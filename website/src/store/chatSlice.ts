@@ -1,6 +1,7 @@
 import { createSlice, createAsyncThunk, createSelector, type PayloadAction } from '@reduxjs/toolkit'
 import { whenScrollQuiet } from '../lib/scrollQuiet'
 import { api } from '../api/client'
+import { resolveDefaultMemoryMode } from '../api/queryClient'
 import { devLog, inspectorOn } from '../dev/scrollInspector'
 import { addSlotOptimistic, updateSlot, removeSlotOptimistic, markSlotRead, fetchSlots, slotSurfaceKey, sseSlots, sseConnected } from './dashboardSlice'
 import { resolveDefaultColor } from '../utils/sessionColors'
@@ -397,6 +398,40 @@ const evictSlotState = (state: ChatState, slotKey: string): void => {
   // authoritative snapshot said it is gone, and restoring it would re-create
   // exactly the dead-slot selection the origin exists to unwind (#6309).
   if (state.slotSwitchOrigin && spellings.includes(state.slotSwitchOrigin.key)) state.slotSwitchOrigin = null
+}
+
+/** Retire folder-suggestion cards for slots an authoritative list reports as
+ *  already filed.
+ *
+ *  The card is per-window Redux state, but the question it asks — "file this
+ *  unfiled session?" — is answered globally the moment ANY window files the
+ *  session: accepting the card, the sidebar row menu, and drag-to-folder all
+ *  land in PATCH /api/chat/slots/{slot}/folder, whose push_slots_update
+ *  broadcasts the new folder_id to every connected client. Without this pass
+ *  every OTHER window keeps offering a move that already happened, and
+ *  accepting there re-issues it. Deliberately unconditional on the card's
+ *  `ts`: the backend offers at most one card per slot and never re-offers
+ *  after filing, so any card for a filed slot is moot regardless of
+ *  generation. That holds only for a list that is CURRENT — a session key can
+ *  be reused after close, and a stale list then reports the PREVIOUS tenant's
+ *  folder_id against the replacement's card — so each caller must ensure its
+ *  payload is not stale relative to the suggestion stream: WS frames are
+ *  ordered with the suggestion frames on one socket, and the fetch reply is
+ *  only trusted before the first live snapshot (see its call site). Declining,
+ *  by contrast, writes nothing server-side, so a decline stays window-local
+ *  and other windows age their copy out (FOLDER_SUGGESTION_MAX_TURNS) — the
+ *  offer is still answerable there. */
+const clearFiledFolderSuggestions = (
+  state: ChatState,
+  payload: readonly { key: string; folder_id?: string }[],
+): void => {
+  if (!state.folderSuggestions) return
+  for (const s of payload) {
+    if (!s.folder_id) continue
+    // Both spellings, same as evictSlotState: some writers key through safeKey().
+    delete state.folderSuggestions[s.key]
+    delete state.folderSuggestions[safeKey(s.key)]
+  }
 }
 
 /** Read one slot's pending question card, or null.
@@ -2782,6 +2817,9 @@ export const refreshSlot = createAsyncThunk(
 let warmSeqCounter = 0
 const nextWarmSeq = (): number => ++warmSeqCounter
 
+const configuredDefaultMemoryMode = () =>
+  resolveDefaultMemoryMode(() => api.dashboardConfig())
+
 export const warmSlotCache = createAsyncThunk(
   'chat/warmSlotCache',
   async (key: string, { getState }) => {
@@ -2810,7 +2848,7 @@ export const createSlot = createAsyncThunk<
     const agent = typeof opts === 'string' ? opts : opts?.agent
     const model = typeof opts === 'string' ? undefined : opts?.model
     const mode = typeof opts === 'string' ? undefined : opts?.mode
-    const memory_mode = typeof opts === 'string' ? undefined : opts?.memory_mode
+    const requestedMemoryMode = typeof opts === 'string' ? undefined : opts?.memory_mode
     const clean_mode = typeof opts === 'string' ? undefined : opts?.clean_mode
     const folderId = typeof opts === 'string' ? undefined : opts?.folder_id
     // Title at BIRTH, for the same reason folder membership rides this payload:
@@ -2837,6 +2875,10 @@ export const createSlot = createAsyncThunk<
     // pending (e.g. New Chat spun on "Creating" under memory pressure and they
     // moved to another tab), the new slot must NOT hijack the view.
     const originActiveSlot = (getState() as RootState).chat.activeSlot
+    // An explicit Incognito/Temporary menu choice wins. All other dashboard chat
+    // entry points resolve the persisted preference here, before the first turn
+    // can read or write memory.
+    const memory_mode = requestedMemoryMode || await configuredDefaultMemoryMode()
     const slot = await api.createChatSlot(undefined, agent, model, mode, memory_mode, title, clean_mode, undefined, folderId || undefined, instanceId)
     const dashState = (getState() as RootState).dashboard
     // An explicit color (e.g. carried from a slot being recreated on a
@@ -3000,7 +3042,9 @@ export const forkSlot = createAsyncThunk(
       ? await api.forkChatSlot(slot, atIndex, prompt, mode, direction, messageId)
       : await api.forkChatSlot(slot, atIndex, prompt, mode, direction)
     if (d.ok) {
-      dispatch(addSlotOptimistic({ key: d.key, title: d.title || d.key, messages: d.messages || 0, running: false, folder_id: d.folder_id }))
+      // memory_mode is the parent's, echoed by the server; without it the new
+      // tab would read as persistent until the next slots refresh.
+      dispatch(addSlotOptimistic({ key: d.key, title: d.title || d.key, messages: d.messages || 0, running: false, folder_id: d.folder_id, memory_mode: d.memory_mode }))
     }
     return d
   },
@@ -5494,6 +5538,7 @@ const chatSlice = createSlice({
         // even when it is empty.
         if (action.payload.length === 0 && !seenSnapshot) return
         reconcileSlotResidue(state, action.payload)
+        clearFiledFolderSuggestions(state, action.payload)
       })
       /** The other authoritative slot-list writer. A request's reply is
        *  authoritative even when empty — nothing to disambiguate — so this is
@@ -5505,6 +5550,16 @@ const chatSlice = createSlice({
       .addCase(fetchSlots.fulfilled, (state, action) => {
         if (state.slotsSnapshotSeen === true) return
         reconcileSlotResidue(state, action.payload)
+        // Gated behind the snapshot bit like the residue reconcile above, and
+        // for the same staleness reason: an HTTP reply can be OLDER than the WS
+        // stream. A filed slot's key can be reused by a fresh session that has
+        // already received its own suggestion card; a pre-reuse reply still
+        // names the key with folder_id set, and clearing on it would delete the
+        // replacement's one-shot card — which the backend never re-offers. The
+        // WS path has no such window (suggestion frames and slots frames arrive
+        // in order on one socket), so after the first live snapshot the frames
+        // own this cleanup exclusively.
+        clearFiledFolderSuggestions(state, action.payload)
       })
       .addCase(fetchHistory.fulfilled, (state, action) => {
         const { sessions, hasMore, offset, append } = action.payload

@@ -45,7 +45,10 @@ import SubagentCompletionCard from './SubagentCompletionCard'
 import { isSubagentCompletionMessage, type ParsedSubagentCompletion } from './subagentCompletion'
 import { REASONING_ROLES, hasReasoningContent } from './groupDisplayItems'
 import { FileCard } from '../../components/FileCard'
-import type { MessageRenderer, MessageRenderContext } from '../../app-sdk/messageRenderers'
+import UserMessage from './UserMessage'
+import { formatTs, type MessageRenderer, type MessageRenderContext } from '../../app-sdk/messageRenderers'
+import { renderUserContent } from './ChatPageMessageContent'
+import { fmtMessageTimeFull } from './messageTime'
 import type { ChatMessage } from '../../types'
 
 /** Disclosure-map identity for a tool row (#8204). messageRowKey is
@@ -127,6 +130,12 @@ export interface TranscriptRendererOptions {
    *  still has to act on, whereas Continue resumes a turn and so is unique. */
   onPickModel?: () => void
   onOpenDefaultModel?: () => void
+  /** Draw confirmed steers as ordinary user messages (no "Steered into the
+   *  running turn" badge). A `steer-only` composer host sets it: every busy
+   *  send on that surface is a steer, so the badge would label each one with
+   *  the very mechanics the surface hides. Off (default) the SDK's `user`
+   *  entry is used unchanged. */
+  hideSteerBadge?: boolean
 }
 
 /** Index of the last `error` row, so only that one offers Continue. Derived
@@ -355,5 +364,26 @@ export function createTranscriptRenderers(
         )
       },
     },
+    // Replaces the SDK's `user` entry (same id) ONLY when the host asks for it:
+    // identical content path (renderUserContent — paste chips, inline images
+    // and file cards included), one prop different. Absent the flag no entry is emitted, so every other
+    // surface keeps the SDK row byte-for-byte.
+    ...(o.hideSteerBadge
+      ? [{
+          id: 'user',
+          roles: ['user'],
+          render: (m: ChatMessage, ctx: MessageRenderContext) => ctx.wrapper(
+            <UserMessage
+              content={m.content}
+              meta={m.meta}
+              timestamp={formatTs(m.ts)}
+              timestampTitle={fmtMessageTimeFull(m.ts)}
+              renderContent={(c, mt) => renderUserContent({ content: c, meta: mt, onFileOpen: ctx.onFileOpen })}
+              hideSteerBadge
+            />,
+            true,
+          ),
+        } satisfies MessageRenderer]
+      : []),
   ]
 }

@@ -23,7 +23,7 @@ from typing import Callable
 import pytest
 
 from kiro_crew import vector_memory as vm
-from kiro_crew.vector_memory import VectorMemoryStore, _lesson_display_text
+from kiro_crew.vector_memory import LessonWriteOutcome, VectorMemoryStore, _lesson_display_text
 
 
 def _lesson_texts(store: VectorMemoryStore) -> list[str]:
@@ -1217,7 +1217,7 @@ class TestLessonDedupPaths:
         assert store.write_lesson("Quote every shell argument you interpolate", source="migration")
         assert store.get_lessons()[0]["confidence"] == 0.9
 
-    def test_semantic_dedup_keeps_the_longer_rule(self, tmp_path: Path) -> None:
+    def test_semantic_dedup_keeps_the_newer_rule_when_it_is_longer(self, tmp_path: Path) -> None:
         """Distinct wording, identical vectors: only the cosine path can dedup these."""
         short_rule = "Zebra crossings need beacons"
         long_rule = "Submarine hatches demand orange lanterns for visibility"
@@ -1227,14 +1227,184 @@ class TestLessonDedupPaths:
         assert store.write_lesson(long_rule)
         assert _lesson_texts(store) == [long_rule]
 
-    def test_semantic_dedup_rejects_the_shorter_rule(self, tmp_path: Path) -> None:
+    def test_semantic_dedup_keeps_the_newer_rule_when_it_is_shorter(self, tmp_path: Path) -> None:
+        """Same pair, submitted in the other order -- the newer rule still wins.
+
+        A length tie-break on ``len(rule) > len(existing_text)`` would DROP
+        the submission when it loses, so character count would decide which of two
+        near-identical rules is current. Corrections land on the losing side of
+        that comparison as a rule: a retraction collapses a detailed stale claim
+        into a short accurate one. The stale lesson then stayed in effect, which
+        misleads the agent instead of merely losing detail. The substring and
+        topic-overlap branches already superseded unconditionally; this one now
+        agrees with them.
+        """
         long_rule = "Submarine hatches demand orange lanterns for visibility"
         short_rule = "Zebra crossings need beacons"
         store = _store(tmp_path)
         store.embed_fn = _TableEmbedder({short_rule: _unit(0), long_rule: _unit(0)})
         assert store.write_lesson(long_rule)
-        assert not store.write_lesson(short_rule)
-        assert _lesson_texts(store) == [long_rule]
+        assert store.write_lesson(short_rule)
+        assert _lesson_texts(store) == [short_rule]
+
+    def test_semantic_supersede_never_lets_an_inferred_lesson_displace_user_explicit(
+        self, tmp_path: Path
+    ) -> None:
+        """Newest-wins must not invert source authority.
+
+        Consolidation extracts lessons on its own schedule, so an inferred
+        near-duplicate routinely arrives AFTER the user's explicit correction.
+        Unconditional newest-wins would tombstone the user's own lesson and
+        replace it with automated guidance -- the same inversion
+        ``_write_semantic`` already refuses for same-key writes. The stored
+        ``user_explicit`` row must survive, and the write must report the old
+        deduped outcome rather than a supersede.
+        """
+        taught = "Zebra crossings need beacons"
+        inferred = "Submarine hatches demand orange lanterns for visibility"
+        store = _store(tmp_path)
+        store.embed_fn = _TableEmbedder({taught: _unit(0), inferred: _unit(0)})
+        assert store.write_lesson(taught)  # source defaults to user_explicit
+        result = store.write_lesson(inferred, source="consolidation")
+        assert not result
+        assert result.outcome is LessonWriteOutcome.DEDUPED
+        assert result.reason == "semantic_similarity"
+        assert result.superseded == ()
+        assert _lesson_texts(store) == [taught]
+
+    def test_semantic_supersede_lets_a_user_explicit_correction_replace_an_inferred_lesson(
+        self, tmp_path: Path
+    ) -> None:
+        """The guard is one-directional: the user's correction still wins."""
+        inferred = "Submarine hatches demand orange lanterns for visibility"
+        taught = "Zebra crossings need beacons"
+        store = _store(tmp_path)
+        store.embed_fn = _TableEmbedder({taught: _unit(0), inferred: _unit(0)})
+        assert store.write_lesson(inferred, source="consolidation")
+        assert store.write_lesson(taught)  # source defaults to user_explicit
+        assert _lesson_texts(store) == [taught]
+
+    def test_semantic_supersede_keeps_a_higher_confidence_import_lesson(
+        self, tmp_path: Path
+    ) -> None:
+        """Authority is source AND confidence, not the ``user_explicit`` literal.
+
+        The onboarding import stores the user's own lessons at confidence 1.0
+        under source ``import`` (see ``onboarding_import``). A consolidation
+        write carries confidence 0.9, and before this PR the length tie-break
+        was the only thing that could spare such a row. The guard must weigh
+        stored confidence, mirroring ``_write_semantic``'s same-key refusal
+        ("Existing entry has higher confidence").
+        """
+        imported = "Zebra crossings need beacons"
+        inferred = "Submarine hatches demand orange lanterns for visibility"
+        store = _store(tmp_path)
+        store.embed_fn = _TableEmbedder({imported: _unit(0), inferred: _unit(0)})
+        key = f"lesson.{hashlib.sha256(imported.encode()).hexdigest()[:16]}"
+        assert (
+            store.set_semantic_if_absent(
+                key,
+                {"rule": imported, "category": "preference", "negative": None},
+                1.0,
+                "import",
+            )
+            == "imported"
+        )
+        result = store.write_lesson(inferred, source="consolidation")
+        assert not result
+        assert result.outcome is LessonWriteOutcome.DEDUPED
+        assert result.reason == "semantic_similarity"
+        assert _lesson_texts(store) == [imported]
+
+    def test_a_declined_write_deletes_no_row_it_scanned_before_the_decliner(
+        self, tmp_path: Path
+    ) -> None:
+        """Semantic supersedes are deferred until the scan settles the write.
+
+        Rows are scanned newest-first, not authority-first. Without deferral,
+        a consolidation write near-identical to TWO stored rows -- a newer
+        inferred one and an older user-set one -- deleted the inferred row
+        first, then hit the user's row, whose guard declined the write: the
+        inferred row was gone and nothing replaced it. Declining must cost no
+        stored row from this branch.
+        """
+        taught = "Zebra crossings need beacons"
+        inferred = "Submarine hatches demand orange lanterns for visibility"
+        submitted = "Quokkas patrol the western observation deck at dawn"
+        # sub is >0.85 cosine to BOTH stored rows, but the stored rows sit only
+        # 0.6 from each other -- so they coexist (neither write deduped the
+        # other) while both match the submission in the semantic branch.
+        vec_a = [1.0, 0.0] + [0.0] * (_DIM - 2)
+        vec_b = [0.6, 0.8] + [0.0] * (_DIM - 2)
+        vec_sub = [0.894, 0.447] + [0.0] * (_DIM - 2)
+        store = _store(tmp_path)
+        store.embed_fn = _TableEmbedder(
+            {taught: vec_a, inferred: vec_b, submitted: vec_sub}
+        )
+        assert store.write_lesson(taught)  # user_explicit, older
+        assert store.write_lesson(inferred, source="consolidation")  # newer
+        assert sorted(_lesson_texts(store)) == sorted([taught, inferred])
+        result = store.write_lesson(submitted, source="consolidation")
+        assert not result
+        assert result.outcome is LessonWriteOutcome.DEDUPED
+        assert result.reason == "semantic_similarity"
+        # The decline cost nothing: the inferred row scanned before the
+        # user-set decliner is still stored, and nothing was reported deleted.
+        assert result.superseded == ()
+        assert sorted(_lesson_texts(store)) == sorted([taught, inferred])
+
+    def test_the_authority_pre_pass_skips_rows_the_lexical_branches_claim(
+        self, tmp_path: Path
+    ) -> None:
+        """A row substring/topic-overlap would resolve keeps main's outcome.
+
+        The pre-pass covers PURE semantic matches only. A submission that
+        lexically contains a stored ``user_explicit`` rule is claimed by the
+        source-blind substring branch first (per-row branch order), and main
+        deletes the stored row there -- "longer wins". The pre-pass must not
+        turn that into an authority decline, or it would change main-owned
+        lexical dedup outcomes this change disclaims.
+        """
+        taught = "Zebra crossings need beacons"
+        submitted = "Zebra crossings need beacons after dusk"
+        store = _store(tmp_path)
+        store.embed_fn = _TableEmbedder({taught: _unit(0), submitted: _unit(0)})
+        assert store.write_lesson(taught)  # user_explicit
+        result = store.write_lesson(submitted, source="consolidation")
+        assert result  # stored, not declined
+        assert result.outcome is LessonWriteOutcome.INSERTED
+        assert len(result.superseded) == 1  # the contained row was superseded
+        assert _lesson_texts(store) == [submitted]
+
+    def test_a_substring_covered_refusal_drops_the_deferred_semantic_deletes(
+        self, tmp_path: Path
+    ) -> None:
+        """The semantic branch's newest-wins deletes must not outrun a refusal.
+
+        The old tie-break REFUSED where newest-wins now deletes, so an
+        immediate delete could strand a row: a semantic near-duplicate deleted
+        mid-scan, then a later stored superset claims the write via main's
+        ``substring_covered`` refusal -- the near-duplicate is gone and the
+        submission was never stored. The semantic supersedes are deferred and
+        a refusal executes none of them.
+        """
+        superset = "Quokkas patrol the western observation deck at dawn"
+        near_dup = "Zebra crossings need beacons"
+        submitted = "Quokkas patrol the western observation deck"
+        store = _store(tmp_path)
+        store.embed_fn = _TableEmbedder(
+            {superset: _unit(1), near_dup: _unit(0), submitted: _unit(0)}
+        )
+        assert store.write_lesson(superset, source="consolidation")  # older
+        assert store.write_lesson(near_dup, source="consolidation")  # newer
+        result = store.write_lesson(submitted, source="consolidation")
+        assert not result
+        assert result.outcome is LessonWriteOutcome.DEDUPED
+        assert result.reason == "substring_covered"
+        # The refusal cost nothing from the semantic branch: the near-duplicate
+        # scanned before the superset is still stored.
+        assert result.superseded == ()
+        assert sorted(_lesson_texts(store)) == sorted([superset, near_dup])
 
     def test_the_rule_vector_is_persisted(self, tmp_path: Path) -> None:
         store = _store(tmp_path)

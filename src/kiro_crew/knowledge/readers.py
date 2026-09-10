@@ -81,11 +81,17 @@ class FileReader:
     # Binary formats need optional runtime deps: .pdf -> pdfplumber and .docx ->
     # python-docx (both declared in setup.cfg). .pptx -> python-pptx is NOT declared,
     # so .pptx is intentionally kept out of SUPPORTED even though _read_pptx exists.
+    # Every source-code extension listed in ingestion.CODE_EXTS must appear here:
+    # SUPPORTED is the folder-scan gate (folder_watcher._walk), and a source's
+    # include_extensions can only narrow it, so an extension missing here is
+    # silently skipped before any reader or chunker runs. test_knowledge.py pins
+    # CODE_EXTS as a subset of this set.
     SUPPORTED = {
         '', '.md', '.txt', '.org', '.py', '.java', '.ts', '.js', '.rs', '.go',
         '.html', '.htm', '.docx', '.pdf',
         '.csv', '.log', '.json', '.jsonl', '.ndjson', '.yaml', '.yml',
         '.sh', '.rb', '.ps1', '.psm1', '.psd1', '.c', '.cpp', '.h',
+        '.cs', '.kt', '.kts', '.swift', '.scala',
     }
 
     _DISPATCH = {

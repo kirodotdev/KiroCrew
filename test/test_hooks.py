@@ -288,6 +288,246 @@ class TestToolHooks:
         # Plain tool name deny still works via normalized
         assert mgr.on_tool_call("Running: rm foo").action == TOOL_DENY
 
+    def test_auto_approve_matches_verified_mcp_identity_not_title(self):
+        """With a verified MCP identity the grant is keyed on the identity.
+
+        The title is agent-influenced (``select_tool_title`` prefers a
+        model-authored ``description``), so a title that reads like an allowed
+        tool must not approve a different one. The identity is rendered in
+        kiro-cli's own title spelling, so a pattern written against that title
+        keeps matching when the two agree.
+        """
+        cfg = HooksConfig(auto_approve_tools=["Running: @memory-mcp/*"])
+        mgr = HookManager(cfg)
+        # Title and identity agree: approved.
+        assert (
+            mgr.on_tool_call(
+                "Running: @memory-mcp/search_memory",
+                mcp_server_name="memory-mcp",
+                mcp_tool_name="search_memory",
+                mcp_identity_trusted=True,
+            ).action
+            == TOOL_AUTO_APPROVE
+        )
+        # A description-derived title that does not spell the identity still
+        # approves, because the identity (not the title) is what is matched.
+        assert (
+            mgr.on_tool_call(
+                "Look up the paper the user mentioned",
+                mcp_server_name="memory-mcp",
+                mcp_tool_name="search_memory",
+                mcp_identity_trusted=True,
+            ).action
+            == TOOL_AUTO_APPROVE
+        )
+        # A forged title over a DIFFERENT verified tool is not approved.
+        assert (
+            mgr.on_tool_call(
+                "Running: @memory-mcp/search_memory",
+                mcp_server_name="ops-mcp",
+                mcp_tool_name="delete_everything",
+                mcp_identity_trusted=True,
+            ).action
+            == TOOL_ALLOW
+        )
+        # An identity that is present but UNPROVEN (no provenance flag) does not
+        # key the grant: the call falls back to the title branch, which here
+        # matches -- the same behavior as before this change, never wider.
+        unproven = mgr.on_tool_call(
+            "Running: @memory-mcp/search_memory",
+            mcp_server_name="memory-mcp",
+            mcp_tool_name="search_memory",
+        )
+        assert unproven.action == TOOL_AUTO_APPROVE and unproven.identity_grant is False
+        # The lossy wire spelling is NOT a grant target: `github`+`repo__delete`
+        # and `github__repo`+`delete` share `mcp__github__repo__delete`, so a
+        # grant written against it would approve the other tool.
+        cfg3 = HooksConfig(auto_approve_tools=["mcp__github__repo__delete"])
+        for server, tool in (("github", "repo__delete"), ("github__repo", "delete")):
+            assert (
+                HookManager(cfg3)
+                .on_tool_call(
+                    "anything",
+                    mcp_server_name=server,
+                    mcp_tool_name=tool,
+                    mcp_identity_trusted=True,
+                )
+                .action
+                == TOOL_ALLOW
+            )
+        # The bare "@server/tool" spelling matches too.
+        cfg2 = HooksConfig(auto_approve_tools=["@memory-mcp/search_*"])
+        mgr2 = HookManager(cfg2)
+        assert (
+            mgr2.on_tool_call(
+                "anything",
+                mcp_server_name="memory-mcp",
+                mcp_tool_name="search_memory",
+                mcp_identity_trusted=True,
+            ).action
+            == TOOL_AUTO_APPROVE
+        )
+        # No identity (a built-in, or a backend without _meta.kiro): the title
+        # path is unchanged.
+        assert mgr.on_tool_call("Running: @memory-mcp/search_memory").action == TOOL_AUTO_APPROVE
+        assert mgr.on_tool_call("Running: @other/thing").action == TOOL_ALLOW
+
+    def test_deny_binds_to_verified_identity_spelling_too(self):
+        """A deny written in the same `@server/tool` spelling the approve loop
+        matches binds to the identity, not only to the title: a benign title
+        over a denied verified tool is denied, and deny still beats approve
+        when both lists are written against the identity."""
+        cfg = HooksConfig(
+            auto_approve_tools=["@ops/*"],
+            auto_deny_tools=["@ops/delete_*"],
+        )
+        mgr = HookManager(cfg)
+        # Benign title, denied identity -> DENY (the title never mattered).
+        assert (
+            mgr.on_tool_call(
+                "Tidy up the workspace",
+                mcp_server_name="ops",
+                mcp_tool_name="delete_everything",
+                mcp_identity_trusted=True,
+            ).action
+            == TOOL_DENY
+        )
+        # The deny binds even without provenance: a deny target can only deny.
+        assert (
+            mgr.on_tool_call(
+                "Tidy up the workspace", mcp_server_name="ops", mcp_tool_name="delete_everything"
+            ).action
+            == TOOL_DENY
+        )
+        # A non-denied tool on the same server still auto-approves by identity.
+        assert (
+            mgr.on_tool_call(
+                "anything", mcp_server_name="ops", mcp_tool_name="list_items", mcp_identity_trusted=True
+            ).action
+            == TOOL_AUTO_APPROVE
+        )
+        # A server-level deny binds to every tool of that server.
+        mgr2 = HookManager(HooksConfig(auto_deny_tools=["@ops"]))
+        assert (
+            mgr2.on_tool_call("anything", mcp_server_name="ops", mcp_tool_name="list_items").action
+            == TOOL_DENY
+        )
+
+    def test_identity_grant_provenance_and_child_coverage(self):
+        """``identity_grant`` marks exactly the grants decided by verified MCP
+        identity, and ``identity_grant_covers_child`` admits only those, and
+        only for a child whose own identity verified."""
+        from types import SimpleNamespace
+
+        from kiro_crew.hooks import ToolHookResult, identity_grant_covers_child
+
+        cfg = HooksConfig(auto_approve_tools=["@memory-mcp/*", "Reading *"])
+        mgr = HookManager(cfg)
+        by_identity = mgr.on_tool_call(
+            "whatever",
+            mcp_server_name="memory-mcp",
+            mcp_tool_name="search_memory",
+            mcp_identity_trusted=True,
+        )
+        unproven_identity = mgr.on_tool_call(
+            "whatever", mcp_server_name="memory-mcp", mcp_tool_name="search_memory"
+        )
+        # Without provenance the identity keys nothing: title "whatever" matches
+        # no pattern, and the result carries no identity_grant.
+        assert unproven_identity.action == TOOL_ALLOW and unproven_identity.identity_grant is False
+        by_title = mgr.on_tool_call("Reading /tmp/x")
+        assert by_identity.action == TOOL_AUTO_APPROVE and by_identity.identity_grant is True
+        assert by_title.action == TOOL_AUTO_APPROVE and by_title.identity_grant is False
+
+        verified_child = SimpleNamespace(child_mcp_identity_trusted=True)
+        unverified_child = SimpleNamespace(child_mcp_identity_trusted=False)
+        assert identity_grant_covers_child(by_identity, verified_child) is True
+        assert identity_grant_covers_child(by_title, verified_child) is False
+        assert identity_grant_covers_child(by_identity, unverified_child) is False
+        assert identity_grant_covers_child(ToolHookResult.allow(), verified_child) is False
+        # A directly constructed result (the runner's downgrade shape) carries
+        # no identity provenance.
+        assert (
+            identity_grant_covers_child(ToolHookResult(action=TOOL_AUTO_APPROVE), verified_child)
+            is False
+        )
+
+    def test_title_only_pattern_logs_the_rewrite_once(self, caplog):
+        """A pattern that matches only the agent-authored title of an
+        identity-verified MCP call does not grant, and the gate logs the
+        rewrite once per (pattern, identity) so an unattended card can be
+        traced to its pattern."""
+        import logging
+
+        from kiro_crew import hooks as hooks_mod
+
+        hooks_mod._TITLE_ONLY_GRANT_NOTED.clear()
+        cfg = HooksConfig(auto_approve_tools=["Look up*"])
+        mgr = HookManager(cfg)
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.hooks"):
+            for _ in range(2):
+                assert (
+                    mgr.on_tool_call(
+                        "Look up the paper the user mentioned",
+                        mcp_server_name="memory-mcp",
+                        mcp_tool_name="search_memory",
+                        mcp_identity_trusted=True,
+                    ).action
+                    == TOOL_ALLOW
+                )
+        notes = [r for r in caplog.records if "@memory-mcp/search_memory" in r.getMessage()]
+        assert len(notes) == 1
+        assert "'Look up*'" in notes[0].getMessage()
+        # No breadcrumb when the identity is unproven: the title branch is the
+        # grant key there and the pattern simply grants.
+        caplog.clear()
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.hooks"):
+            assert (
+                mgr.on_tool_call(
+                    "Look up the paper", mcp_server_name="memory-mcp", mcp_tool_name="search_memory"
+                ).action
+                == TOOL_AUTO_APPROVE
+            )
+        assert not [r for r in caplog.records if "verified MCP identity" in r.getMessage()]
+
+    def test_every_permission_path_caller_passes_mcp_identity(self):
+        """Every ``on_tool_call`` caller in the package hands the gate the event's
+        verified MCP identity. The identity is what an ``auto_approve_tools``
+        pattern is matched against for an MCP-served call; a caller that omits
+        it falls back to the agent-authored title on that one surface, which is
+        exactly the forgery the identity match closes."""
+        import re
+        from pathlib import Path
+
+        import kiro_crew
+
+        root = Path(kiro_crew.__file__).resolve().parent
+        offenders: list[str] = []
+        for path in root.rglob("*.py"):
+            rel = path.relative_to(root).as_posix()
+            if "/tests/" in f"/{rel}" or rel.startswith("hooks.py"):
+                continue
+            text = path.read_text(encoding="utf-8")
+            # Gate consultations are assignments (`result = ...hooks.on_tool_call(`);
+            # the renderer's unrelated `on_tool_call` handler and docstring mentions
+            # are not.
+            for match in re.finditer(r"=\s*[\w.]+\.on_tool_call\(", text):
+                depth, i = 1, match.end()
+                while i < len(text) and depth:
+                    depth += {"(": 1, ")": -1}.get(text[i], 0)
+                    i += 1
+                call = text[match.start() : i]
+                if (
+                    "mcp_tool_name=" not in call
+                    or "mcp_server_name=" not in call
+                    or "mcp_identity_trusted=" not in call
+                ):
+                    line = text.count("\n", 0, match.start()) + 1
+                    offenders.append(f"{rel}:{line}")
+        assert not offenders, "on_tool_call callers missing mcp identity kwargs: " + ", ".join(
+            offenders
+        )
+
 
 class TestToolCallEvaluatesRawCommand:
     """Regression: the security gate must evaluate the ACTUAL shell command,

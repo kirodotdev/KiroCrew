@@ -9,6 +9,18 @@ nothing on the page ever said which component was absent. This module answers
 the third, machine-local question, and is the only one whose answer can change
 without a config write or a new build.
 
+**Installed is not signed in, and this module deliberately probes no credential.**
+Every verdict here is about a FILE resolving; none of it says a harness can
+authenticate. That gap is real -- an installed-and-signed-out harness still dies
+at ``session/new`` -- but the answer does not belong here: reading another
+harness's token is what the credential floor exists to forbid, and a probe that
+did it would be the one reader the floor cannot fence. The sign-in answer is
+declared per harness in :mod:`kiro_crew.agent_sdk.host_auth` and reaches the
+operator as a remedy string the doctor row and the backend panel render
+verbatim. So a caller that wants "can this harness actually run" reads a
+declaration beside this state, and nothing here grows a credential probe or a
+field claiming one ran.
+
 **The resolving itself is the driver's, not this module's.** Everything that has
 to reach the harness -- the binary resolves, the read of the spawn's own
 process-lifetime cache, the remedy's package name -- lives in

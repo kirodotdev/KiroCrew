@@ -1490,14 +1490,22 @@ class TestDisableTrace:
         sdk.store.dir.mkdir(parents=True, exist_ok=True)
         denied_stem = "d" * 32
         (sdk.store.dir / f"{denied_stem}.json").write_text("{}")
-        real_open = os.open
 
-        def denying_open(path, flags, *args, **kwargs):
+        from kiro_crew import platform_compat as _pc
+
+        real_no_reparse = _pc.open_file_no_reparse
+
+        # The refused read is simulated at the seam the record read actually uses.
+        # Patching os.open would only cover the POSIX arm of open_file_no_reparse --
+        # its Windows arm reaches CreateFileW -- and the scenario in the docstring
+        # is a Windows one, so the record would read fine there and be classified
+        # by its contents instead of as unreadable.
+        def denying_open(path, *args, **kwargs):
             if str(path).endswith(f"{denied_stem}.json"):
                 raise PermissionError(13, "denied", str(path))
-            return real_open(path, flags, *args, **kwargs)
+            return real_no_reparse(path, *args, **kwargs)
 
-        monkeypatch.setattr(os, "open", denying_open)
+        monkeypatch.setattr(_pc, "open_file_no_reparse", denying_open)
 
         cleanup = asyncio.run(sdk.remove_all_async())
         assert cleanup.removed == 1

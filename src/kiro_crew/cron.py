@@ -32,7 +32,7 @@ import time
 import uuid
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Iterator, NamedTuple
 from zoneinfo import ZoneInfo
@@ -1140,6 +1140,78 @@ def get_local_tz() -> tuple[str, ZoneInfo]:
             exc_info=True,
         )
         return "UTC", ZoneInfo("UTC")
+
+
+# Patterns for parse_time_string
+_RE_IN_DURATION = re.compile(
+    r"^in\s+(\d+)\s*(s|sec|second|seconds|m|min|minute|minutes|h|hr|hour|hours)$", re.I
+)
+_UNIT_SECS = {
+    "s": 1,
+    "sec": 1,
+    "second": 1,
+    "seconds": 1,
+    "m": 60,
+    "min": 60,
+    "minute": 60,
+    "minutes": 60,
+    "h": 3600,
+    "hr": 3600,
+    "hour": 3600,
+    "hours": 3600,
+}
+
+
+def parse_time_string(s: str) -> float | str:
+    """Parse a human time string into a Unix timestamp. Returns error string on failure.
+
+    Lives here, next to :func:`get_local_tz`, because BOTH one-shot entry points
+    need it: the ``cron_add`` MCP tool and ``POST /api/crons``. A second copy
+    would let the two drift, and "5pm" resolving to different instants depending
+    on which door the request came through is exactly the class of bug a shared
+    parser prevents. Relative forms ("in 30 minutes") are absolute already;
+    everything else is interpreted in the CONFIGURED timezone, never the
+    process's, so a gateway running in UTC still honours the user's setting.
+    """
+    s = s.strip()
+    _, tz = get_local_tz()
+    now = datetime.now(tz)
+
+    # "in 5 minutes", "in 2 hours"
+    m = _RE_IN_DURATION.match(s)
+    if m:
+        secs = int(m.group(1)) * _UNIT_SECS[m.group(2).lower()]
+        return time.time() + secs
+
+    # Try common formats with optional "tomorrow"
+    tomorrow = False
+    text = s
+    if text.lower().startswith("tomorrow"):
+        tomorrow = True
+        text = re.sub(r"^at\b\s*", "", text[8:].strip())
+
+    # "5pm", "5:30pm", "17:00", "9:30am"
+    for fmt in ("%I%p", "%I:%M%p", "%H:%M", "%I %p", "%I:%M %p"):
+        try:
+            parsed = datetime.strptime(text, fmt)
+            result = now.replace(hour=parsed.hour, minute=parsed.minute, second=0, microsecond=0)
+            if tomorrow:
+                result += timedelta(days=1)
+            elif result <= now:
+                result += timedelta(days=1)  # "5pm" when it's already 6pm → tomorrow
+            return result.timestamp()
+        except ValueError:
+            continue
+
+    # ISO-ish: "YYYY-MM-DD HH:MM", space or "T" separator, seconds optional
+    for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%dT%H:%M", "%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"):
+        try:
+            parsed = datetime.strptime(text, fmt).replace(tzinfo=now.tzinfo)
+            return parsed.timestamp()
+        except ValueError:
+            continue
+
+    return f"Error: could not parse time '{s}'. Examples: '5pm', 'in 30 minutes', 'tomorrow 9am'"
 
 
 def _job_tz(job: CronJob) -> ZoneInfo:

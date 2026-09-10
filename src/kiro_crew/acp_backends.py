@@ -42,7 +42,6 @@ from kiro_crew.agent_sdk.backends import (  # noqa: F401 - re-exported for exist
     ACP_BACKENDS_HOST_AUTH_CALLBACK,
     ACP_BACKENDS_INLINE_COMPACTION,
     ACP_BACKENDS_INTERNAL_SANDBOX,
-    ACP_BACKENDS_KIRO_IDENTITY_STORE,
     ACP_BACKENDS_KIRO_SLASH_COMMANDS,
     ACP_BACKENDS_KNOWN,
     ACP_BACKENDS_MCP_CONFIG_HOT_RELOAD,
@@ -70,6 +69,14 @@ from kiro_crew.agent_sdk.backends import (  # noqa: F401 - re-exported for exist
     selectable_backends,
 )
 
+# Declared per harness rather than listed as a capability set: whether a
+# ``kiro-cli logout`` retires a running child is a fact about how that harness signs
+# in, and it is projected from the same declaration that gives the credential floor
+# the leaf it fences. See ``agent_sdk.host_auth``.
+from kiro_crew.agent_sdk.host_auth import (  # noqa: E402,F401 - re-exported for importers
+    backends_retired_by_host_logout,
+)
+
 __all__ = [
     "ACP_BACKENDS_ACP_RUNTIME",
     "ACP_BACKENDS_ADVERTISED_MODEL_SELECTION",
@@ -78,7 +85,6 @@ __all__ = [
     "ACP_BACKENDS_HOST_AUTH_CALLBACK",
     "ACP_BACKENDS_INLINE_COMPACTION",
     "ACP_BACKENDS_INTERNAL_SANDBOX",
-    "ACP_BACKENDS_KIRO_IDENTITY_STORE",
     "ACP_BACKENDS_KIRO_SLASH_COMMANDS",
     "ACP_BACKENDS_KNOWN",
     "ACP_BACKENDS_MCP_CONFIG_HOT_RELOAD",
@@ -102,6 +108,7 @@ __all__ = [
     "POLICY_ID_KIRO",
     "Routing",
     "apply_selectable_denials",
+    "backends_retired_by_host_logout",
     "model_registry_namespace",
     "permission_config_for",
     "register_selectable_backend",

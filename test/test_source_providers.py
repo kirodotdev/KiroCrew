@@ -10080,6 +10080,52 @@ class TestGetJiraAuth:
         result = source._get_jira_auth("acme.atlassian.net")
         assert result == ("dev@acme.com", "env-override")
 
+    def test_catalog_slots_match_runtime_precedence(self, monkeypatch):
+        """Catalog output names the same vault slot the runtime resolves."""
+        from kiro_crew.dashboard.handlers.secrets import _managed_secret_catalog
+
+        class FakeEntry:
+            host = "acme.atlassian.net"
+            email = "dev@acme.com"
+
+        class FakeDashboard:
+            jira_auth = [FakeEntry()]
+
+        class FakeConfig:
+            dashboard = FakeDashboard()
+
+            @classmethod
+            def load(cls):
+                return cls()
+
+            def load_credentials(self):
+                return {}
+
+        monkeypatch.setattr(source, "KiroCrewConfig", FakeConfig)
+        monkeypatch.delenv("JIRA_API_TOKEN", raising=False)
+        host_name = source.jira_host_token_name(FakeEntry.host)
+        cases = (
+            ([host_name], {host_name: "host-value"}, host_name),
+            ([], {"JIRA_API_TOKEN": "global-value"}, "JIRA_API_TOKEN"),
+        )
+        for stored_names, vault_values, expected_name in cases:
+            monkeypatch.setattr(
+                source,
+                "_resolve_jira_token_from_vault",
+                lambda name, values=vault_values: values.get(name, ""),
+            )
+            assert source._get_jira_auth(FakeEntry.host) == (
+                FakeEntry.email,
+                vault_values[expected_name],
+            )
+            catalog = _managed_secret_catalog(
+                stored_names,
+                [FakeEntry.host],
+                jira_global_applicable=True,
+                wakatime_enabled=False,
+            )
+            assert expected_name in {entry["name"] for entry in catalog}
+
     def test_migrated_secret_ref_in_env_resolves_from_vault_not_uri(self, monkeypatch):
         """After `secrets import --apply`, the .env line is
         `JIRA_API_TOKEN=secret://JIRA_API_TOKEN` and `load_credentials`

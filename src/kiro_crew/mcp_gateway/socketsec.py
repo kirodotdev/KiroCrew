@@ -44,8 +44,8 @@ refuses a connection the stub's handshake raises ``FallbackRequestedError`` and
 it then ``execvpe`` the target backend directly, appending a record to
 ``stub_fallback.jsonl``. So a ``LOCAL_PEERCRED`` failure on some Mac
 configuration costs pooling and leaves an audit trail; it does not break the
-session. :func:`socket_owner_only` consequently no longer guards any supported
-platform's admission path -- it is the fallback for a POSIX platform that has
+session. :func:`socket_owner_only` consequently guards no supported platform's
+admission path -- it is the fallback for a POSIX platform that has
 neither ``SO_PEERCRED`` nor Darwin's option.
 
 Stdlib-only (``socket``, ``struct``, ``ctypes``, ``os``, ``logging``) plus the

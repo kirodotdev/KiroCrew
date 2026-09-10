@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState } from 'react'
-import { Activity, Radar, RotateCw, Square, X } from 'lucide-react'
+import { Activity, Radar, RotateCw, Square, Trash2, X } from 'lucide-react'
 import { useIsFetching, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api, type MonitorWrite } from '../api/client'
 import {
@@ -57,6 +57,7 @@ type Mutation = ({ captured: AutomationRecord | null; slotKey: string; editorKey
   | { action: 'create'; payload: Required<MonitorWrite> }
   | { action: 'update'; id: string; payload: MonitorWrite }
   | { action: 'stop'; id: string }
+  | { action: 'clear'; id: string }
   | { action: 'restart'; id: string }
 ))
 
@@ -147,6 +148,9 @@ export default function SessionAutomationPopover({
   const editor = editors[editorKey] ?? incomingEditor()
   const errors = errorsByEditor[editorKey] ?? {}
   const [confirmStop, setConfirmStop] = useState(false)
+  /* Separate from confirmStop: the two act on different states and one erases.
+     A shared flag would let a stop confirmation land on the clear. */
+  const [confirmClear, setConfirmClear] = useState(false)
   const id = useId()
   const queryClient = useQueryClient()
   const snapshotFetching = useIsFetching({ queryKey: ['session-automation', slotKey], exact: true }) > 0
@@ -161,6 +165,7 @@ export default function SessionAutomationPopover({
     if (!open) return
     if (automation?.kind === 'legacy_goal_loop') setLegacyModeSlot(slotKey)
     setConfirmStop(false)
+    setConfirmClear(false)
   }, [open, automation?.id, automation?.kind, slotKey])
 
   useEffect(() => {
@@ -187,6 +192,7 @@ export default function SessionAutomationPopover({
       if (request.action === 'create') return api.monitorCreate(request.payload)
       if (request.action === 'update') return api.monitorUpdate(request.id, request.payload)
       if (request.action === 'stop') return api.monitorStop(request.id)
+      if (request.action === 'clear') return api.monitorClear(request.id)
       return api.monitorRestart(request.id)
     },
     onSuccess: (result, request) => {
@@ -472,6 +478,15 @@ export default function SessionAutomationPopover({
                     <div className="mt-0.5 text-muted">{fmtDateTimeNumeric(terminal.stoppedAt)}</div>
                   ) : null}
                 </div>
+                {/* The two exits, named where the terminal state is described.
+                    Restart alone is not a way out: this record keeps occupying
+                    the session and a stopped one refuses a new monitor, so a
+                    reader who only sees Restart cannot tell how to watch
+                    something else -- and the other exit is irreversible, which
+                    nothing else on this surface says. */}
+                <p data-testid="monitor-terminal-exits" className="text-muted leading-relaxed">
+                  {i18nT('components.sessionAutomationPopover.terminal_exits')}
+                </p>
               </div>
             ) : null}
           </div>
@@ -647,19 +662,57 @@ export default function SessionAutomationPopover({
               </SendBtn>
             </>
           ) : terminal ? (
-            <SendBtn
-              type="button"
-              disabled={busy || !monitor.actionable || sessionModeUnsupported}
-              onClick={() => mutation.mutate({
-                action: 'restart',
-                id: monitor.id,
-                captured: automation,
-                slotKey,
-                editorKey,
-              })}
-            >
-              <RotateCw className="lucide-inline" aria-hidden /> {i18nT('components.sessionAutomationPopover.restart_monitor')}
-            </SendBtn>
+            confirmClear ? (
+              <>
+                <Btn type="button" disabled={busy} onClick={() => setConfirmClear(false)}>{i18nT('components.sessionAutomationPopover.cancel')}</Btn>
+                <Btn
+                  type="button"
+                  danger
+                  disabled={busy}
+                  data-testid="monitor-confirm-clear"
+                  onClick={() => mutation.mutate({
+                    action: 'clear',
+                    id: monitor.id,
+                    captured: automation,
+                    slotKey,
+                    editorKey,
+                  })}
+                >
+                  {i18nT('components.sessionAutomationPopover.confirm_clear')}
+                </Btn>
+              </>
+            ) : (
+              <>
+                {/* A stopped monitor's record keeps occupying the session, and a
+                    retained stop REFUSES a re-arm, so Restart alone leaves the
+                    session able to watch only the subject the user stopped
+                    watching. Clearing is the other exit, and the only one that
+                    frees the slot. Behind a confirm because it is irreversible,
+                    matching the stop control's own confirm. */}
+                <Btn
+                  type="button"
+                  danger
+                  disabled={busy || sessionModeUnsupported}
+                  data-testid="monitor-clear"
+                  onClick={() => setConfirmClear(true)}
+                >
+                  <Trash2 className="lucide-inline" aria-hidden /> {i18nT('components.sessionAutomationPopover.clear_monitor')}
+                </Btn>
+                <SendBtn
+                  type="button"
+                  disabled={busy || !monitor.actionable || sessionModeUnsupported}
+                  onClick={() => mutation.mutate({
+                    action: 'restart',
+                    id: monitor.id,
+                    captured: automation,
+                    slotKey,
+                    editorKey,
+                  })}
+                >
+                  <RotateCw className="lucide-inline" aria-hidden /> {i18nT('components.sessionAutomationPopover.restart_monitor')}
+                </SendBtn>
+              </>
+            )
           ) : confirmStop ? (
             <>
               <Btn type="button" disabled={busy} onClick={() => setConfirmStop(false)}>{i18nT('components.sessionAutomationPopover.cancel')}</Btn>

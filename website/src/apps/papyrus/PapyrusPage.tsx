@@ -658,7 +658,7 @@ export default function PapyrusPage() {
       // No `name`: the backend mints a unique slot key. Reusing a name-derived key
       // would append onto an archived session's history file.
       const created = await api.createChatSlot(
-        undefined, undefined, undefined, undefined, undefined,
+        undefined, undefined, undefined, undefined, 'persistent',
         i18nT('apps.papyrus.workspace.session_title', { name: project }),
       )
       const key = created.key as string

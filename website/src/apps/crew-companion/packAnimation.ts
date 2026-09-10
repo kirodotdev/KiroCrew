@@ -5,7 +5,7 @@
  * content and its format. Both are legal and the desktop app accepted both, so rather
  * than casting at a dozen call sites the narrowing lives here once.
  */
-import type { AnimationFormat } from './appearanceTypes'
+import type { AnimationFormat } from '../../lib/appearancePacks/types'
 
 export type AnimationEntry = string | { content?: string; format?: AnimationFormat }
 

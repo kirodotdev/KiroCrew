@@ -490,7 +490,8 @@ The store's Install button (`POST /api/apps/registry/install`, or the SSE varian
    app; 60s timeout) and run a detected build: `npm install` plus `npm run build`
    when `package.json` declares a build script, or `pip install .` /
    `pip install -r requirements.txt` for a Python source tree. A missing
-   toolchain is a logged skip, not a failure. **An official-catalog entry does
+   `npm` is a logged skip; the pip step runs on the gateway's own interpreter
+   and a failed run fails the install. **An official-catalog entry does
    not clone a branch**: it fetches exactly the commit the published catalog
    pins and hard-fails on any mismatch, never reuses a pre-existing checkout
    (the old one is set aside and restored if the install fails), and clones

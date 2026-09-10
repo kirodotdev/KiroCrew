@@ -362,9 +362,14 @@ async def test_definition_disk_operations_are_offloaded_from_the_gateway_loop(
             )
         ).status == 200
 
+    # The definition read paths serialize their response off-loop too
+    # (_json_response_off_loop's worker), so each GET contributes two
+    # to_thread hops: the disk read, then redact + json.dumps.
     assert calls == [
         "list_definitions",
+        "_redact_and_serialize",
         "save_definition",
         "get_definition",
+        "_redact_and_serialize",
         "update_definition",
     ]

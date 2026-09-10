@@ -551,6 +551,60 @@ class TestMemoryPressure:
         assert issues == []
 
 
+class TestDoctorAgentAuth:
+    """One sign-in row per selectable harness, from its declaration."""
+
+    def _run(self, monkeypatch, capsys, backends, signed_in):
+        from kiro_crew import acp_backends
+
+        probes: list[int] = []
+
+        def probe():
+            probes.append(1)
+            return signed_in
+
+        monkeypatch.setattr(acp_backends, "selectable_backend_values", lambda: backends)
+        monkeypatch.setattr(cli_doctor, "_kiro_cli_signed_in", probe)
+        cli_doctor._doctor_agent_auth()
+        return capsys.readouterr().out, len(probes)
+
+    def test_a_separate_sign_in_harness_is_not_probed(self, monkeypatch, capsys) -> None:
+        """Reading another harness's token is what the credential floor forbids, so
+        the row names the store and prints the declared ACTION, unprobed, and says
+        so -- the marker tells the operator this is absence of evidence, not a
+        verdict."""
+        from kiro_crew.agent_sdk import host_auth
+
+        out, probes = self._run(monkeypatch, capsys, ["codex"], signed_in=True)
+        assert probes == 0
+        assert host_auth.entitlement_label("codex") in out
+        assert "not checked here" in out
+        # Wrapped, not reworded: every word of the remedy reaches the row.
+        for word in host_auth.declaration_for("codex").sign_in_remedy.split():
+            assert word in out, word
+        assert host_auth.ENTITLEMENT_OWN_CREDENTIAL_FILE not in out
+
+    def test_host_store_harnesses_share_one_probe(self, monkeypatch, capsys) -> None:
+        """kiro and KAS both resolve tokens from the host store, so the row probes it
+        once, and a signed-out answer prints the signed-out STATEMENT -- the one row
+        with evidence behind it."""
+        from kiro_crew.agent_sdk import host_auth
+
+        out, probes = self._run(monkeypatch, capsys, ["", "kas"], signed_in=False)
+        assert probes == 1
+        assert out.count("not signed in") == 2
+        for word in host_auth.signed_out_message("").split():
+            assert word in out, word
+
+    def test_an_unknown_probe_is_not_reported_as_signed_out(self, monkeypatch, capsys) -> None:
+        """A spawn that failed says nothing about the store; reporting it as signed
+        out would send an operator to re-run a login they already completed."""
+        out, probes = self._run(monkeypatch, capsys, [""], signed_in=None)
+        assert probes == 1
+        assert "could not check" in out
+        assert "not signed in" not in out
+
+
 class TestDoctorKas:
     """`kirocrew doctor` KAS backend section — gated on acp_backend == kas.
 
@@ -716,14 +770,27 @@ class TestDoctorKas:
 
         Pinned as an assertion because the previous implementation DID shell out
         for one, and re-adding that would put Crew back in the credential path.
+
+        The row is asserted against the DECLARED entitlement source rather than
+        against its prose: which store holds the token is the fact, and pinning a
+        sentence instead would fail on a reword while still passing if the block
+        grew a probe.
+
+        Against the source's operator-facing LABEL, and asserting the identifier is
+        absent. Both halves matter: the label proves the row still names the declared
+        source, and the identifier's absence proves a snake_case internal is not being
+        printed into a row a human reads during triage.
         """
+        from kiro_crew.agent_sdk import host_auth
+
         self._patch_cfg(monkeypatch, "kas")
         monkeypatch.setattr(cli_doctor, "resolve_kiro_cli", lambda: "/x/kiro-cli")
         monkeypatch.setattr(cli_doctor, "_kas_relay_help", lambda _binary: "v3")
         issues: list[str] = []
         cli_doctor._doctor_kas(issues)
         out = capsys.readouterr().out
-        assert "owned by kiro-cli" in out
+        assert host_auth.entitlement_label("kas") in out
+        assert host_auth.ENTITLEMENT_HOST_IDENTITY_STORE not in out
         assert not hasattr(cli_doctor, "_kas_version_label")
 
 

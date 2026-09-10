@@ -5988,3 +5988,77 @@ class TestManifestReaders:
         assert listed[0].sessions == batch.sessions == 2
         assert listed[0].bytes == batch.bytes
         assert listed[0].bytes > 0
+
+
+class TestReclaimHoldsTheSessionLockAcrossTheIndexPurge:
+    """The search index's copy of a session's text must not come back after the move.
+
+    The index keeps that copy; the background indexer rebuilds a row from any
+    transcript still in place. A purge that merely PRECEDED the move therefore left a
+    window -- the indexer's write lands after it, and the text is in the index once
+    the files are gone. Both sides take ``ConversationLog._locked``, so the invariant
+    is that the purge runs while the reclaim holds that lock.
+    """
+
+    def test_the_purge_runs_while_the_unit_lock_is_held(
+        self, stores: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import threading
+
+        from kiro_crew.history import ConversationLog
+
+        crew_home, kiro_home = stores
+        _cli_half(kiro_home, "aaaa1111", log_bytes=2048, age_days=40)
+        _transcript(crew_home, "dashboard_chat-1", size=300, age_days=40)
+
+        exclusive: list[bool] = []
+        real_purge = session_storage._purge_search_index
+
+        def probing_purge(stems: list[str]) -> bool:
+            # Reentrant for the holding thread, so probe from another one.
+            lock_path = str(crew_home / "sessions" / f"{stems[0]}.jsonl")
+            lock = ConversationLog._file_locks.get(lock_path)
+            if lock is None:
+                exclusive.append(False)
+                return real_purge(stems)
+
+            def probe() -> None:
+                got = lock.acquire(blocking=False)
+                exclusive.append(not got)
+                if got:
+                    lock.release()
+
+            thread = threading.Thread(target=probe)
+            thread.start()
+            thread.join(timeout=10)
+            return real_purge(stems)
+
+        monkeypatch.setattr(session_storage, "_purge_search_index", probing_purge)
+
+        batch = session_storage.move_to_trash(
+            ["aaaa1111"],
+            reason="manual",
+            index=_index({"aaaa1111": "dashboard_chat-1"}),
+            now=_NOW,
+        )
+
+        assert batch.sessions == 1
+        assert exclusive == [True], "the purge ran without the session lock held"
+
+    def test_a_refused_purge_leaves_the_session_in_place(
+        self, stores: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        crew_home, kiro_home = stores
+        _cli_half(kiro_home, "aaaa1111", log_bytes=2048, age_days=40)
+        _transcript(crew_home, "dashboard_chat-1", size=300, age_days=40)
+        monkeypatch.setattr(session_storage, "_purge_search_index", lambda stems: False)
+
+        with pytest.raises(session_storage.SessionStorageError):
+            session_storage.move_to_trash(
+                ["aaaa1111"],
+                reason="manual",
+                index=_index({"aaaa1111": "dashboard_chat-1"}),
+                now=_NOW,
+            )
+
+        assert (crew_home / "sessions" / "dashboard_chat-1.jsonl").is_file()

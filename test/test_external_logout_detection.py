@@ -618,9 +618,9 @@ class _FakeProvider:
 
     @property
     def uses_kiro_identity_store(self) -> bool:
-        from kiro_crew.acp.types import ACP_BACKENDS_KIRO_IDENTITY_STORE
+        from kiro_crew.acp.types import backends_retired_by_host_logout
 
-        return self.backend in ACP_BACKENDS_KIRO_IDENTITY_STORE
+        return self.backend in backends_retired_by_host_logout()
 
     def is_process_alive(self) -> bool:
         return True
@@ -645,9 +645,9 @@ class _FakeRuntime:
 
     @property
     def uses_kiro_identity_store(self) -> bool:
-        from kiro_crew.acp.types import ACP_BACKENDS_KIRO_IDENTITY_STORE
+        from kiro_crew.acp.types import backends_retired_by_host_logout
 
-        return self._acp_backend in ACP_BACKENDS_KIRO_IDENTITY_STORE
+        return self._acp_backend in backends_retired_by_host_logout()
 
     def has_active_sessions(self) -> bool:
         return self._active

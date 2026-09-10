@@ -284,6 +284,20 @@
 /* ── Design tokens ── */
 /* Shared across all themes */
 :root {
+  /* Top safe-area inset, consumed by the tailwind.config.js safe-area plugin
+     (p-safe / top-safe / top-safe-offset-* / top-safe-or-*). 0 by default: in
+     any in-browser context the UA's own chrome sits between the status bar /
+     display cutout and the page, so a non-zero top env() there is spurious —
+     Android WebView browsers (e.g. corporate wrappers) report the cutout
+     height even with their URL bar on screen, which painted a dead band above
+     the app header. Only when the app IS the window (installed PWA) does the
+     viewport really extend under the cutout, and display-mode is exactly that
+     signal — the @media block after this rule re-enables env() there.
+     Bottom/left/right stay bare env() in the plugin — those insets are real
+     in-browser. Declared INSIDE this first :root block deliberately:
+     src/i18n/scriptFonts.test.ts reads the file's first :root body for the
+     script-fallback tokens, so a separate leading block would shadow it. */
+  --safe-area-top: 0px;
   /* Single source of truth for the script fallbacks. Every declaration of
      --font-body / --mono — here, in the theme blocks below, and the ones built in
      hooks/useTheme.tsx and hooks/useZoom.ts — references these by name instead of
@@ -307,6 +321,12 @@
   --font-body:var(--theme-font-sans, var(--script-fallbacks),'Space Grotesk',-apple-system,BlinkMacSystemFont,sans-serif);
   --mono:var(--theme-font-mono, var(--script-fallbacks-mono),'JetBrains Mono',ui-monospace,SFMono-Regular,monospace);
   --radius-sm:6px;--radius-md:8px;--radius-lg:12px;--radius-xl:16px;
+}
+/* The standalone/fullscreen half of the --safe-area-top gate declared above:
+   only when the app is the window does the top env() inset describe a region
+   this viewport actually occupies. */
+@media (display-mode: standalone), (display-mode: fullscreen) {
+  :root { --safe-area-top: env(safe-area-inset-top, 0px); }
 }
 html:lang(zh-CN) {
   /* Isolated Simplified aliases for Chinese UI. Not :lang(zh): that also

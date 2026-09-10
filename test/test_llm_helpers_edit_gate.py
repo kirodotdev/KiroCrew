@@ -1,11 +1,11 @@
-"""A file EDIT's tool_input is a document, and its gate is the target path (#8812).
+"""A file EDIT's tool_input is a document, and its gate is the target path.
 
 ``_dispatch.derive_edit_diff`` renders an edit's new content as a unified diff and
 that text is what ``event.tool_input`` carries. Feeding it to the shell-command
 scan refused writing a Markdown page that says ``git push origin main`` or a
 docstring naming the gateway-restart command (both live ``is_denied`` regex
-rules) -- and any body over the command-line size cap, for its length. (Before
-#9183 a sentence naming ``~/.ssh`` was refused too; that producer is gone.) These tests pin the
+rules) -- and any body over the command-line size cap, for its length. A body
+sentence naming ``~/.ssh`` is not refused either: there is no text-path fence. These tests pin the
 replacement: an edit is judged by where it writes (``is_sensitive_write_path`` over
 every accepted path spelling), the title tier still runs, and a non-edit tool
 keeps the document scan byte for byte.
@@ -170,9 +170,9 @@ class TestEditTargetIsTheGate:
 
     @pytest.mark.asyncio
     async def test_title_tier_still_runs_first(self) -> None:
-        # The title is a shell command the env-credential tier refuses (#9183
-        # removed the text path fence, so a credential PATH in a title is no
-        # longer the producer -- an env-credential read still is).
+        # The title is a shell command the env-credential tier refuses. A credential
+        # PATH in a title is not the producer (there is no text-path fence); an
+        # env-credential read is.
         ev = _edit_event("/tmp/proj/a.md")
         ev.title = "env | grep AWS_SECRET_ACCESS_KEY"
         approved, _p, rows = await _resolve(ev)

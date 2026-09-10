@@ -109,6 +109,9 @@ class HybridRetriever:
         filter, NOT a security boundary: like ``source_id`` it narrows the
         seeds, and the graph leg stays unfiltered for the same reason. The two
         filters compose (both applied when both are given).
+
+        Returns at most ``limit`` ranked rows, plus at most ONE extra trailing
+        row -- the keyword leg's protected top hit (see below).
         """
         kw = self._keyword_search(
             query, limit=limit * 2, source_id=source_id, namespace=namespace
@@ -145,11 +148,11 @@ class HybridRetriever:
         gr_ids = {i for i, _ in gr}
         vec_ids = {i for i, _ in (vec or [])}
 
-        results = []
-        for item_id, score in fused[:limit]:
+        def _row(item_id: str, score: float) -> dict | None:
+            """A result row for one fused candidate, or None when the item does not resolve."""
             item = items_cache.get(item_id)
             if not item:
-                continue
+                return None
             types = []
             if item_id in kw_ids:
                 types.append("keyword")
@@ -157,7 +160,7 @@ class HybridRetriever:
                 types.append("graph")
             if item_id in vec_ids:
                 types.append("vector")
-            results.append({
+            return {
                 "id": item_id,
                 "title": item["title"],
                 "summary": item.get("summary"),
@@ -165,7 +168,35 @@ class HybridRetriever:
                 "score": score,
                 "source": item.get("source_id"),
                 "match_type": "+".join(types),
-            })
+            }
+
+        picks = fused[:limit]
+
+        # The keyword leg's own best match is protected from fusion truncation.
+        # The vector leg carries VECTOR_RRF_WEIGHT, so it can crowd a
+        # keyword-only document past `limit` even when that document is the
+        # single right answer -- the case where the query carries an exact error
+        # string, a ticket id or a rare technical term, and the caller otherwise
+        # sees related-but-wrong rows with no sign the right one was found and
+        # dropped. No weight setting avoids this, so the winner is appended as
+        # one extra trailing row instead: nothing already ranked is removed,
+        # reordered or demoted, so the rescue cannot regress a query the ranking
+        # already answers. Only rank 1 is protected -- promoting lower keyword
+        # ranks into the window would have to displace ranked rows, which is the
+        # regression this shape exists to avoid. The row keeps its real fused
+        # score, which downstream confidence floors depend on, and it is appended
+        # before the enrichment passes below so it stays as citable as any ranked
+        # row.
+        if kw:
+            top_kw_id = kw[0][0]
+            if all(item_id != top_kw_id for item_id, _ in picks):
+                picks += [(i, s) for i, s in fused if i == top_kw_id]
+
+        results = []
+        for item_id, score in picks:
+            row = _row(item_id, score)
+            if row is not None:
+                results.append(row)
 
         self._attach_source_locations(results)
         self._attach_citation_sources(results)

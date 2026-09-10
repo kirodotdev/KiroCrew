@@ -23,6 +23,7 @@ vi.mock('../api/client', () => ({
     monitorCreate: vi.fn(),
     monitorUpdate: vi.fn(),
     monitorStop: vi.fn(),
+    monitorClear: vi.fn(),
     monitorRestart: vi.fn(),
   },
 }))
@@ -606,6 +607,54 @@ describe('SessionAutomationPopover', () => {
     expect(screen.getByText('250,000')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Restart monitor' }))
     await waitFor(() => expect(api.monitorRestart).toHaveBeenCalledWith('monitor-1'))
+  })
+
+  it('offers Clear beside Restart on a stopped monitor, behind a confirm', async () => {
+    // Restart alone is not a way out: the stopped record keeps occupying the
+    // session and a retained stop REFUSES a new monitor, so a user who wants to
+    // watch a different pull request is stuck with the one they stopped
+    // watching. Clearing removes the record, and it is irreversible, so it sits
+    // behind the same confirm the stop control uses.
+    ;(api.monitorClear as ReturnType<typeof vi.fn>).mockResolvedValue({ ok: true, monitor: null })
+    renderPopover({
+      ...activeMonitor,
+      active: false,
+      terminal: { outcome: 'user_stop', reason: 'user_stop', stoppedAt: 1_800_000_100 },
+    })
+
+    // Both exits are named where the terminal state is described.
+    expect(screen.getByTestId('monitor-terminal-exits').textContent).toContain('removes this monitor for good')
+    fireEvent.click(screen.getByRole('button', { name: 'Clear stopped monitor' }))
+    // One press does not erase anything.
+    expect(api.monitorClear).not.toHaveBeenCalled()
+    expect(screen.queryByRole('button', { name: 'Restart monitor' })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Yes, clear it' }))
+    await waitFor(() => expect(api.monitorClear).toHaveBeenCalledWith('monitor-1'))
+  })
+
+  it('lets a confirm on the clear be cancelled without erasing anything', () => {
+    renderPopover({
+      ...activeMonitor,
+      active: false,
+      terminal: { outcome: 'user_stop', reason: 'user_stop', stoppedAt: 1_800_000_100 },
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Clear stopped monitor' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+
+    expect(api.monitorClear).not.toHaveBeenCalled()
+    expect(screen.getByRole('button', { name: 'Restart monitor' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Clear stopped monitor' })).toBeTruthy()
+  })
+
+  it('offers no clear control while a monitor is still running', () => {
+    // Clearing a LIVE watch would delete it with no record it existed, which is
+    // what the server refuses; the surface must not offer the press either.
+    renderPopover(activeMonitor)
+
+    expect(screen.queryByRole('button', { name: 'Clear stopped monitor' })).toBeNull()
+    expect(screen.queryByTestId('monitor-terminal-exits')).toBeNull()
+    expect(screen.getByRole('button', { name: 'Stop monitor' })).toBeTruthy()
   })
 
   it('wraps unbroken terminal wake instructions on narrow layouts', () => {

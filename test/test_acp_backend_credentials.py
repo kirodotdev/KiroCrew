@@ -145,15 +145,19 @@ def test_override_roots_are_part_of_the_cache_key() -> None:
     The TTL cache is keyed on the resolved roots, so a root the BUILDER anchors
     on but the KEY omits would serve targets computed for the previous value —
     the fail-open shape the resolved-home key already exists to prevent. Asserts
-    on the key's own fields rather than on cache behaviour, so the reason a
+    on the key's own contents rather than on cache behaviour, so the reason a
     failure happened is visible.
+
+    Each adapter override reaches the key through ``adapter_roots``, keyed by the
+    variable name the declaration spells, so what has to be present is the
+    VARIABLE rather than a per-adapter NamedTuple field.
     """
-    fields = set(security._ResolvedRoots._fields)
-    for _leaf, root_fields in security._OVERRIDE_ANCHORED_LEAVES:
-        for field in root_fields:
-            assert field in fields, (
-                f"_OVERRIDE_ANCHORED_LEAVES anchors on {field!r}, which is not a "
-                "_ResolvedRoots field, so it cannot be part of the cache key"
+    resolved = dict(security._resolve_root_anchors(str(security.Path.home())).adapter_roots)
+    for _leaf, root_envs in security._OVERRIDE_ANCHORED_LEAVES:
+        for env_var in root_envs:
+            assert env_var in resolved, (
+                f"_OVERRIDE_ANCHORED_LEAVES anchors on {env_var!r}, which the resolved "
+                "roots do not carry, so it cannot be part of the cache key"
             )
 
 

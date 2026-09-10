@@ -89,6 +89,18 @@
   width: auto !important;
 }
 
+/* Steer badges ("Steering…" / "Steered into the running turn" / requeued)
+   are inline-flex boxes ABOVE the bubble in the normal theme's flex-col
+   root. CLI mode flattens that root to display:block and the bubble's
+   .msg-content to inline-block, so an inline-level badge flows onto the
+   SAME line as the message text. Promote each badge to a block-level flex
+   row so it keeps its own line. Direct-child only: the badge's inner
+   animate-pulse span and the InfoTip stay untouched, and the hover footer
+   uses `flex` (not `inline-flex`) so it never matches. */
+[data-ui="cli"] [style*="--mc-content-width"] [data-role="user"]:has(.msg-content) > .inline-flex {
+  display: flex !important;
+}
+
 /* The user-message card chrome: drop bg, border, rounding. Keep a faint
    background on the text only — Kiro CLI's "the words look slightly
    highlighted" effect. */

@@ -266,7 +266,7 @@ class TestMemberDispatchCeiling:
             assert sc.member_dispatch_enabled() is True
 
     def test_member_falls_back_under_switch_when_ceiling_off(self):
-        # Switch off AND ceiling off: the member is no longer exempt, so it hits
+        # Switch off AND ceiling off: the member's exemption does not apply, so it hits
         # the same session_control_disabled refusal an ordinary caller gets.
         member = DM_SLOT_KEY_PREFIX + "radar"
         worker = _slot("chat-1-w1", created_by=member)

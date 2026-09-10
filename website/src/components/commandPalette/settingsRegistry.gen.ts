@@ -865,6 +865,16 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1
   },
   {
+    "id": "chat.default-memory-mode",
+    "label": "Default Memory Mode",
+    "labelKey": "settings.chat.defaultMemoryMode.label",
+    "description": "Persistent uses what it knows and saves new memory. Incognito uses what it knows but saves no new memory. Temporary starts blank and saves no new memory. Every chat still appears in History. You can change the mode for any chat.",
+    "tab": "chat",
+    "type": "select",
+    "occurrence": 1,
+    "configKey": "dashboard.default_memory_mode"
+  },
+  {
     "id": "chat.default-model",
     "label": "Default Model",
     "labelKey": "pages.settings.chatPanel.default_model",
@@ -1566,6 +1576,24 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "type": "toggle",
     "occurrence": 1,
     "configKey": "telemetry.beacon_enabled"
+  },
+  {
+    "id": "secrets.jira-api-token",
+    "labelKey": "settings.secrets.jira_api_token_label",
+    "tab": "secrets",
+    "type": "input",
+    "occurrence": 1,
+    "label": "Jira API token",
+    "description": "Authenticates Jira issue lookups for the configured instance."
+  },
+  {
+    "id": "secrets.wakatime-api-key",
+    "labelKey": "settings.secrets.wakatime_api_key_label",
+    "tab": "secrets",
+    "type": "input",
+    "occurrence": 1,
+    "label": "WakaTime API key",
+    "description": "Authenticates coding-activity sync when WakaTime is enabled."
   },
   {
     "id": "security.denied-commands",

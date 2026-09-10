@@ -77,7 +77,7 @@ import threading
 import time
 import uuid
 from collections.abc import Callable, Iterator, Mapping
-from contextlib import contextmanager, suppress
+from contextlib import ExitStack, contextmanager, suppress
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import IO, Any
@@ -92,7 +92,13 @@ from kiro_crew.config.paths import (
     kiro_sessions_dir,
     legacy_home,
 )
-from kiro_crew.history import ARCHIVE_DIR_NAME, ARCHIVE_SEGMENT_DELIMITER, SESSIONS_DIR_NAME
+from kiro_crew.history import (
+    ARCHIVE_DIR_NAME,
+    ARCHIVE_SEGMENT_DELIMITER,
+    SESSIONS_DIR_NAME,
+    ConversationLog,
+)
+from kiro_crew.history_index import INDEX_FILENAME, SessionSearchIndex
 from kiro_crew.session_map import SESSION_MAP_FILENAME
 
 logger = logging.getLogger(__name__)
@@ -2234,6 +2240,42 @@ def _entry_bytes(entry: dict[str, Any]) -> int:
     return total
 
 
+def _purge_search_index(stems: list[str]) -> bool:
+    """Remove the search index's copy of *stems*' message text; report the verdict.
+
+    The index stores each indexed session's message text, keyed by transcript stem.
+    A session leaving live storage must not leave that copy behind: search cannot
+    reach it once the transcript is gone, but it stays READABLE on disk, so a later
+    empty-trash would report a purge it did not complete.
+
+    Returns ``False`` rather than raising, because the caller refuses ONE session at
+    a time and reports it: a session whose copy cannot be removed is left in place,
+    exactly where the caller left it, and named in the warning the move logs.
+
+    The caller holds that session's ``ConversationLog._locked`` across this call AND
+    its file moves. That is what makes the removal stick: the background indexer
+    takes the same per-session lock, so it cannot re-read a still-present transcript
+    and write the row back in between.
+
+    An index that does not exist is not created here -- a reclaim must not bring one
+    into being, and absent means there is no copy to remove. An index that exists but
+    cannot be opened is a refusal: the copy may be in it and nothing here can remove
+    it, so unprovable removal is not removal.
+    """
+    if not stems:
+        return True
+    db_path = _crew_sessions_dir() / ".index" / INDEX_FILENAME
+    if not db_path.exists():
+        return True
+    index = SessionSearchIndex(db_path)
+    try:
+        if not index.available:
+            return False
+        return index.drop(stems)
+    finally:
+        index.close()
+
+
 def move_to_trash(
     uids: list[str],
     *,
@@ -2448,12 +2490,19 @@ def _move_to_trash_locked(
     moved_bytes = 0
     moved_sessions = 0
     revived: list[str] = []
+    # Sessions left in place because the search index would not give up its copy
+    # of their text. Reported like ``revived``: doing less than the caller asked
+    # without saying so is a defect, and this refusal protects deleted content.
+    refused_index: list[str] = []
     refresh_failed = False
     staged_dirs: set[Path] = set()
     source_dirs: set[Path] = set()
     cli_files = _cli_index()
     with (target / MANIFEST_NAME).open("w", encoding="utf-8") as manifest:
         _write_header(manifest, batch_id, clock, reason)
+        # The indexer serializes on ConversationLog's per-session lock, so the
+        # reclaim borrows the same lock rather than inventing a second one.
+        log = ConversationLog(base_dir=_crew_sessions_dir())
         for uid in requested:
             unit = by_uid.get(uid)
             if unit is None:
@@ -2503,82 +2552,99 @@ def _move_to_trash_locked(
                 # revival is.
                 revived.append(uid)
                 continue
-            files: list[dict[str, Any]] = []
-            done: list[tuple[Path, Path]] = []
-            failed = False
-            woke = False
-            for src, rel in _unit_paths(unit.sid, unit.stems, archives, cli_files):
-                try:
-                    size, mtime = _file_stamp(src)
-                except OSError:
-                    # A file that cannot be sized cannot be recorded, and a file
-                    # the manifest does not record is one restore cannot put back.
-                    # Skipping it here while moving the rest is precisely the split
-                    # this loop's rollback exists to prevent, so it is a failure.
-                    logger.warning("could not stat %s for staging", src, exc_info=True)
-                    failed = True
-                    break
-                if mtime > validated_at:
-                    # Every authority check ran before the loop, and moving a
-                    # six-figure store is not instant, so a session can be resumed
-                    # between being certified retired and being reached here. Its
-                    # replay log is then written to, and this is the one signal of
-                    # that which costs nothing: the stat is already being taken for
-                    # the manifest.
-                    #
-                    # A candidate qualified by being untouched for
-                    # MIN_RECLAIM_AGE_DAYS, so an mtime newer than the instant we
-                    # certified it cannot be the same idle file — something has it
-                    # open. Leave the whole session alone rather than any part of
-                    # it: staging half is the split the rollback below exists to
-                    # prevent, and the half left behind would be the live half.
-                    woke = True
-                    break
-                dst = target / rel
-                if dst.parent not in staged_dirs:
-                    dst.parent.mkdir(parents=True, exist_ok=True)
-                    # Before anything moves INTO it, not with the batch at the end.
-                    # The same-filesystem move is a rename, which removes the file's
-                    # only other name in the same atomic step that creates this one:
-                    # if the rename reaches disk while the mkdir that created its
-                    # parent does not, the file has no reachable name left. Syncing
-                    # the chain here orders the two — the directory that will hold
-                    # the file is durable before the source entry can be given up.
-                    #
-                    # Cheap in the way the per-file case would not be: once per new
-                    # directory, not once per file, so the hot path stays a bare
-                    # rename (see :func:`_sync_batch` for the end-of-batch sync that
-                    # forces the entries those renames then add).
+            # The index's copy of this session's text goes under the SAME lock that
+            # holds its files, and stays held across the move. A purge that merely
+            # preceded the move left a window: the background indexer re-reads a
+            # transcript that is still in place, so its write lands after the purge
+            # and the text is back in the index once the files are gone. The
+            # indexer takes this same per-session lock, so holding it here is what
+            # excludes it. Locks are taken in sorted order so two multi-stem
+            # reclaims cannot deadlock against each other.
+            with ExitStack() as unit_locks:
+                for stem in sorted(unit.stems):
+                    unit_locks.enter_context(log._locked(stem))
+                if not _purge_search_index(list(unit.stems)):
+                    logger.warning(
+                        "could not remove the search index copy for %r; not moving it", uid
+                    )
+                    refused_index.append(uid)
+                    continue
+                files: list[dict[str, Any]] = []
+                done: list[tuple[Path, Path]] = []
+                failed = False
+                woke = False
+                for src, rel in _unit_paths(unit.sid, unit.stems, archives, cli_files):
                     try:
-                        _fsync_tree(target, dst.parent)
+                        size, mtime = _file_stamp(src)
                     except OSError:
-                        # Same treatment as a file that would not move: nothing of
-                        # this session has entered this directory yet, so rolling it
-                        # back and leaving the rest of the batch to be recorded and
-                        # synced properly is strictly better than abandoning a batch
-                        # whose manifest has not been forced out.
-                        logger.warning(
-                            "could not sync the staging directory %s", dst.parent, exc_info=True
-                        )
+                        # A file that cannot be sized cannot be recorded, and a file
+                        # the manifest does not record is one restore cannot put back.
+                        # Skipping it here while moving the rest is precisely the split
+                        # this loop's rollback exists to prevent, so it is a failure.
+                        logger.warning("could not stat %s for staging", src, exc_info=True)
                         failed = True
                         break
-                    # Recorded only once the chain is durable. On the failure above
-                    # nothing was staged under it, so there is nothing for the
-                    # end-of-batch sync to force; a later session needing the same
-                    # directory re-runs the mkdir and retries the sync.
-                    staged_dirs.update(_levels_between(target, dst.parent))
-                try:
-                    _move_file(src, dst)
-                except OSError:
-                    logger.warning("could not move %s into the trash", src, exc_info=True)
-                    failed = True
-                    break
-                # The live-store directory this file just left. Synced once at the end
-                # rather than per file, because the same-filesystem path is a bare
-                # rename and this is the hot path (see :func:`_sync_batch`).
-                source_dirs.add(src.parent)
-                done.append((dst, src))
-                files.append({"rel": rel, "origin": str(src), "bytes": size})
+                    if mtime > validated_at:
+                        # Every authority check ran before the loop, and moving a
+                        # six-figure store is not instant, so a session can be resumed
+                        # between being certified retired and being reached here. Its
+                        # replay log is then written to, and this is the one signal of
+                        # that which costs nothing: the stat is already being taken for
+                        # the manifest.
+                        #
+                        # A candidate qualified by being untouched for
+                        # MIN_RECLAIM_AGE_DAYS, so an mtime newer than the instant we
+                        # certified it cannot be the same idle file — something has it
+                        # open. Leave the whole session alone rather than any part of
+                        # it: staging half is the split the rollback below exists to
+                        # prevent, and the half left behind would be the live half.
+                        woke = True
+                        break
+                    dst = target / rel
+                    if dst.parent not in staged_dirs:
+                        dst.parent.mkdir(parents=True, exist_ok=True)
+                        # Before anything moves INTO it, not with the batch at the end.
+                        # The same-filesystem move is a rename, which removes the file's
+                        # only other name in the same atomic step that creates this one:
+                        # if the rename reaches disk while the mkdir that created its
+                        # parent does not, the file has no reachable name left. Syncing
+                        # the chain here orders the two — the directory that will hold
+                        # the file is durable before the source entry can be given up.
+                        #
+                        # Cheap in the way the per-file case would not be: once per new
+                        # directory, not once per file, so the hot path stays a bare
+                        # rename (see :func:`_sync_batch` for the end-of-batch sync that
+                        # forces the entries those renames then add).
+                        try:
+                            _fsync_tree(target, dst.parent)
+                        except OSError:
+                            # Same treatment as a file that would not move: nothing of
+                            # this session has entered this directory yet, so rolling it
+                            # back and leaving the rest of the batch to be recorded and
+                            # synced properly is strictly better than abandoning a batch
+                            # whose manifest has not been forced out.
+                            logger.warning(
+                                "could not sync the staging directory %s", dst.parent, exc_info=True
+                            )
+                            failed = True
+                            break
+                        # Recorded only once the chain is durable. On the failure above
+                        # nothing was staged under it, so there is nothing for the
+                        # end-of-batch sync to force; a later session needing the same
+                        # directory re-runs the mkdir and retries the sync.
+                        staged_dirs.update(_levels_between(target, dst.parent))
+                    try:
+                        _move_file(src, dst)
+                    except OSError:
+                        logger.warning("could not move %s into the trash", src, exc_info=True)
+                        failed = True
+                        break
+                    # The live-store directory this file just left. Synced once at the end
+                    # rather than per file, because the same-filesystem path is a bare
+                    # rename and this is the hot path (see :func:`_sync_batch`).
+                    source_dirs.add(src.parent)
+                    done.append((dst, src))
+                    files.append({"rel": rel, "origin": str(src), "bytes": size})
             if woke:
                 # Put back whatever already moved for this session: the point of
                 # leaving it alone is that it stays resumable, and half a session
@@ -2683,6 +2749,14 @@ def _move_to_trash_locked(
             revived[0],
         )
 
+    if refused_index:
+        logger.warning(
+            "left %d session(s) in place: the search index would not release its copy "
+            "of their text (first: %r)",
+            len(refused_index),
+            refused_index[0],
+        )
+
     if not moved_sessions:
         # Leave no empty batch behind — but a rollback that itself failed can have
         # left staged files here, and those are the only copy.
@@ -2698,6 +2772,11 @@ def _move_to_trash_locked(
             raise SessionStorageError(
                 f"all {len(revived)} selected session(s) were resumed while being "
                 "staged; nothing was moved"
+            )
+        if refused_index:
+            raise SessionStorageError(
+                f"the search index would not release its copy of {len(refused_index)} "
+                "selected session(s)' text; nothing was moved"
             )
         raise SessionStorageError("none of the selected sessions were found on disk")
 

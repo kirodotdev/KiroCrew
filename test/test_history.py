@@ -5480,10 +5480,17 @@ class TestConsolidationValueGuard:
         assert store.get_semantic("project.beta.status") is None
 
     def test_well_formed_item_still_overwrites(self, tmp_path) -> None:
-        """Negative control: the harness above can detect a clobber when one happens."""
+        """Negative control: the harness above can detect a clobber when one happens.
+
+        The seeded row is a lower-confidence *consolidation* row rather than a
+        ``user_explicit`` one, because consolidation is never allowed to overwrite
+        ``user_explicit`` (see ``TestConsolidationDoesNotImpersonateUser``) — seeding one
+        here would make this control pass for the wrong reason and stop detecting clobbers.
+        """
         store = self._store(tmp_path)
         assert (
-            store.set_semantic("project.alpha.status", "curated text", 1.0, "user_explicit") is None
+            store.set_semantic("project.alpha.status", "curated text", 0.85, "consolidation:sess-0")
+            is None
         )
         c = self._consolidator(store)
 
@@ -5531,3 +5538,60 @@ class TestConsolidationValueGuard:
         ), "the cause was not read from the reject code"
         assert not any("value_empty" in m for m in msgs), "a non-empty value reported value_empty"
         assert any("0 skipped (no value), 1 refused" in m for m in msgs)
+
+
+class TestConsolidationDoesNotImpersonateUser:
+    """Consolidation writes under its own source, never under ``user_explicit``."""
+
+    @staticmethod
+    def _consolidator(store):
+        memory = MagicMock()
+        memory.read_preferences.return_value = ""
+        memory.read_projects.return_value = ""
+        return HistoryConsolidator(
+            log=MagicMock(),
+            memory=memory,
+            sessions=None,
+            vector_store=store,
+            migrated=True,
+        )
+
+    def _store(self, tmp_path):
+        from kiro_crew.vector_memory import VectorMemoryStore
+
+        store = VectorMemoryStore(db_path=tmp_path / "mem.db")
+        store.init()
+        return store
+
+    def test_confident_item_does_not_overwrite_a_user_explicit_row(self, tmp_path) -> None:
+        """A re-summarization at confidence 1.0 must lose the ``user_explicit`` conflict path."""
+        store = self._store(tmp_path)
+        assert (
+            store.set_semantic("project.alpha.status", "curated text", 1.0, "user_explicit") is None
+        )
+        c = self._consolidator(store)
+
+        c._write_structured_memory(
+            {"semantic": [{"key": "project.alpha.status", "value": "shrunk", "confidence": 1.0}]},
+            "sess-1",
+        )
+
+        row = store.get_semantic("project.alpha.status")
+        assert row["value_json"] == json.dumps("curated text")
+        assert row["source"] == "user_explicit"
+
+    def test_confident_item_still_creates_a_new_key_under_consolidation_source(
+        self, tmp_path
+    ) -> None:
+        """Demoting the source must not stop consolidation from writing its own keys."""
+        store = self._store(tmp_path)
+        c = self._consolidator(store)
+
+        c._write_structured_memory(
+            {"semantic": [{"key": "project.beta.status", "value": "fresh", "confidence": 1.0}]},
+            "sess-1",
+        )
+
+        row = store.get_semantic("project.beta.status")
+        assert row["value_json"] == json.dumps("fresh")
+        assert row["source"] == "consolidation:sess-1"

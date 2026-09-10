@@ -62,6 +62,7 @@ if TYPE_CHECKING:
         evict_completed_agents,
         extract_options,
         fire_tool_hooks,
+        identity_grant_covers_child,
         logger,
         name_grant,
         provider_fallback_active,
@@ -1345,6 +1346,7 @@ class RunEventCoordinator(ManagerComponent):
                     is_shell=event.is_shell,
                     mcp_server_name=event.mcp_server_name,
                     mcp_tool_name=event.tool_name,
+                    mcp_identity_trusted=event.mcp_identity_trusted,
                 )
                 if tool_result.action == TOOL_DENY:
                     await self._manager._reject_and_log(
@@ -1360,10 +1362,7 @@ class RunEventCoordinator(ManagerComponent):
                     # identity is verified and only the ARGUMENTS are
                     # unverified, which this grant never reads). Honor the
                     # grant instead of stalling a trusted fan-out on an
-                    # interactive card per call. The hook auto-approve below
-                    # stays fail-closed for these: its auto_approve_tools
-                    # patterns match the agent-authored title, which a child
-                    # could forge.
+                    # interactive card per call.
                     if parent_policy == "auto" and event.child_unconditional_grant_eligible:
                         await self._manager._approve_and_log(
                             client,
@@ -1373,6 +1372,32 @@ class RunEventCoordinator(ManagerComponent):
                             metadata={
                                 "subagent_id": info.id,
                                 "reason": "parent_policy_auto",
+                                "child_mcp_identity": (
+                                    f"{event.mcp_server_name}/{event.tool_name}"
+                                ),
+                                "child_args_unverified": True,
+                            },
+                            info=info,
+                        )
+                        continue
+                    # IDENTITY-KEYED hook grant: the app-own-server grant, or an
+                    # ``auto_approve_tools`` pattern matched against
+                    # ``@server/tool`` from ``_meta.kiro``
+                    # (ToolHookResult.identity_grant). Its matched input is the
+                    # same identity ``child_mcp_identity_trusted`` verified, so a
+                    # forged title cannot reach it, and it is the user's own
+                    # NARROW grant where parent_policy=auto is the broad one.
+                    # Every other hook auto-approve (title, payload kind, command)
+                    # stays fail-closed below for a low-fidelity child.
+                    if identity_grant_covers_child(tool_result, event):
+                        await self._manager._approve_and_log(
+                            client,
+                            event.request_id,
+                            session_key,
+                            event,
+                            metadata={
+                                "subagent_id": info.id,
+                                "reason": "hook_identity_auto_approve",
                                 "child_mcp_identity": (
                                     f"{event.mcp_server_name}/{event.tool_name}"
                                 ),

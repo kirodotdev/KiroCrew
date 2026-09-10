@@ -63,7 +63,16 @@ describe('the API transport feeding the registry', () => {
   beforeEach(() => {
     __resetArtifactWrites()
     globalThis.fetch = vi.fn(
-      () => new Promise<Response>((res) => { release = res }),
+      (input: RequestInfo | URL) => {
+        if (String(input) === '/api/dashboard/config') {
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            json: async () => ({ default_memory_mode: 'persistent' }),
+          } as unknown as Response)
+        }
+        return new Promise<Response>((res) => { release = res })
+      },
     ) as unknown as typeof fetch
   })
   afterEach(() => { globalThis.fetch = originalFetch })
@@ -131,6 +140,7 @@ describe('the API transport feeding the registry', () => {
   it('does not count a write to an unrelated resource', async () => {
     const p = api.createChatSlot('a')
     expect(hasPendingArtifactWrite('a')).toBe(false)
+    await vi.waitFor(() => expect(globalThis.fetch).toHaveBeenCalledTimes(2))
     release(ok())
     await p
   })

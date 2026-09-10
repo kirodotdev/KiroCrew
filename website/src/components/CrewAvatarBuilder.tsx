@@ -8,11 +8,17 @@
  * what picking it does. The draft starts from the face the crew already wears
  * (the pinned traits, or the name-derived ones), never from a blank.
  *
- * A third tier, Expressions, is the REACTION layer: per state (working, done,
- * error) a different pair of eyes and mouth, and a sound. It is a separate
- * tier rather than two more axes because it is not part of the crew's
- * identity — every other axis stays fixed across states, which is what keeps
- * a reacting crew recognisable as the same crew.
+ * A third identity tier, Library, wears an appearance pack from the crew
+ * appearance library — art somebody else drew, served per state by the gateway.
+ * Its whole draft is one pack id, so the pane lives in its own component
+ * (`CrewAvatarLibraryTab`) which owns the listing, the import and the delete.
+ *
+ * Expressions is the REACTION layer rather than a tier: per state (working, done,
+ * error) a different pair of eyes and mouth, and a sound. It is separate from the
+ * axes because it is not part of the crew's identity — every other axis stays
+ * fixed across states, which is what keeps a reacting crew recognisable as the
+ * same crew. Only the ghost tier has a face to change, so a picture and a pack
+ * get the Sounds half alone.
  *
  * Composition goes through `compose()` from the style module — the same and
  * only path the roster uses — so the preview cannot drift from the saved
@@ -26,7 +32,7 @@ import { useTranslation } from 'react-i18next'
 // for the decode, and a bare import of the icon binds that identifier at
 // module scope — the constructor would then build a React component and every
 // picture upload would throw.
-import { Coffee, Crown, Dices, Eye, Ghost, Heart, Image as ImageIcon, ImageUp, Meh, Palette, Play, Smile, Sparkles } from 'lucide-react'
+import { Coffee, Crown, Dices, Eye, Ghost, Heart, Image as ImageIcon, ImageUp, LibraryBig, Meh, Palette, Play, Smile, Sparkles } from 'lucide-react'
 import { Dialog, DialogBody, DialogContent, DialogFooter, DialogHeader, DialogTitle } from './ui/dialog'
 import { Btn, Toggle } from './ui'
 import SegmentedControl from './SegmentedControl'
@@ -53,6 +59,7 @@ import {
 } from '../lib/crewAvatarState'
 import { SOUND_PRESETS, loadSoundSettings, playPreset, type SoundPreset } from '../hooks/useNotificationSound'
 import CrewAvatar, { seededTraits, type CrewAvatarOverride } from './CrewAvatar'
+import CrewAvatarLibraryTab from './CrewAvatarLibraryTab'
 import ErrorNotice from './ErrorNotice'
 
 /** Trait axes shown as category tabs, in mockup order. `blush` is a two-option
@@ -263,11 +270,15 @@ async function cropToSquareDataUri(file: File): Promise<string> {
   }
 }
 
-/** The identity tier: hand-pick ghost traits, or wear a picture. */
-type Tier = 'face' | 'picture'
-/** The dialog's panes. `expressions` is not a third identity — it decorates
+/** The identity tier: hand-pick ghost traits, wear a picture, or wear a pack. */
+type Tier = 'face' | 'picture' | 'pack'
+/** The dialog's panes. `expressions` is not a fourth identity — it decorates
  *  whichever tier is selected, which is why `tier` is tracked separately. */
 type Pane = Tier | 'expressions'
+
+/** The tier a stored override selects when the dialog opens. */
+const tierOf = (value: CrewAvatarOverride | null): Tier =>
+  value?.kind === 'image' ? 'picture' : value?.kind === 'pack' ? 'pack' : 'face'
 
 /** Only the states the user actually configured are stored, so an untouched
  *  reaction layer stays absent from the record rather than shipping three
@@ -305,8 +316,11 @@ export default function CrewAvatarBuilder({
     value?.kind === 'ghost' ? (value.traits ?? null) : null,
   )
   const [axis, setAxis] = useState<Axis>('eyes')
-  const [tier, setTier] = useState<Tier>(value?.kind === 'image' ? 'picture' : 'face')
-  const [pane, setPane] = useState<Pane>(value?.kind === 'image' ? 'picture' : 'face')
+  const [tier, setTier] = useState<Tier>(tierOf(value))
+  const [pane, setPane] = useState<Pane>(tierOf(value))
+  /** The pack the draft wears, or null. A pack override is nothing BUT this id,
+   *  so the Library pane needs no draft of its own. */
+  const [packId, setPackId] = useState<string | null>(value?.kind === 'pack' ? value.id : null)
   /** Per-state overrides. Held flat (not nested under the tier) so switching
    *  between a ghost face and a picture never discards them. */
   const [expressions, setExpressions] = useState<AvatarExpressions>(value?.expressions ?? {})
@@ -332,8 +346,9 @@ export default function CrewAvatarBuilder({
     if (open) {
       setDraft(value?.kind === 'ghost' ? (value.traits ?? null) : null)
       setAxis('eyes')
-      setTier(value?.kind === 'image' ? 'picture' : 'face')
-      setPane(value?.kind === 'image' ? 'picture' : 'face')
+      setTier(tierOf(value))
+      setPane(tierOf(value))
+      setPackId(value?.kind === 'pack' ? value.id : null)
       setExpressions(value?.expressions ?? {})
       setSounds(value?.sounds ?? {})
       setPending(value?.kind === 'image' ? (value.pendingData ?? null) : null)
@@ -505,7 +520,8 @@ export default function CrewAvatarBuilder({
       ? value
       : null
 
-  const applyDisabled = tier === 'picture' && pictureResult === null
+  const applyDisabled =
+    (tier === 'picture' && pictureResult === null) || (tier === 'pack' && packId === null)
 
   /**
    * The override Apply commits.
@@ -523,6 +539,14 @@ export default function CrewAvatarBuilder({
       ...(prune(sounds) ? { sounds } : {}),
     }
     const hasReactions = Object.keys(reactions).length > 0
+    if (tier === 'pack') {
+      // A pack override is the id and the reactions, nothing else: the art is
+      // the library's, so there is no draft to merge and no stored field to
+      // preserve. Apply is disabled until an id is picked, so the guard is a
+      // type narrowing rather than a reachable branch.
+      if (!packId) return null
+      return { kind: 'pack', id: packId, ...reactions }
+    }
     if (tier === 'picture') {
       if (!pictureResult) return null
       // The CURRENT maps are the truth, so the stored value's own reactions are
@@ -699,6 +723,13 @@ export default function CrewAvatarBuilder({
                   icon: <ImageIcon size={13} aria-hidden="true" />,
                 },
                 {
+                  key: 'pack',
+                  label: t('components.avatarBuilder.mode_library'),
+                  // A shelf, not a garment: the strip goes icon-only at phone
+                  // width, so the icon has to say the same word as the label.
+                  icon: <LibraryBig size={13} aria-hidden="true" />,
+                },
+                {
                   key: 'expressions',
                   label: t('components.avatarBuilder.mode_expressions'),
                   icon: <Sparkles size={13} aria-hidden="true" />,
@@ -725,16 +756,33 @@ export default function CrewAvatarBuilder({
           </div>
           {pane === 'expressions' ? (
             <div className="flex flex-col gap-3" data-testid="avatar-expressions-pane">
-              <p className="text-[11.5px] text-muted">{t('components.avatarBuilder.expr_hint')}</p>
+              {/* Only the ghost tier has a face to pick, and this line promises
+                  one — on the other tiers it sat directly above a note saying
+                  the opposite. Those notes carry the whole explanation there. */}
+              {tier === 'face' && (
+                <p className="text-[11.5px] text-muted">{t('components.avatarBuilder.expr_hint')}</p>
+              )}
               {tier === 'picture' && (
                 <p className="text-[11px] text-muted" data-testid="avatar-expressions-picture-note">
                   {t('components.avatarBuilder.expr_picture_note')}
+                </p>
+              )}
+              {tier === 'pack' && (
+                <p className="text-[11px] text-muted" data-testid="avatar-expressions-pack-note">
+                  {t('components.avatarBuilder.expr_pack_note')}
                 </p>
               )}
               <div className="flex max-h-[380px] flex-col gap-3 overflow-y-auto pr-1">
                 {AVATAR_STATES.map(stateRow)}
               </div>
             </div>
+          ) : pane === 'pack' ? (
+            <CrewAvatarLibraryTab
+              open={open}
+              name={name}
+              selectedId={packId}
+              onSelect={setPackId}
+            />
           ) : pane === 'picture' ? (
             <div className="flex flex-col items-center gap-3 py-2" data-testid="avatar-upload-pane">
               {pending ? (
@@ -903,6 +951,7 @@ export default function CrewAvatarBuilder({
                 pickGen.current += 1
                 setDraft(null)
                 setPending(null)
+                setPackId(null)
                 // The default face has no reactions either: this link is the
                 // one control that means "everything back to the default".
                 setExpressions({})

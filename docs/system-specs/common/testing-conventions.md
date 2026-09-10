@@ -1011,8 +1011,8 @@ run, and each named a class the floor did not yet close.
 - **A collection-time probe reads the operator's config.** `test_app_backend.py`'s
   `_sandbox_can_spawn()` runs at import, before any per-test pin, and called
   `wrap_argv()` — which loads `KiroCrewConfig` from the REAL `~/.kiro/crew/config.json`.
-  A developer box that carries `sandbox_allow_unsandboxed_exec=true` (the only way Kiro Crew
-  runs on Windows) made the probe say "can spawn", and the three tests it gates then ran
+  A developer box that carries `sandbox_allow_unsandboxed_exec=true` (redundant on Windows
+  since the platform default already permits it, but common on a backend-less Linux box) made the probe say "can spawn", and the three tests it gates then ran
   under the fixture's default config and failed closed, while CI skipped them. A
   `skipif` helper must observe what the tests will observe: run it under an empty
   `KIROCREW_HOME`. The pattern to grep for is a module-level `def _can_*()` (or

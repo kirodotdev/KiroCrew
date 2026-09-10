@@ -116,7 +116,7 @@ SUBAGENT_TIMEOUT_MAX = 86400
 # body is unambiguous (linear) while still capturing an inner ``[`` inside an
 # option ("Fix [x] logging", "a[1]"). A CLOSER is admitted CONDITIONALLY, not
 # freely: only where an earlier ``[`` in the same label matches it or the label
-# list continues after it (#9284 — see :data:`_MARKER_LABEL_CONTINUES` for why
+# list continues after it (see :data:`_MARKER_LABEL_CONTINUES` for why
 # an unconditional ``]`` made the body run past the marker and delete prose).
 # This parser runs over untrusted LLM/relayed text before Slack, the dashboard,
 # Discord, Telegram, and WeCom render it.
@@ -201,7 +201,7 @@ MARKER_WRAPPERS = "`*_"
 _MARKER_WRAP_CLASS = "[" + re.escape(MARKER_WRAPPERS) + "]"
 
 #: A closer may stay INSIDE a label only where it CONTINUES the label list
-#: (#9284). A label may legitimately carry a closer -- ``[OPTIONS: Alpha ] |
+#: A label may legitimately carry a closer -- ``[OPTIONS: Alpha ] |
 #: Bravo ]]`` is a supported shape -- so the body has to admit one. Admitting it
 #: UNCONDITIONALLY (the old ``[^[\n]``, which includes ``]``) made the body run to
 #: the LAST closer in range instead of the first plausible one, so an ordinary
@@ -482,7 +482,7 @@ def strip_control_comments(text: str) -> str:
 #: that body, and the one place the "spelled once" rule in
 #: :data:`_MARKER_BODY_LINE` does not apply. It has to be: a prefix of a legal
 #: body need not itself be a legal body. ``[OPTIONS: A ]`` mid-stream holds a
-#: closer that satisfies neither half of the #9284 rule YET, and becomes legal
+#: closer that satisfies neither half of the closer rule YET, and becomes legal
 #: the moment ``| B]`` arrives, so a probe spelled as the real body would call
 #: that tail dead and publish the marker as raw text. Widening this to the
 #: grammar is what ``test_options_marker_closers.py``'s

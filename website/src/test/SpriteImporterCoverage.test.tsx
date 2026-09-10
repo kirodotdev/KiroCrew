@@ -33,7 +33,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { render, screen, fireEvent, act, cleanup, within } from '@testing-library/react'
 
-import type { PackMeta } from '../apps/crew-companion/appearanceTypes'
+import type { PackMeta } from '../lib/appearancePacks/types'
 
 // ── Bridge double ──────────────────────────────────────────────────────────
 

@@ -81,12 +81,14 @@ export const CHUNK_BUDGETS = {
   // same drift again (~36 KB of English strings in four days). A feature PR
   // adding ~40 keys (#8307) trips it on its merge ref while main's own gate
   // stays green, so the ceiling moves back to the 5% convention.
-  // The structured-monitor dashboard adds 57 English keys, a measured 2.7 KB
-  // increase over main's 776.5 KB runtime chunk. That is expected catalog
-  // growth, not a new library reaching the runtime. Keep roughly 5% headroom,
-  // matching the `all` entry's convention above, so ordinary translated UI
-  // additions do not make this gate block unrelated descendants.
-  t: 819 * KB, // measured 779.2 KB with structured-monitor catalog additions
+  // Two catalog surfaces stack on this chunk after the merge: the
+  // structured-monitor dashboard (57 English keys) and the managed-credentials
+  // surface (25 English keys plus setup / irreversibility guidance). Both are
+  // ordinary translated product copy, not a library reaching the runtime. The
+  // merged analyze build measures the chunk at 807,525 B (788.6 KB); keep
+  // roughly 5% headroom (matching the `all` entry's convention above) over that
+  // combined measurement so expected catalog growth does not block descendants.
+  t: 819 * KB, // measured 788.6 KB on the merged (structured-monitor + managed-credentials) build (~3.7% headroom)
 
   // Pierre editor implementation (PR #4072 replaced Monaco, whose
   // 'editor.api2' chunk this entry set used to carry) -- the code-editor
@@ -118,7 +120,11 @@ export const CHUNK_BUDGETS = {
   // Same recurrence, same remedy: 5% headroom, matching the `all` and `t`
   // entries' convention, so ordinary first-party growth does not re-trip this
   // within days.
-  App: 3530 * KB, // measured 3360 KB on main @ 6ae74179d (~5% headroom)
+  // The managed-credentials UI and its setup / irreversible-delete states take
+  // the merge result to 3,445,107 B (3364.4 KB). Preserve the documented margin
+  // at that current measurement; a library-class regression still exceeds this
+  // ceiling by hundreds of kilobytes.
+  App: 3533 * KB, // measured 3364.4 KB on managed-credentials PR (~5% headroom)
 
   // Markdown/math/syntax rendering stack (katex, highlight.js, remark/rehype)
   // -- one deliberate `codeSplitting` group, see vite.config.ts.

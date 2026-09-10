@@ -4,6 +4,7 @@ import { Pencil, Circle, Pin, Zap, Locate, Link2, Tag as TagIcon, X, ExternalLin
 import type { ChatFolder } from '../types'
 import FolderMoveSubmenu from './FolderMoveSubmenu'
 import SendToInstanceSubmenu from './SendToInstanceSubmenu'
+import ExportSessionItem from './ExportSessionItem'
 import SessionColorSwatches from './SessionColorSwatches'
 import LinkedSurfacesSection from './LinkedSurfacesSection'
 import { DropdownMenuItem, DropdownMenuSeparator } from './ui/dropdown-menu'
@@ -81,7 +82,7 @@ export function collapseGroups<T>(groups: (T | false | null | undefined)[][]): T
  * with dividers auto-collapsing between them):
  *   [informational]  MCP servers ▸  (header only)
  *   [tab modifiers]  Rename · Mark read/unread · Pin · Switch to Autopilot/Chat · Move to folder ▸ · Tags…
- *   [nav / access]   Reveal in sidebar (header only) · Copy link · Connected surfaces
+ *   [nav / access]   Reveal in sidebar (header only) · Copy link · Send a copy ▸ · Export to a file · Connected surfaces
  *   [colour]         colour swatches
  *   [close]          Close session
  */
@@ -209,6 +210,15 @@ export default function SessionActionsMenu({
       // about this tab — the peer gets its own copy under its own key.
       // Self-hiding when no instances are configured.
       <SendToInstanceSubmenu key="send-instance" slotKey={slotKey} variant={variant} />,
+      // The same act with the live hop removed: a tunnel needs both machines up
+      // and reachable at once, a file does not. Adjacent to the submenu above
+      // so the two read as one choice about where the copy goes.
+      <ExportSessionItem
+        key="export-file"
+        slotKey={slotKey}
+        Item={Item}
+        memoryMode={slot?.memory_mode}
+      />,
       // Channel-neutral link state and actions — connected origins are read-only,
       // explicit mirrors can be reminded/stopped, and an otherwise-unlinked
       // dashboard session retains the existing Slack channel picker.

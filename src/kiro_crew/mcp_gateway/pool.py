@@ -30,14 +30,13 @@ boundary and never was a usable proxy for one:
 There is deliberately NO per-principal dimension either. Kiro Crew is
 single-operator: a Slack bot and a cron job are the same operator's
 automations, not separate principals, so a multi-principal shared gateway
-is not a supported deployment model. A ``user_identity`` field existed
-here historically, but nothing ever populated its ``KIROCREW_PRINCIPAL``
-source, so it always collapsed to the OS user and never isolated anything
-— it was deleted rather than kept as a misleading affordance. The
+is not a supported deployment model. A ``user_identity`` key field would be
+a misleading affordance: nothing populates a ``KIROCREW_PRINCIPAL`` source,
+so such a field collapses to the OS user and isolates nothing. The
 cross-OS-user boundary that IS real is carried by ``os_uid``. If
 multi-principal isolation is ever wanted, it needs a real design (what
-counts as a principal on an unattended surface is the hard part);
-re-adding a key field would be the small part.
+counts as a principal on an unattended surface is the hard part); adding a
+key field would be the small part.
 
 Stable hashing uses SHA-256 over a JSON-serialized tuple with sorted keys.
 Python's built-in ``hash()`` is intentionally non-deterministic across
@@ -149,10 +148,10 @@ def _proc_rss_kb(pid: Optional[int]) -> int:
     under-reports the true footprint by ~30x, so we sum the whole subtree.
 
     Delegates to :func:`platform_compat.proc_subtree_sample`, the one shared
-    ``/proc`` subtree walker — this module used to carry its own line-for-line
-    copy of that BFS plus its own copy of the process ceiling (#6096). ``rss``
-    is the only reading asked for, so the pool pays no ``/proc/<pid>/stat`` read
-    per process for a CPU figure it does not surface, and an unreadable root pid
+    ``/proc`` subtree walker, rather than a local copy of that BFS and of the
+    process ceiling. ``rss`` is the only reading asked for, so the pool pays no
+    ``/proc/<pid>/stat`` read per process for a CPU figure it does not surface,
+    and an unreadable root pid
     still returns -1 without walking anything.
 
     Returns -1 if ``pid`` is falsy or its own status cannot be read; otherwise

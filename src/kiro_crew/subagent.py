@@ -64,6 +64,7 @@ from kiro_crew.hooks import (
     TOOL_AUTO_APPROVE,
     TOOL_DENY,
     fire_tool_hooks,
+    identity_grant_covers_child,
     safe_read_file,
 )
 from kiro_crew.llm_helpers import (
@@ -2480,6 +2481,7 @@ _COMPONENT_GLOBAL_BINDINGS = (
     evict_completed_agents,
     extract_options,
     fire_tool_hooks,
+    identity_grant_covers_child,
     has_dashboard_surface,
     list_orphans,
     maintenance_executor,

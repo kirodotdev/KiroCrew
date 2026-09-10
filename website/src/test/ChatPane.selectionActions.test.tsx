@@ -80,6 +80,7 @@ Object.defineProperty(window, 'matchMedia', {
 import ChatPane from '../components/ChatPane'
 import { api } from '../api/client'
 import { clearSideChatDrafts, readSideChatDraft } from '../chat-core/composer/sideChatDrafts'
+import { __resetPaneDraftsForTests } from '../utils/chatPaneDrafts'
 
 const SLOT = 'pane-slot'
 const PANE_MESSAGES = [
@@ -129,6 +130,11 @@ async function renderPane(props: { openSideChat?: (slot: string) => void } = {})
 const composer = () => screen.getByLabelText('Message input') as HTMLTextAreaElement
 
 describe('ChatPane selection actions (Quote / Ask)', () => {
+  // Every test mounts the same SLOT; the pane parks its composer on unmount
+  // (RTL's auto-cleanup, which runs after this file's afterEach) into a
+  // module-level store, so the reset must happen at the START of the next
+  // test or one test's Quote text rides into the next test's composer.
+  beforeEach(() => { __resetPaneDraftsForTests() })
   afterEach(() => { document.body.replaceChildren(); clearSideChatDrafts() })
 
   it('hands the assistant row a Quote action even when the host offers no Side Chat', async () => {

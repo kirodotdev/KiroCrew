@@ -212,6 +212,8 @@ export const QUOTED_OPERAND_CONFIRM_KEYS = [
   'pages.schedulePage.cronFolders.confirm_delete_folder',
   'pages.schedulePage.delete_named_job', // ASCII quotes → locale pair #5725
   'pages.settings.remoteCrewPanel.confirm_delete_of', // was fully bare #4821
+  'settings.secrets.delete_confirm',
+  'settings.secrets.delete_managed_confirm',
   'pages.settings.securityPanel.trustedApps.revoke_confirm_title',
   'pages.settings.securityPanel.trustedApps.revoke_confirm_body',
 ]

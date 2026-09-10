@@ -541,6 +541,9 @@ def _governance_denial(ev: object, *, session_key: str, agent: str) -> str:
             # command meant is_shell=False, so the request was treated as a non-shell tool and
             # skipped the branch written for it.
             is_shell=bool(getattr(ev, "is_shell", False)) or bool(command),
+            mcp_server_name=getattr(ev, "mcp_server_name", "") or "",
+            mcp_tool_name=getattr(ev, "tool_name", "") or "",
+            mcp_identity_trusted=bool(getattr(ev, "mcp_identity_trusted", False)),
         )
         if getattr(result, "action", "") == TOOL_DENY:
             return (getattr(result, "reason", "") or "denied by governance policy").strip()

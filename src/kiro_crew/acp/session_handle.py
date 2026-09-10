@@ -754,7 +754,7 @@ class AcpSessionHandle:
                 message,
                 allow_image=self._runtime.supports_image_prompt,
             )
-            # Content-free outbound STRUCTURE diagnostics (issue #6022): one
+            # Content-free outbound STRUCTURE diagnostics: one
             # line per turn build recording block counts, per-type counts, and
             # the serialized byte size — NEVER any block text or bytes — so an
             # operator can tell a stale/invalid model id apart from a
@@ -1280,7 +1280,7 @@ class AcpSessionHandle:
         aborted" the adapter throws on a ``cancelled`` outcome). Falls back to
         ``cancelled`` when no deny-shaped option was advertised — NOT a per-tool
         signal: kiro-cli maps it to cancelling the TURN, auto-denying every
-        later tool call in it without prompting (#7681).
+        later tool call in it without prompting.
         """
         recorded = self._permission_options.pop(request_id, None)
         # Answered (see approve_tool) — a rejection ends the human wait too.
@@ -1293,8 +1293,8 @@ class AcpSessionHandle:
             )
         else:
             # Same last-resort warning as AcpClient.reject_tool — this is the
-            # second of the two ``cancelled`` fallback sites, and the silent
-            # cascade is the bug report's whole complaint (#7681).
+            # second of the two ``cancelled`` fallback sites, and the cascade
+            # it can trigger is otherwise silent.
             logger.warning(
                 "reject_tool: no deny option advertised for req=%s; answering "
                 "'cancelled', which the backend may treat as cancelling the "
@@ -1826,8 +1826,8 @@ class AcpSessionHandle:
             avail = models.get("availableModels", [])
             if isinstance(avail, list):
                 # The shape walk is delegated to the canonical parser so this
-                # snapshot and a probe's answer stay directly comparable
-                # (#6382). The envelope is the same checked-binding discipline
+                # snapshot and a probe's answer stay directly comparable.
+                # The envelope is the same checked-binding discipline
                 # as the client's, though here the parser's dict-or-list
                 # fallback is unreachable by construction (the inner dict
                 # always has a key). The isinstance check above is the
@@ -1835,7 +1835,7 @@ class AcpSessionHandle:
                 # clobber a previously-stored list. A well-formed EMPTY list
                 # still overwrites — that asymmetry with
                 # ``AcpClient._capture_available_models`` (non-empty guard) is
-                # pre-existing policy, deliberately unchanged here.
+                # deliberate, not an oversight.
                 self._available_models = parse_advertised_models(
                     {"models": {"availableModels": avail}}
                 )
@@ -2142,7 +2142,7 @@ class AcpSessionHandle:
                 # `failed` and the backend has since gone silent past the budget,
                 # so no prompt response or end_turn is coming. End the turn with
                 # an explicit stop reason so the caller releases the slot instead
-                # of draining to the chat-turn ceiling (issue #3583). Consumer
+                # of draining to the chat-turn ceiling. Consumer
                 # park time is subtracted, like every other idle clock here, so a
                 # long human approval cannot be charged to the backend.
                 #
@@ -2303,8 +2303,8 @@ class AcpSessionHandle:
                             # frame landing inside the oracle await therefore
                             # still defers the tool clock, but by ONE tick: when
                             # it is dequeued the ownership check below leaves
-                            # last_own_data_ts alone, so the unbounded deferral
-                            # this branch used to allow cannot re-form.
+                            # last_own_data_ts alone, so the deferral cannot
+                            # compound into an unbounded one.
                             last_data_ts = time.monotonic()
                             last_own_data_ts = last_data_ts
                             parked_at_own_data = self._parked_total
@@ -2654,6 +2654,18 @@ class AcpSessionHandle:
                     # text. Never trust backend-echoed steer text: redact before it
                     # can reach any surface. Mirrors AcpClient._dispatch_events.
                     params = msg.params or {}
+                    _steer_sid = str(params.get("sessionId") or "")
+                    if _steer_sid and _steer_sid != self._session_id:
+                        # A steer echo naming ANOTHER session — an announced
+                        # child's frame routed to this single-owner queue
+                        # (either session/update spelling). Only a frame this
+                        # session OWNS may settle this session's steer
+                        # ledger: surfacing a child's steering_consumed as a
+                        # parent EVENT_STEER_CONSUMED could settle a pending
+                        # user steer or policy-refusal continuation the
+                        # parent backend never consumed. Same trust boundary
+                        # the compaction branch draws with owns_frame.
+                        continue
                     _upd = params.get("update")
                     _upd = _upd if isinstance(_upd, dict) else {}
                     _disc = str(_upd.get("sessionUpdate") or "")
@@ -2680,11 +2692,11 @@ class AcpSessionHandle:
                     # peer and reap its live turn (every consumer resets the
                     # session on that terminal), and an ownerless `completed`
                     # would disarm a peer's legitimate budget and restore the
-                    # #3583 hang this fix exists to close.  Same trust boundary
+                    # hang the budget exists to close.  Same trust boundary
                     # the budget's own clock already draws (last_own_data_ts) and
                     # the subagent roster already draws (runtime_global=).  A lone
                     # session's frame is left unmarked and genuinely is its own,
-                    # so single-session behaviour is unchanged.  The event still
+                    # so a single-session run is unaffected.  The event still
                     # surfaces either way — only the mutations are gated.
                     owns_frame = not msg.fanout_no_owner
                     if status_type == "completed" and owns_frame:
@@ -2750,6 +2762,52 @@ class AcpSessionHandle:
                     ssid = str(params.get("sessionId") or "")
                     upd = params.get("update") or {}
                     upd = upd if isinstance(upd, dict) else {}
+                    if ssid and ssid != self._session_id:
+                        # A backend-internal child's update under the
+                        # extension method `_kiro.dev/session/update`. BOTH
+                        # session-update spellings are live carriers, not a
+                        # version succession: kiro-cli 2.21.x uses the
+                        # extension method for the child stream regardless
+                        # of the plain/extension ordering the steer comment
+                        # in _dispatch.classify_notification describes. Run
+                        # the payload through the shared parser for its
+                        # cache SIDE EFFECTS ONLY — the origin-scoped
+                        # per-toolCallId writes (command bytes, raw params,
+                        # shell classification, and the `_meta.kiro`
+                        # server/tool identity) that a later child
+                        # permission request's trust split reads. Without
+                        # this parse the caches stay empty for the extension
+                        # spelling, a child MCP call cannot verify its
+                        # identity, and every auto-approve path falls to the
+                        # interactive UNVERIFIED card. Identity still comes
+                        # ONLY from a frame this client parsed: the runtime
+                        # routes the method solely for an announced child on
+                        # a single-owner runtime. Same
+                        # cache-side-effects-only shape as the KAS child
+                        # nested-tool path in _handle_update.
+                        #
+                        # The activity events stay the hand-rolled yields
+                        # below, and they INTENTIONALLY differ from
+                        # _handle_update's child re-tag path (the plain
+                        # spelling's route): this branch emits activity for
+                        # any update carrying a toolCallId — including
+                        # discriminant-less frames and tool_call_update
+                        # refinements the parser suppresses — a display
+                        # shape pinned by the pre-existing
+                        # test_dispatch_subagent_activity_* tests. The
+                        # security caches are the shared, parser-derived
+                        # part; the coarse crew-monitor display is not.
+                        parse_session_update(
+                            upd,
+                            tool_input_cache=self._tool_call_inputs,
+                            tool_input_redacted_cache=self._tool_call_input_redacted,
+                            shell_cache=self._tool_call_is_shell,
+                            raw_params_cache=self._tool_call_raw_params,
+                            diff_path_cache=self._tool_call_diff_path,
+                            mcp_server_name_cache=self._tool_call_mcp_server,
+                            tool_name_cache=self._tool_call_tool_name,
+                            cache_scope=ssid,
+                        )
                     tcid = str(upd.get("toolCallId") or "")
                     # Single-source the text-shape read via the shared parser so the
                     # sub-agent text path matches the main one (content.text + flat).
@@ -3077,7 +3135,7 @@ class AcpSessionHandle:
         Thin wrapper binding this handle's resolved model id (kiro-agent
         ``currentModelId``, else the user-picked alias); the shared logic lives
         on ``AcpPromptStats.backfill_context_window`` (the AcpClient path
-        delegates to the same method, so the two can no longer drift).
+        delegates to the same method, so the two cannot drift).
         """
         self.last_prompt_stats.backfill_context_window(
             pct, self._resolved_model_id or self._model
@@ -3421,11 +3479,11 @@ class AcpSessionHandle:
             elif kind == kas_wire.KIND_SUMMARIZATION_FAILED:
                 status_type = "failed"
                 # Parity with AcpClient._handle_compaction_status: log the WHOLE
-                # frame at WARNING. This branch previously logged nothing at
-                # all, so a KAS summarization failure left the chat row as the
-                # only record of it — and when the row's reason collapsed to a
-                # placeholder there was nothing to grep server-side and no way
-                # to learn which field the reason actually arrived in.
+                # frame at WARNING. Without it a KAS summarization failure
+                # leaves the chat row as the only record of it — and when the
+                # row's reason collapses to a placeholder there is nothing to
+                # grep server-side and no way to learn which field the reason
+                # actually arrived in.
                 # redact_text, not the bare frame: conversationSummary rides in
                 # this payload, so an unredacted dump would persist whatever the
                 # conversation contained -- a pasted credential included -- into

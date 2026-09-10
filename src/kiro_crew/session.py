@@ -348,7 +348,7 @@ def _provider_uses_kiro_identity_store(provider: Any) -> bool:
     Reads the capability the object DECLARES (harness-parity H14) rather than
     probing private attributes: ``LLMProvider`` declares it with a safe default of
     False, ``AcpProvider`` / ``AcpSessionProvider`` grant it by membership in
-    ``ACP_BACKENDS_KIRO_IDENTITY_STORE``, and ``AcpRuntime`` declares the same
+    ``backends_retired_by_host_logout()``, and ``AcpRuntime`` declares the same
     property under the same name because the sweep reaches shared runtimes too.
 
     Fails CLOSED on anything that does not declare it -- a test double or a future

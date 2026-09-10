@@ -133,7 +133,7 @@ _GIT_PUBLISH_RE = re.compile(
 # to ``git push`` but break the token sequence above, e.g.
 # ``git$(echo ' ')push``, ``git`echo`push``, ``git$()push``.  After stripping
 # empty substitutions/backticks the residue is ``gitpush``; we also match a
-# literal ``git_push`` (kiro-cli historically denied that form).
+# literal ``git_push``, a form kiro-cli denies too.
 _GIT_PUBLISH_GLUE_RE = re.compile(r"git(?:\$\([^)]*\)|`[^`]*`)+push|git_push")
 
 # Program NAME produced by an expansion the shell resolves to the git binary
@@ -192,7 +192,7 @@ _SELF_IMPORT_RE = re.compile(r"\bkiro_crew\b")
 #: dynamic-exec verbs, not a blanket deny on all inline Python: ``python -c "print(1)"`` and
 #: routine one-liners stay allowed, and the residual — arbitrary code that avoids even these
 #: (``perl``, a written-then-run script, a renamed interpreter) — is out of a string matcher's
-#: reach and is documented as such rather than papered over. Found in review (GPT 5.6).
+#: reach and is documented as such rather than papered over.
 _INLINE_DYNAMIC_EXEC_RE = re.compile(
     r"\b__import__\s*\(|\bimportlib\b|\bimport_module\b|\bexec\s*\(|\beval\s*\(|"
     r"\bcompile\s*\(|\bb64decode\b|\bmarshal\b|\bgetattr\s*\("
@@ -230,13 +230,13 @@ def _is_self_module_invocation(tokens: list[str], i: int) -> bool:
     ``python -c "from kiro_crew.cli import main; main()" token`` reaches the identical mint
     with the import name buried in an inline-program payload. The two forms differ only in
     how the interpreter is told to import the package, so they cannot be gated separately —
-    the earlier "anything that is not a flag means this is not the module shape" bail read the
-    payload as a script name and returned False. Found in review.
+    an "anything that is not a flag means this is not the module shape" bail reads the
+    payload as a script name and returns False.
 
     Interpreter flags that take a SEPARATE OPERAND (``-X dev``, ``-W ignore``, ``-Q new``)
-    have their operand skipped. An earlier version stopped at the first token that did
-    not begin with ``-``, so ``python -X dev -m kiro_crew token`` bailed on ``dev`` and the
-    mint went through — the bypass this whole function exists to close, reintroduced one flag
+    have their operand skipped. Stopping at the first token that does
+    not begin with ``-`` bails on ``dev`` in ``python -X dev -m kiro_crew token`` and lets
+    the mint through — the bypass this whole function exists to close, one flag
     deeper. Modelling which flags consume an operand is the fix; "stop at the
     first non-flag" is not expressible as a heuristic here, because an operand and a script
     path look identical.
@@ -342,7 +342,7 @@ def _stdin_redirect_carriers(tokens: list[str], start: int, stop: int) -> "Itera
     redirection may appear ANYWHERE in a simple command -- BEFORE the program name
     (``<<'PY' python -``), after it, and GLUED TO IT with no space
     (``python3<<<'…'``, ``python3<prog.py``), all of which are ordinary bash reaching
-    the same mint (each caught in review, GPT 5.6).  A token that carries a redirect
+    the same mint.  A token that carries a redirect
     after some other text is therefore classified from its first ``<`` onward: the
     text before it is the program name or an earlier operand, and the shell reads the
     rest as the redirection.
@@ -355,8 +355,8 @@ def _stdin_redirect_carriers(tokens: list[str], start: int, stop: int) -> "Itera
     closes a heredoc only on a line that holds the delimiter ALONE, and line structure
     does not survive tokenizing -- so a body line that merely CONTAINS the word
     (``# EOF``, an ordinary Python comment) produced a token equal to the tag and closed
-    the body early, leaving the real payload after it unscanned (caught in review, GPT
-    5.6).  The last occurrence is the delimiter that actually ends it; taking it
+    the body early, leaving the real payload after it unscanned.
+    The last occurrence is the delimiter that actually ends it; taking it
     over-yields only when the tag word recurs in a LATER command, which is the safe
     direction.
     """
@@ -437,7 +437,7 @@ def _stdin_program_text(tokens: list[str], i: int) -> "Iterator[str]":
       glued to it (:func:`_stdin_redirect_carriers`).  Walked over the WHOLE frame in ONE
       pass, not per side of the interpreter: a marker and its body can straddle the
       program name (``<<EOF python - … EOF``), and splitting the walk lost that
-      association entirely (caught in review, GPT 5.6).  Only REDIRECT OPERANDS are
+      association entirely.  Only REDIRECT OPERANDS are
       yielded, so a neighbouring command's ordinary argument is still never program text;
     * a PIPE PRODUCER -- the tokens left of this interpreter, when a pipe feeds it.
       The pipe is NOT reliably its own token: the tokenizer splits on whitespace only,
@@ -445,17 +445,17 @@ def _stdin_program_text(tokens: list[str], i: int) -> "Iterator[str]":
       ``_program_basename`` resolves the program from the LAST control-operator
       segment.  So the pipe is detected as a CHARACTER anywhere left of, or glued
       into, the interpreter token, and that token's own leading segment is producer
-      text.  Requiring a standalone ``|`` token missed all four no-space spellings and
-      let the producer's payload through (caught in review, GPT 5.6).
+      text.  Requiring a standalone ``|`` token would miss all four no-space spellings
+      and let the producer's payload through.
 
     Both families over-yield on the left: any pipe, or any earlier command's own stdin
     redirect, qualifies.  That is the safe direction -- a missed carrier is a bypass,
     an extra token is only a visible refusal (pinned by a test).
 
-    Everything else in the frame is another command's argv.  Scanning THAT was the
-    defect (#2660): a frame is not split on a newline, so an unrelated neighbour that
+    Everything else in the frame is another command's argv.  Scanning THAT is the
+    defect: a frame is not split on a newline, so an unrelated neighbour that
     merely names this package in a FILE PATH (``isort src/kiro_crew/mcp_core.py``
-    followed by any ``python - <<'PY' … PY``) made a harmless heredoc read as a
+    followed by any ``python - <<'PY' … PY``) makes a harmless heredoc read as a
     credential mint -- with no ``token`` word anywhere in the command.
 
     Yields lazily so the caller's ``any()`` short-circuits: the cost stays O(frame)
@@ -501,7 +501,7 @@ def _has_self_importing_inline_program(tokens: list[str], i: int) -> bool:
         # A redirect GLUED to the program name is still this command's redirect, and the
         # detector only ever saw the tokens AFTER the interpreter -- so `python<<EOF … EOF`
         # had no marker in view and its body read as a script path. Hand the suffix over as
-        # its own token (caught in review, GPT 5.6).
+        # its own token.
         later_tokens = [glued[glued.index("<") :], *later_tokens]
     # STDIN program: the text is not an operand of this interpreter — the shell fills stdin from
     # a heredoc body, a redirected file, or a pipe producer — so the search space is those
@@ -563,14 +563,14 @@ def _python_reads_stdin(later_tokens: list[str]) -> bool:
     pipe/redirect token ends this command's own arguments.
 
     The heredoc structure is read off the RAW token via :func:`_heredoc_marker`, because
-    ``_normalize_operand`` strips a redirection to the empty string — which made the heredoc
-    branch here unreachable and had ``python << 'PY' … PY`` (no ``-``) report FALSE, reading
-    the first word of the BODY as a script path (#2660).  A redirect OPERAND is consumed
+    ``_normalize_operand`` strips a redirection to the empty string — which would leave the
+    heredoc branch here unreachable and have ``python << 'PY' … PY`` (no ``-``) report FALSE,
+    reading the first word of the BODY as a script path.  A redirect OPERAND is consumed
     through :func:`_operand_span_end` for the same reason the carrier scan uses it: a
     substitution operand is one shell WORD over several tokens, and skipping only the first
-    left ``python <<< $(printf …)`` reading ``%s`` as a script path (caught in review, GPT
-    5.6).  The two functions share that helper so the detector and the carrier scope agree
-    on where an operand ends.
+    leaves ``python <<< $(printf …)`` reading ``%s`` as a script path.  The two
+    functions share that helper so the detector and the carrier scope agree on where
+    an operand ends.
     """
     skip_next = False
     heredoc_tag: str | None = None
@@ -586,7 +586,7 @@ def _python_reads_stdin(later_tokens: list[str]) -> bool:
             # whatever comes after the tag belongs to the NEXT command. Reading it as
             # this interpreter's positional made `python <<PY … PY; echo ok` report
             # "runs a script named echo" and skipped the whole branch, so the heredoc's
-            # payload went unscanned (caught in review, GPT 5.6). The heredoc has
+            # payload went unscanned. The heredoc has
             # already supplied the program, so the answer here is simply True.
             if raw == heredoc_tag:
                 return True
@@ -704,7 +704,7 @@ def _python_reads_stdin(later_tokens: list[str]) -> bool:
     return True  # nothing but flags → bare interpreter reads stdin
 
 
-# ── Self-protection floor short-circuit (perf, issue #3603) ──
+# ── Self-protection floor short-circuit (perf) ──
 # The floor predicates below re-tokenize the command and descend every nested
 # shell payload (`_self_token_frames`), which is where the cost of the deny
 # scan concentrates: it scales with NESTING COMPLEXITY, and each `is_denied`
@@ -712,16 +712,16 @@ def _python_reads_stdin(later_tokens: list[str]) -> bool:
 # call — a tool name plus a path — can never fire either predicate, so the
 # descent is pure waste there.
 #
-# The gate is a NECESSARY condition, deliberately wider than the issue's
-# proposal of a raw `_SELF_NAME_RE` search. That proposal is UNSOUND: the
+# The gate is a NECESSARY condition, deliberately wider than a raw
+# `_SELF_NAME_RE` search. That narrower gate is UNSOUND: the
 # predicates fire on inputs whose raw text never matches `kiro[-.]?crew` —
 # `python -m kiro_crew token` (the underscored import spelling), `[k]irocrew
 # token` (one-char bracket class), `kiro$()crew` (empty substitution),
 # `kiro${x:-crew}` (parameter default), `bash -c "\x6birocrew token"` (printf
 # escapes), `kiro?rew` (glob the shell expands before exec), and a `-c`
 # payload reaching the CLI through `exec`/`b64decode` with no name at all.
-# Every one of those was verified to be denied by the floor today, so a gate
-# that skipped them would be a real bypass, not an optimization.
+# Every one of those is denied by the floor, so a gate that skipped them would
+# be a real bypass, not an optimization.
 #
 # Sound formulation: the floor can only fire if, after the normalizations the
 # predicates themselves apply (shlex quote-stripping, `_debracket`,
@@ -745,7 +745,7 @@ def _python_reads_stdin(later_tokens: list[str]) -> bool:
 #     of a literal import — checked on the raw text AND on the quote-stripped
 #     text, because empty-quote glue hides the verb exactly as it hides the
 #     name (`python -c "ex""ec(...)"` carries no name and no other machinery,
-#     yet the floor denies it: pre-merge review finding);
+#     yet the floor denies it);
 #   * the literal name after stripping quotes/backslashes (`k""iro""crew`,
 #     `ki\rocrew` — shlex removes those before the predicates compare).
 # When none of these is present, no predicate can return True, so the descent
@@ -802,7 +802,7 @@ def _is_credential_mint(text_lower: str) -> bool:
     argv whose PROGRAM is the CLI, and ``kirocrew doctor | grep token`` puts the
     word in ``grep``'s argv, not the CLI's.
     """
-    # Perf short-circuit (#3603): the tokenize-and-descend below is the deny
+    # Perf short-circuit: the tokenize-and-descend below is the deny
     # scan's dominant cost, and it cannot produce a hit when the gate says the
     # input carries neither a self name nor the machinery to synthesize one.
     if not _self_floor_can_fire(text_lower):
@@ -820,14 +820,14 @@ def _is_credential_mint(text_lower: str) -> bool:
             # main()"`` names no ``token`` argv word, and ``python - <<'PY' … PY`` puts the
             # program on stdin, off argv entirely. The honest gate is the import. Scoped to
             # ``_SELF_IMPORT_RE``, so ``python -c "print(1)"`` and a bare ``python -`` running
-            # unrelated code are untouched. Found in review (GPT 5.6).
+            # unrelated code are untouched.
             if _has_self_importing_inline_program(tokens, i):
                 return True
             # Either the console script IS the program, or an interpreter runs the product as
             # a MODULE (`python -m kiro_crew ... token`). The module form mints the identical
             # token, and its argv program is the interpreter, so `_is_self_program` alone
             # missed it — the underscored import name is not a console-script spelling either,
-            # so the regex tier could not see it. Found in review.
+            # so the regex tier could not see it.
             if not _is_self_program(token) and not _is_self_module_invocation(tokens, i):
                 continue
             # The name is an ARGUMENT of a command that treats arguments as data
@@ -845,14 +845,14 @@ def _is_credential_mint(text_lower: str) -> bool:
                 if _is_mint_verb(later):
                     return True
                 # The operand of `-c` is a quoted PROGRAM, so its `;` is data, not a command
-                # separator. Letting `_ends_argv` see it ended the scan on the payload of
+                # separator. Letting `_ends_argv` see it ends the scan on the payload of
                 # `python -c "from kiro_crew.cli import main; main()" token` — one token before
-                # the verb — so the mint was permitted even though the interpreter check had
-                # already matched. Found in review.
+                # the verb — so the mint is permitted even though the interpreter check has
+                # already matched.
                 #
-                # This skip is no longer what protects the `-c` form: a payload that imports
+                # This skip is not what protects the `-c` form: a payload that imports
                 # the CLI is denied above, before this loop runs, because it can construct the
-                # verb internally. The skip remains correct for the case it was written for —
+                # verb internally. The skip covers the remaining case —
                 # a payload that does NOT import us, followed by a real `token` argument.
                 if inline_payload_next:
                     inline_payload_next = False
@@ -881,12 +881,11 @@ def _static_substitution_output(body: str) -> str:
     ``$(echo kill)`` and ``$(printf kill)`` put the verb in COMMAND position
     through their output; the undecoyed spelling is already detected by the
     token walk (``kill)`` strips to a ``kill`` basename), so only the decoyed
-    combination slipped -- the raw window had no anchor for it (server-side
-    GPT review round 6, bash-measured).  Resolution is deliberately narrow:
-    ``echo``/``printf`` with a literal first operand, flags and format words
-    skipped.  Anything dynamic returns ``"\x00"``, a word no program name
-    matches, so an unresolvable generator can only under-anchor (miss goes to
-    the remainder ledger), never conjure one.
+    combination slips -- the raw window has no anchor for it (bash-measured).
+    Resolution is deliberately narrow: ``echo``/``printf`` with a literal first
+    operand, flags and format words skipped.  Anything dynamic returns
+    ``"\x00"``, a word no program name matches, so an unresolvable generator can
+    only under-anchor (miss goes to the remainder ledger), never conjure one.
     """
     tokens = body.split()
     if tokens and _shell_normalizer._program_basename(tokens[0]) in {"echo", "printf"}:
@@ -910,9 +909,9 @@ def _kill_prefix_keeps_anchor(words: "list[tuple[str, bool]]", word: "list[str]"
     ``kill$(B)`` runs the program ``kill`` whenever B expands to NOTHING at
     runtime -- ``$(:)``, ``$(true)``, any silent command -- which no static
     scan can decide, so the anchor decision fails toward detection: a FIRST
-    word whose pre-glue prefix is exactly ``kill`` keeps its anchor (server-
-    side GPT review round 3, bash-measured: ``kill$(:) $(pgrep -f <name>)``
-    kills).  Only the first word, because the program position is what makes
+    word whose pre-glue prefix is exactly ``kill`` keeps its anchor
+    (bash-measured: ``kill$(:) $(pgrep -f <name>)`` kills).  Only the first
+    word, because the program position is what makes
     the prefix a program: ``echo kill$(printf x) $(pgrep -f <name>)`` hands
     every ``kill...`` word to echo as data, and eating the anchor there is
     what keeps that spelling allowed.  The glued word's OWN body sits at the
@@ -974,8 +973,8 @@ def _bare_kill_raw_bodies(source: str) -> "list[str]":
     character that is quote SYNTAX (an opener or closer -- the state machine's
     own transitions say which) is dropped, while a quote character that is DATA
     (inside the other quote type, or escaped) is kept.  Without that,
-    ``k''ill`` reached the comparison spelled with its splice and the kill was
-    missed (server-side GPT review, bash-measured: the spliced spelling runs
+    ``k''ill`` reaches the comparison spelled with its splice and the kill is
+    missed (bash-measured: the spliced spelling runs
     ``kill``).  A syntax quote still OPENS a word -- ``''#`` is the word ``#``,
     not a comment -- which the ``open_word`` flag carries.
 
@@ -993,8 +992,8 @@ def _bare_kill_raw_bodies(source: str) -> "list[str]":
     This pass is a UNION with the token walk, never a replacement: the tokens
     carry resolutions the raw text does not (``p=$(pgrep -f kirocrew); kill $p``
     resolves ``$p`` at tokenization) and the raw text carries the quoting the
-    tokens lost.  Keeping both is what guarantees no previously-detected
-    spelling is dropped.
+    tokens lost.  Keeping both is what guarantees no spelling either half
+    detects is dropped.
     """
     bodies: list[str] = []
     words: list[tuple[str, bool]] = []  # (word, glued-to-a-substitution)
@@ -1017,9 +1016,9 @@ def _bare_kill_raw_bodies(source: str) -> "list[str]":
         # The literal spelling, or a variable an EARLIER command assigned the
         # verb to: ``k=kill; $k $(...)`` reaches this walk spelled ``$k``,
         # while the token walk sees it resolved -- so the decoyed alias
-        # spelling slipped both union halves (server-side GPT review round 5,
-        # bash-measured).  Both ``$k`` and ``${k}`` count; the value check
-        # goes through the same basename read as the literal.
+        # spelling slips both union halves (bash-measured).  Both ``$k`` and
+        # ``${k}`` count; the value check goes through the same basename read as
+        # the literal.
         if _shell_normalizer._program_basename(w) == "kill":
             return True
         if not w.startswith("$"):
@@ -1077,9 +1076,9 @@ def _bare_kill_raw_bodies(source: str) -> "list[str]":
                 # An EMPTY substitution expands to NOTHING, so the word
                 # CONTINUES across it -- ``kill$()`` runs ``kill`` (the same
                 # glue-evasion ``_EMPTY_SUBST_RE`` undoes for the token walk;
-                # server-side GPT review, bash-measured).  Marking it glued
-                # instead handed the evasion a free pass: the glued word was
-                # excluded from the kill match and the segment lost its anchor.
+                # bash-measured).  Marking it glued
+                # instead hands the evasion a free pass: the glued word is
+                # excluded from the kill match and the segment loses its anchor.
                 if proven and not body.strip():
                     # The word is OPEN even when the expansion vanishes: a
                     # ``#`` right after ``$()`` is a word to bash (comments
@@ -1158,8 +1157,7 @@ def _bare_kill_raw_bodies(source: str) -> "list[str]":
                     or (ch == "&" and not word and source.startswith(">", off + 1))
                 ):
                     # The full redirect grammar audited against the separator
-                    # set (this class produced three review rounds one spelling
-                    # at a time -- ``2>&1``, ``&>``, ``>|``): a ``&`` or ``|``
+                    # set (``2>&1``, ``&>``, ``>|``): a ``&`` or ``|``
                     # riding a trailing ``<``/``>`` is a descriptor duplication
                     # or the noclobber override, and a leading ``&>``/``&>>``
                     # redirects both streams -- all redirects of THIS command,
@@ -1234,9 +1232,9 @@ def _is_self_kill(text_lower: str) -> bool:
       kirocrew)``, ``kill $(pidof kirocrew)``, ``kill $(cat /run/kirocrew.pid)``,
       backticks).  A ``kill <pid>`` alongside a command that merely mentions a
       product path is NOT a self-kill -- that is the false positive this
-      replaced.
+      structural check avoids.
     """
-    # Perf short-circuit (#3603): both loops below re-run the payload descent.
+    # Perf short-circuit: both loops below re-run the payload descent.
     # A kill can only target the product if the gate's necessary condition
     # holds, so a miss skips both descents.
     if not _self_floor_can_fire(text_lower):
@@ -1316,7 +1314,7 @@ def _is_self_kill(text_lower: str) -> bool:
         # DE-QUOTED tokens, so a quoted close-paren reads as a real closer and
         # closes the window early, dropping the clause that names the target
         # (``kill $(printf ')' ; pgrep -f kirocrew)``).  Re-derive the same
-        # window from the RAW text, where the quotes still exist (#8633).
+        # window from the RAW text, where the quotes still exist.
         for body in _bare_kill_raw_bodies(source):
             if _SELF_NAME_RE.search(_debracket(body)) or _SELF_NAME_RE.search(
                 _resolve_param_defaults(body)
@@ -1336,7 +1334,7 @@ def _is_self_kill(text_lower: str) -> bool:
 # use (``_self_token_frames``) -- resolves every such spelling before the check.
 # The floor is a UNION with the regex tier, never a replacement: the regex still
 # catches a payload the tokenizer cannot see into (``bash -c "kirocrew restart"``)
-# and the ``python -m kiro_crew restart`` module form (``kiro.?crew`` + verb) (#4824).
+# and the ``python -m kiro_crew restart`` module form (``kiro.?crew`` + verb).
 _SELF_CLOUD_DESTRUCTIVE_VERBS: frozenset[str] = frozenset(
     {"destroy", "stop", "start", "launch", "connect", "tunnel", "login", "logout"}
 )
@@ -1620,7 +1618,7 @@ def _is_git_push_via_normalizer(text_lower: str) -> bool:
     any token sequence resolves to ``git`` followed by ``push`` as the
     subcommand (skipping flags and their arguments, and skipping empty or
     whitespace-only words in the subcommand seek, which git never resolves
-    a command name from -- issue #8115).
+    a command name from.)
 
     Avoids false positives on ``git stash push`` by requiring ``push`` to
     be the FIRST non-flag token after ``git`` (the subcommand position).
@@ -1660,9 +1658,9 @@ def _is_git_push_via_normalizer(text_lower: str) -> bool:
         if _resolves_to(token, "git"):
             # Skip global flags and their arguments to find the subcommand.
             #
-            # A zero-width or whitespace-only word is also skipped (issue
-            # #8115).  It is a real argv element the shell hands over, and git
-            # does NOT ignore it -- git takes it as its command name and
+            # A zero-width or whitespace-only word is also skipped.  It is a
+            # real argv element the shell hands over, and git does NOT ignore
+            # it -- git takes it as its command name and
             # exits.  Skipping it is deliberate fail-closed OVER-detection: it
             # widens only DETECTION, and a spelling it newly reaches either
             # fails to run at all (git rejects the zero-width command name) or
@@ -1685,7 +1683,7 @@ def _is_git_push_via_normalizer(text_lower: str) -> bool:
             j = i + 1
             while j < len(tokens):
                 if not tokens[j].strip():
-                    j += 1  # zero-width/whitespace-only word (issue #8115)
+                    j += 1  # zero-width/whitespace-only word
                 elif tokens[j] in _GIT_ARG_FLAGS:
                     j += 2  # skip flag + its argument
                 elif tokens[j].startswith("-"):
@@ -1712,25 +1710,24 @@ _PUSH_ALL_BRANCHES_OPTS = frozenset({"mirror", "all", "branches"})
 #: flags, the first positional is the remote" read treats the sole remaining
 #: token as the REMOTE when it is really the refspec. That mis-parse routes
 #: ``git push --repo=origin main`` to the single-arg rule instead of the
-#: protected-branch rule, which was harmless only while the whole floor was
-#: unconditional: once the rules became individually disableable, switching the
-#: single-arg rule off published to ``main``.
+#: protected-branch rule. The rules are individually disableable, so with the
+#: single-arg rule switched off that mis-parse publishes to ``main``.
 _PUSH_REPO_OPTS = frozenset({"repo"})
 
-#: The ARITY table (#7796): push options that take a REQUIRED value git also
+#: The ARITY table: push options that take a REQUIRED value git also
 #: accepts as a SEPARATED token (``--push-option ci.skip``). The token scan
 #: must consume that value or it leaks into the positional list, where it is
 #: read as a remote/refspec — and because an option value like ``ci.skip``
 #: normalizes to a non-protected name, the tag set for an otherwise-bare
-#: publish came back EMPTY. An empty tag set IS the allow decision, so one
-#: extra flag switched the protected-branch floor off. Same shape as
+#: publish comes back EMPTY. An empty tag set IS the allow decision, so one
+#: extra flag switches the protected-branch floor off. Same shape as
 #: ``_PUSH_REPO_OPTS`` (which stays separate because its value being the
 #: REMOTE also shifts the positional split), resolved through
-#: ``_push_option_matches`` so abbreviations keep working (finding 2).
+#: ``_push_option_matches`` so abbreviations keep working.
 #: Attached forms (``--push-option=x``) bind the value inside the token and
 #: never disturb the split, so they need no entry here. (``repo`` itself is
 #: deliberately NOT unioned in: the dedicated ``_PUSH_REPO_OPTS`` branch runs
-#: first and would make the member unreachable — First Principles review.)
+#: first and would make the member unreachable.)
 _PUSH_VALUE_OPTS = frozenset({"push-option", "receive-pack", "exec"})
 
 #: Long push options that never consume the NEXT token: booleans, plus the
@@ -1739,8 +1736,9 @@ _PUSH_VALUE_OPTS = frozenset({"push-option", "receive-pack", "exec"})
 #: structurally (git's negation never takes a separate value), so they are not
 #: enumerated. ``recurse-submodules`` is deliberately ABSENT: listing an
 #: option here vouches that its separated neighbour is a positional, and being
-#: wrong about that is exactly the #7796 erasure — so an option whose arity is
-#: not modelled with confidence falls to the protective fallback instead.
+#: wrong about that is exactly the erasure the ARITY table prevents — so an
+#: option whose arity is not modelled with confidence falls to the protective
+#: fallback instead.
 _PUSH_NO_VALUE_OPTS = frozenset(
     {
         "atomic",
@@ -1778,10 +1776,9 @@ _PUSH_NO_VALUE_SHORTS = frozenset({"f", "n", "q", "v", "u", "d", "4", "6"})
 _AMBIGUOUS_REFS = {"head", "@", "fetch_head"}
 
 # Refspec spellings that resolve only at runtime: ``@{upstream}`` / ``@{u}``
-# git-revision syntax. (The ``$``/backtick branches this once carried are now
-# subsumed upstream — the per-token ``$`` check and the segment-level
-# expansion ungate both run before any refspec reaches this — so they were
-# removed as shadowed duplicates per First Principles review on #7808.)
+# git-revision syntax. (No ``$``/backtick branch here: the per-token ``$``
+# check and the segment-level expansion ungate both run before any refspec
+# reaches this, so such a branch would be a shadowed duplicate.)
 _AMBIGUOUS_REFSPEC_RE = re.compile(r"@\{")
 
 
@@ -1861,23 +1858,23 @@ def _git_push_args(segment: str) -> list[str] | None:
         #
         # A token that OPENS with ``<(`` / ``>(`` is process substitution, which
         # bash reads as a WORD, not a redirection -- so it is returned rather than
-        # skipped. Skipping it consumed an option's value (``-o <(echo)``) and
-        # shifted the positional split onto the remote, downgrading a push of a
+        # skipped. Skipping it consumes an option's value (``-o <(echo)``) and
+        # shifts the positional split onto the remote, downgrading a push of a
         # protected branch to the disableable single-arg row.
         #
         # Redirection arity comes from ``_push_token_redirection``, the model the
         # argument scan itself uses, rather than a second reading of the same
-        # grammar here. The local reading treated the ``-`` of ``<<-`` as an
-        # ATTACHED target, so the tab-stripping heredoc's separated delimiter word
-        # survived as a phantom refspec and erased the tag -- the shape #7808 had
-        # already closed one layer down. One model, one place.
+        # grammar here. A local reading that treats the ``-`` of ``<<-`` as an
+        # ATTACHED target leaves the tab-stripping heredoc's separated delimiter
+        # word standing as a phantom refspec and erases the tag -- a shape already
+        # closed one layer down. One model, one place.
         #
         # The tokens are returned in their RAW spelling. The caller's scan is
         # defined over raw words -- it splits each one at its own unquoted
         # operators and models redirection arity itself -- so handing it
-        # operator-CUT words erased the shapes it classifies by (``origin>`` read
-        # as a plain remote, ``@(main)`` as the ambiguous ref ``@``, a lone ``&``
-        # as an empty token).
+        # operator-CUT words erases the shapes it classifies by (``origin>``
+        # reading as a plain remote, ``@(main)`` as the ambiguous ref ``@``, a
+        # lone ``&`` as an empty token).
         args: list[str] = []
         raw_args = raw_tokens[i + 1 :]
         k = 0
@@ -1896,9 +1893,9 @@ def _git_push_args(segment: str) -> list[str] | None:
                 # (``2>(cat ... )``): not the bare process-substitution word
                 # (that is caught above) and not a file target -- the parens
                 # span later words, and skipping this one as a self-contained
-                # redirection left the body's remainder (``>/dev/null # fake
-                # )``) to be read as argv, where the ``#`` truncated the real
-                # refspecs (GPT 5.6 review on #8719). Whatever bash makes of
+                # redirection leaves the body's remainder (``>/dev/null # fake
+                # )``) to be read as argv, where the ``#`` truncates the real
+                # refspecs. Whatever bash makes of
                 # the spelling, this gate cannot read it: fail CLOSED.
                 return None
             k += 1
@@ -1912,41 +1909,39 @@ def _git_push_args(segment: str) -> list[str] | None:
             # PROCESS-SUBSTITUTION BOUNDARY, walked QUOTE-AWARELY and proven.
             #
             # The target is a whole command line, so it ends at its matching
-            # unquoted ``)``. Counting the parens per word with str.count was
-            # quote-UNAWARE, and that was a live bypass: in
+            # unquoted ``)``. Counting the parens per word with str.count is
+            # quote-UNAWARE, and that is a live bypass: in
             # ``git push origin feature > >(echo '(' ) main`` the QUOTED ``(``
-            # inflated the depth to 2, the real ``)`` only returned it to 1, and
-            # the trailing ``main`` was swallowed into the substitution -- so a
-            # protected-branch push came back with the remaining words alone and
-            # was allowed. ``> >(printf "(") main`` is the same shape with double
-            # quotes. Both traced independently by the GPT 5.6 and Opus lanes on
-            # #8712. The shared state machine ignores quoted parens, so the
+            # inflates the depth to 2, the real ``)`` only returns it to 1, and
+            # the trailing ``main`` is swallowed into the substitution -- so a
+            # protected-branch push comes back with the remaining words alone and
+            # is allowed. ``> >(printf "(") main`` is the same shape with double
+            # quotes. The shared state machine ignores quoted parens, so the
             # boundary lands where bash puts it.
             #
             # FAIL CLOSED when the boundary cannot be PROVEN complete -- the
             # words ran out with the substitution still open (``>(echo main``),
             # or a quote is still open at the end. Silently swallowing the rest
-            # of the segment is precisely how an unterminated construct hid a
+            # of the segment is precisely how an unterminated construct hides a
             # refspec. Returning None routes the segment to the caller's
             # unparseable branch, which emits the non-opt-out-able ambiguity
-            # sentinel: the same posture the whole-segment expansion regex gave
-            # process substitution before it moved to this walk. A PROVEN
-            # boundary is a word; an UNPROVABLE one is ambiguous.
+            # sentinel. A PROVEN boundary is a word; an UNPROVABLE one is
+            # ambiguous.
             #
             # PROVEN is also refused for a body word the quote walk cannot READ
             # (``_process_substitution_word_is_opaque``): the paren count models
             # quoting, and nothing else -- so a construct outside quoting moves
             # the real closer or hides the program without the count noticing. A
             # word-initial ``#`` comments out the ``)`` after it (``>(cat
-            # >/dev/null # fake )`` + newline + ``) main`` pushed main); a
+            # >/dev/null # fake )`` + newline + ``) main`` pushes main); a
             # reserved word makes the body a compound command whose ``)`` is
-            # SYNTAX (``>(case x in x) git push;; esac)`` ran the bare push); an
+            # SYNTAX (``>(case x in x) git push;; esac)`` runs the bare push); an
             # unquoted glob or expansion in a body word means the program the
             # payload walk judges the skipped body by resolves only at run time
-            # (``>(/usr/bin/g?t push origin main)`` closed cleanly and the walk
-            # saw no ``git``). Each was one GPT 5.6 round on #8719, and modelling
-            # them one at a time is unbounded, so the rule is the class: a body
-            # word the walk cannot read is not a redirection the gate may skip.
+            # (``>(/usr/bin/g?t push origin main)`` closes cleanly and the walk
+            # sees no ``git``). Modelling them one at a time is unbounded, so the
+            # rule is the class: a body word the walk cannot read is not a
+            # redirection the gate may skip.
             depth = 0
             state = 0
             ansi = False
@@ -2004,10 +1999,10 @@ _SHELL_RESERVED_WORDS = frozenset(
 #: still be one the redirect skip may step over: the alphabet of an ordinary
 #: program invocation -- letters, digits, and ``/ - _ . = :`` (paths, flags,
 #: ``KEY=value``, ``host:port``). Everything else is refused as OPAQUE. This is
-#: an ALLOWLIST on purpose: the earlier denylist (``*?[``, then extglob ``(``,
-#: then ``#``, then ``& ; |``) grew by one shell metacharacter per review round
-#: on #8719, and an enumeration of what bash can do with a character is never
-#: finished. Quoted text is not judged here at all -- #8712's quote walk owns
+#: an ALLOWLIST on purpose: a denylist (``*?[``, extglob ``(``, ``#``,
+#: ``& ; |``) grows by one shell metacharacter at a time, and an enumeration of
+#: what bash can do with a character is never finished. Quoted text is not
+#: judged here at all -- the quote walk owns
 #: it -- and ``$'`` (the ANSI-C quote that walk models) is the one active ``$``
 #: admitted, so ``> >(echo '(' ) main`` and ``> >(echo $'a\'b') main`` keep
 #: their precise reading while a glob, an extglob or nested paren, a comment, a
@@ -2037,13 +2032,13 @@ def _process_substitution_word_is_opaque(word: str, state: int, ansi: bool, *, f
     for index, step in enumerate(steps):
         if not step.active and step.state == 0 and step.text.startswith("\\"):
             # An UNQUOTED escape pair: ``\g\i\t`` reaches the program as
-            # ``git`` while no scanner word spells it (GPT 5.6 review on
-            # #8719). Inside quotes the walk owns the backslash; outside them
-            # it is a spelling the allowlist must not see through.
+            # ``git`` while no scanner word spells it.  Inside quotes the walk
+            # owns the backslash; outside them it is a spelling the allowlist
+            # must not see through.
             return True
         if not step.active and step.state == 2 and step.text == step.char and step.char in "$`":
             # Double quotes do NOT suspend expansion: ``"$GIT" push origin
-            # main`` runs whatever ``$GIT`` names (GPT 5.6 review on #8719).
+            # main`` runs whatever ``$GIT`` names.
             # An unescaped ``$`` or backtick inside double quotes is an
             # expansion the scan cannot resolve, so the word is opaque; an
             # escaped ``\$`` (text ``\$``) stays data.
@@ -2115,7 +2110,7 @@ def _push_segment_targets_protected(arg_tokens: list[str]) -> frozenset[str]:
         tags.add("git-publish-push-mirror-all")
     # Skip flags (tokens starting with -); non_flags[0] is the remote and
     # non_flags[1:] are the refspecs/branches. Option ARITY is modelled
-    # explicitly (#7796): a flag that CARRIES the repository (``--repo=x`` /
+    # explicitly: a flag that CARRIES the repository (``--repo=x`` /
     # ``--repo x``) means the remote is NOT positional, a value-taking option's
     # SEPARATED value is consumed so it is never read as a remote/refspec, and
     # any option the scan does not recognise poisons the positional split
@@ -2138,11 +2133,11 @@ def _push_segment_targets_protected(arg_tokens: list[str]) -> frozenset[str]:
     # shell runs a remote-only push. A ``#`` is word-initial only when the
     # whitespace before it was a REAL separator: if ANY earlier token leaves
     # the shell state open (trailing escape / unterminated quote fuses across
-    # the split), the ``#`` may be mid-word — truncating there discarded a
-    # real trailing refspec (GPT 5.6 round 5 on #7808, verified: an
-    # escaped-space option value fused into ``#x`` dropped ``main`` from the
-    # scan, leaving only the disableable bare tag). With an open token seen,
-    # truncation is skipped entirely: the open state already poisons the
+    # the split), the ``#`` may be mid-word — truncating there discards a
+    # real trailing refspec (an escaped-space option value fused into ``#x``
+    # drops ``main`` from the scan, leaving only the disableable bare tag).
+    # With an open token seen, truncation is skipped entirely: the open state
+    # already poisons the
     # split protectively and the superset scan keeps every later positional
     # visible.
     _open_seen = False
@@ -2159,7 +2154,7 @@ def _push_segment_targets_protected(arg_tokens: list[str]) -> frozenset[str]:
     # vanishes entirely) and quoted newlines splice words ACROSS the segment
     # split, so the real refspec may be assembled from pieces this segment
     # cannot see — ``origin ma\`` + newline + ``in`` pushes MAIN while no
-    # token here spells it (GPT 5.6 round 6 on #7808, verified real). An
+    # token here spells it. An
     # unreconstructable name gets the same posture as ``ma$in``: the ungated
     # sentinel, which no catalog row can switch off. Deliberately NARROWER
     # than ungating on any per-token open state: a MID-segment open (a quoted
@@ -2180,11 +2175,11 @@ def _push_segment_targets_protected(arg_tokens: list[str]) -> frozenset[str]:
         word came from, never WHAT it is, so every branch that recovers a word
         from operator glue routes it through here instead of appending it to
         ``non_flags`` directly. Appending unconditionally is how ``(git push
-        --repo=origin -f)`` erased the floor: the ``)`` was stripped, ``-f`` was
-        filed as a refspec, it matched no protected name, and the segment came
+        --repo=origin -f)`` erases the floor: the ``)`` is stripped, ``-f`` is
+        filed as a refspec, it matches no protected name, and the segment comes
         back with NO tags at all — a force push to a possibly-protected current
-        branch, admitted by adding one parenthesis (GPT 5.6 security finding on
-        #8712). The same spelling without parens is correctly bare.
+        branch, admitted by adding one parenthesis. The same spelling without
+        parens is correctly bare.
         """
         nonlocal skip_next, positional_only, repo_in_flag, unrecognised_option
         if skip_next:
@@ -2196,9 +2191,8 @@ def _push_segment_targets_protected(arg_tokens: list[str]) -> frozenset[str]:
             return
         if positional_only or word == "-" or not word.startswith("-"):
             # A lone ``-`` is an OPERAND to git's option parser (a repository
-            # spelled ``./-`` is addressable) — skipping it as a flag shifted
-            # the real refspec into the remote slot and downgraded the row
-            # (GPT 5.6 round 13 on #7808).
+            # spelled ``./-`` is addressable) — skipping it as a flag shifts
+            # the real refspec into the remote slot and downgrades the row.
             non_flags.append(word)
             return
         if word == "--":
@@ -2237,37 +2231,34 @@ def _push_segment_targets_protected(arg_tokens: list[str]) -> frozenset[str]:
     for raw, tok, (operator_pieces, _open) in zip(arg_tokens, tokens, shell_reads):
         if tok:
             # Word-producing shell syntax makes ANY token unverifiable, no
-            # matter which slot the split assigns it (GPT 5.6 round 3 on
-            # #7808, verified real): ``V='ci.skip main'; git push
-            # --repo=origin --push-option $V`` expands and word-splits AFTER
-            # this scan, handing git a ``main`` refspec the split never saw —
-            # and consuming the literal ``$V`` had REGRESSED that case from
-            # the ungated posture (the leaked value used to hit the refspec
+            # matter which slot the split assigns it: ``V='ci.skip main'; git
+            # push --repo=origin --push-option $V`` expands and word-splits
+            # AFTER this scan, handing git a ``main`` refspec the split never
+            # saw — and consuming the literal ``$V`` would drop that case from
+            # the ungated posture (where the leaked value hits the refspec
             # ambiguity check) to the disableable bare rule. A ``$`` anywhere
             # therefore lands on the ungated branch, the same posture as
             # ``ma$in``; ``$(``/``${``/backticks never reach here because the
             # caller's expansion regex already ungated the whole segment.
             # Glob characters (``* ? [``) are pathname expansion — a file
             # named ``main`` makes ``ma[i]n`` push main — and none of them is
-            # legal in a refname, so they keep the wildcard-refspec identity
-            # the leaked-value scan used to give them, at zero cost to real
-            # commands.
+            # legal in a refname, so they take the wildcard-refspec identity,
+            # at zero cost to real commands.
             if "$" in tok or tok.startswith("~"):
                 # Tilde expansion is env-driven text, not path syntax: bare
                 # ``~`` IS ``$HOME`` (``HOME=main`` publishes main), ``~±``
                 # and ``~N`` read PWD/OLDPWD/DIRSTACK, and even ``~/main``
                 # resolves to ``refs/heads/main`` under a crafted
                 # ``HOME=refs/heads`` — so a leading unquoted ``~`` is as
-                # unverifiable as ``$`` (GPT 5.6 round 15 on #7808, verified
-                # real). Mid-word ``~`` is literal in an argv word and stays
-                # data.
+                # unverifiable as ``$``. Mid-word ``~`` is literal in an argv
+                # word and stays data.
                 tags.add(_GIT_PUBLISH_UNGATED)
             # Extglob patterns (``@( +( !(`` — and ``?( *(``, already covered
             # by their leading glob char) are pathname expansion too when the
             # shell has extglob on, so they take the same wildcard identity:
             # like a glob, they can only ever match existing FILE names
-            # (GPT 5.6 round 9 on #7808, verified: ``@(main)`` beside a file
-            # named ``main`` expands to a push of main with no tag at all).
+            # (``@(main)`` beside a file named ``main`` expands to a push of
+            # main with no tag at all).
             if any(ch in tok for ch in "*?[") or any(op in tok for op in ("@(", "+(", "!(")):
                 tags.add("git-publish-push-wildcard-refspec")
             # Process substitution that SURVIVED redirection removal is an argv
@@ -2280,7 +2271,7 @@ def _push_segment_targets_protected(arg_tokens: list[str]) -> frozenset[str]:
                 tags.add(_GIT_PUBLISH_UNGATED)
         # Shell operators are consumed by the SHELL, so they are handled
         # before every argv-level reading — including after ``--``, which is
-        # git's end-of-options, not the shell's (GPT 5.6 round 4 on #7808).
+        # git's end-of-options, not the shell's.
         if pending_redirection_target:
             # The word a bare redirection operator takes as its target; the
             # shell removes it from argv.
@@ -2297,10 +2288,10 @@ def _push_segment_targets_protected(arg_tokens: list[str]) -> frozenset[str]:
             # A word GLUED to its redirection: bash reads ``origin>/dev/null``
             # as the word ``origin`` plus a redirection, i.e. a remote-only
             # push whose true row is SINGLE-ARG — the protective fallback
-            # emitted BARE for it, and a wrong identity is itself a hazard
-            # under per-rule opt-out (GPT 5.6 round 10 on #7808, verified
-            # real). When the token decomposes cleanly — a non-flag word,
-            # then a well-formed redirection (no risky ``&`` beyond an
+            # emits BARE for it, and a wrong identity is itself a hazard
+            # under per-rule opt-out. When the token decomposes cleanly — a
+            # non-flag word, then a well-formed redirection (no risky ``&``
+            # beyond an
             # fd-dup) — keep the word positional and consume the redirection
             # exactly as the shell does, with no fallback. Anything murkier
             # (a bare ``&`` command boundary, a flag-shaped prefix, quotes
@@ -2310,10 +2301,10 @@ def _push_segment_targets_protected(arg_tokens: list[str]) -> frozenset[str]:
             dequoted_prefix = _dequote_token(prefix)
             # A flag GLUED to a redirection: the flag identity must not be
             # lost to the fallback — ``--all>/dev/null`` is an all-branches
-            # push, and emitting only the disableable no-refspec rows let an
-            # operator who disabled those admit it while mirror-all stayed
-            # enabled (GPT 5.6 round 16 on #7808, verified real). The
-            # all-branches check is the one whose MISSED identity is a
+            # push, and emitting only the disableable no-refspec rows lets an
+            # operator who disabled those admit it while mirror-all stays
+            # enabled. The all-branches check is the one whose MISSED identity
+            # is a
             # bypass; other flag prefixes stay on the fallback, which only
             # ever over-protects.
             if _push_option_matches(dequoted_prefix, _PUSH_ALL_BRANCHES_OPTS):
@@ -2333,9 +2324,9 @@ def _push_segment_targets_protected(arg_tokens: list[str]) -> frozenset[str]:
             ):
                 # The glued WORD is exactly what the shell hands git as the
                 # argv word, so it must flow wherever a plain word would: a
-                # pending option value first (GPT 5.6 round 13 — appending it
-                # as a positional while ``skip_next`` stayed armed let the
-                # NEXT real word be eaten as the "value" and erased the
+                # pending option value first (appending it as a positional
+                # while ``skip_next`` stays armed lets the NEXT real word be
+                # eaten as the "value" and erases the
                 # tags), else through the ordinary option-vs-positional
                 # reading. The guard above already keeps a flag-shaped prefix
                 # off this branch; classifying rather than appending means a
@@ -2348,8 +2339,8 @@ def _push_segment_targets_protected(arg_tokens: list[str]) -> frozenset[str]:
             # origin my-feature)`` hands the ref token ``my-feature)``, whose
             # ``)`` merely closes the subshell. It removes nothing from argv and
             # adds nothing to the word, so the word keeps its exact identity and
-            # the split stays trusted — routing it to the fallback below denied
-            # every legitimate refname pushed inside a subshell. The word itself
+            # the split stays trusted — routing it to the fallback below would
+            # deny every legitimate refname pushed inside a subshell. The word itself
             # is still read as a refspec candidate, so a protected name inside the
             # parens is caught exactly as it is without them. A leading paren
             # leaves no prefix and keeps the protective fallback.
@@ -2381,14 +2372,14 @@ def _push_segment_targets_protected(arg_tokens: list[str]) -> frozenset[str]:
             continue
         _classify_word(tok)
     if unrecognised_option:
-        # Fail-protective invariant (#7796, shape C): an option this scan does
+        # Fail-protective invariant: an option this scan does
         # not model might take a separated value, so the positional split
         # cannot be trusted — the "remote" it would drop may really be a
         # leaked option value. Read the segment protectively instead: the
         # current branch might be protected (the bare tag — unless an
-        # all-branches flag already names the target set exhaustively, the
-        # finding-3 suppression, in which case mirror-all covers a superset of
-        # bare), and EVERY positional is scanned as a refspec candidate so an
+        # all-branches flag already names the target set exhaustively, in which
+        # case mirror-all covers a superset of bare), and EVERY positional is
+        # scanned as a refspec candidate so an
         # actual protected name still reports its own precise catalog row. A
         # mis-parse can therefore only ever OVER-protect: a future value-taking
         # push option cannot silently reopen the erasure class.
@@ -2397,11 +2388,11 @@ def _push_segment_targets_protected(arg_tokens: list[str]) -> frozenset[str]:
             if non_flags:
                 # An untrusted split cannot distinguish the bare shape from
                 # the remote-only shape — the visible positionals may all be
-                # option values, or one may be the remote. Three review
-                # rounds (10, 13, 14 on #7808) each turned that ambiguity
-                # into a bypass by disabling whichever single row the
-                # fallback happened to emit, so the fallback now names BOTH
-                # no-refspec rows: admitting an unparseable spelling takes
+                # option values, or one may be the remote. Naming a single row
+                # turns that ambiguity into a bypass — disabling whichever row
+                # the fallback happened to emit admits the spelling — so the
+                # fallback names BOTH no-refspec rows: admitting an unparseable
+                # spelling takes
                 # disabling both. (With no positionals at all the remote-only
                 # shape is impossible and bare stands alone; an all-branches
                 # flag still suppresses both, since mirror-all covers a
@@ -2518,13 +2509,13 @@ def _git_publish_floor_tags(text_lower: str) -> frozenset[str]:
             #
             # Defer only when a payload is ITSELF a publish, because that is the
             # source the caller will actually judge. Asking merely whether a
-            # payload EXISTS was a bypass: an ARGUMENT that happens to share a
+            # payload EXISTS is a bypass: an ARGUMENT that happens to share a
             # name with a shell verb (a remote or refspec called ``eval``) makes
             # the walk report a payload, and quoting the program defeats the
-            # ``git`` anchor so the args come back None -- together those allowed
-            # a protected-branch publish that nothing downstream ever judged. A
-            # payload that is not a publish answers nothing, so it no longer buys
-            # a pass, and with no payload at all there is nothing to wait for.
+            # ``git`` anchor so the args come back None -- together those admit
+            # a protected-branch publish that nothing downstream ever judges. A
+            # payload that is not a publish answers nothing, so it buys no pass,
+            # and with no payload at all there is nothing to wait for.
             #
             # Guarded because this runs inside the PreToolUse gate, which must
             # return a security DECISION and never raise. Failing CLOSED is the

@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from aiohttp import web
 
-from kiro_crew.dashboard import chat, handlers, session_transfer
+from kiro_crew.dashboard import chat, handlers, session_export, session_transfer
 from kiro_crew.dashboard.handlers.source_providers import (
     api_app_contributors,
     api_issue_source,
@@ -56,6 +56,10 @@ def register(app: web.Application) -> None:
     # ``/api/chat/slots/{slot}`` POST would otherwise shadow this path.
     app.router.add_post("/api/chat/slots/import", session_transfer.api_chat_slot_import)
     app.router.add_get("/api/chat/slots/{slot}", chat.api_chat_slot_detail)
+    # Download one session as a file. GET because it changes no conversation --
+    # a repeat costs the source nothing. It does flush a dirty slot first, like
+    # the tunnel's send, so it is not a pure read of the disk.
+    app.router.add_get("/api/chat/slots/{slot}/export", session_export.api_chat_slot_export)
     app.router.add_get("/api/chat/slots/{slot}/summary", chat.api_chat_slot_summary)
     # Same path, POST: reading a summary must stay free of side effects, so
     # generating one is a separate verb rather than a query flag on the GET.

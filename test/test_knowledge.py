@@ -499,6 +499,45 @@ class TestHeadingAwareChunker:
         for c in chunks:
             assert "line_start" in c and "line_end" in c
 
+    def test_chunk_code_splits_on_kotlin_declaration_keywords(self):
+        # Kotlin/C# spell their declarations `fun`/`object`/`interface`/`internal`.
+        # Without those keywords in the boundary regex the whole file is one block
+        # that the oversized branch then slices on word count, so a chunk starts
+        # mid-declaration and function-level retrieval granularity is lost.
+        source = "\n".join(
+            [
+                "package com.example",
+                "",
+                "interface Greeter {",
+                "    val name: String",
+                "}",
+                "",
+                "object Registry {",
+                "    val items = 0",
+                "}",
+                "",
+                "internal val secret = 0",
+                "",
+                "fun greet(): Int {",
+                "    return 1",
+                "}",
+            ]
+        )
+        # target_size=6 is picked so no block merges into its neighbour and none
+        # trips the oversized-split branch: every declaration therefore heads its
+        # own chunk, which is exactly what the boundary regex is asserted on.
+        chunks = HeadingAwareChunker(target_size=6).chunk_code(source, language="kt")
+        heads = [c["content"].split("\n", 1)[0] for c in chunks]
+        for decl in (
+            "interface Greeter {",
+            "object Registry {",
+            "internal val secret = 0",
+            "fun greet(): Int {",
+        ):
+            assert decl in heads, f"{decl!r} did not start a chunk; chunk heads: {heads}"
+        # Boundaries partition the lines: nothing is dropped or duplicated.
+        assert "\n".join(c["content"] for c in chunks) == source
+
     def test_small_text_single_chunk(self):
         text = "Just a short note."
         chunker = HeadingAwareChunker(target_size=500)
@@ -562,6 +601,52 @@ class TestFileReader:
         assert '.ps1' in CODE_EXTS
         assert '.psm1' in CODE_EXTS
         assert '.psd1' not in CODE_EXTS
+
+    def test_kotlin_and_peer_code_extensions_ingested_as_plain_text(self, tmp_path):
+        # Kotlin (.kt/.kts) and the C#/Swift/Scala trio are plain UTF-8 text, so
+        # the generic _read_text path handles them with no reader and no new
+        # dependency. They must be in SUPPORTED because that set is the
+        # folder-scan gate (folder_watcher._walk), and a source's
+        # include_extensions can only narrow it: an extension absent there is
+        # skipped before any reader runs, so a folder source over such a repo
+        # indexes only its README and config.
+        reader = FileReader()
+        samples = {
+            '.kt': 'fun main() { println("hello from kotlin") }',
+            '.kts': 'val greeting = "hello from a kotlin script"',
+            '.cs': 'internal class Greeter { public void Hi() {} }',
+            '.swift': 'func greet() { print("hello from swift") }',
+            '.scala': 'object Greeter { def hi(): Unit = () }',
+        }
+        for ext, content in samples.items():
+            assert ext in reader.SUPPORTED, f"{ext} missing from SUPPORTED"
+            assert ext not in reader._DISPATCH, f"{ext} must use the generic text path"
+            f = tmp_path / f"sample{ext}"
+            f.write_text(content, encoding="utf-8")
+            text, meta = reader.read(str(f))
+            assert content in text
+            assert meta['format'] == ext.lstrip('.')
+            assert meta['extension'] == ext
+
+    def test_code_extensions_are_a_subset_of_supported(self):
+        # CODE_EXTS (ingestion.py) and SUPPORTED (readers.py) are two
+        # hand-maintained registries over the same extensions, and only SUPPORTED
+        # gates the folder scan. An extension listed in CODE_EXTS alone never
+        # reaches the chunker it selects -- the file is dropped upstream with no
+        # error -- so the subset relation is the guard against that silent drift.
+        from kiro_crew.knowledge.ingestion import CODE_EXTS
+        assert {'.kt', '.kts'} <= CODE_EXTS
+        missing = sorted(CODE_EXTS - FileReader.SUPPORTED)
+        assert not missing, f"CODE_EXTS entries absent from FileReader.SUPPORTED: {missing}"
+
+    def test_kotlin_script_routes_to_the_code_chunker(self):
+        # .kts is a Kotlin build/script file, not prose: it must reach chunk_code
+        # like .kt rather than the generic prose chunker.
+        from kiro_crew.knowledge.ingestion import _run_chunker
+        chunker = MagicMock()
+        _run_chunker(chunker, '.kts', 'val x = 1', 'file:///build.gradle.kts')
+        chunker.chunk_code.assert_called_once_with('val x = 1', language='kts')
+        chunker.chunk.assert_not_called()
 
     def test_utf16_powershell_files_decode_cleanly(self, tmp_path):
         # Windows PowerShell 5.1 tooling (New-ModuleManifest, the legacy ISE)

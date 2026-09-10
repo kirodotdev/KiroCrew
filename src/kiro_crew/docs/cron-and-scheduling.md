@@ -46,7 +46,7 @@ cron resume <id>
 | Type | Syntax | Example |
 |------|--------|---------|
 | Interval | MCP `every=<seconds>` or CLI `--every <seconds>` | `every=300` (5 min, minimum 60s) |
-| One-shot | MCP `at=<Unix timestamp>`, `delay=<seconds>`, or `at_time=<human time>` | `at_time="tomorrow 9am"` |
+| One-shot | MCP or `POST /api/crons` `at=<Unix timestamp>`, `delay=<seconds>`, or `at_time=<human time>` | `at_time="tomorrow 9am"` |
 | Cron expression | MCP `cron_expr=<5-field expression>` or CLI `--cron <expression>` | `cron_expr="0 9 * * 1-5"` (weekdays 9am) |
 
 `cron_expr` uses five fields: `min hour dom month dow`; the MCP schema documents numeric day-of-week values `0=Sun` through `6=Sat`.

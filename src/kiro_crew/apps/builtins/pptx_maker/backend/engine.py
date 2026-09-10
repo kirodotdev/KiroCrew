@@ -37,6 +37,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from kiro_crew import platform_compat
 from kiro_crew.apps.builtins.pptx_maker.backend import engine_source, paths
 from kiro_crew.sandbox import cgroup_scope_argv, run_limited, sandboxed_spawn_argv
 
@@ -55,6 +56,30 @@ OPTIONAL_DEPS: dict[str, str] = {
     "soffice": "LibreOffice",
     "pdftoppm": "poppler",
 }
+
+#: Fixed install roots for an optional tool whose installer leaves ``PATH`` alone, so
+#: a by-name lookup cannot see an install that is present and working. LibreOffice's
+#: Windows installer is one: it writes ``soffice`` into its own ``program`` directory
+#: and adds nothing to ``PATH``.
+#:
+#: Literal roots rather than ``%ProgramFiles%``, for the reason
+#: ``platform_compat._WINDOWS_GIT_DIRS`` records: ``HKCU\Environment`` is writable
+#: without elevation, so resolving through an environment variable would let a
+#: poisoned value redirect this lookup into a directory the user can write. An
+#: install on another drive misses and is reported missing, which is honest.
+#:
+#: Naming these roots is NOT by itself what keeps the search out of writable
+#: directories — passing one as ``shutil.which(path=…)`` does not bound where that
+#: function looks, and it searches the working directory first on a default Windows
+#: host. :func:`_soffice_system_install_path` accepts a hit only when its parent is
+#: the root it asked about, and that check is what makes this tuple the reachable set.
+#:
+#: Only ``soffice`` has one: poppler ships no Windows installer, so ``pdftoppm``
+#: stays served by the managed launcher :mod:`.preview_tools` writes.
+_SOFFICE_WINDOWS_DIRS: tuple[str, ...] = (
+    r"C:\Program Files\LibreOffice\program",
+    r"C:\Program Files (x86)\LibreOffice\program",
+)
 
 # Icon asset packs the engine can download with its own bundled scripts. Run
 # once per engine version into the engine's user config dir, so the packs
@@ -301,22 +326,106 @@ def user_subdir(sub: str) -> Path | None:
     return (base / sub) if base is not None else None
 
 
+def _which_within(name: str, directory: str | os.PathLike[str]) -> str | None:
+    """*name* resolved INSIDE *directory*, or ``None`` — never from the working dir.
+
+    ``shutil.which(path=…)`` does not bound where it looks. On Windows it inserts the
+    process's working directory AHEAD of the given path whenever
+    ``_winapi.NeedCurrentDirectoryForExePath`` says to, and that is the default —
+    having ``NoDefaultCurrentDirectoryInExePath`` set is the exception, not the rule.
+    Measured on CPython 3.12.14, with ``soffice.com`` planted in the working directory
+    and ``path=`` an empty directory: with the variable unset the call returns
+    ``.\\soffice.COM``, and with it set the same call returns ``None``. So a probe of a
+    trusted directory silently answers with whatever the process happens to be standing
+    next to, and the answer is RELATIVE — parent ``.`` — which then follows the process.
+
+    Both callers feed the result to something that EXECUTES it: one directly, one by
+    appending its parent to the MCP ``PATH``. A hit is therefore accepted only when its
+    containing directory really is the one that was asked about. The LEAF is not
+    link-resolved, so a managed launcher that is a symlink to a real binary elsewhere
+    still counts; only its parent has to match.
+    """
+    found = shutil.which(name, path=str(directory))
+    if not found:
+        return None
+    parent = os.path.realpath(os.path.dirname(os.path.abspath(found)))
+    expected = os.path.realpath(str(directory))
+    if os.path.normcase(parent) != os.path.normcase(expected):
+        return None
+    return os.path.abspath(found)
+
+
+def _soffice_system_install_path() -> str | None:
+    """``soffice`` resolved from its fixed Windows install root, or ``None``.
+
+    Goes through :func:`_which_within` rather than ``shutil.which`` directly, so the
+    Windows executable suffixes still come from ``PATHEXT`` and the executable check is
+    the one a ``PATH`` lookup applies, while the reachable set stays the two fixed
+    roots rather than "the two fixed roots, plus wherever the process is standing".
+
+    Singular rather than keyed by tool name because ``soffice`` is the only optional
+    dep with a fixed install root at all — see :data:`_SOFFICE_WINDOWS_DIRS`.
+    """
+    if not platform_compat.IS_WINDOWS:
+        return None
+    for directory in _SOFFICE_WINDOWS_DIRS:
+        found = _which_within("soffice", directory)
+        if found:
+            return found
+    return None
+
+
+def soffice_install_dir() -> str | None:
+    """The directory holding a system ``soffice`` that a by-name lookup cannot reach.
+
+    The engine resolves ``pdftoppm``/``soffice`` with ``shutil.which()`` inside its own
+    MCP server process, so a tool whose installer left ``PATH`` alone is invisible
+    there even when :func:`optional_dep_path` can point at it.
+    :func:`.provision.mcp_tools_path` appends what this returns, which is what makes
+    such an install reachable by the process that rasterizes slides.
+
+    A tool already on ``PATH`` contributes nothing, so the rendered ``PATH`` grows only
+    on a host where the difference is what decides whether previews work.
+
+    Singular: ``soffice`` is the only optional dep with a fixed install root, so this
+    can only ever name zero or one directory — a list would imply a registry of them
+    that does not exist.
+    """
+    if shutil.which("soffice"):
+        return None
+    found = _soffice_system_install_path()
+    if not found:
+        return None
+    return os.path.dirname(found) or None
+
+
 def optional_dep_path(name: str) -> str | None:
     """Absolute path to *name*, preferring the user's OWN install over the managed one.
 
     ``PATH`` is consulted first so a real system LibreOffice/poppler always wins —
     the same precedence :func:`papyrus.backend.latex.find_compiler_sync` gives a
-    user's own TeX distribution over the managed Tectonic. The app-managed
-    directory is only a fallback for a host that has neither.
+    user's own TeX distribution over the managed Tectonic. The tool's fixed install
+    root (:data:`_SOFFICE_WINDOWS_DIRS`) is consulted second, so an install whose
+    installer does not extend ``PATH`` still counts as the user's own rather than
+    reading as absent. The app-managed directory is only a fallback for a host that
+    has none of the three.
 
-    Returns ``None`` when the tool is available from neither source.
+    That order is what keeps ``/deps`` truthful: resolving a system install through
+    the managed probe would report LibreOffice as installed BY Kiro Crew, which the UI
+    renders as a claim about the host that this app never made.
+
+    Returns ``None`` when the tool is available from no source.
     """
     found = shutil.which(name)
     if found:
         return found
-    # `shutil.which` with an explicit `path=` so the managed dir is probed even
-    # though it is not on this process's PATH.
-    managed = shutil.which(name, path=str(paths.preview_tools_bin()))
+    system = _soffice_system_install_path() if name == "soffice" else None
+    if system:
+        return system
+    # `_which_within` rather than a bare `shutil.which(path=…)`: the managed result is
+    # EXECUTED, and on a default Windows host that call would answer with a binary
+    # planted in the process's working directory before it ever looked here.
+    managed = _which_within(name, paths.preview_tools_bin())
     return managed or None
 
 

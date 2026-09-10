@@ -988,7 +988,7 @@ class TestOnEventDispatch:
             "text": "hi",
             "team": "T1",
         }
-        with patch("kiro_crew.slack.events.validated_self_bot_id", return_value="B_SELF"):
+        with patch("kiro_crew.slack.enterprise.validated_self_bot_id", return_value="B_SELF"):
             with patch("kiro_crew.slack.events._route_message", new_callable=AsyncMock) as route:
                 await on_event(_client(), _req("events_api", {"event": event}))
         route.assert_awaited_once()
@@ -1007,7 +1007,7 @@ class TestOnEventDispatch:
             "text": "hi",
             "team": "T1",
         }
-        with patch("kiro_crew.slack.events.validated_self_bot_id", return_value=""):
+        with patch("kiro_crew.slack.enterprise.validated_self_bot_id", return_value=""):
             with patch("kiro_crew.slack.events._route_message", new_callable=AsyncMock) as route:
                 await on_event(_client(), _req("events_api", {"event": event}))
         route.assert_not_called()
@@ -1029,7 +1029,7 @@ class TestOnEventDispatch:
             "text": "hi",
             "team": "T1",
         }
-        with patch("kiro_crew.slack.events.validated_self_bot_id", return_value="B_SELF"):
+        with patch("kiro_crew.slack.enterprise.validated_self_bot_id", return_value="B_SELF"):
             with patch("kiro_crew.slack.events._route_message", new_callable=AsyncMock) as route:
                 await on_event(_client(), _req("events_api", {"event": event}))
         route.assert_awaited_once()
@@ -1063,7 +1063,7 @@ class TestOnEventDispatch:
         orch._cfg.slack.trusted_bot_ids = {"B_SELF"}
         on_event = await _install_on_event(orch, ev.SeenCache())
         event = {"type": "message", "bot_id": "B_SELF", "channel": "C1", "text": "hi", "team": "T1"}
-        with patch("kiro_crew.slack.events.validated_self_bot_id", return_value="B_SELF"):
+        with patch("kiro_crew.slack.enterprise.validated_self_bot_id", return_value="B_SELF"):
             with patch("kiro_crew.slack.events._route_message", new_callable=AsyncMock) as route:
                 await on_event(_client(), _req("events_api", {"event": event}))
         route.assert_not_called()
@@ -1084,7 +1084,7 @@ class TestOnEventDispatch:
             "text": "hi",
             "team": "T1",
         }
-        with patch("kiro_crew.slack.events.validated_self_bot_id", return_value="B_SELF"):
+        with patch("kiro_crew.slack.enterprise.validated_self_bot_id", return_value="B_SELF"):
             with patch("kiro_crew.slack.events._route_message", new_callable=AsyncMock) as route:
                 await on_event(_client(), _req("events_api", {"event": event}))
         route.assert_awaited_once()
@@ -1104,7 +1104,7 @@ class TestOnEventDispatch:
             "text": "hi",
             "team": "T1",
         }
-        with patch("kiro_crew.slack.events.validated_self_bot_id", return_value="B_SELF"):
+        with patch("kiro_crew.slack.enterprise.validated_self_bot_id", return_value="B_SELF"):
             with patch("kiro_crew.slack.events._route_message", new_callable=AsyncMock) as route:
                 await on_event(_client(), _req("events_api", {"event": event}))
         route.assert_not_called()

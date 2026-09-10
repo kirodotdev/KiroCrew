@@ -17,7 +17,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, fireEvent, waitFor, cleanup, act, within } from '@testing-library/react'
 
-import type { PackMeta } from '../apps/crew-companion/appearanceTypes'
+import type { PackMeta } from '../lib/appearancePacks/types'
 
 // ── Bridge double ──────────────────────────────────────────────────────────
 

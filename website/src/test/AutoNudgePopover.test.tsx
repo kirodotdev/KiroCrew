@@ -626,10 +626,10 @@ describe('AutoNudgePopover Trigger nudge (#8212)', () => {
     expect(screen.queryByRole('button', { name: 'Start loop' })).toBeNull()
   })
 
-  it('says the loop is paused where the button would be, so the absence has a reason', () => {
+  it('says the loop is stopped where the button would be, so the absence has a reason', () => {
     // Absence alone is ambiguous: an inactive loop looked identical to an active
     // one whose button failed to render, and a usability reader could not tell
-    // the paused screenshot was even the same loop. The state is the reason for
+    // the stopped screenshot was even the same loop. The state is the reason for
     // the absence, so it occupies the space the absence leaves.
     renderWith(makeLoop({ active: false }))
     expect(screen.getByTestId('auto-nudge-loop-paused')).toBeTruthy()
@@ -710,6 +710,52 @@ describe('AutoNudgePopover Trigger nudge (#8212)', () => {
     // A refusal must not report success by tearing the popover down.
     expect(onChange).not.toHaveBeenCalled()
     expect(onOpenChange).not.toHaveBeenCalled()
+  })
+
+  it('names the object it clears once the loop is already stopped, and says the erase is final', async () => {
+    // One button, two actions. On a live loop the press stops the loop and keeps
+    // the record. On a stopped one there is nothing left to stop: the press
+    // removes it, which is the only way the slot can watch something else -- a
+    // stopped structured monitor blocks a re-arm until its row is gone.
+    // "Clear record" failed a blind read (the popover shows nothing called a
+    // "record"), so the label names the GOAL, the status reads Stopped rather
+    // than the resumable-sounding Paused, and a help line names both exits
+    // because the erase has no undo. Both directions asserted so this cannot
+    // just move the confusion.
+    renderWith(makeLoop({ active: false }))
+    expect(screen.getByRole('button', { name: 'Clear stopped goal' })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Stop loop' })).toBeNull()
+    expect(screen.getByTestId('auto-nudge-loop-paused').textContent).toBe('Stopped')
+    expect(screen.getByTestId('auto-nudge-stopped-help').textContent)
+      .toBe('Start loop resumes this goal. Clear stopped goal removes it for good.')
+    cleanup()
+    renderWith(makeLoop({ active: true }))
+    expect(screen.getByRole('button', { name: 'Stop loop' })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Clear stopped goal' })).toBeNull()
+    expect(screen.queryByTestId('auto-nudge-stopped-help')).toBeNull()
+  })
+
+  it('sends the pressed INTENT so a stale label cannot erase a record it did not mean to', async () => {
+    // The server otherwise reads the operation off the record's state at arrival
+    // time, so a "Stop loop" press against a record that went terminal in the
+    // meantime would clear it. The intent travels with the request; the server
+    // 409s on a mismatch.
+    const calls: string[] = []
+    vi.stubGlobal('fetch', vi.fn((url: string, init?: RequestInit) => {
+      if (init?.method === 'DELETE') calls.push(String(url))
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({ loop: null }) })
+    }) as unknown as typeof fetch)
+
+    renderWith(makeLoop({ active: true }))
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Stop loop' })) })
+    cleanup()
+    renderWith(makeLoop({ active: false }))
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Clear stopped goal' })) })
+
+    expect(calls).toEqual([
+      '/api/autonudge/l1?intent=stop',
+      '/api/autonudge/l1?intent=clear',
+    ])
   })
 
   it('sits on the schedule line, not in the Stop/Save action row (max-two-buttons-per-row)', async () => {

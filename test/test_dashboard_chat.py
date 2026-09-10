@@ -14399,19 +14399,67 @@ class TestForkSlot:
         assert "prompt_len=0" in kw["resources"]
 
     @pytest.mark.asyncio
-    async def test_fork_rejects_ephemeral_slot(self, tmp_path):
+    async def test_fork_of_incognito_parent_inherits_incognito(self, tmp_path):
+        """A restricted session forks; the child is born restricted.
+
+        A refusal would buy no privacy -- the parent's transcript is already on
+        disk for tab recovery -- and would only cost the user the conversation.
+        What must hold is that the child never LOOSENS the mode: it is registered
+        restricted at birth, so consolidation and lessons stay closed to the
+        copied content.
+        """
         state = _make_state(tmp_path)
-        slot = state.get_or_create_slot("src")
-        slot.memory_mode = "incognito"
+        slot = state.get_or_create_slot("src", memory_mode="incognito")
         slot.append("user", "secret", "msg msg-u")
+        slot.append("assistant", "kept between us", "msg msg-a")
         slot.drain()
 
         app = _make_app(state)
         async with TestClient(TestServer(app)) as client:
             resp = await client.post("/api/chat/slots/src/fork", json={})
-            assert resp.status == 400
+            assert resp.status == 200
             data = await resp.json()
-            assert "persistent" in data["error"].lower()
+
+        assert data["ok"] is True
+        assert data["memory_mode"] == "incognito"
+        child = state._slots[data["key"]]
+        assert child.memory_mode == "incognito"
+        assert child.is_restricted is True
+        assert child.blocks_reads is False
+        assert f"dashboard:{data['key']}" in state._restricted_keys
+        assert [m["content"] for m in child.messages] == ["secret", "kept between us"]
+
+    @pytest.mark.asyncio
+    async def test_fork_of_temporary_parent_stays_temporary_with_its_history(self, tmp_path):
+        """Temporary blocks memory READS, not the session's own thread history.
+
+        ``build_session_context`` assembles the thread-history block from the
+        child's conversation log before any ``blocks_reads`` gate, so a temporary
+        fork still hands the copied turns to its fresh kiro-cli process -- the
+        fork is useful, and the child is as blank to memory as its parent.
+        """
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("src", memory_mode="temporary")
+        slot.append("user", "parent question", "msg msg-u")
+        slot.append("assistant", "parent answer", "msg msg-a")
+        slot.drain()
+
+        app = _make_app(state)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post("/api/chat/slots/src/fork", json={})
+            assert resp.status == 200
+            data = await resp.json()
+
+        child = state._slots[data["key"]]
+        assert child.memory_mode == "temporary"
+        assert child.blocks_reads is True
+        assert f"dashboard:{data['key']}" in state._restricted_keys
+
+        from kiro_crew.dashboard.chat import _history_key_for
+
+        recent = state.conversation_log.recent(_history_key_for(data["key"]))
+        visible = [m["content"] for m in recent if m.get("role") in ("user", "assistant")]
+        assert visible == ["parent question", "parent answer"]
 
     @pytest.mark.asyncio
     async def test_fork_history_visible_to_new_kiro_via_context_builder(self, tmp_path):
@@ -14618,29 +14666,34 @@ class TestForkSlot:
             assert [m["content"] for m in visible] == ["q1", "a1", "q2", "a2"]
 
     @pytest.mark.asyncio
-    async def test_fork_audits_denied_on_ephemeral(self, tmp_path, monkeypatch):
-        """M-1 regression: ephemeral rejection must emit a denied SEL event."""
+    async def test_fork_audit_records_inherited_memory_mode(self, tmp_path, monkeypatch):
+        """The SEL event for a restricted fork is ``allowed`` and names the mode.
+
+        A restricted parent is not a denial ground, but the boundary the child
+        inherited must still be visible in the audit log.
+        """
         from unittest.mock import MagicMock
 
         mock_sel = MagicMock()
         monkeypatch.setattr("kiro_crew.dashboard.chat_fork.sel", lambda: mock_sel)
 
         state = _make_state(tmp_path)
-        slot = state.get_or_create_slot("src")
-        slot.memory_mode = "incognito"
+        slot = state.get_or_create_slot("src", memory_mode="incognito")
         slot.append("user", "hi", "msg msg-u")
         slot.drain()
 
         app = _make_app(state)
         async with TestClient(TestServer(app)) as client:
             resp = await client.post("/api/chat/slots/src/fork", json={})
-            assert resp.status == 400
+            assert resp.status == 200
 
-        mock_sel.log_api_access.assert_called_once()
-        kw = mock_sel.log_api_access.call_args[1]
-        assert kw["operation"] == "chat.slot_fork"
-        assert kw["outcome"] == "denied"
-        assert "memory_mode=incognito" in kw["resources"]
+        calls = [c[1] for c in mock_sel.log_api_access.call_args_list]
+        assert calls, "fork emitted no SEL event"
+        assert all(kw["operation"] == "chat.slot_fork" for kw in calls)
+        assert not [kw for kw in calls if kw["outcome"] == "denied"]
+        allowed = [kw for kw in calls if kw["outcome"] == "allowed"]
+        assert len(allowed) == 1
+        assert "memory_mode=incognito" in allowed[0]["resources"]
 
     @pytest.mark.asyncio
     async def test_fork_app_isolation_rejects_cross_app(self, tmp_path, monkeypatch):
@@ -16629,6 +16682,87 @@ class TestEmptyResponseRetry:
         assert slot._empty_response_retries == 0
 
     @pytest.mark.asyncio
+    async def test_productive_giveup_notice_does_not_claim_nothing_happened(
+        self, tmp_path: Path
+    ) -> None:
+        """A PRODUCTIVE turn reaching give-up (its one continuation also ended
+        without a closing reply) must not be described as "returned nothing":
+        the card is read by the model via the transcript, and telling it the
+        completed work produced no output invites a redo of side effects that
+        already landed. Same distinction the continue rung draws one rung up."""
+        from kiro_crew.acp.types import STOP_REASON_END_TURN
+        from kiro_crew.providers.base import (
+            EVENT_COMPLETE,
+            EVENT_TOOL_CALL,
+            EVENT_TOOL_RESULT,
+            LLMEvent,
+        )
+
+        state, slot, client, _run_chat = self._make_state_and_slot(tmp_path)
+        slot._empty_response_retries = 2  # the single continuation is spent
+
+        async def _stream(msg):
+            yield LLMEvent(kind=EVENT_TOOL_CALL, tool_call_id="tc-1", title="send_message")
+            yield LLMEvent(kind=EVENT_TOOL_RESULT, tool_call_id="tc-1", text="sent")
+            yield LLMEvent(kind=EVENT_COMPLETE, stop_reason=STOP_REASON_END_TURN)
+
+        client.stream = _stream
+        client.stream_command = _stream
+
+        await _run_chat(state, slot, "test message")
+        await self._cancel_background_tasks(state)
+
+        notice_msgs = [m for m in slot.messages if m.get("role") == "notice"]
+        assert notice_msgs, "give-up produced no notice card"
+        assert not any("returned nothing" in m.get("content", "") for m in notice_msgs), (
+            "the give-up card claims the turn produced nothing, but this turn "
+            "ran a tool whose side effects already landed"
+        )
+        assert any("without a closing reply" in m.get("content", "") for m in notice_msgs)
+        # The card reassures rather than inviting a redo: completed steps stay done.
+        assert any("will not re-run" in m.get("content", "") for m in notice_msgs)
+        # Terminal rung still resets the budget for the next genuine user turn.
+        assert slot._empty_response_retries == 0
+
+    @pytest.mark.asyncio
+    async def test_giveup_without_recoveries_drops_retry_claim(self, tmp_path: Path) -> None:
+        """A give-up reached with the recovery counter still at zero (here: a
+        nested depth>0 turn) must not assert that a retry and an auto-continue
+        ran — neither did. The counter is the evidence, not the rung."""
+        state, slot, client, _run_chat = self._make_state_and_slot(tmp_path)
+        self._make_empty_stream(client)
+
+        await _run_chat(state, slot, "test message", _prompt_depth=1)
+
+        notice_msgs = [m for m in slot.messages if m.get("role") == "notice"]
+        assert any("returned nothing this turn" in m.get("content", "") for m in notice_msgs)
+        assert not any("retried" in m.get("content", "") for m in notice_msgs), (
+            "the give-up card claims a retry ran, but slot._empty_response_retries "
+            "is still 0 on this path"
+        )
+        assert not any("auto-continued" in m.get("content", "") for m in notice_msgs)
+        assert not any("recovery was attempted" in m.get("content", "") for m in notice_msgs)
+
+    @pytest.mark.asyncio
+    async def test_giveup_after_spent_recoveries_reports_recovery(self, tmp_path: Path) -> None:
+        """When the recovery budget was actually spent (counter exhausted, turn
+        not productive), the card reports that automatic recovery was
+        attempted. Phrased phase-neutrally on purpose: the counter counts
+        budget spent, not which rungs ran."""
+        state, slot, client, _run_chat = self._make_state_and_slot(tmp_path)
+        slot._empty_response_retries = 2  # re-queue + nudge both spent
+        self._make_empty_stream(client)
+
+        await _run_chat(state, slot, "test message")
+
+        notice_msgs = [m for m in slot.messages if m.get("role") == "notice"]
+        assert any("automatic recovery was attempted" in m.get("content", "") for m in notice_msgs)
+        # The counter alone cannot prove WHICH rungs ran (a productive turn's
+        # continuation arrives here at 2 with no verbatim retry), so the card
+        # must not name specific recovery phases.
+        assert not any("auto-continued automatically" in m.get("content", "") for m in notice_msgs)
+
+    @pytest.mark.asyncio
     async def test_second_empty_flag_off_shows_notice(self, tmp_path: Path) -> None:
         """With session.empty_response_auto_continue disabled, the second empty
         surfaces the terminal notice immediately (pre-feature behavior)."""
@@ -16647,6 +16781,14 @@ class TestEmptyResponseRetry:
 
         notice_msgs = [m for m in slot.messages if m.get("role") == "notice"]
         assert any("returned nothing this turn" in m.get("content", "") for m in notice_msgs)
+        # Counter is 1 here: ONLY the silent verbatim re-queue ran (rung 1's
+        # guard ignores the gate); the auto-continue was forbidden by config.
+        # The card reports budget spent phase-neutrally and must not assert
+        # the auto-continue that provably did not run. This is also the
+        # boundary case for the counter gate: budget WAS spent, so the bare
+        # zero-recoveries wording would be wrong too.
+        assert any("automatic recovery was attempted" in m.get("content", "") for m in notice_msgs)
+        assert not any("auto-continued" in m.get("content", "") for m in notice_msgs)
         assert slot._empty_response_retries == 0
 
     @pytest.mark.asyncio

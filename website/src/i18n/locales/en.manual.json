@@ -1282,6 +1282,7 @@
       "customized_note": "Using a custom face",
       "edit_avatar": "Edit avatar",
       "expr_hint": "Pick a different face and a sound for each moment.",
+      "expr_pack_note": "This crew wears a pack — a ready-made set of faces — so only the sound applies here.",
       "expr_picture_note": "A picture has no face to change, so only the sounds apply.",
       "expr_reset_state": "Reset",
       "expr_sound": "Sound",
@@ -1289,9 +1290,34 @@
       "field_label": "Avatar",
       "hint_customize": "Edit this avatar",
       "image_load_failed": "The saved picture could not be loaded — showing the default face instead.",
+      "lib_badge_builtin": "Built-in",
+      "lib_badge_custom": "Custom",
+      "lib_by_author": "Author: {{author}}",
+      "lib_delete": "Delete",
+      "lib_delete_confirm": "Delete pack",
+      "lib_delete_failed": "Could not delete that pack.",
+      "lib_delete_keep": "Keep",
+      "lib_delete_note": "Removed for every crew. Import the bundle again to get it back.",
+      "lib_empty": "No appearance packs yet. A pack arrives as a .json bundle someone shares with you — import one to get started.",
+      "lib_error": "Could not load the appearance library.",
+      "lib_format_lottie": "Lottie",
+      "lib_format_sprite": "Sprite",
+      "lib_format_svg": "SVG",
+      "lib_hint": "A pack is a ready-made set of faces for a crew, drawn by someone else. Only SVG packs can be a crew face for now.",
+      "lib_import": "Import pack (.json)…",
+      "lib_import_too_large": "That pack file is too big. The limit is 24 MB.",
+      "lib_import_unreadable": "That file is not a pack bundle.",
+      "lib_import_unwearable": "That pack is installed, but a crew can only wear an SVG pack.",
+      "lib_in_use": "{{name}} was not deleted — it is still worn by: {{crews}}",
+      "lib_in_use_unknown": "{{name}} was not deleted — a crew is still wearing it.",
+      "lib_loading": "Loading packs…",
+      "lib_retry": "Try again",
+      "lib_selected": "Selected",
+      "lib_unsupported": "Not supported for crews yet",
       "mirror": "Flip direction",
       "mode_expressions": "Expressions",
       "mode_face": "Ghost face",
+      "mode_library": "Library",
       "mode_picture": "Picture",
       "opt_angry": "Angry",
       "opt_antenna": "Antenna",
@@ -1337,6 +1363,7 @@
       "opt_wink": "Wink",
       "opt_wobble": "Wobble",
       "opt_wrench": "Wrench",
+      "pack_load_failed": "The pack’s art could not be loaded — showing the default face instead.",
       "randomize": "Randomize",
       "reset_default": "Reset to the default face",
       "sound_blip": "Blip",
@@ -1556,7 +1583,9 @@
       "start_loop": "Start loop",
       "trigger_nudge": "Trigger nudge",
       "watches_load_failed": "Couldn't load this session's watches.",
-      "loop_paused": "Paused"
+      "clear_stopped_goal": "Clear stopped goal",
+      "loop_stopped": "Stopped",
+      "stopped_help": "Start loop resumes this goal. Clear stopped goal removes it for good."
     },
     "bottomTerminalPanel": {
       "close_failed": "Couldn't stop this terminal's shell on the server. It will be cleaned up automatically.",
@@ -2581,9 +2610,11 @@
       "suggestion_summarize_chat": "Summarize this week's chat activity",
       "suggestion_triage_tickets": "Triage my on-call tickets",
       "suggestion_write_design_doc": "Help me write a design doc",
-      "switch_back_to_default_mode": "Switch back to default mode",
-      "switch_to_ephemeral_mode": "Switch to ephemeral mode",
+      "choose_memory_mode": "Choose memory mode",
+      "incognito_active_switch_to_persistent": "Incognito — switch to persistent mode",
+      "switch_to_persistent_mode": "Switch to persistent mode",
       "temporary": "Temporary",
+      "temporary_active_switch_to_persistent": "Temporary — switch to persistent mode",
       "temporary_desc": "Blank slate — no memory reads or writes",
       "what_can_i_do_for_you": "What can I do for you?"
     },
@@ -2923,7 +2954,10 @@
       "use_legacy_costly": "Use legacy goal loop (costly)",
       "wake_instructions": "Instructions for the agent when it wakes",
       "wake_instructions_too_long": "Enter no more than {{max}} characters.",
-      "wakes": "Wakes: {{count}}"
+      "wakes": "Wakes: {{count}}",
+      "clear_monitor": "Clear stopped monitor",
+      "confirm_clear": "Yes, clear it",
+      "terminal_exits": "Restart watches the same pull request again. Clear stopped monitor removes this monitor for good and lets this session watch something else."
     }
   },
   "hooks": {
@@ -3772,7 +3806,8 @@
       "worktree_creation_returned_no_path": "Worktree creation returned no path",
       "loading_earlier_messages": "Loading earlier messages…",
       "send_failed_with_error": "Send failed: {{error}}",
-      "delivery_unconfirmed": "Delivery not confirmed — your text is back in the composer; check the transcript before sending it again.",
+      "send_failed_with_error_restored": "Couldn't send this message: {{error}}. Your text is back in the composer.",
+      "delivery_unconfirmed": "Delivery not confirmed — your text is back in the composer; check the conversation above before sending it again.",
       "could_not_read_file_reason": "Could not read {{path}} ({{reason}})",
       "screenshot_failed_reason": "Screenshot failed: {{reason}}",
       "http_status": "HTTP {{status}}",
@@ -5842,9 +5877,6 @@
       "show_controls": "Show controls"
     },
     "developer": {
-      "agentBackendTab": {
-        "codex_signs_in_separately": "Codex signs in on its own: finish its sign-in, or name a model provider in ~/.codex/config.toml (CODEX_HOME moves that folder). Neither is checked here — the adapter reads them, not {{productName}}."
-      },
       "featurePreviewsTab": {
         "chat_on_a_crew": "Chat on a crew",
         "chat_on_a_crew_desc": "Adds “New chat on crew” to the create menu, which starts a session on a remote instance — another machine you have connected under Settings > Remote Instances. Unfinished: the session opens in that instance’s own pane and is not listed in this dashboard’s sessions yet, so to return to it later, switch to that instance’s pane.",
@@ -5899,6 +5931,11 @@
   },
   "settings": {
     "chat": {
+      "defaultMemoryMode": {
+        "description": "Persistent uses what it knows and saves new memory. Incognito uses what it knows but saves no new memory. Temporary starts blank and saves no new memory. Every chat still appears in History. You can change the mode for any chat.",
+        "label": "Default Memory Mode",
+        "persistent": "Persistent"
+      },
       "plainDiff": {
         "description": "Render diffs as plain unified-diff text instead of syntax-highlighted colour. Uses less memory on large diffs.",
         "label": "Plain diffs"
@@ -5915,6 +5952,35 @@
     "groups": {
       "preferences": "Preferences",
       "system": "System"
+    },
+    "secrets": {
+      "managed_title": "Used automatically by {{productName}}",
+      "managed_description": "Credentials {{productName}} recognizes and uses automatically. Add or rotate their values here.",
+      "jira_api_token_label": "Jira API token",
+      "jira_api_token_description": "Authenticates Jira issue lookups for the configured instance.",
+      "jira_global_unused_multi_host": "Not used by Jira while multiple hosts are configured. Set each host’s credential above, or delete this entry.",
+      "jira_global_unused_host_token": "Not used because the host-specific Jira credential takes precedence. Delete this entry if you no longer need the fallback.",
+      "jira_host_token_label": "Jira host API token",
+      "jira_host_token_description": "Authenticates Jira issue lookups for one configured host.",
+      "wakatime_api_key_label": "WakaTime API key",
+      "wakatime_api_key_description": "Authenticates coding-activity sync when WakaTime is enabled.",
+      "other_stored_title": "Other stored secrets",
+      "other_stored_description": "Reference stored secrets by exact name as secret://NAME from an MCP server configuration or .env credential setting.",
+      "managed_config_error": "Some automatic credentials are hidden because $KIROCREW_HOME/config.json (default ~/.kiro/crew/config.json) could not be read.",
+      "wakatime_unused_hint": "Not used while WakaTime is disabled. Enable WakaTime or delete this entry.",
+      "managed_name_hint": "Saving here updates {{name}} under Used automatically by {{productName}}.",
+      "stored_title": "Stored secrets",
+      "managed_unconfigured_hint": "To use WakaTime or Jira automatically, enable WakaTime or add a Jira host in $KIROCREW_HOME/config.json (default ~/.kiro/crew/config.json).",
+      "managed_setup_guide": "Open the secrets setup guide",
+      "delete_managed_confirm": "Permanently delete “{{name}}”? The current value cannot be recovered.",
+      "delete_managed_name": "Delete {{name}}",
+      "save_managed_name": "Save {{name}}",
+      "managed_value_placeholder": "Paste secret value",
+      "wakatime_setup_link": "Open WakaTime API key settings",
+      "saved": "Saved",
+      "name_placeholder": "MY_API_KEY",
+      "value_placeholder": "sk-...",
+      "load_error": "Could not load secrets: {{error}}"
     },
     "tabs": {
       "about": {
@@ -5981,9 +6047,6 @@
         "description": "Text-to-speech and speech-to-text (dictation) settings",
         "label": "Voice"
       }
-    },
-    "secrets": {
-      "load_error": "Could not load secrets: {{error}}"
     }
   },
   "utils": {

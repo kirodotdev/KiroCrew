@@ -979,6 +979,19 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # from kiro-cli's own store (see ``acp/kas_transport.py``), so the former
         # ``chat _ get-kas-token`` spawn is gone rather than moved.
         "cli_doctor.py::_kas_relay_help",
+        # ``<kiro-cli> whoami`` sign-in probe for the declaration-driven auth row:
+        # fixed argv (the binary name is a module constant and the subcommand is a
+        # literal), 10s-capped, no shell, no agent-influenced argument. It reads only
+        # the EXIT CODE -- stdout is captured so it cannot reach a terminal and is
+        # never parsed, so no identity or token value enters the process.
+        #
+        # This is the one harness whose credential state the doctor probes at all, and
+        # deliberately so: kiro-cli signs in to the HOST identity store, so its state
+        # is the host's own. Every other harness keeps its entitlement in a file it
+        # owns, and reading that file is what the credential floor exists to forbid --
+        # a probe there would be the one reader the floor cannot fence. Those rows
+        # print their declared remedy unprobed instead (``_doctor_agent_auth``).
+        "cli_doctor.py::_kiro_cli_signed_in",
         # ``systemctl is-active <unit>`` probes for the memory-pressure
         # preparedness check: argv is hardcoded (systemd-oomd/earlyoom unit
         # names), no agent influence, 5s-capped, read-only query.

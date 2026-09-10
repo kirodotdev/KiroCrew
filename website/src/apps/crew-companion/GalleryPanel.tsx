@@ -14,8 +14,8 @@
  */
 import { ChevronDown, MoreHorizontal, Plus, X } from 'lucide-react'
 import React, { useCallback, useEffect, useState } from 'react'
-import type { PackMeta } from './appearanceTypes'
-import { REQUIRED_STATES, STATUS_STATES, RANDOM_STATES, LEGACY_STATES, ALL_MOODS } from './appearanceTypes'
+import type { PackMeta } from '../../lib/appearancePacks/types'
+import { REQUIRED_STATES, STATUS_STATES, RANDOM_STATES, LEGACY_STATES, ALL_MOODS } from '../../lib/appearancePacks/types'
 import { toDataUri } from './animationResolver'
 import { applySvgColorMap, type ColorMap } from './colorCustomizer'
 import { ghostPoseForKey } from './ghostEyes'

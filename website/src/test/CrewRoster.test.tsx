@@ -990,6 +990,173 @@ describe('crew avatar builder', () => {
   })
 })
 
+describe('crew editor — appearance pack round-trip', () => {
+  /* A crew wearing a pack from the crew appearance library. The record is the
+     pack id and nothing else, so the editor has to LOAD it: while it did not,
+     `avatarPayload`'s `editAvatar ?? {}` wrote "no override" on every save, and
+     editing a crew's triggers undressed it. */
+  const PACK_CREW = {
+    name: 'aurora',
+    kiro_agent: 'oncall-agent',
+    workspace: 'oncall',
+    memory_store: 'oncall-mem',
+    model: 'claude-opus-5',
+    avatar: { kind: 'pack', id: 'aurora-fox', sounds: { done: 'chime' } },
+  }
+
+  beforeEach(() => {
+    mockApi.kirocrewAgents.mockResolvedValue({
+      agents: [DEFAULT_CREW, PACK_CREW],
+      default_agent: 'kirocrew',
+    })
+  })
+
+  it('writes the pack back verbatim when an unrelated field is saved', async () => {
+    await renderRoster()
+    const sheet = await openEditor('aurora')
+
+    gotoPane(sheet, 'routing')
+    fireEvent.change(within(sheet).getByRole('textbox', { name: 'Triggers' }), {
+      target: { value: 'pager' },
+    })
+    fireEvent.click(within(sheet).getByRole('button', { name: 'Save changes' }))
+
+    await waitFor(() => expect(mockApi.updateKirocrewAgent).toHaveBeenCalled())
+    expect(mockApi.updateKirocrewAgent).toHaveBeenCalledWith(
+      'aurora',
+      expect.objectContaining({
+        triggers: 'pager',
+        // The id AND the sounds — the reaction layer rides on a pack too.
+        avatar: { kind: 'pack', id: 'aurora-fox', sounds: { done: 'chime' } },
+      }),
+    )
+  })
+
+  it('reads a freshly opened pack crew as having nothing pending', async () => {
+    // The dirty check compares the loaded draft against the saved record, so a
+    // pack that round-trips must not read as an edit.
+    await renderRoster()
+    const sheet = await openEditor('aurora')
+    expect(within(sheet).getByRole('button', { name: 'Save changes' })).toBeDisabled()
+  })
+
+  it('draws the pack art in the editor rather than the name-derived face', async () => {
+    await renderRoster()
+    const sheet = await openEditor('aurora')
+    const face = within(sheet).getByTestId('header-avatar-button').querySelector('img')!
+    expect(face.getAttribute('src')).toBe('/api/appearances/aurora-fox/slot/idle')
+  })
+
+  it('reports a pack crew as customized, so the editor offers the reset', async () => {
+    await renderRoster()
+    expect(hasAvatarOverride(PACK_CREW.avatar)).toBe(true)
+  })
+
+  it('Reset → Apply → Save undresses a pack crew, using the explicit-reset spelling', async () => {
+    /* `{}` cannot express this. The backend's `_carry_pack_through_faceless_save`
+       reads a faceless save on a pack-wearing crew as an unrelated edit by a client
+       that cannot see packs, and KEEPS the pack — which is right for such a client
+       and wrong for this one, now that the Library tab exists and Reset is a click
+       that means something. So the editor has to send `null`, the spelling the
+       backend reserves for a reset that is meant. Before this, Reset → Save
+       reported success and left the crew wearing the pack.
+
+       The other half of the distinction is pinned by "writes the pack back verbatim
+       when an unrelated field is saved" above: a save with no opinion about the face
+       must keep sending the pack, or every routing edit would undress the crew —
+       which is the bug the backend carve exists to stop. */
+    await renderRoster()
+    const sheet = await openEditor('aurora')
+
+    fireEvent.click(within(sheet).getByTestId('header-avatar-button'))
+    const builder = await screen.findByRole('dialog', { name: 'Customize avatar' })
+    fireEvent.click(within(builder).getByTestId('avatar-builder-reset'))
+    fireEvent.click(within(builder).getByTestId('avatar-builder-save'))
+    fireEvent.click(within(sheet).getByRole('button', { name: 'Save changes' }))
+
+    await waitFor(() => expect(mockApi.updateKirocrewAgent).toHaveBeenCalled())
+    expect(mockApi.updateKirocrewAgent).toHaveBeenCalledWith(
+      'aurora',
+      expect.objectContaining({ avatar: null }),
+    )
+  })
+
+  it('preserves a record NO tier reader understands, not just the pack tier', async () => {
+    /* The wipe is a property of the enumeration, not of the pack tier: the
+       payload is `draft ?? {}`, so every record the readers do not claim is
+       erased by an unrelated edit. Teaching the editor a third reader would
+       leave a fourth tier to be broken the same way, so this pins the CLASS —
+       a kind this build has never heard of has to survive too.
+
+       The record carries `sounds` on purpose. `soundsFrom` is kind-agnostic, so
+       it claims ANY record with a valid reaction map, unknown tier and all —
+       which is how the wipe survived its own fix for every newer tier that
+       happens to ship a chime. A record wearing both halves is the one that
+       pins the class shut. */
+    mockApi.kirocrewAgents.mockResolvedValue({
+      agents: [
+        DEFAULT_CREW,
+        {
+          ...OTHER_CREW,
+          avatar: {
+            kind: 'hologram',
+            id: 'from-a-newer-client',
+            depth: 3,
+            sounds: { done: 'chime' },
+          },
+        },
+      ],
+      default_agent: 'kirocrew',
+    })
+    await renderRoster()
+    const sheet = await openEditor('oncall')
+
+    gotoPane(sheet, 'routing')
+    fireEvent.change(within(sheet).getByRole('textbox', { name: 'Triggers' }), {
+      target: { value: 'pager' },
+    })
+    fireEvent.click(within(sheet).getByRole('button', { name: 'Save changes' }))
+
+    await waitFor(() => expect(mockApi.updateKirocrewAgent).toHaveBeenCalled())
+    expect(mockApi.updateKirocrewAgent).toHaveBeenCalledWith(
+      'oncall',
+      expect.objectContaining({
+        triggers: 'pager',
+        avatar: {
+          kind: 'hologram',
+          id: 'from-a-newer-client',
+          depth: 3,
+          sounds: { done: 'chime' },
+        },
+      }),
+    )
+  })
+
+  it('lets the builder overrule a record it did not understand', async () => {
+    // The passthrough must not ride along behind a choice the user just made:
+    // Apply is them deciding this crew's avatar.
+    mockApi.kirocrewAgents.mockResolvedValue({
+      agents: [DEFAULT_CREW, { ...OTHER_CREW, avatar: { kind: 'hologram', id: 'x' } }],
+      default_agent: 'kirocrew',
+    })
+    await renderRoster()
+    const sheet = await openEditor('oncall')
+
+    fireEvent.click(within(sheet).getByTestId('header-avatar-button'))
+    const builder = await screen.findByRole('dialog', { name: 'Customize avatar' })
+    fireEvent.click(within(builder).getByTestId('avatar-opt-wink'))
+    fireEvent.click(within(builder).getByTestId('avatar-builder-save'))
+    fireEvent.click(within(sheet).getByRole('button', { name: 'Save changes' }))
+
+    await waitFor(() => expect(mockApi.updateKirocrewAgent).toHaveBeenCalled())
+    const body = mockApi.updateKirocrewAgent.mock.calls[0][1]
+    expect(body.avatar).toEqual({
+      kind: 'ghost',
+      traits: { ...seededTraits('oncall'), eyes: 'wink' },
+    })
+  })
+})
+
 describe('avatar editor entry — discoverability (issue #9103)', () => {
   beforeEach(() => { localStorage.clear() })
 

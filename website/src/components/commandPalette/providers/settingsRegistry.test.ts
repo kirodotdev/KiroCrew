@@ -21,7 +21,7 @@ const SETTINGS_DIR = path.resolve(__dirname, '../../../pages/settings')
 // provider/secretary/sync/tasks tabs).
 const VALID_TABS = new Set([
   'overview', 'chat', 'voice', 'display', 'browser', 'skills', 'computer-use',
-  'instances', 'security', 'notifications', 'channels', 'developer', 'about',
+  'instances', 'security', 'secrets', 'notifications', 'channels', 'developer', 'about',
   'privacy', 'shortcuts',
 ])
 

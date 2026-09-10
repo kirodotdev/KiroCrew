@@ -3081,6 +3081,18 @@ function ChatSidebar({
     try { return new URLSearchParams(window.location.search).get('history') === '1' }
     catch { return false }
   })
+  // The main session search is the broad entry point. Carry it into Older
+  // Sessions when that pane opens, then keep following it while both controls
+  // are visible. The history field can still be refined independently: only a
+  // later edit to the main search intentionally replaces that refinement.
+  const openHistoryPane = useCallback(() => {
+    setHistoryFilter(slotFilter)
+    setHistoryOpen(true)
+    dispatch(fetchHistory(false))
+  }, [dispatch, slotFilter])
+  useEffect(() => {
+    if (historyOpen) setHistoryFilter(slotFilter)
+  }, [historyOpen, slotFilter])
   // The toggle below fetches when it OPENS the pane, so a pane that starts open
   // has never fetched and would render its empty state over real history.
   useEffect(() => {
@@ -3417,7 +3429,7 @@ function ChatSidebar({
       <button
         type="button"
         data-testid={`older-sessions-hint-${lane}`}
-        onClick={() => { setHistoryOpen(true); dispatch(fetchHistory(false)) }}
+        onClick={openHistoryPane}
         className="mt-1 mx-1 px-2 py-1.5 text-left text-[12px] text-muted hover:text-accent hover:bg-accent-subtle rounded-md cursor-pointer bg-transparent border-none transition-colors"
       >
         {i18nT('pages.chatSidebar.show_all_older_sessions')}
@@ -7508,8 +7520,8 @@ function ChatSidebar({
       <div
         role="button"
         tabIndex={0}
-        onClick={() => { setHistoryOpen(!historyOpen); if (!historyOpen) dispatch(fetchHistory(false)) }}
-        onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setHistoryOpen(!historyOpen); if (!historyOpen) dispatch(fetchHistory(false)) } }}
+        onClick={() => { if (historyOpen) setHistoryOpen(false); else openHistoryPane() }}
+        onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); if (historyOpen) setHistoryOpen(false); else openHistoryPane() } }}
         /* pt/pb are 14px, not py-3, so this row's top border lands on the same
            baseline as the nav rail's community row ("Star us · Report issue"):
            both cards sit 8px off the shell floor, the rail spends 8+2+24+10 =

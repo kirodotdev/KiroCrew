@@ -25,7 +25,7 @@ already has exactly one authorization seam in this codebase:
 ``MessagingTransport.may_send_to``. Scoping replay to the notice puts the whole
 feature behind a gate that already exists and is already owned, instead of
 introducing a parallel one. Re-dispatch, if wanted, is a separate design owned
-by the channel dispatch wiring -- issue #9144.
+by the channel dispatch wiring.
 
 Why the spool is written at the refusal point and nowhere else
 --------------------------------------------------------------
@@ -44,7 +44,7 @@ carries the group's private operating rules, and the notice quotes the entry
 only where ``may_send_to`` can express
 revocation for it**: Discord answers threads from ``_allowed_threads``; WhatsApp's
 answers from ``dm_policy`` alone and knows nothing of the group roster, so
-WhatsApp spools DMs only and leaves group routes to #9144.
+WhatsApp spools DMs only; group routes belong to that re-dispatch design.
 
 Bounding, in one primitive
 --------------------------
@@ -72,7 +72,7 @@ at most one duplicate notice and never the entries queued behind it. An entry
 whose channel is not connected THIS run is never noticed: it stays on disk for a
 start where the channel is back, and the age horizon bounds it.
 
-Attachments are NOT spooled (issue #2217's fifth question, still open): an
+Attachments are NOT spooled: an
 ingested attachment lives in a turn-owned temp path that is gone after a
 restart. The entry records how many were dropped and the notice says so.
 
@@ -210,7 +210,7 @@ class SpooledInbound:
     Every field is plain JSON: the entry survives a process boundary, so it may
     hold no live object (no renderer, no socket, no temp path). Exactly the
     fields the notice needs and nothing recorded "for later": a field nothing
-    reads is a field nothing tests, and a re-dispatch design (#9144) would own
+    reads is a field nothing tests, and a re-dispatch design would own
     its own record.
     """
 
@@ -251,7 +251,7 @@ class SpooledInbound:
         Distinct from :attr:`dedupe_key`, which is a correctness identity and is
         deliberately empty for an entry the platform gave no id: a log line still
         needs something to name. Two identical bodies can share a trace id, which
-        is acceptable for a diagnostic and is exactly why it must not be used to
+        is acceptable for a diagnostic and is exactly why it must never
         decide whether one of them is a duplicate.
         """
         tail = self.message_id or hashlib.sha256(self.text.encode("utf-8")).hexdigest()[:8]
@@ -764,7 +764,7 @@ def _quote(entry: SpooledInbound, transport: Any) -> str:
     defang runs on the QUOTE before it is sized, because it inserts characters.
 
     Sized to ``capabilities.max_message_chars``, because the notice PREFIXES the
-    quote: a message that fit the platform's cap on the way in no longer fits
+    quote: a message that fit the platform's cap on the way in overflows the cap
     with the prefix and the ``> `` markers added, and a transport's ``send_message``
     that slices to its cap and returns an id would confirm a notice whose tail
     was silently cut. The quote is truncated here, VISIBLY, before the send, so

@@ -78,12 +78,6 @@
   "platform": {
     "os": [
       "macos",
-      "linux"
-    ]
-  },
-  "platform": {
-    "os": [
-      "macos",
       "linux",
       "windows"
     ]

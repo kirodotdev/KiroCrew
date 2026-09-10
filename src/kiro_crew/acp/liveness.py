@@ -1,11 +1,11 @@
 """Per-session liveness oracle — wellness is the detector, timeouts are the backstop.
 
-The per-session watchdogs in ``session_handle.py`` historically used *timeouts
-as death detectors*: a stale-turn window (90s) and a tool-stall window (600s)
-that killed healthy-but-slow work — a silent 30-minute redirected build, a
-``wait(1800)`` poll, or a long non-streamed reasoning stretch. This module
-inverts that: an EFFECTIVE per-session oracle returns a verdict with evidence,
-so the watchdog acts FASTER on real deaths and never on healthy work.
+A timeout is a poor death detector: a stale-turn window (90s) or a tool-stall
+window (600s) kills healthy-but-slow work — a silent 30-minute redirected
+build, a ``wait(1800)`` poll, or a long non-streamed reasoning stretch. This
+module inverts that shape: an EFFECTIVE per-session oracle returns a verdict
+with evidence, so the watchdog in ``session_handle.py`` acts FASTER on real
+deaths and never on healthy work.
 
     verdict = oracle(session) -> WORKING | DEAD | STUCK_INPUT | UNKNOWN
 
@@ -109,7 +109,7 @@ EVIDENCE_ESTABLISHED_FLAT = "established_flat"
 # ``session_handle._dispatch_events``) instead of spending the build-scale
 # suspect window on a command that already exited — the sub-second shell tool
 # whose result frame was lost is never observed alive, so the plain
-# "no matching shell child" evidence used to buy it the full forbearance.
+# "no matching shell child" evidence must not buy it the full forbearance.
 #
 # Deliberately NOT a DEAD verdict: absence is inferred from process start times,
 # and a live command that exec'd into something the cmdline heuristic misses is
@@ -1067,7 +1067,7 @@ class LivenessOracle:
             # ABSENT, not negative, so fall back to the portable probe before the
             # caller takes its conservative branch. Linux-only counters must not
             # read as "assume dead" on the platform most backends run on: that is
-            # how a macOS turn was declared complete mid-tool (issue #8520).
+            # how a macOS turn gets declared complete mid-tool.
             return self._portable_model_wait(runtime_pid)
         if evidence == EVIDENCE_SAMPLING:
             # No baseline yet — cannot attest either way.

@@ -43,7 +43,17 @@ function schemaWith(values: string[] | undefined) {
  * One `GET /api/acp-backends` row, defaulted to the uninteresting answer
  * (selectable and installed) so each test states only the field it is about.
  */
-function probeRow(id: string, over: Partial<{ selectable: boolean; installed: string; missing_components: string[]; install_command: string; restart_required: boolean }> = {}) {
+function probeRow(
+  id: string,
+  over: Partial<{
+    selectable: boolean
+    installed: string
+    missing_components: string[]
+    install_command: string
+    restart_required: boolean
+    auth: { sign_in_remedy: string; signs_in_separately: boolean }
+  }> = {},
+) {
   return {
     id,
     policy_id: id || 'kiro',
@@ -52,6 +62,8 @@ function probeRow(id: string, over: Partial<{ selectable: boolean; installed: st
     missing_components: [],
     install_command: '',
     restart_required: false,
+    // No `auth` by default: an older gateway sends none, so the uninteresting row
+    // is the one that carries no auth object at all.
     ...over,
   }
 }
@@ -556,6 +568,31 @@ describe('AgentBackendTab', () => {
     expect(screen.getAllByText(/normally asks before it acts/)).toHaveLength(1)
   })
 
+  it('states BOTH the gating caveat and the sign-in remedy on a harness that has both', async () => {
+    // Claude is the one harness carrying two independent facts: its tool gating has a
+    // caveat, and it signs in through its own credential file rather than Crew's
+    // identity store. An earlier revision returned early on the gating line, so the
+    // only harness with two things to say said one of them. They are different facts
+    // with different remedies and neither substitutes for the other.
+    const remedy = 'Claude Code is not signed in. Run `claude` in your terminal.'
+    acpBackendsMock.mockResolvedValue({
+      backends: [
+        probeRow(''),
+        probeRow('kas'),
+        probeRow('claude', {
+          auth: {
+            sign_in_remedy: remedy,
+            signs_in_separately: true,
+          },
+        }),
+      ],
+    })
+    wrap()
+    await waitFor(() => expect(button('Claude Code')).toBeEnabled())
+    expect(screen.getByText(/pre-approved in Claude's own settings/)).toBeInTheDocument()
+    expect(screen.getByText(remedy)).toBeInTheDocument()
+  })
+
   it('drops the caveat with the row when Claude Code is not selectable', async () => {
     schemaMock.mockReturnValue(schemaWith(['', 'kas']))
     wrap()
@@ -563,41 +600,85 @@ describe('AgentBackendTab', () => {
     expect(screen.queryByText(/normally asks before it acts/)).not.toBeInTheDocument()
   })
 
-  it('tells a Codex operator that being installed is not being signed in', async () => {
-    // The gap the install line cannot cover. codex-acp ships its own Codex binary, so
-    // `installed` answers the whole binary question -- and a session with no credential
-    // still dies on the first turn, with nothing on the page having said what was
-    // absent. Both branches of the remedy must be named: Codex's own sign-in, and a
-    // model provider in ~/.codex/config.toml for credentials that come from elsewhere.
+  it('renders the server\'s sign-in remedy verbatim when the harness signs in separately', async () => {
+    // The gap the install line cannot cover: an adapter shipping its own binary makes
+    // `installed` answer the whole binary question, and a session with no credential
+    // still dies on the first turn. The remedy is the SERVER's sentence, rendered as
+    // sent -- no per-harness literal here, and no locale entry to add before a newly
+    // registered harness can say anything.
+    const remedy = 'Codex signs in on its own: finish its sign-in, or name a model provider in ~/.codex/config.toml.'
+    schemaMock.mockReturnValue(schemaWith(['', 'claude', 'kas', 'codex']))
+    acpBackendsMock.mockResolvedValue({
+      backends: [
+        probeRow(''),
+        probeRow('claude'),
+        probeRow('kas'),
+        probeRow('codex', {
+          auth: { sign_in_remedy: remedy, signs_in_separately: true },
+        }),
+      ],
+    })
+    wrap()
+    await waitFor(() => expect(button('codex')).toBeEnabled())
+    expect(screen.getByText(remedy)).toBeInTheDocument()
+  })
+
+  it('says nothing when the harness does not sign in separately', async () => {
+    // A harness authenticating through Crew's own identity store has no separate
+    // sign-in to finish, so telling its reader to go and finish one would be false.
+    // The remedy string may still be present on the row; `signs_in_separately` is
+    // what decides, not its presence.
+    const remedy = 'Finish the harness sign-in before starting a session.'
+    schemaMock.mockReturnValue(schemaWith(['', 'claude', 'kas', 'codex']))
+    acpBackendsMock.mockResolvedValue({
+      backends: [
+        probeRow(''),
+        probeRow('claude'),
+        probeRow('kas'),
+        probeRow('codex', {
+          auth: { sign_in_remedy: remedy, signs_in_separately: false },
+        }),
+      ],
+    })
+    wrap()
+    await waitFor(() => expect(button('codex')).toBeEnabled())
+    expect(screen.queryByText(remedy)).not.toBeInTheDocument()
+  })
+
+  it('renders a row with no auth object at all, and says nothing about signing in', async () => {
+    // A gateway that predates the `auth` field sends none. Absent probe information
+    // is not a verdict, so the row must render normally rather than crashing on the
+    // optional-chain or inventing a caveat.
     schemaMock.mockReturnValue(schemaWith(['', 'claude', 'kas', 'codex']))
     acpBackendsMock.mockResolvedValue({
       backends: [probeRow(''), probeRow('claude'), probeRow('kas'), probeRow('codex')],
     })
     wrap()
     await waitFor(() => expect(button('codex')).toBeEnabled())
-    expect(screen.getByText(/Codex signs in on its own/)).toBeInTheDocument()
-    expect(screen.getByText(/~\/\.codex\/config\.toml/)).toBeInTheDocument()
+    // The row is fully live: reachable, and the click writes the id the wire accepts.
+    fireEvent.click(button('codex'))
+    await waitFor(() => expect(patchConfigMock).toHaveBeenCalledWith('agent.acp_backend', 'codex'))
+    expect(screen.queryByText(/signs in|sign-in/i)).not.toBeInTheDocument()
   })
 
-  it('says the credential is not checked here rather than implying it is', async () => {
-    // The reason this is a standing caveat and not a probe line: the panel does not
-    // read those files, and a `missing` verdict would DISABLE the switch for an
-    // operator who is authenticated by a path the check cannot see. The sentence has
-    // to disclaim the measurement, or the reader takes silence for a green light.
-    schemaMock.mockReturnValue(schemaWith(['', 'codex']))
-    acpBackendsMock.mockResolvedValue({ backends: [probeRow(''), probeRow('codex')] })
+  it('does not put one harness\'s sign-in remedy on the others', async () => {
+    // The caveat is per-row and comes from that row's own payload, so a remedy on
+    // one harness must not leak onto a sibling that did not send one.
+    const remedy = 'Finish the codex sign-in first.'
+    schemaMock.mockReturnValue(schemaWith(['', 'claude', 'kas', 'codex']))
+    acpBackendsMock.mockResolvedValue({
+      backends: [
+        probeRow(''),
+        probeRow('claude'),
+        probeRow('kas'),
+        probeRow('codex', {
+          auth: { sign_in_remedy: remedy, signs_in_separately: true },
+        }),
+      ],
+    })
     wrap()
     await waitFor(() => expect(button('codex')).toBeEnabled())
-    expect(screen.getByText(/Neither is checked here/)).toBeInTheDocument()
-  })
-
-  it('does not put the Codex caveat on the other agents', async () => {
-    // Kiro CLI and KAS authenticate through Crew's own identity store, so telling
-    // their reader to finish a separate sign-in would be false.
-    acpBackendsMock.mockResolvedValue({ backends: [probeRow(''), probeRow('claude'), probeRow('kas')] })
-    wrap()
-    await waitFor(() => expect(button('Kiro CLI')).toBeEnabled())
-    expect(screen.queryByText(/Codex signs in on its own/)).not.toBeInTheDocument()
+    expect(screen.getAllByText(remedy)).toHaveLength(1)
   })
 
   it('states that the set is decided at gateway start', async () => {

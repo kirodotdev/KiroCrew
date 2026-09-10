@@ -33,9 +33,12 @@ from .store import AUTO_ADDED_PROP, KnowledgeStore
 
 logger = logging.getLogger(__name__)
 
+#: Extensions routed to the code-aware chunker. Must be a subset of
+#: ``FileReader.SUPPORTED`` -- that set is the folder-scan gate, so an extension
+#: listed here but absent there never reaches this dispatch at all.
 CODE_EXTS = {
     '.py', '.java', '.ts', '.js', '.rs', '.go', '.rb', '.c', '.cpp', '.h',
-    '.sh', '.ps1', '.psm1', '.cs', '.kt', '.swift', '.scala',
+    '.sh', '.ps1', '.psm1', '.cs', '.kt', '.kts', '.swift', '.scala',
 }
 
 MARKDOWN_EXTS = {'.md', '.docx'}

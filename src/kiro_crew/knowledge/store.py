@@ -7,7 +7,9 @@ import json
 import logging
 import threading
 from collections import defaultdict
+from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
@@ -37,6 +39,44 @@ AUTO_ADDED_PROP = "auto_added"
 # confirm and resume endpoints when the user adopts one; its presence is what keeps a
 # later refusal from undoing that decision.
 AUTO_REGISTRATION_RETIRED_PROP = "auto_registration_retired"
+
+
+@dataclass(frozen=True)
+class SourceContentStats:
+    """One source's share of the admitted content.
+
+    ``source_id`` is None for the bucket holding items that belong to no source.
+    The store deliberately does not spell that bucket with the dashboard's
+    ``__none__`` wire sentinel: that string is a contract between the items API
+    and the SPA, and a third copy down here in the store would have to change
+    with them while nothing in SQLite needs it.
+    """
+
+    source_id: str | None
+    name: str
+    documents: int
+    items: int
+
+
+@dataclass(frozen=True)
+class ContentStats:
+    """Admitted knowledge content: totals plus the same numbers per source.
+
+    ``sources`` counts registered sources, so it excludes the sourceless bucket
+    that ``per_source`` may carry. Both totals reconcile against ``per_source``
+    exactly -- summing its ``items`` gives ``items`` and summing its
+    ``documents`` gives ``documents`` -- which is the property that makes these
+    numbers auditable, and the reason membership here is plain ownership
+    (``items.source_id``) rather than the ownership-OR-location rule
+    ``knowledge_list_sources`` uses to estimate what a scope would yield. Under
+    that rule an item surviving a cross-source dedup collapse counts for two
+    sources and the per-source numbers over-sum the totals.
+    """
+
+    sources: int
+    documents: int
+    items: int
+    per_source: tuple[SourceContentStats, ...]
 
 
 def is_auto_registered(props: dict) -> bool:
@@ -377,8 +417,12 @@ _OWNERSHIP_HASH_COL: dict[str, str] = {
 
 
 class KnowledgeStore:
-    def __init__(self, db_path: str):
+    def __init__(self, db_path: str, *, read_only: bool = False):
         self._db_path = db_path
+        # A read-only store runs neither the schema DDL nor `_migrate()` and opens
+        # every connection with SQLite `mode=ro`, so a write is refused by the
+        # engine rather than by convention -- see `open_read_only`.
+        self._read_only = read_only
         # One connection PER THREAD. sqlite3 connections carry
         # thread affinity (check_same_thread=True by default), but callers
         # like HybridRetriever.search() run on worker threads via
@@ -436,13 +480,42 @@ class KnowledgeStore:
         # the writer lock is taken, so it stays.
         # The suppression ends with the block: the six non-constructor
         # `_load_graph()` call sites and every query path stay fully guarded.
+        if read_only:
+            return
         with _ON_LOOP_DB_GUARD.allow_on_loop():
             self._init_schema()
             self._migrate()
 
+    @classmethod
+    def open_read_only(cls, db_path: str) -> "KnowledgeStore":
+        """Open an EXISTING library for reading only: no DDL, no migration, no reap.
+
+        The constructor runs `_migrate()` on every open, and that sweep takes the
+        writer lock and deletes any itemless source row nothing references. That
+        is the right cost for a surface that goes on to write and the wrong one
+        for a verb documented as read-only -- `kirocrew knowledge stats` runs in
+        a fresh process, so it would re-run the sweep on every invocation. Here
+        the file is opened with SQLite `mode=ro`: nothing on this store can
+        write, because the engine refuses rather than a convention asking. The
+        trade is that a schema behind the code is reported, not repaired -- a
+        read that meets a missing table or column raises
+        `sqlite3.OperationalError`, and any migrating open (the gateway,
+        `kirocrew knowledge dedup --apply`) is the fix.
+        """
+        return cls(db_path, read_only=True)
+
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self._db_path, timeout=30, isolation_level=None)
-        conn.execute("PRAGMA journal_mode=WAL")
+        if self._read_only:
+            # `as_uri()` percent-encodes the path, which is the escaping SQLite
+            # undoes when it parses a URI filename, so a path holding `?` or `#`
+            # cannot be read as the start of the query string. journal_mode is
+            # left alone: a read-only connection may not change it, and a WAL
+            # file is readable as-is.
+            uri = Path(self._db_path).resolve().as_uri() + "?mode=ro"
+            conn = sqlite3.connect(uri, uri=True, timeout=30, isolation_level=None)
+        else:
+            conn = sqlite3.connect(self._db_path, timeout=30, isolation_level=None)
+            conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA busy_timeout=10000")
         conn.execute("PRAGMA foreign_keys=ON")
         conn.row_factory = sqlite3.Row
@@ -2010,6 +2083,82 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
             if u in visited and v in visited:
                 edges.append({"source": u, "target": v, "type": data.get("relation_type"), "weight": data.get("weight")})
         return {"nodes": nodes, "edges": edges}
+
+    def aggregate_stats(self) -> ContentStats:
+        """Admitted content, totalled and broken down by source.
+
+        Distinct from ``get_stats``, which reports raw table cardinality for the
+        dashboard overview: this counts ACTIVE items only, because a superseded
+        or deduped copy is not content the library will serve, and it resolves
+        the two units a reader conflates otherwise. An ``items`` row IS a chunk
+        -- the unit ``knowledge_list_sources`` and ``/source-counts`` already
+        call an item -- and every chunk of one document carries that document's
+        whole-text ``content_hash``, so ``(source_id, content_hash)`` is the
+        document identity, the same one ``dedup`` groups on. An item written
+        without a content hash is therefore counted in ``items`` and belongs to
+        no document.
+
+        Read-only: no write, no repair, no rebuild. A caller that finds the
+        numbers wrong has a diagnosis, not a fix.
+        """
+        totals = self.db.execute(
+            "SELECT COUNT(*) AS items, "
+            "COUNT(DISTINCT CASE WHEN content_hash IS NOT NULL AND content_hash != '' "
+            "  THEN COALESCE(source_id, '') || char(31) || content_hash END) AS documents "
+            "FROM items WHERE status = 'active'"
+        ).fetchone()
+        # char(31) is a unit separator: concatenating the two keys raw would let
+        # a source id ending in a hash prefix collide with its neighbour.
+        by_source = {
+            row["sid"]: row
+            for row in self.db.execute(
+                "SELECT COALESCE(source_id, '') AS sid, COUNT(*) AS items, "
+                "COUNT(DISTINCT CASE WHEN content_hash IS NOT NULL AND content_hash != '' "
+                "  THEN content_hash END) AS documents "
+                "FROM items WHERE status = 'active' GROUP BY sid"
+            ).fetchall()
+        }
+        per_source: list[SourceContentStats] = []
+        source_rows = self.db.execute("SELECT id, name FROM sources ORDER BY name").fetchall()
+        for src in source_rows:
+            counted = by_source.get(src["id"])
+            per_source.append(
+                SourceContentStats(
+                    source_id=src["id"],
+                    name=src["name"],
+                    documents=int(counted["documents"]) if counted else 0,
+                    items=int(counted["items"]) if counted else 0,
+                )
+            )
+        # Every registered source is listed even at zero, so a source that
+        # ingested nothing is visible rather than absent. The sourceless bucket
+        # is the opposite: it is not a registered row, so it appears only when it
+        # holds something. It holds every active item no registered source owns:
+        # the NULL-source rows, and any row whose source_id names a source that no
+        # longer exists. `items.source_id REFERENCES sources(id)` keeps the second
+        # kind out of anything this store writes, but a database written before
+        # the foreign key was enforced can still hold one, and a row counted in
+        # `items` that appeared on no line would break the reconciliation this
+        # breakdown promises. A document is identified by (source_id,
+        # content_hash), so summing the per-source_id document counts is exact.
+        registered = {src["id"] for src in source_rows}
+        unowned = [row for sid, row in by_source.items() if sid not in registered]
+        unowned_items = sum(int(row["items"]) for row in unowned)
+        if unowned_items > 0:
+            per_source.append(
+                SourceContentStats(
+                    source_id=None,
+                    name="(no source)",
+                    documents=sum(int(row["documents"]) for row in unowned),
+                    items=unowned_items,
+                )
+            )
+        return ContentStats(
+            sources=len(source_rows),
+            documents=int(totals["documents"]) if totals else 0,
+            items=int(totals["items"]) if totals else 0,
+            per_source=tuple(per_source),
+        )
 
     def get_stats(self) -> dict:
         return {

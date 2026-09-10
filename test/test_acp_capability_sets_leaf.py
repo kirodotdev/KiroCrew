@@ -39,22 +39,29 @@ from kiro_crew.acp_backends import (
     ACP_BACKENDS_ADVERTISED_MODEL_SELECTION,
     ACP_BACKENDS_COMPACT,
     ACP_BACKENDS_INTERNAL_SANDBOX,
-    ACP_BACKENDS_KIRO_IDENTITY_STORE,
     ACP_BACKENDS_SEED_LOCAL_SETTINGS,
     ACP_BACKENDS_SESSION_SHARING,
     ACP_BACKENDS_STEER,
     model_registry_namespace,
 )
+from kiro_crew.agent_sdk.host_auth import backends_retired_by_host_logout
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
 SRC = Path(__file__).resolve().parent.parent / "src" / "kiro_crew"
 
+#: The sets whose definition home is the leaf. The kiro-identity-store membership is
+#: deliberately absent: it is ``host_auth.backends_retired_by_host_logout()``,
+#: projected from each harness's own auth declaration rather than opted into here. It
+#: is a FUNCTION and not an ``ACP_BACKENDS_*`` set because that naming is vocabulary,
+#: whose home is the leaf -- and it cannot live in the leaf either, which supplies the
+#: backend ids that table is keyed by. Its home, its value and its
+#: re-export identity are pinned in ``test_agent_sdk_host_auth.py``; the value pin
+#: below stays here too, because the harness membership is still this module's subject.
 CAPABILITY_SETS = (
     "ACP_BACKENDS_ACP_RUNTIME",
     "ACP_BACKENDS_ADVERTISED_MODEL_SELECTION",
     "ACP_BACKENDS_COMPACT",
     "ACP_BACKENDS_INTERNAL_SANDBOX",
-    "ACP_BACKENDS_KIRO_IDENTITY_STORE",
     "ACP_BACKENDS_SEED_LOCAL_SETTINGS",
     "ACP_BACKENDS_SESSION_SHARING",
     "ACP_BACKENDS_STEER",
@@ -153,7 +160,7 @@ def test_membership_is_unchanged_by_the_move() -> None:
     assert ACP_BACKENDS_INTERNAL_SANDBOX == frozenset({ACP_BACKEND_KIRO})
     assert ACP_BACKENDS_STEER == frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
     assert ACP_BACKENDS_ACP_RUNTIME == frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
-    assert ACP_BACKENDS_KIRO_IDENTITY_STORE == frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
+    assert backends_retired_by_host_logout() == frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
     # The provider-advertised-model seams: claude only today. A future adapter
     # with the same served-vs-stored spelling gap (or its own settings seed) opts
     # in here — a deliberate edit this pin forces to be seen.

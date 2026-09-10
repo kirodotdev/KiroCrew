@@ -1,4 +1,4 @@
-"""Tests for #9284: a closer stays in an ``[OPTIONS:]`` label only where it is
+"""A closer stays in an ``[OPTIONS:]`` label only where it is
 MATCHED by an earlier ``[``, or where it CONTINUES the label list.
 
 A label may legitimately carry a closer -- ``[OPTIONS: Alpha ] | Bravo ]]`` is a
@@ -36,8 +36,8 @@ one step further down, to ``split_options_trailer``, because narrowing the gramm
 is what made that function's partial-cut gate load-bearing: a marker the grammar
 declines must not be silently deleted by the consumer instead.
 
-Measured against ``origin/main`` at 56f67aa43 (post-#9174): every case in
-``OVERREACH`` and ``TRAILER_OVERREACH`` matches there and deletes the prose shown.
+Under an unconditional closer, every case in
+``OVERREACH`` and ``TRAILER_OVERREACH`` matches whole and deletes the prose shown.
 """
 
 from __future__ import annotations
@@ -59,12 +59,12 @@ OVERREACH = [
     "Pick [OPTIONS: A | B] and the type is dict[str, Any]",
     "All set [OPTIONS: Ship | Hold] before you diff src/app[0]",
     "Ready [OPTIONS: Yes | No] see the note in docs[2]",
-    # The wrapped forms of the same shape, on #9174's leading-wrapper path.
+    # The wrapped forms of the same shape, on the leading-wrapper (``lwrap``) path.
     "`[OPTIONS: A | B] then check arr[0]`",
     "**[OPTIONS: Merge | Wait] then read CHANGELOG[1]**",
 ]
 
-#: End-of-buffer shapes for the DOTALL grammar, where the body used to cross blank
+#: End-of-buffer shapes for the DOTALL grammar, where an unconditional closer lets the body cross blank
 #: lines and take the whole closing paragraph.
 TRAILER_OVERREACH = [
     "[OPTIONS: A | B]\n\nAnd then a whole closing paragraph about arr[0]",
@@ -242,7 +242,7 @@ class TestAcceptedCosts:
 
 
 class TestTheWideningIsNotOverlyNarrow:
-    """Everything #9174 and the closer widening added must still parse."""
+    """Everything the wrapper tolerance and the closer widening admit must still parse."""
 
     def test_the_plain_marker_still_parses_on_both_grammars(self):
         for text in ("Done.\n\n[OPTIONS: Merge | Wait]", "Done. [OPTIONS: Merge | Wait]"):
@@ -262,8 +262,8 @@ class TestTheWideningIsNotOverlyNarrow:
             assert match.group("lwrap") == wrap, text
 
     def test_a_wrapped_marker_with_a_continuing_closer_still_parses(self):
-        # The two rules compose: the wrapper is #9174's, the mid-label closer is
-        # this one's, and a marker carrying both is still a marker.
+        # The two rules compose: wrapper tolerance and the mid-label closer are independent,
+        # and a marker carrying both is still a marker.
         match = OPTIONS_RE_LINE.search("`[OPTIONS: Alpha ] | Bravo]`")
         assert match is not None
         assert match.group("lwrap") == "`"

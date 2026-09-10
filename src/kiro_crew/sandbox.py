@@ -6472,15 +6472,33 @@ def _allow_no_isolation() -> bool:
         return False
 
 
+#: ``_unsandboxed_exec_grant()`` verdicts. Kept as constants because the warning
+#: text, the SEL ``resources`` string and the tests all have to name the same
+#: two cases, and a typo in any one of them would silently read as "not granted".
+UNSANDBOXED_BY_OPERATOR = "operator"
+UNSANDBOXED_BY_PLATFORM = "platform"
+
+
 def _allow_unsandboxed_exec() -> bool:
-    """Whether the operator has explicitly opted into allowing execution
-    without ANY sandbox backend (fail-open behavior).
+    """Whether execution is permitted when NO sandbox backend is available.
 
-    When False (default), wrap_argv will RAISE instead of returning unmodified
-    argv when no sandbox backend is available. This is the fail-closed behavior
-    required by a penetration-test finding.
+    Name, signature and meaning are unchanged: still the one boolean gate
+    ``wrap_argv`` consults, and the seam a test patches to pin a host as permitting
+    or refusing. It remains a plain read of
+    ``agent.sandbox_allow_unsandboxed_exec``, because that field now CARRIES the
+    effective policy — :func:`~kiro_crew.config.loader
+    .unsandboxed_exec_platform_default` is resolved into it at load time, so an
+    undeclared key already reads ``True`` on a platform with no installable
+    backend and a declared ``false`` still reads ``False`` everywhere.
 
-    Read lazily from config to avoid an import cycle with the config loader.
+    Deliberately not keyed on whether the operator DECLARED the key. That would
+    make a full-document ``KiroCrewConfig.save()`` — which publishes
+    ``asdict(self.agent)``, materializing every field — turn "never decided" into
+    a declared lockdown and re-brick every spawn on such a platform. Meaning has
+    to live in the value, so that writing the resolved value back changes nothing.
+
+    An unreadable config yields ``False``: a broken config must never be a way to
+    obtain a LOOSER sandbox than the operator configured.
     """
     try:
         from kiro_crew.config.loader import (
@@ -6490,6 +6508,63 @@ def _allow_unsandboxed_exec() -> bool:
         return bool(getattr(KiroCrewConfig.load().agent, "sandbox_allow_unsandboxed_exec", False))
     except Exception:
         return False
+
+
+def _unsandboxed_grant_source(permitted: bool) -> str:
+    """Which permission let a spawn through, for the warning and the SEL event.
+
+    Derived FROM the gate's own verdict rather than resolved independently, so the
+    two can never contradict each other about one spawn — including when a test
+    patches :func:`_allow_unsandboxed_exec`, where an independent read would
+    describe the real host while the gate described the pinned one.
+
+    The split is not cosmetic: it is what lets the audit log say whether a host ran
+    unconfined because an operator accepted the risk or because the platform
+    default did, and only the operator case survives a later change to that
+    default. A declaration is what distinguishes them, so an unreadable config
+    reports the platform — the gate can only have said ``True`` there via the
+    platform branch anyway.
+    """
+    if not permitted:
+        return ""
+    return UNSANDBOXED_BY_OPERATOR if _unsandboxed_exec_key_declared() else UNSANDBOXED_BY_PLATFORM
+
+
+def _unsandboxed_exec_key_declared() -> bool:
+    """Whether the operator declared the opt-in key at all, for message wording.
+
+    Thin, failure-tolerant wrapper over
+    :func:`~kiro_crew.config.loader.unsandboxed_exec_declared` so a refusal can
+    tell "you set this to false" apart from "you never set it" without a broken
+    config turning the refusal itself into an exception. Diagnostic only — it never
+    decides whether a spawn runs.
+    """
+    try:
+        from kiro_crew.config.loader import (  # circular import: sandbox is a low-level dep
+            unsandboxed_exec_declared,
+        )
+
+        return unsandboxed_exec_declared()
+    except Exception:
+        return False
+
+
+def unsandboxed_exec_permitted_by() -> str:
+    """Public read of the no-backend execution verdict, for diagnostics.
+
+    The same resolution :func:`wrap_argv` gates on, exposed so ``doctor`` reports
+    the policy the spawn path will actually apply instead of re-deriving it from
+    the config field — which records only what the operator DECLARED, and reads
+    ``False`` both for "locked down" and for "never decided".
+
+    Returns ``UNSANDBOXED_BY_OPERATOR``, ``UNSANDBOXED_BY_PLATFORM`` or ``""``.
+
+    Deliberately does NOT fold in the governance ``sandbox.min_level`` floor: the
+    floor is resolved per spawn against the mode that spawn requested, so a single
+    host-level answer would be wrong for some of them. A caller that reports this
+    verdict must say that a floor overrides it.
+    """
+    return _unsandboxed_grant_source(_allow_unsandboxed_exec())
 
 
 # Fallback tier for configured_sandbox_mode() when the config cannot be read.
@@ -6881,7 +6956,7 @@ def agent_confinement_evidence() -> str | None:
     return None
 
 
-def _warn_no_isolation(mode: str) -> None:
+def _warn_no_isolation(mode: str, granted_by: str = "") -> None:
     """Loudly surface that the agent subprocess is running WITHOUT OS-level
     isolation, so the fallback is never silent.
 
@@ -6891,15 +6966,38 @@ def _warn_no_isolation(mode: str) -> None:
     degradation of the security posture, so it is logged as a WARNING unless
     the operator has explicitly acknowledged it via
     ``agent.sandbox_allow_no_isolation``. Emitted once per process.
+
+    ``granted_by`` names which permission let the spawn through
+    (``UNSANDBOXED_BY_OPERATOR`` / ``UNSANDBOXED_BY_PLATFORM``) and changes the
+    REMEDY, not the severity. "Install a supported sandbox" is unactionable on a
+    platform that has none to install, and a warning whose only suggestion is
+    impossible trains readers to ignore it — so a platform-default grant is told
+    how to LOCK THE HOST DOWN instead. The default is empty so the existing
+    ``mode="off"`` callers keep the operator-shaped text.
     """
     if getattr(wrap_argv, "_warned", False):
         return
     wrap_argv._warned = True  # type: ignore[attr-defined]
     if _allow_no_isolation():
         logger.info(
-            "OS-level sandbox unavailable (mode=%s); running WITHOUT credential "
-            "isolation. Operator opted in via agent.sandbox_allow_no_isolation; "
-            "app-level checks are the only remaining boundary.",
+            "OS-level sandbox unavailable (mode=%s, permitted by %s); running "
+            "WITHOUT credential isolation. Operator opted in via "
+            "agent.sandbox_allow_no_isolation; app-level checks are the only "
+            "remaining boundary.",
+            mode,
+            granted_by or "config",
+        )
+        return
+    if granted_by == UNSANDBOXED_BY_PLATFORM:
+        logger.warning(
+            "SECURITY: this platform offers no OS-level sandbox backend for Kiro "
+            "Crew to apply (mode=%s), so the agent subprocess runs WITHOUT "
+            "credential isolation — ~/.aws, ~/.ssh and other secrets are readable "
+            "by it and only the bypassable app-level security.py checks remain. "
+            "This is the documented default for such a host, not a failure: no "
+            "backend can be installed here. To refuse these spawns instead, set "
+            "agent.sandbox_allow_unsandboxed_exec=false in ~/.kiro/crew/config.json "
+            "(or pin a governance sandbox.min_level, which overrides it fleet-wide).",
             mode,
         )
         return
@@ -7738,10 +7836,13 @@ def wrap_argv(
         # returned unmodified argv, allowing the agent subprocess to access all
         # credential paths without any OS-level isolation.
         #
-        # ONE read of the opt-in: the gate below and the message that explains a
-        # refusal must describe the same state, and a concurrent config reload
-        # must not let them disagree about the same spawn.
+        # ONE read of the gate: the branch below, the warning on the permitted path
+        # and the message that explains a refusal must describe the same state, and
+        # a concurrent config reload must not let them disagree about the same
+        # spawn. ``granted_by`` is DERIVED from that one verdict rather than
+        # resolved again, so it cannot contradict it.
         opted_in = _allow_unsandboxed_exec()
+        granted_by = _unsandboxed_grant_source(opted_in)
         # A governance ``sandbox.min_level`` floor OVERRIDES the config opt-in
         # (issue #3162).  Before this, the floor did the opposite of what pinning
         # it implies: it disabled the audited first-party carve-out below while
@@ -7875,6 +7976,22 @@ def wrap_argv(
                     "Sandbox backend unavailable and a governance policy forbids "
                     "unsandboxed execution. "
                 )
+            elif _unsandboxed_exec_key_declared():
+                # The operator DID decide, and decided to keep this host
+                # fail-closed. Telling them the flag "is not set" would send them
+                # to set a key they already set, so name their own decision as
+                # the thing to revisit. Diagnostic-only, so reading it here rather
+                # than alongside the gate costs at worst a stale WORDING under a
+                # concurrent config reload, never a wrong allow/deny.
+                sel_reason = (
+                    "No sandbox backend available and allow_unsandboxed_exec is declared false"
+                )
+                refusal = (
+                    "Sandbox backend unavailable and agent.sandbox_allow_unsandboxed_exec "
+                    "is set to false on this host, so unsandboxed execution stays "
+                    "refused. Change that key to true (or remove it to accept this "
+                    "platform's default) if you want these spawns to run unconfined. "
+                )
             else:
                 sel_reason = "No sandbox backend available and allow_unsandboxed_exec is not set"
                 refusal = "Sandbox backend unavailable and allow_unsandboxed_exec is not set. "
@@ -7910,8 +8027,51 @@ def wrap_argv(
                 # they never read as advice to reconfigure a merely busy host.
                 remedy=probe_remedy,
             )
-        # Opted in: warn (or info) and return unmodified argv
-        _warn_no_isolation(mode)
+        # Permitted: audit, warn (or info), and return unmodified argv.
+        #
+        # The audit is not optional now that a PLATFORM DEFAULT can reach here.
+        # Before, everything on this path had an operator declaration behind it
+        # and the config file was itself the record; a spawn permitted because of
+        # the platform has no such record, so without this event an unconfined
+        # spawn would leave no trace at all. ``outcome="unconfined"`` matches the
+        # first-party carve-out's third outcome — neither ``denied`` (nothing was
+        # refused) nor ``allowed`` (nothing confines this spawn) — and
+        # ``resources`` names WHICH permission applied, so the log distinguishes
+        # an accepted risk from a default.
+        #
+        # Best-effort, like the carve-out and unlike the fail-closed ``denied``
+        # audit: this fires for every spawn on a backend-less host, and draining
+        # SEL synchronously on each one would put a flush on the gateway event
+        # loop. Denying the spawn on an audit hiccup would also brick every MCP
+        # server and app backend on Windows, which is the platform this path
+        # exists to serve.
+        try:
+            from kiro_crew.sel import sel  # circular import: sandbox is low-level
+
+            sel().log_tool_invocation(
+                session_key="sandbox",
+                agent="system",
+                source="sandbox.wrap_argv",
+                tool_name=_command_log_label(argv),
+                tool_kind="subprocess",
+                outcome="unconfined",
+                resources=(
+                    "operator declared agent.sandbox_allow_unsandboxed_exec=true"
+                    if granted_by == UNSANDBOXED_BY_OPERATOR
+                    else "platform default for a host with no sandbox backend"
+                ),
+            )
+        except Exception:
+            logger.warning(
+                "SEL audit failed for an unconfined spawn (%s permission) — "
+                "proceeding unaudited rather than bricking every agent "
+                "subprocess on a host that has no sandbox backend to fall back "
+                "on. Command: %s",
+                granted_by,
+                _command_log_label(argv),
+                exc_info=True,
+            )
+        _warn_no_isolation(mode, granted_by)
     return argv, None
 
 

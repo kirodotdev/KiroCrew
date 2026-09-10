@@ -7,7 +7,7 @@
  */
 
 import type { PetState, PetMood } from './types'
-import type { AnimationFormat, AnimationSource, PackManifest, StateAnimationMap } from './appearanceTypes'
+import type { AnimationFormat, AnimationSource, PackManifest, StateAnimationMap } from '../../lib/appearancePacks/types'
 import { applySvgColorMap, type ColorMap } from './colorCustomizer'
 
 /**

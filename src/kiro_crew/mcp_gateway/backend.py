@@ -349,8 +349,8 @@ def _strip_caller_meta(msg: dict[str, Any]) -> dict[str, Any]:
     BOTH gateway-owned blocks are stripped here, in ONE place, deliberately: the
     tenant nonce decides which namespace an unnamed co-tenant's per-tenant state
     lands in, so a stub allowed to supply its own could choose to land in a
-    PEER's namespace — the same collision #5322 fixed, only chosen instead of
-    accidental. Giving the nonce its own strip function would have added a second
+    PEER's namespace — the same collision the nonce prevents, only chosen instead
+    of accidental. Giving the nonce its own strip function would add a second
     site that every future forward path has to remember; both call sites of this
     one (``forward_from_stub`` and ``_handle_initialize``) already exist.
     """
@@ -467,7 +467,7 @@ def _mcp_apps_enabled() -> bool:
        shared without its server-authored UI.
     2. A stored ``mcp_gateway.apps_enabled = false`` -> disabled, EVEN with the
        env flag on. This key is retired going forward — nothing writes it, the
-       MCP Management page does not surface it, and the docs no longer teach it —
+       MCP Management page does not surface it, and the docs do not teach it —
        but a released version honoured it as a trustworthy opt-out, so a config
        that already carries ``false`` keeps its opt-out. Dropping it here would
        silently start executing server-authored UI for the one operator who took
@@ -564,7 +564,7 @@ def _inject_tenant_meta(msg: dict[str, Any], nonce: str) -> dict[str, Any]:
     including the ones with no caller — that is the case it exists for. A backend
     serving a caller the gateway cannot name falls back to a per-PROCESS
     namespace, which on a pooled backend is one namespace for every unnamed
-    co-tenant (#5322); the nonce splits it per connection.
+    co-tenant; the nonce splits it per connection.
 
     Deliberately NOT on the gateway's own synthesized lease frames
     (``resources/subscribe`` / ``resources/unsubscribe`` replays): those carry the
@@ -1276,7 +1276,7 @@ class Backend:
         alongside (3) and independently of it: a caller the gateway cannot name
         gets no identity block but still gets a nonce, which is what keeps two
         unnamed co-tenants of one pooled backend out of each other's per-tenant
-        state (#5322). Empty means "no separator available" and leaves the
+        state. Empty means "no separator available" and leaves the
         backend on its own per-process fallback.
         """
         if not self.is_alive:
@@ -3688,7 +3688,7 @@ class Backend:
         * ``"idle"``   -- no stubs attached (``refcount == 0``). LEFT ALONE:
           the idle-sweep owns eviction of these on its own timer. Recycling
           idle-but-healthy backends here would re-introduce the cr-guide
-          over-reaping regression (MCPool 0.2.7).
+          over-reaping regression.
         * ``"wedged"`` -- a stub is attached AND BOTH: (1) an in-flight request
           exceeds :data:`HEARTBEAT_TIMEOUT_SECS`, AND (2) no ping response has
           arrived within :data:`PING_STALE_SECS` (backend unresponsive). OR the
@@ -4034,7 +4034,7 @@ async def spawn_backend(
     # identity (unlike a per-session value, which would be a correctness bug).
     spawn_env = dict(env)
     spawn_env[KIROCREW_SPAWNED_ENV] = KIROCREW_SPAWNED_VALUE
-    # Per-process temp containment (#5064). Safe re: the pooled-backend
+    # Per-process temp containment. Safe re: the pooled-backend
     # PoolKey invariant for the same reason as the marker above -- the value
     # is derived from the key's own digest plus a token generated AFTER
     # pool-identity resolution and is never folded into the hash, so it can

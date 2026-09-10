@@ -81,8 +81,11 @@ Independently, a user who wants the data home entirely outside `~/.kiro/` can se
 **Technical hedge — recovery-pointer breadcrumb.** `config_dir()` writes a small,
 non-secret `~/.kirocrew.breadcrumb` pointer file at the top-level home
 (`RECOVERY_BREADCRUMB_NAME`), deliberately **outside** `~/.kiro/`, recording the
-data-home path (see `_write_recovery_breadcrumb`). It is idempotent (rewritten
-only when the recorded path changes), best-effort (never blocks startup), and
+data-home path (see `_write_recovery_breadcrumb`). It is idempotent where the
+platform can check safely (on POSIX the prior content is read via `O_NOFOLLOW`
+and rewritten only when the recorded path changes; where that flag is missing —
+Windows — the check is skipped and the file is atomically rewritten once per
+process), best-effort (never blocks startup), and
 written only on the default path (a `KIROCREW_HOME` override carries no `~/.kiro/`
 wipe risk). It is **not a backup** — just a durable signpost that survives a
 `~/.kiro/`-wide uninstaller wipe so a user or support script can find any
@@ -1032,6 +1035,7 @@ class TelemetryConfig:
 class DashboardConfig:
     url: str = ""                  # public URL for the dashboard (used in Slack links)
     # ... restore_sessions / bot_name / avatar / widget_density / auto_open_browser / etc.
+    default_memory_mode: str = "persistent"  # persistent | incognito | temporary; default for user-created dashboard chats only
     verbosity: str = "default"     # "default" | "concise" | "ultra"; "concise" injects a brevity guideline block into the agent prompt ({{VERBOSITY_BLOCK}}), "ultra" injects a stricter punchline-first block (answer within a ~3-sentence opening, then scannable detail). Read/written via GET/PUT /api/dashboard/config (rejects values other than default|concise|ultra). Resolved for all transports in ContextBuilder._resolve_prompt_templates; an unrecognized value injects an empty block.
     theme_mode: str = ""           # "dark" | "light" | "system"; empty = unset (frontend falls back to localStorage or "system")
     theme_color: str = ""          # color-theme slug (e.g. "kiro", "emerald", "monokai"); empty = unset

@@ -3541,7 +3541,7 @@ class TestGitCoord:
 
     @pytest.mark.asyncio
     async def test_reinit_recovers_an_orphaned_worktree(self, tmp_path: Path) -> None:
-        """#3792: reproduce the reported state precisely -- the worktree
+        """Reproduce the reported state precisely -- the worktree
         directory still exists on disk, but its registration under the main
         repo's ``.git/worktrees/`` was removed out from under it (what an
         interrupted ``git worktree remove`` leaves behind: deregistration and
@@ -3596,7 +3596,7 @@ class TestGitCoord:
     async def test_reinit_fails_closed_when_the_original_repo_is_also_gone(
         self, tmp_path: Path
     ) -> None:
-        """If even run.repo_root can no longer be recovered from, reinit must
+        """If even run.repo_root cannot be recovered from, reinit must
         report failure rather than silently disabling git."""
         from kiro_crew import git_coord
 
@@ -3678,7 +3678,7 @@ class TestGitCoord:
         read as valid.
 
         Matching paths are not identity: something else can create a repo
-        exactly where the lost worktree used to be, and then
+        exactly where the lost worktree stood, and then
         ``rev-parse --show-toplevel`` answers with that path -- the expected
         one. Resuming on that would commit the run's remaining steps into a
         repository that is not the run's own. A linked worktree shares its main
@@ -3780,7 +3780,7 @@ class TestGitCoord:
     async def test_git_probe_fails_closed_when_the_directory_itself_is_gone(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Probing a directory that no longer exists must read as "not a git
+        """Probing a directory that does not exist must read as "not a git
         repo", never raise.
 
         The two platforms disagree on how the spawn fails: POSIX reports a
@@ -3838,7 +3838,7 @@ class TestGitCoord:
         await git_coord.init_workspace(run)
         worktree_dir = Path(run.worktree_path)
 
-        # The #3792 state: deregistered, checkout still on disk, so the first
+        # The orphaned state: deregistered, checkout still on disk, so the first
         # proof legitimately passes and recovery proceeds to capture.
         admin_dir = Path(run.repo_root) / ".git" / "worktrees" / worktree_dir.name
         assert admin_dir.exists()
@@ -3905,7 +3905,7 @@ class TestGitCoord:
         await git_coord.init_workspace(run)
         worktree_dir = Path(run.worktree_path)
 
-        # The #3792 state: deregistered, but the checkout survives on disk, so
+        # The orphaned state: deregistered, but the checkout survives on disk, so
         # the ownership proof passes and recovery proceeds to delete.
         admin_dir = Path(run.repo_root) / ".git" / "worktrees" / worktree_dir.name
         assert admin_dir.exists()
@@ -3971,7 +3971,7 @@ class TestGitCoord:
         worktree_dir = Path(run.worktree_path)
         (worktree_dir / "scratch.txt").write_text("uncommitted scratch")
 
-        # The #3792 orphaned state: deregistered, directory intact.
+        # The orphaned state: deregistered, directory intact.
         import shutil
 
         admin_dir = Path(run.repo_root) / ".git" / "worktrees" / worktree_dir.name
@@ -4225,7 +4225,7 @@ class TestGitCoord:
         # Replace the worktree with an unrelated directory carrying a FORGED
         # pointer: a regular ``.git`` file naming a nonexistent entry under
         # the real repository's ``worktrees`` directory. The ownership checks
-        # accept it as a stale checkout, which used to authorize deletion.
+        # accept it as a stale checkout, which on its own would authorize deletion.
         await git_coord.finalize(run)
         worktree_dir.mkdir(parents=True)
         forged_target = Path(run.repo_root) / ".git" / "worktrees" / "no-such-entry"
@@ -4375,7 +4375,7 @@ class TestGitCoord:
         step = Step(index=1, title="Add step.py", description="d")
         assert await git_coord.commit_step(run, step) != ""
 
-        # The #3792 orphaned state: checkout on disk, admin entry gone. The
+        # The orphaned state: checkout on disk, admin entry gone. The
         # branch is still intact here, so every PRE-add check passes.
         admin_dir = Path(run.repo_root) / ".git" / "worktrees" / worktree_dir.name
         assert admin_dir.exists()

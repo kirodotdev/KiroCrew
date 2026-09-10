@@ -65,7 +65,11 @@ def test_the_ratchet_can_actually_fail() -> None:
     The count moves when a refusal enters or leaves this module's own body. Two
     corpus-read refusals now answer through `chat_utils.history_corpus_unreadable`,
     which sets the code by construction, so the scanner no longer sees them here —
-    a stronger guarantee than a per-site scan, but two fewer sites to count.
+    a stronger guarantee than a per-site scan, but two fewer sites to count. There
+    is no ``slot_not_persistent`` site: an incognito or temporary session forks
+    and the child inherits its mode. The one memory-mode refusal in the module is
+    ``fork_source_memory_mode_invalid``, for a parent whose persisted mode is
+    outside the allowlist.
     """
     coded = [f for f in _findings() if f.bucket == "compliant"]
     assert len(coded) == 27, f"scanner reached {len(coded)} coded sites, expected 27"
@@ -231,13 +235,52 @@ async def test_a_slot_with_no_forkable_messages(tmp_path, monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_non_persistent_slot(tmp_path, monkeypatch) -> None:
+async def test_a_non_persistent_slot_forks_and_inherits_its_mode(tmp_path, monkeypatch) -> None:
+    """The mode is a memory boundary, not a property of the transcript, so the
+    fork proceeds and the child is born with the parent's mode rather than the
+    persistent default."""
     monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
     state = _seeded_state(tmp_path)
-    state._slots["forkable"].memory_mode = "ephemeral"
+    state._slots["forkable"].memory_mode = "incognito"
     status, body = await _fork(state, "forkable", {})
-    assert status == 400
-    assert body["code"] == "slot_not_persistent"
+    assert status == 200
+    assert body["ok"] is True
+    assert body["memory_mode"] == "incognito"
+    assert state._slots[body["key"]].memory_mode == "incognito"
+
+
+@pytest.mark.asyncio
+async def test_a_parent_with_an_unrecognised_persisted_mode_is_refused(
+    tmp_path, monkeypatch
+) -> None:
+    """Rehydration copies the transcript header's ``memory_mode`` onto the slot as
+    written, so a hand-edited header puts a value outside the allowlist on a live
+    parent. The child inherits that value, and the slot constructor rejects it;
+    the fork must refuse with a code before any child exists, not surface the
+    constructor's ``ValueError`` as a 500."""
+    from kiro_crew.dashboard.chat_persistence import (
+        _rehydrate_slot_from_history,
+        _save_slot_to_history,
+    )
+
+    monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+    state = _make_state(tmp_path)
+    slot = state.get_or_create_slot("forkable")
+    slot.append("user", "hello", "msg msg-u")
+    slot.append("assistant", "hi", "msg msg-a")
+    slot.drain()
+    _save_slot_to_history(state, slot, closed=False)
+    state.conversation_log.update_metadata("dashboard:forkable", {"memory_mode": "off"})
+    del state._slots["forkable"]
+    parent = _rehydrate_slot_from_history(state, "forkable")
+    assert parent is not None and parent.memory_mode == "off"
+    keys_before = set(state._slots)
+
+    status, body = await _fork(state, "forkable", {})
+
+    assert status == 409
+    assert body["code"] == "fork_source_memory_mode_invalid"
+    assert set(state._slots) == keys_before, "a refused fork must allocate no child"
 
 
 # ── the property the conversion must not break ──

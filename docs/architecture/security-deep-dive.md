@@ -118,14 +118,23 @@ Two properties are load-bearing at the architecture level:
 
 - **Failure is refusal, not degradation.** With no sandbox backend available and
   a mode other than `off`, `wrap_argv` raises rather than spawning unconfined.
-  Running unconfined is an explicit opt-in (`agent.sandbox_allow_unsandboxed_exec`);
+  Running unconfined is permitted by an explicit opt-in
+  (`agent.sandbox_allow_unsandboxed_exec=true`) or, on a platform with no
+  installable backend, by that platform's default;
   a separate flag (`agent.sandbox_allow_no_isolation`) only demotes the warning's
   log level and does not permit execution. The opt-in's default is
-  **platform-independent** — a platform-derived default would grant unconfined
-  execution on every backend-less host with no operator having declared it — so
-  the discoverable path is instead a consent step in `kirocrew setup`, which
-  prompts (default no) when `detect_backend()` reports `"none"` and writes the
-  key only on an explicit yes.
+  **platform-dependent** — allow on Windows, where no user namespace, no
+  `sandbox-exec` and nothing installable can ever satisfy the check, and
+  fail-closed everywhere else, where a missing backend is broken or one AppArmor
+  profile away from working and the guidance names that profile. The cost is
+  stated rather than glossed: on Windows this removes a deny-by-default
+  authorization. A declared `false` outranks the platform default in both
+  directions, a governance `sandbox.min_level` floor outranks the declaration,
+  and every unconfined spawn is SEL-audited `unconfined` naming the permitting
+  party — the platform grant has no config file standing as its record.
+  `kirocrew setup` still asks, in the direction that matches the default: the
+  opt-IN where it is fail-closed, and the exposure stated plus the opt-OUT where
+  it is allow, writing nothing on a decline so the host stays undeclared.
 - **Windows Kiro delegation is not a global fail-open.** `is_kiro_cli=True` from a
   reviewed official-Kiro spawn site delegates directly to Kiro's built-in sandbox
   before backend probing. A Kiro-looking filename is insufficient on Windows.

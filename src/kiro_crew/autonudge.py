@@ -1477,7 +1477,7 @@ class AutoNudgeService:
                         raise MonitorUpdateConflict(
                             "the session's stopped automation is retained as evidence "
                             "and is not replaceable by a re-arm; its owner must clear "
-                            "it first"
+                            "it first from the dashboard's goal popover"
                         )
                     if existing_monitor is not None and existing_monitor.wake_in_flight:
                         raise MonitorUpdateConflict(
@@ -1654,7 +1654,8 @@ class AutoNudgeService:
                     raise MonitorUpdateConflict(
                         "the session's stopped automation is retained as evidence "
                         f"(stop reason: {existing.stopped_reason or 'manual'!s}) and is "
-                        "not replaceable by a re-arm; its owner must clear it first"
+                        "not replaceable by a re-arm; its owner must clear it first "
+                        "from the dashboard's goal popover"
                     )
                 if existing_monitor is not None and existing_monitor.wake_in_flight:
                     raise MonitorUpdateConflict(
@@ -2247,11 +2248,59 @@ class AutoNudgeService:
                 await self._remove_unserialized(loop.id)
             return loop
 
-    async def _remove_unserialized(self, loop_id: str) -> None:
+    async def clear_terminal_monitor(self, monitor_id: str) -> bool:
+        """Remove a structured monitor row ONLY while it is still terminal.
+
+        The owner-facing clear (``authorize_and_clear_monitor``) checks the
+        record's state, then audits — and the audit hands off to a thread, which
+        yields the event loop. In that window a concurrent
+        ``restore_monitor_after_failed_session_close`` can put the SAME row back
+        into service, so an unconditional removal afterwards would delete a live
+        watch with no record it existed: exactly the harm the live-monitor
+        refusal exists to prevent, reached from the other side.
+
+        So the decision is re-taken here, under the one lock hold that also
+        performs the removal. Returns ``False`` when the row moved on (restored,
+        already gone, or a wake accepted since), and removes nothing.
+        """
+
+        def _still_terminal(loop: NudgeLoop) -> bool:
+            state = loop.monitor
+            if state is None or state.outcome is None:
+                return False
+            if state.version != MONITOR_STATE_VERSION:
+                return False
+            return not state.wake_in_flight
+
+        lock = await self._acquire_mutation_lock(monitor_id)
+        if lock is None:
+            return False
+        try:
+            return await self._remove_unserialized(monitor_id, precondition=_still_terminal)
+        finally:
+            lock.release()
+
+    async def _remove_unserialized(
+        self,
+        loop_id: str,
+        *,
+        precondition: Callable[[NudgeLoop], bool] | None = None,
+    ) -> bool:
+        """Remove one loop. Returns whether the removal happened.
+
+        ``precondition`` is evaluated on the LIVE row inside the same ``_lock``
+        hold that removes it, so a caller whose decision was taken before an
+        await can re-take it atomically here instead of racing whatever landed
+        in between. A refused precondition changes nothing.
+        """
         async with self._lock:
             existed = loop_id in self._loops
             if not existed and loop_id not in self._pending_removals:
-                return
+                return False
+            if precondition is not None:
+                current = self._loops.get(loop_id)
+                if current is None or not precondition(current):
+                    return False
             # Remove in-memory but SKIP the blocking save: _save() -> _write_state
             # fsyncs, and a wedged disk must not freeze the event loop. Snapshot
             # under THIS lock hold (serialization vs the post-fire write). Keep
@@ -2312,6 +2361,7 @@ class AutoNudgeService:
                     # entry may go too (see remove_sync for why not earlier).
                     self._revoke_self_arm_for(removed_loop)
                     self._emit("removed", removed_loop)
+                return True
 
     def get_by_id(self, loop_id: str) -> NudgeLoop | None:
         """The loop with this id, or ``None``.

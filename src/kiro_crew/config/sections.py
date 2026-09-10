@@ -926,16 +926,28 @@ class AgentConfig:
         metadata=_meta(
             "Allow Unsandboxed Execution",
             "When true, allow agent subprocesses to execute without any sandbox "
-            "backend (fail-open). When false (default), wrap_argv raises a "
-            "RuntimeError if no sandbox backend is available and mode is not 'off', "
-            "preventing unsandboxed execution entirely (fail-closed). This is "
-            "distinct from sandbox_allow_no_isolation which only controls warning "
-            "severity — this field controls whether execution proceeds at all. "
-            "The default is platform-independent: on a host with no backend (any "
-            "Windows host, a Linux kernel refusing user namespaces) `kirocrew "
-            "setup` OFFERS this opt-in interactively and writes it only on an "
-            "explicit yes, so unconfined execution stays operator-declared and is "
-            "never enabled implicitly by the platform.",
+            "backend (fail-open). When false, wrap_argv raises if no sandbox "
+            "backend is available and mode is not 'off', preventing unsandboxed "
+            "execution entirely (fail-closed). This is distinct from "
+            "sandbox_allow_no_isolation which only controls warning severity — "
+            "this field controls whether execution proceeds at all. "
+            "A LOADED config carries the effective policy: the loader resolves an "
+            "undeclared key through config.loader.unsandboxed_exec_platform_default() "
+            "— allow on Windows, which has no backend that any operator action could "
+            "install, and fail-closed everywhere else, where a missing backend is "
+            "broken or one profile away from working. A declared value always wins in "
+            "both directions, and a governance sandbox.min_level floor outranks the "
+            "declaration. The resolution is folded into the VALUE rather than keyed on "
+            "key presence so a full-document save() — which serializes every field — "
+            "cannot turn 'never decided' into a declared lockdown. This dataclass "
+            "default stays platform-independent so the committed config-schema "
+            "snapshot is identical on every platform; the one caller that writes a "
+            "document from a directly constructed config (the first-run default write "
+            "in cli_server) resolves the platform default explicitly before saving. "
+            "`kirocrew setup` surfaces the decision on a backend-less host, offering "
+            "the opt-in where the default is fail-closed and stating the exposure plus "
+            "offering the opt-out where it is allow, and writes nothing unless the "
+            "operator answers yes.",
         ),
     )
     apps_allow_third_party: bool = field(
@@ -2620,6 +2632,17 @@ class DashboardConfig:
             "session restores — with short pauses instead of launching "
             "everything at once, so a host still under memory pressure is "
             "not pushed straight back into the same collapse.",
+        ),
+    )
+    default_memory_mode: str = field(
+        default="persistent",
+        metadata=_meta(
+            "Default Memory Mode",
+            "Memory mode for new dashboard chat sessions. 'persistent' reads "
+            "and writes memory; 'incognito' reads but does not write; "
+            "'temporary' neither reads nor writes. Explicit per-session choices "
+            "still win.",
+            enum=["persistent", "incognito", "temporary"],
         ),
     )
     widget_density: str = field(

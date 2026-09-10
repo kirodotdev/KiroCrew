@@ -484,8 +484,27 @@ class TestLearnAddToolReportsTheOutcome:
 
     def test_dedup_says_covered_by_an_existing_lesson(self):
         text = self._call({"ok": False, "outcome": "deduped", "reason": "substring_covered"})
-        assert "NOT saved as a new entry" in text
+        assert "NOT saved" in text
         assert "already covers it" in text
+        # The message quotes the SUBMITTED rule. It must say so: the old wording put
+        # that quote straight after "an existing stored lesson already covers it",
+        # which read as a quote of the stored lesson, so a caller thought it had been
+        # shown the winner and could not tell a correct dedup from a dropped
+        # correction. It must also name the replace path.
+        assert "DROPPED" in text
+        assert "NOT the stored lesson" in text
+        assert "learn_remove" in text
+
+    def test_semantic_dedup_reply_never_coaches_removing_the_protected_lesson(self):
+        """``semantic_similarity`` is only reachable when the stored row OUTRANKS
+        the write. Coaching the remove-and-re-add path there would walk an
+        automated caller through deleting the row the store just protected."""
+        text = self._call({"ok": False, "outcome": "deduped", "reason": "semantic_similarity"})
+        assert "NOT saved" in text
+        assert "higher authority" in text
+        assert "DROPPED" in text
+        assert "NOT the stored lesson" in text
+        assert "learn_remove" not in text
 
     def test_no_op_says_already_stored_without_claiming_an_exact_match(self):
         """``unchanged`` does not mean the stored row equals the submission.

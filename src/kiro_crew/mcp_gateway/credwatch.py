@@ -161,9 +161,9 @@ async def watch_credential(
             no-arg callable invoked after every probe cycle finishes,
             including cycles that fire nothing. It lets a caller await
             "one poll has happened" instead of sleeping a wall-clock
-            guess. The sleep-based tests were flaky on Windows runners,
-            whose coarser timer resolution let a write land outside the
-            intended window (issue #1105).
+            guess. A sleep-based test flakes on Windows runners,
+            whose coarser timer resolution lets a write land outside the
+            intended window.
     """
     baseline_mtime: Optional[float] = None
     baseline_digest: Optional[str] = None

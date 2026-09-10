@@ -19,7 +19,7 @@ import SegmentedControl from '../components/SegmentedControl'
 import InfoTip from '../components/InfoTip'
 import { FOCUSABLE } from '../hooks/useDialogFocusTrap'
 import SimpleSelect from '../components/SimpleSelect'
-import CrewAvatar, { ghostTraitsFrom, imageAvatarFrom, type CrewAvatarOverride } from '../components/CrewAvatar'
+import CrewAvatar, { ghostTraitsFrom, imageAvatarFrom, packAvatarFrom, unclaimedAvatarFrom, type CrewAvatarOverride } from '../components/CrewAvatar'
 import CrewStateAvatar from '../components/CrewStateAvatar'
 import CrewAvatarBuilder from '../components/CrewAvatarBuilder'
 import { expressionsFrom, soundsFrom } from '../lib/crewAvatarState'
@@ -69,8 +69,11 @@ interface AgentUpdatePayload {
   reasoning_effort: string
   /** Default session color (#rrggbb hex) for new sessions. '' = no default. */
   session_color: string
-  /** Pinned ghost face from the avatar builder. `{}` = the name-derived face. */
-  avatar: CrewAvatarOverride | Record<string, never>
+  /** The face this save commits. Three spellings the backend tells apart:
+   *  a record pins a face; `null` is an explicit RESET to the name-derived face;
+   *  `{}` says this save has no opinion about the face at all, and on a crew
+   *  wearing a pack the backend answers it by keeping the pack. */
+  avatar: CrewAvatarOverride | Record<string, unknown> | null
 }
 
 /** The stored spelling for "no per-agent pin, inherit the next tier down". The
@@ -828,6 +831,29 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
   const [editEffort, setEditEffort] = useState('')
   /** Draft avatar override. null = the name-derived face (no override). */
   const [editAvatar, setEditAvatar] = useState<CrewAvatarOverride | null>(null)
+  /**
+   * The stored `avatar` when no reader understood it — a tier a newer client
+   * wrote, or a pack id this build cannot parse.
+   *
+   * Held so Save writes it back VERBATIM. The payload below is `draft ?? {}`, so
+   * without this an unrecognised record is erased by the first unrelated edit —
+   * and that is a property of the enumeration rather than of any one tier, so
+   * teaching the editor a third reader would just leave the fourth to break the
+   * same way. Cleared the moment the builder commits a draft, because that is
+   * the user deciding this crew's avatar.
+   */
+  const [avatarPassthrough, setAvatarPassthrough] = useState<Record<string, unknown> | null>(null)
+  /** The builder committed an explicit RESET — the user pressed "Reset to default"
+   *  and then Apply — as opposed to never having opened it. Both leave
+   *  `editAvatar` null, and the two must not send the same thing: `{}` is the
+   *  spelling a client uses when it has no opinion about the face, and the backend
+   *  answers it on a pack-wearing crew by keeping the pack
+   *  (`_carry_pack_through_faceless_save`), because the editor that shipped before
+   *  this picker could not see a pack and would otherwise have undressed one on
+   *  every unrelated save. `null` is the spelling reserved for a reset that is
+   *  MEANT, and this editor is now the client that can mean it. Without the
+   *  distinction, Reset → Save silently did nothing to a pack crew. */
+  const [avatarReset, setAvatarReset] = useState(false)
   const [avatarBuilderOpen, setAvatarBuilderOpen] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
   /** The armed confirm row, scrolled into view when it appears: the danger zone
@@ -880,6 +906,7 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
     sheetEpoch.current += 1
     setError(''); setSheetHint('')
     setConfirmDelete(false)
+    setAvatarPassthrough(null)
     setName(''); setKiroAgent(''); setWorkspace('default'); setMemoryStore('default')
     setTriggers('')
     setSessionColor('')
@@ -903,24 +930,43 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
     // override" everywhere).
     const storedTraits = ghostTraitsFrom(a.avatar)
     const storedImage = imageAvatarFrom(a.avatar)
-    // The reaction layer rides on both tiers, and on neither: a record that
-    // pins no face and no picture but carries expressions or sounds is still
-    // an override ("the name-derived face, plus these reactions").
+    const storedPack = packAvatarFrom(a.avatar)
+    // The reaction layer rides on every tier, and on none: a record that pins no
+    // face, no picture and no pack but carries expressions or sounds is still an
+    // override ("the name-derived face, plus these reactions").
     const storedExpressions = expressionsFrom(a.avatar)
     const storedSounds = soundsFrom(a.avatar)
     const reactions = {
       ...(storedExpressions ? { expressions: storedExpressions } : {}),
       ...(storedSounds ? { sounds: storedSounds } : {}),
     }
+    // A record NO reader claimed is owned WHOLE by the passthrough, reactions
+    // included, so it gets no draft at all. Synthesizing `{kind:'ghost',
+    // …reactions}` for it looks harmless and is not: `avatarPayload` prefers a
+    // draft over the passthrough, so the lifted reaction layer would go back as
+    // a GHOST record and the tier it was lifted out of would be dropped — by
+    // exactly the unrelated save the passthrough exists to survive. The builder's
+    // Apply is the only thing allowed to overrule such a record.
+    const storedUnclaimed = unclaimedAvatarFrom(a.avatar)
     setEditAvatar(
-      storedTraits
-        ? { kind: 'ghost', traits: storedTraits, ...reactions }
-        : storedImage
-          ? { kind: 'image', v: storedImage.v, ...reactions }
-          : Object.keys(reactions).length
-            ? { kind: 'ghost', ...reactions }
-            : null,
+      storedUnclaimed
+        ? null
+        : storedTraits
+          ? { kind: 'ghost', traits: storedTraits, ...reactions }
+          : storedImage
+            ? { kind: 'image', v: storedImage.v, ...reactions }
+            : storedPack
+              ? // Loaded so Save writes the pack back verbatim. Without this the
+                // draft was null for a pack crew, and `avatarPayload`'s
+                // `editAvatar ?? {}` reset the record to "no override" — so
+                // changing only the model undressed the crew.
+                { kind: 'pack', id: storedPack.id, ...reactions }
+              : Object.keys(reactions).length
+                ? { kind: 'ghost', ...reactions }
+                : null,
     )
+    setAvatarPassthrough(storedUnclaimed)
+    setAvatarReset(false)
     setAvatarBuilderOpen(false)
     setSheet({ mode: 'edit', name: a.name })
   }, [])
@@ -1141,7 +1187,14 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
       reasoning_effort: editEffort,
       session_color: sessionColor,
     }
-    let avatarPayload: CrewAvatarOverride | Record<string, never> = editAvatar ?? {}
+    // Three spellings, and the difference between the last two is load-bearing:
+    // a draft the user built; `null` when they explicitly RESET (see
+    // `avatarReset`); `avatarPassthrough` before `{}` so a record this build did
+    // not understand is preserved rather than erased; and `{}` last, for a crew
+    // that really has no override and a save that says nothing about the face.
+    let avatarPayload: CrewAvatarOverride | Record<string, unknown> | null = avatarReset
+      ? null
+      : (editAvatar ?? avatarPassthrough ?? {})
     if (editAvatar?.kind === 'image') {
       let stagedToken: string | null = null
       if (editAvatar.pendingData) {
@@ -1205,7 +1258,9 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
       epoch,
       data: {
         ...data,
-        // {} is the wire spelling for "reset to the name-derived face".
+        // `null` = reset on purpose, `{}` = this save says nothing about the
+        // face. On a pack crew those two differ, so the distinction has to
+        // survive all the way onto the wire.
         avatar: avatarPayload,
       },
     })
@@ -1358,18 +1413,24 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
     if (editEffort !== (editingAgent.reasoning_effort || '')) out.add('model')
     if (triggers !== (editingAgent.triggers || '')) out.add('routing')
     if (sessionColor !== (editingAgent.session_color || '')) out.add('routing')
-    // Both tiers in one comparison: ghost traits normalize through
-    // ghostTraitsFrom (flat record, stable key order) and an image override
-    // through imageAvatarFrom — so a picture pick, replace, or removal is
-    // dirty exactly like a trait edit. pendingData is part of the draft's
-    // identity on purpose: a newly chosen picture IS an unsaved change.
-    const savedNorm = ghostTraitsFrom(editingAgent.avatar) ?? imageAvatarFrom(editingAgent.avatar)
+    // Every tier in one comparison: ghost traits normalize through
+    // ghostTraitsFrom (flat record, stable key order), an image override through
+    // imageAvatarFrom and a pack through packAvatarFrom — so a picture pick, a
+    // replace, a removal or a pack swap is dirty exactly like a trait edit.
+    // pendingData is part of the draft's identity on purpose: a newly chosen
+    // picture IS an unsaved change.
+    const savedNorm =
+      ghostTraitsFrom(editingAgent.avatar) ??
+      imageAvatarFrom(editingAgent.avatar) ??
+      packAvatarFrom(editingAgent.avatar)
     const draftNorm =
       editAvatar?.kind === 'ghost'
         ? (editAvatar.traits ?? null)
         : editAvatar?.kind === 'image'
           ? { v: editAvatar.v, pendingData: editAvatar.pendingData }
-          : null
+          : editAvatar?.kind === 'pack'
+            ? { id: editAvatar.id }
+            : null
     if (JSON.stringify(draftNorm) !== JSON.stringify(savedNorm)) out.add('routing')
     // Compared separately from the face, and BOTH sides go through the same
     // coercion — which is what makes the comparison sound rather than merely
@@ -1379,7 +1440,16 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
     // working/done/error with eyes before mouth. Comparing the raw draft
     // against a coerced record would report two identical sets of overrides as
     // a change, and the rail would show an unsaved dot on a freshly saved crew.
-    const savedReactions = [expressionsFrom(editingAgent.avatar), soundsFrom(editingAgent.avatar)]
+    //
+    // Both readers are kind-AGNOSTIC, so on a record no reader claimed they
+    // still report its reaction map — while `openEdit` deliberately holds that
+    // record whole in the passthrough and seeds NO draft. Comparing the two
+    // would put an unsaved dot on a crew that was only just opened, so the
+    // saved side reads as "no draft either", which is what it is.
+    const unclaimed = unclaimedAvatarFrom(editingAgent.avatar) !== null
+    const savedReactions = unclaimed
+      ? [null, null]
+      : [expressionsFrom(editingAgent.avatar), soundsFrom(editingAgent.avatar)]
     const draftReactions = [expressionsFrom(editAvatar), soundsFrom(editAvatar)]
     if (JSON.stringify(draftReactions) !== JSON.stringify(savedReactions)) out.add('routing')
     // An open inline schedule-create form is pending work too: it gets the
@@ -1806,7 +1876,11 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
                   disabled={sheetBusy}
                   data-testid="header-avatar-button"
                 >
-                  <CrewStateAvatar seed={editing} avatar={editAvatar ?? undefined} size={28} onImageError={() => setError(i18nT('components.avatarBuilder.image_load_failed'))} />
+                  {/* Which tier failed decides the message: CrewAvatar draws a pack's slot
+                      URL through the same <img>, so one banner for both told a pack
+                      crew its "saved picture" was broken — a picture it never had,
+                      and advice ("upload it again") it cannot act on. */}
+                  <CrewStateAvatar seed={editing} avatar={editAvatar ?? undefined} size={28} onImageError={() => setError(i18nT(packAvatarFrom(editAvatar) ? 'components.avatarBuilder.pack_load_failed' : 'components.avatarBuilder.image_load_failed'))} />
                 </CrewAvatarButton>
               )}
               <DialogTitle className="font-mono">
@@ -2247,7 +2321,18 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
               name={editing}
               value={editAvatar}
               onCancel={() => setAvatarBuilderOpen(false)}
-              onSave={next => { setEditAvatar(next); setAvatarBuilderOpen(false) }}
+              onSave={next => {
+                setEditAvatar(next)
+                // Any Apply is the user deciding the avatar, so a record they
+                // never saw must not ride along behind their choice.
+                setAvatarPassthrough(null)
+                // A null draft out of the builder is the Reset link having been
+                // pressed — an intent, not an absence. Recorded so Save can send
+                // the reset the backend honours instead of the "no opinion" `{}`
+                // that leaves a pack on.
+                setAvatarReset(next === null)
+                setAvatarBuilderOpen(false)
+              }}
             />
           )}
         </DialogContent>

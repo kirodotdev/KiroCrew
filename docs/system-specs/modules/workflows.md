@@ -528,10 +528,15 @@ ancestry, and the driving `task`. Statuses: `running`, `finished`, `failed`,
 
 Two distinct serializations:
 
-- `snapshot(include_events=)` is the **UI view**. The compact form adds derived
-  live progress (`phase` from the last `phase_started`, `last_log` from the last
-  `log`) plus `partial_result_count` / `agent_error_count`; the full form adds
-  `events`, `source`, `partial_results` and `agent_errors`. Partials are keyed on
+- `snapshot(include_events=, include_result=)` is the **UI view**. The compact
+  form (`include_events=False, include_result=False`, what `list()` builds) adds
+  derived live progress (`phase` from the last `phase_started`, `last_log` from
+  the last `log`) plus `partial_result_count` / `agent_error_count`, and omits
+  the `result` payload — a finished run's result can be hundreds of KB, so it
+  rides only on the detail view, exactly like `events` and `source`. The full
+  form adds `result`, `events`, `source`, `partial_results` and `agent_errors`.
+  The `on_done` completion snapshot keeps `include_result=True`, so
+  result-to-chat injection is unaffected. Partials are keyed on
   **status**, not on `result is None`: a run can finish and legitimately return
   `None`, and a running run has no result yet, so neither lost anything and
   reporting partials for them would mislead the reader and resend every payload on
@@ -565,6 +570,14 @@ host lifecycle checkpoint may stall the gateway event loop or move live registry
 state across threads. Cancellation drains an in-flight registration write before
 asynchronously deleting the partial run, so a late atomic replace cannot resurrect an
 identity that was never returned to its host driver.
+
+The read handlers extend the same rule to the response path: the run list, run
+detail, and definition list/get endpoints serialize the payload once
+synchronously on the event loop (an atomic snapshot — no await, so no
+loop-driven mutation can interleave), then a worker thread rebuilds its own
+structure from that immutable string and performs redaction + the final JSON
+serialization. The thread only ever touches objects it created itself, so it
+can never observe or race live registry state.
 
 ### `store.py`
 

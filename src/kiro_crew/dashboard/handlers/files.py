@@ -12,6 +12,7 @@ import logging
 import mimetypes
 import ntpath
 import os
+import posixpath
 import re
 import stat as _stat_mod
 import subprocess
@@ -53,7 +54,11 @@ from kiro_crew.dashboard.chat_utils import (
 from kiro_crew.dashboard.file_index import _SKIP_DIRS as _WALK_SKIP_DIRS
 from kiro_crew.dashboard.handlers._shared import _probe_persisted_session, read_bounded_json
 from kiro_crew.dashboard.origin import is_direct_local_request
-from kiro_crew.dashboard.state import DashboardState, append_and_surface
+from kiro_crew.dashboard.state import (
+    VALID_MEMORY_MODES,
+    DashboardState,
+    append_and_surface,
+)
 from kiro_crew.doc_parser import extract_text
 from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes, safe_read_prefix
 from kiro_crew.messaging.display_safety import redact_for_display
@@ -66,6 +71,7 @@ from kiro_crew.security import (
     is_sensitive_path,
     redact_credentials,
     redact_exfiltration_urls,
+    redact_path_segments,
 )
 from kiro_crew.slack.handler import is_tracked_channel
 from kiro_crew.validation import (
@@ -4043,7 +4049,7 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
             )
             return body_err
         assert body is not None  # read_bounded_json returns (dict, None) on success
-        _allowed = {"restore_sessions", "restore_window_minutes", "merge_queued_messages", "widget_density", "use_builtin_browser", "verbosity", "quick_send", "session_grid", "tail_fork_enabled", "link_previews", "mcp_app_panel", "auto_open_git_panel", "folder_suggestions_enabled", "session_card_source_links"}
+        _allowed = {"restore_sessions", "restore_window_minutes", "merge_queued_messages", "default_memory_mode", "widget_density", "use_builtin_browser", "verbosity", "quick_send", "session_grid", "tail_fork_enabled", "link_previews", "mcp_app_panel", "auto_open_git_panel", "folder_suggestions_enabled", "session_card_source_links"}
         # One-release backward-compat shim for removed key; delete after all clients update.
         deprecated_ignored_keys = {"tail_fork_head_handling"}
         # Read-only keys the GET exposes: both settings surfaces save with
@@ -4096,6 +4102,23 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
                     {"error": "merge_queued_messages must be a boolean"}, status=400
                 )
             updates["merge_queued_messages"] = val
+        if "default_memory_mode" in body:
+            val = body["default_memory_mode"]
+            if val not in VALID_MEMORY_MODES:
+                _sel().log_tool_invocation(
+                    session_key="dashboard",
+                    tool_name="dashboard_config_write",
+                    outcome="failure",
+                )
+                return web.json_response(
+                    {
+                        "error": "default_memory_mode must be 'persistent', "
+                        "'incognito' or 'temporary'",
+                        "code": "invalid_default_memory_mode",
+                    },
+                    status=400,
+                )
+            updates["default_memory_mode"] = val
         if "widget_density" in body:
             val = body["widget_density"]
             if val not in ("more", "less"):
@@ -4360,6 +4383,7 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
             "restore_sessions": cfg.dashboard.restore_sessions,
             "restore_window_minutes": cfg.dashboard.restore_window_minutes,
             "merge_queued_messages": cfg.dashboard.merge_queued_messages,
+            "default_memory_mode": cfg.dashboard.default_memory_mode,
             "widget_density": cfg.dashboard.widget_density,
             "use_builtin_browser": cfg.dashboard.use_builtin_browser,
             "verbosity": cfg.dashboard.verbosity,
@@ -5096,6 +5120,10 @@ async def api_project_git_status(request: web.Request) -> web.Response:
             pass
 
         result: dict = {"repo": True, "repoRoot": repo_root, "files": files[:500]}
+        # Status paths are repo-root-relative; when the project directory sits
+        # below the repo root, every path starts with this prefix.
+        rel = os.path.relpath(base, repo_root)
+        result["_prefix"] = "" if rel in (".", "") or rel.startswith("..") else rel.replace(os.sep, posixpath.sep)
         if len(files) > 500:
             result["truncated"] = True
         if branch:
@@ -5115,27 +5143,60 @@ async def api_project_git_status(request: web.Request) -> web.Response:
         result["repoRoot"] = redact(result["repoRoot"])
     if result.get("branch"):
         result["branch"] = redact(result["branch"])
-    # Redact each file path, then drop entries that duplicate an earlier one
-    # (preserving order and first occurrence). Same collision class as
-    # api_project_tree: redact() can collapse two genuinely-different paths to
-    # the same placeholder. This list feeds GitPanel, which keys its rows on
+    # Redact each file path with redact_path_segments over the same
+    # context-aware redact(): each path is redacted segment-wise, and every
+    # redacted segment carries an opaque label keyed per gateway process, so two
+    # genuinely-different paths that collapse to the same tag stay two entries
+    # instead of one placeholder -- the whole-string redact() is still the
+    # floor, never less. The label is stable across responses within this
+    # process, which is what lets the dashboard join this listing with the
+    # tree listing by path.
+    # Then drop entries that duplicate an earlier one (preserving order and
+    # first occurrence): this is the fallback for a collision the helper does
+    # not separate. This list feeds GitPanel, which keys its rows on
     # `${path}:${staged}` and takes its file total from files.length, so a
     # collision would render two indistinguishable rows under one React key and
-    # overstate the count. (It cannot reach @pierre/trees as a duplicate the way
-    # api_project_tree's list can: the tree's "changed" mode already collapses
-    # status entries by path before handing them over.) The files[:500] cap was
-    # already applied to the raw listing above, so this only removes collisions.
+    # overstate the count. (It cannot reach @pierre/trees as a duplicate the
+    # way api_project_tree's list can: the tree's "changed" mode already
+    # collapses status entries by path before handing them over.) The
+    # files[:500] cap was already applied to the raw listing above, so this
+    # only removes collisions.
     #
     # The key is (path, status, staged), NOT path alone: one file with both
     # staged and unstaged changes ("MM", "AM", "MD") legitimately yields two
     # entries sharing a path but differing in status/staged, and GitPanel
-    # renders them as separate rows. Keying on path alone would drop the
+    # renders them as separate rows (identical originals redact identically, so
+    # the pair still shares its path). Keying on path alone would drop the
     # unstaged lane and undercount the file total. A real redaction collision
     # has an identical tuple, so it still collapses.
+    # The project directory's own repo-relative prefix is redacted the same
+    # way the tree root and repoRoot are (whole-string, unlabelled), so a
+    # credential-shaped project directory reads identically on both sides of
+    # the dashboard join; only the part beneath it is labelled per segment.
+    prefix = str(result.pop("_prefix", "") or "")
+    prefix_slash = posixpath.join(prefix, "") if prefix else ""
+    redacted_prefix = redact(prefix) if prefix else ""
+
+    def _redact_status_path(path: str) -> str:
+        if prefix_slash and path.startswith(prefix_slash):
+            below = redact_path_segments(path[len(prefix_slash) :], redact)
+            joined = posixpath.join(redacted_prefix, below)
+            # Same floor redact_path_segments applies to its own assembly: the
+            # prefix and the part beneath it are redacted separately, so a
+            # token that straddles the joining slash is matched by neither
+            # half. The joined result must be a fixed point of the redactor;
+            # when it is not, the whole-path result wins, exactly as it does
+            # inside the helper.
+            return joined if redact(joined) == joined else redact(path)
+        if prefix and path == prefix:
+            return redacted_prefix
+        return redact_path_segments(path, redact)
+
     deduped_files: list[dict] = []
     seen_keys: set[tuple[str, str | None, bool | None]] = set()
-    for f in result.get("files", []):
-        f["path"] = redact(f["path"])
+    files = result.get("files", [])
+    for f in files:
+        f["path"] = _redact_status_path(f["path"])
         key = (f["path"], f.get("status"), f.get("staged"))
         if key in seen_keys:
             continue
@@ -5297,15 +5358,25 @@ async def api_project_tree(request: web.Request) -> web.Response:
     # Egress redaction, same rationale as api_project_git_status: listed names
     # are repo content and this body is rendered by the dashboard.
     result["root"] = redact(result["root"])
-    # De-duplicate after redaction, preserving order and first occurrence.
-    # redact() collapses each matched token to a fixed placeholder, so two
-    # genuinely-different project-relative paths (e.g. a src/ vs target/ Maven
-    # prefix and a credential-shaped filename token) can flatten to the same
-    # redacted string. The dashboard tree hands this list straight to
-    # @pierre/trees, whose appendPresortedPaths throws "Duplicate path" on
-    # adjacent identical entries. dict.fromkeys keeps first occurrence. This
-    # does not affect "truncated": the cap is applied to the raw listing above.
-    result["paths"] = list(dict.fromkeys(redact(p) for p in result["paths"]))
+    # Redact each path with redact_path_segments over the same context-aware
+    # redact(): the whole-string redact() collapses each matched token to a
+    # fixed placeholder, so two genuinely-different project-relative paths
+    # whose only differing segment is credential-shaped redact to the same
+    # string. The helper redacts each path segment-wise and suffixes every
+    # redacted segment with an opaque label keyed per gateway process, so both
+    # stay in the tree; it never emits less redaction than redact() itself, and
+    # the label is stable across responses within this process, so the git
+    # status listing labels the same path identically and the dashboard's join
+    # by path holds.
+    # Then de-duplicate, preserving order and first occurrence, as the fallback
+    # for a collision the helper does not separate: the dashboard tree hands
+    # this list straight to @pierre/trees, whose appendPresortedPaths throws
+    # "Duplicate path" on adjacent identical entries. dict.fromkeys keeps first
+    # occurrence. This does not affect "truncated": the cap is applied to the
+    # raw listing above.
+    result["paths"] = list(
+        dict.fromkeys(redact_path_segments(p, redact) for p in result["paths"])
+    )
     return web.json_response(result)
 
 

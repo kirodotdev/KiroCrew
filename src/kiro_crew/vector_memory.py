@@ -3018,13 +3018,20 @@ class VectorMemoryStore:
         Deduplicates against existing lessons:
         - Substring match: if existing contains new (or vice versa), longer wins
         - Topic overlap: if >50% of significant words match, newer replaces older
-        - Semantic similarity: if >85% cosine similarity, longer wins
+        - Semantic similarity: if >85% cosine similarity, newer replaces older --
+          unless a stored near-duplicate outranks this write (``user_explicit``
+          over a lower-authority source, or strictly higher stored confidence).
+          That verdict is decided in a non-mutating pre-pass BEFORE the scan
+          deletes anything, so a write declined on authority deletes nothing
+          and reports ``deduped`` / ``semantic_similarity`` with an empty
+          ``superseded``.
 
-        Two of those three rules DELETE a stored lesson, and the "longer wins" tie
-        break means a submitted rule can retire a stored one that is more general
-        than it -- attaching a condition to a rule makes the text longer and the
-        guidance NARROWER, so the row that survives can be the one that applies less
-        often. That is the designed behaviour and this method keeps it: the
+        Two of those three rules DELETE a stored lesson, and the substring rule's
+        "longer wins" direction means a submitted rule can retire a stored one that
+        is more general than it -- attaching a condition to a rule makes the text
+        longer and the guidance NARROWER, so the row that survives can be the one
+        that applies less often. That is the designed behaviour and this method
+        keeps it: the
         alternative is a store that accumulates near-identical rules, which is what
         these three rules exist to prevent, and the onboarding import already shows
         the sanctioned way to opt out of it (route to ``set_semantic_if_absent``,
@@ -3351,6 +3358,123 @@ class VectorMemoryStore:
         # skips this scan entirely, so an ``enriched`` result always reports none.
         superseded: list[str] = []
 
+        # The mutating semantic branch's supersedes, DEFERRED (key, report,
+        # sim): they execute after the loop, only when the write proceeds, so
+        # a later refusal (main's ``substring_covered``) cannot strand a
+        # deletion this change's newest-wins took where the old tie-break
+        # would have refused. See the semantic branch below.
+        deferred_semantic: list[tuple[str, str, float]] = []
+
+        # AUTHORITY PRE-PASS -- non-mutating, decided before the scan's first
+        # deletion. The invariant (settled after three review rounds circled
+        # the same class): every refusal THIS change introduces is decidable
+        # before the scan mutates anything. Rows are scanned in recency order,
+        # not authority order, so a mid-scan authority decline could land
+        # AFTER the untouched branches (or an earlier semantic supersede)
+        # already deleted a row -- losing a stored lesson while storing
+        # nothing. So the authority verdict is settled here, over the same
+        # rows the semantic branch below will see: the pre-pass shares
+        # ``backfills_done`` / ``pending_backfills`` with the main scan and
+        # memoizes each computed blob onto its row dict, so a row embedded
+        # here is never re-embedded or re-counted below, and the semantic
+        # branch's visible set is a subset of the pre-pass's. (The pre-pass
+        # can spend budget on rows the main scan never reaches -- it walks the
+        # whole list, while the scan can return early on a lexical claimant --
+        # so the SETS can differ even though no row is ever double-charged.)
+        # A ``user_explicit`` write can never be declined, so the pass is
+        # skipped for it entirely. Main's substring/topic-overlap branches
+        # keep their delete-as-you-go shape (their one pre-existing
+        # delete-then-decline route, via ``substring_covered``, predates this
+        # change and is spec-documented); scan-wide authority ordering is a
+        # tracked follow-up decision.
+        if similarity is not None and source != "user_explicit" and not matched:
+            for existing in lesson_rows:
+                pre_text = _as_text(existing)
+                if pre_text is None:
+                    continue
+                # PURE semantic matches only. A row the mutating scan's
+                # substring or topic-overlap branch would claim FIRST (per-row
+                # branch order) keeps main's outcome for it -- those branches
+                # are source-blind by main's design, and the pre-pass must not
+                # decline a write that main would have resolved lexically
+                # before the semantic test ever ran. The predicates mirror the
+                # scan's own, on the same normalized text.
+                pre_lower = pre_text.lower()
+                if rule_lower in pre_lower or pre_lower in rule_lower:
+                    continue
+                if rule_words:
+                    pre_words = self._lesson_keywords(pre_lower)
+                    if pre_words and (
+                        len(rule_words & pre_words) / min(len(rule_words), len(pre_words))
+                        >= 0.5
+                    ):
+                        continue
+                existing_emb_blob = existing.get("embedding")
+                row_blob: bytes | None = None
+                if (
+                    existing_emb_blob
+                    and isinstance(existing_emb_blob, bytes)
+                    and len(existing_emb_blob) >= 4
+                ):
+                    row_blob = existing_emb_blob
+                elif self.embed_fn and backfills_done < _MAX_BACKFILLS_PER_CALL:
+                    # Same lazy-backfill contract as the main scan (count even
+                    # on failure; generation sampled BEFORE the embed). The
+                    # blob is memoized onto the row dict so the main scan
+                    # neither re-embeds nor re-counts this row; a failure is
+                    # marked so the row is attempted at most once per call,
+                    # exactly as before this pass existed.
+                    backfill_generation = self._space_generation
+                    existing_emb = self._try_embed(
+                        _lesson_embed_text(json.loads(existing["value_json"])),
+                        PRIORITY_BULK,
+                    )
+                    if existing_emb:
+                        row_blob = struct.pack(f"{len(existing_emb)}f", *existing_emb)
+                        pending_backfills.append(
+                            (row_blob, existing["key"], backfill_generation)
+                        )
+                        existing["embedding"] = row_blob
+                    else:
+                        existing["_authority_prepass_embed_failed"] = True
+                    backfills_done += 1
+                if row_blob is None:
+                    continue
+                if similarity({"embedding": row_blob}) > 0.85:
+                    # Outranking means a ``user_explicit`` row over this
+                    # lower-authority write, or a strictly higher stored
+                    # confidence -- the confidence half on its own merit: the
+                    # onboarding import stores the user's own lessons at
+                    # confidence 1.0 under source "import", so a 0.9
+                    # consolidation write must not retire them. Strict ``>``
+                    # is a deliberate divergence from ``_write_semantic``'s
+                    # same-key rule (which treats confidences within 0.1 as
+                    # equal and lets the newer write win): near-duplicates are
+                    # DIFFERENT rows with no same-key freshness to prefer, and
+                    # equal confidence falls through to newest-wins below.
+                    try:
+                        existing_confidence = float(existing.get("confidence") or 0.0)
+                    except (TypeError, ValueError):
+                        existing_confidence = 0.0
+                    if (
+                        existing.get("source") == "user_explicit"
+                        or existing_confidence > confidence
+                    ):
+                        logger.info(
+                            "Lesson semantic dedup: higher-authority %r kept over %s",
+                            existing["key"],
+                            source,
+                        )
+                        # Nothing has been deleted: this return precedes the
+                        # mutating scan entirely, so a declined write costs no
+                        # stored row and ``superseded`` is always empty here.
+                        _flush_backfills()
+                        return LessonWriteResult(
+                            LessonWriteOutcome.DEDUPED,
+                            "semantic_similarity",
+                            tuple(superseded),
+                        )
+
         for existing in [] if matched else lesson_rows:
             existing_text = _as_text(existing)
             if existing_text is None:
@@ -3429,19 +3553,28 @@ class VectorMemoryStore:
             # Semantic dedup via embeddings (use stored embedding when available)
             if similarity is not None:
                 existing_emb_blob = existing.get("embedding")
-                row_blob: bytes | None = None
+                row_blob = None
                 if (
                     existing_emb_blob
                     and isinstance(existing_emb_blob, bytes)
                     and len(existing_emb_blob) >= 4
                 ):
                     row_blob = existing_emb_blob
-                elif self.embed_fn and backfills_done < _MAX_BACKFILLS_PER_CALL:
+                elif (
+                    self.embed_fn
+                    and backfills_done < _MAX_BACKFILLS_PER_CALL
+                    and not existing.get("_authority_prepass_embed_failed")
+                ):
                     # Lazy backfill: compute embedding for legacy lessons (count even on failure)
                     # Sampled BEFORE the embed: _try_embed returns None when a swap
                     # spanned its own call, so this value is the blob's true space.
                     # Sampling after it returns would tag an old blob with the new
                     # generation and the flush check would wave it through.
+                    # A row the authority pre-pass already attempted is skipped:
+                    # the pre-pass memoized a successful blob onto the row dict
+                    # (so this branch is not reached) and marked a failure, so
+                    # every row is attempted at most once per call, exactly as
+                    # before the pre-pass existed.
                     backfill_generation = self._space_generation
                     # Embed the canonical rule text (matching write_lesson), not
                     # the display rendering -- the vector must live in the same
@@ -3457,22 +3590,53 @@ class VectorMemoryStore:
                 if row_blob is not None:
                     sim = similarity({"embedding": row_blob})
                     if sim > 0.85:
-                        logger.info("Lesson semantic dedup: %.2f sim with %r", sim, existing["key"])
-                        if len(rule) > len(existing_text):
-                            pending_backfills[:] = [
-                                (b, k, g)
-                                for b, k, g in pending_backfills
-                                if k != existing["key"]
-                            ]
-                            superseded.append(existing_report)
-                            self.delete_semantic(existing["key"], source)
-                        else:
-                            _flush_backfills()
-                            return LessonWriteResult(
-                                LessonWriteOutcome.DEDUPED,
-                                "semantic_similarity",
-                                tuple(superseded),
-                            )
+                        # Newest wins, matching the substring and topic-overlap
+                        # branches above -- both supersede the stored row
+                        # unconditionally. A length tie-break on
+                        # ``len(rule) > len(existing_text)`` would DROP the
+                        # submission when it loses, making character count
+                        # decide which of two near-identical rules is current.
+                        # A correction is frequently SHORTER than the stale
+                        # lesson it corrects (a retracted claim collapses to a
+                        # one-line "not installed"), so the losing case landed
+                        # exactly on corrections -- and left the stale lesson in
+                        # effect, the one outcome that actively misleads the
+                        # agent rather than merely losing information.
+                        #
+                        # No authority check HERE, by construction: the
+                        # non-mutating pre-pass above already returned DEDUPED
+                        # if any purely-semantic row outranks the write. But a
+                        # LATER row can still decline the write via main's own
+                        # ``substring_covered`` return, and this branch's
+                        # newest-wins deletes where a length tie-break would
+                        # refuse -- so THIS branch's supersedes are DEFERRED
+                        # and executed only after the scan completes with the
+                        # write going ahead. A declined write executes none of
+                        # them. The substring and topic-overlap branches keep
+                        # main's delete-as-you-go shape, including before a
+                        # ``substring_covered`` refusal -- that composition
+                        # predates this change and is reported via
+                        # ``superseded``.
+                        deferred_semantic.append(
+                            (existing["key"], existing_report, sim)
+                        )
+                        continue
+
+        # Execute the semantic supersedes the scan deferred: reachable only
+        # when no refusal claimed the write, so the submission WILL be stored
+        # and these rows are genuinely replaced.
+        for d_key, d_report, d_sim in deferred_semantic:
+            logger.info(
+                "Lesson semantic supersede: %.2f sim, %s replaces %s",
+                d_sim,
+                key,
+                d_key,
+            )
+            pending_backfills[:] = [
+                (b, k, g) for b, k, g in pending_backfills if k != d_key
+            ]
+            superseded.append(d_report)
+            self.delete_semantic(d_key, source)
 
         _flush_backfills()
 

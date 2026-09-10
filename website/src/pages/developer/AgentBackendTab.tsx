@@ -20,13 +20,6 @@ const CONFIG_KEY = 'agent.acp_backend'
 const KIRO = ''
 const CLAUDE = 'claude'
 const KAS = 'kas'
-/**
- * Named for `caveat` alone, and deliberately NOT added to `NAMED`: this frontend
- * has no translated label for Codex, so its chip carries the server's `policy_id`
- * (see the fallback in `nameOf`). Listing it as NAMED without a translated entry
- * would trade a legible wire name for a chip with no text.
- */
-const CODEX = 'codex'
 
 /**
  * The agents this frontend has a translated name and an icon for.
@@ -342,6 +335,8 @@ export function AgentBackendTab() {
    * A standing caveat about the harness itself, independent of whether it is
    * installed. Unlike `status`, this does not change with the probe.
    *
+   * ## Tool gating, which is stated here
+   *
    * The DEFAULT path is gated: Claude asks, `claude-agent-acp` turns that into
    * `session/request_permission`, and Crew's own approval path decides. What escapes
    * is narrower and worth stating precisely -- a tool ALREADY pre-approved in Claude's
@@ -352,27 +347,50 @@ export function AgentBackendTab() {
    * That is documented, intended Claude behaviour rather than a defect here, but it
    * means the guarantee differs per harness. An operator choosing between harnesses is
    * choosing between governance models, so the panel names the difference instead of
-   * letting them find it in a shell command that never asked.
+   * letting them find it in a shell command that never asked. It is a TOOL-GATING
+   * disclosure and not an auth one, so nothing below replaces it.
    *
-   * Codex carries the OTHER thing a harness can be missing. Its adapter ships a Codex
-   * binary of its own, so `installed` answers the whole binary question and a session
-   * can still die on the first turn for want of a credential — which the install line
-   * then has nothing to say about. The remedy is two-branched (Codex's own sign-in, or
-   * a `model_provider` in `~/.codex/config.toml` where the credentials come from
-   * elsewhere entirely), so it is stated once rather than inferred from a failure.
+   * Which is why this returns a LIST rather than one string. Claude is the harness
+   * that carries both -- its tool gating has the caveat above AND it signs in through
+   * its own credential file -- and an earlier revision returned early on the gating
+   * line, so the one harness with two facts to state showed one of them.
    *
-   * A caveat and not a probe line, deliberately. Reading those files would make this a
-   * measurement, and a measurement here gates the control: `missing` disables the chip,
-   * and the checkable paths are not the only ones that authenticate a Codex — an
-   * ambient key, a relocated `CODEX_HOME`, a `CODEX_ACP_BIN` adapter with its own
-   * configuration. Every one of those is an operator we would have disabled the switch
-   * for while they were already signed in, which the probe module names as the more
-   * expensive mistake. A standing sentence cannot be wrong in that direction.
+   * ## Signing in, which the SERVER states
+   *
+   * `auth.sign_in_remedy` arrives as a finished sentence and is rendered verbatim;
+   * `auth.signs_in_separately` decides whether it is rendered at all, because a
+   * harness that authenticates through Crew's own identity store has no separate
+   * sign-in to finish. Absent `auth` says nothing, like every other absent probe
+   * field.
+   *
+   * It is NOT translated, and that is the trade rather than an oversight. A
+   * translated per-harness sentence is, by construction, a per-harness edit to
+   * thirteen locale files, so the harness that needs the sentence most -- one an
+   * edition registered and this frontend has never heard of -- is exactly the one
+   * that would get no sentence at all. An untranslated remedy that is CORRECT beats
+   * a translated one nobody adds.
+   *
+   * This also finishes the pattern the option list already follows: `candidates` is
+   * a union of server answers rather than ids written here, and `nameOf` falls back
+   * to the wire id when this frontend has no translated name. The `value === CODEX`
+   * branch this replaces was the panel's last per-harness literal. Now the server
+   * names a harness and states its remedy, and adding one costs no edit here.
+   *
+   * Still a caveat and not a probe line, deliberately. A measurement here would gate
+   * the control -- `missing` disables the chip -- and the paths that authenticate a
+   * harness are not all checkable: an ambient key, a relocated config home, an
+   * adapter carrying its own configuration. Each of those is an operator whose switch
+   * we would have disabled while they were already signed in, which the probe module
+   * names as the more expensive mistake. A standing sentence cannot be wrong in that
+   * direction.
    */
-  const caveat = (value: string): string => {
-    if (value === CLAUDE) return i18nT('pages.developer.agentBackendTab.claude_uses_its_own_permissions')
-    if (value === CODEX) return i18nT('pages.developer.agentBackendTab.codex_signs_in_separately')
-    return ''
+  const caveats = (value: string): string[] => {
+    const lines: string[] = []
+    if (value === CLAUDE)
+      lines.push(i18nT('pages.developer.agentBackendTab.claude_uses_its_own_permissions'))
+    const auth = probe(value)?.auth
+    if (auth?.signs_in_separately) lines.push(auth.sign_in_remedy)
+    return lines
   }
 
   /**
@@ -481,7 +499,11 @@ export function AgentBackendTab() {
                 className={`m-0 ${disabledOption(value) ? 'text-warn' : 'text-muted'}`}
               >
                 {status(value)}
-                {caveat(value) && <div className="mt-0.5 text-muted">{caveat(value)}</div>}
+                {caveats(value).map(line => (
+                  <div key={line} className="mt-0.5 text-muted">
+                    {line}
+                  </div>
+                ))}
               </dd>
             </div>
           ))}

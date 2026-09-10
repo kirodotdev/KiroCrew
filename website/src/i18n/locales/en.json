@@ -4386,6 +4386,13 @@
       "timestamp": "Timestamp",
       "trigger": "Trigger"
     },
+    "exportSessionItem": {
+      "export_to_file": "Export to a file",
+      "exported": "Exported",
+      "failed": "Failed",
+      "not_saved_to_disk": "session not saved to disk",
+      "unknown_error": "The export failed"
+    },
     "fileCard": {
       "save": "Save"
     },
@@ -7491,7 +7498,7 @@
         "active_projects": "Projects you worked on",
         "coding_time": "Coding time",
         "connect_body": "WakaTime is a free tool that tracks the time you spend coding in your editor.",
-        "connect_hint": "Add a secret named WAKATIME_API_KEY in Settings and set wakatime.enabled to true in your config. Get a key at wakatime.com/settings/account.",
+        "connect_hint": "Set wakatime.enabled to true in $KIROCREW_HOME/config.json (default ~/.kiro/crew/config.json), then in Settings → Secrets set the WakaTime API key under Used automatically by {{productName}}. Get a key at wakatime.com/settings/account.",
         "connect_title": "Connect WakaTime",
         "daily_average": "Average per day",
         "export_csv": "Export hours (CSV)",
@@ -8967,7 +8974,7 @@
       "add_secret": "Add secret",
       "name_label": "Name",
       "value_label": "Value",
-      "delete_confirm": "Delete this secret?",
+      "delete_confirm": "Permanently delete “{{name}}”? The current value cannot be recovered.",
       "delete": "Delete",
       "cancel": "Cancel",
       "save": "Save",

@@ -23,7 +23,11 @@ from kiro_crew.acp.client import AcpError, AcpPromptBusy, advertised_model_ids
 from kiro_crew.acp.types import EVENT_STEER_CONSUMED, TurnUsage
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.hooks import _EDIT_TOOL_KIND, fire_tool_hooks, get_global_hook_store
-from kiro_crew.platform.tool_paths import edit_target_candidates
+from kiro_crew.platform.tool_paths import (
+    command_shaped_strings,
+    edit_target_candidates,
+    is_document_writing_tool,
+)
 from kiro_crew.providers.base import (
     EVENT_COMPLETE,
     EVENT_PERMISSION_REQUEST,
@@ -917,9 +921,13 @@ def _extract_tool_input_strings(tool_input: str) -> list[str]:
 # gateway and losing the whole turn.
 #
 # Known cost of that trade: a permission-gated write of a benign file larger
-# than this lands its whole content in ``tool_input`` and is refused. The durable
-# fix is to stop running the SHELL-COMMAND matcher over fields that never carry a
-# command. Tracked in https://github.com/kirodotdev/KiroCrew/issues/8053.
+# than this lands its whole content in ``tool_input`` and is refused WHEN the
+# frame's provenance is unknown. An edit with trusted provenance is judged by
+# its target path instead (``_edit_target_denial``), and every other non-shell
+# tool with trusted provenance has its document-body fields skipped
+# (``platform.tool_paths.command_shaped_strings``), so neither reaches this
+# ceiling on a body; the residual is the unclassified frame, which keeps the
+# full scan by design. Tracked in https://github.com/kirodotdev/KiroCrew/issues/8053.
 #
 # One number for both tiers: the shell gate refuses a command above
 # ``security.MAX_SCANNABLE_COMMAND_CHARS`` on its own (every caller, not only
@@ -1846,7 +1854,7 @@ async def stream_and_collect(
             msg = str(exc)
             # Prompt-busy is matched STRUCTURALLY first, with the substring kept
             # as a fallback. _format_acp_error rewrites the backend's "prompt
-            # already in progress" into friendly prose that no longer carries
+            # already in progress" into friendly prose without
             # the marker, so a string-only check silently loses BOTH arms below
             # (cancel+retry and PromptBusyExhaustedError) for any producer that
             # formats before raising — which the shared-runtime AcpSessionHandle
@@ -2236,18 +2244,56 @@ async def _resolve_permission(
     # target gate). Suppressing the document scan stays keyed on the fully
     # trusted edit reroute (``_edit_params is not None``) alone.
     _edit_target_gated = _edit_params is not None or bool(event.diff_path and not event.is_shell)
-    _input_strings = (
-        []
-        if _edit_params is not None
-        else (_extract_tool_input_strings(_tool_input) if _tool_input else [])
+    # Every OTHER non-shell tool with client-established provenance gets a
+    # FIELD-SCOPED scan: the same three predicates, over every string in the
+    # trusted params except a document body (``platform.tool_paths.
+    # DOCUMENT_BODY_KEYS`` -- ``content``, ``fileText``, ``newStr``, ...). A body
+    # is prose or source, and reading it as a shell command line refused a write
+    # that merely QUOTED ``rm -rf /`` or named a credential path. Provenance is
+    # the client's, never the payload's: ``shell_classified`` with ``is_shell``
+    # False (the shell cache the preceding tool_call frame populated -- a shell
+    # tool keeps the full scan, for it ``command`` IS what executes),
+    # ``raw_params_trusted`` (params from that same cache, so the strings judged
+    # are the ones that execute), and ``mcp_identity_trusted`` (the tool_name /
+    # server caches HIT, so the tool is a resolved built-in or a resolved MCP
+    # tool, not an unknown), and the resolved name must be a BUILT-IN document
+    # writer (``platform.tool_paths.is_document_writing_tool``): an MCP tool can
+    # execute whatever it calls ``content``, so its fields are all scanned. A frame
+    # missing any of those attributes, or carrying it as false, is an UNKNOWN tool
+    # and keeps the full document scan (fail closed). Every non-body string --
+    # a ``command`` word, a path, a URL -- still reaches the scan, and a walk
+    # that hits its work cap is denied as unverifiable.
+    _scoped_params = (
+        event.raw_tool_params
+        if (
+            _edit_params is None
+            and getattr(event, "shell_classified", False)
+            and not event.is_shell
+            and getattr(event, "raw_params_trusted", False)
+            and getattr(event, "mcp_identity_trusted", False)
+            and is_document_writing_tool(
+                getattr(event, "tool_name", ""), getattr(event, "mcp_server_name", "")
+            )
+            and isinstance(getattr(event, "raw_tool_params", None), dict)
+        )
+        else None
     )
+    _scoped_truncated = False
+    if _edit_params is not None:
+        _input_strings: list[str] = []
+    elif _scoped_params is not None:
+        _scoped_strings = command_shaped_strings(_scoped_params)
+        _scoped_truncated = _scoped_strings.truncated
+        _input_strings = list(_scoped_strings)
+    else:
+        _input_strings = _extract_tool_input_strings(_tool_input) if _tool_input else []
 
     def _scan_off_loop() -> tuple[str, str, str, str] | None:
         # One worker hop for the title and the whole tool_input loop. Both are
         # regex-heavy over agent-supplied text; on the event loop a ~9 KB shell
         # title held the loop past the 25 s stall watchdog and took the gateway
-        # down (the title tier used to run inline here while only the tool_input
-        # tier was offloaded, so that crash path survived the first offload).
+        # down (an inline title tier with only the tool_input
+        # tier offloaded leaves exactly that crash path open).
         # ``re`` HOLDS the GIL for one match call, so the hop does not keep the
         # loop live inside a single scan -- the linear patterns and the size
         # ceiling do that; what the hop buys is the realpath I/O inside
@@ -2261,6 +2307,15 @@ async def _resolve_permission(
             edit_hit = _edit_target_denial(_edit_params, event.diff_path)
             if edit_hit is not None:
                 return (*edit_hit, "always_deny_input")
+        if _scoped_truncated:
+            # The field-scoped walk could not finish, so the strings it did
+            # collect are not the whole payload: refuse rather than scan a part.
+            return (
+                "oversize",
+                "Blocked: tool arguments too large to security-scan (deny-by-default)",
+                "",
+                "always_deny_input",
+            )
         if _input_strings:
             input_hit = _first_tool_input_denial(_input_strings, _denied_regexes)
             if input_hit is not None:
@@ -2291,6 +2346,9 @@ async def _resolve_permission(
             diff_path=event.diff_path,
             command=event.shell_command,
             is_shell=event.is_shell,
+            mcp_server_name=event.mcp_server_name,
+            mcp_tool_name=event.tool_name,
+            mcp_identity_trusted=event.mcp_identity_trusted,
         )
         if tool_result.action == TOOL_DENY:
             await provider.reject_tool(event.request_id)
@@ -2418,7 +2476,7 @@ def _extract_json_of_type(
             # error must not escape. Fail the WHOLE scan closed: a truncated
             # scan cannot certify a preferred match as unambiguous, so keeping
             # candidates collected before the bomb would let a worked example
-            # launder past the ambiguity refusal (GPT review, #4974 round 4).
+            # launder past the ambiguity refusal.
             # Callers already have recovery paths for None (schema retry loop,
             # the spine's forcing re-emit); salvaging a prefix of a reply that
             # contains a nesting bomb is not worth defeating them.
@@ -2561,7 +2619,7 @@ async def save_conversation_turn_off_loop(
     The whole turn is written under one :meth:`~kiro_crew.history.ConversationLog.atomic_appends`
     hold. ``append`` locks per ROW, so without it two concurrent turns for the
     same session could interleave into ``user_A, user_B, assistant_A,
-    assistant_B`` -- turns that no longer pair up, which no timestamp ordering can
+    assistant_B`` -- turns that do not pair up, which no timestamp ordering can
     repair because each row's ``ts`` is individually correct. On the loop that was
     impossible (a synchronous caller never yields between its two appends), so the
     hazard is introduced BY offloading and has to be closed here rather than

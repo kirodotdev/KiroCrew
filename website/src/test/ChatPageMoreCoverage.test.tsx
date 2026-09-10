@@ -134,7 +134,20 @@ vi.mock('../components/AgentDropdownList', () => ({ default: () => null, Default
 vi.mock('../components/ModelDropdownList', () => ({ default: () => null }))
 vi.mock('../components/InfoTip', () => ({ default: () => null }))
 vi.mock('../components/SegmentedControl', () => ({ default: () => null }))
-vi.mock('../components/WelcomeView', () => ({ default: () => null }))
+interface WelcomeProps {
+  onSwitchMode?: (mode: 'persistent' | 'incognito' | 'temporary') => void | Promise<void>
+  onToggleClean?: (clean: boolean) => void | Promise<void>
+}
+let welcomeProps: WelcomeProps | null = null
+vi.mock('../components/WelcomeView', async () => {
+  const React = await import('react')
+  return {
+    default: (props: WelcomeProps) => {
+      welcomeProps = props
+      return React.createElement('div', { 'data-testid': 'welcome' })
+    },
+  }
+})
 vi.mock('../pages/ChatSidebar', () => ({ default: () => null, SIDEBAR_MIN: 200, SIDEBAR_MAX: 500 }))
 vi.mock('../pages/chat/ActivityViewer', () => ({ default: () => null }))
 vi.mock('../pages/chat/SessionColorPicker', () => ({ default: () => null }))
@@ -245,6 +258,11 @@ const SLOT = {
   mode: '', created: '', last_ts: '',
 }
 const OTHER_SLOT = { ...SLOT, key: 'chat-2', title: 'chat-2' }
+const REMOTE_SLOT = {
+  ...SLOT,
+  memory_mode: 'temporary',
+  instance_id: 'crew-remote-1',
+}
 
 interface HistorySession { key: string; title: string; created: string; messages: number }
 
@@ -327,6 +345,7 @@ beforeEach(() => {
   inputProps = null
   projectPickerProps = null
   gridProps = null
+  welcomeProps = null
   chatSettings = { contentWidth: 'compact' }
   localStorage.clear()
   sessionStorage.clear()
@@ -339,6 +358,32 @@ afterEach(() => {
   vi.clearAllTimers()
   vi.useRealTimers()
   alertSpy.mockRestore()
+})
+
+describe('Welcome recreation preserves remote execution', () => {
+  it.each(['memory mode', 'clean mode'] as const)(
+    'carries instanceId through a %s change',
+    async (kind) => {
+      apiSpy('dashboardConfig').mockResolvedValue({ default_memory_mode: 'persistent' })
+      apiSpy('createChatSlot').mockResolvedValue({
+        ...REMOTE_SLOT,
+        key: 'chat-new',
+        memory_mode: 'persistent',
+      })
+      apiSpy('deleteChatSlot').mockResolvedValue({ ok: true })
+      renderChatPage([], { slots: [REMOTE_SLOT] })
+      await waitFor(() => expect(welcomeProps).not.toBeNull())
+
+      await act(async () => {
+        if (kind === 'memory mode') await welcomeProps!.onSwitchMode?.('persistent')
+        else await welcomeProps!.onToggleClean?.(true)
+      })
+
+      await waitFor(() => expect(apiMocks.createChatSlot).toHaveBeenCalled())
+      expect(apiMocks.createChatSlot.mock.calls.at(-1)?.[9]).toBe('crew-remote-1')
+      expect(apiMocks.deleteChatSlot).toHaveBeenCalledWith('chat-1')
+    },
+  )
 })
 
 describe('ChatPage row callbacks — fork', () => {

@@ -736,4 +736,59 @@ test.describe('E2E: sidebar tag columns', () => {
     const slot = updated.find((x: { key: string }) => x.key === s.key)
     expect(slot.tags).toContain('review')
   })
+
+  test('17b. right-click on ANOTHER row while the Tags picker is open closes the picker and opens that row\'s menu', async ({ page, request }) => {
+    // The picker's full-viewport backdrop sits over every row. Before the fix
+    // the second right-click landed on the backdrop, nothing prevented its
+    // default, and the browser/Electron menu appeared while the picker stayed.
+    await resetColumns(request)
+    const a = await (await request.post('/api/chat/slots', { data: { agent: 'default' } })).json()
+    const b = await (await request.post('/api/chat/slots', { data: { agent: 'default' } })).json()
+    await request.patch(`/api/chat/slots/${a.key}/title`, { data: { title: 'E2E-17b first' } })
+    await request.patch(`/api/chat/slots/${b.key}/title`, { data: { title: 'E2E-17b second' } })
+    await page.goto('/chat')
+    const rowA = page.locator(`[data-slot-key="${a.key}"]`).first()
+    const rowB = page.locator(`[data-slot-key="${b.key}"]`).first()
+    await rowA.click({ button: 'right' })
+    await page.getByRole('menuitem', { name: /Tags/ }).click()
+    const picker = page.locator('[data-testid="slot-tag-picker"]')
+    await expect(picker).toBeVisible()
+
+    // Record whether the app suppressed the browser's own menu. A window-level
+    // bubble listener runs after React's root handler, so `defaultPrevented`
+    // reflects what the app did with the gesture.
+    await page.evaluate(() => {
+      window.addEventListener('contextmenu', e => { (window as unknown as { __ctx?: boolean }).__ctx = e.defaultPrevented })
+    })
+    // Real pointer on row B: the backdrop is what actually receives it, so drive
+    // the mouse rather than a locator click (which would refuse the intercepted
+    // target). Aim near the row's LEFT edge, not its centre — with the wide
+    // sidebar primeBrowser sets, the viewport-centred picker dialog overlaps the
+    // middle of the rows, and a right-click on the dialog is deliberately inert.
+    const box = await rowB.boundingBox()
+    if (!box) throw new Error('row B has no box')
+    const point = { x: box.x + 24, y: box.y + box.height / 2 }
+    const dialog = await picker.boundingBox()
+    if (!dialog) throw new Error('picker dialog has no box')
+    const insideDialog = point.x >= dialog.x && point.x <= dialog.x + dialog.width
+      && point.y >= dialog.y && point.y <= dialog.y + dialog.height
+    expect(insideDialog, 'test geometry: the click point must be on the backdrop, not the dialog').toBe(false)
+    await page.mouse.click(point.x, point.y, { button: 'right' })
+
+    await expect(picker).toBeHidden()
+    expect(await page.evaluate(() => (window as unknown as { __ctx?: boolean }).__ctx)).toBe(true)
+    // A fresh Kiro Crew context menu is open — and it is row B's: its Tags item
+    // opens the picker for B, and toggling a tag there updates B, not A.
+    const menu = page.getByRole('menu').filter({ has: page.getByRole('menuitem', { name: /Tags/ }) })
+    await expect(menu).toBeVisible()
+    await menu.getByRole('menuitem', { name: /Tags/ }).click()
+    await expect(picker).toBeVisible()
+    await picker.getByRole('menuitemcheckbox', { name: /Review/ }).click()
+    await expect.poll(async () => {
+      const slots = await (await request.get('/api/chat/slots')).json()
+      return slots.find((x: { key: string }) => x.key === b.key)?.tags ?? []
+    }).toContain('review')
+    const slots = await (await request.get('/api/chat/slots')).json()
+    expect(slots.find((x: { key: string }) => x.key === a.key)?.tags ?? []).not.toContain('review')
+  })
 })

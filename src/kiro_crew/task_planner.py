@@ -321,6 +321,9 @@ async def decompose(
                         diff_path=event.diff_path,
                         command=event.shell_command,
                         is_shell=event.is_shell,
+                        mcp_server_name=event.mcp_server_name,
+                        mcp_tool_name=event.tool_name,
+                        mcp_identity_trusted=event.mcp_identity_trusted,
                     )
                     if hook_result.action == TOOL_DENY:
                         await client.reject_tool(event.request_id)

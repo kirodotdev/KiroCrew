@@ -201,7 +201,13 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
     if (!loop) return
     setSaving(true)
     try {
-      const resp = await fetch(`/api/autonudge/${loop.id}`, { method: 'DELETE' })
+      // The INTENT travels with the request, because the server otherwise
+      // decides what this verb means from the record's state at arrival time:
+      // a press meant as "Stop loop" on a popover rendered moments earlier
+      // would silently ERASE a record that went terminal in between. The server
+      // 409s on a mismatch instead, and the popover surfaces that.
+      const intent = loop.active ? 'stop' : 'clear'
+      const resp = await fetch(`/api/autonudge/${loop.id}?intent=${intent}`, { method: 'DELETE' })
       if (!resp.ok) {
         // Parse JSON body for server-supplied error (e.g. 503 when feature disabled).
         // Only on error path: a successful DELETE may return 204 No Content.
@@ -499,18 +505,29 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
               </button>
             ) : (
               /* Says WHY the button is not here, rather than leaving a gap. A
-                 blind reader of the paused screenshot could not tell it was the
+                 blind reader of the stopped screenshot could not tell it was the
                  same loop at all, and an inactive loop otherwise looks identical
                  to an active one whose button failed to render -- the state is
                  the reason for the absence, so it belongs in the space the
                  absence leaves. Text, not a disabled button: the server refuses
-                 to fire an inactive loop, so there is no press to offer. */
-              <span
-                data-testid="auto-nudge-loop-paused"
-                className="text-muted text-[11px] shrink-0"
-              >
-                {i18nT('components.autoNudgePopover.loop_paused')}
-              </span>
+                 to fire an inactive loop, so there is no press to offer.
+                 Reads "Stopped", not "Paused": the button beside it removes this
+                 record for good, and a blind reader took "Paused" as "it
+                 remembers where it left off" -- a resumable-sounding status next
+                 to an erase control is the mixed message a UX review blocked on.
+                 The help line under it names both exits, because the erase is
+                 irreversible and nothing else on the surface says so. */
+              <div className="flex flex-col items-start gap-0.5">
+                <span
+                  data-testid="auto-nudge-loop-paused"
+                  className="text-muted text-[11px] shrink-0"
+                >
+                  {i18nT('components.autoNudgePopover.loop_stopped')}
+                </span>
+                <span data-testid="auto-nudge-stopped-help" className="text-muted text-[11px]">
+                  {i18nT('components.autoNudgePopover.stopped_help')}
+                </span>
+              </div>
             )}
           </div>
         )}
@@ -531,7 +548,19 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
               disabled={saving}
               className="px-3 py-1 rounded border border-border text-muted hover:text-danger hover:border-danger bg-transparent cursor-pointer disabled:opacity-50"
             >
-              {i18nT('components.autoNudgePopover.stop_loop')}
+              {/* Two different actions behind one button, so the label has to
+                  name which one this press does. On a LIVE loop it stops the
+                  loop and keeps the record. On an already-stopped one there is
+                  nothing left to stop: the press REMOVES the record, which is
+                  what frees the slot to watch something else. Labelling both
+                  "Stop loop" made the second press read as a no-op.
+                  The label names the OBJECT ("goal"), not an internal noun: a
+                  blind reader refused to press "Clear record" because the
+                  popover shows nothing called a record, so the one control that
+                  unsticks the session went unpressed. */}
+              {loop.active
+                ? i18nT('components.autoNudgePopover.stop_loop')
+                : i18nT('components.autoNudgePopover.clear_stopped_goal')}
             </button>
           )}
           <button

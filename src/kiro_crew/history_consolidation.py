@@ -1300,14 +1300,16 @@ class HistoryConsolidator:
                     )
                     continue
                 conf = float(item.get("confidence", 0.5))
-                # Confidence 1.0 means user explicitly stated it — escalate source
-                # so it can overwrite previous user_explicit entries
-                item_source = "user_explicit" if conf >= 1.0 else source
+                # Always our own source, never "user_explicit": a confidence of 1.0 is the
+                # LLM's claim that the user stated the fact, not proof of it. Under
+                # `consolidation:<key>` the conflict resolution in _write_semantic protects
+                # a genuine user-stated row from a re-summarization (conflict_skip) while
+                # still letting consolidation create new keys and update its own.
                 err = self._vector_store.set_semantic(
                     key=item["key"],
                     value=item["value"],
                     confidence=conf,
-                    source=item_source,
+                    source=source,
                 )
                 if err is None:
                     written += 1

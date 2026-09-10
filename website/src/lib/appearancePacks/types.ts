@@ -1,8 +1,13 @@
 /**
- * CrewCompanion - Appearance Pack type definitions
+ * Appearance pack type definitions — the pack format's shared vocabulary.
  *
  * Defines the data model for appearance packs, including pack metadata,
  * animation mappings, manifest structure, and related utility types.
+ *
+ * Core, not app-owned: a crew can wear an appearance pack, so the dashboard's own
+ * avatar builder needs this vocabulary while Crew Companion — an optional app —
+ * may be absent. Core never imports from `apps/`, so the format lives here and
+ * the Companion reads it from core.
  */
 
 // ── Animation & Pack Types ─────────────────────────────────────────────────

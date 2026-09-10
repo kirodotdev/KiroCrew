@@ -227,7 +227,10 @@ def test_aws_stays_masked_with_only_config_reexposed() -> None:
         "the whole-directory hide is what keeps ~/.aws/credentials and the SSO "
         "cache away from the self-approving child"
     )
-    assert gate.adapter_expose_files(ACP_BACKEND_CODEX) == (os.path.join(home, ".aws", "config"),)
+    hidden = gate.adapter_hidden_credential_dirs(ACP_BACKEND_CODEX)
+    assert gate.adapter_expose_files(ACP_BACKEND_CODEX, hidden) == (
+        os.path.join(home, ".aws", "config"),
+    )
     assert (
         ".aws" in sensitive_home_dirs()
     ), "the agent's own file tools must still be fenced from ~/.aws"
@@ -241,14 +244,16 @@ def test_every_exposed_leaf_sits_under_a_masked_dir() -> None:
     file over its own live source. Pin containment at the table.
     """
     masked = set(gate.adapter_hidden_credential_dirs(ACP_BACKEND_CODEX))
-    for exposed in gate.adapter_expose_files(ACP_BACKEND_CODEX):
+    for exposed in gate.adapter_expose_files(
+        ACP_BACKEND_CODEX, gate.adapter_hidden_credential_dirs(ACP_BACKEND_CODEX)
+    ):
         assert any(exposed.startswith(m + os.sep) for m in masked), exposed
 
 
 @pytest.mark.parametrize("backend", (*AGENT_SPEC_BACKENDS, ACP_BACKEND_CLAUDE))
 def test_unenforced_harness_gets_no_expose_files(backend) -> None:
     """The first-class path keeps byte-identical sandbox arguments here too."""
-    assert gate.adapter_expose_files(backend) == ()
+    assert gate.adapter_expose_files(backend, ()) == ()
 
 
 def test_the_harness_keeps_its_own_token_readable() -> None:

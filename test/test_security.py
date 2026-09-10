@@ -3321,7 +3321,7 @@ class TestRedactExfiltrationUrls:
     def test_substitution_is_built_from_the_exported_prefix(self) -> None:
         """The URL tag must start with ``EXFILTRATION_REDACTION_TAG_PREFIX``.
 
-        The dashboard chat notice (issue #8132) prefix-counts that constant in
+        The dashboard chat notice prefix-counts that constant in
         the persisted text to tell the user a URL was rewritten -- the tag
         interpolates the domain, so unlike the constant credential tags it
         cannot be equality-compared. Driving the REAL redactor here pins the
@@ -8115,7 +8115,7 @@ class TestTrustedIssueLinkChannel:
 
 
 class TestSubstitutionCloserReadsCommandGrammar:
-    """A ``)`` that shell COMMAND GRAMMAR makes ordinary must not end a body (#8150).
+    """A ``)`` that shell COMMAND GRAMMAR makes ordinary must not end a body.
 
     ``_substitution_bodies`` is the shared answer to "what text does this command
     run as a shell", so a body that stops early is not one pass's problem: every
@@ -8128,7 +8128,7 @@ class TestSubstitutionCloserReadsCommandGrammar:
     would mask what these cases are actually testing.
 
     Both directions are asserted. The scan may not stop early (the anchors), and
-    it may not start refusing shapes it used to allow -- a scanner made stricter
+    it may not start refusing shapes it allows today -- a scanner made stricter
     in the wrong place is how a gate becomes unusable.
     """
 

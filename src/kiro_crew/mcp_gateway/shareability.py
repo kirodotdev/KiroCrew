@@ -340,9 +340,9 @@ def assess(
     #    routing-shaped, so a server serving the wrong session's data without ever
     #    emitting an unroutable frame produces no ledger entry. There is no retreat
     #    to fall back on. The set of producers has narrowed as managed servers
-    #    adopted the caller block (#4622, #4659), but the branch keeps two jobs:
+    #    adopted the caller block, but the branch keeps two jobs:
     #    ``kirocrew-computer`` advertises yet stays session-bound deliberately
-    #    (#5322 gave its UNNAMED co-tenants per-connection namespaces on a current
+    #    (its UNNAMED co-tenants get per-connection namespaces on a current
     #    gateway, but an ADOPTED pre-nonce daemon injects none — see
     #    ``_MANAGED_SERVERS_ADVERTISING_BUT_WITHHELD``), and the conservative
     #    default for a future managed server missing from
@@ -359,7 +359,7 @@ def assess(
 
     # 4. Config-derived notes. Computed BEFORE the probe gate for the same reason.
     #
-    #    ``rotating_secret_env`` no longer DISQUALIFIES, because it is not a leak: a
+    #    ``rotating_secret_env`` does not DISQUALIFY, because it is not a leak: a
     #    secret-prefixed key is never forwarded into a SHARED backend
     #    (``gatewayd._declared_non_secret_env`` drops it; ``ENV_SCRUB_PREFIXES``
     #    explains why the keys are excluded from the pool hash so rotation cannot
@@ -373,7 +373,7 @@ def assess(
     #    -- with forwarding on, exactly this set -- and a non-zero count leaves the
     #    entry unwrapped, which ``_stub_eligibility`` reports as
     #    ``pooling_blocked_by_env``. Its stated ground is that any withheld key can
-    #    be the one the server dies without (#3495 cause B). Recommending a share
+    #    be the one the server dies without. Recommending a share
     #    the rewriter will decline would have the page promise work the broker never
     #    does -- two of our own components disagreeing, which is worse than either
     #    answer. So the verdict follows the guard that actually runs, and when that
@@ -397,9 +397,9 @@ def assess(
 
     # 4. Notes that travel with the verdict instead of replacing it.
     #
-    #    Both of these used to return DISQUALIFIED, and both were inferences
-    #    dressed as findings. They are collected here and appended to whichever
-    #    tier the evidence actually supports.
+    #    Neither of these DISQUALIFIES: reading either as disqualifying is an
+    #    inference dressed as a finding. They are collected here and appended to
+    #    whichever tier the evidence actually supports.
     #
     #    They are NOT equally load-bearing, and the difference is what this layer
     #    is for. It exists to turn pooling ON for an operator who never got round
@@ -415,7 +415,7 @@ def assess(
     #      reachability probe -- are indistinguishable from two samples that both
     #      vary the identity. The second kind gives every co-tenant of one process
     #      the SAME answer, which is what an unpooled process does too. It is also
-    #      re-derived every pass now, so gating on it would make a server's
+    #      re-derived every pass, so gating on it would make a server's
     #      eligibility flap with the last sample -- a gate nobody can predict is
     #      worse than none. Pure information.
     #

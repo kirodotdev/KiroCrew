@@ -5,7 +5,9 @@ its own port, its own `KIROCREW_HOME` (own DB / sessions / memory), no Slack
 tunnel, `--no-crons` (unless you pass `--crons`), resource-capped, and reclaimed
 by `pod down`. Test a branch's
 backend `/api/*` **and** the SPA bundle it serves, all **without touching your
-live gateway or your shared `~/.kiro/crew` data**.
+live gateway or your shared `~/.kiro/crew` data**. `--no-embeddings` additionally
+boots it without the embedding model, for load tests that must not pay per-chunk
+embed compute.
 
 Think **`kubectl` for local worktree test rigs.** This is the *test line*
 (multi-active, burn-on-evict); it is orthogonal to the *live line* (a single
@@ -28,6 +30,7 @@ kirocrew pod up   <wt> [--json]   # bring up an isolated pod → {base_url, toke
 kirocrew pod up   <wt> --provision# provision (if needed) then bring it up
 kirocrew pod up   <wt> --approval reads  # boot its gateway in an approval mode
 kirocrew pod up   <wt> --crons          # boot its gateway with the cron scheduler on
+kirocrew pod up   <wt> --no-embeddings  # boot without the embedding model (keyword-search fallback)
 kirocrew pod up   <wt> --seed minimal  # pre-populate its HOME from a named scenario
 kirocrew pod scenarios [--json]        # list named scenarios and their descriptions
 kirocrew pod api  <wt> GET sessions    # authenticated request → fixed-key JSON
@@ -104,6 +107,53 @@ already matches. Use plain `pod up` to restart that home unchanged. Service
 restarts keep the sessions and logs already present. After health succeeds,
 `pod up` reads the fixture marker back and fails if the requested scenario did
 not land.
+
+## Boot without the embedding model
+
+```bash
+kirocrew pod up my-wt --no-embeddings
+```
+
+Records `EMBEDDINGS='0'` in the pod's env file, which makes `boot` export
+`KIROCREW_SKIP_MODEL_DOWNLOAD=1` into **the pod's env only**. The pod never
+downloads the ~610MB GGUF and never computes a vector; memory and knowledge
+search answer through the keyword fallback, which is a supported mode rather than
+a broken one, so the instance stays usable. Your own home is untouched and keeps
+whatever model it already has.
+
+This exists for **load-testing ingestion**. Knowledge ingest embeds per chunk, so
+a bundle large enough to exercise a cross-file cost ceiling spends nearly all of
+its wall clock inside embedding compute — enough that driving one has hit a
+30-minute worker wall. Without the model, chunk count grows while embed compute
+does not, so the same bundle is drivable in minutes and any remaining slowness is
+attributable to something else.
+
+The setting travels with the pod, so `pod exec` against an embedding-light pod
+also sees it and cannot quietly start the download the pod was booted to do
+without. It is read once at boot: recording it against a running pod applies on
+the next one, and `pod up` says so. It lives as `EMBEDDINGS='0'` in the per-pod
+env file — the same hand-editable file that pins `CHECKOUT=` and `PORT=` — so a
+pod you keep around for other work can be flipped persistently by editing that
+line and bringing the pod up again.
+
+The boot journal names the mode from the env the pod actually runs with, so a
+`KIROCREW_SKIP_MODEL_DOWNLOAD=1` the pod merely inherits is announced too (as
+"inherited from the boot environment"), and the `pod.up` audit row keys
+`embeddings=off` on the merged env file plus that inherited switch rather than on
+the flag alone. Any `KIROCREW_EMBED_MODEL_PATH` / `KIROCREW_EMBED_MODEL_URL` in
+the inherited environment is dropped from the pod env alongside the switch: the
+switch only gates the download, and a custom model path would otherwise load and
+embed anyway while the journal says the pod does not.
+
+The switch behind the flag, `KIROCREW_SKIP_MODEL_DOWNLOAD`, is deliberately
+subsystem-wide: an embedding-light pod also skips its speech-to-text (whisper)
+model download, so do not test or measure voice input in one.
+
+`--no-embeddings` is the only supported spelling. Pointing
+`KIROCREW_EMBED_MODEL_URL` at an unreachable mirror looks equivalent and is not:
+it spends the downloader's whole attempt budget on requests chosen to fail, and a
+value that is not `https://` is ignored in favour of the real CDN — so a typo
+downloads the model you were avoiding.
 
 ## Call the pod API without handling its token
 

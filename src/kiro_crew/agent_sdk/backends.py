@@ -91,8 +91,10 @@ with no row here.
      - driver-internal (whether ``$HOME`` is relocated onto the pod tree)
    * - ``ACP_BACKENDS_ACP_RUNTIME``
      - pre-session registry query (which start path a session takes)
-   * - ``ACP_BACKENDS_KIRO_IDENTITY_STORE``
-     - pre-session registry query (whether a kiro-cli logout retires the child)
+   * - ``host_auth.backends_retired_by_host_logout()``
+     - pre-session registry query (whether a kiro-cli logout retires the child).
+       Declared per harness in :mod:`kiro_crew.agent_sdk.host_auth`, not here, and a
+       function rather than a set because it is derived rather than vocabulary
    * - ``ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION``
      - driver-internal (which wire request switches the model)
    * - ``ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION``
@@ -517,28 +519,20 @@ ACP_BACKENDS_POD_HOME_REMAP = frozenset({ACP_BACKEND_KIRO})
 # overlay, so it takes the AcpClient path.
 ACP_BACKENDS_ACP_RUNTIME = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
 
-# Backends whose sign-in lives in kiro-cli's OWN identity store, so an external
-# ``kiro-cli logout`` (or a switch to another account) invalidates a process that
-# is already running. Membership is what authorizes retiring a live session's
-# child when that store starts naming a different account: a harness
-# authenticated some other way must not be recycled on a store it never reads.
-# KAS is a member: it is spawned as ``kiro-cli acp --agent-engine v3
-# --auth-method cli`` (see :mod:`kiro_crew.acp.kas_transport`) unless Crew's own
-# vault holds an identity, and that ``--auth-method cli`` is precisely the
-# demonstration this set waits for — the relay resolves every access token from
-# kiro-cli's own store, so a logout that invalidates the kiro backend
-# invalidates a running KAS relay identically. Excluding it would let a KAS
-# session keep serving turns on the previous account's credentials. In the
-# Crew-owned spawn (ACP_BACKENDS_HOST_AUTH_CALLBACK) a recycle on kiro-cli logout
-# is harmless — the replacement re-probes the vault and comes back Crew-owned —
-# so membership stays conservative rather than being made spawn-dependent.
-# Positive membership rather than "not claude" (harness-parity H5).
+# ``ACP_BACKENDS_KIRO_IDENTITY_STORE`` is gone, and it has no replacement HERE.
+# Whether a ``kiro-cli logout`` may retire a running child is a fact about how the
+# harness SIGNS IN, and it was the third hand-maintained copy of that fact -- beside
+# the credential floor and the sandbox mask, each of which had to agree with it. It is
+# now ``host_auth.backends_retired_by_host_logout()``, projected from the harness's own
+# declaration, which is where the same declaration also supplies the leaf the floor
+# fences and the leaf the mask spares.
 #
-# codex-acp is excluded: it signs in through its own credentials file, so a
-# kiro-cli logout says nothing about whether a running codex session is still
-# authenticated, and retiring its child on that signal would end a live turn for
-# no reason.
-ACP_BACKENDS_KIRO_IDENTITY_STORE = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
+# It could not become a projected SET in this module: this module supplies the backend
+# ids that table is keyed by, so importing ``host_auth`` from here would close a cycle.
+# And it must not be a projected set in ``host_auth`` either -- an ``ACP_BACKENDS_*``
+# name is vocabulary, whose home this module is, and the harness-parity gate enforces
+# that. A derived answer is not vocabulary, so it stays a function and the question of
+# which module owns the set does not arise.
 
 # Backends that switch models through ``session/set_config_option("model", ...)``
 # rather than the kiro-native ``session/set_model`` request. Opt-in for the same
@@ -661,7 +655,8 @@ ACP_BACKENDS_STRUCTURED_REFUSAL = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
 # all; a request with that method from any non-member is answered
 # method-not-found like every other ownerless request, never with a token.
 # Positive membership rather than ``== ACP_BACKEND_KAS`` in the shared runtime
-# (harness-parity H5). Distinct from ACP_BACKENDS_KIRO_IDENTITY_STORE on purpose:
+# (harness-parity H5). Distinct from ``host_auth.backends_retired_by_host_logout()``
+# on purpose:
 # "may be handed Crew's credential" and "is invalidated by a kiro-cli logout" are
 # different properties, and a member here that is spawned in cli-owned mode (no
 # Crew identity stored) never receives the callback in the first place.

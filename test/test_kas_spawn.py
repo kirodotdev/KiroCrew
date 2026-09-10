@@ -51,7 +51,6 @@ from kiro_crew.acp.types import (
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
     ACP_BACKENDS_HOST_AUTH_CALLBACK,
-    ACP_BACKENDS_KIRO_IDENTITY_STORE,
     ACP_CLIENT_CAPABILITIES,
     KAS_CLIENT_CAPABILITIES,
 )
@@ -165,7 +164,9 @@ class TestAuthOwnership:
         Crew-owned), so staying conservative costs one respawn, never a turn on
         stale credentials.
         """
-        assert ACP_BACKEND_KAS in ACP_BACKENDS_KIRO_IDENTITY_STORE
+        from kiro_crew.acp.types import backends_retired_by_host_logout
+
+        assert ACP_BACKEND_KAS in backends_retired_by_host_logout()
 
     def test_the_runtime_declares_the_identity_capability(self, tmp_path):
         """The sweep reads the declared property, not the frozenset directly."""

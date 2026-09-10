@@ -1,18 +1,24 @@
-"""Tests that _parse_time_string uses config timezone, not system timezone."""
+"""Tests that parse_time_string uses config timezone, not system timezone.
+
+Patches ``kiro_crew.cron`` rather than ``kiro_crew.mcp_cron``: the parser lives
+beside ``get_local_tz`` in ``cron`` so both one-shot entry points (the
+``cron_add`` MCP tool and ``POST /api/crons``) share one implementation, and a
+patch has to target the module whose globals the function actually reads.
+"""
 
 from datetime import datetime
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
-import kiro_crew.mcp_cron as mcp_cron_mod
+import kiro_crew.cron as cron_mod
 
 
 def test_at_time_uses_config_timezone_not_system():
     """'23:59' interpreted in config tz (Pacific) should show 23:59 Pacific."""
     pacific = ZoneInfo("America/Los_Angeles")
 
-    with patch.object(mcp_cron_mod, "get_local_tz", return_value=("America/Los_Angeles", pacific)):
-        result = mcp_cron_mod._parse_time_string("23:59")
+    with patch.object(cron_mod, "get_local_tz", return_value=("America/Los_Angeles", pacific)):
+        result = cron_mod.parse_time_string("23:59")
 
     assert isinstance(result, float)
     result_pacific = datetime.fromtimestamp(result, tz=pacific)
@@ -26,7 +32,7 @@ def test_at_time_respects_different_timezones():
     Uses 23:59 to avoid flakiness — this time is almost always in the future
     regardless of when the test runs, for both Pacific and Eastern timezones.
 
-    The two ``datetime.now(tz)`` calls inside ``_parse_time_string`` must
+    The two ``datetime.now(tz)`` calls inside ``parse_time_string`` must
     observe the same wall-clock instant so that 23:59-in-Pacific and
     23:59-in-Eastern resolve to the same calendar date in their tz.
     Without this, when UTC is in the late-night-Pacific / early-morning-
@@ -47,13 +53,13 @@ def test_at_time_respects_different_timezones():
         def now(cls, tz=None):
             return fixed_utc.astimezone(tz) if tz else fixed_utc.replace(tzinfo=None)
 
-    with patch.object(mcp_cron_mod, "datetime", _FixedDatetime), \
-         patch.object(mcp_cron_mod, "get_local_tz", return_value=("America/Los_Angeles", pacific)):
-        result_pacific = mcp_cron_mod._parse_time_string("23:59")
+    with patch.object(cron_mod, "datetime", _FixedDatetime), \
+         patch.object(cron_mod, "get_local_tz", return_value=("America/Los_Angeles", pacific)):
+        result_pacific = cron_mod.parse_time_string("23:59")
 
-    with patch.object(mcp_cron_mod, "datetime", _FixedDatetime), \
-         patch.object(mcp_cron_mod, "get_local_tz", return_value=("America/New_York", eastern)):
-        result_eastern = mcp_cron_mod._parse_time_string("23:59")
+    with patch.object(cron_mod, "datetime", _FixedDatetime), \
+         patch.object(cron_mod, "get_local_tz", return_value=("America/New_York", eastern)):
+        result_eastern = cron_mod.parse_time_string("23:59")
 
     assert isinstance(result_pacific, float)
     assert isinstance(result_eastern, float)

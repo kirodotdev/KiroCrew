@@ -96,7 +96,7 @@ PREFLIGHT_IDENTITY_NAMES: tuple[str, str] = (_IDENTITY_A["name"], _IDENTITY_B["n
 #: here with nothing reading it.
 #:
 #: The VALUE matches the code the verdict engine emits, so a grep for either
-#: finds both. It deliberately no longer says "caller sensitive": two spawns that
+#: finds both. It deliberately does NOT say "caller sensitive": two spawns that
 #: both vary ``clientInfo`` cannot tell a caller-derived answer from one that
 #: varies for the server's own reasons, so the honest name describes what was
 #: seen rather than what caused it.

@@ -21,6 +21,8 @@ rather than permission.
   error tails + banned-process scan + host load + delivery counters, in ONE
   call per cycle.
 - `scripts/credit_spend.py` — per-item credit rollup + budget verdict.
+- `scripts/spec_check.py` — the spec's closed-value fields, checked once at
+  startup. Exit 2 refuses the run.
 
 A decision this procedure states as prose rots silently; a decision a script
 computes can be tested. So anything below that cites a script is that script's
@@ -39,6 +41,7 @@ The operator's seed message names a spec file (JSON). Fields you consume now:
                    "skip_signals": ["claimed", "in-progress"]},
   "worker_contract": {"branch_pattern": "fix/{slug}-{n}",
                        "worktree_pattern": "../{repo_name}-fix-{n}"},
+  "verifier": {"repro_gate": "best_effort"},
   "governance": {"max_in_flight": 32, "max_per_cycle": 3,
                   "idle_alert_secs": 900, "session_ceiling": 30,
                   "credit_budget_per_item": 100, "topup_ceiling": 2},
@@ -56,9 +59,53 @@ in the config and it is what makes `cwd=fleet` reachable, so leaving it out
 classifies every banned line as `foreign` or `unknown` and the enforcing row of
 the banned-ops table never fires.
 
+`verifier.repro_gate` has two values, and exactly two — `spec_check.py` refuses
+the run on anything else (`malformed spec: verifier.repro_gate 'pod-required':
+expected 'best_effort' or 'pod_required'`), because a third value engages neither
+branch below and would leave the generic contract in force under a spec that
+reads as gated:
+
+- `best_effort` (default) keeps the generic pipeline behavior: reproduce where
+  cheap, and let the worker justify the narrowest honest verification when a
+  live system adds no signal.
+- `pod_required` is a HARD ADMISSION GATE for a pod-verification campaign. The
+  item is not implementation-eligible until the UNMODIFIED worktree reproduces
+  the reported failure in a live pod running that worktree's code. A unit or
+  structural test, a direct module call, a simulated exception, source reading,
+  or a note that a pod *could* verify the change later does NOT satisfy the
+  gate. No source, test, or documentation edit may precede the live red trace.
+  If the necessary scenario, product route, caller identity, host capability,
+  or externally drivable trigger is absent, the worker reports
+  `STANDDOWN: pod-repro-ineligible — <evidence>; missing=<capability>` without a
+  commit or PR, the conductor releases the claim with that evidence, and the
+  queue advances to the next candidate. After admission, the same live trace
+  must turn green before the worker may report `GREEN`.
+
+A pipeline using `pod_required` is measured by the number of admitted issues,
+not by the number inspected. An issue fixed with unit evidence but no admitted
+pod repro is useful work in another campaign and a FAILED sample in this one;
+never relabel it success in the friction report.
+
 ## Startup (once per run)
 
-1. Read the spec. `chat_folder_create` the pipeline folder.
+1. Run the checker through Kiro Crew's runtime interpreter before reading the
+   spec yourself or doing anything else. On POSIX run
+   `"$KIROCREW_RUNTIME_PYTHON" -I -B "<skill-dir>/scripts/spec_check.py" --spec <path>`;
+   on PowerShell run
+   `& $env:KIROCREW_RUNTIME_PYTHON -I -B "<skill-dir>/scripts/spec_check.py" --spec <path>`.
+   `-I` keeps the current directory, script directory, user site, and inherited
+   Python environment out of the import path before `safe_read_file` loads;
+   `-B` preserves the desktop bundle's no-bytecode-write rule even though
+   isolated mode ignores its `PYTHONDONTWRITEBYTECODE` environment setting.
+   Never substitute bare `python` or `python3`: desktop installs carry their own
+   interpreter and do not require either name on `PATH`. Exit 2 is a REFUSAL TO
+   START, not a warning: it means a field with a closed value set carries a value
+   that is neither of its options, and every such value engages no branch at all
+   — so the mode the operator asked for is silently off while the spec says it is
+   on. Report the message verbatim and stop; do not guess a default, and do not
+   open the folder or claim an item first, because a run that has already
+   dispatched a worker cannot un-dispatch it. Only after exit 0 may you read the
+   spec and use its values. Then `chat_folder_create` the pipeline folder.
 2. Build the queue from the work source (or adopt the operator's seeded
    backlog). **Record the backlog at whatever size it is** — as the queue's
    PROVENANCE, one entry: the work source, its selector, the count, and the item
@@ -430,7 +477,25 @@ Fill `{...}` from the spec; keep every clause — each one closes a failure mode
 > PREFLIGHT (mandatory): view the item; check open PRs and worktrees for
 > overlap — if anything already covers it, reply `STANDDOWN: <reason>` and
 > stop. Never adopt another session's WIP.
-> CONFIRM the mechanism before fixing: reproduce where cheap; wrong premise →
+> REPRO ADMISSION (`{verifier.repro_gate}`): expand this clause from the spec.
+> In `pod_required` mode, keep the worktree byte-clean and run `kirocrew pod
+> scenarios`, choose the closest shipped state, boot the UNMODIFIED worktree in
+> that scenario, and drive the externally visible failing behavior through
+> `pod api`, pod-e2e/Playwright, or another real product route. Run pod
+> status/token/API commands through the worktree's `./.venv/bin/kirocrew` after
+> provisioning: the globally installed binary may be sandbox-blind to the pod
+> process's sockets and fail closed on ownership proof. If `playwright-cli`
+> cannot launch on the host, the repository's own Playwright runner against the
+> same live pod is equivalent evidence; record the engine and launch flags, and
+> treat a missing REQUIRED engine (for example Safari/WebKit-specific behavior)
+> as `missing=<capability>` rather than silently substituting Chromium.
+> Record the scenario, exact probe, and failing observable. A unit test, direct
+> import, simulated error, or post-fix friction note is NOT admission. No live pod red →
+> `STANDDOWN: pod-repro-ineligible — <evidence>; missing=<capability>` and STOP
+> with no edit, commit, or PR. Live red admitted → implement, then run the SAME
+> pod trace green and tear the pod down to zero residue before `GREEN`.
+> CONFIRM the mechanism before fixing: in `best_effort` mode, reproduce where
+> cheap; wrong premise →
 > `STANDDOWN: premise disproven — <evidence>`. A design decision →
 > `PROPOSAL: <link>` (write the proposal on the item; do not build).
 > IMPLEMENT in your own worktree (`{worktree_pattern}`, branch

@@ -1358,6 +1358,7 @@ versions is what lets a v2 instance still receive a copy from a v1 one.
 | Method and path | Purpose |
 |---|---|
 | `POST /api/instances/{id}/send-session` | Sending side. Body `{"slot": "<local slot key>"}`. Bundles the local session and delivers it over that instance's open tunnel. |
+| `GET /api/chat/slots/{slot}/export` | Sending side, file hop. Streams the SAME bundle as a gzipped download instead of over a tunnel — see §14.7. |
 | `POST /api/chat/slots/import` | Receiving side. Accepts a bundle and materialises a new slot. |
 
 `send-session` goes through the same `_guard()` as every other route in §6
@@ -1413,6 +1414,147 @@ other direction is therefore done by registering the peers you want on each host
 that should originate a transfer, and a hub-initiated **pull** (read a peer's
 session over the same forward) is the natural follow-on that would make
 remote → hub and remote → remote work without any reverse reachability.
+
+### 14.7 The file hop (`GET /api/chat/slots/{slot}/export`)
+
+The same bundle, written to a file instead of pushed down a tunnel. Code:
+`src/kiro_crew/dashboard/session_export.py`, with the menu action
+`ExportSessionItem` mounted beside `SendToInstanceSubmenu` in the shared
+`SessionActionsMenu`.
+
+**Why the hop exists.** §14.4's send is a request/response between two live
+gateways, so it needs both machines up at the same moment, reachable from one
+account, with a working tunnel between them. A laptop that is asleep can receive
+nothing, and two machines that never see each other have no path at all. A file
+needs none of that.
+
+**It adds no format.** `bundle_version` stays **2**. The keys the export adds are
+additive, which is what keeps §14.3's compatibility promise: `_validate_bundle`
+refuses an unrecognised version outright but drops an unknown KEY silently, so a
+version bump would stop every instance that has not updated from receiving
+anything, while a new optional key costs it nothing.
+
+The response is `application/gzip` with
+`Content-Disposition: attachment; filename*=UTF-8''<percent-encoded name>` and
+`X-Content-Type-Options: nosniff`. The name is `<title-slug>-<stamp>.kcsession.json.gz`.
+The slug is script-PRESERVING — a CJK, Cyrillic or accented title keeps its
+characters, because the header carries them percent-encoded, which is the spelling
+every other download handler already ships (`handlers/files.py`,
+`handlers/diagnostics.py`, `handlers/wakatime.py`). Percent-encoding is also what
+makes the header injection-proof: a title cannot contribute a quote, a semicolon,
+a CR or an LF.
+
+Status codes: `404` unknown slot, a slot an app token does not own, or a
+CHANNEL-LINKED slot named by an app token — all three answer the same code,
+because a distinguishable 403 would let an app enumerate slots, or learn which of
+its own slots carry a channel link, across the isolation boundary (CWE-204);
+`400` an incognito or
+temporary session (`export_slot_not_persistent`), one with no visible messages
+(`export_bundle_empty`), or one whose bundle the importer itself would refuse
+(`export_bundle_rejected`, carrying the importer's own code); `503` no consistent
+view of the transcript could be taken (`export_snapshot_unstable`, retryable);
+`500` any other assembly failure (`export_failed`). SEL-audited as
+`chat.slot_export`.
+
+**Owning the slot is not owning the transcript.** A channel-linked slot displays a
+conversation that lives on the channel's own session, and `get_or_create_slot`
+auto-binds that link from a channel-shaped slot NAME, which the creating caller
+supplies. So an app can hold a slot it legitimately owns whose transcript belongs
+to a channel it does not. An app token is therefore refused on any channel-linked
+slot rather than the handler reasoning about the binding — fail closed, because
+the cost of being wrong is a foreign conversation leaving the app sandbox. The
+dashboard owner is unaffected, being entitled to both.
+
+**A producer never emits a document its own reader would refuse.** Before
+compressing, the handler runs the bundle through `_validate_bundle` — the
+importer's own validator — and refuses the export if it would be rejected. The
+bounds (5,000 messages, 1 MB per message, 20 MB of content) are therefore
+consulted rather than restated, so the producer and the reader cannot drift apart.
+Only the VERDICT is used: the validated payload is discarded, because validation
+rebuilds a normalised allowlist that would strip the optional keys the export adds
+on purpose.
+
+Three properties worth stating because they are easy to lose:
+
+- **Layer A only — the context window does not travel in a file.** §14.1a's
+  byte-exact, unredacted Layer B is justified by its DESTINATION, not by its
+  payload: a send reaches the operator's own authenticated peer, which stores it
+  `0600`, so the context never leaves their trust boundary. A file has no
+  destination — it can sit in a download, a bucket or on a USB stick — so that
+  justification does not carry over: an export withholds Layer B and sets
+  `layer_b_skipped`, so the loss is stated rather than inferred from an absent
+  key. Redacting it instead is not available, because the thinking-block
+  signatures inside it are validated on replay (§14.1a) and redacting and
+  transplanting cannot both hold. The cost is real and accepted — a session
+  installed from a file resumes from its transcript rather than through
+  `session/load`.
+- **The filename is an egress surface, not decoration.** A name is displayed by
+  whatever holds the file — a share, a bucket listing, a chat attachment — so the
+  slug is built from the bundle's **already-redacted** title and never from
+  `slot.title`.
+- **An incognito or temporary session cannot be exported.** Those transcripts
+  exist under a promise that nothing is kept, so writing one into a file is
+  refused rather than best-effort served.
+- **No conversation changes, and nothing installs.** An export creates, moves and
+  deletes nothing, so a repeat costs the source nothing and the action needs no
+  confirm step. It is not a pure read of the disk, though: like `send-session` it
+  FLUSHES a dirty slot first, because slicing a stale transcript would ship a
+  superseded turn — so an export can persist pending session state and fails
+  rather than exporting when that write fails. Reading such a file back is
+  separate work that does not exist yet: today a file is installed by POSTing its
+  decompressed contents to `/api/chat/slots/import` with a dashboard credential.
+
+### 14.8 The `source` provenance record — recorded, never applied
+
+An export carries an optional `source` object so a reader can answer "what was
+this session running under?". Present on the file hop; the tunnel's bundle does
+**not** carry it, because a send is an existing working flow and there is no
+reason for this to change what it puts on the wire.
+
+| Field | Meaning |
+|---|---|
+| `model` | the model the source session was pinned to |
+| `reasoning_effort` | the source's effort setting |
+| `approval_policy` | `""` interactive, `"auto"` auto-approve every tool |
+| `workspace`, `project` | named as text only; both are local scopes §14.3 drops. Credential- and exfiltration-redacted like the title, being the only free text in the record |
+| `exported_at` | ISO instant the file was written |
+| `producer` | the exporting gateway's version, for diagnosis only |
+
+`origin` and `agent` are NOT repeated here — both already sit at the top level
+of the bundle, where the importer reads them.
+
+**The reader is a person, not a caller.** An export is a user-facing artifact
+whose whole point is being inspectable (§14.7), and somebody deciding whether to
+install a session needs to know what model produced it, at what effort, and above
+all whether the transcript was produced under auto-approval. Every field earns
+its place against THAT reader. A field only a future caller would want does not
+go in, which is why `mode` and `autocompact_pct` are absent: both are re-derived
+per turn, so they are pointless to apply and there is nothing for a human to do
+with them either.
+
+**Every field is display and diagnosis only. None of it is applied.**
+`approval_policy` is why that has to be stated rather than left to taste:
+`"auto"` means auto-approve every tool, so a bundle that carried it as an
+*applied* setting would let a session arrive on another machine pre-authorised to
+run tools without prompting — a privilege escalation across a trust boundary, and
+the same class of defect `subagent._validate_agent` refuses when it declines to
+default an unknown agent name. An imported session always lands interactive.
+
+**No field is ever required.** A reader asks whether a key is present and
+well-formed, never whether a version implies it must be there. That is the real
+compatibility mechanism, because a version number only coordinates a linear
+history: two forks can each add their own fields and each stamp the same number,
+and a reader that trusted the number would then look for fields its own branch
+associates with it. So `producer` records which code wrote a file for diagnosis
+and is **never read as a gate**.
+
+`approval_policy` has one wrinkle the others do not. It has no durable copy
+anywhere — the live session object is its only home — so a conversation whose
+session is gone (evicted, or not re-opened since a gateway restart) has no policy
+to report. Absence therefore means "not known" while `""` means "interactive",
+and the two are kept distinguishable on purpose: collapsing them would make the
+field's only interesting reading, that a transcript was produced under
+auto-approval, indistinguishable from a gateway with nothing to say.
 
 ## 15. Federated session search (search every connected instance at once)
 

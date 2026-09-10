@@ -236,28 +236,43 @@ own sandbox, so Kiro Crew delegates the default chat backend, model list, accoun
 identity and usage reads to it automatically. A fresh desktop install therefore
 does **not** need a config edit before the first chat.
 
-This is deliberately not a Windows-wide bypass. Scripts, hooks, third-party ACP
-backends and other commands without a proven internal sandbox still fail closed.
-To run those paths without an OS sandbox, explicitly opt in at
-`%USERPROFILE%\.kiro\crew\config.json`:
+Everything else — scripts, hooks, third-party ACP backends, app backends, MCP
+probes and the `gh`/`glab` provider CLIs — has no proven internal sandbox to
+delegate to, and on Windows there is nothing installable that would give Kiro Crew
+one: no Linux user namespace, no macOS `sandbox-exec`. **Those paths therefore run
+UNCONFINED by default on Windows.** That is this platform's documented default,
+not a bypass you enabled and not a failure. It means an agent-driven subprocess
+can read your home directory, including `.aws` and `.ssh`, with no OS
+confinement; Kiro Crew still scrubs credential environment variables and records
+every such spawn in the audit log, but it cannot stop a hostile repo or document
+from reading files.
+
+To refuse them instead — accepting that MCP servers, app backends, script crons,
+hooks and the Papyrus compiler will report a sandbox error — declare the opt-out
+at `%USERPROFILE%\.kiro\crew\config.json`:
 
 ```json
-{ "agent": { "sandbox_allow_unsandboxed_exec": true } }
+{ "agent": { "sandbox_allow_unsandboxed_exec": false } }
 ```
 
-**`kirocrew setup` offers this for non-Kiro subprocesses.** Because Windows has no OS-level
-sandbox backend, the wizard detects that and asks once — stating that agent
-subprocesses will be able to read your home directory, including `.aws` and
-`.ssh`, with no OS confinement. It defaults to **no** and writes the key only if
-you answer yes, so the choice stays yours; the JSON above remains the manual
-equivalent if you skipped the prompt or run setup non-interactively. Answering no
-(or pressing Enter) leaves the fail-closed posture in place, and the wizard tells
-you how to opt in later.
+A declared value always wins over the platform default, in either direction, and
+a `sandbox.min_level` governance floor overrides both fleet-wide.
 
-Setting it means agent subprocesses run with your own user privileges, which is the
-same posture as running the tool yourself in a shell. Config is read live, so no
-gateway restart is needed. Without it, the affected paths answer a clear 422 naming
-the remedy rather than failing obscurely.
+**`kirocrew setup` surfaces this decision.** Because Windows has no OS-level
+sandbox backend, the wizard detects that and states the exposure once, then offers
+to refuse those spawns. It defaults to **no** — leaving the platform default in
+place — and writes nothing unless you answer yes, so the choice stays yours and
+the key stays undeclared. The JSON above is the manual equivalent if you skipped
+the prompt or run setup non-interactively; a non-interactive run still prints the
+notice, so an unattended install is told what its posture is.
+
+`kirocrew doctor` reports the effective state under **Sandbox** — whether these
+spawns are refused, unconfined because you declared it, or unconfined because of
+the platform default.
+
+Running unconfined means agent subprocesses run with your own user privileges,
+which is the same posture as running the tool yourself in a shell. Config is read
+live, so no gateway restart is needed after a change.
 
 **The model picker and the credit pill follow chat's Kiro delegation.**
 `/api/models`, the credit pill's `whoami` identity fetch and its `/usage` scrape
@@ -282,9 +297,9 @@ while the other 503s. Concretely:
 | Project skills (`<project>/.kiro/skills`) | not yet — Python on Windows does not expose handle-relative directory traversal that can reject every reparse point before resolving it. Catalog, consent and loading fail closed before canonicalizing the project path, preventing a raced junction to a UNC share from initiating SMB authentication. Global and installed skills continue to work. |
 | Theme-pack install, detail, assets, overlays, topbars, and removal | works — opened pack files are contained with `GetFinalPathNameByHandleW`; descriptor resolution fails closed instead of trusting a pathname-only check |
 | LLM cron jobs (the `message` kind) | works |
-| Script cron jobs | need the `agent.sandbox_allow_unsandboxed_exec` opt-in above — they run through `wrap_argv`, which fail-closes where no OS sandbox backend exists. Without it the job fails with a message naming that setting (it no longer raises an uncaught error) |
+| Script cron jobs | run unconfined under this platform's default (declare `sandbox_allow_unsandboxed_exec=false` to refuse them) — they run through `wrap_argv`, which permits them on Windows because no backend is installable. With that opt-out declared the job fails with a message naming the setting (it no longer raises an uncaught error) |
 | Command cron jobs (`sh -c "…"`) | not supported on Windows — the stored command is vetted under POSIX-sh semantics, and Windows ships no shell whose language matches: cmd.exe is not POSIX at all, and Git-for-Windows's `sh.exe` is bash and performs brace expansion that hides `cat ~/.a{w,w}s/credentials` from the vet. The job fails-closed with an explanation. Use a **script cron** or an LLM `message` cron on this platform |
-| Script hooks (Settings → Hooks) | need the `agent.sandbox_allow_unsandboxed_exec` opt-in above (like script crons — the hook command routes through `wrap_argv`, which fail-closes where no OS sandbox backend exists; without it the hook returns that message as its `error`). With the opt-in they run in **cmd.exe** language: a hook `command` runs as `%ComSpec% /c "<command>"`, so read the context env vars as `%KIROCREW_HOOK_EVENT%` / `%KIROCREW_HOOK_CONTEXT%` (not `$VAR`), and group arguments with double quotes only (cmd.exe gives `'…'` no meaning). The line reaches cmd.exe verbatim, so a quoted interpreter path with a space works. A hook authored on macOS/Linux is not portable and must be rewritten |
+| Script hooks (Settings → Hooks) | run unconfined under this platform's default (declare `sandbox_allow_unsandboxed_exec=false` to refuse them) (like script crons — the hook command routes through `wrap_argv`, which permits them on Windows because no backend is installable; with that opt-out declared the hook returns that message as its `error`). They run in **cmd.exe** language: a hook `command` runs as `%ComSpec% /c "<command>"`, so read the context env vars as `%KIROCREW_HOOK_EVENT%` / `%KIROCREW_HOOK_CONTEXT%` (not `$VAR`), and group arguments with double quotes only (cmd.exe gives `'…'` no meaning). The line reaches cmd.exe verbatim, so a quoted interpreter path with a space works. A hook authored on macOS/Linux is not portable and must be rewritten |
 | Pull-request source drawer provider fetch/check/resolve | not yet — and for a different reason than it used to be. The provider-CLI **trust** check now works here (see Issue Radar below), but the drawer does not share Issue Radar's spawn: it keeps its own async, sandbox-routed one (`source_providers._run_json`), which refuses on Windows because no OS sandbox backend exists. So the blocker is the sandbox, not the binary check |
 | Issue Radar | works — its `gh` spawn is not sandbox-routed, so the trust check is the only gate, and that is answered by reading the binary's Windows ACL (`kiro_crew.windows_acl`) in place of the POSIX `st_uid` + write-bit walk, which reports nothing on this platform. Refused when any principal outside `{you, SYSTEM, Administrators, TrustedInstaller}` can replace the binary or a parent directory, when the security descriptor is unreadable, or when the gateway token is **elevated** (an elevated gateway spawns elevated children, which makes the walk vacuous). GitHub only on this platform unless `glab` is installed. **If a `gh` you trust is refused**, the override variables (`KIROCREW_ISSUE_RADAR_GH`, `KIROCREW_GH_BIN`) re-enter the same check rather than bypassing it, so the recourse is to install `gh` somewhere only you and the system can write — a per-user `%LOCALAPPDATA%` install is accepted — or to file an issue quoting the refusal, which names the offending principal or the ACE type it could not evaluate |
 | Spec Builder | works, except **Duplicate** — crash-safe copy publication pins a staging directory and uses the platform's atomic no-replace rename (`renameat2(RENAME_NOREPLACE)` on Linux, `renameatx_np(RENAME_EXCL)` on macOS). Windows provides neither that native contract nor CPython's directory-descriptor operations, so the backend reports the capability as unavailable and the dashboard omits Duplicate instead of falling back to a check-then-rename race or a junction-prone path write. Approval, per-task runs, labels, archive/restore, chat, and whole-plan execution work normally |
@@ -292,11 +307,11 @@ while the other 503s. Concretely:
 | Browser automation (`playwright-cli`) | works (`npm install -g @playwright/cli@latest`, needs Node.js 20 or newer) |
 | Vector memory / embeddings | works — embeddings run **in-process** through the vendored llama-cpp-python (`_vendor/llama_cpp_libs/win_amd64`), which loads the Qwen3-Embedding-0.6B GGUF from `~/.kiro/crew/models`. No remote endpoint, no Docker and no Ollama server is involved on any platform |
 | STT (whisper / optional cloud transcription) | works |
-| Voice reply | works out of the box on the default `system` provider: it drives `System.Speech` through Windows PowerShell 5.1, needs no install, and deliberately does NOT route through `wrap_argv`, so the missing sandbox backend does not block it. `piper` and `polly` DO route through `wrap_argv` and therefore need the `agent.sandbox_allow_unsandboxed_exec` opt-in above; without it synthesis returns no audio and the log names that setting. `pip install piper-tts` does ship a Windows x64 wheel, so piper itself is installable |
+| Voice reply | works out of the box on the default `system` provider: it drives `System.Speech` through Windows PowerShell 5.1, needs no install, and deliberately does NOT route through `wrap_argv`, so the missing sandbox backend does not block it. `piper` and `polly` DO route through `wrap_argv` and therefore run unconfined under this platform's default; declare `sandbox_allow_unsandboxed_exec=false` and synthesis returns no audio, with the log naming that setting. `pip install piper-tts` does ship a Windows x64 wheel, so piper itself is installable |
 | SSH tunnel (`kirocrew cloud` remote dashboard) | not yet — needs the OpenSSH client on `PATH` and a signal-handling audit |
 | MCP server tool listing (dashboard MCP page, `kirocrew doctor`) | **built-in servers work, no opt-in** — `kirocrew-core` / `-cron` / `-computer` are probed for real: their command line is derived entirely inside the package (never user-config text), so the first-party carve-out spawns the handshake probe unconfined (env-scrubbed, SEL-audited as `unconfined`) even with no sandbox backend. When that probe cannot run (a transient sandbox failure, a governance sandbox floor, or a customized command for the server), the listing falls back to reading the package's own tool declaration and logs a WARNING noting that `ok` then means "declared" rather than "handshake succeeded". A **third-party** server has no declaration to read and never gets the carve-out, so its listing needs the `agent.sandbox_allow_unsandboxed_exec` opt-in — its binary is named by config and spawning it is what the sandbox exists to confine. The third-party server itself is unaffected: kiro-cli launches it from the agent config without this probe, so its tools still work in chat |
 | MCP gateway (opt-in, OFF by default) | works — a named-pipe transport replaces the AF_UNIX socket, and the peer check uses `GetNamedPipeClientProcessId` + a SID comparison in place of `SO_PEERCRED`. Still opt-in: set `mcp_gateway.enabled` to turn it on |
-| Papyrus (LaTeX editor, opt-in builtin) | works, **but compiling and git need the `agent.sandbox_allow_unsandboxed_exec` opt-in above** — unlike official Kiro, these processes have no proven internal sandbox, so `wrap_argv` keeps the no-backend fail-closed policy. Without it, compile and clone/commit/push/pull answer a clear 422 (`compiler_sandbox_unavailable` / `git_sandbox_unavailable`) naming the remedy rather than a bare "internal error". The managed Tectonic compiler is Windows-pinned (`x86_64-pc-windows-msvc`); Windows-on-ARM has no upstream asset and keeps the manual install path |
+| Papyrus (LaTeX editor, opt-in builtin) | works, and compiling and git run unconfined under this platform's default — unlike official Kiro, these processes have no proven internal sandbox, so `wrap_argv` applies the ordinary Windows no-backend policy, which permits them. With `sandbox_allow_unsandboxed_exec=false` declared, compile and clone/commit/push/pull answer a clear 422 (`compiler_sandbox_unavailable` / `git_sandbox_unavailable`) naming the remedy rather than a bare "internal error". The managed Tectonic compiler is Windows-pinned (`x86_64-pc-windows-msvc`); Windows-on-ARM has no upstream asset and keeps the manual install path |
 | Computer use — **reading** (`computer_list_apps`, `computer_get_state`) | works, still behind the operator's one keystone opt-in (Settings → Computer Use). Reads the UI Automation tree of a window and can attach a `PrintWindow` screenshot. Two Windows-specific limits: a **non-elevated gateway cannot see an elevated window** (UIPI, and the secure desktop is unreachable to any application — a security property, not a gap), and a window drawn on a swapchain surface **cannot be captured**, so WindowsTerminal returns a tree with no screenshot rather than a blank image. Walking is also markedly slower than macOS — a large Chromium window costs hundreds of milliseconds at the node budget — so raise `max_tree_nodes` deliberately |
 | Computer use — **input** (click, drag, type, key, set value, scroll, action) | works, behind the same keystone opt-in. **Element-addressed actions touch neither your cursor nor your focus** — they go through UI Automation control patterns, so the provider performs them inside the target application; prefer them, and they are what `click_method: "auto"` resolves to. The exceptions are forced by the platform: Windows has no per-process input delivery (no `CGEventPostToPid` analogue), so `type_text` / `press_key` TAKE your keyboard focus (the result says so), and a coordinate click needs `click_method: "global"` named explicitly because it moves your real cursor — `auto` refuses to resolve onto it. Every pointer gesture is confined to the authorized window first, comparing top-level handles rather than pids (one broker process fronts many packaged apps), and a drag confines every point of its path since the release is where a drop lands |
 

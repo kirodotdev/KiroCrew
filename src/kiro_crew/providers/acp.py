@@ -11,7 +11,6 @@ from pathlib import Path
 from typing import Any
 
 from kiro_crew.acp.client import (
-    _NOT_LOGGED_IN_MESSAGE,
     DEFAULT_MODEL,
     AcpAuthRequired,
     AcpClient,
@@ -30,7 +29,6 @@ from kiro_crew.acp.types import (
     ACP_BACKENDS_ACP_RUNTIME,
     ACP_BACKENDS_COMPACT,
     ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION,
-    ACP_BACKENDS_KIRO_IDENTITY_STORE,
     ACP_BACKENDS_KIRO_SLASH_COMMANDS,
     ACP_BACKENDS_KNOWN,
     ACP_BACKENDS_SESSION_SHARING,
@@ -43,6 +41,7 @@ from kiro_crew.acp.types import (
     STOP_REASON_END_TURN,
 )
 from kiro_crew.acp_backends import POLICY_ID_BY_BACKEND
+from kiro_crew.agent_sdk import host_auth
 from kiro_crew.agent_sdk.backend_identity import is_claude_backend_name
 from kiro_crew.agent_sdk.capabilities import SessionCapabilities, capabilities_for
 from kiro_crew.atomic_write import atomic_write
@@ -569,13 +568,13 @@ class AcpProvider(LLMProvider):
     def uses_kiro_identity_store(self) -> bool:
         """True when this provider's child signs in from kiro-cli's own store.
 
-        Membership in ``ACP_BACKENDS_KIRO_IDENTITY_STORE`` (harness-parity
+        Membership in ``backends_retired_by_host_logout()`` (harness-parity
         H5/H14). Declaring it here is what lets the session layer ask the
         question through the ABC instead of probing private attributes, so an
         adapted provider is classified by its own declaration rather than by
         whichever internal shape it happens to expose.
         """
-        return self._client.backend in ACP_BACKENDS_KIRO_IDENTITY_STORE
+        return self._client.backend in host_auth.backends_retired_by_host_logout()
 
     @property
     def mcp_config_hot_reload(self) -> bool:
@@ -840,7 +839,12 @@ class AcpProvider(LLMProvider):
             # surface an actionable login prompt (parity with AcpClient) rather
             # than a generic runtime-death error.
             if runtime.saw_not_logged_in():
-                raise AcpAuthRequired(_NOT_LOGGED_IN_MESSAGE) from exc
+                # ``self._client`` is still the placeholder AcpClient at this
+                # point, and it carries the backend this runtime was spawned for
+                # (it is the value passed as ``acp_backend`` above) — so the
+                # sign-in advice names the harness that actually failed to
+                # authenticate rather than assuming kiro-cli.
+                raise AcpAuthRequired(host_auth.signed_out_message(self._client.backend)) from exc
             raise
         finally:
             # subprocess launch + ACP `initialize` handshake
@@ -936,7 +940,9 @@ class AcpProvider(LLMProvider):
                         await runtime.spawn()
                     except AcpRuntimeError as exc:
                         if runtime.saw_not_logged_in():
-                            raise AcpAuthRequired(_NOT_LOGGED_IN_MESSAGE) from exc
+                            raise AcpAuthRequired(
+                                host_auth.signed_out_message(self._client.backend)
+                            ) from exc
                         raise
                 try:
                     handle = await runtime.create_session(
@@ -946,7 +952,9 @@ class AcpProvider(LLMProvider):
                     )
                 except AcpRuntimeError as exc:
                     if runtime.saw_not_logged_in():
-                        raise AcpAuthRequired(_NOT_LOGGED_IN_MESSAGE) from exc
+                        raise AcpAuthRequired(
+                            host_auth.signed_out_message(self._client.backend)
+                        ) from exc
                     raise
                 finally:
                     # In a finally, mirroring session_load: a start that BLEW its

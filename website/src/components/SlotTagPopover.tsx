@@ -10,6 +10,18 @@ import { isTouchDevice } from '../utils/isTouchDevice'
 import { Input } from './ui'
 
 import { i18nT } from '../i18n/t'
+
+/**
+ * The topmost element at viewport point (x, y) that is NOT `backdrop` or one of
+ * its descendants — i.e. what the pointer would hit if the backdrop were not
+ * there. `null` when nothing else is under the point or the platform lacks
+ * `document.elementsFromPoint` (older engines and non-browser test DOMs).
+ */
+export function elementBeneath(backdrop: Element, x: number, y: number): Element | null {
+  if (typeof document.elementsFromPoint !== 'function') return null
+  return document.elementsFromPoint(x, y).find(el => !backdrop.contains(el)) ?? null
+}
+
 /**
  * The single app-wide per-slot tag-assignment popover. Which slot's picker is
  * open comes from the ChatPage-scoped TagPopover context, so any surface (the
@@ -51,6 +63,28 @@ export default function SlotTagPopover() {
     return () => clearTimeout(t)
   }, [slotKey])
 
+  // A right-click on the backdrop is the user pointing at something ELSE (most
+  // often another session row), not a request for the browser's own menu. The
+  // full-viewport backdrop would otherwise swallow the `contextmenu`: the row's
+  // Radix ContextMenuTrigger never sees it and the OS/Electron menu pops instead.
+  // So: suppress the native menu, dismiss the picker, and re-issue the same
+  // gesture to the element under the pointer so its own Kiro Crew context menu
+  // opens fresh. Only the backdrop itself does this — a right-click inside the
+  // dialog (e.g. on the "New tag" input) keeps its native menu.
+  const onBackdropContextMenu = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (e.target !== e.currentTarget) return
+    e.preventDefault()
+    const beneath = elementBeneath(e.currentTarget, e.clientX, e.clientY)
+    close()
+    if (!beneath) return
+    beneath.dispatchEvent(new MouseEvent('contextmenu', {
+      bubbles: true, cancelable: true, composed: true, view: window,
+      clientX: e.clientX, clientY: e.clientY, screenX: e.screenX, screenY: e.screenY,
+      button: 2, buttons: 0,
+      ctrlKey: e.ctrlKey, shiftKey: e.shiftKey, altKey: e.altKey, metaKey: e.metaKey,
+    }))
+  }
+
   if (!slotKey) return null
   const currentTags = new Set(pending ?? slot?.tags ?? [])
   const toggle = (tagId: string) => {
@@ -69,6 +103,7 @@ export default function SlotTagPopover() {
     <div role="button" tabIndex={0} aria-label={i18nT('components.slotTagPopover.close_tag_picker')}
       className="fixed inset-0 z-[9999]"
       onClick={e => { if (e.target === e.currentTarget) close() }}
+      onContextMenu={onBackdropContextMenu}
       onKeyDown={e => {
         // Only handle keys originating directly on the backdrop — events
         // bubbling up from inner dialog buttons/inputs must not dismiss it.

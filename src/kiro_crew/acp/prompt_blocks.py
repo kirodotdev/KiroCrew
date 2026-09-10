@@ -38,7 +38,7 @@ from kiro_crew.hooks import is_unc_shape, safe_read_file_bytes, unc_probe_allowe
 # The budget constants and Pillow machinery live in the LEAF module
 # kiro_crew.imaging (shared with the gateway's tool-result rewrite, which must
 # not import the ACP package). The two constants are re-exported because this
-# module is where the prompt path's callers and tests historically found them.
+# module is where the prompt path's callers and tests import them from.
 from kiro_crew.imaging import (  # noqa: F401 -- constants re-exported, see comment
     MAX_IMAGE_B64_BYTES,
     MAX_IMAGE_EDGE_PX,
@@ -280,8 +280,8 @@ def summarize_prompt_structure(blocks: object) -> dict:
       than a size describing a payload the counts claim is empty.
 
     This summary is deliberately safe to log: it carries no content and
-    therefore cannot leak credentials or user data. That is a hard requirement
-    (issue #6022) -- the kiro-cli data dir is fenced precisely because it holds
+    therefore cannot leak credentials or user data. That is a hard
+    requirement -- the kiro-cli data dir is fenced precisely because it holds
     SSO tokens, so the outbound-request diagnostics must expose counts, types,
     and sizes ONLY, never the bytes themselves.
 

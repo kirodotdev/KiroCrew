@@ -193,6 +193,7 @@ describe('ReviewChat', () => {
     const call = createChatSlot.mock.calls[0]
     expect(call[0]).toBe('sage-followup-abc123def456')
     expect(call[1]).toBe('sage-reviewer')
+    expect(call[4]).toBe('persistent')
     expect(call[5]).toBeUndefined()   // title
     expect(call[8]).toBeUndefined()   // folder_id
   })

@@ -65,6 +65,14 @@ structured monitor per session, occupying the same slot as a `monitor_start`
 loop. Use `monitor_start` instead when you need to ACT most cycles, or when what
 you are watching is not a public GitHub PR.
 
+That retained record keeps occupying the slot, so arming a monitor for a
+DIFFERENT subject in the same session is refused (`the session's stopped
+automation is retained as evidence`). Only its owner can end it, by pressing
+**Clear stopped monitor** in the session-automation popover (**Clear stopped
+goal** in the legacy goal view). Read that refusal as a request to the user, not
+as a transient error to retry: nothing armed, so say so instead of reporting a
+monitor you do not have.
+
 ### `interval_secs` counts between the loop's own cycles
 
 Each delivered cycle's countdown starts when that cycle's turn **ends**, so

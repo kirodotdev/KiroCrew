@@ -45,6 +45,7 @@ from kiro_crew.config.loader import (
     normalize_agent_model,
     resolve_agent_bindings,
     resolve_effective_model,
+    unsandboxed_exec_declared,
 )
 from kiro_crew.config.paths import (
     LEGACY_CONFIG_DIR_NAME,
@@ -1136,6 +1137,117 @@ def _doctor_claude_backend() -> None:
         print("  claude-acp:  ⚠️  could not check")
 
 
+def _doctor_agent_auth() -> None:
+    """One sign-in row per selectable harness, projected from its declaration.
+
+    Replaces four per-provider answers that could disagree: an inline
+    ``kiro-cli whoami`` row, a Claude report with no auth line at all, no codex
+    row whatsoever, and a KAS block asserting in prose whose token it used. Each
+    was a separate edit, so a harness that became selectable without one was
+    simply silent here -- which is how a signed-out harness could read as ready.
+    Now the row comes from ``agent_sdk.host_auth``, the same declaration the
+    credential floor and ``GET /api/acp-backends`` read, so doctor cannot say
+    something the panel contradicts.
+
+    Iterates ``acp_backends.selectable_backend_values()`` -- the sorted form of
+    ``selectable_backends()``, which is already this module's neighbourhood via
+    ``_doctor_claude_backend``'s local ``acp_backends`` import. Chosen over
+    ``agent_sdk.probe_backends()`` for two reasons: it is the set the operator can
+    actually select (a policy-denied harness needs no sign-in advice), and it
+    answers without spawning the install probes' subprocesses, which this row does
+    not need.
+
+    **``kiro-cli whoami`` is the only credential this checks, and deliberately.**
+    kiro-cli signs in to the HOST identity store, so its state is the host's own
+    and readable here. Every other harness keeps its entitlement in a file it owns,
+    and reading that file is exactly what the credential floor exists to forbid --
+    a probe here would be the one reader the floor cannot fence. So those rows name
+    the store and print the declared remedy unprobed: advice that is always correct
+    beats a verdict obtained by breaking the floor.
+
+    Advisory only, which is why it takes no ``issues`` list: a harness the operator
+    has not signed into is not a broken installation, and failing doctor's exit code
+    on it would make the default host red for an optional backend.
+    """
+    from kiro_crew.acp_backends import POLICY_ID_BY_BACKEND, selectable_backend_values
+    from kiro_crew.agent_sdk import declaration_for, entitlement_label, signs_in_separately
+
+    try:
+        backends = selectable_backend_values()
+    except Exception:
+        # Reading the registry must not break triage; the rows are advisory.
+        return
+
+    # Probed at most once even though two harnesses share the host store: kiro and
+    # KAS both resolve tokens from it, and spawning ``whoami`` per row would pay
+    # twice for one answer.
+    host_signed_in: bool | None = None
+    host_probed = False
+
+    for backend in backends:
+        try:
+            declaration = declaration_for(backend)
+            separate = signs_in_separately(backend)
+        except Exception:
+            continue
+        label = f"{POLICY_ID_BY_BACKEND.get(backend, backend) or backend} auth:"
+        # The LABEL, not the identifier. ``entitlement_source`` is code
+        # (``own_credential_file``), and printing it put snake_case internals in a
+        # row an operator is meant to read during triage.
+        source = entitlement_label(backend)
+
+        if separate:
+            # No probe, by the rule above. "not checked here" is load-bearing: it
+            # tells the operator this ➖ is an absence of evidence, not a verdict
+            # that the harness is signed out.
+            print(f"  {label.ljust(13)}➖ {source} (not checked here)")
+            # The ACTION, not the state: nothing was measured on this row, and a
+            # line reading "is not signed in" under a "not checked here" would
+            # contradict the line above it and train the reader to skip both.
+            _print_wrapped(declaration.sign_in_remedy)
+            continue
+
+        if not host_probed:
+            host_signed_in = _kiro_cli_signed_in()
+            host_probed = True
+        if host_signed_in is True:
+            print(f"  {label.ljust(13)}✅ {source}")
+        elif host_signed_in is None:
+            print(f"  {label.ljust(13)}⚠️  {source}; could not check")
+        else:
+            print(f"  {label.ljust(13)}⏹ {source}; not signed in")
+            # The signed-out STATEMENT here, because this row alone has evidence:
+            # the host identity store is the one store this core may read.
+            # Wrapped, not reflowed: ``textwrap.wrap`` only inserts line breaks, so
+            # the operator reads the declared wording, which is what the panel shows.
+            _print_wrapped(declaration.signed_out_message)
+
+
+def _kiro_cli_signed_in() -> bool | None:
+    """Whether the HOST identity store holds a credential. ``None`` when unknown.
+
+    Three-valued on purpose, mirroring the install probe: a spawn that failed says
+    nothing about the store, and reporting that as signed-out would tell an
+    operator to re-run a login they already completed.
+
+    Absent binary is ``None`` rather than ``False`` for the same reason -- the
+    kiro-cli row above already reports the install, and "not signed in" would send
+    someone to ``kiro-cli login`` before there is a ``kiro-cli`` to run it.
+    """
+    if not shutil.which(KIRO_CLI_BIN):
+        return None
+    try:
+        result = subprocess.run(  # noqa: S603 - argv list, no shell, local binary
+            [KIRO_CLI_BIN, "whoami"],
+            capture_output=True,
+            timeout=10,
+            **UTF8_TEXT,
+        )
+    except Exception:
+        return None
+    return result.returncode == 0
+
+
 def _doctor_path_launcher() -> None:
     """Report which install the ``kirocrew`` command on PATH actually belongs to.
 
@@ -1526,7 +1638,60 @@ def _doctor_sandbox(issues: list[str]) -> None:
         return
     # Platforms with no OS-level backend to offer (Windows; macOS builds without
     # sandbox-exec) — a fact about the platform, not a fault of this install.
+    # Report what that MEANS for spawns, not just that the backend is absent: with
+    # no backend the configured posture is either "refuse every agent subprocess"
+    # or "run them unconfined", and an operator reading this line needs to know
+    # which.
+    #
+    # Stated as the POSTURE, not as what will happen. A governance
+    # sandbox.min_level floor is resolved per spawn against the mode that spawn
+    # requested, so it is not foldable into one host-level answer — and on a
+    # governed host it makes wrap_argv refuse the very spawns a bare "they run
+    # unconfined" would promise. Each permitting branch therefore names the floor
+    # as the thing that overrides it.
     print("  backend:     ⏭  no OS-level sandbox backend on this platform")
+    permitted_by = sandbox.unsandboxed_exec_permitted_by()
+    if permitted_by == sandbox.UNSANDBOXED_BY_PLATFORM:
+        print("  exec:        ⚠️  configured to run agent subprocesses UNCONFINED")
+        _print_wrapped(
+            "This is the default for a platform with no backend to install: "
+            "~/.aws, ~/.ssh and the rest of your home directory are readable by "
+            "an agent subprocess, and only the bypassable app-level checks "
+            "remain. Every such spawn is audited. To refuse them instead, set "
+            "agent.sandbox_allow_unsandboxed_exec=false. A governance "
+            "sandbox.min_level floor overrides this and makes such spawns fail "
+            "closed, so a managed host refuses them despite this line."
+        )
+    elif permitted_by == sandbox.UNSANDBOXED_BY_OPERATOR:
+        print("  exec:        ⚠️  unconfined by declaration — sandbox_allow_unsandboxed_exec=true")
+        _print_wrapped(
+            "The operator declared this opt-in, so agent subprocesses run "
+            "without OS-level isolation and every such spawn is audited. Remove "
+            "the key to fall back to this platform's default. A governance "
+            "sandbox.min_level floor overrides the declaration and makes such "
+            "spawns fail closed."
+        )
+    else:
+        print("  exec:        ⛔ agent subprocesses are REFUSED on this host")
+        if unsandboxed_exec_declared():
+            _print_wrapped(
+                "agent.sandbox_allow_unsandboxed_exec is set to false, so MCP "
+                "servers, app backends and the provider CLIs will report a "
+                "sandbox error. Remove the key to accept this platform's "
+                "default, or set it to true to allow unconfined execution."
+            )
+        else:
+            # Undeclared AND fail-closed: a platform with no backend whose default
+            # is still refuse (a macOS build without sandbox-exec). Telling this
+            # operator the key "is set to false" would send them to change
+            # something they never wrote.
+            _print_wrapped(
+                "No backend is available and no opt-in is declared, so MCP "
+                "servers, app backends and the provider CLIs will report a "
+                "sandbox error. Set agent.sandbox_allow_unsandboxed_exec=true to "
+                "allow unconfined execution, or run `kirocrew setup` to be walked "
+                "through the decision."
+            )
 
 
 def _linger_enabled(user: str) -> bool | None:
@@ -2393,8 +2558,8 @@ def _doctor_kas(issues: list[str]) -> None:
     :mod:`kiro_crew.acp.kas_transport`), so the thing that makes a selected KAS
     backend fail at session-create time is a kiro-cli whose ``acp`` subcommand
     cannot select the KAS engine. Credentials are deliberately NOT probed here:
-    the relay resolves tokens from kiro-cli's own store, so the kiro-cli
-    sign-in check already reported above is the same signal.
+    the relay resolves tokens from kiro-cli's own store, so the declaration-driven
+    sign-in row already reported above is the same signal.
     """
     # Positive backend test (not ``!= ACP_BACKEND_KAS``): an inequality would
     # silently capture every harness added later — see the harness-parity gate.
@@ -2460,7 +2625,13 @@ def _report_kas_backend(issues: list[str]) -> None:
         print(f"  engine:      ❌ this kiro-cli does not offer engine {KAS_RELAY_ENGINE}")
         print("               Fix: update kiro-cli, or switch agent.acp_backend to kiro.")
         issues.append(f"kiro-cli does not support the KAS engine ({KAS_RELAY_ENGINE})")
-    print("  token:       ➖ owned by kiro-cli (see the sign-in check above)")
+    # Read from the declaration rather than restated here: this block once claimed
+    # in prose whose token KAS used, which is a second place for that fact to be
+    # wrong. The relay resolves every access token from kiro-cli's own store, so the
+    # sign-in rows above are already the whole answer for this backend.
+    from kiro_crew.agent_sdk import entitlement_label
+
+    print(f"  token:       ➖ {entitlement_label(ACP_BACKEND_KAS)} " "(see the sign-in rows above)")
 
 
 def _doctor_agents_janitor(issues: list[str], sweep_backups: bool) -> None:
@@ -2879,28 +3050,16 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
     kiro = shutil.which(KIRO_CLI_BIN)
     if kiro:
         print(f"  kiro-cli:    ✅ {kiro}")
-        # Check login status — best-effort, never a hard failure
-        try:
-            r = subprocess.run(
-                [KIRO_CLI_BIN, "whoami"],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=10,
-            )
-            if r.returncode == 0:
-                print("  kiro login:  ✅")
-            else:
-                print("  kiro login:  ⏹ not logged in (run: kiro-cli login)")
-        except Exception:
-            print("  kiro login:  ⚠️  could not check")
         _doctor_headless_auth(issues)
     else:
         print("  kiro-cli:    ⏭  not found (the default agent backend)")
         print("               Install kiro-cli per its docs, then: kiro-cli login")
 
     _doctor_claude_backend()
+    # After the install rows, and per harness rather than per provider: sign-in is a
+    # different question from install with a different remedy, and every harness's
+    # answer now comes from one declaration instead of a block written per backend.
+    _doctor_agent_auth()
 
     git = shutil.which("git")
     if git:

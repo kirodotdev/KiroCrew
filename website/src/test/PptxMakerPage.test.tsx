@@ -566,7 +566,9 @@ describe('PptxMakerPage', () => {
       // `kiro-cli --agent` resolves against. The slash form matches nothing and
       // `--agent` falls back to the default agent instead of failing, so pinning
       // the wrong spelling here would let a silently agent-less chat pass.
-      expect(api.createChatSlot).toHaveBeenCalledWith(undefined, 'pptx-maker--pptx-maker-spec'),
+      expect(api.createChatSlot).toHaveBeenCalledWith(
+        undefined, 'pptx-maker--pptx-maker-spec', undefined, undefined, 'persistent',
+      ),
     )
   })
 

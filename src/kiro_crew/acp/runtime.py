@@ -82,11 +82,11 @@ from kiro_crew.acp.types import (
     ACP_BACKEND_KIRO,
     ACP_BACKENDS_HOST_AUTH_CALLBACK,
     ACP_BACKENDS_INTERNAL_SANDBOX,
-    ACP_BACKENDS_KIRO_IDENTITY_STORE,
     ACP_BACKENDS_POD_HOME_REMAP,
     ACP_CLIENT_CAPABILITIES,
     KAS_CLIENT_CAPABILITIES,
     METHOD_KAS_SESSION_DELETE,
+    METHOD_KIRO_SESSION_UPDATE,
     METHOD_MCP_OAUTH_REQUEST,
     METHOD_MCP_SERVER_INIT_FAILURE,
     METHOD_MCP_SERVER_INITIALIZED,
@@ -99,6 +99,7 @@ from kiro_crew.acp.types import (
     METHOD_SUBAGENT_LIST_UPDATE,
     JsonRpcMessage,
     JsonRpcRequest,
+    backends_retired_by_host_logout,
 )
 from kiro_crew.agent import ensure_agent_materialized
 from kiro_crew.browser_cli.launch import browser_session_env, browser_socket_env
@@ -615,10 +616,9 @@ def _get_rss_tree_mb(pid: int) -> float | None:
     On macOS the tree is walked too, and it is NOT redundant: kiro-cli spawns
     MCP-server / tool children there exactly as it does on Windows (see that
     branch's note), so measuring only ``pid`` under-reports a session's real
-    footprint and blinds the watchdog's leak ceiling. An earlier version of this
-    docstring claimed the macOS tree "is just the process itself"; it is kept
-    corrected here because that claim is what made the per-pid whole-machine
-    snapshot look free.
+    footprint and blinds the watchdog's leak ceiling. The macOS tree is NOT "just
+    the process itself" — believing otherwise is what makes the per-pid
+    whole-machine snapshot look free.
     """
     if sys.platform == "linux":
         total = 0.0
@@ -920,13 +920,13 @@ class AcpRuntime:
     def uses_kiro_identity_store(self) -> bool:
         """True when this runtime's process signs in from kiro-cli's own store.
 
-        Membership in ``ACP_BACKENDS_KIRO_IDENTITY_STORE`` (harness-parity
+        Membership in ``backends_retired_by_host_logout()`` (harness-parity
         H5/H14). ``AcpRuntime`` is not an ``LLMProvider``, but the identity-change
         sweep reaches shared runtimes as well as session providers, so it
         declares the same capability under the same name -- letting that sweep
         ask both families one question instead of probing private attributes.
         """
-        return self._acp_backend in ACP_BACKENDS_KIRO_IDENTITY_STORE
+        return self._acp_backend in backends_retired_by_host_logout()
 
     @property
     def supports_image_prompt(self) -> bool:
@@ -1325,6 +1325,13 @@ class AcpRuntime:
         # credential-pointer/API-key resolution so no resolver can reintroduce a
         # denied variable; KIRO_API_KEY itself is intentionally not denied.
         env = scrub_agent_subprocess_env(env)
+        # Bundled skill scripts must not depend on a system ``python`` name.
+        # The desktop bundles carry their interpreter outside the user's PATH,
+        # while this path is already running under the exact environment that
+        # can import ``kiro_crew``. Overwrite after the scrub and after
+        # ``extra_env`` so agent configuration cannot redirect the trusted read
+        # gate to a foreign interpreter.
+        env["KIROCREW_RUNTIME_PYTHON"] = sys.executable
         # Pod-scoped kiro-cli children write their OWN MCP OAuth grants,
         # confined to the pod's tree instead of the real host's -- see
         # acp.client._apply_pod_home_remap's docstring. No-op outside a pod and
@@ -2003,7 +2010,11 @@ class AcpRuntime:
         _m = method if isinstance(method, str) else ""
         if _m == METHOD_REQUEST_PERMISSION:
             _mclass = "permission"
-        elif _m == METHOD_SESSION_UPDATE:
+        elif _m in (METHOD_SESSION_UPDATE, METHOD_KIRO_SESSION_UPDATE):
+            # Both live session-update spellings classify as "update": a
+            # dashboard alerting on the pre-fix hang signature must see a
+            # dropped extension-method child update the same way it sees
+            # the plain spelling.
             _mclass = "update"
         else:
             _mclass = "other"
@@ -2251,6 +2262,7 @@ class AcpRuntime:
                         and (
                             msg.is_method(METHOD_REQUEST_PERMISSION)
                             or msg.is_method(METHOD_SESSION_UPDATE)
+                            or msg.is_method(METHOD_KIRO_SESSION_UPDATE)
                         )
                     ):
                         # A frame for a backend-internal subagent the backend
@@ -2258,10 +2270,17 @@ class AcpRuntime:
                         # runtime with an UNAMBIGUOUS consumer (exactly one
                         # registered session — the dashboard-slot shape).
                         #
-                        # - session/update: routed so the consumer's
-                        #   per-toolCallId caches capture the child's REAL
-                        #   command bytes; the handle re-tags them as crew
-                        #   activity, never as parent transcript.
+                        # - session/update — under EITHER spelling: kiro-cli
+                        #   2.21.x emits child updates as the extension method
+                        #   `_kiro.dev/session/update` where earlier versions
+                        #   used plain `session/update`. Routed so the
+                        #   consumer's per-toolCallId caches capture the
+                        #   child's REAL command bytes; the handle re-tags
+                        #   them as crew activity, never as parent transcript.
+                        #   Both spellings must route: a dropped child update
+                        #   leaves the caches empty, child MCP identity
+                        #   unverified, and every auto-approve path falls to
+                        #   the interactive card.
                         # - session/request_permission: routed so the child's
                         #   approval flows through the exact policy pipeline a
                         #   main-agent approval takes — with the command bytes
@@ -2311,6 +2330,21 @@ class AcpRuntime:
                             # drain; a genuinely wedged backend still
                             # accumulates blocked tasks and trips the cap.
                             await asyncio.sleep(0)
+                        elif not _owner_turn_active:
+                            # An UPDATE between the owner's turns (either
+                            # session/update spelling). Nothing reads the
+                            # queue until the next prompt's dispatch loop,
+                            # and _run_turn clears the per-toolCallId caches
+                            # at turn start and then discards stale
+                            # non-permission frames from the queue — so a
+                            # between-turns update can never contribute a
+                            # cache write or an activity event. Queueing it
+                            # would only grow an unbounded queue in gateway
+                            # memory while the slot idles (session queues
+                            # have no depth cap). Unlike a REQUEST there is
+                            # no protocol obligation to answer, so take the
+                            # counted-drop path.
+                            self._note_dropped_frame(session_id, msg.method)
                         else:
                             # Hang-resilience series: a child permission
                             # request delivered to the mode-parity pipeline.
@@ -2482,13 +2516,12 @@ class AcpRuntime:
         actionable login prompt) instead of a generic process-death error —
         parity with AcpClient, which inspects stderr the same way.
 
-        That parity is what this now actually delivers. The check used to be a
-        single regex for the literal banner ``not logged in``, while AcpClient's
-        error-frame path recognised the full auth vocabulary; a real expired
-        bearer token writes ``AccessDeniedException: "Invalid token"`` and ``the
-        bearer token included in the request is invalid`` and says ``not logged
-        in`` nowhere, so this returned False on exactly the state it exists to
-        detect, and the operator was shown a ``session/new`` timeout instead.
+        Recognises the full auth vocabulary rather than the literal banner
+        ``not logged in``: a real expired bearer token writes
+        ``AccessDeniedException: "Invalid token"`` and ``the bearer token
+        included in the request is invalid`` and says ``not logged in`` nowhere,
+        so a single-banner regex answers False on exactly the state this exists
+        to detect, and the operator is shown a ``session/new`` timeout instead.
 
         Reads the latch, not the ring buffer: see ``_saw_auth_failure``.
         """
@@ -3207,8 +3240,8 @@ class AcpRuntime:
                 # session/load their 90s budget. A switched-to server pending
                 # OAuth holds the response for its full 30s wait, so the generic
                 # _REQUEST_TIMEOUT turns set_mode into the SAME race the
-                # session-start floor exists to prevent (see _SESSION_NEW_TIMEOUT
-                # and #9185). `budget` is already resolved for the session/new
+                # session-start floor exists to prevent (see
+                # _SESSION_NEW_TIMEOUT). `budget` is already resolved for the session/new
                 # above, so reuse it rather than re-reading config.
                 await self._send_and_await(
                     METHOD_SET_MODE,
@@ -3492,7 +3525,7 @@ class AcpRuntime:
                 # Same as create_session: set_mode on the resume path boots the
                 # switched-to agent's MCP servers, so it shares session/load's
                 # 90s budget rather than the generic _REQUEST_TIMEOUT that the
-                # backend's own 30s OAuth wait would race (#9185). `budget` is
+                # backend's own 30s OAuth wait would race. `budget` is
                 # the session-start budget already resolved above.
                 await self._send_and_await(
                     METHOD_SET_MODE,

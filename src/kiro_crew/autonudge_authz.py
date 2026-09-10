@@ -34,7 +34,11 @@ from kiro_crew.autonudge import (
 )
 from kiro_crew.autonudge_selfarm import forget_self_arm, record_self_arm
 from kiro_crew.config.loader import workspace_dir_for
-from kiro_crew.monitoring.models import MAX_MONITOR_WAKE_INSTRUCTIONS_CHARS, MonitorState
+from kiro_crew.monitoring.models import (
+    MAX_MONITOR_WAKE_INSTRUCTIONS_CHARS,
+    MONITOR_STATE_VERSION,
+    MonitorState,
+)
 from kiro_crew.security import (
     is_sensitive_path,
     redact_credentials,
@@ -209,6 +213,90 @@ async def authorize_and_stop_monitor(
     if loop is None:
         return None, "structured monitor not found", 404
     return loop, None, 200
+
+
+async def authorize_and_clear_monitor(
+    *,
+    svc: Any,
+    loop_id: str,
+    session_key: str,
+    source: str,
+    caller: str = "",
+) -> tuple[bool, str | None, int]:
+    """Audit before the owner CLEARS one already-terminal monitor record.
+
+    ``monitor_stop`` deliberately retains its outcome, and
+    ``_stopped_row_is_replaceable`` refuses to let a re-arm displace a
+    consumer-recorded stop. That refusal names the way out — *its owner must
+    clear it first* — and this is that path: it REMOVES a row whose outcome is
+    already set, so the slot can arm a monitor for a different subject.
+
+    Without it the retained row is permanent. ``stop_monitor`` returns an
+    already-terminal loop unchanged, so the delete route reported success and
+    removed nothing, and ``POST /api/monitors/{id}/restart`` only ever revives
+    the SAME target. A session that stopped a watch on one pull request could
+    never watch another one.
+
+    Terminal-only by design. A LIVE monitor still goes through
+    ``authorize_and_stop_monitor``, which is what writes the evidence: this
+    function may not be a way to delete a running watch without a record of it
+    having existed.
+    """
+    loop = svc.get_by_id(loop_id)
+    monitor = getattr(loop, "monitor", None) if loop is not None else None
+
+    async def _audit(outcome: str, error: str = "") -> bool:
+        try:
+            await asyncio.to_thread(
+                lambda: sel().log_tool_invocation(
+                    session_key=session_key,
+                    source=source,
+                    tool_name="monitor_clear",
+                    outcome=outcome,
+                    error=error,
+                    critical=True,
+                    metadata={"loop_id": loop_id, "caller": caller},
+                )
+            )
+        except Exception:
+            logger.error("monitor clear denied: SEL audit unavailable", exc_info=True)
+            return False
+        return True
+
+    if loop is None or monitor is None:
+        error = "structured monitor not found"
+        await _audit("denied", error)
+        return False, error, 404
+    if monitor.version != MONITOR_STATE_VERSION:
+        # Same rule the arm path applies to a future-version row: it is a newer
+        # gateway's state, retained across a downgrade on purpose. An older
+        # gateway cannot judge what it holds, so it may not delete it either.
+        error = "monitor was written by a newer gateway and cannot be cleared by this one"
+        await _audit("denied", error)
+        return False, error, 409
+    if monitor.outcome is None:
+        error = "only a stopped monitor can be cleared"
+        await _audit("denied", error)
+        return False, error, 409
+    if monitor.wake_in_flight:
+        # Mirrors the arm path's guard: a terminal record can still own an
+        # accepted wake that has not completed, and the completion has nowhere
+        # to land once the row is gone. Worded for the popover, which renders
+        # this string verbatim in its error notice: "wake" is internal vocabulary
+        # a user has never seen.
+        error = "this goal is still finishing a run, so try again in a moment"
+        await _audit("denied", error)
+        return False, error, 409
+    if not await _audit("invoked"):
+        return False, "audit log unavailable — monitor not cleared", 503
+    # The checks above were taken BEFORE the audit's ``to_thread`` yielded, so
+    # they are re-taken atomically inside the removal's own lock hold: a
+    # concurrent close-rollback restore in that window must not be deleted.
+    if not await svc.clear_terminal_monitor(loop_id):
+        error = "monitor changed before the clear committed"
+        await _audit("denied", error)
+        return False, error, 409
+    return True, None, 200
 
 
 def resolve_stop_sentinel(slot_key: str, workspace: str = "default") -> str:

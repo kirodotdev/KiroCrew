@@ -1688,6 +1688,9 @@ def _update_approve() -> None:
     from kiro_crew.platform.update_stepup import read_pending
 
     print("👻 Approving the pending in-app update…\n")
+    # Default read: never writes. This runs in the CLI process, outside the
+    # gateway's nonce mutex — expiry cleanup here could race a gateway
+    # re-arm and delete a fresh request. Cleanup is the gateway's job.
     pending = read_pending()
     if pending is None:
         print("❌ No armed update request (it may have expired).")

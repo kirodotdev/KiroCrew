@@ -68,6 +68,12 @@ from kiro_crew.cron import (
 from kiro_crew.cron_trigger import trigger_cron_job
 from kiro_crew.dashboard import tailnet, tailnet_serve
 from kiro_crew.dashboard.origin import parse_dashboard_url
+from kiro_crew.embeddings import (
+    get_shared_embedder,
+    make_sync_embed_fn,
+    model_file_present,
+    store_embedding_space_is_stale,
+)
 from kiro_crew.eval.judge import LLMJudge
 from kiro_crew.eval.runner import EvalRunner, format_results, score_by_dimension
 from kiro_crew.eval.scenario import AssertionType, load_scenario, load_scenarios
@@ -2436,6 +2442,84 @@ def _memory_show(args: argparse.Namespace) -> None:
         print(_TERMINAL_CTRL_RE.sub("", text))
 
 
+# Each says WHICH index answered, because the caller cannot tell a keyword hit
+# from a semantic one by looking at the output. On stderr, not stdout: the hits
+# are still the answer and `--layer vector`'s stdout shape is a documented
+# promise. Same degradations, same wording shape, as the `kirocrew run`
+# store in cli_server.
+_SEARCH_KEYWORD_ONLY_NO_MODEL = (
+    "Embedding model not downloaded yet — keyword-matching this query "
+    "(the gateway downloads it in the background)"
+)
+_SEARCH_KEYWORD_ONLY_STALE_SPACE = (
+    "Embedding model changed — keyword-matching this query "
+    "(the gateway re-embeds in the background)"
+)
+_SEARCH_KEYWORD_ONLY_NOT_READY = (
+    "Embedding model did not load — keyword-matching this query "
+    "(run 'kirocrew doctor' for the reason)"
+)
+_SEARCH_KEYWORD_ONLY_PENDING_ROWS = (
+    "No embedded episodic row matched — keyword-matching this query "
+    "(rows still waiting for the gateway's re-embed sweep are keyword-only)"
+)
+# Loading the GGUF off local disk, matching the wait the knowledge bench allows
+# for the same one-shot CLI block (`cli_bench._KB_REAL_EMBED_TIMEOUT_S`).
+_SEARCH_MODEL_LOAD_TIMEOUT_SECS = 120.0
+
+
+def _memory_search_embedding(store: VectorMemoryStore, query: str) -> list[float] | None:
+    """Query vector for `memory search`, or None when it must degrade to keyword.
+
+    ``search_episodic`` text-searches whenever ``query_embedding`` is None and
+    does NOT auto-embed (only ``get_episodic_context`` does), and nothing repairs
+    an un-embedded QUERY the way the gateway's boot sweep repairs an un-embedded
+    row — so a one-shot read has to produce its own vector or it can never do
+    semantic recall at all. Without one, `--layer all` prints two labelled
+    sections that are both keyword hits over different corpora, while the two are
+    documented as answering different questions ("where did I write this word"
+    versus "what does this mean like").
+
+    Deliberately NO download kick: this is a one-shot CLI and must not start a
+    610MB download it will abandon at exit; the long-lived gateway owns that. A
+    stale vector space degrades this query too — the loaded FAISS index was built
+    by a different model, so scoring a new-model query vector against it compares
+    incomparable vectors, which is worse than keyword.
+
+    Unlike the long-lived stores (gateway, `kirocrew run`), this store embeds
+    exactly once, so ``embed_fn`` is bound only on the path that reaches the
+    embed and no ``embed_fn_factory`` is wired: there is no later write for a
+    lazy rebind to serve, and leaving the factory unset means the degraded
+    branches above cannot be silently undone underneath them.
+    """
+    if not query:
+        return None
+    if not model_file_present():
+        print(_SEARCH_KEYWORD_ONLY_NO_MODEL, file=sys.stderr)
+        return None
+    if store_embedding_space_is_stale(store):
+        print(_SEARCH_KEYWORD_ONLY_STALE_SPACE, file=sys.stderr)
+        return None
+    # BLOCK once, here. The callable from make_sync_embed_fn() never waits on the
+    # model load — it kicks the background load and returns None — so binding it
+    # alone leaves the very invocation the user typed on keyword search. A
+    # one-shot read is exactly the sync context wait_ready() exists for.
+    # wait_ready is the llama.cpp backend's seam and NOT on the EmbeddingBackend
+    # ABC, so probe for it, same as the dashboard and the re-embed sweep.
+    embedder = get_shared_embedder()
+    wait_ready = getattr(embedder, "wait_ready", None)
+    ready = (
+        wait_ready(timeout=_SEARCH_MODEL_LOAD_TIMEOUT_SECS)
+        if callable(wait_ready)
+        else embedder.is_ready()
+    )
+    if not ready:
+        print(_SEARCH_KEYWORD_ONLY_NOT_READY, file=sys.stderr)
+        return None
+    store.embed_fn = make_sync_embed_fn()
+    return store._try_embed(query)
+
+
 def _memory_cmd(args: argparse.Namespace) -> None:
     """Manage the memory system (vector store + markdown layer)."""
     action = getattr(args, "mem_action", None)
@@ -2476,7 +2560,32 @@ def _memory_cmd(args: argparse.Namespace) -> None:
         elif action == "search":
             layer = getattr(args, "layer", "all")
             if layer in ("vector", "all"):
-                results = store.search_episodic(query_text=args.query, limit=10)
+                query_embedding = _memory_search_embedding(store, args.query)
+                results = store.search_episodic(
+                    query_embedding=query_embedding,
+                    query_text=args.query,
+                    limit=10,
+                )
+                if not results and query_embedding is not None:
+                    # Both vector legs score only rows with a non-NULL embedding
+                    # (search_episodic's FAISS branch and _sqlite_vector_search's
+                    # "embedding IS NOT NULL"), and NULL rows are a designed
+                    # state: write_episodic(defer_embedding=True) bulk writers,
+                    # `memory import` / `memory migrate` — THIS store binds no
+                    # embed_fn on those paths — and rows cleared by
+                    # reconcile_embedding_space. All of them wait on the
+                    # gateway's boot-only, paced backfill sweep, so an empty
+                    # semantic result over an un-embedded corpus is not "no such
+                    # memory". Retry the keyword leg the pre-embedding CLI used
+                    # rather than reporting nothing; guarded on query_embedding
+                    # so the degraded paths above never run it twice.
+                    results = store.search_episodic(query_text=args.query, limit=10)
+                    if results:
+                        # Only when keyword actually recovered something the
+                        # vector pass could not see — an empty store must not
+                        # emit a degrade line. Same stderr rule as the three
+                        # degrades above: stdout shape is a promise.
+                        print(_SEARCH_KEYWORD_ONLY_PENDING_ROWS, file=sys.stderr)
                 if not results:
                     print("No episodic memories found.")
                     # Under "all" the markdown layer is still to come: an empty

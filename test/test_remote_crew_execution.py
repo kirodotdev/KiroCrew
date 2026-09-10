@@ -890,7 +890,12 @@ class TestBindingAuthorization:
         state = _make_state(tmp_path)
         async with TestClient(TestServer(_create_app(state))) as client:
             resp = await client.post(
-                "/api/chat/slots", json={"name": "chat-1", "instance_id": "nobita"}
+                "/api/chat/slots",
+                json={
+                    "name": "chat-1",
+                    "instance_id": "nobita",
+                    "memory_mode": "temporary",
+                },
             )
             assert resp.status == 200
             body = await resp.json()
@@ -898,7 +903,13 @@ class TestBindingAuthorization:
         assert body["instance_id"] == "nobita"
         # The peer's slot key is bound server-side but never projected.
         assert state._slots["chat-1"].remote_slot == "peer-chat-9"
-        peer.assert_awaited_once()
+        peer.assert_awaited_once_with(
+            state,
+            "nobita",
+            agent="",
+            model="",
+            memory_mode="temporary",
+        )
 
     @pytest.mark.asyncio
     async def test_a_peer_that_refuses_leaves_no_local_slot_bound(self, tmp_path, monkeypatch):
@@ -1128,7 +1139,11 @@ class TestBoundCreateDefaults:
         assert body["agent"] == ""
         # And nothing was asked of the peer either: an omitted agent is how the
         # peer is told to apply its own default.
-        assert peer.await_args.kwargs == {"agent": "", "model": ""}
+        assert peer.await_args.kwargs == {
+            "agent": "",
+            "model": "",
+            "memory_mode": "persistent",
+        }
 
     @pytest.mark.asyncio
     async def test_a_local_create_still_stamps_the_default(self, tmp_path, peer, local_default):
@@ -1457,7 +1472,7 @@ class TestCreatePeerSlot:
         await create_peer_slot(state, "nobita")
 
         _, kwargs = mgr.proxy_request.call_args
-        assert json.loads(kwargs["data"]) == {}
+        assert json.loads(kwargs["data"]) == {"memory_mode": "persistent"}
 
     @pytest.mark.asyncio
     async def test_an_explicit_pick_rides_the_create(self, tmp_path):
@@ -1471,17 +1486,27 @@ class TestCreatePeerSlot:
         mgr = _mgr_returning(200, b'{"key": "peer-chat-9"}')
         state.instances_manager = mgr
 
-        await create_peer_slot(state, "nobita", agent="reviewer", model="opus")
+        await create_peer_slot(
+            state,
+            "nobita",
+            agent="reviewer",
+            model="opus",
+            memory_mode="temporary",
+        )
 
         _, kwargs = mgr.proxy_request.call_args
-        assert json.loads(kwargs["data"]) == {"agent": "reviewer", "model": "opus"}
+        assert json.loads(kwargs["data"]) == {
+            "agent": "reviewer",
+            "model": "opus",
+            "memory_mode": "temporary",
+        }
 
     @pytest.mark.parametrize(
         "kwargs,expected",
         [
-            ({"agent": "reviewer"}, {"agent": "reviewer"}),
-            ({"model": "opus"}, {"model": "opus"}),
-            ({"agent": "", "model": ""}, {}),
+            ({"agent": "reviewer"}, {"agent": "reviewer", "memory_mode": "persistent"}),
+            ({"model": "opus"}, {"model": "opus", "memory_mode": "persistent"}),
+            ({"agent": "", "model": ""}, {"memory_mode": "persistent"}),
         ],
     )
     @pytest.mark.asyncio

@@ -532,7 +532,7 @@ async def run_gatewayd(
             name="mcp-gateway-idle-sweeper",
         )
 
-        # Backend temp containment (#5064): reclaim per-process temp dirs
+        # Backend temp containment: reclaim per-process temp dirs
         # whose owner is dead AND whose content is idle (see backend_tmp --
         # deletion deliberately lives ONLY here, never on a shutdown path,
         # because a launcher's exit is not proof its process tree is gone).
@@ -1477,7 +1477,7 @@ def env_target_resolver(pool_key: PoolKey) -> Optional[tuple[str, list[str], dic
     """
     base = "KIROCREW_MCP_TARGET_" + pool_key.server_name.upper().replace("-", "_")
     # Accept the legacy MC_MCP_TARGET_ prefix for overlays/daemons written by
-    # older versions that haven't been regenerated (#928).
+    # older versions that haven't been regenerated.
     legacy_base = "MC_MCP_TARGET_" + pool_key.server_name.upper().replace("-", "_")
     # Prefer the args-disambiguated entry (written by
     # rewriter._collect_target_env) so two agents that share a server name but
@@ -1506,9 +1506,9 @@ def env_target_resolver(pool_key: PoolKey) -> Optional[tuple[str, list[str], dic
     # site can't drift from the kiro-cli/agent spawn path's scrub again.
     for key in _PYTHON_ENV_PREFIXES:
         env.pop(key, None)
-    # No KIROCREW_CHANNEL_ID is exported into the backend env. It used to be
-    # copied from PoolKey.channel_id, which only made sense while a backend was
-    # owned by one channel. A pooled backend serves several channels, so a
+    # No KIROCREW_CHANNEL_ID is exported into the backend env. Copying it from
+    # PoolKey.channel_id would only make sense while a backend was owned by one
+    # channel. A pooled backend serves several channels, so a
     # single channel baked into its environment at spawn would be actively
     # wrong — it would tell the server it belongs to whichever channel happened
     # to spawn it first. The channel is delivered PER CALL instead, in
@@ -1716,7 +1716,7 @@ class _StubConn:
         self.caller = caller
         self.pid_start_ids = pid_start_ids if pid_start_ids is not None else {}
         # Namespace separator for a connection whose session the gateway cannot
-        # name, forwarded to the backend on every request (#5322). GATEWAY-minted
+        # name, forwarded to the backend on every request. GATEWAY-minted
         # and never derived from the Register frame: ``stub_uuid`` arrives from
         # the stub, so a nonce derived from it would let one stub choose to share
         # an unnamed peer's per-tenant namespace. Independent of ``caller``,
@@ -2477,8 +2477,8 @@ async def _handle_connection(
         # filesystem gate below, which is a real check rather than a shrug: a
         # 0600 socket already prevents any other uid from connecting.
         #
-        # macOS used to take this branch. It was promoted into
-        # PEER_IDENTITY_SUPPORTED once the macOS CI job proved LOCAL_PEERCRED
+        # macOS does NOT take this branch: it is inside
+        # PEER_IDENTITY_SUPPORTED because the macOS CI job proves LOCAL_PEERCRED
         # returns MATCH on real hardware over an accepted socket, with that
         # canary enforced by node id so it cannot silently stop running.
         peer_result = socketsec.check_peer_is_self(writer)
@@ -4042,9 +4042,9 @@ def _read_rss_kb() -> int:
 
     Delegates to :func:`platform_compat.proc_rss_bytes` — the one per-platform
     current-RSS reader — so this diagnostic cannot drift from the figure the
-    dashboard reports. The per-platform duplicate that used to live here read
+    dashboard reports. A separate per-platform reader here would reach for
     ``ru_maxrss`` on macOS, which is a high-water mark that never decreases, so
-    a spike the gateway had already released stayed in every later snapshot.
+    a spike the gateway had already released would stay in every later snapshot.
     """
     rss_bytes = _proc_rss_bytes()
     return rss_bytes // 1024 if rss_bytes > 0 else -1

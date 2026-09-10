@@ -234,9 +234,37 @@ def learn_add(name: str, args: dict[str, Any]) -> str:
             f"{lost}"
         )
     if outcome == "deduped":
+        # ``rule`` is the SUBMITTED text, not the stored lesson that claimed the
+        # write. The old wording put it directly after "an existing stored lesson
+        # already covers it", which reads as a quote OF that stored lesson -- so a
+        # caller believed it had been shown the winner. It had not, and it could
+        # not name what it lost to, leaving a blind ``learn_remove`` on a guessed
+        # substring as the only recovery. Say which text this is, and name the
+        # replace path for a submission that was meant to CORRECT a stale lesson.
+        if reason == "semantic_similarity":
+            # This reason means the stored near-duplicate OUTRANKS the write
+            # (the user's own lesson, or a higher-confidence imported one).
+            # Do NOT coach the remove-and-re-add path here: an automated
+            # caller following it would delete the row the store just
+            # protected and replace it with lower-authority guidance.
+            return (
+                f"Lesson was NOT saved{detail}: a near-identical lesson with "
+                f"higher authority (set by the user, or imported at higher "
+                f"confidence) already covers it, and that stored lesson stays "
+                f"in effect. The text below is what was DROPPED -- it is NOT the "
+                f"stored lesson: {rule}\n"
+                "Only the user can replace their own lesson; do not remove it on "
+                "their behalf."
+                f"{lost}"
+            )
         return (
-            f"Lesson was NOT saved as a new entry{detail}: an existing stored lesson "
-            f"already covers it, and that lesson stays in effect. Rule: {rule}{lost}"
+            f"Lesson was NOT saved{detail}. The text below is what was DROPPED -- it "
+            f"is NOT the stored lesson: {rule}\n"
+            "An existing stored lesson already covers it, and that existing lesson "
+            "stays in effect. If this was meant to correct or replace a stale lesson, "
+            "run learn_list to find the stored wording, learn_remove it, then add this "
+            "again -- otherwise the outdated lesson keeps applying."
+            f"{lost}"
         )
     if outcome == "unchanged":
         # No exact-match claim here, because ``unchanged`` does not mean the stored row

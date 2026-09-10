@@ -1,11 +1,11 @@
 """Durable provenance for the ``settings.local.json`` seed Crew writes.
 
 Crew seeds ``<work_dir>/.claude/settings.local.json`` for a claude-agent-acp
-session and overwrites or removes ONLY the file it owns. Ownership used to be
-proven entirely from per-instance memory ("this client created it" plus "the
-bytes it wrote"), which answers the question correctly inside one session and
-wrongly outside one: a seed left behind by a session that was killed, or by an
-earlier app version, reads as a stranger's file forever after. The writer then
+session and overwrites or removes ONLY the file it owns. Proving that ownership
+from per-instance memory alone ("this client created it" plus "the bytes it
+wrote") answers the question correctly inside one session and wrongly outside
+one: a seed left behind by a session that was killed, or by an earlier app
+version, reads as a stranger's file forever after. The writer then
 takes its leave-it-alone branch on every subsequent session, so a stale
 ``availableModels`` allowlist (and a stale ``permissions.defaultMode``, up to an
 inherited ``bypassPermissions``) becomes permanent project state that Crew can
@@ -411,8 +411,7 @@ def forget(path: Path | str, owner: str) -> bool:
     """Durably drop *owner*'s claim on *path*. ``True`` when the DISK agrees.
 
     **BLOCKING — callers must run this off the event loop** (``asyncio.to_thread``
-    or an executor). It takes :data:`_LOCK` and writes the sidecar, and the one
-    caller that used to run it on the loop no longer does.
+    or an executor). It takes :data:`_LOCK` and writes the sidecar.
 
     The return value is the contract, and it is what makes the revoke safe to
     delete a file behind: ``True`` means the sidecar on disk no longer names

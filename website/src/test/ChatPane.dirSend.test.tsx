@@ -306,9 +306,12 @@ describe('ChatPane send — a failed send is reported on the pane', () => {
     fireEvent.keyDown(box, { key: 'Enter', code: 'Enter' })
 
     await waitFor(() => expect(errorsIn(store, 'pane-refused')).toHaveLength(1))
-    // The server's own reason survives. "check your connection" would be wrong
-    // AND unactionable for a 409 the caller can actually do something about.
-    expect(errorsIn(store, 'pane-refused')[0].content).toBe('slot is stopping')
+    // The server's own reason survives — FRAMED with what happened and where
+    // the text went, never bare: "check your connection" would be wrong AND
+    // unactionable for a 409 the caller can actually do something about, and
+    // a bare "slot is stopping" reads as the agent erroring, not as a send
+    // that never went out.
+    expect(errorsIn(store, 'pane-refused')[0].content).toBe("Couldn't send this message: slot is stopping. Your text is back in the composer.")
     await waitFor(() => expect((box as HTMLTextAreaElement).value).toBe('refused at the guard'))
   })
 
@@ -362,7 +365,7 @@ describe('ChatPane send — a failed send is reported on the pane', () => {
     fireEvent.click(screen.getByText('Submit'))
 
     await waitFor(() => expect(errorsIn(store, 'pane-ask')).toHaveLength(1))
-    expect(errorsIn(store, 'pane-ask')[0].content).toBe('slot is stopping')
+    expect(errorsIn(store, 'pane-ask')[0].content).toBe("Couldn't send this message: slot is stopping. Your text is back in the composer.")
     // ...and the answer comes back so it can be sent again.
     const box = (await screen.findAllByRole('textbox'))[0] as HTMLTextAreaElement
     await waitFor(() => expect(box.value).toBe('Public only'))

@@ -26,7 +26,11 @@ initI18n('en')
 
 const params = new URLSearchParams(location.search)
 const theme = params.get('theme') || 'dark'
-const scene = params.get('scene') || 'long' // long | short | paging
+const scene = params.get('scene') || 'long' // long | short | paging | busy
+// `busy`: the active slot has a turn running, so the composer shows its
+// mid-turn affordance (the Steer/Queue split button). Evidence that the main
+// chat's composer is untouched by pane-only busy-mode changes.
+const busyScene = scene === 'busy'
 // ThemeProvider derives the root theme from its OWN preference store
 // (localStorage 'mc-theme', falling back to 'system') and rewrites the
 // data-theme attribute on mount — so setting the attribute alone is
@@ -49,7 +53,7 @@ const mkLong = (): Msg[] => Array.from({ length: 16 }, (_, i) => ([
 ])).flat()
 const mkShort = (): Msg[] => mkLong().slice(0, 2)
 
-const messages = scene === 'short' ? mkShort() : mkLong()
+const messages = scene === 'short' || busyScene ? mkShort() : mkLong()
 ;(window as unknown as { __CAPTURE_MESSAGES__: Msg[] }).__CAPTURE_MESSAGES__ = messages
 
 const store = configureStore({
@@ -57,14 +61,14 @@ const store = configureStore({
   preloadedState: {
     dashboard: {
       status: null,
-      slots: [{ key: 'slot-a', title: 'scroll-shell fixture', messages: messages.length, running: false, mode: '', pending_approval: false, waiting_for_input: false, last_activity_ts: undefined }],
+      slots: [{ key: 'slot-a', title: 'scroll-shell fixture', messages: messages.length, running: busyScene, mode: '', pending_approval: false, waiting_for_input: false, last_activity_ts: undefined }],
       slotsLoaded: true,
       unreadSlots: [], refreshTrigger: 0, approvalMode: 'normal',
       subagentRunning: {}, subagentDetails: {}, subagentText: {},
     } as unknown as RootState['dashboard'],
     chat: {
       activeSlot: 'slot-a', messages,
-      slotRunning: false, slotStopping: false, slotState: 'idle',
+      slotRunning: busyScene, slotStopping: false, slotState: busyScene ? 'streaming' : 'idle',
       history: [], historyHasMore: false, pendingInput: null,
       subagents: {}, toolLog: [], activityOpen: false, activityTab: 'tools',
       // The paging scene photographs the two states the shell extraction moved

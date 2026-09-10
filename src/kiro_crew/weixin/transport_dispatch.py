@@ -185,10 +185,10 @@ class WeixinDispatcher:
         attachment_temp_paths: list[str] = []
         # Captured BEFORE ingestion, which clears ``inbound.attachments`` and
         # inlines the temp paths into the text. The durable inbound spool needs
-        # both originals (issue #2217): the count is what tells the restart
+        # both originals: the count is what tells the restart
         # notice this turn carried media that was not carried over, and the
         # pre-ingestion text is what the notice quotes -- the ingested form
-        # holds paths to files that no longer exist.
+        # holds paths to temp files that are gone after a restart.
         original_text = text
         original_attachments = len(inbound.attachments or ())
         if inbound.attachments:
@@ -272,9 +272,9 @@ class WeixinDispatcher:
         """Session acquisition + turn dispatch for one already-ingested message.
 
         ``original_text`` / ``original_attachments`` are the pre-ingestion values,
-        which this frame can no longer recover: ingestion clears
+        which this frame cannot recover: ingestion clears
         ``inbound.attachments`` and rewrites the text with temp paths that are gone
-        after a restart. They exist for the durable inbound spool (issue #2217).
+        after a restart. They exist for the durable inbound spool.
         """
         assert self.client is not None
         # ── Mid-turn concurrency: check the CURRENT-generation key for an
@@ -312,7 +312,7 @@ class WeixinDispatcher:
             ChannelTurn(
                 channel_type="weixin",
                 session_key=session_key,
-                # Durable inbound spool (issue #2217): the peer id IS the reply
+                # Durable inbound spool: the peer id IS the reply
                 # target on this DM-only channel, and the reply's context_token
                 # is already persisted off-loop, so the restart notice can land.
                 # ``original_text`` with NO fallback to the ingested ``text``: the

@@ -380,7 +380,7 @@ Model: `Qwen/Qwen3-Embedding-0.6B` Q8_0 GGUF (610MB). Apache-2.0 licensed. Serve
 ### Consolidation Integration
 
 `HistoryConsolidator._consolidate()` now extracts structured data alongside existing fields:
-- `"semantic"` array → `_write_semantic()` for each (max 20 per consolidation)
+- `"semantic"` array → `_write_semantic()` for each (max 20 per consolidation), always under `source="consolidation:<key>"` — **never** `user_explicit`, whatever confidence the LLM claims, so the conflict rule above still protects a genuine user-stated row (mirrors the lesson writer's `source="consolidation"`)
 - `"episodic"` array → `write_episodic()` for each (max 10 per consolidation)
 - Dual-write mode: when `config.memory.migrated` is False, also writes markdown files (backward compat)
 
@@ -409,7 +409,7 @@ Model: `Qwen/Qwen3-Embedding-0.6B` Q8_0 GGUF (610MB). Apache-2.0 licensed. Serve
 
 `kirocrew memory {list,search,show,stats,audit,export,migrate,import}` — manage memory from the command line:
 - `show [preferences|projects|history]` — read the markdown layer through `MemoryStore` (all three targets when none given); `--format md|json` (json entries carry `path`, `updated_at` mtime in UTC ISO-8601, `content`), `--since YYYY-MM-DD` filters history days. Missing/empty files print as empty rather than erroring
-- `search <query>` — searches BOTH memories and labels each section: the vector store's episodic recall, then keyword hits from the markdown layer's FTS5 index (`MemoryStore.search`, over `preferences.md` / `projects.md` / every `history/*.md`). `--layer vector|history|all` (default `all`); `--layer vector` reproduces the previous vector-only output exactly, and `--layer history` skips constructing the vector store entirely, the same way `show` does. The two indexes answer different questions — "where did I write this word" versus "what does this mean like" — so they are reported separately rather than merged into one ranking
+- `search <query>` — searches BOTH memories and labels each section: the vector store's episodic recall, then keyword hits from the markdown layer's FTS5 index (`MemoryStore.search`, over `preferences.md` / `projects.md` / every `history/*.md`). `--layer vector|history|all` (default `all`); `--layer vector` reproduces the previous vector-only output exactly, and `--layer history` skips constructing the vector store entirely, the same way `show` does. The two indexes answer different questions — "where did I write this word" versus "what does this mean like" — so they are reported separately rather than merged into one ranking. `search_episodic` text-searches whenever `query_embedding` is None and does not auto-embed, so the vector section embeds the query in-process, blocking once on the model load (`_SEARCH_MODEL_LOAD_TIMEOUT_SECS`, 120 s) — a one-shot read cannot lean on the gateway's boot re-embed sweep the way a WRITE can. It degrades to keyword matching, naming the reason on **stderr** (stdout shape is unchanged), when the model is not downloaded (a one-shot CLI never kicks the download), when the store's vectors were produced by a different model, or when the model fails to load; and when the semantic pass returns nothing it retries the keyword leg once before reporting "No episodic memories found.", because the vector legs score only rows with a non-NULL embedding and deferred/imported/re-embed-pending rows are keyword-searchable only until the gateway's sweep reaches them
 - `stats` — counts, embedded coverage, FAISS accelerator status, audit event count, and a **`Reads (this process)`** block from `read_counters()` (rows + statements, then the semantic/episodic population-scan tallies). Labelled per-process because the CLI constructs its own store, so the totals describe only what this invocation read; the gateway's totals are the `reads` object on `GET /api/memory/observability`
 - `export` — vector-store collections; `--include-markdown` opts in a `markdown` collection (`preferences`/`projects` entries + per-day `history` list from `MemoryStore.markdown_snapshot()`) without changing the default payload shape
 - `migrate` — one-time markdown → structured migration (preferences.md → semantic, history/*.md → episodic)
@@ -662,7 +662,7 @@ lesson beat a contradicting preference in the same prompt.
 |----------|------------|-----------|
 | Lesson contradicts a preference | Lesson wins via the `[Learned corrections]` framing | `context.py` |
 | Two semantic writes to one key | `user_explicit` overrides all; else higher confidence; confidences within 0.1 count as equal so newer wins | `vector_memory._write_semantic()` |
-| Duplicate lessons | Substring dedup (contained-in-stored declines; contains-a-stored-one DELETES it, "longer wins"), then topic-overlap dedup (≥50% of the smaller keyword set → newer replaces older), then embedding dedup (cosine > 0.85 → longer text wins). Every deletion is named in `LessonWriteResult.superseded` | `vector_memory.write_lesson()` |
+| Duplicate lessons | Substring dedup (contained-in-stored declines; contains-a-stored-one DELETES it, "longer wins", regardless of source), then topic-overlap dedup (≥50% of the smaller keyword set → newer replaces older, regardless of source), then embedding dedup (cosine > 0.85 → newer replaces older, unless a stored near-duplicate outranks the write — `user_explicit` over a lower-authority source, or strictly higher stored confidence. That verdict is decided in a non-mutating authority pre-pass before the scan deletes anything, so a write declined on authority deletes nothing and reports empty `superseded`; the pre-pass covers semantic matches only, and the two earlier branches stay source-blind). Every deletion is named in `LessonWriteResult.superseded` | `vector_memory.write_lesson()` |
 | Contradicting episodic fragments | No explicit resolution: time decay plus MMR surfaces the newer/more relevant fragment | `vector_memory.search_episodic()` |
 | A semantic value is superseded | `_retire_stale_episodic()` tombstones episodic rows that quote the old value | `vector_memory._write_semantic()` step 9 |
 
@@ -1773,7 +1773,7 @@ No new command. Users interact via the existing skill management surface:
 ## Hooks (`hooks.py`)
 
 Config-driven from `config.json` → `hooks` section:
-- **auto_approve_tools** / **auto_deny_tools** — tool patterns (exact, `prefix*`, `*suffix`, `*contains*`)
+- **auto_approve_tools** / **auto_deny_tools** — tool patterns (exact, `prefix*`, `*suffix`, `*contains*`). An approve pattern is matched against the display title, except for an MCP-served call whose canonical identity is verified (`mcp_server_name`/`mcp_tool_name` from `_meta.kiro` AND the event's `mcp_identity_trusted` provenance flag, which every permission-path caller threads through — non-emptiness alone is not provenance): there it is matched against that identity as `Running: @server/tool` and `@server/tool` (`mcp_identity_ref`), in place of the title — never the lossy wire form `mcp__server__tool`, under which two identities whose server or tool name contains `__` collide — so a model-authored `description` in the title cannot approve a different tool than the one that executes. An identity that is present but unproven falls back to the title match. Deny patterns keep matching the title, the raw command and the wire `mcp__server__tool` name, and now also the `@server/tool` / `Running: @server/tool` spelling whenever the server name is present (a deny target can only deny), so both lists can be written in one spelling and deny still beats approve on the identity plane. **Migration note:** for an MCP-served call with a verified identity the approve pattern is no longer compared to the title, so an approve pattern written against a title that does not spell the identity (for example one keyed on a tool's `description` text) stops auto-approving and the call shows an approval card; rewrite it as `@server/tool` (or `Running: @server/tool`, kiro-cli's own title for MCP calls). Deny patterns keep matching the title, the raw command, and the canonical `mcp__server__tool` name together.
 - **auto_replies** — pattern → direct reply (skip ACP entirely)
 - **transforms** — pattern → prefix prepended to message
 - **context_rules** — trigger keywords → context injected into message
@@ -1827,10 +1827,12 @@ path, choosing isolation over quoting fidelity.
 
 On Windows both wrappers are pass-throughs whenever they return at all — there is
 no sandbox backend and no cgroup v2 — but `wrap_argv` **fail-closes** rather than
-passing through unless `agent.sandbox_allow_unsandboxed_exec` is set, so a
-Windows script hook needs that opt-in (the same one script crons and Papyrus
-need). Without it the hook's `SandboxUnavailableError` surfaces as the result's
-`error`, naming the setting.
+passing through where that is what the host resolves to. On Windows an
+undeclared key resolves to allow, so a script hook runs unconfined by default
+(as script crons and Papyrus do); where the operator declared
+`agent.sandbox_allow_unsandboxed_exec=false`, or a governance
+`sandbox.min_level` floor is pinned, the hook's `SandboxUnavailableError`
+surfaces as the result's `error`, naming the setting.
 
 ### `safe_read_file(path: str) -> str`
 

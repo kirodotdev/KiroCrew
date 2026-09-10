@@ -40,9 +40,15 @@ Each session can operate in one of three memory modes:
 
 | Mode | Reads Memory | Writes Memory | Consolidates | Use Case |
 |------|-------------|---------------|-------------|----------|
-| **Persistent** (default) | ✅ | ✅ | ✅ | Normal work |
+| **Persistent** (factory default) | ✅ | ✅ | ✅ | Normal work |
 | **Incognito** | ✅ | ❌ | ❌ | Sensitive tasks — reads context but blocks learn_add and consolidation |
 | **Temporary** | ❌ | ❌ | ❌ | Isolated experiments — no memory interaction at all |
+
+For new dashboard chats, choose the default under **Settings → Chat → Sessions →
+Default Memory Mode**. The choice is stored as
+`dashboard.default_memory_mode`. An explicit Incognito or Temporary choice still
+wins for that chat. App-owned chats, messaging channels, cron jobs, and direct API
+callers keep their own mode selection and do not inherit this dashboard preference.
 
 Set via the dashboard Welcome view (ghost button), the mode icon in the chat
 header, Slack (`!incognito` / `!temporary` prefix), or Telegram (`/incognito` /
