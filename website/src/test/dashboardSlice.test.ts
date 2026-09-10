@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import reducer, {
   sseStatus,
+  setYoloDuration,
   sseConnected,
   sseDisconnected,
   sseSlots,
@@ -57,6 +58,55 @@ describe('dashboardSlice', () => {
       const status = { uptime: '1h', sessions: 0, messages: 0, cron_jobs: 0, subagents: 0, lessons: 0, yolo: false } as StatusData
       const state = reducer(yoloState, sseStatus(status))
       expect(state.approvalMode).toBe('normal')
+    })
+
+    it('carries the config-derived grant keys across a WebSocket frame that omits them', () => {
+      const http = {
+        uptime: '1h', sessions: 0, messages: 0, cron_jobs: 0, subagents: 0, lessons: 0,
+        yolo_duration: '1h', yolo_until_shutdown_permitted: false,
+      } as StatusData
+      const wsFrame = { uptime: '2h', sessions: 3, messages: 5, cron_jobs: 1, subagents: 0, lessons: 2 } as StatusData
+      const state = reducer(reducer(initial, sseStatus(http)), sseStatus(wsFrame))
+      expect(state.status).toEqual({ ...wsFrame, yolo_duration: '1h', yolo_until_shutdown_permitted: false })
+    })
+
+    it('still replaces every other key a frame omits (an omitted key is an answer)', () => {
+      const http = {
+        uptime: '1h', sessions: 0, messages: 0, cron_jobs: 0, subagents: 0, lessons: 0,
+        version_display: '0.4.0', yolo_expires_at: '2026-01-01T00:00:00Z', yolo_until_shutdown: true,
+      } as StatusData
+      const wsFrame = { uptime: '2h', sessions: 0, messages: 0, cron_jobs: 0, subagents: 0, lessons: 0 } as StatusData
+      const state = reducer(reducer(initial, sseStatus(http)), sseStatus(wsFrame))
+      expect(state.status).toEqual(wsFrame)
+    })
+
+    it('lets a frame that carries a grant key overwrite the retained value', () => {
+      const first = { uptime: '1h', sessions: 0, messages: 0, cron_jobs: 0, subagents: 0, lessons: 0, yolo_duration: '1h' } as StatusData
+      const second = { ...first, yolo_duration: '24h' } as StatusData
+      const state = reducer(reducer(initial, sseStatus(first)), sseStatus(second))
+      expect(state.status?.yolo_duration).toBe('24h')
+    })
+
+    it('setYoloDuration writes the saved value and it outranks later frames and replies', () => {
+      const http = { uptime: '1h', sessions: 0, messages: 0, cron_jobs: 0, subagents: 0, lessons: 0, yolo_duration: '30m' } as StatusData
+      const wsFrame = { uptime: '2h', sessions: 0, messages: 0, cron_jobs: 0, subagents: 0, lessons: 0 } as StatusData
+      let state = reducer(initial, sseStatus(http))
+      state = reducer(state, setYoloDuration('24h'))
+      expect(state.status?.yolo_duration).toBe('24h')
+      // A frame without the key carries the save; a stale reply WITH the old
+      // key (a request that began before the save) does not roll it back.
+      state = reducer(state, sseStatus(wsFrame))
+      expect(state.status?.yolo_duration).toBe('24h')
+      state = reducer(state, sseStatus(http))
+      expect(state.status?.yolo_duration).toBe('24h')
+    })
+
+    it('a save recorded before any status arrives is applied to the first status', () => {
+      const wsFrame = { uptime: '2h', sessions: 0, messages: 0, cron_jobs: 0, subagents: 0, lessons: 0 } as StatusData
+      let state = reducer(initial, setYoloDuration('1h'))
+      expect(state.status).toBeNull()
+      state = reducer(state, sseStatus(wsFrame))
+      expect(state.status?.yolo_duration).toBe('1h')
     })
   })
 

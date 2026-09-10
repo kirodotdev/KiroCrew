@@ -13,6 +13,12 @@ export interface SubagentDetail {
 
 interface DashboardState {
   status: StatusData | null
+  /** The ad-hoc auto-approve duration this tab last saved in Settings, or
+   *  undefined when it has saved none. Applied over every status write: the
+   *  save is the newest fact this tab holds, and a status reply that began
+   *  before it (the boot read, a slow earlier request) can carry the older
+   *  value. Reset by a page load, whose boot read then reads the stored one. */
+  savedYoloDuration?: NonNullable<StatusData['yolo_duration']>
   connected: boolean
   slots: ChatSlot[]
   /** Increments for every accepted authoritative full-slot frame/reply. */
@@ -216,8 +222,30 @@ const dashboardSlice = createSlice({
   name: 'dashboard',
   initialState,
   reducers: {
+    // Two writers feed this reducer with different field sets. The HTTP
+    // `/api/status` reply carries the configured ad-hoc duration and whether
+    // policy permits `until_shutdown`; the 5-second WebSocket `dashboard` frame
+    // is built from the gateway's shared snapshot and omits both, because
+    // resolving them costs a config read and a governance evaluation the push
+    // loop must not pay. A frame is otherwise authoritative and REPLACES the
+    // status (a key it omits is an answer -- e.g. an older gateway sending no
+    // `version_display`), so only these two config-derived keys are carried
+    // forward when a frame lacks them. Without that the first push drops them
+    // and the approval-mode confirm card names the default 6-hour duration
+    // whatever the operator configured. A duration this tab saved in Settings
+    // outranks both the carried value and the payload's own: a reply that
+    // began before the save can carry the older token. The live-grant fields
+    // (`yolo_expires_at`, `yolo_until_shutdown`) are deliberately NOT carried:
+    // they change on every activation, and a stale expiry is worse than none.
     sseStatus(state, action: PayloadAction<StatusData>) {
-      state.status = action.payload
+      const prev = state.status
+      const next: StatusData = { ...action.payload }
+      const duration = state.savedYoloDuration ?? next.yolo_duration ?? prev?.yolo_duration
+      if (duration !== undefined) next.yolo_duration = duration
+      if (next.yolo_until_shutdown_permitted === undefined && prev?.yolo_until_shutdown_permitted !== undefined) {
+        next.yolo_until_shutdown_permitted = prev.yolo_until_shutdown_permitted
+      }
+      state.status = next
       state.connected = true
       // Sync YOLO from backend (authoritative source)
       if (action.payload.yolo !== undefined) {
@@ -234,6 +262,15 @@ const dashboardSlice = createSlice({
     sseYolo(state, action: PayloadAction<boolean>) {
       if (state.status) state.status.yolo = action.payload
       state.approvalMode = action.payload ? 'yolo' : (state.approvalMode === 'yolo' ? 'normal' : state.approvalMode)
+    },
+    // A duration the user just saved in Settings. The gateway stores the token
+    // as sent, so no re-read is needed: the picker can name it at once, and
+    // `sseStatus` keeps it over every later frame or reply, including one that
+    // was already in flight when the save landed. Recorded even before the
+    // first status arrives, so a save during cold load is not lost.
+    setYoloDuration(state, action: PayloadAction<NonNullable<StatusData['yolo_duration']>>) {
+      state.savedYoloDuration = action.payload
+      if (state.status) state.status.yolo_duration = action.payload
     },
     sseConnected(state) { state.connected = true; state.slotsLoaded = false; state.subagentRunning = {}; state.subagentDetails = {}; state.subagentText = {} },
     sseDisconnected(state) { state.connected = false },
@@ -507,7 +544,7 @@ const dashboardSlice = createSlice({
   },
 })
 
-export const { sseStatus, sseYolo, sseConnected, sseDisconnected, sseSlots, setSidebarOrder, sseTodoUpdate, sseMcpReportUpdate, touchSlotActivity, setChannelTrusted, sseSlotTitle, addSlotOptimistic, removeSlotOptimistic, updateSlot, updateSlotFolder, updateSlotPin, triggerRefresh, markSlotUnread, markSlotRead, setUpdateProgress,
+export const { sseStatus, sseYolo, setYoloDuration, sseConnected, sseDisconnected, sseSlots, setSidebarOrder, sseTodoUpdate, sseMcpReportUpdate, touchSlotActivity, setChannelTrusted, sseSlotTitle, addSlotOptimistic, removeSlotOptimistic, updateSlot, updateSlotFolder, updateSlotPin, triggerRefresh, markSlotUnread, markSlotRead, setUpdateProgress,
   setDesktopUpdateAvailable, sseSubagentStatus, sseSubagentText, sseSlotColor, setSessionDefaultColor, setSessionColorsMode, setSessionColorsPalette, setSessionColorsIntensity, setEnabledAppIds, patchSlotSourceLinks, patchSlotLink } = dashboardSlice.actions
 
 /**
