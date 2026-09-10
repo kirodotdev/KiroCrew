@@ -575,6 +575,33 @@ class TestAnswerOnlyBlock:
             assert "That single line is the whole warning" not in result
             assert "The defect here is silence about a one-way door" not in result
 
+    def test_a_picture_is_payload_and_the_surface_picks_its_form(self):
+        """Measured gap this closes: asked how a guard change stops false
+        positives across platforms, answer_only wrote the case matrix out as
+        sentences — one per row — and the reader rebuilt the table in their
+        head. The block classes a picture as payload, so the one-sentence
+        bound does not read as a ban on drawing, and it ranks the forms by
+        what the surface renders: the widget clause is keyed on the Inline
+        Widgets section being present in the prompt, which
+        ``_resolve_prompt_placeholders`` already withholds off-dashboard, so
+        a Slack-only session degrades to a mermaid fence or a table without a
+        second surface check here.
+        """
+        result = _resolve("{{VERBOSITY_BLOCK}}", "dashboard:x", verbosity="answer_only")
+        assert "A picture is payload, not prose" in result
+        assert "a matrix of cases and verdicts" in result
+        assert "when your instructions carry an Inline Widgets section" in result
+        assert "else a mermaid fence, else an image file, else a plain table" in result
+
+    def test_a_picture_that_restates_the_text_is_cut(self):
+        """The preference for pictures must not become a licence to draw a
+        box with the paragraph inside it — that is explanation in a frame,
+        and the same opt-in rule removes it.
+        """
+        result = _resolve("{{VERBOSITY_BLOCK}}", "dashboard:x", verbosity="answer_only")
+        assert "do not repeat in words what the picture already shows" in result
+        assert "A picture that only restates the text is cut" in result
+
     def test_a_destructive_command_carries_its_undo_path(self):
         """Measured gap this closes: asked how to delete every local branch
         merged into main, answer_only returned the bare command and conveyed

@@ -2312,6 +2312,16 @@ class ContextBuilder:
                 "list is illustrative, not exhaustive: whenever a format is "
                 "mandated elsewhere in your instructions, brevity never "
                 "overrides it.\n\n"
+                "A picture is payload, not prose. When the answer has a "
+                "shape — a flow, a before/after, a matrix of cases and "
+                "verdicts — prefer one picture with a one-sentence caption "
+                "over the sentences that would describe it, and do not "
+                "repeat in words what the picture already shows. Use the "
+                "richest form this surface renders: an inline widget when "
+                "your instructions carry an Inline Widgets section, else a "
+                "mermaid fence, else an image file, else a plain table. A "
+                "picture that only restates the text is cut like any other "
+                "explanation.\n\n"
                 "Preserve the user's language."
             )
         else:

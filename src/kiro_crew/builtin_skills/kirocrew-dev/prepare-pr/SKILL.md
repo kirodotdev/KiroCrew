@@ -700,50 +700,57 @@ technically exact.
   before, or stops seeing. Not "improves robustness".
 - **Show it, when words alone are slow.** A five-year-old gets a moved flow from
   one picture before they finish the first sentence about it. When the change
-  moves steps, states, or who calls whom, add one Mermaid diagram. See *Draw it*
-  below.
+  has a shape, add one picture of the delta. See *Draw it* below.
 
 Rewrite check before every push of the body: read section 3 once, out loud. If
 any sentence needs a second read to find its point, rewrite that sentence. If the
 first sentence of any section is not the point, move the point up. If any sentence
 says what an earlier version did, delete it — the body has no earlier version.
 
-#### Draw it — the Age 5 diagram
+#### Draw it — the Age 5 picture
 
-The doctrine lives in the `explain-for` skill: *Draw it when the thing has a
-shape* says when a Mermaid fence beats prose, and *Colour it, and make every
-colour mean something* says how to colour it. Do not restate it here — follow it.
-What this section adds is only what a PR body needs on top: the trigger, the fixed
-diff palette, the legend, the placement, and the render check.
+A picture is part of the body, not decoration on it. Draw one when the change has
+a **shape** the reviewer would otherwise have to rebuild in their head from prose:
+steps that moved, a state that changed hands, a guard that now passes or blocks
+different inputs, a structure that gained or lost a field. Skip it for a one-line
+fix, a rename, a test-only change, or a doc edit. **One picture, at most**, and a
+picture that only restates section 3 is deleted, not kept.
 
-Draw one when the change alters **a sequence, a state machine, or who calls
-whom** — a step added, removed, reordered, or given a new owner. Skip it for a
-one-line fix, a rename, a test-only change, or a doc edit. **One diagram, at most.**
+You choose the form. Anything GitHub renders inside a ```` ```mermaid ```` fence is
+fair — flowchart, sequence, state, class, ER, timeline, or whatever fits the delta —
+and when the delta is a **matrix** (which inputs pass or fail, how each platform
+behaves), a markdown table is the picture: rows are the concrete cases, columns are
+Before and After, each cell is one coloured verdict. Do not force a matrix into
+boxes and arrows. The constraints below are the ones that make every PR read the
+same way at a glance; everything else is your call.
 
-- **Mermaid, in the body.** GitHub renders a ```` ```mermaid ```` fence in the PR
-  body directly. Nothing to commit, no SHA to re-pin, nothing for
-  `cleanup-temp-screenshots.yml` to prune, and a reviewer can fix a box label in
-  the text. A real rendered screen or a pixel before/after is not a diagram — that
-  is a screenshot; see *Screenshots* below, which owns the path and pinning rules.
-- **Show the delta, not the whole system.** Before → after side by side
-  (`flowchart LR` with two subgraphs), or one graph where the changed edge is the
-  only thing that stands out. Six to ten nodes is the ceiling.
-- **The diff palette is fixed.** Declare these four `classDef`s and tag every
-  node, so each PR reads the same way at a glance:
+- **Text, in the body.** A Mermaid fence or a markdown table renders in the PR body
+  directly. Nothing to commit, no SHA to re-pin, nothing for
+  `cleanup-temp-screenshots.yml` to prune, and a reviewer can fix a label in the
+  text. A real rendered screen or a pixel before/after is not a picture of the
+  delta — that is a screenshot; see *Screenshots* below, which owns the path and
+  pinning rules.
+- **Before → After, and only the delta.** Two states side by side (two subgraphs,
+  or two columns), or one graph where the changed edge is the only thing that
+  stands out. Six to ten nodes, or eight rows, is the ceiling.
+- **The diff palette is fixed.** In a Mermaid fence declare these four `classDef`s
+  and tag every node; in a table use the matching squares in each cell:
 
-  | class | fill / stroke | meaning |
-  |---|---|---|
-  | `added` | `#DCFCE7` / `#16A34A` | new after this PR |
-  | `changed` | `#FEF3C7` / `#D97706` | behaviour changed |
-  | `removed` | `#FEE2E2` / `#DC2626`, dashed | gone after this PR |
-  | `ctx` | `#E0F2FE` / `#0284C7` | untouched, shown for context |
+  | class | fill / stroke | cell | meaning |
+  |---|---|---|---|
+  | `added` | `#DCFCE7` / `#16A34A` | 🟩 | new after this PR |
+  | `changed` | `#FEF3C7` / `#D97706` | 🟨 | behaviour changed |
+  | `removed` | `#FEE2E2` / `#DC2626`, dashed | 🟥 | gone after this PR |
+  | `ctx` | `#E0F2FE` / `#0284C7` | 🟦 | untouched, shown for context |
 
   Colour the edges too: `linkStyle <n> stroke:#16A34A,stroke-width:2px` on the
   new path, `stroke:#DC2626,stroke-dasharray:4 3` on the removed one. Put one
-  legend line under the fence: `🟩 added · 🟨 changed · 🟥 removed · 🟦 unchanged`.
-- **Caption in the Age 5 register**, one sentence: who now calls whom, and what
-  the reader sees because of it.
+  legend line under the picture: `🟩 added · 🟨 changed · 🟥 removed · 🟦 unchanged`.
+- **Caption in the Age 5 register**, one sentence: what now happens that did not,
+  and what the reader sees because of it.
 - **Place it inside section 3**, right after the paragraph it illustrates.
+
+A moved step, as a flowchart:
 
 ```mermaid
 flowchart LR
@@ -765,8 +772,21 @@ flowchart LR
 
 *The cron now runs a script instead of spending an LLM turn; the PR still opens.*
 
+A guard whose boundary moved, as a matrix:
+
+| case | Before | After |
+|---|---|---|
+| `~/.aws/credentials` read by a script | 🟦 blocked | 🟦 blocked |
+| the word `credentials` inside a code comment | 🟥 blocked | 🟩 allowed |
+| `%USERPROFILE%\.aws\credentials` on Windows | 🟥 allowed | 🟩 blocked |
+
+🟩 added · 🟨 changed · 🟥 removed · 🟦 unchanged
+
+*Real credential reads stay blocked on every platform; a comment that merely
+names the file no longer trips the guard.*
+
 Check the render before pushing — `gh pr view <n> --web`. A fence that fails to
-parse shows as a red error box, which is worse than no diagram.
+parse shows as a red error box, which is worse than no picture.
 
 ### Screenshots
 
