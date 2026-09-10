@@ -4,6 +4,7 @@ import { api, ApiError } from '../api/client'
 import { store, useAppDispatch } from '../store'
 import { deleteSlot, switchSlot } from '../store/chatSlice'
 import { updateSlotPin, updateSlot, markSlotRead, markSlotUnread } from '../store/dashboardSlice'
+import { emitSlotRead } from '../lib/slotReadRelay'
 import { copySessionLink } from '../utils/shareUrl'
 import { useMoveSlotToFolder } from './useMoveSlotToFolder'
 import { loadChatConfig } from '../pages/chat/ChatSettings'
@@ -291,6 +292,14 @@ export function useSessionActions(mode?: string): SessionActions {
   const toggleRead = useCallback((slotKey: string) => {
     const isUnread = store.getState().dashboard.unreadSlots.includes(slotKey)
     dispatch(isUnread ? markSlotRead(slotKey) : markSlotUnread(slotKey))
+    // Read direction relays to other windows (a deliberate "I've seen this"),
+    // watermarked at the slot's newest known message ts. The unread direction
+    // stays window-local — markSlotUnread's string form records the manual
+    // sentinel, so no other window's relayed read can clear the reminder.
+    if (isUnread) {
+      const slotTs = store.getState().dashboard.slots.find(s => s.key === slotKey)?.last_ts
+      emitSlotRead(slotKey, slotTs)
+    }
   }, [dispatch])
 
   const togglePin = useCallback((slotKey: string) => {

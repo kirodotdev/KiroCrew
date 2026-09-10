@@ -61,6 +61,7 @@ import { usePersistedString } from '../../hooks/usePersistedString'
 import { findReport, type ErrorReport } from '../../utils/errorReport'
 import { useAppDispatch, useAppSelector } from '../../store'
 import { markSlotRead } from '../../store/dashboardSlice'
+import { emitSlotRead } from '../../lib/slotReadRelay'
 import CrewAvatar from '../../components/CrewAvatar'
 import CrewStateAvatar from '../../components/CrewStateAvatar'
 import ChatPane from '../../components/ChatPane'
@@ -1023,9 +1024,39 @@ export default function MembersPage() {
   const activeSlotUnread = useAppSelector(
     (s) => !!activeSlot && s.dashboard.unreadSlots.includes(activeSlot),
   )
+  const activeSlotLastTs = useAppSelector(
+    (s) => (activeSlot ? s.dashboard.slots.find(sl => sl.key === activeSlot)?.last_ts : undefined),
+  )
+  // Reactive document visibility AND focus, so the read effect below re-runs
+  // when the user returns to a hidden tab or focuses the window — a plain
+  // document.hidden read would leave the effect settled and the reveal
+  // unnoticed, and Page Visibility alone calls occluded/unfocused windows
+  // "visible", which would let a parked window mark threads read.
+  const [pageVisible, setPageVisible] = useState(() => !document.hidden && document.hasFocus())
   useEffect(() => {
-    if (activeSlot && activeSlotUnread) dispatch(markSlotRead(activeSlot))
-  }, [activeSlot, activeSlotUnread, dispatch])
+    const onVis = () => setPageVisible(!document.hidden && document.hasFocus())
+    document.addEventListener('visibilitychange', onVis)
+    window.addEventListener('focus', onVis)
+    window.addEventListener('blur', onVis)
+    return () => {
+      document.removeEventListener('visibilitychange', onVis)
+      window.removeEventListener('focus', onVis)
+      window.removeEventListener('blur', onVis)
+    }
+  }, [])
+  useEffect(() => {
+    // Viewing the thread is the read — but only a VISIBLE view is a view. A
+    // hidden member tab neither clears its own badge nor relays one; on
+    // reveal this effect re-runs via pageVisible and does both. The relay is
+    // NOT gated on this window's own badge: this window may have read the
+    // thread earlier (locally clean) while another window's badge is still
+    // lit, and a visible view here retires that too. Throttled per slot by
+    // the relay module; watermarked at the slot's newest known message ts.
+    if (activeSlot && pageVisible) {
+      if (activeSlotUnread) dispatch(markSlotRead(activeSlot))
+      emitSlotRead(activeSlot, activeSlotLastTs)
+    }
+  }, [activeSlot, activeSlotUnread, pageVisible, activeSlotLastTs, dispatch])
 
   // Per-row unread marker: the rail badge says "1", this says WHICH member.
   // Keyed the same way isRunning resolves a member's slot (thread-endpoint

@@ -1,4 +1,5 @@
 import { safeSetItem } from '../utils/safeStorage'
+import { newerTs } from '../lib/slotReadRelay'
 import { jsonEqual } from '../utils/structuralEqual'
 import { createSlice, createAsyncThunk, createSelector, type PayloadAction } from '@reduxjs/toolkit'
 import { api } from '../api/client'
@@ -36,6 +37,20 @@ interface DashboardState {
   channelTrusted: boolean
   refreshTrigger: number
   unreadSlots: string[]
+  /** Watermarks for relayed clears: slot -> newest message ts that marked it
+   *  unread. A cross-window `slot_read` clears the badge only when its read
+   *  watermark chronologically covers this value, so an in-flight relay
+   *  cannot erase a badge a NEWER message lit. A manual mark-as-unread
+   *  records the MANUAL_UNREAD sentinel, which no watermark covers — the
+   *  deliberate note to self answers only to this window. Message watermarks
+   *  are persisted in the SHARED store next to the badges they protect: any
+   *  window that boots — a reload OR a brand-new tab — restores each badge
+   *  with its watermark, so a stale relay can never clear a badge lit by a
+   *  message the reader had not seen, in any window. Sentinels persist
+   *  per-tab and never publish shared state. Badge and watermark persist
+   *  as ONE shared record entry written atomically, so the pair can never
+   *  tear apart and there are no orphans to reconcile at boot. */
+  unreadSince: Record<string, string>
   slotsLoaded: boolean
   updateProgress: { step: string; detail: string } | null
   // Desktop updater: an update is discoverable/staged (found|downloading|
@@ -53,6 +68,128 @@ interface DashboardState {
 }
 
 const safeGet = (key: string, fallback: string) => { try { return localStorage.getItem(key) ?? fallback } catch { return fallback } }
+/** unreadSince sentinel for a manual mark-as-unread. It parses as an invalid
+ *  instant, so the conservative comparison below can never treat any relayed
+ *  read watermark as covering it. A bare non-letter char, never rendered —
+ *  the constant name carries the meaning. */
+export const MANUAL_UNREAD = '\uffff'
+
+/** True when `read` chronologically covers `since`. Timestamps are parsed as
+ *  instants — mixed-offset server strings make lexical order lie about time
+ *  order — and ANY unparseable side answers false, so an invalid watermark
+ *  can never clear a badge (and the manual sentinel never parses). */
+const readCovers = (read: string | undefined, since: string): boolean => {
+  if (read === undefined) return false
+  const r = Date.parse(read)
+  const s = Date.parse(since)
+  return Number.isFinite(r) && Number.isFinite(s) && r >= s
+}
+
+
+/** THE shared unread record ('mc-unread-shared' in localStorage): slot ->
+ *  message watermark, or '' for a badge no watermark guards (any relayed
+ *  read clears it). Badge presence and watermark are one key in one JSON
+ *  document written by ONE setItem, so a sibling tab can never observe a
+ *  badge without its watermark or a watermark without its badge — there is
+ *  no torn state to reconcile at boot. That guarantee is single-WRITE
+ *  atomicity only: localStorage has no cross-process transaction, so two
+ *  windows' simultaneous RMWs race last-writer-wins on the whole document.
+ *  Per-slot deltas keep any lost update slot-local, and it self-heals on
+ *  that slot's next arrival or relay. Writes are per-slot DELTAS with
+ *  newest-parseable-ts-wins: two windows writing the same slot settle on
+ *  the newest instant, keys this window never touched pass through, and a
+ *  ''-arrival never demotes a real watermark. MANUAL_UNREAD sentinels are
+ *  deliberately NOT here: the reminder answers only to its own window, so
+ *  sentinels persist to per-tab sessionStorage via persistManualSentinels.
+ *  'mc-unread-slots' is kept as a write-only PROJECTION of the record's
+ *  keys — the pre-existing hub relay (safeSet) and tabs still running
+ *  older code read it; nothing in this file does. */
+const persistSharedUnread = (add: Record<string, string>, remove: readonly string[]): void => {
+  try {
+    let stored: Record<string, string>
+    try { stored = JSON.parse(localStorage.getItem('mc-unread-shared') ?? '{}') as Record<string, string> } catch { stored = {} }
+    for (const k of remove) delete stored[k]
+    for (const [k, v] of Object.entries(add)) {
+      if (v === MANUAL_UNREAD) continue  // sentinels never publish
+      const prev = stored[k]
+      if (prev === undefined) { stored[k] = v; continue }
+      if (v === '') continue  // presence already recorded; never demote a watermark
+      stored[k] = prev === '' ? v : (newerTs(prev, v) ?? prev)
+    }
+    localStorage.setItem('mc-unread-shared', JSON.stringify(stored))
+    // Projection write bypasses safeSet's hub relay: the shared keys omit
+    // this window's manual sentinels, so relaying their count would under-
+    // report the hub switcher chip. The reducers relay the window's own
+    // unreadSlots count after every unread mutation instead.
+    safeSetItem('mc-unread-slots', JSON.stringify(Object.keys(stored)))
+  } catch { /* SecurityError / quota */ }
+}
+/** Clear one slot's SHARED unread record only when `readTs` covers the
+ *  watermark CURRENTLY PERSISTED — the live stored value, read inside this
+ *  call, never this window's in-memory view, which can be stale across a
+ *  reconnect gap. A ''-record (badge, no watermark) accepts any read.
+ *  Returns undefined when the record was cleared; returns the surviving
+ *  watermark when a sibling advanced it past this read — the caller then
+ *  keeps the badge and adopts that watermark instead of erasing a newer
+ *  window's state. */
+const clearSharedUnreadIfCovered = (slot: string, readTs: string | undefined): string | undefined => {
+  let sharedW: string | undefined
+  try {
+    sharedW = (JSON.parse(localStorage.getItem('mc-unread-shared') ?? '{}') as Record<string, string>)[slot]
+  } catch { sharedW = undefined }
+  if (sharedW !== undefined && sharedW !== '' && !readCovers(readTs, sharedW)) return sharedW
+  persistSharedUnread({}, [slot])
+  return undefined
+}
+/** This window's manual reminders, per-tab (sessionStorage): a deliberate
+ *  mark-as-unread answers only to the window that made it, so a shared key
+ *  would clobber siblings' reminder sets. */
+const persistManualSentinels = (unreadSince: Record<string, string>): void => {
+  const manual = Object.fromEntries(Object.entries(unreadSince).filter(([, v]) => v === MANUAL_UNREAD))
+  try { sessionStorage.setItem('mc-unread-since', JSON.stringify(manual)) } catch { /* SecurityError / quota */ }
+}
+/** Boot restore for unreadSince (exported for tests): message watermarks
+ *  from the ONE shared record, joined with this window's per-tab manual
+ *  sentinels. A ''-entry is a badge no watermark guards — it restores the
+ *  badge (restoreUnreadBadges below) but records no watermark, so any
+ *  relayed read clears it. An ABSENT record beside a legacy
+ *  'mc-unread-slots' list means older code persisted badges before the
+ *  record existed: each seeds once as '' so no badge is lost on upgrade.
+ *  Sentinels: no other window's read may clear the deliberate reminder,
+ *  and neither reload nor the shared record may demote it — the sentinel
+ *  wins a key collision, and restoreUnreadBadges() re-seeds its badge
+ *  without writing shared state. */
+export const restoreUnreadSince = (): Record<string, string> => {
+  try {
+    const raw = localStorage.getItem('mc-unread-shared')
+    let record: Record<string, string>
+    try { record = JSON.parse(raw ?? '{}') as Record<string, string> } catch { record = {} }
+    if (raw === null) {
+      let legacy: string[]
+      try { legacy = JSON.parse(localStorage.getItem('mc-unread-slots') ?? '[]') as string[] } catch { legacy = [] }
+      for (const k of legacy) record[k] = ''
+      if (legacy.length > 0) localStorage.setItem('mc-unread-shared', JSON.stringify(record))
+    }
+    const since: Record<string, string> = {}
+    for (const [k, v] of Object.entries(record)) if (v !== '') since[k] = v
+    let manual: Record<string, string>
+    try { manual = JSON.parse(sessionStorage.getItem('mc-unread-since') ?? '{}') as Record<string, string> } catch { manual = {} }
+    for (const [k, v] of Object.entries(manual)) if (v === MANUAL_UNREAD) since[k] = MANUAL_UNREAD
+    return since
+  } catch { return {} }
+}
+/** Boot restore for unreadSlots: every key of the shared record (badge
+ *  presence IS record membership), plus this window's manual reminders —
+ *  the reminder answers only to this window, so its badge comes back here
+ *  without writing shared state. */
+export const restoreUnreadBadges = (since: Record<string, string>): string[] => {
+  let badges: string[]
+  try { badges = Object.keys(JSON.parse(localStorage.getItem('mc-unread-shared') ?? '{}') as Record<string, string>) } catch { badges = [] }
+  for (const [k, v] of Object.entries(since)) {
+    if (v === MANUAL_UNREAD && !badges.includes(k)) badges.push(k)
+  }
+  return badges
+}
 // When running embedded inside the Instances hub (an iframe), relay unread-count
 // changes to the parent so it can badge this instance's switcher chip (§5.3).
 // Only the count (a non-secret number) is sent; the parent validates event.origin
@@ -82,7 +219,7 @@ const initialState: DashboardState = {
   approvalMode: 'normal',
   channelTrusted: false,
   refreshTrigger: 0,
-  unreadSlots: (() => { try { return JSON.parse(localStorage.getItem('mc-unread-slots') ?? '[]') as string[] } catch { return [] } })(),
+  ...(() => { const since = restoreUnreadSince(); return { unreadSlots: restoreUnreadBadges(since), unreadSince: since } })(),
   slotsLoaded: false,
   updateProgress: null,
   desktopUpdateAvailable: false,
@@ -153,8 +290,18 @@ const reconcileSlots = (state: DashboardState, liveKeys: Set<string>, evictStale
   const unread = state.unreadSlots ?? []
   const drained = unread.filter(k => liveKeys.has(k))
   if (drained.length !== unread.length) {
+    // unreadSince tolerates partial preloaded test state, like `?? []` above.
+    if (state.unreadSince) {
+      let droppedManual = false
+      for (const k of unread) if (!liveKeys.has(k)) {
+        if (state.unreadSince[k] === MANUAL_UNREAD) droppedManual = true
+        delete state.unreadSince[k]
+      }
+      if (droppedManual) persistManualSentinels(state.unreadSince)
+    }
     state.unreadSlots = drained
-    safeSet('mc-unread-slots', JSON.stringify(drained))
+    persistSharedUnread({}, unread.filter(k => !liveKeys.has(k)))
+    _relayUnreadToParent(JSON.stringify(state.unreadSlots))
   }
   // Eviction is NOT recoverable, so it is skipped when the caller cannot vouch
   // for the list's freshness: an HTTP reply in flight can be older than the live
@@ -349,7 +496,13 @@ const dashboardSlice = createSlice({
     removeSlotOptimistic(state, action: PayloadAction<string>) {
       state.slots = state.slots.filter(s => s.key !== action.payload)
       state.unreadSlots = state.unreadSlots.filter(k => k !== action.payload)
-      safeSet('mc-unread-slots', JSON.stringify(state.unreadSlots))
+      if (state.unreadSince?.[action.payload] !== undefined) {
+        const wasManual = state.unreadSince[action.payload] === MANUAL_UNREAD
+        delete state.unreadSince[action.payload]
+        if (wasManual) persistManualSentinels(state.unreadSince)
+      }
+      persistSharedUnread({}, [action.payload])
+      _relayUnreadToParent(JSON.stringify(state.unreadSlots))
     },
     updateSlot(state, action: PayloadAction<Partial<ChatSlot> & { key: string }>) {
       const slot = state.slots.find(s => s.key === action.payload.key)
@@ -431,13 +584,101 @@ const dashboardSlice = createSlice({
       }
     },
     triggerRefresh(state) { state.refreshTrigger += 1 },
-    markSlotUnread(state, action: PayloadAction<string>) {
-      if (!state.unreadSlots.includes(action.payload)) state.unreadSlots.push(action.payload)
-      safeSet('mc-unread-slots', JSON.stringify(state.unreadSlots))
+    /** DUAL PAYLOAD SHAPE — the form IS the semantics. String payload =
+     *  MANUAL reminder: records the relay-immune sentinel; only a local read
+     *  in this window clears it. Object payload `{slot, ts?}` = message
+     *  arrival: records a clearable watermark. Passing a bare string for an
+     *  arrival creates a badge no remote read can retire — arrival call
+     *  sites must always use the object form. */
+    markSlotUnread(state, action: PayloadAction<string | { slot: string; ts?: string }>) {
+      const slot = typeof action.payload === 'string' ? action.payload : action.payload.slot
+      const ts = typeof action.payload === 'string' ? undefined : action.payload.ts
+      if (!state.unreadSlots.includes(slot)) state.unreadSlots.push(slot)
+      if (!state.unreadSince) state.unreadSince = {}  // partial preloaded state
+      // Watermarks carry only ACTUAL server-minted message timestamps: a
+      // frame without one falls back to the slot's last_ts, and when neither
+      // exists nothing is recorded (any relayed read may clear). Minting
+      // client time here would make windows disagree about the same message
+      // and strand badges against valid relays.
+      const effectiveTs = typeof action.payload === 'string'
+        ? undefined
+        : (ts ?? state.slots.find(s => s.key === slot)?.last_ts)
+      if (typeof action.payload !== 'string') {
+        // ONE atomic shared write: badge presence and watermark are the same
+        // record entry ('' = badge with no watermark, any relayed read
+        // clears). The RMW keeps the newest instant, so publishing on every
+        // arrival converges.
+        persistSharedUnread({ [slot]: effectiveTs ?? '' }, [])
+        const prev = state.unreadSince[slot]
+        // A manual sentinel is never demoted by a message arrival; otherwise
+        // the chronologically newest parseable instant wins.
+        if (effectiveTs !== undefined && prev !== MANUAL_UNREAD) {
+          const next = newerTs(prev, effectiveTs)
+          if (next !== undefined && next !== prev) state.unreadSince[slot] = next
+        }
+      } else {
+        // Manual mark-as-unread: per-tab ONLY. The sentinel means NO remote
+        // clear can meet the bar, and its badge never publishes to the
+        // shared store — one window's private reminder must not surface in
+        // every sibling.
+        state.unreadSince[slot] = MANUAL_UNREAD
+        persistManualSentinels(state.unreadSince)
+      }
+      _relayUnreadToParent(JSON.stringify(state.unreadSlots))
     },
     markSlotRead(state, action: PayloadAction<string>) {
+      if (state.unreadSince?.[action.payload] !== undefined) {
+        const wasManual = state.unreadSince[action.payload] === MANUAL_UNREAD
+        delete state.unreadSince[action.payload]
+        if (wasManual) persistManualSentinels(state.unreadSince)
+      }
+      // No-op guard: relayed slot_read frames fan in from every window (own
+      // echo included); skipping absent keys keeps echo fan-in from
+      // multiplying localStorage writes.
+      if (!state.unreadSlots.includes(action.payload)) return
       state.unreadSlots = state.unreadSlots.filter(k => k !== action.payload)
-      safeSet('mc-unread-slots', JSON.stringify(state.unreadSlots))
+      // The LOCAL badge always clears — the user read what this window
+      // displayed. SHARED state clears only when this window's newest known
+      // message (slot last_ts) covers the persisted shared watermark: a
+      // lagging window (reconnect gap) cannot prove it saw the message a
+      // sibling watermarked, so the shared badge survives for siblings and
+      // reboots instead of being silently erased.
+      const _readTs = state.slots?.find(sl => sl.key === action.payload)?.last_ts
+      clearSharedUnreadIfCovered(action.payload, _readTs)
+      _relayUnreadToParent(JSON.stringify(state.unreadSlots))
+    },
+    /** A read relayed from ANOTHER window: honors the watermark. Clears only
+     *  when the relay's `readTs` covers everything that lit the badge here —
+     *  a badge with no watermark (none was ever minted) accepts any relay,
+     *  the MANUAL_UNREAD sentinel accepts none, and a newer local ts keeps
+     *  the badge for the message the reader had not seen. Watermarks survive
+     *  reload with their badges, so a restored badge keeps its guard against
+     *  a sibling window's trailing relay. */
+    remoteSlotRead(state, action: PayloadAction<{ slot: string; readTs?: string }>) {
+      const { slot, readTs } = action.payload
+      const since = state.unreadSince?.[slot]
+      if (since !== undefined && !readCovers(readTs, since)) return
+      // The local watermark accepted the relay — but this window's view can
+      // be stale (reconnect gap), so the SHARED clear is guarded by the
+      // shared map's own value, read inside the RMW. A sibling's newer
+      // watermark survives, and this window adopts it: badge stays lit for
+      // the message the relay did not cover.
+      const survivor = clearSharedUnreadIfCovered(slot, readTs)
+      if (survivor !== undefined) {
+        if (!state.unreadSince) state.unreadSince = {}
+        state.unreadSince[slot] = survivor
+        if (!state.unreadSlots.includes(slot)) state.unreadSlots.push(slot)
+        _relayUnreadToParent(JSON.stringify(state.unreadSlots))
+        return
+      }
+      if (state.unreadSince?.[slot] !== undefined) {
+        // A sentinel never reaches here (readCovers rejects it above), so the
+        // deleted key is always a shared message watermark.
+        delete state.unreadSince[slot]
+      }
+      if (!state.unreadSlots.includes(slot)) return
+      state.unreadSlots = state.unreadSlots.filter(k => k !== slot)
+      _relayUnreadToParent(JSON.stringify(state.unreadSlots))
     },
     setUpdateProgress(state, action: PayloadAction<{ step: string; detail: string } | null>) {
       state.updateProgress = action.payload
@@ -544,7 +785,7 @@ const dashboardSlice = createSlice({
   },
 })
 
-export const { sseStatus, sseYolo, setYoloDuration, sseConnected, sseDisconnected, sseSlots, setSidebarOrder, sseTodoUpdate, sseMcpReportUpdate, touchSlotActivity, setChannelTrusted, sseSlotTitle, addSlotOptimistic, removeSlotOptimistic, updateSlot, updateSlotFolder, updateSlotPin, triggerRefresh, markSlotUnread, markSlotRead, setUpdateProgress,
+export const { sseStatus, sseYolo, setYoloDuration, sseConnected, sseDisconnected, sseSlots, setSidebarOrder, sseTodoUpdate, sseMcpReportUpdate, touchSlotActivity, setChannelTrusted, sseSlotTitle, addSlotOptimistic, removeSlotOptimistic, updateSlot, updateSlotFolder, updateSlotPin, triggerRefresh, markSlotUnread, markSlotRead, remoteSlotRead, setUpdateProgress,
   setDesktopUpdateAvailable, sseSubagentStatus, sseSubagentText, sseSlotColor, setSessionDefaultColor, setSessionColorsMode, setSessionColorsPalette, setSessionColorsIntensity, setEnabledAppIds, patchSlotSourceLinks, patchSlotLink } = dashboardSlice.actions
 
 /**

@@ -1,5 +1,6 @@
 import { createSlice, createAsyncThunk, createSelector, type PayloadAction } from '@reduxjs/toolkit'
 import { whenScrollQuiet } from '../lib/scrollQuiet'
+import { emitSlotRead } from '../lib/slotReadRelay'
 import { api } from '../api/client'
 import { resolveDefaultMemoryMode } from '../api/queryClient'
 import { devLog, inspectorOn } from '../dev/scrollInspector'
@@ -2000,6 +2001,23 @@ export const switchSlot = createAsyncThunk<
     // any older page still in flight is superseded even when the key is unchanged.
     _abortLoadOlder?.()
     dispatch(markSlotRead(key))
+    // Opening a session is the canonical read gesture: relay it so every
+    // other open dashboard window retires this slot's unread bubble too —
+    // but only AFTER the transcript fetch succeeds (see the emits by the
+    // return paths below). A failed load displays no transcript, and a
+    // pre-fetch relay would clear sibling badges for messages this window
+    // never showed. Watermark = the slot's server-minted last_ts when
+    // known, read AT EMIT TIME — after the fetch — so messages that arrived
+    // while the transcript loaded (a reconnect window) are covered by the
+    // relayed watermark instead of a stale pre-fetch capture. When none is
+    // known the relay goes out with NO watermark — receivers then keep any
+    // badge that recorded a watermark of its own (covering nothing is the
+    // conservative default). Client time is never minted here: windows
+    // disagreeing about the same message would strand badges against valid
+    // relays. Optional-chained like the slotRun guard below: a partial
+    // preloaded test state can omit the dashboard slice, and throwing here
+    // would abort the switch fetch itself.
+    const _newestSlotTs = () => (getState() as RootState).dashboard?.slots?.find(s => s.key === key)?.last_ts
     // Bounded to the page size so opening a long session costs one page, not the
     // whole chained transcript; `loadOlderMessages` walks back from the cursor
     // this fetch returns. Unbounded while the slot is streaming, for the same
@@ -2046,8 +2064,16 @@ export const switchSlot = createAsyncThunk<
         // the only one of the two in settled units, and returning only the retry threw
         // away the baseline the next switch needs.
         const wide = await fetchSlotDetail(key)
+        // Emit only while this request still owns the slot switch: a rapid
+        // A->B switch leaves A's fetch resolving after B took over, and A's
+        // transcript never rendered — relaying its read would clear sibling
+        // badges for messages nobody displayed. `pending` assigns activeSlot
+        // atomically before this thunk body runs, so a superseded request
+        // observes someone else's key here.
+        if ((getState() as { chat: ChatState }).chat.activeSlot === key) emitSlotRead(key, _newestSlotTs())
         return { ...wide, comparableTotal: first.total }
       }
+      if ((getState() as { chat: ChatState }).chat.activeSlot === key) emitSlotRead(key, _newestSlotTs())
       return first
     } catch (e) {
       // A thrown error crosses the thunk boundary as `miniSerializeError(e)`,

@@ -455,6 +455,48 @@ def broadcast_side_queue(
     state.broadcast_ws_owners(SIDE_QUEUE_EVENT, payload)
 
 
+def _handle_slot_read(
+    state: DashboardState, slot_key: object, read_ts: object = None, *, owner: bool
+) -> bool:
+    """Relay a client's ``slot_read`` frame to every owner window.
+
+    A window sends this when the user reads a slot there (opens it, toggles
+    mark-as-read, or watches a message land in its visible active slot). The
+    gateway rebroadcasts it so every other window retires that slot's unread
+    bubble too. Pure relay — the server keeps no read-state: unread is a
+    frontend concept (Redux + localStorage per window) and stays one; this
+    only carries the gesture between windows sharing the gateway.
+
+    ``read_ts`` is the read WATERMARK the sending window computed: the newest
+    message timestamp it knew for the slot at the read. It is relayed opaquely
+    (bounded string, no parsing); receivers keep any badge their window
+    recorded for a newer message, so an in-flight relay cannot erase a
+    message the reader had not seen. Absent or invalid, the frame relays
+    without one and receivers apply their conservative default.
+
+    Owner-only, mirroring ``_handle_slot_focused``: an app-scoped socket must
+    not clear the user's badges, and ``broadcast_ws_owners`` keeps the echo
+    off app sockets on the way out. The sender receives its own broadcast
+    back; the frontend dispatch is idempotent so that echo is harmless.
+
+    The slot key is validated as a non-empty bounded string but deliberately
+    NOT checked against live slots: a read of a just-deleted slot must still
+    clear stale badges in other windows (their drain only prunes keys missing
+    from a later slots snapshot).
+
+    Returns whether a broadcast went out (for tests).
+    """
+    if not owner:
+        return False
+    if not isinstance(slot_key, str) or not slot_key or len(slot_key) > 512:
+        return False
+    payload: dict = {"slot": slot_key}
+    if isinstance(read_ts, str) and read_ts and len(read_ts) <= 64:
+        payload["read_ts"] = read_ts
+    state.broadcast_ws_owners("slot_read", payload)
+    return True
+
+
 def _handle_slot_focused(
     state: DashboardState,
     slot_key: object,
@@ -1086,9 +1128,51 @@ async def api_ws(request: web.Request) -> web.WebSocketResponse:
                     elif msg_type == "unsubscribe_subagents":
                         state.unsubscribe_subagents(ws)
                     elif msg_type == "slot_focused":
+                        if not owner_request:
+                            # SEL: the owner gate is a permission decision —
+                            # the deny leaves a record like slot_read's below
+                            # (AUTOSDE: all permission decisions audit).
+                            try:
+                                _audit_deny(ws_app or "<unknown>", "slot_focused", "not_owner")
+                            except Exception:
+                                logger.debug(
+                                    "ws: SEL audit for slot_focused deny failed",
+                                    exc_info=True,
+                                )
                         _focus_task = _handle_slot_focused(
                             state, data.get("slot"), _focus_task, owner=owner_request
                         )
+                    elif msg_type == "slot_read":
+                        _relayed = _handle_slot_read(
+                            state,
+                            data.get("slot"),
+                            data.get("read_ts"),
+                            owner=owner_request,
+                        )
+                        # SEL: the owner gate above is an authorization
+                        # decision. Denies always leave a record. Grants are
+                        # deliberately NOT audited: the owner gate admits only
+                        # the dashboard user's own sockets (owner requires an
+                        # empty app claim, and every is_dashboard_user
+                        # assignment is True exactly then), so a grant is
+                        # always the owner's own UI gesture at ~1/s per
+                        # watched slot, never a cross-boundary decision — the
+                        # denies are the whole boundary record.
+                        # subscribe_logs keeps its grant audit because app
+                        # tokens with log scope DO reach that grant; no app
+                        # token can reach this one.
+                        if not _relayed:
+                            try:
+                                _audit_deny(
+                                    ws_app or "<unknown>",
+                                    "slot_read",
+                                    ("not_owner" if not owner_request else "invalid_frame"),
+                                )
+                            except Exception:
+                                logger.debug(
+                                    "ws: SEL audit for slot_read deny failed",
+                                    exc_info=True,
+                                )
                 except (json.JSONDecodeError, Exception):
                     pass
             elif msg.type in (WSMsgType.ERROR, WSMsgType.CLOSE):

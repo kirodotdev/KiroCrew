@@ -9,15 +9,17 @@ import { api } from '../api/client'
 import chatReducer, { PANE_HYDRATE_LIMIT, sseSubagentSpawn, sseSubagentPending, sseSubagentDone } from '../store/chatSlice'
 import type { RootState } from '../store'
 
-// Track markSlotUnread dispatches
+// Track markSlotUnread dispatches (normalized to the slot key: the payload
+// widened to `{slot, ts}` for the read-watermark, and these specs pin WHICH
+// slots get marked, not the watermark itself)
 const markSlotUnreadCalls: string[] = []
 
 vi.mock('../store/dashboardSlice', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../store/dashboardSlice')>()
   return {
     ...actual,
-    markSlotUnread: (slot: string) => {
-      markSlotUnreadCalls.push(slot)
+    markSlotUnread: (slot: string | { slot: string; ts?: string }) => {
+      markSlotUnreadCalls.push(typeof slot === 'string' ? slot : slot.slot)
       return actual.markSlotUnread(slot)
     },
   }

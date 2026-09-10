@@ -4,13 +4,14 @@ import { isArtifactEditing } from '../utils/artifactEditGuard'
 import { isReconcileNote } from '../lib/noteContract'
 import { useAppDispatch, useAppSelector } from '../store'
 import { store } from '../store'
-import { sseStatus, sseYolo, sseConnected, sseDisconnected, sseSlots, sseTodoUpdate, sseMcpReportUpdate, setChannelTrusted, sseSlotTitle, triggerRefresh, fetchSlots, markSlotUnread, setUpdateProgress, sseSubagentStatus, sseSubagentText, touchSlotActivity, patchSlotSourceLinks, type SubagentDetail } from '../store/dashboardSlice'
+import { sseStatus, sseYolo, sseConnected, sseDisconnected, sseSlots, sseTodoUpdate, sseMcpReportUpdate, setChannelTrusted, sseSlotTitle, triggerRefresh, fetchSlots, markSlotUnread, remoteSlotRead, setUpdateProgress, sseSubagentStatus, sseSubagentText, touchSlotActivity, patchSlotSourceLinks, type SubagentDetail } from '../store/dashboardSlice'
 import { addNotification, ackNotificationByTs, unackNotificationByTs, removeNotificationByTs, clearAllNotifications, fetchNotifications, markBootNotificationsFetched } from '../store/notificationsSlice'
 import { dispatchMcNotification, TURN_DONE_KIND, APPROVAL_KIND, shouldChimeOnTurnDone } from './notificationEvent'
 import { shouldNotifyOnChatComplete } from './chatCompleteNotify'
 import { emitThemeSound } from './themeSound'
 import { streamingFlushHoldMs } from '../lib/streamHold'
 import { registerPendingChunkDrain } from '../lib/pendingChunkDrain'
+import { bindSlotReadSender, emitSlotRead, flushSlotRead } from '../lib/slotReadRelay'
 import { VoicePcmPlayer, voiceBoundary, createVoiceRequestId } from '../lib/voicePlayback'
 import { reportVoiceFailure } from '../lib/voiceFailure'
 import {
@@ -39,6 +40,26 @@ type LogCallback = ((data: { level: string; msg: string }) => void) | null
  *  is a correctness backstop for a lost terminal frame rather than the progress
  *  channel (that is the live event stream), and the tick makes no request at all
  *  while no row is running. */
+/** True when this window is rendering the active slot's transcript: the chat
+ *  routes (the root path serves ChatPage too) plus the popout and embed chat
+ *  frames. Passive read relays (arrival, completion, tab reveal) must check
+ *  this: `chat.activeSlot` is RETAINED across navigation, so on Settings or
+ *  any other route "slot === activeSlot" says nothing about what the user can
+ *  see, and relaying there would erase sibling windows' badges for messages
+ *  nobody displayed. Passive relays must ALSO require document.hasFocus():
+ *  Page Visibility reports occluded or unfocused windows as "visible"
+ *  (Firefox tracks no occlusion; side-by-side windows always report
+ *  visible), so a window parked behind other apps would otherwise mark
+ *  every arrival read within ~1s — unseen work looking read, the inverse
+ *  of the stale-badge defect. Deliberate gestures (switchSlot,
+ *  mark-as-read) need no gate — they only occur on surfaces that show the
+ *  slot, under real focus. */
+const isChatSurfaceVisible = (): boolean => {
+  if (typeof window === 'undefined') return false
+  const path = window.location.pathname
+  return path === '/' || path === '/chat' || path.startsWith('/chat/')
+    || path.startsWith('/popout/chat') || path.startsWith('/embed/chat')
+}
 const WORKFLOW_HEAL_MS = 15000
 const LEGACY_AUTOMATION_SEED_QUERY_KEY = ['automation-seed', 'legacy'] as const
 const STRUCTURED_AUTOMATION_SEED_QUERY_KEY = ['automation-seed', 'structured'] as const
@@ -1521,7 +1542,25 @@ export function useWebSocket() {
                 data.role === 'user' || data.role === 'inject',
               )
             }
-            if (data.slot && data.slot !== store.getState().chat.activeSlot && !reconnectingRef.current) dispatch(markSlotUnread(data.slot))
+            if (data.slot && data.slot !== store.getState().chat.activeSlot && !reconnectingRef.current) dispatch(markSlotUnread({ slot: data.slot, ts: data.ts || undefined }))
+            // The message landed in THIS window's active slot while the tab is
+            // visible: the user is watching it arrive, so the fresh bubble the
+            // other windows just lit for it is already read — relay that, with
+            // this message's ts as the read watermark (receivers keep badges
+            // lit by anything newer). A hidden window isn't reading: relay
+            // nothing — the visibilitychange handler relays the active slot's
+            // read on reveal, watermarked at its post-flush last_ts, which
+            // covers every arrival buffered while hidden. No per-arrival state
+            // is kept, so a later timestamp-less frame cannot regress the
+            // reveal watermark. Reconnect catch-up replays aren't reads either
+            // (mirrors the markSlotUnread suppression above).
+            else if (data.slot && !reconnectingRef.current && !document.hidden && document.hasFocus() && isChatSurfaceVisible()) {
+              // Watermark = this message's own server ts, else the slot's
+              // last_ts (also server-minted); never client time — windows
+              // minting their own clocks disagree about the same message.
+              const arrivalTs = data.ts || store.getState().dashboard.slots?.find(s => s.key === data.slot)?.last_ts
+              emitSlotRead(data.slot, arrivalTs)
+            }
             // Theme audio: an agent reply arriving is the `message-received`
             // trigger (no-op unless an L2 theme with that manifest sound is
             // active + unmuted). User/tool messages don't chime.
@@ -1748,6 +1787,18 @@ export function useWebSocket() {
                 items,
                 ...(typeof raw.ts === 'number' ? { ts: raw.ts } : {}),
               }))
+            }
+            break
+          }
+          case 'slot_read': {
+            // Another window read this slot (relayed via the gateway): retire
+            // the bubble here too, honoring the read watermark — a badge lit
+            // by a message NEWER than what the reader saw stays lit, and a
+            // manual mark-as-unread is never cleared remotely. remoteSlotRead
+            // (never the emitter) so a relayed read can't echo back out.
+            const r = data as { slot?: string; read_ts?: string }
+            if (typeof r.slot === 'string' && r.slot) {
+              dispatch(remoteSlotRead({ slot: r.slot, readTs: typeof r.read_ts === 'string' && r.read_ts ? r.read_ts : undefined }))
             }
             break
           }
@@ -2015,10 +2066,18 @@ export function useWebSocket() {
               }
             }
             if (data.slot && data.slot !== store.getState().chat.activeSlot && !reconnectingRef.current) {
-              dispatch(markSlotUnread(data.slot))
+              dispatch(markSlotUnread({ slot: data.slot, ts: (data as { ts?: string }).ts || undefined }))
               // #2: warm the per-slot cache so switching to this background
               // session renders the finished answer instantly (no on-switch fetch).
               dispatch(warmSlotCache(data.slot))
+            }
+            // Turn finished in this window's active slot: same visible-only
+            // read-relay as the chat_message arrival branch above (a hidden
+            // window relays on reveal instead).
+            else if (data.slot && !reconnectingRef.current && !document.hidden && document.hasFocus() && isChatSurfaceVisible()) {
+              // Same actual-timestamp rule as the chat_message branch above.
+              const doneTs = (data as { ts?: string }).ts || store.getState().dashboard.slots?.find(s => s.key === data.slot)?.last_ts
+              emitSlotRead(data.slot, doneTs)
             }
             if (data.slot) {
               dispatch(setSlotStatusDetail({ slot: data.slot, kind: 'idle', text: 'Ready', ts: Date.now() }))
@@ -2353,10 +2412,21 @@ export function useWebSocket() {
       ws.send(JSON.stringify({ type: 'slot_focused', slot }))
     }
     sendSlotFocusedImpl = sendFocus
+    // Read-relay sender rides the same socket with the same best-effort
+    // contract; slotReadRelay owns the per-slot throttle and the watermark.
+    bindSlotReadSender((slot: string, readTs?: string) => {
+      const ws = wsRef.current
+      if (!ws || ws.readyState !== WebSocket.OPEN) return
+      ws.send(JSON.stringify(readTs ? { type: 'slot_read', slot, read_ts: readTs } : { type: 'slot_read', slot }))
+    })
     let lastFocusSent: string | null = store.getState().chat.activeSlot
     const unsubFocus = store.subscribe(() => {
       const active = store.getState().chat.activeSlot
       if (active === lastFocusSent) return  // store.subscribe fires on EVERY action
+      // The outgoing slot stops being visible-active NOW: flush its pending
+      // trailing read-relay so the timer can't fire after a newer message
+      // re-badges the slot and wipe a bubble nobody read.
+      if (lastFocusSent) flushSlotRead(lastFocusSent)
       lastFocusSent = active
       stopVoice()
       voiceMutedRef.current = false
@@ -2367,9 +2437,38 @@ export function useWebSocket() {
       // Hidden → blur (cancels a pending prefetch server-side); visible →
       // re-announce the active slot even if unchanged, since the server may
       // have expired the previous prefetch while the tab was away.
+      if (document.hidden) {
+        // Going hidden: no pending trailing read-relay may outlive visibility
+        // (a newer message could re-badge the slot before the timer fired).
+        flushSlotRead()
+      }
       sendFocus(document.hidden ? null : store.getState().chat.activeSlot)
+      if (!document.hidden) {
+        // Returning to the tab IS the read of whatever the active slot shows.
+        // Flush buffered recency bumps first — rAF doesn't fire in hidden
+        // tabs, so arrivals from the hidden stretch are still buffered — then
+        // relay the active slot's read at its post-flush last_ts (server-
+        // minted, monotonic in the reducer). Receivers keep badges lit by
+        // anything newer (readCovers), so an idle reveal clears nothing it
+        // shouldn't. Dropped during reconnect catch-up, mirroring the
+        // arrival branches.
+        flushSlotActivity()
+        const active = store.getState().chat.activeSlot
+        if (active && !reconnectingRef.current && document.hasFocus() && isChatSurfaceVisible()) {
+          emitSlotRead(active, store.getState().dashboard.slots?.find(s => s.key === active)?.last_ts)
+        }
+      }
     }
     document.addEventListener('visibilitychange', onVisibility)
+    // Also on window focus: the passive-relay gate requires hasFocus(), and
+    // a focus-only change (window occluded -> foreground) fires NO
+    // visibilitychange — without this listener the relay suppressed while
+    // unfocused never re-fires and sibling badges stay stale until the next
+    // gesture. onVisibility's hidden branch is unreachable here (a focused
+    // document is never hidden), so the focus path re-announces the slot,
+    // flushes buffered activity, and relays the read under the same
+    // visible+focused gate.
+    window.addEventListener('focus', onVisibility)
     return () => {
       closingRef.current = true
       clearTimeout(reconnectTimerRef.current)
@@ -2394,6 +2493,7 @@ export function useWebSocket() {
       window.removeEventListener('voice-synthesis-failed', onVoiceFailed)
       window.removeEventListener('voice-config-changed', onVoiceConfigChanged)
       document.removeEventListener('visibilitychange', onVisibility)
+      window.removeEventListener('focus', onVisibility)
       unsubFocus()
       sendSlotFocusedImpl = () => {}
     }

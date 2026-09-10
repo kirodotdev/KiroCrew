@@ -435,11 +435,15 @@ describe('dashboardSlice per-slot sub-agent teardown', () => {
   }
 
   it('drains unread state for a slot that vanished from the authoritative list', () => {
+    // Persisted state lives in the ONE shared record; 'mc-unread-slots' is a
+    // write-only projection of its keys. Seed the record the way arrivals do.
+    localStorage.setItem('mc-unread-shared', JSON.stringify({ 'chat-1': '', 'chat-2': '' }))
     const before = { ...seeded(), unreadSlots: ['chat-1', 'chat-2'] }
 
     const next = reducer(before, sseSlots([{ key: 'chat-1', messages: 0, running: false }] as ChatSlot[]))
 
     expect(next.unreadSlots).toEqual(['chat-1'])
+    expect(Object.keys(JSON.parse(localStorage.getItem('mc-unread-shared') ?? '{}'))).toEqual(['chat-1'])
     expect(JSON.parse(localStorage.getItem('mc-unread-slots') ?? '[]')).toEqual(['chat-1'])
   })
 

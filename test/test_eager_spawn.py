@@ -1785,6 +1785,72 @@ class TestSlotFocusedFrame:
         assert getattr(slot, "_prefetch_ttl_task", None) is None
 
 
+class TestSlotReadFrame:
+    """ws._handle_slot_read: the cross-window unread-badge read relay.
+
+    A window that read a slot tells the gateway; the gateway rebroadcasts to
+    every owner window so their bubbles retire too. Pure relay — no server
+    read-state — so the contract under test is small: owner-gated, validated
+    slot key, one owner-scoped broadcast.
+    """
+
+    def _state(self):
+        return MagicMock(spec=DashboardState)
+
+    def test_owner_read_broadcasts_to_owner_clients(self):
+        from kiro_crew.dashboard.ws import _handle_slot_read
+
+        state = self._state()
+        assert _handle_slot_read(state, "t1", owner=True) is True
+        state.broadcast_ws_owners.assert_called_once_with("slot_read", {"slot": "t1"})
+
+    def test_read_watermark_is_relayed_opaquely(self):
+        from kiro_crew.dashboard.ws import _handle_slot_read
+
+        state = self._state()
+        assert _handle_slot_read(state, "t1", "2026-09-10T00:00:00Z", owner=True) is True
+        state.broadcast_ws_owners.assert_called_once_with(
+            "slot_read", {"slot": "t1", "read_ts": "2026-09-10T00:00:00Z"}
+        )
+
+    def test_junk_read_watermark_is_dropped_but_frame_relays(self):
+        """A bad watermark degrades to a watermark-less relay (receivers apply
+        their conservative default) rather than dropping the read gesture."""
+        from kiro_crew.dashboard.ws import _handle_slot_read
+
+        for junk in (42, "", "x" * 65, {"ts": "y"}):
+            state = self._state()
+            assert _handle_slot_read(state, "t1", junk, owner=True) is True
+            state.broadcast_ws_owners.assert_called_once_with("slot_read", {"slot": "t1"})
+
+    def test_non_owner_frame_is_ignored(self):
+        """An app-scoped socket must not clear the user's badges."""
+        from kiro_crew.dashboard.ws import _handle_slot_read
+
+        state = self._state()
+        assert _handle_slot_read(state, "t1", owner=False) is False
+        state.broadcast_ws_owners.assert_not_called()
+
+    def test_junk_slot_keys_are_ignored(self):
+        from kiro_crew.dashboard.ws import _handle_slot_read
+
+        state = self._state()
+        for junk in (None, "", 42, {"slot": "x"}, "k" * 513):
+            assert _handle_slot_read(state, junk, owner=True) is False
+        state.broadcast_ws_owners.assert_not_called()
+
+    def test_deleted_slot_key_still_relays(self):
+        """No liveness check on purpose: a read of a just-deleted slot must
+        still clear stale badges in other windows (their unread drain only
+        prunes keys missing from a later slots snapshot)."""
+        from kiro_crew.dashboard.ws import _handle_slot_read
+
+        state = self._state()
+        state.get_slot = MagicMock(return_value=None)
+        assert _handle_slot_read(state, "gone", owner=True) is True
+        state.broadcast_ws_owners.assert_called_once_with("slot_read", {"slot": "gone"})
+
+
 class TestSpecResumeFallbackMapGuard:
     """A speculative resume that fell back must not overwrite the sid."""
 
