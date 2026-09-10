@@ -111,8 +111,8 @@ function Label({ text, count, changed, children }: {
   text: string; count?: number | string; changed?: boolean; children?: React.ReactNode
 }) {
   return (
-    <div className="mb-1.5 mt-4 flex items-center gap-2">
-      <span className="text-[10.5px] font-medium uppercase tracking-[.13em] text-muted">{text}</span>
+    <div className="mb-1.5 mt-3.5 flex items-center gap-2">
+      <span className="text-[11px] font-medium uppercase tracking-wider text-muted">{text}</span>
       {count !== undefined && <span className="font-mono text-[10.5px] text-muted/70">{count}</span>}
       {changed && <span className="h-1.5 w-1.5 rounded-full bg-accent" aria-hidden="true" />}
       {children}
@@ -121,7 +121,7 @@ function Label({ text, count, changed, children }: {
 }
 
 function Hint({ children }: { children: React.ReactNode }) {
-  return <p className="m-0 mt-1.5 text-[11px] leading-relaxed text-muted/80">{children}</p>
+  return <p className="m-0 mt-1.5 text-[11.5px] leading-relaxed text-muted">{children}</p>
 }
 
 /** Chip list capped at CHIP_CAP, with the remainder behind a toggle. */
@@ -197,7 +197,9 @@ export default function AgentTemplateDetail({
   const chipMotion = reduceMotion
     ? { initial: { opacity: 0 }, animate: { opacity: 1 }, exit: { opacity: 0 }, transition: { duration: 0 } }
     : {
-        layout: true as const,
+        // No layout:true — a stale layout transform stranded the chip ~60px
+        // below its header slot, over the explainer copy (UX review on
+        // bc98c501d). The fade+scale alone covers the swap.
         initial: { opacity: 0, scale: 0.85 },
         animate: { opacity: 1, scale: 1 },
         exit: { opacity: 0, scale: 0.85 },
@@ -429,17 +431,23 @@ export default function AgentTemplateDetail({
   const promptIsFile = prompt.startsWith('file://')
 
   return (
-    <div className="mt-1 rounded-[10px] border border-border-strong">
-      {/* The selector IS the panel's header: everything inside the panel is
-          what the selected template defines, so containment states the scope
-          no sentence has to. Sticky so a long definition never leaves the
-          reader guessing which template — or whose copy — they are in. */}
-      <div className="sticky top-0 z-[3] flex flex-wrap items-center gap-x-2.5 gap-y-1 rounded-t-[10px] border-b border-border-strong bg-bg-elevated px-3.5 py-2">
-        <span className="text-[10px] uppercase tracking-[.12em] text-muted">
+    <div>
+      {/* The selector row is the pane's header: one divider under it marks
+          where the selection ends and what it contains begins — the panel
+          walls are gone so the pane shares the dialog's own surface, like
+          every other pane (option D of the alignment review). Sticky so a
+          long definition never leaves the reader guessing which template —
+          or whose copy — they are in. */}
+      {/* The scroll container's own top padding is a gap the sticky header
+          does not occupy; without the ::before cover, scrolled fields bleed
+          through that strip above the TEMPLATE row. The -top-4/h-4 size
+          mirrors the tab panel's py-4 (KiroCrewAgentsPage crew-editor tab
+          panel) — if that padding changes, resize this cover with it. */}
+      <div className="sticky top-0 z-[3] flex flex-wrap items-center gap-x-2.5 gap-y-1 border-b border-border bg-card pb-3 pt-1 before:absolute before:inset-x-0 before:-top-4 before:h-4 before:bg-card before:content-['']">
+        <span className="text-[11px] font-medium uppercase tracking-wider text-muted">
           {i18nT('components.agentTemplateDetail.template_prefix')}
         </span>
-        <span className="border-b border-dashed border-border-strong">
-          <SimpleSelect
+        <SimpleSelect
             options={opts}
             optionBadges={opts.map(o => {
               const p = provenance?.[o]
@@ -453,10 +461,11 @@ export default function AgentTemplateDetail({
             onChange={handleSelect}
             triggerFallback={i18nT('pages.kiroCrewAgentsPage.select_an_agent_template')}
             aria-label={fieldLabel}
-            className="h-auto min-w-0 border-0 bg-transparent px-1 py-0.5 text-[13.5px] font-semibold shadow-none"
+            // Standard trigger, sized to its content: the header row carries
+            // tags and actions beside it, so full width would push them out.
+            className="w-auto min-w-[180px] max-w-[280px] py-1 text-[12.5px] font-semibold"
             contentClassName="min-w-[300px]"
           />
-        </span>
         {/* Built-in/source → Customized swaps here at the fork moment. Both live
             in one AnimatePresence so the outgoing chip fades out as the incoming
             one fades in, instead of a hard unmount/mount. `initial={false}` keeps
@@ -491,7 +500,9 @@ export default function AgentTemplateDetail({
                 <ChevronDown className="h-3 w-3" aria-hidden />
               </button>
             </PopoverTrigger>
-            <PopoverContent align="start" sideOffset={6} className="w-[300px] bg-card p-3 text-[11.5px] shadow-lg">
+            {/* align=end opens the popover inward: the pill sits near the
+                dialog's right edge, and a start-aligned popover overflows it. */}
+            <PopoverContent align="end" sideOffset={6} className="w-[300px] bg-card p-3 text-[11.5px] shadow-lg">
               {changes.map(c => (
                 <div key={c.key} className="flex items-baseline justify-between gap-3 py-0.5">
                   <span className="font-semibold">{c.label}</span>
@@ -547,7 +558,7 @@ export default function AgentTemplateDetail({
         )}
       </div>
 
-      <div className="px-4 pb-4">
+      <div className="pt-2.5">
         {/* One mental model in one sentence: where the definition comes from
             and how far an edit reaches. The file name is bookkeeping — behind
             the info tip, not in the reading line. */}
@@ -696,7 +707,7 @@ export default function AgentTemplateDetail({
           <p className="m-0 text-[12px] leading-relaxed text-muted">
             {i18nT('components.agentTemplateDetail.publish_hint')}
           </p>
-          <label className="mt-2 block text-[10.5px] font-medium uppercase tracking-[.13em] text-muted">
+          <label className="mt-2 block text-[11px] font-medium uppercase tracking-wider text-muted">
             {i18nT('components.agentTemplateDetail.publish_name_label')}
             <input
               aria-label={i18nT('components.agentTemplateDetail.publish_name_label')}
