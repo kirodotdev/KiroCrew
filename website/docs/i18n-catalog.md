@@ -61,7 +61,11 @@ Catalogs live in `src/i18n/locales/`:
 | `en-XA.json` | generated pseudolocale, dev-only. Not a language. |
 
 Shipped languages, ordered by global speaker count (which is also the picker
-order): `en`, `zh-CN`, `hi`, `es`, `fr`, `bn`, `pt`, `ru`, `de`, `ja`, `ko`, `it`.
+order, with one deliberate exception): `en`, `zh-CN`, `zh-TW`, `hi`, `es`, `fr`, `bn`,
+`pt`, `ru`, `de`, `ja`, `ko`, `it`. `zh-TW` is the exception — by speaker count it would
+sit last, but it is the same language as `zh-CN` under a different script, and a reader
+who finds 简体中文 at position two with no Chinese entry beside it concludes there is no
+Traditional option and stops scanning.
 
 **Right-to-left languages (Arabic, Urdu) are intentionally not shipped.** The
 layout is built from physical-direction utilities (`pl-*`, `left-*`, `text-left`)
@@ -224,7 +228,7 @@ allowlist you can forget to extend:
   restate it here.
 
 A new confirm key with `{{name}}` and no kind word fails CI until it is quoted
-in all 12 catalogs and added to the pin. The glyph pin then requires **every**
+in all 13 catalogs and added to the pin. The glyph pin then requires **every**
 non-exempt placeholder in a pinned key to be wrapped, not merely one of them.
 After changing English, regenerate `en-XA.json` with `npm run i18n:pseudo`.
 
@@ -391,29 +395,34 @@ consulted for Latin or general punctuation, so they cannot change Latin metrics
 or leading, and they are a no-op when the named face is not installed.
 
 The `:root` tokens carry only the non-Han script aliases (Devanagari, Bengali).
-Regional Han faces are scoped with `html:lang(zh-CN)`, `html:lang(ja)`, and
-`html:lang(ko)` so untagged CJK in an English UI reaches the browser/OS
-locale-aware cascade instead of being forced through Simplified Chinese glyph
-forms. A bare `:lang(zh)` is not used: it also matches Traditional tags
-(`zh-TW`, `zh-HK`, `zh-Hant`). Under `html:lang(zh-CN)` the tokens switch to
-`KC Han Fallback` and `KC Han Mono Fallback`; under `html:lang(ja)` they switch
+Regional Han faces are scoped with `html:lang(zh-CN)`, `html:lang(zh-TW)`,
+`html:lang(ja)` and `html:lang(ko)` so untagged CJK in an English UI reaches the
+browser/OS locale-aware cascade instead of being forced through one region's
+glyph forms. A bare `:lang(zh)` is not used: it matches both Chinese catalogs at
+once, and `zh-HK`/`zh-Hant` besides. Under `html:lang(zh-CN)` the tokens switch to
+`KC Han Fallback` and `KC Han Mono Fallback`; under `html:lang(zh-TW)` to
+`KC Han TC Fallback` and `KC Han TC Mono Fallback`, whose ranges add Bopomofo
+(U+3100-312F and the Extended block) for Taiwan's phonetic annotations — the two
+Chinese aliases must never be mixed, because they claim the same Han code points
+and whichever one leads draws every shared ideograph; under `html:lang(ja)` they switch
 to `KC Japanese Fallback` and `KC Japanese Mono Fallback`, whose ranges include
 Kana as well as shared ideographs; under `html:lang(ko)` they switch to
 `KC Korean Fallback` and `KC Korean Mono Fallback`, whose ranges add the Hangul
 syllable and Jamo blocks. Keep every other locale's aliases out of these tokens:
 if the named face is unavailable, the browser must reach its language-aware
 fallback for that script instead of being forced through a foreign Han alias —
-which for Korean cannot draw Hangul at all. The rules set only the fallback
+which for Korean cannot draw Hangul at all, and for either Chinese means the other
+region's glyph forms. The rules set only the fallback
 tokens: `--font-body` / `--mono` already resolve `var(--script-fallbacks)` on
 `<html>` (`:root` and `useZoom`), so document language updates both stacks
 without redeclaring them. Content `lang=` inside an English document is not
 wired; there is no in-repo producer of those attributes yet.
 
 **Do not reorder those stacks or drop the token when adding a family.** Moving a
-Latin family in front silently returns zh-CN, ja, ko, hi and bn to whatever the
-platform picks for a missing glyph. A test pins the `:root` tokens, every
-declaration site (including the theme blocks, which redeclare both), the
-`html:lang(zh-CN/ja/ko)` overrides, and the ordering.
+Latin family in front silently returns zh-CN, zh-TW, ja, ko, hi and bn to
+whatever the platform picks for a missing glyph. A test pins the `:root` tokens,
+every declaration site (including the theme blocks, which redeclare both), the
+`html:lang(zh-CN/zh-TW/ja/ko)` overrides, and the ordering.
 
 ## Translating the corpus
 

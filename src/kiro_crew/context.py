@@ -1619,7 +1619,7 @@ _UI_LANGUAGE_TAG_RE = re.compile(r"^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8}){0,2}$")
 #: generated, not a language a model can write. Treating it as non-catalog
 #: keeps injection behaviour identical across build modes.
 _UI_LANGUAGE_CATALOGS = frozenset(
-    {"en", "zh-CN", "hi", "es", "fr", "bn", "pt", "ru", "de", "ja", "ko", "it"}
+    {"en", "zh-CN", "zh-TW", "hi", "es", "fr", "bn", "pt", "ru", "de", "ja", "ko", "it"}
 )
 
 

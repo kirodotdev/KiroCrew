@@ -40,6 +40,15 @@ export interface LanguageEntry {
  * Ordered by global speaker count, so the picker's top entries are the ones
  * most users are looking for rather than an alphabetical accident.
  *
+ * `zh-TW` is the one deliberate exception: by speaker count it would sit last,
+ * but it is the SAME language as `zh-CN` under a different script, and a reader
+ * who finds 简体中文 at position two and no Chinese entry near it concludes the
+ * product has no Traditional option and stops scanning. Adjacency serves the
+ * ordering rule's stated purpose better than its letter does here. It changes
+ * no resolution behaviour: `zh-CN` still precedes `zh-TW`, so `matchTag`'s
+ * primary-subtag fallback (bare `zh`, `zh-Hans`, `zh-HK`) resolves exactly as
+ * before.
+ *
  * Right-to-left languages (Arabic, Urdu) are deliberately absent: the catalogs
  * would translate correctly, but the dashboard's layout is built from
  * physical-direction Tailwind utilities (`pl-*`, `left-*`, `text-left`) and
@@ -51,6 +60,7 @@ export interface LanguageEntry {
 export const SUPPORTED_LANGUAGES: readonly LanguageEntry[] = [
   { code: 'en', label: 'English' },
   { code: 'zh-CN', label: '简体中文' },
+  { code: 'zh-TW', label: '繁體中文' },
   { code: 'hi', label: 'हिन्दी' },
   { code: 'es', label: 'Español' },
   { code: 'fr', label: 'Français' },

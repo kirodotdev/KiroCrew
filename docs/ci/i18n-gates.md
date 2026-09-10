@@ -1,6 +1,6 @@
 # The i18n gate chain
 
-The dashboard ships in twelve languages. This doc covers the **gates**: what runs,
+The dashboard ships in thirteen languages. This doc covers the **gates**: what runs,
 what can fail a PR, what only reports, and the rule that governs relaxing a
 ratchet. The authoring rules (how to add a catalog key, the `src/i18n/format.ts`
 seam, the glossary) live in the frontend docs under `website/`.
@@ -75,7 +75,7 @@ the branch may simply have inherited.
 | `[unit-vs-base]` | diff | zero tolerance | a file you touched gained number+unit literals relative to the base |
 | `[source-strings]` | diff | zero tolerance | badly shaped copy among only the English keys your branch adds |
 | `[changed-values]` | diff | zero tolerance | catalog QA over every value the branch added or changed, all languages |
-| `[changed-passthrough]` | diff | zero tolerance | a catalog value the branch added or changed that still reads as English. Separate from `changed-values` although one script hosts both: "you left this in English" and "your quotes do not pair" are different work, and one shared count would mean two things |
+| `[changed-passthrough]` | diff | zero tolerance | a catalog value the branch added or changed that still reads as English. Separate from `changed-values` although one script hosts both: "you left this in English" and "your quotes do not pair" are different work, and one shared count would mean two things. A catalog with no snapshot at the base ref — the pull request that ADDS a language — has no diff to scope to, so its whole catalog is judged. Normal DNT and syntax stripping still apply; the few additional invariants are exact key/value pairs in the checker, so neither unrelated English prose nor a changed value at an exempt key inherits the exemption |
 | `[key-refs]` | repo | hard zero | a `t('key')` naming a key that does not exist |
 | `[plurals]` | repo | hard zero | an i18nT-adjacent plural suffix concatenated outside the translation call |
 | `[plurals-hardcoded]` | repo | ceiling — fails on growth | the same plural glue with NO `i18nT` in it — template-literal glue, JSX-text glue, string concatenation, or a whole-word ternary |

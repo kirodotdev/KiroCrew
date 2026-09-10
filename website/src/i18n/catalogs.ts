@@ -11,6 +11,7 @@
  */
 
 import zhCN from './locales/zh-CN.json'
+import zhTW from './locales/zh-TW.json'
 import hi from './locales/hi.json'
 import es from './locales/es.json'
 import fr from './locales/fr.json'
@@ -46,6 +47,7 @@ import { EN_TRANSLATION } from './enCatalog'
 const AUTHORED_CATALOGS: Record<string, { translation: Record<string, unknown> }> = {
   en: { translation: EN_TRANSLATION },
   'zh-CN': { translation: zhCN },
+  'zh-TW': { translation: zhTW },
   hi: { translation: hi },
   es: { translation: es },
   fr: { translation: fr },
