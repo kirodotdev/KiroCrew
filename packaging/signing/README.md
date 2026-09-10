@@ -95,6 +95,14 @@ publisher role remain trusted. The publisher role holds `kms:Sign`, so its
 compromise can produce a valid manifest and is explicitly out of scope; the
 signature does not create a separate trust boundary from that role.
 
+The same key, algorithm and canonical form sign the feature-videos release
+manifest (`scripts/feature-videos/`, schema
+`kirocrew-feature-videos-manifest-v1`). That tool loads `cli-manifest.py` by path
+and uses its canonical JSON, key-id derivation, runners and `kms_sign_digest`
+rather than carrying copies, so there is one signer to audit. The two schemas
+keep the two verifiers apart; the key grant is one grant, and a principal that
+may sign videos may sign a CLI manifest.
+
 ### Repository bootstrap state
 
 The repository intentionally carries `UNCONFIGURED` in both
