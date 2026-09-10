@@ -154,7 +154,7 @@ export default function ReviewChat(
       // user has since renamed or moved into a folder of their own.
       const slot = await api.createChatSlot(
         prep.slot_key, prep.agent, undefined, undefined, 'persistent',
-        alreadyOpen ? undefined : prep.title, undefined, undefined,
+        alreadyOpen ? undefined : prep.title, undefined,
         alreadyOpen ? undefined : (prep.folder_id || undefined),
       )
       return slot.key || prep.slot_key

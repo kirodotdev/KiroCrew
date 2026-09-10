@@ -8020,11 +8020,9 @@
       "annotate_added_ack": "Aggiunto al campo del messaggio — nulla viene inviato finché non invii il messaggio"
     },
     "welcomeView": {
-      "agent_only_no_kirocrew_context_or_mcp": "Solo agente — nessun contesto {{productName}} né MCP",
       "autopilot": "Pilota automatico",
-      "clean": "Pulito",
       "incognito": "Incognito",
-      "incognito_desc": "Letture della memoria attive, scritture disattivate",
+      "incognito_desc": "Usa la memoria esistente, ma non apprende lezioni. Conserva la trascrizione per ripristinare la scheda.",
       "refresh_suggestions": "Aggiorna i suggerimenti",
       "simple_tasks_run_instantly_complex_ones_get_a_pl": "Le attività semplici vengono eseguite subito. Per quelle complesse viene proposto un piano che approvi prima.",
       "suggestion_pipeline_status": "Controlla lo stato della mia pipeline",
@@ -8035,10 +8033,9 @@
       "suggestion_write_design_doc": "Aiutami a scrivere un documento di progettazione",
       "choose_memory_mode": "Scegli la modalità memoria",
       "incognito_active_switch_to_persistent": "Incognito — passa alla modalità persistente",
-      "switch_to_persistent_mode": "Passa alla modalità persistente",
       "temporary": "Temporaneo",
       "temporary_active_switch_to_persistent": "Temporaneo — passa alla modalità persistente",
-      "temporary_desc": "Foglio bianco — nessuna lettura o scrittura in memoria",
+      "temporary_desc": "Non usa la memoria e non apprende lezioni. Conserva la trascrizione per ripristinare la scheda.",
       "try_create_a_plan_to_analyze_kirocrew_code_packa": "Prova: \"Crea un piano per analizzare il pacchetto di codice di {{productName}} e riportare il numero di file per componenti principali\"",
       "what_can_i_do_for_you": "Cosa posso fare per te?"
     },
@@ -10123,7 +10120,6 @@
       "checks_failed": "Controlli falliti",
       "checks_passed": "Controlli superati",
       "checks_running": "Controlli in corso",
-      "clean_agent_only_no_kirocrew_context_or_mcp": "Pulito — solo agente, nessun contesto {{productName}} né MCP",
       "clean_up_sessions": "Pulisci le sessioni",
       "clean_up_sessions_2": "Pulisci le sessioni",
       "clear": "Cancella",

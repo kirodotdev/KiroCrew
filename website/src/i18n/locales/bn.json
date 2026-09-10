@@ -7907,11 +7907,9 @@
       "annotate_added_ack": "বার্তা বাক্সে যোগ হয়েছে — বার্তা পাঠানোর আগে কিছুই পাঠানো হয় না"
     },
     "welcomeView": {
-      "agent_only_no_kirocrew_context_or_mcp": "শুধু এজেন্ট — {{productName}} কনটেক্সট বা MCP নেই",
       "autopilot": "Autopilot",
-      "clean": "ক্লিন",
       "incognito": "ছদ্মবেশী",
-      "incognito_desc": "মেমরি পড়া চালু, লেখা বন্ধ",
+      "incognito_desc": "বিদ্যমান মেমরি ব্যবহার করে, কিন্তু নতুন কোনো শিক্ষা শেখে না। ট্যাব পুনরুদ্ধারের জন্য ট্রান্সক্রিপ্ট রাখে।",
       "refresh_suggestions": "পরামর্শ রিফ্রেশ করুন",
       "simple_tasks_run_instantly_complex_ones_get_a_pl": "সাধারণ কাজ সঙ্গে সঙ্গেই চলে। জটিল কাজের জন্য আগে একটি প্ল্যান তৈরি হয়, যা আপনি অনুমোদন করেন।",
       "suggestion_pipeline_status": "আমার পাইপলাইনের অবস্থা দেখুন",
@@ -7922,10 +7920,9 @@
       "suggestion_write_design_doc": "একটি ডিজাইন ডকুমেন্ট লিখতে আমাকে সাহায্য করুন",
       "choose_memory_mode": "মেমরি মোড বেছে নিন",
       "incognito_active_switch_to_persistent": "ছদ্মবেশী — স্থায়ী মোডে বদলান",
-      "switch_to_persistent_mode": "স্থায়ী মোডে বদলান",
       "temporary": "অস্থায়ী",
       "temporary_active_switch_to_persistent": "অস্থায়ী — স্থায়ী মোডে বদলান",
-      "temporary_desc": "নতুন শুরু — মেমরিতে পড়া বা লেখা হবে না",
+      "temporary_desc": "মেমরি ব্যবহার করে না এবং নতুন কোনো শিক্ষা শেখে না। ট্যাব পুনরুদ্ধারের জন্য ট্রান্সক্রিপ্ট রাখে।",
       "try_create_a_plan_to_analyze_kirocrew_code_packa": "যেমন: “{{productName}} কোড প্যাকেজ বিশ্লেষণ করে প্রধান কম্পোনেন্ট অনুযায়ী ফাইলের সংখ্যা জানানোর একটি প্ল্যান তৈরি করো”",
       "what_can_i_do_for_you": "তোমার জন্য কী করতে পারি?"
     },
@@ -9979,7 +9976,6 @@
       "checks_failed": "চেক ব্যর্থ",
       "checks_passed": "চেক পাস",
       "checks_running": "চেক চলছে",
-      "clean_agent_only_no_kirocrew_context_or_mcp": "ক্লিন — শুধু এজেন্ট, {{productName}} কনটেক্সট বা MCP নেই",
       "clean_up_sessions": "সেশন পরিষ্কার করুন",
       "clean_up_sessions_2": "সেশন পরিষ্কার করুন",
       "clear": "সাফ করুন",

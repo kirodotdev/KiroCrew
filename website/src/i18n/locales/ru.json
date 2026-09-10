@@ -8133,11 +8133,9 @@
       "annotate_added_ack": "Добавлено в поле сообщения — ничего не отправляется, пока вы не отправите сообщение"
     },
     "welcomeView": {
-      "agent_only_no_kirocrew_context_or_mcp": "Только агент — без контекста {{productName}} и MCP",
       "autopilot": "Автопилот",
-      "clean": "Чистый",
       "incognito": "Инкогнито",
-      "incognito_desc": "Чтение памяти включено, запись отключена",
+      "incognito_desc": "Использует существующую память, но не усваивает новых уроков. Сохраняет историю чата для восстановления вкладки.",
       "refresh_suggestions": "Обновить подсказки",
       "simple_tasks_run_instantly_complex_ones_get_a_pl": "Простые задачи выполняются сразу. Для сложных сначала составляется план, который вы утверждаете.",
       "suggestion_pipeline_status": "Проверить статус моего пайплайна",
@@ -8148,10 +8146,9 @@
       "suggestion_write_design_doc": "Помочь мне написать проектный документ",
       "choose_memory_mode": "Выбрать режим памяти",
       "incognito_active_switch_to_persistent": "Инкогнито — переключиться в постоянный режим",
-      "switch_to_persistent_mode": "Переключиться в постоянный режим",
       "temporary": "Временная",
       "temporary_active_switch_to_persistent": "Временный — переключиться в постоянный режим",
-      "temporary_desc": "Чистый лист — без чтения и записи памяти",
+      "temporary_desc": "Не использует память и не усваивает новых уроков. Сохраняет историю чата для восстановления вкладки.",
       "try_create_a_plan_to_analyze_kirocrew_code_packa": "Попробуйте: «Создай план анализа пакета кода {{productName}} и покажи количество файлов по основным компонентам»",
       "what_can_i_do_for_you": "Чем могу помочь?"
     },
@@ -10267,7 +10264,6 @@
       "checks_failed": "Проверки не пройдены",
       "checks_passed": "Проверки пройдены",
       "checks_running": "Проверки выполняются",
-      "clean_agent_only_no_kirocrew_context_or_mcp": "Чистый — только агент, без контекста {{productName}} и MCP",
       "clean_up_sessions": "Очистить сессии",
       "clean_up_sessions_2": "Очистка сессий",
       "clear": "Очистить",

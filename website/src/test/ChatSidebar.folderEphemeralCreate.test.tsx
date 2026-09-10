@@ -94,12 +94,11 @@ import ChatSidebar from '../pages/ChatSidebar'
 
 const DEFAULT_AGENT = 'kirocrew'
 const FOLDER_ID = 'folder-zzzz'
-// api.createChatSlot(name, agent, model, mode, memory_mode, title, clean_mode, artifact, folder_id)
+// api.createChatSlot(name, agent, model, mode, memory_mode, title, artifact, folder_id)
 const ARG_AGENT = 1
 const ARG_MODE = 3
 const ARG_MEMORY_MODE = 4
-const ARG_CLEAN_MODE = 6
-const ARG_FOLDER_ID = 8
+const ARG_FOLDER_ID = 7
 
 const folders: ChatFolder[] = [{ id: FOLDER_ID, name: 'CDF', order: 0, collapsed: true }]
 
@@ -169,7 +168,6 @@ describe('folder menu: ephemeral chat creation', () => {
     await waitFor(() => expect(mocks.createChatSlot).toHaveBeenCalledTimes(1))
     const call = mocks.createChatSlot.mock.calls[0]
     expect(call[ARG_MEMORY_MODE]).toBe('incognito')
-    expect(call[ARG_CLEAN_MODE]).toBeFalsy()
     expect(call[ARG_FOLDER_ID]).toBe(FOLDER_ID)
     expect(call[ARG_MODE]).not.toBe('orchestrator')
     expect(call[ARG_AGENT]).toBe(DEFAULT_AGENT)

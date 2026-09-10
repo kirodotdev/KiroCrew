@@ -28,8 +28,6 @@ const payload = (list: string[]): Suggestions => ({
 
 const chooserTrigger = () =>
   screen.getByText(i18nT('components.welcomeView.choose_memory_mode')).closest('button')!
-const cleanUndoTrigger = () =>
-  screen.getByText(i18nT('components.welcomeView.switch_to_persistent_mode')).closest('button')!
 const temporaryUndoTrigger = () =>
   screen.getByText(
     i18nT('components.welcomeView.temporary_active_switch_to_persistent'),
@@ -144,14 +142,24 @@ describe('WelcomeView', () => {
     ).not.toBeInTheDocument()
   })
 
-  it('offers clean as a peer option and turns it on', () => {
-    const onToggleClean = vi.fn()
+  it('offers exactly the two memory modes and nothing else', () => {
     renderWithProviders(
-      <WelcomeView mode="orchestrator" setInput={vi.fn()} onToggleClean={onToggleClean} />,
+      <WelcomeView mode="orchestrator" setInput={vi.fn()} onSwitchMode={vi.fn()} />,
     )
     fireEvent.click(chooserTrigger())
-    fireEvent.click(screen.getByText(i18nT('components.welcomeView.clean')).closest('button')!)
-    expect(onToggleClean).toHaveBeenCalledWith(true)
+    const popover = screen
+      .getByText(i18nT('components.welcomeView.incognito'))
+      .closest('div.fixed')!
+    const cards = Array.from(popover.querySelectorAll('button')).map(b => b.textContent)
+    expect(cards).toHaveLength(2)
+    expect(cards[0]).toContain(i18nT('components.welcomeView.incognito'))
+    expect(cards[0]).toContain(
+      'Uses existing memory but learns no lessons. Keeps the transcript for tab recovery.',
+    )
+    expect(cards[1]).toContain(i18nT('components.welcomeView.temporary'))
+    expect(cards[1]).toContain(
+      'Uses no memory and learns no lessons. Keeps the transcript for tab recovery.',
+    )
   })
 
   it('an outside mousedown closes the popover, one inside keeps it', () => {
@@ -169,38 +177,17 @@ describe('WelcomeView', () => {
     ).not.toBeInTheDocument()
   })
 
-  it('clearing clean supersedes resetting the memory mode', () => {
+  it('resets the memory mode from the ephemeral trigger', () => {
     const onSwitchMode = vi.fn()
-    const onToggleClean = vi.fn()
-    renderWithProviders(
-      <WelcomeView
-        mode="orchestrator"
-        setInput={vi.fn()}
-        memoryMode="incognito"
-        cleanMode
-        onSwitchMode={onSwitchMode}
-        onToggleClean={onToggleClean}
-      />,
-    )
-    fireEvent.click(cleanUndoTrigger())
-    expect(onToggleClean).toHaveBeenCalledWith(false)
-    expect(onSwitchMode).not.toHaveBeenCalled()
-  })
-
-  it('resets the memory mode when clean is off but the mode is ephemeral', () => {
-    const onSwitchMode = vi.fn()
-    const onToggleClean = vi.fn()
     renderWithProviders(
       <WelcomeView
         mode="orchestrator"
         setInput={vi.fn()}
         memoryMode="temporary"
         onSwitchMode={onSwitchMode}
-        onToggleClean={onToggleClean}
       />,
     )
     fireEvent.click(temporaryUndoTrigger())
     expect(onSwitchMode).toHaveBeenCalledWith('persistent')
-    expect(onToggleClean).not.toHaveBeenCalled()
   })
 })

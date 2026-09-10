@@ -8020,11 +8020,9 @@
       "annotate_added_ack": "Ajouté à la zone de message — rien n’est envoyé avant que vous n’envoyiez le message"
     },
     "welcomeView": {
-      "agent_only_no_kirocrew_context_or_mcp": "Agent seul — aucun contexte {{productName}} ni MCP",
       "autopilot": "Autopilote",
-      "clean": "Propre",
       "incognito": "Incognito",
-      "incognito_desc": "Lectures en mémoire activées, écritures désactivées",
+      "incognito_desc": "Utilise la mémoire existante, mais n’apprend aucune leçon. Conserve la transcription pour restaurer l’onglet.",
       "refresh_suggestions": "Actualiser les suggestions",
       "simple_tasks_run_instantly_complex_ones_get_a_pl": "Les tâches simples s'exécutent immédiatement. Les tâches complexes reçoivent un plan que vous approuvez d'abord.",
       "suggestion_pipeline_status": "Vérifier l'état de mon pipeline",
@@ -8035,10 +8033,9 @@
       "suggestion_write_design_doc": "M'aider à rédiger un document de conception",
       "choose_memory_mode": "Choisir le mode mémoire",
       "incognito_active_switch_to_persistent": "Incognito — passer au mode persistant",
-      "switch_to_persistent_mode": "Passer au mode persistant",
       "temporary": "Temporaire",
       "temporary_active_switch_to_persistent": "Temporaire — passer au mode persistant",
-      "temporary_desc": "Page blanche — aucune lecture ni écriture en mémoire",
+      "temporary_desc": "N’utilise pas la mémoire et n’apprend aucune leçon. Conserve la transcription pour restaurer l’onglet.",
       "try_create_a_plan_to_analyze_kirocrew_code_packa": "Essayez : « Crée un plan pour analyser le package de code {{productName}} et indiquer le nombre de fichiers par composant principal »",
       "what_can_i_do_for_you": "Que puis-je faire pour toi ?"
     },
@@ -10123,7 +10120,6 @@
       "checks_failed": "Vérifications échouées",
       "checks_passed": "Vérifications réussies",
       "checks_running": "Vérifications en cours",
-      "clean_agent_only_no_kirocrew_context_or_mcp": "Propre — agent uniquement, sans contexte {{productName}} ni MCP",
       "clean_up_sessions": "Nettoyer les sessions",
       "clean_up_sessions_2": "Nettoyer les sessions",
       "clear": "Effacer",

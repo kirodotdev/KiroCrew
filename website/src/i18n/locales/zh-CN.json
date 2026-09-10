@@ -7794,11 +7794,9 @@
       "annotate_added_ack": "已加入消息输入框 — 在你发送消息之前不会发出"
     },
     "welcomeView": {
-      "agent_only_no_kirocrew_context_or_mcp": "仅代理 — 无 {{productName}} 上下文或 MCP",
       "autopilot": "自动驾驶",
-      "clean": "纯净",
       "incognito": "隐身",
-      "incognito_desc": "允许读取记忆，禁用写入",
+      "incognito_desc": "使用现有记忆，但不会学习新经验。保留聊天记录以便恢复标签页。",
       "refresh_suggestions": "刷新建议",
       "simple_tasks_run_instantly_complex_ones_get_a_pl": "简单任务立即执行。复杂任务会先生成计划供你审批。",
       "suggestion_pipeline_status": "查看我的流水线状态",
@@ -7809,10 +7807,9 @@
       "suggestion_write_design_doc": "帮我写一份设计文档",
       "choose_memory_mode": "选择记忆模式",
       "incognito_active_switch_to_persistent": "隐身 — 切换到持久模式",
-      "switch_to_persistent_mode": "切换到持久模式",
       "temporary": "临时",
       "temporary_active_switch_to_persistent": "临时 — 切换到持久模式",
-      "temporary_desc": "全新开始 — 不读写记忆",
+      "temporary_desc": "不使用记忆，也不会学习新经验。保留聊天记录以便恢复标签页。",
       "try_create_a_plan_to_analyze_kirocrew_code_packa": "试试：“制定一个计划，分析 {{productName}} 代码包并按主要组件报告文件数”",
       "what_can_i_do_for_you": "我能帮你做什么？"
     },
@@ -9835,7 +9832,6 @@
       "checks_failed": "检查失败",
       "checks_passed": "检查通过",
       "checks_running": "检查运行中",
-      "clean_agent_only_no_kirocrew_context_or_mcp": "纯净 — 仅代理，无 {{productName}} 上下文或 MCP",
       "clean_up_sessions": "清理会话",
       "clean_up_sessions_2": "清理会话",
       "clear": "清除",

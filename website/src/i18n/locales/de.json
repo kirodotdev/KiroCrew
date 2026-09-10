@@ -7907,11 +7907,9 @@
       "annotate_added_ack": "Ins Nachrichtenfeld eingefügt – gesendet wird erst, wenn du die Nachricht abschickst"
     },
     "welcomeView": {
-      "agent_only_no_kirocrew_context_or_mcp": "Nur Agent — kein {{productName}}-Kontext oder MCP",
       "autopilot": "Autopilot",
-      "clean": "Sauber",
       "incognito": "Inkognito",
-      "incognito_desc": "Lesen aus der Erinnerung aktiviert, Schreiben deaktiviert",
+      "incognito_desc": "Nutzt vorhandene Erinnerungen, lernt aber keine Lektionen. Speichert den Chatverlauf zur Wiederherstellung des Tabs.",
       "refresh_suggestions": "Vorschläge aktualisieren",
       "simple_tasks_run_instantly_complex_ones_get_a_pl": "Einfache Aufgaben laufen sofort. Für komplexe gibt es einen Plan, den Sie zuerst genehmigen.",
       "suggestion_pipeline_status": "Meinen Pipeline-Status prüfen",
@@ -7922,10 +7920,9 @@
       "suggestion_write_design_doc": "Mir beim Schreiben eines Design-Dokuments helfen",
       "choose_memory_mode": "Speichermodus wählen",
       "incognito_active_switch_to_persistent": "Inkognito — zum dauerhaften Modus wechseln",
-      "switch_to_persistent_mode": "Zum dauerhaften Modus wechseln",
       "temporary": "Temporär",
       "temporary_active_switch_to_persistent": "Temporär — zum dauerhaften Modus wechseln",
-      "temporary_desc": "Leeres Blatt — kein Lesen oder Schreiben in die Erinnerung",
+      "temporary_desc": "Verwendet keine Erinnerungen und lernt keine Lektionen. Speichert den Chatverlauf zur Wiederherstellung des Tabs.",
       "try_create_a_plan_to_analyze_kirocrew_code_packa": "Versuchen Sie: „Erstelle einen Plan, um das {{productName}}-Codepaket zu analysieren und die Dateianzahl nach Hauptkomponenten zu melden“",
       "what_can_i_do_for_you": "Was kann ich für dich tun?"
     },
@@ -9979,7 +9976,6 @@
       "checks_failed": "Prüfungen fehlgeschlagen",
       "checks_passed": "Prüfungen erfolgreich",
       "checks_running": "Prüfungen laufen",
-      "clean_agent_only_no_kirocrew_context_or_mcp": "Sauber — nur Agent, kein {{productName}}-Kontext oder MCP",
       "clean_up_sessions": "Sitzungen aufräumen",
       "clean_up_sessions_2": "Sitzungen aufräumen",
       "clear": "Leeren",

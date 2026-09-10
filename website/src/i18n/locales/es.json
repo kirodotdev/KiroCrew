@@ -8020,11 +8020,9 @@
       "annotate_added_ack": "Añadido al cuadro de mensaje — no se envía nada hasta que envíes el mensaje"
     },
     "welcomeView": {
-      "agent_only_no_kirocrew_context_or_mcp": "Solo agente — sin contexto de {{productName}} ni MCP",
       "autopilot": "Piloto automático",
-      "clean": "Limpio",
       "incognito": "Incógnito",
-      "incognito_desc": "Lecturas de memoria activadas, escrituras desactivadas",
+      "incognito_desc": "Usa la memoria existente, pero no aprende lecciones. Conserva la transcripción para recuperar la pestaña.",
       "refresh_suggestions": "Actualizar sugerencias",
       "simple_tasks_run_instantly_complex_ones_get_a_pl": "Las tareas simples se ejecutan al instante. Las complejas generan un plan que apruebas primero.",
       "suggestion_pipeline_status": "Consultar el estado de mi pipeline",
@@ -8035,10 +8033,9 @@
       "suggestion_write_design_doc": "Ayudarme a escribir un documento de diseño",
       "choose_memory_mode": "Elegir modo de memoria",
       "incognito_active_switch_to_persistent": "Incógnito — cambiar al modo persistente",
-      "switch_to_persistent_mode": "Cambiar al modo persistente",
       "temporary": "Temporal",
       "temporary_active_switch_to_persistent": "Temporal — cambiar al modo persistente",
-      "temporary_desc": "Borrón y cuenta nueva — sin lecturas ni escrituras en memoria",
+      "temporary_desc": "No usa la memoria ni aprende lecciones. Conserva la transcripción para recuperar la pestaña.",
       "try_create_a_plan_to_analyze_kirocrew_code_packa": "Prueba: “Crea un plan para analizar el paquete de código de {{productName}} e informar del número de archivos por componentes principales”",
       "what_can_i_do_for_you": "¿Qué puedo hacer por ti?"
     },
@@ -10123,7 +10120,6 @@
       "checks_failed": "Comprobaciones fallidas",
       "checks_passed": "Comprobaciones superadas",
       "checks_running": "Comprobaciones en ejecución",
-      "clean_agent_only_no_kirocrew_context_or_mcp": "Limpio — solo el agente, sin contexto de {{productName}} ni MCP",
       "clean_up_sessions": "Limpiar sesiones",
       "clean_up_sessions_2": "Limpiar sesiones",
       "clear": "Borrar",

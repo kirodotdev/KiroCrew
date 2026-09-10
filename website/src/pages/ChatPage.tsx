@@ -6657,7 +6657,6 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                   mode={currentSlot?.mode || mode}
                   setInput={setInput}
                   memoryMode={currentSlot?.memory_mode ?? 'persistent'}
-                  cleanMode={currentSlot?.clean_mode}
                   onSwitchMode={async (newMode) => {
                     if (!activeSlot) return
                     // Create-first-then-delete: deleting the active slot first
@@ -6671,23 +6670,6 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                       model: old?.model || undefined,
                       mode,
                       memory_mode: newMode,
-                      folder_id: old?.folder_id ?? null,
-                      color_index: old?.color_index ?? null,
-                      color_hex: old?.color_hex ?? null,
-                      project: old?.project ?? null,
-                      instanceId: old?.instance_id || undefined,
-                    }
-                    try { await dispatch(createSlot(opts)).unwrap() } catch { return }
-                    try { await dispatch(deleteSlot(activeSlot)).unwrap() } catch { /* new slot already active */ }
-                  }}
-                  onToggleClean={async (clean) => {
-                    if (!activeSlot) return
-                    const old = currentSlot
-                    const opts = {
-                      agent: old?.agent || defaultAgent || undefined,
-                      model: old?.model || undefined,
-                      mode,
-                      clean_mode: clean,
                       folder_id: old?.folder_id ?? null,
                       color_index: old?.color_index ?? null,
                       color_hex: old?.color_hex ?? null,
@@ -7350,7 +7332,6 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               }}
               onOptimizeResult={handleOptimizeResult}
               memoryMode={currentSlot?.memory_mode ?? 'persistent'}
-              cleanMode={currentSlot?.clean_mode}
               sentMessages={sentMessages}
               sendOnEnter={isMobile ? 'ctrl-enter' : chatConfig.sendOnEnter}
               followUpOptions={followUpOptions}

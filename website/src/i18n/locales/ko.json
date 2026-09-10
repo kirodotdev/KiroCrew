@@ -7794,11 +7794,9 @@
       "annotate_added_ack": "메시지 입력란에 추가했습니다 — 메시지를 보내기 전에는 전송되지 않습니다"
     },
     "welcomeView": {
-      "agent_only_no_kirocrew_context_or_mcp": "에이전트 전용 — {{productName}} 컨텍스트나 MCP 없음",
       "autopilot": "오토파일럿",
-      "clean": "클린",
       "incognito": "시크릿",
-      "incognito_desc": "메모리 읽기 사용, 쓰기 사용 안 함",
+      "incognito_desc": "기존 메모리를 사용하지만 새로운 학습 내용은 만들지 않습니다. 탭 복구를 위해 대화 기록은 보관합니다.",
       "refresh_suggestions": "제안 새로 고침",
       "simple_tasks_run_instantly_complex_ones_get_a_pl": "간단한 작업은 즉시 실행됩니다. 복잡한 작업은 먼저 승인할 계획을 제시합니다.",
       "suggestion_pipeline_status": "파이프라인 상태 확인",
@@ -7809,10 +7807,9 @@
       "suggestion_write_design_doc": "설계 문서 작성 지원",
       "choose_memory_mode": "메모리 모드 선택",
       "incognito_active_switch_to_persistent": "시크릿 — 영구 모드로 전환",
-      "switch_to_persistent_mode": "영구 모드로 전환",
       "temporary": "임시",
       "temporary_active_switch_to_persistent": "임시 — 영구 모드로 전환",
-      "temporary_desc": "백지 상태 — 메모리 읽기와 쓰기 없음",
+      "temporary_desc": "메모리를 사용하지 않고 새로운 학습 내용도 만들지 않습니다. 탭 복구를 위해 대화 기록은 보관합니다.",
       "try_create_a_plan_to_analyze_kirocrew_code_packa": "예시: ‘{{productName}} 코드 패키지를 분석하고 주요 구성 요소별 파일 수를 보고하는 계획을 만드세요’",
       "what_can_i_do_for_you": "무엇을 도와드릴까요?"
     },
@@ -9835,7 +9832,6 @@
       "checks_failed": "검사 실패",
       "checks_passed": "검사 통과",
       "checks_running": "검사 실행 중",
-      "clean_agent_only_no_kirocrew_context_or_mcp": "클린 — 에이전트만, {{productName}} 컨텍스트나 MCP 없음",
       "clean_up_sessions": "세션 정리",
       "clean_up_sessions_2": "세션 정리",
       "clear": "지우기",

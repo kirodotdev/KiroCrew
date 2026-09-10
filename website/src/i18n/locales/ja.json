@@ -7794,11 +7794,9 @@
       "annotate_added_ack": "メッセージ欄に追加しました — メッセージを送信するまで何も送られません"
     },
     "welcomeView": {
-      "agent_only_no_kirocrew_context_or_mcp": "エージェントのみ — {{productName}} コンテキストまたは MCP なし",
       "autopilot": "オートパイロット",
-      "clean": "クリーン",
       "incognito": "プライベート",
-      "incognito_desc": "メモリ読み取り有効、書き込み無効",
+      "incognito_desc": "既存のメモリを使いますが、新しいレッスンは学習しません。タブを復元できるよう、会話記録は保持します。",
       "refresh_suggestions": "提案を更新",
       "simple_tasks_run_instantly_complex_ones_get_a_pl": "シンプルなタスクは瞬時に実行されます。複雑なものはまず承認するプランを得られます。",
       "suggestion_pipeline_status": "パイプラインステータスを確認",
@@ -7809,10 +7807,9 @@
       "suggestion_write_design_doc": "設計ドキュメントの作成を支援",
       "choose_memory_mode": "メモリモードを選択",
       "incognito_active_switch_to_persistent": "プライベート — 永続モードに切り替える",
-      "switch_to_persistent_mode": "永続モードに切り替える",
       "temporary": "一時的",
       "temporary_active_switch_to_persistent": "一時的 — 永続モードに切り替える",
-      "temporary_desc": "白紙 — メモリ読み取りおよび書き込みなし",
+      "temporary_desc": "メモリを使わず、新しいレッスンも学習しません。タブを復元できるよう、会話記録は保持します。",
       "try_create_a_plan_to_analyze_kirocrew_code_packa": "試す：「{{productName}} コードパッケージを分析し、主要コンポーネント別のファイル数をレポートするプランを作成してください」",
       "what_can_i_do_for_you": "何かお手伝いできることはありますか？"
     },
@@ -9835,7 +9832,6 @@
       "checks_failed": "チェックに失敗しました",
       "checks_passed": "チェックに合格しました",
       "checks_running": "チェック実行中",
-      "clean_agent_only_no_kirocrew_context_or_mcp": "クリーン — エージェントのみ、{{productName}} のコンテキストや MCP なし",
       "clean_up_sessions": "セッションを整理",
       "clean_up_sessions_2": "セッションを整理",
       "clear": "クリア",

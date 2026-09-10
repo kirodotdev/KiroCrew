@@ -8020,11 +8020,9 @@
       "annotate_added_ack": "Adicionado à caixa de mensagem — nada é enviado até enviares a mensagem"
     },
     "welcomeView": {
-      "agent_only_no_kirocrew_context_or_mcp": "Somente agente — sem contexto do {{productName}} nem MCP",
       "autopilot": "Autopilot",
-      "clean": "Limpo",
       "incognito": "Anônimo",
-      "incognito_desc": "Leituras de memória ativadas, gravações desativadas",
+      "incognito_desc": "Usa a memória existente, mas não aprende lições. Mantém a transcrição para recuperar a aba.",
       "refresh_suggestions": "Atualizar sugestões",
       "simple_tasks_run_instantly_complex_ones_get_a_pl": "Tarefas simples são executadas na hora. As complexas geram um plano que você aprova primeiro.",
       "suggestion_pipeline_status": "Verificar o status do meu pipeline",
@@ -8035,10 +8033,9 @@
       "suggestion_write_design_doc": "Ajudar-me a escrever um documento de design",
       "choose_memory_mode": "Escolher modo de memória",
       "incognito_active_switch_to_persistent": "Anônimo — mudar para o modo persistente",
-      "switch_to_persistent_mode": "Mudar para o modo persistente",
       "temporary": "Temporário",
       "temporary_active_switch_to_persistent": "Temporário — mudar para o modo persistente",
-      "temporary_desc": "Começo do zero — sem leituras ou gravações de memória",
+      "temporary_desc": "Não usa memória nem aprende lições. Mantém a transcrição para recuperar a aba.",
       "try_create_a_plan_to_analyze_kirocrew_code_packa": "Tente: “Crie um plano para analisar o pacote de código do {{productName}} e informar a contagem de arquivos por componente principal”",
       "what_can_i_do_for_you": "O que posso fazer por você?"
     },
@@ -10123,7 +10120,6 @@
       "checks_failed": "Verificações falharam",
       "checks_passed": "Verificações aprovadas",
       "checks_running": "Verificações em execução",
-      "clean_agent_only_no_kirocrew_context_or_mcp": "Limpo — somente o agente, sem contexto do {{productName}} nem MCP",
       "clean_up_sessions": "Limpar sessões",
       "clean_up_sessions_2": "Limpar sessões",
       "clear": "Limpar",

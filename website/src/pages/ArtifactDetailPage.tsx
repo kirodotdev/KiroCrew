@@ -1165,7 +1165,7 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
       // The pinned title keeps the sidebar readable.
       const res = await api.createChatSlot(
         undefined, undefined, undefined, undefined, undefined,
-        i18nT('pages.artifactDetailPage.session_title', { name: artifact.name }), undefined, artifact.slug,
+        i18nT('pages.artifactDetailPage.session_title', { name: artifact.name }), artifact.slug,
       )
       if (prefillText) writePrefill(res.key, prefillText)
       dispatch(addSlotOptimistic({

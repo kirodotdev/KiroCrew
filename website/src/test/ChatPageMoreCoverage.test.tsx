@@ -136,7 +136,6 @@ vi.mock('../components/InfoTip', () => ({ default: () => null }))
 vi.mock('../components/SegmentedControl', () => ({ default: () => null }))
 interface WelcomeProps {
   onSwitchMode?: (mode: 'persistent' | 'incognito' | 'temporary') => void | Promise<void>
-  onToggleClean?: (clean: boolean) => void | Promise<void>
 }
 let welcomeProps: WelcomeProps | null = null
 vi.mock('../components/WelcomeView', async () => {
@@ -361,29 +360,25 @@ afterEach(() => {
 })
 
 describe('Welcome recreation preserves remote execution', () => {
-  it.each(['memory mode', 'clean mode'] as const)(
-    'carries instanceId through a %s change',
-    async (kind) => {
-      apiSpy('dashboardConfig').mockResolvedValue({ default_memory_mode: 'persistent' })
-      apiSpy('createChatSlot').mockResolvedValue({
-        ...REMOTE_SLOT,
-        key: 'chat-new',
-        memory_mode: 'persistent',
-      })
-      apiSpy('deleteChatSlot').mockResolvedValue({ ok: true })
-      renderChatPage([], { slots: [REMOTE_SLOT] })
-      await waitFor(() => expect(welcomeProps).not.toBeNull())
+  it('carries instanceId through a memory mode change', async () => {
+    apiSpy('dashboardConfig').mockResolvedValue({ default_memory_mode: 'persistent' })
+    apiSpy('createChatSlot').mockResolvedValue({
+      ...REMOTE_SLOT,
+      key: 'chat-new',
+      memory_mode: 'persistent',
+    })
+    apiSpy('deleteChatSlot').mockResolvedValue({ ok: true })
+    renderChatPage([], { slots: [REMOTE_SLOT] })
+    await waitFor(() => expect(welcomeProps).not.toBeNull())
 
-      await act(async () => {
-        if (kind === 'memory mode') await welcomeProps!.onSwitchMode?.('persistent')
-        else await welcomeProps!.onToggleClean?.(true)
-      })
+    await act(async () => {
+      await welcomeProps!.onSwitchMode?.('persistent')
+    })
 
-      await waitFor(() => expect(apiMocks.createChatSlot).toHaveBeenCalled())
-      expect(apiMocks.createChatSlot.mock.calls.at(-1)?.[9]).toBe('crew-remote-1')
-      expect(apiMocks.deleteChatSlot).toHaveBeenCalledWith('chat-1')
-    },
-  )
+    await waitFor(() => expect(apiMocks.createChatSlot).toHaveBeenCalled())
+    expect(apiMocks.createChatSlot.mock.calls.at(-1)?.[8]).toBe('crew-remote-1')
+    expect(apiMocks.deleteChatSlot).toHaveBeenCalledWith('chat-1')
+  })
 })
 
 describe('ChatPage row callbacks — fork', () => {

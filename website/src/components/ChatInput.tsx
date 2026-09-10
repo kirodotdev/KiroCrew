@@ -576,7 +576,6 @@ interface ChatInputProps {
   projectGitAhead?: number
   projectGitBehind?: number
   memoryMode?: string
-  cleanMode?: boolean
   /** User-sent messages for ↑/↓ history navigation (oldest → newest). */
   sentMessages?: string[]
   /** Authoritative automation record for this slot (if any). */
@@ -927,7 +926,6 @@ function ChatInput({
   projectGitAhead,
   projectGitBehind,
   memoryMode,
-  cleanMode,
   sentMessages,
   onAutomationClick,
   automation,
@@ -3874,7 +3872,7 @@ function ChatInput({
       <div
         data-testid="input-wrapper"
         ref={wrapperRef}
-        className={`${hasApproval ? 'rounded-b-2xl rounded-t-none' : 'rounded-2xl'} relative transition-colors overflow-hidden ${manualHeight !== null ? 'flex flex-col min-h-0' : ''} ${(cleanMode || memoryMode === 'incognito' || memoryMode === 'temporary') ? 'border-2' : 'border'} ${cleanMode ? 'border-accent bg-bg-elevated' : memoryMode === 'temporary' ? 'border-aim bg-bg-elevated' : memoryMode === 'incognito' ? 'border-warn bg-bg-elevated' : 'border-border bg-bg-elevated focus-within:border-accent/50'}`}
+        className={`${hasApproval ? 'rounded-b-2xl rounded-t-none' : 'rounded-2xl'} relative transition-colors overflow-hidden ${manualHeight !== null ? 'flex flex-col min-h-0' : ''} ${(memoryMode === 'incognito' || memoryMode === 'temporary') ? 'border-2' : 'border'} ${memoryMode === 'temporary' ? 'border-aim bg-bg-elevated' : memoryMode === 'incognito' ? 'border-warn bg-bg-elevated' : 'border-border bg-bg-elevated focus-within:border-accent/50'}`}
 
         onDragOver={onDragOver}
         onDragLeave={onDragLeave}

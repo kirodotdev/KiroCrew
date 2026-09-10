@@ -5374,8 +5374,6 @@
       "web_preview": "Web preview"
     },
     "welcomeView": {
-      "agent_only_no_kirocrew_context_or_mcp": "Agent-only — no {{productName}} context or MCP",
-      "clean": "Clean",
       "refresh_suggestions": "Refresh suggestions",
       "simple_tasks_run_instantly_complex_ones_get_a_pl": "Simple tasks run instantly. Complex ones get a plan you approve first.",
       "try_create_a_plan_to_analyze_kirocrew_code_packa": "Try: “Create a plan to analyze {{productName}} code package and report file count by major components”"
@@ -6361,7 +6359,6 @@
       "checks_failed": "Checks failed",
       "checks_passed": "Checks passed",
       "checks_running": "Checks running",
-      "clean_agent_only_no_kirocrew_context_or_mcp": "Clean — agent-only, no {{productName}} context or MCP",
       "clean_up_sessions": "Clean up sessions",
       "clean_up_sessions_2": "Clean Up Sessions",
       "clear": "Delete all",

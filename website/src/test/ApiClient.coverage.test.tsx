@@ -903,10 +903,10 @@ describe('request bodies with conditionally-omitted keys', () => {
     expect(call().url).toBe('/api/dashboard/config')
     expect(call(1).body).toEqual({ memory_mode: 'temporary' })
 
-    await api.createChatSlot('n', 'a', 'm', 'mode', 'mem', 't', false, 'slug', 'f1')
+    await api.createChatSlot('n', 'a', 'm', 'mode', 'mem', 't', 'slug', 'f1')
     expect(call(2).body).toEqual({
       name: 'n', agent: 'a', model: 'm', mode: 'mode', memory_mode: 'mem',
-      title: 't', clean_mode: false, artifact: 'slug', folder_id: 'f1',
+      title: 't', artifact: 'slug', folder_id: 'f1',
     })
   })
 

@@ -131,6 +131,6 @@ describe('ArtifactDetailPage popout navigation containment', () => {
     await waitFor(() => expect(screen.getByText(/Artifact: cr-queue/i)).toBeInTheDocument())
     fireEvent.click(screen.getByLabelText('Toggle agent chat'))
     await waitFor(() => expect(vi.mocked(api).createChatSlot).toHaveBeenCalledTimes(1))
-    expect(vi.mocked(api).createChatSlot.mock.calls[0][7]).toBe('cr-queue')
+    expect(vi.mocked(api).createChatSlot.mock.calls[0][6]).toBe('cr-queue')
   })
 })

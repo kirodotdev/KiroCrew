@@ -134,7 +134,7 @@ beforeEach(() => {
   // folder_id, which is what lets the row render inside the folder on its first
   // paint instead of being corrected afterwards.
   mocks.createChatSlot.mockImplementation((...args: unknown[]) =>
-    Promise.resolve({ key: NEW_KEY, folder_id: (args[8] as string) || '' }),
+    Promise.resolve({ key: NEW_KEY, folder_id: (args[7] as string) || '' }),
   )
   mocks.setSlotFolder.mockResolvedValue({})
   mocks.dropSlotToColumn.mockResolvedValue({ ok: true })
@@ -167,7 +167,7 @@ describe('board view: new chat in folder', () => {
     // Folder membership must ride the CREATE call. The server broadcasts the
     // new slot before responding, so a follow-up PATCH lands too late and the
     // session visibly flashes at the top level first.
-    expect(mocks.createChatSlot.mock.calls[0][8]).toBe(FOLDER_ID)
+    expect(mocks.createChatSlot.mock.calls[0][7]).toBe(FOLDER_ID)
     await waitFor(() => expect(mocks.dropSlotToColumn).toHaveBeenCalledWith(NEW_KEY, COL_A))
     expect(mocks.setSlotFolder).not.toHaveBeenCalled()
     unsubscribe()

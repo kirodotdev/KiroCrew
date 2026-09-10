@@ -3558,7 +3558,7 @@ export const api = {
    *  over there. The backend opens the peer's slot first, so a peer that is
    *  disconnected or on a different version fails the create rather than yielding
    *  a session that cannot send. */
-  createChatSlot: async (name?: string, agent?: string, model?: string, mode?: string, memory_mode?: string, title?: string, clean_mode?: boolean, artifact?: string, folder_id?: string, instance_id?: string) => {
+  createChatSlot: async (name?: string, agent?: string, model?: string, mode?: string, memory_mode?: string, title?: string, artifact?: string, folder_id?: string, instance_id?: string) => {
     const resolvedMemoryMode = memory_mode ?? await resolveDefaultMemoryMode(
       () => fetch('/api/dashboard/config').then(j),
     )
@@ -3569,7 +3569,6 @@ export const api = {
       ...(mode ? { mode } : {}),
       memory_mode: resolvedMemoryMode,
       ...(title ? { title } : {}),
-      ...(clean_mode !== undefined ? { clean_mode } : {}),
       ...(artifact ? { artifact } : {}),
       ...(folder_id ? { folder_id } : {}),
       ...(instance_id ? { instance_id } : {}),

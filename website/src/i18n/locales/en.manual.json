@@ -2625,7 +2625,7 @@
     "welcomeView": {
       "autopilot": "Autopilot",
       "incognito": "Incognito",
-      "incognito_desc": "Memory reads enabled, writes disabled",
+      "incognito_desc": "Uses existing memory but learns no lessons. Keeps the transcript for tab recovery.",
       "suggestion_pipeline_status": "Check my pipeline status",
       "suggestion_review_cr": "Review my latest CR",
       "suggestion_search_code": "Search code for usage examples",
@@ -2634,10 +2634,9 @@
       "suggestion_write_design_doc": "Help me write a design doc",
       "choose_memory_mode": "Choose memory mode",
       "incognito_active_switch_to_persistent": "Incognito — switch to persistent mode",
-      "switch_to_persistent_mode": "Switch to persistent mode",
       "temporary": "Temporary",
       "temporary_active_switch_to_persistent": "Temporary — switch to persistent mode",
-      "temporary_desc": "Blank slate — no memory reads or writes",
+      "temporary_desc": "Uses no memory and learns no lessons. Keeps the transcript for tab recovery.",
       "what_can_i_do_for_you": "What can I do for you?"
     },
     "widgetFrame": {
