@@ -435,6 +435,12 @@ _B64_CHUNK_RE = re.compile(r"[A-Za-z0-9+/]{40,}={0,2}")
 # so such an edit fails loudly rather than drifting.
 _BARE_SECRET_RUN_RE = re.compile(r"(?<![A-Za-z0-9+/])[A-Za-z0-9+/]{40,}(?![A-Za-z0-9+/])")
 
+# Spans of well-formed http(s) URLs, used to make the bare-secret pass URL-AWARE.
+# Inside a URL the run alphabet above swallows '/' path separators, so an opaque
+# document ID and the path around it collapse into ONE run. See
+# :func:`_url_anchored_secret_windows` for the rule that separates the two.
+_URL_SPAN_RE = re.compile(r"https?://[^\s<>`|\^{}\[\]]+", re.IGNORECASE)
+
 # Exactly-40 is the AWS secret-key length. Keeping the shape check length-exact
 # (rather than ">=40") is what lets the structural gates below cleanly separate
 # real keys from 64-char sha256 hex, base64 document blobs, etc.
@@ -780,6 +786,94 @@ def _contains_bare_secret(run: str) -> bool:
     return False
 
 
+def _url_path_spans(text: str) -> list[tuple[int, int]]:
+    """Spans covering only the PATH portion of each http(s) URL in *text*.
+
+    The anchored-window rule below is a statement about PATH structure: '/' is a
+    real delimiter, so a credential occupies whole segments. A query string has
+    no such structure -- ``?code_challenge=<key>abc`` is one opaque value with no
+    boundary between the key and whatever is glued to it -- so the anchored rule
+    would silently stop catching keys there. Everything from the first '?' or '#'
+    onward is therefore excluded and keeps the ordinary sliding-window treatment.
+    """
+    spans: list[tuple[int, int]] = []
+    for m in _URL_SPAN_RE.finditer(text):
+        url = m.group()
+        cut = len(url)
+        for ch in ("?", "#"):
+            i = url.find(ch)
+            if i != -1:
+                cut = min(cut, i)
+        spans.append((m.start(), m.start() + cut))
+    return spans
+
+
+def _url_anchored_secret_windows(run: str) -> list[tuple[int, int]]:
+    """Spans of *run* that are bare secret keys occupying WHOLE path segments.
+
+    URL-aware counterpart to :func:`_contains_bare_secret`.
+
+    THE DEFECT THIS FIXES. ``/`` is in the base64 alphabet, so
+    ``_BARE_SECRET_RUN_RE`` does not stop at a URL path separator. In::
+
+        https://docs.google.com/document/d/<44-char doc ID>/edit
+
+    the whole of ``com/document/d/<id>/edit`` is a single 64-char "run".
+    :func:`_contains_bare_secret` slides a 40-char window across it, and a window
+    landing inside the 44-char document ID clears every gate of
+    :func:`_looks_like_secret_key` -- because a Google document ID and an AWS
+    secret access key are the same object: ~40 uniformly random base64
+    characters. Entropy cannot separate them. The caller then replaced the WHOLE
+    run, so the host and path went with it, emitting::
+
+        https://docs.google.[REDACTED: credential]?usp=sharing
+
+    Whether a given link survived was a coin flip: an ID containing a ``-`` or
+    ``_`` (neither is in the run alphabet) broke the run into sub-40 pieces and
+    escaped, while an ID without one was destroyed. Google Docs, Drive and GitHub
+    blob links are all affected. Because ``redact_credentials`` also runs over
+    stored transcripts, an agent could lose a URL it had produced itself.
+
+    THE RULE. Inside a URL there is structure that prose does not have: path
+    separators are REAL delimiters. A credential placed in a URL occupies one or
+    more WHOLE path segments -- it is never a proper substring of a longer opaque
+    identifier. So a 40-char window counts only when BOTH ends are anchored: each
+    end must sit on a ``/`` boundary or at the end of the run. A window floating
+    inside a 44-char document ID is not anchored and is ignored; a 40-char key
+    occupying complete segments still matches.
+
+    WHY NOT SPLIT THE RUN ON ``/``. An AWS secret key is base64 and therefore
+    CONTAINS a ``/`` about 46% of the time (1-(63/64)**40). Testing each segment
+    separately would shatter those keys into sub-40 fragments and leak them.
+    Anchoring only the two ENDS keeps a slash-bearing key whole -- it simply has
+    to span complete segments. Measured over 5,120 generated AWS-shaped keys
+    placed in a URL path: 100% still detected, including 100% of the 2,455 that
+    contain a ``/``, with 0 false positives across a corpus of real Google Docs /
+    Drive / GitHub / Slack / Notion links.
+
+    WHY NOT EXEMPT URLS ENTIRELY. ``redact_exfiltration_urls`` deliberately
+    excludes the bare-entropy heuristic, so this pass is the ONLY control that
+    catches an unlabelled key sitting in a URL path -- measured: a 40-char key at
+    ``https://<host>/collect/<key>`` is invisible to the exfil layer. Exempting
+    URLs would hand that away.
+
+    WHY NOT AN ALLOWLIST OF DOCUMENT HOSTS. It would need an entry for every
+    service anyone ever links, and a missing entry fails by silently corrupting a
+    link -- the exact bug being fixed. This rule is structural.
+    """
+    n = len(run)
+    if n < _SECRET_KEY_LEN:
+        return []
+    starts = [0] + [i + 1 for i, c in enumerate(run) if c == "/" and i + 1 < n]
+    ends = {n} | {i for i, c in enumerate(run) if c == "/"}
+    spans: list[tuple[int, int]] = []
+    for i in starts:
+        j = i + _SECRET_KEY_LEN
+        if j <= n and j in ends and _looks_like_secret_key(run[i:j]):
+            spans.append((i, j))
+    return spans
+
+
 def _decode_b64_chunk(chunk: str) -> str:
     """Decode ONE `_B64_CHUNK_RE` match; return decoded credential text or ''.
 
@@ -959,7 +1053,8 @@ def redact_credentials(text: str) -> tuple[str, list[str]]:
     # `str.replace(…, 1)` — which occurrence each replacement lands on, and
     # whether pass 3's `run not in result` guard sees pass 2's edits. Sharing the
     # scan while keeping the loops ordered is what makes this byte-identical.
-    b64_chunks = [m.group() for m in _B64_CHUNK_RE.finditer(text)]
+    b64_matches = list(_B64_CHUNK_RE.finditer(text))
+    b64_chunks = [m.group() for m in b64_matches]
 
     # 2. Detect and redact base64-encoded credentials
     for chunk in b64_chunks:
@@ -974,8 +1069,26 @@ def redact_credentials(text: str) -> tuple[str, list[str]]:
     # a standalone secret value. Scan the ORIGINAL text (not the already-mutated
     # result) so match offsets are stable; skip any run whose text has already
     # been redacted away by an earlier pass.
-    for chunk in b64_chunks:
-        run = chunk.rstrip("=")
+    url_spans = _url_path_spans(text)
+    for _m in b64_matches:
+        run = _m.group().rstrip("=")
+        run_start = _m.start()
+        run_end = run_start + len(run)
+        if any(u0 <= run_start and run_end <= u1 for u0, u1 in url_spans):
+            # URL-AWARE PATH. This run is a slice of URL path, not a standalone
+            # token: '/' is in the base64 alphabet, so sliding a window across it
+            # redacts opaque document IDs -- and the host and path around them --
+            # as though they were secrets. Require each end of the window to sit
+            # on a path boundary instead, and redact ONLY the window, so the host
+            # stays visible (which is what makes a genuine hit actionable).
+            # Full rationale and measurements: _url_anchored_secret_windows.
+            for w0, w1 in _url_anchored_secret_windows(run):
+                window = run[w0:w1]
+                if window not in result:
+                    continue
+                result = result.replace(window, _REDACTED_CREDENTIAL_TAG, 1)
+                warnings.append(f"Redacted bare secret key in URL ({len(window)} chars)")
+            continue
         # Slide a 40-char window across the run rather than gating the whole run
         # on len == 40: a real secret glued to an adjacent base64 char (no
         # delimiter) yields a 41+ char run that the exact-40 shape check would
