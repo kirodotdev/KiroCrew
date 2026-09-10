@@ -43,9 +43,64 @@ class TestCatalog:
         # file tools, so a text regex over the command added refusals of read-only
         # work and no protection. Before that: the four product-name-anywhere
         # self-management rows and the seven legacy identifier-substring rows.
-        assert len(BUILTIN_DENIED_RULES) == 111
+        # This change: the three tailscale network-exposure rows (serve / funnel / node-state).
+        assert len(BUILTIN_DENIED_RULES) == 114
         ids = [r.id for r in BUILTIN_DENIED_RULES]
         assert len(set(ids)) == len(BUILTIN_DENIED_RULES)
+
+    def test_tailscale_network_exposure_family(self):
+        """The agent's own bash cannot widen its own network exposure via `tailscale`.
+
+        Putting the dashboard on the tailnet is governed at the dashboard/CLI
+        seam (owner-only, audited, `capabilities.tailnet_origin`-pinnable), but
+        the raw CLI sits below that seam. These rules close the bash path while
+        keeping the read subcommands the status/doctor paths use. Kiro Crew's
+        OWN publish path is unaffected: it spawns `tailscale` via
+        `subprocess.run`, not through this gate.
+        """
+        from kiro_crew import security
+
+        effective = list(
+            security.compute_effective_denied(security.BUILTIN_DENIED_RULES, (), False, (), ())
+        )
+
+        for blocked in (
+            "tailscale serve --bg --https=443 http://127.0.0.1:5476",
+            "tailscale serve --https 443 --set-path=/ off",
+            "tailscale serve reset",
+            "sudo tailscale serve --bg --https=443 http://127.0.0.1:5476",
+            "tailscale funnel 443 on",
+            "tailscale funnel reset",
+            "tailscale up --ssh",
+            "tailscale up --advertise-exit-node",
+            "tailscale set --advertise-exit-node",
+            "tailscale set --ssh",
+            "tailscale login",
+            "tailscale logout",
+            "tailscale switch other-tailnet",
+            "tailscale cert desk.tail1a2b3c.ts.net",
+            "tailscale --socket=/tmp/ts.sock serve --bg --https=443 http://127.0.0.1:5476",
+        ):
+            assert security.is_denied(
+                blocked, denied_regexes=effective
+            ), f"tailscale exposure not blocked: {blocked!r}"
+
+        for allowed in (
+            "tailscale status",
+            "tailscale status --json",
+            "tailscale serve status",
+            "tailscale serve status --json",
+            "tailscale funnel status",
+            "tailscale netcheck",
+            "tailscale ping desk.tail1a2b3c.ts.net",
+            "tailscale whois 100.64.0.1",
+            "tailscale version",
+            "echo 'the tailscale is up on the boat'",
+            "grep -r tailscale src/",
+        ):
+            assert not security.is_denied(
+                allowed, denied_regexes=effective
+            ), f"tailscale read wrongly blocked: {allowed!r}"
 
     def test_token_mint_is_blocked_in_both_the_cli_and_module_forms(self):
         """`kirocrew token` mints a signed dashboard token that authenticates to EVERY gateway
