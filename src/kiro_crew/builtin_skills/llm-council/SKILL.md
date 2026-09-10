@@ -1,6 +1,6 @@
 ---
 name: llm-council
-description: Convene a cross-vendor LLM council — the main session acts as Chairman and spawns several subagents, each pinned to a DIFFERENT model (Anthropic / OpenAI / DeepSeek / Zhipu / Qwen / etc. via kiro-cli). Three modes — synthesis (independent answers merged into one), vote (structured ballots + majority tally), and adversarial (red-team a target artifact into a SHIP/REVISE/REJECT verdict). Use for hard, high-stakes, ambiguous, or subjective questions, group decisions, or reviews where a second (and third) opinion from different model families adds real signal.
+description: Use for hard, high-stakes, ambiguous, or subjective questions, group decisions, or reviews where a second (and third) opinion from different model families adds real signal. Convene a cross-vendor LLM council — the main session acts as Chairman and spawns several subagents, each pinned to a DIFFERENT model (Anthropic / OpenAI / DeepSeek / Zhipu / Qwen / etc. via kiro-cli). Three modes — synthesis (independent answers merged into one), vote (structured ballots + majority tally), and adversarial (red-team a target artifact into a SHIP/REVISE/REJECT verdict).
 triggers: ask the council, convene the council, council on this, panel of models, vote on this, models vote, red-team, adversarial review, other models say, cross-check with other models, second opinion from multiple models
 inject_on_trigger: false
 ---

@@ -1,6 +1,6 @@
 ---
 name: security-conductor
-description: Operating procedure for the kirocrew-security-conductor agent - run proactive vulnerability discovery on one target as a supervised fleet. Decompose the target into attack surfaces, dispatch one auditor per surface behind the rules of engagement, dispatch an independent verifier per finding whose job is rejecting false positives, adjudicate severity, hold the two human gates, run a retrospective that proposes lessons, and report upward. Use when a security conductor session is being seeded, or when inspecting/debugging one.
+description: Use when a security conductor session is being seeded, or when inspecting/debugging one. Operating procedure for the kirocrew-security-conductor agent - run proactive vulnerability discovery on one target as a supervised fleet. Decompose the target into attack surfaces, dispatch one auditor per surface behind the rules of engagement, dispatch an independent verifier per finding whose job is rejecting false positives, adjudicate severity, hold the two human gates, run a retrospective that proposes lessons, and report upward.
 ---
 
 # Security Conductor

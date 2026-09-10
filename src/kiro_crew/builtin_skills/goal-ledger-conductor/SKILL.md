@@ -1,6 +1,6 @@
 ---
 name: goal-ledger-conductor
-description: Own a long-horizon goal end to end while tracking it in the work ledger - decompose it into items, stand up one session per item, read each worker's reported status as structured data rather than as a transcript, verify claims with the acceptance evaluator, and decide each next round until the goal is met or a stop condition fires. Use when the user hands over a goal too large for one session ("clear the flaky-test backlog", "take this feature from design to PRs", "push these N PRs green") and wants the fleet's state to be readable rather than inferred.
+description: Use when the user hands over a goal too large for one session ("clear the flaky-test backlog", "take this feature from design to PRs", "push these N PRs green") and wants the fleet's state to be readable rather than inferred. Own a long-horizon goal end to end while tracking it in the work ledger - decompose it into items, stand up one session per item, read each worker's reported status as structured data rather than as a transcript, verify claims with the acceptance evaluator, and decide each next round until the goal is met or a stop condition fires.
 ---
 
 # Goal Ledger Conductor
