@@ -63,6 +63,31 @@ dispatchable agent name. A duplicate existing name is a deployment refusal.
    never retries the prompt. `turn_result` describes stream completion/degradation,
    not independent proof that the model followed memory.
 
+### Native observer evidence (bundle v8)
+
+Only the `UCAM native_write` record is emitted at WARNING, so the default
+WARNING threshold retains this hash-only evidence without enabling sensitive
+INFO output elsewhere. No logger/handler levels or global logging configuration
+are changed; ACK success traces remain INFO. Adapter `/6` and the receipt format
+are unchanged; exact module and plan hashes distinguish the v8 source.
+
+The actual isolated Kiro path is `AcpSessionProvider` →
+`AcpRuntime.send_request` → successful `stdin.drain()` →
+`ConsumerRun.after_send`: mark sent, emit the native-write record, then attempt
+the injected ACK. Legacy `AcpClient._send_request` uses the same post-drain
+callback. No trace is emitted for failed writes/drains, cancellation during
+drain, rejected projections, unrelated sessions, or non-prompt requests.
+Post-send ACK outages leave the native-write evidence intact without retrying
+the prompt. The record contains only the constant adapter identifier and three
+SHA-256 values, never task/context text, identity, credentials, or exception data.
+
+This is reliable at the inspected WARNING threshold, not a logging bypass:
+disabled loggers, ERROR-only handlers, dropped logs, and process death can still
+lose evidence. Missing logs must fail strict proof, not authorize a retry or
+imply no native dispatch. Local fake-transport regressions are not live proof.
+Prepare a NEW v8 directory from the pinned deployed preimages; never overwrite
+v7. Deployment/restart and a fresh live proof remain separate parent-owned work.
+
 HTTP operations have a 2.5-second total timeout each, including credential-file
 loading. Before dispatch there are at most two API operations (GET and fetched
 ACK). There is no offline/legacy fallback for this dedicated consumer. Unrelated

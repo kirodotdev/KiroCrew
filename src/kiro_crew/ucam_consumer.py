@@ -524,7 +524,7 @@ class ConsumerRun:
         if projection is None:
             raise ConsumerError("ucam_projection_missing")
         self.sent = True
-        logger.info(
+        logger.warning(
             "UCAM native_write adapter=%s run_hash=%s digest=%s prompt_hash=%s",
             ADAPTER_VERSION,
             self.run_hash,

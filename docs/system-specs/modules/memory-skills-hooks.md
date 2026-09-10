@@ -5,6 +5,13 @@
 Persistent memory, skill system, and config-driven hooks. Assembled by
 `ContextBuilder` and injected into ACP prompts.
 
+The opt-in synthetic UCAM App Kit consumer is separate from these legacy memory
+layers. Its hash-only `UCAM native_write` observer record uses WARNING so default
+logging retains post-drain transport evidence without enabling INFO globally.
+It changes no logging configuration and leaves ACK success traces at INFO.
+See [the consumer contract](../../../addons/ucam-synthetic-consumer/README.md)
+for the actual runtime boundary, evidence limits, and exact-source bundle rules.
+
 ### The six memory layers
 
 Six distinct layers, each with its own store, write path, and context cap. The
