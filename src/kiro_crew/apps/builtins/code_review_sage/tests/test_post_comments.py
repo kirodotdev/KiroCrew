@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import json
 import os
 import shutil
 import tempfile
@@ -73,6 +74,21 @@ def _unconfirmed(_link, _units):
     return False
 
 
+def _post_payload(task: str) -> dict:
+    prefix = "assembled AND redacted in Python: "
+    suffix = ". Use it EXACTLY as given;"
+    return json.loads(task.split(prefix, 1)[1].split(suffix, 1)[0])
+
+
+def _posted_response(posted_comments: int, design_comment_posted: bool) -> str:
+    return (
+        "<code-review-sage-posted>"
+        + json.dumps({"posted_comments": posted_comments,
+                      "design_comment_posted": design_comment_posted})
+        + "</code-review-sage-posted>"
+    )
+
+
 class _Base(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
@@ -96,13 +112,11 @@ class TestPostRecorded(_Base):
 
         def dispatch(task, timeout=0):
             seen.append(task)
-            rec = results.read_result("CR-1", self.root, None) or {}
-            # The poster's only job: publish what Python already built.
-            self.assertIn("github_review_payload", rec)
-            rec["posted_comments"] = len(rec.get("pending_comments") or [])
-            rec["design_comment_posted"] = True
-            results.write_result(rec, self.root, None)
-            return {"ok": True, "output": "posted", "error": ""}
+            payload = _post_payload(task)
+            self.assertIn("comments", payload)
+            return {"ok": True, "output": _posted_response(
+                len(payload.get("comments") or []) + bool(payload.get("body")),
+                bool(payload.get("body"))), "error": ""}
 
         out = await asyncio.to_thread(
             D.post_recorded, "CR-1", "https://github.com/o/r/pull/1",
@@ -112,31 +126,6 @@ class TestPostRecorded(_Base):
         self.assertEqual(out["pending"], 4)
         self.assertEqual(out["posted_comments"], 4)
         self.assertTrue(seen)
-
-    async def test_a_publish_to_shared_failure_aborts_the_dispatch(self):
-        """`publish_to_shared` returning False means the record at the shared path
-        is NOT ours -- it refuses precisely when its no-follow read is blocked,
-        which is the case where a sibling worker replaced the record with a link.
-        Dispatching anyway would point the poster at whatever IS there and publish
-        it to the pull request, so no poster may run."""
-        results.write_result(_record(red=1, yellow=0), self.root, "run-a")
-        calls: list = []
-
-        def dispatch(task, timeout=0):
-            calls.append(task)
-            return {"ok": True, "output": "posted", "error": ""}
-
-        with unittest.mock.patch.object(results, "publish_to_shared",
-                                        return_value=False):
-            out = await asyncio.to_thread(
-                D.post_recorded, "CR-1", "https://github.com/o/r/pull/1",
-                dispatch=dispatch, confirm=_confirmed, root=self.root,
-                run_id="run-a")
-
-        self.assertEqual(calls, [], "no poster may be dispatched")
-        self.assertFalse(out["post_ok"])
-        self.assertIn("stage", out["post_error"])
-        self.assertEqual(out["posted_comments"], 0)
 
     async def test_an_unresolvable_host_aborts_the_post_fail_closed(self):
         """A link whose host is no longer in `allowed_hosts()` (the GHE host was
@@ -201,13 +190,11 @@ class TestSelectivePosting(_Base):
 
     def _poster(self, delivered: int | None = None):
         def dispatch(task, timeout=0):
-            rec = results.read_result("CR-1", self.root, None) or {}
-            pending = rec.get("pending_comments") or []
-            rec["posted_comments"] = len(pending) if delivered is None else delivered
-            rec["design_comment_posted"] = any(
-                e.get("kind") == "design" for e in pending)
-            results.write_result(rec, self.root, None)
-            return {"ok": True, "output": "posted", "error": ""}
+            payload = _post_payload(task)
+            count = (len(payload.get("comments") or []) + bool(payload.get("body"))
+                     if delivered is None else delivered)
+            return {"ok": True, "output": _posted_response(count, bool(payload.get("body"))),
+                    "error": ""}
         return dispatch
 
     async def test_posts_only_the_selected_comment(self):
@@ -267,13 +254,12 @@ class TestSelectivePosting(_Base):
         seen: list[list[str]] = []
 
         def capture(task, timeout=0):
-            rec = results.read_result("CR-1", self.root, None) or {}
-            payload = rec.get("github_review_payload") or {}
+            payload = _post_payload(task)
             seen.append([c.get("body", "")[:40]
                          for c in (payload.get("comments") or [])])
-            rec["posted_comments"] = len(rec.get("pending_comments") or [])
-            results.write_result(rec, self.root, None)
-            return {"ok": True, "output": "posted", "error": ""}
+            return {"ok": True, "output": _posted_response(
+                len(payload.get("comments") or []) + bool(payload.get("body")),
+                bool(payload.get("body"))), "error": ""}
 
         await asyncio.to_thread(
             D.post_recorded, "CR-1", "https://github.com/o/r/pull/1",
@@ -341,8 +327,8 @@ class TestSelectivePosting(_Base):
 class TestRecordsSurviveForPosting(_Base):
     def _dispatch(self):
         def dispatch(task, timeout=0):
-            results.write_result(_record(), self.root)
-            return {"ok": True, "output": "done", "error": ""}
+            return {"ok": True, "output": "<code-review-sage-result>"
+                    + json.dumps(_record()) + "</code-review-sage-result>", "error": ""}
         return dispatch
 
     async def test_records_are_kept_when_the_review_was_not_posted(self):
@@ -364,13 +350,12 @@ class TestRecordsSurviveForPosting(_Base):
 
         def dispatch(task, timeout=0):
             if "SINGLE thorough pass" in task:
-                results.write_result(_record(), self.root)
+                output = "<code-review-sage-result>" + json.dumps(_record()) + "</code-review-sage-result>"
             else:
-                rec = results.read_result("CR-1", self.root, None)
-                if rec:
-                    rec["posted_comments"] = len(rec.get("pending_comments") or [])
-                    results.write_result(rec, self.root, None)
-            return {"ok": True, "output": "done", "error": ""}
+                payload = _post_payload(task)
+                output = _posted_response(len(payload.get("comments") or []) + bool(payload.get("body")),
+                                          bool(payload.get("body")))
+            return {"ok": True, "output": output, "error": ""}
 
         out = await asyncio.to_thread(
             lambda: D.run_review(
@@ -641,10 +626,10 @@ class TestStaleDeliveryEvidenceIsNotInherited(_Base):
 
         # A real poster on the retry delivers and IS recorded.
         def real(task, timeout=0):
-            r = results.read_result("CR-1", self.root, None) or {}
-            r["posted_comments"] = len(r.get("pending_comments") or [])
-            results.write_result(r, self.root, None)
-            return {"ok": True, "output": "posted", "error": ""}
+            payload = _post_payload(task)
+            return {"ok": True, "output": _posted_response(
+                len(payload.get("comments") or []) + bool(payload.get("body")),
+                bool(payload.get("body"))), "error": ""}
 
         out = await asyncio.to_thread(
             D.post_recorded, "CR-1", "https://github.com/o/r/pull/1",
@@ -652,15 +637,14 @@ class TestStaleDeliveryEvidenceIsNotInherited(_Base):
         self.assertTrue(out["posted_keys"], out)
 
     async def test_a_real_delivery_is_still_recorded(self):
-        """The reset must not break the path where the poster does write back."""
+        """The reset must not discard the poster's response-bound report."""
         results.write_result(_record(), self.root, "run-a")
 
         def dispatch(task, timeout=0):
-            r = results.read_result("CR-1", self.root, None) or {}
-            r["posted_comments"] = len(r.get("pending_comments") or [])
-            r["design_comment_posted"] = True
-            results.write_result(r, self.root, None)
-            return {"ok": True, "output": "posted", "error": ""}
+            payload = _post_payload(task)
+            return {"ok": True, "output": _posted_response(
+                len(payload.get("comments") or []) + bool(payload.get("body")),
+                bool(payload.get("body"))), "error": ""}
 
         out = await asyncio.to_thread(
             D.post_recorded, "CR-1", "https://github.com/o/r/pull/1",
@@ -712,12 +696,9 @@ class TestDeliveryIsCountedInPayloadUnits(_Base):
         results.write_result(rec, self.root, "run-a")
 
         def dispatch(task, timeout=0):
-            r = results.read_result("CR-1", self.root, None) or {}
-            payload = r.get("github_review_payload") or {}
-            r["posted_comments"] = pipeline.review_payload_units(payload)
-            r["design_comment_posted"] = bool(payload.get("body"))
-            results.write_result(r, self.root, None)
-            return {"ok": True, "output": "posted", "error": ""}
+            payload = _post_payload(task)
+            return {"ok": True, "output": _posted_response(
+                pipeline.review_payload_units(payload), bool(payload.get("body"))), "error": ""}
 
         out = await_sync(D.post_recorded, "CR-1", "https://github.com/o/r/pull/1",
                          dispatch=dispatch, confirm=_confirmed, root=self.root, run_id="run-a")
@@ -732,11 +713,9 @@ class TestDeliveryIsCountedInPayloadUnits(_Base):
         results.write_result(_record(red=1, yellow=2), self.root, "run-a")
 
         def dispatch(task, timeout=0):
-            r = results.read_result("CR-1", self.root, None) or {}
-            r["posted_comments"] = pipeline.review_payload_units(
-                r.get("github_review_payload") or {})
-            results.write_result(r, self.root, None)
-            return {"ok": True, "output": "posted", "error": ""}
+            payload = _post_payload(task)
+            return {"ok": True, "output": _posted_response(
+                pipeline.review_payload_units(payload), bool(payload.get("body"))), "error": ""}
 
         out = await_sync(D.post_recorded, "CR-1", "https://github.com/o/r/pull/1",
                          dispatch=dispatch, confirm=_confirmed, root=self.root, run_id="run-a")
@@ -777,10 +756,7 @@ class TestConfirmedCountIsAuthoritative(unittest.TestCase):
         results.write_result(_record(red=1, yellow=2), self.root, "run-a")
 
         def dispatch(task, timeout=0):
-            r = results.read_result("CR-1", self.root, None) or {}
-            r["posted_comments"] = 1
-            results.write_result(r, self.root, None)
-            return {"ok": True, "output": "posted", "error": ""}
+            return {"ok": True, "output": _posted_response(1, False), "error": ""}
 
         out = await_sync(D.post_recorded, "CR-1", "https://github.com/o/r/pull/1",
                          dispatch=dispatch, confirm=_unconfirmed, root=self.root,

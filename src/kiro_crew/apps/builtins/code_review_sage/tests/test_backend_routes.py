@@ -752,59 +752,6 @@ class TestConsolidateRejectsPatternlessOutput:
         assert "Authorize by confirming the owner" in path.read_text(encoding="utf-8")
 
 
-class TestAdoptionRefusesAPlantedLink:
-    """The reviewer worker owns the shared dir and has file tools.
-
-    ``is_file()`` follows symlinks, and ``os.replace`` moves the LINK, so a link
-    planted where a record belongs used to land in the run dir intact — and
-    ``read_result`` dereferences it with a plain read. Adoption must never carry a
-    link across, and must not leave one behind to retry.
-    """
-
-    @unittest.skipUnless(SYMLINKS_OK, "platform forbids unprivileged symlinks")
-    def test_a_symlink_is_refused_and_removed(self, tmp_path):
-
-        store.ensure_layout(tmp_path)
-        secret = tmp_path / "outside-secret.txt"
-        secret.write_text("SENSITIVE", encoding="utf-8")
-
-        shared = results.results_dir(tmp_path, None)
-        shared.mkdir(parents=True, exist_ok=True)
-        planted = shared / f"{results.safe_change_id('CR-1')}.json"
-        planted.symlink_to(secret)
-
-        assert results.adopt_from_shared("CR-1", tmp_path, "run-1") is False
-        # Nothing was adopted...
-        assert results.read_result("CR-1", tmp_path, "run-1") is None
-        # ...the link is gone, so the same plant cannot be retried...
-        assert not planted.exists() and not planted.is_symlink()
-        # ...and the target itself was left alone.
-        assert secret.read_text(encoding="utf-8") == "SENSITIVE"
-
-    def test_a_real_record_is_still_adopted_as_a_regular_file(self, tmp_path):
-
-        store.ensure_layout(tmp_path)
-        shared = results.results_dir(tmp_path, None)
-        shared.mkdir(parents=True, exist_ok=True)
-        (shared / f"{results.safe_change_id('CR-2')}.json").write_text(
-            json.dumps({
-                "schema": "code-review-sage-result", "version": 1,
-                "change_id": "CR-2", "platform": "github",
-                "repo_identity": "github.com/o/r",
-                "phase1": {"gate_verdict": "PASS", "design_risk": "low",
-                           "criticality": "low"},
-                "counts": {"red": 0, "yellow": 1},
-            }), encoding="utf-8")
-
-        assert results.adopt_from_shared("CR-2", tmp_path, "run-1") is True
-        got = results.read_result("CR-2", tmp_path, "run-1")
-        assert got and got["change_id"] == "CR-2"
-        dst = results.result_path("CR-2", tmp_path, "run-1")
-        assert dst.is_file() and not dst.is_symlink()
-        # The shared copy is consumed, as before.
-        assert not (shared / f"{results.safe_change_id('CR-2')}.json").exists()
-
-
 class TestRetentionKeepsActiveRuns(unittest.IsolatedAsyncioTestCase):
     """Retention is by position, so a still-RUNNING run can sit past the cap.
 
@@ -878,163 +825,6 @@ class TestRetentionKeepsActiveRuns(unittest.IsolatedAsyncioTestCase):
         self.assertIn("run-0", self.removed,
                       "retention stopped reclaiming finished runs")
         self.assertLessEqual(len(self.mod._RUNS), cap)
-
-
-class TestAdoptionValidatesBeforeItWrites:
-    """Adoption must be all-or-nothing.
-
-    Round 13 traded ``os.replace`` for an ``O_TRUNC`` write to close a symlink
-    hole, and that gave up atomicity: a malformed payload truncated whatever valid
-    record was already filed, and ``read_result`` then raised on the wreckage, so
-    no retry could recover it. Validate first, write via rename.
-    """
-
-    def _stage(self, tmp_path, change_id, body):
-        shared = results.results_dir(tmp_path, None)
-        shared.mkdir(parents=True, exist_ok=True)
-        (shared / f"{results.safe_change_id(change_id)}.json").write_text(
-            body, encoding="utf-8")
-
-    def _good(self, cid="CR-1", yellow=1):
-        """A record that satisfies the real contract (REQUIRED_TOP/PHASE1).
-
-        The earlier minimal fixture passed the envelope checks but was never a
-        valid record, so it could not exercise adoption once the schema gate went
-        in — the contract is what write_result has always enforced.
-        """
-        import json as _json
-        return _json.dumps({
-            "schema": "code-review-sage-result", "version": 1,
-            "change_id": cid, "platform": "github",
-            "repo_identity": "github.com/o/r",
-            "phase1": {"gate_verdict": "PASS", "design_risk": "low",
-                       "criticality": "low"},
-            "counts": {"red": 0, "yellow": yellow},
-        })
-
-    def test_malformed_output_leaves_the_existing_record_intact(self, tmp_path):
-        store.ensure_layout(tmp_path)
-
-        # A valid record is adopted first.
-        self._stage(tmp_path, "CR-1", self._good(yellow=3))
-        assert results.adopt_from_shared("CR-1", tmp_path, "run-1") is True
-        before = results.read_result("CR-1", tmp_path, "run-1")
-        assert before and before["counts"]["yellow"] == 3
-
-        # Then the poster leaves malformed JSON for the same change.
-        self._stage(tmp_path, "CR-1", "{not json at all")
-        assert results.adopt_from_shared("CR-1", tmp_path, "run-1") is False
-
-        # The valid record survived and is still readable — the retry path works.
-        after = results.read_result("CR-1", tmp_path, "run-1")
-        assert after == before, "a malformed payload destroyed the valid record"
-
-    def test_a_record_violating_the_schema_is_refused(self, tmp_path):
-        store.ensure_layout(tmp_path)
-        # `phase1: []` is dict-shaped at the top level but carries a list where an
-        # object belongs. The report reads it as rec.get("phase1", {}).get(...),
-        # which raises on a list — the present-but-wrong-type case a default
-        # cannot rescue, and the whole run fails.
-        bad = json.dumps({
-            "schema": "code-review-sage-result", "version": 1,
-            "change_id": "CR-1", "platform": "github",
-            "repo_identity": "github.com/o/r",
-            "phase1": [],
-        })
-        self._stage(tmp_path, "CR-1", bad)
-        assert results.adopt_from_shared("CR-1", tmp_path, "run-1") is False
-        assert results.read_result("CR-1", tmp_path, "run-1") is None
-
-    def test_an_unknown_gate_verdict_is_refused(self, tmp_path):
-        store.ensure_layout(tmp_path)
-        bad = json.dumps({
-            "schema": "code-review-sage-result", "version": 1,
-            "change_id": "CR-1", "platform": "github",
-            "repo_identity": "github.com/o/r",
-            "phase1": {"gate_verdict": "LOOKS_FINE", "design_risk": "low",
-                       "criticality": "low"},
-        })
-        self._stage(tmp_path, "CR-1", bad)
-        assert results.adopt_from_shared("CR-1", tmp_path, "run-1") is False
-
-    def test_a_record_naming_another_change_is_refused(self, tmp_path):
-        store.ensure_layout(tmp_path)
-        # Filed under CR-1 but claiming to be CR-9: accepting it would attribute
-        # CR-9's findings to CR-1 in the report.
-        self._stage(tmp_path, "CR-1", self._good("CR-9"))
-        assert results.adopt_from_shared("CR-1", tmp_path, "run-1") is False
-        assert results.read_result("CR-1", tmp_path, "run-1") is None
-
-    def test_a_json_array_is_refused(self, tmp_path):
-        store.ensure_layout(tmp_path)
-        self._stage(tmp_path, "CR-1", '[{"change_id": "CR-1"}]')
-        assert results.adopt_from_shared("CR-1", tmp_path, "run-1") is False
-
-    def test_no_temp_files_are_left_behind(self, tmp_path):
-        store.ensure_layout(tmp_path)
-        self._stage(tmp_path, "CR-1", self._good())
-        assert results.adopt_from_shared("CR-1", tmp_path, "run-1") is True
-        rd = results.results_dir(tmp_path, "run-1")
-        assert not list(rd.glob(".adopt-*")), "adoption left a temp file behind"
-
-
-class TestPublishRefusesAPlantedDestinationLink:
-    """The shared dir is worker-writable, so its paths are untrusted targets.
-
-    Publishing wrote with `dst.write_bytes(...)`, which follows a symlink at the
-    destination. The worker can plant one there, so the write landed on whatever it
-    pointed at. Renaming over the name instead destroys the plant.
-    """
-
-    def _record(self, cid="CR-1"):
-        return {
-            "schema": "code-review-sage-result", "version": 1,
-            "change_id": cid, "platform": "github",
-            "repo_identity": "github.com/o/r",
-            "phase1": {"gate_verdict": "PASS", "design_risk": "low",
-                       "criticality": "low"},
-            "counts": {"red": 0, "yellow": 1},
-        }
-
-    @unittest.skipUnless(SYMLINKS_OK, "platform forbids unprivileged symlinks")
-    def test_a_planted_link_is_replaced_not_followed(self, tmp_path):
-
-        store.ensure_layout(tmp_path)
-        results.write_result(self._record(), tmp_path, "run-1")
-
-        outside = tmp_path / "outside-secret.txt"
-        outside.write_text("SENSITIVE", encoding="utf-8")
-
-        shared = results.results_dir(tmp_path, None)
-        shared.mkdir(parents=True, exist_ok=True)
-        planted = shared / f"{results.safe_change_id('CR-1')}.json"
-        planted.symlink_to(outside)
-
-        assert results.publish_to_shared("CR-1", tmp_path, "run-1") is True
-
-        # The target is untouched — the write did not follow the link.
-        assert outside.read_text(encoding="utf-8") == "SENSITIVE"
-        # And the shared path is now a real file holding the record.
-        assert planted.is_file() and not planted.is_symlink()
-        assert json.loads(planted.read_text(encoding="utf-8"))["change_id"] == "CR-1"
-
-    def test_publishing_still_works_with_no_link_present(self, tmp_path):
-
-        store.ensure_layout(tmp_path)
-        results.write_result(self._record("CR-2"), tmp_path, "run-1")
-        assert results.publish_to_shared("CR-2", tmp_path, "run-1") is True
-        shared = results.results_dir(tmp_path, None)
-        got = json.loads(
-            (shared / f"{results.safe_change_id('CR-2')}.json").read_text(encoding="utf-8"))
-        assert got["change_id"] == "CR-2"
-
-    def test_no_temp_files_are_left_behind(self, tmp_path):
-
-        store.ensure_layout(tmp_path)
-        results.write_result(self._record("CR-3"), tmp_path, "run-1")
-        assert results.publish_to_shared("CR-3", tmp_path, "run-1") is True
-        shared = results.results_dir(tmp_path, None)
-        assert not list(shared.glob(".publish-*")), "publish left a temp file behind"
 
 
 class TestRestartClearsAStrandedPostingFlag(unittest.TestCase):
@@ -1117,55 +907,6 @@ class TestGroupedPostAppliesKeysPerChange(unittest.TestCase):
                           f"create_task at offset {i} keeps no strong ref")
             self.assertIn("_TASKS.discard", window,
                           f"create_task at offset {i} never drops its ref")
-
-
-class TestPublishRefusesAPlantedSourceLink:
-    """The RUN results dir is worker-writable too, so the source is untrusted.
-
-    Its sibling above covers the write: a link planted at the DESTINATION is
-    replaced rather than followed. This covers the read. A worker that swaps its
-    own finished record for a link to something outside the sandbox would
-    otherwise have the linked bytes copied into the SHARED staging dir, which
-    every worker can read. Same function, same trust boundary, opposite
-    direction.
-    """
-
-    @unittest.skipUnless(SYMLINKS_OK, "platform forbids unprivileged symlinks")
-    def test_a_symlinked_record_is_not_published(self, tmp_path):
-
-        store.ensure_layout(tmp_path)
-        outside = tmp_path / "outside-secret.txt"
-        outside.write_text("SENSITIVE", encoding="utf-8")
-
-        # The worker plants a link where its own record belongs.
-        src = results.result_path("CR-9", tmp_path, "run-9")
-        src.parent.mkdir(parents=True, exist_ok=True)
-        src.symlink_to(outside)
-
-        assert results.publish_to_shared("CR-9", tmp_path, "run-9") is False
-
-        shared = results.results_dir(tmp_path, None)
-        landed = shared / f"{results.safe_change_id('CR-9')}.json"
-        if landed.exists():
-            assert "SENSITIVE" not in landed.read_text(encoding="utf-8")
-        # A refused publish leaves no staging residue behind either.
-        assert list(shared.glob(".publish-*")) == []
-
-    def test_a_hardlinked_record_is_not_published(self, tmp_path):
-        """The nolink guard also rejects a shared inode, not just a symlink."""
-
-        store.ensure_layout(tmp_path)
-        outside = tmp_path / "outside-hard.txt"
-        outside.write_text("SENSITIVE", encoding="utf-8")
-
-        src = results.result_path("CR-10", tmp_path, "run-10")
-        src.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            os.link(outside, src)
-        except OSError:                     # pragma: no cover - platform without links
-            pytest.skip("hardlinks unavailable here")
-
-        assert results.publish_to_shared("CR-10", tmp_path, "run-10") is False
 
 
 class TestReportWritesRefusePlantedLinks:
@@ -1343,56 +1084,6 @@ class TestOrphanReapDoesNotBlockStartup(unittest.IsolatedAsyncioTestCase):
             self.routes.register_routes(app)
             for hook in app.on_startup:
                 await hook(app)   # must not raise
-
-
-class TestAdoptionRequiresAnExactChangeIdentity:
-    """Adoption must compare change ids EXACTLY, not through `safe_change_id`.
-
-    That sanitizer is lossy by design — it produces a filename stem — so
-    comparing the sanitized forms accepted a record naming a genuinely different
-    change. `GH-acme-service/api-1` and `GH-acme-service_api-1` both reduce to
-    `GH-acme-service_api-1`, so a worker record for the first was filed as the
-    second and the report attributed its findings to the wrong pull request.
-    """
-
-    def _record(self, cid):
-        return {
-            "schema": "code-review-sage-result", "version": 1,
-            "change_id": cid, "platform": "github",
-            "repo_identity": "github.com/acme/service_api",
-            "phase1": {"gate_verdict": "PASS", "design_risk": "low",
-                       "criticality": "low"},
-            "counts": {"red": 0, "yellow": 0},
-            "findings": [],
-        }
-
-    def test_a_record_naming_a_different_change_is_refused(self, tmp_path):
-        from sage_lib import results, store
-
-        store.ensure_layout(tmp_path)
-        want = "GH-acme-service_api-1"
-        other = "GH-acme-service/api-1"      # different change, same stem
-        assert results.safe_change_id(other) == results.safe_change_id(want)
-        assert other != want
-
-        shared = results.results_dir(tmp_path, None)
-        shared.mkdir(parents=True, exist_ok=True)
-        (shared / f"{results.safe_change_id(want)}.json").write_text(
-            json.dumps(self._record(other)), encoding="utf-8")
-
-        assert results.adopt_from_shared(want, tmp_path, "run-x1") is False
-
-    def test_an_exact_match_is_still_adopted(self, tmp_path):
-        from sage_lib import results, store
-
-        store.ensure_layout(tmp_path)
-        want = "GH-acme-service_api-1"
-        shared = results.results_dir(tmp_path, None)
-        shared.mkdir(parents=True, exist_ok=True)
-        (shared / f"{results.safe_change_id(want)}.json").write_text(
-            json.dumps(self._record(want)), encoding="utf-8")
-
-        assert results.adopt_from_shared(want, tmp_path, "run-x2") is True
 
 
 class TestCountValuesMustBeNumeric:
@@ -2544,8 +2235,8 @@ class TestNoRowFieldIsExemptFromRedaction(unittest.TestCase):
         return report.__file__
 
 
-class TestWholeRunsSerialize:
-    """A second run's body must not start while the first is still reviewing."""
+class TestIndependentRunsUseTheBoundedPool:
+    """Different claimed changes may review concurrently with bound results."""
 
     @pytest.mark.asyncio
     async def test_run_bodies_do_not_overlap(self, monkeypatch, tmp_path):
@@ -2589,16 +2280,11 @@ class TestWholeRunsSerialize:
         await asyncio.gather(*(mod._run_review_bg(r, [f"https://x/pull/{i}"])
                                for i, r in enumerate(runs)))
 
-        assert not overlapped, "two run bodies were inside run_review at once"
+        assert overlapped, "independent run bodies should share the bounded pool"
 
 
-class TestReviewersSerialize:
-    """Reviewers inside one run are serialized.
-
-    Workers share the staging directory and each has file tools, so two live at
-    once lets one write another change's record between that slot being cleared
-    and its own worker writing -- findings attributed to the wrong pull request.
-    """
+class TestReviewersUsePoolConcurrency:
+    """Run-scoped reviewers use the pool after capability-bound adoption."""
 
     @pytest.mark.asyncio
     async def test_one_reviewer_at_a_time(self, monkeypatch, tmp_path):
@@ -2633,8 +2319,8 @@ class TestReviewersSerialize:
         await asyncio.gather(*(mod._run_review_bg(r, [f"https://x/pull/{i}"])
                                for i, r in enumerate(runs)))
 
-        assert seen.get("concurrency") == 1, (
-            "the backend must ask for one reviewer at a time; got "
+        assert seen.get("concurrency") == 0, (
+            "the backend must delegate concurrency to the bounded pool; got "
             f"{seen.get('concurrency')!r}")
 
 

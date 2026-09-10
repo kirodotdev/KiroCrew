@@ -7,6 +7,7 @@ a review. These tests pin the default OFF and the accounting that goes with it �
 in particular that the durable dedup index still records the PR as reviewed, so
 a repo review does not re-review it forever.
 """
+
 from __future__ import annotations
 
 import json
@@ -44,25 +45,48 @@ class _Base(unittest.TestCase):
         carry (see review_driver.build_*_task), so "was a poster dispatched?" is
         answered the way the driver actually distinguishes them.
         """
+
         def dispatch(task: str, timeout: int = 0):
             tasks.append(task)
+            output = "done"
             if "SINGLE thorough pass" in task:
-                results.write_result({
-                    "schema": "code-review-sage-result", "version": 1,
-                    "change_id": "CR-1", "platform": "github",
-                    "repo_identity": "github.com/o/r", "revision": "1",
-                    "phase1": {"gate_verdict": "PASS", "design_risk": "low",
-                               "criticality": "low"},
+                record = {
+                    "schema": "code-review-sage-result",
+                    "version": 1,
+                    "change_id": "CR-1",
+                    "platform": "github",
+                    "repo_identity": "github.com/o/r",
+                    "revision": "1",
+                    "phase1": {"gate_verdict": "PASS", "design_risk": "low", "criticality": "low"},
                     "blast_radius": {"rating": "SMALL", "signals": {}},
                     "counts": {"red": 0, "yellow": 1},
-                    "findings": [{"dimension": "correctness", "severity": "yellow",
-                                  "file": "f", "line": 1, "snippet": "x",
-                                  "observation": "o", "consequence": "c",
-                                  "suggestion": "s"}],
-                    "deep_reviewed": True, "title": "CR-1",
-                    "files_covered": ["f"], "coverage_complete": True,
-                }, self.root, run_id)
-            return {"ok": True, "output": "done", "error": ""}
+                    "findings": [
+                        {
+                            "dimension": "correctness",
+                            "severity": "yellow",
+                            "file": "f",
+                            "line": 1,
+                            "snippet": "x",
+                            "observation": "o",
+                            "consequence": "c",
+                            "suggestion": "s",
+                        }
+                    ],
+                    "deep_reviewed": True,
+                    "title": "CR-1",
+                    "files_covered": ["f"],
+                    "coverage_complete": True,
+                }
+                if run_id:
+                    output = (
+                        "<code-review-sage-result>"
+                        + json.dumps(record)
+                        + "</code-review-sage-result>"
+                    )
+                else:
+                    results.write_result(record, self.root, run_id)
+            return {"ok": True, "output": output, "error": ""}
+
         return dispatch
 
     @staticmethod
@@ -73,16 +97,18 @@ class _Base(unittest.TestCase):
 class TestNoAutoPost(_Base):
     def test_default_dispatches_no_poster(self):
         tasks: list[str] = []
-        out = D.run_review(["CR-1"], dispatch=self._dispatch(tasks),
-                           generate_report=False, root=self.root)
+        out = D.run_review(
+            ["CR-1"], dispatch=self._dispatch(tasks), generate_report=False, root=self.root
+        )
         self.assertEqual(out["changes"], 1)
         # The review task ran; no posting task was ever dispatched.
         self.assertTrue(tasks)
         self.assertFalse(self._posters(tasks), "a poster was dispatched")
 
     def test_default_marks_posting_skipped(self):
-        out = D.run_review(["CR-1"], dispatch=self._dispatch([]),
-                           generate_report=False, root=self.root)
+        out = D.run_review(
+            ["CR-1"], dispatch=self._dispatch([]), generate_report=False, root=self.root
+        )
         rec = out["per_change"][0]
         self.assertTrue(rec["posting_skipped"])
         self.assertEqual(rec["posted_comments"], 0)
@@ -96,8 +122,9 @@ class TestNoAutoPost(_Base):
         # The guard that refuses to mark a PR reviewed when a post half-failed
         # must not also refuse a run that deliberately posted nothing, or every
         # repo review would re-review the same PRs forever.
-        out = D.run_review(["CR-1"], dispatch=self._dispatch([]),
-                           generate_report=False, root=self.root)
+        out = D.run_review(
+            ["CR-1"], dispatch=self._dispatch([]), generate_report=False, root=self.root
+        )
         rec = out["per_change"][0]
         self.assertTrue(rec["deep_reviewed"])
         self.assertGreaterEqual(rec["posted_comments"], rec["posting_expected"])
@@ -108,8 +135,14 @@ class TestNoAutoPost(_Base):
         def prog(cid, phase, extra=None):
             if phase == "done":
                 seen[cid] = extra or {}
-        D.run_review(["CR-1"], dispatch=self._dispatch([]), generate_report=False,
-                     root=self.root, progress=prog)
+
+        D.run_review(
+            ["CR-1"],
+            dispatch=self._dispatch([]),
+            generate_report=False,
+            root=self.root,
+            progress=prog,
+        )
         self.assertEqual(seen["CR-1"]["posted"], 0)
         self.assertEqual(seen["CR-1"]["expected"], 0)
         # The findings themselves are still reported — they are what the app shows.
@@ -117,19 +150,29 @@ class TestNoAutoPost(_Base):
 
     def test_findings_still_land_in_the_report(self):
         # Not posting must not mean not reviewing: the report is the deliverable.
-        out = D.run_review(["CR-1"], dispatch=self._dispatch([], run_id="r1"),
-                           archiver=lambda *_a, **_k: None,
-                           generate_report=True, root=self.root, run_id="r1")
+        out = D.run_review(
+            ["CR-1"],
+            dispatch=self._dispatch([], run_id="r1"),
+            archiver=lambda *_a, **_k: None,
+            generate_report=True,
+            root=self.root,
+            run_id="r1",
+        )
         self.assertEqual(out["result_records"], 1)
         payload = json.loads(
-            (store.run_dir("r1", self.root) / "report" / "report.json")
-            .read_text(encoding="utf-8"))
+            (store.run_dir("r1", self.root) / "report" / "report.json").read_text(encoding="utf-8")
+        )
         self.assertTrue(payload["rows"])
 
     def test_opt_in_restores_posting(self):
         tasks: list[str] = []
-        D.run_review(["CR-1"], dispatch=self._dispatch(tasks),
-                     generate_report=False, root=self.root, post=True)
+        D.run_review(
+            ["CR-1"],
+            dispatch=self._dispatch(tasks),
+            generate_report=False,
+            root=self.root,
+            post=True,
+        )
         self.assertTrue(self._posters(tasks), "posting was enabled but no poster ran")
 
     def test_config_flag_enables_posting(self):
@@ -138,8 +181,9 @@ class TestNoAutoPost(_Base):
         cfg["review"]["auto_post"] = True
         cfg_path.write_text(json.dumps(cfg), encoding="utf-8")
         tasks: list[str] = []
-        D.run_review(["CR-1"], dispatch=self._dispatch(tasks),
-                     generate_report=False, root=self.root)
+        D.run_review(
+            ["CR-1"], dispatch=self._dispatch(tasks), generate_report=False, root=self.root
+        )
         self.assertTrue(self._posters(tasks))
 
     def test_non_boolean_config_does_not_enable_posting(self):
@@ -149,8 +193,9 @@ class TestNoAutoPost(_Base):
         cfg["review"]["auto_post"] = "true"
         cfg_path.write_text(json.dumps(cfg), encoding="utf-8")
         tasks: list[str] = []
-        D.run_review(["CR-1"], dispatch=self._dispatch(tasks),
-                     generate_report=False, root=self.root)
+        D.run_review(
+            ["CR-1"], dispatch=self._dispatch(tasks), generate_report=False, root=self.root
+        )
         self.assertFalse(self._posters(tasks))
 
     def test_default_config_has_posting_off(self):
@@ -177,26 +222,45 @@ class TestSilentRunIsStillRecordedReviewed(unittest.TestCase):
         which passed with the bug still present — it was testing the mirror.
         """
         from backend import routes
-        return (bool(rec.get("deep_reviewed")) and bool(rec.get("post_ok"))
-                and (rec.get("posted_comments") or 0)
-                >= routes._posting_expected(rec))
+
+        return (
+            bool(rec.get("deep_reviewed"))
+            and bool(rec.get("post_ok"))
+            and (rec.get("posted_comments") or 0) >= routes._posting_expected(rec)
+        )
 
     def test_a_silent_review_counts_as_reviewed(self):
-        self.assertTrue(self._indexed({
-            "deep_reviewed": True, "post_ok": True,
-            "posted_comments": 0, "posting_expected": 0}))
+        self.assertTrue(
+            self._indexed(
+                {
+                    "deep_reviewed": True,
+                    "post_ok": True,
+                    "posted_comments": 0,
+                    "posting_expected": 0,
+                }
+            )
+        )
 
     def test_a_partial_post_is_not_recorded(self):
-        self.assertFalse(self._indexed({
-            "deep_reviewed": True, "post_ok": True,
-            "posted_comments": 1, "posting_expected": 3}))
+        self.assertFalse(
+            self._indexed(
+                {
+                    "deep_reviewed": True,
+                    "post_ok": True,
+                    "posted_comments": 1,
+                    "posting_expected": 3,
+                }
+            )
+        )
 
     def test_a_record_without_the_field_still_needs_one_delivery(self):
         # Records written before `posting_expected` existed keep the old meaning.
-        self.assertFalse(self._indexed({
-            "deep_reviewed": True, "post_ok": True, "posted_comments": 0}))
-        self.assertTrue(self._indexed({
-            "deep_reviewed": True, "post_ok": True, "posted_comments": 1}))
+        self.assertFalse(
+            self._indexed({"deep_reviewed": True, "post_ok": True, "posted_comments": 0})
+        )
+        self.assertTrue(
+            self._indexed({"deep_reviewed": True, "post_ok": True, "posted_comments": 1})
+        )
 
 
 class TestRecordsKeptWhenPostingFails(_Base):
@@ -217,21 +281,29 @@ class TestRecordsKeptWhenPostingFails(_Base):
                 tasks.append(task)
                 return {"ok": False, "output": "", "error": "poster dispatch failed"}
             return inner(task, timeout)
+
         return dispatch
 
     def test_a_failed_post_keeps_the_result_records(self):
         tasks: list[str] = []
-        out = D.run_review(["CR-1"], dispatch=self._dispatch_failing_poster(tasks),
-                           generate_report=True, archiver=lambda html, root: "slug-1",
-                           root=self.root, post=True)
+        out = D.run_review(
+            ["CR-1"],
+            dispatch=self._dispatch_failing_poster(tasks),
+            generate_report=True,
+            archiver=lambda html, root: "slug-1",
+            root=self.root,
+            post=True,
+        )
         # A poster WAS dispatched (posting was intended) and it failed.
         self.assertTrue(self._posters(tasks), "no poster was dispatched")
         self.assertFalse(out["per_change"][0]["post_ok"])
         # The records the retry needs are still on disk, and the summary says why.
         self.assertNotIn("results_cleaned", out)
         self.assertTrue(out.get("results_kept_undelivered"))
-        self.assertTrue(results.list_results(self.root, out.get("run_id")),
-                        "result records were deleted after a failed post")
+        self.assertTrue(
+            results.list_results(self.root, out.get("run_id")),
+            "result records were deleted after a failed post",
+        )
 
     def test_the_cleanup_still_runs_once_delivery_is_complete(self):
         # The guard must not become a leak: on real delivery the records ARE
@@ -241,9 +313,13 @@ class TestRecordsKeptWhenPostingFails(_Base):
         # still reaches clear_results — rather than re-testing the predicate.
         tasks: list[str] = []
         with mock.patch.object(D, "_all_delivered", return_value=True):
-            out = D.run_review(["CR-1"], dispatch=self._dispatch(tasks),
-                               generate_report=True,
-                               archiver=lambda html, root: "slug-1",
-                               root=self.root, post=True)
+            out = D.run_review(
+                ["CR-1"],
+                dispatch=self._dispatch(tasks),
+                generate_report=True,
+                archiver=lambda html, root: "slug-1",
+                root=self.root,
+                post=True,
+            )
         self.assertIn("results_cleaned", out)
         self.assertFalse(out.get("results_kept_undelivered"))

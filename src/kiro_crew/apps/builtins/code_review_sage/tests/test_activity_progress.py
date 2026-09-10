@@ -7,12 +7,12 @@ standalone CLI and test fakes pass a plain ``(task, timeout)`` callable.
 from __future__ import annotations
 
 import os
+import json
 import shutil
 import tempfile
 import unittest
 from pathlib import Path
 
-from sage_lib import results
 from sage_lib import review_driver as D
 from sage_lib import store
 
@@ -49,13 +49,15 @@ class TestActivityRelay(unittest.TestCase):
     def _progress(self, cid, phase, extra=None):
         self.seen.append((cid, phase, dict(extra or {})))
 
+    def _review_response(self) -> str:
+        return "<code-review-sage-result>" + json.dumps(_record()) + "</code-review-sage-result>"
+
     def test_relays_the_reviewers_tool_calls_as_activity(self):
         def dispatch(task, timeout=0, on_activity=None):
             if on_activity is not None:
                 on_activity("execute_bash", 1)
                 on_activity("fs_read", 2)
-            results.write_result(_record(), self.root)
-            return {"ok": True, "output": "done", "error": ""}
+            return {"ok": True, "output": self._review_response(), "error": ""}
 
         D.run_review(["CR-1"], dispatch=dispatch, generate_report=False,
                      root=self.root, run_id="run-a", progress=self._progress)
@@ -72,8 +74,7 @@ class TestActivityRelay(unittest.TestCase):
 
         def dispatch(task, timeout=0):
             calls.append(task)
-            results.write_result(_record(), self.root)
-            return {"ok": True, "output": "done", "error": ""}
+            return {"ok": True, "output": self._review_response(), "error": ""}
 
         out = D.run_review(["CR-1"], dispatch=dispatch, generate_report=False,
                            root=self.root, run_id="run-a",
@@ -95,8 +96,7 @@ class TestActivityRelay(unittest.TestCase):
             # itself, not rely on the pool's guard being the only net.
             if on_activity is not None:
                 on_activity("execute_bash", 1)
-            results.write_result(_record(), self.root)
-            return {"ok": True, "output": "done", "error": ""}
+            return {"ok": True, "output": self._review_response(), "error": ""}
 
         def boom(cid, phase, extra=None):
             if extra and "activity" in extra:
