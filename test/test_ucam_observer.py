@@ -80,7 +80,7 @@ async def test_native_observer_hash_only_after_drain(
         f"digest={api.data['digest']} prompt_hash={expected_prompt_hash}"
     )
     assert re.fullmatch(
-        r"UCAM native_write adapter=kirocrew-ucam/6 run_hash=[a-f0-9]{64} "
+        r"UCAM native_write adapter=kirocrew-ucam/7 run_hash=[a-f0-9]{64} "
         r"digest=[a-f0-9]{64} prompt_hash=[a-f0-9]{64}",
         entry.getMessage(),
     )

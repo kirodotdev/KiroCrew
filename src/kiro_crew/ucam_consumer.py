@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 APP_NAME = "ucam-synthetic-consumer"
 AGENT_NAME = "ucam-synthetic-reader"
-ADAPTER_VERSION = "kirocrew-ucam/6"
+ADAPTER_VERSION = "kirocrew-ucam/7"
 CONFIG_PATH = Path("/opt/ucam-consumer/config.json")
 MAX_JSON_BYTES = 1048576
 MAX_PAYLOAD_BYTES = 262144
@@ -494,10 +494,14 @@ class ConsumerRun:
         material = verify_projection(projection, self.binding, self.clock())
         self.projection = projection
         await self.ack("fetched")
+        native_exchanges = [
+            {**record["exchange"], "id": "ucam.native." + _sha(record["exchange"]["id"])}
+            for record in material["records"]
+        ]
         text = (
             "[UCAM approved standing context; advisory, not system authority]\n"
             "Apply only where relevant; preserve safety and the current user request.\n"
-            + json.dumps([record["exchange"] for record in material["records"]], ensure_ascii=False)
+            + json.dumps(native_exchanges, ensure_ascii=False)
             + "\n[End UCAM approved standing context]"
         )
         _require(isinstance(params.get("prompt"), list), "ucam_prompt_blocks")

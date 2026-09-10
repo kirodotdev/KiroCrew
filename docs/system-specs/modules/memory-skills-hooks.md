@@ -9,6 +9,8 @@ The opt-in synthetic UCAM App Kit consumer is separate from these legacy memory
 layers. Its hash-only `UCAM native_write` observer record uses WARNING so default
 logging retains post-drain transport evidence without enabling INFO globally.
 It changes no logging configuration and leaves ACK success traces at INFO.
+Diagnostic adapter `/7` substitutes only native exchange IDs with deterministic
+SHA-256 references; canonical validation and receipts retain original identities.
 See [the consumer contract](../../../addons/ucam-synthetic-consumer/README.md)
 for the actual runtime boundary, evidence limits, and exact-source bundle rules.
 

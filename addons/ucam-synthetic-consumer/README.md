@@ -51,7 +51,8 @@ dispatchable agent name. A duplicate existing name is a deployment refusal.
    scope/generation/epoch/records. Duplicate keys, nonfinite values, unsafe control
    integers, stale leases, non-approved or expired records, wrong owner/workspace
    `scope_context`, and non-synthetic records fail closed. Finite exponent/fraction
-   metadata is supported. DNA exchange objects remain nested and unmodified.
+   metadata is supported. Canonical DNA exchange objects remain unmodified;
+   the diagnostic native view replaces only their IDs as specified below.
 5. A successful `fetched` ACK must echo the receipt and the server-pinned harness
    `kirocrew`. The callback adds an advisory JSON text block to the outgoing ACP
    prompt, not to a mutable prompt file. It rechecks the lease immediately before
@@ -63,13 +64,13 @@ dispatchable agent name. A duplicate existing name is a deployment refusal.
    never retries the prompt. `turn_result` describes stream completion/degradation,
    not independent proof that the model followed memory.
 
-### Native observer evidence (bundle v8)
+### Native observer evidence
 
 Only the `UCAM native_write` record is emitted at WARNING, so the default
 WARNING threshold retains this hash-only evidence without enabling sensitive
 INFO output elsewhere. No logger/handler levels or global logging configuration
-are changed; ACK success traces remain INFO. Adapter `/6` and the receipt format
-are unchanged; exact module and plan hashes distinguish the v8 source.
+are changed; ACK success traces remain INFO. The receipt format is unchanged;
+adapter `/7` identifies the diagnostic native ID renderer.
 
 The actual isolated Kiro path is `AcpSessionProvider` →
 `AcpRuntime.send_request` → successful `stdin.drain()` →
@@ -85,8 +86,34 @@ This is reliable at the inspected WARNING threshold, not a logging bypass:
 disabled loggers, ERROR-only handlers, dropped logs, and process death can still
 lose evidence. Missing logs must fail strict proof, not authorize a retry or
 imply no native dispatch. Local fake-transport regressions are not live proof.
-Prepare a NEW v8 directory from the pinned deployed preimages; never overwrite
-v7. Deployment/restart and a fresh live proof remain separate parent-owned work.
+Prepare a NEW v9 bundle with the unchanged v8 host postimages; never overwrite
+older bundles. Deployment/restart and live proof remain separate parent-owned work.
+
+### Conditional native ID diagnostic (adapter /7)
+
+Only native `exchange.id` becomes `ucam.native.` followed by lowercase SHA-256
+hex of the original ID's exact UTF-8 bytes. There is no normalization or branch
+on source, claim, or marker. A separate exchange dictionary preserves every other
+field, nested value, field order, record order, advisory header and task. Existing
+canonical ID syntax and uniqueness checks still run first: IDs are ASCII under
+the current contract, so non-ASCII IDs remain rejected rather than newly accepted.
+
+Canonical input, provenance, digest, epoch, generation, authorization and ACK
+bodies remain unchanged. `prompt_hash` hashes the actual transformed outgoing
+prompt blocks; a canonical digest receipt is not a claim that untransformed
+canonical bytes reached the model. Both hashes remain in the post-drain observer.
+
+The no-tools reader has no record lookup or lifecycle tool. Its HTTP routes and
+durable registry use run IDs, not exchange IDs; service calls are projection/ACK
+only. The frozen three-record diagnostic has empty links and no cross-record ID
+references. Correlation uses the retained authorized canonical snapshot by
+recomputing the alias; aliases are not canonical API IDs, authority, or secrets.
+For inputs with relationships or tools that require original IDs, this experiment
+does not establish compatibility: stop for design review rather than rewriting
+references or broadening lookup authority. Other unchanged fields, including
+claims, links and lineage, can still reveal source information. This only removes
+the source cue in IDs, not all provenance cues, and is not a general adapter design
+or evidence of model reliability. No fixture or output-oracle change is included.
 
 HTTP operations have a 2.5-second total timeout each, including credential-file
 loading. Before dispatch there are at most two API operations (GET and fetched
