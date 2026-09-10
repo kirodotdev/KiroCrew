@@ -783,6 +783,38 @@
       "description": "Draw a cursor that glides to each target and pulses when it clicks, so you can follow along on screen. Purely visual — it changes nothing about what the agent is allowed to do, and it only appears for clicks that move the real pointer."
     },
     {
+      "id": "connections.client-id",
+      "label": "Client ID",
+      "tab": "connections",
+      "route": "/settings/connections?highlight=connections.client-id"
+    },
+    {
+      "id": "connections.client-secret",
+      "label": "Client secret",
+      "tab": "connections",
+      "route": "/settings/connections?highlight=connections.client-secret"
+    },
+    {
+      "id": "connections.client-secret-2",
+      "label": "Client secret",
+      "tab": "connections",
+      "route": "/settings/connections?highlight=connections.client-secret-2"
+    },
+    {
+      "id": "connections.oauth-client-github",
+      "label": "OAuth app",
+      "tab": "connections",
+      "route": "/settings/connections?highlight=connections.oauth-client-github",
+      "description": "Client ID, client secret and redirect URI for a provider that needs a registered OAuth app"
+    },
+    {
+      "id": "connections.oauth-client-asana",
+      "label": "OAuth app",
+      "tab": "connections",
+      "route": "/settings/connections?highlight=connections.oauth-client-asana",
+      "description": "Client ID, client secret and redirect URI for a provider that needs a registered OAuth app"
+    },
+    {
       "id": "developer.chat-on-a-crew",
       "label": "Chat on a crew",
       "tab": "developer",

@@ -10426,7 +10426,12 @@
       "value_prop_stripe": "Consulter les clients, paiements et factures Stripe.",
       "value_prop_vercel": "Inspecter vos projets et déploiements Vercel.",
       "waiting_for_approval": "En attente d’autorisation",
-      "waiting_for_approval_address": "En attente de l’adresse d’autorisation… Elle s’affichera ici lors de la prochaine connexion de l’agent — envoyez un message dans le chat pour lancer l’autorisation."
+      "waiting_for_approval_address": "En attente de l’adresse d’autorisation… Elle s’affichera ici lors de la prochaine connexion de l’agent — envoyez un message dans le chat pour lancer l’autorisation.",
+      "needs_configuration": "Configuration requise",
+      "needs_configuration_help": "{{provider}} nécessite une configuration unique. « Configurer l’app OAuth » ouvre une page de réglages guidée ; rien ne change tant que vous n’enregistrez pas, et vous pourrez la supprimer plus tard. Elle vous guide pour enregistrer une app auprès de {{provider}} et saisir son ID client et son secret.",
+      "configure_oauth_app": "Configurer l’application OAuth",
+      "prerequisite_github": "GitHub ne prend pas en charge l’enregistrement dynamique de client : Connecter utilise donc l’app OAuth GitHub enregistrée sous Paramètres → Apps OAuth. La page de consentement GitHub nomme cette app ; approuvez-la pour continuer.",
+      "prerequisite_asana": "Asana ne prend pas en charge l’enregistrement dynamique de client : Connecter utilise donc l’app MCP Asana enregistrée sous Paramètres → Apps OAuth. La page de consentement Asana nomme cette app ; approuvez-la pour continuer."
     },
     "contextBreakdown": {
       "axis_bar": "longueur de barre ∝ √caractères · segments = composition de ce tour",
@@ -14381,6 +14386,41 @@
         "tokens_count_other": "{{count}} jetons d'accès",
         "tokens_count_many": "{{count}} jetons d'accès",
         "could_not_read_webhook_status": "Impossible de lire l'état du webhook — vérifie que la passerelle est démarrée"
+      },
+      "connectionsPanel": {
+        "title": "Applications OAuth pour Connexions",
+        "intro": "Certains fournisseurs refusent d’enregistrer automatiquement un client OAuth. Pour chacun ci-dessous, suivez son guide de configuration pour enregistrer une app dans la console du fournisseur, collez-y exactement l’URI de redirection affichée ici, puis saisissez l’ID client et le secret de l’app. Les valeurs définies par variables d’environnement remplacent ce qui est enregistré ici.",
+        "loading": "Chargement…",
+        "none": "Chaque fournisseur de cette installation enregistre lui-même son client OAuth, il n’y a donc rien à configurer ici.",
+        "load_failed": "Impossible de charger les applications OAuth",
+        "configured": "Configuré",
+        "not_configured": "Configuration requise",
+        "card_intro": "Enregistre une application dans la console développeur de {{provider}} et saisis ses identifiants ci-dessous.",
+        "open_runbook": "Ouvrir le guide de configuration {{provider}}",
+        "redirect_uri": "URI de redirection",
+        "redirect_uri_help": "Enregistre exactement cette valeur dans la console du fournisseur.",
+        "copy_redirect_uri": "Copier l’URI de redirection",
+        "copy": "Copier",
+        "copied": "Copié",
+        "client_id": "ID client",
+        "client_id_help": "Identifiant public de l’application enregistrée. Stocké dans config.json.",
+        "client_id_placeholder": "Colle l’ID client",
+        "client_secret": "Secret client",
+        "client_secret_required": "{{provider}} exige un secret client au point de terminaison des jetons. Stocké chiffré dans le coffre-fort de secrets et jamais affiché à nouveau.",
+        "client_secret_optional": "{{provider}} accepte un client public, le secret est donc facultatif. Stocké chiffré dans le coffre-fort de secrets et jamais affiché à nouveau.",
+        "client_secret_placeholder": "Colle le secret client",
+        "set_by_environment": "Défini par la variable d’environnement {{name}}, qui remplace toute valeur enregistrée ici.",
+        "save": "Enregistrer",
+        "saving": "Enregistrement…",
+        "save_failed": "Impossible d’enregistrer l’application OAuth",
+        "remove": "Supprimer l’app OAuth",
+        "remove_client": "Retirer l’application OAuth de {{provider}}",
+        "oauth_app": "Application OAuth",
+        "oauth_app_search_description": "Client ID, secret client et URI de redirection d'un fournisseur qui exige une application OAuth enregistrée",
+        "copy_failed": "Impossible de copier dans le presse-papiers. Sélectionne l'URI de redirection et copie-la à la main.",
+        "remove_confirm": "Supprimer l’app OAuth {{provider}} ? L’ID client et le secret enregistré sont effacés, et {{provider}} ne pourra plus se connecter tant que vous ne les aurez pas saisis à nouveau.",
+        "remove_confirm_action": "Supprimer l’app OAuth",
+        "cancel": "Annuler"
       }
     },
     "settingsPage": {
@@ -14930,6 +14970,10 @@
       "secrets": {
         "label": "Secrets",
         "description": "Stockez les clés API et identifiants en toute sécurité"
+      },
+      "connections": {
+        "label": "Applications OAuth",
+        "description": "Applications OAuth pour les fournisseurs qui exigent un client enregistré"
       }
     },
     "secrets": {
@@ -14976,7 +15020,9 @@
       "save_error": "Impossible d’enregistrer le secret : {{error}}",
       "delete_error": "Impossible de supprimer le secret : {{error}}",
       "load_error": "Impossible de charger les secrets : {{error}}",
-      "wakatime_unused_hint": "Non utilisé tant que WakaTime est désactivé. Activez WakaTime ou supprimez cette entrée."
+      "wakatime_unused_hint": "Non utilisé tant que WakaTime est désactivé. Activez WakaTime ou supprimez cette entrée.",
+      "connections_client_secret_description": "Secret client d'une application OAuth des Connexions. Géré dans Paramètres → Applications OAuth.",
+      "connections_client_secret_manage": "Gérer dans Applications OAuth"
     }
   },
   "store": {

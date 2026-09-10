@@ -1807,6 +1807,14 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # (an internal model field). The egress boundary is the dashboard API
         # handler that serializes hooks via to_dict() — already a registered sink.
         "hooks.py",
+        # Helper, not a boundary: `redact_oauth_client_secrets` /
+        # `restore_redacted_oauth_client_secrets` are pure functions over an agent
+        # spec dict that mask (and, on the write-back, un-mask) a pre-registered
+        # Connections client's `oauth.clientSecret`. Nothing leaves the process
+        # here; the egress boundaries are the two dashboard reads that CALL the
+        # masker -- `GET /api/agent/config` and `GET /api/agents/detail/{name}`
+        # in `dashboard/handlers/agents.py`, an already-registered sink.
+        "mcp_utils.py",
     }
 )
 

@@ -277,6 +277,10 @@ export const CONFIRM_OPERAND_KEY_EXEMPTIONS: Record<string, string> = {
     + 'mints itself (uuid4, never user-supplied text), and it already sits inside '
     + 'parentheses after the words "another install" -- so the risk glyph quotes exist '
     + 'to close, a crafted operand blending into the sentence, cannot arise here (#9554)',
+  'pages.settings.connectionsPanel.remove_confirm':
+    'the {{provider}} operand is a Connections registry display name (GitHub, Asana), '
+    + 'a fixed vendor brand never typed by a user, and the kind words "OAuth app" sit '
+    + 'next to it -- a brand name in glyph quotes would read as a user-supplied label',
 }
 
 function placeholdersIn(value: string): string[] {

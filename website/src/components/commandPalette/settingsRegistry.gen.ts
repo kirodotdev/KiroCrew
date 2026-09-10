@@ -1255,6 +1255,52 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1
   },
   {
+    "id": "connections.client-id",
+    "label": "Client ID",
+    "labelKey": "pages.settings.connectionsPanel.client_id",
+    "tab": "connections",
+    "type": "input",
+    "occurrence": 1
+  },
+  {
+    "id": "connections.client-secret",
+    "label": "Client secret",
+    "labelKey": "pages.settings.connectionsPanel.client_secret",
+    "tab": "connections",
+    "type": "input",
+    "occurrence": 1
+  },
+  {
+    "id": "connections.client-secret-2",
+    "label": "Client secret",
+    "labelKey": "pages.settings.connectionsPanel.client_secret",
+    "tab": "connections",
+    "type": "input",
+    "occurrence": 2
+  },
+  {
+    "id": "connections.oauth-client-github",
+    "labelKey": "pages.settings.connectionsPanel.oauth_app",
+    "labelSuffix": "GitHub",
+    "tab": "connections",
+    "type": "input",
+    "occurrence": 1,
+    "settingId": "connections-oauth-client-github",
+    "label": "OAuth app",
+    "description": "Client ID, client secret and redirect URI for a provider that needs a registered OAuth app"
+  },
+  {
+    "id": "connections.oauth-client-asana",
+    "labelKey": "pages.settings.connectionsPanel.oauth_app",
+    "labelSuffix": "Asana",
+    "tab": "connections",
+    "type": "input",
+    "occurrence": 1,
+    "settingId": "connections-oauth-client-asana",
+    "label": "OAuth app",
+    "description": "Client ID, client secret and redirect URI for a provider that needs a registered OAuth app"
+  },
+  {
     "id": "developer.chat-on-a-crew",
     "label": "Chat on a crew",
     "labelKey": "pages.developer.featurePreviewsTab.chat_on_a_crew",

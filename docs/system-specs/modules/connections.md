@@ -13,6 +13,18 @@ end to end; Kiro Crew observes grant presence by `stat`, and every rule below fo
 from that boundary. The credential-boundary detail lives in
 [`../architecture/design-notes/mcp-oauth-ownership.md`](../../architecture/design-notes/mcp-oauth-ownership.md).
 
+One thing that looks like an exception is not one. A provider whose MCP server
+refuses dynamic client registration (`auth.mode: "preregistered"` in the
+registry — GitHub and Asana today) needs an OAuth **app** an operator registered
+in the vendor console, and a confidential app comes with a `client_secret`. That
+secret is the operator's *application* credential, not any user's grant: the
+grant still lives with kiro-cli and nothing here reads it. Kiro Crew keeps the
+secret in the encrypted vault (`CONNECTIONS_<SLUG>_CLIENT_SECRET`) as the source
+of truth and writes it into the emitted agent spec as `oauth.clientSecret` only
+because that file is the one thing kiro-cli reads — **the same footing the
+existing `headers` secrets have: vault is truth, the spec is a projection.** See
+"Pre-registered OAuth clients" below.
+
 ## Status and cancel
 
 How a Connections card learns whether a provider is actually authorized, what a
@@ -903,13 +915,13 @@ mounts or gates on it.
 | Stripe | payments-finance | 1 | yes / yes | tool-level | shown | — |
 | Vercel | developer-tools | 1 | yes / yes | none | shown | — |
 | GitLab | developer-tools | 1 | yes / yes | none (single `mcp` scope) | shown | — |
-| GitHub | developer-tools | 2 | **no** / yes | read-only server variant | gated | Kiro OAuth app registration, then `client_id` |
+| GitHub | developer-tools | 2 | **no** / yes — pre-registered client (`auth.mode`) | read-only server variant | shown as "needs configuration" until an operator enters a client; Connect after | manual launch-gate check with an operator-registered app ([runbook](../../guides/oauth-app-registration/github.md)) |
 | Superhuman Mail | calendar-email | 1 | yes / yes | none | gated | logged-in revoke-surface check |
 | Sentry | developer-tools | 2 | yes / yes | grant only the `inspect` + `docs` skills | gated | manual launch-gate check (L2 SOP) |
 | Supabase | developer-tools | 2 | yes / yes | installs `?read_only=true` | gated | manual launch-gate check |
 | Airtable | data-analytics | 2 | yes / yes | decline the `*:write` scopes at consent | gated | manual launch-gate check |
 | PayPal | payments-finance | 2 | yes / yes | none — live endpoint moves money | gated | manual launch-gate check; sandbox first |
-| Asana | project-management | 2 | **no** / yes | none (single `default` scope) | gated | Kiro MCP-app registration in Asana's developer console, then `client_id` |
+| Asana | project-management | 2 | **no** / yes — pre-registered client (`auth.mode`) | none (single `default` scope) | shown as "needs configuration" until an operator enters a client; Connect after | manual launch-gate check with an operator-registered app ([runbook](../../guides/oauth-app-registration/asana.md)) |
 | Figma | design | 3 | yes / yes | Dev seat is read-only outside drafts | hidden | Figma admits clients from its MCP Catalog waitlist |
 | Canva | design | 3 | yes / yes | none | hidden | Canva allow-lists the redirect URI per client |
 | Dropbox | file-storage | 3 | yes / yes | `/dash` search server (Dash plan) | hidden | Dropbox honours DCR only for its trusted-client list |
@@ -930,14 +942,22 @@ banner allowlist stays registry-derived while the admission is pursued.
 2. **Public remote MCP with OAuth discovery.** The vendor hosts the server and
    publishes RFC 9728 protected-resource metadata naming an RFC 8414 issuer.
    Without that the L0 probe has nothing to assert and the entry cannot exist.
-   Google Workspace, Microsoft 365, Snowflake and Databricks all fail this rung
-   today (pre-registered client, tenant-scoped URL, or no fixed endpoint) and
-   would need a Kiro-built connector, which is a different product decision.
+   A vendor that publishes the metadata but refuses dynamic client
+   registration (GitHub, Asana, Google Workspace, Slack, HubSpot, Box) clears
+   this rung as a **pre-registered** entry — see "Pre-registered OAuth clients"
+   below; a vendor with no fixed public endpoint at all (Microsoft 365,
+   Snowflake, Databricks) still fails it and would need a Kiro-built
+   connector, which is a different product decision.
 3. **L0 green in record mode, then strict mode.** `l0_probe --record` captures
    DCR, PKCE and the issuer; a strict run must then pass with those values
-   committed. Trailing-slash issuer disagreements between a vendor's PRM and
-   its AS document (Calendly, Box, Google in the 2026-09-08 survey) fail here
-   by design — RFC 8414 §2 compares issuers as exact strings.
+   committed. Issuers are compared as exact strings (RFC 8414 §2) with exactly
+   one equivalence, `l0_probe.same_issuer`: an issuer whose path is empty
+   equals the same issuer with path `/` (RFC 3986 §6.2.3), which is the
+   root-slash disagreement Google and Box publish between their PRM and AS
+   documents. A trailing slash after a **non-empty** path (`/tenant/` vs
+   `/tenant`) remains a mismatch by design and is pinned by tests — that is the
+   realm-substitution boundary the strict comparison exists for. Pre-registered
+   entries record the vendor's DCR value but are not held to it.
 4. **Banner allowlist.** The issuer's `authorization_endpoint` is added to
    `security.exfil._OAUTH_AUTHORIZATION_ENDPOINTS` and the consent-URL corpus,
    or the fail-closed banner blocks every connect.
@@ -947,3 +967,73 @@ banner allowlist stays registry-derived while the admission is pursued.
 
 Rungs 1–4 are what this roster's gated entries have; rung 5 is what they wait
 on.
+
+## Pre-registered OAuth clients
+
+Most providers let kiro-cli register a public OAuth client at runtime (RFC 7591),
+so nothing about the client exists before the first Connect. A provider that
+refuses that carries an `auth` block in the registry:
+
+```json
+"auth": {"mode": "preregistered", "confidential": true, "redirect_host": "127.0.0.1",
+         "redirect_port": 48101, "registration_guide": "oauth-app-registration/github.md"}
+```
+
+`registry.py` validates the block (`_validate_auth`): the mode vocabulary is
+closed, a `dcr` block carries nothing else, a `preregistered` block names
+`confidential`, a unique `redirect_port` in 1024–49151, an optional
+`redirect_host` of `127.0.0.1` (default, RFC 8252 §7.3) or `localhost` (for a
+vendor whose HTTPS exemption names only that host — HubSpot refuses IP
+literals), and a runbook under `docs/guides/oauth-app-registration/`. The
+callback path is the constant `CALLBACK_PATH = "/callback"`, so
+`registry.redirect_uri(provider)` is the one string both the runbook prints and
+the runtime pins: `http://<host>:<port>/callback`. A shipped `redirect_host` /
+`redirect_port` is immutable: every operator who followed the runbook has
+registered that exact URI in a vendor console Kiro Crew cannot reach, so changing
+it silently breaks each of their apps until they re-register. Retire a port by
+adding a provider, never by renumbering one;
+`test_connections_registry_auth.py` pins the shipped values so a change fails
+loudly.
+
+**Where the client lives.** `connections/oauth_clients.py` resolves it with a
+fixed precedence — environment
+(`KIROCREW_CONNECTIONS_<SLUG>_CLIENT_ID` / `_CLIENT_SECRET`, the container and
+CI shape) over `config.json` (`connections.oauth_clients.<slug>.client_id`, the
+public half) and the vault (`CONNECTIONS_<SLUG>_CLIENT_SECRET`, the secret
+half), with the registry's own `client_id` as a last-resort default for the id
+only. `resolve_oauth_client` answers `None` when what is stored cannot attempt
+an authorization (no id, or a confidential client without a secret), and
+`oauth_client_view` is the dashboard shape, which by construction never carries
+a secret value.
+
+**How it reaches kiro-cli.** kiro-cli's remote-MCP `oauth` block accepts
+`clientId`, `clientSecret` (when both are set DCR is skipped and the secret is
+presented at the token endpoint) and `redirectUri` (pins the loopback host, port
+and path). `agent._apply_operator_oauth_client` writes the three at agent-spec
+emission for a server whose name is the provider slug **and** whose URL is the
+registry `mcp_url` (`provider_for_server` — name alone would land an operator's
+client on a hand-authored stranger); `warm._registry_server_entry` does the same
+for the premint path and answers `None` for an unconfigured provider so nothing
+warms against a vendor that will only say "unknown client". The mint spec copies
+the emitted entry verbatim, so the cold path inherits it.
+
+**What the user sees.** `get_visible_providers` shows a pre-registered entry
+regardless of `launch_gate_passed` (vendor approval still hides), because until
+a client exists the card is an instruction, not an offer: `/api/connections/status`
+marks the row `needsClientConfig` (only while no grant is held), the card renders
+the sixth state `needs-configuration` — "an administrator must configure an
+OAuth app" — with a link to **Settings → OAuth Apps**, where one card per
+pre-registered provider carries the redirect URI to copy, the Client ID field,
+the Client secret field (write-only, vault-backed) and the runbook link. The
+routes behind it are `GET /api/connections/oauth-clients` (any dashboard user;
+no secret value) and owner-only `PUT` / `DELETE
+/api/connections/oauth-clients/{slug}`. The launch gate keeps governing the
+entry's quality claims: a configured GitHub still runs the normal first-connect
+(`not-verified`) flow, and `launch_gate_passed` flips only after the manual L2
+walk with an operator-registered app.
+
+**Runbooks.** One per provider under `docs/guides/oauth-app-registration/`
+(index in its `README.md`): console, app type, scopes, the exact redirect URI,
+review or publishing requirements, and where the result goes. Registering the
+app is the operator's action; the tree only ships the instructions. Microsoft
+365 has a runbook and no entry — there is no fixed public endpoint to probe.

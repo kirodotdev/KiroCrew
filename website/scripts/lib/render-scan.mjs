@@ -123,7 +123,9 @@ export const ALWAYS_LATIN = [
   'AWS', 'Discord', 'Docker', 'Git', 'GitHub', 'GitLab', 'JSON', 'Kiro', 'Kiro Crew',
   'KiroCrew',
   // Connections launch-set provider brands (registry names; DNT proper nouns).
-  'Atlassian', 'Linear', 'Notion', 'Stripe', 'Vercel',
+  // Asana joins because its pre-registered entry is now visible in the gallery
+  // regardless of the launch gate, so its brand renders on `capabilities-mcp`.
+  'Asana', 'Atlassian', 'Linear', 'Notion', 'Stripe', 'Vercel',
   'MCP', 'Markdown', 'Node.js', 'OAuth', 'Playwright', 'Python', 'Slack',
   'Telegram', 'TypeScript', 'Webex', 'WhatsApp', 'YAML', 'iMessage', 'npm',
   // `WeCom` and `WeChat` are deliberately ABSENT despite rendering from the same

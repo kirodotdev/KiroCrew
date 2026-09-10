@@ -10118,7 +10118,12 @@
       "value_prop_stripe": "Stripe の顧客、支払い、請求書を照会します。",
       "value_prop_vercel": "Vercel のプロジェクトとデプロイを確認します。",
       "waiting_for_approval": "承認待機中",
-      "waiting_for_approval_address": "承認アドレスを待機中…エージェントが次に接続するときにここに表示されます。チャットメッセージを送信して今すぐ認可を開始してください。"
+      "waiting_for_approval_address": "承認アドレスを待機中…エージェントが次に接続するときにここに表示されます。チャットメッセージを送信して今すぐ認可を開始してください。",
+      "needs_configuration": "設定が必要",
+      "needs_configuration_help": "{{provider}} は初回のみ設定が必要です。「OAuth アプリを設定」を押すと案内付きの設定ページが開きます。そこで保存するまで何も変わらず、あとで削除もできます。{{provider}} でアプリを登録し、クライアント ID とシークレットを入力する手順を案内します。",
+      "configure_oauth_app": "OAuth アプリを設定",
+      "prerequisite_github": "GitHub は動的クライアント登録に対応していないため、「接続」は設定 → OAuth アプリに登録した GitHub のOAuth アプリを使います。GitHub の同意画面にはそのアプリ名が表示されます。承認して続行してください。",
+      "prerequisite_asana": "Asana は動的クライアント登録に対応していないため、「接続」は設定 → OAuth アプリに登録した Asana のMCP アプリを使います。Asana の同意画面にはそのアプリ名が表示されます。承認して続行してください。"
     },
     "contextBreakdown": {
       "axis_bar": "バー長さ ∝ √chars · セグメント = そのターンの構成",
@@ -14024,6 +14029,41 @@
         "manage_webhooks": "Webhooks を管理",
         "tokens_count_other": "アクセストークン {{count}} 個",
         "could_not_read_webhook_status": "webhook の状態を取得できませんでした — ゲートウェイが起動していない可能性があります"
+      },
+      "connectionsPanel": {
+        "title": "コネクション用の OAuth アプリ",
+        "intro": "一部のプロバイダーは OAuth クライアントの自動登録を受け付けません。以下の各プロバイダーについて、設定ガイドに従ってベンダーコンソールでアプリを登録し、ここに表示されたリダイレクト URI をそのままアプリに貼り付けてから、アプリのクライアント ID とシークレットを入力してください。環境変数で設定した値は、ここで保存した値より優先されます。",
+        "loading": "読み込み中…",
+        "none": "このインストールのすべてのプロバイダーは OAuth クライアントを自動登録するため、ここで設定するものはありません。",
+        "load_failed": "OAuth アプリを読み込めませんでした",
+        "configured": "設定済み",
+        "not_configured": "設定が必要",
+        "card_intro": "{{provider}} の開発者コンソールでアプリを登録し、その資格情報を以下に入力してください。",
+        "open_runbook": "{{provider}} の設定ガイドを開く",
+        "redirect_uri": "リダイレクト URI",
+        "redirect_uri_help": "ベンダーのコンソールにこの値を正確に登録してください。",
+        "copy_redirect_uri": "リダイレクト URI をコピー",
+        "copy": "コピー",
+        "copied": "コピーしました",
+        "client_id": "クライアント ID",
+        "client_id_help": "登録したアプリの公開識別子です。config.json に保存されます。",
+        "client_id_placeholder": "クライアント ID を貼り付け",
+        "client_secret": "クライアントシークレット",
+        "client_secret_required": "{{provider}} はトークンエンドポイントでクライアントシークレットを要求します。シークレット保管庫に暗号化して保存され、再表示されることはありません。",
+        "client_secret_optional": "{{provider}} はパブリッククライアントを受け付けるため、シークレットは省略できます。シークレット保管庫に暗号化して保存され、再表示されることはありません。",
+        "client_secret_placeholder": "クライアントシークレットを貼り付け",
+        "set_by_environment": "環境変数 {{name}} で設定されており、ここに保存した値より優先されます。",
+        "save": "保存",
+        "saving": "保存中…",
+        "save_failed": "OAuth アプリを保存できませんでした",
+        "remove": "OAuth アプリを削除",
+        "remove_client": "{{provider}} の OAuth アプリを削除",
+        "oauth_app": "OAuth アプリ",
+        "oauth_app_search_description": "登録済み OAuth アプリが必要なプロバイダーの Client ID、クライアントシークレット、リダイレクト URI",
+        "copy_failed": "クリップボードにコピーできませんでした。リダイレクト URI を選択して手動でコピーしてください。",
+        "remove_confirm": "{{provider}} の OAuth アプリを削除しますか？クライアント ID と保存済みのシークレットが削除され、再入力するまで {{provider}} は接続できません。",
+        "remove_confirm_action": "OAuth アプリを削除",
+        "cancel": "キャンセル"
       }
     },
     "settingsPage": {
@@ -14547,6 +14587,10 @@
       "secrets": {
         "label": "Secrets",
         "description": "APIキーと資格情報を安全に保存"
+      },
+      "connections": {
+        "label": "OAuth アプリ",
+        "description": "登録済みクライアントが必要なプロバイダー向けの OAuth アプリ"
       }
     },
     "secrets": {
@@ -14593,7 +14637,9 @@
       "save_error": "シークレットを保存できませんでした：{{error}}",
       "delete_error": "シークレットを削除できませんでした：{{error}}",
       "load_error": "シークレットを読み込めませんでした：{{error}}",
-      "wakatime_unused_hint": "WakaTime が無効な間は使用されません。WakaTime を有効にするか、この項目を削除してください。"
+      "wakatime_unused_hint": "WakaTime が無効な間は使用されません。WakaTime を有効にするか、この項目を削除してください。",
+      "connections_client_secret_description": "コネクション OAuth アプリのクライアントシークレット。「設定 → OAuth アプリ」で管理します。",
+      "connections_client_secret_manage": "OAuth アプリで管理"
     }
   },
   "store": {

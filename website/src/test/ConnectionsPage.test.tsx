@@ -15,6 +15,7 @@ import {
   type OAuthState,
   type PendingConnect,
 } from '../pages/connections/ConnectionsPage'
+import { CONNECTION_PROVIDERS, isPreregisteredProvider, type ConnectionProvider } from '../pages/connections/registry'
 
 const server = (status: string): McpServer => ({
   name: 'notion',
@@ -498,5 +499,81 @@ describe('one probe reading serves both the badge and the Test button', () => {
       .toBeUndefined()
     expect(confirmedGrantPresent(status({ grantPresent: false }))).toBe(false)
     expect(confirmedGrantPresent(status({ grantPresent: true }))).toBe(true)
+  })
+})
+
+/**
+ * A PRE-REGISTERED provider (GitHub, Asana) cannot register its own OAuth client,
+ * so until an operator enters one under Settings → OAuth Apps the status feed
+ * flags the row with `needsClientConfig`. The card is then an instruction, not
+ * an offer to connect -- unless a consent is genuinely in flight, in which case
+ * the live approval URL still has to be honoured.
+ */
+describe('a pre-registered provider without an operator client', () => {
+  it('renders needs-configuration when nothing is in flight', () => {
+    expect(connectionStateFor(undefined, undefined, false, false, false, true)).toBe('needs-configuration')
+    // The flag outranks the not-connected fold even without a grant verdict.
+    expect(connectionStateFor(undefined, undefined, false, undefined, false, true)).toBe('needs-configuration')
+  })
+
+  it('keeps a consent in flight as waiting-for-approval', () => {
+    // The backend's mint table says a flow is live right now: an operator
+    // configured, clicked Connect, then cleared the record. The URL is still
+    // valid, so the card must stay in the waiting state and let the poll settle.
+    expect(connectionStateFor(undefined, undefined, false, false, true, true)).toBe('waiting-for-approval')
+    // The same holds for THIS tab's own pending click …
+    expect(connectionStateFor(undefined, undefined, true, false, false, true)).toBe('waiting-for-approval')
+    // … and for a chat-delivered approval URL, which never sets awaitingConsent.
+    // The entry exists here because the chat banner only fires once Connect has
+    // written it; with NO entry a lone URL never meant "waiting" (the `!server`
+    // fold), and this flag does not change that rule.
+    const oauth: OAuthState = { oauthUrl: 'https://github.com/login/oauth/authorize?state=x' }
+    expect(connectionStateFor(server('needs_auth'), oauth, false, false, false, true)).toBe('waiting-for-approval')
+    expect(connectionStateFor(undefined, oauth, false, false, false, true)).toBe('not-connected')
+  })
+
+  it('defaults the flag off so every existing call site is unchanged', () => {
+    expect(connectionStateFor(undefined, undefined, false, false, false)).toBe('not-connected')
+    expect(connectionStateFor(undefined, undefined, false, false, true)).toBe('waiting-for-approval')
+  })
+})
+
+/**
+ * The gallery roster mirrors the backend's `get_visible_providers`: launch-gated
+ * providers ship, a pre-registered provider ships REGARDLESS of the gate (its
+ * card is the instruction the operator needs to see), and vendor approval stays
+ * a hard hide either way.
+ */
+describe('the visible provider roster', () => {
+  const bySlug = (slug: string) => CONNECTION_PROVIDERS.find(p => p.slug === slug)
+
+  it('includes the pre-registered providers even though they have not passed the launch gate', () => {
+    for (const slug of ['github', 'asana']) {
+      const provider = bySlug(slug)
+      expect(provider, `${slug} should be visible`).toBeDefined()
+      expect(provider!.launch_gate_passed).toBe(false)
+      expect(isPreregisteredProvider(provider!)).toBe(true)
+      expect(provider!.auth?.confidential).toBe(true)
+    }
+  })
+
+  it('still hides a provider awaiting vendor approval', () => {
+    // Figma is vendor_approval_pending in the registry today; assert on the
+    // predicate rather than only the slug so the test says WHY it is hidden.
+    expect(bySlug('figma')).toBeUndefined()
+    const hidden: ConnectionProvider = {
+      name: 'Pending', slug: 'pending', tier: 3, mcp_url: 'https://mcp.pending.example/mcp',
+      revoke_page_url: '', docs_url: '', gotcha_copy: '', smoke_fixture: { tool: 't', args: {} },
+      launch_gate_passed: false, vendor_approval_pending: true,
+      auth: { mode: 'preregistered', confidential: true, redirect_port: 48199, registration_guide: 'oauth-app-registration/pending.md' },
+    }
+    // Same rule the filter applies: pre-registration does not override the veto.
+    expect(!hidden.vendor_approval_pending && (hidden.launch_gate_passed || isPreregisteredProvider(hidden))).toBe(false)
+  })
+
+  it('treats an absent or dcr auth block as not pre-registered', () => {
+    const notion = bySlug('notion')!
+    expect(isPreregisteredProvider(notion)).toBe(false)
+    expect(isPreregisteredProvider({ ...notion, auth: { mode: 'dcr' } })).toBe(false)
   })
 })

@@ -4066,6 +4066,76 @@ def reproject_for_ceiling_change() -> None:
     _projected_ceiling_generation = generation
 
 
+def _apply_operator_oauth_client(name: str, entry: dict, *, managed: bool) -> dict:
+    """Bind the operator's pre-registered OAuth client to a Connections server.
+
+    ``managed`` is whether the dashboard store owns this name (the caller's
+    ``_store_entry`` resolved to a usable dict). An UNMANAGED entry is returned
+    untouched, apply and strip alike: a server the user hand-authored at a
+    provider's URL -- ``kiro-cli mcp add --agent kirocrew`` with their own
+    ``oauth.clientId``/``clientSecret`` -- holds the only copy of that client in
+    a file the rebuild merges onto, so stripping it here would destroy it and
+    overwriting it would swap the user's app for the operator's. The same
+    verbatim-preservation rule every other unmanaged wire value gets applies.
+
+    For a managed server, a no-op unless it is a registry provider in
+    ``auth.mode = "preregistered"`` at the registry's own URL; for such a
+    provider the operator has not configured yet the entry is emitted with the
+    three owned keys removed (a cleared client must not survive the merge onto
+    the previous spec) and kiro-cli's own DCR attempt fails against the vendor
+    exactly as it would today, while the card already says why. When configured,
+    the client id, the secret (confidential clients) and the pinned redirect URI
+    are written into kiro-cli's ``oauth`` block; see
+    ``kiro_crew.connections.oauth_clients`` for the custody argument, in short:
+    the vault is the source of truth and this file is a projection of it, the
+    same footing ``headers`` secrets already have here.
+
+    Function-local imports: the connections package is otherwise off the agent
+    module's import path, and the vault is only opened when a provider actually
+    matches, so a plain rebuild with no pre-registered server never decrypts.
+    """
+
+    if not managed:
+        return entry
+
+    from kiro_crew.connections import get_provider, is_preregistered
+    from kiro_crew.connections.oauth_clients import (
+        apply_preregistered_oauth_client,
+        provider_for_server,
+        resolve_oauth_client,
+        strip_preregistered_oauth_client,
+    )
+
+    provider = provider_for_server(name, entry)
+    if provider is None:
+        # A managed entry NAMED for a pre-registered provider whose URL does not
+        # matches the registry: the operator's client was projected into the
+        # previous render for the registry endpoint, and the rebuild merges onto
+        # that render, so without this the old secret would ride along to the
+        # replacement endpoint. The client is bound to the endpoint it was
+        # registered for, so a moved URL retires it from this entry. Any other
+        # managed name is not this module's business.
+        named = get_provider(name)
+        if named is not None and is_preregistered(named):
+            return strip_preregistered_oauth_client(entry)
+        return entry
+    from kiro_crew.secrets import SecretVault
+
+    resolved = resolve_oauth_client(
+        provider,
+        config=_load_json(_mc_config_path()) or {},
+        vault=SecretVault(config_dir()),
+    )
+    if resolved is None:
+        # The rebuild merges onto the PREVIOUS installed spec, so a client the
+        # operator cleared would otherwise survive there verbatim -- a retired
+        # secret still presented at the token endpoint and still readable in
+        # the file. For a pre-registered provider the operator's record is the
+        # only source of these three keys, so absence means removal.
+        return strip_preregistered_oauth_client(entry)
+    return apply_preregistered_oauth_client(entry, resolved)
+
+
 def rebuild_agent_config(
     *, clean: bool = False, refresh_forks: bool | Literal["defer"] = True
 ) -> Path:
@@ -4277,6 +4347,9 @@ def rebuild_agent_config(
         return shutil.which(cmd, path=_search), _search
 
     valid_servers: dict[str, Any] = {}
+    # URL servers whose operator OAuth client is bound at write time, by name ->
+    # whether the store owns the entry (see `_apply_operator_oauth_client`).
+    _oauth_client_targets: dict[str, bool] = {}
     # The store is keyed by its own RAW name, but ``name`` below iterates the
     # config, whose slashed keys a previous pass rewrote to their alias
     # (``_normalize_mcp_server_keys``). Looking the store up by the raw key alone
@@ -4452,6 +4525,12 @@ def rebuild_agent_config(
                         ]
                 _store_entry = _candidates[0] if len(_candidates) == 1 else None
             valid_servers[name] = kiro_oauth_wire_entry(spec, store_entry=_store_entry, server=name)
+            # The operator's pre-registered client is NOT bound here. It is read
+            # from the vault and written into the entry in `_finalize_and_write`,
+            # under the same lock as the spec write, so a rotation that lands
+            # between this pass and the commit is what the file carries -- a
+            # secret snapshotted here could be retired by the time it is written.
+            _oauth_client_targets[name] = _store_entry is not None
             continue
         # Build candidate specs in priority order: the merged winner first,
         # then the same server from each source as a resolution fallback.
@@ -4858,6 +4937,23 @@ def rebuild_agent_config(
 
     def _finalize_and_write() -> None:
         servers_map = config.get("mcpServers")
+        if isinstance(servers_map, dict):
+            # Bind the operator's pre-registered OAuth client HERE, inside the
+            # critical section that ends in the spec write (for kirocrew.json the
+            # caller holds `_mcp_lock`), and not in the server pass far above. The
+            # vault is read at the last moment before the commit, so two rebuilds
+            # cannot interleave "resolve old secret -> rotation commits new secret
+            # -> stale write": whichever rebuild writes last resolved last, and a
+            # rotation's own rebuild always runs after its vault write. A retired
+            # secret re-emitted into the spec would be presented at the token
+            # endpoint and readable in the file until the next rebuild, which is
+            # why the read is placed here rather than merely repeated.
+            for _oauth_name, _managed in _oauth_client_targets.items():
+                _entry = servers_map.get(_oauth_name)
+                if isinstance(_entry, dict):
+                    servers_map[_oauth_name] = _apply_operator_oauth_client(
+                        _oauth_name, _entry, managed=_managed
+                    )
         # Runs here, at the single funnel every write path goes through, and AFTER
         # the passes that mutate `allowedTools` (managed/shared MCP sync) — a policy
         # seeded before them would describe a list those passes then replace.

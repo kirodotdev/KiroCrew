@@ -10118,7 +10118,12 @@
       "value_prop_stripe": "Stripe 고객, 결제, 청구서를 조회합니다.",
       "value_prop_vercel": "Vercel 프로젝트와 배포를 확인합니다.",
       "waiting_for_approval": "승인 대기 중",
-      "waiting_for_approval_address": "승인 주소를 기다리는 중… 에이전트가 다음에 연결할 때 여기에 표시됩니다 — 지금 인증을 시작하려면 아무 채팅 메시지나 보내세요."
+      "waiting_for_approval_address": "승인 주소를 기다리는 중… 에이전트가 다음에 연결할 때 여기에 표시됩니다 — 지금 인증을 시작하려면 아무 채팅 메시지나 보내세요.",
+      "needs_configuration": "설정 필요",
+      "needs_configuration_help": "{{provider}}은(는) 최초 한 번만 설정하면 됩니다. \"OAuth 앱 구성\"을 누르면 안내형 설정 페이지가 열립니다. 거기서 저장하기 전까지는 아무것도 바뀌지 않으며, 나중에 제거할 수도 있습니다. {{provider}}에 앱을 등록하고 클라이언트 ID와 시크릿을 입력하는 과정을 안내합니다.",
+      "configure_oauth_app": "OAuth 앱 설정",
+      "prerequisite_github": "GitHub은(는) 동적 클라이언트 등록을 지원하지 않으므로 연결은 설정 → OAuth 앱에 등록한 GitHub OAuth 앱을(를) 사용합니다. GitHub 동의 화면에는 그 앱 이름이 표시됩니다. 승인하면 계속 진행됩니다.",
+      "prerequisite_asana": "Asana은(는) 동적 클라이언트 등록을 지원하지 않으므로 연결은 설정 → OAuth 앱에 등록한 Asana MCP 앱을(를) 사용합니다. Asana 동의 화면에는 그 앱 이름이 표시됩니다. 승인하면 계속 진행됩니다."
     },
     "contextBreakdown": {
       "axis_bar": "막대 길이 ∝ √chars · 세그먼트 = 해당 턴의 구성",
@@ -14024,6 +14029,41 @@
         "manage_webhooks": "Webhook 관리",
         "tokens_count_other": "액세스 토큰 {{count}}개",
         "could_not_read_webhook_status": "Webhook 상태를 읽을 수 없습니다 — 게이트웨이가 실행 중인지 확인하세요"
+      },
+      "connectionsPanel": {
+        "title": "연결용 OAuth 앱",
+        "intro": "일부 제공자는 OAuth 클라이언트 자동 등록을 거부합니다. 아래 각 제공자에 대해 설정 가이드를 따라 공급업체 콘솔에 앱을 등록하고, 여기 표시된 리디렉션 URI를 그대로 해당 앱에 붙여 넣은 뒤, 앱의 클라이언트 ID와 시크릿을 입력하세요. 환경 변수로 설정된 값은 여기에 저장된 값보다 우선합니다.",
+        "loading": "불러오는 중…",
+        "none": "이 설치의 모든 제공업체는 OAuth 클라이언트를 직접 등록하므로 여기서 설정할 항목이 없습니다.",
+        "load_failed": "OAuth 앱을 불러올 수 없음",
+        "configured": "설정됨",
+        "not_configured": "설정 필요",
+        "card_intro": "{{provider}} 개발자 콘솔에 앱을 등록하고 아래에 자격 증명을 입력하세요.",
+        "open_runbook": "{{provider}} 설정 가이드 열기",
+        "redirect_uri": "리디렉션 URI",
+        "redirect_uri_help": "공급자 콘솔에 이 값을 정확히 등록하세요.",
+        "copy_redirect_uri": "리디렉션 URI 복사",
+        "copy": "복사",
+        "copied": "복사됨",
+        "client_id": "클라이언트 ID",
+        "client_id_help": "등록된 앱의 공개 식별자입니다. config.json에 저장됩니다.",
+        "client_id_placeholder": "클라이언트 ID 붙여 넣기",
+        "client_secret": "클라이언트 비밀",
+        "client_secret_required": "{{provider}}은(는) 토큰 엔드포인트에서 클라이언트 비밀을 요구합니다. 비밀 저장소에 암호화되어 저장되며 다시 표시되지 않습니다.",
+        "client_secret_optional": "{{provider}}은(는) 공개 클라이언트를 허용하므로 비밀은 선택 사항입니다. 비밀 저장소에 암호화되어 저장되며 다시 표시되지 않습니다.",
+        "client_secret_placeholder": "클라이언트 비밀 붙여 넣기",
+        "set_by_environment": "환경 변수 {{name}}(으)로 설정되어 있으며, 여기에 저장된 값보다 우선합니다.",
+        "save": "저장",
+        "saving": "저장 중…",
+        "save_failed": "OAuth 앱을 저장할 수 없음",
+        "remove": "OAuth 앱 제거",
+        "remove_client": "{{provider}} OAuth 앱 제거",
+        "oauth_app": "OAuth 앱",
+        "oauth_app_search_description": "등록된 OAuth 앱이 필요한 제공자의 Client ID, 클라이언트 시크릿, 리디렉션 URI",
+        "copy_failed": "클립보드에 복사할 수 없습니다. 리디렉션 URI를 선택해 직접 복사하세요.",
+        "remove_confirm": "{{provider}} OAuth 앱을 제거하시겠습니까? 클라이언트 ID와 저장된 시크릿이 삭제되며, 다시 입력하기 전까지 {{provider}}은(는) 연결할 수 없습니다.",
+        "remove_confirm_action": "OAuth 앱 제거",
+        "cancel": "취소"
       }
     },
     "settingsPage": {
@@ -14547,6 +14587,10 @@
       "secrets": {
         "label": "Secrets",
         "description": "API 키와 자격 증명을 안전하게 저장"
+      },
+      "connections": {
+        "label": "OAuth 앱",
+        "description": "등록된 클라이언트가 필요한 제공업체용 OAuth 앱"
       }
     },
     "secrets": {
@@ -14593,7 +14637,9 @@
       "save_error": "시크릿을 저장하지 못했습니다: {{error}}",
       "delete_error": "시크릿을 삭제하지 못했습니다: {{error}}",
       "load_error": "시크릿을 불러오지 못했습니다: {{error}}",
-      "wakatime_unused_hint": "WakaTime이 비활성화된 동안에는 사용되지 않습니다. WakaTime을 활성화하거나 이 항목을 삭제하세요."
+      "wakatime_unused_hint": "WakaTime이 비활성화된 동안에는 사용되지 않습니다. WakaTime을 활성화하거나 이 항목을 삭제하세요.",
+      "connections_client_secret_description": "연결 OAuth 앱의 클라이언트 시크릿입니다. 설정 → OAuth 앱에서 관리합니다.",
+      "connections_client_secret_manage": "OAuth 앱에서 관리"
     }
   },
   "store": {
