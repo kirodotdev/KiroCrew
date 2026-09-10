@@ -249,6 +249,14 @@ Add a new protocol to `ALLOWED_PROTOCOLS` in that file, and only there. Each
 addition widens what a model-authored or user-pasted link can launch on the host,
 so treat it as a security change, not a formatting one.
 
+How a refused destination RENDERS is part of the contract (issue #9925): the
+transform's rejection sentinel is `''`, and `MdAnchor`'s `!href` guard renders
+the label as inert text with **no anchor** — never `<a href="">`, whose empty
+href resolves to the current page — matching `md-notebook/Preview.tsx`'s
+`href ? <a …> : <span>` trade. A test that pins an anchor existing for a
+destination the transform rejects is pinning a defect. (Known outstanding
+violation: mochi's `ChatPanel` markdown anchors, tracked in #9944.)
+
 One deliberate, key-scoped exception exists: a Windows absolute path
 (`WINDOWS_ABS_PATH_RE` — drive letter or UNC) is passed through **for image
 `src` only**, because `defaultUrlTransform` parses `C:` as an unknown scheme and

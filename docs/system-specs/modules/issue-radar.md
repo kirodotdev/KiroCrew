@@ -1144,8 +1144,17 @@ the list, the filters, the selected item — is untouched.
   the ACTIVE repo (case-insensitively) is claimed. Trailing segments (`/files`),
   query strings and `#issuecomment-…` fragments are ignored — same target. Any
   other link (a different repo, an Enterprise host, `/discussions/`, `/commit/`,
-  a relative href, a non-`http(s)` scheme) keeps its existing behaviour and opens
-  externally. A repo is identified by owner/repo only, so a same-path URL on an
+  a relative href) is NOT claimed: it falls through to `MdAnchor`'s own branch
+  ladder (forge/Jira chips, unfurl chips, session links, path interception,
+  default anchor — see `MarkdownRenderer.tsx`, which owns that contract and its
+  tests), exactly as if no override were installed. Two facts matter to an
+  override author: a scheme `defaultUrlTransform` also refuses (anything
+  outside `http(s)`, `mailto:`, `xmpp:`, `irc(s):` and the renderer's
+  editor-scheme allowlist) never reaches the override at all — `urlTransform`
+  rejects it and the renderer shows the label as inert text (no anchor); and a
+  `mailto:`/`xmpp:`/`irc(s):` href DOES reach the override, so a provider must
+  keep its own scheme check.
+  A repo is identified by owner/repo only, so a same-path URL on an
   Enterprise host is a DIFFERENT repo and is never claimed.
 - **Interception** happens at the ANCHOR, not on the DOM: `MarkdownRenderer`
   exposes a `LinkOverrideCtx` seam (a predicate-style render override consulted by
