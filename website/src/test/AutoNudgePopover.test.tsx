@@ -723,7 +723,12 @@ describe('AutoNudgePopover Trigger nudge (#8212)', () => {
     // because the erase has no undo. Both directions asserted so this cannot
     // just move the confusion.
     renderWith(makeLoop({ active: false }))
-    expect(screen.getByRole('button', { name: 'Clear stopped goal' })).toBeTruthy()
+    const clear = screen.getByRole('button', { name: 'Clear stopped goal' })
+    expect(clear).toBeTruthy()
+    // Danger-coloured unconditionally, not on :hover -- a touch viewport never
+    // produces hover, so a hover-only colour renders an irreversible erase
+    // identically to the buttons beside it.
+    expect(clear.className).toContain('text-danger')
     expect(screen.queryByRole('button', { name: 'Stop loop' })).toBeNull()
     expect(screen.getByTestId('auto-nudge-loop-paused').textContent).toBe('Stopped')
     expect(screen.getByTestId('auto-nudge-stopped-help').textContent)
@@ -733,6 +738,85 @@ describe('AutoNudgePopover Trigger nudge (#8212)', () => {
     expect(screen.getByRole('button', { name: 'Stop loop' })).toBeTruthy()
     expect(screen.queryByRole('button', { name: 'Clear stopped goal' })).toBeNull()
     expect(screen.queryByTestId('auto-nudge-stopped-help')).toBeNull()
+  })
+
+  it('asks before erasing a stopped goal, and each label restates the action', async () => {
+    // Same two-step the monitor surface uses for its identical erase. The
+    // confirm row renders no question, so a bare "Yes" would name nothing:
+    // both labels have to restate what happens.
+    const calls: string[] = []
+    vi.stubGlobal('fetch', vi.fn((url: string, init?: RequestInit) => {
+      if (init?.method === 'DELETE') calls.push(String(url))
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({ loop: null }) })
+    }) as unknown as typeof fetch)
+
+    renderWith(makeLoop({ active: false }))
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Clear stopped goal' })) })
+    expect(calls).toEqual([])
+    expect(screen.getByRole('button', { name: 'Cancel' })).toBeTruthy()
+    // Two controls, not three: the confirmation replaces the primary CTA rather
+    // than sitting beside it (website/AUTOSDE.yaml:230 caps a row at two). Its
+    // back-out reads "Cancel", the same word the monitor surface's confirm uses
+    // for the same act.
+    const row = screen.getByRole('button', { name: 'Cancel' }).parentElement!
+    expect(Array.from(row.querySelectorAll('button')).map(b => b.textContent))
+      .toEqual(['Cancel', 'Clear goal for good'])
+    // And the help line becomes the question, instead of naming two buttons that
+    // just left the row.
+    expect(screen.getByTestId('auto-nudge-stopped-help').textContent)
+      .toBe('Remove this goal for good?')
+    // Cancelling erases nothing and restores the original control.
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Cancel' })) })
+    expect(calls).toEqual([])
+    expect(screen.getByRole('button', { name: 'Clear stopped goal' })).toBeTruthy()
+    // Second press through the confirm performs it.
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Clear stopped goal' })) })
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Clear goal for good' })) })
+    expect(calls).toEqual(['/api/autonudge/l1?intent=clear'])
+  })
+
+  it('drops a primed confirmation when the record changes under the popover', async () => {
+    // The popover re-renders from websocket state without closing, so another
+    // tab can swap the record while a confirmation is primed: edit and restart
+    // the same loop id, then a cycle cap stops it again. The press would then
+    // erase a goal the confirmation never described, and the server sees no
+    // mismatch because the record is inactive both times. Each of the three
+    // changes that can arrive this way is asserted.
+    // A harness that can swap the loop WITHOUT closing the popover, which is
+    // what a websocket-driven re-render does.
+    const Swappable = ({ next }: { next: Partial<AutoNudgeLoop> }) => {
+      const [loop, setLoop] = useState<AutoNudgeLoop>(makeLoop({ active: false }))
+      return (
+        <>
+          <button onClick={() => setLoop(current => ({ ...current, ...next }))}>swap</button>
+          <AutoNudgePopover
+            slotKey={SLOT}
+            loop={loop}
+            open={true}
+            onOpenChange={() => {}}
+            onChange={() => {}}
+          />
+        </>
+      )
+    }
+
+    for (const next of [
+      { id: 'l2' },
+      { active: true },
+      { message: 'a different goal entirely' },
+    ]) {
+      const qc = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } })
+      render(
+        <QueryClientProvider client={qc}>
+          <Swappable next={next} />
+        </QueryClientProvider>,
+      )
+      fireEvent.click(screen.getByRole('button', { name: 'Clear stopped goal' }))
+      expect(screen.getByRole('button', { name: 'Clear goal for good' })).toBeTruthy()
+      fireEvent.click(screen.getByRole('button', { name: 'swap' }))
+      expect(screen.queryByRole('button', { name: 'Clear goal for good' })).toBeNull()
+      cleanup()
+    }
   })
 
   it('sends the pressed INTENT so a stale label cannot erase a record it did not mean to', async () => {
@@ -751,6 +835,7 @@ describe('AutoNudgePopover Trigger nudge (#8212)', () => {
     cleanup()
     renderWith(makeLoop({ active: false }))
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Clear stopped goal' })) })
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Clear goal for good' })) })
 
     expect(calls).toEqual([
       '/api/autonudge/l1?intent=stop',

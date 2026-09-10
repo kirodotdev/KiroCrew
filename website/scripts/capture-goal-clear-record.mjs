@@ -16,8 +16,9 @@
  *                         would delete it with no record it existed, which the
  *                         server refuses; the surface must not offer the press.
  *   4. stopped legacy  -> the legacy goal view's own button reads "Clear stopped
- *                         goal", the status reads "Stopped", and pressing it
- *                         issues the DELETE carrying its intent.
+ *                         goal" in danger colour, the status reads "Stopped",
+ *                         and it asks before issuing the DELETE (frame 5), which
+ *                         carries the pressed intent.
  *
  * This ASSERTS as well as photographs, because a PNG cannot fail. It drives the
  * REAL built SPA (website/dist) behind `serveDist` with every /api/** call
@@ -59,13 +60,18 @@ const STOPPED = goal.loop_stopped
 const STOPPED_HELP = goal.stopped_help
 const START = goal.start_loop
 const CLEAR_MONITOR = panel.clear_monitor
+const CLEAR_GOAL_FOR_GOOD = goal.clear_goal_for_good
 const CONFIRM_CLEAR = panel.confirm_clear
 const RESTART = panel.restart_monitor
 const STOP_MONITOR = panel.stop_monitor
 const TERMINAL_EXITS = panel.terminal_exits
+const MONITOR_QUESTION = panel.clear_monitor_question
+const GOAL_QUESTION = goal.clear_goal_question
+const CANCEL = goal.cancel
 for (const [name, value] of Object.entries({
-  STOP, CLEAR_GOAL, STOPPED, STOPPED_HELP, START,
+  STOP, CLEAR_GOAL, CLEAR_GOAL_FOR_GOOD, STOPPED, STOPPED_HELP, START,
   CLEAR_MONITOR, CONFIRM_CLEAR, RESTART, STOP_MONITOR, TERMINAL_EXITS,
+  MONITOR_QUESTION, GOAL_QUESTION, CANCEL,
 })) {
   if (!value) throw new Error(`catalog key for ${name} is missing -- renamed?`)
 }
@@ -297,6 +303,11 @@ const has = async (popover, name) => (await popover.getByRole('button', { name }
     `the first press already sent ${JSON.stringify(writes)}`)
   check('02 the confirm is offered', (await has(popover, CONFIRM_CLEAR)) === 1,
     `"${CONFIRM_CLEAR}" not found after pressing the clear`)
+  // The line that named Restart and the clear must not survive their departure:
+  // it becomes the question, which the confirmation row itself does not render.
+  const asked = await popover.getByTestId('monitor-terminal-exits').innerText()
+  check('02 the line becomes the question', asked.trim() === MONITOR_QUESTION,
+    `the line reads ${JSON.stringify(asked)}, want ${JSON.stringify(MONITOR_QUESTION)}`)
   await popover.getByRole('button', { name: CONFIRM_CLEAR }).click()
   await page.waitForTimeout(900)
   check('02 the confirm issues the clear',
@@ -341,6 +352,23 @@ const has = async (popover, name) => (await popover.getByRole('button', { name }
     `the help line reads ${JSON.stringify(help)}`)
 
   await popover.getByRole('button', { name: CLEAR_GOAL }).click()
+  await page.waitForTimeout(400)
+  await shoot(popover, '05-stopped-legacy-goal-confirm.png')
+  check('04 one press only asks', writes.length === 0,
+    `the first press already sent ${JSON.stringify(writes)}`)
+  check('04 the confirm restates the action',
+    (await has(popover, CLEAR_GOAL_FOR_GOOD)) === 1,
+    `"${CLEAR_GOAL_FOR_GOOD}" not found after pressing the clear`)
+  // The confirmation REPLACES the primary CTA: three controls in one row breaks
+  // the two-per-row cap, and the choice being confirmed should be the whole row.
+  check('04 the confirm holds the row', (await has(popover, START)) === 0,
+    `"${START}" still sits beside the confirmation, making three buttons in one row`)
+  check('04 the back-out reads Cancel', (await has(popover, CANCEL)) === 1,
+    `the back-out is not "${CANCEL}" -- both confirm rows use one word for the same act`)
+  const goalAsked = await popover.getByTestId('auto-nudge-stopped-help').innerText()
+  check('04 the help line becomes the question', goalAsked.trim() === GOAL_QUESTION,
+    `the help line reads ${JSON.stringify(goalAsked)}, want ${JSON.stringify(GOAL_QUESTION)}`)
+  await popover.getByRole('button', { name: CLEAR_GOAL_FOR_GOOD }).click()
   await page.waitForTimeout(900)
   check('04 the press carries its intent',
     writes.length === 1 && writes[0] === `DELETE /api/autonudge/${LOOP_ID}?intent=clear`,

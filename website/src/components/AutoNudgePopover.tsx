@@ -2,6 +2,7 @@ import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { ArrowLeft, Goal, X } from 'lucide-react'
 import { Popover, PopoverTrigger, PopoverContent } from './ui/popover'
+import { Btn } from './ui'
 import ErrorNotice from './ErrorNotice'
 import { cronJobsQuery } from '../api/cronJobsQuery'
 import { runBelongsToSlot } from '../apps/workflows/runModel'
@@ -61,6 +62,9 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
   const [idleInput, setIdleInput] = useState(() => String(loop?.idle_secs || 60))
   const [maxCyclesInput, setMaxCyclesInput] = useState(() => String(loop?.max_cycles || 0))
   const [saving, setSaving] = useState(false)
+  /* Two-step on the clear only. The erase is irreversible and sits beside the
+     primary CTA, so one press asks and the second performs. */
+  const [confirmClear, setConfirmClear] = useState(false)
   const [error, setError] = useState('')
   // Watches armed on this slot, read through the SHARED `cron-jobs` query rather
   // than a private fetch. That key is invalidated by the websocket hook, so a
@@ -127,6 +131,20 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
     return isPristineDefault ? null : { message: s.message, idleSecs, maxCycles }
   }
 
+  /* A pending confirmation belongs to the record the reader was LOOKING at. The
+     popover re-renders from websocket state without closing, so another tab can
+     swap that record underneath it -- edit and restart the same loop id, then a
+     cycle cap (max_cycles=1 fires once) stops it again -- and the primed press
+     would erase a goal the confirmation never described. The intent guard does
+     not catch it: the record is inactive at render AND at press, so the server
+     sees no mismatch. Keyed on identity, state and the text itself, since the
+     text is what the erase destroys and drafts are not persisted while a loop
+     exists. */
+
+  useEffect(() => {
+    setConfirmClear(false)
+  }, [loop?.id, loop?.active, loop?.message])
+
   // Seed/restore fields on each open (rising edge). A live loop is the
   // authoritative source; otherwise the last per-slot draft is restored.
   // One read seeds all three fields. Runs in an effect (not render) so the
@@ -135,6 +153,9 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
     if (!open) return
     hasEdited.current = false
     setError('')
+    // A pending confirmation must not survive a close: reopening later would
+    // put a primed erase under the next press.
+    setConfirmClear(false)
     if (loop) {
       // `||` (not `??`) is deliberate: a loop with idle_secs/max_cycles of 0
       // or an empty message shows the 60 / 0 / default template.
@@ -524,8 +545,15 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
                 >
                   {i18nT('components.autoNudgePopover.loop_stopped')}
                 </span>
+                {/* While confirming, this line must not keep naming the two
+                    buttons that just left the row -- a blind reader looked for
+                    the "Start loop" it describes and could not find it -- and
+                    the confirmation row itself renders no question. So the help
+                    line BECOMES the question for that state. */}
                 <span data-testid="auto-nudge-stopped-help" className="text-muted text-[11px]">
-                  {i18nT('components.autoNudgePopover.stopped_help')}
+                  {confirmClear
+                    ? i18nT('components.autoNudgePopover.clear_goal_question')
+                    : i18nT('components.autoNudgePopover.stopped_help')}
                 </span>
               </div>
             )}
@@ -543,41 +571,64 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
 
         <div className="flex gap-2 justify-end">
           {loop && (
+            loop.active ? (
+              <button
+                onClick={stop}
+                disabled={saving}
+                className="px-3 py-1 rounded border border-border text-muted hover:text-danger hover:border-danger bg-transparent cursor-pointer disabled:opacity-50"
+              >
+                {i18nT('components.autoNudgePopover.stop_loop')}
+              </button>
+            ) : confirmClear ? (
+              /* The same two-step the monitor surface uses for its identical
+                 erase. Each label restates the ACTION and its object rather
+                 than answering a question the row does not render: read alone,
+                 "Yes" says nothing about what is being cleared. */
+              <>
+                <Btn type="button" onClick={() => setConfirmClear(false)} disabled={saving}>
+                  {i18nT('components.autoNudgePopover.cancel')}
+                </Btn>
+                <Btn type="button" danger onClick={stop} disabled={saving}>
+                  {i18nT('components.autoNudgePopover.clear_goal_for_good')}
+                </Btn>
+              </>
+            ) : (
+              /* On an already-stopped loop this press REMOVES the record, which
+                 is what frees the slot to watch something else -- labelling it
+                 "Stop loop" made it read as a no-op. It names the GOAL rather
+                 than an internal noun, because a blind reader refused to press
+                 "Clear record" for showing nothing called a record.
+                 `Btn danger` colours it unconditionally rather than on :hover,
+                 which a touch viewport never produces, and it sits behind a
+                 confirm because it is an irreversible erase one slot from the
+                 primary CTA -- the monitor surface's identical erase is guarded
+                 exactly so. */
+              <Btn type="button" danger onClick={() => setConfirmClear(true)} disabled={saving}>
+                {i18nT('components.autoNudgePopover.clear_stopped_goal')}
+              </Btn>
+            )
+          )}
+          {/* Withheld while the clear is being confirmed: three controls in one
+              row breaks the two-per-row cap (website/AUTOSDE.yaml:230), and the
+              confirmation should hold the reader's whole choice -- the monitor
+              surface's own confirm replaces its row for the same reason. */}
+          {!confirmClear && (
             <button
-              onClick={stop}
-              disabled={saving}
-              className="px-3 py-1 rounded border border-border text-muted hover:text-danger hover:border-danger bg-transparent cursor-pointer disabled:opacity-50"
+              onClick={save}
+              disabled={saving || writeDisabled || !message.trim()}
+              className="px-3 py-1 rounded bg-accent text-accent-fg border-none cursor-pointer disabled:opacity-50 hover:bg-accent/90"
             >
-              {/* Two different actions behind one button, so the label has to
-                  name which one this press does. On a LIVE loop it stops the
-                  loop and keeps the record. On an already-stopped one there is
-                  nothing left to stop: the press REMOVES the record, which is
-                  what frees the slot to watch something else. Labelling both
-                  "Stop loop" made the second press read as a no-op.
-                  The label names the OBJECT ("goal"), not an internal noun: a
-                  blind reader refused to press "Clear record" because the
-                  popover shows nothing called a record, so the one control that
-                  unsticks the session went unpressed. */}
-              {loop.active
-                ? i18nT('components.autoNudgePopover.stop_loop')
-                : i18nT('components.autoNudgePopover.clear_stopped_goal')}
+              {/* A paused loop's way out was invisible: this button silently PATCHes
+                  `active: true`, so on an inactive loop it must SAY so. A usability
+                  reader found no resume control at all and called both "Stopped" and
+                  "Stop loop" risky as a result. Gated on `active`, not on existence,
+                  which is the bug -- and it reuses the `start_loop` key the no-loop
+                  case already uses, so no catalogue gains a string. */}
+              {loop?.active
+                ? i18nT('components.autoNudgePopover.save')
+                : i18nT('components.autoNudgePopover.start_loop')}
             </button>
           )}
-          <button
-            onClick={save}
-            disabled={saving || writeDisabled || !message.trim()}
-            className="px-3 py-1 rounded bg-accent text-accent-fg border-none cursor-pointer disabled:opacity-50 hover:bg-accent/90"
-          >
-            {/* A paused loop's way out was invisible: this button silently PATCHes
-                `active: true`, so on an inactive loop it must SAY so. A usability
-                reader found no resume control at all and called both "Paused" and
-                "Stop loop" risky as a result. Gated on `active`, not on existence,
-                which is the bug -- and it reuses the `start_loop` key the no-loop
-                case already uses, so no catalogue gains a string. */}
-            {loop?.active
-              ? i18nT('components.autoNudgePopover.save')
-              : i18nT('components.autoNudgePopover.start_loop')}
-          </button>
         </div>
       </PopoverContent>}
     </Popover>

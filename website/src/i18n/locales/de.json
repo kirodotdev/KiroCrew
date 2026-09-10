@@ -5637,7 +5637,10 @@
       "watches_title": "Überwachungen ohne Tokenverbrauch",
       "clear_stopped_goal": "Gestopptes Ziel löschen",
       "loop_stopped": "Gestoppt",
-      "stopped_help": "Schleife starten setzt dieses Ziel fort. Gestopptes Ziel löschen entfernt es endgültig."
+      "stopped_help": "Schleife starten setzt dieses Ziel fort. Gestopptes Ziel löschen entfernt es endgültig.",
+      "clear_goal_for_good": "Ziel endgültig löschen",
+      "cancel": "Abbrechen",
+      "clear_goal_question": "Dieses Ziel endgültig löschen?"
     },
     "bottomTerminalPanel": {
       "close_terminal": "Terminal schließen",
@@ -8194,8 +8197,9 @@
       "wake_instructions_too_long": "Gib höchstens {{max}} Zeichen ein.",
       "wakes": "Aktivierungen: {{count}}",
       "clear_monitor": "Gestoppten Monitor löschen",
-      "confirm_clear": "Ja, löschen",
-      "terminal_exits": "Neu starten beobachtet denselben Pull Request weiter. Gestoppten Monitor löschen entfernt ihn endgültig, damit diese Sitzung etwas anderes beobachten kann."
+      "confirm_clear": "Monitor endgültig löschen",
+      "terminal_exits": "Neu starten beobachtet denselben Pull Request weiter. Gestoppten Monitor löschen entfernt ihn endgültig, damit diese Sitzung etwas anderes beobachten kann.",
+      "clear_monitor_question": "Diesen Monitor endgültig löschen?"
     }
   },
   "hooks": {

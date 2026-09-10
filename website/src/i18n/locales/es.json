@@ -5730,7 +5730,10 @@
       "watches_title": "Vigilancias sin consumo de tokens",
       "clear_stopped_goal": "Borrar objetivo detenido",
       "loop_stopped": "Detenido",
-      "stopped_help": "Iniciar bucle reanuda este objetivo. Borrar objetivo detenido lo elimina definitivamente."
+      "stopped_help": "Iniciar bucle reanuda este objetivo. Borrar objetivo detenido lo elimina definitivamente.",
+      "clear_goal_for_good": "Borrar el objetivo definitivamente",
+      "cancel": "Cancelar",
+      "clear_goal_question": "¿Eliminar este objetivo definitivamente?"
     },
     "bottomTerminalPanel": {
       "close_terminal": "Cerrar la terminal",
@@ -8306,8 +8309,9 @@
       "wake_instructions_too_long": "Introduce como máximo {{max}} caracteres.",
       "wakes": "Activaciones: {{count}}",
       "clear_monitor": "Borrar monitor detenido",
-      "confirm_clear": "Sí, bórralo",
-      "terminal_exits": "Reiniciar vuelve a vigilar la misma pull request. Borrar monitor detenido lo elimina definitivamente y deja que esta sesión vigile otra cosa."
+      "confirm_clear": "Borrar el monitor definitivamente",
+      "terminal_exits": "Reiniciar vuelve a vigilar la misma pull request. Borrar monitor detenido lo elimina definitivamente y deja que esta sesión vigile otra cosa.",
+      "clear_monitor_question": "¿Eliminar este monitor definitivamente?"
     }
   },
   "hooks": {

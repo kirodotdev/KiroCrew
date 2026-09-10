@@ -168,6 +168,18 @@ export default function SessionAutomationPopover({
     setConfirmClear(false)
   }, [open, automation?.id, automation?.kind, slotKey])
 
+  /* A primed confirmation belongs to the record the reader was LOOKING at. This
+     popover re-renders from websocket state without closing, so another client
+     can swap that record underneath it -- edit and restart the same monitor,
+     then a spent budget stops it again -- and the primed press would act on a
+     record the confirmation never described. The open-edge reset above cannot
+     see that: the popover never closed. Keyed on the state the two confirms
+     each depend on, so either one is dropped the moment its premise moves. */
+  useEffect(() => {
+    setConfirmStop(false)
+    setConfirmClear(false)
+  }, [monitor?.id, monitor?.active, monitor?.terminal?.outcome, monitor?.target])
+
   useEffect(() => {
     if (!open) return
     const incoming = monitor ? monitorDraft(monitor) : defaults()
@@ -478,14 +490,18 @@ export default function SessionAutomationPopover({
                     <div className="mt-0.5 text-muted">{fmtDateTimeNumeric(terminal.stoppedAt)}</div>
                   ) : null}
                 </div>
-                {/* The two exits, named where the terminal state is described.
+                  {/* The two exits, named where the terminal state is described.
                     Restart alone is not a way out: this record keeps occupying
                     the session and a stopped one refuses a new monitor, so a
                     reader who only sees Restart cannot tell how to watch
                     something else -- and the other exit is irreversible, which
-                    nothing else on this surface says. */}
+                    nothing else on this surface says. While confirming, it
+                    BECOMES the question instead: the buttons it names have left
+                    the row, and the confirmation renders no question of its own. */}
                 <p data-testid="monitor-terminal-exits" className="text-muted leading-relaxed">
-                  {i18nT('components.sessionAutomationPopover.terminal_exits')}
+                  {confirmClear
+                    ? i18nT('components.sessionAutomationPopover.clear_monitor_question')
+                    : i18nT('components.sessionAutomationPopover.terminal_exits')}
                 </p>
               </div>
             ) : null}

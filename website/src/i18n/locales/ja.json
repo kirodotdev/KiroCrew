@@ -5544,7 +5544,10 @@
       "watches_title": "トークンを消費しない監視",
       "clear_stopped_goal": "停止した目標を削除",
       "loop_stopped": "停止中",
-      "stopped_help": "ループを開始するとこの目標を再開します。停止した目標を削除すると完全に消えます。"
+      "stopped_help": "ループを開始するとこの目標を再開します。停止した目標を削除すると完全に消えます。",
+      "clear_goal_for_good": "目標を完全に削除",
+      "cancel": "キャンセル",
+      "clear_goal_question": "この目標を完全に削除しますか？"
     },
     "bottomTerminalPanel": {
       "terminal_is_in_its_own_window": "ターミナルは別ウィンドウで開いています",
@@ -8082,8 +8085,9 @@
       "wake_instructions_too_long": "{{max}} 文字以内で入力してください。",
       "wakes": "起動回数：{{count}}",
       "clear_monitor": "停止した監視を削除",
-      "confirm_clear": "はい、削除する",
-      "terminal_exits": "再開すると同じプルリクエストを再び監視します。停止した監視を削除すると完全に消え、このセッションで別のものを監視できます。"
+      "confirm_clear": "監視を完全に削除",
+      "terminal_exits": "再開すると同じプルリクエストを再び監視します。停止した監視を削除すると完全に消え、このセッションで別のものを監視できます。",
+      "clear_monitor_question": "この監視を完全に削除しますか？"
     }
   },
   "hooks": {

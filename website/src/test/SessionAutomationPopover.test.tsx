@@ -628,7 +628,11 @@ describe('SessionAutomationPopover', () => {
     // One press does not erase anything.
     expect(api.monitorClear).not.toHaveBeenCalled()
     expect(screen.queryByRole('button', { name: 'Restart monitor' })).toBeNull()
-    fireEvent.click(screen.getByRole('button', { name: 'Yes, clear it' }))
+    // The exits line becomes the question rather than naming the buttons that
+    // just left the row.
+    expect(screen.getByTestId('monitor-terminal-exits').textContent)
+      .toBe('Remove this monitor for good?')
+    fireEvent.click(screen.getByRole('button', { name: 'Clear monitor for good' }))
     await waitFor(() => expect(api.monitorClear).toHaveBeenCalledWith('monitor-1'))
   })
 
@@ -645,6 +649,26 @@ describe('SessionAutomationPopover', () => {
     expect(api.monitorClear).not.toHaveBeenCalled()
     expect(screen.getByRole('button', { name: 'Restart monitor' })).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Clear stopped monitor' })).toBeTruthy()
+  })
+
+  it('drops a primed confirmation when the monitor changes under the popover', () => {
+    // Same hazard as the legacy surface: this popover re-renders from websocket
+    // state without closing, so another client can swap the record while a
+    // confirmation is primed and the press would act on a record the
+    // confirmation never described.
+    const terminal = {
+      ...activeMonitor,
+      active: false,
+      terminal: { outcome: 'user_stop', reason: 'user_stop', stoppedAt: 1_800_000_100 },
+    } as StructuredMonitor
+    const { rerenderAutomation } = renderPopover(terminal)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Clear stopped monitor' }))
+    expect(screen.getByRole('button', { name: 'Clear monitor for good' })).toBeTruthy()
+    rerenderAutomation({ ...terminal, active: true, terminal: null })
+
+    expect(screen.queryByRole('button', { name: 'Clear monitor for good' })).toBeNull()
+    expect(api.monitorClear).not.toHaveBeenCalled()
   })
 
   it('offers no clear control while a monitor is still running', () => {

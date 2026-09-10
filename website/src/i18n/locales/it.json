@@ -5730,7 +5730,10 @@
       "watches_title": "Monitoraggi senza token",
       "clear_stopped_goal": "Elimina obiettivo interrotto",
       "loop_stopped": "Interrotto",
-      "stopped_help": "Avvia ciclo riprende questo obiettivo. Elimina obiettivo interrotto lo rimuove definitivamente."
+      "stopped_help": "Avvia ciclo riprende questo obiettivo. Elimina obiettivo interrotto lo rimuove definitivamente.",
+      "clear_goal_for_good": "Elimina definitivamente l’obiettivo",
+      "cancel": "Annulla",
+      "clear_goal_question": "Eliminare definitivamente questo obiettivo?"
     },
     "bottomTerminalPanel": {
       "close_terminal": "Chiudi il terminale",
@@ -8306,8 +8309,9 @@
       "wake_instructions_too_long": "Inserisci non più di {{max}} caratteri.",
       "wakes": "Attivazioni: {{count}}",
       "clear_monitor": "Elimina monitor interrotto",
-      "confirm_clear": "Sì, elimina",
-      "terminal_exits": "Riavvia continua a seguire la stessa pull request. Elimina monitor interrotto lo rimuove definitivamente e libera questa sessione per altro."
+      "confirm_clear": "Elimina definitivamente il monitor",
+      "terminal_exits": "Riavvia continua a seguire la stessa pull request. Elimina monitor interrotto lo rimuove definitivamente e libera questa sessione per altro.",
+      "clear_monitor_question": "Eliminare definitivamente questo monitor?"
     }
   },
   "hooks": {

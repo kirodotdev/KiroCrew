@@ -5730,7 +5730,10 @@
       "watches_title": "Surveillances sans jetons",
       "clear_stopped_goal": "Supprimer l’objectif arrêté",
       "loop_stopped": "Arrêté",
-      "stopped_help": "Démarrer la boucle reprend cet objectif. Supprimer l’objectif arrêté l’efface définitivement."
+      "stopped_help": "Démarrer la boucle reprend cet objectif. Supprimer l’objectif arrêté l’efface définitivement.",
+      "clear_goal_for_good": "Supprimer définitivement l’objectif",
+      "cancel": "Annuler",
+      "clear_goal_question": "Supprimer définitivement cet objectif ?"
     },
     "bottomTerminalPanel": {
       "close_terminal": "Fermer le terminal",
@@ -8306,8 +8309,9 @@
       "wake_instructions_too_long": "Saisissez au maximum {{max}} caractères.",
       "wakes": "Réveils : {{count}}",
       "clear_monitor": "Supprimer le moniteur arrêté",
-      "confirm_clear": "Oui, supprimer",
-      "terminal_exits": "Redémarrer surveille de nouveau la même pull request. Supprimer le moniteur arrêté l’efface définitivement et libère cette session pour autre chose."
+      "confirm_clear": "Supprimer définitivement le moniteur",
+      "terminal_exits": "Redémarrer surveille de nouveau la même pull request. Supprimer le moniteur arrêté l’efface définitivement et libère cette session pour autre chose.",
+      "clear_monitor_question": "Supprimer définitivement ce moniteur ?"
     }
   },
   "hooks": {

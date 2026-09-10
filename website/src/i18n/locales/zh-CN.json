@@ -5544,7 +5544,10 @@
       "watches_title": "零 token 监视",
       "clear_stopped_goal": "清除已停止的目标",
       "loop_stopped": "已停止",
-      "stopped_help": "启动循环可继续这个目标；清除已停止的目标会永久删除它。"
+      "stopped_help": "启动循环可继续这个目标；清除已停止的目标会永久删除它。",
+      "clear_goal_for_good": "永久清除目标",
+      "cancel": "取消",
+      "clear_goal_question": "要永久删除这个目标吗？"
     },
     "bottomTerminalPanel": {
       "close_terminal": "关闭终端",
@@ -8082,8 +8085,9 @@
       "wake_instructions_too_long": "请输入不超过 {{max}} 个字符。",
       "wakes": "唤醒次数：{{count}}",
       "clear_monitor": "清除已停止的监控",
-      "confirm_clear": "确认清除",
-      "terminal_exits": "重启会继续盯同一个 PR。清除已停止的监控会永久删除它，这个会话才能去盯别的东西。"
+      "confirm_clear": "永久清除监控",
+      "terminal_exits": "重启会继续盯同一个 PR。清除已停止的监控会永久删除它，这个会话才能去盯别的东西。",
+      "clear_monitor_question": "要永久删除这个监控吗？"
     }
   },
   "hooks": {
