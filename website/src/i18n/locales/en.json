@@ -4249,7 +4249,14 @@
       "used": "Used",
       "sketch": "Sketch",
       "sketch_desc": "Draw a sketch; attaches an image plus its editable source",
-      "more_actions": "More actions"
+      "more_actions": "More actions",
+      "send_later": "Send later…",
+      "schedule": "Schedule",
+      "scheduled_message": "Scheduled message",
+      "send_later_desc": "Schedule this message to send at a later time",
+      "one_message_scheduled": "1 message scheduled for {{when}}",
+      "n_messages_scheduled": "{{count}} messages scheduled, next {{when}}",
+      "view_schedule": "View schedule"
     },
     "chatPane": {
       "agent_list": "Agent list",
@@ -4550,7 +4557,10 @@
       "suppress_automatic_message_delivery_the_agent_co": "Suppress automatic message delivery. The agent controls when to notify.",
       "the_prompt_or_task_sent_to_the_agent_when_this_j": "The prompt or task sent to the agent when this job fires",
       "weekly_schedule": "Weekly schedule",
-      "which_agent_handles_this_job_leave_default_for_t": "Which agent handles this job. Leave default for the primary agent."
+      "which_agent_handles_this_job_leave_default_for_t": "Which agent handles this job. Leave default for the primary agent.",
+      "run_once": "Run once",
+      "pick_a_date_and_time": "Pick a date and time",
+      "pick_a_time_in_the_future": "Pick a time in the future"
     },
     "jobLogsView": {
       "cancel": "Cancel",

@@ -243,6 +243,72 @@ configuration before it is useful). The contract, end to end:
   returns to **paused** (manifest is the sole source of truth on
   re-register). Documented in `docs/app-kit/manifest-reference.md`.
 
+### One-shot jobs are readable and re-timable, not just creatable
+
+`at` / `delay` / `at_time` landed on the create routes first, which left a
+one-shot as the only schedule kind a client could create and then neither render
+nor edit. Three gaps, one per layer, all closed together because closing any one
+alone leaves the surface still unusable:
+
+- **`GET /api/crons` reports `at_ts`** (and `delete_after_run`) beside the existing
+  `cron_expr` / `every_secs`, each set only for the kind that owns it. Before this
+  a one-shot's fire time existed on that payload only inside the human-readable
+  `schedule` string, so the Schedule form matched neither the interval nor the
+  weekly shape, fell through to **cron mode with an empty expression**, and its own
+  `buildBody` then refused to save it — an MCP-created one-shot could not be edited
+  from the dashboard at all. `delete_after_run` is reported independently rather
+  than inferred from the kind, since the two are separate fields.
+- **`PATCH /api/crons/{id}` accepts `at` / `delay` / `at_time`**, through the SAME
+  `_resolve_one_shot_at` parser and precedence the create route uses, so a fire
+  time means one thing on both surfaces.
+- **`_update_job_locked` applies `at_ts`**, because the store is the persistence
+  owner: a handler passing one through would otherwise be silently dropped. It is
+  mutually exclusive with `cron_expr` / `every_secs` (a schedule has exactly one
+  kind, and accepting both would drop one depending on assignment order) and
+  bounded by `_MAX_AT_TS` for the reason the create path bounds it — a value past
+  what `datetime.fromtimestamp` can render is stored fine by a caller that skips
+  the schema and then raises while the job list is serialized, failing
+  `GET /api/crons` for EVERY job until that record is deleted by id. Re-timing
+  never touches `delete_after_run`.
+
+**Schedule form (`JobForm`)**: a fourth `schedMode` arm, `once`, decided by
+`at_ts` being a finite number — positive evidence rather than "matched nothing
+else". It shows a `datetime-local` control and **no timezone select**, because an
+`at` fire time is an absolute instant and there is no zone to choose; the picker's
+wall clock is read in the viewer's own zone (`toLocalInputValue` subtracts the
+offset, since `toISOString` would render UTC and shift every viewer outside it).
+On save it sends `at` as epoch seconds and no `timezone`. An empty or past time is
+refused in the form, naming the field the user is looking at — a past time would
+fire the moment it was saved.
+
+**Composer shortcut (`ScheduleLaterPopover`)**: a **Send later…** row in the
+composer's plus menu opens a time picker that schedules the current draft instead
+of sending it, creating an ordinary one-shot with `session_key` naming THIS chat so
+the result is mirrored back into the conversation the text was typed in. A
+**shortcut, not a second scheduling surface** — the Schedule page remains where the
+job is listed, edited and cancelled, which is the split the maintainers asked for.
+A gateway predating create-time `session_key` ignores the field and the job simply
+delivers to its own tab, so the shortcut degrades rather than failing.
+
+It is a menu row rather than a caret on Send (the shape Slack uses) because the idle
+action row already carries mic + Optimize + Send, and `max-two-buttons-per-row`
+(`website/AUTOSDE.yaml`, `blocking: true`) caps a row at two peers and names
+widening and wrapping as non-fixes. The plus menu is a separate visual group, so the
+row costs that row nothing and relocates none of the controls in it. The cost is
+discoverability, which the banner below is what pays for.
+
+**Scheduled-message banner**: a `role="status"` strip above the composer naming the
+soonest pending one-shot for this chat and linking to the Schedule page, in the
+spirit of Slack's "1 scheduled message". Without it a pending message is invisible
+between scheduling and firing, because the menu row that created it is not a
+persistent affordance. `scheduledMessages` is supplied by the HOST page
+(`ChatPage`, `ChatPane`), not fetched by `ChatInput`: that component is rendered by
+several surfaces and a per-mount `GET /api/crons` would add a request to all of
+them, so the read lives with the page that already owns a query client. `ChatInput`
+drops any job whose fire time has passed — a fired one-shot is deleted server-side,
+but the host's read can be up to its `staleTime` old and the banner must not keep
+advertising a run that is gone. The side panel deliberately passes nothing.
+
 ### Hide in Chat (`hide_in_chat`)
 
 By default a persistent-session agent cron auto-creates a linked dashboard chat slot (`cron-{job_id}`) at the **start of its first eligible run** (`ensure_cron_slot`, so session-control caller identity and dashboard-surface routing work during the run itself — issue #8336; delivery's `inject_cron_result_to_dashboard` then finds the same slot idempotently). The pre-create is **best-effort** (`_pre_create_cron_slot`): a failure minting the tab is logged and the run proceeds without it (delivery's own bind still creates the tab afterwards), and a wake-deadline cancellation landing inside the pre-create leaves `run_never_started` armed so a `delete_after_run` one-shot is retained rather than consumed by a run that never dispatched — the tab is an amenity of the run, never a precondition. Runs appear in the active session list. Set `hide_in_chat: true` to suppress that slot creation — the run's result still reaches Slack/dashboard notifications, and the run stays visible in the History tab via the **cron execution-history store** (`CronHistoryStore`, written by the executor whenever the store is usable — see **History is best-effort** below — and surfaced at `GET /api/crons/{id}/history`), but no entry clutters the Chats sidebar. Useful for fire-and-forget jobs (daily digests, log cleanups, polling). Default `false` (preserves prior behavior; absent field reads as `false`). Orthogonal to `silent`: `silent` suppresses the push notification, `hide_in_chat` suppresses the chat slot. The flag is a no-op for `script`/`command` crons, which never create a slot. The executor gates all three `inject_cron_result_to_dashboard` call sites on `not job.hide_in_chat`; the dashboard notification's CTA falls into the pre-existing no-slot branch ("View last result", which lazily rebuilds a slot from history on click) instead of "Continue session". Note: the `cron:{job_id}` *dashboard conversation_log* is written ONLY by `inject_cron_result_to_dashboard`, so it is intentionally empty for a hidden cron — it exists solely to give a dashboard follow-up turn context, which a no-slot cron never has. Hidden-cron result persistence is the execution-history store, not `cron:{job_id}`.

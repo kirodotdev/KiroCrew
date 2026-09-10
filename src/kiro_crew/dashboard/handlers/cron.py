@@ -793,11 +793,22 @@ async def api_cron_update(request: web.Request) -> web.Response:
         kwargs["channel"] = ch
         if ch and (len(ch) > CHANNEL_MAX_LEN or not CHANNEL_ID_RE.match(ch)):
             return web.json_response({"error": "invalid channel ID format"}, status=400)
-    # Schedule: accept cron_expr or every (seconds)
+    # Schedule: accept cron_expr, every (seconds), or a one-shot fire time
     if "cron" in body:
         kwargs["cron_expr"] = body["cron"]
     if "every" in body:
         kwargs["every_secs"] = body["every"]
+    # One-shot, through the SAME parser and precedence the create route uses
+    # (`at` absolute, then `delay`, then `at_time`) so a fire time means the same
+    # thing on both surfaces. Update accepted it nowhere before, which left a
+    # one-shot's time the one schedule a client could read but never change: the
+    # Schedule form could open such a job and not save it.
+    if any(k in body for k in ("at", "delay", "at_time")):
+        at_ts, at_err = _resolve_one_shot_at(body)
+        if at_err is not None:
+            return at_err
+        if at_ts is not None:
+            kwargs["at_ts"] = at_ts
     if "timezone" in body:
         tz_val = (body["timezone"] or "").strip()
         if tz_val and not is_valid_timezone(tz_val):
@@ -2400,6 +2411,19 @@ async def api_crons(request: web.Request) -> web.Response:
             )[0],
             "cron_expr": j.schedule.cron_expr if j.schedule.kind == "cron" else None,
             "every_secs": j.schedule.every_secs if j.schedule.kind == "every" else None,
+            # The one-shot fire time, in the same shape the other two kinds get:
+            # the field for the kind that owns it, None otherwise. Without it a
+            # one-shot's schedule existed on this payload only inside the
+            # human-readable `schedule` string, so a client could render the job
+            # but had nothing machine-readable to edit or round-trip it with — the
+            # Schedule form matched neither the interval nor the weekly shape and
+            # fell through to a cron mode with an empty expression, which its own
+            # save then refused.
+            "at_ts": j.schedule.at_ts if j.schedule.kind == "at" else None,
+            # A one-shot is normally `delete_after_run`, but the two are
+            # independent fields and a recurring job can carry the flag too, so it
+            # is reported on its own rather than inferred from the kind.
+            "delete_after_run": bool(getattr(j, "delete_after_run", False)),
             "created_ts": j.created_ts or None,
             "last_status": j.last_status,
             "agent": redact_credentials(redact_exfiltration_urls(j.agent_id or "")[0])[0] or None,

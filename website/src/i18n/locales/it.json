@@ -5900,7 +5900,14 @@
       "session_control_ready": "Pronto",
       "session_control_chip_label": "{{label}} — {{detail}}",
       "agent_inherited_default": "Questa sessione segue l’agente predefinito ({{name}}). Non ha un agente proprio, quindi cambia se cambia il predefinito. Fai clic per fissarne uno.",
-      "model_inherited_default": "Questa sessione usa il modello predefinito ({{name}}). Non ha un modello proprio, quindi cambia se cambia il predefinito. Fai clic per fissarne uno."
+      "model_inherited_default": "Questa sessione usa il modello predefinito ({{name}}). Non ha un modello proprio, quindi cambia se cambia il predefinito. Fai clic per fissarne uno.",
+      "send_later": "Invia più tardi…",
+      "schedule": "Pianifica",
+      "scheduled_message": "Messaggio pianificato",
+      "send_later_desc": "Pianifica l'invio di questo messaggio più tardi",
+      "one_message_scheduled": "1 messaggio pianificato per {{when}}",
+      "n_messages_scheduled": "{{count}} messaggi pianificati, il prossimo {{when}}",
+      "view_schedule": "Vedi pianificazione"
     },
     "chatPane": {
       "agent_list": "Elenco degli agenti",
@@ -6531,7 +6538,10 @@
       "the_prompt_or_task_sent_to_the_agent_when_this_j": "Il prompt o l'attività inviata all'agente quando questo job si attiva",
       "timezone": "Fuso orario",
       "weekly_schedule": "Pianificazione settimanale",
-      "which_agent_handles_this_job_leave_default_for_t": "Quale agente gestisce questo job. Lascia il valore predefinito per l'agente principale."
+      "which_agent_handles_this_job_leave_default_for_t": "Quale agente gestisce questo job. Lascia il valore predefinito per l'agente principale.",
+      "run_once": "Esegui una volta",
+      "pick_a_date_and_time": "Scegli data e ora",
+      "pick_a_time_in_the_future": "Scegli un orario futuro"
     },
     "jobLogsView": {
       "cancel": "Annulla",

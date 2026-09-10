@@ -57,7 +57,7 @@ export function jobKindOf(job?: CronJob): JobKind {
 
 /** Parse a CronJob into initial form state */
 function parseJobDefaults(job?: CronJob) {
-  if (!job) return { name: '', message: '', agent: '', model: '', channel: '', approvalMode: '', silent: false, strictSchedule: false, hideInChat: false, minimalContext: false, jobKind: 'message' as JobKind, schedMode: 'interval' as const, intVal: 1, intUnit: 'hours' as const, weekDays: [] as number[], weekTime: '09:00', cronExpr: '' }
+  if (!job) return { name: '', message: '', agent: '', model: '', channel: '', approvalMode: '', silent: false, strictSchedule: false, hideInChat: false, minimalContext: false, jobKind: 'message' as JobKind, schedMode: 'interval' as const, intVal: 1, intUnit: 'hours' as const, weekDays: [] as number[], weekTime: '09:00', cronExpr: '', onceLocal: '', onceLocalInitial: '' }
   const isInterval = !!(job.every_secs || (job.schedule || '').match(/^every\s+\d+/))
   const secs = job.every_secs || (() => { const m = (job.schedule || '').match(/^every\s+(\d+)\s*([sh])/); if (!m) return 3600; return m[2] === 'h' ? parseInt(m[1]) * 3600 : parseInt(m[1]) })()
   // Largest unit that divides `secs` EVENLY, not the largest unit that is merely
@@ -77,6 +77,13 @@ function parseJobDefaults(job?: CronJob) {
   const intVal = Math.max(1, Math.round(intUnit === 'days' ? secs / 86400 : intUnit === 'hours' ? secs / 3600 : secs / 60))
   const cronRaw = job.cron_expr || ''
   const cronParts = cronRaw.split(/\s+/)
+  // A one-shot is decided by its OWN field rather than by failing to look like
+  // anything else. `at_ts` is set only for a `kind: "at"` schedule, so it is
+  // positive evidence — before the API reported it, such a job matched neither
+  // isInterval nor isWeekly and fell through to cron mode with an empty
+  // expression, which buildBody then refused to save. That made an
+  // MCP-scheduled one-shot uneditable from this form entirely.
+  const isOnce = typeof job.at_ts === 'number' && Number.isFinite(job.at_ts)
   // Weekly mode can only represent a single plain minute/hour pair plus a day
   // set expandDow understands. A list, range, or step in the minute or hour
   // field (e.g. `0 9,12,15 * * 1-5`) must fall through to cron mode, where the
@@ -95,7 +102,7 @@ function parseJobDefaults(job?: CronJob) {
     !seg.split('-').some(tok => /^\d+$/.test(tok) && parseInt(tok, 10) > 7) && expandDow(seg).length > 0)
   const isWeekly = !isInterval && cronParts.length === 5 && cronParts[4] !== '*' && cronParts[2] === '*' && cronParts[3] === '*'
     && isPlainField(cronParts[0], 59) && isPlainField(cronParts[1], 23) && isRepresentableDow(cronParts[4])
-  const schedMode = isInterval ? 'interval' as const : isWeekly ? 'weekly' as const : 'cron' as const
+  const schedMode = isOnce ? 'once' as const : isInterval ? 'interval' as const : isWeekly ? 'weekly' as const : 'cron' as const
   // Read cron time and days directly (stored in job timezone, not UTC)
   let weekDays: number[] = []
   let weekTime = '09:00'
@@ -104,7 +111,24 @@ function parseJobDefaults(job?: CronJob) {
     weekDays = expandDow(cronParts[4]).map(d => CRON_DOW_TO_GRID[d] || 1)
     weekTime = `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}`
   }
-  return { name: job.name, message: job.message, agent: job.agent || '', model: job.model || '', channel: job.channel || '', approvalMode: job.approval_mode || '', silent: job.silent || false, strictSchedule: job.strict_schedule || false, hideInChat: job.hide_in_chat || false, minimalContext: job.minimal_context || false, jobKind: jobKindOf(job), schedMode, intVal, intUnit, weekDays, weekTime, cronExpr: cronRaw }
+  // `datetime-local` wants wall-clock text with no zone, and an `at_ts` is an
+  // absolute instant, so it is rendered in the VIEWER's local zone — which is the
+  // zone the picker itself means. That is why the once arm shows no timezone
+  // select: unlike a cron expression, an epoch carries no zone to choose.
+  const onceLocal = isOnce ? toLocalInputValue(job.at_ts as number) : ''
+  return { name: job.name, message: job.message, agent: job.agent || '', model: job.model || '', channel: job.channel || '', approvalMode: job.approval_mode || '', silent: job.silent || false, strictSchedule: job.strict_schedule || false, hideInChat: job.hide_in_chat || false, minimalContext: job.minimal_context || false, jobKind: jobKindOf(job), schedMode, intVal, intUnit, weekDays, weekTime, cronExpr: cronRaw, onceLocal, onceLocalInitial: onceLocal }
+}
+
+/** Format an epoch-seconds instant for a `datetime-local` input, in local time.
+ *
+ * `toISOString` would render UTC and the picker would show the wrong wall clock
+ * for every viewer outside it, so the offset is subtracted first. Seconds are
+ * dropped because the input's default step is a minute — keeping them would make
+ * the control round a value the user never edited and report the form dirty. */
+function toLocalInputValue(epochSecs: number): string {
+  const d = new Date(epochSecs * 1000)
+  const local = new Date(d.getTime() - d.getTimezoneOffset() * 60000)
+  return local.toISOString().slice(0, 16)
 }
 
 /** Build the API body from form state. Returns null if validation fails (sets error). */
@@ -140,7 +164,26 @@ function buildBody(
   body.silent = f.silent
   body.strict_schedule = f.strictSchedule
   body.hide_in_chat = f.hideInChat
-  if (f.schedMode === 'interval') {
+  if (f.schedMode === 'once') {
+    // The picker gives wall-clock text with no zone, so it is parsed in the
+    // viewer's own zone (what `new Date('YYYY-MM-DDTHH:mm')` does) and sent as
+    // absolute epoch SECONDS, which is what `at` takes. No `timezone` goes with
+    // it: an instant is already unambiguous, and sending one would imply the
+    // fire time gets reinterpreted somewhere.
+    const at = Date.parse(f.onceLocal)
+    if (!f.onceLocal || Number.isNaN(at)) { setError(i18nT('components.jobForm.pick_a_date_and_time')); return null }
+    const atSecs = Math.floor(at / 1000)
+    // Refused in the form rather than at the API so the message names the field
+    // the user is looking at. A past time would fire immediately on save, which
+    // is never what picking a date meant.
+    if (atSecs <= Math.floor(Date.now() / 1000)) { setError(i18nT('components.jobForm.pick_a_time_in_the_future')); return null }
+    // Only send `at` when the TIME CONTROL actually changed. The input's step is a
+    // minute, so rendering an `at_ts` that carries seconds necessarily truncates
+    // it — and sending that back on an edit whose only change was the name would
+    // move the run up to 59 seconds earlier every time the job was touched. An
+    // unchanged control therefore sends nothing and the stored instant stands.
+    if (!isEdit || f.onceLocal !== f.onceLocalInitial) body.at = atSecs
+  } else if (f.schedMode === 'interval') {
     body.every = f.intVal * (f.intUnit === 'minutes' ? 60 : f.intUnit === 'hours' ? 3600 : 86400)
   } else if (f.schedMode === 'weekly') {
     if (f.weekDays.length === 0) { setError(i18nT('components.jobForm.select_at_least_one_day')); return null }
@@ -255,6 +298,7 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
   const [weekTime, setWeekTime] = useState(init.weekTime)
   const [tz, setTz] = useState(() => job ? (job.timezone || 'UTC') : Intl.DateTimeFormat().resolvedOptions().timeZone)
   const [cronExpr, setCronExpr] = useState(init.cronExpr)
+  const [onceLocal, setOnceLocal] = useState(init.onceLocal)
   // Touched = any field diverged from what the form OPENED with. Compared
   // against `init`/`defaults` (the same sources the state seeded from), so a
   // value typed and then typed back reads as untouched again — the same rule
@@ -270,7 +314,7 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
     hideInChat !== defaults.hideInChat || schedMode !== init.schedMode ||
     minimalContext !== defaults.minimalContext ||
     intVal !== init.intVal || intUnit !== init.intUnit ||
-    weekTime !== init.weekTime || cronExpr !== init.cronExpr ||
+    weekTime !== init.weekTime || cronExpr !== init.cronExpr || onceLocal !== init.onceLocal ||
     weekDays.length !== init.weekDays.length || weekDays.some((d, i) => d !== init.weekDays[i])
   const dirtyChangeRef = useRef(onDirtyChange)
   dirtyChangeRef.current = onDirtyChange
@@ -321,7 +365,7 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
 
   const submit = async () => {
     setError(''); setSaving(true)
-    const f = { name, message: msg, agent: locked ?? agent, model, channel, approvalMode, silent, strictSchedule, hideInChat, minimalContext, jobKind, schedMode, intVal, intUnit, weekDays, weekTime, cronExpr }
+    const f = { name, message: msg, agent: locked ?? agent, model, channel, approvalMode, silent, strictSchedule, hideInChat, minimalContext, jobKind, schedMode, intVal, intUnit, weekDays, weekTime, cronExpr, onceLocal, onceLocalInitial: init.onceLocal }
     const body = buildBody(f, tz, setError, !!job, job ? undefined : prefill)
     if (!body) { setSaving(false); return }
     try {
@@ -422,13 +466,25 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
       {vertical && <div className="flex flex-col gap-0.5"><span className="text-[12px] text-muted font-medium">{i18nT('components.jobForm.schedule')}</span><span className="text-[11px] text-muted/70">{i18nT('components.jobForm.how_often_this_job_runs')}</span></div>}
       <div className={`flex gap-2 items-center flex-wrap ${vertical ? '' : ''}`}>
         <SimpleSelect
-          options={['interval', 'weekly', 'cron']}
-          optionLabels={[i18nT('components.jobForm.every_interval'), i18nT('components.jobForm.weekly_schedule'), i18nT('components.jobForm.cron_expression')]}
+          options={['once', 'interval', 'weekly', 'cron']}
+          optionLabels={[i18nT('components.jobForm.run_once'), i18nT('components.jobForm.every_interval'), i18nT('components.jobForm.weekly_schedule'), i18nT('components.jobForm.cron_expression')]}
           value={schedMode}
-          onChange={v => setSchedMode(v as 'interval' | 'weekly' | 'cron')}
+          onChange={v => setSchedMode(v as 'once' | 'interval' | 'weekly' | 'cron')}
           aria-label={i18nT('components.jobForm.schedule')}
         />
-        {schedMode === 'interval' ? (<>
+        {schedMode === 'once' ? (<>
+          {/* No timezone select here on purpose: an `at` fire time is an absolute
+              instant, so there is no zone to choose — the picker's wall clock is
+              read in the viewer's own zone. Every other arm sends a cron/interval
+              spelling, which does need one. */}
+          <Input
+            type="datetime-local"
+            aria-label={i18nT('components.jobForm.run_once')}
+            style={{ flex: '0 0 220px' }}
+            value={onceLocal}
+            onChange={e => setOnceLocal(e.target.value)}
+          />
+        </>) : schedMode === 'interval' ? (<>
           <Input type="number" min={1} style={{ flex: '0 0 70px' }} value={intVal} onChange={e => setIntVal(Math.max(1, parseInt(e.target.value) || 1))} />
           <SimpleSelect
             aria-label={i18nT('components.jobForm.every_interval')}

@@ -374,6 +374,26 @@ export default function ChatPane({
   // Quick Send parity with ChatPage: same query key, so the cache is shared
   // with the page and no extra request is made for a pane.
   const { data: dashCfg } = useQuery<{ quick_send?: boolean }>({ queryKey: ['dashboardConfig'], queryFn: () => api.dashboardConfig(), staleTime: 30_000 })
+  // Pending one-shot crons this chat scheduled, for the composer's
+  // scheduled-message banner. Owned HERE rather than in ChatInput: that component
+  // is rendered by several surfaces (and by many tests) and a per-mount
+  // `GET /api/crons` would add a request to all of them. Read on mount and on
+  // focus, not polled — the set changes only when the user acts.
+  const { data: cronsData, refetch: refetchScheduled } = useQuery({
+    queryKey: ['crons', 'session-scheduled', activeSlot],
+    queryFn: () => api.crons(),
+    enabled: !!activeSlot,
+    staleTime: 30_000,
+  })
+  const scheduledMessages = useMemo(() => {
+    const jobs = (cronsData?.jobs ?? []) as Array<{ id: string; name?: string; session_key?: string | null; at_ts?: number | null; enabled?: boolean }>
+    // `dashboard:<slot>` is how the create path namespaces a target, and a finite
+    // future `at_ts` is what makes it a PENDING one-shot rather than a recurring
+    // job that merely belongs to this chat.
+    return jobs
+      .filter(j => j.session_key === `dashboard:${activeSlot}` && typeof j.at_ts === 'number' && j.enabled !== false)
+      .map(j => ({ id: j.id, at_ts: j.at_ts as number, name: j.name }))
+  }, [cronsData, activeSlot])
   // Follow-up bar layout: the same persisted setting ChatPage reads, kept live
   // the same way (ChatPage.tsx's reload listener) — a pane is long-lived, so a
   // one-shot read would leave it on the old layout after the user changes the
@@ -1374,6 +1394,8 @@ export default function ChatPane({
           voice={composerVoiceOptions}
         >
         <ChatInput
+          scheduledMessages={scheduledMessages}
+          onScheduledMessagesChanged={refetchScheduled}
           value={input}
           onChange={setInput}
           onSend={doSend}

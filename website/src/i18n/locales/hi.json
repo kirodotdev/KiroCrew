@@ -5807,7 +5807,14 @@
       "session_control_ready": "तैयार",
       "session_control_chip_label": "{{label}} — {{detail}}",
       "agent_inherited_default": "यह सत्र डिफ़ॉल्ट एजेंट ({{name}}) का अनुसरण करता है। इसका अपना कोई एजेंट नहीं है, इसलिए डिफ़ॉल्ट बदलने पर यह भी बदल जाता है। पिन करने के लिए क्लिक करें।",
-      "model_inherited_default": "यह सत्र डिफ़ॉल्ट मॉडल ({{name}}) पर चलता है। इसका अपना कोई मॉडल नहीं है, इसलिए डिफ़ॉल्ट बदलने पर यह भी बदल जाता है। एक पिन करने के लिए क्लिक करें।"
+      "model_inherited_default": "यह सत्र डिफ़ॉल्ट मॉडल ({{name}}) पर चलता है। इसका अपना कोई मॉडल नहीं है, इसलिए डिफ़ॉल्ट बदलने पर यह भी बदल जाता है। एक पिन करने के लिए क्लिक करें।",
+      "send_later": "बाद में भेजें…",
+      "schedule": "शेड्यूल करें",
+      "scheduled_message": "शेड्यूल किया गया संदेश",
+      "send_later_desc": "इस संदेश को बाद में भेजने के लिए शेड्यूल करें",
+      "one_message_scheduled": "{{when}} के लिए 1 संदेश शेड्यूल किया गया",
+      "n_messages_scheduled": "{{count}} संदेश शेड्यूल किए गए, अगला {{when}}",
+      "view_schedule": "शेड्यूल देखें"
     },
     "chatPane": {
       "agent_list": "एजेंट सूची",
@@ -6429,7 +6436,10 @@
       "the_prompt_or_task_sent_to_the_agent_when_this_j": "यह जॉब चलने पर एजेंट को भेजा जाने वाला प्रॉम्प्ट या कार्य",
       "timezone": "टाइमज़ोन",
       "weekly_schedule": "साप्ताहिक शेड्यूल",
-      "which_agent_handles_this_job_leave_default_for_t": "यह जॉब कौन सा एजेंट संभालेगा। मुख्य एजेंट के लिए डिफ़ॉल्ट पर छोड़ दें।"
+      "which_agent_handles_this_job_leave_default_for_t": "यह जॉब कौन सा एजेंट संभालेगा। मुख्य एजेंट के लिए डिफ़ॉल्ट पर छोड़ दें।",
+      "run_once": "एक बार चलाएँ",
+      "pick_a_date_and_time": "दिनांक और समय चुनें",
+      "pick_a_time_in_the_future": "भविष्य का समय चुनें"
     },
     "jobLogsView": {
       "cancel": "रद्द करें",

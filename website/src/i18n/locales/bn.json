@@ -5757,7 +5757,7 @@
       "screenshot": "স্ক্রিনশট",
       "select_project": "প্রজেক্ট বেছে নাও",
       "send": "পাঠান",
-      "send_options": "পাঠানোর অপশন",
+      "send_options": "পাঠানোর বিকল্প",
       "show_in_chat": "চ্যাটে দেখান",
       "show_pending_tool_call_in_chat": "অপেক্ষমাণ টুল কল চ্যাটে দেখান",
       "skill": "স্কিল",
@@ -5807,7 +5807,14 @@
       "session_control_ready": "প্রস্তুত",
       "session_control_chip_label": "{{label}} — {{detail}}",
       "agent_inherited_default": "এই সেশনটি ডিফল্ট এজেন্ট ({{name}}) অনুসরণ করে। এর নিজস্ব কোনো এজেন্ট নেই, তাই ডিফল্ট পরিবর্তন হলে এটিও পরিবর্তন হয়। পিন করতে ক্লিক করুন।",
-      "model_inherited_default": "এই সেশনটি ডিফল্ট মডেল ({{name}}) ব্যবহার করে। এর নিজস্ব কোনো মডেল নেই, তাই ডিফল্ট পরিবর্তিত হলে এটিও পরিবর্তিত হয়। একটি নির্দিষ্ট করতে ক্লিক করুন।"
+      "model_inherited_default": "এই সেশনটি ডিফল্ট মডেল ({{name}}) ব্যবহার করে। এর নিজস্ব কোনো মডেল নেই, তাই ডিফল্ট পরিবর্তিত হলে এটিও পরিবর্তিত হয়। একটি নির্দিষ্ট করতে ক্লিক করুন।",
+      "send_later": "পরে পাঠান…",
+      "schedule": "সময়সূচি",
+      "scheduled_message": "সময়সূচিভুক্ত বার্তা",
+      "send_later_desc": "এই বার্তাটি পরে পাঠানোর জন্য সময়সূচি করুন",
+      "one_message_scheduled": "{{when}}-এ 1টি বার্তা সময়সূচিতে আছে",
+      "n_messages_scheduled": "{{count}}টি বার্তা সময়সূচিতে আছে, পরবর্তী {{when}}",
+      "view_schedule": "সময়সূচি দেখুন"
     },
     "chatPane": {
       "agent_list": "এজেন্ট তালিকা",
@@ -6429,7 +6436,10 @@
       "the_prompt_or_task_sent_to_the_agent_when_this_j": "এই জব চালু হলে এজেন্টকে পাঠানো প্রম্পট বা টাস্ক",
       "timezone": "টাইমজোন",
       "weekly_schedule": "সাপ্তাহিক সময়সূচি",
-      "which_agent_handles_this_job_leave_default_for_t": "কোন এজেন্ট এই জব পরিচালনা করবে। প্রধান এজেন্টের জন্য ডিফল্ট রেখে দিন।"
+      "which_agent_handles_this_job_leave_default_for_t": "কোন এজেন্ট এই জব পরিচালনা করবে। প্রধান এজেন্টের জন্য ডিফল্ট রেখে দিন।",
+      "run_once": "একবার চালান",
+      "pick_a_date_and_time": "একটি তারিখ ও সময় বাছুন",
+      "pick_a_time_in_the_future": "ভবিষ্যতের একটি সময় বাছুন"
     },
     "jobLogsView": {
       "cancel": "বাতিল করুন",
