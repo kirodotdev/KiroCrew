@@ -5,7 +5,7 @@ Why this module exists
 ``config.json`` is written as a FULL materialization of the schema: every field
 lands on disk, including ones the operator never set. The loader then resolves
 each field as ``data.get(key, DEFAULT)``, so a stored value always beats the
-dataclass default. The consequence (issue #5244) is that changing a shipped
+dataclass default. The consequence is that changing a shipped
 default only reaches installs created after the change -- every pre-existing
 install keeps whatever value was materialized the last time it wrote config, and
 nothing tells anyone.
@@ -30,13 +30,13 @@ release that changed it.
 Why the report is acknowledgeable
 ---------------------------------
 Value equality alone cannot falsify a report, so an operator who deliberately
-chose a value that happens to equal a superseded default was told about it on
-every load, forever, with no way to answer (issue #7559). Worse, the registry is
+chose a value that happens to equal a superseded default would be told about it
+on every load, forever, with no way to answer. Worse, the registry is
 append-only: each new entry adds another permanent line, and a section that is
 mostly unanswerable noise is a section operators learn to skip -- which costs
 exactly the genuine drift the mechanism exists to surface.
 
-So the report is now falsifiable. :func:`acked_superseded` reads an
+So the report is falsifiable. :func:`acked_superseded` reads an
 acknowledgment file recording ``<dotted key> -> the value that was acked``, and a
 key whose STORED value still equals its acked value is not reported. The value is
 recorded rather than a bare key name so the acknowledgment covers the choice, not
@@ -105,35 +105,34 @@ class SupersededDefault:
 # "was this value chosen or merely materialized" automatically -- is exactly the
 # provenance the config layer does not have.
 SUPERSEDED_DEFAULTS: tuple[SupersededDefault, ...] = (
-    # #4566 changed mcp_gateway.forward_declared_env from False to True because
-    # the False default was costing env-declaring servers their pooling. It
-    # shipped with no migration, so an install materialized while the default was
-    # still False keeps resolving False and never received the fix (issue #5244).
+    # forward_declared_env's False default costs env-declaring servers their
+    # pooling, so the shipped default is True. The change carried no migration, so
+    # an install materialized while the default was still False keeps resolving
+    # False and never receives the fix.
     SupersededDefault(
         dotted_key="mcp_gateway.forward_declared_env",
         old_default=False,
         new_default=True,
         changed_in="#4566",
     ),
-    # #4388 changed session.autocompact_pct from 90.0 to 70.0 because 90.0 was
-    # also the maximum its own validator accepted, so the shipped default was
-    # the most expensive value an operator could hold: credits scale with
-    # context and steepen near the ceiling, and compacting AT the ceiling pays
-    # that rate repeatedly before acting. It shipped deliberately without a
-    # migration -- on disk, "chose 90" and "90 was the default when this file
-    # was written" are the same bytes -- so an install materialized before it
-    # still compacts at 90 and nothing told anyone (issue #4389).
+    # session.autocompact_pct defaults to 70.0, not 90.0: 90.0 is also the maximum
+    # its own validator accepts, so 90.0 is the most expensive value an operator
+    # could hold: credits scale with context and steepen near the ceiling, and
+    # compacting AT the ceiling pays that rate repeatedly before acting. The change
+    # carried no migration -- on disk, "chose 90" and "90 was the default when this
+    # file was written" are the same bytes -- so an install materialized before it
+    # still compacts at 90 and nothing tells anyone.
     SupersededDefault(
         dotted_key="session.autocompact_pct",
         old_default=90.0,
         new_default=70.0,
         changed_in="#4388",
     ),
-    # 0.5.0 changed stt.streaming from False to True: every provider now produces
-    # partial results, so the reason the default was off (two of the six providers
-    # could stream) no longer exists. An install materialized before that keeps
-    # resolving False and sees text only after it stops speaking, which reads as
-    # the feature being missing rather than switched off.
+    # stt.streaming defaults to True: every provider produces partial results, so
+    # the reason the default was off (only two of the six providers could stream)
+    # does not hold. An install materialized before the change keeps resolving False
+    # and sees text only after it stops speaking, which reads as the feature being
+    # missing rather than switched off.
     SupersededDefault(
         dotted_key="stt.streaming",
         old_default=False,
@@ -155,10 +154,10 @@ SUPERSEDED_DEFAULTS: tuple[SupersededDefault, ...] = (
         new_default="base",
         changed_in="0.5.0",
     ),
-    # #6651 changed the watchdog budget from a materialized 25 seconds to a
-    # nullable, launch-class default: 25 seconds for desktop/foreground and 90
-    # seconds for managed services. A stored 25 may be either the old default or
-    # a deliberate operator pin, so report it instead of rewriting it.
+    # The watchdog budget is a nullable, launch-class default: 25 seconds for
+    # desktop/foreground and 90 seconds for managed services. A stored 25 may be
+    # either the old default or a deliberate operator pin, so report it instead of
+    # rewriting it.
     SupersededDefault(
         dotted_key="dashboard.loop_stall_exit_after_secs",
         old_default=25,
@@ -345,7 +344,7 @@ def record_acks(dotted_keys: list[str]) -> list[str]:
     not taken from the caller's earlier snapshot: a value changed between the listing
     and this call would otherwise be acknowledged at its superseded snapshot, which
     then silently suppresses the report for a value the operator never affirmed. A
-    key that is no longer drifted is skipped rather than acked.
+    key that is not drifted is skipped rather than acked.
 
     The ack write happens inside that same config lock hold, so the recorded value
     cannot be stale by the time it lands. Lock order is config-then-ack at the only
@@ -376,7 +375,7 @@ def record_acks(dotted_keys: list[str]) -> list[str]:
 def drop_acks(dotted_keys: list[str]) -> None:
     """Forget the acknowledgments for *dotted_keys*, under the file's lock.
 
-    Called after an adopt: the acked value is no longer stored, so keeping the entry
+    Called after an adopt: the acked value is gone, so keeping the entry
     would silence a genuinely deliberate choice made later. A no-op when none of the
     keys is acked, so an adopt on a never-acked key does not touch the file at all.
     """
@@ -460,7 +459,7 @@ class CoercedValue:
     operator can do about it. A superseded default is a value that still works and
     still wins, so it may be a deliberate choice and must not be rewritten. A
     coerced value cannot win: the loader replaces it because it names something that
-    no longer exists, so there is no choice to preserve -- which makes removing it
+    does not exist, so there is no choice to preserve -- which makes removing it
     unambiguously safe, and makes affirming it meaningless.
 
     Left in place it is inert bytes that buy nothing and cost a warning on every

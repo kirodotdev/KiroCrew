@@ -79,7 +79,7 @@ def require_computer_use(
 
     The signature is preserved so ``tools.py``'s ordered chokepoint reads the same
     and so a future edition can reintroduce a decision here without touching every
-    call site — but there is no longer a governance decision to make. The keystone
+    call site — but there is no governance decision to make here. The keystone
     primary enable, checked upstream in :mod:`tools`, is the whole gate.
 
     Every parameter after ``action`` is accepted and ignored on purpose rather than
@@ -101,8 +101,8 @@ def require_pointer_move(
 ) -> "str | None":
     """Always returns ``None`` when the feature is on.
 
-    The real-pointer path used to need a second opt-in (``allow_pointer_move``) and
-    a governance permit of its own. Both are gone: one enable covers the feature,
+    The real-pointer path needs no second opt-in (``allow_pointer_move``) and
+    no governance permit of its own: one enable covers the feature,
     and ``policy.resolve_click_method`` still requires the model to NAME
     ``click_method: "global"`` explicitly — ``auto`` never resolves to it, so the
     pointer is never warped by accident.
@@ -178,10 +178,9 @@ def apply_observation_ceiling(
 ) -> dict[str, Any]:
     """Pass *payload* through unchanged.
 
-    The ceiling used to blank window titles, strip element values and scrub file
-    paths according to the ``computer_use.observations`` scope. With that scope gone
-    there is nothing to narrow: the renderers' own secure-field suppression and the
-    package-wide credential redaction are what protect the output now.
+    There is no observation scope to narrow the payload: the renderers' own
+    secure-field suppression and the package-wide credential redaction are what
+    protect the output.
     """
     return dict(payload)
 
@@ -196,10 +195,9 @@ def app_is_disclosable(
 ) -> bool:
     """Whether ``computer_list_apps`` may name this application.
 
-    Now only "does it have an identity at all" — an app with neither a bundle id
+    Only "does it have an identity at all" — an app with neither a bundle id
     nor a display name is dropped because there is nothing to show, not because a
-    policy forbids it. The per-app governance axes that used to filter this list
-    are gone.
+    policy forbids it.
     """
     return bool(bundle_id or display_name)
 

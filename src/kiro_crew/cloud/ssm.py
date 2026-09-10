@@ -9,7 +9,7 @@ Two kinds of SSM interaction:
    ``AWS-StartPortForwardingSession`` document. This is a streaming child
    process, so it is spawned directly with ``subprocess.Popen`` (not through the
    capture-only chokepoint). The argv builders are testable (the CLI head is
-   resolved via the deploy engine's shared resolver, #4770).
+   resolved via the deploy engine's shared resolver).
 
 Requires the ``session-manager-plugin`` on the client for #2 (bundled by the
 launcher prerequisites); #1 needs only the ``aws`` CLI.
@@ -171,7 +171,7 @@ def build_port_forward_argv(
     """Build the ``aws ssm start-session`` port-forward argv (testable).
 
     The CLI head is resolved absolutely through the deploy engine's shared
-    resolver so a GUI-launched gateway's minimal PATH still finds it (#4770).
+    resolver so a GUI-launched gateway's minimal PATH still finds it.
     """
     argv = [
         resolve_aws_bin(),
@@ -197,11 +197,11 @@ def session_manager_plugin_installed() -> bool:
     Resolved through the deploy engine's shared resolver, not a bare
     ``shutil.which``: the plugin's own installers target ``/usr/local/bin`` (and
     the Homebrew cask the brew prefix), neither of which is on the minimal
-    launchd ``PATH`` a Finder/Dock-launched gateway inherits — so the bare probe
-    reported "not installed" for a plugin that was installed, and
-    :func:`require_session_manager_plugin` refused every SSM tunnel before one
-    was attempted (#5392). Same resolution the ``start-session`` argv head
-    already uses, so probe and spawn can no longer disagree (#4770, #5360).
+    launchd ``PATH`` a Finder/Dock-launched gateway inherits — so a bare probe
+    reports "not installed" for a plugin that IS installed, and
+    :func:`require_session_manager_plugin` would refuse every SSM tunnel before
+    one is attempted. Same resolution the ``start-session`` argv head already
+    uses, so probe and spawn agree.
     """
     return shutil.which(resolve_aws_tool_bin(_SESSION_MANAGER_PLUGIN)) is not None
 
@@ -337,7 +337,7 @@ def open_port_forward(
     The child gets :func:`~kiro_crew.deploy.engine.aws_spawn_env` rather than a
     bare inherited env: the ``aws`` head is resolved absolutely, but the CLI then
     looks ``session-manager-plugin`` up by name on its OWN ``PATH``, which under a
-    GUI-launched gateway is the minimal launchd one (#5392). The resolved head is
+    GUI-launched gateway is the minimal launchd one. The resolved head is
     handed over so the widening is withheld when it is a bare name — a bare name
     means provenance REFUSED the candidate in those dirs, and widening would put
     it back within ``execvp``'s reach.

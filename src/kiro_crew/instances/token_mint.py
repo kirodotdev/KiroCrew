@@ -49,7 +49,7 @@ _TTL_RE = re.compile(TTL_PATTERN)
 # (also matches https://.../?token=...&foo=bar).
 _TOKEN_RE = re.compile(r"[?&]token=([^\s&]+)")
 
-# Bare KiroCrew-token / JWT shape, used to scrub a token that reached stdout
+# Bare Kiro Crew token / JWT shape, for scrubbing a token that reached stdout
 # outside a URL before a stdout tail is put into an exception message.
 #
 # The segment count is `{1,4}` REPEATED, not a fixed `head.payload.sig` triple:
@@ -77,8 +77,8 @@ _OUTPUT_TAIL_CHARS = 300
 _OUTPUT_SCAN_CHARS = _OUTPUT_TAIL_CHARS * 8
 
 # Stand-in for the run touching the scan window's left edge: the slice may have
-# cut it out of the middle of a secret, leaving a suffix the token patterns can
-# no longer recognise.
+# cut it out of the middle of a secret, leaving a suffix the token patterns
+# cannot recognise.
 #
 # The floor is deliberately LOW rather than set to the window-minus-tail
 # "reachability" distance. A clipped fragment 2000+ chars from the end looks
@@ -115,7 +115,7 @@ def _validate_ttl(ttl: str) -> str:
 def ttl_to_seconds(ttl: str) -> int:
     """Convert a validated ``<int>[hm]`` ttl string to seconds.
 
-    Used to schedule proactive token refresh before the cap. Raises
+    Schedules proactive token refresh before the cap. Raises
     :class:`TokenMintError` for a malformed ttl.
     """
     ttl = _validate_ttl(ttl)
@@ -385,7 +385,7 @@ def _redacted_output_tail(stdout: str, limit: int = _OUTPUT_TAIL_CHARS) -> str:
     non-zero exit) could still put a live credential in it. The generic
     credential/exfil redactors run FIRST: the exfiltration-URL pass keys on the
     token-bearing URL shape, so scrubbing the token value first would disarm it
-    and let a suspicious destination survive (#9014). The token-specific
+    and let a suspicious destination survive. The token-specific
     ``_TOKEN_RE`` / ``_JWT_RE`` substitutions run AFTER as belt-and-suspenders
     for token shapes the generic passes miss. The result is truncated to the
     last *limit* chars (the tail, because the reason is the last thing printed).

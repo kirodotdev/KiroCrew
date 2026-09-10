@@ -269,8 +269,8 @@ class WeixinTransport(MessagingTransport):
                     continue
                 if errcode is not None:
                     # Unknown protocol error: still back off. Without this an
-                    # unrecognized code would spin the same way the two known
-                    # codes used to.
+                    # unrecognized code would spin instead of backing off the way
+                    # the two known codes do.
                     failures += 1
                     delay = 2 if failures < 3 else 30
                     logger.warning(

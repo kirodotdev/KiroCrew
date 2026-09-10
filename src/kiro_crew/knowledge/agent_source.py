@@ -232,7 +232,7 @@ def remove_document(store: KnowledgeStore, source_id: str, slug: str) -> int:
         # A document that LOST a dedup owns nothing but still holds the winner's
         # items. Removing it has to release that claim, exactly as the artifact
         # path does, or a later winner deletion resurfaces content this aggregate
-        # no longer has.
+        # does not have.
         store.detach_source_location_by_hash(source_id, prev_hash or "")
     store.db.execute(
         "DELETE FROM agent_item_state WHERE source_id = ? AND slug = ?",

@@ -155,7 +155,7 @@ class WakaTimeClient:
         """Confirm the key works by reading the current user. Raises
         :class:`WakaTimeAuthError` on 401/403, returns the user dict on success.
 
-        Used to validate a newly-entered key before persisting it. Distinct from
+        Validates a newly-entered key before persisting it. Distinct from
         the read verbs: a caller wants a hard signal that the key is valid, not a
         silent empty result.
         """

@@ -82,7 +82,7 @@ async def maybe_start_webex(orch: "GatewayOrchestrator") -> "WebexClient | None"
             # org's own regional Device Manager, which is what a non-US-resident
             # org needs for inbound to work at all. Passed through UNCHANGED —
             # defaulting it here would spell a pin and "discover" identically, and
-            # the client could no longer tell them apart.
+            # the client could not tell them apart.
             device_base=webex_cfg.wdm_base,
         )
         transport = WebexTransport(

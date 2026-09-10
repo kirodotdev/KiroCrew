@@ -346,7 +346,7 @@ def respawn_executable() -> str:
     or does not carry a usable interpreter, so a broken or absent link can
     never take the restart path away — except when ``sys.executable`` itself is
     already gone, where :func:`_respawn_fallback` reaches the legacy tree
-    instead of handing back a path that no longer exists.
+    instead of handing back a path that does not exist.
 
     One more shape routes here: a process still served by the retired
     in-data-home venv (:func:`_legacy_nested_venv`). The installer re-run that

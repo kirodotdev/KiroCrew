@@ -7,7 +7,7 @@ a **system**-scope unit at ``/etc/systemd/system`` can never start. PID 1 runs
 in the ``init_t`` domain, the binary carries a home label (``user_home_t``), and
 the loaded policy does not grant ``init_t`` ``execute`` on that label. ``execve``
 returns ``EACCES`` and systemd reports ``status=203/EXEC``, which it then repeats
-until ``StartLimitBurst`` is exhausted (#7165).
+until ``StartLimitBurst`` is exhausted.
 
 **Why this needs a dedicated check instead of an ordinary file test.** ``203/EXEC``
 has several causes that are indistinguishable in the unit's status output: the

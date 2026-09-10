@@ -777,8 +777,7 @@ def wait(name: str, args: dict[str, Any]) -> str:
     # KIROCREW_SESSION_KEY, or a HMAC-verified pid sidecar.
     # When it comes back empty the identity is a guess, so the ping degrades
     # to the original `{}` touch: the session still cannot be reaped
-    # mid-sleep, and the countdown simply never appears. Tracked in #2347,
-    # which is the work that lets this gate go away.
+    # mid-sleep, and the countdown simply never appears.
     _identified = bool(mcp_core.require_strict_session_key("the wait keepalive ping")[0])
     # The 5s cadence exists ONLY to bound how long the button appears to do
     # nothing. An unidentified sleep publishes nothing and honours no
@@ -1064,8 +1063,8 @@ def ask_question(name: str, args: dict[str, Any]) -> str:
     # RETURNED, not raised: an escaped exception is turned into the same
     # ``"Error: …"`` text by the JSON-RPC layer, but it escapes this server's own
     # return path — so it is neither audited with the call's args nor tagged as a
-    # refusal, and the consumer reads a decline as a LOST DIRECTIVE MARKER
-    # (#8635). Returning keeps the model-facing text identical and keeps the
+    # refusal, and the consumer reads a decline as a LOST DIRECTIVE MARKER.
+    # Returning keeps the model-facing text identical and keeps the
     # "marker or refusal, nothing in between" invariant total.
     try:
         questions = validate_ask_user_question(args)
@@ -1116,13 +1115,13 @@ def monitor_start(name: str, args: dict[str, Any]) -> str:
     # hard TIME bound (e.g. "babysit this for at most 2 hours").
     max_runtime_secs = int(args.get("max_runtime_secs") or 0)
     # The one escape from gating, and deliberately an opt-OUT. An opt-IN is what
-    # this change exists to stop shipping: five consecutive opt-in mechanisms
-    # measured zero adoption, because the default never moved. An opt-out does
-    # not share that failure -- the default gates everything, and this only
-    # releases the minority of loops whose duty is to act WHILE the subject is
-    # quiet (refresh a heartbeat, chase a silent reviewer, rebase onto a moving
-    # base). Those loops previously had no control but the wording of their own
-    # instruction, which is a fragile thing to key a cadence on.
+    # An opt-out is used rather than opt-in: an opt-in default gates everything
+    # and releases nothing (every opt-in mechanism sees zero adoption because
+    # the default never moves), while this releases the minority of loops whose
+    # duty is to act WHILE the subject is quiet (refresh a heartbeat, chase a
+    # silent reviewer, rebase onto a moving base). Those loops otherwise have no
+    # control but the wording of their own instruction, which is a fragile
+    # thing to key a cadence on.
     gate = args.get("gate")
     gate = True if gate is None else bool(gate)
     # Infer from the message AS IT WILL BE STORED. The authorizer redacts
@@ -1207,8 +1206,8 @@ def _parsed_pull_request_target(raw: Any) -> tuple[str, str]:
     JSON-RPC layer turns it into the same ``"Error: …"`` text, but past the point
     that tags a decline as a refusal, so the consumer reads it as a LOST directive
     marker and fires the WARNING reserved for a transport regression. Guarding the
-    two sites separately is what let the second one ship unguarded (#8635); a
-    single seam is what makes the next caller correct by construction.
+    two sites separately would let a second site go unguarded; a
+    single seam makes the next caller correct by construction.
     """
     try:
         return parse_github_pull_request_target(str(raw)).url, ""
@@ -1285,7 +1284,7 @@ def monitor_inspect(name: str, args: dict[str, Any]) -> str:
 def _compact_monitor_inspection(result: dict[str, Any]) -> dict[str, Any]:
     """Project the browser record into a bounded, agent-oriented status."""
     compact = {key: result.get(key) for key in ("enabled", "active", "monitor_id") if key in result}
-    # Surface the auto-nudge loop reading (#9194) so a caller can tell an armed
+    # Surface the auto-nudge loop reading so a caller can tell an armed
     # auto-nudge loop from nothing armed. It is already a bounded, fixed-key dict
     # from the handler, so it passes through as-is; absent on responses that
     # predate the field, and None when no loop is armed.

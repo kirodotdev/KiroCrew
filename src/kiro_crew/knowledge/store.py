@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 AUTO_ADDED_PROP = "auto_added"
 
 # Marker recording that a row Kiro Crew registered itself has been adopted by the
-# user, the feature that registered it no longer existing. Written by
+# user (the auto-registration feature that created such rows is gone). Written by
 # `retire_auto_registered_folder` when the scan funnel refuses such a row, and by the
 # confirm and resume endpoints when the user adopts one; its presence is what keeps a
 # later refusal from undoing that decision.
@@ -104,13 +104,11 @@ _WALKING_SOURCE_TYPES = ("local_folder", "obsidian_vault")
 
 # Every query in this module funnels through the ``db`` property, so one check
 # there covers every caller at any stack depth -- including the ones a lexical
-# ``async def`` scan cannot see, which is why this guard exists (#7078, the
-# interprocedural half of #3057).
+# ``async def`` scan cannot see, which is why this guard exists.
 #
 # Both narrowings below are temporary and exist for the same reason: this store
 # still has on-loop callers left -- the lines in
-# ``.github/sync-io-in-async-baseline.txt``, all of it knowledge paths, owned by
-# the cleanup at #7019.
+# ``.github/sync-io-in-async-baseline.txt``, all of it knowledge paths.
 #
 # ``dashboard/handlers/knowledge.py`` takes the store through a worker for every
 # take of its OWN, endpoints and background tasks alike. It is not the whole
@@ -137,7 +135,7 @@ _WALKING_SOURCE_TYPES = ("local_folder", "obsidian_vault")
 #   same backlog, which would report tracked work as a regression and push the
 #   developer to unset ``KIROCREW_DEV_MODE`` -- silencing history.py's guard too.
 #
-# When #7019 empties that baseline, delete both arguments and this store joins
+# When that baseline is empty, delete both arguments and this store joins
 # the shared switch.
 _ON_LOOP_DB_GUARD = OnLoopDBGuard(
     label="knowledge store",
@@ -487,12 +485,12 @@ class KnowledgeStore:
         # the socket binds, so construction happens on the loop on every
         # launch. The take is deliberate, so the on-loop guard -- which exists
         # to police reader/writer query paths -- warned spuriously on every
-        # boot (#8231). Deliberate is not free, though: `_migrate()` runs an
+        # boot. Deliberate is not free, though: `_migrate()` runs an
         # unconditional writer-locked orphan sweep, which is data-scaled and
-        # still runs here. `_load_graph()` no longer does: it is deferred to the
+        # still runs here. `_load_graph()` does not: it is deferred to the
         # first graph reader (`ensure_graph_loaded`), the same shape the FTS
         # rebuild already uses, which takes roughly half the construction cost
-        # off the boot path (#8329). Gating the sweep as well would change when
+        # off the boot path. Gating the sweep as well would change when
         # the writer lock is taken, so it stays.
         # The suppression ends with the block: the six non-constructor
         # `_load_graph()` call sites and every query path stay fully guarded.
@@ -818,9 +816,8 @@ class KnowledgeStore:
         #
         # Nothing in-tree can write that escaped form any more (`json.dumps`
         # never escapes ASCII, and `_without_sync_status` re-serializes on every
-        # insert and update), but `import_bundle` used to store a bundle's
-        # properties text verbatim, so a row imported before this change can
-        # still hold one.
+        # insert and update), but a row imported by an early `import_bundle` --
+        # which stored properties text verbatim -- can still hold one.
         blob_copies = self.db.execute(
             "SELECT id, properties, sync_status FROM sources").fetchall()
         for row in blob_copies:
@@ -1009,7 +1006,7 @@ class KnowledgeStore:
         from ``__init__``, for the reason ``ensure_fts_index_current`` gives
         about itself: the constructor runs on the event-loop thread and this
         work is proportional to ``entities`` + ``entity_relations``, so doing it
-        there stalls the gateway before the socket binds (#8329).
+        there stalls the gateway before the socket binds.
 
         **The offload is load-bearing, not hygiene.** Both handlers are
         ``async def`` and read the graph on the loop, where the loop-stall
@@ -1049,14 +1046,14 @@ class KnowledgeStore:
         freshest committed state rather than replaying rows it captured earlier.
 
         **Build a fresh graph, then publish it with one reference assignment.**
-        The rebuild used to ``clear()`` the live ``self._graph`` and re-add row
-        by row, which serialization made stale-publish-safe but left the object a
+        Clearing the live ``self._graph`` and re-adding row
+        by row would be stale-publish-safe under serialization but leave the object a
         reader could be iterating momentarily empty: a reader holding
-        ``self._graph`` between the ``clear()`` and the last insert saw a torn
+        ``self._graph`` between the ``clear()`` and the last insert would see a torn
         (empty or truncated) graph, and a multi-step reader that re-read
         ``self.graph`` across its own steps -- degree ranking, then per-node
-        attribute reads -- could miss a node that ``clear()`` had just removed
-        (#8692). Building into a NEW ``SimpleDiGraph`` and swapping the reference
+        attribute reads -- could miss a node that ``clear()`` had just removed.
+        Building into a NEW ``SimpleDiGraph`` and swapping the reference
         under the lock closes that window: the old object is never mutated, so a
         reader holding it sees a complete, consistent OLD graph until it drops the
         reference, and the next read sees the complete NEW one. The multi-step
@@ -1204,7 +1201,7 @@ class KnowledgeStore:
         Matched on ``content_hash`` because that is what identifies the document
         independently of which source holds it. Appends rather than replaces, so a
         multi-item group (a chunked file) is not truncated to one, and clears any
-        deferral marker: a row that owns an item is no longer deferring to anyone.
+        deferral marker: a row that owns an item is not deferring to anyone.
 
         A hash is only an identifier while it picks out ONE row. Two distinct
         documents in one source may legitimately hold identical text, and writing the
@@ -1247,14 +1244,14 @@ class KnowledgeStore:
                 (json.dumps(ids), healthy, st["rowid"]))
 
     def detach_source_location_by_hash(self, source_id: str, content_hash: str) -> int:
-        """Drop this source's CLAIM on a document it no longer has a copy of.
+        """Drop this source's CLAIM on a document it has no copy of.
 
         The counterpart to :meth:`_adopt_reassigned_item`. A source that lost a dedup
         holds no items for that document -- its state row is 'deduped' with an empty
         group -- yet it IS still a location of the winner's items, which is what keeps
         the document reachable if the winner goes away. When the losing copy is
         genuinely removed (its file deleted from that folder), the claim has to go too,
-        or the source stays a candidate to inherit a document it no longer has and the
+        or the source stays a candidate to inherit a document it does not have and the
         content resurfaces there as searchable text with no file behind it.
 
         Identified by ``content_hash`` because that is the only handle such a row has:
@@ -1295,7 +1292,7 @@ class KnowledgeStore:
     def release_stale_claim(self, source_id: str, prev_hash: str | None,
                             new_hash: str, prev_item_ids: list[str],
                             prev_text_hash: str | None = None) -> int:
-        """Release a claim made for content this source no longer has.
+        """Release a claim made for content this source does not have.
 
         A source that lost a dedup owns no items but IS a location of the winner's,
         and that claim is specific to the content it was made for. When the source's
@@ -1443,10 +1440,8 @@ class KnowledgeStore:
     def delete_source_cascade(self, source_id):
         """Delete a source and all its items in a single transaction (batch SQL).
 
-        No tombstone is written. One used to be, so a recurring discovery sweep could
-        not re-create the auto source a user had just deleted; with both discovery
-        loops removed nothing re-creates a source behind the user, so recording the
-        deletion would be a write nothing reads. The ``dismissed_auto_sources`` table
+        No tombstone is written. Nothing re-creates a source behind the user, so
+        recording the deletion would be a write nothing reads. The ``dismissed_auto_sources`` table
         is left in place unused rather than dropped, so no schema migration rides
         along with a feature removal.
         """
@@ -1892,13 +1887,13 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
             "VALUES (?, ?, ?, ?, ?, ?, ?)",
             (eid, name, entity_type, description, json.dumps(aliases or []), now, now))
         # Hold ``_graph_lock`` across BOTH the commit and the in-memory add, as one
-        # critical section (#8692). ``_load_graph`` -- which every delete / merge /
+        # critical section. ``_load_graph`` -- which every delete / merge /
         # import path runs after its own COMMIT -- takes this same lock for its whole
         # rebuild-and-swap, so serializing commit+add here means a concurrent rebuild
         # can never land BETWEEN this commit and this add. Without that, a source
         # deletion that removes this entity's rows could rebuild and swap in the
         # window, and this late add would re-inject the deleted entity into the
-        # published graph while SQLite no longer has it. Whichever of the two paths
+        # published graph when SQLite has already dropped it. Whichever of the two paths
         # acquires last leaves the in-memory graph agreeing with the committed rows.
         with self._graph_lock:
             self.db.commit()
@@ -2109,7 +2104,7 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
 
     def get_neighbors(self, entity_id, depth=1) -> list:
         # Pin one graph reference for the whole traversal. ``_load_graph``
-        # publishes a rebuilt graph by swapping ``self._graph`` (#8692), so
+        # publishes a rebuilt graph by swapping ``self._graph``, so
         # re-reading ``self.graph`` at each step could mix an old and a new graph
         # across the successor/predecessor walk and the per-node attribute reads.
         # Capturing it once means this read sees a single consistent snapshot.
@@ -2142,7 +2137,7 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
         against it, so the check and the traversal see the same snapshot -- a
         rebuild swapping in a fresh graph between them cannot let an entity pass
         the check on the old graph and be walked on the new one, returning a
-        degenerate ``name: None`` subgraph instead of ``None`` (#8692). The
+        degenerate ``name: None`` subgraph instead of ``None``. The
         ``get_entity_graph`` handler relies on this ``None`` to answer 404.
         """
         graph = self.graph

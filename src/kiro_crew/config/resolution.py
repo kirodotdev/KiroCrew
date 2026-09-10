@@ -202,7 +202,7 @@ def capture_extra_section_keys(data: dict, cfg: object) -> dict:
             per_record: dict = {}
             for name, entry in raw.items():
                 record = section_obj.get(name)
-                # A flat legacy entry (workspaces used to be plain strings) has
+                # A flat legacy entry (a workspace written as a plain string) has
                 # no nested keys to lose; a record the load did not build (it was
                 # not a dict, or was rejected) has nothing to compare against.
                 if not isinstance(entry, dict) or record is None or not is_dataclass(record):
@@ -435,7 +435,7 @@ def _coerced_section(data: dict, key: str, degraded: set[str]) -> dict:
     take the whole process down — but it must stop doing so SILENTLY. Every
     section read goes through here so the "was this value real, or invented by
     the parser" question has one answer for every consumer, instead of each
-    security gate growing its own shadow parser beside the loader (#4057).
+    security gate growing its own shadow parser beside the loader.
 
     An ABSENT section is not degraded: that is the genuine unconfigured state.
     """

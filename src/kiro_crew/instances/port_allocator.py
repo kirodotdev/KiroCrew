@@ -72,7 +72,7 @@ def _is_addr_free(port: int, host: str) -> bool:
     pre-flight would falsely report the just-freed port as "in use" and reject
     the reconnect — the observed symptom of having to "wait longer" before a
     just-disconnected instance can be reconnected. With ``SO_REUSEADDR`` set the
-    probe matches ssh: a ``TIME_WAIT`` remnant is no longer a false positive,
+    probe matches ssh: a ``TIME_WAIT`` remnant is not a false positive,
     while a genuinely *live* listener (a real port collision between two
     connected instances) still fails to bind and is correctly reported in use
     (``SO_REUSEADDR`` exempts ``TIME_WAIT`` only, never an active ``LISTEN``).

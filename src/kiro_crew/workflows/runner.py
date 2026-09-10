@@ -592,7 +592,7 @@ class WorkflowRunner:
         self._audit = _guarded_audit(audit or _default_audit)
         self._ports = ports or {}
         # Optional async teardown fired once when a background run reaches its
-        # terminal state (success/fail/cancel). Used to shut down a per-run warm
+        # terminal state (success/fail/cancel). Shuts down a per-run warm
         # session pool (agent_pool) so its warm sessions are released exactly when
         # the run ends. Best-effort — a teardown failure never changes the outcome.
         self._on_complete = on_complete

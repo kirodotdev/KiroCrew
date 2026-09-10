@@ -302,7 +302,7 @@ from kiro_crew.config.sections import (  # noqa: F401
     yolo_duration_to_secs,
 )
 
-# Superseded-default reporting (#5244). Leaf module: stdlib only, so importing it
+# Superseded-default reporting. Leaf module: stdlib only, so importing it
 # here creates no cycle.
 from kiro_crew.config.superseded_defaults import drift_summary, superseded_default_drift
 
@@ -806,10 +806,10 @@ def _persist_config_migration(
 ) -> bool:
     """Write the pending migrations to *path* as a read-modify-write.
 
-    Replaces the ``cfg.save()`` this used to be. ``save()`` re-serializes the
-    WHOLE snapshot the load parsed, and that snapshot was read before this call:
-    a dashboard PATCH or ``kirocrew config set`` landing in between was silently
-    dropped, because nothing ordered the two (#7793). ``load()`` already runs off
+    Writes as a read-modify-write rather than ``cfg.save()``. ``save()``
+    re-serializes the WHOLE snapshot the load parsed, and that snapshot was read
+    before this call: a dashboard PATCH or ``kirocrew config set`` landing in
+    between is silently dropped, because nothing orders the two. ``load()`` already runs off
     the event loop in places (``chat_runner``'s stop-hook nudge-cap site awaits
     ``asyncio.to_thread(KiroCrewConfig.load)``), so the interleave is reachable.
 
@@ -1134,14 +1134,11 @@ def write_config_atomically(path: Path, data: dict, *, fsync: bool = False) -> N
     ``atomic_write``'s ``mode`` routes through ``fchmod_safe``, which applies the
     mode on POSIX and is a documented no-op on Windows.
 
-    **Windows gets a real owner-only DACL, not just the inert mode.** This used
-    to deliberately skip ``platform_compat.restrict_to_owner`` because that helper
-    shelled out to ``icacls`` — a blocking subprocess this function could not
-    afford, being called from ``async`` request handlers and from
-    ``KiroCrewConfig.save()``. That constraint no longer exists: the lockdown is
-    applied in-process through ``advapi32`` (measured at 0.24 ms, against 313 ms
-    for the subprocess it replaced), so it is safe on the event loop and the
-    reason to omit it is gone. Since ``config.json`` can carry inline provider
+    **Windows gets a real owner-only DACL, not just the inert mode.** The lockdown
+    is applied in-process through ``advapi32`` (measured at 0.24 ms, against 313 ms
+    for the ``icacls`` subprocess), so it is safe on the event loop even though this
+    function is called from ``async`` request handlers and from
+    ``KiroCrewConfig.save()``. Since ``config.json`` can carry inline provider
     tokens and API keys, applying it is the correct default rather than a duty
     pushed onto each caller.
 
@@ -1332,9 +1329,8 @@ def update_config_locked(
     ``write_config_atomically(config_path())`` caller outside this module, and
     the required path for new ``config.json`` mutations.  **No such caller
     remains** -- the dashboard agents endpoint, ``security.py``, the apps manager
-    and the CLI setup wizard were the last of them and are converted (#8032);
-    ``memory.py`` was converted earlier and reaches this function through
-    ``dashboard/chat_utils.run_config_write``.
+    and the CLI setup wizard all route through the locked path, and ``memory.py``
+    reaches this function through ``dashboard/chat_utils.run_config_write``.
     ``TestEveryConfigWriterIsLocked`` in
     ``test/test_config_rmw_preserves_settings.py`` is the ratchet that keeps the
     list from regrowing.
@@ -1342,9 +1338,9 @@ def update_config_locked(
     Read "direct caller outside this module" strictly: it is the exact set the
     ratchet checks, and it is NOT the same as "every writer that reaches
     ``config.json``".  :meth:`KiroCrewConfig.save` calls
-    :func:`write_config_atomically` and does NOT come through here -- but since
-    #4767 it holds the SAME sidecar lock (via :func:`_config_write_lock`), so
-    its rename can no longer land inside this function's read-modify-write.
+    :func:`write_config_atomically` and does NOT come through here -- but it holds
+    the SAME sidecar lock (via :func:`_config_write_lock`), so its rename cannot
+    land inside this function's read-modify-write.
     ``save`` is still a whole-document publish of in-memory state, not an RMW:
     a stale snapshot saved after a locked update overwrites it with older
     values.  The lock fixes interleaving, not staleness.
@@ -1551,8 +1547,8 @@ def refresh_config_meta_stamp() -> bool:
     upgrade that never touches ``config.json`` leaves ``lastTouchedVersion``
     naming the *previous* build indefinitely. That contradicts the field's
     documented meaning ("the build that wrote the bytes now on disk") and
-    sends anyone debugging a version question chasing a build that is no
-    longer installed (#3102). Called once per gateway start, off the boot
+    sends anyone debugging a version question chasing a build that is not
+    installed. Called once per gateway start, off the boot
     path: a version check on one small file, a rewrite only when it differs.
 
     Deliberately a plain field refresh, not a migration hook: the stamp is
@@ -1728,8 +1724,8 @@ def strip_kiro_cli_api_key(env: MutableMapping[str, str]) -> MutableMapping[str,
     raw ``os.environ`` snapshot would ride into an agent process that has no use
     for it.
 
-    "Foreign process" is no longer the right framing for KAS: Crew reaches it
-    through kiro-cli's ACP relay, so the child IS a kiro-cli. The strip still
+    For KAS the child IS a kiro-cli: Crew reaches it through kiro-cli's ACP relay.
+    The strip still
     applies because the v3 engine resolves its tokens either from kiro-cli's
     OIDC store (``--auth-method cli``) or from Crew's own vault over its
     ``_kiro/auth/getAccessToken`` callback, and an API key in its environment
@@ -2151,7 +2147,7 @@ def _shadowed_base_sections(base: dict, overlay: dict) -> dict:
 
     Only sections the overlay names are kept (an overlay normally touches a few),
     and only their base copy — the loader already has the merged copy. This rides
-    in the cache sidecar so a cache hit, where the overlay is no longer in scope,
+    in the cache sidecar so a cache hit, where the overlay is not in scope,
     can still capture correctly.
     """
     return {k: copy.deepcopy(base[k]) for k in overlay if k in base}
@@ -2415,7 +2411,7 @@ class KiroCrewConfig:
     #: right for an ordinary consumer and dangerous for one reading a SECURITY
     #: value out of a section: a coerced-away section is indistinguishable from
     #: "the operator configured nothing", so a narrowing silently becomes
-    #: allow-all (#4057, and the same shape as #3945).
+    #: allow-all.
     #:
     #: A consumer cannot recover this by re-reading the file, which is why the
     #: signal has to live here: ``load()`` runs a migration that REWRITES
@@ -2478,7 +2474,7 @@ class KiroCrewConfig:
     # an older config written by a newer edition) would otherwise erase the
     # operator's value on the next save() of any kind, with no backup on that
     # path. Shape: {section: {key: value}}. Populated only from disk, and only
-    # ever used to fill a key the emitted section LACKS, so it cannot clobber a
+    # ever fills a key the emitted section LACKS, so it cannot clobber a
     # live value. See resolution.capture_extra_section_keys for what counts as
     # unknown (a schema-modelled key that validation rejected stays dropped).
     _extra_keys: dict = field(default_factory=dict)
@@ -2522,7 +2518,7 @@ class KiroCrewConfig:
         # a config read on that side would stat/read/validate config.json on the
         # loop. Done here rather than inside _load_resolved so EVERY return path
         # publishes -- including the defaults path taken when neither config file
-        # could be read, which must CLEAR a previously published snapshot rather
+        # could be read, which must CLEAR an already-published snapshot rather
         # than leave a deleted directory resolving commands. Lazy import: env
         # must stay off this module's import graph.
         try:
@@ -2539,7 +2535,7 @@ class KiroCrewConfig:
         # config.json itself. Here rather than in _load_resolved so EVERY return
         # path publishes -- including the degraded-defaults path, which must
         # overwrite a richer previous snapshot rather than leave the resolver
-        # honoring aliases that no longer load.
+        # honoring aliases that do not load.
         try:
             publish_agent_alias_snapshot(cfg)
         except Exception as e:  # pragma: no cover - defensive
@@ -2640,7 +2636,7 @@ class KiroCrewConfig:
                     _mark_file_degraded(path)
 
             # Report -- never correct -- a stored BASE value that still holds a
-            # superseded default (issue #5244), before the overlay merge below:
+            # superseded default, before the overlay merge below:
             # the overlay is the operator's live choice and says nothing about
             # what the base materialized. Read-only by design; a key with a
             # documented escape hatch cannot be corrected automatically, because
@@ -2700,7 +2696,7 @@ class KiroCrewConfig:
                 # genuinely absent one, and the two are opposite claims for a
                 # security gate: "the operator configured nothing" versus "we
                 # could not read what they configured". Carry the observation
-                # through so the caller can tell them apart (#4057).
+                # through so the caller can tell them apart.
                 cfg = cls(_degraded_sections=frozenset(_OBSERVED_DEGRADED_SECTIONS))
                 if (
                     DEGRADED_WHOLE_CONFIG in _OBSERVED_DEGRADED_SECTIONS
@@ -2799,7 +2795,7 @@ class KiroCrewConfig:
         slack_data = _coerced_section(data, "slack", _degraded)
         publish_data = _coerced_section(data, "publish", _degraded)
         # A malformed allowed_destinations is the same class as a malformed
-        # section one level down (#4057), in two shapes. A non-LIST value:
+        # section one level down, in two shapes. A non-LIST value:
         # iterating it either crashes load() with a TypeError (a scalar — a
         # config typo must not abort gateway startup) or yields garbage (a
         # dict iterates as its keys, a string as its characters). A list with
@@ -4040,10 +4036,9 @@ class KiroCrewConfig:
         #
         # The in-memory half below mutates `cfg` and RECORDS which migrations it
         # decided on; the on-disk half re-reads config.json inside the write lock
-        # and applies exactly those as a delta (see _persist_config_migration).
-        # It used to be `cfg.save()`, which re-serialized this load's whole
-        # snapshot and so dropped any config write that landed after this load's
-        # read (#7793).
+        # and applies exactly those as a delta (see _persist_config_migration),
+        # rather than `cfg.save()`, which would re-serialize this load's whole
+        # snapshot and drop any config write that landed after this load's read.
         try:
             pending: set[str] = set()
             # Flat workspace strings → need migration to {"dir": ...}
@@ -4100,7 +4095,7 @@ class KiroCrewConfig:
                 # fields, so writing back here would replace the operator's
                 # malformed narrowing with clean defaults — erasing the only
                 # on-disk evidence and turning the denial into silent
-                # allow-all at the next restart (#4057). Keep the malformed
+                # allow-all at the next restart. Keep the malformed
                 # bytes; every future process re-observes and re-denies until
                 # the operator actually fixes the file. Migration re-runs on
                 # the first clean load.
@@ -4248,7 +4243,7 @@ class KiroCrewConfig:
         output to prevent overlay settings from leaking into the base file.
 
         **The write happens under the sidecar advisory lock** — the same
-        ``<config>.lock`` that :func:`update_config_locked` holds (#4767).
+        ``<config>.lock`` that :func:`update_config_locked` holds.
         Without it, this whole-document rename could land INSIDE another
         writer's read-modify-write (a CLI ``update_config_locked`` holder, a
         boot refresh, a second gateway), and whichever renamed second
@@ -4266,14 +4261,13 @@ class KiroCrewConfig:
         write. Every read-modify-write flow, and every dashboard/coroutine
         caller, belongs on :func:`update_config_locked` (via
         ``dashboard/chat_utils.run_config_write``), which holds the flock
-        across the WHOLE read-mutate-write transaction; as of #4767 no
-        coroutine in the tree calls ``save()`` at all
-        (``TestNoInlineSaveOnTheEventLoop`` pins that structurally).
+        across the WHOLE read-mutate-write transaction; no coroutine in the tree
+        calls ``save()`` at all (``TestNoInlineSaveOnTheEventLoop`` pins that
+        structurally).
 
         **Async callers must offload.** A contended POSIX ``flock`` blocks
         the calling thread for as long as the holder keeps it, which on the
-        event-loop thread stalls the whole gateway — the exact failure that
-        reverted the first attempt at this lock (#4371).
+        event-loop thread stalls the whole gateway.
         """
 
         d = self.to_dict()
@@ -4545,8 +4539,8 @@ class KiroCrewConfig:
             # toggles the read-only attribute and succeeds without narrowing
             # who can read), and the real owner-only lockdown --
             # ``platform_compat.restrict_to_owner`` -- is not applied on this
-            # READ path. It no longer spawns a subprocess, so the reason is no
-            # longer cost: it is that a reader has no business rewriting a
+            # READ path. The reason is not cost: it is that a reader has no
+            # business rewriting a
             # descriptor it did not create, and doing so here would apply the
             # DACL of whichever process happened to read the file next.
             # Windows enforcement therefore lives where the file is WRITTEN --
@@ -5126,7 +5120,7 @@ def publish_agent_alias_snapshot(config: "KiroCrewConfig") -> None:
     Pure in-memory rebind — safe from anywhere, including the event loop. Called
     from :meth:`KiroCrewConfig.load` so every successful load refreshes it,
     including the degraded-defaults path (which must OVERWRITE a richer previous
-    snapshot rather than leave a resolver claiming aliases that no longer load).
+    snapshot rather than leave a resolver claiming aliases that do not load).
     """
     global _CONFIG_AGENT_ALIAS_SNAPSHOT
     aliases = frozenset(str(n) for n in config.agents if isinstance(n, str) and n)
@@ -5167,7 +5161,7 @@ def agent_alias_snapshot() -> tuple[frozenset[str], str, bool]:
 # files LOWERS that maximum, and so does restoring a backup with ``cp -p`` or any
 # other writer that preserves timestamps; each one makes the current state of the
 # filesystem look like an older read, so the publish that should win is dropped
-# and the live gate keeps a threshold the files no longer say. A ticket is
+# and the live gate keeps a threshold the current files do not carry. A ticket is
 # independent of the filesystem, so a deletion and a timestamp-preserving restore
 # both order as what they are: the newest read.
 _CONFIG_AUTOCOMPACT_PCT: float = DEFAULT_AUTOCOMPACT_PCT
@@ -5294,7 +5288,7 @@ def publish_config_timezone(config: "KiroCrewConfig", ticket: int | None = None)
     reader sees either the whole previous value or the whole new one. Called from
     :meth:`KiroCrewConfig.load` so every successful load refreshes it, including
     the degraded-defaults path, which must OVERWRITE a previous snapshot rather
-    than leave a zone the files no longer name.
+    than leave a zone the files do not name.
 
     *ticket* orders this publish against concurrent ones and carries the same
     contract as :func:`publish_autocompact_pct`: it must come from

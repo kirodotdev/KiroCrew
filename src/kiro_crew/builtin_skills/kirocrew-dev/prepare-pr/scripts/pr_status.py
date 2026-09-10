@@ -178,7 +178,7 @@ _CLOSING_REF = _CLOSING_VERB + r"[ \t]*:?[ \t]+" + _ISSUE_TARGET
 # refused for the same reason (it advances to the four-column stop).
 #
 # What the cap costs: a trailer indented four or more columns that GitHub WOULD
-# resolve as lazy paragraph continuation is no longer credited as a declaration.
+# resolve as lazy paragraph continuation is not credited as a declaration.
 # That is the cheap direction -- it prints an advisory notice on an odd body,
 # where the opposite error credits an EXAMPLE and silently suppresses a real
 # unrelated-closure warning -- and a trailer is written as a whole line of its
@@ -210,7 +210,7 @@ _CLOSING_REF_RE = re.compile(
     r"/issues/(?P<url_number>\d+))",
     re.IGNORECASE,
 )
-# Any issue-ish reference at all, used to tell "forgot the verb" from
+# Any issue-ish reference at all, to tell "forgot the verb" from
 # "genuinely closes nothing". Mirrors the same three targets, so a qualified
 # ref or an issue URL written without a verb is reported as a missing keyword
 # rather than as a body with no issue link at all.
@@ -587,7 +587,7 @@ def closing_link_reason(body, closing_refs, repo=None):
     if _CLOSING_KW_RE.search(visible_body):
         # A visible verb is present but the host resolved nothing: the number,
         # repository target, or issue state does not form a live closure. A code
-        # fence is no longer a candidate explanation -- fenced text is masked
+        # fence is not a candidate explanation -- fenced text is masked
         # before this runs, so it cannot reach here in the first place.
         return (
             "body has a closing keyword but the host resolved no issue "
@@ -861,7 +861,7 @@ def collapse_superseded(rollup):
 
     GitHub keeps superseded attempts (typically CANCELLED) in the rollup next
     to the run that replaced them; counting them inflates the failure count
-    with entries that are no longer live. Identity is the workflow-qualified
+    with entries that are not live. Identity is the workflow-qualified
     check name for CheckRuns and the context name for StatusContexts; newest
     is decided by startedAt (ISO-8601, so string comparison orders correctly).
     Entries that cannot be strictly ordered against the current winner are all
@@ -1086,7 +1086,7 @@ def evaluate_reviewer_markers(comments, head_sha, bindings, only=None):
 
 
 def reviewer_round_settled(marker_eval):
-    """Whether the AI-review round is decided, regardless of the other checks.
+    """Whether AI review for this head is decided, regardless of the other checks.
 
     True only when the fleet was PINNED (``--reviewers`` / the loop's own
     profile names), the comments were readable, every pinned lane carries a
@@ -1449,7 +1449,7 @@ def _flag_value(argv, name):
 def disposition_gate(argv, environ):
     """Evaluate ONLY the disposition rule and print one JSON object; exit 0.
 
-    This is the server-side entry point (issue #6658): pr-readiness.yml calls
+    This is the server-side entry point: pr-readiness.yml calls
     it so a disposition record violating the one-lane / one-rationale-per-
     finding rule fails the repository's required status for EVERY writer, not
     only for a writer running the prepare-pr loop. It exists as a mode of this
@@ -1463,7 +1463,7 @@ def disposition_gate(argv, environ):
     Prints ``{"ok", "violations", "comments", "records", "unverified",
     "error"}``. ``ok`` is False when the record set could not be established,
     which the caller must treat as UNKNOWN (pending) rather than as a red: a
-    transient API failure red-lighting the required status is the #2753 class
+    transient API failure red-lighting the required status is that class
     of bug. Exit status is 0 for both outcomes -- the JSON carries the verdict,
     so a non-zero exit means only that this script itself failed to run, and
     the caller can tell the two apart. Enforcement scope is deliberately
@@ -1611,7 +1611,7 @@ def main(argv):
         "  unresolved threads (advisory): " + ("?" if n_unresolved is None else str(n_unresolved))
     )
 
-    # Reviewer-side conditions (issue #2550): the stamp and the comment body
+    # Reviewer-side conditions: the stamp and the comment body
     # are the signal -- never the review workflow's run conclusion, which is
     # unreliable in both directions on this repo.
     marker_authors = resolve_marker_authors(argv, os.environ)
@@ -1670,7 +1670,7 @@ def main(argv):
         for name in marker_eval["stale"]:
             print("  - {}: STALE (stamp names an older head)".format(sanitize(name)))
 
-    # Disposition-rule gate (issue #4187): a repository writer's disposition
+    # Disposition-rule gate: a repository writer's disposition
     # comment must claim exactly one span= finding identity from its own
     # target= lane. Each record is validated against the findings stamped for
     # the head its head= says it judged (in the ordinary fix-then-push round

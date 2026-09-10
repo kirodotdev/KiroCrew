@@ -159,7 +159,7 @@ def read_open_fds() -> int | None:
     per-platform probe (also behind gatewayd's zombie-diagnostic ``fd_count``
     field). POSIX counts fd-directory entries minus the enumeration fd itself;
     Windows reports the kernel handle count — platform-dependent semantics,
-    but coverage this gauge previously lacked.
+    covered on both platforms here.
     """
     return platform_compat.count_open_fds()
 

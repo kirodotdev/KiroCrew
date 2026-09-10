@@ -9,7 +9,7 @@ and is never stored here.
 Two persisted hints support lazy reconnect on gateway restart:
 
 * per-instance ``was_connected`` — whether the instance had an open tunnel when
-  it was last touched, used to render "disconnected — click to reconnect".
+  it was last touched; renders "disconnected — click to reconnect".
 * top-level ``last_active_id`` — the single instance to auto-revive on startup
   (startup opens *no* other tunnels, avoiding a stale-credential ssh herd).
 
@@ -91,11 +91,9 @@ _DEFAULT_SSM_RUN_AS = "ec2-user"
 # re-export seam, giving the value a name that says what it means HERE (the
 # REMOTE's port, not ours).
 #
-# It was previously 7777 -- an earlier default dashboard port -- which left the
-# Add form pre-filling a port no stock remote listens on (#1972). Correcting it
-# was only safe once the local forward stopped mirroring this value: while it
-# mirrored, filling in the port a stock remote actually binds landed the user on
-# a guaranteed local-port collision.
+# The local forward does not mirror this value: mirroring would pre-fill the port
+# a stock remote actually binds and land the user on a guaranteed local-port
+# collision.
 DEFAULT_REMOTE_PORT = _DEFAULT_PORT
 _DEFAULT_TTL = "20h"
 
@@ -203,7 +201,7 @@ class Instance:
     # unknown). Persisted so a forwarder orphaned by a gateway hard-kill can be
     # reclaimed by its OWN identity — pid + start time + exact argv — never by
     # matching the process table, which cannot distinguish our child from an
-    # operator's own forward (#1972). Either half missing means the identity
+    # operator's own forward. Either half missing means the identity
     # cannot be confirmed and no reclaim happens (fail closed).
     forwarder_pid: int = _NO_FORWARDER_PID
     forwarder_start: str = ""

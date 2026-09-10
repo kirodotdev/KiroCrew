@@ -830,7 +830,7 @@ class IngestionPipeline:
             raise PermissionError(f"Refusing to ingest sensitive path: {log_name}")
 
         # Size guard BEFORE reading: chunking a very large file is CPU-bound and
-        # previously hung gateway startup for 25s+ with only a raw faulthandler
+        # can hang gateway startup for 25s+ with only a raw faulthandler
         # dump (no actionable error). Skip with a clear WARNING naming the file.
         limit_mb = _max_ingest_file_mb()
         try:
@@ -1442,7 +1442,7 @@ class IngestionPipeline:
         """Generate and store embedding for an item. No-op if embedder is None.
 
         Includes chunk ``content`` so vector search matches body text, not just
-        the title/summary (which previously left body-only queries unmatchable).
+        the title/summary -- otherwise body-only queries are unmatchable.
         Respects the global embed rate limiter (knowledge.embed_rate_limit).
         The caller selects the shared inference scheduling class per ingest.
         """

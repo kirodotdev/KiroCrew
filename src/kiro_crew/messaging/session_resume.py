@@ -935,8 +935,8 @@ class SessionResumeController:
 
             # Snapshot what this pick is about to overwrite. ``record`` replaces the
             # channel's expectation outright, so on a failed bind, retiring the
-            # replacement is not a rollback: it leaves a DETACHED marker where an
-            # ACTIVE record used to be, and that record was the evidence a lost
+            # replacement is not a rollback: it leaves a DETACHED marker in place of the
+            # ACTIVE record, and that record was the evidence a lost
             # link owes the user a notice. The next message would then route
             # natively and the notice would never be delivered.
             #

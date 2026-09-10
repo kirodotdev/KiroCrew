@@ -63,7 +63,7 @@ _REPLAY_TRUNCATED = "\n… (truncated)"
 def _safe_teams_text(text: str, max_chars: int) -> str:
     """Redact for Teams' rendering, then budget. Redaction FIRST, always.
 
-    Truncating first can split a credential into a form the scanner no longer matches,
+    Truncating first can split a credential into a form the scanner does not match,
     which is the one ordering that turns a display-safety helper into a leak.
     """
     return _display_safe(text)[:max_chars]

@@ -1123,7 +1123,7 @@ class TelegramDispatcher:
                 "Telegram: aborting dispatch for %s — gateway is shutting down",
                 session_key,
             )
-            # Durable inbound spool (issue #2217). Written HERE and nowhere else:
+            # Durable inbound spool. Written HERE and nowhere else:
             # this is the one point where the payload is still in memory AND the
             # turn is provably unopened, so a replay on the next start cannot
             # double-answer a turn that actually ran. Telegram cannot recover this
@@ -1382,7 +1382,7 @@ class TelegramDispatcher:
                         if isinstance(requested, str) and requested:
                             privacy_requests.append(requested)
                     else:
-                        # Once one message no longer fits, defer it AND everything
+                        # Once one message does not fit, defer it AND everything
                         # behind it, so queue order stays exact.
                         defer_rest = True
                         remainder.append(item)
@@ -2589,7 +2589,7 @@ class TelegramDispatcher:
             else:
                 # No pending decision to resolve — the request already timed out
                 # (decider denies by default and pops the key), was answered, or the
-                # press came from a STALE keyboard whose nonce no longer matches
+                # press came from a STALE keyboard whose nonce does not match
                 # (request ids restart at 1 per provider process, so an old button can
                 # name an id that is live again for a different tool).
                 # Don't imply the press took effect: a post-timeout "Approve" on
@@ -2820,7 +2820,7 @@ class TelegramDispatcher:
         ``"{chat_id}:{thread}"`` -> the Topic id; a DM (direct) route -> None.
         An authorized forum turn always carries a Topic (General is denied at
         the gate), so the threadless-``comp`` -> None case is only the defensive
-        fallback. Used to thread every dispatcher-originated send back into the
+        fallback. Threads every dispatcher-originated send back into the
         SAME Topic the turn came from.
         """
         slot, comp = route
@@ -3221,7 +3221,7 @@ class TelegramDispatcher:
                 await self._reply(chat_id, "No active session to compact.", thread=thread)
                 return
 
-            # Capability gate (#8156, mirroring the dashboard's #7800 gate): a
+            # Capability gate (mirrors the dashboard's compact gate): a
             # backend that cannot serve a manual /compact treats the prompt as
             # ordinary text and never answers, so dispatching would strand the
             # 120s wait below. Informational, never an error.

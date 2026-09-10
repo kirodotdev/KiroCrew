@@ -56,7 +56,7 @@ _DEFAULT_SSM_RUN_AS = "ec2-user"
 # generated profile names (e.g. SSO-derived "<account>+<permission-set>");
 # it is not a shell metacharacter and the value is only ever passed as a
 # discrete ``--profile <value>`` argv element. The shape is
-# constants.AWS_PROFILE_NAME_RE — the single source of truth (#6063) —
+# constants.AWS_PROFILE_NAME_RE — the single source of truth —
 # aliased rather than re-spelled here; registry.py in turn aliases this
 # module's name for its early record check. Behavior-neutral swap: the old
 # local copy admitted a leading '-' in the class and relied on the explicit

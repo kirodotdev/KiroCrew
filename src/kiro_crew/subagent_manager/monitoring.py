@@ -265,7 +265,7 @@ class OrphanStallMonitor(ManagerComponent):
         learns about the orphan on its next turn. Returns True if delivered.
 
         ``meta`` carries the structured completion facts for the dashboard card
-        (#1792) so the orphan row renders without re-parsing its prose header.
+        so the orphan row renders without re-parsing its prose header.
         """
         if self._manager._on_orphan_notify is None:
             return False
@@ -305,7 +305,7 @@ class OrphanStallMonitor(ManagerComponent):
     def _live_shared_count_impl(self, pid: int | None, agents: "list[SubagentInfo]") -> int:
         """Count live session-shared subagents sharing runtime *pid* (>= 1).
 
-        Used to average the shared AcpRuntime's measured RSS/CPU across the
+        Averages the shared AcpRuntime's measured RSS/CPU across the
         sessions currently running inside it, so each shared subagent is charged
         an empirical per-session share rather than the whole process.
 
@@ -403,10 +403,10 @@ class OrphanStallMonitor(ManagerComponent):
             if not self._manager._conv_registry_rebuilt:
                 # First pass after (re)start: re-seed the conversation TTL
                 # registry from state.json so promoted conversations survive
-                # a gateway restart under sweep ownership (#1114). The flag
+                # a gateway restart under sweep ownership. The flag
                 # is set only on SUCCESS — a failed rebuild retries on the
-                # next sweep instead of silently restoring the pre-#1114
-                # orphaning until the next restart (Arbiter, PR #1246).
+                # next sweep instead of silently leaving those conversations
+                # orphaned until the next restart.
                 try:
                     await self._manager._rebuild_conversation_registry()
                     self._manager._conv_registry_rebuilt = True
@@ -585,7 +585,7 @@ class OrphanStallMonitor(ManagerComponent):
         )
         # The consult awaits, so fresh activity, a final tool result, or the next
         # dispatch can retire this snapshot while the walk is still running. A
-        # verdict about a tool that is no longer in flight must not be applied to
+        # verdict about a tool that is not in flight must not be applied to
         # whatever replaced it: DEAD/STUCK_INPUT skips the two-sweep confirmation,
         # so a stale one would flag an agent that has demonstrably resumed working.
         if info._stall_gen != submitted_gen:

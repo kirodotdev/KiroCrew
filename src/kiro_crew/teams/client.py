@@ -339,7 +339,7 @@ class TeamsSendError(Exception):
         """Whether the Connector says this conversation can never be delivered to.
 
         403 is what Teams answers once the user blocked the bot or removed the app;
-        404 is a conversation id that no longer resolves. Both are permanent, and a
+        404 is a conversation id that does not resolve. Both are permanent, and a
         route kept after either one turns every later cron result and mirror leg into
         a red badge with nothing to clear it. Deliberately NOT 401 (our credential)
         or 429/5xx (transient).
@@ -1044,7 +1044,7 @@ class TeamsClient:
     async def update_message(
         self, conversation_id: str, activity_id: str, content: str, service_url: str
     ) -> bool:
-        """Rewrite a previously-sent bot activity in place.
+        """Rewrite an already-sent bot activity in place.
 
         Teams supports ``PUT .../activities/{activityId}`` for the bot's OWN
         activities only (a user's message can never be updated), which is what
@@ -1100,7 +1100,7 @@ class TeamsClient:
     async def update_card(
         self, conversation_id: str, activity_id: str, card: dict[str, Any], service_url: str
     ) -> bool:
-        """Replace a previously-posted card in place. False when not applied."""
+        """Replace an already-posted card in place. False when not applied."""
         if not activity_id:
             return False
         try:
@@ -1129,7 +1129,7 @@ class TeamsClient:
         No ``text`` rides along, for the same reason ``send_card`` sends none:
         Teams SPLITS an activity carrying both text and an attachment and withholds
         the resulting id, so a combined send would land as two messages the caller
-        can no longer address. Raises :class:`TeamsSendError` on failure -- the
+        cannot address. Raises :class:`TeamsSendError` on failure -- the
         caller must be able to tell the user the picture did not arrive.
         """
         result = await self._post_activity(
@@ -1211,14 +1211,14 @@ class TeamsClient:
         except OSError as exc:
             raise ValueError("refusing unresolvable Teams attachment host") from exc
         for resolved in resolved_addresses:
-            # `link_unfurl`'s vet, not a local flag list. The category flags this
-            # used to enumerate approved two ranges that are plainly not public:
+            # `link_unfurl`'s vet, not a local flag list. A local flag list
+            # misses two ranges that are plainly not public:
             # `100.64.0.0/10` (RFC 6598 shared space -- what a Tailscale tailnet
             # and most carrier NAT hand out, which CPython's `is_private` table
             # omits and only `is_global` rejects) and `fec0::/10` (deprecated IPv6
-            # site-local, which reports `is_global=True`). It also evaluated the
-            # ipv4-mapped and 6to4 encodings as written, so `::ffff:127.0.0.1`
-            # passed a check whose whole purpose was to refuse loopback. That
+            # site-local, which reports `is_global=True`). It also has to handle the
+            # ipv4-mapped and 6to4 encodings, or `::ffff:127.0.0.1`
+            # passes a check whose whole purpose is to refuse loopback. That
             # module already owns this decision for link unfurling and for the
             # meetings calendar fetch, and its
             # `test_vet_rejects_every_special_purpose_range` pins the refusal set

@@ -479,7 +479,7 @@ def ensure_running(port: int | None = None) -> ShowInfo | None:
     global _proc, _info, _relay, _last_reason, _child_port
     with _lock:
         # Ownership is re-proved on reuse, not just at startup. A child that is
-        # alive but no longer listening leaves its port free for a squatter, and
+        # alive but not listening leaves its port free for a squatter, and
         # without this the next call would hand that squatter back as the panel.
         if _recorded_is_live():
             return _info

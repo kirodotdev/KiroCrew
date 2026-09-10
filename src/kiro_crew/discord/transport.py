@@ -240,7 +240,7 @@ class DiscordTransport(MessagingTransport):
 
         Consulting the thread set keeps outbound exactly as tight as inbound, which
         also settles the auto-created case: those ids are registered in memory only,
-        so after a restart such a thread can no longer drive a turn either, and
+        so after a restart such a thread cannot drive a turn either, and
         continuing to post into it would make outbound the more permissive of the two.
         A thread REMOVED from the roster falls through to the DM arm, where a forum
         session key names no principal, so revocation still refuses it.

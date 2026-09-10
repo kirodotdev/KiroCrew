@@ -498,7 +498,7 @@ class _SshTunnel:
         self.status.state = TunnelState.CONNECTING
         self.status.error = ""
         # Built in a worker thread: the SSM branch resolves the aws CLI
-        # absolutely (#4770), which probes the filesystem (PATH scan +
+        # absolutely, which probes the filesystem (PATH scan +
         # well-known install dirs) — synchronous work that must not run on the
         # gateway event loop, where a stalled network mount on PATH would
         # freeze every request and heartbeat.
@@ -532,7 +532,7 @@ class _SshTunnel:
                 # then looks session-manager-plugin up BY NAME on this child's own
                 # PATH, which a GUI-launched gateway hands down as the minimal
                 # launchd one — so the tunnel dies inside a correctly-resolved aws
-                # unless the child's env carries the install dirs (#5392). argv[0]
+                # unless the child's env carries the install dirs. argv[0]
                 # is handed over so the widening is withheld for a bare head: that
                 # bare name IS a provenance refusal, and widening would put the
                 # refused binary back within execvp's reach. None means inherit,
@@ -1175,8 +1175,8 @@ class SshTunnelManager:
         is what turns that permanent leak into a reclaim.
 
         Reclamation is keyed on OUR OWN recorded identity, never a
-        process-table match — matching the table by argv pattern is what once
-        SIGTERMed forwards operators had opened themselves (#1972), and no
+        process-table match — matching the table by argv pattern would
+        SIGTERM forwards operators opened themselves, and no
         pattern can distinguish our child from a stranger's. The registry
         itself is agent-writable, so a recorded claim is honored only when it
         AUTHENTICATES: the record must carry the gateway's own MAC over
@@ -1525,7 +1525,7 @@ class SshTunnelManager:
             # message rather than letting the child exit with a cryptic error.
             #
             # Probed in a worker thread: the probe resolves the plugin through the
-            # deploy engine's shared resolver (#5392), which scans PATH, then the
+            # deploy engine's shared resolver, which scans PATH, then the
             # well-known install dirs, then routes a fallback-dir hit through
             # executable-provenance validation — filesystem work that must not run
             # on the gateway event loop, where a stalled network mount would freeze
@@ -1563,10 +1563,10 @@ class SshTunnelManager:
             # gateway's, so the two differ and the same-origin branch rejects it.
             # Browsers forbid scripts from forging either header.
             #
-            # Mirroring the remote port instead made the shipped defaults
+            # Mirroring the remote port instead would make the shipped defaults
             # self-contradictory: a stock gateway binds the same default port on
-            # both ends, so a stock hub already held the port a stock remote
-            # reported and two stock installs could never connect (#1972).
+            # both ends, so a stock hub would already hold the port a stock remote
+            # reports and two stock installs could never connect.
             #
             # Every instance's recorded port stays reserved, and the allocator
             # probes each candidate, so a port anything still holds — including a
@@ -1579,9 +1579,8 @@ class SshTunnelManager:
             # session to the remote until the OS reaps it. That leak is now
             # reclaimed by ``_reclaim_orphan_forwarder`` above — by the child's
             # RECORDED pid behind a strict exact-argv identity check, never by
-            # scanning the process table. The reaper that scan-based approach
-            # replaced matched argv patterns and could SIGTERM a forward the
-            # operator had opened themselves (#1972); an unrecorded or
+            # scanning the process table. Scanning it by argv pattern could
+            # SIGTERM a forward the operator opened themselves; an unrecorded or
             # unverified process is therefore left alone, and allocation simply
             # skips its port.
             #
@@ -1698,7 +1697,7 @@ class SshTunnelManager:
             # the cap immediately.
             self._recover_attempts.pop(instance_id, None)
             # Connected cleanly — drop any retained failure reason from a prior
-            # attempt so status() no longer reports a stale error.
+            # attempt so status() does not report a stale error.
             self._last_error.pop(instance_id, None)
             return tunnel.status
 
@@ -1977,7 +1976,7 @@ class SshTunnelManager:
         A rebuild replaced the tunnel child, so the recorded forwarder
         identity (``forwarder_pid`` + ``forwarder_start``) must move with
         ``was_connected`` — a stale identity would point a later hard-kill
-        reclaim at a process that no longer exists (harmless, the identity
+        reclaim at a process that does not exist (harmless, the identity
         check refuses it) while the ACTUAL replacement child leaked
         unrecorded. All hints go in one write.
 
@@ -2851,7 +2850,7 @@ class SshTunnelManager:
         try:
             while True:
                 await asyncio.sleep(delay)
-                # A failed re-mint is only terminal once the instance is no longer
+                # A failed re-mint is only terminal once the instance is not
                 # connected (dropped from _tunnels); a transient mint failure
                 # retries on the next cycle at the same interval, since `delay` is
                 # derived from the ttl once, before the loop, and never re-derived.

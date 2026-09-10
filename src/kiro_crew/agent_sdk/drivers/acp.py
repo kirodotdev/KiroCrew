@@ -52,7 +52,7 @@ def resolve_pin_spelling(model_id: str, advertised: object) -> str:
 
     Thin delegation to :func:`kiro_crew.acp.client.resolve_pin_spelling` — the
     namespace fold for persisted pins carrying a stale ``<namespace>::``
-    qualifier (#8521) — so application code (``session.py``'s
+    qualifier — so application code (``session.py``'s
     ``AllocationDeps`` wiring) reaches it through the SDK surface instead of
     importing the ACP layer (the agent-sdk-boundary gate refuses a new edge).
     Plain data in, plain data out: a string and a sequence of strings, a string

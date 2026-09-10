@@ -917,7 +917,7 @@ class DiscordDispatcher:
             )
             if monitor_completion is not None:
                 return MonitorDispatchResult.BUSY
-            # Durable inbound spool (issue #2217), for a USER message only — the
+            # Durable inbound spool, for a USER message only — the
             # monitor branch above returns first. A monitor turn is generated
             # work whose own loop re-fires after the restart, so spooling it
             # would replay a check the loop is about to run again anyway.
@@ -1055,7 +1055,7 @@ class DiscordDispatcher:
                         texts.append(item[1])
                         attachments.extend(item_attachments)
                     else:
-                        # Once one message no longer fits, defer it and everything
+                        # Once one message does not fit, defer it and everything
                         # behind it so queue order remains exact.
                         defer_rest = True
                         remainder.append(item)
@@ -1788,7 +1788,7 @@ class DiscordDispatcher:
                 await self.client.send_message(channel_id, "No active session to compact.")
                 return
 
-            # Capability gate (#8156, mirroring the dashboard's #7800 gate): a
+            # Capability gate (mirroring the dashboard's gate): a
             # backend that cannot serve a manual /compact treats the prompt as
             # ordinary text and never answers, so dispatching would strand the
             # 120s wait below. Informational, never an error.

@@ -158,8 +158,8 @@ def search_chat_history(name: str, args: dict[str, Any]) -> str:
     query = args["query"]
     limit = args.get("limit", 10)
     all_workspaces = args.get("all_workspaces", False)
-    # A supplied-but-unparseable date (e.g. 2026-02-30 passes the regex but is
-    # not a real calendar date) must ERROR, not be silently dropped — a silent
+    # A supplied-but-unparseable date (one that passes the regex but names no
+    # real calendar day, like Feb 30) must ERROR, not be silently dropped — a silent
     # drop would return the UNFILTERED set and mislead the caller.
     after_epoch = before_epoch = None
     if args.get("after"):
@@ -191,7 +191,7 @@ def search_chat_history(name: str, args: dict[str, Any]) -> str:
         # TOCTOU: the file may be unlinked (clear-sessions, rotation, concurrent
         # process) between the ranked snapshot and this read. has_log is the
         # existence gate so we never emit a ghost row for a session the read
-        # tool can no longer retrieve. Do NOT additionally require non-empty
+        # tool cannot retrieve. Do NOT additionally require non-empty
         # metadata: a legacy session whose file predates the metadata line
         # returns {} here yet get_chat_session serves it fine, so rejecting {}
         # would hide those sessions from search while they remain readable.

@@ -19,7 +19,7 @@ on the other end is a phone number rather than a workspace member:
   answers itself in a loop. The bridge's ``is_from_me`` covers the rows it has
   already attributed to us, and the client's ledger of what it sent covers the
   self-chat case, where the allow-listed handle is the identity the agent sends
-  as and that flag is not dependable on its own (issue #5246).
+  as and that flag is not dependable on its own.
 * **DM only, fail closed.** A reply in a group chat would deliver tool output
   to members who are not on the allowlist, the same reasoning that makes every
   channel's non-DM path opt-in. Telegram and Webex can lift theirs because each

@@ -8,8 +8,8 @@ The official registry is a public, no-auth REST API (v0.1):
 Entries follow the server.json schema: ``name`` (reverse-DNS, e.g.
 ``io.github.owner/repo``), ``description``, ``version``, ``status``
 (active|deprecated|deleted), ``repository.url``, ``packages[]``,
-``remotes[]``. The schema has shipped in both camelCase (2025-09-29)
-and snake_case (earlier drafts) field spellings, and list items may be
+``remotes[]``. The schema has shipped in both camelCase
+and snake_case field spellings, and list items may be
 wrapped as ``{"server": {...}, "_meta": {...}}`` — parsing is defensive
 against all of these: malformed entries are skipped, deleted entries are
 dropped, deprecated entries are badged.

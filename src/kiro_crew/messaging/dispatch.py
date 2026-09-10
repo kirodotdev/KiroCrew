@@ -274,7 +274,7 @@ async def inbound_permitted(
 
     A PURE cancellation is the one exemption, matching the native Slack route's
     ``!stop`` carve-out: a denied channel must still be able to halt a runaway
-    session it previously STARTED, and on a channel with no interactive buttons
+    session it already STARTED, and on a channel with no interactive buttons
     (``max_buttons=0``) the typed cancel is the only affordance there is, so
     gating it makes the off-switch unreachable exactly when it is needed. Nothing
     else is exempt -- a restart is not a cancellation.

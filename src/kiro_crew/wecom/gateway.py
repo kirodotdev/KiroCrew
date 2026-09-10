@@ -12,12 +12,12 @@ The turn itself runs on the shared ``TurnDriver`` (credential/exfil redaction +
 tool-approval ladder + SEL audit) via the dispatcher -- no hand-rolled loop.
 
 ``warn_if_channel_uncredentialed`` is the diagnostic companion, generalized
-over every collapsed-flag channel (issue #5418): the channel registry's
+over every collapsed-flag channel: the channel registry's
 enabled-only gate never calls a factory when ``_<channel>_enabled`` is False,
 so ``_start_channel_transports`` logs each channel's enabled-but-uncredentialed
 skip reason through this helper at the start decision point, after
 ``KIROCREW_READY``. ``warn_if_wecom_uncredentialed`` remains as the
-WeCom-shaped wrapper pinning the original contract (issue #304).
+WeCom-shaped wrapper pinning the original contract.
 """
 
 from __future__ import annotations
@@ -78,8 +78,7 @@ def warn_if_channel_uncredentialed(
     ever report the difference. This helper is therefore called by
     ``_start_channel_transports`` at the start decision point (after
     ``KIROCREW_READY``, off the boot-path window), once per collapsed-flag
-    channel, from the raw ingredients each flag was computed from (issue
-    #5418, generalizing the WeCom fix from issue #304).
+    channel, from the raw ingredients each flag was computed from.
 
     ``credentials`` holds ``(name, value)`` pairs for exactly the operands the
     channel's enabled-flag predicate reads -- no more (a name that does not
@@ -110,12 +109,12 @@ def warn_if_channel_uncredentialed(
 def warn_if_wecom_uncredentialed(cfg_enabled: bool, bot_id: str, secret: str) -> None:
     """WeCom-shaped wrapper over :func:`warn_if_channel_uncredentialed`.
 
-    Preserves the public contract issue #304 introduced (pinned by
-    ``test_wecom_gateway.py::TestSkipReasonWarning``): exactly one WARNING on
+    Preserves the public contract pinned by
+    ``test_wecom_gateway.py::TestSkipReasonWarning``: exactly one WARNING on
     this module's logger naming the missing credential name(s)
     (``WECOM_BOT_ID`` / ``WECOM_SECRET``), values never logged, silence when
     disabled or fully credentialed. Production routes through the
-    six-channel table in ``_start_channel_transports`` (issue #5418), which
+    six-channel table in ``_start_channel_transports``, which
     feeds the generic helper the same ``(name, value)`` pairs.
     """
     warn_if_channel_uncredentialed(

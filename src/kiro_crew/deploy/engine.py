@@ -93,7 +93,7 @@ def random_bucket_name() -> str:
 # exactly why the Artifact Deploy "Verify" step failed for Homebrew users until
 # the gateway was relaunched from a shell that carried the full PATH. The SSM
 # session-manager-plugin installs into these same dirs, so it is resolved and
-# spawn-searched through them too (#5392).
+# spawn-searched through them too.
 _AWS_BIN_DIRS = (
     "/opt/homebrew/bin",  # Apple Silicon Homebrew
     "/usr/local/bin",     # Intel Homebrew + official AWS CLI v2 pkg symlink
@@ -113,7 +113,7 @@ def resolve_aws_tool_bin(name: str) -> str:
     the gateway has to find in those dirs: ``session-manager-plugin`` installs
     into exactly the same ones (AWS's macOS ``.pkg`` symlinks it into
     ``/usr/local/bin``, the Homebrew cask into the brew prefix), and its probe hit
-    the identical minimal-PATH gap (#5392). Both callers therefore share this one
+    the identical minimal-PATH gap. Both callers therefore share this one
     body rather than each re-deriving the dirs and the provenance rule.
 
     A hit found only through the fallback dirs (i.e. NOT reachable via the
@@ -150,7 +150,7 @@ def resolve_aws_bin() -> str:
     Public: this is the repo's single ``aws``-CLI resolution chokepoint, reused
     by every sibling spawn site (``cloud.aws``, ``cloud.ssm``, ``voice_reply``,
     ``dashboard.chat_voice``, the artifact-deploy skill scripts) so each one
-    survives a GUI-launched gateway's minimal PATH the same way (#4770). See
+    survives a GUI-launched gateway's minimal PATH the same way. See
     :func:`resolve_aws_tool_bin` for the search order and the provenance rule.
     """
     return resolve_aws_tool_bin("aws")
@@ -168,11 +168,11 @@ def aws_spawn_env(aws_bin: str) -> dict[str, str]:
     against the CHILD's inherited ``PATH`` at exec time. A GUI-launched gateway
     hands the child the minimal launchd ``PATH``, so the tunnel dies inside a
     correctly-resolved ``aws`` — the resolver cannot reach that lookup, only the
-    child's environment can (#5392). Passing this as ``env=`` is therefore the
+    child's environment can. Passing this as ``env=`` is therefore the
     other half of the same fix, not a duplicate of it.
 
     APPENDED, never prepended: the inherited ``PATH`` keeps first claim on every
-    name, so this can only make a previously-unresolvable lookup succeed and can
+    name, so this can only make an otherwise-unresolvable lookup succeed and can
     never re-point one the child already resolved. That is the whole trust
     argument for widening a credential-bearing child's ``PATH`` at all, and it is
     also why this is not :func:`kiro_crew.env.augmented_path`, which PREPENDS a
@@ -433,7 +433,7 @@ def _harden_bucket(bucket: str, profile: str, tagset: str) -> None:
     #
     # No put-bucket-logging either. These buckets set ObjectOwnership
     # BucketOwnerEnforced, which disables the ACL that server access logging
-    # historically relies on, so a log destination has to be granted to
+    # relies on, so a log destination has to be granted to
     # logging.s3.amazonaws.com in the target's BUCKET POLICY instead. That grant
     # cannot live in this helper: put_oac_bucket_policy writes a complete policy
     # document after hardening and would overwrite it.

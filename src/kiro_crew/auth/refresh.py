@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 # Per-identity in-process locks, so concurrent coroutines in THIS process serialize
 # on the asyncio lock (cooperative, no event-loop block) before contending the
 # cross-process flock. LoopBoundLock (not a bare module-global asyncio.Lock, which
-# binds to the import-time loop and breaks across loops/tests — issue #4800) is
+# binds to the import-time loop and breaks across loops/tests) is
 # safe to declare at module scope; the per-identity registry is created lazily.
 _identity_locks: dict[str, LoopBoundLock] = {}
 _locks_guard = LoopBoundLock()

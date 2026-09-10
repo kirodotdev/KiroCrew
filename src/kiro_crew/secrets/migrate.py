@@ -492,7 +492,7 @@ def migrate_env_secrets(
                 # or a future writer added without adopting the lock convention).
                 # `new_text` was built from `original_bytes`, so committing it now would
                 # CLOBBER that writer's change.  Re-read the bytes one last time and
-                # abort if they no longer match the snapshot: we never overwrite a .env
+                # abort if they do not match the snapshot: we never overwrite a .env
                 # that moved since we composed the rewrite.  This shrinks the clobber
                 # window to the atomic_write itself (an unavoidable last-writer race
                 # shared by any file writer), rather than the whole store+verify span.

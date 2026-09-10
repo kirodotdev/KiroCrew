@@ -742,7 +742,7 @@ class TeamsDispatcher:
                         texts.append(item[1])
                         attachments.extend(queued_files)
                     else:
-                        # Once one message no longer fits, defer it AND everything
+                        # Once one message does not fit, defer it AND everything
                         # behind it, so the queue keeps exact FIFO order.
                         defer_rest = True
                         remainder.append(item)
@@ -1079,7 +1079,7 @@ class TeamsDispatcher:
         email = self._identity(inbound)
         pct = self.sessions.check_context_usage(session_key, provider)
         if pct >= self.cfg.teams.soft_threshold_pct:
-            # Capability gate (#8156): no forced compaction to run and the
+            # Capability gate: no forced compaction to run and the
             # soft nudge's /compact advice cannot work — the backend compacts
             # on its own as context fills.
             unsupported = compact_unsupported_backend(provider)
@@ -1130,7 +1130,7 @@ class TeamsDispatcher:
             if provider is None:
                 await self._reply(inbound, "ℹ️ There's no conversation to compact yet.")
                 return
-            # Capability gate (#8156, mirroring the dashboard's #7800 gate): a
+            # Capability gate, mirroring the dashboard's compact gate: a
             # backend that cannot serve a manual /compact treats the prompt as
             # ordinary text and never answers, so dispatching would strand the
             # unbounded wait below. Informational, never an error.

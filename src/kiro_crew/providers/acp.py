@@ -115,7 +115,7 @@ def _write_cli_overlay(work_dir: Path, model: str, effort: str) -> None:
     existing["chat.modelDefaults"] = model_defaults
     atomic_write(
         cli_json, json.dumps(existing, indent=2)
-    )  # atomic: readers never see a partial file (#426)
+    )  # atomic: readers never see a partial file
 
 
 #: kiro-cli's own Tool Search activation thresholds. Mirrored as the defaults of
@@ -201,7 +201,7 @@ def _write_tool_search_overlay(
         existing.pop("toolSearch.minTokens", None)
     atomic_write(
         cli_json, json.dumps(existing, indent=2)
-    )  # atomic: readers never see a partial file (#426)
+    )  # atomic: readers never see a partial file
 
 
 def _clear_cli_overlay_effort(work_dir: Path, model: str) -> None:
@@ -236,7 +236,7 @@ def _clear_cli_overlay_effort(work_dir: Path, model: str) -> None:
         if not model_cfg:
             model_defaults.pop(model, None)
     try:
-        atomic_write(cli_json, json.dumps(data, indent=2))  # atomic (#426)
+        atomic_write(cli_json, json.dumps(data, indent=2))  # atomic
     except OSError:
         logger.debug("ACP effort overlay clear failed", exc_info=True)
 
@@ -552,8 +552,8 @@ class AcpProvider(LLMProvider):
         in-prompt, while KAS treats the prompt as ordinary text and never emits
         a status — its ``summarization_*`` frames fire only for KAS-initiated
         auto-summarization — so an ungated dispatch strands
-        ``wait_for_compaction()`` for the full ``COMPACT_WAIT_TIMEOUT_SECS``
-        (#7800). Read off the backend STRING, not the ``is_*_backend``
+        ``wait_for_compaction()`` for the full ``COMPACT_WAIT_TIMEOUT_SECS``.
+        Read off the backend STRING, not the ``is_*_backend``
         properties, matching ``provider_label``'s MagicMock caution; a
         non-``str`` value answers ``None`` so a spec'd double never reads as a
         refusal. The empty string is ``ACP_BACKEND_KIRO`` (a member), so a
@@ -982,7 +982,7 @@ class AcpProvider(LLMProvider):
                 _send_model = configured_model
                 if model_is_unusable(configured_model, _advertised):
                     # A literal miss can be a stale `<namespace>::` qualifier on
-                    # a model the backend fully serves (#8521): resolve to the
+                    # a model the backend fully serves: resolve to the
                     # advertised spelling and send THAT — same fold the display
                     # verdict uses, so chip and wire agree. A pin absent under
                     # either spelling still takes the withhold.

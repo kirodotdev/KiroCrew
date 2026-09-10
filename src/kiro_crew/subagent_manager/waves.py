@@ -163,7 +163,7 @@ class WaveDigestCoordinator(ManagerComponent):
         finishing*. With the default count (10) above any realistic wave size,
         the only flush that ever fires is the wave-close one, and a member that
         HANGS rather than fails withholds every sibling's finished result for
-        the full ``_TIMEOUT_SECS`` reap window (issue #2215).
+        the full ``_TIMEOUT_SECS`` reap window.
 
         This sweep is the timer the event-driven triggers lack: when the OLDEST
         outstanding hold in a wave has aged past :data:`DIGEST_HOLD_SECS` and
@@ -278,7 +278,7 @@ class WaveDigestCoordinator(ManagerComponent):
     async def settle_queued_delivery_impl(self, agent_ids: list[str]) -> None:
         """Write the ``delivered`` tombstones for completions consumed from a queue.
 
-        The queued-injection path (issue #4839) deliberately leaves a completion
+        The queued-injection path deliberately leaves a completion
         un-tombstoned until the parent's turn has consumed the announce, so the
         write lands here — in the parent's drain — rather than in
         :meth:`_report_terminal`. That is also why it must repeat the gate that
@@ -326,7 +326,7 @@ class WaveDigestCoordinator(ManagerComponent):
         owe them to the parent's consumption instead (the queue branch via
         ``_defer_queued_delivery``, the direct-injection branch via the same
         slot ledger), leaving this a no-op there. Marking the held members
-        delivered no longer risks the restart-loss window here (settling at
+        delivered does not risk the restart-loss window here (settling at
         digest composition, before routing, would).
 
         The ids are taken off ``info`` BEFORE settling, so a re-entry cannot

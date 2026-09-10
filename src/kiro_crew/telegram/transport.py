@@ -88,8 +88,8 @@ DispatchFn = Callable[[InboundMessage], Awaitable[None]]
 # for steer-ack receipts), and threads=True because forum Topics ARE threads
 # and this transport handles them end to end: send_message forwards
 # message_thread_id, receive() populates InboundMessage.thread_id, and
-# forum_gate_outcome authorizes on it. (This was previously declared False —
-# wrongly; declarations must match the code, not the DM-only common case.)
+# forum_gate_outcome authorizes on it. Declarations must match the code, not
+# the DM-only common case.
 # max_buttons=25: TOTAL interactive choices per prompt (the renderer packs 2
 # per row -> up to 13 scrollable rows), parity with discord's platform-
 # practical total. Enforced via apply_options_cap; overflow degrades to a

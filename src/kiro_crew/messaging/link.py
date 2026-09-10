@@ -485,7 +485,7 @@ def legacy_dashboard_mirror_key(channel_session_key: str) -> str:
     key itself, so that key is where its mirror binding belongs and where the
     turn path reads it back. Bindings created before that unification live on
     ``"dashboard:" + history._safe_key(channel_session_key)`` — the runtime key
-    of the derived slot that used to own the conversation.
+    of the derived slot that owned the conversation under the earlier scheme.
 
     Retained for compat only: reads and clears fall back to this spelling
     (``SessionMap._mirror_key``) so a link a user set earlier still resolves,

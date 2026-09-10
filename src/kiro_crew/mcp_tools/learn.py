@@ -140,7 +140,7 @@ def learn_add(name: str, args: dict[str, Any]) -> str:
             "never reached a prompt, and saving it as a global lesson would apply it "
             "in every session. Use repo_scope to restrict a lesson to one repository."
         )
-    # The tool no longer offers a workspace scope: that tier never reached a
+    # The tool offers no workspace scope: that tier never reached a
     # prompt, so a lesson saved under it reported success and changed nothing.
     # Restricting a correction to one codebase is what repo_scope does, and the
     # context builder enforces it before injection.
@@ -185,12 +185,10 @@ def learn_add(name: str, args: dict[str, Any]) -> str:
         # not just this one.
         return f"Error: {err_val}"
     scope_note = f" (applies only in {repo_scope})" if repo_scope else ""
-    # The route used to answer ``{"ok": true}`` on every success path, so this tool
-    # reported "Saved lesson" even when the store had REFUSED the value or a dedup
-    # rule had dropped it -- the model was told its correction was persisted when
-    # nothing had been. ``outcome`` names what actually happened; an older gateway
-    # that does not send it falls through to the saved wording, which is what this
-    # tool said unconditionally before.
+    # ``outcome`` names what actually happened, so this tool does not report
+    # "Saved lesson" when the store REFUSED the value or a dedup rule dropped it.
+    # An older gateway that does not send ``outcome`` falls through to the saved
+    # wording.
     outcome = d.get("outcome")
     reason = d.get("reason")
     detail = f" ({reason})" if isinstance(reason, str) and reason else ""

@@ -255,7 +255,7 @@ class WhatsAppDispatcher:
             if provider is None:
                 await self._say(scope, COMPACT_NOTHING_TEXT)
                 return
-            # Capability gate (#8156, mirroring the dashboard's #7800 gate): a
+            # Capability gate (mirroring the dashboard's gate): a
             # backend that cannot serve a manual /compact treats the prompt as
             # ordinary text and never answers, so dispatching would strand the
             # unbounded wait below. Informational, never an error.
@@ -531,7 +531,7 @@ class WhatsAppDispatcher:
         may_speak = not unprompted and not delivery_is_muted(self.sessions, session_key, "whatsapp")
         wa = self.cfg.whatsapp
         if pct >= wa.soft_threshold_pct:
-            # Capability gate (#8156): no forced compaction to run and the
+            # Capability gate: no forced compaction to run and the
             # soft nudge's /compact advice cannot work — the backend compacts
             # on its own as context fills.
             unsupported = compact_unsupported_backend(provider)

@@ -273,7 +273,7 @@ class FeishuDispatcher:
             if provider is None:
                 await self.client.send_reply(inbound.message_id, "ℹ️ 当前没有可压缩的对话。")
                 return
-            # Capability gate (#8156, mirroring the dashboard's #7800 gate): a
+            # Capability gate (mirroring the dashboard's gate): a
             # backend that cannot serve a manual /compact treats the prompt as
             # ordinary text and never answers, so dispatching would strand the
             # unbounded wait below. Informational (this surface speaks Chinese;
@@ -381,7 +381,7 @@ class FeishuDispatcher:
         route = self._route(inbound)
         pct = self.sessions.check_context_usage(session_key, provider)
         if pct >= self.cfg.feishu.soft_threshold_pct:
-            # Capability gate (#8156): no forced compaction to run and the
+            # Capability gate: no forced compaction to run and the
             # soft nudge's /compact advice cannot work — the backend compacts
             # on its own as context fills.
             unsupported = compact_unsupported_backend(provider)

@@ -364,8 +364,8 @@ class HybridRetriever:
         so it is treated as a literal FTS5 string -- the user's input never
         contributes FTS5 operators (parameterized quoting). Stopwords are dropped
         and the remaining tokens OR-joined
-        so natural-language queries no longer require every
-        literal token to appear in a matching document.
+        so natural-language queries need not have every
+        literal token appear in a matching document.
 
         A CJK run is one whitespace token but several words, so it expands to its
         adjacent-character phrases instead of being matched whole; queries with

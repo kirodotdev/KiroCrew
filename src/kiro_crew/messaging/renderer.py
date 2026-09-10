@@ -101,7 +101,7 @@ class OutputEvent:
 
 
 def chunk_text(text: str, max_chars: int) -> list[str]:
-    """Split ``text`` into chunks no longer than ``max_chars``.
+    """Split ``text`` into chunks of at most ``max_chars`` characters.
 
     Pure helper used by Renderers to honor ``capabilities.max_message_chars``.
     Returns ``[]`` for empty input. A non-positive ``max_chars`` disables
@@ -186,7 +186,7 @@ def display_safe_for(text: str, capabilities: TransportCapabilities) -> str:
 
     Control-tag comments are stripped first, same as :func:`display_safe` —
     the deterministic backstop against a dashboard-authored control tag
-    reaching channel users as literal text (#7948).
+    reaching channel users as literal text.
     """
     text = strip_control_comments(text or "")
     safe, _ = redact_for_display(text, _default_redactor)
@@ -261,7 +261,7 @@ def display_safe(text: str) -> str:
 
     Control-tag comments are stripped first (fence/inline-code aware): channel
     formatters render HTML comments literally, so a dashboard-authored
-    ``<!-- keep-visible -->`` (#7948) or ``deliver:``/``plan_task_id:`` tag
+    ``<!-- keep-visible -->`` or ``deliver:``/``plan_task_id:`` tag
     delivered to a channel would otherwise reach end users as visible text.
     The prompt rule only contains the emitter; this is the deterministic
     backstop on the message itself.
@@ -499,7 +499,7 @@ def split_options_trailer(text: str, *, hide_partial: bool = False) -> tuple[str
             # when no ``]`` ever arrives the sealed frame re-trims too, so the
             # transient-frame consolation above does not apply. Locating a
             # marker by substring without asking whether it READS as one is
-            # the class #8983 fixed at the directive seam; this is the same
+            # the bug fixed at the directive seam; this is the same
             # rule at the trailer seam. Only the tail-most occurrence can be
             # mid-flight -- a stream appends, so text after an opener means
             # that opener was never in flight -- which is why one viability
@@ -769,7 +769,7 @@ class SilentRenderer(Renderer):
     ``on_prompt_choice`` is dropped like the rest, matching the Slack gate that
     withholds the linked approval prompt from a disconnected thread: the
     dashboard renders the same prompt, and soliciting a decision in the
-    conversation the user just left would ask where they are no longer looking.
+    conversation the user just left would ask where they are not looking.
     """
 
     def __init__(self, capabilities: Any = None, channel_type: str = "") -> None:

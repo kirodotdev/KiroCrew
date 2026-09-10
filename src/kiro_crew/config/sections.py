@@ -1780,7 +1780,7 @@ def _coerce_embedding_provider(raw: str) -> str:
     """Normalize legacy or unknown embedding_provider values.
 
     Embeddings are always-on: every value coerces to ``"llama_cpp"``. Old configs
-    may carry ``"ollama"`` (previous runtime) or ``"none"`` (previously-disabled);
+    may carry ``"ollama"`` (a retired runtime) or ``"none"`` (the disabled setting);
     both are transparently upgraded. Unknown values also coerce so a config file
     from a newer/older version never crashes.
     """
@@ -2273,7 +2273,7 @@ def _tailscale_config_from(
     genuinely unconfigured; MALFORMED is the operator having asked for a
     restriction this load cannot read, and it is recorded in *degraded* under
     :data:`DEGRADED_TAILSCALE` so the gate can deny instead of admitting every
-    tailnet peer (the shape that reopened the publish allowlist, #4057).
+    tailnet peer (the shape that reopens the publish allowlist).
 
     ``key_present`` separates the two states a bare value cannot: a MISSING
     ``tailscale`` key and one written as JSON ``null`` both arrive here as
@@ -2413,7 +2413,7 @@ def _tailscale_config_from(
         # Defaults TRUE, and a non-boolean resolves to TRUE as well: this is a
         # narrowing-only field like the two rules above, so an operator typo may
         # only ever leave the binding ON, never silently reopen the replay path
-        # the binding closes (issue #2417).
+        # the binding closes.
         bind_refresh_chains=_safe_bool(data.get("bind_refresh_chains"), True),
         keep_awake=_safe_bool(data.get("keep_awake"), True),
     )
@@ -3730,7 +3730,7 @@ CHAT_TURN_TIMEOUT_MAX = 86400
 # per-server cold-start cost (observed: a 71-server agent with no pending OAuth
 # completes in ~14s; a 17-server agent behind a sandboxed per-server launcher on
 # a loaded host takes ~50s). The floor IS the default: the budget must stay
-# comfortably ABOVE the backend's 30s OAuth authorization wait (issue #2946) —
+# comfortably ABOVE the backend's 30s OAuth authorization wait —
 # a lower value recreates the session-start race the dedicated budget exists to
 # prevent, so out-of-range values clamp UP to it. The max bounds a typo'd
 # value: a session start slower than 15 minutes is pathological and should
@@ -3788,11 +3788,10 @@ AUTOCOMPACT_PCT_MIN = 5.0
 AUTOCOMPACT_PCT_MAX = 90.0
 
 # ── Load/write bound parity ────────────────────────────────────────────────────
-# Ranges for bounded numeric fields whose LOAD path previously applied no bounds
-# at all, while `_EDITABLE_CONFIG` rejected the same values at write time. A
-# hand-edited config.json goes nowhere near the dashboard API, so every one of
-# these loaded verbatim -- the same asymmetry #4688 and #4734 closed for the
-# security-relevant knobs.
+# Ranges for bounded numeric fields the LOAD path clamps, while `_EDITABLE_CONFIG`
+# rejects the same values at write time. A hand-edited config.json goes nowhere
+# near the dashboard API, so without this every one of these would load verbatim --
+# the same load/write asymmetry the security-relevant knobs also close.
 #
 # Defined HERE and imported by `_EDITABLE_CONFIG` rather than spelled twice, so
 # the write gate and the load clamp cannot drift. Three fields already clamped on
@@ -3903,7 +3902,7 @@ _VALID_STT_PROVIDERS = (STT_PROVIDER_LOCAL, "apple", "transcribe")
 #: install the user had to perform themselves (a whisper CLI on ``PATH``, or an
 #: ``mlx``/``faster-whisper`` wheel), which is precisely the cost the resident
 #: local engine removes, so a stored value degrades to ``local`` instead of
-#: leaving voice input pointing at something that is no longer dispatchable.
+#: leaving voice input pointing at something that is not dispatchable.
 _RETIRED_STT_PROVIDERS = ("whisper", "mlx", "parakeet", "faster")
 
 #: Model names accepted for ``stt.model``, derived from the catalog that owns the
@@ -5075,7 +5074,7 @@ def _limit_int(value: object, key: str, *, lo: int, hi: int | None = None) -> in
     - EXCEPT when it truncates to ``0``, either sign: ``0.5`` is not a request to
       disable the limit, but ``int(0.5)`` is exactly the value that means
       "disabled" on the rlimit path and "use the default" on the cgroup path.
-      That silent reinterpretation is the trap in #3474, so it is refused.
+      That silent reinterpretation is the trap, so it is refused.
     - NaN and +/-Infinity are refused before ``int()`` sees them. ``json.loads``
       accepts both literals, and ``int(inf)`` raises ``OverflowError`` --
       uncaught on the rlimit path, which turned a typo into a failure of every
@@ -5137,8 +5136,8 @@ class ResourceLimitsConfig:
 
     THREE mechanisms read this one block, and a key shared between two of them
     does NOT mean the same thing on both. That is the whole reason this section
-    has a schema (#3474): every consumer used to parse the raw dict itself, so
-    the incompatible domains were written down nowhere and drifted apart.
+    has a schema: without it every consumer parses the raw dict itself, leaving
+    the incompatible domains written down nowhere and free to drift apart.
 
     - ``POSIX rlimits`` (``security.apply_resource_limits``, via ``preexec_fn``
       or the exec shim's ``--rlimits=``). Here ``0`` is a MEANINGFUL, documented

@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_MODEL = "qwen3-embedding:0.6b"
 # Retained for config compatibility (knowledge.embed_timeout_secs). The
 # in-process backend has no per-request network timeout — the value is stored
-# on the embedder but no longer bounds an HTTP call.
+# on the embedder but bounds no HTTP call.
 TIMEOUT = 10  # seconds
 NEGATIVE_CACHE_TTL = 300  # seconds before re-checking failed availability
 # Safety bound (chars) on chunk content folded into an item embedding.
@@ -222,7 +222,7 @@ def bytes_to_floats(data: bytes) -> list[float]:
                 pass
         return []
     # Not JSON: compact binary form (struct-packed floats). A byte length that is
-    # not a multiple of 4 is the corrupt case that used to raise struct.error.
+    # not a multiple of 4 is corrupt and would raise struct.error, so it is rejected.
     if isinstance(data, (bytes, bytearray)) and len(data) % 4 == 0:
         try:
             n = len(data) // 4
@@ -240,7 +240,7 @@ def embed_signature(model: str, content_budget: int = _EMBED_CONTENT_BUDGET) -> 
     item content fixes it. Items whose stored ``embedding_sig`` differs from
     the current one are re-embedded by the sig-gated rebuild (manual trigger
     and watcher self-heal both use it). The literal ``inprocess`` token stands
-    where the Ollama-era ``base_url`` used to — the in-process runtime has no
+    in the slot a ``base_url`` would occupy — the in-process runtime has no
     endpoint, and keeping a distinct token forces a one-time re-embed when
     migrating vectors produced by an external server.
 

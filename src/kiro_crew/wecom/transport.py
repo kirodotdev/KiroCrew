@@ -270,8 +270,8 @@ class WeComTransport(MessagingTransport):
     def _may_push(self, chat_id: str) -> bool:
         """Whether *chat_id* is AUTHORIZED to be pushed to right now.
 
-        Deny-by-default and evaluated fresh, so neither a persisted binding nor a
-        previously-advertised target can outlive the permission behind it: a userid
+        Deny-by-default and evaluated fresh, so neither a persisted binding nor an
+        already-advertised target can outlive the permission behind it: a userid
         removed from the allow-list stops receiving this session's replies.
 
         Deliberately does NOT require process-local warmth. ``_warm_chats`` is

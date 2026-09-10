@@ -50,7 +50,7 @@ class ContinuationCoordinator(ManagerComponent):
         A FINISHED run also holds its conversation while its id sits in
         ``_abandoned_state_writers``: its bounded state-write drain expired, so a
         worker is still live and its stale whole-file rewrite would roll back the
-        ``keep`` that this gate's two callers write on the loop (#6298). Holding
+        ``keep`` that this gate's two callers write on the loop. Holding
         defers those writes past the worker instead of letting it undo them. That
         record lives on the manager rather than on the run, because
         ``evict_completed_agents`` prunes completed runs out of ``_agents`` and an
@@ -124,7 +124,7 @@ class ContinuationCoordinator(ManagerComponent):
         return result
 
     def _scan_keep_states_impl(self) -> list[tuple[str, str, str, str, str, float]]:
-        """Blocking scan for keep runs (#1114): read every ``state.json``
+        """Blocking scan for keep runs: read every ``state.json``
         under the subagents dir and collect the promoted conversations.
 
         Returns ``(conv_id, conv_key, sid, provider, cwd, last_used)`` tuples.
@@ -188,17 +188,17 @@ class ContinuationCoordinator(ManagerComponent):
         return out
 
     async def _rebuild_conversation_registry_impl(self) -> None:
-        """Re-seed the conversation TTL registry from disk after a restart (#1114).
+        """Re-seed the conversation TTL registry from disk after a restart.
 
         The registry (``_conversations`` + the SessionManager continuable
         cache + session map) is in-memory; without this, a gateway restart
-        orphans promoted conversations — the TTL sweep no longer knows them,
+        orphans promoted conversations — the TTL sweep does not know them,
         and nothing else deletes their session files (the tombstone pruner
         skips keep runs by design). Runs on the reaper's first pass (retried
         until it succeeds); entries already past TTL are released by the
         very next sweep.
 
-        Threading contract (Arbiter, PR #1246): ONLY the pure-read
+        Threading contract: ONLY the pure-read
         ``_scan_keep_states`` runs in the executor. All ``SessionMap``
         access (``resumable_sid`` self-prune, ``seed_conversation`` writes)
         stays on the event loop — the map is an unlocked dict with
@@ -335,8 +335,8 @@ class ContinuationCoordinator(ManagerComponent):
                 ),
             )
             return info
-        # Promote the run's retention through the single choke point
-        # (#1115): state.json keep=True (tombstone pruner skips deletion),
+        # Promote the run's retention through the single choke point:
+        # state.json keep=True (tombstone pruner skips deletion),
         # the SessionManager continuable cache, and the TTL registry entry.
         # The conversation TTL sweep / spawn_release owns deletion from here.
         # Snapshot existing ownership: a retryable promotion attempt must undo
@@ -405,7 +405,7 @@ class ContinuationCoordinator(ManagerComponent):
         does the blocking work in one place so an async caller can hand it to
         `asyncio.to_thread` and pass the result in.
 
-        A path that no longer exists is returned ANYWAY, so `spawn` refuses it.
+        A path that does not exist is returned ANYWAY, so `spawn` refuses it.
         Filtering it to "" would keep such a continuation working but is unsafe:
         an empty cwd resolves to the POOL project, so a follow-up
         whose task names relative files would have edited an unrelated project's
@@ -452,7 +452,7 @@ class ContinuationCoordinator(ManagerComponent):
         not registered yet — retry shortly), ``no_session`` (session not
         reachable), or the provider's failure reason.
 
-        Startup grace (#1113): the window between spawn-return and session
+        Startup grace: the window between spawn-return and session
         registration is precisely when a parent most wants to steer (it just
         realized the task text was wrong), so a missing provider on a live
         run polls for up to ``_STEER_STARTUP_WAIT_SECS`` instead of failing
@@ -775,7 +775,7 @@ class ContinuationCoordinator(ManagerComponent):
         )
         sid = self._manager._sessions.forget_conversation(conv_key)
         self._manager._conversations.pop(conv_key, None)
-        # Demote the persisted source of truth too (#1115): with the disk
+        # Demote the persisted source of truth too: with the disk
         # fallback in place, a stale keep=True would re-warm the continuable
         # cache after release and resurrect the conversation on the next
         # restart's registry rebuild.

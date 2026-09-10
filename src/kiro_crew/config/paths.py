@@ -458,7 +458,7 @@ def _under_system_tmp(path: Path) -> bool:
     and the automation that clones a per-task scratch tree deletes it when the
     task ends. A machine-wide agent spec stamped from such a checkout outlives
     it and leaves every managed MCP server pointing at a launcher (and possibly
-    a pinned data home) that no longer exists (#4781).
+    a pinned data home) that is gone.
 
     Deliberately NOT folded into :func:`_in_ephemeral_tree`. That predicate
     serves the launcher installer, which rejected a blanket temp-dir rule on
@@ -480,8 +480,8 @@ def _under_system_tmp(path: Path) -> bool:
     root as configured AT CALL TIME (it honours ``$TMPDIR``), matching how the
     rest of this module treats redirected environments — but on macOS launchd
     sets ``$TMPDIR`` to a per-user ``/var/folders/.../T``, so ``gettempdir()``
-    alone does NOT contain ``/tmp``, and ``/tmp/<scratch clone>`` — the literal
-    shape #4781 reports — would read as durable there. POSIX ``/tmp`` is
+    alone does NOT contain ``/tmp``, and ``/tmp/<scratch clone>`` would read as
+    durable there. POSIX ``/tmp`` is
     therefore checked as well: it is reaped on reboot by contract, so nothing
     durable lives under it. ``/var/tmp`` deliberately is not: POSIX has it
     PRESERVED across reboots, which is the opposite claim.
@@ -502,12 +502,12 @@ def _under_system_tmp(path: Path) -> bool:
             roots.append(Path(candidate).resolve())
         except (OSError, ValueError):  # pragma: no cover - defensive: unusable root
             continue
-    # The PATH is resolved too, not just the roots. Resolving one side only made the
-    # comparison cross namespaces on exactly the platform this rule was added for:
+    # The PATH is resolved too, not just the roots. Resolving one side only makes the
+    # comparison cross namespaces on exactly the platform this rule exists for:
     # macOS resolves `/tmp` to `/private/tmp`, so a checkout at `/tmp/<scratch clone>`
-    # -- the literal shape #4781 reports -- kept `/tmp` among its parents, matched
-    # nothing, and read as DURABLE. The guard then stamped a machine-wide agent spec
-    # from a tree the OS reaps at reboot, which is the outcome it exists to prevent.
+    # keeps `/tmp` among its parents, matches nothing, and reads as DURABLE. The guard
+    # then stamps a machine-wide agent spec from a tree the OS reaps at reboot, which
+    # is the outcome it exists to prevent.
     #
     # Resolving is also the safe direction for a symlink pointing OUT of the temp tree:
     # the checkout really lives at the target, so a durable target correctly stops
@@ -736,7 +736,7 @@ def kiro_agents_dir() -> Path:
     ``kiro_home() / "agents"``. Two hand-written copies of the default would let a
     later change to the layout land in only one, and the write guard compares this
     resolver's answer against that one -- a stale comparison there reads a shared
-    target as private and fails OPEN on the machine-wide home, which is the #4912
+    target as private and fails OPEN on the machine-wide home, which is the
     failure class this whole seam exists to prevent.
     """
     if _agents_dir_override is not None:

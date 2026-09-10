@@ -40,7 +40,7 @@ Stage = Callable[..., Awaitable[Any]]
 def _positional_arity(func: Callable[..., Any]) -> Optional[int]:
     """Number of positional params a callable accepts, or None if it takes *args.
 
-    Used to call a stage with only as many of (prev, item, index) as it declares,
+    Lets a stage be called with only as many of (prev, item, index) as it declares,
     mirroring the JS pipeline's "extra args ignored" behavior so 1-arg and 3-arg
     stages both work.
     """

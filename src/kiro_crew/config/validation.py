@@ -143,8 +143,8 @@ def _actual_type_name(value: object) -> str:
 #:
 #: * ``publish`` (the section) and ``publish.allowed_destinations``: the
 #:   default is **open** (no restriction), so repairing a malformed narrowing
-#:   silently widens it to allow-all with no denial and no audit record
-#:   (#4057). The loader's recording coercion (``_coerced_section``) and the
+#:   silently widens it to allow-all with no denial and no audit record.
+#:   The loader's recording coercion (``_coerced_section``) and the
 #:   gate's fail-closed checks are the honest handlers — but they can only run
 #:   if validation leaves the evidence in place. Keeping the value also keeps
 #:   security behaviour identical whether or not ``jsonschema`` is installed
@@ -200,7 +200,7 @@ def _apply_field_default(data: dict, dot_path: str) -> bool:
     Values at a fail-closed path (see :data:`_FAIL_CLOSED_PATHS`) are never
     removed: repairing them to their open defaults silently widens a security
     narrowing, and the loader/gate pair downstream turns the preserved
-    malformed value into a recorded degradation and a denial instead (#4057).
+    malformed value into a recorded degradation and a denial instead.
     """
     if dot_path in _FAIL_CLOSED_PATHS:
         return False
@@ -362,11 +362,10 @@ class ConfigCache:
 
 # Process-global cache instance.
 _CONFIG_CACHE = ConfigCache()
-# Back-compat alias only: the cache lock used to be a module-level global of this
-# name. Exposed so any lingering `kiro_crew.config.loader._CONFIG_CACHE_LOCK`
-# reference keeps resolving. Do NOT acquire this externally — all locking is
-# internal to ConfigCache; this alias can be dropped once nothing references the
-# old module-level name.
+# Back-compat alias for callers still referencing the module-level global
+# `kiro_crew.config.loader._CONFIG_CACHE_LOCK`. Do NOT acquire this externally —
+# all locking is internal to ConfigCache; the alias can be dropped once nothing
+# references that name.
 _CONFIG_CACHE_LOCK = _CONFIG_CACHE._lock
 
 

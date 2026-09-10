@@ -67,7 +67,7 @@ _MAX_RESPONSE_BYTES = 4 * 1024 * 1024
 # Whole-run budget derived from the per-request one; bounds a stall-every-leg server.
 _TOTAL_BUDGET_MULTIPLIER = 3
 
-# JSON-RPC error substrings meaning "the grant no longer works": only these grade
+# JSON-RPC error substrings meaning the grant is rejected: only these grade
 # NEEDS_RECONSENT past initialize, so an outage is never a consent problem.
 _RECONSENT_TOKENS = ("unauthorized", "invalid_token", "invalid_grant", "forbidden")
 
@@ -641,7 +641,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
 
     async def _run_and_persist() -> dict[str, Any]:
-        # Fatal path persists in-loop too -- round 2's trap, one seam over.
+        # Fatal path persists in-loop too -- the same trap as the seam one over.
         try:
             report = await run_l1(
                 concurrency=args.concurrency,
