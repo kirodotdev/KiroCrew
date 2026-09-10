@@ -470,7 +470,31 @@ Contract:
   files) is excluded, as are the settings `config.json` already owns (theme
   mode/colour, language, onboarding flags) and keys a migration deliberately
   deletes (`mc-zoom`, `mc-font-scale`), so no setting has two homes and nothing
-  resurrects a key a migration removed.
+  resurrects a key a migration removed. The per-surface prefs that used to
+  silently reset across origins -- notification sound (`mc-notification-sound`),
+  interface mode (`mc-ui`), reading width (`mc-reading-width`) -- are durable.
+- GROWING the durable set is guarded by a reconcile pass (growth-gap issue
+  9491). A warm profile never runs the cold restore, so a key added to the
+  allowlist by an upgrade would otherwise be flushed at its local DEFAULT --
+  often written by a hook on mount (`mc-ui` is the live example) -- overwriting
+  the value another origin backed up. Before the first flush after an upgrade
+  that added keys, the client reads the host copy once for the keys this
+  profile has never synced: a key absent locally adopts the host value (with
+  the same reload-if-restored rule as the cold path), a key present locally is
+  baselined so the first flush does not upload it (it goes up when the user
+  next changes it), and a key the host does not hold is seeded from local. The
+  reconciled roster is recorded as a reserved entry inside `mc-ui-prefs-synced`
+  -- deliberately not its own key, so a downgraded (pre-roster) build's next
+  fingerprint rewrite sheds it and a re-upgrade reconciles again instead of
+  trusting a stale roster -- making the pass one GET per allowlist growth, not
+  per boot. A profile with no roster predates the mechanism and is baselined
+  against the frozen pre-mechanism allowlist, so only genuinely new keys are
+  reconciled: a key the profile merely never held is NOT bulk-imported from
+  another origin. A failed reconcile suppresses
+  the sync for the session -- flushing unreconciled keys is the exact clobber
+  the pass exists to prevent -- and the next boot retries; the failed-restore
+  marker applies as on the cold path, so a default written by a settings-less
+  render between the failure and the retry loses to the host.
 - Also excluded: any value that GATES A SAFETY CONFIRMATION. `mc-yolo-ack` is the
   instance — its presence makes the approval-mode picker skip the confirmation
   and enable full auto-approval — and the reason is that this file sits in the
