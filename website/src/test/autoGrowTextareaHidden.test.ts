@@ -21,8 +21,16 @@ describe('useAutoGrowTextarea', () => {
     const s = await src()
     expect(s).toMatch(/new IntersectionObserver/)
     expect(s).toMatch(/e\.isIntersecting\)\) measure\(el, maxH\)/)
-    // ResizeObserver would feed back -- `measure` sets the height it would observe.
-    expect(s).not.toMatch(/new ResizeObserver/)
+  })
+
+  it('re-measures on a width change, and only a width change (#9979)', async () => {
+    const s = await src()
+    // A window resize or a pane folding beside the field changes the column the
+    // text wraps in with no value change, so the value-keyed effect never runs.
+    // A ResizeObserver covers it -- but `measure` writes the height that observer
+    // also sees, so the callback must bail unless the WIDTH moved, or it loops.
+    expect(s).toMatch(/new ResizeObserver/)
+    expect(s).toMatch(/if \(width === lastWidth\) return/)
   })
 
   it('keeps one implementation of the measurement', async () => {
@@ -30,6 +38,6 @@ describe('useAutoGrowTextarea', () => {
     // Both effects route through `measure`, so the guard cannot be present in one
     // path and missing from the other.
     expect((s.match(/el\.style\.height = 'auto'/g) || []).length).toBe(1)
-    expect((s.match(/measure\(el, maxH\)/g) || []).length).toBe(2)
+    expect((s.match(/measure\(el, maxH\)/g) || []).length).toBe(3)
   })
 })

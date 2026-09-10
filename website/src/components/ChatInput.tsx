@@ -3264,6 +3264,32 @@ function ChatInput({
     if (inputRef.current && !dragging.current) applyHeight(inputRef.current, manualHeight, prefillHint, textareaParked)
   }, [value, prefillHint, manualHeight, textareaParked])
 
+  // Re-measure when the textarea's WIDTH changes at an unchanged value: a window
+  // resize, a sibling column folding, the side panel docking. The wrapped
+  // placeholder or text needs a different height at the new column, and the
+  // effect above cannot know — none of its deps moved. Without this the box kept
+  // the height it had at the old width and clipped the placeholder's second
+  // line mid-glyph on the Members DM thread (issue #9979, finding 4).
+  // Width ONLY: the observer also fires for the height `applyHeight` itself
+  // writes, and re-running on that would measure for nothing (the memo makes it
+  // a no-op, but the guard makes the intent legible). `dragging` and `parked`
+  // are the same preconditions the two call sites above honour.
+  useEffect(() => {
+    const el = inputRef.current
+    if (!el || typeof ResizeObserver === 'undefined') return
+    let lastWidth = el.clientWidth
+    const ro = new ResizeObserver(() => {
+      const width = el.clientWidth
+      if (width === lastWidth) return
+      lastWidth = width
+      if (!dragging.current) applyHeight(el, manualHeight, prefillHint, parkedRef.current)
+    })
+    ro.observe(el)
+    return () => ro.disconnect()
+    // `textareaParked` re-arms the observer on the way back from the sr-only box,
+    // where the 1px width must not be the baseline the next change is judged from.
+  }, [manualHeight, prefillHint, textareaParked])
+
   // Keep the paste-highlight mirror's scroll aligned with the textarea after
   // value/height changes (applyHeight mutates scrollTop programmatically, which
   // doesn't fire the textarea's onScroll). rAF lets layout settle first.
