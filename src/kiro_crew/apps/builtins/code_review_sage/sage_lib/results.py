@@ -428,6 +428,13 @@ def adopt_from_shared(change_id: str, root: Path | None = None,
     errs = validate_result(parsed)
     if errs:
         return False
+    # `delivery_intent` is DRIVER-owned: it is the durable evidence that a
+    # review reached GitHub, and post_recorded treats a "prepared"/"attempting"
+    # /"indeterminate" one as an operation to reconcile and confirm. The worker
+    # owns the staging dir, so adopting its record verbatim let it author an
+    # intent the driver would then confirm as its own delivery. The field never
+    # crosses this boundary.
+    parsed.pop("delivery_intent", None)
     got = str(parsed.get("change_id") or "")
     if got != change_id:
         # Compared EXACTLY, not through `safe_change_id`. That sanitizer is lossy
@@ -446,7 +453,10 @@ def adopt_from_shared(change_id: str, root: Path | None = None,
     # the name: atomic, so a valid record is never destroyed by a failed write,
     # and the rename replaces the NAME without following a link planted there.
     try:
-        store.atomic_write_locked(dst, raw)
+        # Serialized from the PARSED record, not the raw bytes: the driver-owned
+        # fields reconciled above live on `parsed`, and writing `raw` would put
+        # the worker's original document back on disk with them undone.
+        store.atomic_write_locked(dst, json.dumps(parsed, indent=2).encode("utf-8"))
     except OSError:
         return False
     try:

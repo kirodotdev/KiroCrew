@@ -185,6 +185,20 @@ async def _save_runs() -> None:
         logger.warning("failed to persist runs.json", exc_info=True)
 
 
+def _mark_restart_delivery_indeterminate(run_id: str) -> str:
+    """Persist restart ambiguity before reopening a run for an explicit retry."""
+    message = "Posting was interrupted by a gateway restart; reconcile before posting again."
+    for record in results.list_results(None, run_id):
+        intent = record.get("delivery_intent")
+        if not isinstance(intent, dict) or intent.get("state") not in {"prepared", "attempting"}:
+            continue
+        intent["state"] = "indeterminate"
+        intent["error"] = message
+        record["delivery_intent"] = intent
+        results.write_result(record, None, run_id)
+    return message
+
+
 def _load_runs() -> None:
     """Load persisted runs on startup. Any run still marked ``running`` is
     re-marked ``interrupted`` — its in-process driver thread did not survive the
@@ -216,10 +230,21 @@ def _load_runs() -> None:
                 r["error"] = "Interrupted by a gateway restart — re-run the review."
                 r.setdefault("finished_at", _now())
             if r.get("posting"):
+                run_id = str(r.get("run_id") or "")
+                if run_id:
+                    try:
+                        restart_message = _mark_restart_delivery_indeterminate(run_id)
+                    except (OSError, ValueError) as exc:
+                        restart_message = (
+                            "Posting recovery could not persist delivery intent: "
+                            f"{exc}; reconcile before posting again."
+                        )
+                        logger.error(
+                            "code-review-sage posting intent recovery failed", exc_info=True)
                 r["posting"] = False
-                r["post_error"] = (
-                    "Posting was interrupted by a gateway restart — comments already "
-                    "delivered are marked as sent; post again to send the rest.")
+                r["post_error"] = (restart_message if run_id else
+                                   "Posting was interrupted by a gateway restart; "
+                                   "reconcile before posting again.")
         _RUNS = data[:_RUNS_MAX]
     except Exception:  # pragma: no cover - defensive
         logger.warning("failed to load runs.json", exc_info=True)
@@ -1125,6 +1150,15 @@ async def _post_comments_bg(run_id: str, run: dict,
         # only after the records above reflect what actually landed.
         await asyncio.to_thread(_record_reviewed, run)
         await _notify_posted(run, posted, bool(failed))
+    except (OSError, ValueError) as exc:
+        logger.exception("posting delivery intent persistence failed")
+        async with _LOCK:
+            run["posting"] = False
+            run["post_error"] = (
+                "posting durability state could not be persisted; reconcile the "
+                f"pull request before posting again: {exc}")
+            await _save_runs()
+        raise
     except Exception as e:
         logger.exception("posting comments failed")
         async with _LOCK:
@@ -2395,18 +2429,20 @@ def register_routes(app: web.Application) -> None:
         store.ensure_layout()
     except Exception:  # pragma: no cover - never break gateway startup
         logger.warning("code-review-sage: ensure_layout failed at startup", exc_info=True)
-    _load_runs()  # restore durable job status (mark orphaned 'running' as 'interrupted')
     # A run dir with no registry entry is unreachable residue (crash between the
     # two writes, or an older layout) — reap it once at startup, but OFF the event
     # loop. `register_routes` is a sync function called from `start_dashboard`,
     # which is a coroutine, so everything here runs on the loop: this reap walks
     # every run dir and deletes the unreferenced ones, and its cost grows with
     # accumulated residue, so on a host with stale runs it stalled gateway startup.
-    # `ensure_layout` and `_load_runs` above stay inline deliberately — they are
-    # bounded, and the routes cannot answer correctly until they have run (an empty
-    # `_RUNS` or missing `resolved_paths` is what the UI renders as a perpetual
-    # "Initializing…"). Cleanup has no such ordering requirement, so it is the one
-    # that can wait.
+    # `ensure_layout` stays inline because the routes cannot answer correctly until
+    # it completes. Loading the registry includes per-record recovery writes, so
+    # startup awaits it from a worker thread before the app begins serving requests.
+
+    async def _load_runs_on_startup(_app: web.Application) -> None:
+        await asyncio.to_thread(_load_runs)
+
+    app.on_startup.append(_load_runs_on_startup)
 
     async def _reap_on_startup(_app: web.Application) -> None:
         try:

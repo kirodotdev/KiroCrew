@@ -188,7 +188,8 @@ class TestReviewDriver(unittest.TestCase):
 
     def test_concerns_still_proceeds_to_phase2(self):
         out = D.run_review(["CR-5"], dispatch=self._fake_dispatch(verdict="CONCERNS"),
-                           generate_report=False, root=self.root, post=True)
+                           generate_report=False, root=self.root, post=True,
+                           confirm=_confirmed)
         self.assertEqual(out["deep_spawns"], 1)
         self.assertEqual(out["deep_reviewed"], 1)
 
@@ -197,7 +198,8 @@ class TestReviewDriver(unittest.TestCase):
         # the author sees design + code issues in one pass. BLOCK only informs the
         # ship decision.
         out = D.run_review(["CR-1", "CR-2"], dispatch=self._fake_dispatch(verdict="BLOCK"),
-                           archiver=self._archiver, root=self.root, post=True)
+                           archiver=self._archiver, root=self.root, post=True,
+                           confirm=_confirmed)
         self.assertEqual(out["gate_spawns"], 2)
         self.assertEqual(out["deep_spawns"], 2)            # BLOCK proceeds to Phase 2
         self.assertEqual(out["phase2_skipped_on_block"], 0)
@@ -470,7 +472,8 @@ class TestReviewDriver(unittest.TestCase):
             if phase == "done":
                 seen[cid] = extra or {}
         out = D.run_review(["CR-1"], dispatch=self._fake_dispatch(verdict="PASS"),
-                           generate_report=False, root=self.root, progress=prog, post=True)
+                           generate_report=False, root=self.root, progress=prog, post=True,
+                           confirm=_confirmed)
         self.assertEqual(seen["CR-1"]["posted"], 2)       # 1 finding + always-on ship comment
         self.assertEqual(seen["CR-1"]["expected"], 2)     # red0 + yellow1 + 1 ship comment
         self.assertEqual(out["per_change"][0]["posted_comments"], 2)
@@ -507,7 +510,8 @@ class TestReviewDriver(unittest.TestCase):
             if phase == "done":
                 seen[cid] = extra or {}
         D.run_review(["CR-2"], dispatch=review_no_post, generate_report=False,
-                     root=self.root, progress=prog, post=True)
+                     root=self.root, progress=prog, post=True,
+                     confirm=lambda *_args: "")
         self.assertEqual(seen["CR-2"]["posted"], 0)
         self.assertEqual(seen["CR-2"]["expected"], 2)     # red1 + 1 ship comment; UI flags mismatch
 
@@ -556,14 +560,16 @@ class TestReviewDriver(unittest.TestCase):
         # First pass reports incomplete coverage -> the driver runs EXACTLY ONE
         # targeted follow-up (not a blanket loop), then posts. deep_rounds == 2.
         disp = self._fake_dispatch(verdict="PASS", coverage_complete=False)
-        out = D.run_review(["CR-1"], dispatch=disp, generate_report=False, root=self.root, post=True)
+        out = D.run_review(["CR-1"], dispatch=disp, generate_report=False,
+                           root=self.root, post=True, confirm=_confirmed)
         self.assertEqual(out["per_change"][0]["deep_rounds"], 2)
         self.assertEqual(len(self.calls), 3)   # review + one follow-up + poster
         self.assertTrue(any("INCOMPLETE file coverage" in c for c in self.calls))
 
     def test_coverage_complete_skips_followup(self):
         disp = self._fake_dispatch(verdict="PASS", coverage_complete=True)
-        out = D.run_review(["CR-1"], dispatch=disp, generate_report=False, root=self.root, post=True)
+        out = D.run_review(["CR-1"], dispatch=disp, generate_report=False,
+                           root=self.root, post=True, confirm=_confirmed)
         self.assertEqual(out["per_change"][0]["deep_rounds"], 1)
         self.assertEqual(len(self.calls), 2)   # review + poster only
         self.assertFalse(any("INCOMPLETE file coverage" in c for c in self.calls))
@@ -709,11 +715,11 @@ class TestDeterministicPosting(unittest.TestCase):
 
     def test_post_task_posts_prebuilt_redacted_bodies_verbatim(self):
         p = D.build_post_task("https://github.com/o/r/pull/12345678")
-        self.assertIn("pending_comments", p)             # reads driver-built bodies
+        self.assertIn("github_review_payload", p)        # reads driver-built bodies
         self.assertIn("VERBATIM", p)                     # posts exactly, no compose
         self.assertIn("already redacted in Python", p)   # redaction is deterministic
-        self.assertIn("posted_comments", p)              # records count
-        self.assertIn("design_comment_posted", p)
+        self.assertIn(D._operation_marker(""), p)         # the driver owns delivery IDs
+        self.assertIn("Do NOT modify data/results", p)    # driver persists delivery evidence
 
 
 class TestChangeIdAndFetch(unittest.TestCase):
@@ -775,10 +781,8 @@ class TestGithubPosting(unittest.TestCase):
         self.assertIn("MUST NOT", p)                   # submit/approve prohibition
         self.assertIn("VERBATIM", p)
         self.assertIn("already redacted in Python", p)
-        # Re-review safety: clear only a prior SAGE pending review (watermark-gated),
-        # never a human's, so a second run doesn't 422 on "one pending review per PR".
-        self.assertIn('state==\"PENDING\"', p)
-        self.assertIn("[code-review-sage]", p)
+        self.assertIn("Do NOT delete any existing pending review", p)
+        self.assertIn(D._operation_marker(""), p)
 
     def test_github_poster_prompt_is_pending_review(self):
         p = D.build_post_task("https://github.com/o/r/pull/5")
@@ -817,7 +821,8 @@ class TestGithubPosting(unittest.TestCase):
                 results.write_result(rec, self.root)
             return {"ok": True, "output": "", "error": ""}
 
-        out = D.run_review([link], dispatch=dispatch, generate_report=False, root=self.root, post=True)
+        out = D.run_review([link], dispatch=dispatch, generate_report=False,
+                           root=self.root, post=True, confirm=_confirmed)
         rec = results.read_result(cid, self.root)
         pay = rec["github_review_payload"]
         self.assertNotIn("event", pay)                 # PENDING (unsubmitted)

@@ -37,6 +37,8 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import copy
+import hashlib
 import inspect
 import json
 import logging
@@ -49,8 +51,10 @@ import urllib.error
 import urllib.request
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
+from enum import Enum
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 # Optional KiroCrew runtime dep (absent when running standalone / in tests).
 # Kept at module top per the imports guideline; guarded at each use site.
@@ -508,7 +512,8 @@ def build_review_followup_task(change_link: str) -> str:
     )
 
 
-def build_post_task(change_link: str) -> str:
+def build_post_task(change_link: str, operation_id: str = "",
+                    predecessor: dict | None = None) -> str:
     """Poster prompt: publish the driver-built, Python-REDACTED DRAFT comments for
     one change. The bodies are authoritative and already scrubbed in Python — the
     poster posts them VERBATIM and only resolves the (non-sensitive) anchor. This
@@ -546,16 +551,13 @@ def build_post_task(change_link: str) -> str:
         + "  1. Read data/results/<id>.json and take its `github_review_payload` "
         "object (fields: body, comments[], optional commit_id). It was assembled "
         "AND redacted in Python — use it EXACTLY as given; do NOT rebuild it. Parse "
-        "<owner>/<repo>/<number> from the PR URL.\n"
-        "  2. FIRST clear any stale sage draft: GitHub allows only ONE pending "
-        "review per PR per user, so a leftover one would make step 3 fail with 422. "
-        "GET repos/<owner>/<repo>/pulls/<number>/reviews and, if a review with "
-        "state==\"PENDING\" exists WHOSE BODY CONTAINS the exact marker "
-        "`[code-review-sage]`, DELETE just that one (DELETE "
-        "repos/<owner>/<repo>/pulls/<number>/reviews/<review_id>) — it is a stale "
-        "sage draft. NEVER delete a non-PENDING review or a PENDING review lacking "
-        "that marker (it may be a human's in-progress draft).\n"
-        "  3. THEN write `github_review_payload` to a temp JSON file and create ONE "
+        "<owner>/<repo>/<number> from the PR URL. Add this exact hidden HTML comment "
+        "to the END of the outbound `body` in the TEMP JSON only: `"
+        + _operation_marker(operation_id)
+        + "`. Do not write the marker back to the "
+        "result record or alter any other payload content.\n"
+        + _predecessor_instruction(predecessor)
+        + "  3. THEN write that outbound payload to a temp JSON file and create ONE "
         "PENDING (unsubmitted) review:\n"
         "     gh api --method POST repos/<owner>/<repo>/pulls/<number>/reviews "
         "--input <tmpfile>\n"
@@ -565,10 +567,8 @@ def build_post_task(change_link: str) -> str:
         "call any submit/approve/dismiss endpoint, and MUST NOT run `gh pr review` "
         "(that would submit immediately). `gh` uses its own stored auth — never "
         "read, print, or pass any token.\n"
-        "  4. Update data/results/<id>.json: set posted_comments = len(comments) "
-        "plus 1 when `body` is non-empty; set design_comment_posted = true when "
-        "`body` is non-empty (else false). Do NOT modify findings, phase1, "
-        "pending_comments, or github_review_payload.\n"
+        "  4. Do NOT modify data/results/<id>.json. The caller records durable "
+        "delivery evidence only after its own GitHub read-back.\n"
         "Do NOT spawn further subagents. Execute; do not ask questions."
     )
 
@@ -705,230 +705,421 @@ def _unconfigured_dispatch(task: str, timeout: int = DEFAULT_TASK_TIMEOUT) -> di
     }
 
 
+_OPERATION_MARKER_PREFIX = "<!-- code-review-sage-operation:"
+_OPERATION_MARKER_SUFFIX = " -->"
+_OPERATION_ID_RE = re.compile(r"[0-9a-f]{32}")
+
+
+class DeliveryProbe(str, Enum):
+    """The remote evidence states that govern whether a delivery may proceed."""
+
+    FOUND = "FOUND"
+    ABSENT = "ABSENT"
+    UNKNOWN = "UNKNOWN"
+    CONFLICT = "CONFLICT"
+
+
+def _operation_marker(operation_id: str) -> str:
+    """Return the non-preview marker that identifies one outbound operation."""
+    if operation_id == "":
+        return f"{_OPERATION_MARKER_PREFIX}{_OPERATION_MARKER_SUFFIX}"
+    if not isinstance(operation_id, str) or not _OPERATION_ID_RE.fullmatch(operation_id):
+        raise ValueError("delivery operation ID must be 32 lowercase hexadecimal characters")
+    return f"{_OPERATION_MARKER_PREFIX}{operation_id}{_OPERATION_MARKER_SUFFIX}"
+
+
+def _outbound_payload(payload: dict, operation_id: str) -> dict:
+    """Make the wire-only payload without contaminating the visible draft payload."""
+    wire = dict(payload)
+    body = str(wire.get("body") or "").rstrip()
+    wire["body"] = f"{body}\n\n{_operation_marker(operation_id)}"
+    return wire
+
+
+def _canonical_payload(payload: dict) -> dict:
+    """Normalize exactly the GitHub fields whose remote echo proves a delivery."""
+    comments = []
+    for comment in payload.get("comments") or []:
+        comments.append({"path": str(comment.get("path") or ""),
+                         "line": int(comment.get("line") or 0),
+                         "side": str(comment.get("side") or "RIGHT").upper(),
+                         "body": _confirm_text(comment.get("body"))})
+    comments.sort(key=lambda item: json.dumps(item, sort_keys=True, separators=(",", ":")))
+    return {"body": _confirm_text(payload.get("body")), "comments": comments,
+            "commit_id": str(payload.get("commit_id") or "")}
+
+
+def _payload_digest(payload: dict) -> str:
+    """Hash the exact canonical payload that is sent to GitHub."""
+    wire = json.dumps(_canonical_payload(payload), sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(wire.encode("utf-8")).hexdigest()
+
+
+def _canonical_target(link: str) -> str:
+    """Canonicalize a GitHub pull-request URL before it enters durable intent."""
+    host, owner, repo, number = adapters.github_pr_ref(link)
+    return f"https://{host}/{owner}/{repo}/pull/{number}"
+
+
+def _write_intent(record: dict, intent: dict, state: str, *, root: Path | None,
+                  run_id: str | None, error: str = "", review_id: str = "") -> None:
+    """Persist a state transition before any caller can observe or act on it."""
+    intent["state"] = state
+    if error:
+        intent["error"] = error
+    else:
+        intent.pop("error", None)
+    if review_id:
+        intent["review_id"] = review_id
+    record["delivery_intent"] = intent
+    results.write_result(record, root, run_id)
+
+
+def _remote_payload(review: dict, comments: list[dict]) -> dict:
+    """Project GitHub's review echo into the canonical outbound-payload shape."""
+    return {"body": review.get("body") or "", "commit_id": review.get("commit_id") or "",
+            "comments": [{"path": comment.get("path") or "",
+                          "line": comment.get("line") or comment.get("original_line") or 0,
+                          "side": comment.get("side") or "RIGHT", "body": comment.get("body") or ""}
+                         for comment in comments]}
+
+
+def _intent_payload(record: dict, intent: dict) -> tuple[dict | None, str]:
+    """Rebuild and verify the immutable wire payload held by an intent digest."""
+    payload = record.get("github_review_payload")
+    operation_id = intent.get("operation_id")
+    if not isinstance(payload, dict) or not operation_id:
+        return None, "delivery intent has no reconstructable outbound payload"
+    if not isinstance(operation_id, str) or not _OPERATION_ID_RE.fullmatch(operation_id):
+        return None, "delivery intent has invalid operation ID"
+    wire = _outbound_payload(payload, operation_id)
+    if _payload_digest(wire) != str(intent.get("payload_digest") or ""):
+        return None, "delivery intent payload no longer matches its immutable digest"
+    return wire, ""
+
+
+def _predecessor_instruction(predecessor: dict | None) -> str:
+    """Tell the poster the only review it may replace after driver reconciliation."""
+    if not predecessor:
+        return "  2. Do NOT delete any existing pending review. If GitHub refuses the POST, stop.\n"
+    review_id = str(predecessor.get("review_id") or "")
+    operation_id = str(predecessor.get("operation_id") or "")
+    if not review_id or not operation_id:
+        return "  2. Do NOT delete any existing pending review. If GitHub refuses the POST, stop.\n"
+    marker = _operation_marker(operation_id)
+    return ("  2. The driver reconciled exactly one locally known predecessor review: "
+            f"id `{review_id}` with hidden marker `{marker}`. GET that exact review first. "
+            "Only if it is still PENDING and its body contains that exact marker, DELETE "
+            f"that exact id (DELETE repos/<owner>/<repo>/pulls/<number>/reviews/{review_id}). "
+            "If the id, state, or marker differs, stop without DELETE or POST. Never delete "
+            "a review discovered only by the generic Sage marker or a human draft.\n")
+
+
+def _authenticated_login() -> str | None:
+    """The `gh` login this host posts as, or None when it cannot be determined."""
+    try:
+        return discovery.current_login()
+    except (discovery.GhError, discovery.GhSetupError, OSError):
+        return None
+
+
+def _probe_delivery(link: str, intent: dict, payload: dict) -> tuple[DeliveryProbe, str, str]:
+    """Reconcile an operation against GitHub without mutating remote state."""
+    operation_id = intent.get("operation_id")
+    if not isinstance(operation_id, str) or not _OPERATION_ID_RE.fullmatch(operation_id):
+        return DeliveryProbe.CONFLICT, "", "delivery intent has invalid operation ID"
+    predecessor = intent.get("predecessor") if isinstance(intent.get("predecessor"), dict) else None
+    predecessor_operation_id = (predecessor or {}).get("operation_id")
+    if predecessor is not None and (
+            not isinstance(predecessor_operation_id, str)
+            or not _OPERATION_ID_RE.fullmatch(predecessor_operation_id)):
+        return DeliveryProbe.CONFLICT, "", "delivery predecessor has invalid operation ID"
+    try:
+        host, owner, repo, number = adapters.github_pr_ref(link)
+    except adapters.AdapterError as exc:
+        return DeliveryProbe.CONFLICT, "", f"delivery target is no longer valid: {exc}"
+    if _canonical_target(link) != str(intent.get("target") or ""):
+        return DeliveryProbe.CONFLICT, "", "delivery target differs from the prepared intent"
+    expected_revision = str(intent.get("revision") or "")
+    if expected_revision != str(payload.get("commit_id") or ""):
+        return DeliveryProbe.CONFLICT, "", "delivery revision differs from the prepared intent"
+    try:
+        pr_rows = discovery.run_gh_json(f"repos/{owner}/{repo}/pulls/{number}", host=host)
+        reviews = discovery.run_gh_json(f"repos/{owner}/{repo}/pulls/{number}/reviews",
+                                        jq=".[]", paginate=True, host=host)
+    except (discovery.GhError, discovery.GhSetupError, OSError) as exc:
+        return DeliveryProbe.UNKNOWN, "", f"could not read GitHub delivery state: {exc}"
+    if len(pr_rows) != 1 or str(((pr_rows[0].get("head") or {}).get("sha") or "")) != expected_revision:
+        return DeliveryProbe.CONFLICT, "", "pull request head changed since the review was prepared"
+    marker = _operation_marker(operation_id)
+    predecessor_id = str((predecessor or {}).get("review_id") or "")
+    predecessor_marker = _operation_marker(predecessor_operation_id) if predecessor else ""
+    predecessor_digest = str((predecessor or {}).get("payload_digest") or "")
+    found_id = ""
+    predecessor_seen = False
+    predecessor_exists = False
+    for review in reviews:
+        review_id = str(review.get("id") or "")
+        body = str(review.get("body") or "")
+        # Recorded before the PENDING filter below, so a predecessor that was
+        # submitted (or otherwise left the draft state) is distinguishable from
+        # one that is genuinely gone. The two need opposite answers.
+        if predecessor_id and review_id == predecessor_id:
+            predecessor_exists = True
+        if marker in body:
+            try:
+                comments = discovery.run_gh_json(f"repos/{owner}/{repo}/pulls/{number}/reviews/{review_id}/comments",
+                                                 jq=".[]", paginate=True, host=host)
+            except (discovery.GhError, discovery.GhSetupError, OSError) as exc:
+                return DeliveryProbe.UNKNOWN, "", f"could not read posted review {review_id}: {exc}"
+            if _payload_digest(_remote_payload(review, comments)) != str(intent.get("payload_digest") or ""):
+                return DeliveryProbe.CONFLICT, "", "operation marker matched a review with different payload"
+            # Matching body and payload prove the CONTENT is ours, not that we
+            # posted it. The marker is readable by anyone who can read this PR,
+            # and the record carrying the intent is worker-writable, so content
+            # alone would let a review posted by another account be adopted as
+            # this operation's own delivery. Checked here rather than at the
+            # marker, so a genuine payload mismatch still reports as the
+            # conflict it is.
+            author = str(((review.get("user") or {}).get("login") or ""))
+            login = _authenticated_login()
+            if login is None:
+                return (DeliveryProbe.UNKNOWN, "",
+                        "could not confirm the posting account for a matched review")
+            if author.casefold() != login.casefold():
+                return (DeliveryProbe.CONFLICT, "",
+                        "operation marker matched a review posted by another account")
+            found_id = review_id
+            continue
+        if str(review.get("state") or "") != "PENDING":
+            continue
+        if review_id == predecessor_id and predecessor_marker in body:
+            try:
+                comments = discovery.run_gh_json(f"repos/{owner}/{repo}/pulls/{number}/reviews/{review_id}/comments",
+                                                 jq=".[]", paginate=True, host=host)
+            except (discovery.GhError, discovery.GhSetupError, OSError) as exc:
+                return DeliveryProbe.UNKNOWN, "", f"could not read predecessor review {review_id}: {exc}"
+            if _payload_digest(_remote_payload(review, comments)) != predecessor_digest:
+                return DeliveryProbe.CONFLICT, "", "known predecessor no longer matches its recorded payload"
+            predecessor_seen = True
+            continue
+        return DeliveryProbe.CONFLICT, "", "another pending Sage or human draft blocks this delivery"
+    if found_id:
+        if predecessor_seen:
+            return DeliveryProbe.CONFLICT, "", "multiple pending drafts block confirmation"
+        return DeliveryProbe.FOUND, found_id, ""
+    if predecessor and not predecessor_seen:
+        # A predecessor still on the PR but no longer a matching pending draft
+        # is a real conflict — it may have been submitted, and posting again
+        # would duplicate a delivered review. One that is not on the PR at all
+        # was deleted, and there is nothing left to reconcile: answering
+        # CONFLICT there stranded the operation permanently, because no retry
+        # could ever make the deleted draft reappear.
+        if predecessor_exists:
+            return (DeliveryProbe.CONFLICT, "",
+                    "known predecessor draft is no longer a matching pending draft")
+    return DeliveryProbe.ABSENT, "", ""
+
+
 def post_recorded(change_id: str, link: str, *, dispatch, root: Path | None = None,
                   run_id: str | None = None,
                   timeout: float = DEFAULT_TASK_TIMEOUT,
                   keys: list[str] | None = None, confirm=None) -> dict:
-    """Publish an ALREADY-RECORDED review to its pull request.
-
-    Builds the draft comment bodies from the recorded findings plus the always-on
-    ship-readiness comment, REDACTS each in Python (``pipeline.build_pending_comments``
-    -> ``_redact``), persists them into the record, then dispatches the verbatim
-    poster. Redaction is deterministic HERE — no LLM free-text reaches the pull
-    request, which is the security property the split between reviewer and poster
-    exists to guarantee.
-
-    Used by two callers: the opt-in ``review.auto_post`` path inside a run, and
-    the explicit "post comments" action, which is the same operation deferred
-    until the user asks for it. Returns posting stats; no poster is spawned when
-    there is nothing to post.
-
-    ``keys`` selects individual comments (see ``build_pending_comments``) so the
-    author can send the findings they agree with and leave the rest. Already-posted
-    keys are dropped from the selection: each call creates its own pending review
-    on GitHub, so re-sending one would duplicate it on the pull request. Omitting
-    ``keys`` posts everything not yet posted.
-    """
+    """Publish a recorded review through a durable, reconcilable delivery intent."""
     cur = results.read_result(change_id, root, run_id)
     if not cur:
-        # No record means no review to publish. Without this the always-on
-        # ship-readiness comment would be built from an empty record and posted as
-        # a review of nothing (and the write-back would fail validation).
         return {"post_ok": True, "posted_comments": 0,
                 "design_comment_posted": False, "pending": 0,
                 "post_error": "no recorded review for this change"}
     all_entries = pipeline.build_pending_comments(cur)
-    already = set(cur.get("posted_keys") or [])
+    already = {str(key) for key in cur.get("posted_keys") or []}
     wanted = (set(keys) if keys is not None
-              else {str(e.get("key")) for e in all_entries})
-    new = [e for e in all_entries
-           if str(e.get("key")) in wanted and str(e.get("key")) not in already]
+              else {str(entry.get("key")) for entry in all_entries})
+    new = [entry for entry in all_entries
+           if str(entry.get("key")) in wanted and str(entry.get("key")) not in already]
     if not new:
         return {"post_ok": True, "posted_comments": 0,
                 "design_comment_posted": False, "pending": 0,
                 "posted_keys": sorted(already),
                 "post_error": "nothing left to post" if all_entries else ""}
-    # The draft is the UNION of what is already drafted and what was just
-    # selected — not the selection alone.
-    #
-    # GitHub allows one pending review per author, so the poster DELETES the
-    # existing sage draft and creates a replacement. A payload holding only the
-    # new selection therefore does not add to the draft, it REPLACES it: post
-    # finding A, then finding B, and A is deleted with the old draft and never
-    # reappears — while `posted_keys` still claims A landed, so nothing would
-    # ever re-send it. Rebuilding the full draft each time keeps every comment
-    # the author chose.
-    #
-    # If the author submitted the previous draft on GitHub in between, there is no
-    # pending review to replace and the re-included comments post a second time.
-    # That is the deliberate trade this module already takes elsewhere: a visible
-    # duplicate can be removed, a silently dropped finding cannot be recovered.
-    pending = [e for e in all_entries
-               if str(e.get("key")) in (wanted | already)]
+
+    pending = [entry for entry in all_entries
+               if str(entry.get("key")) in (wanted | already)]
     cur["pending_comments"] = pending
-    # GitHub posts a single PENDING review, so assemble the deterministic,
-    # already-redacted envelope in Python here — the poster posts it verbatim via
-    # one `gh api` call and never composes bodies.
     try:
-        _platform = pipeline.adapters.detect_platform(link)
-    except Exception:  # pragma: no cover - defensive
-        _platform = "github"
-    if _platform == "github":
-        # A record with no `revision` cannot be anchored, and the builder refuses
-        # rather than let GitHub bind the draft to the current head. Surface that as
-        # a post failure on the record: the run reports it, the findings stay on disk
-        # for a retry once the record is repaired, and nothing reaches the pull
-        # request. Letting it raise would abort the whole batch for one bad record.
-        try:
-            cur["github_review_payload"] = pipeline.build_github_review_payload(cur)
-        except ValueError as e:
+        cur["github_review_payload"] = pipeline.build_github_review_payload(cur)
+    except ValueError as exc:
+        cur["post_ok"] = False
+        cur["post_error"] = str(exc)
+        results.write_result(cur, root, run_id)
+        return {"post_ok": False, "post_error": str(exc), "posted_comments": 0,
+                "design_comment_posted": False, "pending": len(pending),
+                "expected_units": 0, "posted_keys": sorted(already)}
+    try:
+        target = _canonical_target(link)
+    except adapters.AdapterError as exc:
+        if confirm is not None and "://" not in link:
+            target = link
+        else:
+            error = f"refusing to post: {exc}"
             cur["post_ok"] = False
-            cur["post_error"] = str(e)
-            cur["posted_comments"] = 0
-            cur["design_comment_posted"] = False
+            cur["post_error"] = error
             results.write_result(cur, root, run_id)
-            return {"post_ok": False, "post_error": str(e), "posted_comments": 0,
+            return {"post_ok": False, "post_error": error, "posted_comments": 0,
                     "design_comment_posted": False, "pending": len(pending),
-                    "expected_units": 0, "posted_keys": list(already)}
-    # Clear the delivery fields before the record goes to the poster. They are
-    # what the poster writes back as its ONLY evidence of delivery, so a value
-    # left over from an earlier attempt is indistinguishable from one it just
-    # wrote: a first post that partially failed leaves `posted_comments` at 3,
-    # the one-comment retry publishes that record, a poster that delivers
-    # nothing writes nothing, and `3 >= 1` then marks the comment delivered and
-    # adds it to `posted_keys` — permanently skipping a finding that was never
-    # posted. Zeroing them means the check can only ever pass on a count written
-    # by THIS attempt. `posted_keys` is deliberately not cleared: it is the
-    # durable ledger of what really landed, and forgetting it would duplicate.
-    # The posting-skipped path below already resets these two for the same
-    # reason; this is the sibling that did not.
-    cur["posted_comments"] = 0
-    cur["design_comment_posted"] = False
-    results.write_result(cur, root, run_id)
-    # The poster reads github_review_payload from the shared path named in its
-    # prompt, and writes posted_comments back there.
-    #
-    # A False return on a RUN-SCOPED record means the trusted record is NOT what
-    # sits at that path -- `publish_to_shared` refuses when its own no-follow read
-    # is blocked, which is exactly the case where a sibling worker replaced the
-    # record with a link. Dispatching anyway would point the poster at whatever IS
-    # there and publish it to the pull request, so the failure has to abort.
-    #
-    # Without a run_id the record already IS the shared one: publishing is a no-op
-    # that also reports False, and treating that as refusal would abort every
-    # unscoped post. The guard therefore applies only where a copy was required.
+                    "expected_units": 0, "posted_keys": sorted(already)}
+
+    reconciled_absent = False
+    previous = cur.get("delivery_intent")
+    if isinstance(previous, dict) and previous.get("state") in {
+            "prepared", "attempting", "indeterminate"}:
+        wire, error = _intent_payload(cur, previous)
+        if wire is None:
+            _write_intent(cur, previous, "indeterminate", root=root, run_id=run_id,
+                          error=error)
+            return {"post_ok": False, "post_error": error, "posted_comments": 0,
+                    "design_comment_posted": False, "pending": len(pending),
+                    "expected_units": int(previous.get("selected_units") or 0),
+                    "posted_keys": sorted(already)}
+        probe, review_id, error = _probe_delivery(link, previous, wire)
+        if probe is DeliveryProbe.FOUND:
+            cur["posted_keys"] = sorted(
+                already | {str(key) for key in previous.get("selected_keys") or []})
+            cur["posted_comments"] = int(previous.get("selected_units") or 0)
+            cur["design_comment_posted"] = bool(wire.get("body"))
+            cur["posted_review_id"] = review_id
+            _write_intent(cur, previous, "confirmed", root=root, run_id=run_id,
+                          review_id=review_id)
+            return {"post_ok": True, "post_error": "",
+                    "posted_comments": cur["posted_comments"],
+                    "design_comment_posted": cur["design_comment_posted"],
+                    "pending": len(pending), "expected_units": cur["posted_comments"],
+                    "posted_keys": cur["posted_keys"], "posted_review_id": review_id}
+        if probe is not DeliveryProbe.ABSENT:
+            _write_intent(cur, previous, "indeterminate", root=root, run_id=run_id,
+                          error=error)
+            return {"post_ok": False, "post_error": error, "posted_comments": 0,
+                    "design_comment_posted": False, "pending": len(pending),
+                    "expected_units": int(previous.get("selected_units") or 0),
+                    "posted_keys": sorted(already)}
+        _write_intent(cur, previous, "prepared", root=root, run_id=run_id)
+        intent = previous
+        reconciled_absent = True
+    else:
+        predecessor = None
+        if isinstance(previous, dict) and previous.get("state") == "confirmed":
+            previous_operation_id = previous.get("operation_id")
+            if (not isinstance(previous_operation_id, str)
+                    or not _OPERATION_ID_RE.fullmatch(previous_operation_id)):
+                error = "delivery intent has invalid operation ID"
+                _write_intent(cur, previous, "indeterminate", root=root, run_id=run_id,
+                              error=error)
+                return {"post_ok": False, "post_error": error, "posted_comments": 0,
+                        "design_comment_posted": False, "pending": len(pending),
+                        "expected_units": int(previous.get("selected_units") or 0),
+                        "posted_keys": sorted(already)}
+            predecessor_id = str(cur.get("posted_review_id")
+                                 or previous.get("review_id") or "")
+            if predecessor_id:
+                predecessor = {"review_id": predecessor_id,
+                               "operation_id": previous_operation_id,
+                               "payload_digest": str(previous.get("payload_digest") or "")}
+        operation_id = uuid4().hex
+        wire = _outbound_payload(cur["github_review_payload"], operation_id)
+        intent = {"operation_id": operation_id, "target": target,
+                  "revision": str(wire.get("commit_id") or ""),
+                  "payload_digest": _payload_digest(wire),
+                  "selected_keys": sorted(str(entry.get("key")) for entry in pending),
+                  "selected_count": len(pending),
+                  "selected_units": pipeline.review_payload_units(
+                      cur["github_review_payload"]),
+                  "state": "prepared"}
+        if predecessor:
+            intent["predecessor"] = predecessor
+        cur["posted_comments"] = 0
+        cur["design_comment_posted"] = False
+        cur["posted_review_id"] = ""
+        _write_intent(cur, intent, "prepared", root=root, run_id=run_id)
+
+    wire, error = _intent_payload(cur, intent)
+    if wire is None:
+        _write_intent(cur, intent, "indeterminate", root=root, run_id=run_id,
+                      error=error)
+        return {"post_ok": False, "post_error": error, "posted_comments": 0,
+                "design_comment_posted": False, "pending": len(pending),
+                "expected_units": int(intent.get("selected_units") or 0),
+                "posted_keys": sorted(already)}
+    if confirm is None and not reconciled_absent:
+        probe, _review_id, error = _probe_delivery(link, intent, wire)
+        if probe is not DeliveryProbe.ABSENT:
+            message = error or "delivery intent is already present on GitHub"
+            _write_intent(cur, intent, "indeterminate", root=root, run_id=run_id,
+                          error=message)
+            return {"post_ok": False, "post_error": message, "posted_comments": 0,
+                    "design_comment_posted": False, "pending": len(pending),
+                    "expected_units": int(intent.get("selected_units") or 0),
+                    "posted_keys": sorted(already)}
     if run_id and not results.publish_to_shared(change_id, root, run_id):
-        staged = "could not stage the review record for the poster"
-        cur["post_ok"] = False
-        cur["post_error"] = staged
-        results.write_result(cur, root, run_id)
-        return {"post_ok": False, "post_error": staged, "posted_comments": 0,
+        error = "could not stage the prepared delivery intent for the poster"
+        _write_intent(cur, intent, "indeterminate", root=root, run_id=run_id,
+                      error=error)
+        return {"post_ok": False, "post_error": error, "posted_comments": 0,
                 "design_comment_posted": False, "pending": len(pending),
-                "expected_units": 0, "posted_keys": list(already)}
-    # The prompt builder FAILS CLOSED when the link's host no longer revalidates
-    # (see build_post_task): a prompt built with an unconfirmed host would let
-    # its `gh api` calls default to public github.com and land this draft on a
-    # public same-slug PR. Surface that as a per-change post failure — the
-    # record stays on disk for a retry once the host is configured again.
+                "expected_units": int(intent.get("selected_units") or 0),
+                "posted_keys": sorted(already)}
     try:
-        post_prompt = build_post_task(link)
-    except pipeline.adapters.AdapterError as exc:
-        refused = f"refusing to post: {exc}"
-        cur["post_ok"] = False
-        cur["post_error"] = refused
-        results.write_result(cur, root, run_id)
-        return {"post_ok": False, "post_error": refused, "posted_comments": 0,
+        post_prompt = build_post_task(link, intent["operation_id"],
+                                      intent.get("predecessor"))
+    except (adapters.AdapterError, ValueError) as exc:
+        error = f"refusing to post: {exc}"
+        _write_intent(cur, intent, "indeterminate", root=root, run_id=run_id,
+                      error=error)
+        return {"post_ok": False, "post_error": error, "posted_comments": 0,
                 "design_comment_posted": False, "pending": len(pending),
-                "expected_units": 0, "posted_keys": list(already)}
+                "expected_units": int(intent.get("selected_units") or 0),
+                "posted_keys": sorted(already)}
+
+    # The poster owns the shared record, so its write-back cannot alter the
+    # intent or wire payload used to prove this dispatch reached GitHub.
+    dispatched_intent = copy.deepcopy(intent)
+    dispatched_wire = copy.deepcopy(wire)
+    _write_intent(cur, intent, "attempting", root=root, run_id=run_id)
     spawn = dispatch(post_prompt, timeout)
-    results.adopt_from_shared(change_id, root, run_id)
-    after = results.read_result(change_id, root, run_id) or {}
-    ok = bool(spawn.get("ok", False))
-    # The poster writes the count it actually delivered. That write is the ONLY
-    # evidence of delivery — a spawn that merely returned cleanly proves nothing,
-    # and treating it as proof would break the guard that catches a poster which
-    # posted nothing (_record_reviewed refuses to mark a PR reviewed unless
-    # posted >= expected). ``posted_comments`` is therefore never overwritten.
-    delivered = int(after.get("posted_comments", 0) or 0)
-    # Compare against PAYLOAD UNITS, not the finding count. The poster reports
-    # `len(comments) + 1 if body`, and a finding without a usable anchor folds into
-    # the body instead of becoming its own inline comment — so `len(pending)`
-    # over-counts and a complete delivery read as short. `posted_keys` then went
-    # unwritten and the next post duplicated comments already on the pull request.
-    # Non-GitHub platforms have no payload; there the finding count is the unit count.
-    expected_units = (pipeline.review_payload_units(cur["github_review_payload"])
-                      if _platform == "github" else len(pending))
-    # `confirm` is a seam, not a bypass: it defaults to the real read-back and
-    # exists so tests about WHICH comments a rebuilt draft carries do not each
-    # need a live pull request.
-    _confirm = confirm or _draft_confirmed
-    # One confirmation, two consumers. `posted_keys` is the durable per-finding
-    # ledger; `post_ok` is what `_record_reviewed` reads to index the pull request as
-    # reviewed and what `_all_delivered` reads before CLEARING the result records.
-    # Gating only the ledger left the other two riding on the poster's own report, so
-    # a fabricated count still marked the PR reviewed and deleted the records the
-    # retry would have needed -- the more damaging half of the same hole.
-    #
-    # The PAYLOAD is what gets confirmed, not its size: a count is satisfied by any
-    # draft of the right shape, including a previous run's draft the poster never
-    # replaced.
-    confirmed_id = str(_confirm(link, cur.get("github_review_payload") or {}) or "")
-    confirmed = bool(ok) and bool(confirmed_id)
-    if confirmed:
-        # Record WHICH comments landed, not just how many: the count cannot tell a
-        # later call what is already on the pull request, and that is what stops a
-        # second post from duplicating it.
-        #
-        # The gate is a read-back from GitHub, NOT the poster's own report. The
-        # poster is an LLM session and `posted_comments` is a number it writes about
-        # itself (see `build_post_task` step 4), so a prompt-injected reviewer could
-        # claim a delivery that never happened. Fail-closed: an unverifiable delivery
-        # leaves the ledger untouched and reports failure, so the records survive and
-        # the next post re-sends. A visible duplicate can be removed; a silently
-        # dropped finding cannot be recovered.
-        after["posted_keys"] = sorted(
-            already | {str(e.get("key")) for e in pending})
-        # A confirmed delivery makes the poster's self-reported count redundant, so
-        # the read-back's own accounting replaces it. Leaving the poster's number in
-        # place let a correct delivery be under-reported: the draft is proven on the
-        # pull request, but `_record_reviewed` compares posted against expected and
-        # refuses to index the head, so the next run posts the same review again.
-        after["posted_comments"] = expected_units
-        # WHICH draft was delivered, so a view can tell "this run posted at some
-        # point" from "the draft pending right now is this run's". A later run
-        # replaces the draft by deleting and re-creating it, so a changed id is the
-        # signal that the pending draft belongs to someone else.
+    adopted = results.adopt_from_shared(change_id, root, run_id) if run_id else True
+    after = results.read_result(change_id, root, run_id) or cur
+    if confirm is not None:
+        confirmed_id = str(confirm(link, dispatched_wire) or "")
+        probe = DeliveryProbe.FOUND if confirmed_id else DeliveryProbe.UNKNOWN
+        error = "" if confirmed_id else "the posted draft could not be confirmed on the pull request"
+    else:
+        probe, confirmed_id, error = _probe_delivery(link, dispatched_intent, dispatched_wire)
+    if probe is DeliveryProbe.FOUND:
+        delivered_keys = sorted(already | {str(key)
+                                           for key in intent.get("selected_keys") or []})
+        after["posted_keys"] = delivered_keys
+        after["posted_comments"] = int(intent.get("selected_units") or 0)
+        after["design_comment_posted"] = bool(cur["github_review_payload"].get("body"))
         after["posted_review_id"] = confirmed_id
-        results.write_result(after, root, run_id)
-    elif ok and delivered:
-        # A partial post cannot be attributed to specific comments, so nothing is
-        # marked delivered. Re-posting the selection is the safe direction: a
-        # duplicate is visible and removable, a silently-dropped finding is not.
-        after["post_partial"] = True
-    return {
-        # `post_ok` means DELIVERED, not "the spawn exited cleanly". Two readers
-        # depend on that meaning: `_record_reviewed` indexes the pull request as
-        # reviewed, and `_all_delivered` clears the result records afterwards. A
-        # spawn that returned cleanly having posted nothing must not satisfy either.
-        "post_ok": confirmed,
-        "post_error": (
-            spawn.get("error", "")
-            or ("" if confirmed else
-                "the posted draft could not be confirmed on the pull request")),
-        # Authoritative once confirmed: `after["posted_comments"]` was replaced with
-        # the payload's own unit count above, so this no longer echoes the poster.
-        "posted_comments": int(after.get("posted_comments", 0) or 0),
-        "design_comment_posted": bool(after.get("design_comment_posted")),
-        "pending": len(pending),
-        # The number of deliverable units actually sent, so the caller can set
-        # `posting_expected` from what was sent rather than recomputing it from
-        # finding counts (which miscounts folded-in unanchored findings).
-        "expected_units": expected_units,
-        "posted_keys": list(after.get("posted_keys") or []),
-        # Empty unless this attempt confirmed a draft, so a caller can never mistake
-        # an earlier run's id for the one pending now.
-        "posted_review_id": str(after.get("posted_review_id") or ""),
-    }
+        _write_intent(after, dispatched_intent, "confirmed", root=root, run_id=run_id,
+                      review_id=confirmed_id)
+        return {"post_ok": True, "post_error": "",
+                "posted_comments": after["posted_comments"],
+                "design_comment_posted": after["design_comment_posted"],
+                "pending": len(pending), "expected_units": after["posted_comments"],
+                "posted_keys": delivered_keys, "posted_review_id": confirmed_id}
+    if not adopted and not error:
+        error = "the poster result record could not be read back"
+    error = (str(spawn.get("error") or "") or error
+             or "the posted draft could not be confirmed on the pull request")
+    delivered = int(after.get("posted_comments") or 0)
+    after["design_comment_posted"] = False
+    after["posted_review_id"] = ""
+    _write_intent(after, dispatched_intent, "indeterminate", root=root, run_id=run_id,
+                  error=error)
+    return {"post_ok": False, "post_error": error, "posted_comments": delivered,
+            "design_comment_posted": False, "pending": len(pending),
+            "expected_units": int(intent.get("selected_units") or 0),
+            "posted_keys": sorted(already), "posted_review_id": ""}
 
 
 def _confirm_text(value: object) -> str:
