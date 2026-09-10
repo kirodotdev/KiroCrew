@@ -3834,6 +3834,134 @@ class TestSemanticWriteTimeEmbedding:
         assert self._stored_embedding(store, "pref.city") == blob
         assert texts.count('pref.city "Paris"') == 1, texts
 
+    def test_semantic_scoring_cache_reuses_rows_without_changing_context(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        store = VectorMemoryStore(db_path=tmp_path / "mem.db")
+        store.init()
+        store.embed_fn = self._directional_embed()
+        assert store.set_semantic("pref.travel", "nippon", 1.0, "user_explicit") is None
+        assert store.set_semantic("pref.drink", "coffee", 1.0, "user_explicit") is None
+
+        expected = store.get_semantic_context(query_text="tokyo")
+        assert store._semantic_scoring is not None
+        original_fetch = store._fetch_all_locked
+        scoring_scans = 0
+
+        def count_scoring_scans(sql: str, params: tuple = ()):
+            nonlocal scoring_scans
+            if sql.startswith("SELECT key, value_json, updated_at, embedding FROM semantic_memory"):
+                scoring_scans += 1
+            return original_fetch(sql, params)
+
+        monkeypatch.setattr(store, "_fetch_all_locked", count_scoring_scans)
+        assert store.get_semantic_context(query_text="tokyo") == expected
+        assert scoring_scans == 0, "unchanged semantic context must reuse its resident scoring rows"
+
+    def test_semantic_scoring_cache_invalidates_for_local_write_and_delete(
+        self, tmp_path: Path
+    ) -> None:
+        store = VectorMemoryStore(db_path=tmp_path / "mem.db")
+        store.init()
+        assert store.set_semantic("pref.city", "Paris", 1.0, "user_explicit") is None
+        assert "pref.city: Paris" in store.get_semantic_context(query_text="paris")
+        assert store._semantic_scoring is not None
+
+        assert store.set_semantic("pref.city", "Tokyo", 1.0, "user_explicit") is None
+        assert store._semantic_scoring is None
+        assert "pref.city: Tokyo" in store.get_semantic_context(query_text="tokyo")
+
+        assert store.delete_semantic("pref.city", "user_explicit") is True
+        assert store._semantic_scoring is None
+        assert store.get_semantic_context(query_text="tokyo") == ""
+
+    @pytest.mark.parametrize("writer", ["upsert", "insert_if_absent", "delete"])
+    def test_semantic_scoring_invalidation_stays_inside_writer_lock(
+        self, tmp_path: Path, monkeypatch, writer: str
+    ) -> None:
+        class _CheckedRLock:
+            def __init__(self) -> None:
+                self._lock = threading.RLock()
+                self._owner: int | None = None
+                self._depth = 0
+
+            def __enter__(self) -> "_CheckedRLock":
+                self._lock.acquire()
+                current = threading.get_ident()
+                if self._owner == current:
+                    self._depth += 1
+                else:
+                    assert self._owner is None
+                    self._owner = current
+                    self._depth = 1
+                return self
+
+            def __exit__(self, exc_type, exc_value, traceback) -> None:
+                assert self._owner == threading.get_ident()
+                self._depth -= 1
+                if self._depth == 0:
+                    self._owner = None
+                self._lock.release()
+
+            def held_by_current_thread(self) -> bool:
+                return self._owner == threading.get_ident()
+
+        store = VectorMemoryStore(db_path=tmp_path / "mem.db")
+        store.init()
+        assert store.set_semantic("pref.city", "Paris", 1.0, "user_explicit") is None
+        assert store.get_semantic_context(query_text="paris")
+
+        checked_lock = _CheckedRLock()
+        monkeypatch.setattr(store, "_db_lock", checked_lock)
+        original_invalidate = store._invalidate_semantic_scoring
+
+        def invalidate_under_writer_lock() -> None:
+            assert checked_lock.held_by_current_thread()
+            original_invalidate()
+
+        monkeypatch.setattr(store, "_invalidate_semantic_scoring", invalidate_under_writer_lock)
+
+        if writer == "upsert":
+            assert store.set_semantic("pref.city", "Tokyo", 1.0, "user_explicit") is None
+        elif writer == "insert_if_absent":
+            assert store.set_semantic_if_absent("pref.country", "Japan", 1.0, "user_explicit") == "imported"
+        else:
+            assert store.delete_semantic("pref.city", "user_explicit") is True
+
+    def test_semantic_scoring_cache_invalidates_after_deferred_vector_backfill(
+        self, tmp_path: Path
+    ) -> None:
+        store = VectorMemoryStore(db_path=tmp_path / "mem.db")
+        store.init()
+        assert store.set_semantic("pref.city", "Paris", 1.0, "user_explicit") is None
+        assert "pref.city: Paris" in store.get_semantic_context(query_text="paris")
+        assert store._semantic_scoring is not None
+
+        store.embed_fn = self._directional_embed()
+        assert store._backfill_semantic_kv_embeddings(pace=False) == 1
+        assert store._semantic_scoring is None
+        assert store.get_semantic_context(query_text="paris")
+
+    def test_semantic_scoring_cache_detects_an_external_commit(self, tmp_path: Path) -> None:
+        import sqlite3 as stdlib_sqlite3
+
+        db_path = tmp_path / "mem.db"
+        store = VectorMemoryStore(db_path=db_path)
+        store.init()
+        assert store.set_semantic("pref.city", "Paris", 1.0, "user_explicit") is None
+        assert "pref.city: Paris" in store.get_semantic_context(query_text="paris")
+        assert store._semantic_scoring is not None
+
+        with stdlib_sqlite3.connect(db_path) as other:
+            other.execute(
+                "UPDATE semantic_memory SET value_json = ?, updated_at = ? WHERE key = ?",
+                ('"Tokyo"', "2099-01-01T00:00:00+00:00", "pref.city"),
+            )
+
+        refreshed = store.get_semantic_context(query_text="tokyo")
+        assert "pref.city: Tokyo" in refreshed
+        assert "pref.city: Paris" not in refreshed
+
     def test_null_vector_row_does_not_outrank_embedded_row(self, tmp_path: Path) -> None:
         store = VectorMemoryStore(db_path=tmp_path / "mem.db")
         store.init()
