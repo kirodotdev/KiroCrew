@@ -488,9 +488,15 @@ async def api_work_ledger_get(request: web.Request) -> web.Response:
     """GET /api/work-ledger — the whole ledger this session owns.
 
     The conductor record, every item with all its fields, the derived
-    ``orphaned`` / ``stale`` flags, each item's newest events, and a
-    ready-to-pipe ``accept_batch`` built from ``acceptance`` ALONE — never from a
-    worker's claimed ``pr``, which is surfaced beside the item instead.
+    ``orphaned`` / ``stale`` / ``acceptance_concrete`` flags, each item's newest
+    events, and a ready-to-pipe ``accept_batch`` built from ``acceptance`` ALONE —
+    never from a worker's claimed ``pr``, which is surfaced beside the item instead.
+
+    ``accept_batch`` holds only the items whose bar is concrete, so an item still
+    carrying a ``"TBD"`` pull request number is absent from it; ``acceptance_concrete``
+    on the item row is why. Each entry carries the item's ``status`` so the conductor
+    can apply its own "``done`` only" filter without a second lookup — the filter stays
+    the conductor's to apply.
     """
     key, refusal = await _caller_key(request, "work_ledger_read")
     if refusal is not None:
@@ -516,6 +522,10 @@ async def api_work_ledger_get(request: web.Request) -> web.Response:
         row["stale"] = work_ledger.is_stale(
             item, worker_running=_slot_running(state, item.worker_session_key or "")
         )
+        # Why an item is (or is not) in ``accept_batch``, on the item itself. Without
+        # it a conductor sees an item it dispatched simply missing from the batch and
+        # has no way to tell "bar not filled in yet" from "the read dropped it".
+        row["acceptance_concrete"] = work_ledger.is_acceptance_concrete(item.acceptance)
         events = await asyncio.to_thread(_tail_events, key, item.item_id, _MAX_EVENT_TAIL)
         row["events"] = [event.to_dict() for event in events]
         rows.append(row)
@@ -559,9 +569,9 @@ def _tail_events(key: str, item_id: str, limit: int) -> list[work_ledger.WorkEve
 def _slot_running(state: DashboardState, key: str) -> bool:
     """Whether *key*'s slot has a TURN IN FLIGHT — not merely an open tab.
 
-    ``stale`` is the conjunction "quiet past the window AND not running", and the
-    second half means the worker is doing something (a thirty-minute build), not
-    that its session exists. An idle worker whose tab is still open but which
+    ``stale`` is the conjunction "quiet past the window AND not running AND the
+    worker's last word still left the move with it", and the running half means the
+    worker is doing something (a thirty-minute build), not that its session exists. An idle worker whose tab is still open but which
     stopped without reporting is exactly the case the flag exists to surface, and
     testing slot EXISTENCE here would never flag it. ``orphaned`` keeps the
     existence test, because a conductor's absence is what that flag means.

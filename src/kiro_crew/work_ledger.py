@@ -95,6 +95,39 @@ VERDICTS: frozenset[str] = frozenset({"pass", "fail", "pending", "refused", "err
 #: because they differ in WHO must act: an external dependency versus the conductor.
 WORKER_STATUSES: frozenset[str] = frozenset({"progress", "done", "blocked", "question"})
 
+#: The statuses from which a report gap still means "the WORKER went quiet", which is
+#: the only thing :func:`is_stale` exists to surface. ``done`` is deliberately absent:
+#: a worker that has claimed its bar is met has nothing left to report, and the next
+#: move belongs to the conductor (verify, promote, close) or to a human. Flagging it
+#: would point the flag at the reader instead of the worker.
+STALE_ELIGIBLE_STATUSES: frozenset[str] = frozenset({"progress", "blocked", "question"})
+
+#: Field values that mean "not filled in yet". A conductor legitimately opens an item
+#: whose bar is not knowable at dispatch time -- the worker is what learns the pull
+#: request number -- and writes ``"TBD"`` in the field meanwhile, so the placeholder is
+#: part of the shape rather than a typo. See :func:`is_acceptance_concrete`.
+ACCEPTANCE_PLACEHOLDERS: frozenset[str] = frozenset({"tbd", ""})
+
+#: Per ``kind``, the fields ``accept_eval.py`` actually READS. This is the whole
+#: vocabulary :func:`is_acceptance_concrete` judges a bar by: a placeholder in a field
+#: that script consumes is what makes a bar unevaluable, and a placeholder anywhere
+#: else is in a field it never looks at, so it is none of this predicate's business.
+#: ``cmd`` reads nothing because that script always REFUSES it, and ``refused`` is a
+#: message the conductor must receive -- re-express the condition, never route around
+#: it -- so dropping such an item from the batch would delete its only delivery.
+#: A test derives this map's keys from the script's own dispatch and fails on drift.
+ACCEPTANCE_READ_FIELDS: dict[str, tuple[str, ...]] = {
+    "pr_checks": ("pr", "repo"),
+    "file": ("path", "exists"),
+    "human_approval": (),
+    "cmd": (),
+}
+
+#: The ``kind`` values that script dispatches on at all. Anything else is an error-only
+#: spec (its closing ``return ("error", f"unknown accept kind ...")``), so it is not
+#: concrete. Derived from the map above rather than spelled twice.
+ACCEPTANCE_KINDS: frozenset[str] = frozenset(ACCEPTANCE_READ_FIELDS)
+
 #: Every ITEM write appends exactly one event, so there is no way to move an item
 #: field without a line explaining it (the conductor's own ``goal``/``round``
 #: header is the one eventless write, because it belongs to no item). ``report``
@@ -1099,12 +1132,25 @@ def is_stale(
     silent. The window exists only to cover the gap between binding and the first
     report, and to catch a session that ended without reporting.
 
-    A terminal item is never stale — there is nothing left to report. An item with no
-    report yet is measured from ``created_at``, which is what makes the bind-to-first-
-    report gap visible. An unparseable timestamp reads as stale, because the
-    alternative is an item that can never be flagged.
+    A terminal item is never stale — there is nothing left to report. Neither is one
+    whose last report was ``done``: the ball is in the conductor's court (verify,
+    promote, close) or a human's, and silence from a worker that has already claimed
+    its bar is met is the expected end of its work, not a gap worth waking anyone for.
+    :data:`STALE_ELIGIBLE_STATUSES` names the statuses that do still count, and no
+    report yet counts too — that is the bind-to-first-report gap.
+
+    One exception, and it is the same rule read carefully: a ``done`` item the conductor
+    has already ruled ``verdict: fail`` on and left OPEN is a retry, so the move is back
+    with the worker and its silence is a gap again. The flag follows who owns the next
+    move, not the words of the last report.
+
+    An item with no report yet is measured from ``created_at``, which is what makes
+    that gap visible. An unparseable timestamp reads as stale, because the alternative
+    is an item that can never be flagged.
     """
     if item.is_terminal or worker_running:
+        return False
+    if not _worker_owns_next_move(item):
         return False
     reference = item.last_report_at or item.created_at
     if not reference:
@@ -1118,6 +1164,101 @@ def is_stale(
     if moment.tzinfo is None:
         moment = moment.astimezone()
     return moment - stamped > timedelta(seconds=max(window_secs, 0.0))
+
+
+def _worker_owns_next_move(item: WorkItem) -> bool:
+    """Whether *item*'s last report leaves the next move with the WORKER.
+
+    The half of :func:`is_stale` that keeps the flag pointed at a worker rather than at
+    whoever is reading. No report yet counts (the worker owes the first one), and so
+    does a ``done`` whose verdict came back ``fail`` on a still-open item — the
+    conductor handed that work back.
+    """
+    if item.status is None or item.status in STALE_ELIGIBLE_STATUSES:
+        return True
+    return item.status == "done" and item.verdict == "fail"
+
+
+def is_acceptance_concrete(acceptance: Any) -> bool:
+    """Whether *acceptance* names a bar ``accept_eval.py`` can actually evaluate.
+
+    Derived at read time like :func:`is_stale` and :func:`is_orphaned`, and for the
+    same reason: the answer changes when the conductor promotes the bar, so a stamped
+    flag would go stale in the one direction that matters.
+
+    A conductor may dispatch an item before its bar is knowable and write ``"TBD"`` in
+    the field until a worker reports the real value. Handed such a condition,
+    ``accept_eval.py`` answers ``error`` — "pr_checks spec needs an integer pr" — which
+    a conductor reading a column of verdicts is then tempted to take for a real failure
+    of the work. So a non-concrete bar is left OUT of :func:`accept_batch` entirely
+    until an ``accept`` promotion fills it in, and this predicate is what the read
+    surfaces so the omission is visible rather than mysterious.
+
+    Judged FIELD BY FIELD, over :data:`ACCEPTANCE_READ_FIELDS` — only what that script
+    reads for this ``kind``. Deliberately NOT a scan of the whole object: an acceptance
+    is stored verbatim and may legitimately carry metadata the evaluator never looks at
+    (a branch name, a note, a `cmd` argv that mentions the word TBD), and judging those
+    would drop an evaluable bar for a field that cannot affect the verdict. A whole-
+    object walk was also a recursion over caller-supplied nesting on the read path,
+    which a deep record could turn into a failed ledger read for the whole slot.
+
+    Non-concrete means: an empty acceptance (the absence of a bar); a ``kind`` outside
+    :data:`ACCEPTANCE_KINDS`; a placeholder STRING (blank, or ``"TBD"`` in any case) in
+    a field this ``kind``'s evaluator reads; or one of those fields mistyped — a
+    ``pr_checks`` ``pr`` that is not a positive integer, a ``file`` ``path`` that is not
+    a string, a ``file`` ``exists`` that is not a bool. An explicit ``null`` in an
+    OPTIONAL read field is absence, which the evaluator handles, so it is concrete; in a
+    required one the type rule refuses it.
+
+    Those type rules are ``accept_eval.py``'s own error-only guards, mirrored here so
+    the batch never carries a spec that script can answer nothing but ``error`` to. The
+    mirror is deliberate duplication across a process boundary: the two must agree, and
+    a test pins them against the script's real behaviour. It stops at the guards that
+    are error-ONLY — a ``cmd`` bar stays in the batch, because ``refused`` is a verdict
+    the conductor is supposed to receive and act on.
+    """
+    if not isinstance(acceptance, dict) or not acceptance:
+        return False
+    kind = acceptance.get("kind")
+    if not isinstance(kind, str) or kind not in ACCEPTANCE_KINDS:
+        return False
+    for name in ACCEPTANCE_READ_FIELDS[kind]:
+        # An ABSENT read field is not a placeholder: ``repo`` and ``exists`` are both
+        # optional in the evaluator, and the type rules below are what catch a missing
+        # field that is actually required.
+        if name in acceptance and _is_placeholder(acceptance[name]):
+            return False
+    if kind == "pr_checks":
+        pr = acceptance.get("pr")
+        # ``bool`` is an ``int`` subclass, and ``pr: true`` is not a pull request.
+        if isinstance(pr, bool) or not isinstance(pr, int) or pr < MIN_PR:
+            return False
+    if kind == "file":
+        if not isinstance(acceptance.get("path"), str):
+            return False
+        # ``exists`` defaults to True in the evaluator, so its ABSENCE is fine; only a
+        # present non-bool is not. ``1``/``0`` are rejected there too, and coercing
+        # here would let a truthy ``"false"`` invert an absence check into a presence
+        # one — the reason that guard is a type check rather than ``bool()``.
+        if not isinstance(acceptance.get("exists", True), bool):
+            return False
+    return True
+
+
+def _is_placeholder(value: Any) -> bool:
+    """Whether ONE field value still says "not filled in yet".
+
+    Only a STRING can say it. ``None`` is deliberately not a placeholder: the evaluator
+    treats an absent optional field as absent (``repo: null`` simply omits ``--repo``),
+    so calling it unfilled would drop an evaluable bar — and where a field is genuinely
+    required, the per-kind type rules below refuse ``None`` anyway, which is the honest
+    place for that judgement.
+
+    Flat on purpose: it is applied to the named fields the evaluator reads, never walked
+    over a caller-supplied object graph. A container in such a field is not a
+    placeholder — it is a wrong type, and the type rules refuse it.
+    """
+    return isinstance(value, str) and value.strip().lower() in ACCEPTANCE_PLACEHOLDERS
 
 
 def _parse_iso(value: str) -> datetime | None:
@@ -1635,6 +1776,17 @@ def accept_batch(items: list[WorkItem]) -> dict[str, Any]:
     any already-green pull request and pass. The claim is surfaced beside the item
     for a conductor to promote explicitly, which turns the two-phase acceptance the
     skill performs by hand into a visible field without moving control of the bar.
+
+    An item whose bar is not yet concrete — a ``"TBD"`` pull request number, a blank
+    field — is left out, which is the other half of that same two-phase shape: the
+    skill promises the omission, and doing it here is what makes the promise true.
+    :func:`is_acceptance_concrete` is the test, and the read surfaces it per item so a
+    conductor can see WHY an item is missing from the batch.
+
+    ``status`` rides along on each entry, and the batch is deliberately NOT filtered by
+    it. The conductor applies the "only ``done`` items" filter — that judgement is its
+    own, and the seam is load-bearing — but it should not need a second lookup to
+    apply it. ``accept_eval.py`` reads ``id`` and ``accept`` and ignores the rest.
     """
     return {
         "items": [
@@ -1642,9 +1794,9 @@ def accept_batch(items: list[WorkItem]) -> dict[str, Any]:
             # ``acceptance`` are this store's field names. The rename happens here,
             # at the one seam between the two, so neither side learns the other's
             # vocabulary.
-            {"id": item.item_id, "accept": item.acceptance}
+            {"id": item.item_id, "accept": item.acceptance, "status": item.status}
             for item in items
-            if not item.is_terminal and item.acceptance
+            if not item.is_terminal and is_acceptance_concrete(item.acceptance)
         ]
     }
 

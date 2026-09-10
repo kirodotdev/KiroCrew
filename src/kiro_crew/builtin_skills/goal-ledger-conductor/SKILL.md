@@ -174,10 +174,13 @@ check AND the exit condition in the message. Then end your turn.
 Each cycle:
 
 1. **`work_ledger_read` first, every cycle.** It returns the conductor record,
-   every item with all its fields, each item's derived `orphaned` and `stale`
-   flags, the newest events per item, and a ready-to-pipe `accept_batch`. This
-   one read replaces the whole transcript-reading cycle, and it is O(record) —
-   which is why this loop's cost does not grow with its own history.
+   every item with all its fields, each item's derived `orphaned`, `stale` and
+   `acceptance_concrete` flags, the newest events per item, and a ready-to-pipe
+   `accept_batch`. This one read replaces the whole transcript-reading cycle, and
+   it is O(record) — which is why this loop's cost does not grow with its own
+   history. An item is never `stale` on the strength of silence alone: its worker
+   also has to be not running, and its last word has to have left the next move
+   with the worker, so a `done` item waiting on you is not flagged.
 2. **Act on three statuses, and only three:**
 
    | status | what it means | what you do |
@@ -192,8 +195,9 @@ Each cycle:
 3. **Verify every `done` with the evaluator — never by reading the child's
    transcript and judging, and never by believing the claim.** Take the
    `accept_batch` that `work_ledger_read` already built, **keep only the entries
-   whose item is currently `status: done`**, and pipe that filtered document
-   through a **quoted heredoc**:
+   whose item is currently `status: done`** — each entry carries that status, so
+   the filter is a read of the document you already have — and pipe that filtered
+   document through a **quoted heredoc**:
 
    ```bash
    python3 <this skill's dir>/scripts/accept_eval.py <<'ACCEPT_BATCH'
