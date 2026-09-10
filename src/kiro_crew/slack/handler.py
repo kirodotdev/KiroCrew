@@ -3192,17 +3192,38 @@ async def handle_message(
     _tool_gap = False
 
     async def _rotate_stream() -> str | None:
-        """Stop the dead stream and start a fresh one. Returns new ts or None."""
+        """Stop the dead stream and start a fresh one. Returns new ts or None.
+
+        Best-effort: MUST NOT raise. The
+        real ``SlackClient`` swallows its own API errors, but a client or
+        transport that does not would send the exception up into the streaming
+        loop, where the typed ``except`` arms are all ``kiro_crew.acp.client``
+        errors — it reaches the generic ``except Exception`` catch-all, renders
+        the terminal "🔧 Something went wrong" message, and records a session
+        failure on a turn that is still live. A failed rotation is the existing,
+        handled outcome (``new_ts`` None → demote to chat.update), so map a
+        raise onto it.
+        """
         nonlocal stream_ts, use_slack_stream
         if stream_ts:
-            await slack.stop_stream(channel, stream_ts)
-        new_ts = await slack.start_stream(
-            channel,
-            reply_ts,
-            initial_text=_STREAM_CONTINUED,
-            team_id=team_id or None,
-            user_id=user_id or None,
-        )
+            try:
+                await slack.stop_stream(channel, stream_ts)
+            except Exception:
+                logger.warning(
+                    "Slack stop_stream failed during rotation — abandoning old stream",
+                    exc_info=True,
+                )
+        try:
+            new_ts = await slack.start_stream(
+                channel,
+                reply_ts,
+                initial_text=_STREAM_CONTINUED,
+                team_id=team_id or None,
+                user_id=user_id or None,
+            )
+        except Exception:
+            logger.warning("Slack start_stream failed during rotation", exc_info=True)
+            new_ts = None
         if new_ts:
             stream_ts = new_ts
             logger.info("Stream rotated: new ts=%s", new_ts)
@@ -3231,11 +3252,30 @@ async def handle_message(
             return True  # whole delta withheld (partial credential) — nothing to send yet
         if "[REDACTED" in safe:
             _stream_had_redaction = True
-        ok = await slack.append_stream(channel, stream_ts, safe)
+        # Best-effort: MUST NOT raise. A raising append is the same event as a
+        # refused append — the text is not on the stream — and the refusal path
+        # below (rotate, then retry once) already handles it. Letting it raise
+        # would escape into the generic catch-all below the loop and fake a
+        # terminal error on a live turn.
+        try:
+            ok = await slack.append_stream(channel, stream_ts, safe)
+        except Exception:
+            logger.warning("Slack append_stream failed — attempting rotation", exc_info=True)
+            ok = False
         if not ok and use_slack_stream:
             if await _rotate_stream():
                 assert stream_ts is not None
-                return await slack.append_stream(channel, stream_ts, safe)
+                try:
+                    ok = await slack.append_stream(channel, stream_ts, safe)
+                except Exception:
+                    logger.warning("Slack append_stream failed after rotation", exc_info=True)
+                    ok = False
+        # A delta that failed both the append and the post-rotation retry is
+        # not re-delivered: the real ``stop_stream`` deliberately ignores
+        # ``final_text``, and this is the same outcome the shipped client's
+        # REFUSED append produces on this path. Confirmed-delivery recovery
+        # for this class is a designed subsystem tracked as its own issue
+        # (delivery debt), deliberately not grown inside this guard sweep.
         return ok
 
     async def _append_task(task_id: str, title: str, status: str, details: str = "") -> bool:
@@ -3344,9 +3384,19 @@ async def handle_message(
                 thinking_ts = await slack.post_message(channel, _THINKING_PLACEHOLDER, reply_ts)
             except Exception:
                 logger.debug("Failed to reserve thinking slot", exc_info=True)
-        stream_ts = await slack.start_stream(
-            channel, reply_ts, team_id=team_id or None, user_id=user_id or None
-        )
+        # Best-effort: MUST NOT raise. The real ``SlackClient.start_stream``
+        # swallows its own errors and returns None, but a client or transport
+        # that raises instead would escape into the loop's generic catch-all
+        # from the first TEXT_CHUNK or TOOL_CALL event. A raise is the same
+        # event as a None return — streaming is unavailable — so map it onto
+        # the existing demotion path below.
+        try:
+            stream_ts = await slack.start_stream(
+                channel, reply_ts, team_id=team_id or None, user_id=user_id or None
+            )
+        except Exception:
+            logger.warning("Slack start_stream failed — demoting to chat.update", exc_info=True)
+            stream_ts = None
         use_slack_stream = stream_ts is not None
         if not use_slack_stream:
             # ``SlackClient.start_stream`` swallows its own errors and returns
@@ -3658,7 +3708,17 @@ async def handle_message(
                 accumulated += event.text
 
                 if _status_dirty and use_slack_stream:
-                    await slack.set_thread_status(channel, reply_ts, _STATUS_WORKING)
+                    # Best-effort: MUST NOT raise. The thread
+                    # status is decoration, and a raise here escapes into the
+                    # generic ``except Exception`` catch-all below the loop,
+                    # faking a terminal error on a live turn.
+                    try:
+                        await slack.set_thread_status(channel, reply_ts, _STATUS_WORKING)
+                    except Exception:
+                        logger.warning(
+                            "Slack set_thread_status failed — skipping status refresh",
+                            exc_info=True,
+                        )
                     _status_dirty = False
 
                 # ── Bracket hold-back: filter [OPTIONS: ...] from stream ──
@@ -3774,7 +3834,16 @@ async def handle_message(
                 tool_status = f"\n🫆 `{tool_name}`\n"
                 await _ensure_stream_started()
                 if use_slack_stream:
-                    await slack.set_thread_status(channel, reply_ts, f"is using {tool_name}")
+                    # Best-effort: MUST NOT raise. Decoration
+                    # only — a raise escapes to the catch-all and fakes a
+                    # terminal error on a live turn.
+                    try:
+                        await slack.set_thread_status(channel, reply_ts, f"is using {tool_name}")
+                    except Exception:
+                        logger.warning(
+                            "Slack set_thread_status failed — skipping tool status",
+                            exc_info=True,
+                        )
                     _status_dirty = True
                 if use_slack_stream:
                     # Flush any buffered text before the tool status
@@ -3828,7 +3897,19 @@ async def handle_message(
                         )
                         await _append_task(_active_task_id, _ct, "complete")
                         _active_task_id = ""
-                    await slack.stop_stream(channel, stream_ts)
+                    # Best-effort: MUST NOT raise. The stream is being
+                    # abandoned either way (``stream_ts`` is cleared just
+                    # below, and ``_ensure_stream_started`` opens a fresh
+                    # message after wait returns), so a raising ``stop_stream``
+                    # changes nothing except — unguarded — faking a terminal
+                    # error on a live turn via the catch-all.
+                    try:
+                        await slack.stop_stream(channel, stream_ts)
+                    except Exception:
+                        logger.warning(
+                            "Slack stop_stream failed at wait finalize — abandoning stream",
+                            exc_info=True,
+                        )
                     stream_ts = None
                     accumulated = ""
 
@@ -4315,8 +4396,8 @@ async def handle_message(
         # either per-chunk during streaming (_stream_had_redaction), inside the
         # final render (_render_redacted), or caught by the post-decorator scan
         # (exfil_warnings/cred_warnings). The security invariant requires the
-        # final visible message reflect the redacted accumulated text; all other
-        # cases leave the rich render intact.
+        # final visible message reflect the redacted accumulated text; all
+        # other cases leave the rich render intact.
         #
         # _render_redacted is the one that catches an ANSI-obfuscated credential:
         # the per-chunk StreamRedactor sees raw chunks and does not strip escapes,

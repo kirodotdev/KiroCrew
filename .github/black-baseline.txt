@@ -990,7 +990,6 @@ test/test_slack_mirror_unlink.py
 test/test_slack_options_lifecycle.py
 test/test_slack_pins_reactions.py
 test/test_slack_render_pipeline.py
-test/test_slack_renderer.py
 test/test_slack_scope_probe.py
 test/test_slack_sessions_view.py
 test/test_slack_thread_session_binding.py

@@ -4058,3 +4058,236 @@ class TestLiveTurnPresentationFailure:
         )
         assert "Something went wrong" not in all_text, slack.actions
         assert sessions.record_failure_calls == 0
+
+
+class TestStreamingLoopPresentationGuards:
+    """Presentation-guard sweep: every remaining presentation-side Slack
+    call inside the streaming loop must be best-effort. The real ``SlackClient``
+    swallows its own API errors, but a client or transport that raises instead
+    would escape into the generic ``except Exception`` catch-all (the typed arms
+    are all ``kiro_crew.acp.client`` errors), rendering the terminal
+    "🔧 Something went wrong" message and recording a session failure on a turn
+    that is still live. Each test drives one guarded site with a raising client
+    and asserts: no failure recorded, no terminal placeholder, reply delivered.
+    """
+
+    class _TrackingSessions(FakeSessionManager):
+        def __init__(self, provider):
+            super().__init__(provider)
+            self.record_failure_calls = 0
+            self.record_success_calls = 0
+
+        async def record_failure(self, key):
+            self.record_failure_calls += 1
+            return False
+
+        def record_success(self, key):
+            self.record_success_calls += 1
+
+    @staticmethod
+    def _all_text(slack) -> str:
+        return " ".join(
+            str(a[1].get("text") or "")
+            for a in slack.actions
+            if a[0] in ("post", "update", "append_stream", "stop_stream")
+        )
+
+    @pytest.mark.asyncio
+    async def test_set_thread_status_raise_in_tool_and_text_branches(self):
+        """``set_thread_status`` raises in the TOOL_CALL branch (tool status) and
+        again in the TEXT_CHUNK branch (the ``_status_dirty`` reset): both are
+        decoration and must be swallowed."""
+
+        class RaisingStatusSlack(MockSlackClient):
+            def __init__(self):
+                super().__init__()
+                self._stream_enabled = True
+                self.status_raises = 0
+
+            async def set_thread_status(self, *a, **kw):
+                # Out-of-scope calls for this sweep: the pre-loop base-status
+                # call (before the stream opens) and the end-of-turn/error-path
+                # status CLEARS (empty status). Raise only on the in-loop
+                # TOOL_CALL / TEXT_CHUNK branch calls this sweep guards —
+                # non-empty statuses sent after the stream opened.
+                status = a[2] if len(a) > 2 else kw.get("status", "")
+                if not status or not any(m == "start_stream" for m, _ in self.actions):
+                    return await super().set_thread_status(*a, **kw)
+                self.status_raises += 1
+                raise RuntimeError("ratelimited: assistant.threads.setStatus")
+
+        slack = RaisingStatusSlack()
+        # tool_call hits the TOOL_CALL-branch status; the following text chunk
+        # (with _status_dirty=True) hits the TEXT_CHUNK-branch reset.
+        provider = FakeProvider(
+            [
+                LLMEvent(
+                    kind="tool_call",
+                    title="Running: grep",
+                    tool_kind="execute",
+                    tool_purpose="searching the repo",
+                ),
+                LLMEvent(kind="text_chunk", text="The answer is 42"),
+            ]
+        )
+        sessions = self._TrackingSessions(provider)
+
+        await handle_message(slack, sessions, "C1", "do something slow", None, "msg1", "U1")
+
+        assert slack.status_raises >= 2, slack.actions  # both branches actually fired
+        assert sessions.record_failure_calls == 0
+        all_text = self._all_text(slack)
+        assert "Something went wrong" not in all_text, slack.actions
+        assert "The answer is 42" in all_text, slack.actions
+        assert sessions.record_success_calls == 1
+
+    @pytest.mark.asyncio
+    async def test_wait_finalize_stop_stream_raise(self):
+        """``stop_stream`` raising at the wait-tool finalize must not fail the
+        turn: the stream is abandoned either way and the next chunk reopens a
+        fresh one. Only the finalize call (no ``final_text``) raises — the
+        end-of-turn delivery call carries the reply and stays live."""
+
+        class RaisingFinalizeSlack(MockSlackClient):
+            def __init__(self):
+                super().__init__()
+                self._stream_enabled = True
+                self.finalize_raises = 0
+
+            async def stop_stream(self, channel, ts, final_text=None):
+                if final_text is None:
+                    self.finalize_raises += 1
+                    raise RuntimeError("message_not_found: chat.stopStream")
+                return await super().stop_stream(channel, ts, final_text)
+
+        slack = RaisingFinalizeSlack()
+        provider = FakeProvider(
+            [
+                LLMEvent(
+                    kind="tool_call",
+                    title="Running: wait",
+                    tool_kind="execute",
+                    tool_purpose="waiting for CI",
+                ),
+                LLMEvent(kind="text_chunk", text="The answer is 42"),
+            ]
+        )
+        sessions = self._TrackingSessions(provider)
+
+        await handle_message(slack, sessions, "C1", "babysit the build", None, "msg1", "U1")
+
+        assert slack.finalize_raises >= 1, slack.actions  # the finalize path actually fired
+        assert sessions.record_failure_calls == 0
+        all_text = self._all_text(slack)
+        assert "Something went wrong" not in all_text, slack.actions
+        assert "The answer is 42" in all_text, slack.actions
+        assert sessions.record_success_calls == 1
+
+    @pytest.mark.asyncio
+    async def test_append_stream_raise_with_failed_rotation(self):
+        """``append_stream`` raising (instead of returning False) must route into
+        the existing rotation path, and the rotation's own ``start_stream``
+        raising must demote to chat.update — never escape to the catch-all. The
+        reply is still delivered from ``accumulated`` at end of turn."""
+
+        class RaisingAppendSlack(MockSlackClient):
+            def __init__(self):
+                super().__init__()
+                self._stream_enabled = True
+                self._started_once = False
+                self.append_raises = 0
+
+            async def start_stream(self, *a, **kw):
+                # First open succeeds (streaming path taken); the rotation's
+                # reopen raises like a transport failure.
+                if self._started_once:
+                    raise RuntimeError("fatal_error: chat.startStream")
+                self._started_once = True
+                return await super().start_stream(*a, **kw)
+
+            async def append_stream(self, *a, **kw):
+                self.append_raises += 1
+                raise RuntimeError("ratelimited: chat.appendStream")
+
+        slack = RaisingAppendSlack()
+        provider = FakeProvider([LLMEvent(kind="text_chunk", text="The answer is 42")])
+        sessions = self._TrackingSessions(provider)
+
+        await handle_message(slack, sessions, "C1", "hello", None, "msg1", "U1")
+
+        assert slack.append_raises >= 1, slack.actions  # the guarded site actually fired
+        assert sessions.record_failure_calls == 0
+        all_text = self._all_text(slack)
+        assert "Something went wrong" not in all_text, slack.actions
+        assert "The answer is 42" in all_text, slack.actions
+        assert sessions.record_success_calls == 1
+
+    @pytest.mark.asyncio
+    async def test_append_retry_raise_after_successful_rotation_still_delivers(self):
+        """Rotation SUCCEEDS but the retry append raises too: the raise must
+        map onto the refused-append outcome — the turn stays live, no terminal
+        error, no failure record — exactly as the shipped client's refused
+        append behaves on this path. (Re-delivering the dropped delta is the
+        delivery-debt follow-up, deliberately out of this sweep's scope.)"""
+
+        class AlwaysRaisingAppendSlack(MockSlackClient):
+            def __init__(self):
+                super().__init__()
+                self._stream_enabled = True
+                self.append_raises = 0
+
+            async def append_stream(self, *a, **kw):
+                self.append_raises += 1
+                raise RuntimeError("ratelimited: chat.appendStream")
+
+        slack = AlwaysRaisingAppendSlack()
+        provider = FakeProvider([LLMEvent(kind="text_chunk", text="The answer is 42")])
+        sessions = self._TrackingSessions(provider)
+
+        await handle_message(slack, sessions, "C1", "hello", None, "msg1", "U1")
+
+        # Both the first append and the post-rotation retry fired and raised.
+        assert slack.append_raises >= 2, slack.actions
+        assert sessions.record_failure_calls == 0
+        all_text = self._all_text(slack)
+        assert "Something went wrong" not in all_text, slack.actions
+        assert sessions.record_success_calls == 1
+
+    @pytest.mark.asyncio
+    async def test_initial_start_stream_raise_demotes_to_fallback(self):
+        """The lazy first ``start_stream`` in ``_ensure_stream_started`` raising
+        must demote to the chat.update path exactly like a ``None`` return —
+        not escape to the catch-all from the first event."""
+
+        class RaisingStartSlack(MockSlackClient):
+            def __init__(self):
+                super().__init__()
+                self._stream_enabled = True
+                self.start_raises = 0
+
+            async def start_stream(self, *a, **kw):
+                self.start_raises += 1
+                raise RuntimeError("fatal_error: chat.startStream")
+
+        slack = RaisingStartSlack()
+        provider = FakeProvider(
+            [
+                LLMEvent(
+                    kind="tool_call",
+                    title="Running: grep",
+                    tool_kind="execute",
+                    tool_purpose="searching the repo",
+                ),
+                LLMEvent(kind="text_chunk", text="The answer is 42"),
+            ]
+        )
+        sessions = self._TrackingSessions(provider)
+
+        await handle_message(slack, sessions, "C1", "hello", None, "msg1", "U1")
+
+        assert slack.start_raises >= 1, slack.actions  # the guarded site actually fired
+        assert sessions.record_failure_calls == 0
+        all_text = self._all_text(slack)
+        assert "Something went wrong" not in all_text, slack.actions
+        assert "The answer is 42" in all_text, slack.actions
+        assert sessions.record_success_calls == 1
