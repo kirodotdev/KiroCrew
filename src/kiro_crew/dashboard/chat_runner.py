@@ -11088,18 +11088,41 @@ async def _run_chat(
                 _retrying_empty = True
             else:
                 _empty_rung = EMPTY_RUNG_GIVE_UP
-                # Recoverable, usually-transient: the runner already silently
-                # self-retried once (first empty = silent re-queue). Surface a
-                # soft "notice" card (not a red "error" card) so a self-healing
-                # event doesn't read like a crash — and phrase it to reflect
-                # that the retry already happened. Single emit (see AcpProcessDied
-                # note): slot.append persists + broadcasts one chat_message via
-                # _on_message; no explicit broadcast_ws.
-                _empty_msg = (
-                    "ℹ️ The model returned nothing this turn (it was retried "
-                    "and auto-continued automatically). Just send your message "
-                    "again to continue."
-                )
+                # Recoverable, usually-transient: surface a soft "notice" card
+                # (not a red "error" card) so a self-healing event doesn't read
+                # like a crash. Single emit (see AcpProcessDied note):
+                # slot.append persists + broadcasts one chat_message via
+                # _on_message; no explicit broadcast_ws. Same rung, different
+                # words, for the same reason as the continue rung above: the
+                # card is read by the MODEL (via the transcript) and by the
+                # user. "returned nothing" is false for a productive turn and
+                # invites a redo of work whose side effects already landed,
+                # and a recovery claim is false on the paths that reach
+                # give-up with the recovery counter still at zero (nested
+                # depth>0 turns; a gate-off zero-counter give-up is only
+                # reachable productive and takes the productive wording). The
+                # counter counts budget spent, not which rungs ran (flag-off
+                # reaches give-up at one with no auto-continue; a productive
+                # turn's continuation reaches it at two with no verbatim
+                # retry), so the non-zero clause claims only that automatic
+                # recovery was attempted.
+                if _empty_activity.productive:
+                    _empty_msg = (
+                        "ℹ️ The turn ended without a closing reply. Send a "
+                        "message to continue from where it stopped — completed "
+                        "steps will not re-run."
+                    )
+                elif slot._empty_response_retries > 0:
+                    _empty_msg = (
+                        "ℹ️ The model returned nothing this turn (automatic "
+                        "recovery was attempted). Just send your message "
+                        "again to continue."
+                    )
+                else:
+                    _empty_msg = (
+                        "ℹ️ The model returned nothing this turn. Just send "
+                        "your message again to continue."
+                    )
                 slot.append("notice", _empty_msg, "msg msg-info")
             # ONE warning per empty verdict, emitted AFTER the rung is chosen so
             # the log line carries the decision rather than only the symptom. The

@@ -16629,6 +16629,87 @@ class TestEmptyResponseRetry:
         assert slot._empty_response_retries == 0
 
     @pytest.mark.asyncio
+    async def test_productive_giveup_notice_does_not_claim_nothing_happened(
+        self, tmp_path: Path
+    ) -> None:
+        """A PRODUCTIVE turn reaching give-up (its one continuation also ended
+        without a closing reply) must not be described as "returned nothing":
+        the card is read by the model via the transcript, and telling it the
+        completed work produced no output invites a redo of side effects that
+        already landed. Same distinction the continue rung draws one rung up."""
+        from kiro_crew.acp.types import STOP_REASON_END_TURN
+        from kiro_crew.providers.base import (
+            EVENT_COMPLETE,
+            EVENT_TOOL_CALL,
+            EVENT_TOOL_RESULT,
+            LLMEvent,
+        )
+
+        state, slot, client, _run_chat = self._make_state_and_slot(tmp_path)
+        slot._empty_response_retries = 2  # the single continuation is spent
+
+        async def _stream(msg):
+            yield LLMEvent(kind=EVENT_TOOL_CALL, tool_call_id="tc-1", title="send_message")
+            yield LLMEvent(kind=EVENT_TOOL_RESULT, tool_call_id="tc-1", text="sent")
+            yield LLMEvent(kind=EVENT_COMPLETE, stop_reason=STOP_REASON_END_TURN)
+
+        client.stream = _stream
+        client.stream_command = _stream
+
+        await _run_chat(state, slot, "test message")
+        await self._cancel_background_tasks(state)
+
+        notice_msgs = [m for m in slot.messages if m.get("role") == "notice"]
+        assert notice_msgs, "give-up produced no notice card"
+        assert not any("returned nothing" in m.get("content", "") for m in notice_msgs), (
+            "the give-up card claims the turn produced nothing, but this turn "
+            "ran a tool whose side effects already landed"
+        )
+        assert any("without a closing reply" in m.get("content", "") for m in notice_msgs)
+        # The card reassures rather than inviting a redo: completed steps stay done.
+        assert any("will not re-run" in m.get("content", "") for m in notice_msgs)
+        # Terminal rung still resets the budget for the next genuine user turn.
+        assert slot._empty_response_retries == 0
+
+    @pytest.mark.asyncio
+    async def test_giveup_without_recoveries_drops_retry_claim(self, tmp_path: Path) -> None:
+        """A give-up reached with the recovery counter still at zero (here: a
+        nested depth>0 turn) must not assert that a retry and an auto-continue
+        ran — neither did. The counter is the evidence, not the rung."""
+        state, slot, client, _run_chat = self._make_state_and_slot(tmp_path)
+        self._make_empty_stream(client)
+
+        await _run_chat(state, slot, "test message", _prompt_depth=1)
+
+        notice_msgs = [m for m in slot.messages if m.get("role") == "notice"]
+        assert any("returned nothing this turn" in m.get("content", "") for m in notice_msgs)
+        assert not any("retried" in m.get("content", "") for m in notice_msgs), (
+            "the give-up card claims a retry ran, but slot._empty_response_retries "
+            "is still 0 on this path"
+        )
+        assert not any("auto-continued" in m.get("content", "") for m in notice_msgs)
+        assert not any("recovery was attempted" in m.get("content", "") for m in notice_msgs)
+
+    @pytest.mark.asyncio
+    async def test_giveup_after_spent_recoveries_reports_recovery(self, tmp_path: Path) -> None:
+        """When the recovery budget was actually spent (counter exhausted, turn
+        not productive), the card reports that automatic recovery was
+        attempted. Phrased phase-neutrally on purpose: the counter counts
+        budget spent, not which rungs ran."""
+        state, slot, client, _run_chat = self._make_state_and_slot(tmp_path)
+        slot._empty_response_retries = 2  # re-queue + nudge both spent
+        self._make_empty_stream(client)
+
+        await _run_chat(state, slot, "test message")
+
+        notice_msgs = [m for m in slot.messages if m.get("role") == "notice"]
+        assert any("automatic recovery was attempted" in m.get("content", "") for m in notice_msgs)
+        # The counter alone cannot prove WHICH rungs ran (a productive turn's
+        # continuation arrives here at 2 with no verbatim retry), so the card
+        # must not name specific recovery phases.
+        assert not any("auto-continued automatically" in m.get("content", "") for m in notice_msgs)
+
+    @pytest.mark.asyncio
     async def test_second_empty_flag_off_shows_notice(self, tmp_path: Path) -> None:
         """With session.empty_response_auto_continue disabled, the second empty
         surfaces the terminal notice immediately (pre-feature behavior)."""
@@ -16647,6 +16728,14 @@ class TestEmptyResponseRetry:
 
         notice_msgs = [m for m in slot.messages if m.get("role") == "notice"]
         assert any("returned nothing this turn" in m.get("content", "") for m in notice_msgs)
+        # Counter is 1 here: ONLY the silent verbatim re-queue ran (rung 1's
+        # guard ignores the gate); the auto-continue was forbidden by config.
+        # The card reports budget spent phase-neutrally and must not assert
+        # the auto-continue that provably did not run. This is also the
+        # boundary case for the counter gate: budget WAS spent, so the bare
+        # zero-recoveries wording would be wrong too.
+        assert any("automatic recovery was attempted" in m.get("content", "") for m in notice_msgs)
+        assert not any("auto-continued" in m.get("content", "") for m in notice_msgs)
         assert slot._empty_response_retries == 0
 
     @pytest.mark.asyncio

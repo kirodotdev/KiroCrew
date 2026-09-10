@@ -155,7 +155,19 @@ send time.
      and suppressed while a Stop is active;
   3. **third empty** (the nudge also produced nothing) → terminal notice card
      asking the user to send a message; the counter resets so the next
-     genuine user turn gets a fresh budget.
+     genuine user turn gets a fresh budget. The card's wording is cause-aware,
+     mirroring rung 2's split: a productive turn is told the turn ended
+     without a closing reply and that completed steps will not re-run (never
+     "returned nothing", which is false for it and — read back by the model
+     via the transcript — invites a redo of landed side effects). For
+     non-productive turns the recovery clause appears only when the counter
+     shows budget was spent, and claims only that automatic recovery was
+     attempted — the counter counts budget, not which rungs ran (with the
+     auto-continue gate off, give-up arrives at one with no auto-continue).
+     Give-up with the counter at zero is reachable non-productive only on
+     nested depth>0 turns, where the card reports only the empty turn (the
+     gate-off zero-counter path is productive by construction and takes the
+     productive wording).
 
   **A PRODUCTIVE turn never reaches rung 1.** "Empty" at this branch means only
   that the FINAL assistant segment is empty, which is not the same as "the turn
