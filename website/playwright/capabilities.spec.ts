@@ -2,7 +2,7 @@ import { test, expect } from '@playwright/test'
 
 /**
  * /capabilities — Agent Capabilities page.
- * SidePanelLayout with 7 tabs: Agents, Agent Templates, Connections,
+ * SidePanelLayout with 6 tabs: Agents, Connections,
  * Skills, Steering, Hooks, Prompts. Default tab is "crews" (KiroCrewAgentsPage).
  *
  * Covers: page load + heading, tab navigation with content change assertion,
@@ -28,10 +28,10 @@ test.describe('Capabilities Page — /capabilities', () => {
     await expect(page.locator('#main-content').getByText('Agents you chat with', { exact: false })).toBeVisible({ timeout: 5000 })
   })
 
-  test('shows all 7 tab buttons in the side nav', async ({ page }) => {
+  test('shows all 6 tab buttons in the side nav', async ({ page }) => {
     // Tab buttons inside the nav panel — look inside #main-content nav
     const nav = page.locator('#main-content nav')
-    const tabs = ['Agents', 'Agent Templates', 'Connections', 'Skills', 'Steering', 'Hooks', 'Prompts']
+    const tabs = ['Agents', 'Connections', 'Skills', 'Steering', 'Hooks', 'Prompts']
     for (const label of tabs) {
       await expect(nav.getByRole('button', { name: label, exact: true })).toBeVisible({ timeout: 5000 })
     }
@@ -78,13 +78,6 @@ test.describe('Capabilities Page — /capabilities', () => {
     await page.waitForURL('**/capabilities?tab=hooks', { timeout: 5000 })
     // HooksPage shows the "+ New Hook" button
     await expect(page.getByRole('button', { name: /\+ new hook/i })).toBeVisible({ timeout: 10000 })
-  })
-
-  test('switching to Agent Templates tab renders installed agents', async ({ page }) => {
-    await page.locator('#main-content nav').getByRole('button', { name: 'Agent Templates', exact: true }).click()
-    await page.waitForURL('**/capabilities?tab=templates', { timeout: 5000 })
-    // AgentsPage renders "Installed Agents" heading text
-    await expect(page.locator('#main-content').getByText('Installed Agents')).toBeVisible({ timeout: 10000 })
   })
 
   test('create and delete crew round-trip via the editor panel', async ({ page, request }) => {

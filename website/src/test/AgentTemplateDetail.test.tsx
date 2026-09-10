@@ -28,13 +28,11 @@ const mockApi = vi.hoisted(() => ({
   agentPublish: vi.fn(),
   agentReset: vi.fn(),
   updateKirocrewAgent: vi.fn(),
-  agentDelete: vi.fn(),
   skills: vi.fn(),
 }))
 vi.mock('../api/client', () => ({ api: mockApi }))
 
 import AgentTemplateDetail from '../components/crew/AgentTemplateDetail'
-import { agentTemplatePaneEnabled } from '../hooks/useAgentTemplatePane'
 
 const DENIED = Array.from({ length: 11 }, (_, i) => `denied-${i}`)
 const FIELD_LABEL = 'Agent Template'
@@ -105,7 +103,6 @@ beforeEach(() => {
   mockApi.agentPublish.mockResolvedValue({ template: 'published-name' })
   mockApi.agentReset.mockResolvedValue({})
   mockApi.updateKirocrewAgent.mockResolvedValue({})
-  mockApi.agentDelete.mockResolvedValue({})
   // A plain array, which is what the endpoint really answers — an object with an
   // `agents` key silently blanks provenance, so the fixture has to match.
   mockApi.agentsInstalled.mockResolvedValue([
@@ -125,17 +122,6 @@ beforeEach(() => {
     allowedTools: ['fs_read'],
     mcpServers: { 'kirocrew-core': {} },
     toolsSettings: { execute_bash: { deniedCommands: DENIED } },
-  })
-})
-
-describe('agent_template_pane flag', () => {
-  it('is off unless the config says exactly true', () => {
-    // A truthy-but-not-true value must not open a surface that relocates
-    // shipped content — same contract as the connections_ui flag.
-    expect(agentTemplatePaneEnabled(undefined)).toBe(false)
-    expect(agentTemplatePaneEnabled({})).toBe(false)
-    expect(agentTemplatePaneEnabled({ agent_template_pane: 'yes' })).toBe(false)
-    expect(agentTemplatePaneEnabled({ agent_template_pane: true })).toBe(true)
   })
 })
 
@@ -309,7 +295,6 @@ describe('the crew\'s own copy bound', () => {
       expect(mockApi.agentReset).toHaveBeenCalledWith('atlas-crewA', 'crewA'),
     )
     expect(mockApi.updateKirocrewAgent).not.toHaveBeenCalled()
-    expect(mockApi.agentDelete).not.toHaveBeenCalled()
     await waitFor(() => expect(onSelect).toHaveBeenCalledWith('atlas'))
   })
 

@@ -428,7 +428,7 @@ class TestTeardownGateOnQueuedSettlement:
         _finished_run(info.id, agent_root)
         gate = asyncio.Event()
         mgr._teardown_gates[info.id] = gate
-        # Evicted exactly as api_spawn_clear does it: both records, together.
+        # Evicted the way a bulk clear would: both records, together.
         mgr._agents.pop(info.id, None)
         mgr._tasks.pop(info.id, None)
 

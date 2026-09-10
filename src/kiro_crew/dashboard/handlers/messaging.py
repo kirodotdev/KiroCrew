@@ -1087,25 +1087,6 @@ async def api_spawn_stop_all(request: web.Request) -> web.Response:
     )
 
 
-async def api_spawn_clear(request: web.Request) -> web.Response:
-    """DELETE /api/spawn — clear all completed subagents."""
-    state: DashboardState = request.app["state"]
-    if not state.subagents:
-        return web.json_response({"ok": True})
-    scope, refusal = await internal_memory_scope(request, "spawn.clear")
-    if refusal is not None:
-        return refusal
-    done_ids = [
-        a.id
-        for a in state.subagents.all_agents
-        if a.done and (scope is None or a.memory_store == scope)
-    ]
-    for aid in done_ids:
-        state.subagents._agents.pop(aid, None)
-        state.subagents._tasks.pop(aid, None)
-    return web.json_response({"ok": True, "cleared": len(done_ids)})
-
-
 # ── Sessions / Notifications ──
 
 
@@ -7082,7 +7063,6 @@ guard_owner_surface_routes(
             "api_spawn_mark_collected",
             "api_spawn_list",
             "api_spawn_stop_all",
-            "api_spawn_clear",
         }
     ),
     resource_scoped={

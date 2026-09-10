@@ -736,47 +736,6 @@ class SessionAllocationService:
         for parent_key, runtime in list(self._subagent_runtimes.items()):
             add(f"Subagent runtime ({parent_key})", runtime, "")
 
-    def context_info(self) -> list[dict[str, object]]:
-        """Return the dashboard-facing context snapshot for live sessions."""
-        result: list[dict[str, object]] = []
-        for key, session in self._sessions.items():
-            provider = session.provider
-            pct = provider.context_usage_pct()
-            model = "unknown"
-            agent = ""
-            if self._deps.is_claude_provider(provider):
-                model = provider._model or "auto"
-                agent = provider._agent or ""
-            elif self._deps.is_acp_provider(provider):
-                model = provider.client._model or "auto"
-                agent = provider.client._agent or ""
-                if model == "auto" and agent and agent != "kirocrew":
-                    model = self._owner._resolve_agent_model(agent)
-                model = model or "auto"
-
-            if key == self._deps.constants.background_key:
-                name = "Background (titles, cron, heartbeat)"
-            elif key.startswith("dashboard:"):
-                name = f"Chat ({key.split(':', 1)[1]})"
-            else:
-                name = key
-
-            window = 0
-            if hasattr(provider, "context_window_tokens"):
-                window = provider.context_window_tokens()
-            result.append(
-                {
-                    "key": key,
-                    "name": name,
-                    "model": model,
-                    "agent": agent,
-                    "context_pct": round(pct, 1),
-                    "context_window_tokens": window,
-                    "prompts": session.prompt_count,
-                }
-            )
-        return result
-
     def record_success(self, key: str) -> None:
         session = self._sessions.get(self._owner._fold_key(key))
         if session:

@@ -841,18 +841,6 @@ class TestApiSpawnDelete:
         assert mgr._agents == {} and mgr._tasks == {}
 
 
-class TestApiSpawnClear:
-    def test_ok_without_manager(self) -> None:
-        assert _payload(_run(mod.api_spawn_clear, _Req(_state()))) == {"ok": True}
-
-    def test_clears_only_finished_agents(self) -> None:
-        mgr = _mgr(all_agents=[_info(id="run", done=False), _info(id="fin", done=True)])
-        mgr._agents = {"run": _info(), "fin": _info()}
-        resp = _run(mod.api_spawn_clear, _Req(_state(subagents=mgr)))
-        assert _payload(resp) == {"ok": True, "cleared": 1}
-        assert list(mgr._agents) == ["run"]
-
-
 class TestApiSpawnStopAll:
     def test_requires_manager(self) -> None:
         resp = _run(mod.api_spawn_stop_all, _Req(_state(), {"slot": "chat-1"}))
@@ -1966,7 +1954,6 @@ def test_module_exposes_every_route_handler_under_test() -> None:
         "api_spawn_list",
         "api_spawn_retry",
         "api_spawn_delete",
-        "api_spawn_clear",
         "api_notification_channels",
         "api_notification_channel_settings",
         "api_slack_pins",

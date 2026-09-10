@@ -45,7 +45,7 @@ Kiro Crew owns specs named `kirocrew`, `kirocrew-lite`, `kirocrew-conductor`, `k
 
 ## Custom Agents
 
-Custom agents are JSON files in `~/.kiro/agents/`. They define their own system prompt, tools, MCP servers, and permissions.
+Custom agents are JSON files in `~/.kiro/agents/`. They define their own system prompt, tools, MCP servers, and permissions. To delete a template, remove its JSON file from `~/.kiro/agents/`. There is no in-app delete. A crew still bound to the deleted name does not break: kiro-cli cannot resolve the missing spec and falls back to the default agent spec for that session, so the crew keeps running — with the default prompt and tools instead of the deleted template's. Check a template's bindings and repoint them before removing the file so no crew silently changes behavior.
 
 ```json
 {
@@ -60,11 +60,11 @@ Custom agents are JSON files in `~/.kiro/agents/`. They define their own system 
 
 ## Managing Agents
 
-**Agent Capabilities → Agent Templates** shows installed agents with their source, tools, and MCP servers. Drop a new JSON file into `~/.kiro/agents/` and it appears automatically; the tab also provides edit and delete controls. `/agents` redirects to Agent Capabilities.
+**Agent Capabilities → Agents** shows your agents; select one and open its **Template** pane to see its definition — model, system prompt, skills, tools, and MCP servers. Drop a new JSON file into `~/.kiro/agents/` and it appears automatically. `/agents` redirects to Agent Capabilities.
 
 ## Mapping Skills to an Agent
 
-Each agent template can be given its own set of [skills](skills.md). Open **Agent Capabilities → Agent Templates**, select an agent, and use the **Skills** section to add or remove them. Every edit saves immediately.
+Each agent template can be given its own set of [skills](skills.md). Open **Agent Capabilities → Agents**, select an agent, open its **Template** pane, and use the **Skills** section to add or remove them. Every edit saves immediately.
 
 Under the hood a mapped skill is a `skill://` entry in the agent's `resources`, so kiro-cli loads it natively when the agent starts:
 

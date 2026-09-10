@@ -362,7 +362,6 @@ test/test_acp_true_provider_error.py
 test/test_acp_turn_lock.py
 test/test_admission_gate.py
 test/test_agent_default_model.py
-test/test_agent_delete_reference_guard.py
 test/test_agent_discovery.py
 test/test_agent_import_hoist.py
 test/test_agent_source_ownership_durability.py

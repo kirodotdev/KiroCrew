@@ -63,12 +63,6 @@ def _sel():
     return _pkg.sel()
 
 
-async def api_sessions_context(request: web.Request) -> web.Response:
-    """GET /api/sessions/context — context usage for all active sessions."""
-    state: DashboardState = request.app["state"]
-    return web.json_response({"sessions": state.sessions.context_info()})
-
-
 # One sampler per process: it carries the CPU jiffy baseline and the rolling load
 # window, both of which are meaningless if rebuilt per request (a fresh baseline
 # always reports CPU as unknown, and a fresh window is always empty).

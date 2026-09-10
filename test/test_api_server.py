@@ -61,7 +61,6 @@ class TestRegisterMcpRoutes:
             ("GET", "/api/spawn"),
             ("GET", "/api/spawn/{agent_id}"),
             ("DELETE", "/api/spawn/{agent_id}"),
-            ("DELETE", "/api/spawn"),
             ("GET", "/api/lessons"),
             ("POST", "/api/lessons"),
             ("DELETE", "/api/lessons"),

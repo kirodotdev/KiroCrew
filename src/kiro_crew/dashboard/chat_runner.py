@@ -2556,7 +2556,7 @@ def _native_subagent_sync(state, slot, subagents, tracker, card_output=None) -> 
                 "last_activity": now,
                 "last_tool": "",
             }
-            # Register in state-level dict so DELETE /api/spawn can cancel native cards.
+            # Register in state-level dict so DELETE /api/spawn/{id} can cancel native cards.
             _register_native_card(state, card_id, slot.key, sid)
             logger.debug(
                 "native subagent spawn broadcast: id=%s agent=%s slot=%s",

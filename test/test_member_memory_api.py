@@ -1071,7 +1071,7 @@ async def test_private_continue_authenticates_parent_before_cwd_read(env, member
 
 
 @pytest.mark.asyncio
-async def test_private_spawn_list_and_clear_only_touch_own_runs(env, member_proof):
+async def test_private_spawn_list_only_shows_own_runs(env, member_proof):
     from kiro_crew.dashboard.handlers import messaging
 
     def row(name, store):
@@ -1099,10 +1099,6 @@ async def test_private_spawn_list_and_clear_only_touch_own_runs(env, member_proo
     response = await messaging.api_spawn_list(request(env, internal=True, proof=member_proof))
     assert [r["id"] for r in json.loads(response.text)["agents"]] == ["alice-run"]
     assert "result-bob" not in response.text and "result-global" not in response.text
-    cleared = await messaging.api_spawn_clear(request(env, internal=True, proof=member_proof))
-    assert json.loads(cleared.text)["cleared"] == 1
-    assert set(env.state.subagents._agents) == {"bob-run", "global-run"}
-    assert set(env.state.subagents._tasks) == {"bob-run", "global-run"}
 
 
 @pytest.mark.asyncio

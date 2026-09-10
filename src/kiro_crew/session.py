@@ -1906,10 +1906,6 @@ class SessionManager:
         """Append background and subagent runtime process rows."""
         self._allocation_boundary()._append_companion_runtime_rows(rows)
 
-    def context_info(self) -> list[dict[str, object]]:
-        """Return the dashboard-facing live context snapshot."""
-        return self._allocation_boundary().context_info()
-
     @staticmethod
     def _resolve_agent_model(agent: str) -> str:
         """Resolve model from agent config file. Cached at class level with

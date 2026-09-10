@@ -7640,20 +7640,6 @@
       "defaultValue": true
     },
     {
-      "path": "agent_template_pane",
-      "kind": "core",
-      "type": "boolean",
-      "required": false,
-      "deprecated": false,
-      "sensitive": false,
-      "tags": [],
-      "label": "Agent template pane",
-      "help": "Show the crew definition panel with private fork-on-edit (soak; see #8567).",
-      "hasChildren": false,
-      "enumValues": null,
-      "defaultValue": false
-    },
-    {
       "path": "timezone",
       "kind": "core",
       "type": "string",

@@ -2504,69 +2504,8 @@ class TestDiscardConversation:
         mock_clear.assert_called_once_with("k1")
 
 
-class TestContextInfo:
-    """Tests for context_info() and _resolve_agent_model()."""
-
-    @pytest.mark.asyncio
-    async def test_context_info_basic(self, cfg):
-        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
-        await mgr.get_or_create("dashboard:slot0")
-        mgr.release("dashboard:slot0")
-        mgr._sessions["dashboard:slot0"].prompt_count = 5
-
-        info = mgr.context_info()
-        assert len(info) == 1
-        entry = info[0]
-        assert entry["key"] == "dashboard:slot0"
-        assert entry["name"] == "Chat (slot0)"
-        assert entry["prompts"] == 5
-        assert entry["context_pct"] == 0.0
-        await mgr.close_all()
-
-    @pytest.mark.asyncio
-    async def test_context_info_background_key_name(self, cfg):
-        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
-        await mgr.start_pool()
-        info = mgr.context_info()
-        bg_entry = next(e for e in info if e["key"] == BACKGROUND_KEY)
-        assert "Background" in bg_entry["name"]
-        await mgr.close_all()
-
-    @pytest.mark.asyncio
-    async def test_context_info_non_dashboard_key(self, cfg):
-        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
-        await mgr.get_or_create("slack:thread123")
-        mgr.release("slack:thread123")
-        info = mgr.context_info()
-        entry = next(e for e in info if e["key"] == "slack:thread123")
-        assert entry["name"] == "slack:thread123"
-        await mgr.close_all()
-
-    @pytest.mark.asyncio
-    async def test_context_info_with_acp_provider(self, cfg):
-        """AcpProvider path extracts model and agent from client."""
-        from unittest.mock import MagicMock
-
-        from kiro_crew.providers.acp import AcpProvider
-        from kiro_crew.session import _Session
-
-        mock_provider = MagicMock(spec=AcpProvider)
-        mock_provider.context_usage_pct = MagicMock(return_value=45.0)
-        mock_provider.shutdown = AsyncMock()
-        mock_provider.client = MagicMock()
-        mock_provider.client._model = "sonnet-4"
-        mock_provider.client._agent = "kirocrew"
-        mock_provider.client._session_id = None
-
-        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
-        mgr._sessions["k1"] = _Session(provider=mock_provider, prompt_count=3)
-
-        info = mgr.context_info()
-        entry = info[0]
-        assert entry["model"] == "sonnet-4"
-        assert entry["agent"] == "kirocrew"
-        assert entry["context_pct"] == 45.0
-        await mgr.close_all()
+class TestResolveAgentModelResolution:
+    """Tests for _resolve_agent_model()."""
 
     def test_resolve_agent_model_cache_miss_returns_auto(self, cfg):
         # Clear cache if exists
@@ -2593,8 +2532,7 @@ class TestContextInfo:
 
         ``~/.kiro/agents`` is shared with other tools; an ACP-style
         ``{"id": ...}`` here would be CACHED and then handed to
-        ``/api/sessions/context`` (the dashboard calls ``.replace()`` on it) and
-        to the pooled-model comparison in ``claim_pooled``. This method is
+        the pooled-model comparison in ``claim_pooled``. This method is
         annotated ``-> str`` and must honour that.
         """
         import json
@@ -2616,8 +2554,8 @@ class TestContextInfo:
 
         ``~/.kiro/agents`` is user-writable and shared with kiro-cli, so an
         oversized "agent config" there must be refused rather than slurped into
-        memory — and this resolution is CACHED and served to
-        ``/api/sessions/context``, so it is not a rare corner.
+        memory — and this resolution is CACHED and reused on every later
+        lookup, so it is not a rare corner.
 
         Exercised with a LOWERED cap rather than a real 50 MB fixture; the
         property is that the cap is consulted, not its value. Paired with the
@@ -4401,31 +4339,6 @@ class TestBackgroundSession:
         await mgr._ensure_background()
         # Should still only have one background session
         assert mgr.count == 1
-        await mgr.close_all()
-
-
-class TestContextInfoBasic:
-    @pytest.mark.asyncio
-    async def test_returns_session_info(self, cfg):
-        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
-        await mgr.get_or_create("dashboard:slot0")
-        mgr.release("dashboard:slot0")
-        info = mgr.context_info()
-        assert len(info) >= 1
-        slot_info = [i for i in info if i["key"] == "dashboard:slot0"]
-        assert len(slot_info) == 1
-        assert slot_info[0]["context_pct"] == 0.0
-        assert "Chat" in slot_info[0]["name"]
-        await mgr.close_all()
-
-    @pytest.mark.asyncio
-    async def test_background_session_name(self, cfg):
-        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
-        await mgr._ensure_background()
-        info = mgr.context_info()
-        bg_info = [i for i in info if i["key"] == BACKGROUND_KEY]
-        assert len(bg_info) == 1
-        assert "Background" in bg_info[0]["name"]
         await mgr.close_all()
 
 

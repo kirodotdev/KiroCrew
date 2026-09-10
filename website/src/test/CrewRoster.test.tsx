@@ -66,6 +66,7 @@ vi.mock('framer-motion', async () => {
 const mockApi = vi.hoisted(() => ({
   kirocrewAgents: vi.fn(),
   agentsInstalled: vi.fn(),
+  agentDetail: vi.fn(),
   workspaces: vi.fn(),
   kirocrewConfig: vi.fn(),
   createWorkspace: vi.fn(),
@@ -151,6 +152,9 @@ beforeEach(() => {
   vi.clearAllMocks()
   mockApi.kirocrewAgents.mockResolvedValue(AGENTS_RESPONSE)
   mockApi.agentsInstalled.mockResolvedValue(INSTALLED_RESPONSE)
+  mockApi.agentDetail.mockImplementation((name: string) =>
+    Promise.resolve({ name, skills: [] }),
+  )
   mockApi.workspaces.mockResolvedValue(WORKSPACES_RESPONSE)
   mockApi.kirocrewConfig.mockResolvedValue(CONFIG_RESPONSE)
   mockApi.agentResolvedModel.mockResolvedValue({ model: '', pinned: false, kiro_agent: 'kirocrew' })
@@ -550,7 +554,9 @@ describe('crew editor — opening', () => {
     expect(within(sheet).queryByRole('combobox', { name: 'Memory Store' })).not.toBeInTheDocument()
 
     gotoPane(sheet, 'template')
-    expect(within(sheet).getByRole('combobox', { name: 'Agent Template' })).toHaveTextContent('oncall-agent')
+    // The pane's header selector carries the same accessible name, so use
+    // findByRole to await the pane render before asserting.
+    expect(await within(sheet).findByRole('combobox', { name: 'Agent Template' })).toHaveTextContent('oncall-agent')
 
     gotoPane(sheet, 'model')
     expect(within(sheet).getByRole('combobox', { name: 'Edit default model' })).toHaveTextContent('claude-opus-5')

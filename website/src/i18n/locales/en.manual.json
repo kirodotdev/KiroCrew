@@ -3155,15 +3155,6 @@
     "crew_members": "Crew Members"
   },
   "pages": {
-    "agentsPage": {
-      "consumption_for_current_billing_period": "{{provider}} consumption for the current billing period. Cached 10 min.",
-      "context_window_usage_tip": "Live context window utilization per active {{label}} session. Custom agents show their configured model. Compaction triggers at 90%.",
-      "default": "Default",
-      "delete_subagent": "Delete subagent {{id}}",
-      "retry": "Retry",
-      "delete_unavailable_references_failed": "Couldn't load the crew roster or the fallback-template setting, so deleting this template is unavailable until they load.",
-      "failed_to_load_agents": "Failed to load agents"
-    },
     "aidlc": {
       "taskDetailPanel": {
         "depend_on_task": "Depend on Task {{n}}: {{title}}",
@@ -3401,8 +3392,6 @@
     "capabilitiesPage": {
       "crews_label": "Agents",
       "crews_description": "Agents you chat with, each with its own workspace",
-      "templates_label": "Agent Templates",
-      "templates_description": "Manage what each agent starts from: its model, skills, tools, MCP servers, and guardrails",
       "connections_label": "Connections",
       "connections_description": "Connect official services and manage custom MCP servers",
       "skills_label": "Skills",

@@ -7,7 +7,7 @@
  * Order in this file = order in the rail (within each group). Add new
  * built-in surfaces here; do not add hardcoded badge logic to `App.tsx`.
  */
-import { MessageSquare, Bell, Component, CalendarDays, Settings, ClipboardCheck, Compass, Webhook, Users, LayoutTemplate, BookOpen, Link2, Library, MessageSquareText, Workflow, ScrollText, Bot } from 'lucide-react'
+import { MessageSquare, Bell, Component, CalendarDays, Settings, ClipboardCheck, Compass, Webhook, Users, BookOpen, Link2, Library, MessageSquareText, Workflow, ScrollText, Bot } from 'lucide-react'
 import type { ReactElement } from 'react'
 import { createSelector } from '@reduxjs/toolkit'
 import { KiroGhostMark } from '../components/KiroGhostMark'
@@ -223,7 +223,6 @@ registerBuiltinSurface({
 // copy, and the strict i18n config looks inside ALL-CAPS module constants.
 const CAPABILITY_SUB_ITEMS: readonly { tab: string; labelKey: string; label: string; icon: ReactElement }[] = [
   { tab: 'crews', labelKey: 'pages.capabilitiesPage.crews_label', label: surfaceMachineValue('Crews'), icon: <Bot size={16} /> },
-  { tab: 'templates', labelKey: 'pages.capabilitiesPage.templates_label', label: surfaceMachineValue('Agent Templates'), icon: <LayoutTemplate size={16} /> },
   { tab: 'skills', labelKey: 'pages.capabilitiesPage.skills_label', label: surfaceMachineValue('Skills'), icon: <BookOpen size={16} /> },
   { tab: 'mcp', labelKey: 'pages.capabilitiesPage.connections_label', label: surfaceMachineValue('Connections'), icon: <Link2 size={16} /> },
   { tab: 'knowledge', labelKey: 'pages.capabilitiesPage.knowledge_label', label: surfaceMachineValue('Knowledge'), icon: <Library size={16} /> },

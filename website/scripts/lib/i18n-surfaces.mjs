@@ -121,7 +121,6 @@ export const SURFACES = [
   { id: 'capabilities-hooks', url: '/capabilities?tab=hooks' },
   { id: 'capabilities-prompts', url: '/capabilities?tab=prompts' },
   { id: 'capabilities-steering', url: '/capabilities?tab=steering' },
-  { id: 'capabilities-templates', url: '/capabilities?tab=templates' },
   { id: 'developer-archive', url: '/developer?tab=archive' },
   { id: 'developer-config', url: '/developer?tab=config' },
   { id: 'developer-logs', url: '/developer?tab=logs' },

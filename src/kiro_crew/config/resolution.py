@@ -15,11 +15,16 @@ logger = logging.getLogger("kiro_crew.config.loader")
 
 
 # Top-level config.json keys that save() stamps itself rather than modelling as
-# a section. They are neither parsed into a field nor round-tripped through
+# a section, plus RETIRED keys older builds materialized into every saved
+# config. They are neither parsed into a field nor round-tripped through
 # to_dict(), so every consumer that classifies top-level keys — the
 # _extra_sections capture below and validation.py's unrecognized-key warning —
 # must exclude them, or Kiro Crew warns the user about a key it wrote itself.
-CONFIG_RESERVED_TOP_KEYS: frozenset = frozenset({"meta"})
+# A retired key is therefore silently ignored at load and dropped on the next
+# save, never warned about and never resurrected.
+#   * agent_template_pane — retired: the agent editor's Template pane renders
+#     unconditionally now, so a stale materialized ``false`` must not warn.
+CONFIG_RESERVED_TOP_KEYS: frozenset = frozenset({"meta", "agent_template_pane"})
 
 # Top-level config.json sections this core models AND round-trips through
 # to_dict(). Any other top-level key found at load() is captured into
@@ -79,7 +84,6 @@ _KNOWN_CONFIG_SECTIONS: frozenset = frozenset(
         "auto_update",
         "registries",
         "connections_ui",
-        "agent_template_pane",
     }
 )
 

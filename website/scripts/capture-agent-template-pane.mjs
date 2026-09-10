@@ -1,6 +1,6 @@
 /**
- * Screenshot harness for the agent-template PANEL in the crew editor
- * (flag `agent_template_pane`): the template selector is the header bar of a
+ * Screenshot harness for the agent-template PANEL in the crew editor:
+ * the template selector is the header bar of a
  * panel containing the definition it names.
  *
  * Runs the REAL built SPA (website/dist) behind the shared in-process static
@@ -118,7 +118,7 @@ try {
     await stubDashboardApi(page, {
       extra: async (path, route) => {
         if (path === '/api/config/kirocrew') {
-          await json(route, { ...KIROCREW_CONFIG_FIXTURE, agent_template_pane: true })
+          await json(route, KIROCREW_CONFIG_FIXTURE)
           return true
         }
         if (path === '/api/agents') {

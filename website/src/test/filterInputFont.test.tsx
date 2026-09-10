@@ -100,7 +100,6 @@ describe('dropdown filter inputs follow the Font Family setting', () => {
       'components/ModelEffortDropdown.tsx',
       'components/AgentSelector.tsx',
       'components/AgentSkillsEditor.tsx',
-      'pages/AgentsPage.tsx',
       'pages/ChatPage.tsx',
     ]
     const offenders: string[] = []

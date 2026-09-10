@@ -250,34 +250,7 @@ class TestCancelAndCallbacks:
         await mgr._fire_recycle_callback("dashboard:a", reason="rss")
 
 
-# ── context_info / _resolve_agent_model ──────────────────────────────────────
-
-
-class TestContextInfoModelResolution:
-    @pytest.mark.asyncio
-    async def test_an_auto_model_on_a_named_agent_is_resolved_from_agent_json(
-        self, mgr
-    ) -> None:
-        """``client._model == "auto"`` is not a model the dashboard can show, so
-        a named (non-``kirocrew``) agent falls through to its JSON pin."""
-        from kiro_crew.providers.acp import AcpProvider
-
-        provider = MagicMock(spec=AcpProvider)
-        provider.context_usage_pct = MagicMock(return_value=12.0)
-        provider.context_window_tokens = MagicMock(return_value=200_000)
-        provider.shutdown = AsyncMock()
-        provider.client = MagicMock()
-        provider.client._model = "auto"
-        provider.client._agent = "researcher"
-        _register(mgr, "dashboard:slot1", provider=provider)
-
-        with patch.object(
-            SessionManager, "_resolve_agent_model", staticmethod(lambda a: "sonnet-9")
-        ):
-            info = mgr.context_info()
-
-        assert info[0]["model"] == "sonnet-9"
-        assert info[0]["agent"] == "researcher"
+# ── _resolve_agent_model ──────────────────────────────────────
 
 
 class TestResolveAgentModel:

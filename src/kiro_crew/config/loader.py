@@ -2449,16 +2449,6 @@ class KiroCrewConfig:
             "Show the Connections services gallery (set false to hide it).",
         ),
     )
-    #: Same shape and posture as ``connections_ui``: default-off, strict bool,
-    #: read live by the dashboard's useAgentTemplatePane hook. Unmodelled, the
-    #: masked GET strips it and the panel can never be enabled.
-    agent_template_pane: bool = field(
-        default=False,
-        metadata=_meta(
-            "Agent template pane",
-            "Show the crew definition panel with private fork-on-edit (soak; see #8567).",
-        ),
-    )
     #: Top-level sections that were PRESENT on disk but not a JSON object, and
     #: were therefore coerced to defaults by :meth:`load`.
     #:
@@ -3928,7 +3918,6 @@ class KiroCrewConfig:
             ),
             auto_update=data.get("auto_update", True),
             connections_ui=_safe_bool(data.get("connections_ui", True), True),
-            agent_template_pane=_safe_bool(data.get("agent_template_pane", False), False),
             _degraded_sections=frozenset(_degraded | _OBSERVED_DEGRADED_SECTIONS),
             timezone=data.get("timezone", ""),
             snapshot_dir=data.get("snapshot_dir", ""),
@@ -4308,7 +4297,6 @@ class KiroCrewConfig:
             # _extra_sections capture AND dropped here — losing the operator's
             # opt-in on the first save().
             "connections_ui": self.connections_ui,
-            "agent_template_pane": self.agent_template_pane,
         }
         # External registries (always serialized so save() round-trips the field)
         d["registries"] = [asdict(r) for r in self.registries]

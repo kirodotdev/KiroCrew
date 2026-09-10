@@ -44,7 +44,6 @@ _EXPECTED_MUTATING_ROUTES = {
     ("POST", "/api/capability/agents/uninstall"),
     ("POST", "/api/capability/plugins/sync"),
     ("PATCH", "/api/agents/detail/{name}"),
-    ("DELETE", "/api/agents/detail/{name}"),
     ("POST", "/api/agents"),
     ("POST", "/api/agents/sync"),
     ("PUT", "/api/agents/{name}"),

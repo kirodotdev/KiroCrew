@@ -270,8 +270,6 @@ export const CONFIRM_OPERAND_KEY_EXEMPTIONS: Record<string, string> = {
   'apps.mochi.approval.inline_ask':
     'the {{tool}} operand renders as a styled <code> chip via renderAroundTool, '
     + 'so glyph quotes would double-decorate it (#5725)',
-  'pages.agentsPage.delete_the_template_named_confirm':
-    'kind word "template" sits next to the operand (#4657)',
   'pages.kiroCrewAgentsPage.delete_crew_named_confirm':
     'kind word "crew" sits next to the operand (#4657)',
   'apps.awsControl.console.backup_restore_foreign_confirm':

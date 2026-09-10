@@ -193,7 +193,6 @@ are always present; user-configured servers from the agent config are merged in.
 
 - Provider-agnostic via factory (one provider, `AcpProvider`, over the resolved backend)
 - Calls `repair_agent_configs()` on gateway startup and periodically
-- context_info() reports model/agent
 - Resume: calls `set_resume_session_id()` before `start()`
 
 ### Subagent Approval Mode Inheritance (`subagent.py`)
