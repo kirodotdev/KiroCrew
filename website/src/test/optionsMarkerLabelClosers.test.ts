@@ -116,13 +116,15 @@ describe('OPTION_MARKER_RE label closers must be matched or continue the list (#
     ])
   })
 
-  it('accepts a lookalike PAIR as a cost, because only ASCII `[` opens', () => {
-    // The closer set was widened to the CJK lookalikes; there is no matching
-    // OPENER set, so `【` is an ordinary character and the `】` after it reads as
-    // unmatched. Common in Chinese output, hence stated explicitly.
+  it('matches a lookalike PAIR, because openers are paired too', () => {
+    // A closer counts as matched when its OWN opener precedes it, and the opener
+    // class carries a lookalike for every closer the set accepts — so a label
+    // written wholly in CJK punctuation parses like its ASCII equivalent. Asserted
+    // here because the rule under test in this suite is what decides the outcome;
+    // the pairing itself is covered by `optionsMarkerLookalikeOpeners.test.ts`.
     const text = '[OPTIONS: 【重要】修复 | 跳过】'
-    expect(parseOptions(text).options).toEqual([])
-    expect(parseOptions(text).text).toBe(text)
+    expect(parseOptions(text).options).toEqual(['【重要】修复', '跳过'])
+    expect(parseOptions(text).text).toBe('')
   })
 
   it('never swallows a NESTED head into a label', () => {

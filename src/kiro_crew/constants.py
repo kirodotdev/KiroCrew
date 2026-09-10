@@ -165,10 +165,50 @@ SUBAGENT_TIMEOUT_MAX = 86400
 #: :data:`_MARKER_LABEL_PAIR`, and via :data:`_MARKER_LABEL_CONTINUES`. Those two
 #: are what the disjointness argument is about (see :data:`_MARKER_BODY_LINE`),
 #: so the pair form -- which is where the deciding lookahead lives -- is the one
-#: NOT to skip. Both readmit all four codepoints at once, which is why adding
-#: these three introduces no ambiguity that ASCII ``]`` did not already have.
+#: NOT to skip.
+#:
+#: The two readmissions are asymmetric. Continuation readmits all four codepoints
+#: at once; the pair form readmits exactly ONE per branch, the partner of that
+#: branch's opener in :data:`_MARKER_OPENERS`. So this constant is not widenable on
+#: its own: a fifth closer with no opener beside it is admitted by continuation and
+#: by nothing else, which is a real shape but not the matched one. Widen the PAIR,
+#: and pin it in ``test_options_marker_lookalike_openers.py``. The two are zipped
+#: with ``strict=True``, so a length mismatch raises at import rather than dropping
+#: the surplus branch silently -- and unlike an ``assert`` that holds under ``-O``.
 MARKER_CLOSERS = "]\u3011\uff3d\u3015"
 _MARKER_CLOSE_CLASS = "[" + re.escape(MARKER_CLOSERS) + "]"
+
+#: The OPENERS those closers pair with, in the SAME ORDER -- ``[`` U+005B,
+#: ``\u3010`` U+3010, ``\uff3b`` U+FF3B, ``\u3014`` U+3014. The order is load-bearing, not
+#: cosmetic: :data:`_MARKER_LABEL_PAIR` zips the two strings to build one
+#: matched-pair branch per pair, so reordering either constant silently pairs
+#: ``\u3010`` with ``\uff3d`` and makes a mismatched bracket count as matched.
+#:
+#: Why an opener set exists at all: a closer is admitted back into a label when it
+#: is MATCHED by an opener earlier in the same label, so the rule needs to know
+#: which brackets can do the matching. A model that writes a label in CJK
+#: punctuation writes BOTH halves in it -- ``[OPTIONS: \u89c1\u3010\u88681\u3011\u8bf4\u660e | \u8df3\u8fc7]`` --
+#: and against ASCII ``[`` alone that ``\u3011`` has no opener the rule recognises: the
+#: body ends there, the anchor rejects the remainder, and the whole marker reaches
+#: the reader as literal text with no pills. Every opener the closer set accepts a
+#: lookalike of therefore belongs here.
+#:
+#: PRIVATE, unlike :data:`MARKER_CLOSERS`, which is public because
+#: ``messaging.renderer`` reads it to decide whether a tail could still be a marker
+#: in flight. Nothing outside this module and its tests needs the opener set:
+#: "matched" is a question only the grammar asks. Promote it when a caller exists.
+#:
+#: Spelled with escapes for the same reason as the closers: ``[`` and ``\uff3b``
+#: are hard to tell apart, so the pairing has to be readable to be checkable.
+_MARKER_OPENERS = "[\u3010\uff3b\u3014"
+#: Every bracket character the label body must not swallow into a pair interior
+#: or a run of ordinary text -- both classes at once, so a lookalike cannot hide
+#: inside either and escape the rule.
+_MARKER_BRACKETS = _MARKER_OPENERS + MARKER_CLOSERS
+#: The three NON-ASCII openers on their own. The bare-opener fallback needs them
+#: as a class without the ``(?!OPTIONS:)`` guard, which only ASCII ``[`` can
+#: begin a head with.
+_MARKER_LOOKALIKE_OPEN_CLASS = "[" + re.escape(_MARKER_OPENERS[1:]) + "]"
 
 #: Markdown WRAPPER characters tolerated around a complete marker line.
 #: A model sometimes wraps the whole marker in inline code or emphasis --
@@ -245,20 +285,28 @@ _MARKER_WRAP_CLASS = "[" + re.escape(MARKER_WRAPPERS) + "]"
 #: line". There is more than one way to be that closer, and all of them parsed
 #: on the old body:
 #:
-#:     [OPTIONS: Fix ]x logging | Skip]            unmatched -- no ``[`` at all
+#:     [OPTIONS: Fix ]x logging | Skip]            unmatched -- no opener at all
 #:     [OPTIONS: Fix list[dict[str, Any]] now | S] nesting deeper than one level
-#:     [OPTIONS: 【重要】修复 | 跳过】               a lookalike PAIR: ``【`` is not
-#:                                                 an opener, only ``[`` is
+#:     [OPTIONS: See [a【b] ref | Skip]             the pair interior holds a
+#:                                                 bracket of a DIFFERENT kind
+#:     [OPTIONS: 见【表1,表2】说明, 跳过]           a LOOKALIKE pair interior holds a
+#:                                                 separator the consumers'
+#:                                                 splitters cannot keep whole
 #:     [OPTIONS: Fix [multi\nline] now | Skip]     TRAILER only -- the pair
 #:                                                 interior excludes ``\n`` even
 #:                                                 under DOTALL
 #:
-#: All four fail toward a VISIBLE marker, not toward deleted prose, and that
+#: A well-formed lookalike pair is NOT on this list: ``[OPTIONS: 【重要】修复 |
+#: 跳过】`` parses, because :data:`_MARKER_OPENERS` carries a partner for every
+#: closer the set accepts.
+#:
+#: All five fail toward a VISIBLE marker, not toward deleted prose, and that
 #: asymmetry is what makes them affordable: the user sees the marker they were
 #: already seeing for the broken shapes, and nothing is removed from the
-#: message. Making them parse means matching brackets to arbitrary depth and
-#: over an opener set this grammar does not have, which a regex is the wrong
-#: tool for; the cost is bounded instead by the direction it fails in.
+#: message. Making the first two parse means matching brackets to arbitrary
+#: depth, which a regex is the wrong tool for; the last three are interior
+#: exclusions this grammar takes deliberately, each for a reason recorded at
+#: :data:`_MARKER_LABEL_PAIR`. The cost is bounded by the direction it fails in.
 #:
 #: A declined marker leaves the text intact only because every partial-cut gate
 #: downstream tests for a closer over :data:`MARKER_CLOSERS` rather than ASCII
@@ -272,10 +320,10 @@ _MARKER_WRAP_CLASS = "[" + re.escape(MARKER_WRAPPERS) + "]"
 #: apart. Resolving it means deciding which shape loses -- a separate call.
 _MARKER_LABEL_CONTINUES = rf"(?=[ \t]*[|,]|{_MARKER_CLOSE_CLASS})"
 
-#: A closer MATCHED by a ``[`` earlier in the same label. One level deep, and its
-#: interior excludes ``[`` and EVERY closer (not just ASCII ``]``, so a lookalike
-#: cannot be swallowed into the interior and escape the rule), which makes its
-#: match from any given ``[`` unique. The trailing negative lookahead is what
+#: A closer MATCHED by its OWN opener earlier in the same label. One level deep,
+#: and its interior excludes every bracket in both classes -- so a lookalike cannot
+#: be swallowed into an interior and escape the rule -- which makes its match from
+#: any given opener unique. The trailing negative lookahead is what
 #: makes this disjoint from :data:`_MARKER_LABEL_CONTINUES` rather than an
 #: alternative spelling of it.
 #:
@@ -289,9 +337,55 @@ _MARKER_LABEL_CONTINUES = rf"(?=[ \t]*[|,]|{_MARKER_CLOSE_CLASS})"
 #: restores "no bracket form may consume a ``[`` that begins a fresh
 #: ``[OPTIONS:``" as an absolute property of the body rather than one that holds
 #: only for sibling heads.
-_MARKER_LABEL_PAIR = (
-    rf"\[(?!OPTIONS:)[^[{re.escape(MARKER_CLOSERS)}\n]*{_MARKER_CLOSE_CLASS}"
+#:
+#: ONE BRANCH PER BRACKET PAIR, matched POSITIONALLY against
+#: :data:`_MARKER_OPENERS`. A single branch spanning both classes -- any opener,
+#: then any closer -- would make ``【表1]`` a pair, and that is the greedy-body
+#: defect back through a side door: the label would end at a closer whose opener
+#: never appeared, so the body could again run past the marker's real terminator.
+#: The pairing is what keeps "matched" meaning matched.
+#:
+#: The interior excludes EVERY bracket, both classes, and that costs one shape:
+#: a pair whose interior holds a bracket of a DIFFERENT kind -- ``[OPTIONS: See
+#: [a【b] ref | Skip]`` -- has no pair parse, so with ordinary words after the
+#: closer the marker is declined. It is a real narrowing, pinned in
+#: ``test_options_marker_lookalike_openers.py`` beside the two older costs.
+#: The uniform exclusion is deliberate and is what the linearity argument reads:
+#: admitting ``【`` here would let the ASCII branch consume a character the
+#: ``【`` branch could also open on, so a span would have two parses. Trading a
+#: shape that fails toward a VISIBLE marker for an ambiguity in the body is the
+#: wrong way round -- the ambiguity is what the ReDoS profile rests on.
+#:
+#: The LOOKALIKE branches additionally exclude both SEPARATORS, ``|`` and ``,``, and
+#: that exclusion is about the CONSUMER rather than the grammar. Admitting a pair
+#: whole is only safe if what receives the capture can keep it whole, and the
+#: splitters cannot: the frontend's ``parseOptions`` picks its delimiter as
+#: ``labels.includes("|") ? "|" : ","`` and neither surface has any notion of
+#: nesting. So a lookalike pair carrying an internal separator --
+#: ``[OPTIONS: 见【表1,表2】说明, 跳过]``, an ordinary CJK phrase -- would be captured
+#: whole and then torn into ``['见【表1', '表2】说明', '跳过']``: three choices with
+#: unbalanced brackets, echoed back as the user's reply when tapped.
+#:
+#: The ASCII branch does NOT exclude them, and the asymmetry is deliberate rather
+#: than an oversight. Excluding ``,`` there declines ``[OPTIONS: Fix dict[str, Any]
+#: now | Skip]`` and ``[OPTIONS: Refactor arr[i, j] now | Skip]`` -- ordinary labels
+#: a model writes constantly, which parse today. The lookalike branches carry no
+#: such history: they are new, so nothing depends on them admitting a separator, and
+#: a separator inside one is only reachable through the corruption above. Each half
+#: is chosen against what it would break.
+#:
+#: This is a MITIGATION on the matched-pair path, not a guarantee. The continuation
+#: form admits a closer followed by a separator regardless of what preceded it, so
+#: ``[OPTIONS: 见【表1|表2】 | 跳过]`` still reaches the splitter and still splits into
+#: three -- exactly as it does today, on both surfaces. Removing that class needs a
+#: nesting-aware splitter, not a tighter interior; it is out of scope here and the
+#: cost table says so.
+_MARKER_LABEL_PAIR = "|".join(
+    rf"{re.escape(_open)}{'(?!OPTIONS:)' if _open == '[' else ''}"
+    rf"[^{re.escape(_MARKER_BRACKETS if _open == '[' else _MARKER_BRACKETS + '|,')}\n]*"
+    rf"{re.escape(_close)}"
     rf"(?![ \t]*[|,]|{_MARKER_CLOSE_CLASS})"
+    for _open, _close in zip(_MARKER_OPENERS, MARKER_CLOSERS, strict=True)
 )
 
 #: Label body, spelled once per regex so LINE and TRAILER cannot drift. LINE
@@ -300,22 +394,25 @@ _MARKER_LABEL_PAIR = (
 #: :data:`_OPTIONS_TAIL_PREFIX_RE`, which is a prefix closure and has to stay
 #: looser -- see the reason there before "fixing" it to match.
 #:
-#: ReDoS: the four alternatives are mutually exclusive at every position. The
-#: two bracket forms both begin at ``[`` (and both refuse a fresh ``[OPTIONS:``)
-#: but cannot consume the same span -- the pair form's lookahead and the
-#: continuation form's are each other's negation -- an unmatched ``[`` is left to
-#: the bare-``[`` form, and the negated class excludes both ``[`` and every
-#: closer. So there is never more than one way to consume a character, and each
+#: ReDoS: the alternatives are mutually exclusive at every position. Each pair
+#: form begins at its OWN opener, so no two pair forms compete; a pair form and
+#: the continuation form cannot consume the same span, their lookaheads being
+#: each other's negation; an opener the pair forms reject is left to a
+#: bare-opener form; and the negated class excludes EVERY opener and EVERY closer,
+#: so it can never take a character a bracket form could have taken. That last
+#: exclusion is what the added openers made necessary -- leaving ``【`` in the
+#: catch-all would give it two parses and cost the disjointness the linearity
+#: rests on. So there is never more than one way to consume a character, and each
 #: lookahead is entered only at a bracket and bounded by the run it scans.
 _MARKER_BODY_LINE = (
-    rf"(?:{_MARKER_LABEL_PAIR}|\[(?!OPTIONS:)"
+    rf"(?:(?:{_MARKER_LABEL_PAIR})|\[(?!OPTIONS:)|{_MARKER_LOOKALIKE_OPEN_CLASS}"
     rf"|{_MARKER_CLOSE_CLASS}{_MARKER_LABEL_CONTINUES}"
-    rf"|[^[{re.escape(MARKER_CLOSERS)}\n])*"
+    rf"|[^{re.escape(_MARKER_BRACKETS)}\n])*"
 )
 _MARKER_BODY_TRAILER = (
-    rf"(?:{_MARKER_LABEL_PAIR}|\[(?!OPTIONS:)"
+    rf"(?:(?:{_MARKER_LABEL_PAIR})|\[(?!OPTIONS:)|{_MARKER_LOOKALIKE_OPEN_CLASS}"
     rf"|{_MARKER_CLOSE_CLASS}{_MARKER_LABEL_CONTINUES}"
-    rf"|[^[{re.escape(MARKER_CLOSERS)}])*"
+    rf"|[^{re.escape(_MARKER_BRACKETS)}])*"
 )
 
 # The ``labels`` group is NAMED because the ``lwrap`` conditional group

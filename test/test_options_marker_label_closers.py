@@ -176,11 +176,16 @@ class TestAcceptedCosts:
         assert match is not None
         assert match.group("labels") == " Fix list[dict[str, Any]] | Skip"
 
-    def test_a_lookalike_PAIR_is_a_cost_because_only_ascii_opens(self):
-        # ``MARKER_CLOSERS`` widened the CLOSER set; there is no matching OPENER
-        # set, so ``【`` is an ordinary character and the ``】`` after it reads as
-        # unmatched. Common in Chinese output, hence stated explicitly.
-        assert OPTIONS_RE_LINE.search("[OPTIONS: 【重要】修复 | 跳过】") is None
+    def test_a_lookalike_PAIR_is_matched_because_openers_are_paired_too(self):
+        # A closer counts as matched when its OWN opener precedes it, and
+        # ``MARKER_OPENERS`` carries a lookalike for every closer the set accepts.
+        # So a label written wholly in CJK punctuation parses like its ASCII
+        # equivalent. Asserted in this class because the rule under test here is
+        # what decides the outcome; the pairing itself is covered in full by
+        # ``test_options_marker_lookalike_openers.py``.
+        match = OPTIONS_RE_LINE.search("[OPTIONS: 【重要】修复 | 跳过】")
+        assert match is not None
+        assert match.group("labels") == " 【重要】修复 | 跳过"
 
     def test_a_pair_spanning_a_newline_is_a_trailer_only_cost(self):
         # The pair interior excludes ``\n`` on BOTH grammars, so under TRAILER
@@ -202,7 +207,12 @@ class TestAcceptedCosts:
         load-bearing, so the two are pinned together.
         """
         for text in (
-            "请选择：\n[OPTIONS: 【重要】修复 | 跳过】",
+            # A MISMATCHED lookalike pair: ``【`` pairs only with ``】``, so the
+            # ``〕`` here is unmatched and the marker is declined. A shape whose
+            # ONLY closers are lookalikes is what makes the gate's closer set
+            # load-bearing -- an ASCII-only gate reads this as in-flight and cuts
+            # it, which is the destructive outcome the class exists to rule out.
+            "请选择：\n[OPTIONS: 见【表1〕说明 | 跳过】",
             "Pick one:\n[OPTIONS: Fix ]x logging | Skip]",
             "Pick one:\n[OPTIONS: Fix list[dict[str, Any]] now | Skip]",
         ):

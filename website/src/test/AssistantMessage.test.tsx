@@ -895,16 +895,39 @@ describe('parseOptions', () => {
     // The label body: tempered alternation, NOT a nested quantifier. Spelled with
     // `\uXXXX` escapes because that is how the SOURCE spells the closer class —
     // `.source` is the literal pattern text, so a literal `】` here would not match.
+    const O = '\\[\\u3010\\uFF3B\\u3014'
     const C = '\\]\\u3011\\uFF3D\\u3015'
+    const B = O + C
     const CONT = `[ \\t]*[|,]|[${C}]`
-    // Four alternatives, mutually exclusive at every position. The two bracket
-    // forms both begin at `[` but are each other's negation on what FOLLOWS the
-    // closer, so no span of input ever has two parses — that disjointness is what
-    // the linearity rests on, so it is pinned here character for character. BOTH
-    // bracket forms carry `(?!OPTIONS?:)`: that is what keeps a nested head out of
-    // a label, and dropping it from the pair form is a widening, not a tidy-up.
+    // One matched-pair branch PER BRACKET PAIR (#9375), each beginning at its own
+    // opener and ending at that opener's own closer — so no two pair branches can
+    // consume the same span, and a crossed `【…]` is not a pair. Only the ASCII
+    // branch carries `(?!OPTIONS?:)`, because only `[` can begin a nested head;
+    // dropping it there is a widening, not a tidy-up.
+    const pairs = [
+      ['\\[(?!OPTIONS?:)', '\\]'],
+      ['\\u3010', '\\u3011'],
+      ['\\uFF3B', '\\uFF3D'],
+      ['\\u3014', '\\u3015'],
+    ]
+      // The LOOKALIKE interiors refuse both separators on top of every bracket, and
+      // that is about the CONSUMER: `parseOptions` picks its delimiter as
+      // `labels.includes('|') ? '|' : ','` with no notion of nesting, so a pair
+      // carrying either is torn into fragments with unbalanced brackets. The ASCII
+      // interior does NOT refuse them, because excluding `,` there declines
+      // `[OPTIONS: Fix dict[str, Any] now | Skip]`, which parses today — so the
+      // asymmetry is pinned here character for character rather than left to drift.
+      .map(([open, close]) => {
+        const interior = open === '\\[(?!OPTIONS?:)' ? B : `${B}|,`
+        return `${open}[^${interior}\\n]*${close}(?!${CONT})`
+      })
+      .join('|')
+    // The catch-all excludes EVERY bracket, not just the closers: leaving `【` in it
+    // would give that character two parses and cost the disjointness the linearity
+    // rests on. It does NOT exclude the separators — only a lookalike pair interior
+    // does, and only because of the splitter. Pinned for both reasons.
     expect(src).toContain(
-      `(?:\\[(?!OPTIONS?:)[^[${C}\\n]*[${C}](?!${CONT})|\\[(?!OPTIONS?:)|[${C}](?=${CONT})|[^[${C}\\n])*`,
+      `(?:(?:${pairs})|\\[(?!OPTIONS?:)|[\\u3010\\uFF3B\\u3014]|[${C}](?=${CONT})|[^${B}\\n])*`,
     )
     // No `(x+)+` / `(x*)*` anywhere: that is the shape that backtracks
     // exponentially, and it is what the tempered body above replaced.

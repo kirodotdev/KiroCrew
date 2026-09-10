@@ -38,11 +38,14 @@
 // and the turn silently loses its pills. Labels are unaffected, so accepting the
 // lookalike costs nothing. ReDoS profile is unchanged from the previous literal
 // `\]`: the class shares no character with the trailing `[ \t]*`, and the body
-// excludes it from its negated class and readmits all four codepoints in exactly
-// TWO tempered places (below) — as the matched-pair form's final atom, and via the
-// continuation lookahead. A widening of this class has to be re-audited against
-// both; the pair form is the one holding the deciding lookahead, so it is the one
-// not to skip.
+// excludes it from its negated class and readmits it in exactly TWO tempered
+// places (below) — as the matched-pair form's final atom, and via the continuation
+// lookahead. A widening of this class has to be re-audited against both; the pair
+// form is the one holding the deciding lookahead, so it is the one not to skip.
+// Note the asymmetry between those two: continuation readmits all four codepoints
+// at once, while the pair form readmits exactly ONE per branch — its own opener's
+// partner. So this class is not widenable alone; widen the PAIR, keeping the opener
+// and closer lists the same length and order.
 //
 // A CLOSER MUST BE MATCHED, OR CONTINUE THE LABEL LIST (#9284). A label may
 // legitimately carry a closer (`[OPTIONS: Alpha ] | Bravo ]]` is a supported,
@@ -75,12 +78,41 @@
 //
 //   [OPTIONS: Fix ]x logging | Skip]             unmatched — no `[` at all
 //   [OPTIONS: Fix list[dict[str, Any]] now | S]  nesting deeper than one level
-//   [OPTIONS: 【重要】修复 | 跳过】                 a lookalike PAIR — `【` is not an
-//                                                opener, only `[` is
+//   [OPTIONS: See [a【b] ref | Skip]              interior holds another bracket kind
+//   [OPTIONS: 见【表1,表2】说明, 跳过]            a LOOKALIKE pair interior holds a
+//                                                separator the splitters cannot keep
 //
-// All fail toward a VISIBLE marker, not toward deleted prose, and that asymmetry
-// is what makes them affordable. Making them parse means matching brackets to
-// arbitrary depth and over an opener set this grammar does not have. The
+// A well-formed lookalike PAIR is NOT among them: `[OPTIONS: 见【表1】说明 | 跳过]`
+// parses, because the pair branches below pair each opener positionally with its own
+// closer, so a label written wholly in CJK punctuation behaves like its ASCII
+// equivalent. The pairing is the load-bearing part — one branch accepting any
+// opener followed by any closer would make `【表1]` a pair and hand the body a way
+// past the marker's real terminator again.
+//
+// Rows 3-4 are interior exclusions, and each is deliberate. Row 3: admitting `【` in
+// the ASCII branch's interior would let it consume a character the `【` branch could
+// also open on, giving a span two parses — and single-parse-per-span is what the
+// linearity argument rests on. Row 4 is about the CONSUMER rather than the grammar:
+// `parseOptions` picks its delimiter as `labels.includes('|') ? '|' : ','` and has no
+// notion of nesting, so a lookalike pair carrying either separator would be torn into
+// fragments with unbalanced brackets, echoed back as the user's reply when tapped.
+//
+// Row 4 applies to the LOOKALIKE interiors only. The ASCII interior keeps admitting
+// both separators, because excluding `,` there declines `[OPTIONS: Fix dict[str, Any]
+// now | Skip]` and `[OPTIONS: Refactor arr[i, j] now | Skip]` — labels a model writes
+// constantly, which parse today. The lookalike branches carry no such history, and a
+// separator inside one is only reachable through the corruption above. Each half is
+// chosen against what it would break.
+//
+// And it is a MITIGATION, not a guarantee: the continuation form admits a closer
+// followed by a separator regardless of what preceded it, so
+// `[OPTIONS: 见【表1|表2】 | 跳过]` still reaches the splitter and still splits into
+// three — exactly as it does today. Removing that class needs a nesting-aware
+// splitter, not a tighter interior.
+//
+// All four rows fail toward a VISIBLE marker, not toward deleted prose, and that
+// asymmetry is what makes them affordable. Making rows 1-2 parse means matching
+// brackets to arbitrary depth, which a regex is the wrong tool for. The
 // separator-tail form (`…| Wait], details in CHANGELOG[1]`) is NOT reachable by
 // this rule and is unchanged: `], ` does continue the list, by the same rule that
 // makes `[OPTIONS: Alpha ], Bravo]` legal.
@@ -118,8 +150,31 @@
 // `String#matchAll` does NOT — it seeds its internal clone from `lastIndex`, so pass a fresh
 // `new RegExp(OPTION_MARKER_RE)` there. Never call `.exec`/`.test` on it: both leave the index
 // advanced, and the next reader silently scans from the wrong offset.
+// ONE REGEX LITERAL, with the body spelled twice (once per wrapper branch) and the
+// four matched-pair branches spelled out in each. It is long, and composing it from
+// named fragments would read far better \u2014 but every fragment would be a module-scope
+// STRING literal, and `eslint.i18n.strict.config.js` reports those as untranslated
+// user-visible copy. The exemption the gate offers is by shape in
+// `eslint.i18n.config.js`, and that config argues at length against widening a
+// shape for one file ("A path this narrow cannot exempt a future file"): a hole cut
+// for regex fragments is a hole real copy can sit in later. A regex literal
+// contains no string literal, so it needs no hole.
+//
+// What guards the duplication instead: `.source` is pinned character-for-character
+// by `AssistantMessage.test.tsx`, and that pin is BUILT from per-pair pieces, so the
+// two copies here cannot drift from each other or from the backend without the test
+// naming the difference. The four pair branches read, per pair:
+//
+//   <opener>[^<every bracket>\n]*<its own closer>(?![ \t]*[|,]|<any closer>)
+//
+// with `(?!OPTIONS?:)` on the ASCII branch alone, since only `[` can begin a head.
+//
+// Every lookalike is written as a `\uXXXX` ESCAPE, never as the character itself.
+// That is not stylistic: `\uff3d` U+FF3D and `]` U+005D are indistinguishable at a
+// glance in most fonts, so a literal class would be unreviewable and a wrong
+// codepoint would read as correct. The escapes make the pairing checkable.
 export const OPTION_MARKER_RE =
-  /(?:^[ \t]*[`*_]{1,3}\[OPTION(S)?:((?:\[(?!OPTIONS?:)[^[\]\u3011\uFF3D\u3015\n]*[\]\u3011\uFF3D\u3015](?![ \t]*[|,]|[\]\u3011\uFF3D\u3015])|\[(?!OPTIONS?:)|[\]\u3011\uFF3D\u3015](?=[ \t]*[|,]|[\]\u3011\uFF3D\u3015])|[^[\]\u3011\uFF3D\u3015\n])*)[\]\u3011\uFF3D\u3015](?:\([^\s()]*\))?[`*_]{0,3}|\[OPTION(S)?:((?:\[(?!OPTIONS?:)[^[\]\u3011\uFF3D\u3015\n]*[\]\u3011\uFF3D\u3015](?![ \t]*[|,]|[\]\u3011\uFF3D\u3015])|\[(?!OPTIONS?:)|[\]\u3011\uFF3D\u3015](?=[ \t]*[|,]|[\]\u3011\uFF3D\u3015])|[^[\]\u3011\uFF3D\u3015\n])*)[\]\u3011\uFF3D\u3015](?:\([^\s()]*\))?)[ \t]*$/gim
+  /(?:^[ \t]*[`*_]{1,3}\[OPTION(S)?:((?:(?:\[(?!OPTIONS?:)[^\[\u3010\uFF3B\u3014\]\u3011\uFF3D\u3015\n]*\](?![ \t]*[|,]|[\]\u3011\uFF3D\u3015])|\u3010[^\[\u3010\uFF3B\u3014\]\u3011\uFF3D\u3015|,\n]*\u3011(?![ \t]*[|,]|[\]\u3011\uFF3D\u3015])|\uFF3B[^\[\u3010\uFF3B\u3014\]\u3011\uFF3D\u3015|,\n]*\uFF3D(?![ \t]*[|,]|[\]\u3011\uFF3D\u3015])|\u3014[^\[\u3010\uFF3B\u3014\]\u3011\uFF3D\u3015|,\n]*\u3015(?![ \t]*[|,]|[\]\u3011\uFF3D\u3015]))|\[(?!OPTIONS?:)|[\u3010\uFF3B\u3014]|[\]\u3011\uFF3D\u3015](?=[ \t]*[|,]|[\]\u3011\uFF3D\u3015])|[^\[\u3010\uFF3B\u3014\]\u3011\uFF3D\u3015\n])*)[\]\u3011\uFF3D\u3015](?:\([^\s()]*\))?[`*_]{0,3}|\[OPTION(S)?:((?:(?:\[(?!OPTIONS?:)[^\[\u3010\uFF3B\u3014\]\u3011\uFF3D\u3015\n]*\](?![ \t]*[|,]|[\]\u3011\uFF3D\u3015])|\u3010[^\[\u3010\uFF3B\u3014\]\u3011\uFF3D\u3015|,\n]*\u3011(?![ \t]*[|,]|[\]\u3011\uFF3D\u3015])|\uFF3B[^\[\u3010\uFF3B\u3014\]\u3011\uFF3D\u3015|,\n]*\uFF3D(?![ \t]*[|,]|[\]\u3011\uFF3D\u3015])|\u3014[^\[\u3010\uFF3B\u3014\]\u3011\uFF3D\u3015|,\n]*\u3015(?![ \t]*[|,]|[\]\u3011\uFF3D\u3015]))|\[(?!OPTIONS?:)|[\u3010\uFF3B\u3014]|[\]\u3011\uFF3D\u3015](?=[ \t]*[|,]|[\]\u3011\uFF3D\u3015])|[^\[\u3010\uFF3B\u3014\]\u3011\uFF3D\u3015\n])*)[\]\u3011\uFF3D\u3015](?:\([^\s()]*\))?)[ \t]*$/gim
 
 /** The closing brackets OPTION_MARKER_RE accepts — ASCII plus the CJK lookalikes.
  *  Module-private and used with matchAll only (to take the LAST closer in the
