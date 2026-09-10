@@ -1277,6 +1277,7 @@ def _build_tool_call_event(
         # Trusted identity from _meta.kiro (NOT the LLM-authored title).
         tool_name=_tool_name,
         mcp_server_name=_mcp_server_name,
+        tool_identity_trusted=bool(_tool_name),
         # The pair above comes exclusively from the _kiro_* extractors over the
         # frame's _meta.kiro (non-model-authored) — the trusted tool_call path.
         # Earned only when an identity pair was actually extracted: a frame
