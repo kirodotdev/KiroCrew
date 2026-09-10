@@ -295,6 +295,11 @@ class HybridRetriever:
         - the aggregate artifact source -> ``artifact_slug`` + ``artifact_name``
           (from ``artifact_item_state``), so a citation can name the artifact
           and deep-link to ``/artifacts/<slug>``.
+        - the aggregate agent source -> ``source_uri`` is REPLACED with the
+          document's own stored locator (from ``agent_item_state``), since the
+          aggregate row's ``agent://`` is a control uri, not a citation. Rows
+          written before the locator was stored carry NULL and keep the
+          aggregate uri.
         - every other source type -> nothing extra; ``source_uri`` is already the
           document locator (uploads, quip, etc.).
 
@@ -323,6 +328,8 @@ class HybridRetriever:
                        and meta[sid]["source_type"] in ("local_folder", "obsidian_vault")]
         artifact_sids = [sid for sid in sid_list if sid in meta
                          and meta[sid]["source_type"] == "artifact"]
+        agent_sids = [sid for sid in sid_list if sid in meta
+                      and meta[sid]["source_type"] == "agent"]
 
         item_to_file: dict[str, str] = {}
         for sid in folder_sids:
@@ -342,6 +349,17 @@ class HybridRetriever:
                 for item_id in _stored_item_ids(row["item_ids"]):
                     item_to_artifact[item_id] = (row["slug"], row["name"])
 
+        item_to_agent_uri: dict[str, str] = {}
+        for sid in agent_sids:
+            for row in self.store.db.execute(
+                "SELECT source_uri, item_ids FROM agent_item_state WHERE source_id = ?",
+                (sid,),
+            ).fetchall():
+                if not row["source_uri"]:
+                    continue  # legacy row: the aggregate uri stands
+                for item_id in _stored_item_ids(row["item_ids"]):
+                    item_to_agent_uri[item_id] = row["source_uri"]
+
         for result in results:
             sid = result.get("source")
             row = meta.get(sid) if isinstance(sid, str) else None
@@ -355,6 +373,9 @@ class HybridRetriever:
             artifact = item_to_artifact.get(result["id"])
             if artifact:
                 result["artifact_slug"], result["artifact_name"] = artifact
+            agent_uri = item_to_agent_uri.get(result["id"])
+            if agent_uri:
+                result["source_uri"] = agent_uri
 
     def _keyword_search(
         self,

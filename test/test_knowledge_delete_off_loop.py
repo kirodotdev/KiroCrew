@@ -822,7 +822,8 @@ def test_agent_deduped_state_write_keeps_a_late_adoption(tmp_path):
             "VALUES (?, 'doc', ?, ?, '2026-01-01T00:00:00', 'Doc', 'active')",
             (source_id, text_hash, json.dumps([item])))
 
-        _record_deduped_state(store, source_id, "doc", text_hash, "Doc")
+        _record_deduped_state(store, source_id, "doc", text_hash, "Doc",
+                              source_uri="")
 
         row = store.db.execute(
             "SELECT item_ids, status FROM agent_item_state "
@@ -856,7 +857,7 @@ def test_aggregate_deduped_state_write_records_an_empty_group_when_nothing_adopt
             "VALUES (?, 'doc', 'h', ?, '2026-01-01T00:00:00', 'Doc', 'active')",
             (source_id, json.dumps([gone])))
 
-        _record_deduped_state(store, source_id, "doc", "h", "Doc")
+        _record_deduped_state(store, source_id, "doc", "h", "Doc", source_uri="")
 
         row = store.db.execute(
             "SELECT item_ids, status FROM agent_item_state "

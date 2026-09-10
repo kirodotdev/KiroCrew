@@ -275,7 +275,15 @@ capped, stored and hashed, and never opened, resolved, stat-ed or fetched. It is
 the RAW uri while only the redacted form is stored or audited — redaction is lossy, so two
 uris differing only in a same-length credential-shaped segment reduce to the same string,
 and hashing that would merge two documents into one group. A caller needing the bytes at
-that location reads them itself and passes `content`.
+that location reads them itself and passes `content`. The redacted form is persisted in
+`agent_item_state.source_uri` on every state write, and citation enrichment attaches it
+to the document's search hits (§4), so a reader can see where the adding agent said the
+document came from — the value is writer-supplied and never resolved, so it is a stated
+origin, not a verified one — while `agent://` stays the aggregate row's control uri
+only. Rows written before the column existed carry NULL and fall back to the aggregate
+uri; a later add of the same document backfills them, including the unchanged-content
+duplicate shortcut, which writes no state row and therefore repairs the locator
+in place.
 
 This replaces the never-built server-side doc-link scanner. Rather than Kiro Crew
 regex-matching links in chat and fetching them unattended, the agent reads the document
@@ -434,7 +442,7 @@ Vectors are comparable only to vectors from the same model at the same width. Th
 
 **Re-embed scheduling class.** `rebuild_embeddings(..., priority=)` sets the class every embed in the loop runs at on the one shared inference slot, and **attendance** decides it, not corpus size — the same rule vector memory's paced sweep applies. The watcher's unattended self-heal (`_run_reembed_job`) passes `PRIORITY_BULK`, so a multi-hour rebuild yields to interactive embeds and to memory's paced sweeps and gets the reduced `memory.embedding_bulk_threads` pool. The dashboard-triggered rebuild (`_rebuild_embeddings_job`) passes `PRIORITY_NORMAL` explicitly: a user clicked it and is polling the job row, so it keeps the full pool. `InProcessEmbedder.embed` / `embed_for_item` forward the value to the backend; both default to `PRIORITY_NORMAL`, so a caller that forgets is impolite rather than throttled.
 
-**Citation enrichment** — `_attach_source_locations` batch-fetches `source_locations` (adds `section_title`, `chunk_range`, `anchor`); `_attach_citation_sources` adds `source_type`/`source_name`/`source_uri` plus the most specific per-document locator: `file_path` for folder/vault sources (from `folder_file_state`), `artifact_slug`/`artifact_name` for the aggregate artifact source (deep-links `/artifacts/<slug>`). Missing/unmapped sources degrade cleanly (extra keys simply absent).
+**Citation enrichment** — `_attach_source_locations` batch-fetches `source_locations` (adds `section_title`, `chunk_range`, `anchor`); `_attach_citation_sources` adds `source_type`/`source_name`/`source_uri` plus the most specific per-document locator: `file_path` for folder/vault sources (from `folder_file_state`), `artifact_slug`/`artifact_name` for the aggregate artifact source (deep-links `/artifacts/<slug>`), and for the aggregate agent source the hit's `source_uri` is replaced with the document's own stored locator (from `agent_item_state.source_uri`) — the aggregate's `agent://` is a control uri, not a citation, and stands only for legacy rows whose column is NULL. Missing/unmapped sources degrade cleanly (extra keys simply absent).
 
 The retrieval benchmark builds a disposable corpus with one embedding callable
 for both ingestion and queries. It explicitly uses `ANY_EMBEDDING_SPACE` because

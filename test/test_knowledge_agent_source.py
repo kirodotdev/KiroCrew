@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 import time
 from unittest.mock import AsyncMock, MagicMock
 
@@ -27,6 +28,7 @@ from kiro_crew.knowledge.agent_source import (
 from kiro_crew.knowledge.folder_watcher import FolderWatcher
 from kiro_crew.knowledge.ingestion import DUPLICATE_JOB_STATUS, IngestionPipeline
 from kiro_crew.knowledge.readers import FileReader
+from kiro_crew.knowledge.retrieval import HybridRetriever
 from kiro_crew.knowledge.store import KnowledgeStore
 
 
@@ -89,7 +91,7 @@ class TestAggregateSource:
         # aggregate must be exempt via its item-state table or the very first
         # document lands in a source that was reaped at boot.
         sid, _ = ensure_agent_source(kstore)
-        set_state(kstore, sid, "slug1", "H1", [], "Doc")
+        set_state(kstore, sid, "slug1", "H1", [], "Doc", source_uri="")
         kstore.close()
         reopened = KnowledgeStore(str(tmp_path / "knowledge.db"))
         try:
@@ -113,7 +115,7 @@ class TestSlug:
 class TestState:
     def test_roundtrip(self, kstore):
         sid, _ = ensure_agent_source(kstore)
-        set_state(kstore, sid, "s", "H1", ["i1", "i2"], "Doc")
+        set_state(kstore, sid, "s", "H1", ["i1", "i2"], "Doc", source_uri="")
         assert get_state(kstore, sid, "s") == ("H1", ["i1", "i2"])
 
     def test_missing_is_empty(self, kstore):
@@ -125,7 +127,8 @@ class TestState:
         # column default, and the document would be re-ingested and re-collapsed
         # on every pass.
         sid, _ = ensure_agent_source(kstore)
-        set_state(kstore, sid, "s", "H1", ["i1"], "Doc", status="deduped")
+        set_state(kstore, sid, "s", "H1", ["i1"], "Doc", status="deduped",
+                  source_uri="")
         assert kstore.db.execute(
             "SELECT status FROM agent_item_state WHERE slug = 's'").fetchone()[0] == "deduped"
 
@@ -133,14 +136,14 @@ class TestState:
         sid, _ = ensure_agent_source(kstore)
         iid = kstore.add_item(title="t", content="c", item_type="document",
                               source_id=sid, content_hash="H1")
-        set_state(kstore, sid, "s", "H1", [iid], "Doc")
+        set_state(kstore, sid, "s", "H1", [iid], "Doc", source_uri="")
         assert remove_document(kstore, sid, "s") == 1
         assert get_state(kstore, sid, "s") == (None, [])
         assert _items(kstore, sid) == []
 
     def test_cascade_clears_agent_state(self, kstore):
         sid, _ = ensure_agent_source(kstore)
-        set_state(kstore, sid, "s", "H1", ["i1"], "Doc")
+        set_state(kstore, sid, "s", "H1", ["i1"], "Doc", source_uri="")
         kstore.delete_source_cascade(sid)
         assert kstore.db.execute(
             "SELECT COUNT(*) FROM agent_item_state").fetchone()[0] == 0
@@ -528,8 +531,8 @@ class TestAgentSourceIsDeduped:
                             source_id=sid, content_hash="H1")
         b = kstore.add_item(title="b", content="b", item_type="document",
                             source_id=sid, content_hash="H2")
-        set_state(kstore, sid, "sa", "H1", [a], "Doc A")
-        set_state(kstore, sid, "sb", "H2", [b], "Doc B")
+        set_state(kstore, sid, "sa", "H1", [a], "Doc A", source_uri="")
+        set_state(kstore, sid, "sb", "H2", [b], "Doc B", source_uri="")
         docs = enumerate_docs(kstore)
         agent_docs = [d for d in docs if d.source_id == sid]
         assert len(agent_docs) == 2
@@ -541,7 +544,7 @@ class TestAgentSourceIsDeduped:
 
     def test_state_item_ids_are_json_lists(self, kstore):
         sid, _ = ensure_agent_source(kstore)
-        set_state(kstore, sid, "s", "H1", ["i1"], "Doc")
+        set_state(kstore, sid, "s", "H1", ["i1"], "Doc", source_uri="")
         raw = kstore.db.execute(
             "SELECT item_ids FROM agent_item_state WHERE slug = 's'").fetchone()[0]
         assert json.loads(raw) == ["i1"]
@@ -821,3 +824,110 @@ def test_removing_a_deduped_agent_document_releases_its_claim(tmp_path):
         assert store.get_item(iid) is None
     finally:
         store.db.close()
+
+
+class TestCitationSourceUri:
+    """A search hit cites the document's own locator, never the aggregate's.
+
+    The aggregate source row's uri is fixed to ``agent://`` -- a control handle,
+    not a citation. The redacted per-document ``source_uri`` is persisted in
+    ``agent_item_state`` and attached to the hit by item id, so a reader can
+    open and verify the original document.
+    """
+
+    def _hit(self, kstore, source_id, query):
+        results = HybridRetriever(kstore).search(query, source_id=source_id)
+        assert results, "expected the document to be found"
+        return results[0]
+
+    @pytest.mark.asyncio
+    async def test_search_hit_cites_the_documents_own_uri(self, pipeline, kstore):
+        uri = "https://wiki.example.com/design/frobnicator"
+        res = await add_agent_document(pipeline, title="Frobnicator design",
+                                       content="the frobnicator design body",
+                                       source_uri=uri)
+        assert res["status"] == "added"
+        hit = self._hit(kstore, res["source_id"], "frobnicator design")
+        assert hit["source_type"] == AGENT_SOURCE_TYPE
+        assert hit["source_uri"] == uri
+        assert hit["source_uri"] != AGENT_SOURCE_URI
+
+    @pytest.mark.asyncio
+    async def test_cited_uri_is_the_redacted_form(self, pipeline, kstore):
+        # The raw uri may carry a credential the agent never inspected; only the
+        # redacted form may be stored, so only the redacted form can be cited.
+        res = await add_agent_document(
+            pipeline, title="Runbook", content="the deploy runbook body",
+            source_uri="https://wiki.example.com/doc?key=AKIAIOSFODNN7EXAMPLE")
+        assert res["status"] == "added"
+        hit = self._hit(kstore, res["source_id"], "deploy runbook")
+        assert "AKIA" not in hit["source_uri"]
+        assert "REDACTED" in hit["source_uri"]
+
+    @pytest.mark.asyncio
+    async def test_legacy_row_falls_back_to_the_aggregate_uri(self, pipeline, kstore):
+        res = await add_agent_document(pipeline, title="Old doc",
+                                       content="the legacy document body",
+                                       source_uri="test://old-doc")
+        assert res["status"] == "added"
+        # A row written before the column existed carries NULL.
+        kstore.db.execute("UPDATE agent_item_state SET source_uri = NULL")
+        kstore.db.commit()
+        hit = self._hit(kstore, res["source_id"], "legacy document")
+        assert hit["source_uri"] == AGENT_SOURCE_URI
+
+    @pytest.mark.asyncio
+    async def test_re_adding_unchanged_content_backfills_a_legacy_row(
+            self, pipeline, kstore):
+        # An unchanged document takes the duplicate shortcut, which writes no
+        # state row -- so the shortcut itself must repair a NULL locator, or
+        # "re-add to backfill" never works for documents that did not change.
+        uri = "test://legacy-backfill"
+        res = await add_agent_document(pipeline, title="Old doc",
+                                       content="the stable legacy body",
+                                       source_uri=uri)
+        assert res["status"] == "added"
+        kstore.db.execute("UPDATE agent_item_state SET source_uri = NULL")
+        kstore.db.commit()
+        again = await add_agent_document(pipeline, title="Old doc",
+                                         content="the stable legacy body",
+                                         source_uri=uri)
+        assert again["status"] == "duplicate"
+        hit = self._hit(kstore, res["source_id"], "stable legacy")
+        assert hit["source_uri"] == uri
+
+    @pytest.mark.asyncio
+    async def test_locator_survives_an_edited_re_add(self, pipeline, kstore):
+        # The state write is INSERT OR REPLACE: replacing the group for edited
+        # content must carry the locator, not reset it to NULL.
+        uri = "test://edited-doc"
+        res = await add_agent_document(pipeline, title="Doc",
+                                       content="the first draft body",
+                                       source_uri=uri)
+        assert res["status"] == "added"
+        second = await add_agent_document(pipeline, title="Doc",
+                                          content="the second draft body",
+                                          source_uri=uri)
+        assert second["status"] == "added"
+        hit = self._hit(kstore, res["source_id"], "second draft")
+        assert hit["source_uri"] == uri
+
+    def test_migration_adds_the_column_idempotently(self, tmp_path):
+        db_path = str(tmp_path / "legacy.db")
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            "CREATE TABLE agent_item_state ("
+            "source_id TEXT NOT NULL, slug TEXT NOT NULL, content_hash TEXT, "
+            "item_ids TEXT DEFAULT '[]', updated_at TEXT NOT NULL, name TEXT, "
+            "status TEXT DEFAULT 'active', merged_into_source_id TEXT, "
+            "PRIMARY KEY (source_id, slug))")
+        conn.commit()
+        conn.close()
+        for _ in range(2):  # the second open must not re-run the ALTER
+            store = KnowledgeStore(db_path)
+            try:
+                cols = {r[1] for r in store.db.execute(
+                    "PRAGMA table_info(agent_item_state)").fetchall()}
+                assert "source_uri" in cols
+            finally:
+                store.close()

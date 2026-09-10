@@ -149,7 +149,8 @@ def get_state(store: KnowledgeStore, source_id: str, slug: str) -> tuple[str | N
 
 
 def _record_deduped_state(store: KnowledgeStore, source_id: str, slug: str,
-                          content_hash: str, name: str) -> None:
+                          content_hash: str, name: str,
+                          *, source_uri: str) -> None:
     """Terminal write for a document the pre-ingest gate refused.
 
     Invoked BY the gate as its ``on_duplicate`` finalizer, from inside the gate's
@@ -170,34 +171,47 @@ def _record_deduped_state(store: KnowledgeStore, source_id: str, slug: str,
     """
     adopted = store.surviving_group_in_txn("agent_item_state", source_id, slug)
     _write_state_row(store, source_id, slug, content_hash, adopted, name,
-                     status="active" if adopted else "deduped")
+                     status="active" if adopted else "deduped",
+                     source_uri=source_uri)
 
 
 def set_state(store: KnowledgeStore, source_id: str, slug: str, content_hash: str,
-              item_ids: list[str], name: str, status: str = "active") -> None:
+              item_ids: list[str], name: str, status: str = "active",
+              *, source_uri: str) -> None:
     """Record one document's hash, item group, display name and status.
 
     ``status`` is written explicitly on every call: the statement is an
     ``INSERT OR REPLACE``, so omitting it would silently reset a ``deduped``
     marker back to the column default and the document would be re-ingested and
-    re-collapsed on every pass.
+    re-collapsed on every pass. ``source_uri`` (the redacted locator) rides the
+    same rule, and is required so no caller can erase it by accident.
     """
     _write_state_row(store, source_id, slug, content_hash, item_ids, name,
-                     status=status)
+                     status=status, source_uri=source_uri)
     store.db.commit()
 
 
 def _write_state_row(store: KnowledgeStore, source_id: str, slug: str,
                      content_hash: str, item_ids: list[str], name: str,
-                     status: str = "active") -> None:
+                     status: str = "active", *, source_uri: str) -> None:
     """The row write alone, with no transaction control, so a caller already
-    holding one can include it."""
+    holding one can include it.
+
+    ``source_uri`` is the document's REDACTED locator (see
+    ``add_agent_document``); it is stored so a search hit can cite the document
+    itself rather than the aggregate's ``agent://``. It is required and
+    keyword-only for the same reason ``status`` is written explicitly on every
+    call: the statement is an ``INSERT OR REPLACE``, so a caller allowed to
+    omit it would silently erase the locator a previous add recorded. A caller
+    with genuinely no locator states ``source_uri=""``, stored as NULL.
+    """
     store.db.execute(
         "INSERT OR REPLACE INTO agent_item_state "
-        "(source_id, slug, content_hash, item_ids, updated_at, name, status) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        "(source_id, slug, content_hash, item_ids, updated_at, name, status, "
+        "source_uri) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         (source_id, slug, content_hash, json.dumps(item_ids),
-         datetime.now().isoformat(), name, status),
+         datetime.now().isoformat(), name, status, source_uri or None),
     )
 
 
@@ -260,7 +274,9 @@ async def add_agent_document(
     ``source_uri`` is where the document came from -- a path, URL or any stable
     handle -- and is a stored identity label: redacted, capped, hashed into the
     document's key (see ``document_slug``), and never opened, resolved, stat-ed or
-    fetched. Keep it that way; a caller that needs the bytes at that location reads
+    fetched. The redacted form is persisted on the document's state row so search
+    hits cite the document's own locator rather than the aggregate ``agent://``.
+    Keep it that way; a caller that needs the bytes at that location reads
     them itself and passes ``content``.
 
     It is REQUIRED, because the title alone does not identify a document.
@@ -322,6 +338,20 @@ async def _add_agent_document(
     # leaving the document permanently unsearchable. An empty group therefore
     # falls through and re-attempts the write.
     if prev_hash == content_hash and old_item_ids:
+        # The shortcut writes no state row, and an unchanged document takes it
+        # on EVERY re-add -- so it must repair the one thing a legacy row can
+        # lack: a NULL locator from before the column existed. Without this,
+        # "re-add to backfill" never works for a document whose content did not
+        # change, and its citations say ``agent://`` forever.
+        def _backfill_uri() -> None:
+            cur = store.db.execute(
+                "UPDATE agent_item_state SET source_uri = ? "
+                "WHERE source_id = ? AND slug = ? "
+                "AND (source_uri IS NULL OR source_uri = '')",
+                (source_uri, source_id, slug))
+            if cur.rowcount:
+                store.db.commit()
+        await asyncio.to_thread(_backfill_uri)
         return {"status": "duplicate", "reason": "unchanged since last add",
                 "slug": slug, "source_id": source_id}
 
@@ -350,7 +380,8 @@ async def _add_agent_document(
 
     def _record_ownership(new_ids: list[str]) -> None:
         recorded_ids[:] = new_ids
-        set_state(store, source_id, slug, content_hash, new_ids, title)
+        set_state(store, source_id, slug, content_hash, new_ids, title,
+                  source_uri=source_uri)
 
     tmp_path: str | None = None
     try:
@@ -375,7 +406,8 @@ async def _add_agent_document(
             # hop for the same reason: the gate has already committed the delete
             # and the location claim by the time it reports back.
             on_duplicate=lambda _text_hash: _record_deduped_state(
-                store, source_id, slug, content_hash, title),
+                store, source_id, slug, content_hash, title,
+                source_uri=source_uri),
         )
     except ImportChunkBudgetError as exc:
         # The cross-file import budget refused this add. Surface WHY to the agent

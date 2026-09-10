@@ -816,7 +816,10 @@ class KnowledgeStore:
             -- Same shape and role as artifact_item_state: it is what lets one
             -- aggregate source hold many independently-replaceable documents,
             -- and what gives de-duplication a per-document unit to act on
-            -- instead of the whole source.
+            -- instead of the whole source. source_uri is the document's own
+            -- REDACTED locator, kept so a search hit can cite the document it
+            -- came from rather than the aggregate's control uri (agent://);
+            -- NULL on rows written before the column existed.
             CREATE TABLE IF NOT EXISTS agent_item_state (
                 source_id TEXT NOT NULL REFERENCES sources(id),
                 slug TEXT NOT NULL,
@@ -826,6 +829,7 @@ class KnowledgeStore:
                 name TEXT,
                 status TEXT DEFAULT 'active',
                 merged_into_source_id TEXT,
+                source_uri TEXT,
                 PRIMARY KEY (source_id, slug)
             );
 
@@ -1037,6 +1041,14 @@ class KnowledgeStore:
         if "merged_into_source_id" not in agent_cols:
             self.db.execute(
                 "ALTER TABLE agent_item_state ADD COLUMN merged_into_source_id TEXT")
+        # The document's own REDACTED locator, attached to agent-source search
+        # hits so a citation names where the document came from instead of the
+        # aggregate's control uri. Legacy rows carry NULL, which citation
+        # enrichment treats as "unknown" and falls back to agent://; the next
+        # add of that document backfills it.
+        if "source_uri" not in agent_cols:
+            self.db.execute(
+                "ALTER TABLE agent_item_state ADD COLUMN source_uri TEXT")
         # The orphan sweep is NOT here any more -- see `reclaim_orphans`. The
         # constructor runs on the event loop before the socket binds, and the
         # sweep is data-scaled and writer-locked, so on a large store it
