@@ -42,11 +42,11 @@ def _FakeProvider(models, *, backend=None):
     """A provider double carrying a REAL capability record, not an identity flag.
 
     ``_advertised_cc_models`` selects a session by
-    ``SessionCapabilities.resolves_model_from_advertised_list``, and
-    ``capabilities_of`` requires a genuine record: a ``MagicMock(spec=...)``'s
-    attributes are all truthy, so an attribute-shaped assertion would let this
-    double claim every capability at once. Setting the real record is what makes
-    the double describe a backend that exists.
+    ``SessionCapabilities.resolves_model_from_advertised_list`` AND by
+    ``model_id_namespace``, and ``capabilities_of`` requires a genuine record: a
+    ``MagicMock(spec=...)``'s attributes are all truthy, so an attribute-shaped
+    assertion would let this double claim every capability at once. Setting the
+    real record is what makes the double describe a backend that exists.
     """
     from kiro_crew.acp_backends import ACP_BACKEND_CLAUDE
     from kiro_crew.agent_sdk.capabilities import capabilities_for
@@ -66,7 +66,7 @@ class TestAdvertisedCcModels:
                 {"modelId": "claude-sonnet-4-6", "name": "Sonnet 4.6", "description": "Everyday"},
             ]
         )
-        out = _advertised_cc_models(_request_with_providers({"s": prov}))
+        out = _advertised_cc_models(_request_with_providers({"s": prov}), "claude_code")
         assert out == [
             {
                 "model_name": "claude-sonnet-4-6",
@@ -86,16 +86,16 @@ class TestAdvertisedCcModels:
                 },
             ]
         )
-        out = _advertised_cc_models(_request_with_providers({"s": prov}))
+        out = _advertised_cc_models(_request_with_providers({"s": prov}), "claude_code")
         assert out[0]["model_name"] == "global.anthropic.claude-opus-4-8[1m]"
 
     def test_empty_when_no_active_sessions(self):
-        assert _advertised_cc_models(_request_with_providers({})) == []
+        assert _advertised_cc_models(_request_with_providers({}), "claude_code") == []
 
     def test_skips_provider_without_accessor(self):
         prov = _FakeProvider([])
         prov.available_models = None
-        out = _advertised_cc_models(_request_with_providers({"s": prov}))
+        out = _advertised_cc_models(_request_with_providers({"s": prov}), "claude_code")
         assert out == []
 
     def test_skips_non_claude_providers(self):
@@ -103,7 +103,24 @@ class TestAdvertisedCcModels:
             [{"modelId": "claude-opus-5", "name": "Opus 5", "description": ""}],
             backend="",
         )
-        out = _advertised_cc_models(_request_with_providers({"s": prov}))
+        out = _advertised_cc_models(_request_with_providers({"s": prov}), "claude_code")
+        assert out == []
+
+    def test_skips_a_codex_provider_holding_the_same_capability(self):
+        """codex also resolves from its advertised list, and its ids are not claude's.
+
+        Both harnesses hold ``resolves_model_from_advertised_list``, so the
+        capability alone does not say whose list this is. Without the namespace
+        gate a live codex session would answer the claude picker with codex ids,
+        and claude-agent-acp refuses every one of them.
+        """
+        from kiro_crew.acp_backends import ACP_BACKEND_CODEX
+
+        prov = _FakeProvider(
+            [{"modelId": "gpt-5.4-codex", "name": "GPT-5.4 Codex", "description": ""}],
+            backend=ACP_BACKEND_CODEX,
+        )
+        out = _advertised_cc_models(_request_with_providers({"s": prov}), "claude_code")
         assert out == []
 
 

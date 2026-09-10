@@ -1659,11 +1659,21 @@ class AcpError(Exception):
     independently of how :func:`_format_acp_error` words the user-facing
     message. ``None`` means "unclassified" — callers fall back to
     string-matching the formatted message.
+
+    ``code`` is the raw JSON-RPC error code when the failure came back as an
+    error frame (``-32602`` Invalid params, ``-32601`` Method not found, ...),
+    else ``None``. Carried as data so a caller can classify a rejection by code
+    instead of parsing the redacted message: a codex session dies at startup on
+    a bare ``{"code": -32602, "message": "Invalid params"}`` with no ``data``,
+    which no message match can tell from a protocol error.
     """
 
-    def __init__(self, *args: object, transient: bool | None = None) -> None:
+    def __init__(
+        self, *args: object, transient: bool | None = None, code: int | None = None
+    ) -> None:
         super().__init__(*args)
         self.transient = transient
+        self.code = code
         # Reactive-fallback metadata, set by :func:`_raise_acp_error` when a
         # prompt-time error names a rejected model (so run_bg_oneliner can retry
         # once with a served model). Guarded so AcpModelUnavailable — which sets
@@ -2297,6 +2307,30 @@ def _auto_remedy(available_models: Sequence[str] | None) -> str:
     if usable and DEFAULT_MODEL not in usable:
         return "or (2) "
     return f"(2) set agent.model to '{DEFAULT_MODEL}' in ~/.kiro/crew/config.json, or (3) "
+
+
+def _jsonrpc_error_code(error: object) -> int | None:
+    """The integer ``code`` of a JSON-RPC error frame, or ``None``.
+
+    Tolerant of every shape the wire has produced: a missing ``code``, a
+    non-dict frame, or a code spelled as a numeric string all answer ``None``
+    (a bool is refused too — ``True == 1`` would otherwise read as a code).
+    """
+    if not isinstance(error, dict):
+        return None
+    code = error.get("code")
+    if isinstance(code, bool):
+        return None
+    if isinstance(code, int):
+        return code
+    return None
+
+
+#: JSON-RPC ``Invalid params``. On ``session/set_config_option`` the request shape
+#: is fixed and the VALUE is the only param a caller varies, so this code means the
+#: adapter refused the value it was handed — the frame a stale codex model pin
+#: draws, carrying no ``data`` to match on.
+_JSONRPC_INVALID_PARAMS = -32602
 
 
 def _format_acp_error(
@@ -4516,6 +4550,15 @@ class AcpClient:
         ``strict=False`` (startup application of an inherited value) returns
         ``""`` so the caller stays on the backend default, mirroring the
         withhold contract in :meth:`_apply_startup_model`.
+
+        Two shapes count as a value rejection. claude-agent-acp names the
+        option in its message (``Invalid value for config option model: ...``).
+        A codex session instead dies on a bare JSON-RPC ``-32602 Invalid params``
+        with no detail — the same frame a malformed request would draw, but the
+        request shape here is fixed and the value is the only thing that varies,
+        so the code IS the rejection. Before this was read as a protocol failure
+        it re-raised, the session init failed, and a stale model pin from another
+        backend killed every codex session at startup.
         """
         last_exc: AcpError | None = None
         for cand in self._model_config_candidates(model_id):
@@ -4531,7 +4574,11 @@ class AcpClient:
                         raise
                     logger.debug("adapter exposes no 'model' config option; skipping model push")
                     return ""
-                if "config option model" not in lowered:
+                value_rejected = (
+                    "config option model" in lowered
+                    or getattr(exc, "code", None) == _JSONRPC_INVALID_PARAMS
+                )
+                if not value_rejected:
                     raise  # transport/protocol failure — not a value rejection
                 last_exc = exc
                 continue
@@ -4547,9 +4594,11 @@ class AcpClient:
         if strict:
             raise AcpModelUnavailable(_rejected_log, self._advertised_model_ids()) from last_exc
         logger.warning(
-            "ACP model %s rejected by the adapter; staying on the backend default %s",
+            "ACP model %s rejected by the adapter; staying on the backend default %s "
+            "(advertised: %s)",
             _rejected_log,
             self._resolved_model_id or DEFAULT_MODEL,
+            ", ".join(self._advertised_model_ids()) or "none",
         )
         return ""
 
@@ -6563,7 +6612,9 @@ class AcpClient:
                     # discipline as the substitution-advisory log site above.
                     _err_log, _ = redact_exfiltration_urls(str(msg.error))
                     _err_log, _ = redact_credentials(_err_log)
-                    raise AcpError(f"JSON-RPC error: {_err_log}")
+                    raise AcpError(
+                        f"JSON-RPC error: {_err_log}", code=_jsonrpc_error_code(msg.error)
+                    )
                 return msg.result or {}
             # Notification (has method, no id) — buffer for drain.
             if msg.method and msg.id is None:

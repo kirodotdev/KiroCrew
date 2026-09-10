@@ -320,7 +320,7 @@ EXPECTED_CAPABILITIES = {
     "": (PROVIDER_ACP, MODEL_NAMESPACE_ACP, False, False, False),
     "kas": (PROVIDER_ACP, MODEL_NAMESPACE_ACP, False, False, False),
     "claude": (PROVIDER_CLAUDE_CODE, "claude_code", True, True, True),
-    "codex": (PROVIDER_ACP, MODEL_NAMESPACE_ACP, False, True, False),
+    "codex": (PROVIDER_ACP, "codex", True, True, False),
     "nope": (PROVIDER_ACP, MODEL_NAMESPACE_ACP, False, False, False),
 }
 
@@ -475,9 +475,12 @@ class TestTheKiroConstructionPathIsUnconditional:
     reached through a TABLE, so an edit to
     ``_MODEL_REGISTRY_NAMESPACE_BY_BACKEND`` can move it.
 
-    So the pin is the branch, not the value: every non-claude backend must reach
-    ``to_acp_id`` and must never reach ``to_provider_id``. That is what makes
-    "the Kiro path is unconditional" a test result rather than a claim.
+    So the pin is the branch, not the value: every kiro-family backend (and any
+    stranger, which defaults to that family) must reach ``to_acp_id`` and must
+    never reach ``to_provider_id``. That is what makes "the Kiro path is
+    unconditional" a test result rather than a claim. codex is on its own
+    provider namespace like claude and takes the other arm -- pinned below so a
+    move in either direction is a deliberate edit.
     """
 
     @staticmethod
@@ -503,20 +506,27 @@ class TestTheKiroConstructionPathIsUnconditional:
         cfg.acp_effective_model(None, "opus-4.8-1m")
         return calls
 
-    @pytest.mark.parametrize("backend", ["", "kas", "codex", "some-future-harness"])
-    def test_a_non_claude_backend_never_reaches_the_provider_namespace(
+    @pytest.mark.parametrize("backend", ["", "kas", "some-future-harness"])
+    def test_a_kiro_family_backend_never_reaches_the_provider_namespace(
         self, monkeypatch, backend: str
     ) -> None:
         calls = self._translations(monkeypatch, backend)
         assert [c[0] for c in calls] == ["to_acp_id"], (
             f"backend {backend!r} left the acp translation path; the capability "
-            f"lookup must not move a non-claude backend off to_acp_id"
+            f"lookup must not move a kiro-family backend off to_acp_id"
         )
 
     def test_the_claude_backend_still_reaches_its_own_namespace(self, monkeypatch) -> None:
         """The other half: the one backend that DID take the other arm still does."""
         calls = self._translations(monkeypatch, "claude")
         assert calls == [("to_provider_id", "opus-4.8-1m", "claude_code")]
+
+    def test_the_codex_backend_reaches_its_own_namespace(self, monkeypatch) -> None:
+        """codex ids are the adapter's own vocabulary: translated into the ``codex``
+        namespace (a passthrough, the registry has no such provider), never folded
+        onto a kiro id codex would refuse."""
+        calls = self._translations(monkeypatch, "codex")
+        assert calls == [("to_provider_id", "opus-4.8-1m", "codex")]
 
     def test_the_namespace_table_cannot_move_kiro_off_the_acp_arm(self) -> None:
         """The drift the reviewer named, pinned at the table rather than the branch.
@@ -525,7 +535,7 @@ class TestTheKiroConstructionPathIsUnconditional:
         translator call; this names the table entry, so the failure message points
         at the line an editor would have changed.
         """
-        for backend in ("", "kas", "codex"):
+        for backend in ("", "kas"):
             assert sdk_backends.model_registry_namespace(backend) == MODEL_NAMESPACE_ACP
 
 
