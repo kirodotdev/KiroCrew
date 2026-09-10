@@ -387,6 +387,47 @@ composition failure propagates fail-closed. The capability probe
 (`_probe_sandbox_exec`) still runs only the trusted fixed `/usr/bin/true` target
 under `(allow default)`, never an edition-resolved or user-writable executable.
 
+#### Connect fence: OS-level denial of loopback/self sshd (issue #9806)
+
+The Linux sandbox installs a second seccomp filter — user-notification, not
+kill — that traps `connect(2)` and lets a supervisor thread in the launcher
+parent answer each call: **EPERM** when the target is this host (any loopback
+address, or an address from the netlink `RTM_GETADDR` interface table plus
+hostname records; on point-to-point links the peer's `IFA_ADDRESS` is
+excluded — only `IFA_LOCAL` is self) on a fenced port (22), **CONTINUE**
+otherwise. This closes the class the argv text tier structurally cannot see:
+interpreter indirection, script bodies, and non-ssh clients. `io_uring` is
+denied outright in the Step-6 ERRNO filter (`io_uring_setup/enter/register`),
+so `IORING_OP_CONNECT` cannot carry a connect the fence never sees.
+
+- **Single spelling.** `security/connect_fence.py` owns the BPF program
+  builder, the verdict policy, the seccomp wire constants, and the
+  supervisor's SOURCE TEXT (`SUPERVISOR_SOURCE`); `_build_launcher_script`
+  interpolates that text and bakes the constants, and the unit tests execute
+  the shipped verdict code against the module's matrix — the launcher cannot
+  silently diverge from what is tested.
+- **Never blocking the event loop.** The builder runs on the gateway's
+  single asyncio loop, so it only reads cached literals: the address sweep
+  (netlink + `getaddrinfo`) runs on a daemon thread with a serve-stale TTL.
+  A first spawn before the sweep lands gets a loopback-only self set —
+  loopback denial is unconditional, so the #9806 core is fenced from the
+  first spawn.
+- **Deterministic handoff.** The child installs the filter, sends the notify
+  fd, and BLOCKS on a one-byte parent ack sent only after the supervisor
+  thread is live; a missing ack aborts the spawn loudly. A supervisor loop
+  exit on an unexpected error closes the notify fd so trapped connects fail
+  fast (ENOSYS) instead of hanging.
+- **Fail toward the text tier, never toward a dead filter.** The builder
+  refuses to arm on unsupported arches and on kernels below 5.5
+  (`USER_NOTIF_FLAG_CONTINUE`; `NEW_LISTENER` alone at 5.0 would accept the
+  install and then hang every allowed connect). An unreadable or non-INET
+  sockaddr answers CONTINUE by contract — the fence adds denials, it does
+  not invent them.
+- **Declared residuals** (tracked on issue #9806): the documented seccomp
+  user-memory TOCTOU on the CONTINUE path, SEL forwarding of denials
+  (stderr audit line today), and the macOS seatbelt leg. Full closure is
+  the netns egress design.
+
 ### XPIA Hardening (`security.py` + `hooks.py`)
 
 **Sensitive path protection** — blocks at the hook layer before tool execution:

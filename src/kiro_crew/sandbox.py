@@ -4404,6 +4404,92 @@ def _private_memory_seatbelt_rules(
             expression = json.dumps("^" + re.escape(home + "/" + leaf) + r"($|[./])")
             rules.append(f"(deny file-write* (regex {expression}))")
     return rules
+#: Connect fence build-time literal cache: (prog, nr, self, ports)
+#: reprs, computed once per process by ``_build_launcher_script``.
+_FENCE_CACHE_TTL_SECS = 300.0
+_FENCE_BUILD_CACHE: tuple[float, tuple[str, str, str, str, str, str, str]] | None = None
+_FENCE_REFRESH_GATE = threading.Lock()
+
+
+def _fence_build_literals(
+    self_addresses: tuple[str, ...],
+) -> tuple[str, str, str, str, str, str, str]:
+    """Pure literal build for the launcher fence — no I/O, event-loop safe.
+
+    ``self_addresses`` is the swept non-loopback self set (empty for the
+    degraded first-spawn build). Arch table, kernel-release gate, and wire
+    constants are local computation; the only blocking work (the netlink
+    dump and getaddrinfo) lives in ``_fence_refresh_cache`` on a thread.
+    """
+    from .security import connect_fence as _cf  # lazy: this module keeps zero top-level sibling imports
+
+    _uname = os.uname()
+    try:
+        prog: bytes | None = _cf.build_connect_notif_prog(_uname.machine)
+        nr: int | None = _cf.seccomp_syscall_nr(_uname.machine)
+    except _cf.FenceUnsupportedArch:
+        prog = None
+        nr = None
+    # USER_NOTIF_FLAG_CONTINUE needs kernel 5.5+; NEW_LISTENER alone (5.0+)
+    # would accept the install and then hang every allowed connect. Refuse
+    # to arm below 5.5 — same degrade path as an unsupported arch (the text
+    # tier stays the cover).
+    if not _cf.kernel_supports_notif_continue(_uname.release):
+        prog = None
+        nr = None
+    return (
+        repr(prog),
+        repr(nr),
+        repr(tuple(sorted(self_addresses))),
+        repr(tuple(sorted(_cf.FENCE_PORTS))),
+        _cf.SUPERVISOR_SOURCE,
+        repr(_cf.SECCOMP_SET_MODE_FILTER),
+        repr(_cf.SECCOMP_FILTER_FLAG_NEW_LISTENER),
+    )
+
+
+def _fence_refresh_cache() -> None:
+    """Sweep self addresses and refresh ``_FENCE_BUILD_CACHE`` (daemon thread).
+
+    Owns the blocking work the builder must never do on the event loop: the
+    netlink RTM_GETADDR dump and the hostname getaddrinfo. The gate is
+    acquired by the kicking builder and released here, so at most one sweep
+    runs at a time; a failure leaves the previous entry (or ``None``) in
+    place and the builder keeps serving stale/degraded literals.
+    """
+    global _FENCE_BUILD_CACHE
+    try:
+        from .security import connect_fence as _cf  # lazy: see _fence_build_literals
+
+        _FENCE_BUILD_CACHE = (
+            time.monotonic(),
+            _fence_build_literals(tuple(_cf.fence_self_addresses())),
+        )
+    except Exception:  # pragma: no cover — the seed is best-effort by contract
+        logger.debug("connect-fence seed refresh failed", exc_info=True)
+    finally:
+        _FENCE_REFRESH_GATE.release()
+
+
+def _fence_prewarm() -> None:
+    """Kick the self-address sweep at import time (daemon thread).
+
+    The launcher builder never blocks the event loop, so a spawn that
+    arrives before any sweep completes bakes a loopback-only self set.
+    Warming the cache at import shrinks that window to the first instants
+    of the process: the sweep takes milliseconds while the first real
+    spawn follows import by far longer, so the first launcher carries the
+    full adapter-address set on any ordinarily-timed spawn. Failure stays
+    non-fatal — the sweep thread logs and the degraded loopback-only path
+    remains the fallback.
+    """
+    if _FENCE_REFRESH_GATE.acquire(blocking=False):
+        threading.Thread(
+            target=_fence_refresh_cache, name="fence-seed-prewarm", daemon=True
+        ).start()
+
+
+_fence_prewarm()
 
 
 def _build_launcher_script(
@@ -4435,6 +4521,48 @@ def _build_launcher_script(
     home = str(Path.home())
     uid = os.getuid()
     gid = os.getgid()
+    # Connect fence build-time inputs. HARD RULE: this builder
+    # runs on the gateway's single event loop (the no-blocking-call rule;
+    # same reason test_the_builder_does_not_stat_the_hidden_paths forbids
+    # even isfile here), so it NEVER resolves addresses inline — the
+    # netlink+getaddrinfo sweep runs on a daemon thread
+    # (_fence_refresh_cache) and this path only reads cached literals.
+    # Cache states: fresh → use; stale (TTL) → use AND kick a refresh
+    # (serve-stale, so DHCP/VPN drift lands on a later spawn); missing
+    # (first spawn) → arch-only degraded literals with an EMPTY self set.
+    # Loopback denial is unconditional in the verdict, so the core threat
+    # (self sshd via loopback) is fenced from the very first spawn; the
+    # swept non-loopback self addresses arrive on spawns a moment later.
+    # An already-running sandbox keeps its baked set until respawn.
+    global _FENCE_BUILD_CACHE
+    _fence_cache_entry = _FENCE_BUILD_CACHE
+    if _fence_cache_entry is None or (
+        time.monotonic() - _fence_cache_entry[0] > _FENCE_CACHE_TTL_SECS
+    ):
+        if _FENCE_REFRESH_GATE.acquire(blocking=False):
+            threading.Thread(
+                target=_fence_refresh_cache, name="fence-seed-refresh", daemon=True
+            ).start()
+    if _fence_cache_entry is not None:
+        (
+            _fence_prog_lit,
+            _fence_nr_lit,
+            _fence_self_lit,
+            _fence_ports_lit,
+            _fence_supervisor_src,
+            _fence_setmode_lit,
+            _fence_newlistener_lit,
+        ) = _fence_cache_entry[1]
+    else:
+        (
+            _fence_prog_lit,
+            _fence_nr_lit,
+            _fence_self_lit,
+            _fence_ports_lit,
+            _fence_supervisor_src,
+            _fence_setmode_lit,
+            _fence_newlistener_lit,
+        ) = _fence_build_literals(())
     # Source the sensitive-dir lists from the active PlatformContext so the
     # The internal companion can extend them (+ .midway/.ada).  The Default adapter
     # returns ``list(_STRICT_DIRS)`` / ``list(_CC_DIRS)``, so standalone is
@@ -4622,6 +4750,13 @@ import tempfile
 # test pins this: every import in this generated script must be module-level.
 import platform as _plat
 import struct as _struct
+# Connect fence (issue 9806) runtime deps — module-level per the pre-isolation
+# contract above; the supervisor text (connect_fence.SUPERVISOR_SOURCE) is
+# import-free and relies on these bindings.
+import fcntl as _fence_fcntl
+import ipaddress as _fence_ip
+import socket as _fence_socket
+import threading as _fence_threading
 
 _CLONE_NEWUSER = 0x10000000
 _CLONE_NEWNS   = 0x00020000
@@ -4789,6 +4924,14 @@ def main():
     c2p_r, c2p_w = os.pipe()  # child signals "unshare done"
     p2c_r, p2c_w = os.pipe()  # parent signals "maps written"
 
+    # Connect fence (issue 9806): notify-fd handoff channel. The child
+    # installs the filter and sends the fd; the parent supervises verdicts.
+    _FENCE_PROG = {_fence_prog_lit}
+    _FENCE_NR = {_fence_nr_lit}
+    _FENCE_SELF = {_fence_self_lit}
+    _FENCE_PORTS = {_fence_ports_lit}
+    _fence_psock, _fence_csock = _fence_socket.socketpair()
+
     pid = os.fork()
 
     if pid > 0:
@@ -4825,6 +4968,29 @@ def main():
         os.replace(_temporary, os.path.join(_namespace_dir, f"{{os.getpid()}}.namespace.json"))
         os.write(p2c_w, b"n")
         os.close(p2c_w)
+        # Connect fence (issue 9806): receive the notify fd, start the
+        # supervisor, then ack the child. The child blocks on this ack and
+        # aborts the spawn if it never arrives, so a filter is never left
+        # installed without a live supervisor answering it.
+        _fence_csock.close()
+        _fence_nfd = -1
+        try:
+            _fence_psock.settimeout(15.0)
+            _fmsg, _ffds, _fflags, _faddr = _fence_socket.recv_fds(_fence_psock, 16, 1)
+            if _ffds:
+                _fence_nfd = _ffds[0]
+        except OSError:
+            _fence_nfd = -1
+        # Connect fence supervisor: source owned by security/connect_fence.py
+        # (SUPERVISOR_SOURCE) and interpolated at build time — one spelling.
+{_fence_supervisor_src}
+        try:
+            if _fence_nfd >= 0:
+                _fence_psock.sendall(b"a")  # supervisor live: release the child
+        except OSError:
+            pass
+        finally:
+            _fence_psock.close()
         _, status = os.waitpid(pid, 0)
         code = os.WEXITSTATUS(status) if os.WIFEXITED(status) else 1
         sys.exit(code)
@@ -5229,15 +5395,22 @@ def main():
             # setns=308, pivot_root=155, kill=62
             # aarch64: mount=40, umount2=39, unshare=97, setns=268,
             # pivot_root=41, kill=129
+            # io_uring (both arches — unified post-4.20 numbering):
+            # io_uring_setup=425, io_uring_enter=426, io_uring_register=427.
+            # Denied because IORING_OP_CONNECT performs a connect(2) the
+            # user-notification fence never sees (issue 9806 review F3) —
+            # with ring setup answered EPERM no ring exists, and liburing/
+            # libuv consumers fall back to plain syscalls, which the fence
+            # and this filter do see.
             # (_plat is imported in the preamble, pre-isolation -- importing it
             # HERE was the reported #8151 crash: the post-unshare first-time
             # stdlib read was denied and the whole launcher died.)
             _machine = _plat.machine()
             if _machine == "x86_64":
-                _DENY_SYSCALLS = (165, 166, 272, 308, 155)
+                _DENY_SYSCALLS = (165, 166, 272, 308, 155, 425, 426, 427)
                 _KILL_NR = 62
             elif _machine == "aarch64":
-                _DENY_SYSCALLS = (40, 39, 97, 268, 41)
+                _DENY_SYSCALLS = (40, 39, 97, 268, 41, 425, 426, 427)
                 _KILL_NR = 129
             else:
                 # No syscall table for this arch, so the filter that keeps the
@@ -5334,6 +5507,44 @@ def main():
                                    ctypes.addressof(_fprog), 0, 0)
                 if _ret != 0:
                     sys.exit("sandbox: BLOCKED — failed to install seccomp-BPF filter (prctl returned %d)" % _ret)
+
+        # Connect fence (issue 9806): install the notif filter, send the fd,
+        # then BLOCK for the parent's ack that the supervisor is live. A
+        # filter with no supervisor would leave every trapped connect
+        # unanswered, so a missing ack aborts the spawn loudly instead of
+        # proceeding into that state.
+        _fence_psock.close()
+        _fence_installed = False
+        if _FENCE_PROG is not None and _FENCE_NR is not None:
+            class _FenceProg(ctypes.Structure):
+                _fields_ = [("len", ctypes.c_ushort), ("filter", ctypes.c_char_p)]
+            _fprog_fence = _FenceProg()
+            _fprog_fence.len = len(_FENCE_PROG) // 8
+            _fprog_fence.filter = _FENCE_PROG
+            # ctypes converts variadic integer args as c_int, MASKING a
+            # 64-bit address (GPT F1): pass the prog pointer as an explicit
+            # c_void_p so the full pointer reaches seccomp(2).
+            _fence_fd = _libc.syscall(_FENCE_NR, {_fence_setmode_lit}, {_fence_newlistener_lit}, ctypes.c_void_p(ctypes.addressof(_fprog_fence)))
+            if _fence_fd >= 0:
+                try:
+                    _fence_socket.send_fds(_fence_csock, [b"f"], [_fence_fd])
+                    _fence_csock.settimeout(30.0)
+                    _fence_ack = _fence_csock.recv(1)
+                except OSError:
+                    _fence_ack = b""
+                os.close(_fence_fd)
+                if _fence_ack == b"a":
+                    _fence_installed = True
+                else:
+                    sys.exit(
+                        "sandbox: BLOCKED - connect fence installed but the "
+                        "supervisor did not confirm; refusing to run with an "
+                        "unanswered filter"
+                    )
+        if not _fence_installed:
+            print("sandbox: connect fence unavailable on this kernel; "
+                  "command-line tier remains the interim cover", file=sys.stderr)
+        _fence_csock.close()
 
         # ── Step 7: Pre-exec hardlink scan ──
         # Scan the agent workspace + /tmp for hardlinks (nlink > 1) whose
