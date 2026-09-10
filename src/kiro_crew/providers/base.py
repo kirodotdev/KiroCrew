@@ -120,6 +120,15 @@ class LLMProvider(ABC):
         return False
 
     @property
+    def defer_replay_sid_promotion(self) -> bool:
+        """Whether replay settlement must precede publishing a fresh native SID.
+
+        The safe default is False: adapters added later publish their own session
+        identity normally unless they explicitly adopt the deferred-SID contract.
+        """
+        return False
+
+    @property
     def is_claude_backend(self) -> bool:
         """True when this provider drives claude-agent-acp."""
         return False

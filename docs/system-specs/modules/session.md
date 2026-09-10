@@ -1200,8 +1200,12 @@ when a switch is detected (stored SID exists AND providers differ).
 4. The new provider's session_id (once obtained) is saved with the correct
    provider label
 5. On the first prompt after the switch, `chat_runner` detects the flag and
-   injects history from `compress_thread_history()` (KiroCrew's conversation_log)
-6. The flag is consumed (set to False) — replay fires exactly once per switch
+   injects history from `compress_thread_history()` (Kiro Crew's conversation_log)
+6. The flag remains armed through prompt acceptance and is settled only when the
+   replay-bearing turn lands. ACP providers promote a deliberately deferred fresh
+   SID before consuming the lease; non-ACP providers already published their SID
+   during allocation and consume the lease directly. Cancelled, failed, empty, or
+   synthetic terminals leave it armed for the next prompt.
 
 **Same-provider resume:** unaffected. Normal `session/load` path with full
 native fidelity.
