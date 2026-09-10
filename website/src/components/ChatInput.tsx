@@ -1582,10 +1582,10 @@ function ChatInput({
   // claiming active work over a dead session.
   const resumeOffered = !!(continuable && onContinue && continueIsRecovery)
   const continuePlaceholder = resumeOffered
-    ? i18nT('components.chatInput.turn_interrupted_press_continue')
+    ? i18nT('components.chatInput.turn_interrupted_press_resume')
     : ''
   const continueLabel = i18nT(continueIsRecovery
-    ? 'components.chatInput.continue_interrupted_turn'
+    ? 'components.chatInput.resume_interrupted_turn'
     : 'components.chatInput.continue_thread')
   const [slashMenuOpen, setSlashMenuOpen] = useState(false)
   const [filePickerOpen, setFilePickerOpen] = useState(false)

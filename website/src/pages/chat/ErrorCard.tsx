@@ -1,5 +1,5 @@
 import { memo } from 'react'
-import { KeyRound, Loader2, Play, Settings, SlidersHorizontal } from 'lucide-react'
+import { KeyRound, Loader2, RotateCw, Settings, SlidersHorizontal } from 'lucide-react'
 
 import { i18nT } from '../../i18n/t'
 import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
@@ -23,8 +23,55 @@ const AUTH_REQUIRED_KIND = 'auth_required'
 export const isAuthRequired = (m: Pick<ChatMessage, 'kind' | 'meta'>): boolean =>
   m.kind === AUTH_REQUIRED_KIND || (m.meta as { kind?: string } | undefined)?.kind === AUTH_REQUIRED_KIND
 
+/**
+ * WIRE SHAPES, never rendered — the gateway's own English error prose, matched
+ * byte-for-byte against `chat_runner.py` (`_emit_error` / `_emit_stale` /
+ * `_emit_stall` and the `slot.append("error", …)` sites). On a row that offers
+ * Resume, a match is replaced by the catalog copy beside it, so the banner
+ * speaks the same verb as the button and translates with the rest of the card.
+ * Anything that does not match renders verbatim, so an unknown or newer gateway
+ * string still reaches the screen.
+ *
+ * Only "Connection lost" carries a detail — the process exit code, ` (exit N)` —
+ * captured and re-interpolated so the diagnostic survives the swap.
+ *
+ * Keyed by wire id with literal catalog keys so `check-i18n-keys.mjs` can
+ * resolve every `i18nT` target statically.
+ */
+const RETRY_PROSE = {
+  connection_lost: {
+    key: 'pages.chat.errorCard.retry_connection_lost',
+    wire: /^⟳ Connection lost( \(exit -?\d+\))? — please retry\.$/,
+  },
+  session_busy: { key: 'pages.chat.errorCard.retry_session_busy', wire: /^⟳ Session busy — please retry\.$/ },
+  turn_stalled: { key: 'pages.chat.errorCard.retry_turn_stalled', wire: /^⟳ Turn stalled — please retry\.$/ },
+  tool_stalled: { key: 'pages.chat.errorCard.retry_tool_stalled', wire: /^⟳ Tool appeared stalled — please retry\.$/ },
+  backend_hiccup: { key: 'pages.chat.errorCard.retry_backend_hiccup', wire: /^⟳ Backend hiccup — please retry\.$/ },
+} as const
+
+/**
+ * Localised, Resume-worded copy for a known gateway retry row, or `null` for
+ * anything else. Call it ONLY for a row that renders the Resume button: on a
+ * row with no control (a settled or historical error, or a surface with no turn
+ * to resume) the wire text must stand, because "resume to pick up where it
+ * stopped" beside nothing sends the reader looking for a button that is not
+ * there.
+ */
+export function retryProse(content: string): string | null {
+  for (const { key, wire } of Object.values(RETRY_PROSE)) {
+    const m = wire.exec(content)
+    if (m) return i18nT(key, { detail: m[1] ?? '' })
+  }
+  return null
+}
+
 export interface ErrorCardProps {
-  /** Server- or client-authored prose; typed diagnostic prefixes are display-only. */
+  /**
+   * Server- or client-authored error prose; typed diagnostic prefixes are
+   * display-only. Rendered verbatim, except that on a row offering Resume a
+   * known gateway "please retry" string is shown as its localised Resume-worded
+   * equivalent (see {@link retryProse}).
+   */
   content: string
   meta?: ChatMessage['meta']
   /**
@@ -69,22 +116,22 @@ const ACTION_BTN =
 /**
  * The error row in a chat transcript.
  *
- * Every one of these carries prose that already tells the reader to retry
- * ("⟳ Connection lost — please retry."), but until now there was nothing to
- * click: recovering meant retyping the prompt. When the turn is genuinely
- * resumable the card grows an action, so the instruction and the affordance sit
- * in the same place.
+ * When the turn is genuinely resumable the card carries a Resume action beside
+ * the prose, and the gateway's own "please retry" wording is swapped for
+ * catalog copy that names the same verb ({@link retryProse}), so the banner
+ * never says "retry" next to a control that says "Resume". A row with no
+ * Resume control keeps the gateway text as written.
  *
  * The button is deliberately absent rather than disabled when the turn is not
  * resumable — a permanently greyed control on a red card reads as a broken
  * feature, and there is no state the user could reach that would enable it.
  *
  * A model-entitlement rejection is the one error whose fix is NOT a retry, so
- * its row swaps Continue for the two actions that actually end it: pick a model
+ * its row swaps Resume for the two actions that actually end it: pick a model
  * the account is served, and change the default the next session would start on.
  */
 export const ErrorCard = memo(function ErrorCard({
-  content,
+  content: wireContent,
   meta,
   onContinue,
   continuing,
@@ -94,6 +141,10 @@ export const ErrorCard = memo(function ErrorCard({
   unentitledElsewhere,
 }: ErrorCardProps) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
+  // Swap the gateway's "please retry" wording ONLY on a row that renders the
+  // Resume button. A row with no control keeps the wire text: telling the
+  // reader to resume beside nothing is worse than the mismatch it would fix.
+  const content = (onContinue && retryProse(wireContent)) || wireContent
   if (onOpenSignIn) {
     // A signed-out agent process: the one action that ends it is signing in
     // again from Settings. The prose (the backend's own wording, which may
@@ -221,13 +272,13 @@ export const ErrorCard = memo(function ErrorCard({
         onClick={onContinue}
         disabled={continuing}
         className={`${ACTION_BTN} bg-accent text-accent-fg hover:bg-accent-hover`}
-        title={i18nT('pages.chat.errorCard.continue_hint')}
+        title={i18nT('pages.chat.errorCard.resume_hint')}
         data-testid="error-card-continue"
       >
         {continuing
           ? <Loader2 size={12} className="lucide-inline shrink-0 animate-spin" aria-hidden="true" />
-          : <Play size={12} className="lucide-inline shrink-0" aria-hidden="true" />}
-        {i18nT('pages.chat.errorCard.continue')}
+          : <RotateCw size={12} className="lucide-inline shrink-0" aria-hidden="true" />}
+        {i18nT('pages.chat.errorCard.resume')}
       </button>
     </div>
   )

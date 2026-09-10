@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 
-import { ErrorCard, isAuthRequired, isModelUnentitled } from '../pages/chat/ErrorCard'
+import { ErrorCard, isAuthRequired, isModelUnentitled, retryProse } from '../pages/chat/ErrorCard'
 
 const setupMeta = (member = 'reviewer') => ({
   code: 'memory_unavailable',
@@ -11,7 +11,7 @@ const setupMeta = (member = 'reviewer') => ({
 /**
  * The error row used to be an actionless div whose own copy told the reader to
  * retry. These tests pin the two shapes: settled (no action) and resumable
- * (Continue), plus the guard that a press cannot double-fire.
+ * (Resume), plus the guard that a press cannot double-fire.
  */
 describe('ErrorCard', () => {
   it('treats retained setup metadata as an ordinary retryable error', () => {
@@ -40,15 +40,21 @@ describe('ErrorCard', () => {
 
   it('renders the prose verbatim with no action when the turn is not resumable', () => {
     render(<ErrorCard content="⟳ Connection lost — please retry." />)
+    // The wire text stands: with no Resume control there is nothing for a
+    // "resume to pick up where it stopped" instruction to point at.
     expect(screen.getByTestId('error-card')).toHaveTextContent('⟳ Connection lost — please retry.')
     // Deliberately ABSENT rather than disabled: a permanently greyed button on a
     // red card reads as a broken feature.
     expect(screen.queryByTestId('error-card-continue')).toBeNull()
   })
 
-  it('renders a Continue action when the turn is resumable', () => {
+  it('renders a Resume action when the turn is resumable', () => {
     render(<ErrorCard content="boom" onContinue={() => {}} />)
     expect(screen.getByTestId('error-card-continue')).toBeTruthy()
+    // Interrupted-turn recovery is a Resume action — the visible label must
+    // read "Resume", not "Continue" (regression pin for the Resume/Continue
+    // naming rule).
+    expect(screen.getByTestId('error-card-continue')).toHaveTextContent('Resume')
     expect(screen.getByTestId('error-card')).toHaveAttribute('data-continuable', 'true')
   })
 
@@ -70,7 +76,51 @@ describe('ErrorCard', () => {
 
   it('keeps the error prose visible in the resumable shape', () => {
     render(<ErrorCard content="⟳ Session busy — please retry." onContinue={() => {}} />)
-    expect(screen.getByTestId('error-card')).toHaveTextContent('⟳ Session busy — please retry.')
+    expect(screen.getByTestId('error-card')).toHaveTextContent('Session busy — resume to pick up where it stopped.')
+  })
+
+  /**
+   * The gateway's error rows say "please retry"; the button beside them says
+   * "Resume". One action, one verb: a known gateway row is swapped for catalog
+   * copy that names Resume, and NEVER says "retry" next to that button.
+   */
+  describe('retryProse — gateway wording is re-spoken with the Resume verb', () => {
+    it('localises every known gateway retry row', () => {
+      expect(retryProse('⟳ Connection lost — please retry.')).toBe('Connection lost — resume to pick up where it stopped.')
+      expect(retryProse('⟳ Session busy — please retry.')).toBe('Session busy — resume to pick up where it stopped.')
+      expect(retryProse('⟳ Turn stalled — please retry.')).toBe('Turn stalled — resume to pick up where it stopped.')
+      expect(retryProse('⟳ Tool appeared stalled — please retry.')).toBe('Tool appeared stalled — resume to pick up where it stopped.')
+      expect(retryProse('⟳ Backend hiccup — please retry.')).toBe('The agent hit a brief problem — resume to pick up where it stopped.')
+    })
+
+    it('keeps the exit-code detail a connection-lost row carries', () => {
+      expect(retryProse('⟳ Connection lost (exit 1) — please retry.')).toBe('Connection lost (exit 1) — resume to pick up where it stopped.')
+      expect(retryProse('⟳ Connection lost (exit -9) — please retry.')).toBe('Connection lost (exit -9) — resume to pick up where it stopped.')
+    })
+
+    it('leaves anything else verbatim — an unknown or newer gateway string must still reach the screen', () => {
+      expect(retryProse('⟳ Connection lost — please retry')).toBeNull()      // no full stop: not the wire shape
+      expect(retryProse('Connection lost — please retry.')).toBeNull()        // no glyph
+      expect(retryProse('⟳ Something new — please retry.')).toBeNull()
+      expect(retryProse('boom')).toBeNull()
+      render(<ErrorCard content="⟳ Something new — please retry." />)
+      expect(screen.getByTestId('error-card')).toHaveTextContent('⟳ Something new — please retry.')
+    })
+
+    it('never renders "retry" beside the Resume button', () => {
+      render(<ErrorCard content="⟳ Connection lost — please retry." onContinue={() => {}} />)
+      const card = screen.getByTestId('error-card')
+      expect(card).toHaveTextContent('Resume')
+      expect(card).not.toHaveTextContent(/retry/i)
+    })
+
+    it('keeps the wire text on a row with no Resume control — an instruction to resume must have a button to point at', () => {
+      render(<ErrorCard content="⟳ Session busy — please retry." />)
+      const card = screen.getByTestId('error-card')
+      expect(card).toHaveTextContent('⟳ Session busy — please retry.')
+      expect(card).not.toHaveTextContent(/resume/i)
+      expect(screen.queryByTestId('error-card-continue')).toBeNull()
+    })
   })
 })
 

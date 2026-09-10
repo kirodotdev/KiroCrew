@@ -4931,7 +4931,7 @@
       "click_again_to_confirm": "Click again to confirm",
       "collapse": "Collapse",
       "confirm_delete_job": "Delete?",
-      "continue_session": "Continue session",
+      "go_to_chat": "Go to Chat",
       "d_ago": "{{n}}d ago",
       "delete_2": "Delete {{n}}",
       "delete_failed": "Delete failed",

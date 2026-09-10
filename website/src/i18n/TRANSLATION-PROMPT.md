@@ -106,6 +106,14 @@ and overrides your reading of the English.
   same part of speech.
 - Match the terminology already used in this catalog. The examples below are
   approved output — mirror their word choices for recurring terms.
+- **Keep "Resume" and "Continue" distinct — they are two different actions.**
+  *Resume* picks a paused or interrupted thing back up where it left off (an
+  interrupted turn, a paused scan, a stopped session). *Continue* advances a
+  flow to its next step (an onboarding wizard, a multi-step import). Use a
+  different word for each in your language so the distinction survives
+  translation — e.g. zh-CN 「恢复」 for Resume and 「继续」 for Continue, de
+  „wieder aufnehmen“ for Resume and „fortsetzen“ for Continue; do not collapse
+  both onto one verb.
 - Do not pad. UI strings sit in fixed-width chrome; the shortest accurate
   wording is the right one.
 - Do not translate a sentence fragment into a fragment that only works in

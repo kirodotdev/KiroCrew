@@ -85,12 +85,12 @@ export default function CronRowActions({
         <DropdownMenuItem
           disabled={!hasResult}
           title={job.has_slot
-            ? i18nT('pages.schedulePage.continue_session')
+            ? i18nT('pages.schedulePage.go_to_chat')
             : job.has_result ? i18nT('pages.schedulePage.view_last_result') : i18nT('pages.schedulePage.no_result')}
           onSelect={onOpenInChat}
         >
           <MessageSquare size={13} className="shrink-0 text-muted" />
-          <span>{job.has_slot ? i18nT('pages.schedulePage.continue_session') : i18nT('pages.schedulePage.view_last_result')}</span>
+          <span>{job.has_slot ? i18nT('pages.schedulePage.go_to_chat') : i18nT('pages.schedulePage.view_last_result')}</span>
         </DropdownMenuItem>
 
         <DropdownMenuSeparator />
