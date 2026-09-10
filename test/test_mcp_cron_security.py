@@ -17,13 +17,14 @@ Fixes under test:
 from __future__ import annotations
 
 import json
+import os
 import time
 import uuid
 from pathlib import Path
 
 import pytest
 
-from conftest import requires_symlinks
+from conftest import make_dir_link, requires_symlinks
 from kiro_crew import mcp_cron
 from kiro_crew.mcp_cron import (
     _call_tool_inner,
@@ -322,6 +323,65 @@ def test_assignment_limit_fails_closed_not_open():
     assert _vet_shell_command(at_limit) is None, "64 harmless assignments must pass"
 
 
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        (
+            "A= B=x;C=;  D=$A\nE='s\\h'",
+            [("A", ""), ("B", "x"), ("C", ""), ("D", "$A"), ("E", "'s\\h'")],
+        ),
+        (
+            " \t\r\n\u2003A=one&&B=two|C=three",
+            [("A", "one"), ("B", "two"), ("C", "three")],
+        ),
+        ("echo-a=b cmd a=b -Xc=d _ok=e 9BAD=f", [("a", "b"), ("_ok", "e")]),
+        ("A=x;B=$A;A=y", [("A", "x"), ("B", "$A"), ("A", "y")]),
+        (
+            "A='one two' B=\"three four\" C=.s''sh",
+            [("A", "'one"), ("B", '\"three'), ("C", ".s''sh")],
+        ),
+        (
+            "A='left;B=middle|C=right'",
+            [("A", "'left"), ("B", "middle"), ("C", "right'")],
+        ),
+        (
+            "A=one\\ two B=three\\;C=four",
+            [("A", "one\\"), ("B", "three\\"), ("C", "four")],
+        ),
+        ("A=B=C _= 9BAD=x éBAD=y A-é=z", [("A", "B=C"), ("_", "")]),
+        (
+            "def=x True=y __=z a0=q K=bad Ａ=bad Á=bad",
+            [("def", "x"), ("True", "y"), ("__", "z"), ("a0", "q")],
+        ),
+    ],
+)
+def test_assignment_boundaries_preserve_capture_order_and_empty_values(command, expected):
+    assert list(mcp_cron._iter_local_assignments(command)) == expected
+
+
+@pytest.mark.parametrize("separator", [" ", "\t", "\n"])
+def test_whitespace_assignment_lists_keep_the_exact_admission_limit(separator):
+    assignments = separator.join(f"Z{i}=x" for i in range(64))
+    assert _vet_shell_command(assignments + "; echo done") is None
+    error = _vet_shell_command(assignments + separator + "LAST=x; echo done")
+    assert error is not None and "too many variable assignments" in error
+
+
+@pytest.mark.parametrize(
+    ("prefix", "separator"),
+    [
+        ("\t" * 20_000, ""),
+        ("A" * 20_000 + " " + "9" * 20_000 + "=ignored", "; "),
+    ],
+    ids=["long-whitespace", "long-non-assignment-words"],
+)
+def test_long_prefix_never_hides_later_assignments(prefix, separator):
+    assert list(mcp_cron._iter_local_assignments(prefix)) == []
+    command = prefix + separator + "A=.s B=sh; cat ~/$A$B/id_rsa"
+    assert list(mcp_cron._iter_local_assignments(command)) == [("A", ".s"), ("B", "sh")]
+    assert _substitute_local_assignments(command).endswith("cat ~/.ssh/id_rsa")
+
+
 @pytest.mark.parametrize("cmd", BENIGN_COMMANDS)
 def test_vet_shell_command_allows_benign(cmd):
     assert _vet_shell_command(cmd) is None, f"should allow: {cmd!r}"
@@ -374,6 +434,41 @@ def test_glob_matching_cost_is_bounded():
     assert _glob_could_reach_credentials("cat ~/.??h/id_rsa")
     assert _glob_could_reach_credentials("cat ~/." + "*" * 300 + "/id_rsa")
     assert not _glob_could_reach_credentials("rm /tmp/*.log")
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("", False),
+        ("plain", False),
+        ("abc[", False),
+        ("abc]", False),
+        ("][", False),
+        ("][x]", True),
+        ("[]", True),
+        ("[[]", True),
+        ("[\n]", True),
+        ("[\n", False),
+        ("*", True),
+        ("?", True),
+    ],
+)
+def test_glob_markers_distinguish_literal_brackets_and_complete_pairs(value, expected):
+    assert mcp_cron._contains_glob_meta(value) is expected
+
+
+def test_glob_word_limit_applies_only_after_wildcard_detection():
+    at_limit = "/tmp/" + "x" * 250 + "*"
+    assert len(at_limit) == 256
+    assert not _glob_could_reach_credentials("cat " + at_limit)
+    assert _glob_could_reach_credentials("cat " + at_limit + "x")
+    literal = "[" * 20_000
+    assert not _glob_could_reach_credentials("cat " + literal)
+    assert _glob_could_reach_credentials("cat " + literal + "]")
+    # A pair across whitespace is not a glob in either individual shell word.
+    assert not _glob_could_reach_credentials("cat [\n]")
+    assert _glob_could_reach_credentials("cat ~/.s[s]h/id_rsa")
+    assert not _glob_could_reach_credentials("cat ~/notes/[ab].txt")
 
 
 def test_vet_shell_command_empty_is_clean():
@@ -529,6 +624,164 @@ def test_vet_script_file_reads_and_blocks(tmp_path):
 def test_vet_script_file_missing_file_errors(tmp_path):
     err = _vet_script_file(str(tmp_path / "nope.py"))
     assert err is not None and err.startswith("Error:")
+
+
+def _assert_descriptors_closed(descriptors):
+    """Every descriptor the vetter opened must be released before it returns."""
+    for descriptor in descriptors:
+        with pytest.raises(OSError):
+            os.fstat(descriptor)
+
+
+def _refuse_content_read(*args, **kwargs):
+    raise AssertionError("an unverified script leaf reached the content reader")
+
+
+def test_resolved_fifo_is_refused_before_a_blocking_read(monkeypatch, tmp_path):
+    import builtins
+
+    from kiro_crew.config.loader import config_dir
+    from kiro_crew.cron_script import resolve_script_path
+
+    make_fifo = getattr(os, "mkfifo", None)
+    if make_fifo is None:
+        pytest.skip("the host has no FIFO creation primitive")
+    script = config_dir().resolve() / "crons" / "waiting.py"
+    script.parent.mkdir(parents=True, exist_ok=True)
+    make_fifo(script)
+    resolved, function = resolve_script_path(f"{script}:run")
+    assert function == "run"
+    original_open = builtins.open
+
+    def no_blocking_read(path, *args, **kwargs):
+        if not isinstance(path, int) and Path(path) == script:
+            raise AssertionError("the scanner attempted a blocking FIFO read")
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "open", no_blocking_read)
+    err = _vet_script_file(resolved)
+    assert err is not None and "regular file" in err
+
+
+@requires_symlinks
+@pytest.mark.parametrize("without_nofollow", [False, True])
+def test_script_leaf_swap_never_reads_the_target(monkeypatch, tmp_path, without_nofollow):
+    script = tmp_path.resolve() / "review.py"
+    script.write_text("print('safe')\n", encoding="utf-8")
+    target = tmp_path.resolve() / "private-target"
+    target.write_text("private content must not reach the reader", encoding="utf-8")
+    if without_nofollow:
+        monkeypatch.setattr(os, "O_NOFOLLOW", 0, raising=False)
+    original_open = os.open
+    descriptors = []
+    swapped = []
+
+    def swap_then_open(path, flags, *args, **kwargs):
+        if Path(path) == script:
+            script.unlink()
+            script.symlink_to(target)
+            swapped.append(path)
+        descriptor = original_open(path, flags, *args, **kwargs)
+        descriptors.append(descriptor)
+        return descriptor
+
+    monkeypatch.setattr(os, "open", swap_then_open)
+    monkeypatch.setattr(os, "fdopen", _refuse_content_read)
+    err = _vet_script_file(str(script))
+    assert swapped
+    assert err is not None and err.startswith("Error:")
+    assert "private content" not in err
+    _assert_descriptors_closed(descriptors)
+
+
+def test_fifo_substituted_during_open_is_nonblocking_and_refused(monkeypatch, tmp_path):
+    make_fifo = getattr(os, "mkfifo", None)
+    if make_fifo is None:
+        pytest.skip("the host has no FIFO creation primitive")
+    script = tmp_path.resolve() / "review.py"
+    script.write_text("print('safe')\n", encoding="utf-8")
+    original_open = os.open
+    descriptors = []
+
+    def swap_then_open(path, flags, *args, **kwargs):
+        if Path(path) == script:
+            assert flags & getattr(os, "O_NONBLOCK", 0), "FIFO open must never block"
+            script.unlink()
+            make_fifo(script)
+        descriptor = original_open(path, flags, *args, **kwargs)
+        descriptors.append(descriptor)
+        return descriptor
+
+    monkeypatch.setattr(os, "open", swap_then_open)
+    err = _vet_script_file(str(script))
+    assert err is not None and "regular file" in err
+    assert descriptors
+    _assert_descriptors_closed(descriptors)
+
+
+def test_regular_script_keeps_utf8_replacement_and_universal_newlines(monkeypatch, tmp_path):
+    script = tmp_path / "review.py"
+    script.write_bytes(b"# caf\xc3\xa9\r\n# invalid: \xff\r\nprint('safe')\r\n")
+    seen = []
+    monkeypatch.setattr(mcp_cron, "_vet_script_contents", lambda text: seen.append(text))
+    assert _vet_script_file(str(script)) is None
+    assert seen == ["# caf\u00e9\n# invalid: \ufffd\nprint('safe')\n"]
+
+
+def test_script_parent_swap_before_metadata_never_reads_the_target(monkeypatch, tmp_path):
+    root = tmp_path.resolve()
+    parent = root / "crons" / "nested"
+    parent.mkdir(parents=True)
+    script = parent / "review.py"
+    script.write_text("print('safe')\n", encoding="utf-8")
+    target = root / "private-target"
+    target.mkdir()
+    (target / script.name).write_text("private content must not reach the reader", encoding="utf-8")
+    original_sensitive = mcp_cron.is_sensitive_path
+    original_fd_path = mcp_cron.fd_real_path
+    swapped = []
+    descriptors = []
+
+    def swap_after_path_check(path):
+        result = original_sensitive(path)
+        if Path(path) == script and not swapped:
+            assert not result
+            parent.rename(root / "original-cron-directory")
+            make_dir_link(parent, target)
+            swapped.append(path)
+        return result
+
+    def observed_fd_path(descriptor):
+        descriptors.append(descriptor)
+        actual = original_fd_path(descriptor)
+        assert actual is not None and Path(actual) == target / script.name
+        return actual
+
+    monkeypatch.setattr(mcp_cron, "is_sensitive_path", swap_after_path_check)
+    monkeypatch.setattr(mcp_cron, "fd_real_path", observed_fd_path)
+    monkeypatch.setattr(os, "fdopen", _refuse_content_read)
+    err = _vet_script_file(str(script))
+    assert swapped and descriptors
+    assert err is not None and "cannot verify cron script path" in err
+    assert "private content" not in err
+    _assert_descriptors_closed(descriptors)
+
+
+def test_script_unknown_descriptor_path_is_refused_before_read(monkeypatch, tmp_path):
+    script = tmp_path / "review.py"
+    script.write_text("print('safe')\n", encoding="utf-8")
+    descriptors = []
+
+    def unavailable_fd_path(descriptor):
+        descriptors.append(descriptor)
+        return None
+
+    monkeypatch.setattr(mcp_cron, "fd_real_path", unavailable_fd_path)
+    monkeypatch.setattr(os, "fdopen", _refuse_content_read)
+    err = _vet_script_file(str(script))
+    assert descriptors
+    assert err is not None and "cannot verify cron script path" in err
+    _assert_descriptors_closed(descriptors)
 
 
 class TestOversizedScriptIsRefusedNotTruncated:

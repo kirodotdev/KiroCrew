@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
+import { partitionBaseSurfaces } from '../../scripts/lib/i18n-surfaces.mjs'
 import {
   BUCKETS,
   BUCKET_MEANING,
@@ -323,7 +324,7 @@ describe('CI supplies a base commit on both paths', () => {
   // tests above would still pass.
   // Both blocking workflows, not just ci.yml. The cheap diff-scoped gates moved
   // into fast-gate.yml, which ci.yml blocks on through `await-fast-gate`; reading
-  // ci.yml alone would have silently dropped six of the ten wirings out of this
+  // ci.yml alone would have silently dropped seven of the eleven wirings out of this
   // file's view while every assertion below still passed on the remaining four.
   const workflowSources = ['ci.yml', 'fast-gate.yml'].map((name) => ({
     name,
@@ -342,7 +343,7 @@ describe('CI supplies a base commit on both paths', () => {
     // A count, not a set: the point is that a gate ADDED to either workflow
     // cannot skip this file's `base.sha` assertion below by going unnoticed. Bump
     // it when a diff-scoped gate lands, and check the new wiring is in the loop.
-    expect(wirings).toHaveLength(10)
+    expect(wirings).toHaveLength(11)
   })
 
   it('still sees a wiring in each workflow it reads', () => {
@@ -541,6 +542,44 @@ describe('INVARIANT — with a diff in hand, a total can never fail the run', ()
     expect(gate).toMatch(/const missing = [\s\S]*?if \(missing\.length\) \{[\s\S]*?fallback: true/)
     // The default must be the safe one, so a new early return cannot raise it by omission.
     expect(gate).toMatch(/let totalIsFallback = false/)
+  })
+})
+
+describe('base render plan for a new query-param panel', () => {
+  const panel = { id: 'private-memory', url: '/settings?store=member', sourceFile: 'src/PrivateMemory.tsx', readyText: '0011' }
+  const overview = { id: 'overview', url: '/settings' }
+
+  it('does not await a new panel on the old bundle and charges all HEAD findings', () => {
+    const surfaces = [overview, panel]
+    const plan = partitionBaseSurfaces(surfaces, new Set(['overview']), () => false)
+    expect(plan.measurable).toEqual([overview])
+    expect(surfaces).toEqual([overview, panel])
+    const verdict = decide({
+      counts: { overview: { text: 0, layout: 0, latent: 0 }, 'private-memory': { text: 1, layout: 0, latent: 0 } },
+      baseCounts: { overview: { text: 0, layout: 0, latent: 0 } },
+      surfaceIds: surfaces.map(surface => surface.id),
+      newSurfaces: plan.absent,
+    })
+    expect(verdict.failed).toBe(true)
+    expect(verdict.grew.map(fmtDelta)).toEqual(['private-memory.text: 0 -> 1 (+1)'])
+  })
+
+  it('measures newly registered panels whose implementation already existed', () => {
+    const plan = partitionBaseSurfaces([panel], new Set(), () => true)
+    expect(plan.measurable).toEqual([panel])
+    expect(plan.absent.size).toBe(0)
+  })
+
+  it('does not hide a broken existing surface behind a missing source file', () => {
+    const plan = partitionBaseSurfaces([panel], new Set([panel.id]), () => false)
+    expect(plan.measurable).toEqual([panel])
+    expect(plan.absent.size).toBe(0)
+  })
+
+  it('retains the browser route probe for surfaces without a source declaration', () => {
+    const plan = partitionBaseSurfaces([overview], new Set(), () => false)
+    expect(plan.measurable).toEqual([overview])
+    expect(plan.absent.size).toBe(0)
   })
 })
 

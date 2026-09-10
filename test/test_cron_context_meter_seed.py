@@ -52,6 +52,8 @@ def _make_job(job_id="abc123", name="test-cron", message="do the thing"):
     job.message = message
     job.last_result_ts = 0.0
     job.agent_id = ""
+    job.member_id = ""
+    job.memory_store = ""
     job.timezone = "UTC"
     return job
 

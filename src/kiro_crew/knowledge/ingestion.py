@@ -1551,7 +1551,7 @@ _REBUILD_STALE_AFTER = timedelta(minutes=10)
 
 # Items that just failed a re-embed (vec is None) keep a stale sig but get an
 # `embedded_at` stamp; the watcher backs off from re-triggering on them until this
-# window elapses, so a perpetually-failing item (Ollama down) can't drive a fresh
+# window elapses, so a perpetually-failing item (model not resident) can't drive a fresh
 # rebuild every scan interval. Longer than _REBUILD_STALE_AFTER so a legit retry
 # isn't suppressed but a tight retrigger loop is.
 _REEMBED_RETRY_BACKOFF = timedelta(minutes=15)
@@ -1839,7 +1839,7 @@ async def rebuild_embeddings(store, embedder, *, job_id: str | None = None,
             last_id = row["id"]
             if job_id is not None:
                 # Heartbeat the job row PER ITEM, not just per batch: a single embed
-                # is the CPU floor (Ollama), so 50 serial embeds can exceed
+                # is the CPU floor, so 50 serial embeds can exceed
                 # _REBUILD_STALE_AFTER on a slow/cold host. If updated_at only
                 # advanced at end-of-batch, the single-flight claimer would judge a
                 # live rebuild abandoned mid-batch and start a second one (duplicated

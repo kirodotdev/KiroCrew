@@ -4,7 +4,102 @@
 
 The Slack integration (`kiro_crew/slack/`) connects KiroCrew to Slack via Socket Mode. DMs are routed through ACP to kiro-cli with real-time streaming and interactive tool approval.
 
+Startup wires memory objects behind one gateway-lifetime in-process barrier.
+After the dashboard binds, one tracked worker activates pending V1 and V2 restores before opening any memory database or
+markdown/FTS store. It clears a previous gateway's cached handles, initializes the
+already-wired Global store and rebuilds FTS before releasing memory access.
+The gateway publishes that task to dashboard state and emits `KIROCREW_READY`
+without yielding to it, then awaits it before arming cron, heartbeat, automatic
+memory work or channel transports. Persisted Crew work and restored legacy
+channel agents resume after the same wait. Agent-backed dashboard turns shield-wait on
+the same task at their central admission seam before identity, provider or
+metadata work. A cancelled turn therefore cannot cancel preparation or record
+the transient fence as a failed turn. The bound dashboard remains available for
+status and recovery while preparation runs; its memory content operations
+refuse access until the pass settles. A journal or
+activation failure is recorded against that canonical store, and the worker
+continues restoring later stores. Once the pass completes, healthy Global,
+named V1 and private V2 stores become usable independently. A Global restore or
+initialization failure fences only Global and skips its migration; private
+repair and automatic backups of healthy member V2 stores still run. Structural configuration or worker
+initialization failure can keep the whole preparing fence closed.
+Failed-store context, HTTP, direct/cached store handles and backups refuse with
+a named reason; HTTP returns `503` and `code: store_unavailable`.
+Store status, backup listing and cancellation remain available for owner recovery.
+Failure preserves the journal and prior data. Owner backup and cancellation
+responses report `activation_failed`, `restore_error` and `restart_required`
+for the affected store, even when its journal parses or has been cancelled.
+Cancellation does not unlock that store in this gateway; a subsequent restart
+retries recovery before access. Once the preparing pass completes, an owner can
+stage a known-good backup for a failed store, including when its current database
+is unreadable. Staging validates ownership and the backup without opening live
+memory, and retains the existing pending-journal lock. It does not clear the
+failure fence or activate that copy until the next restart. Preparing, stopped
+and structurally failed gateways still refuse new staging.
+The failure map is process-local and lasts only
+for that gateway. V2 product store users hold a shared POSIX admission lock outside the replaceable directory; restore activation requires the exclusive lock. Windows relies on native open-handle replacement refusal. This does not claim coordination with arbitrary external writers that bypass the product protocol. A stopped worker
+closes any late handle before its barrier is released and cannot release a
+successor gateway's barrier.
+
+After successful memory readiness, one gateway-owned repair loop visits the
+active Global store and cached named V1/V2 stores in round-robin order every 30
+seconds on the embedding executor. Each visit revalidates readiness and the
+named store's declaration and ownership, uses only an already-ready backend and
+repairs at most 16 missing vectors per memory kind using existing bulk pacing.
+Bounded cursor pages move past failed rows and wrap for retries. Later seeds,
+queued writes and model reconciliation therefore receive repair without a
+restart. Successful pages append to the resident native index instead of rebuilding and writing the entire index on every page. Shutdown stops new visits and fences late embedding commits. The loop
+waits for Global's boot migration and full repair sweep before visiting that
+store, never opens a store and adds no per-member task or model load. V1
+retrieval, admission, decay, consolidation and capacity behavior remain
+unchanged.
+
+The first heartbeat after memory becomes ready schedules a tracked background
+backup pass for active member V2 stores only. Global and named V1 backups remain
+manual. Existing per-store backup freshness prevents duplicate copies across
+restarts; later checks retain the daily cadence at tick 30 modulo 1440. A large
+member ZIP does not delay subsequent heartbeat ticks or idle-session checks.
+Only one backup pass belongs to a heartbeat service at a time. Shutdown signals
+its worker to finish at most the current atomic copy, then skip pruning and all
+remaining stores. Stopping the async waiter never resets that worker's stop flag.
+Automatic backup enumeration excludes V1 and archived, unbound private stores.
+Manual all-store backups include declared V1 and active V2 stores. Archived files
+and backup listings remain available for owner inspection; restore requires an
+active exclusive binding and there is no archive reattachment UI.
+
+Explicit member deletion and committed package-agent pruning release that store's
+SQLite handle, FAISS/scoring arrays and markdown/lesson caches off the event loop.
+An in-flight construction cannot republish a handle across the cache's eviction
+generation. Existing files and rollback copies remain intact; recreating a member
+receives a fresh store identity. Superseded restore trees remain outside automatic
+`backup_keep` retention and require explicit owner cleanup. Their UUID names and
+file timestamps do not establish completed recovery or safe deletion order.
+
+During operation, member cron jobs, linked DMs, nudges and completion injections validate
+their own recorded memory identity before acquiring a provider. Completion
+injections use the parent conversation's memory; delegates keep their target's
+private memory for the delegated run and retries.
+
+Private-memory refusals retain their named recovery reason in channel replies,
+but pass through the shared credential/exfiltration and local-path redactors
+before truncation. Both native Slack and its transport dispatcher apply the same
+protection as Discord and Telegram. Native Slack sanitizes the accumulated reply
+before final rendering and conversation persistence; an operating-system error
+must not expose its data-home path to channel readers.
+
+Native and transport Slack dispatch resolve persisted agent/project overrides
+off-loop. Only the event loop updates the live override maps, retaining a newer
+command or completed hydration that arrived during the read. Both dispatch paths
+recheck thread ownership after hydration and store admission before provider
+allocation. Unlinking returns to the canonical Slack conversation; pinned answers
+retain their asker. Transport also retains its privacy-boundary owner check.
+Cached overrides keep the existing synchronous no-I/O fast path.
+
 ## Architecture
+
+Channel startup diagnostics receive setting names and boolean presence checks,
+never credential values. Each channel keeps its existing enablement predicate;
+missing settings are named once, and configured or disabled channels stay silent.
 
 ```
 Slack Socket Mode → events.py (dispatch) → handler.py → SessionManager → AcpClient → kiro-cli

@@ -12,6 +12,9 @@ import ast
 import asyncio
 from pathlib import Path
 from typing import Any
+from unittest.mock import AsyncMock
+
+import pytest
 
 from kiro_crew.messaging import dispatch as D
 from kiro_crew.messaging.dispatch import ChannelTurn, drive_turn
@@ -203,6 +206,48 @@ def test_the_happy_path_releases_exactly_once(monkeypatch) -> None:
     # Pins that the gate is actually consulted on the normal path, so it cannot
     # be dropped or renamed into a no-op without a test noticing.
     assert sessions.begin_turns == 1
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/home/alice/memory.db",
+        "/Users/alice/memory.db",
+        r"C:\Users\alice\memory.db",
+    ],
+)
+def test_private_memory_refusal_hides_paths_and_credentials_before_channel_output(
+    monkeypatch, path
+):
+    from kiro_crew.memory_stores import UnknownMemoryStore
+
+    _patch_pipeline(monkeypatch)
+    secret = "ghp_" + "x" * 36
+    refuse = AsyncMock(
+        side_effect=UnknownMemoryStore(
+            f"Member memory unavailable: cannot read {path}; token={secret}. "
+            "Repair this member's memory. Global Memory V1 was not used."
+        )
+    )
+    monkeypatch.setattr(D, "session_store_for_turn", refuse)
+    sessions = _Sessions()
+    sessions.get_or_create = AsyncMock()
+    renderer = _Renderer()
+    renderer.on_text_chunk = AsyncMock()
+    renderer.on_done = AsyncMock()
+
+    asyncio.run(drive_turn(_turn(renderer), sessions=sessions, ctx_builder=_CtxBuilder()))
+
+    renderer.on_text_chunk.assert_awaited_once()
+    visible = renderer.on_text_chunk.call_args.args[0]
+    assert "Repair this member's memory" in visible
+    assert "Global Memory V1 was not used" in visible
+    assert path not in visible and "alice" not in visible and secret not in visible
+    assert len(visible) <= 1000
+    renderer.on_done.assert_awaited_once()
+    assert renderer.closed == 1
+    sessions.get_or_create.assert_not_awaited()
+    assert sessions.released == 0
 
 
 def test_every_turn_open_site_is_gated_on_the_shutdown_state() -> None:

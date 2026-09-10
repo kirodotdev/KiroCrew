@@ -72,6 +72,109 @@ def _mock_state(slot: _ChatSlot, provider: object = None) -> DashboardState:
     return state
 
 
+@pytest.fixture
+def private_switch_state():
+    from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig
+    from kiro_crew.dashboard.chat_utils import effective_session_key
+    from kiro_crew.history import ConversationLog
+    from kiro_crew.member_memory_auth import bind_private_session_store
+    from kiro_crew.memory_stores import provision_member_memory
+
+    cfg = KiroCrewConfig.load()
+    for name in ("writer", "reviewer"):
+        cfg.agents[name] = KiroCrewAgentConfig(kiro_agent="kirocrew")
+        provision_member_memory(cfg, name)
+    cfg.save()
+    slot = _ChatSlot("private-switch")
+    slot.agent = "writer"
+    slot.memory_store = cfg.agents["writer"].memory_store
+    slot.workspace = "original-workspace"
+    slot.project = "original-project"
+    state = _mock_state(slot)
+    state.sessions.reset.return_value = True
+    state.conversation_log = ConversationLog()
+    key = effective_session_key(slot)
+    state.conversation_log.update_metadata(
+        key, {"agent": slot.agent, "memory_store": slot.memory_store}
+    )
+    bind_private_session_store(key, slot.memory_store)
+    return state, slot, key
+
+
+class TestPrivateChatMemberSwitch:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("target", ["reviewer", "default", ""])
+    async def test_cross_member_switch_refuses_before_any_mutation(
+        self, private_switch_state, target
+    ):
+        from kiro_crew.member_memory_auth import read_private_session_store
+
+        state, slot, key = private_switch_state
+        before = (slot.agent, slot.memory_store, slot.workspace, slot.project)
+        metadata = await asyncio.to_thread(state.conversation_log.get_metadata, key)
+        async with TestClient(TestServer(_make_app(state))) as client:
+            # A retry cannot gradually mutate the slot or erase the permanent pin.
+            for _ in range(2):
+                response = await client.post(
+                    f"/api/chat/slots/{slot.key}/agent", json={"agent": target}
+                )
+                assert response.status == 409
+                result = await response.json()
+                assert result["code"] == "private_memory_session_pinned"
+                assert "Start a new conversation" in result["error"]
+        assert (slot.agent, slot.memory_store, slot.workspace, slot.project) == before
+        assert await asyncio.to_thread(state.conversation_log.get_metadata, key) == metadata
+        assert await asyncio.to_thread(read_private_session_store, key) == before[1]
+        state.sessions.reset.assert_not_awaited()
+        state.push_slots_update.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_linked_session_pin_is_checked_instead_of_the_slot_key(
+        self, private_switch_state
+    ):
+        state, slot, key = private_switch_state
+        slot.linked_session_key = key
+        slot.key = "linked-alias"
+        state._slots = {slot.key: slot}
+        async with TestClient(TestServer(_make_app(state))) as client:
+            response = await client.post(
+                f"/api/chat/slots/{slot.key}/agent", json={"agent": "reviewer"}
+            )
+            assert response.status == 409
+            assert (await response.json())["code"] == "private_memory_session_pinned"
+        assert slot.agent == "writer"
+        state.sessions.reset.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_same_member_reset_stays_available(self, private_switch_state):
+        state, slot, key = private_switch_state
+        with patch(f"{MOD}.warm_project_agent_names", new_callable=AsyncMock):
+            async with TestClient(TestServer(_make_app(state))) as client:
+                response = await client.post(
+                    f"/api/chat/slots/{slot.key}/agent", json={"agent": "writer"}
+                )
+                assert response.status == 200
+        state.sessions.reset.assert_awaited_once()
+        assert state.sessions.reset.await_args.args[0] == key
+        assert slot.agent == "writer"
+
+    @pytest.mark.asyncio
+    async def test_unreadable_pin_refuses_without_reset(self, private_switch_state):
+        state, slot, _ = private_switch_state
+        with patch(
+            "kiro_crew.member_memory_auth.read_private_session_store",
+            side_effect=ValueError("invalid binding"),
+        ):
+            async with TestClient(TestServer(_make_app(state))) as client:
+                response = await client.post(
+                    f"/api/chat/slots/{slot.key}/agent", json={"agent": "reviewer"}
+                )
+                assert response.status == 503
+                assert (await response.json())["code"] == "private_memory_binding_unavailable"
+        assert slot.agent == "writer"
+        state.sessions.reset.assert_not_awaited()
+
+
 class TestSlotModelSwitchAtomicity:
     @pytest.mark.asyncio
     async def test_mid_turn_switch_answers_409_without_reset(self):

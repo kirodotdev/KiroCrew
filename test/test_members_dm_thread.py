@@ -15,6 +15,7 @@ Covers spec task 2 of the Crew Members page:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import threading
 import time
@@ -46,6 +47,7 @@ def _fake_config(names, default=CREW):
     return SimpleNamespace(
         agents={name: KiroCrewAgentConfig(kiro_agent=name) for name in names},
         default_agent=default,
+        memory_stores={},
     )
 
 
@@ -563,10 +565,31 @@ class TestPinEnforcement:
                 assert (await resp.json())["code"] == "member_pin_mismatch"
         assert slot.agent == CREW
 
-    def _runner_harness(self, tmp_path, *, mode):
+    def _runner_harness(self, tmp_path, monkeypatch, *, mode, private=True, switch_to=OTHER):
+        from kiro_crew.config.loader import KiroCrewConfig
         from kiro_crew.dashboard.chat_runner import _run_chat
+        from kiro_crew.memory_stores import provision_member_memory
 
-        state = _make_state(tmp_path)
+        cfg = KiroCrewConfig.load()
+        cfg.agents[CREW] = KiroCrewAgentConfig(kiro_agent="kirocrew")
+        provision_member_memory(cfg, CREW)
+        cfg.save()
+        # No real provider or embedding process runs in this stream harness.
+        # Keep private ownership and the protected session binding real.
+        monkeypatch.setattr(
+            "kiro_crew.member_memory_auth.private_memory_execution_supported",
+            lambda **kwargs: True,
+        )
+        monkeypatch.setattr("kiro_crew.dashboard.chat_runner._maybe_auto_title", AsyncMock())
+        monkeypatch.setattr("kiro_crew.dashboard.chat_runner.generate_session_summary", AsyncMock())
+        context = SimpleNamespace(
+            ensure_store=AsyncMock(return_value=object()),
+            build_message=lambda text, *args, **kwargs: (text, None),
+            conversation_log=None,
+            hooks=SimpleNamespace(auto_approve_subagent_tools=False),
+        )
+
+        state = _make_state(tmp_path, context_builder=context)
         state.sessions.get_or_create = AsyncMock(return_value=(MagicMock(), False, False))
         state.sessions.release = MagicMock()
         state.sessions.reset = AsyncMock()
@@ -581,7 +604,8 @@ class TestPinEnforcement:
         # Ordinary-mode control runs on an ordinary key: the constructor's
         # member-* reservation (correctly) refuses a bare member key.
         slot_key = "member-code-reviewer" if mode == DM_SLOT_MODE else "chat-1-100"
-        slot = state.get_or_create_slot(slot_key, agent=CREW, mode=mode)
+        agent = CREW if private else "default"
+        slot = state.get_or_create_slot(slot_key, agent=agent, mode=mode)
         slot.append("user", "hello", "msg msg-u")
 
         client = state.sessions.get_or_create.return_value[0]
@@ -595,7 +619,7 @@ class TestPinEnforcement:
         )
 
         async def _stream(msg):
-            yield LLMEvent(kind=EVENT_AGENT_SWITCHED, text=OTHER)
+            yield LLMEvent(kind=EVENT_AGENT_SWITCHED, text=switch_to)
             # Anything after the switch executes as the FOREIGN agent — the
             # veto must stop consumption here, so this text must never land.
             yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="foreign agent output after switch")
@@ -606,10 +630,17 @@ class TestPinEnforcement:
         return state, slot, _run_chat
 
     @pytest.mark.asyncio
-    async def test_mid_turn_agent_switch_is_vetoed_on_member_threads(self, tmp_path):
-        state, slot, _run_chat = self._runner_harness(tmp_path, mode=DM_SLOT_MODE)
+    @pytest.mark.parametrize("mode", [DM_SLOT_MODE, ""], ids=["member-dm", "ordinary-v2"])
+    @pytest.mark.parametrize("switch_to", [OTHER, CREW], ids=["other-agent", "alias-collision"])
+    async def test_mid_turn_agent_switch_is_vetoed_on_member_threads(
+        self, tmp_path, monkeypatch, mode, switch_to
+    ):
+        state, slot, _run_chat = self._runner_harness(
+            tmp_path, monkeypatch, mode=mode, switch_to=switch_to
+        )
 
         await _run_chat(state, slot, "test message")
+        await asyncio.gather(*state._background_tasks)
 
         # The pin held: agent unchanged, no switch advertised to the UI.
         assert slot.agent == CREW
@@ -644,15 +675,17 @@ class TestPinEnforcement:
         )
 
     @pytest.mark.asyncio
-    async def test_mid_turn_agent_switch_still_lands_on_ordinary_slots(self, tmp_path):
+    async def test_mid_turn_agent_switch_still_lands_on_ordinary_slots(self, tmp_path, monkeypatch):
         """Control for the veto: the same event MOVES a non-member slot.
 
         Proves the event path executes in this harness, so the member test
         above passes because of the veto, not because the event never ran.
         """
-        state, slot, _run_chat = self._runner_harness(tmp_path, mode="")
+        state, slot, _run_chat = self._runner_harness(tmp_path, monkeypatch, mode="", private=False)
+        assert slot.agent == "default"
 
         await _run_chat(state, slot, "test message")
+        await asyncio.gather(*state._background_tasks)
 
         assert slot.agent == OTHER
         switch_broadcasts = [

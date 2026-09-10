@@ -349,7 +349,7 @@ class EvalRunner:
             if session_mgr:
                 await session_mgr.close_all()
             if vector_store:
-                vector_store.close()
+                await asyncio.to_thread(vector_store.close)
             if old_ws is None:
                 os.environ.pop("KIROCREW_WORKSPACE", None)
             else:

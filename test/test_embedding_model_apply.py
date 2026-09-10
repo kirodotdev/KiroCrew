@@ -876,7 +876,7 @@ class TestApplyOrdering:
     def test_activation_comes_after_config_write_and_reconcile(self) -> None:
         src = self._src()
         write_at = src.find("_write_embed_model_config(raw, embedder.dim)")
-        reconcile_at = src.find("reconcile_store_embedding_space(store)")
+        reconcile_at = src.find("reconcile_store_embedding_space(target)")
         activate_at = src.find("activate_shared_embedder()")
         assert -1 not in (write_at, reconcile_at, activate_at)
         assert write_at < activate_at, "activating before persistence exposes the new space"
@@ -891,7 +891,7 @@ class TestApplyOrdering:
         than config, so deferring the write costs nothing.
         """
         src = self._src()
-        reconcile_at = src.find("reconcile_store_embedding_space(store)")
+        reconcile_at = src.find("reconcile_store_embedding_space(target)")
         write_at = src.find("_write_embed_model_config(raw, embedder.dim)")
         assert -1 not in (reconcile_at, write_at)
         assert reconcile_at < write_at

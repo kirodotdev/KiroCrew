@@ -21,7 +21,11 @@ from kiro_crew.knowledge import readers
 from kiro_crew.knowledge.chunker import HeadingAwareChunker
 from kiro_crew.knowledge.extractor import EntityExtractor
 from kiro_crew.knowledge.readers import FileReader
-from kiro_crew.knowledge.retrieval import HybridRetriever, _bytes_to_floats
+from kiro_crew.knowledge.retrieval import (
+    ANY_EMBEDDING_SPACE,
+    HybridRetriever,
+    _bytes_to_floats,
+)
 from kiro_crew.knowledge.store import KnowledgeBundleError, KnowledgeStore, SimpleDiGraph
 from kiro_crew.knowledge.sync import SyncScheduler
 
@@ -1041,7 +1045,11 @@ class TestHybridRetrieverSourceFilter:
         vec = json.dumps([1.0, 0.0, 0.0, 0.0]).encode()
         store.add_item("Vec A", "alpha content", "doc", source_id=src_a, embedding=vec)
         store.add_item("Vec B", "beta content", "doc", source_id=src_b, embedding=vec)
-        retriever = HybridRetriever(store, embedder=lambda q: [1.0, 0.0, 0.0, 0.0])
+        # ANY_EMBEDDING_SPACE: this asserts the SOURCE scope, and the items carry
+        # no signature, so the space predicate is deliberately out of the way.
+        retriever = HybridRetriever(
+            store, embedder=lambda q: [1.0, 0.0, 0.0, 0.0], embed_sig=ANY_EMBEDDING_SPACE
+        )
         results = retriever.search("unrelatedquerytoken", source_id=src_a)
         assert [r["title"] for r in results] == ["Vec A"]
 
@@ -1088,7 +1096,9 @@ class TestHybridRetrieverNamespaceFilter:
         vec = json.dumps([1.0, 0.0, 0.0, 0.0]).encode()
         store.add_item("Vec A", "alpha content", "doc", namespace="client-a", embedding=vec)
         store.add_item("Vec B", "beta content", "doc", namespace="client-b", embedding=vec)
-        retriever = HybridRetriever(store, embedder=lambda q: [1.0, 0.0, 0.0, 0.0])
+        retriever = HybridRetriever(
+            store, embedder=lambda q: [1.0, 0.0, 0.0, 0.0], embed_sig=ANY_EMBEDDING_SPACE
+        )
         results = retriever.search("unrelatedquerytoken", namespace="client-a")
         assert [r["title"] for r in results] == ["Vec A"]
 
@@ -2296,7 +2306,9 @@ class TestHybridRetrieverExtended:
     def test_vector_search_with_embedder(self, store):
         emb = json.dumps([1.0, 0.0, 0.0])
         store.add_item("Vec Doc", "vector content", "doc", embedding=emb)
-        retriever = HybridRetriever(store, embedder=lambda q: [1.0, 0.0, 0.0])
+        retriever = HybridRetriever(
+            store, embedder=lambda q: [1.0, 0.0, 0.0], embed_sig=ANY_EMBEDDING_SPACE
+        )
         results = retriever._vector_search("query")
         assert results is not None
         assert len(results) == 1
@@ -2315,7 +2327,9 @@ class TestHybridRetrieverExtended:
         emb = json.dumps([1.0, 0.0])
         item_id = store.add_item("JWT Auth", "JWT token design", "doc", embedding=emb)
         store.add_mention(item_id, e1)
-        retriever = HybridRetriever(store, embedder=lambda q: [1.0, 0.0])
+        retriever = HybridRetriever(
+            store, embedder=lambda q: [1.0, 0.0], embed_sig=ANY_EMBEDDING_SPACE
+        )
         results = retriever.search("JWT")
         assert len(results) >= 1
         # Should have multiple match types
@@ -2716,14 +2730,21 @@ class TestCosineSimilarityDimensionMismatch:
 
 
 class _FakeEmbedder:
-    """Embedder stub: returns a fixed vector and records which items it embedded."""
+    """Embedder stub: returns a fixed vector and records which items it embedded.
+
+    Records the scheduling class of every ``embed_for_item`` call so a caller's
+    priority can be asserted; the shape mirrors ``InProcessEmbedder``, whose
+    signature inputs are ``model`` + ``dim`` + ``content_budget``.
+    """
 
     model = "fake-embed"
+    dim = 4  # width of the vector below; feeds embed_signature like the real one
     base_url = ""
     content_budget = 10_000  # mirrors the real _EMBED_CONTENT_BUDGET default
 
     def __init__(self):
         self.embedded_titles: list[str] = []
+        self.priorities: list[int] = []
 
     def is_available(self) -> bool:
         return True
@@ -2733,6 +2754,7 @@ class _FakeEmbedder:
 
     def embed_for_item(self, title, summary, content=None, *, priority=PRIORITY_NORMAL):
         self.embedded_titles.append(title)
+        self.priorities.append(priority)
         return [0.1, 0.2, 0.3, 0.4]
 
 
@@ -2780,7 +2802,7 @@ class TestRebuildEmbeddingsJob:
             "SELECT embedding, embedding_sig, embedded_at FROM items "
             "WHERE status = 'active' LIMIT 1").fetchone()
         assert row["embedding"] == floats_to_bytes([0.1, 0.2, 0.3, 0.4])
-        assert row["embedding_sig"] == embed_signature(embedder.model)
+        assert row["embedding_sig"] == embed_signature(embedder.model, embedder.dim)
         assert row["embedded_at"]
 
     async def test_rebuild_is_idempotent_skips_current_sig(self, store):
@@ -2801,7 +2823,7 @@ class TestRebuildEmbeddingsJob:
         from kiro_crew.knowledge.embedder import embed_signature, floats_to_bytes
         from kiro_crew.knowledge.ingestion import rebuild_embeddings
         embedder = _FakeEmbedder()
-        sig = embed_signature(embedder.model)
+        sig = embed_signature(embedder.model, embedder.dim)
         done = store.add_item("done", "body", "document",
                               embedding=floats_to_bytes([0.1, 0.2, 0.3, 0.4]))
         store.db.execute("UPDATE items SET embedding_sig = ? WHERE id = ?", (sig, done))
@@ -2903,7 +2925,7 @@ class TestWatcherSelfHeal:
         assert job["status"] == "completed"
         assert job["items_processed"] == 3
         assert len(embedder.embedded_titles) == 3
-        sig = embed_signature(embedder.model)
+        sig = embed_signature(embedder.model, embedder.dim)
         stale = store.db.execute(
             "SELECT COUNT(*) AS c FROM items WHERE embedding_sig IS NULL OR embedding_sig != ?",
             (sig,)).fetchone()["c"]
@@ -2913,7 +2935,7 @@ class TestWatcherSelfHeal:
         # Everything already current -> no job created.
         from kiro_crew.knowledge.embedder import embed_signature, floats_to_bytes
         embedder = _FakeEmbedder()
-        sig = embed_signature(embedder.model)
+        sig = embed_signature(embedder.model, embedder.dim)
         item_id = store.add_item("current", "body", "document",
                                  embedding=floats_to_bytes([0.1, 0.2, 0.3, 0.4]))
         store.db.execute("UPDATE items SET embedding_sig = ? WHERE id = ?", (sig, item_id))
@@ -2986,27 +3008,90 @@ class TestWatcherSelfHeal:
 
 class TestEmbedSignature:
     def test_base_url_ignored_by_signature(self):
-        # Embeddings run in-process (no external inference endpoint), so the
-        # sig hashes f"{model}|inprocess|{budget}" — no base_url input. Same
-        # model = stable signature; changing the model changes the signature,
-        # triggering the sig-gated rebuild.
+        # Embeddings run in-process (no external inference endpoint), so the sig
+        # has no base_url input. Same model + width = stable signature.
         from kiro_crew.knowledge.embedder import embed_signature
 
-        a = embed_signature("m")
-        b = embed_signature("m")
+        a = embed_signature("m", 1024)
+        b = embed_signature("m", 1024)
         assert a == b
 
     def test_model_changes_signature(self):
         from kiro_crew.knowledge.embedder import embed_signature
 
-        assert embed_signature("m1") != embed_signature("m2")
+        assert embed_signature("m1", 1024) != embed_signature("m2", 1024)
 
     def test_content_budget_changes_signature(self):
         # Changing the budget must change the embed signature, else items
         # truncated under the old budget would never be re-embedded.
         from kiro_crew.knowledge.embedder import embed_signature
 
-        assert embed_signature("m") != embed_signature("m", content_budget=42)
+        assert embed_signature("m", 1024) != embed_signature("m", 1024, content_budget=42)
+
+    def test_dim_change_moves_both_identities(self):
+        """A width change at a CONSTANT model id must move BOTH space identities.
+
+        The ratchet on the fold. ``dim`` is exactly the axis a KB signature over
+        ``model`` alone cannot see — a custom GGUF re-quantized to a different
+        projection, a backend adopting the model's own width — and an identity
+        that misses it leaves the KB serving old-width vectors as if nothing had
+        changed. Asserting BOTH here is what makes dropping the input from either
+        half fail a test rather than ship.
+        """
+        from kiro_crew.embeddings import embedding_space_signature
+        from kiro_crew.knowledge.embedder import embed_signature
+
+        assert embedding_space_signature("m", 1024) != embedding_space_signature("m", 768)
+        assert embed_signature("m", 1024) != embed_signature("m", 768)
+
+    def test_the_two_identities_partition_spaces_identically(self):
+        """Whatever the inputs, the two identities agree on "same vector space?".
+
+        For every pair of ``(model, dim)`` combinations, memory's signature and
+        the knowledge library's must be equal for exactly the same pairs. This is
+        the property that matters, but on its own it is satisfied by any injective
+        hash over the same fields -- see the derivation test below for the half it
+        cannot reach.
+        """
+        from kiro_crew.embeddings import embedding_space_signature
+        from kiro_crew.knowledge.embedder import embed_signature
+
+        spaces = [("m", 1024), ("m", 768), ("other", 1024), ("other", 768)]
+        memory = [embedding_space_signature(model, dim) for model, dim in spaces]
+        knowledge = [embed_signature(model, dim) for model, dim in spaces]
+        for i, left in enumerate(spaces):
+            for j, right in enumerate(spaces):
+                assert (memory[i] == memory[j]) == (knowledge[i] == knowledge[j]), (
+                    f"{left} vs {right}: memory and knowledge disagree about whether "
+                    "these are the same vector space"
+                )
+
+    def test_the_kb_identity_is_derived_from_memorys_not_reassembled(self, monkeypatch):
+        """The KB's space identity is a FUNCTION of memory's, not a twin of it.
+
+        Agreement on ``(model, dim)`` is not derivation: an independently
+        assembled hash over the same two fields agrees on every input and is
+        still a second definition of "same vector space", so the next field added
+        to ``embedding_space_signature`` reaches memory alone.
+
+        Observed by DISPLACING the shared function and watching the KB's value
+        follow. Substituting one that ignores ``dim`` must collapse the KB's two
+        widths onto one signature and keep its two models apart -- which holds
+        only if every ``(model, dim)`` input reaches ``embed_signature`` through
+        that one function.
+        """
+        from kiro_crew import embeddings as embeddings_mod
+        from kiro_crew.knowledge.embedder import embed_signature
+
+        assert embed_signature("m", 1024) != embed_signature("m", 768)
+
+        monkeypatch.setattr(
+            embeddings_mod, "embedding_space_signature", lambda model, dim: f"space::{model}"
+        )
+        assert embed_signature("m", 1024) == embed_signature("m", 768)
+        assert embed_signature("m", 1024) != embed_signature("other", 1024)
+        # The KB's own input is unaffected: it is folded on outside the space half.
+        assert embed_signature("m", 1024) != embed_signature("m", 1024, content_budget=42)
 
     def test_embedder_signature_matches_model_signature(self):
         from kiro_crew.knowledge.embedder import (
@@ -3017,9 +3102,34 @@ class TestEmbedSignature:
 
         class _E:
             model = "m"
+            dim = 1024
             content_budget = _EMBED_CONTENT_BUDGET
 
-        assert embedder_signature(_E()) == embed_signature("m")
+        assert embedder_signature(_E()) == embed_signature("m", 1024)
+
+    def test_embedder_signature_reads_the_width_from_the_embedder(self):
+        """``embedder_signature`` must not pin the width to a literal.
+
+        It is the single call sites use, so a width it did not read from the
+        embedder would make every per-item sig claim a space the vectors are not
+        in — and no other test would notice, because the value would still be
+        internally consistent.
+        """
+        from kiro_crew.knowledge.embedder import (
+            _EMBED_CONTENT_BUDGET,
+            embed_signature,
+            embedder_signature,
+        )
+
+        class _E:
+            model = "m"
+            dim = 1024
+            content_budget = _EMBED_CONTENT_BUDGET
+
+        narrow = _E()
+        narrow.dim = 768
+        assert embedder_signature(narrow) == embed_signature("m", 768)
+        assert embedder_signature(narrow) != embedder_signature(_E())
 
 
 class _FlakyEmbedder(_FakeEmbedder):
@@ -3031,6 +3141,7 @@ class _FlakyEmbedder(_FakeEmbedder):
 
     def embed_for_item(self, title, summary, content=None, *, priority=PRIORITY_NORMAL):
         self.embedded_titles.append(title)
+        self.priorities.append(priority)
         if title in self.fail_titles:
             return None
         return [0.1, 0.2, 0.3, 0.4]

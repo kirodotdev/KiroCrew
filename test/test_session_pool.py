@@ -76,6 +76,92 @@ def _make_manager(pool_size: int = 2, pool_agent: str = "kirocrew", pool_ttl_sec
 # ---------------------------------------------------------------------------
 
 
+class TestPrivateMemoryAllocation:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("key", ["cron:review", "subagent:review", "memory-consolidation:review:unique"])
+    async def test_private_session_bypasses_global_pool_and_reuses_own_client(self, key):
+        mgr, factory = _make_manager()
+        private = _make_provider()
+        private._private_memory = True
+        factory.side_effect = None
+        factory.return_value = private
+        mgr._drain_and_claim = AsyncMock()
+        mgr._ensure_cleanup_task = MagicMock()
+        with patch("kiro_crew.session_allocation.private_memory_store_for_session", return_value="member-review"):
+            provider, is_new, _ = await mgr.get_or_create(key, agent="kirocrew")
+            assert provider is private and is_new
+            mgr.release(key)
+            reused, is_new, _ = await mgr.get_or_create(key, agent="kirocrew")
+            assert reused is private and not is_new
+            mgr.release(key)
+        mgr._drain_and_claim.assert_not_awaited()
+        factory.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_private_binding_refuses_a_preexisting_global_client(self):
+        mgr, _ = _make_manager(pool_size=0)
+        mgr._ensure_cleanup_task = MagicMock()
+        with patch("kiro_crew.session_allocation.private_memory_store_for_session", return_value=""):
+            old, _, _ = await mgr.get_or_create("cron:review")
+            mgr.release("cron:review")
+        with patch("kiro_crew.session_allocation.private_memory_store_for_session", return_value="member-review"):
+            with pytest.raises(RuntimeError, match="isolation does not match"):
+                await mgr.get_or_create("cron:review")
+        assert mgr._sessions["cron:review"].provider is old
+        assert not mgr._sessions["cron:review"].semaphore.locked()
+
+    @pytest.mark.asyncio
+    async def test_factory_cannot_supply_global_runtime_for_private_binding(self):
+        mgr, factory = _make_manager()
+        old = _make_provider()
+        factory.side_effect = None
+        factory.return_value = old
+        with patch("kiro_crew.session_allocation.private_memory_store_for_session", return_value="member-review"):
+            with pytest.raises(RuntimeError, match="Provider does not match"):
+                await mgr.get_or_create("cron:review")
+        old.start.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("parent_store", ["", "member-other", "member-review"])
+    async def test_private_task_uses_dedicated_allocation_for_every_parent(self, parent_store):
+        mgr, _ = _make_manager()
+        expected = (_make_provider(), True, False)
+        mgr.get_or_create = AsyncMock(return_value=expected)
+        mgr._get_or_bootstrap_run_runtime = AsyncMock()
+        with patch("kiro_crew.session_allocation.private_memory_store_for_session", side_effect=lambda key: "member-review" if key == "task:child" else parent_store):
+            result = await mgr.open_task_session("task:parent", "task:child", agent="review", cwd="/work")
+        assert result is expected
+        mgr.get_or_create.assert_awaited_once_with("task:child", agent="review", approval_policy="", cwd="/work")
+        mgr._get_or_bootstrap_run_runtime.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_private_parent_cannot_downgrade_to_an_unbound_task_child(self):
+        mgr, factory = _make_manager()
+        mgr._get_or_bootstrap_run_runtime = AsyncMock()
+        with patch("kiro_crew.session_allocation.private_memory_store_for_session", side_effect=lambda key: "member-review" if key == "task:parent" else ""):
+            with pytest.raises(RuntimeError, match="trusted child memory binding"):
+                await mgr.open_task_session("task:parent", "task:child")
+        factory.assert_not_called()
+        mgr._get_or_bootstrap_run_runtime.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_private_parent_cannot_supply_a_companion_runtime(self):
+        mgr, _ = _make_manager()
+        with patch("kiro_crew.session_allocation.private_memory_store_for_session", return_value="member-review"):
+            with pytest.raises(RuntimeError, match="dedicated runtime"):
+                await mgr.get_subagent_runtime("parent")
+            with pytest.raises(RuntimeError, match="dedicated runtime"):
+                await mgr._get_or_bootstrap_run_runtime("parent")
+
+    def test_private_provider_is_ineligible_for_sharing(self):
+        mgr, _ = _make_manager()
+        provider = _make_provider()
+        provider._private_memory = True
+        provider.is_session_sharing_eligible = True
+        mgr._sessions["parent"] = SimpleNamespace(provider=provider)
+        assert mgr.is_session_sharing_eligible("parent") is False
+
+
 class TestFillWarmPool:
     @pytest.mark.asyncio
     async def test_fills_to_pool_size(self):

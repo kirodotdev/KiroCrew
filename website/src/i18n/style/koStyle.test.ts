@@ -180,11 +180,29 @@ describe('ko script (style/ko.md §1.1)', () => {
 })
 
 describe('ko spacing (style/ko.md §2)', () => {
+  // The ending `-ㄹ수록` attaches to the verb; its `수` is not a bound noun.
+  const BOUND_NOUN_SPACING = /(?:할|될|볼|줄|올|쓸|갈|열|있을|없을)수(?!록)|수(?:있|없)|(?:하는|한|할|된|되는)것|(?:하기|이기)때문/
+
+  it.each<[string, boolean]>([
+    ['함께 작업할수록 이 비공개 메모리가 쌓입니다.', false],
+    ['볼수록 새롭습니다.', false],
+    ['기록이 없을수록 찾기 어렵습니다.', false],
+    ['함께 작업할 수 있습니다.', false],
+    ['함께 작업할수 있습니다.', true],
+    ['함께 작업할 수있습니다.', true],
+    ['이 기록을 볼수 없습니다.', true],
+    ['할수록 좋지만 이 작업은 할수 없습니다.', true],
+    ['저장하는것을 확인하세요.', true],
+    ['저장하기때문에 유지됩니다.', true],
+  ])('distinguishes bound-noun spacing from verb endings: %s', (value, hasSpacingError) => {
+    expect(BOUND_NOUN_SPACING.test(stripCode(value))).toBe(hasSpacingError)
+  })
+
   it('spaces 의존명사 away from the verb it follows', () => {
     // `할수 있습니다` is the single most common Korean spacing error a machine
     // produces. Restricted to the unambiguous families: a 의존명사 rule in general
     // needs a parser, and an approximation would fire on correct copy.
-    const bad = offenders(/(?:할|될|볼|줄|올|쓸|갈|열|있을|없을)수|수(?:있|없)|(?:하는|한|할|된|되는)것|(?:하기|이기)때문/)
+    const bad = offenders(BOUND_NOUN_SPACING)
     expect(bad, report(bad)).toEqual([])
   })
 

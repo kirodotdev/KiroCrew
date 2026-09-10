@@ -153,11 +153,56 @@ def schemas() -> list[dict[str, Any]]:
     ]
 
 
+def _history_memory_scope() -> tuple[str | None, dict[str, tuple[str, ...]], str]:
+    from kiro_crew.member_memory_auth import (
+        mcp_memory_scope,
+        private_history_session_index,
+        private_memory_boundaries_active,
+    )
+
+    if not private_memory_boundaries_active():
+        return None, {}, ""
+    session, error = mcp_core.require_strict_session_key(
+        "Error: chat history requires a verified session."
+    )
+    if not session:
+        return None, {}, error
+    try:
+        scope = mcp_memory_scope(session)
+        return scope, private_history_session_index(), ""
+    except (OSError, ValueError):
+        return None, {}, "Error: this session's private memory is unavailable."
+
+
+def _history_memory_visible(key: str, scope: str | None, index: dict[str, tuple[str, ...]]) -> bool:
+    if scope is None:
+        return True
+    from kiro_crew.history import transcript_stems
+    from kiro_crew.member_memory_auth import private_memory_store_for_session
+
+    try:
+        # An unsigned transcript cannot supply its own canonical identity.
+        # Every candidate comes from the protected snapshot and is re-read
+        # against its current store and transcript before any content is shown.
+        candidates = set(index.get(key, ()))
+        for stem in transcript_stems(key):
+            candidates.update(index.get(stem, ()))
+        return all(
+            private_memory_store_for_session(candidate) == scope
+            for candidate in candidates or {key}
+        )
+    except (OSError, ValueError):
+        return False
+
+
 def search_chat_history(name: str, args: dict[str, Any]) -> str:
     args = validate_tool_args(args, SEARCH_CHAT_HISTORY_SCHEMA)
     query = args["query"]
     limit = args.get("limit", 10)
     all_workspaces = args.get("all_workspaces", False)
+    memory_scope, memory_index, refusal = _history_memory_scope()
+    if refusal:
+        return refusal
     # A supplied-but-unparseable date (one that passes the regex but names no
     # real calendar day, like Feb 30) must ERROR, not be silently dropped — a silent
     # drop would return the UNFILTERED set and mislead the caller.
@@ -187,6 +232,8 @@ def search_chat_history(name: str, args: dict[str, Any]) -> str:
     for meta in ranked:
         key = meta.get("key", "")
         if not key:
+            continue
+        if not _history_memory_visible(key, memory_scope, memory_index):
             continue
         # TOCTOU: the file may be unlinked (clear-sessions, rotation, concurrent
         # process) between the ranked snapshot and this read. has_log is the
@@ -260,6 +307,17 @@ def get_chat_session(name: str, args: dict[str, Any]) -> str:
     key = args["session_key"]
     max_messages = args.get("max_messages", 50)
     all_workspaces = args.get("all_workspaces", False)
+    memory_scope, memory_index, refusal = _history_memory_scope()
+    if refusal:
+        return refusal
+    if not _history_memory_visible(key, memory_scope, memory_index):
+        mcp_core.sel().log_tool_invocation(
+            session_key=mcp_core._resolve_session_key(),
+            source="mcp",
+            tool_name="get_chat_session",
+            outcome="denied_memory_scope",
+        )
+        return "Access denied: that conversation belongs to a different memory store."
 
     # Defense-in-depth on a path-bearing identifier: ConversationLog._safe_key
     # already neutralizes separators. Reject path separators outright, and ".."
@@ -361,6 +419,9 @@ def list_sessions(name: str, args: dict[str, Any]) -> str:
     limit = args.get("limit", 20)
     all_workspaces = args.get("all_workspaces", False)
     summarize = args.get("summarize", False)
+    memory_scope, memory_index, refusal = _history_memory_scope()
+    if refusal:
+        return refusal
 
     cl = ConversationLog()
     session_key = mcp_core._resolve_session_key()
@@ -370,6 +431,8 @@ def list_sessions(name: str, args: dict[str, Any]) -> str:
     for meta in cl.list_sessions():
         key = meta.get("key", "")
         if not key:
+            continue
+        if not _history_memory_visible(key, memory_scope, memory_index):
             continue
         if mcp_core._history_is_incognito(meta):
             continue  # incognito/temporary never surface

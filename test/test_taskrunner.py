@@ -3098,7 +3098,7 @@ class TestEdgeCases:
 
         review_calls = 0
 
-        async def _review_once(r, s, sessions, agent, session_key=""):
+        async def _review_once(r, s, sessions, agent, session_key="", *, ctx=None):
             nonlocal review_calls
             review_calls += 1
             if review_calls == 1:

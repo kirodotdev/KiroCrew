@@ -404,7 +404,9 @@ them, so there is no enable switch here: only knobs for *which* model runs.
 |-----|-------------|---------|
 | `memory.embedding_provider` | Vector embedding backend. `"llama_cpp"` is the only accepted value; any other value in an existing config (including a legacy `"ollama"` or `"none"`) is coerced to it on load | `"llama_cpp"` |
 | `memory.embedding_dim` | Output width of the embedding model in use. Must match a custom model's real width, or the load is refused | `1024` |
-| `memory.embedding_threads` | CPU threads llama.cpp may use per embedding call; clamped to the machine core count | `4` |
+| `memory.embedding_threads` | CPU threads llama.cpp may use per embedding call; explicit settings are clamped to the machine core count | `4` |
+| `memory.embedding_bulk_threads` | Threads used for background embedding; `0` inherits `embedding_threads` | `1` |
+| `memory.embedding_bulk_duty` | Target fraction of worker time spent on background embedding; interactive queries take priority | `0.2` |
 | `memory.embed_model_url` | Override HTTPS URL for the embedding-model GGUF download (mirrored or airgapped hosts). Empty uses the public Kiro Crew CDN. `KIROCREW_EMBED_MODEL_URL` wins over both. Downloads are sha256-verified regardless of source | `""` |
 | `memory.embed_model_path` | Absolute path to a local GGUF to run **instead of** the bundled Qwen3-Embedding-0.6B. When set, the default model is never downloaded, so a custom model survives a default-model version change. Set `embedding_dim` to the model's output width. Changing the model changes the vector space, so stored embeddings are regenerated in the background. A configured-but-unreadable path fails closed (keyword search still works) rather than silently reverting to the default and re-embedding your corpus. Editable from the dashboard (Memory → Embedding Model). `KIROCREW_EMBED_MODEL_PATH` wins over this | `""` |
 | `memory.embed_model_id` | Stable identifier for a custom model's vector space. Defaults to `custom:<filename>:<size>`, which cannot distinguish two different models of identical byte size, so set it explicitly if you swap between such models | `""` |
@@ -415,6 +417,80 @@ them, so there is no enable switch here: only knobs for *which* model runs.
 | `memory.decay_rates` | Per-tag episodic recency decay rates, per day (score factor `exp(-rate * days_old)`). Keys are memory tags (case-insensitive); the reserved `default` key replaces the built-in `0.03` for memories matching no configured tag. A memory carrying several configured tags uses the slowest (smallest) rate, so a broad tag can never age out a long-retention one. `0` never ages out of retrieval ranking; `1` falls out of retrieval within about a day. Ranking only: `episodic_max_count` cap eviction (lowest importance, then oldest) still applies regardless of decay rate. Values are clamped to `0..10`; non-numeric values are ignored with a logged warning. Example: `{"legal_precedents": 0.0, "trading_data": 1.0}` | `{}` |
 | `memory.history_idle_hours` | Hours of inactivity before history consolidation | `3.0` |
 | `memory.history_max_days` | Days of history to retain before pruning | `365` |
+| `memory.private_provisioning_enabled` | Allow new private V2 stores for member creation, discovery sync and explicit V1-to-V2 setup; turning off leaves existing stores and their isolation active | `true` |
+| `memory.backup_enabled` | Periodic rotating backups of active member V2 stores only; V1 backups remain manual and retention does not delete active V2 memories | `true` |
+| `memory.backup_keep` | Backup copies retained per store, with a minimum of one | `7` |
+
+Decay, episodic capacity eviction and history age pruning apply to V1 only.
+V2 keeps memory until explicit correction, replacement, forgetting or restoration.
+Global V1 retains its session-start retrieval; V2 injects essential member and
+project guidance and recalls memory fragments on demand. The shared embedding
+worker and its thread defaults affect both versions.
+
+To pause new private memory creation, set `memory.private_provisioning_enabled`
+to the JSON boolean `false` in `config.json`, or use the existing owner-authenticated
+`PATCH /api/config/kirocrew` with this body:
+
+```json
+{"path": "memory.private_provisioning_enabled", "value": false}
+```
+
+Set the value to `true` to resume. The next creation admission reads the setting;
+no gateway restart is needed. Dashboard and CLI member creation, discovery sync
+that would add members, and explicit V1-to-V2 setup refuse while paused. They do
+not create V1 members instead. Existing V1 members keep their bindings, and
+existing V2 execution, memory reads, edits, backups and recovery keep their
+normal isolation checks. Repeating setup for an already-owned V2 store remains
+valid. The setting does not cancel operations already admitted, disable memory
+preparation or withdraw shared startup changes. An absent field defaults to
+`true`; a present non-boolean value pauses creation, and the owner API rejects
+non-boolean writes.
+An unreadable or malformed configuration file or `memory` section also refuses
+new creation until repaired; the default does not override unreadable settings.
+
+#### Named memory stores
+
+Each Crew Member receives its own empty private V2 memory when it is created.
+The generated store is recorded in `agents.<crew>.memory_store` and declared in
+`memory_stores` with its version and owner. Existing Global Memory V1 remains
+with the built-in default assistant; creating a member never copies or migrates it.
+
+| Key | Description | Default |
+|-----|-------------|---------|
+| `memory_stores` | Store declarations; member entries include `memory_version: 2` and `owner_member`. A missing declaration is an error | `{"default": {}}` |
+| `default_memory_store` | Retained for configuration compatibility; never repairs a missing or invalid member binding | `"default"` |
+| `agents.<crew>.memory_store` | Existing members retain their declared V1 binding; new or opted-in members have an immutable private V2 store identity | Allocated on member creation |
+
+The `default` store keeps the files it already has — `~/.kiro/crew/workspace/memory/`,
+`~/.kiro/crew/memory.db` and `~/.kiro/crew/memory_index.db`. Nothing moves when you
+add a named store. A named store gets `~/.kiro/crew/memory_stores/<name>/`,
+owner-only, holding that crew's markdown memory, its full-text index and its own
+vector database. `kirocrew snapshot` covers the `default` store; a named store's files
+are not in a snapshot yet.
+
+**Store names are strict, and a bad one is refused rather than guessed at.** A name
+is lowercase, 1–80 characters, made of letters, digits and inner hyphens
+(`^[a-z0-9](?:[a-z0-9-]{0,78}[a-z0-9])?$`), a single path segment, not a Windows
+device name (`con`, `nul`, `aux`, `prn`, `com1`–`com9`, `lpt1`–`lpt9`), and does not
+end in a dot or a space. A name that breaks any of those is reported when the config
+loads and no memory directory is created for it — guessing what was meant is how two
+crews would end up sharing one directory. Your entry stays in `config.json` exactly as
+you wrote it so you can fix the spelling; until you do, a member bound to it
+refuses execution with an explicit memory error.
+
+An undeclared name, mismatched owner, missing directory or unreadable database
+also refuses execution. There is no fallback to `default_memory_store` or Global
+Memory V1. Existing members keep working on their declared V1 store until the
+owner chooses empty V2 memory in member settings, or runs
+`kirocrew agent update <name> --provision-memory`. Their existing memory stays
+untouched. Recover a damaged existing private store from its own
+backup instead of rebinding it to another store.
+
+**Private member execution requires OS filesystem isolation.** File tools fence
+`memory_stores/`, and the process sandbox withholds private stores and Global V1
+memory from member subprocesses. Memory tools reach only the member's bound store
+through the gateway. An unsupported or unavailable sandbox refuses private
+execution; member management and existing V1 bindings remain available.
 
 ### Skills
 
@@ -470,6 +546,12 @@ them, so there is no enable switch here: only knobs for *which* model runs.
 | `KIROCREW_EMBED_MODEL_URL` | Override HTTPS URL for the embedding-model GGUF; wins over `memory.embed_model_url` and the CDN default | unset |
 | `KIROCREW_EMBED_MODEL_PATH` | Absolute path to a local GGUF to use instead of the bundled model; wins over `memory.embed_model_path` and suppresses the default download entirely | unset |
 
+Use a dedicated directory for `KIROCREW_HOME`. Startup applies owner-only
+permissions or an owner-only Windows ACL to the data home, including homes that
+use only named stores. A deliberately group-shared directory will have those
+permissions tightened. This is shared data-home hardening and affects V1 as well
+as V2 installations.
+
 ### Timezone
 
 The `timezone` key affects three things:
@@ -518,7 +600,10 @@ rules so they cannot be opted out of at all.
 | `~/.kiro/crew/notifications.jsonl` | Notification history |
 | `~/.kiro/crew/models/` | Embedding model, downloaded in the background at startup |
 | `~/.kiro/crew/history/` | Chat history (JSONL) |
-| `~/.kiro/crew/workspace/memory/` | Memory files |
+| `~/.kiro/crew/workspace/memory/` | Memory files (default store) |
+| `~/.kiro/crew/memory_index.db` | Full-text search index (default store) |
+| `~/.kiro/crew/memory.db` | Semantic, episodic and lesson memory (default store) |
+| `~/.kiro/crew/memory_stores/<name>/` | A named memory store: one crew's private memory, unreadable by the agent's file tools |
 | `~/.kiro/crew/session_map.json` | Session resume mapping |
 | `~/.kiro/crew/snapshots/` | Default output of `kirocrew snapshot` |
 | `~/.kiro/agents/kirocrew.json` | Installed agent config |

@@ -69,6 +69,15 @@ def _default_dir() -> Path:
     import first loads this module. Resolving on each call is cheap: the first
     ``config_dir()`` of the process caches the resolved home.
     """
+    from kiro_crew.config.paths import private_runtime_log_dir
+
+    private_logs = private_runtime_log_dir()
+    if private_logs is not None:
+        # A separate process-local diagnostic chain never appends to, nor
+        # supplies authority for, the gateway's global audit chain.
+        directory = private_logs / f"audit-{os.getpid()}"
+        platform_compat.make_owner_only_dir(directory)
+        return directory
     return config_dir()
 
 

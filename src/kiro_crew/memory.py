@@ -8,6 +8,13 @@ Structure:
         └── 2026-02-16.md   # Daily conversation summaries
 
     ~/.kiro/crew/memory_index.db  # FTS5 full-text search index
+
+The DEFAULT store's index sits in the data-home root, beside ``memory.db``, and
+not inside the markdown tree it describes: that is where the snapshot ``memory``
+component, ``portability``'s export zip and the remote-sync script all name it.
+A NAMED store's index lives inside that store's own directory instead. Which of
+the two a store gets is ``memory_stores.memory_index_path_for``'s decision, not
+this module's — see docs/system-specs/modules/memory-skills-hooks.md.
 """
 
 from __future__ import annotations
@@ -20,7 +27,7 @@ import time
 from datetime import date as _date
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 from kiro_crew._sqlite_compat import (
     FTS5_UNAVAILABLE_HINT,
@@ -36,7 +43,9 @@ from kiro_crew.hooks import (
     safe_read_file_bytes_nolink,
     unc_probe_allowed,
 )
+from kiro_crew.memory_startup import require_memory_ready
 from kiro_crew.metrics.db_metrics import timed, timed_query
+from kiro_crew.pinned_fs import fd_real_path
 from kiro_crew.platform_compat import file_lock, first_linked_ancestor, is_link_or_junction
 
 if TYPE_CHECKING:
@@ -50,6 +59,12 @@ logger = logging.getLogger(__name__)
 
 WORKSPACE_DIR_NAME = "workspace"
 MEMORY_DIR_NAME = "memory"
+#: FTS5 index filename. Only the NAME is owned here — WHERE a given store's
+#: index sits is store policy and belongs to
+#: ``memory_stores.memory_index_path_for``. Named so the snapshot, portability
+#: and remote-sync consumers that spell this file out have one definition to
+#: point at.
+INDEX_DB_FILE = "memory_index.db"
 HISTORY_DIR_NAME = "history"
 PREFERENCES_FILE = "preferences.md"
 PROJECTS_FILE = "projects.md"
@@ -57,9 +72,8 @@ PROJECTS_FILE = "projects.md"
 _DEFAULT_PREFERENCES = "# User Preferences\n\n<!-- Learned from conversations -->\n"
 _DEFAULT_PROJECTS = "# Active Projects\n\n<!-- Current work context -->\n"
 
-# read_recent_history runs on every message turn (context build) and statting +
-# reading up to 181 daily files synchronously on the event loop is a per-message
-# cost. The assembled string changes only when a day's history file is written
+# Explicit history readers can stat and read many daily files. The assembled
+# string changes only when a day's history file is written
 # (append_history) or pruned, so a short TTL keeps it off the hot path while
 # staying fresh; the cache key includes the day so the decay window shifting at
 # midnight invalidates naturally, and append/prune invalidate explicitly.
@@ -158,13 +172,46 @@ def _fts5_literal_query(query: str) -> str:
 class MemoryStore:
     """Structured memory: preferences.md, projects.md, daily history, FTS5 search."""
 
-    def __init__(self, workspace: Path | None = None):
+    def __init__(
+        self,
+        workspace: Path | None = None,
+        index_db: Path | None = None,
+        *,
+        memory_version: int = 1,
+    ):
+        """*index_db* is the FTS index file; omitting it keeps the default store's.
+
+        The index location is STORE POLICY — the default store's sits in the
+        data-home root, a named store's inside that store's own directory — and
+        policy lives in ``memory_stores.memory_index_path_for``, which is the
+        one place that knows a store name. Passing the resolved path in keeps
+        this class independent of store-name/path policy. The caller also passes
+        the resolved memory version: V2 retains history without age-based loss.
+
+        The fallback derivation carries a quirk worth knowing: a bare
+        ``MemoryStore()`` indexes to ``<home>/memory_index.db`` while
+        ``MemoryStore(workspace=workspace_dir())`` indexes to
+        ``<home>/workspace/memory_index.db``, though both share one
+        ``_workspace`` and one markdown tree. Both forms are in use (``cli.py``
+        takes the first, ``context.py`` the second) and both work, because
+        ``rebuild_index`` regenerates the whole index from preferences.md,
+        projects.md and history/*.md and reads no index state — so the cost is a
+        duplicated rebuild, not a wrong answer. Only the root copy is in the
+        snapshot ``memory`` component, so collapsing the two moves a default
+        path, which takes a store name at every call site to do safely.
+        """
+        if memory_version not in (1, 2):
+            raise ValueError("memory_version must be 1 or 2")
+        self._memory_version = memory_version
         self._workspace = workspace or workspace_dir()
+        from kiro_crew.memory_stores import named_store_of_db
+
+        self._memory_store_name = named_store_of_db(self._workspace / "memory.db")
         self._memory_dir = self._workspace / MEMORY_DIR_NAME
         self._history_dir = self._memory_dir / HISTORY_DIR_NAME
         self._preferences_file = self._memory_dir / PREFERENCES_FILE
         self._projects_file = self._memory_dir / PROJECTS_FILE
-        self._index_db = (workspace or config_dir()) / "memory_index.db"
+        self._index_db = index_db or (workspace or config_dir()) / INDEX_DB_FILE
         self._vector_store: "VectorMemoryStore | None" = None
         # TTL cache for read_recent_history, keyed by `days` so callers using
         # different windows (context build=14, suggestions=2, dashboard=30) don't
@@ -178,6 +225,11 @@ class MemoryStore:
     @vector_store.setter
     def vector_store(self, store: "VectorMemoryStore | None") -> None:
         self._vector_store = store
+        if getattr(store, "algorithm_version", None) == "v2" and self._memory_version != 2:
+            # A prepared private tier is positive identity evidence. Retention
+            # stays enabled even while that tier is temporarily detached.
+            self._memory_version = 2
+            self._invalidate_history_cache()
 
     # ── Atomic writes (committed-versions-only contract) ──
 
@@ -236,7 +288,7 @@ class MemoryStore:
             raise
         return fd
 
-    def _atomic_write_text(self, path: Path, content: str) -> None:
+    def _atomic_write_text(self, path: Path, content: str, *, newline: str | None = None) -> None:
         """Publish *content* to *path* via unique temp file + ``os.replace``.
 
         ``write_text`` truncates then writes, so a concurrent reader can
@@ -273,7 +325,7 @@ class MemoryStore:
             mode = _stat.S_IMODE(os.lstat(path).st_mode)
         except OSError:
             pass  # new file: let atomic_write apply the umask default
-        atomic_write(path, content, mode=mode)
+        atomic_write(path, content, mode=mode, newline=newline)
 
     def init(self) -> None:
         """Create directory structure and default files."""
@@ -289,6 +341,9 @@ class MemoryStore:
 
     def read_preferences(self) -> str:
         """Read user preferences markdown file."""
+        require_memory_ready(self._memory_store_name)
+        if self._memory_version == 2:
+            return self._guarded_entry(self._preferences_file, require_readable=True)["content"]
         if self._preferences_file.exists():
             return self._preferences_file.read_text(encoding="utf-8")
         return ""
@@ -345,6 +400,9 @@ class MemoryStore:
 
     def read_projects(self) -> str:
         """Read active projects markdown file."""
+        require_memory_ready(self._memory_store_name)
+        if self._memory_version == 2:
+            return self._guarded_entry(self._projects_file, require_readable=True)["content"]
         if self._projects_file.exists():
             return self._projects_file.read_text(encoding="utf-8")
         return ""
@@ -378,6 +436,36 @@ class MemoryStore:
         finally:
             os.close(lock_fd)
         return True
+
+    def write_private_profile_validated(
+        self, filename: str, content: str, validate: Callable[[str], None]
+    ) -> None:
+        """Validate both private anchors and commit one while holding their file lock."""
+        if self._memory_version != 2 or filename not in {"preferences.md", "projects.md"}:
+            raise ValueError("A validated private profile target is required")
+        self._require_link_free_roots()
+        self._memory_dir.mkdir(parents=True, exist_ok=True)
+        if filename == "projects.md":
+            date = datetime.now().strftime("%Y-%m-%d")
+            normalized = (
+                content.strip() + "\n"
+                if content.strip().startswith("# Active Projects")
+                else f"# Active Projects\n\n_Updated: {date}_\n\n{content}\n"
+            )
+            target = self._projects_file
+        else:
+            normalized = content
+            target = self._preferences_file
+        lock_fd = self._open_lock_nofollow(self._memory_dir / ".write.lock")
+        try:
+            with file_lock(lock_fd, exclusive=True):
+                validate(normalized)
+                # Owner documents are read as exact UTF-8 bytes. Translating
+                # existing CRLF again on Windows would add CR on every save.
+                self._atomic_write_text(target, normalized, newline="")
+                self._index_file(target, normalized)
+        finally:
+            os.close(lock_fd)
 
     # ── Legacy read/write (used by consolidator) ──
 
@@ -482,8 +570,103 @@ class MemoryStore:
             os.close(lock_fd)
         self._invalidate_history_cache()  # today's window changed
 
+    def read_editable_history(self) -> str:
+        """Read the history document replaced by the dashboard's daily edit.
+
+        V2 edits only today's file; its retained aggregate remains available via
+        ``read_recent_history``. V1 keeps the existing aggregate edit contract.
+        """
+        if self._memory_version != 2:
+            return self.read_recent_history()
+        return self._guarded_entry(
+            self._today_history_file(),
+            require_readable=True,
+            _private_store=self._validated_private_read_store(),
+        )["content"]
+
+    def write_today_history(
+        self,
+        content: str,
+        *,
+        expected_baseline: str,
+        validate_current: Callable[[str], None],
+    ) -> bool:
+        """Replace today's file if the editable history has not changed.
+
+        V2 compares today's exact content; V1 preserves its aggregate baseline.
+        Compare under the same cross-process lock used by :meth:`append_history`,
+        so a consolidation append cannot land between admission and replacement.
+        Returns ``False`` for a stale baseline and leaves every file unchanged.
+        """
+        self._require_link_free_roots()
+        self._history_dir.mkdir(parents=True, exist_ok=True)
+        path = self._today_history_file()
+        lock_fd = self._open_lock_nofollow(self._history_dir / ".append.lock")
+        wrote = False
+        try:
+            with file_lock(lock_fd, exclusive=True):
+                if is_link_or_junction(path):
+                    self._audit_read_refusal(
+                        "leaf_link", path, "today's history file is a link/junction"
+                    )
+                    raise OSError(f"memory write refused (history leaf is a link): {path}")
+                try:
+                    st = os.lstat(path)
+                except FileNotFoundError:
+                    st = None
+                if st is not None and (not _stat.S_ISREG(st.st_mode) or st.st_nlink != 1):
+                    self._audit_read_refusal(
+                        "leaf_not_lone_regular",
+                        path,
+                        "today's history file is not a lone regular inode (hardlink/special)",
+                    )
+                    raise OSError(
+                        f"memory write refused (history leaf is not a lone regular file): {path}"
+                    )
+                current_today = ""
+                if st is not None:
+                    private = self._validated_private_read_store()
+                    current_today = self._guarded_entry(
+                        path,
+                        require_readable=True,
+                        missing_ok=False,
+                        _private_store=private,
+                    )["content"]
+                # Validate the exact replacement target before comparing the
+                # edit baseline so hidden or unreadable bytes can never be
+                # overwritten, regardless of the displayed history scope.
+                validate_current(current_today)
+                current = (
+                    current_today
+                    if self._memory_version == 2
+                    else self._read_recent_history_uncached(14, datetime.now().date())
+                )
+                if current != expected_baseline:
+                    logger.info(
+                        "Skipping stale history write: recent history changed since the "
+                        "baseline this update was computed from"
+                    )
+                    # A different process can append without touching this
+                    # instance's cache. The uncached comparison proved that cache
+                    # stale, so make the caller's next read observe the winner.
+                    self._invalidate_history_cache()
+                    return False
+                self._atomic_write_text(
+                    path, content, newline="" if self._memory_version == 2 else None
+                )
+                self._index_file(path, content)
+                wrote = True
+        finally:
+            os.close(lock_fd)
+            if wrote:
+                self._invalidate_history_cache()
+        return True
+
     def prune_history(self, keep_days: int = 365) -> int:
         """Delete daily history files older than *keep_days*. Returns count deleted."""
+        require_memory_ready(self._memory_store_name)
+        if self._memory_version == 2:
+            return 0
         if not self._history_dir.exists():
             return 0
         cutoff = datetime.now().date() - timedelta(days=keep_days)
@@ -502,12 +685,12 @@ class MemoryStore:
         return deleted
 
     def read_recent_history(self, days: int = 14) -> str:
-        """Load daily history with natural decay: recent=full, older=summary.
+        """Read history with V1 age tiers or bounded, full retained V2 entries.
 
-        TTL-cached (keyed on ``days`` + today's date) because this runs on every
-        message turn and otherwise stats + reads up to 181 files synchronously.
+        TTL-cached (keyed on ``days`` + today's date) for explicit readers.
         ``append_history``/``prune_history`` invalidate the cache on write.
         """
+        require_memory_ready(self._memory_store_name)
         if days <= 0:
             return ""
         today = datetime.now().date()
@@ -529,6 +712,14 @@ class MemoryStore:
 
     def _read_recent_history_uncached(self, days: int, today: _date) -> str:
         """Assemble the decayed recent-history string (no caching)."""
+        if self._memory_version == 2:
+            # Read limits bound this response, never delete or summarize stored
+            # history. Older files remain indexed and explicitly accessible.
+            return "\n\n".join(
+                entry["content"].strip()
+                for entry in reversed(self.read_history_entries())
+                if entry["content"].strip()
+            )
         parts: list[str] = []
         for i in range(181):
             day = today - timedelta(days=i)
@@ -620,6 +811,7 @@ class MemoryStore:
            :meth:`_guarded_entry`, so every component of every touched path
            is verified link-free.
         """
+        require_memory_ready(self._memory_store_name)
         root = str(self._memory_dir)
         if os.name == "nt" and is_unc_shape(root) and not unc_probe_allowed(root):
             logger.warning("memory read refused (untrusted UNC workspace): %s", root)
@@ -678,10 +870,11 @@ class MemoryStore:
         returned with ``content: ""`` and ``updated_at: None``. ``since``
         filters history to days on or after that date.
         """
+        private = self._validated_private_read_store()
         return {
-            "preferences": self._guarded_entry(self._preferences_file),
-            "projects": self._guarded_entry(self._projects_file),
-            "history": self.read_history_entries(since=since),
+            "preferences": self._guarded_entry(self._preferences_file, _private_store=private),
+            "projects": self._guarded_entry(self._projects_file, _private_store=private),
+            "history": self._history_entries(since=since, private_store=private),
         }
 
     def read_history_entries(self, since: _date | None = None) -> list[dict]:
@@ -703,6 +896,12 @@ class MemoryStore:
         returned; the newest days win when trimming, and the result stays
         oldest-first.
         """
+        return self._history_entries(
+            since=since, private_store=self._validated_private_read_store()
+        )
+
+    def _history_entries(self, *, since: _date | None, private_store: str) -> list[dict]:
+        """One bounded snapshot shares identity admission, never opened-file checks."""
         if not self._read_root_guard():
             return []
         if not self._history_dir.exists():
@@ -731,7 +930,7 @@ class MemoryStore:
         # consumer syncing memory actually needs), then restore oldest-first
         # order for the caller.
         for day, f in candidates:
-            entry = self._guarded_entry(f)
+            entry = self._guarded_entry(f, _private_store=private_store)
             # A glob-enumerated file exists, so missing updated_at means the
             # guarded read either REFUSED it (planted link, special file,
             # size cap — skip) or read a genuinely EMPTY day (retain, with
@@ -767,7 +966,64 @@ class MemoryStore:
     # attempt almost always lands after the writer's atomic rewrite finishes.
     _GUARDED_READ_ATTEMPTS = 2
 
-    def _guarded_entry(self, path: Path) -> dict:
+    def _validated_private_read_store(self) -> str:
+        """Authorize one read/snapshot; the result is never cached on the store."""
+        require_memory_ready(self._memory_store_name)
+        private = ""
+        if self._memory_version == 2:
+            from kiro_crew.memory_stores import named_store_of_db, require_memory_store
+
+            private = named_store_of_db(self._workspace / "memory.db")
+            if private:
+                require_memory_store(private)
+        return private
+
+    def _read_entry_bytes(self, path: Path, *, private_store: str | None = None) -> bytes | None:
+        """Read one opened inode under a call-local validated store binding."""
+        private = self._validated_private_read_store() if private_store is None else private_store
+        if not private:
+            return safe_read_file_bytes_nolink(str(path), within_root=str(self._memory_dir))
+
+        # Agent file tools must refuse the whole private tree. This internal
+        # reader has a validated store binding and may read only its own opened
+        # inode; it never weakens the generic sensitive-path gate.
+        descriptor = os.open(
+            path,
+            os.O_RDONLY
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_NONBLOCK", 0)
+            | getattr(os, "O_BINARY", 0),
+        )
+        try:
+            info = os.fstat(descriptor)
+            opened = fd_real_path(descriptor)
+            if not _stat.S_ISREG(info.st_mode):
+                raise OSError("Private memory path is not a regular file")
+            if info.st_nlink != 1:
+                raise OSError("Private memory file has multiple hard links")
+            if opened is None:
+                raise OSError("Cannot verify the opened private memory file's location")
+            root = os.path.normcase(os.path.realpath(self._memory_dir))
+            actual = os.path.normcase(opened)
+            expected = os.path.normcase(os.path.abspath(path))
+            if actual != expected or os.path.commonpath([actual, root]) != root:
+                raise OSError("Opened private memory file is outside its expected bound path")
+            with os.fdopen(descriptor, "rb", closefd=False) as handle:
+                data = handle.read(self._HISTORY_SNAPSHOT_MAX_BYTES + 1)
+            if len(data) > self._HISTORY_SNAPSHOT_MAX_BYTES:
+                raise FileTooLargeError("Private memory file exceeds the 8 MiB read limit")
+            return data
+        finally:
+            os.close(descriptor)
+
+    def _guarded_entry(
+        self,
+        path: Path,
+        *,
+        require_readable: bool = False,
+        missing_ok: bool = True,
+        _private_store: str | None = None,
+    ) -> dict:
         """Shape one markdown file as ``{"path", "updated_at", "content"}``.
 
         The memory directory is agent-writable, so a planted dated ``.md``
@@ -780,6 +1036,10 @@ class MemoryStore:
         empty entry — same shape as a missing file — never as leaked content
         or a traceback.
 
+        Private anchors and index rebuilds set ``require_readable`` so a refused
+        source raises instead of appearing empty. Missing anchors may initialize
+        normally; an already enumerated index source also sets ``missing_ok=False``.
+
         ``updated_at`` is snapshotted before the read and re-checked after,
         so the reported metadata always describes the bytes returned: when a
         concurrent consolidation rewrites or prunes the file mid-read, the
@@ -787,21 +1047,29 @@ class MemoryStore:
         pairing one version's content with another version's mtime.
         """
         empty = {"path": str(path), "updated_at": None, "content": ""}
+
+        def refused(reason: str) -> dict:
+            if require_readable:
+                raise OSError(f"Memory read refused ({reason}): {path}")
+            return dict(empty)
+
         # Admission gate BEFORE the stat below — see _read_root_guard for the
         # invariant. The leaf gets its own lstat-based reparse check so every
         # component of the touched path (root, history dir, file) is verified
         # link-free before any following syscall.
         if not self._read_root_guard():
-            return dict(empty)
+            return refused("unsafe memory root")
         if is_link_or_junction(path):
             logger.warning("memory read refused (file is a link): %s", path)
             self._audit_read_refusal("leaf_link", path, "memory file is a link/junction")
-            return dict(empty)
+            return refused("file is a link or junction")
         for _ in range(self._GUARDED_READ_ATTEMPTS):
             try:
                 st_before = path.stat()
-            except OSError:
-                return dict(empty)  # missing (or vanished) is a normal state
+            except FileNotFoundError:
+                return dict(empty) if missing_ok else refused("source file disappeared")
+            except OSError as exc:
+                return refused(f"cannot inspect file: {exc}")
             # Reject non-regular files BEFORE any open: opening a planted FIFO
             # read-only blocks forever waiting for a writer, so the reader's
             # own fstat check would never be reached. stat() follows symlinks,
@@ -814,23 +1082,25 @@ class MemoryStore:
                 self._audit_read_refusal(
                     "not_regular_file", path, "memory path is not a regular file"
                 )
-                return dict(empty)
+                return refused("path is not a regular file")
             try:
-                data = safe_read_file_bytes_nolink(str(path), within_root=str(self._memory_dir))
+                data = self._read_entry_bytes(path, private_store=_private_store)
             except FileTooLargeError:
                 logger.warning("memory read refused (size cap) for %s", path)
                 self._audit_read_refusal("size_cap", path, "memory file exceeds read size cap")
-                return dict(empty)
+                return refused("file exceeds the read size cap")
+            except OSError as exc:
+                return refused(str(exc))
             if data is None:
                 logger.warning("memory read refused or failed for %s", path)
                 self._audit_read_refusal(
                     "read_refused", path, "hardened read refused the file (link/hardlink/target)"
                 )
-                return dict(empty)
+                return refused("linked, escaped or unreadable file")
             try:
                 st_after = path.stat()
-            except OSError:
-                return dict(empty)  # deleted mid-read: no stable version
+            except OSError as exc:
+                return refused(f"source changed during read: {exc}")
             if (st_before.st_mtime_ns, st_before.st_size) != (
                 st_after.st_mtime_ns,
                 st_after.st_size,
@@ -840,7 +1110,7 @@ class MemoryStore:
                 content = data.decode("utf-8")
             except UnicodeDecodeError:
                 logger.warning("memory file is not valid UTF-8: %s", path)
-                return dict(empty)
+                return refused("file is not valid UTF-8")
             if content == "":
                 # Documented empty-state contract: empty content carries null
                 # metadata, same shape as a missing file — consumers key
@@ -850,7 +1120,7 @@ class MemoryStore:
             updated_at = datetime.fromtimestamp(st_after.st_mtime, tz=timezone.utc).isoformat()
             return {"path": str(path), "updated_at": updated_at, "content": content}
         logger.warning("memory file kept changing during read: %s", path)
-        return dict(empty)
+        return refused("file kept changing during read")
 
     # ── Context Injection ──
 
@@ -899,9 +1169,14 @@ class MemoryStore:
 
         history = self.read_recent_history(days=14)
         if history.strip():
+            history_scope = (
+                "retained full entries, bounded read"
+                if self._memory_version == 2
+                else "last 180 days decaying"
+            )
             parts.append(
                 f"## Recent History\n"
-                f"_[source: {self._history_dir}, last 180 days decaying]_\n"
+                f"_[source: {self._history_dir}, {history_scope}]_\n"
                 f"{_cap(history, history_cap)}"
             )
 
@@ -935,6 +1210,7 @@ class MemoryStore:
 
     def _get_db(self) -> sqlite3.Connection:
         """Get or create the FTS5 database connection."""
+        require_memory_ready(self._memory_store_name)
         try:
             return self._try_create_db()
         except Exception as e:
@@ -987,30 +1263,74 @@ class MemoryStore:
 
     def rebuild_index(self) -> int:
         """Rebuild the full FTS index from all memory files. Returns file count."""
+        require_memory_ready(self._memory_store_name)
         files: list[tuple[str, str]] = []
-        for path in (self._preferences_file, self._projects_file):
-            if path.exists():
-                files.append((str(path), path.read_text(encoding="utf-8")))
-        if self._history_dir.exists():
-            for path in self._history_dir.glob("*.md"):
-                files.append((str(path), path.read_text(encoding="utf-8")))
+        if self._memory_version == 2:
+            # Validate roots before enumeration. Read every retained day in the
+            # transaction below: an unreadable source rolls it back, while one
+            # bounded file body at a time avoids retaining the entire history.
+            if not self._read_root_guard():
+                raise OSError(f"Memory index rebuild refused (unsafe roots): {self._memory_dir}")
+            paths = []
+            for path in (self._preferences_file, self._projects_file):
+                try:
+                    path.lstat()
+                except FileNotFoundError:
+                    continue
+                paths.append(path)
+            try:
+                with os.scandir(self._history_dir) as entries:
+                    for candidate in entries:
+                        path = Path(candidate.path)
+                        if path.suffix != ".md":
+                            continue
+                        try:
+                            datetime.strptime(path.stem, "%Y-%m-%d")
+                        except ValueError:
+                            continue
+                        paths.append(path)
+            except FileNotFoundError:
+                pass  # an uninitialized, otherwise safe history root is empty
+
+            def guarded_files() -> "Iterator[tuple[str, str]]":
+                for path in paths:
+                    entry = self._guarded_entry(path, require_readable=True, missing_ok=False)
+                    yield str(path), entry["content"]
+
+            sources = guarded_files()
+        else:
+            for path in (self._preferences_file, self._projects_file):
+                if path.exists():
+                    files.append((str(path), path.read_text(encoding="utf-8")))
+            if self._history_dir.exists():
+                for path in self._history_dir.glob("*.md"):
+                    files.append((str(path), path.read_text(encoding="utf-8")))
+            sources = iter(files)
 
         conn = None
+        indexed = 0
         try:
             conn = self._get_db()
+            if self._memory_version == 2:
+                conn.execute("BEGIN IMMEDIATE")
             conn.execute("DELETE FROM memory_fts")
-            for path_str, content in files:
+            for path_str, content in sources:
                 conn.execute(
                     "INSERT INTO memory_fts (path, content) VALUES (?, ?)",
                     (path_str, content),
                 )
+                indexed += 1
             conn.commit()
         except Exception:
             logger.warning("FTS rebuild failed", exc_info=True)
+            if self._memory_version == 2:
+                if conn is not None:
+                    conn.rollback()
+                raise
         finally:
             if conn is not None:
                 conn.close()
-        return len(files)
+        return indexed if self._memory_version == 2 else len(files)
 
     def index_row_count(self) -> int | None:
         """Rows in the FTS index, or ``None`` when the index cannot be read.
@@ -1021,6 +1341,7 @@ class MemoryStore:
         reports as "you never wrote about this", which is the one answer a memory
         search must never give wrongly.
         """
+        require_memory_ready(self._memory_store_name)
         conn = None
         try:
             conn = self._get_db()
@@ -1043,6 +1364,7 @@ class MemoryStore:
         the driver and the ``except`` below turns it into ``[]`` -- a silent
         "you never wrote about this" for one of the likeliest queries.
         """
+        require_memory_ready(self._memory_store_name)
         conn = None
         try:
             # Inside the try, not around it: this method handles its own errors

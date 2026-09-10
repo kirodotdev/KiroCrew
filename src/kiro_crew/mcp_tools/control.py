@@ -64,6 +64,7 @@ from kiro_crew.validation import (
     MONITOR_WATCH_SCHEMA,
     REGISTER_HOOK_SCHEMA,
     RESET_CONVERSATION_SCHEMA,
+    ROUTE_CREW_SCHEMA,
     SELECT_CREW_SCHEMA,
     SET_PROJECT_SCHEMA,
     SUGGEST_FOLLOWUP_SCHEMA,
@@ -124,6 +125,30 @@ def schemas() -> list[dict[str, Any]]:
             },
         },
         {
+            "name": "route_crew",
+            "description": (
+                "Rank the crews whose triggers match a task, best first, and return each "
+                "one's score, description and memory store. Use this when you want the "
+                "same task to reach the same crew every time; use select_crew when you "
+                "want the roster and intend to judge the fit yourself. Only when both "
+                "`matches` and `unavailable` are empty does no crew claim the task; "
+                "handle that case on the default crew. Report unavailable members and "
+                "their reasons without substituting Global memory. Acting on a match means "
+                "spawn_run(crew=<name>), which is what gives that run the crew's memory "
+                "and template and keeps another crew's memory out of it."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "task": {
+                        "type": "string",
+                        "description": "The task to route. Usually the user's own words.",
+                    },
+                },
+                "required": ["task"],
+            },
+        },
+        {
             "name": "select_crew",
             "description": (
                 "Orchestrator crew routing. Call with NO argument to get the roster of "
@@ -131,7 +156,10 @@ def schemas() -> list[dict[str, Any]]:
                 "crew fits the task better than handling it yourself. Call with `crew` set "
                 "to a roster name to bind it: returns the crew's resolved {workspace, "
                 "memory_store, kiro_agent, model}, which you then run via "
-                "spawn_run(agent=<crew>). Selection rules: (1) pick a crew ONLY when its "
+                "spawn_run(crew=<name>) -- `crew=`, NOT `agent=`: `agent` names a "
+                "kiro-cli template, and passing a crew name there gives the run the "
+                "DEFAULT memory store, silently, which is how one crew's work ends up "
+                "in another's memory. Selection rules: (1) pick a crew ONLY when its "
                 "triggers clearly and specifically match the task with high confidence; "
                 "(2) if no crew is a strong match, do NOT route — fall back to the default "
                 "crew (default_agent); (3) crews without triggers are omitted from the "
@@ -858,6 +886,11 @@ def wait(name: str, args: dict[str, Any]) -> str:
     return f"Waited {seconds}s. Resuming: {reason_safe}"
 
 
+def route_crew(name: str, args: dict[str, Any]) -> str:
+    args = validate_tool_args(args, ROUTE_CREW_SCHEMA)
+    return mcp_core._do_route_crew(str(args.get("task") or ""))
+
+
 def select_crew(name: str, args: dict[str, Any]) -> str:
     args = validate_tool_args(args, SELECT_CREW_SCHEMA)
     return mcp_core._do_select_crew(str(args.get("crew") or ""))
@@ -871,6 +904,44 @@ def register_hook(name: str, args: dict[str, Any]) -> str:
         return "Error: hook_id is required"
     context_summary = str(args.get("context_summary", ""))
     session_key = f"hook:{hook_id}"
+    # The broker's verified caller names the parent; hooks.json is editable
+    # context, never a source of private-memory authority.
+    from kiro_crew.member_memory_auth import (
+        bind_private_session_store,
+        mcp_memory_scope,
+        read_private_session_store,
+    )
+
+    # Legacy Global hooks can be registered without a conversation. Resolving
+    # through the shared gate keeps that behavior while private registration
+    # still requires a trusted caller and the protected member binding below.
+    caller, _ = mcp_core.require_strict_session_key("Error: hook caller is not identified")
+    try:
+        store = mcp_memory_scope(caller) or None
+        if store:
+            # The member controls only its own hook namespace. Its choice of
+            # label cannot reserve a Global or another member's runtime key.
+            hook_id = f"{store}:{hook_id}"
+            session_key = f"hook:{hook_id}"
+        existing = read_private_session_store(session_key)
+        if existing is not None and existing != store:
+            return "Error: this hook belongs to another private member"
+        if store:
+            from kiro_crew.mcp_caller import current_caller
+
+            identity = current_caller()
+            if identity is None or not identity.from_gateway:
+                return "Error: private hook registration requires the trusted MCP gateway"
+            from kiro_crew.history import ConversationLog
+
+            bind_private_session_store(session_key, store)
+            log = ConversationLog()
+            log.init()
+            log.update_metadata(session_key, {"memory_store": store})
+    except (ValueError, OSError):
+        return (
+            "Error: the hook's protected member binding is unavailable; global memory was not used"
+        )
     # Persist hook registration
     hook_file = mcp_core.config_dir() / "hooks.json"
     hook_file.parent.mkdir(parents=True, exist_ok=True)
@@ -1496,6 +1567,7 @@ def suggest_followup(name: str, args: dict[str, Any]) -> str:
 HANDLERS: dict[str, Callable[[str, dict[str, Any]], str]] = {
     "task_run": task_run,
     "wait": wait,
+    "route_crew": route_crew,
     "select_crew": select_crew,
     "register_hook": register_hook,
     "autonudge_stop": autonudge_stop,

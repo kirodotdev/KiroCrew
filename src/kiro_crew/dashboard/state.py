@@ -3240,6 +3240,8 @@ class _ChatSlot:
         "autocompact_pct",
         "mode",
         "workspace",
+        "memory_store",
+        "_memory_assignment_from_history",
         "project",
         "created_at",
         "messages",
@@ -3434,6 +3436,15 @@ class _ChatSlot:
         # "" = default chat, "orchestrator" = orchestrated chat
         self.mode = mode
         self.workspace = workspace
+        # The crew's memory silo, or "" for the global store. Held on the slot
+        # rather than re-resolved per save because it is SLOT-OWNED metadata:
+        # absence retracts it, so a save that could not name it would drop the
+        # binding and silently return that session to the global store.
+        self.memory_store: str = ""
+        # Transcript fields can restore display state, never a new private
+        # assignment. Only a protected binding or an explicit owner pick clears
+        # that admission boundary; this marker is not persisted in the transcript.
+        self._memory_assignment_from_history = False
         self.project: str = ""
         # Remote-execution binding. ``executor`` is "local" for every ordinary
         # slot; "remote" means the turn is dispatched over an instance tunnel to
@@ -4929,6 +4940,12 @@ class DashboardState:
     # assign a fresh set(), so mutation only ever touches an instance attribute.
     unrestored_slot_keys: "frozenset[str] | set[str]" = frozenset()
     crew: Any = None  # Crew Mode control plane (set by gateway; None = unavailable)
+    # Gateway-owned restore/open task. The class default keeps lightweight
+    # ``__new__`` fixtures on the already-ready baseline; a real gateway
+    # publishes its task immediately before READY so chat admission can wait
+    # without mistaking a transient preparation fence for a failed turn.
+    memory_startup_task: "asyncio.Task[None] | None" = None
+    resume_channel_agents: "Callable[[], None] | None" = None
 
     def __init__(
         self,
@@ -4950,14 +4967,20 @@ class DashboardState:
         self.start_time = start_time
         # Published only at the final boot-to-ready boundary in server.py.
         # The socket binds earlier, so /api/ready can truthfully return 503
-        # while session restoration, channel relaunch, and tunnel setup finish.
+        # while session restoration and tunnel setup finish. The gateway may
+        # defer restored channel agents until its memory task completes.
         self.ready: bool = False
+        self.memory_startup_task: "asyncio.Task[None] | None" = None
         # Wired by server.py after the gateway-owned prerequisite service is
         # constructed. The central chat runner reads this latch so every turn
         # entry path is protected, including task/workflow continuations.
         self.kiro_prerequisite_service: Any = None
         self.subagents = subagents
         self.channel_manager: Any = None  # lazy-init in server.py
+        # A gateway launch defers legacy channel-agent relaunch until memory
+        # preparation settles. Standalone dashboard callers keep the immediate
+        # start behavior and leave this callback unset.
+        self.resume_channel_agents: "Callable[[], None] | None" = None
         self.tunnel_manager: Any = None  # lazy-init in server.py (TunnelManager)
         self.instances_manager: Any = None  # lazy-init in server.py (SshTunnelManager)
         self.instances_registry: Any = None  # lazy-init in server.py (InstancesRegistry)
@@ -5681,17 +5704,22 @@ class DashboardState:
         _BUNDLE_ID_CACHE["v"] = (key, digest)
         return digest
 
-    def _count_lessons(self) -> int:
-        """Count lessons from JSONL store + vector store (if enabled)."""
-        count = len(self.lessons.load_all())
-        if self.context_builder:
-            vs = self.context_builder.memory.vector_store
-            if vs:
-                # COUNT(*) — not get_lessons() — so the status paths that poll
-                # this per client do not materialize the whole lesson corpus
-                # just to len() it.
-                count += vs.count_lessons()
-        return count
+    def _count_lessons(self) -> int | None:
+        """Count available Global lessons without blocking the recovery dashboard."""
+        from kiro_crew.memory_startup import MemoryStartupUnavailable
+
+        try:
+            count = len(self.lessons.load_all())
+            if self.context_builder:
+                vs = self.context_builder.memory.vector_store
+                if vs:
+                    # COUNT(*) keeps status polling from materializing lessons.
+                    count += vs.count_lessons()
+            return count
+        except MemoryStartupUnavailable:
+            # The selected store's Recovery view supplies the diagnostic. Keep
+            # the dashboard shell usable and do not misreport unavailable as 0.
+            return None
 
     def status_snapshot(
         self,

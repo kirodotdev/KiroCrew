@@ -178,6 +178,12 @@ SLOT_OWNED_META_KEYS: frozenset[str] = frozenset(
         "autocompact_pct",
         "mode",
         "workspace",
+        # Slot-owned so ABSENCE can retract it. A crew rebound from a named
+        # memory store back to the default writes no key at all, and an unowned
+        # key is carried forward forever by ``carry_unowned_metadata`` -- so the
+        # rebind would be un-erasable and the session would keep consolidating
+        # into the silo it left.
+        "memory_store",
         "project",
         # Remote-execution binding: owned by the slot, so clearing it in memory
         # clears it on disk. Left unowned, a rebind or an unbind would be undone
@@ -2705,6 +2711,36 @@ class ConversationLog:
         if skip_pinned:
             return self._metadata_projection.delete_session(key, skip_pinned=True)
         return self._metadata_projection.delete_session(key, skip_pinned=False)
+
+    def delete_memory_consolidation_session(self, key: str, expected_store: str) -> bool:
+        """Delete every artifact of one retired generated consolidation turn."""
+        from kiro_crew.member_memory_auth import (
+            read_private_session_store,
+            require_memory_consolidation_session_key,
+        )
+
+        require_memory_consolidation_session_key(key, expected_store)
+        binding = read_private_session_store(key)
+        if binding is not None and binding != expected_store:
+            raise ValueError("The transient session belongs to another private store")
+        path = self._path(key)
+        existed = path.exists()
+        deleted = self.delete_session(key)
+        if existed and not deleted:
+            raise OSError(f"Could not delete transient consolidation session {key!r}")
+
+        removed = bool(deleted)
+        archive_dir = _archive_dir(self._dir)
+        stem = _safe_key(key) + ARCHIVE_SEGMENT_DELIMITER
+        if archive_dir.exists():
+            for archived in archive_dir.glob(f"{stem}*.jsonl"):
+                archived.unlink()
+                removed = True
+        lock_path = self._lock_path(key)
+        if lock_path.exists():
+            lock_path.unlink()
+            removed = True
+        return removed
 
     def set_title(self, key: str, title: str) -> None:
         self._metadata_projection.set_title(key, title)

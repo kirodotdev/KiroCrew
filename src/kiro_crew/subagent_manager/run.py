@@ -635,6 +635,38 @@ class RunEventCoordinator(ManagerComponent):
         # that pre-execution delay as idle time and prematurely surface a
         # healthy, just-started subagent as "stalled".
         info.last_activity = info._exec_started
+        if info.error.startswith("memory_unavailable:"):
+            raise RuntimeError(info.error)
+        if not isinstance(info.memory_store, str):
+            raise ValueError("memory_unavailable: the recorded memory identity is malformed")
+        from kiro_crew.context import require_memory_delegation
+
+        await asyncio.to_thread(
+            require_memory_delegation,
+            getattr(self._manager._ctx_builder, "conversation_log", None),
+            info.parent_session_key,
+            info.memory_store,
+        )
+        # Queue waits and restarts can outlive a member/store configuration.
+        # Revalidate before allocating any provider process for the run.
+        if info.memory_store:
+            from kiro_crew.context import prepare_store_vectors
+            from kiro_crew.member_memory_auth import bind_private_session_store
+            from kiro_crew.memory_stores import memory_store_version, require_memory_store
+
+            await asyncio.to_thread(require_memory_store, info.memory_store)
+            if await asyncio.to_thread(memory_store_version, info.memory_store) == 2:
+                # This run's protected dispatch record is the authority. Never
+                # create a private binding from mutable transcript metadata.
+                await asyncio.to_thread(bind_private_session_store, session_key, info.memory_store)
+            await prepare_store_vectors(
+                self._manager._ctx_builder, info.memory_store, session_key=session_key
+            )
+            log = getattr(self._manager._ctx_builder, "conversation_log", None)
+            if log is not None:
+                await asyncio.to_thread(
+                    log.update_metadata, session_key, {"memory_store": info.memory_store}
+                )
         # Inherit approval policy from parent session; yolo/trust overrides
         parent_policy = self._manager._sessions.get_approval_policy(info.parent_session_key)
         # Explicit approval_mode from spawn caller (e.g. Mochi bg agent)
@@ -865,12 +897,25 @@ class RunEventCoordinator(ManagerComponent):
         # workspace directory, not a checkout, so it can only ever mean "this
         # run named no project", which is exactly the fail-closed case. Keeping
         # one meaning for that makes the rule the same on every surface.
+        # The child's own memory silo. Without it every subagent reads the
+        # operator's global store however the parent crew is bound, which makes
+        # a crew's isolation end at the moment it delegates.
+        #
+        # Prepare before the offloaded build because vector initialization is
+        # blocking file IO. A private store that cannot be prepared refuses the
+        # turn; it cannot continue with Global memory.
+        from kiro_crew.context import prepare_store_vectors
+
+        await prepare_store_vectors(
+            self._manager._ctx_builder, info.memory_store, session_key=session_key
+        )
         full_message, _ = await run_in_embed_pool(
             self._manager._ctx_builder.build_message,
             message,
             is_new,
             session_key,
             project=info.cwd or None,
+            memory_store=info.memory_store or None,
             provider_type=self._manager._provider_label_of(client),
             model_window=_sub_window,
             context_groups=_groups,
@@ -1748,6 +1793,10 @@ class RunEventCoordinator(ManagerComponent):
         All must hold: session_sharing config True; parent session exists and
         is ACP/kiro-backed (not CC); not a CC-specific spawn (model/allowed_tools/bare).
         """
+        # The trusted run preparation has validated this immutable target.
+        # A global parent must never lend its process to a private Crew member.
+        if info.memory_store:
+            return False
         try:
             cfg = KiroCrewConfig.load()
             if not cfg.agent.session_sharing:
@@ -1776,6 +1825,14 @@ class RunEventCoordinator(ManagerComponent):
         provider.shutdown() instead of SessionManager.release/reset.
         """
 
+        from kiro_crew.member_memory_auth import private_memory_store_for_session
+
+        stores = await asyncio.gather(
+            asyncio.to_thread(private_memory_store_for_session, session_key),
+            asyncio.to_thread(private_memory_store_for_session, info.parent_session_key),
+        )
+        if any(stores):
+            raise RuntimeError("Private member memory requires a dedicated runtime")
         runtime = self._manager._get_parent_runtime(info.parent_session_key)
         if runtime is None:
             runtime = await self._manager._sessions.get_subagent_runtime(info.parent_session_key)

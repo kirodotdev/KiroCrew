@@ -488,6 +488,11 @@ class TestUncProbeGate:
 
         self._patch_roots(monkeypatch, tmp_path, Path(unc_agents))
         monkeypatch.setattr(hooks, "os", self._NtOs())
+        # The real Windows descriptor witness keeps this as a UNC path. Linux's
+        # /proc witness canonicalizes the openable ``//tmp`` stand-in to
+        # ``/tmp``; model the Windows result so this cross-platform fixture
+        # exercises the intended validated-path/opened-path equality.
+        monkeypatch.setattr(hooks, "_fd_real_path", lambda _fd: unc_spec)
         assert _read_agent_spec(_WindowsResolvedPath()) == {"name": "foo", "model": "m1"}
 
     def test_untrusted_unc_text_is_never_stat_probed_on_windows(self, monkeypatch):

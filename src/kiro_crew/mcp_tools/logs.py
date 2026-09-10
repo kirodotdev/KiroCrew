@@ -62,7 +62,9 @@ def schemas() -> list[dict[str, Any]]:
                 "byte-capped per source AND bounded as a whole; when it does not "
                 "all fit, the OLDEST lines are dropped and the newest are kept, "
                 "with a note saying so. Returns the log text with one section "
-                "per source, or a note when no logs exist."
+                "per source, or a note when no logs exist. Shared host logs are "
+                "unavailable to private members; once private memory exists, "
+                "this tool requires a verified Global V1 session."
             ),
             "inputSchema": {
                 "type": "object",
@@ -100,13 +102,45 @@ def kiro_cli_logs(name: str, args: dict[str, Any]) -> str:
             tail = None
     since = str(args.get("since", "") or "").strip() or None
 
+    from kiro_crew.member_memory_auth import mcp_memory_scope, private_memory_boundaries_active
+
+    # These protocol logs are shared host files, not this member's diagnostic
+    # directory. Redaction cannot establish which session owns ordinary prose.
+    session_key = ""
+    refusal = ""
+    try:
+        if private_memory_boundaries_active():
+            session_key, refusal = mcp_core.require_strict_session_key(
+                "Error: shared kiro-cli logs require a verified Global V1 session."
+            )
+            if session_key and mcp_memory_scope(session_key):
+                refusal = "Error: shared kiro-cli logs are unavailable to private members."
+        else:
+            # Pure V1 installations retain the original caller contract.
+            session_key = mcp_core._resolve_session_key()
+    except (OSError, ValueError, RuntimeError):
+        refusal = "Error: this session's protected memory identity is unavailable."
+    if refusal:
+        try:
+            mcp_core.sel().log_tool_invocation(
+                session_key=session_key,
+                source="mcp",
+                tool_name="kiro_cli_logs",
+                tool_kind="read",
+                outcome="denied_memory_scope",
+            )
+        except Exception:
+            # Failure to record a denial must never turn it into a log read.
+            pass
+        return refusal
+
     try:
         # diagnostics.read_kiro_cli_logs reads only log files and scrubs every
         # byte through the shared redaction stack before returning.
         out = diagnostics.read_kiro_cli_logs(tail=tail, since=since)
     except Exception as exc:  # pragma: no cover — defensive
         mcp_core.sel().log_tool_invocation(
-            session_key=mcp_core._resolve_session_key(),
+            session_key=session_key,
             source="mcp",
             tool_name="kiro_cli_logs",
             tool_kind="read",
@@ -118,7 +152,7 @@ def kiro_cli_logs(name: str, args: dict[str, Any]) -> str:
         return f"Error: kiro_cli_logs failed: {type(exc).__name__}: {exc}"
 
     mcp_core.sel().log_tool_invocation(
-        session_key=mcp_core._resolve_session_key(),
+        session_key=session_key,
         source="mcp",
         tool_name="kiro_cli_logs",
         tool_kind="read",

@@ -39,6 +39,30 @@ def state(monkeypatch, tmp_path):
     )
 
 
+@pytest.mark.parametrize("phase", ["preparing", "global_failed", "member_failed"])
+def test_status_remains_available_during_scoped_memory_recovery(
+    state: DashboardState, tmp_path, phase: str
+) -> None:
+    from kiro_crew.learn import Lesson, LessonStore
+    from kiro_crew.memory_startup import MemoryStartup
+
+    state.lessons = LessonStore(base_dir=tmp_path / "status-lessons")
+    state.lessons.save(Lesson("2026-09-08", "Keep the accepted decision", "knowledge"))
+    assert state._count_lessons() == 1  # Warm the real JSONL cache before recovery.
+    startup = MemoryStartup.begin()
+    try:
+        if phase != "preparing":
+            failed_store = "default" if phase == "global_failed" else "member-alice"
+            startup.fail_store(failed_store, ValueError("staged recovery failed"))
+            assert startup.complete()
+        snapshot = state.status_snapshot()
+        assert snapshot["sessions"] == 0
+        assert snapshot["lessons"] == (1 if phase == "member_failed" else None)
+    finally:
+        startup.stop()
+        startup.release()
+
+
 class TestSubagentSubscribers:
     def test_subscribe_and_unsubscribe(self, state: DashboardState) -> None:
         ws = MagicMock()

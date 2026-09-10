@@ -263,3 +263,21 @@ describe('mobile push/pop symmetry — path model (basePath)', () => {
     expect(screen.getByRole('button', { name: /Settings/ })).toBeInTheDocument()
   })
 })
+
+
+describe('a drill-in pane owns its identity and navigation', () => {
+  afterEach(() => { cleanup(); sessionStorage.clear(); mobile = true })
+  it.each([true, false])('shows only the pane header at mobile=%s', isMobile => {
+    mobile = isMobile
+    render(<MemoryRouter initialEntries={['/settings?tab=overview']}>
+      <SidePanelLayout title="Settings" tabs={TABS} paneOwnsHeader>
+        {() => <div><button>Back to overview</button><h1>Member memory</h1></div>}
+      </SidePanelLayout>
+    </MemoryRouter>)
+    expect(screen.getByRole('heading', { name: 'Member memory' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Back to overview' })).toBeInTheDocument()
+    expect(screen.queryByTestId('mobile-detail-header')).toBeNull()
+    expect(screen.queryByTestId('side-panel-header')).toBeNull()
+    if (isMobile) expect(screen.queryByRole('button', { name: 'Settings' })).toBeNull()
+  })
+})

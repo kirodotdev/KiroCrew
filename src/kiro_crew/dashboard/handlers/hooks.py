@@ -1021,8 +1021,10 @@ async def _run_hook_inner(
     state: DashboardState, session_key: str, message: str, agent: str | None
 ) -> str:
     """Inner agent turn — called within timeout wrapper."""
+    from kiro_crew.context import session_store_for_turn
     from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK  # noqa: F811
 
+    memory_store = await session_store_for_turn(state.context_builder, session_key)
     client, is_new, resumed = await state.sessions.get_or_create(session_key, agent=agent)
     full_message = message
     if is_new and state.context_builder:
@@ -1031,6 +1033,7 @@ async def _run_hook_inner(
             state.context_builder.build_message,
             message, is_new, session_key, agent=agent, resumed=resumed,
             provider_type=KiroCrewConfig.load().agent.provider,
+            memory_store=memory_store,
         )
     result_text = ""
     _complete_event: object | None = None

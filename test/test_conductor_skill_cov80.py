@@ -34,7 +34,13 @@ def test_roster_is_resolved_via_select_crew_not_inlined(tmp_path: Path) -> None:
     body = generate_conductor_skill(_loader(tmp_path)).read_text(encoding="utf-8")
 
     assert 'select_crew(crew="<name>")' in body
-    assert 'spawn_run(agent="<name>"' in body
+    # `crew=`, not `agent=`. This skill is `always: true`, so it is the first
+    # delegation guidance the model reads -- and `agent` names a kiro-cli
+    # template, so a crew name there runs the work against the DEFAULT memory
+    # store with no error. The negative assertion is the load-bearing half: the
+    # old wording was pinned here, so the test protected the leak.
+    assert 'spawn_run(crew="<name>"' in body
+    assert 'spawn_run(agent="<name>"' not in body
 
 
 def test_regeneration_overwrites_in_place(tmp_path: Path) -> None:

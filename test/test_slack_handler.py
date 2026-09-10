@@ -182,6 +182,56 @@ class FakeSessionManager:
 
 
 class TestHandleMessage:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "private_path",
+        [
+            "/home/alice/memory.db",
+            "/Users/alice/memory.db",
+            r"C:\Users\alice\memory.db",
+        ],
+    )
+    async def test_private_memory_refusal_is_safe_before_native_slack_delivery(
+        self, monkeypatch, private_path
+    ):
+        from unittest.mock import AsyncMock, Mock
+
+        from kiro_crew.memory_stores import UnknownMemoryStore
+        from kiro_crew.slack import handler
+
+        secret = "ghp_" + "A" * 36
+        refusal = AsyncMock(
+            side_effect=UnknownMemoryStore(
+                f"memory_unavailable: cannot open {private_path}; token={secret}. "
+                "Repair this member's memory. Global Memory V1 was not used."
+            )
+        )
+        monkeypatch.setattr(handler, "session_store_for_turn", refusal)
+        slack = MockSlackClient()
+        sessions = FakeSessionManager()
+        acquire = AsyncMock()
+        release = Mock()
+        monkeypatch.setattr(sessions, "get_or_create", acquire)
+        monkeypatch.setattr(sessions, "release", release)
+
+        await asyncio.wait_for(
+            handle_message(slack, sessions, "C1", "continue my task", None, "msg1", "U1"),
+            timeout=5,
+        )
+
+        refusal.assert_awaited_once()
+        acquire.assert_not_awaited()
+        release.assert_not_called()
+        wire = "\n".join(
+            action[1].get("text") or ""
+            for action in slack.actions
+            if action[0] in ("post", "update", "append_stream", "stop_stream")
+        )
+        assert "memory_unavailable" in wire
+        assert "Repair this member's memory" in wire
+        assert "Global Memory V1 was not used" in wire
+        assert "alice" not in wire and private_path not in wire and secret not in wire
+
     @pytest.fixture(autouse=True)
     def _ensure_reactions_enabled(self, monkeypatch):
         """Ensure StatusReactionController is enabled regardless of user config."""
@@ -1843,6 +1893,65 @@ class TestPerThreadAgent:
             _hydrated_sessions.discard(owner_key)
             _hydrated_sessions.discard("slack:thread1")
             _hydrated_sessions.discard("thread1")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("change_during", ["hydration", "memory"])
+    @pytest.mark.parametrize("new_owner", ["dashboard:new-owner", None])
+    async def test_reroute_uses_the_owner_after_async_memory_reads(
+        self, monkeypatch, change_during, new_owner
+    ):
+        from kiro_crew.slack import handler
+
+        old_owner = "dashboard:old-owner"
+        thread_ts = "1783733803.877979"
+        final_key = new_owner or f"slack:{thread_ts}"
+        hydrated_keys = []
+        memory_keys = []
+        privacy_keys = []
+
+        class RelinkedSessions(FakeSessionManager):
+            owner_key = old_owner
+
+            def get_session_for_thread(self, thread_ts):
+                return self.owner_key
+
+            def set_slack_link(self, key, thread_ts, channel_id):
+                self.owner_key = key
+
+        sessions = RelinkedSessions()
+
+        async def hydrate(key, _log):
+            hydrated_keys.append(key)
+            if key == old_owner and change_during == "hydration":
+                await asyncio.sleep(0)
+                sessions.owner_key = new_owner
+
+        async def resolve_memory(_builder, key):
+            memory_keys.append(key)
+            if key == old_owner and change_during == "memory":
+                await asyncio.sleep(0)
+                sessions.owner_key = new_owner
+            return f"memory:{key}"
+
+        monkeypatch.setattr(handler, "_hydrate_thread_overrides", hydrate)
+        monkeypatch.setattr(handler, "session_store_for_turn", resolve_memory)
+        monkeypatch.setattr(
+            handler, "_hydrate_conv_flags", lambda _sessions, key: privacy_keys.append(key)
+        )
+        await asyncio.wait_for(
+            handle_message(
+                MockSlackClient(), sessions, "C1", "hello", thread_ts, "msg1", "U_OWNER"
+            ),
+            timeout=5,
+        )
+
+        assert old_owner in hydrated_keys
+        assert final_key in hydrated_keys
+        assert memory_keys == ([old_owner, final_key] if change_during == "memory" else [final_key])
+        assert sessions.keys_seen == [final_key]
+        assert privacy_keys[-1] == final_key
+        assert old_owner not in privacy_keys
+        assert sessions.get_session_for_thread(thread_ts) == final_key
 
     @pytest.mark.asyncio
     async def test_a_pinned_reroute_keeps_the_askers_agent(self):

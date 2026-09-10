@@ -1,6 +1,12 @@
 {
   "_comment": "Translator context for en.json / en.manual.json keys: key -> one sentence saying which surface the string appears on and which sense of the English is meant. A SIDECAR, never inline. VS Code's translation key is `message + \"/\" + comment`, so adding or editing an inline comment there orphans every existing translation of that string; a separate file makes a description free to write and improve at any time. GNOME/KDE reach the same conclusion from the freeze side: \"addition of a comment aimed for translators\" is exempt from a string freeze, but \"adding a context marker (msgctxt) is also subject to the freeze as it renders the affected string 'fuzzy'\". Add an entry whenever a key's English is shorter than its meaning - an abbreviation, a bare unit, a key cap, or a word that is both a noun and a verb. Do NOT add one for a sentence fragment (`of`, `at`, `by`, `via`): a fragment needs deleting in Phase 3, and describing it only legitimises it. Coverage of the opaque class is ratcheted by contextSidecar.test.ts.",
   "entries": {
+    "memoryV2.edit_action": "Verb on the private member memory action that opens an editor; it does not save or approve a fact immediately.",
+    "memoryV2.replaced_at": "Date column showing when an experience was replaced by a fact and removed from current recall.",
+    "memoryV2.replaced_by": "Column naming the fact that replaced a saved experience; the experience remains recoverable.",
+    "memoryV2.times_replaced": "Count of replacement events for one recoverable experience, including replacement again after restoration.",
+    "memoryV2.filter_all": "Memory browser filter that includes facts, rules and experiences from the currently selected store.",
+    "memoryV2.source_user": "Memory record source badge identifying the human user who explicitly supplied or corrected this knowledge.",
     "app.cpu": "Abbreviation for \"CPU\" in the dashboard header's resource strip, followed by a percentage. Width-constrained: keep it as short as the target language allows.",
     "app.dsk": "Abbreviation for \"disk\" in the dashboard header's resource strip, followed by a percentage. Width-constrained: keep it as short as the target language allows.",
     "app.mem": "Abbreviation for \"memory\" (RAM) in the dashboard header's resource strip, followed by a percentage. Width-constrained: keep it as short as the target language allows.",

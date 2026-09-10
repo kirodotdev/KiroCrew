@@ -346,6 +346,25 @@ class TestStartDashboardWiring:
             assert state.ready is True
             assert runner.app["state"] is state
             assert runner.app["port"] == 0
+            assert state.resume_channel_agents is None
+
+    @pytest.mark.asyncio
+    async def test_gateway_launch_can_defer_restored_channel_agents(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        prepared = asyncio.get_running_loop().create_future()
+        prepared.set_result(None)
+        schedule_memory = MagicMock(return_value=prepared)
+        async with _dashboard(
+            tmp_path,
+            monkeypatch,
+            defer_channel_agent_resume=True,
+            schedule_memory_preparation=schedule_memory,
+        ) as (_runner, state, _spies):
+            assert callable(state.resume_channel_agents)
+            assert state.memory_startup_task is prepared
+            assert state.ready is True
+            schedule_memory.assert_called_once_with()
 
     @pytest.mark.asyncio
     async def test_the_mcp_and_dashboard_routes_are_both_mounted(

@@ -140,6 +140,13 @@ def _mock_sessions():
     return s
 
 
+def _mock_context_builder():
+    """Return a context builder with readable, unbound session metadata."""
+    builder = MagicMock()
+    builder.conversation_log.get_metadata_status.return_value = ({}, True)
+    return builder
+
+
 def _mock_dashboard_state():
     """Return a mock DashboardState."""
     ds = MagicMock()
@@ -411,7 +418,13 @@ class TestInitServices:
                                                         "asyncio.create_subprocess_exec",
                                                         new=AsyncMock(return_value=_fake_async_proc(stdout=b"kiro-cli 1.30.0")),
                                                     ):
-                                                        asyncio.run(orch._init_services())
+                                                        try:
+                                                            asyncio.run(orch._init_services())
+                                                            mock_mem_inst.init.assert_not_called()
+                                                            mock_vm_inst.init.assert_not_called()
+                                                            mock_mem_inst.rebuild_index.assert_not_called()
+                                                        finally:
+                                                            orch._stop_memory_startup()
 
         assert orch.sessions is not None
         assert orch.ctx_builder is not None
@@ -446,7 +459,12 @@ class TestInitServices:
                                                         "asyncio.create_subprocess_exec",
                                                         new=AsyncMock(return_value=_fake_async_proc(stdout=b"kiro-cli 1.30.0")),
                                                     ):
-                                                        asyncio.run(orch._init_services())
+                                                        try:
+                                                            asyncio.run(orch._init_services())
+                                                            mock_mem_inst.init.assert_not_called()
+                                                            mock_vm_inst.init.assert_not_called()
+                                                        finally:
+                                                            orch._stop_memory_startup()
 
         assert orch.slack is None
         assert orch.sessions is not None
@@ -1438,7 +1456,7 @@ class TestInitCron:
     async def test_init_cron_no_crons_flag(self):
         orch = _make_orchestrator(no_crons=True)
         orch.sessions = _mock_sessions()
-        orch.ctx_builder = MagicMock()
+        orch.ctx_builder = _mock_context_builder()
         orch.subagent_mgr = MagicMock()
         orch.subagent_mgr.running = []
         with patch("kiro_crew.slack.gateway.CronService") as mock_cs:
@@ -1455,7 +1473,7 @@ class TestInitCron:
     async def test_init_cron_starts_when_enabled(self):
         orch = _make_orchestrator(no_crons=False)
         orch.sessions = _mock_sessions()
-        orch.ctx_builder = MagicMock()
+        orch.ctx_builder = _mock_context_builder()
         orch.subagent_mgr = MagicMock()
         orch.subagent_mgr.running = []
         with patch("kiro_crew.slack.gateway.CronService") as mock_cs:
@@ -1473,7 +1491,7 @@ class TestInitCron:
         """Cron callback runs single-agent path."""
         orch = _make_orchestrator(slack_enabled=True, owner_id="U1")
         orch.sessions = _mock_sessions()
-        orch.ctx_builder = MagicMock()
+        orch.ctx_builder = _mock_context_builder()
         orch.ctx_builder.build_message = MagicMock(return_value=("full msg", None))
         orch.ctx_builder.hooks = MagicMock()
         orch.subagent_mgr = MagicMock()
@@ -1498,6 +1516,8 @@ class TestInitCron:
         callback = mock_cs.create.call_args[1]["on_job"]
 
         job = MagicMock()
+        job.member_id = ""
+        job.memory_store = ""
         job.script = ""
         job.command = ""
         job.id = "j1"
@@ -1543,7 +1563,7 @@ class TestInitCron:
         unless an unrelated surface happened to be mid-turn."""
         orch = _make_orchestrator(slack_enabled=True, owner_id="U1")
         orch.sessions = _mock_sessions()
-        orch.ctx_builder = MagicMock()
+        orch.ctx_builder = _mock_context_builder()
         orch.ctx_builder.build_message = MagicMock(return_value=("full msg", None))
         orch.ctx_builder.hooks = MagicMock()
         orch.subagent_mgr = MagicMock()
@@ -1567,6 +1587,8 @@ class TestInitCron:
         callback = mock_cs.create.call_args[1]["on_job"]
 
         job = MagicMock()
+        job.member_id = ""
+        job.memory_store = ""
         job.script = ""
         job.command = ""
         job.id = "j1"
@@ -1616,7 +1638,7 @@ class TestInitCron:
         key (cron:<job>:<agent>) — identity must be re-published for each."""
         orch = _make_orchestrator(slack_enabled=True, owner_id="U1")
         orch.sessions = _mock_sessions()
-        orch.ctx_builder = MagicMock()
+        orch.ctx_builder = _mock_context_builder()
         orch.ctx_builder.build_message = MagicMock(return_value=("full msg", None))
         orch.ctx_builder.hooks = MagicMock()
         orch.subagent_mgr = MagicMock()
@@ -1640,6 +1662,8 @@ class TestInitCron:
         callback = mock_cs.create.call_args[1]["on_job"]
 
         job = MagicMock()
+        job.member_id = ""
+        job.memory_store = ""
         job.script = ""
         job.command = ""
         job.id = "j1"
@@ -1691,7 +1715,7 @@ class TestInitCron:
         orch = _make_orchestrator(slack_enabled=True, owner_id="U1")
         orch.sessions = _mock_sessions()
         orch.sessions.reset = AsyncMock()
-        orch.ctx_builder = MagicMock()
+        orch.ctx_builder = _mock_context_builder()
         orch.ctx_builder.build_message = MagicMock(return_value=("full msg", None))
         orch.ctx_builder.hooks = MagicMock()
         orch.dashboard_state = _mock_dashboard_state()
@@ -1728,6 +1752,8 @@ class TestInitCron:
         callback = mock_cs.create.call_args[1]["on_job"]
 
         job = MagicMock()
+        job.member_id = ""
+        job.memory_store = ""
         job.script = ""
         job.command = ""
         job.id = "j1"
@@ -1779,7 +1805,7 @@ class TestInitCron:
         orch = _make_orchestrator(slack_enabled=True, owner_id="U1")
         orch.sessions = _mock_sessions()
         orch.sessions.reset = AsyncMock()
-        orch.ctx_builder = MagicMock()
+        orch.ctx_builder = _mock_context_builder()
         orch.ctx_builder.build_message = MagicMock(return_value=("full msg", None))
         orch.ctx_builder.hooks = MagicMock()
         orch.dashboard_state = _mock_dashboard_state()
@@ -1811,6 +1837,8 @@ class TestInitCron:
         callback = mock_cs.create.call_args[1]["on_job"]
 
         job = MagicMock()
+        job.member_id = ""
+        job.memory_store = ""
         job.script = ""
         job.command = ""
         job.id = "j1"
@@ -1862,7 +1890,7 @@ class TestInitCron:
         secret = "AKIAIOSFODNN7EXAMPLE"
         orch = _make_orchestrator(slack_enabled=True, owner_id="U1")
         orch.sessions = _mock_sessions()
-        orch.ctx_builder = MagicMock()
+        orch.ctx_builder = _mock_context_builder()
         orch.ctx_builder.build_message = MagicMock(return_value=("full msg", None))
         orch.ctx_builder.hooks = MagicMock()
         orch.subagent_mgr = MagicMock()
@@ -1886,6 +1914,8 @@ class TestInitCron:
         callback = mock_cs.create.call_args[1]["on_job"]
 
         job = MagicMock()
+        job.member_id = ""
+        job.memory_store = ""
         job.script = ""
         job.command = ""
         job.id = "j1"
@@ -1928,7 +1958,7 @@ class TestInitCron:
         """Duplicate result suppresses Slack delivery."""
         orch = _make_orchestrator(slack_enabled=True, owner_id="U1")
         orch.sessions = _mock_sessions()
-        orch.ctx_builder = MagicMock()
+        orch.ctx_builder = _mock_context_builder()
         orch.ctx_builder.build_message = MagicMock(return_value=("msg", None))
         orch.ctx_builder.hooks = MagicMock()
         orch.subagent_mgr = MagicMock()
@@ -1952,6 +1982,8 @@ class TestInitCron:
         callback = mock_cs.create.call_args[1]["on_job"]
 
         job = MagicMock()
+        job.member_id = ""
+        job.memory_store = ""
         job.script = ""
         job.command = ""
         job.id = "j2"
@@ -1993,7 +2025,7 @@ class TestInitCron:
         """Silent job suppresses delivery."""
         orch = _make_orchestrator()
         orch.sessions = _mock_sessions()
-        orch.ctx_builder = MagicMock()
+        orch.ctx_builder = _mock_context_builder()
         orch.ctx_builder.build_message = MagicMock(return_value=("msg", None))
         orch.ctx_builder.hooks = MagicMock()
         orch.subagent_mgr = MagicMock()
@@ -2014,6 +2046,8 @@ class TestInitCron:
         callback = mock_cs.create.call_args[1]["on_job"]
 
         job = MagicMock()
+        job.member_id = ""
+        job.memory_store = ""
         job.script = ""
         job.command = ""
         job.id = "j3"
@@ -2060,7 +2094,7 @@ class TestInitSubagents:
     async def test_init_subagents_creates_manager(self):
         orch = _make_orchestrator()
         orch.sessions = _mock_sessions()
-        orch.ctx_builder = MagicMock()
+        orch.ctx_builder = _mock_context_builder()
         orch.ctx_builder.hooks = MagicMock()
         orch.dashboard_state = _mock_dashboard_state()
         with patch("kiro_crew.slack.handler.is_yolo_mode", return_value=False):
@@ -2077,7 +2111,7 @@ class TestInitSubagents:
         orch = _make_orchestrator()
         orch._cfg.agent.max_subagents = 5
         orch.sessions = _mock_sessions()
-        orch.ctx_builder = MagicMock()
+        orch.ctx_builder = _mock_context_builder()
         orch.ctx_builder.hooks = MagicMock()
         orch.dashboard_state = None
         with patch("kiro_crew.slack.handler.is_yolo_mode", return_value=False):
@@ -2110,7 +2144,7 @@ class TestInitSubagents:
 
         orch = _make_orchestrator()
         orch.sessions = _mock_sessions()
-        orch.ctx_builder = MagicMock()
+        orch.ctx_builder = _mock_context_builder()
         orch.ctx_builder.hooks = MagicMock()
         orch.dashboard_state = _mock_dashboard_state()
         on_event = self._capture_on_event(orch)
@@ -2137,7 +2171,7 @@ class TestInitSubagents:
 
         orch = _make_orchestrator()
         orch.sessions = _mock_sessions()
-        orch.ctx_builder = MagicMock()
+        orch.ctx_builder = _mock_context_builder()
         orch.ctx_builder.hooks = MagicMock()
         orch.dashboard_state = _mock_dashboard_state()
         on_event = self._capture_on_event(orch)
@@ -2182,7 +2216,7 @@ class TestSubagentDoneStoppedClassification:
         output — never 'completed ✅'."""
         orch = _make_orchestrator()
         orch.sessions = _mock_sessions()
-        orch.ctx_builder = MagicMock()
+        orch.ctx_builder = _mock_context_builder()
         orch.ctx_builder.hooks = MagicMock()
         orch.dashboard_state = _mock_dashboard_state()
         orch.dashboard_state.get_slot = MagicMock(return_value=None)  # slot gone
@@ -2205,7 +2239,7 @@ class TestSubagentDoneStoppedClassification:
         record_failure (a deliberate stop is not a retryable failure)."""
         orch = _make_orchestrator()
         orch.sessions = _mock_sessions()
-        orch.ctx_builder = MagicMock()
+        orch.ctx_builder = _mock_context_builder()
         orch.ctx_builder.hooks = MagicMock()
         orch.dashboard_state = _mock_dashboard_state()
 
@@ -2246,7 +2280,7 @@ class TestSubagentFinalSummaryDirective:
 
         orch = _make_orchestrator()
         orch.sessions = _mock_sessions()
-        orch.ctx_builder = MagicMock()
+        orch.ctx_builder = _mock_context_builder()
         orch.ctx_builder.hooks = MagicMock()
         ds = _mock_dashboard_state()
         slot = MagicMock()
@@ -2294,7 +2328,7 @@ class TestInitHeartbeat:
     async def test_init_heartbeat_creates_service(self):
         orch = _make_orchestrator()
         orch.sessions = _mock_sessions()
-        orch.ctx_builder = MagicMock()
+        orch.ctx_builder = _mock_context_builder()
         orch.ctx_builder.memory = MagicMock()
         orch.ctx_builder.hooks = MagicMock()
         orch.consolidator = MagicMock()
@@ -2319,7 +2353,7 @@ class TestInitTaskRunner:
     def test_init_task_runner_creates_runner(self):
         orch = _make_orchestrator()
         orch.sessions = _mock_sessions()
-        orch.ctx_builder = MagicMock()
+        orch.ctx_builder = _mock_context_builder()
         orch.ctx_builder.hooks = MagicMock()
         orch.conv_log = MagicMock()
         orch.consolidator = MagicMock()
@@ -2474,7 +2508,7 @@ class TestInitDashboard:
         orch.sessions = _mock_sessions()
         orch.cron_svc = MagicMock()
         orch.subagent_mgr = MagicMock()
-        orch.ctx_builder = MagicMock()
+        orch.ctx_builder = _mock_context_builder()
         orch.conv_log = MagicMock()
         orch.consolidator = MagicMock()
         orch.task_runner = MagicMock()
@@ -2545,7 +2579,7 @@ class TestCronFailurePaths:
         """First failure sends alert."""
         orch = _make_orchestrator(slack_enabled=True, owner_id="U1")
         orch.sessions = _mock_sessions()
-        orch.ctx_builder = MagicMock()
+        orch.ctx_builder = _mock_context_builder()
         orch.ctx_builder.build_message = MagicMock(return_value=("msg", None))
         orch.ctx_builder.hooks = MagicMock()
         orch.subagent_mgr = MagicMock()
@@ -2568,6 +2602,8 @@ class TestCronFailurePaths:
         callback = mock_cs.create.call_args[1]["on_job"]
 
         job = MagicMock()
+        job.member_id = ""
+        job.memory_store = ""
         job.script = ""
         job.command = ""
         job.id = "jfail"
@@ -2612,7 +2648,7 @@ class TestCronFailurePaths:
         """Duplicate failure within window suppresses Slack."""
         orch = _make_orchestrator(slack_enabled=True, owner_id="U1")
         orch.sessions = _mock_sessions()
-        orch.ctx_builder = MagicMock()
+        orch.ctx_builder = _mock_context_builder()
         orch.ctx_builder.build_message = MagicMock(return_value=("msg", None))
         orch.ctx_builder.hooks = MagicMock()
         orch.subagent_mgr = MagicMock()
@@ -2635,6 +2671,8 @@ class TestCronFailurePaths:
         callback = mock_cs.create.call_args[1]["on_job"]
 
         job = MagicMock()
+        job.member_id = ""
+        job.memory_store = ""
         job.script = ""
         job.command = ""
         job.id = "jfail2"
@@ -2681,7 +2719,7 @@ class TestCronFailurePaths:
         """Multi-agent sequence runs agents sequentially."""
         orch = _make_orchestrator()
         orch.sessions = _mock_sessions()
-        orch.ctx_builder = MagicMock()
+        orch.ctx_builder = _mock_context_builder()
         orch.ctx_builder.build_message = MagicMock(return_value=("msg", None))
         orch.ctx_builder.hooks = MagicMock()
         orch.subagent_mgr = MagicMock()
@@ -2702,6 +2740,8 @@ class TestCronFailurePaths:
         callback = mock_cs.create.call_args[1]["on_job"]
 
         job = MagicMock()
+        job.member_id = ""
+        job.memory_store = ""
         job.script = ""
         job.command = ""
         job.id = "jmulti"
@@ -3319,7 +3359,7 @@ class TestCronSuccessReminder:
         """After 24h of same result, re-posts with warning."""
         orch = _make_orchestrator(slack_enabled=True, owner_id="U1")
         orch.sessions = _mock_sessions()
-        orch.ctx_builder = MagicMock()
+        orch.ctx_builder = _mock_context_builder()
         orch.ctx_builder.build_message = MagicMock(return_value=("msg", None))
         orch.ctx_builder.hooks = MagicMock()
         orch.subagent_mgr = MagicMock()
@@ -3343,6 +3383,8 @@ class TestCronSuccessReminder:
         callback = mock_cs.create.call_args[1]["on_job"]
 
         job = MagicMock()
+        job.member_id = ""
+        job.memory_store = ""
         job.script = ""
         job.command = ""
         job.id = "j_remind"
@@ -3390,7 +3432,7 @@ class TestSubagentDone:
         """Create orchestrator with subagent manager initialized."""
         orch = _make_orchestrator()
         orch.sessions = _mock_sessions()
-        orch.ctx_builder = MagicMock()
+        orch.ctx_builder = _mock_context_builder()
         orch.ctx_builder.hooks = MagicMock()
         orch.ctx_builder.build_message = MagicMock(return_value=("msg", None))
         orch.dashboard_state = _mock_dashboard_state()
@@ -3719,7 +3761,7 @@ class TestHeartbeatCallback:
     async def test_heartbeat_task_success(self):
         orch = _make_orchestrator(slack_enabled=True, owner_id="U1")
         orch.sessions = _mock_sessions()
-        orch.ctx_builder = MagicMock()
+        orch.ctx_builder = _mock_context_builder()
         orch.ctx_builder.memory = MagicMock()
         orch.ctx_builder.build_message = MagicMock(return_value=("msg", None))
         orch.ctx_builder.hooks = MagicMock()
@@ -3754,7 +3796,7 @@ class TestHeartbeatCallback:
         """HEARTBEAT_KEEP response suppresses delivery."""
         orch = _make_orchestrator()
         orch.sessions = _mock_sessions()
-        orch.ctx_builder = MagicMock()
+        orch.ctx_builder = _mock_context_builder()
         orch.ctx_builder.memory = MagicMock()
         orch.ctx_builder.build_message = MagicMock(return_value=("msg", None))
         orch.ctx_builder.hooks = MagicMock()
@@ -3785,7 +3827,7 @@ class TestHeartbeatCallback:
         """Heartbeat task exception propagates."""
         orch = _make_orchestrator()
         orch.sessions = _mock_sessions()
-        orch.ctx_builder = MagicMock()
+        orch.ctx_builder = _mock_context_builder()
         orch.ctx_builder.memory = MagicMock()
         orch.ctx_builder.build_message = MagicMock(return_value=("msg", None))
         orch.ctx_builder.hooks = MagicMock()
@@ -4125,7 +4167,7 @@ class TestSubagentSlackInjection:
     def _setup(self):
         orch = _make_orchestrator(slack_enabled=True, owner_id="U1")
         orch.sessions = _mock_sessions()
-        orch.ctx_builder = MagicMock()
+        orch.ctx_builder = _mock_context_builder()
         orch.ctx_builder.hooks = MagicMock()
         orch.ctx_builder.build_message = MagicMock(return_value=("msg", None))
         orch.dashboard_state = _mock_dashboard_state()
@@ -4244,7 +4286,7 @@ class TestTaskRunnerApproval:
     def test_task_runner_has_approval_callbacks(self):
         orch = _make_orchestrator()
         orch.sessions = _mock_sessions()
-        orch.ctx_builder = MagicMock()
+        orch.ctx_builder = _mock_context_builder()
         orch.ctx_builder.hooks = MagicMock()
         orch.conv_log = MagicMock()
         orch.consolidator = MagicMock()
@@ -5565,7 +5607,7 @@ class TestCronAcpRetry:
         """ACP error with 'not running' triggers retry."""
         orch = _make_orchestrator()
         orch.sessions = _mock_sessions()
-        orch.ctx_builder = MagicMock()
+        orch.ctx_builder = _mock_context_builder()
         orch.ctx_builder.build_message = MagicMock(return_value=("msg", None))
         orch.ctx_builder.hooks = MagicMock()
         orch.subagent_mgr = MagicMock()
@@ -5586,6 +5628,8 @@ class TestCronAcpRetry:
         callback = mock_cs.create.call_args[1]["on_job"]
 
         job = MagicMock()
+        job.member_id = ""
+        job.memory_store = ""
         job.script = ""
         job.command = ""
         job.id = "jacp"
@@ -5636,7 +5680,7 @@ class TestInjectWithRetry:
     def _setup(self):
         orch = _make_orchestrator(slack_enabled=True, owner_id="U1")
         orch.sessions = _mock_sessions()
-        orch.ctx_builder = MagicMock()
+        orch.ctx_builder = _mock_context_builder()
         orch.ctx_builder.hooks = MagicMock()
         orch.ctx_builder.build_message = MagicMock(return_value=("msg", None))
         orch.dashboard_state = _mock_dashboard_state()
@@ -5728,7 +5772,7 @@ class TestOrchestrationGuard:
     def _setup(self):
         orch = _make_orchestrator()
         orch.sessions = _mock_sessions()
-        orch.ctx_builder = MagicMock()
+        orch.ctx_builder = _mock_context_builder()
         orch.ctx_builder.hooks = MagicMock()
         orch.ctx_builder.build_message = MagicMock(return_value=("msg", None))
         orch.dashboard_state = _mock_dashboard_state()
@@ -5928,7 +5972,7 @@ class TestTaskApprovalCallback:
         """No dashboard → denies task."""
         orch = _make_orchestrator()
         orch.sessions = _mock_sessions()
-        orch.ctx_builder = MagicMock()
+        orch.ctx_builder = _mock_context_builder()
         orch.ctx_builder.hooks = MagicMock()
         orch.conv_log = MagicMock()
         orch.consolidator = MagicMock()
@@ -5952,7 +5996,7 @@ class TestTaskApprovalCallback:
         """Dashboard available → requests approval."""
         orch = _make_orchestrator()
         orch.sessions = _mock_sessions()
-        orch.ctx_builder = MagicMock()
+        orch.ctx_builder = _mock_context_builder()
         orch.ctx_builder.hooks = MagicMock()
         orch.conv_log = MagicMock()
         orch.consolidator = MagicMock()
@@ -5987,7 +6031,7 @@ class TestInitDashboardWiring:
         orch.sessions = _mock_sessions()
         orch.cron_svc = MagicMock()
         orch.subagent_mgr = MagicMock()
-        orch.ctx_builder = MagicMock()
+        orch.ctx_builder = _mock_context_builder()
         orch.conv_log = MagicMock()
         orch.consolidator = MagicMock()
         orch.task_runner = MagicMock()
@@ -6010,7 +6054,7 @@ class TestInitDashboardWiring:
         orch.sessions = _mock_sessions()
         orch.cron_svc = MagicMock()
         orch.subagent_mgr = MagicMock()
-        orch.ctx_builder = MagicMock()
+        orch.ctx_builder = _mock_context_builder()
         orch.conv_log = MagicMock()
         orch.consolidator = MagicMock()
         orch.task_runner = MagicMock()
@@ -6038,7 +6082,7 @@ class TestCronAckedItems:
     async def test_acked_items_appended_to_message(self):
         orch = _make_orchestrator()
         orch.sessions = _mock_sessions()
-        orch.ctx_builder = MagicMock()
+        orch.ctx_builder = _mock_context_builder()
         orch.ctx_builder.build_message = MagicMock(return_value=("msg", None))
         orch.ctx_builder.hooks = MagicMock()
         orch.subagent_mgr = MagicMock()
@@ -6059,6 +6103,8 @@ class TestCronAckedItems:
         callback = mock_cs.create.call_args[1]["on_job"]
 
         job = MagicMock()
+        job.member_id = ""
+        job.memory_store = ""
         job.script = ""
         job.command = ""
         job.id = "jack"
@@ -6108,7 +6154,7 @@ class TestRetriggerRecovery:
     def _setup(self):
         orch = _make_orchestrator()
         orch.sessions = _mock_sessions()
-        orch.ctx_builder = MagicMock()
+        orch.ctx_builder = _mock_context_builder()
         orch.ctx_builder.hooks = MagicMock()
         orch.ctx_builder.build_message = MagicMock(return_value=("msg", None))
         orch.dashboard_state = _mock_dashboard_state()
@@ -6802,7 +6848,17 @@ class TestInitServicesLoopResponsiveness:
                                                             await asyncio.wait_for(
                                                                 orch._init_services(), timeout=90
                                                             )
+                                                            assert state["probed"] == []
+                                                            orch.ctx_builder.memory = mock_mem_inst
+                                                            with (
+                                                                patch("kiro_crew.context.reset_memory_caches"),
+                                                                patch("kiro_crew.memory_backup.apply_pending_member_restores", return_value={}),
+                                                            ):
+                                                                assert await asyncio.wait_for(
+                                                                    asyncio.to_thread(orch._initialize_memory_worker), timeout=90
+                                                                )
                                                         finally:
+                                                            await asyncio.to_thread(orch._stop_memory_startup)
                                                             ticker_task.cancel()
         assert state["starved"] == [], (
             f"loop starved during service init: {state['starved']} observed no "
@@ -6826,7 +6882,7 @@ class TestCronSlackDeliveryFailure:
     async def test_slack_delivery_exception_notifies_dashboard(self):
         orch = _make_orchestrator(slack_enabled=True, owner_id="U1")
         orch.sessions = _mock_sessions()
-        orch.ctx_builder = MagicMock()
+        orch.ctx_builder = _mock_context_builder()
         orch.ctx_builder.build_message = MagicMock(return_value=("msg", None))
         orch.ctx_builder.hooks = MagicMock()
         orch.subagent_mgr = MagicMock()
@@ -6850,6 +6906,8 @@ class TestCronSlackDeliveryFailure:
         callback = mock_cs.create.call_args[1]["on_job"]
 
         job = MagicMock()
+        job.member_id = ""
+        job.memory_store = ""
         job.script = ""
         job.command = ""
         job.id = "jslack"
@@ -7030,7 +7088,7 @@ class TestSlackSubagentCompletionPersistence:
     def _setup(self):
         orch = _make_orchestrator(slack_enabled=True, owner_id="U1")
         orch.sessions = _mock_sessions()
-        orch.ctx_builder = MagicMock()
+        orch.ctx_builder = _mock_context_builder()
         orch.ctx_builder.hooks = MagicMock()
         orch.ctx_builder.build_message = MagicMock(return_value=("msg", None))
         orch.dashboard_state = _mock_dashboard_state()
@@ -7281,7 +7339,7 @@ class TestSubagentChannelTransportDelivery:
         orch.sessions.get_origin_link = MagicMock(return_value=None)
         orch.sessions.get_mirror_link = MagicMock(return_value=None)
         orch.sessions.get_channel = MagicMock(return_value=parent_channel)
-        orch.ctx_builder = MagicMock()
+        orch.ctx_builder = _mock_context_builder()
         orch.ctx_builder.hooks = MagicMock()
         orch.ctx_builder.build_message = MagicMock(return_value=("msg", None))
         orch.dashboard_state = _mock_dashboard_state()
@@ -8604,7 +8662,7 @@ def _collapsed_enabled_operands() -> dict[str, set[str]]:
 
 
 def _uncredentialed_probe_operands() -> dict[str, set[str]]:
-    """Return the self-attribute values named by each production probe row."""
+    """Return the self-attributes whose presence each production probe checks."""
     assignment = next(
         node
         for node in ast.walk(_gateway_method("_start_channel_transports"))
@@ -8619,15 +8677,18 @@ def _uncredentialed_probe_operands() -> dict[str, set[str]]:
         channel_node, _, _, credentials_node = row.elts
         assert isinstance(channel_node, ast.Constant) and isinstance(channel_node.value, str)
         assert isinstance(credentials_node, ast.Tuple)
-        found[channel_node.value] = {
-            pair.elts[1].attr
-            for pair in credentials_node.elts
-            if isinstance(pair, ast.Tuple)
-            and len(pair.elts) == 2
-            and isinstance(pair.elts[1], ast.Attribute)
-            and isinstance(pair.elts[1].value, ast.Name)
-            and pair.elts[1].value.id == "self"
-        }
+        operands = set()
+        for pair in credentials_node.elts:
+            assert isinstance(pair, ast.Tuple) and len(pair.elts) == 2
+            presence = pair.elts[1]
+            assert isinstance(presence, ast.Call)
+            assert isinstance(presence.func, ast.Name) and presence.func.id == "bool"
+            assert len(presence.args) == 1 and not presence.keywords
+            operand = presence.args[0]
+            assert isinstance(operand, ast.Attribute)
+            assert isinstance(operand.value, ast.Name) and operand.value.id == "self"
+            operands.add(operand.attr)
+        found[channel_node.value] = operands
     return found
 
 
@@ -8799,6 +8860,13 @@ class TestChannelSkipReasonAtTransportStart:
     async def _start(self, orch: GatewayOrchestrator, monkeypatch) -> None:
         from kiro_crew.slack import gateway as gw
 
+        warn = gw.warn_if_channel_uncredentialed
+
+        def warn_with_presence(channel_type, settings_name, cfg_enabled, presence):
+            assert all(type(present) is bool for _, present in presence)
+            warn(channel_type, settings_name, cfg_enabled, presence)
+
+        monkeypatch.setattr(gw, "warn_if_channel_uncredentialed", warn_with_presence)
         monkeypatch.setattr(gw, "_channel_transport_permitted", lambda member: False)
         await orch._start_channel_transports()
         # `_start_channel_transports` detaches `_replay_spooled_inbound` as a

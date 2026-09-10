@@ -4,6 +4,10 @@ import userEvent from '@testing-library/user-event'
 import VectorMemoryCard, { parseTags, semanticValueText } from '../pages/overview/VectorMemoryCard'
 import { renderWithProviders } from './helpers'
 import { api } from '../api/client'
+import { i18next, registerCatalogs } from '../i18n'
+import zhCN from '../i18n/locales/zh-CN.json'
+
+registerCatalogs({ 'zh-CN': { translation: zhCN } })
 
 // Coverage-focused companion to the existing VectorMemoryCard specs. Those cover
 // the pure helpers and the semantic render cap; this one drives the three tabs
@@ -103,16 +107,40 @@ describe('VectorMemoryCard — exported helpers', () => {
 describe('VectorMemoryCard — load failures and parent callbacks', () => {
   beforeEach(() => { vi.clearAllMocks(); setupApi() })
 
-  it('swallows every failing load call and stays on the loading card', async () => {
-    vi.mocked(api.vectorStats).mockRejectedValue(new Error('stats down'))
-    vi.mocked(api.vectorEmbeddingStatus).mockRejectedValue(new Error('emb down'))
-    vi.mocked(api.vectorSemantic).mockRejectedValue(new Error('semantic down'))
-
+  it.each(['vectorStats', 'vectorEmbeddingStatus', 'vectorSemantic'] as const)('reports a failed %s read and recovers on retry', async endpoint => {
+    const user = userEvent.setup()
+    vi.mocked(api[endpoint]).mockRejectedValue(new Error('memory read unavailable'))
     renderWithProviders(<VectorMemoryCard />)
-
-    await waitFor(() => expect(api.vectorStats).toHaveBeenCalled())
-    expect(screen.getByText('Loading…')).toBeInTheDocument()
+    expect(await screen.findByRole('alert')).toHaveTextContent('memory read unavailable')
+    await waitFor(() => expect(screen.queryByText('Loading…')).not.toBeInTheDocument())
+    if (endpoint === 'vectorSemantic') expect(screen.queryByText('No semantic entries')).not.toBeInTheDocument()
     expect(screen.getByText('Vector Memory')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /ask.*agent/i })).not.toBeInTheDocument()
+    setupApi()
+    await user.click(screen.getByRole('button', { name: 'Retry', exact: true }))
+    await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument())
+    await waitForActive()
+  })
+
+  it('retains successful semantic rows and unsaved input when a refresh fails', async () => {
+    const user = userEvent.setup()
+    setupApi({ semantic: { entries: [{ key: 'user.name', value_json: '"Saved name"', confidence: 1 }] } })
+    const { queryClient } = renderWithProviders(<VectorMemoryCard />)
+    await screen.findByText('Saved name')
+    await user.type(screen.getByPlaceholderText('Key (e.g. pref.backend.framework)'), 'project.pending')
+    await user.type(screen.getByPlaceholderText('Value'), 'Keep this draft')
+    vi.mocked(api.vectorSemantic).mockRejectedValue(new Error('refresh unavailable'))
+    await act(async () => { await queryClient.invalidateQueries({ queryKey: ['member-memory', 'default', 'semantic-browser'] }) })
+    expect(await screen.findByRole('alert')).toHaveTextContent('refresh unavailable')
+    expect(screen.getByText('Saved name')).toBeInTheDocument()
+    expect(screen.getByPlaceholderText('Value')).toHaveValue('Keep this draft')
+    expect(screen.queryByText('No semantic entries')).not.toBeInTheDocument()
+    vi.mocked(api.vectorSemantic).mockResolvedValue({ entries: [] } as never)
+    await user.click(screen.getByRole('button', { name: 'Retry', exact: true }))
+    await screen.findByText('No semantic entries')
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    expect(screen.getByPlaceholderText('Value')).toHaveValue('Keep this draft')
+    expect(api.vectorSemanticWrite).not.toHaveBeenCalled()
   })
 
   it('reports migrated and active state to the parent', async () => {
@@ -123,6 +151,35 @@ describe('VectorMemoryCard — load failures and parent callbacks', () => {
     await waitForActive()
     expect(onMigratedChange).toHaveBeenCalledWith(true)
     await waitFor(() => expect(onActiveChange).toHaveBeenLastCalledWith(true))
+  })
+})
+
+describe('VectorMemoryCard labels in the active language', () => {
+  beforeEach(() => { vi.clearAllMocks(); setupApi() })
+  afterEach(async () => { await i18next.changeLanguage('en') })
+
+  it('translates statistics and search columns without changing the submitted results', async () => {
+    const user = userEvent.setup()
+    setupApi({ search: { results: [{ id: 'translated-hit', text: 'retained search result', tags: [], importance: 0.9, score: 0.95 }] } })
+    const { rerender } = renderWithProviders(<VectorMemoryCard />)
+    await waitForActive()
+    const statistics = screen.getByText('Embedded').parentElement!.parentElement!
+    await user.click(tab(/^Episodic$/))
+    await user.type(screen.getByPlaceholderText('Search episodic memories…'), 'coverage{Enter}')
+    await screen.findByText('retained search result')
+
+    await act(async () => { await i18next.changeLanguage('zh-CN') })
+    rerender(<VectorMemoryCard />)
+
+    for (const label of ['语义记忆', '情景记忆', '已嵌入']) {
+      expect(within(statistics).getByText(label)).toBeInTheDocument()
+    }
+    expect(screen.getAllByRole('columnheader').map(header => header.textContent)).toEqual([
+      '内容', '标签', '重要性', '得分', '时间', '',
+    ])
+    expect(screen.getByText('retained search result')).toBeInTheDocument()
+    expect(api.vectorEpisodicSearch).toHaveBeenCalledTimes(1)
+    expect(api.vectorEpisodicSearch).toHaveBeenLastCalledWith('coverage', undefined)
   })
 })
 
@@ -137,6 +194,7 @@ describe('VectorMemoryCard — Episodic tab', () => {
     await user.click(tab(/^Episodic$/))
     await waitFor(() => expect(screen.getByText('No episodic entries')).toBeInTheDocument())
     expect(api.vectorEpisodic).toHaveBeenCalledWith(50, 0, undefined)
+    expect(api.vectorEpisodic).toHaveBeenCalledTimes(1)
     expect(screen.getByText('Episodic Memory')).toBeInTheDocument()
     // No search query yet, so no Score column.
     expect(screen.queryByText('Score')).not.toBeInTheDocument()
@@ -180,11 +238,17 @@ describe('VectorMemoryCard — Episodic tab', () => {
     await user.click(tab(/^Episodic$/))
     await waitFor(() => expect(screen.getByText(/shipped the coverage wave/)).toBeInTheDocument())
 
-    await user.type(screen.getByPlaceholderText('Search episodic memories…'), 'coverage{Enter}')
+    await user.type(screen.getByPlaceholderText('Search episodic memories…'), 'coverage')
+    expect(screen.queryByText('Score')).not.toBeInTheDocument()
+    expect(api.vectorEpisodicSearch).not.toHaveBeenCalled()
+    await user.type(screen.getByPlaceholderText('Search episodic memories…'), '{Enter}')
     await waitFor(() => expect(screen.getByText('scored hit')).toBeInTheDocument())
     expect(api.vectorEpisodicSearch).toHaveBeenCalledWith('coverage', undefined)
     expect(screen.getByText('Score')).toBeInTheDocument()
     expect(screen.getByText('0.912')).toBeInTheDocument()
+    await user.type(screen.getByPlaceholderText('Search episodic memories…'), ' draft')
+    expect(screen.getByText('Score')).toBeInTheDocument()
+    expect(api.vectorEpisodicSearch).toHaveBeenLastCalledWith('coverage', undefined)
 
     // Clear resets the query and re-browses.
     await user.click(screen.getByRole('button', { name: 'Clear' }))
@@ -230,7 +294,7 @@ describe('VectorMemoryCard — Episodic tab', () => {
     await waitFor(() => expect(screen.queryByRole('button', { name: 'Clear' })).not.toBeInTheDocument())
   })
 
-  it('appends the next page when Load more is used', async () => {
+  it('retains the first page after a failed next page and retries the same offset', async () => {
     const user = userEvent.setup()
     const page1 = Array.from({ length: 50 }, (_, i) => ({ id: `p1-${i}`, text: `first ${i}`, tags: [], importance: 0.99 }))
     setupApi({ episodic: { entries: page1 } })
@@ -239,16 +303,23 @@ describe('VectorMemoryCard — Episodic tab', () => {
     await user.click(tab(/^Episodic$/))
     await waitFor(() => expect(screen.getByText('first 0')).toBeInTheDocument())
 
-    vi.mocked(api.vectorEpisodic).mockResolvedValue({ entries: [{ id: 'p2-0', text: 'second page row', tags: [], importance: 0.99 }] } as never)
+    vi.mocked(api.vectorEpisodic).mockRejectedValue(new Error('next page down'))
     await user.click(screen.getByRole('button', { name: 'Load more…' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('next page down')
+    expect(screen.getByText('first 0')).toBeInTheDocument()
+    expect(screen.queryByText('No episodic entries')).not.toBeInTheDocument()
+    expect(api.vectorEpisodic).toHaveBeenLastCalledWith(50, 50, undefined)
+    vi.mocked(api.vectorEpisodic).mockResolvedValue({ entries: [{ id: 'p2-0', text: 'second page row', tags: [], importance: 0.99 }] } as never)
+    await user.click(screen.getByRole('button', { name: 'Retry', exact: true }))
     await waitFor(() => expect(screen.getByText('second page row')).toBeInTheDocument())
     expect(api.vectorEpisodic).toHaveBeenLastCalledWith(50, 50, undefined)
     // Still holds the first page, and the exhausted page hides Load more.
     expect(screen.getByText('first 0')).toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Load more…' })).not.toBeInTheDocument()
   })
 
-  it('degrades to an empty list when the browse and search calls fail', async () => {
+  it('reports browse and search failures, preserves rows and retries the submitted search', async () => {
     const user = userEvent.setup()
     vi.mocked(api.vectorEpisodic).mockRejectedValue(new Error('episodic down'))
     vi.mocked(api.vectorEpisodicSearch).mockRejectedValue(new Error('search down'))
@@ -256,25 +327,77 @@ describe('VectorMemoryCard — Episodic tab', () => {
     await waitForActive()
 
     await user.click(tab(/^Episodic$/))
-    await waitFor(() => expect(screen.getByText('No episodic entries')).toBeInTheDocument())
-
+    expect(await screen.findByRole('alert')).toHaveTextContent('episodic down')
+    expect(screen.queryByText('No episodic entries')).not.toBeInTheDocument()
+    vi.mocked(api.vectorEpisodic).mockResolvedValue({ entries: EPISODIC_ROWS } as never)
+    await user.click(screen.getByRole('button', { name: 'Retry', exact: true }))
+    await screen.findByText('third fragment')
     await user.type(screen.getByPlaceholderText('Search episodic memories…'), 'anything{Enter}')
-    await waitFor(() => expect(api.vectorEpisodicSearch).toHaveBeenCalled())
-    expect(screen.getByText('No episodic entries')).toBeInTheDocument()
+    expect(await screen.findByRole('alert')).toHaveTextContent('search down')
+    expect(screen.getByText('third fragment')).toBeInTheDocument()
+    expect(screen.queryByText('No episodic entries')).not.toBeInTheDocument()
+    await user.type(screen.getByPlaceholderText('Search episodic memories…'), ' edited')
+    vi.mocked(api.vectorEpisodicSearch).mockResolvedValue({ results: [] } as never)
+    await user.click(screen.getByRole('button', { name: 'Retry', exact: true }))
+    await screen.findByText('No episodic entries')
+    expect(api.vectorEpisodicSearch).toHaveBeenLastCalledWith('anything', undefined)
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
 
-  it('deletes an episodic row optimistically', async () => {
+  it('retains the row and search after a rejected deletion and retries that row', async () => {
     const user = userEvent.setup()
-    setupApi({ episodic: { entries: EPISODIC_ROWS.slice(0, 2) } })
+    setupApi({ episodic: { entries: EPISODIC_ROWS.slice(0, 2) }, search: { results: EPISODIC_ROWS.slice(0, 2) } })
+    vi.mocked(api.vectorEpisodicDelete).mockRejectedValueOnce(new Error('delete refused'))
+    renderWithProviders(<VectorMemoryCard />)
+    await waitForActive()
+    await user.type(screen.getByPlaceholderText('Key (e.g. pref.backend.framework)'), 'pref.unsaved')
+    await user.click(tab(/^Episodic$/))
+    await screen.findByText(/shipped the coverage wave/)
+    await user.type(screen.getByPlaceholderText('Search episodic memories…'), 'coverage{Enter}')
+    await screen.findByText('Score')
+    const row = screen.getByText(/shipped the coverage wave/).closest('tr')!
+    await user.click(within(row).getByRole('button', { name: 'Delete' }))
+    expect(await within(row).findByRole('alert')).toHaveTextContent('delete refused')
+    expect(screen.getByPlaceholderText('Search episodic memories…')).toHaveValue('coverage')
+    expect(screen.getByText('plain fragment with no timestamp')).toBeInTheDocument()
+    expect(within(row).queryByRole('button', { name: /ask.*agent/i })).not.toBeInTheDocument()
+    await user.click(within(row).getByRole('button', { name: 'Retry' }))
+    await waitFor(() => expect(screen.queryByText(/shipped the coverage wave/)).not.toBeInTheDocument())
+    expect(api.vectorEpisodicDelete).toHaveBeenNthCalledWith(2, 'e1')
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    await user.click(tab(/^Semantic$/))
+    expect(screen.getByPlaceholderText('Key (e.g. pref.backend.framework)')).toHaveValue('pref.unsaved')
+  })
+
+  it('keeps a deleted row out of cached filters when a later refresh fails', async () => {
+    const user = userEvent.setup()
+    setupApi({ episodic: { entries: EPISODIC_ROWS.slice(0, 2) }, search: { results: EPISODIC_ROWS.slice(0, 2) } })
     renderWithProviders(<VectorMemoryCard />)
     await waitForActive()
     await user.click(tab(/^Episodic$/))
     await waitFor(() => expect(screen.getByText(/shipped the coverage wave/)).toBeInTheDocument())
 
+    // Populate both browse and search caches before deleting from the search.
+    await user.type(screen.getByPlaceholderText('Search episodic memories…'), 'coverage{Enter}')
+    await waitFor(() => expect(screen.getByText('Score')).toBeInTheDocument())
+    await waitFor(() => expect(screen.queryByText('Loading…')).not.toBeInTheDocument())
+
     const row = screen.getByText(/shipped the coverage wave/).closest('tr')!
     await user.click(within(row).getByRole('button', { name: 'Delete' }))
     await waitFor(() => expect(screen.queryByText(/shipped the coverage wave/)).not.toBeInTheDocument())
     expect(api.vectorEpisodicDelete).toHaveBeenCalledWith('e1')
+    expect(screen.getByText('plain fragment with no timestamp')).toBeInTheDocument()
+
+    vi.mocked(api.vectorEpisodic).mockRejectedValue(new Error('browse refresh unavailable'))
+    await user.click(screen.getByRole('button', { name: 'Clear' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('browse refresh unavailable')
+    expect(screen.queryByText(/shipped the coverage wave/)).not.toBeInTheDocument()
+    expect(screen.getByText('plain fragment with no timestamp')).toBeInTheDocument()
+
+    vi.mocked(api.vectorEpisodicSearch).mockRejectedValue(new Error('search refresh unavailable'))
+    await user.type(screen.getByPlaceholderText('Search episodic memories…'), 'coverage{Enter}')
+    expect(await screen.findByRole('alert')).toHaveTextContent('search refresh unavailable')
+    expect(screen.queryByText(/shipped the coverage wave/)).not.toBeInTheDocument()
     expect(screen.getByText('plain fragment with no timestamp')).toBeInTheDocument()
   })
 })
@@ -348,15 +471,61 @@ describe('VectorMemoryCard — Audit tab', () => {
     await waitFor(() => expect(screen.getByText('No events')).toBeInTheDocument())
   })
 
-  it('shows an empty audit list when the events call fails', async () => {
+  it.each([false, true])('shows and recovers an audit failure with diagnosticsOnly=%s', async diagnosticsOnly => {
     const user = userEvent.setup()
     vi.mocked(api.vectorEvents).mockRejectedValue(new Error('events down'))
-    renderWithProviders(<VectorMemoryCard />)
+    renderWithProviders(<VectorMemoryCard diagnosticsOnly={diagnosticsOnly} />, {
+      queryDefaults: { retryDelay: 0 },
+    })
     await waitForActive()
 
-    await user.click(tab(/^Audit$/))
-    await waitFor(() => expect(screen.getByText('No events')).toBeInTheDocument())
+    if (!diagnosticsOnly) await user.click(tab(/^Audit$/))
+    expect(await screen.findByRole('alert')).toHaveTextContent('events down')
+    expect(screen.queryByText('No events')).not.toBeInTheDocument()
     expect(api.vectorEvents).toHaveBeenCalledWith(50, 0)
+    vi.mocked(api.vectorEvents).mockResolvedValue({ events: [] } as never)
+    await user.click(screen.getByRole('button', { name: 'Retry', exact: true }))
+    await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument())
+    expect(screen.getByText('No events')).toBeInTheDocument()
+  })
+
+  it('shows the audit failure when the stats request also fails', async () => {
+    vi.mocked(api.vectorStats).mockRejectedValue(new Error('stats down'))
+    vi.mocked(api.vectorEvents).mockRejectedValue(new Error('events down'))
+    renderWithProviders(<VectorMemoryCard diagnosticsOnly />, {
+      queryDefaults: { retryDelay: 0 },
+    })
+
+    await waitFor(() => {
+      const messages = screen.getAllByRole('alert').map(notice => notice.textContent)
+      expect(messages).toEqual(expect.arrayContaining([
+        expect.stringContaining('stats down'), expect.stringContaining('events down'),
+      ]))
+    })
+    expect(api.vectorStats).toHaveBeenCalled()
+    expect(api.vectorEvents).toHaveBeenCalledWith(50, 0)
+    expect(screen.queryByText('Loading…')).not.toBeInTheDocument()
+  })
+
+  it('retains the loaded audit page and retries the failed next-page offset', async () => {
+    const user = userEvent.setup()
+    const page1 = Array.from({ length: 50 }, (_, i) => ({ event_type: 'memory_write', memory_key: `k${i}` }))
+    setupApi({ events: { events: page1 } })
+    renderWithProviders(<VectorMemoryCard diagnosticsOnly />, { queryDefaults: { retryDelay: 0 } })
+    await screen.findByText('k49')
+    vi.mocked(api.vectorEvents).mockRejectedValue(new Error('next audit page unavailable'))
+    await user.click(screen.getByRole('button', { name: 'Load more…' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('next audit page unavailable')
+    expect(screen.getByText('k0')).toBeInTheDocument()
+    expect(screen.getByText('k49')).toBeInTheDocument()
+    expect(screen.queryByText('No events')).not.toBeInTheDocument()
+    vi.mocked(api.vectorEvents).mockResolvedValue({ events: [{ event_type: 'memory_write', memory_key: 'recovered-page' }] } as never)
+    await user.click(screen.getByRole('button', { name: 'Retry', exact: true }))
+    await screen.findByText('recovered-page')
+    expect(api.vectorEvents).toHaveBeenLastCalledWith(50, 50)
+    expect(screen.getByText('k0')).toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Load more…' })).not.toBeInTheDocument()
   })
 
   it('appends the next page of events', async () => {
@@ -379,13 +548,29 @@ describe('VectorMemoryCard — Audit tab', () => {
 describe('VectorMemoryCard — Inspector tab', () => {
   beforeEach(() => { vi.clearAllMocks(); setupApi() })
 
+  it('shows an initial preview failure without reporting an empty context', async () => {
+    const user = userEvent.setup()
+    vi.mocked(api.vectorContextPreview).mockRejectedValue(new Error('preview unavailable'))
+    renderWithProviders(<VectorMemoryCard />)
+    await waitForActive()
+    await user.click(tab(/^Inspector$/))
+    expect(await screen.findByRole('alert')).toHaveTextContent('preview unavailable')
+    expect(screen.queryByText('Click Preview to see what gets injected into prompts.')).not.toBeInTheDocument()
+    expect(screen.queryByText('No context to inject. Add some memories first.')).not.toBeInTheDocument()
+    vi.mocked(api.vectorContextPreview).mockResolvedValue({ semantic_context: 'Recovered context' } as never)
+    await user.click(screen.getByRole('button', { name: 'Retry', exact: true }))
+    await screen.findByText('Recovered context')
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
   it('prompts for a preview when the first fetch returns nothing', async () => {
     const user = userEvent.setup()
     renderWithProviders(<VectorMemoryCard />)
     await waitForActive()
 
     await user.click(tab(/^Inspector$/))
-    await waitFor(() => expect(screen.getByText('Memory Inspector')).toBeInTheDocument())
+    await screen.findByText('Click Preview to see what gets injected into prompts.')
+    expect(screen.getByText('Memory Inspector')).toBeInTheDocument()
     expect(api.vectorContextPreview).toHaveBeenCalledWith(undefined)
     expect(screen.getByText('Click Preview to see what gets injected into prompts.')).toBeInTheDocument()
   })
@@ -419,15 +604,41 @@ describe('VectorMemoryCard — Inspector tab', () => {
     expect(screen.queryByText('Semantic Context (injected at session start)')).not.toBeInTheDocument()
   })
 
-  it('keeps the prompt when the preview call fails', async () => {
+  it('reports a failed preview and retries without losing the query or previous context', async () => {
     const user = userEvent.setup()
-    vi.mocked(api.vectorContextPreview).mockRejectedValue(new Error('preview down'))
+    setupApi({ preview: { semantic_context: 'Previous context' } })
     renderWithProviders(<VectorMemoryCard />)
     await waitForActive()
-
     await user.click(tab(/^Inspector$/))
-    await waitFor(() => expect(api.vectorContextPreview).toHaveBeenCalled())
-    expect(screen.getByText('Click Preview to see what gets injected into prompts.')).toBeInTheDocument()
+    await screen.findByText('Previous context')
+    vi.mocked(api.vectorContextPreview).mockRejectedValue(new Error('preview down'))
+    await user.type(screen.getByPlaceholderText(/Test query/), 'database{Enter}')
+    expect(await screen.findByRole('alert')).toHaveTextContent('preview down')
+    expect(screen.getByText('Previous context')).toBeInTheDocument()
+    expect(screen.getByPlaceholderText(/Test query/)).toHaveValue('database')
+    expect(screen.queryByText('No context to inject. Add some memories first.')).not.toBeInTheDocument()
+    vi.mocked(api.vectorContextPreview).mockResolvedValue({ semantic_context: 'Retried context' } as never)
+    await user.click(screen.getByRole('button', { name: 'Retry', exact: true }))
+    await screen.findByText('Retried context')
+    expect(api.vectorContextPreview).toHaveBeenLastCalledWith('database')
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+
+    vi.mocked(api.vectorContextPreview).mockRejectedValue(new Error('preview unavailable on return'))
+    await user.click(tab(/^Semantic$/))
+    await user.click(tab(/^Inspector$/))
+    expect(await screen.findByRole('alert')).toHaveTextContent('preview unavailable on return')
+    expect(api.vectorContextPreview).toHaveBeenLastCalledWith('database')
+    expect(screen.getByPlaceholderText(/Test query/)).toHaveValue('database')
+    expect(screen.getByText('Retried context')).toBeInTheDocument()
+
+    vi.mocked(api.vectorContextPreview).mockResolvedValue({ semantic_context: 'Context after return' } as never)
+    await user.click(screen.getByRole('button', { name: 'Retry', exact: true }))
+    await screen.findByText('Context after return')
+    expect(api.vectorContextPreview).toHaveBeenLastCalledWith('database')
+    const reads = vi.mocked(api.vectorContextPreview).mock.calls.length
+    await user.click(tab(/^Inspector$/))
+    await waitFor(() => expect(api.vectorContextPreview).toHaveBeenCalledTimes(reads + 1))
+    expect(api.vectorContextPreview).toHaveBeenLastCalledWith('database')
   })
 })
 
@@ -644,19 +855,20 @@ describe('VectorMemoryCard — embedding setup progress', () => {
     await waitFor(() => expect(screen.getByText('Retrying download (attempt 3)…')).toBeInTheDocument())
   })
 
-  it('restarts setup from the Retry button and renders the error progress state', async () => {
+  it('shows a rejected setup restart and keeps Retry available until it succeeds', async () => {
     setupApi({ stats: IDLE_STATS, emb: { provider: 'none', setup_step: 'error', setup_error: 'Download failed' } })
     // A failing restart request must not escape as an unhandled rejection.
-    vi.mocked(api.vectorEnableEmbeddings).mockRejectedValue(new Error('restart refused'))
+    vi.mocked(api.vectorEnableEmbeddings).mockRejectedValueOnce(new Error('restart refused'))
     renderWithProviders(<VectorMemoryCard />)
     await waitFor(() => expect(screen.getByRole('button', { name: /Retry/i })).toBeInTheDocument())
 
     fireEvent.click(screen.getByRole('button', { name: /Retry/i }))
     await waitFor(() => expect(api.vectorEnableEmbeddings).toHaveBeenCalled())
-    // The progress block takes over and renders the error variant.
-    expect(screen.getByText('Download failed')).toBeInTheDocument()
-    expect(screen.getByText('Download failed. Check network connectivity and try again.')).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /Retry/i })).not.toBeInTheDocument()
+    expect(await screen.findByRole('alert')).toHaveTextContent('restart refused')
+    expect(screen.queryByText('Download failed. Check network connectivity and try again.')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /Retry/i }))
+    await waitFor(() => expect(api.vectorEnableEmbeddings).toHaveBeenCalledTimes(2))
+    expect(screen.queryByText('restart refused')).not.toBeInTheDocument()
   })
 
   it('polls until setup reports done, then stops polling and shows the active card', async () => {
@@ -664,7 +876,7 @@ describe('VectorMemoryCard — embedding setup progress', () => {
     setupApi({ stats: ACTIVE_STATS })
     vi.mocked(api.vectorEmbeddingStatus)
       .mockResolvedValueOnce({ provider: 'none', setup_step: 'downloading', bytes_downloaded: 5_000_000, bytes_total: 610_000_000 } as never)
-      // A null poll response is ignored rather than blanking the status.
+      // A malformed poll reports an error without blanking the previous status.
       .mockResolvedValueOnce(null as never)
       .mockResolvedValue({ provider: 'llama_cpp', setup_step: 'done', model_available: true, model_id: 'qwen3-embedding:0.6b', model_dim: 1024 } as never)
 
@@ -686,7 +898,7 @@ describe('VectorMemoryCard — embedding setup progress', () => {
     unmount()
   })
 
-  it('ignores a failing status poll and keeps the current step on screen', async () => {
+  it('reports a failing status poll while keeping the current step on screen', async () => {
     vi.useFakeTimers()
     setupApi({ stats: IDLE_STATS })
     vi.mocked(api.vectorEmbeddingStatus)
@@ -698,8 +910,9 @@ describe('VectorMemoryCard — embedding setup progress', () => {
     expect(screen.getByText('Checking system status…')).toBeInTheDocument()
 
     await act(async () => { await vi.advanceTimersByTimeAsync(2100) })
-    // A rejected poll is swallowed; the step label is not blanked.
+    // The last status remains visible alongside the read failure.
     expect(screen.getByText('Checking system status…')).toBeInTheDocument()
+    expect(screen.getByRole('alert')).toHaveTextContent('status endpoint down')
     unmount()
   })
 

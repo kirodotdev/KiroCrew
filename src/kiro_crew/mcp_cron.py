@@ -22,8 +22,10 @@ import json
 import logging
 import os
 import re
+import stat
 import time
 import urllib.request
+from collections.abc import Iterator
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable
@@ -62,6 +64,7 @@ from kiro_crew.mcp_core import (
     strict_identity_diagnosis,
 )
 from kiro_crew.mcp_shared import call_tool_with_logging, run_mcp_stdio_loop
+from kiro_crew.pinned_fs import fd_real_path
 from kiro_crew.platform import current_context
 from kiro_crew.platform import redact_via_context as redact
 from kiro_crew.port_resolution import resolve_serving_port
@@ -212,12 +215,13 @@ _CRON_SHELL_KEYWORD_RE = re.compile(r"(?:^|[;&|]|\bdo\b|\bthen\b)\s*\b(?:for|whi
 # would break ordinary crons (``rm /tmp/*.log``, ``tar czf - logs/*.txt``), so a
 # glob-bearing word is instead MATCHED against the sensitive names as a glob —
 # see _glob_could_reach_credentials for why matching beats substitution.
-_CRON_GLOB_META_RE = re.compile(r"\[[^]]*\]|[?*]")
 # Ceiling on the glob-bearing word length handed to fnmatch. The longest
 # sensitive name is well under 60 characters, so this is far above anything that
 # can legitimately match one; it bounds fnmatch's superlinear pattern compile
 # on a hostile `cat ????...`.
 _CRON_MAX_GLOB_WORD = 256
+
+
 # Local variable assignments can smuggle path fragments past the vet:
 # `A=.s; B=sh; cp ~/$A$B/id_rsa ...` — the vetter sees `~/` and `/id_rsa` as
 # separate tokens and misses the assembled `~/.ssh/id_rsa`.
@@ -230,17 +234,17 @@ _CRON_MAX_GLOB_WORD = 256
 #   A=.s B=sh ...     an assignment LIST  — whitespace-separated, ONE command
 #                     (verified: `sh -c 'A=.s B=sh; echo "[$A][$B]"'` -> [.s][sh])
 #
-# So the anchor also admits whitespace, which lets `finditer` walk a whole list.
-# A leading ``\s`` cannot over-match a non-assignment word, because the name and
-# ``=`` are still required — ``cp a=b`` assigns nothing in sh, and treating its
-# ``a=b`` as an assignment is harmless here: this map is only ever used to make
-# the credential-path scan see MORE, never to permit something.
-_CRON_LOCAL_ASSIGN_RE = re.compile(
-    r"(?:^|[;&|\s])\s*"  # start-of-command, a separator, or whitespace
-    r"([A-Za-z_][A-Za-z0-9_]*)"  # variable name
-    r"="  # literal =
-    r"([^\s;&|]*)",  # value up to next separator
-)
+def _iter_local_assignments(text: str) -> Iterator[tuple[str, str]]:
+    """Yield the conservative assignment scan's name/value pairs in source order."""
+    for word in re.split(r"[;&|\s]+", text):
+        name, separator, value = word.partition("=")
+        # ASCII identifiers are exactly the shell NAME grammar. Partition at
+        # the first '=' once; failed names cannot restart a pattern search.
+        # ``cp a=b`` still conservatively counts as an assignment for scanning.
+        if separator and name.isascii() and name.isidentifier():
+            yield name, value
+
+
 # A backslash escaping any character. sh drops the backslash and keeps the
 # character during word expansion, so the scan must do the same to see the string
 # the shell will actually use.
@@ -292,6 +296,14 @@ def _split_segments(command: str) -> list[tuple[str, str]]:
     return parts
 
 
+def _contains_glob_meta(value: str) -> bool:
+    """Recognize wildcard markers without rescanning unmatched bracket suffixes."""
+    if "*" in value or "?" in value:
+        return True
+    opening = value.find("[")
+    return opening >= 0 and value.find("]", opening + 1) >= 0
+
+
 def _glob_could_reach_credentials(command: str) -> bool:
     """True when a glob in *command* could expand onto a credential path.
 
@@ -306,10 +318,10 @@ def _glob_could_reach_credentials(command: str) -> bool:
     literal ``.ssh``), and substituting all of them combinatorially is
     exponential on hostile input. ``fnmatch`` decides the whole word in one pass.
     """
-    if not _CRON_GLOB_META_RE.search(command):
+    if not _contains_glob_meta(command):
         return False
     for word in command.split():
-        if not _CRON_GLOB_META_RE.search(word):
+        if not _contains_glob_meta(word):
             continue
         # fnmatch compiles the pattern to a regex, which is superlinear on a
         # pathological one (`cat ????...` x 20k measured 8.2s), and this runs
@@ -448,8 +460,7 @@ def _substitute_local_assignments(command: str) -> str:
     env: dict[str, str] = {}
     out: list[str] = []
     for segment, separator in _split_segments(command):
-        for m in _CRON_LOCAL_ASSIGN_RE.finditer(segment):
-            name, value = m.group(1), m.group(2)
+        for name, value in _iter_local_assignments(segment):
             # Quote removal deletes EVERY quote character in the word, not just a
             # surrounding pair: sh reads `A=.s''sh` as `.ssh` (verified), and an
             # INTERNAL empty pair is the cheapest way to split a credential
@@ -677,7 +688,7 @@ def _vet_shell_command(command: str) -> str | None:
     # harmless `Z=x` assignments fill the map, and a later `A=.s; B=sh; cp
     # ~/$A$B/id_rsa` goes untracked, so `$A$B` stays literal and the credential
     # path is missed. No legitimate cron one-liner sets this many variables.
-    if len(_CRON_LOCAL_ASSIGN_RE.findall(command)) > _CRON_MAX_ASSIGNMENTS:
+    if sum(1 for _ in _iter_local_assignments(command)) > _CRON_MAX_ASSIGNMENTS:
         return (
             "Error: cron command blocked: too many variable assignments "
             f"(limit {_CRON_MAX_ASSIGNMENTS}). A command that sets this many "
@@ -862,7 +873,10 @@ def _vet_script_file(file_path: str) -> str | None:
     independently resolves the real path and rejects it via ``is_sensitive_path``
     before opening, so a symlink under the crons dir pointing at a credential
     file (e.g. ``crons/evil.py -> ~/.aws/credentials``) cannot be read here. Read
-    is capped at ``_MAX_SCRIPT_SCAN_BYTES``, and reads one character PAST it so a
+    uses a nonblocking descriptor that must still name the same regular file
+    after opening. Its kernel-reported path must match the vetted path, so a
+    substituted parent cannot redirect the read either. Reads are capped at
+    ``_MAX_SCRIPT_SCAN_BYTES``, one character PAST it so a
     longer script is refused rather than vetted on its prefix
     (``_SCRIPT_READ_PROBE_BYTES``). Storage-time check only (TOCTOU note:
     the file could change before execution — the exec-time sandbox is the runtime
@@ -875,8 +889,36 @@ def _vet_script_file(file_path: str) -> str | None:
     if is_sensitive_path(str(resolved)):
         return "Error: cron script path blocked by security policy (resolves to a sensitive credential path)"
     try:
-        with open(resolved, encoding="utf-8", errors="replace") as f:
-            contents = f.read(_SCRIPT_READ_PROBE_BYTES)
+        before = os.lstat(resolved)
+        if not stat.S_ISREG(before.st_mode):
+            return "Error: cron script must be a regular file for security review"
+        descriptor = os.open(
+            resolved,
+            os.O_RDONLY
+            | getattr(os, "O_BINARY", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_NONBLOCK", 0),
+        )
+        try:
+            opened = os.fstat(descriptor)
+            if not stat.S_ISREG(opened.st_mode) or (opened.st_dev, opened.st_ino) != (
+                before.st_dev,
+                before.st_ino,
+            ):
+                return (
+                    "Error: cron script changed during security review; retry with a regular file"
+                )
+            opened_path = fd_real_path(descriptor)
+            if (
+                opened_path is None
+                or Path(opened_path) != resolved
+                or is_sensitive_path(opened_path)
+            ):
+                return "Error: cannot verify cron script path for security review; retry with a regular file"
+            with os.fdopen(descriptor, encoding="utf-8", errors="replace", closefd=False) as f:
+                contents = f.read(_SCRIPT_READ_PROBE_BYTES)
+        finally:
+            os.close(descriptor)
     except OSError as e:
         return f"Error: cannot read cron script for security review: {e}"
     return _vet_script_contents(contents)
@@ -1137,6 +1179,12 @@ def _list_tools() -> list[dict[str, Any]]:
                         "type": "string",
                         "description": "Agent name for this job (e.g. 'customer360-code-agent'). "
                         "Empty or omitted uses the default kirocrew agent.",
+                    },
+                    "member_id": {
+                        "type": "string",
+                        "description": "Crew Member responsible for this schedule. Uses that "
+                        "member's private memory. Omit to inherit the creating conversation's "
+                        "member; ordinary conversations retain global V1 memory.",
                     },
                     "silent": {
                         "type": "boolean",
@@ -1812,6 +1860,48 @@ def _validate_args(name: str, args: dict[str, Any]) -> dict[str, Any]:
 
 def _call_tool(name: str, raw_args: dict[str, Any]) -> str:
     """Execute a cron tool and return the result as text."""
+    from kiro_crew.config.paths import private_runtime_log_dir
+
+    if private_runtime_log_dir() is not None:
+        # This marker selects a transport only. The gateway independently
+        # verifies the process/session/store before opening the cron store.
+        from kiro_crew.mcp_core import _post
+
+        session_key, refusal = require_strict_session_key(
+            "Cannot verify this private cron caller. Reopen the member conversation.",
+            server="kirocrew-cron",
+        )
+        if refusal:
+            return f"Error: {refusal}"
+        args = dict(raw_args)
+        if name == "cron_add" and not args.get("channel"):
+            # Preserve the direct runtime's delivery default as an ordinary,
+            # server-validated argument; it confers no ownership authority.
+            channel = _caller_channel_id() or os.environ.get("KIROCREW_CHANNEL_ID")
+            if channel:
+                args["channel"] = channel
+        response = _post(
+            "/api/crons/tools", {"name": name, "arguments": args}, session_key=session_key
+        )
+        if response.get("error"):
+            advice = (
+                " Outcome unknown; check cron_list before retrying a mutation."
+                if response.get("transport_error")
+                else ""
+            )
+            return f"Error: {response['error']}{advice}"
+        result = response.get("result")
+        if not isinstance(result, str):
+            return (
+                "Error: the cron gateway returned an invalid response. "
+                "Check cron_list before retrying a mutation."
+            )
+        return result
+    return _call_tool_locally(name, raw_args)
+
+
+def _call_tool_locally(name: str, raw_args: dict[str, Any]) -> str:
+    """Validated host dispatch, also used by the authenticated HTTP boundary."""
     return call_tool_with_logging(
         name,
         raw_args,
@@ -2440,6 +2530,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
                 timezone=tz,
                 skip_dates=skip_dates,
                 agent_id=agent or "",
+                member_id=args.get("member_id", ""),
                 approval_mode=approval_mode or "",
                 model=model_arg,
                 silent=bool(silent),

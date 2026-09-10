@@ -23,7 +23,7 @@ import asyncio
 import importlib
 import sys
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -80,7 +80,11 @@ def _drive_transport(monkeypatch, sessions, *, hydrate_conv_flags=True, hydrate_
     """Run one inbound Slack reply through the transport path."""
     monkeypatch.setattr(transport_dispatch, "_get_default_agent", lambda: "")
     if hydrate_overrides:
-        monkeypatch.setattr(transport_dispatch, "_hydrate_thread_overrides", lambda *a, **k: None)
+        monkeypatch.setattr(
+            transport_dispatch,
+            "_hydrate_thread_overrides",
+            AsyncMock(return_value=None),
+        )
     if hydrate_conv_flags:
         monkeypatch.setattr(transport_dispatch, "_hydrate_conv_flags", lambda *a, **k: None)
     monkeypatch.setattr(transport_dispatch, "_thread_agents", {})
@@ -111,6 +115,55 @@ def test_reply_in_dashboard_linked_thread_does_not_fork(monkeypatch):
     assert canonical_key(_THREAD_TS) not in sessions.acquired_keys, (
         "a second slack:<ts> session was minted -- the fork bug is back"
     )
+
+
+@pytest.mark.parametrize("change_during", ["hydration", "memory"])
+@pytest.mark.parametrize("new_owner", ["dashboard:chat-new-owner", None])
+def test_owner_change_during_memory_reads_never_acquires_the_stale_route(
+    monkeypatch, change_during, new_owner
+):
+    provider = ScriptedProvider([make_event("ok")])
+    sessions = _RoutingSessions(provider, {_THREAD_TS: _DASHBOARD_KEY})
+    final_key = new_owner or canonical_key(_THREAD_TS)
+    hydrated = []
+    memory_keys = []
+    privacy_keys = []
+
+    async def hydrate(key, _log=None):
+        hydrated.append(key)
+        if key == _DASHBOARD_KEY and change_during == "hydration":
+            await asyncio.sleep(0)
+            if new_owner is None:
+                sessions._thread_index.pop(_THREAD_TS)
+            else:
+                sessions._thread_index[_THREAD_TS] = new_owner
+
+    async def resolve_memory(_builder, key):
+        memory_keys.append(key)
+        if key == _DASHBOARD_KEY and change_during == "memory":
+            await asyncio.sleep(0)
+            if new_owner is None:
+                sessions._thread_index.pop(_THREAD_TS)
+            else:
+                sessions._thread_index[_THREAD_TS] = new_owner
+        return f"memory:{key}"
+
+    monkeypatch.setattr(transport_dispatch, "_hydrate_thread_overrides", hydrate)
+    monkeypatch.setattr(transport_dispatch, "session_store_for_turn", resolve_memory)
+    monkeypatch.setattr(
+        transport_dispatch, "_hydrate_conv_flags", lambda _sessions, key: privacy_keys.append(key)
+    )
+    _drive_transport(monkeypatch, sessions, hydrate_overrides=False, hydrate_conv_flags=False)
+    assert _DASHBOARD_KEY in hydrated
+    assert final_key in hydrated
+    assert memory_keys == (
+        [_DASHBOARD_KEY, final_key] if change_during == "memory" else [final_key]
+    )
+    assert sessions.acquired_keys == [final_key]
+    if change_during == "hydration":
+        assert _DASHBOARD_KEY not in privacy_keys
+    assert privacy_keys[-1] == final_key
+    assert sessions.get_session_for_thread(_THREAD_TS) == final_key
 
 
 def test_reply_does_not_overwrite_the_dashboard_binding(monkeypatch):
@@ -184,7 +237,7 @@ def test_a_reroute_rehydrates_privacy_state_for_the_new_owner(monkeypatch):
     monkeypatch.setattr(
         transport_dispatch,
         "_hydrate_thread_overrides",
-        lambda key, _log=None: hydrated_overrides.append(key),
+        AsyncMock(side_effect=lambda key, _log=None: hydrated_overrides.append(key)),
     )
     monkeypatch.setattr(
         transport_dispatch,

@@ -91,10 +91,12 @@ into its own directory, and a child process classifies against it with
   checkout it was given. Without the check, an installed copy of the package
   shadowing the path would serve *both* refs from one tree and every differential
   would come back empty — a false green with no symptom.
-- **Each child is hermetic.** Every `KIROCREW_*` variable is stripped and
-  `KIROCREW_HOME` is repointed at a throwaway directory, so the verdict depends
-  on the checkout alone and the best-effort audit writes never reach a real
-  security log.
+- **Each child is hermetic.** Every `KIROCREW_*` variable is stripped, and both
+  the OS home (`HOME` / `USERPROFILE`) and `KIROCREW_HOME` are repointed at a
+  throwaway directory. `KIRO_HOME` and the agent harnesses' declared credential
+  home overrides are also stripped. The sensitive-path target set therefore
+  never probes an inherited operator home, the verdict depends on the checkout
+  alone, and the best-effort audit writes never reach a real security log.
 
 Exit codes: `0` no regressions, `1` regressions, `2` corpus or ref error. A `2`
 fails the job — a differential that could not run is not a pass.

@@ -66,6 +66,7 @@ import CrewStateAvatar from '../../components/CrewStateAvatar'
 import ChatPane from '../../components/ChatPane'
 import ErrorBoundary from '../../components/ErrorBoundary'
 import ErrorNotice from '../../components/ErrorNotice'
+import { useGuardedLeave } from '../../components/NavigationLeaveGuard'
 import { useIsMobile } from '../../hooks/useIsMobile'
 import { useConnected } from '../../hooks/useConnected'
 import { SearchFilterBar, FilterMenuButton, FilterChip, FILTER_CHIP_ROW_CLS, FILTER_MENU_LABEL_CLS, FILTER_MENU_CONTENT_CLS } from '../../components/SearchFilterBar'
@@ -75,6 +76,7 @@ import {
   SORT_OPTIONS, SOURCE_FILTERS, STATUS_FILTERS,
   type MemberSignals, type MemberSort, type MemberSourceFilter, type MemberStatusFilter, type RosterQuery,
 } from './rosterFilter'
+import { Btn } from '../../components/ui'
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
 import { isSidePanelHidden, shouldMountSidePanel, sidePanelDockMotion } from '../chat/sidePanelMount'
 import SidePanel, { SIDE_PANEL_MIN_W, SIDE_PANEL_RESERVED_W, type SidePanelLeadingTab, type SidePanelWithholdable } from '../chat/SidePanel'
@@ -142,6 +144,16 @@ export function resolveDefaultMember(
     if (hit) return hit
   }
   return ordered[0]
+}
+
+type MemberMemoryDisplay = 'global' | 'legacy' | 'private' | 'ownership_mismatch' | 'unavailable'
+
+export function memberMemoryDisplay(row: MemberRosterRow): MemberMemoryDisplay {
+  if (row.name === 'default') return row.memory_store === 'default' ? 'global' : 'unavailable'
+  if (row.memory_owner && row.memory_owner !== row.name) return 'ownership_mismatch'
+  if (row.memory_version === 2) return row.memory_owner === row.name ? 'private' : 'unavailable'
+  if (row.memory_version === 1 && !row.memory_owner) return 'legacy'
+  return 'unavailable'
 }
 
 /** Roster width bounds, persisted like the chat sidebar's (mc-sidebar-width). */
@@ -303,6 +315,7 @@ const EMPTY_ROSTER: readonly MemberRosterRow[] = []
 export default function MembersPage() {
   const { t } = useTranslation()
   const navigate = useNavigate()
+  const leave = useGuardedLeave()
   const location = useLocation()
   const queryClient = useQueryClient()
   // The roster is a React Query read (issue #9418), not page state: a return
@@ -442,6 +455,7 @@ export default function MembersPage() {
     () => members.find((m) => m.name === activeName),
     [members, activeName],
   )
+  const activeMemory = active ? memberMemoryDisplay(active) : 'unavailable'
   // Most-recently-active first (like any IM member list); never-talked
   // members fall to the bottom alphabetically. Sorted from the cached roster,
   // which changes only when the cache does — a return to the page, a focus
@@ -658,9 +672,13 @@ export default function MembersPage() {
         )
       }
     },
-    onError: (_err, m, seq) => {
+    onError: (error, m, seq) => {
       if (seq !== threadReqSeq.current[m.name]) return
-      setThreadOutcome(m.name, (prev) => ({ slot_key: prev?.slot_key ?? '', failed: true }))
+      setThreadOutcome(m.name, (prev) => ({
+        slot_key: prev?.slot_key ?? '',
+        failed: true,
+        errorReport: findReport(error instanceof Error ? error.message : undefined),
+      }))
     },
   })
   const { mutate: postThread } = openThread
@@ -1854,10 +1872,26 @@ export default function MembersPage() {
                       ? 'pages.membersPage.thread_repair_failed'
                       : 'pages.membersPage.thread_open_failed',
                   )}
+                  report={threadOutcome?.errorReport}
                   variant="inline"
                   askAgent={!activeSlot}
                   testId="member-thread-error"
                 />
+                {threadOutcome?.errorReport && (
+                  <details className="mt-1.5 text-[12px] text-muted" data-testid="member-thread-error-details">
+                    <summary className="w-fit cursor-pointer rounded-sm focus-ring">{t('pages.membersPage.details')}</summary>
+                    {/* No hand-off here: the notice above owns the sole action
+                        and disables it while the cached conversation holds a draft. */}
+                    <ErrorNotice
+                      message={threadOutcome.errorReport.message}
+                      report={threadOutcome.errorReport}
+                      variant="inline"
+                      askAgent={false}
+                      className="mt-1"
+                      messageClassName="whitespace-pre-wrap"
+                    />
+                  </details>
+                )}
               </div>
             )}
             {activeSlot ? (
@@ -2397,18 +2431,30 @@ export default function MembersPage() {
               <dd className="min-w-0 truncate">{String(active.memory_store ?? '')}</dd>
             </div>
           </dl>
-          {/* Honest disclosure, always rendered, worded for this member's store.
-              Only the markdown layer (preferences, project notes) is read from a
-              named memory_store; conversation memory and lessons live in the
-              one global vector store every member reads, so "what you tell it
-              is known to all of them" stays true on a dedicated store too.
-              Store identity is a config fact — never inferred from the roster. */}
-          <div className="mt-3 text-[11px] text-muted border border-border rounded-md px-2.5 py-2">
-            {String(active.memory_store || 'default') === 'default'
-              ? t('pages.membersPage.memory_shared_note')
-              : t('pages.membersPage.memory_dedicated_note', {
-                  store: String(active.memory_store),
-                })}
+          <div className="mt-3 flex flex-col gap-2 text-[11px] text-muted border border-border rounded-md px-2.5 py-2">
+            <span>
+              {activeMemory === 'global'
+                ? t('pages.kiroCrewAgentsPage.global_memory_v1')
+                : activeMemory === 'private'
+                  ? t('pages.kiroCrewAgentsPage.private_memory_owned')
+                  : activeMemory === 'legacy'
+                    ? t('pages.kiroCrewAgentsPage.private_memory_legacy')
+                    : activeMemory === 'ownership_mismatch'
+                      ? t('pages.kiroCrewAgentsPage.memory_binding_mismatch')
+                      : t('pages.kiroCrewAgentsPage.memory_binding_unavailable')}
+            </span>
+            <Btn onClick={() => {
+              const destination = activeMemory === 'global' || activeMemory === 'private'
+                ? `/settings/overview?view=memory&store=${encodeURIComponent(active.name === 'default' ? 'default' : String(active.memory_store))}`
+                : `${CREW_MANAGER_PATH}&crew=${encodeURIComponent(active.name)}`
+              leave(() => navigate(destination), destination)
+            }}>
+              {activeMemory === 'global' || activeMemory === 'private'
+                ? t('pages.kiroCrewAgentsPage.manage_private_memory')
+                : activeMemory === 'legacy'
+                  ? t('pages.membersPage.setup_in_crew_manager')
+                  : t('pages.kiroCrewAgentsPage.open_crew_manager')}
+            </Btn>
           </div>
           {/* One exit, into the crew manager (the only writer), landing on
               THIS member's editor — the same destination as the header face,

@@ -29,7 +29,11 @@ from kiro_crew.acp.client import _resolve_kiro_bin_for_spawn
 from kiro_crew.config.paths import kiro_agents_dir
 from kiro_crew.dashboard import directive_queue
 from kiro_crew.dashboard.handlers import kiro_usage_api
-from kiro_crew.dashboard.handlers._shared import SESSION_SEARCH_TEXT_FIELDS
+from kiro_crew.dashboard.handlers._shared import (
+    SESSION_SEARCH_TEXT_FIELDS,
+    guard_owner_surface_routes,
+    internal_memory_scope,
+)
 from kiro_crew.dashboard.kiro_readiness import reject_if_kiro_unverified
 from kiro_crew.dashboard.session_memory import SessionMemorySampler
 from kiro_crew.dashboard.state import DashboardState
@@ -1503,10 +1507,9 @@ def _clearable_history_keys(
     Returns ``(clearable, skipped)``. A session is skipped when it is reachable as
     an open tab, when its metadata says ``pinned``, or when that metadata could not
     be read — the same exclusions ``delete_session(..., skip_pinned=True)``
-    applies, so the two agree. Note that metadata which is present but unparseable
-    is NOT an exclusion: ``get_metadata_status`` reports it as readable-with-no-
-    metadata (``({}, True)``), so such a session reads as unpinned and is cleared.
-    The delete resolves it identically, which is what matters here.
+    applies, so the two agree. Present but unparseable metadata is unreadable:
+    ``get_metadata_status`` returns ``({}, False)``, so both the preview and
+    the delete exclude it rather than treating missing identity as permission.
 
     Reads the filesystem (``list_sessions`` globs and stats every session file),
     so callers offload it off the event loop.
@@ -1619,6 +1622,11 @@ async def api_session_directive(request: web.Request) -> web.Response:
     not a silent drop: the only legitimate callers are Kiro Crew's own directive
     tools, so a request that does not derive did not come from one.
     """
+    _, refusal = await internal_memory_scope(
+        request, "api_session_directive", claimed_session=request.headers.get("X-Session-Key", "")
+    )
+    if refusal is not None:
+        return refusal
     # Re-assert the caller's locality BEFORE the header is read. The route is in
     # server.py's strict allowlist, but a ``local_only=False`` deployment
     # reclassifies strict paths as MIXED — so the auth middleware also admits a
@@ -1749,6 +1757,11 @@ async def api_session_keepalive(request: web.Request) -> web.Response:
     field in it is advisory: a caller that sends ``{}`` gets the original
     touch-only behaviour.
     """
+    _, refusal = await internal_memory_scope(
+        request, "api_session_keepalive", claimed_session=request.headers.get("X-Session-Key", "")
+    )
+    if refusal is not None:
+        return refusal
     state: DashboardState = request.app["state"]
     session_key = request.headers.get("X-Session-Key", "").strip()
     if not session_key:
@@ -2019,6 +2032,11 @@ async def api_session_tool_policy(request: web.Request) -> web.Response:
     callers that cannot prove identity get an error, not an empty policy).
     Authenticated via X-Internal-Secret + X-Session-Key.
     """
+    _, refusal = await internal_memory_scope(
+        request, "api_session_tool_policy", claimed_session=request.headers.get("X-Session-Key", "")
+    )
+    if refusal is not None:
+        return refusal
     state: DashboardState = request.app["state"]
     session_key = request.headers.get("X-Session-Key", "").strip()
     if not session_key:
@@ -2270,3 +2288,15 @@ async def api_session_archive_read(request: web.Request) -> web.Response:
     # Archives contain LLM output; redact credentials and exfiltration URLs before serving.
     redacted = await asyncio.to_thread(lambda: redact(raw))
     return web.Response(text=redacted, content_type="application/x-ndjson")
+
+
+# Every ``api_session*`` handler is an owner surface, so a private member's
+# internal call is refused before it runs (audit label = handler name). These
+# three verify and scope their own caller instead.
+guard_owner_surface_routes(
+    globals(),
+    prefix="api_session",
+    member_scoped=frozenset(
+        {"api_session_directive", "api_session_keepalive", "api_session_tool_policy"}
+    ),
+)

@@ -214,7 +214,7 @@ async def execute_single_task(
                 logger.debug("Git commit failed for task %d", task.index, exc_info=True)
 
         task.status = TaskStatus.REVIEWING
-        review_ok = await self_review(run, task, sessions, agent, session_key)
+        review_ok = await self_review(run, task, sessions, agent, session_key, ctx=ctx)
         if not review_ok:
             if committed and run.branch_name:
                 try:
@@ -320,8 +320,12 @@ async def execute_task(
 
         _acquired = False
         try:
-            await check_context(session_key, sessions)
+            from kiro_crew.context import inherit_session_memory
 
+            memory_store = await inherit_session_memory(
+                ctx, f"{SESSION_PREFIX}:{run.task_id}:runtime", session_key
+            )
+            await check_context(session_key, sessions)
             client, is_new, _resumed = await sessions.open_task_session(
                 f"{SESSION_PREFIX}:{run.task_id}:runtime",
                 session_key,
@@ -341,6 +345,7 @@ async def execute_task(
                     agent=agent or None,
                     project=str(work_dir) if work_dir else None,
                     provider_type=KiroCrewConfig.load().agent.provider,
+                    memory_store=memory_store,
                 )
             else:
                 full_prompt = task_prompt
@@ -857,9 +862,14 @@ async def self_review(
     sessions: "SessionManager",
     agent: str,
     session_key: str = "",
+    *,
+    ctx: "ContextBuilder | None" = None,
 ) -> bool:
     """Review task using a separate session that reads the actual git diff."""
     review_key = f"{SESSION_PREFIX}:{run.task_id}:review"
+    from kiro_crew.context import inherit_session_memory
+
+    await inherit_session_memory(ctx, f"{SESSION_PREFIX}:{run.task_id}:runtime", review_key)
     try:
         diff = ""
         if run.branch_name:

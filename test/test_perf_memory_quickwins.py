@@ -21,17 +21,31 @@ Each test is written to FAIL if its corresponding fix is reverted:
   resident, so a second search with no write in between repeats
   neither the full-population fetch nor the per-row candidate build, and every
   writer that changes the scored population invalidates the set.
+- ``TestSqliteVectorSearchNumpyRung`` — that tier produces the SAME ranking and
+  cosines with numpy present as without it, over a fixture written through the
+  real embed-and-admit path, and its numpy conversions stay per-search rather
+  than per-row (numpy is an optional accelerator, not a declared dependency).
+- ``TestRowStemMemo`` — hybrid semantic retrieval derives a stored row's stem
+  token set once per distinct text instead of once per row per query, and a row
+  whose text changes is tokenized afresh rather than served from the memo.
+
+Nothing here asserts a duration or a rate: the assertions are on SHAPE — an
+invocation trace that does not grow when the input doubles, and equality of the
+answer between the two rungs.
 """
 
 from __future__ import annotations
 
 import builtins
+import hashlib
 import json
+import re
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
+from kiro_crew import vector_memory as vm
 from kiro_crew.history import ConversationLog
 from kiro_crew.vector_memory import _HAS_FAISS, _HAS_NUMPY, VectorMemoryStore
 
@@ -981,3 +995,377 @@ class TestOverBudgetRefusalIsMemoized:
         assert recorder.matching(*self.BUILD_SCAN), (
             "after a write the store must re-probe whether the population now fits"
         )
+
+
+def _spread_embed(dim: int):
+    """Deterministic embedding with real numeric spread, no model and no network.
+
+    ``_fake_embed`` above cycles over seven values, which makes every pair of
+    vectors nearly collinear — useless for showing that two dot-product
+    implementations agree. This one is a linear congruential walk seeded by the
+    text, so distinct texts point in unrelated directions.
+
+    The seed comes from sha256, NOT from ``hash()``: str hashing is salted per
+    process, so a ``hash()`` seed would give this fixture a different geometry on
+    every run and any assertion about its cosines would be a coin toss.
+    """
+
+    def _embed(text: str) -> list[float]:
+        state = int.from_bytes(hashlib.sha256(text.encode()).digest()[:4], "big") % 2147483647 or 1
+        out: list[float] = []
+        for _ in range(dim):
+            state = (state * 48271) % 2147483647
+            out.append(state / 2147483647.0 - 0.5)
+        return out
+
+    return _embed
+
+
+#: A realistic embedding width, and one where the two rungs' summation orders
+#: genuinely diverge: the numpy mat-vec dots in float32 (matching the stored
+#: blob) while the stdlib loop accumulates in float64. Over this fixture the two
+#: differ by ~6e-8 against a ~1e-6 worst-case margin to the nearest boundary of
+#: the 4-decimal rounding both rungs apply, so the equality assertions below have
+#: an order of magnitude of headroom rather than sitting on a knife edge.
+_EPISODIC_DIM = 256
+
+
+def _fixture_text(i: int) -> str:
+    # The first 80 characters must differ per row: write_episodic prefix-dedups
+    # on them, so a shared prefix would silently drop most of the fixture.
+    return f"fragment {i:04d} - topic-{i % 7} notes about the gate and the rung"
+
+
+def _sqlite_search_store(tmp_path: Path, n_entries: int, dim: int = _EPISODIC_DIM):
+    """Store with *n_entries* embedded episodic rows and no FAISS index.
+
+    ``_faiss_index`` is cleared so the stdlib rung is exercised whether or not
+    faiss happens to be installed on the host.
+    """
+    store = VectorMemoryStore(db_path=tmp_path / "mem.db", embedding_dim=dim)
+    store.init()
+    store.embed_fn = _spread_embed(dim)
+    for i in range(n_entries):
+        assert store.write_episodic(_fixture_text(i)), f"fixture row {i} was rejected"
+    store._faiss_index = None
+    return store
+
+
+def _query_near_rows(*row_indexes: int) -> list[float]:
+    """A query vector deliberately close to the named fixture rows.
+
+    Two unrelated pseudo-random vectors are near-orthogonal, so a query built
+    from unrelated text scores every row at ~0 cosine and the relevance gate
+    admits NOTHING — which makes any test downstream of that gate pass
+    vacuously. Averaging the target rows' own embeddings puts them above the
+    admission threshold and leaves the rest below it, so the gate is exercised
+    in both directions without touching the threshold itself.
+    """
+    embed = _spread_embed(_EPISODIC_DIM)
+    vectors = [embed(_fixture_text(i)) for i in row_indexes]
+    return [sum(v[d] for v in vectors) / len(vectors) for d in range(_EPISODIC_DIM)]
+
+
+class _CountingNumpy:
+    """Delegates to numpy while tallying the two calls the shape tests pin."""
+
+    def __init__(self, real) -> None:  # type: ignore[no-untyped-def]
+        self._real = real
+        self.asarray_calls = 0
+        self.frombuffer_calls = 0
+
+    def asarray(self, *a, **k):  # type: ignore[no-untyped-def]
+        self.asarray_calls += 1
+        return self._real.asarray(*a, **k)
+
+    def frombuffer(self, *a, **k):  # type: ignore[no-untyped-def]
+        self.frombuffer_calls += 1
+        return self._real.frombuffer(*a, **k)
+
+    def __getattr__(self, name):  # type: ignore[no-untyped-def]
+        return getattr(self._real, name)
+
+
+@pytest.mark.skipif(not _HAS_NUMPY, reason="numpy is an optional accelerator")
+class TestSqliteVectorSearchNumpyRung:
+    """The vectorized rung must be a pure speedup: same answer, hoisted setup.
+
+    ``TestEpisodicSqliteCosineNumpy`` pins the same equality on a hand-inserted
+    4-row fixture. This class approaches it from the other end: rows written
+    through ``write_episodic`` with a real ``embed_fn``, at a width where the
+    two rungs' summation orders actually diverge, and a query aimed close enough
+    to specific rows to carry the relevance gate in both directions.
+    """
+
+    def test_numpy_and_stdlib_rungs_agree(self, tmp_path: Path) -> None:
+        """Identical id order and cosines on the same rows.
+
+        The two rungs differ in summation order and in dtype (numpy dots in
+        float32, matching the stored blob; the stdlib loop accumulates in
+        float64), so agreement here is what makes the change a speedup and not a
+        retuning: the cosine it produces is also what ``_filter_by_relevance``
+        compares against a fixed admission threshold.
+        """
+        store = _sqlite_search_store(tmp_path, 40)
+        query = _spread_embed(_EPISODIC_DIM)("which rung scored the gate")
+
+        with_numpy = store._sqlite_vector_search(query, "gate rung", 40, mmr=False)
+        with patch.object(vm, "_HAS_NUMPY", False):
+            with_stdlib = store._sqlite_vector_search(query, "gate rung", 40, mmr=False)
+
+        assert [c["id"] for c in with_numpy] == [c["id"] for c in with_stdlib]
+        assert with_numpy, "fixture produced no candidates"
+        for a, b in zip(with_numpy, with_stdlib):
+            assert abs(a["cosine_sim"] - b["cosine_sim"]) < 1e-6
+            assert abs(a["score"] - b["score"]) < 1e-6
+
+    def test_rungs_agree_through_mmr_and_relevance_gate(self, tmp_path: Path) -> None:
+        """Equality survives the stages that consume the cosine downstream.
+
+        ``relevance_filter=True`` compares the cosine against a fixed admission
+        threshold, so a rung that shifted the value would drop or admit
+        different rows here even where it left the ordering alone.
+        """
+        store = _sqlite_search_store(tmp_path, 40)
+        query = _query_near_rows(3, 11)
+
+        # Asked for the whole fixture and unreranked, so the length below is the
+        # GATE's own answer rather than the limit's: a query that admitted
+        # everything, or nothing, would let the parity assertions pass without
+        # the threshold ever having decided anything.
+        gated = store._sqlite_vector_search(
+            query, "gate rung", 40, mmr=False, relevance_filter=True
+        )
+        assert 0 < len(gated) < 40, f"the relevance gate admitted {len(gated)} of 40 rows"
+
+        with_numpy = store._sqlite_vector_search(query, "gate rung", 8, relevance_filter=True)
+        with patch.object(vm, "_HAS_NUMPY", False):
+            with_stdlib = store._sqlite_vector_search(query, "gate rung", 8, relevance_filter=True)
+
+        assert with_numpy, "fixture produced no admitted candidates"
+        assert [c["id"] for c in with_numpy] == [c["id"] for c in with_stdlib]
+        for a, b in zip(with_numpy, with_stdlib):
+            assert abs(a["cosine_sim"] - b["cosine_sim"]) < 1e-6
+            assert abs(a["score"] - b["score"]) < 1e-6
+
+    def test_numpy_conversions_do_not_grow_with_the_population(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Doubling the rows leaves the numpy conversion trace IDENTICAL.
+
+        Both conversions are per-SEARCH work, not per-row work: the query vector
+        is the same for every row, and the stored side is one buffer read over
+        the joined blobs. Converting either inside the row loop is invisible in
+        the answer, which is why this is asserted as a call trace rather than as
+        a duration — a timed ratio false-reds on a shared runner, and an
+        absolute count would pin the number of numpy calls the implementation
+        happens to make rather than the property that matters.
+        """
+        counts = []
+        for n_rows in (20, 40):
+            store = _sqlite_search_store(tmp_path / f"n{n_rows}", n_rows)
+            counting = _CountingNumpy(vm.np)
+            monkeypatch.setattr(vm, "np", counting)
+            try:
+                results = store._sqlite_vector_search(
+                    _spread_embed(_EPISODIC_DIM)("gate"), "gate", n_rows, mmr=False
+                )
+            finally:
+                monkeypatch.undo()
+            assert len(results) == n_rows
+            assert counting.asarray_calls, "the numpy rung was never entered"
+            counts.append((counting.asarray_calls, counting.frombuffer_calls))
+
+        small, large = counts
+        assert small == large, (
+            f"the numpy conversion trace grew with the population: {small} -> {large}; "
+            "both the query vector and the stored block are converted once per "
+            "search, not once per row"
+        )
+
+    def test_stdlib_rung_stays_reachable_without_numpy(self, tmp_path: Path) -> None:
+        """numpy is not a declared dependency, so the stdlib rung must work."""
+        store = _sqlite_search_store(tmp_path, 12)
+        query = _spread_embed(_EPISODIC_DIM)("gate")
+        with patch.object(vm, "_HAS_NUMPY", False):
+            results = store._sqlite_vector_search(query, "gate", 5, mmr=False)
+        assert len(results) == 5
+        assert all(-1.0 <= c["cosine_sim"] <= 1.0 for c in results)
+
+    def test_mismatched_dimension_rows_are_skipped_on_both_rungs(self, tmp_path: Path) -> None:
+        """A row from a previous embedding space is incomparable, not truncated."""
+        store = _sqlite_search_store(tmp_path, 6)
+        victim = store.db.execute(
+            "SELECT id FROM episodic_memories WHERE is_deleted = 0 LIMIT 1"
+        ).fetchone()["id"]
+        # Half-width vector: a row written under a narrower embedding model.
+        store.db.execute(
+            "UPDATE episodic_memories SET embedding = ? WHERE id = ?",
+            (b"\x00\x00\x80?" * (_EPISODIC_DIM // 2), victim),
+        )
+        store.db.commit()
+        query = _spread_embed(_EPISODIC_DIM)("gate")
+
+        numpy_hits = store._sqlite_vector_search(query, "gate", 10, mmr=False)
+        with patch.object(vm, "_HAS_NUMPY", False):
+            stdlib_hits = store._sqlite_vector_search(query, "gate", 10, mmr=False)
+        numpy_ids = {c["id"] for c in numpy_hits}
+        stdlib_ids = {c["id"] for c in stdlib_hits}
+        assert victim not in numpy_ids
+        assert numpy_ids == stdlib_ids
+
+
+@pytest.fixture
+def clean_stem_memos():
+    """Isolate the row-side memo, which is module-level and shared per process.
+
+    Deliberately leaves ``_stem_one`` alone: nothing here asserts its counters, and
+    it is the large per-word Snowball memo every other memory test in the worker
+    shares, so clearing it would discard a warm cache for no assertion.
+    """
+    vm._row_stem_tokens.cache_clear()
+    yield
+    vm._row_stem_tokens.cache_clear()
+
+
+def _semantic_store(tmp_path: Path, n_rows: int) -> VectorMemoryStore:
+    """Keyword-only semantic store: no ``embed_fn``, so scoring is stem overlap."""
+    store = VectorMemoryStore(db_path=tmp_path / "mem.db")
+    store.init()
+    for i in range(n_rows):
+        assert (
+            store.set_semantic(
+                f"pref.topic_{i}",
+                f"the runner rebuilds gateways and caches result number {i}",
+                confidence=1.0,
+                source="user_explicit",
+            )
+            is None
+        )
+    return store
+
+
+@pytest.mark.usefixtures("clean_stem_memos")
+class TestRowStemMemo:
+    """Row-side tokenization is derived per distinct text, not per query."""
+
+    def test_memo_reproduces_the_unmemoized_token_set(self) -> None:
+        """The memo is an idiom change, not a tokenization change."""
+        for text in ("running gateways rebuild caches", "pref topic 3", "", "MiXeD Case"):
+            expected = vm._stem_words(set(re.findall(r"\w+", text)))
+            assert vm._row_stem_tokens(text) == expected
+
+    def test_a_scan_that_fits_the_cache_uses_the_memo(self) -> None:
+        """Under the bound, the memoized form is what a scan gets."""
+        assert vm._row_stem_tokens_for_scan(vm._ROW_STEM_CACHE_SIZE) is vm._row_stem_tokens
+
+    def test_a_scan_wider_than_the_cache_bypasses_the_memo(self) -> None:
+        """Past the bound the memo cannot hit, so the scan must not pay for it.
+
+        A repeated full-table scan is LRU's worst case: once the pass touches more
+        entries than the cache holds, every lookup evicts the entry the next one
+        needs and the hit rate is exactly zero, leaving only the wrapper cost and
+        the retained frozensets. Selecting the uncached form is what keeps a store
+        that outgrows the bound from paying for a cache it can never read.
+        """
+        wide = vm._ROW_STEM_CACHE_SIZE + 1
+        assert vm._row_stem_tokens_for_scan(wide) is vm._row_stem_tokens_uncached
+
+    def test_both_forms_agree(self) -> None:
+        """Bypassing the memo must not change the tokens, only who derives them."""
+        for text in ("running gateways rebuild caches", "pref topic 3", "", "MiXeD Case"):
+            assert vm._row_stem_tokens_uncached(text) == vm._row_stem_tokens(text)
+
+    def test_a_wide_scan_leaves_the_memo_untouched(self, tmp_path: Path) -> None:
+        """The bypass is observable end to end, not just at the selector.
+
+        Patching the bound below the row count is what makes this cheap: seeding
+        4,097 real rows to cross the shipped bound would dominate the file's
+        runtime, and the property under test is the width comparison, not the
+        number it compares against.
+        """
+        store = _semantic_store(tmp_path, 30)
+        with patch.object(vm, "_ROW_STEM_CACHE_SIZE", 4):
+            store.get_semantic_context("rebuild the gateway", cap=4000)
+        assert vm._row_stem_tokens.cache_info().misses == 0
+        assert vm._row_stem_tokens.cache_info().hits == 0
+
+    def test_row_side_trace_is_identical_when_the_query_count_doubles(self, tmp_path: Path) -> None:
+        """Two more queries over the same rows cost ZERO new row tokenizations.
+
+        This is the shape assertion for the memo: the row side depends only on
+        the row's text, so doubling the queries must leave its miss count
+        untouched. ``_stem_one`` may still miss on the new query's own words —
+        the query side is deliberately NOT memoized, or a per-message cache
+        would evict the bounded row population it exists to keep.
+        """
+        store = _semantic_store(tmp_path, 30)
+
+        for query in ("rebuild the gateway", "cache the runner result"):
+            store.get_semantic_context(query, cap=4000)
+        after_first_pass = vm._row_stem_tokens.cache_info().misses
+        assert after_first_pass > 0, "expected the first pass to populate the memo"
+
+        for query in ("gateway runner rebuild", "which result was cached"):
+            store.get_semantic_context(query, cap=4000)
+        assert vm._row_stem_tokens.cache_info().misses == after_first_pass
+
+    def test_first_pass_tokenizes_each_row_text_once(self, tmp_path: Path) -> None:
+        """Misses scale with distinct row texts, not with rows times queries."""
+        n_rows = 30
+        store = _semantic_store(tmp_path, n_rows)
+        # Two entries per row — one for the key, one for the value — derived from
+        # the row count rather than restated, so the fixture and the expectation
+        # cannot drift apart.
+        expected_misses = 2 * n_rows
+        store.get_semantic_context("rebuild the gateway", cap=4000)
+        assert vm._row_stem_tokens.cache_info().misses == expected_misses
+        store.get_semantic_context("cache the runner result", cap=4000)
+        assert vm._row_stem_tokens.cache_info().misses == expected_misses
+
+    def test_changed_row_text_is_tokenized_afresh(self, tmp_path: Path) -> None:
+        """A stale memo serving the old token set would be a CORRECTNESS bug.
+
+        The memo is keyed on the row's own text, so an updated value hashes to a
+        different entry. Asserted through the retrieval answer rather than the
+        cache, because that is where a stale token set would surface: the row
+        would keep matching a word absent from its current text.
+        """
+        store = VectorMemoryStore(db_path=tmp_path / "mem.db")
+        store.init()
+        assert (
+            store.set_semantic("pref.editor", "helix", confidence=1.0, source="user_explicit")
+            is None
+        )
+        assert "helix" in store.get_semantic_context("helix", cap=4000)
+
+        assert (
+            store.set_semantic("pref.editor", "kakoune", confidence=1.0, source="user_explicit")
+            is None
+        )
+        after = store.get_semantic_context("helix", cap=4000)
+        assert "helix" not in after
+        assert "kakoune" not in after, "the row still matched a word it no longer holds"
+        assert "kakoune" in store.get_semantic_context("kakoune", cap=4000)
+
+    def test_stemming_still_matches_an_inflected_query(self, tmp_path: Path) -> None:
+        """The memo keeps the stem expansion that makes recall work."""
+        store = VectorMemoryStore(db_path=tmp_path / "mem.db")
+        store.init()
+        assert (
+            store.set_semantic(
+                "pref.style",
+                "the runner rebuilds gateways",
+                confidence=1.0,
+                source="user_explicit",
+            )
+            is None
+        )
+        # "rebuilding"/"gateway" only match through the Snowball expansion.
+        assert "rebuilds" in store.get_semantic_context("rebuilding gateway", cap=4000)
+
+    def test_memo_is_bounded_by_a_named_constant(self) -> None:
+        """An unbounded memo keyed on user memory content is not acceptable."""
+        assert vm._row_stem_tokens.cache_info().maxsize == vm._ROW_STEM_CACHE_SIZE
+        assert isinstance(vm._ROW_STEM_CACHE_SIZE, int)
+        assert vm._ROW_STEM_CACHE_SIZE > 0

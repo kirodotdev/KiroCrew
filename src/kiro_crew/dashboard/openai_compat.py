@@ -422,8 +422,9 @@ async def api_completions(request: web.Request) -> web.StreamResponse:
             # skips and thread-open refuses (orphaned the moment the slot
             # dies). Same rare-send thread-IO budget as the registry check.
             if slot.key.startswith(members_mod.DM_SLOT_KEY_PREFIX):
-                _member_slug = slot.key[len(members_mod.DM_SLOT_KEY_PREFIX) :]
-                _send_binding = await asyncio.to_thread(members_mod.read_dm_binding, _member_slug)
+                _send_binding = await asyncio.to_thread(
+                    members_mod.read_dm_binding_for_slot, slot.key
+                )
                 if _send_binding is None or _send_binding.get("member", "") != slot.agent:
                     sel().log_api_access(
                         caller=request.remote or "",

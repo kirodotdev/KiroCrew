@@ -51,6 +51,8 @@ interface SidePanelLayoutProps {
   rememberKey?: string
   footer?: React.ReactNode
   headerRight?: React.ReactNode
+  /** A drill-in pane supplies its own identity and one-level back navigation. */
+  paneOwnsHeader?: boolean
   /** Where the mobile layout docks `headerRight`. 'header' (default) keeps it
    *  in the title rows of BOTH levels — right for action buttons (e.g.
    *  Capabilities' Restart), which must stay reachable inside a tab.
@@ -145,7 +147,7 @@ export function useSidePanelLeaveGuard(guard: SidePanelLeaveGuard, atStake = fal
 
 const TAB_MEMORY_PREFIX = 'kirocrew:sidepanel-tab:'
 
-export default function SidePanelLayout({ title, tabs, defaultTab, rememberKey, footer, headerRight, headerRightDock = 'header', fixedContent, basePath, children }: SidePanelLayoutProps) {
+export default function SidePanelLayout({ title, tabs, defaultTab, rememberKey, footer, headerRight, headerRightDock = 'header', paneOwnsHeader = false, fixedContent, basePath, children }: SidePanelLayoutProps) {
   const [params, setParams] = useSearchParams()
   const location = useLocation()
   const navigate = useNavigate()
@@ -400,8 +402,7 @@ export default function SidePanelLayout({ title, tabs, defaultTab, rememberKey, 
   // accent back bar ("‹ Settings") over the tab's own header and pane. The
   // horizontal pill strip this replaces hid fifteen of nineteen tabs behind a
   // scroll; a vertical root list shows the whole map, the way iOS Settings does.
-  if (isMobile) {
-    if (!mobileTab) {
+  if (isMobile && !mobileTab) {
       return (
         // pb-24 on the SCROLL CONTAINER (below the footer, not on the list):
         // clearance for the fixed search capsule must protect the LAST in-flow
@@ -469,56 +470,16 @@ export default function SidePanelLayout({ title, tabs, defaultTab, rememberKey, 
           )}
         </div>
       )
-    }
-    // iOS push-stack semantics: ONE back button per level, pointing one level
-    // up. When a pane's own SubNav has drilled a further level in, THIS
-    // level's chrome — the "‹ Settings" bar and the tab's big title — steps
-    // aside entirely, leaving the SubNav's "‹ Channels" bar as the only
-    // navigation. Two stacked back bars is exactly the misread a stack exists
-    // to prevent. The level test honours the legacy aliases too: old bookmarks
-    // still carry ?channel=/?section=, and reading only the canonical name
-    // would stack the bars on exactly those links. Gated on the tab's own
-    // hostsSubNav declaration: chrome yields only where a SubNav exists to
-    // replace it — on any other tab a stray selection param must NOT strand
-    // the pane without navigation. For basePath consumers the second level
-    // lives in the PATH (`${basePath}/<tab>/<sub>`), so the level test is
-    // path depth; the query test with its legacy aliases stays for everyone
-    // else — old bookmarks are translated to paths upstream (SettingsPage's
-    // legacy remap), not honoured here. A NON-EMPTY second segment, not raw
-    // length: `/settings/channels/` (trailing slash) parses to an empty
-    // filler segment, and treating it as drilled would hide the outer back
-    // bar while the SubNav shows its list with no inner bar — a mobile pane
-    // with zero navigation affordance.
-    const subDrilled = !!meta?.hostsSubNav && (basePath ? !!pathSegments[1] : hasSubSelection(params))
-    return (
-      <div className={`flex-1 min-w-0 min-h-0 flex flex-col ${fixed ? 'overflow-hidden' : 'overflow-y-auto'}`}>
-        {!subDrilled && <NavBackBar label={title} onBack={backToRoot} />}
-        {/* No top inset here: NavBackBar above owns the gap beneath itself, at
-          * every level of the push stack. A `pt-*` on this header would stack
-          * on that margin and land this level's title 24px down while the
-          * SubNav's own level sat at 12px. */}
-        {!subDrilled && (
-        <div data-testid="mobile-detail-header" className="flex items-end justify-between gap-4 px-4 pb-2 shrink-0">
-          <div>
-            <div className="text-2xl font-bold tracking-tight text-text-strong">{meta?.label || ''}</div>
-            {meta?.description && <div className="text-muted text-sm mt-1">{meta.description}</div>}
-          </div>
-          {/* header-docked controls (e.g. Capabilities' Restart) stay reachable
-            * inside a tab; a bottom-float search lives on the root only —
-            * its results deep-link anywhere, so no per-tab copy is needed. */}
-          {headerRight && headerRightDock === 'header' && headerRight}
-        </div>
-        )}
-        <div data-testid="side-panel-pane" className={`px-4 pt-1 ${fixed ? 'flex-1 min-h-0 flex flex-col' : 'flex-1 pb-8'}`}>
-          {renderPane()}
-        </div>
-      </div>
-    )
   }
+  // Keep the pane under one React ancestry at both widths. Separate mobile
+  // and desktop return trees remounted its editors on resize, discarding local
+  // drafts, cross-page selections and signed previews without a navigation.
+  // Only the intentional mobile root-list navigation above unmounts a pane.
+  const subDrilled = paneOwnsHeader || (isMobile && !!meta?.hostsSubNav && (basePath ? !!pathSegments[1] : hasSubSelection(params)))
 
   return (
     <div className="flex-1 min-h-0 flex overflow-hidden">
-      <nav className="w-[200px] shrink-0 border-r border-border bg-bg overflow-y-auto pt-1 pb-3 px-3 flex flex-col gap-0.5">
+      {!isMobile && <nav className="w-[200px] shrink-0 border-r border-border bg-bg overflow-y-auto pt-1 pb-3 px-3 flex flex-col gap-0.5">
           <div className="text-lg font-bold text-text-strong px-2.5 py-2 mb-1">{title}</div>
           {tabs.map((t, i) => (
             <React.Fragment key={t.key}>
@@ -545,17 +506,18 @@ export default function SidePanelLayout({ title, tabs, defaultTab, rememberKey, 
             </React.Fragment>
           ))}
           {footer && <div className="mt-auto pt-3 px-2.5">{footer}</div>}
-        </nav>
+        </nav>}
 
       <div className={`flex-1 min-w-0 min-h-0 flex flex-col ${fixed ? 'overflow-hidden' : 'overflow-y-auto'}`}>
-        <div data-testid="side-panel-header" className="flex items-end justify-between gap-4 px-6 pt-2 pb-3 shrink-0">
+        {isMobile && !subDrilled && <NavBackBar label={title} onBack={backToRoot} />}
+        {!subDrilled && <div data-testid={isMobile ? 'mobile-detail-header' : 'side-panel-header'} className={`flex items-end justify-between gap-4 shrink-0 ${isMobile ? 'px-4 pb-2' : 'px-6 pt-2 pb-3'}`}>
           <div>
             <div className="text-2xl font-bold tracking-tight text-text-strong">{meta?.label || ''}</div>
             {meta?.description && <div className="text-muted text-sm mt-1">{meta.description}</div>}
           </div>
-          {headerRight}
-        </div>
-        <div data-testid="side-panel-pane" className={`px-6 ${fixed ? 'flex-1 min-h-0 flex flex-col' : 'flex-1 pb-8'}`}>
+          {(!isMobile || headerRightDock === 'header') && headerRight}
+        </div>}
+        <div data-testid="side-panel-pane" className={`${isMobile ? 'px-4 pt-1' : 'px-6'} ${fixed ? 'flex-1 min-h-0 flex flex-col' : 'flex-1 pb-8'}`}>
           {renderPane()}
         </div>
       </div>

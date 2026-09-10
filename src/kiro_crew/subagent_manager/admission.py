@@ -55,6 +55,7 @@ class SpawnAdmissionCoordinator(ManagerComponent):
         include_memory: bool = True,
         include_lessons: bool = True,
         include_project: bool = True,
+        memory_store: str = "",
         _agent_prevalidated: bool = False,
         _from_queue: bool = False,
         _preassigned_id: str = "",
@@ -165,6 +166,29 @@ class SpawnAdmissionCoordinator(ManagerComponent):
 
         # --- Redact task once for all SubagentInfo storage (raw task kept for kiro-cli prompt) ---
         _redacted_task = redact_credentials(redact_exfiltration_urls(task)[0])[0]
+
+        # Validate before queueing/starting. An explicit private identity may
+        # never degrade to V1 after deletion, a config error, or a restart.
+        try:
+            if not isinstance(memory_store, str):
+                raise ValueError("the supplied memory identity is malformed")
+            if memory_store:
+                from kiro_crew.memory_stores import require_memory_store
+
+                memory_store = require_memory_store(memory_store)
+        except (OSError, ValueError) as exc:
+            return self._manager._announce_rejection(
+                SubagentInfo(
+                    id=agent_id,
+                    task=_redacted_task,
+                    agent=agent,
+                    parent_session_key=parent_session_key,
+                    done=True,
+                    error=f"memory_unavailable: {exc}",
+                    batch_id=batch_id,
+                    batch_total=max(0, int(batch_total)),
+                )
+            )
 
         # --- Memory guard: refuse to spawn if system memory is critically low ---
         try:
@@ -365,6 +389,13 @@ class SpawnAdmissionCoordinator(ManagerComponent):
                     "include_memory": include_memory,
                     "include_lessons": include_lessons,
                     "include_project": include_project,
+                    # Queued alongside the context triple, and for the same
+                    # reason: the drain re-enters `spawn` from this dict alone, so
+                    # a field missing here is a scope the run silently regains.
+                    # For the store that means a delegation which happened to hit
+                    # the concurrency gate runs against the GLOBAL memory instead
+                    # of the crew it was handed to.
+                    "memory_store": memory_store,
                     "_agent_prevalidated": _agent_prevalidated,
                     "_preassigned_id": agent_id,
                 }
@@ -455,6 +486,7 @@ class SpawnAdmissionCoordinator(ManagerComponent):
             include_memory=include_memory,
             include_lessons=include_lessons,
             include_project=include_project,
+            memory_store=memory_store or "",
         )
         info._raw_task = task  # unredacted prompt for kiro-cli execution
         self._manager._agents[agent_id] = info
@@ -872,9 +904,15 @@ class SpawnAdmissionCoordinator(ManagerComponent):
                 parent_session=info.parent_session_key,
                 max_turns=info.max_turns,
                 context_groups=_context_groups_field(info),
+                memory_store=info.memory_store,
             )
         except Exception:
             logger.warning("Failed to create agent folder for %s", info.id, exc_info=True)
+            if info.memory_store:
+                # The run task may already be registered. Its normal terminal
+                # path settles the failure before allocating a provider.
+                info.error = "memory_unavailable: could not persist this member's run binding"
+                return
 
         Stats().inc_subagent_spawned()
         # Beside that stat, and for the same reason: this is the confirmed-start

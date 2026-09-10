@@ -6,6 +6,24 @@ The subagent module (`kiro_crew/subagent.py`) spawns isolated background agents 
 
 Supports `on_tool_approval` callback for interactive tool approval (routed through gateway's approval system in Normal/Trust modes).
 
+Private member memory is a durable run identity. `spawn_run(crew=...)` resolves
+the target member's template and V2 store together; an ordinary spawn inherits
+the calling session's recorded store. Admission and provider allocation both
+validate named stores, and an unavailable store refuses execution instead of
+using Global Memory V1. The run transcript carries the same binding for tools
+and consolidation.
+
+`create_agent_folder` publishes `memory.json` under the run's protected
+`member-memory-bindings/<id>/` directory before dispatch. This top-level tree is
+precreated and mounted read-only inside the sandbox, while remaining readable
+for cron metadata lookup. The writable `trust/` tree is never a migration source
+for memory authority. Continuation
+reads that record after a gateway restart, never an agent-edited `state.json`
+store field. An absent protected record for a V2 run returns
+`memory_unavailable`; unreadable run metadata also refuses rather than proving
+legacy absence. A readable legacy run with no memory binding keeps V1. Retry and
+continuation preserve the store even when the parent uses different memory.
+
 ## Constants
 
 | Constant | Value | Purpose |
@@ -763,6 +781,10 @@ kwargs sourced from `cfg.agent.*`). User-facing docs:
 [`src/kiro_crew/docs/troubleshooting.md`](../../../src/kiro_crew/docs/troubleshooting.md).
 
 ### Dashboard API: `POST /api/spawn`
+
+Crew binding resolution and inherited memory lookup for persisted parent runs
+execute off the gateway event loop. Unavailable member memory remains a typed
+refusal before any child provider is allocated.
 
 Request: `{"task": "..."}`
 Response: `{"id": "abc123", "task": "...", "status": "spawned"}`

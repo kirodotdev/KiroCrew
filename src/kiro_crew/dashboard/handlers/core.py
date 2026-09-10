@@ -59,6 +59,8 @@ from kiro_crew.config.sections import STT_LANGUAGE_AUTO
 from kiro_crew.context_management import RESULT_FILE_MAX_BYTES
 from kiro_crew.dashboard.handlers._shared import (
     _pip_install_channel_available,
+    guard_owner_surface_routes,
+    owner_surface_guard,
     pip_extra_install_command,
 )
 from kiro_crew.dashboard.origin import check_host, is_direct_local_request
@@ -498,11 +500,14 @@ async def api_ready(request: web.Request) -> web.Response:
 
     * **Startup** — before the socket binds, connection failure is the external
       not-ready signal. After bind, ``DashboardState.ready`` remains false and
-      the probe returns 503 while session restoration, channel relaunch, tunnel
-      setup, and other startup work finish.
+      the probe returns 503 while session restoration, tunnel setup, and other
+      pre-ready wiring finishes.
     * **Serving** — the server publishes ``DashboardState.ready = True`` at the
       same final boundary used by the boot-to-ready metric; readiness is then
-      200 while required state is wired and shutdown has not been requested.
+      200 while required control state is wired and shutdown has not been
+      requested. The separately tracked memory preparation task starts at this
+      boundary: memory content routes remain fail-closed and agent turns wait
+      at admission until it settles.
     * **Shutdown requested** — when SIGTERM/SIGINT or ``POST /api/shutdown``
       sets the process-wide ``shutdown_event``, readiness changes to 503 while
       ``/api/live`` remains 200 until the HTTP server exits. Supervisors that
@@ -1898,6 +1903,7 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     },
     "agent.sandbox": {"type": "enum", "values": ["auto", "off"]},
     "agent.sandbox_allow_no_isolation": {"type": "bool"},
+    "memory.private_provisioning_enabled": {"type": "bool"},
     "agent.completion_keep": {"type": "enum", "values": ["head", "tail", "both"]},
     "agent.completion_keep_chars": {
         "type": "int",
@@ -2568,6 +2574,24 @@ async def api_token_local(request: web.Request) -> web.Response:
             resources="invalid-secret",
         )
         return web.json_response({"error": "invalid secret"}, status=403)
+    from kiro_crew.member_memory_auth import local_owner_bootstrap_allowed
+
+    if not await asyncio.to_thread(local_owner_bootstrap_allowed, request):
+        _sel().log_api_access(
+            caller="local-process",
+            operation="token.local",
+            outcome="denied",
+            source="local-bootstrap",
+            resources="unverified-owner-process",
+        )
+        return web.json_response(
+            {
+                "error": "The gateway could not verify this process as the local owner. "
+                "Open the dashboard using its CLI login link on the gateway host.",
+                "code": "member_owner_token_refused",
+            },
+            status=403,
+        )
     ttl = MAX_SESSION_TTL_SECS
     ttl_param = request.query.get("ttl", "")
     if ttl_param:
@@ -2888,3 +2912,18 @@ async def api_app_token(request: web.Request) -> web.Response:
         source="app_auth",
     )
     return web.json_response({"token": token})
+
+
+# The session sub-agent routes are owner surfaces under their own audit labels;
+# any other ``api_session_agent*`` handler is refused to private members under
+# its name.
+guard_owner_surface_routes(
+    globals(),
+    prefix="api_session_agent",
+    member_scoped=frozenset(),
+    resource_scoped={
+        "api_session_agents_list": owner_surface_guard("session.agents.list"),
+        "api_session_agent_result": owner_surface_guard("session.agent.result"),
+        "api_session_agent_stream": owner_surface_guard("session.agent.stream"),
+    },
+)

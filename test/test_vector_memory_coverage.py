@@ -1206,6 +1206,27 @@ class TestLessonDedupPaths:
         assert len(texts) == 1
         assert "never merge upward" in texts[0]
 
+    def test_a_terse_lesson_does_not_supersede_a_detailed_one(self, tmp_path: Path) -> None:
+        """The overlap ratio is measured against the LARGER keyword set.
+
+        Against the smaller one it reads "how much of the shorter rule the longer one
+        covers", which is ~1.0 for any terse near-truism — so a three-word rule scored
+        past the 50% threshold and DELETED eighteen words of real guidance, reporting
+        success. Neither rule here is a substring of the other and the store has no
+        embedder, so the topic-overlap branch is the only one that can fire.
+        """
+        detailed = (
+            "Shell arguments must always be quoted when you interpolate them into a "
+            "bash command, because unquoted globbing silently rewrites every "
+            "filesystem path"
+        )
+        store = _store(tmp_path)
+        assert store.write_lesson(detailed)
+        assert store.write_lesson("Quote shell arguments")
+        texts = _lesson_texts(store)
+        assert detailed in texts
+        assert "Quote shell arguments" in texts
+
     def test_a_negative_example_is_stored_as_its_own_field(self, tmp_path: Path) -> None:
         store = _store(tmp_path)
         assert store.write_lesson("Quote shell arguments", negative="bare interpolation")
@@ -1271,6 +1292,39 @@ class TestLessonDedupPaths:
         assert result.reason == "semantic_similarity"
         assert result.superseded == ()
         assert _lesson_texts(store) == [taught]
+
+    def test_small_keyword_subset_cannot_bypass_semantic_source_authority(
+        self, tmp_path: Path
+    ) -> None:
+        """The authority pre-pass and mutating topic branch classify the same pair."""
+        taught = (
+            "Shell arguments must always be quoted when you interpolate them into a "
+            "bash command, because unquoted globbing silently rewrites every "
+            "filesystem path"
+        )
+        inferred = "Quote shell arguments"
+        store = _store(tmp_path)
+        try:
+            store.embed_fn = _TableEmbedder({taught: _unit(0), inferred: _unit(0)})
+            taught_words = store._lesson_keywords(taught.lower())
+            inferred_words = store._lesson_keywords(inferred.lower())
+            overlap = len(taught_words & inferred_words)
+            assert overlap / min(len(taught_words), len(inferred_words)) >= 0.5
+            assert overlap / max(len(taught_words), len(inferred_words)) < 0.5
+            assert taught.lower() not in inferred.lower() and inferred.lower() not in taught.lower()
+            assert store.write_lesson(taught, source="user_explicit")
+            before = store.get_lessons()
+            events = store.get_events()
+
+            result = store.write_lesson(inferred, source="consolidation")
+
+            assert result.outcome is LessonWriteOutcome.DEDUPED
+            assert result.reason == "semantic_similarity" and result.superseded == ()
+            assert store.get_lessons() == before
+            assert store.get_events() == events
+            assert _lesson_texts(store) == [taught]
+        finally:
+            store.close()
 
     def test_semantic_supersede_lets_a_user_explicit_correction_replace_an_inferred_lesson(
         self, tmp_path: Path

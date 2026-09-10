@@ -179,6 +179,11 @@ class TestMemberThreadSessionAlias:
         """The alias round-trips through the member-key predicate."""
         assert is_member_session_key(member_thread_session_alias("code-reviewer"))
 
+    def test_alias_preserves_the_private_memory_generation(self):
+        assert member_thread_session_alias("code-reviewer", "member-review-v2") == (
+            "dashboard:" + member_slot_key("code-reviewer", "member-review-v2")
+        )
+
     def test_bad_slug_is_refused(self):
         with pytest.raises(MemberSlugError):
             member_thread_session_alias("../escape")

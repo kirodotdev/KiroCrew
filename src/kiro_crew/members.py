@@ -347,19 +347,28 @@ def member_dir(slug: str) -> Path:
     return target
 
 
-def member_slot_key(slug: str) -> str:
+def member_slot_key(slug: str, memory_store: str = "") -> str:
     """Derived, stable chat-slot key for a member's pinned DM thread.
 
-    One slot per member, reused forever. Purely a derivation — nothing is read
-    or written. The dashboard's slot layer normalizes keys to a filename-safe
+    V1 uses the slug; a V2 opt-in uses its private store generation. Nothing is
+    read or written. The dashboard's slot layer normalizes keys to a filename-safe
     charset, but a validated slug is already inside that charset, so the
     derived key survives ``_normalize_slot_key`` unchanged; callers must still
     use the slot layer's RETURNED key as the source of truth.
     """
-    return DM_SLOT_KEY_PREFIX + validate_slug(slug)
+    key = DM_SLOT_KEY_PREFIX + validate_slug(slug)
+    if memory_store:
+        from kiro_crew.memory_stores import validate_memory_store_name
+
+        validate_memory_store_name(memory_store)
+        if memory_store == "default":
+            raise ValueError("Global memory has no private conversation generation")
+        # The complete store name is already a unique, bounded generation ID.
+        key += ".memory-" + memory_store
+    return key
 
 
-def member_thread_session_alias(slug: str) -> str:
+def member_thread_session_alias(slug: str, memory_store: str = "") -> str:
     """Canonical session-map alias for a member's pinned DM thread.
 
     ``dashboard:<slot key>`` — the spelling the session manager and the
@@ -371,7 +380,7 @@ def member_thread_session_alias(slug: str) -> str:
     format lives here rather than being hand-built at each site, where one
     divergent spelling would silently orphan the invariant it serves.
     """
-    return f"dashboard:{member_slot_key(slug)}"
+    return f"dashboard:{member_slot_key(slug, memory_store)}"
 
 
 class MemberLifecycle(str, Enum):
@@ -563,7 +572,14 @@ def read_dm_binding(slug: str) -> dict | None:
     # roster (and the page, which trusts `bound` rows enough to skip the
     # create POST) at an arbitrary unrelated session. Treat non-canonical as
     # absent — the thread endpoint then repairs it to the derived key.
-    if data["slot_key"] != member_slot_key(slug):
+    generation = data.get("memory_store", "")
+    if not isinstance(generation, str):
+        return None
+    try:
+        canonical = member_slot_key(slug, generation)
+    except ValueError:
+        return None
+    if data["slot_key"] != canonical:
         return None
     # And the member must actually BELONG to this slug: a tampered dm.json in
     # slug A's directory naming crew B (a real, registered crew whose slug
@@ -575,7 +591,7 @@ def read_dm_binding(slug: str) -> dict | None:
     return data
 
 
-def write_dm_binding(slug: str, *, member: str, slot_key: str) -> dict:
+def write_dm_binding(slug: str, *, member: str, slot_key: str, memory_store: str = "") -> dict:
     """Persist a member's DM-thread binding atomically; return the record.
 
     ``slot_key`` must be the slug's own derivation — the same canonicality
@@ -598,10 +614,10 @@ def write_dm_binding(slug: str, *, member: str, slot_key: str) -> dict:
     permission tightening.
     """
     path = dm_binding_path(slug)
-    if slot_key != member_slot_key(slug):
+    if slot_key != member_slot_key(slug, memory_store):
         raise ValueError(
             f"non-canonical dm binding slot_key {slot_key!r} for slug {slug!r} "
-            f"(expected {member_slot_key(slug)!r}); such a binding always reads back as absent"
+            f"(expected {member_slot_key(slug, memory_store)!r}); such a binding always reads back as absent"
         )
     binding = {
         "member": member,
@@ -609,6 +625,8 @@ def write_dm_binding(slug: str, *, member: str, slot_key: str) -> dict:
         "slot_key": slot_key,
         "created_ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
+    if memory_store:
+        binding["memory_store"] = memory_store
     path.parent.mkdir(parents=True, exist_ok=True)
     # The trust subtree is owner-only everywhere else (sel.py creates it 0o700);
     # a parents=True mkdir would otherwise leave a default-mode directory chain.
@@ -626,6 +644,15 @@ def write_dm_binding(slug: str, *, member: str, slot_key: str) -> dict:
     # must be at least as durable as the transcript it attributes.
     atomic_write(path, json.dumps(binding, ensure_ascii=False), fsync=True)
     return binding
+
+
+def read_dm_binding_for_slot(slot_key: str) -> dict | None:
+    """Resolve a member slot without letting a newer generation adopt its history."""
+    if not slot_key.startswith(DM_SLOT_KEY_PREFIX):
+        return None
+    slug = slot_key[len(DM_SLOT_KEY_PREFIX) :].split(".memory-", 1)[0]
+    binding = read_dm_binding(slug)
+    return binding if binding is not None and binding["slot_key"] == slot_key else None
 
 
 def member_rules_path(slug: str) -> Path:

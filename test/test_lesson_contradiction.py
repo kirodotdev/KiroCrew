@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import threading
@@ -11,7 +12,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from body_stream_helpers import attach_body
+from member_memory_helpers import declare_v2_store
 
+from kiro_crew.history import ConversationLog
 from kiro_crew.providers.base import (
     EVENT_COMPLETE,
     EVENT_PERMISSION_REQUEST,
@@ -302,6 +305,48 @@ class TestResolveContradictions:
 class TestResolveAndSupersede:
     """Tests for the backgrounded _resolve_and_supersede helper."""
 
+    @pytest.mark.parametrize("private_memory", [False, True], ids=["v1", "v2"])
+    async def test_private_rules_survive_without_requesting_a_model(
+        self, tmp_path, monkeypatch, private_memory
+    ):
+        """Only V1 may remove a persisted rule on an inferred contradiction."""
+        from kiro_crew import memory_stores
+        from kiro_crew.dashboard.handlers.cron import _resolve_and_supersede
+
+        root = tmp_path / "memory_stores"
+        monkeypatch.setattr(memory_stores, "memory_stores_root", lambda: root)
+        directory = declare_v2_store(tmp_path, "member-alice") if private_memory else tmp_path
+        vs = VectorMemoryStore(db_path=directory / "memory.db")
+        await asyncio.to_thread(vs.init)
+        try:
+            assert vs.algorithm_version == ("v2" if private_memory else "v1")
+            old_rule = {"rule": "Use X format", "category": "tool"}
+            new_rule = {"rule": "Do NOT use X format", "category": "tool"}
+            for key, value in (("lesson.old", old_rule), ("lesson.new", new_rule)):
+                await asyncio.to_thread(vs.set_semantic, key, value, 1.0, "user_explicit")
+            state = MagicMock()
+            session = _FakeBgSession("CONTRADICTORY")
+            state.sessions.get_bg_session = AsyncMock(return_value=session)
+            candidates = [{"key": "lesson.old", "rule": old_rule["rule"], "similarity": 0.6}]
+
+            with patch("kiro_crew.dashboard.handlers.cron._sel"):
+                await _resolve_and_supersede(
+                    state, "dashboard:ui", new_rule["rule"], candidates, vs
+                )
+
+            old_record = await asyncio.to_thread(vs.get_semantic, "lesson.old")
+            assert (old_record is not None) is private_memory
+            assert await asyncio.to_thread(vs.get_semantic, "lesson.new") is not None
+            if private_memory:
+                state.sessions.get_bg_session.assert_not_awaited()
+                session.set_model.assert_not_awaited()
+            else:
+                state.sessions.get_bg_session.assert_awaited_once()
+                session.set_model.assert_awaited_once_with("auto")
+                session.destroy.assert_awaited_once()
+        finally:
+            await asyncio.to_thread(vs.close)
+
     async def test_deletes_contradicted_keys(self):
         from kiro_crew.dashboard.handlers.cron import _resolve_and_supersede
 
@@ -350,9 +395,10 @@ class TestResolveAndSupersede:
 @pytest.mark.asyncio
 class TestApiLessonsCreateSchedulesSweep:
     """The handler seam: api_lessons_create registers a background task iff
-    the contradiction scan finds candidates (locks the fire-and-forget wiring)."""
+    a V1 write lands and its contradiction scan finds candidates."""
 
     def _request(self, state):
+        state.conversation_log = ConversationLog()
         request = MagicMock()
         request.app = {"state": state}
         request.headers = {"X-Session-Key": "dashboard:ui"}
@@ -360,12 +406,13 @@ class TestApiLessonsCreateSchedulesSweep:
         attach_body(request, body)
         return request
 
-    async def _run(self, candidates, wrote=True):
+    async def _run(self, candidates, wrote=True, algorithm_version="v1"):
         from kiro_crew.dashboard.handlers import cron
 
         state = MagicMock()
         state._background_tasks = set()
         vs = MagicMock()
+        vs.algorithm_version = algorithm_version
         vs.embed_lesson.return_value = [0.1] * 384
         vs.find_contradiction_candidates.return_value = candidates
         # A real result object, not a bare bool: the route reads the outcome to decide
@@ -397,6 +444,15 @@ class TestApiLessonsCreateSchedulesSweep:
     async def test_no_task_when_no_candidates(self):
         tasks = await self._run([])
         assert tasks == []
+
+    async def test_private_write_does_not_scan_or_schedule_a_model_sweep(self):
+        tasks = await self._run(
+            [{"key": "lesson.old", "rule": "r", "similarity": 0.6}],
+            algorithm_version="v2",
+        )
+        assert tasks == []
+        self._vs.find_contradiction_candidates.assert_not_called()
+        self._vs.write_lesson.assert_called_once()
 
     async def test_refused_write_does_not_sweep(self):
         """A write that did not land must not supersede anything.
@@ -433,6 +489,7 @@ class TestApiLessonsCreateForwardsNegative:
     _NEGATIVE = "Do not use unittest directly"
 
     def _request(self, state):
+        state.conversation_log = ConversationLog()
         request = MagicMock()
         request.app = {"state": state}
         request.headers = {"X-Session-Key": "dashboard:ui"}
@@ -518,6 +575,7 @@ class TestApiLessonsDeleteOffloadsRemove:
 
         state = MagicMock()
         state.lessons = _RecordingStore()
+        state.conversation_log = ConversationLog()
         request = MagicMock()
         request.app = {"state": state}
         request.headers = {"X-Session-Key": "dashboard:ui"}
@@ -1042,6 +1100,7 @@ class TestApiLessonsSanitizesStoredFields:
     and the rule prose is redacted like every other agent-derived string."""
 
     def _request(self, state):
+        state.conversation_log = ConversationLog()
         request = MagicMock()
         request.app = {"state": state}
         request.headers = {"X-Session-Key": "dashboard:ui"}

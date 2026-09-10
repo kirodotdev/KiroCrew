@@ -24,6 +24,7 @@ def _make_gateway():
     gateway.sessions = MagicMock()
     gateway.sessions.get_pid = MagicMock(return_value=None)
     gateway.ctx_builder = MagicMock()
+    gateway.ctx_builder.conversation_log.get_metadata_status.return_value = ({}, True)
     gateway.slack = MagicMock()
     gateway.conv_log = None
     gateway.dashboard_state = MagicMock()

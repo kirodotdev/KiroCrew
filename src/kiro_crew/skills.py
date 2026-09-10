@@ -48,12 +48,16 @@ from kiro_crew.security import (
 from kiro_crew.sel import sel
 from kiro_crew.skill_usage import SKILL_USAGE_FILENAME, SkillUsageLedger
 from kiro_crew.skills_script_validator import validate_scripts
+from kiro_crew.trigger_match import MIN_TRIGGER_OVERLAP, trigger_score, words_of
 
 logger = logging.getLogger(__name__)
 
 
 SKILLS_DIR_NAME = "skills"
-_MIN_TRIGGER_OVERLAP = 0.7
+#: Re-exported from ``trigger_match``, which owns the value and the grammar
+#: it belongs to. Kept as a module name because tests and call sites here
+#: reference it.
+_MIN_TRIGGER_OVERLAP = MIN_TRIGGER_OVERLAP
 
 # Whether skill CRUD can address the skill directory and its SKILL.md relative to
 # a pinned parent descriptor. supports_pinned_walk covers the openat capability
@@ -4651,7 +4655,7 @@ class SkillsLoader:
 
         Returns up to ``max_triggered`` skills sorted by best overlap score.
         """
-        text_words = set(re.findall(r"\w+", text.lower()))
+        text_words = words_of(text)
         scored: list[tuple[str, float]] = []
         # Skills a negative trigger actively excluded — a permission DENY that
         # must still be audited (see the audit event below).
@@ -4672,29 +4676,12 @@ class SkillsLoader:
             if scope and not self._repo_scope_satisfied(scope, project_dir):
                 continue
 
-            # Split into positive and negative triggers
-            negated = False
-            best_overlap = 0.0
-            for trigger in triggers.split(","):
-                trigger = trigger.strip().lower()
-                if not trigger:
-                    continue
-                # Negative trigger: "!search" excludes if "search" words match.
-                # Don't break — keep scoring the remaining positive triggers so
-                # best_overlap is correct regardless of trigger order; the DENY
-                # audit below needs it to know the skill would otherwise have
-                # triggered (e.g. "!test, shorten url" must still compute the
-                # "shorten url" overlap).
-                if trigger.startswith("!"):
-                    neg_words = set(re.findall(r"\w+", trigger[1:]))
-                    if neg_words and neg_words <= text_words:
-                        negated = True
-                else:
-                    trigger_words = set(re.findall(r"\w+", trigger))
-                    if not trigger_words:
-                        continue
-                    overlap = len(trigger_words & text_words) / len(trigger_words)
-                    best_overlap = max(best_overlap, overlap)
+            # Scored by the shared primitive, not here: crew routing scores the
+            # same trigger grammar, and two implementations would agree on the
+            # easy cases and diverge on the ones that matter. `negated` stays
+            # separate from the score because the DENY audit below has to tell
+            # "scored nothing" apart from "scored well and was vetoed".
+            best_overlap, negated = trigger_score(triggers, text_words)
 
             # Only record a negation as a DENY when the skill would otherwise
             # have triggered (positive overlap met the threshold) — that's the

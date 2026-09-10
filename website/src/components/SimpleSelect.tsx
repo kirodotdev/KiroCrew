@@ -30,7 +30,9 @@ import { SourceBadge } from './ui'
  * ~30 call sites each having to remember the touch case is ~30 chances to
  * reintroduce the bug. A caller that wants styled option rows — the one thing
  * the native list cannot do — asks for them with `optionBadges`, and gets the
- * text form on touch instead.
+ * text form on touch instead. Optional identity icons decorate desktop rows;
+ * on touch, the selected icon sits beside the native control, whose options
+ * stay text.
  */
 
 const EMPTY_VALUE_SENTINEL = '\u0000simple-select-empty'
@@ -40,6 +42,9 @@ export interface SimpleSelectProps {
   options: string[]
   /** Optional display labels for each option (same order as options). Falls back to the option value. */
   optionLabels?: string[]
+  /** Decorative identity icons in option order. Text labels remain the accessible
+   * names and typeahead values. Touch keeps the native list plus the selected icon. */
+  optionIcons?: React.ReactNode[]
   value: string
   onChange: (value: string) => void
   /** Optional action at top of dropdown (e.g. "+ New workspace…"). Fires onSelect instead of onChange. */
@@ -80,9 +85,11 @@ export interface SimpleSelectProps {
    *  rows and their badges still render whole. */
   contentClassName?: string
   'aria-label'?: string
+  /** Full trigger text for controls whose visible label may be ellipsized. */
+  title?: string
 }
 
-export default function SimpleSelect({ options, optionLabels, value, onChange, action, clearLabel, triggerFallback, labelsInListOnly, optionBadges, disabled, style, id, className, contentClassName, 'aria-label': ariaLabel }: SimpleSelectProps) {
+export default function SimpleSelect({ options, optionLabels, optionIcons, value, onChange, action, clearLabel, triggerFallback, labelsInListOnly, optionBadges, disabled, style, id, className, contentClassName, 'aria-label': ariaLabel, title }: SimpleSelectProps) {
   const isTouch = useIsTouchDevice()
   const toRadix = (v: string) => (v === '' ? EMPTY_VALUE_SENTINEL : v)
   const fromRadix = (v: string) => (v === EMPTY_VALUE_SENTINEL ? '' : v)
@@ -98,6 +105,7 @@ export default function SimpleSelect({ options, optionLabels, value, onChange, a
     const badge = optionBadges?.[i]
     return badge ? `${opt} — ${badge.label}` : opt
   }
+  const selectedIcon = optionIcons?.[options.indexOf(value)]
 
   if (isTouch) {
     // A value with no matching option (a legacy or provider-dropped setting) has
@@ -105,15 +113,16 @@ export default function SimpleSelect({ options, optionLabels, value, onChange, a
     // the browser would silently display the FIRST option and the row would read
     // as if that were the saved setting.
     const unmatched = !selectable(value)
-    return (
+    const control = (
       <NativeSelect
         id={id}
         aria-label={ariaLabel}
+        title={title}
         disabled={disabled}
         // `style` lands on the WRAPPER on both paths. It is layout intent (a flex
         // basis, a min-width), and on this path the `<select>` is `w-full` inside
         // the wrapper — a flex rule placed on it is simply inert.
-        wrapperStyle={style}
+        wrapperStyle={selectedIcon ? { flex: '1 1 0', minWidth: 0 } : style}
         className={className}
         value={toRadix(value)}
         onChange={e => {
@@ -143,6 +152,7 @@ export default function SimpleSelect({ options, optionLabels, value, onChange, a
         ))}
       </NativeSelect>
     )
+    return selectedIcon ? <div style={style} className="flex min-w-0 items-center gap-2"><span aria-hidden="true" className="shrink-0">{selectedIcon}</span>{control}</div> : control
   }
 
   return (
@@ -155,7 +165,7 @@ export default function SimpleSelect({ options, optionLabels, value, onChange, a
         }}
         disabled={disabled}
       >
-        <SelectTrigger id={id} aria-label={ariaLabel} className={className}>
+        <SelectTrigger id={id} aria-label={ariaLabel} title={title} className={className}>
           <SelectValue placeholder={triggerFallback ?? clearLabel ?? (value || '—')}>
             {/* Children override the selected item's text. Passed only when there
                 IS a selectable non-empty value, so an unset control still falls
@@ -174,8 +184,9 @@ export default function SimpleSelect({ options, optionLabels, value, onChange, a
           )}
           {options.map((opt, i) => {
             const badge = opt === '' ? undefined : optionBadges?.[i]
+            const icon = optionIcons?.[i]
             return (
-              <SelectItem key={opt} value={toRadix(opt)}>
+              <SelectItem key={opt} value={toRadix(opt)} textValue={label(opt, i)}>
                 {badge ? (
                   <span className="inline-flex items-center gap-1.5">
                     {opt}
@@ -185,6 +196,11 @@ export default function SimpleSelect({ options, optionLabels, value, onChange, a
                     <span aria-hidden="true" className="contents">
                       <SourceBadge source={badge.source} tone="neutral">{badge.label}</SourceBadge>
                     </span>
+                  </span>
+                ) : icon ? (
+                  <span className="flex min-w-0 items-center gap-2">
+                    <span aria-hidden="true" className="shrink-0">{icon}</span>
+                    <span className="min-w-0 truncate">{label(opt, i)}</span>
                   </span>
                 ) : label(opt, i)}
               </SelectItem>

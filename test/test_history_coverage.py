@@ -943,12 +943,17 @@ class TestWriteStructuredMemory:
         }
         with caplog.at_level(logging.INFO, logger="kiro_crew.history"):
             c._write_structured_memory(result, "sess")
+        # ``facets`` is part of the call now: the consolidator stamps the carve axes
+        # it already holds. ``None`` here because this test drives
+        # ``_write_structured_memory`` directly rather than through ``_consolidate``,
+        # which is where ``_session_facets`` is built.
         vs.write_episodic.assert_called_once_with(
             text="a thing happened",
             conversation_id="sess",
             tags=["t"],
             importance=0.9,
             source="consolidation:sess",
+            facets=None,
         )
         assert "Wrote 1 episodic" in caplog.text
 

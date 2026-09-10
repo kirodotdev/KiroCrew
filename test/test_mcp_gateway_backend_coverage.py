@@ -402,6 +402,38 @@ class TestAttachDetachAndAccounting:
 
 class TestForwardFromStub:
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("proof", ["trusted.signature", "", None])
+    async def test_only_current_gateway_member_proof_reaches_backend(self, proof) -> None:
+        from kiro_crew.member_memory_auth import PROOF_META_KEY
+
+        backend = _make_backend()
+        backend.supports_caller_identity = True
+        caller = None if proof is None else CallerContext(
+            session_key="reviewer", from_gateway=True, member_memory_proof=proof,
+        )
+        msg = {
+            "method": "tools/call", "id": 23,
+            "params": {"name": "memory_recall", "_meta": {
+                CALLER_META_KEY: {
+                    "schemaVersion": 1, "sessionKey": "victim", PROOF_META_KEY: "forged.signature",
+                },
+                "progressToken": "visible-progress",
+            }},
+        }
+        await backend.forward_from_stub("s1", msg, caller=caller)
+        meta = _frames(backend)[0]["params"]["_meta"]
+        parsed = CallerContext.from_meta(meta)
+        if caller is None:
+            assert parsed is None
+        else:
+            assert parsed is not None
+            assert parsed.session_key == "reviewer"
+            assert parsed.member_memory_proof == proof
+        assert "forged.signature" not in json.dumps(meta)
+        assert meta["progressToken"] == "visible-progress"
+        assert "forged.signature" in json.dumps(msg)
+
+    @pytest.mark.asyncio
     async def test_dead_backend_raises_backend_gone(self) -> None:
         backend = _make_backend()
         backend._dead_reason = "exit rc=1"

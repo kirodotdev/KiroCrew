@@ -1272,7 +1272,7 @@ class TestPersistenceGuards:
         agent_id = "cleanup-store-lockdown"
         sp.create_agent_folder(agent_id, task="t")
         protected_path = sp._cleanup_identities_path(agent_id)
-        protected_path.parent.mkdir(parents=True)
+        protected_path.parent.mkdir(parents=True, exist_ok=True)
         original = json.dumps({"identities": [{"session_id": "sid-original"}]})
         protected_path.write_text(original)
 

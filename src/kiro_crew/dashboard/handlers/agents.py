@@ -71,8 +71,8 @@ from kiro_crew.config.loader import (
     config_path,
     inject_kiro_cli_api_key,
     normalize_agent_model,
-    resolve_agent_bindings,
     resolve_agent_config_path,
+    resolve_agent_identity,
     resolve_effective_model,
     update_config_locked,
     write_config_atomically,
@@ -114,6 +114,19 @@ from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.effort import EFFORT_LEVELS, EFFORT_VALUES
 from kiro_crew.executors import discovery_executor, maintenance_executor, subprocess_executor
 from kiro_crew.loop_lock import LoopBoundLock
+from kiro_crew.member_memory_auth import require_member_memory_creation
+from kiro_crew.memory_stores import (
+    DEFAULT_MEMORY_STORE,
+    MemberAlreadyExists,
+    UnknownMemoryStore,
+    archive_member_memory_store,
+    memory_store_binding_defect,
+    persist_member_config,
+    provision_member_memory,
+    require_member_memory_not_archived,
+    retire_unpublished_member_memory_store,
+    rollback_member_memory_archive_if_active,
+)
 from kiro_crew.platform.governance import sanitize_agent_config_governance
 from kiro_crew.sandbox import (
     SandboxUnavailableError,
@@ -3988,21 +4001,6 @@ async def api_kirocrew_agents(request: web.Request) -> web.Response:
 _config_lock = LoopBoundLock()
 
 
-class _AgentExistsError(Exception):
-    """An agent name re-check failed against the document INSIDE the flock.
-
-    The handler's 409 pre-check runs on a snapshot under the asyncio lock,
-    which excludes in-process races only; a cross-process create (the CLI)
-    can land between that check and the write. The delta mutate re-checks
-    against the document as read inside the sidecar lock and raises this,
-    which the handler maps to the same 409.
-    """
-
-    def __init__(self, name: str) -> None:
-        super().__init__(name)
-        self.name = name
-
-
 def _get_config_lock() -> LoopBoundLock:
     """Return the config lock (loop-bound; rebinds when the running loop changes)."""
     return _config_lock
@@ -4023,6 +4021,7 @@ async def _do_agents_sync(request: web.Request) -> web.Response:
     synced: list[str] = []
     pruned: list[str] = []
     prune_candidates: dict[str, dict] = {}
+    prior_stores: dict[str, str] = {}
     try:
         discovered_agents = await asyncio.get_running_loop().run_in_executor(
             discovery_executor(), lambda: list(list_agents())
@@ -4080,6 +4079,7 @@ async def _do_agents_sync(request: web.Request) -> web.Response:
                         getattr(disc, "source", "?"),
                     )
                     continue
+                await _drained_to_thread(require_member_memory_creation, disc.name)
                 _has_on_disk = await asyncio.to_thread(
                     lambda: (kiro_agents_dir_path() / f"{_dn}.json").exists()
                     or _namespaced_agent_file_exists(_dn)
@@ -4099,6 +4099,8 @@ async def _do_agents_sync(request: web.Request) -> web.Response:
                     description=disc.description,
                     source=disc.source,
                 )
+                prior_stores[disc.name] = cfg.agents[disc.name].memory_store
+                await _drained_to_thread(provision_member_memory, cfg, disc.name)
                 synced.append(disc.name)
 
         # Prune agents whose kiro_agent file no longer exists on disk.
@@ -4124,7 +4126,20 @@ async def _do_agents_sync(request: web.Request) -> web.Response:
                     prune_candidates[name] = dataclasses.asdict(agent_cfg)
                     del cfg.agents[name]
                     pruned.append(name)
-    except Exception:
+    except BaseException as exc:
+        await _retire_failed_member_allocations(cfg, prior_stores)
+        if isinstance(exc, UnknownMemoryStore):
+            return web.json_response(
+                {
+                    "ok": False,
+                    "error": str(exc),
+                    "code": "member_memory_unavailable",
+                    "synced": [],
+                },
+                status=409,
+            )
+        if not isinstance(exc, Exception):
+            raise
         logger.warning("Failed to scan installed agents", exc_info=True)
         try:
             _sel().log_api_access(
@@ -4148,15 +4163,37 @@ async def _do_agents_sync(request: web.Request) -> web.Response:
             # them. _drained_to_thread so a cancellation cannot release the
             # asyncio lock while the worker is mid-write.
             to_add = {n: cfg.agents[n] for n in synced if n in cfg.agents}
+            to_add_stores = {
+                n: (
+                    cfg.agents[n].memory_store,
+                    dataclasses.asdict(cfg.memory_stores[cfg.agents[n].memory_store]),
+                )
+                for n in to_add
+            }
 
-            def _write_sync() -> None:
+            def _write_sync() -> list[str]:
+                retired_stores: list[str] = []
+                created_archives: list[tuple[str, str]] = []
+                skipped_allocations: list[tuple[str, str]] = []
+
                 def _mutate(doc: dict) -> dict | None:
                     agents = coerce_dict_section(doc, "agents")
+                    stores = coerce_dict_section(doc, "memory_stores")
                     changed = False
                     for aname, acfg in to_add.items():
                         if aname not in agents:
+                            store_name, store_record = to_add_stores[aname]
+                            existing = stores.get(store_name)
+                            if existing is not None and existing != store_record:
+                                raise UnknownMemoryStore(
+                                    f"memory store {store_name!r} ownership changed concurrently"
+                                )
+                            require_member_memory_not_archived(store_name, expected_owner=aname)
+                            stores[store_name] = store_record
                             agents[aname] = dataclasses.asdict(acfg)
                             changed = True
+                        else:
+                            skipped_allocations.append((to_add_stores[aname][0], aname))
                     # Prune ONLY this sync's snapshot candidates, and only
                     # while the in-lock entry still equals the snapshot entry:
                     # an agent (re)added or edited between the discovery
@@ -4164,14 +4201,52 @@ async def _do_agents_sync(request: web.Request) -> web.Response:
                     # stale discovered_names and must survive.
                     for aname, snap_entry in prune_candidates.items():
                         if agents.get(aname) == snap_entry:
+                            store_name = snap_entry.get("memory_store", "")
+                            record = stores.get(store_name)
+                            if isinstance(record, dict) and record.get("memory_version") == 2:
+                                owner = record.get("owner_member")
+                                if owner != aname:
+                                    raise UnknownMemoryStore(
+                                        f"memory store {store_name!r} ownership changed concurrently"
+                                    )
+                                if archive_member_memory_store(store_name, aname):
+                                    created_archives.append((store_name, aname))
+                                retired_stores.append(store_name)
                             del agents[aname]
                             changed = True
                     return doc if changed else None
 
-                update_config_locked(mutate=_mutate)
+                try:
+                    update_config_locked(mutate=_mutate)
+                except BaseException:
+                    for store_name, owner in reversed(created_archives):
+                        try:
+                            rollback_member_memory_archive_if_active(store_name, owner)
+                        except Exception:
+                            logger.error(
+                                "failed to roll back member memory retirement for %s",
+                                store_name,
+                                exc_info=True,
+                            )
+                    raise
+                from kiro_crew.context import release_cached_memory_store
 
-            await _drained_to_thread(_write_sync)
-        except Exception:
+                for store_name, owner in skipped_allocations:
+                    retire_unpublished_member_memory_store(store_name, owner)
+                for store_name in retired_stores:
+                    release_cached_memory_store(store_name)
+                return retired_stores
+
+            retired_stores = await _drained_to_thread(_write_sync)
+            if (state := request.app.get("state")) is not None:
+                from kiro_crew.dashboard.handlers._shared import release_markdown_memory_store
+
+                for store_name in retired_stores:
+                    await release_markdown_memory_store(state, store_name)
+        except BaseException as exc:
+            await _retire_failed_member_allocations(cfg, prior_stores)
+            if not isinstance(exc, Exception):
+                raise
             logger.warning("Failed to save config after agent sync", exc_info=True)
             try:
                 _sel().log_api_access(
@@ -4212,6 +4287,22 @@ async def _do_agents_sync(request: web.Request) -> web.Response:
     return web.json_response({"ok": True, "synced": synced, "pruned": pruned})
 
 
+async def _retire_failed_member_allocations(
+    config: KiroCrewConfig, prior_stores: dict[str, str]
+) -> None:
+    """Preserve the primary failure while retiring only this operation's new keys."""
+    for owner, prior in prior_stores.items():
+        try:
+            store = config.agents[owner].memory_store
+            if store == prior:
+                continue
+            await _drained_to_thread(retire_unpublished_member_memory_store, store, owner)
+        except BaseException:
+            logger.warning(
+                "Could not retire unpublished memory for member %s", owner, exc_info=True
+            )
+
+
 async def api_kirocrew_agent_resolved_model(request: web.Request) -> web.Response:
     """GET /api/agents/resolved-model?agent=NAME — the model a new session uses.
 
@@ -4225,22 +4316,24 @@ async def api_kirocrew_agent_resolved_model(request: web.Request) -> web.Respons
     # Globs ~/.kiro/agents and may read the installed agent file — keep the
     # filesystem work off the event loop.
     model = await asyncio.to_thread(resolve_effective_model, cfg, agent_name or None)
-    bindings = resolve_agent_bindings(cfg, agent_name or None)
+    alias, kiro_agent, model_pin = await asyncio.to_thread(
+        resolve_agent_identity, cfg, agent_name or None
+    )
     # Effort resolves through its own chain, served from the SAME resolver the
     # provider factory calls so the pane cannot disagree with what a session will
     # actually run at -- including the role-aware default, which a crew bound to a
     # background worker agent takes instead of the chat default. Keyed on what the
     # bindings resolved, which is what makes an omitted `agent` answer for the
     # configured default crew rather than for no crew at all.
-    crew_effort = cfg.crew_pinned_effort(None, bindings.resolved_alias)
-    session_effort = cfg.resolve_session_effort(bindings.kiro_agent, bindings.resolved_alias)
+    crew_effort = cfg.crew_pinned_effort(None, alias)
+    session_effort = cfg.resolve_session_effort(kiro_agent, alias)
     return web.json_response(
         {
             "model": model,
             "agent": agent_name,
-            "kiro_agent": bindings.kiro_agent,
+            "kiro_agent": kiro_agent,
             # Whether the agent itself pins the model, vs inheriting it.
-            "pinned": bool(bindings.model),
+            "pinned": bool(model_pin),
             # The effort a new session on this crew starts at, and whether the
             # crew pinned it or inherited a default. "" means no tier pins one
             # and the model's own default applies.
@@ -4318,6 +4411,31 @@ def _crew_effort_rejected(raw: object) -> str | None:
     if val in EFFORT_VALUES:
         return None
     return "reasoning_effort must be one of: " + ", ".join(("(empty)", *EFFORT_LEVELS))
+
+
+def _crew_memory_store_rejected(raw: object) -> str | None:
+    """Reason a crew's memory-store binding is unusable, or ``None`` to allow it.
+
+    The rules themselves are ``memory_stores``' and are never restated here: a
+    second copy of the shape rule is how the write boundary comes to accept a name
+    the resolvers refuse to compose a path for, and that refusal would then surface
+    at the crew's first memory write rather than on the form that authored it.
+
+    Rejects rather than degrading, for the same reason as
+    :func:`_crew_effort_rejected`: the value has an author on the other end, and a
+    name quietly degraded onto another crew's silo reads back as a save that was
+    lost while the crew files its memory somewhere it was never bound.
+
+    This helper checks only shape. The create and update handlers separately
+    enforce automatic allocation and immutable private ownership.
+    """
+    defect = memory_store_binding_defect(raw)
+    if defect is None:
+        return None
+    return (
+        f"memory_store {raw!r} is not a usable store name ({defect}); use lowercase "
+        "letters, digits and hyphens, or '' for automatic provisioning on creation"
+    )
 
 
 def _model_pin_rejected(model: str, request: web.Request, provider: str) -> str | None:
@@ -4520,6 +4638,22 @@ async def api_kirocrew_agents_create(request: web.Request) -> web.Response:
             },
             status=400,
         )
+    # Old clients still send default/empty on create. They now mean automatic
+    # private allocation; no caller can choose or reuse another member's store.
+    memory_store = body.get("memory_store", DEFAULT_MEMORY_STORE)
+    memory_store_reason = _crew_memory_store_rejected(memory_store)
+    if memory_store_reason:
+        return web.json_response(
+            {"error": memory_store_reason, "code": "invalid_memory_store"}, status=400
+        )
+    if memory_store not in ("", DEFAULT_MEMORY_STORE):
+        return web.json_response(
+            {
+                "error": "A new Crew Member receives its own empty private memory automatically",
+                "code": "private_memory_required",
+            },
+            status=400,
+        )
     async with _get_config_lock():
         cfg = KiroCrewConfig.load()
         if name in cfg.agents:
@@ -4553,7 +4687,7 @@ async def api_kirocrew_agents_create(request: web.Request) -> web.Response:
         new_agent = KiroCrewAgentConfig(
             kiro_agent=kiro_agent,
             workspace=body.get("workspace", "default"),
-            memory_store=body.get("memory_store", "default"),
+            memory_store=memory_store,
             model=model,
             reasoning_effort=reasoning_effort,
             description=body.get("description", ""),
@@ -4562,32 +4696,24 @@ async def api_kirocrew_agents_create(request: web.Request) -> web.Response:
             session_color=session_color,
             avatar=avatar,
         )
-
-        # Under _get_config_lock() (the async with above): persist as a DELTA
-        # read-modify-write of this one agent entry inside a single sidecar-
-        # flock hold -- a whole-document save() would publish the
-        # handler's snapshot and could revert a concurrent writer's unrelated
-        # settings. _drained_to_thread, not bare to_thread: a cancellation at
-        # the await must not release the asyncio lock while the worker is
-        # still inside the write (see its docstring).
-        def _write_agent() -> None:
-            def _mutate(doc: dict) -> dict:
-                agents = coerce_dict_section(doc, "agents")
-                if name in agents:
-                    # A cross-process create (CLI) won the race after our
-                    # snapshot check above.
-                    raise _AgentExistsError(name)
-                agents[name] = dataclasses.asdict(new_agent)
-                return doc
-
-            update_config_locked(mutate=_mutate)
-
+        # Provision against this snapshot; publish the agent and owned store
+        # together through persist_member_config's flocked delta and create guard.
+        cfg.agents[name] = new_agent
         try:
-            await _drained_to_thread(_write_agent)
-        except _AgentExistsError:
+            try:
+                await _drained_to_thread(require_member_memory_creation, name)
+                await _drained_to_thread(provision_member_memory, cfg, name)
+                await _drained_to_thread(lambda: persist_member_config(cfg, name, create=True))
+            except BaseException:
+                await _retire_failed_member_allocations(cfg, {name: memory_store})
+                raise
+        except MemberAlreadyExists:
             return web.json_response(
-                {"error": f"Agent '{name}' already exists", "code": "agent_exists"},
-                status=409,
+                {"error": f"Agent '{name}' already exists", "code": "agent_exists"}, status=409
+            )
+        except (OSError, UnknownMemoryStore) as exc:
+            return web.json_response(
+                {"error": str(exc), "code": "member_memory_unavailable"}, status=409
             )
     # A crew APPEARING changes what the effort chain resolves even with no pin of
     # its own: the factory's captured config does not know the crew, so it cannot
@@ -4602,7 +4728,64 @@ async def api_kirocrew_agents_create(request: web.Request) -> web.Response:
         source="dashboard",
         resources=name,
     )
-    return web.json_response({"ok": True, "name": name})
+    return web.json_response(
+        {"ok": True, "name": name, "memory_store": cfg.agents[name].memory_store}
+    )
+
+
+async def _retire_legacy_member_contexts(
+    request: web.Request, cfg: KiroCrewConfig, name: str, prior_store: str
+) -> web.Response | None:
+    """Retire idle V1 providers while retaining their original conversation identity."""
+    from kiro_crew.dashboard.chat_utils import effective_session_key, subagents_attached
+
+    state = request.app.get("state")
+    if state is None:
+        return None
+    slots = [
+        slot
+        for slot in list(state._slots.values())
+        if slot.agent == name or (not slot.agent and cfg.default_agent == name)
+    ]
+    for slot in slots:
+        async with slot._lock:
+            key = effective_session_key(slot)
+            if state._slots.get(slot.key) is not slot:
+                continue
+            if slot.agent != name and not (not slot.agent and cfg.default_agent == name):
+                continue
+            provider = state.sessions.get_provider(key)
+            if (
+                slot.running
+                or slot._in_stage_execution
+                or (provider is not None and provider.has_active_turn())
+                or subagents_attached(state, slot, key, "member_memory_opt_in")
+            ):
+                return web.json_response(
+                    {
+                        "error": "Finish or stop this member's work before creating private memory",
+                        "code": "member_memory_busy",
+                    },
+                    status=409,
+                )
+            # This V1 context must remain V1 even if publication is cancelled,
+            # or another request starts while later slots are being retired.
+            slot.memory_store = prior_store
+            slot._memory_assignment_from_history = True
+            eager = slot._eager_spawn_task
+            if eager is not None and not eager.done():
+                eager.cancel()
+                await asyncio.gather(eager, return_exceptions=True)
+            reset = await state.sessions.reset(key, skip_if_busy=True)
+            if not reset and state.sessions.get_provider(key) is not None:
+                return web.json_response(
+                    {
+                        "error": "A member turn started during memory setup; retry after it stops",
+                        "code": "member_memory_busy",
+                    },
+                    status=409,
+                )
+    return None
 
 
 async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
@@ -4736,6 +4919,17 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
         return web.json_response(
             {"error": "starred must be a boolean", "code": "invalid_starred"}, status=400
         )
+    if "memory_store" in body:
+        memory_store_reason = _crew_memory_store_rejected(body["memory_store"])
+        if memory_store_reason:
+            return web.json_response(
+                {"error": memory_store_reason, "code": "invalid_memory_store"}, status=400
+            )
+    if "provision_memory" in body and not isinstance(body["provision_memory"], bool):
+        return web.json_response(
+            {"error": "provision_memory must be a boolean", "code": "invalid_provision_memory"},
+            status=400,
+        )
     async with _get_config_lock():
         cfg = KiroCrewConfig.load()
         if name not in cfg.agents:
@@ -4749,6 +4943,25 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
                     {"error": model_reason, "code": "invalid_model"}, status=400
                 )
         agent = cfg.agents[name]
+        prior_memory_store = agent.memory_store
+        if "memory_store" in body and body["memory_store"] != prior_memory_store:
+            return web.json_response(
+                {
+                    "error": "A member's private memory cannot be rebound or shared",
+                    "code": "private_memory_immutable",
+                },
+                status=409,
+            )
+        prior_record = cfg.memory_stores.get(prior_memory_store)
+        if body.get("provision_memory") and (
+            prior_record is None or prior_record.memory_version != 2
+        ):
+            try:
+                await _drained_to_thread(require_member_memory_creation, name)
+            except UnknownMemoryStore as exc:
+                return web.json_response(
+                    {"error": str(exc), "code": "member_memory_unavailable"}, status=409
+                )
         # Captured BEFORE any mutation: what the effort chain reads today.
         effort_inputs_before = _effort_inputs(agent)
         changed: list[str] = []
@@ -4780,9 +4993,6 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
         if "workspace" in body:
             agent.workspace = body["workspace"]
             changed.append("workspace")
-        if "memory_store" in body:
-            agent.memory_store = body["memory_store"]
-            changed.append("memory_store")
         if "model" in body:
             # "auto"/"" both mean inherit; store the single "" spelling so the
             # agent keeps deferring to the kiro pin / global fallback. Raw, not
@@ -4919,21 +5129,50 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
             # Already validated above, before any mutation.
             agent.starred = body["starred"]
             changed.append("starred")
-        effort_inputs_after = _effort_inputs(agent)
-        # The config write is the transaction's point of no return: on
-        # failure the orphaned install is removed; on success the commit
-        # reaps every variant except the newly pinned one.
-        # `Exception`, NOT `BaseException`: a cancellation arriving here does
-        # not mean the save failed — the drained worker runs to completion,
-        # so on cancellation the save either fully landed (config and pin
-        # consistent; only the commit-time reap is skipped, leaving orphan
-        # variants the pin never serves) or raised a real exception, which
-        # takes the rollback path below. Rolling back on the cancellation
-        # itself would delete the file a completed save now pins.
+        # Validate every supplied field before allocating private ownership.
+        # A rejected edit must not leave private evidence behind an unchanged
+        # V1 binding. Avatar publication is reversible until config is saved.
+        setup_refusal = None
         try:
-            await _drained_to_thread(cfg.save)
-        except Exception:
+            try:
+                if body.get("provision_memory"):
+                    prior_record = cfg.memory_stores.get(prior_memory_store)
+                    if prior_record is None or prior_record.memory_version != 2:
+                        from kiro_crew.memory_stores import require_member_memory_store
+
+                        await _drained_to_thread(require_member_memory_store, cfg, name)
+                        setup_refusal = await _retire_legacy_member_contexts(
+                            request, cfg, name, prior_memory_store
+                        )
+                    if setup_refusal is None:
+                        await _drained_to_thread(provision_member_memory, cfg, name)
+            except BaseException:
+                await _retire_failed_member_allocations(cfg, {name: prior_memory_store})
+                raise
+        except (OSError, UnknownMemoryStore) as exc:
+            setup_refusal = web.json_response(
+                {"error": str(exc), "code": "member_memory_unavailable"}, status=409
+            )
+        if setup_refusal is not None:
             if _avatar_promoted:
+                await _drained_to_thread(_rollback_promoted_avatar, name, _avatar_pin, _prior_pin)
+            return setup_refusal
+        if agent.memory_store != prior_memory_store:
+            changed.append("memory_store")
+        effort_inputs_after = _effort_inputs(agent)
+        # Avatar rollback applies only to ordinary failure: cancellation may
+        # arrive after the drained worker published the new avatar pin. Store
+        # cleanup independently checks the current locked config, so a landed
+        # memory binding survives even when the request was cancelled.
+        try:
+            await _drained_to_thread(
+                lambda: persist_member_config(
+                    cfg, name, expected_store=prior_memory_store, changed_fields=set(changed)
+                )
+            )
+        except BaseException as exc:
+            await _retire_failed_member_allocations(cfg, {name: prior_memory_store})
+            if isinstance(exc, Exception) and _avatar_promoted:
                 await _drained_to_thread(_rollback_promoted_avatar, name, _avatar_pin, _prior_pin)
             raise
         if _avatar_promoted:
@@ -4955,7 +5194,10 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
         source="dashboard",
         resources=f"{name} ({','.join(changed)})",
     )
-    return web.json_response({"ok": True, "name": name})
+    result = {"ok": True, "name": name, "memory_store": agent.memory_store}
+    if agent.memory_store != prior_memory_store:
+        result["new_conversation_required"] = True
+    return web.json_response(result)
 
 
 async def api_kirocrew_agent_delete(request: web.Request) -> web.Response:
@@ -4974,8 +5216,60 @@ async def api_kirocrew_agent_delete(request: web.Request) -> web.Response:
                 {"error": f"Cannot delete default agent '{name}'. Change default_agent first."},
                 status=409,
             )
-        del cfg.agents[name]
-        await _drained_to_thread(cfg.save)
+        created_archive = False
+        retired_store = ""
+
+        def _delete_member() -> tuple[str, bool]:
+            nonlocal created_archive, retired_store
+
+            def mutate(doc: dict) -> dict:
+                nonlocal created_archive, retired_store
+                agents = coerce_dict_section(doc, "agents")
+                if name not in agents:
+                    raise UnknownMemoryStore(f"Crew Member {name!r} was removed concurrently")
+                agent_section = doc.get("agent")
+                if doc.get("default_agent") == name or (
+                    isinstance(agent_section, dict) and agent_section.get("default_agent") == name
+                ):
+                    raise UnknownMemoryStore(f"Crew Member {name!r} became the default")
+                entry = agents[name]
+                stores = coerce_dict_section(doc, "memory_stores")
+                store_name = entry.get("memory_store", "") if isinstance(entry, dict) else ""
+                record = stores.get(store_name)
+                if isinstance(record, dict) and record.get("memory_version") == 2:
+                    if record.get("owner_member") != name:
+                        raise UnknownMemoryStore(
+                            f"memory store {store_name!r} ownership changed concurrently"
+                        )
+                    created_archive = archive_member_memory_store(store_name, name)
+                    retired_store = store_name
+                del agents[name]
+                return doc
+
+            try:
+                update_config_locked(mutate=mutate)
+            except BaseException:
+                if created_archive:
+                    try:
+                        rollback_member_memory_archive_if_active(retired_store, name)
+                    except Exception:
+                        logger.error(
+                            "failed to roll back member memory retirement for %s",
+                            retired_store,
+                            exc_info=True,
+                        )
+                raise
+            return retired_store, created_archive
+
+        retired_store, _created_archive = await _drained_to_thread(_delete_member)
+        if retired_store:
+            from kiro_crew.context import release_cached_memory_store
+
+            await _drained_to_thread(release_cached_memory_store, retired_store)
+            if (state := request.app.get("state")) is not None:
+                from kiro_crew.dashboard.handlers._shared import release_markdown_memory_store
+
+                await release_markdown_memory_store(state, retired_store)
         # The crew is gone; its uploaded picture must not outlive it. Inside
         # the same lock so the cleanup cannot run AFTER a concurrent
         # same-name recreation has already uploaded and committed a new

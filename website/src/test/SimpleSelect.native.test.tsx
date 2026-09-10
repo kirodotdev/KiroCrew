@@ -39,6 +39,16 @@ afterEach(() => { restore?.(); restore = null })
 const LANGS = ['en-US', 'en-GB', 'fr-FR', 'zh-CN']
 
 describe('SimpleSelect on a touch device', () => {
+  it('shows the selected identity beside the native control while keeping native options text-only', () => {
+    const icons = [<img key="reviewer" src="/reviewer.png" alt="" />, <img key="writer" src="/writer.png" alt="" />]
+    const { container, rerender } = render(<SimpleSelect options={['reviewer', 'writer']} optionIcons={icons} value="reviewer" onChange={() => {}} aria-label="Member" />)
+    expect(screen.getByRole('combobox', { name: 'Member' }).tagName).toBe('SELECT')
+    expect(container.querySelector('img')).toHaveAttribute('src', '/reviewer.png')
+    expect(container.querySelector('option img')).toBeNull()
+    rerender(<SimpleSelect options={['reviewer', 'writer']} optionIcons={icons} value="writer" onChange={() => {}} aria-label="Member" />)
+    expect(container.querySelector('img')).toHaveAttribute('src', '/writer.png')
+  })
+
   it('renders a native select carrying every option, not the Radix popup', () => {
     render(<SimpleSelect options={LANGS} value="en-GB" onChange={() => {}} aria-label="Language" />)
     const control = screen.getByRole('combobox', { name: 'Language' })

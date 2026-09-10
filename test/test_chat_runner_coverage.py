@@ -32,6 +32,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from chat_test_helpers import _make_ready_kiro_prerequisite
+from member_memory_helpers import patch_private_memory_supported
 
 from kiro_crew import name_grant
 from kiro_crew.acp.types import (
@@ -45,6 +46,7 @@ from kiro_crew.acp.types import (
 from kiro_crew.dashboard import chat_runner
 from kiro_crew.dashboard.state import DashboardState, _ChatSlot
 from kiro_crew.history import ConversationLog
+from kiro_crew.memory_stores import UnknownMemoryStore
 from kiro_crew.metrics import turns as turns_mod
 from kiro_crew.providers.base import LLMEvent
 from kiro_crew.security import oauth_url_contains_credential
@@ -75,6 +77,7 @@ def _state(tmp_path, **kwargs) -> DashboardState:
     # MagicMock it would answer a truthy provider whose has_active_turn() is also
     # truthy, so every busy-probe would read "turn in flight" on an idle state.
     sessions.get_provider = MagicMock(return_value=None)
+    sessions.resumable_sid = MagicMock(return_value=None)
     sessions.remove = AsyncMock()
     sessions.record_failure = AsyncMock()
     sessions.remove_if_unclaimed = AsyncMock(return_value=False)
@@ -205,6 +208,123 @@ async def _settle(slot) -> None:
         pass
     except Exception:  # pragma: no cover — draining, never the assertion
         pass
+
+
+@pytest.mark.asyncio
+async def test_memory_refusal_preserves_diagnostic_without_initialization_recovery(tmp_path):
+    state, _client = _runner_state(tmp_path)
+    slot = _slot()
+    slot.agent = "reviewer"
+    refusal = UnknownMemoryStore("the owned memory binding cannot be replaced")
+    with patch.object(chat_runner, "resolve_agent_bindings", side_effect=refusal):
+        await _drive(state, slot)
+
+    error = next(row for row in slot.messages if row["role"] == "error")
+    assert error["content"] == f"memory_unavailable: {refusal}"
+    assert error["meta"]["code"] == "memory_unavailable"
+    assert "recovery" not in error["meta"]
+    state.sessions.record_failure.assert_awaited_once()
+    state.sessions.get_or_create.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("damaged_record", [False, True])
+async def test_private_session_cannot_dispatch_as_legacy_after_unsigned_binding_loss(
+    tmp_path, monkeypatch, damaged_record
+):
+    from kiro_crew import member_memory_auth
+    from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig
+    from kiro_crew.memory_stores import provision_member_memory
+
+    state, client = _runner_state(tmp_path)
+    slot = _slot()
+    slot.agent = "legacy"
+    key = chat_runner.effective_session_key(slot)
+
+    def seed():
+        cfg = KiroCrewConfig.load()
+        cfg.agents["writer"] = KiroCrewAgentConfig()
+        cfg.agents["legacy"] = KiroCrewAgentConfig()
+        store = provision_member_memory(cfg, "writer")
+        cfg.save()
+        member_memory_auth.bind_private_session_store(key, store)
+        if damaged_record:
+            member_memory_auth._session_binding_path(key).unlink()
+        return store
+
+    store = await asyncio.to_thread(seed)
+    read_threads = []
+    original = member_memory_auth.read_private_session_store
+
+    def read_binding(session_key):
+        read_threads.append(threading.get_ident())
+        return original(session_key)
+
+    monkeypatch.setattr(member_memory_auth, "read_private_session_store", read_binding)
+    await _drive(state, slot)
+
+    state.sessions.get_or_create.assert_not_awaited()
+    client.stream.assert_not_called()
+    assert read_threads and threading.get_ident() not in read_threads
+    assert slot.memory_store == ""
+    assert state.conversation_log.get_metadata(key).get("memory_store") is None
+    error = next(row for row in slot.messages if row["role"] == "error")
+    assert error["meta"]["code"] == "memory_unavailable"
+    assert (
+        "private memory assignment" in error["content"]
+        or "binding is unreadable" in error["content"]
+    )
+    if not damaged_record:
+        assert await asyncio.to_thread(original, key) == store
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("old_context", ["history", "native", "unsaved"])
+async def test_cli_opt_in_cannot_promote_an_existing_v1_conversation(
+    tmp_path, old_context, monkeypatch
+):
+    import argparse
+
+    from kiro_crew.cli_commands import _handle_agent
+    from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig
+    from kiro_crew.member_memory_auth import read_private_session_store
+
+    patch_private_memory_supported(monkeypatch)
+    state, client = _runner_state(tmp_path)
+    slot = _slot("legacy-before-opt-in")
+    slot.agent = "reviewer"
+    key = chat_runner.effective_session_key(slot)
+    if old_context == "history":
+        await asyncio.to_thread(state.conversation_log.append, key, "assistant", "V1 history")
+    elif old_context == "native":
+        state.sessions.resumable_sid.return_value = "v1-native-session"
+    else:
+        slot.append("assistant", "Unflushed V1 answer", "msg msg-a")
+
+    def opt_in():
+        cfg = KiroCrewConfig.load()
+        cfg.agents["reviewer"] = KiroCrewAgentConfig()
+        cfg.save()
+        _handle_agent(
+            argparse.Namespace(
+                agent_action="update",
+                name="reviewer",
+                kiro_agent=None,
+                workspace=None,
+                memory_store=None,
+                provision_memory=True,
+            )
+        )
+
+    await asyncio.to_thread(opt_in)
+    await _drive(state, slot)
+    error = next(row for row in slot.messages if row["role"] == "error")
+    assert error["meta"]["code"] == "memory_unavailable"
+    assert "new conversation" in error["content"]
+    state.sessions.get_or_create.assert_not_awaited()
+    client.stream.assert_not_called()
+    assert await asyncio.to_thread(read_private_session_store, key) is None
+    assert state.conversation_log.get_metadata(key).get("memory_store") in (None, "")
 
 
 @pytest.mark.asyncio
@@ -437,13 +557,10 @@ class TestDrainPendingContext:
     def test_frame_carries_silent_consumption_contract(self):
         """Every drained block instructs the agent to consume it silently.
 
-        The feature-request seed (and any other
-        pending-context producer) was framed with a bare source label and no
-        consumption contract, so on a fresh session the agent recited the
-        injected workflow verbatim as its visible reply. The contract line
-        must sit INSIDE the frame (between the opening delimiter and the
-        content) so it binds per-block, for every producer, and must both
-        forbid echoing and redirect the reply to the user's visible message.
+        The consumption contract belongs inside each frame, between its opening
+        delimiter and content. It forbids echoing injected workflows and redirects
+        the reply to the user's visible message, giving every producer the same
+        per-block boundary.
         """
         slot = _slot()
         slot._pending_context = [

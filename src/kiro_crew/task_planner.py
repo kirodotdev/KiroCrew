@@ -284,6 +284,9 @@ async def decompose(
     # Route onto the run's shared AcpRuntime (one process per run), keyed by the
     # run's task_id. get_or_create would cold-start a dedicated process instead.
     parent_key = f"{SESSION_PREFIX}:{task_id}:runtime" if task_id else f"{SESSION_PREFIX}:runtime"
+    from kiro_crew.context import inherit_session_memory
+
+    memory_store = await inherit_session_memory(ctx, parent_key, session_key)
     try:
         client, is_new, _resumed = await sessions.open_task_session(
             parent_key, session_key, agent=agent or None, cwd=work_dir or None
@@ -297,6 +300,7 @@ async def decompose(
                 session_key,
                 agent=agent or None,
                 project=work_dir or None,
+                memory_store=memory_store,
             )
         else:
             full_prompt = prompt

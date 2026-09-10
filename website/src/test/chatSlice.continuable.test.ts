@@ -34,6 +34,37 @@ const state = (over: Partial<{ messages: ChatMessage[]; slotRunning: boolean; sl
   }) as never
 
 describe('selectContinuable', () => {
+  it('allows retry of an interrupted legacy turn carrying old setup metadata', () => {
+    const blocked = state({ messages: [msg('user'), msg('error', 'owner setup required', {
+      code: 'memory_unavailable',
+      recovery: { kind: 'initialize_member_memory', member: 'reviewer' },
+    })] })
+    expect(selectContinuable(blocked)).toBe(true)
+    expect(selectTurnInterrupted(blocked)).toBe(true)
+  })
+
+  it.each([
+    undefined,
+    { code: 'memory_unavailable' },
+    { code: 'memory_unavailable', recovery: { kind: 'initialize_member_memory', member: '' } },
+    { code: 'other_error', recovery: { kind: 'initialize_member_memory', member: 'reviewer' } },
+  ])('does not infer setup from error prose or malformed metadata: %j', meta => {
+    expect(selectContinuable(state({ messages: [msg('user'), msg('error',
+      'memory_unavailable: Create private memory', meta,
+    )] }))).toBe(true)
+  })
+
+  it.each(['user', 'assistant'])('ignores a prior setup refusal after a later %s turn', role => {
+    expect(selectContinuable(state({ messages: [
+      msg('user'),
+      msg('error', 'owner setup required', {
+        code: 'memory_unavailable',
+        recovery: { kind: 'initialize_member_memory', member: 'reviewer' },
+      }),
+      msg(role, 'the next turn'),
+    ] }))).toBe(true)
+  })
+
   it('is false for a brand-new chat with no messages', () => {
     // The composer's send button must stay disabled exactly as it is today —
     // there is no conversation to hand back.

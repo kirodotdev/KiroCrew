@@ -13,6 +13,7 @@ fixture, so every path here resolves under tmp.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import time
 from unittest.mock import patch
@@ -31,8 +32,11 @@ from kiro_crew.members import (
     member_briefing_path,
     member_dir,
     member_rules_path,
+    member_slot_key,
+    member_thread_session_alias,
     read_member_briefing,
     read_member_rules,
+    write_dm_binding,
     write_member_rules,
 )
 from kiro_crew.memory import MemoryStore
@@ -808,12 +812,20 @@ class TestMemberRulesRoutes:
             assert (await resp.json())["code"] == "invalid_json"
 
     @pytest.mark.asyncio
-    async def test_put_flags_live_member_session_for_reinjection(self):
+    @pytest.mark.parametrize("memory_store", ["", "member-code-reviewer-generation"])
+    async def test_put_flags_live_member_session_for_reinjection(self, memory_store):
         """A warm member session injected its rules at session start; a saved
         rule must reach it on the NEXT turn, not at the next cold start."""
         from types import SimpleNamespace
         from unittest.mock import MagicMock
 
+        await asyncio.to_thread(
+            write_dm_binding,
+            CREW,
+            member=CREW,
+            slot_key=member_slot_key(CREW, memory_store),
+            memory_store=memory_store,
+        )
         sessions = MagicMock()
         app = _make_rules_app()
         app["state"] = SimpleNamespace(sessions=sessions)
@@ -823,7 +835,9 @@ class TestMemberRulesRoutes:
                     f"/api/members/{CREW}/rules", json={"member": CREW, "rules": "No merges."}
                 )
             assert resp.status == 200
-        sessions.mark_needs_reinjection.assert_called_once_with(f"dashboard:member-{CREW}")
+        sessions.mark_needs_reinjection.assert_called_once_with(
+            member_thread_session_alias(CREW, memory_store)
+        )
 
     @pytest.mark.asyncio
     async def test_put_unknown_member_is_404(self):

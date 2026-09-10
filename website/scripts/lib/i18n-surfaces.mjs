@@ -16,7 +16,11 @@
  * a gate that flakes on a dropdown that did not open is a gate people disable.
  * `fixed-overlay-off-viewport` still covers the portals that mount on load.
  *
- * `settle` is extra idle time in ms for surfaces that fetch after first paint.
+ * `readyText` names fixture content that must mount before measurement;
+ * `settle` is extra idle time in ms after that content is ready.
+ * `sourceFile` identifies a required panel implementation relative to website/.
+ * If both that file and the surface registration are absent from the base tree,
+ * the panel is new even when its query URL resolves to an older default panel.
  */
 /**
  * The app id `check-i18n-render.mjs`'s `FIXTURE_APPS[0]` is served under, and the
@@ -29,11 +33,15 @@
  * be a cycle, since the script already imports `SURFACES` from here.
  */
 export const FIXTURE_DETAIL_APP = 'fixture-research-lab'
+export const FIXTURE_DETAIL_DESCRIPTION = 'Runs research campaigns unattended.'
 
 export const SURFACES = [
   { id: 'chat', url: '/chat', settle: 400 },
   { id: 'settings-display', url: '/settings?tab=display' },
   { id: 'settings-overview', url: '/settings?tab=overview' },
+  // Populated private-memory drill-in. The overview card above never mounts the
+  // member header, memory-kind controls, provenance labels or correction actions.
+  { id: 'overview-member-memory', url: '/settings/overview?view=memory&store=member-fixture-0011', sourceFile: 'src/pages/overview/MemberMemoryPanel.tsx', readyText: '0011', settle: 400 },
   { id: 'schedule', url: '/schedule' },
   { id: 'settings-chat', url: '/settings?tab=chat' },
   { id: 'settings-privacy', url: '/settings?tab=privacy' },
@@ -61,7 +69,7 @@ export const SURFACES = [
   // the permission rows and the install/enable controls. `/apps` above only shows
   // cards; every one of those blocks lives here and none of it had been rendered.
   // The id must match `FIXTURE_DETAIL_APP` or the page renders `app_not_found`.
-  { id: 'app-detail', url: `/apps/detail/${FIXTURE_DETAIL_APP}`, settle: 400 },
+  { id: 'app-detail', url: `/apps/detail/${FIXTURE_DETAIL_APP}`, readyText: FIXTURE_DETAIL_DESCRIPTION, settle: 400 },
   { id: 'notifications', url: '/notifications' },
   { id: 'logs', url: '/logs' },
   { id: 'developer-system', url: '/developer?tab=system' },
@@ -145,6 +153,18 @@ export const SURFACES = [
 ]
 
 /**
+ * Keep newly registered, already implemented panels measurable on the base.
+ * Only a panel whose required implementation is also absent gets a zero base;
+ * HEAD still renders every surface and must satisfy every readiness assertion.
+ */
+export function partitionBaseSurfaces(surfaces, baseIds, hasBaseSource) {
+  const absent = new Set(surfaces.filter(surface => (
+    !baseIds.has(surface.id) && surface.sourceFile && !hasBaseSource(surface.sourceFile)
+  )).map(surface => surface.id))
+  return { absent, measurable: surfaces.filter(surface => !absent.has(surface.id)) }
+}
+
+/**
  * Locales the gate renders.
  *
  * `en-XA` is the only one the text assertions run against — it is the locale where
@@ -155,12 +175,12 @@ export const SURFACES = [
  * does not depend on width.
  *
  * WHY IT SHRANK. Cost is `surfaces x locales x viewports`, doubled because
- * `[vs-base]` renders two trees. At 55 surfaces x 4 locales x 2 viewports that is
+ * `[vs-base]` renders two trees. At 56 surfaces x 4 locales x 2 viewports that is
  * 880 page renders and ~23min, and this gate shares the `e2e` job's
  * `timeout-minutes: 25` with the Playwright suite — it blew the cap and got the whole
  * job CANCELLED before that suite ran even once. `en-XA` x 2 viewports plus one
  * real locale x 1 is 165 renders per tree, which fits with margin. The `en-XA` text
- * half is what widening the registry from 20 to 55 surfaces was FOR, so it is the
+ * half is what widening the registry from 20 to 56 surfaces was FOR, so it is the
  * half that keeps full coverage.
  *
  * WHAT THAT COSTS, stated rather than discovered later:

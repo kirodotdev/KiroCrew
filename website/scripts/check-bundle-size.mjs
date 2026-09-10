@@ -67,7 +67,11 @@ export const CHUNK_BUDGETS = {
   // same 14 modules (13 catalogs plus the entry), no library reached it, and
   // no lazy import() boundary can move a catalog string out of `all`. Same
   // recurrence, same remedy: back to the 5% convention.
-  all: 11590 * KB, // measured 11037 KB on main 2026-09-10 (~5% headroom)
+  // Memory V2 adds the private-memory panels' strings (member memory, records
+  // editor, store picker/card, carve, backups, retired) across all 13 catalogs
+  // on top of that: with them the chunk builds at 11,332,186 B (11067 KB), so
+  // the 5% headroom is taken over that measurement rather than main's.
+  all: 11620 * KB, // measured 11067 KB on feat/memory-v2-ui 2026-09-10 (~5% headroom)
 
   // The i18n RUNTIME — the i18next singleton, `initI18n`, the English catalog —
   // named after `src/i18n/t.ts`. Held separately from `all` above because

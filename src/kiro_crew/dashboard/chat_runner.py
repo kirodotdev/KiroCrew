@@ -56,6 +56,7 @@ from kiro_crew.config.loader import (
 )
 from kiro_crew.connections import get_visible_providers
 from kiro_crew.constants import strip_control_comments
+from kiro_crew.context import prepare_store_vectors
 from kiro_crew.context_blocks import (
     PHASE_PER_TURN,
     PHASE_SESSION_START,
@@ -330,6 +331,49 @@ from kiro_crew.dashboard.chat_utils import (  # noqa: E402
     should_recover_promise_only,
     subagents_attached,
 )
+
+
+def _require_session_memory_assignment(session_key: str, memory_store: str | None) -> None:
+    """A persisted private assignment outranks a later V1 member declaration."""
+    from kiro_crew.member_memory_auth import read_private_session_store
+    from kiro_crew.memory_stores import UnknownMemoryStore
+
+    try:
+        protected = read_private_session_store(session_key)
+    except (OSError, ValueError) as exc:
+        raise UnknownMemoryStore("The protected conversation binding is unreadable") from exc
+    if protected is not None and protected != memory_store:
+        raise UnknownMemoryStore(
+            "This conversation retains its private memory assignment. "
+            "Restore that member binding or open a new conversation; V1 was not used."
+        )
+
+
+def _bind_private_slot_memory(
+    session_key: str,
+    memory_store: str,
+    *,
+    restored: bool,
+    conversation_log=None,
+    native_context: bool = False,
+) -> None:
+    """Transcript restoration cannot grant a new private assignment."""
+    from kiro_crew.member_memory_auth import (
+        bind_private_session_store,
+        read_private_session_store,
+    )
+    from kiro_crew.memory_stores import UnknownMemoryStore
+
+    protected = read_private_session_store(session_key)
+    prior_history = (
+        protected is None and conversation_log is not None and conversation_log.has_log(session_key)
+    )
+    if protected != memory_store and (restored or prior_history or native_context):
+        raise UnknownMemoryStore(
+            "This conversation has no verified assignment to private memory and retains its V1 context. "
+            "Open the member from Members or create a new conversation for private memory."
+        )
+    bind_private_session_store(session_key, memory_store)
 
 
 def _empty_auto_continue_enabled() -> bool:
@@ -4381,7 +4425,13 @@ async def _recover_app_agent_binding(
             slot.key,
             exc_info=True,
         )
-    return resolve_agent_bindings(cfg, slot.agent or None, project)
+    selected_agent = slot.agent
+    bindings = await asyncio.to_thread(resolve_agent_bindings, cfg, selected_agent or None, project)
+    if slot.agent != selected_agent:
+        raise _MemoryUnavailable(
+            "memory_unavailable: agent changed during recovery; retry the turn"
+        )
+    return bindings
 
 
 async def _eager_spawn(
@@ -4398,11 +4448,13 @@ async def _eager_spawn(
        kill the caller, which is exactly what the deferred-reset design
        exists to prevent. When a turn is running, its own end-of-turn path
        consumes the reset instead.
-    2. ``get_or_create`` acquires the per-session semaphore; it is released
-       immediately below because no turn follows. A first message arriving
-       mid-handshake blocks on that same semaphore and then reuses the
-       created session — the per-key serialization in ``get_or_create`` is
-       what makes the eager call and the real call converge on one session.
+    2. Global and named V1 sessions may reach ``get_or_create``, which acquires
+       the per-session semaphore and is released immediately below because no
+       turn follows. Private V2 sessions stop before allocation so the first
+       real turn can validate and pin their trusted store before a provider is
+       registered. For eligible V1 sessions, a first message arriving during
+       the handshake blocks on the same semaphore and reuses the created
+       session.
     """
     try:
         await asyncio.sleep(_EAGER_SPAWN_DEBOUNCE_SECS)
@@ -4440,6 +4492,7 @@ async def _eager_spawn(
                 # means the speculative load falls back and is torn down below.
                 if not sessions.resumable_hint(session_key):
                     return
+
             # Snapshot the bindings the handshake is about to bake in. A
             # switch handler (workspace, model, reasoning effort) that fires
             # mid-handshake resets the session key — but the reset no-ops
@@ -4449,7 +4502,16 @@ async def _eager_spawn(
             # in the wrong workspace). Agent/project changes re-arm through
             # schedule_eager_spawn and cancel this task, but the other
             # switches don't — the snapshot covers them all uniformly.
-            _bound = (slot.agent, slot.model, slot.project, slot.reasoning_effort)
+            def _slot_binding() -> tuple[str, str, str, str, str]:
+                return (
+                    slot.agent,
+                    slot.model,
+                    slot.project,
+                    slot.reasoning_effort,
+                    slot.memory_store,
+                )
+
+            _bound = _slot_binding()
             kiro_agent: str | None = None
             # Canonical crew identity for watchdog overrides. Seeded from the
             # slot, replaced by the resolver's alias below: an EMPTY slot runs
@@ -4465,7 +4527,7 @@ async def _eager_spawn(
             try:
                 cfg = KiroCrewConfig.load()
                 loaded_cfg = cfg
-                bindings = resolve_agent_bindings(cfg, slot.agent or None)
+                bindings = await asyncio.to_thread(resolve_agent_bindings, cfg, _bound[0] or None)
                 kiro_agent = bindings.kiro_agent
                 crew_alias = bindings.resolved_alias
                 agent_model = normalize_agent_model(bindings.model)
@@ -4492,7 +4554,9 @@ async def _eager_spawn(
                             slot.key,
                             exc_info=True,
                         )
-                    bindings = resolve_agent_bindings(cfg, slot.agent or None)
+                    bindings = await asyncio.to_thread(
+                        resolve_agent_bindings, cfg, _bound[0] or None
+                    )
                     kiro_agent = bindings.kiro_agent
                     crew_alias = bindings.resolved_alias
                     agent_model = normalize_agent_model(bindings.model)
@@ -4502,12 +4566,16 @@ async def _eager_spawn(
                         crew_alias = bindings.resolved_alias
                         agent_model = normalize_agent_model(bindings.model)
                 resolved_ok = bindings.requested_resolved
+                await asyncio.to_thread(
+                    _require_session_memory_assignment, session_key, bindings.memory_store_name
+                )
             except Exception:
                 logger.warning(
                     "Eager spawn: failed to resolve agent bindings for slot %s",
                     slot.key,
                     exc_info=True,
                 )
+                return
             # Fail-safe mirror of the real turn's guard: if an app-owned slot
             # STILL did not resolve (self-heal missed, or the resolve threw), do
             # NOT register a speculative session — resolve_agent_bindings returns
@@ -4521,12 +4589,74 @@ async def _eager_spawn(
                     slot.key,
                 )
                 return
+            if slot.agent and not resolved_ok:
+                # The real turn refuses an unavailable explicit Crew Member.
+                # Do not pre-register the resolver's Global fallback first;
+                # doing so would leave an unrelated provider behind the error.
+                logger.info(
+                    "Eager spawn: Crew Member %r is unresolved; leaving to first turn",
+                    slot.agent,
+                )
+                return
+            # Private V2 authority belongs to the first real turn: it validates
+            # the store, pins the session-to-store binding and persists the
+            # slot before provider allocation. Registering an ordinary eager
+            # provider first would make SessionAllocationService correctly
+            # refuse that provider when the real turn later becomes private.
+            #
+            # A restored slot's recorded store is independently authoritative.
+            # If it disagrees with today's resolver (deleted/renamed member,
+            # stale alias, or an in-flight switch), stand down rather than
+            # warming a provider with either identity. The real turn owns the
+            # fail-loud explanation. Valid named V1 stores keep the legacy eager
+            # path; classification uses the validated config and the protected
+            # assignment above. This never creates a protected binding here.
+            from kiro_crew.memory_stores import DEFAULT_MEMORY_STORE
+
+            resolved_store = bindings.memory_store_name
+            restored_store = slot.memory_store
+            if not isinstance(resolved_store, str) or not resolved_store:
+                logger.info(
+                    "Eager spawn: slot %s has no resolved memory store; leaving to first turn",
+                    slot.key,
+                )
+                return
+            if restored_store and (
+                not isinstance(restored_store, str) or restored_store != resolved_store
+            ):
+                logger.info(
+                    "Eager spawn: slot %s restored memory binding disagrees with resolver; "
+                    "leaving to first turn",
+                    slot.key,
+                )
+                return
+            selected_store = restored_store or resolved_store
+            if selected_store != DEFAULT_MEMORY_STORE:
+                record = cfg.memory_stores.get(selected_store)
+                version = getattr(record, "memory_version", None)
+                owner = getattr(record, "owner_member", None)
+                if version == 2 and isinstance(owner, str) and owner:
+                    logger.info("Eager spawn: private V2 slot %s left to first turn", slot.key)
+                    return
+                if version != 1 or owner != "":
+                    logger.info(
+                        "Eager spawn: slot %s has an unavailable or inconsistent memory "
+                        "binding; leaving to first turn",
+                        slot.key,
+                    )
+                    return
             # Off the loop: the resolve globs and reads agent JSON (see
             # _default_session_model). It converts every resolver error,
             # StopIteration included, to "" inside the worker.
             default_model = await asyncio.to_thread(
                 _default_session_model, loaded_cfg, slot, agent_model
             )
+            # Agent recovery and default-model resolution both await. A real
+            # turn or a slot mutation may therefore have landed after the
+            # initial gate. Nothing is registered yet, so simply stand down;
+            # the current owner will allocate from its current bindings.
+            if state.get_slot(slot.key) is not slot or slot.running or _slot_binding() != _bound:
+                return
             _t0 = time.monotonic()
             try:
                 # speculative=True keeps the one-shot first-turn flag armed for
@@ -4589,7 +4719,7 @@ async def _eager_spawn(
             # registered carries stale bindings. Remove it — the first real
             # message cold-starts with the current bindings, exactly as if
             # eager spawn never ran.
-            if (slot.agent, slot.model, slot.project, slot.reasoning_effort) != _bound:
+            if _slot_binding() != _bound:
                 logger.info(
                     "Eager spawn: slot %s bindings changed mid-handshake, removing session",
                     slot.key,
@@ -5813,11 +5943,14 @@ async def _run_pending_synthesis(state: DashboardState, slot: _ChatSlot) -> None
         slot._synthesis_inflight = False
 
 
-def _finish_queue_cycle(state: DashboardState, slot: _ChatSlot) -> None:
+def _finish_queue_cycle(
+    state: DashboardState, slot: _ChatSlot, *, allow_automatic_successor: bool = True
+) -> None:
     """Start synthesis when eligible, otherwise mark a queue cycle idle."""
 
     will_synthesize = (
-        slot._pending_synthesis
+        allow_automatic_successor
+        and slot._pending_synthesis
         and not slot._synthesis_inflight
         # A slot gone from the registry is being torn down, so it has no next
         # user turn to owe a held note to -- withholding there would lose it.
@@ -5872,6 +6005,14 @@ def _finish_queue_cycle(state: DashboardState, slot: _ChatSlot) -> None:
     # detail panel on no refresh at all.
     state.refresh_slot_source_status(slot.key)
     state.push_refresh("history")
+    memory_startup_task = getattr(state, "memory_startup_task", None)
+    if memory_startup_task is not None and (
+        not memory_startup_task.done() or memory_startup_task.cancelled()
+    ):
+        # A turn cancelled at the preparation barrier has no provider-backed
+        # result to title or summarize. Its terminal lifecycle is complete;
+        # the next landed turn owns the ordinary post-processing attempt.
+        return
     if not slot._titled:
         title_task = asyncio.create_task(_maybe_auto_title(state, slot))
         state._background_tasks.add(title_task)
@@ -5920,6 +6061,10 @@ def _emit_ttft_metric(t0: float, session_key: str, *, is_new: bool, resumed: boo
         )
     except Exception:
         logger.debug("TTFT metric emission failed", exc_info=True)
+
+
+class _MemoryUnavailable(RuntimeError):
+    """A memory refusal whose display code must not be inferred from prose."""
 
 
 class _AppAgentNotLoaded(Exception):
@@ -6768,44 +6913,6 @@ async def _run_chat(
             slot.append("done", "", "done")
             return
 
-    # A new turn supersedes whatever question the previous one ended on, so any
-    # OPTIONS control still live in this session's Slack thread stops being
-    # answerable. Guarded on _prompt_depth so the in-turn re-entry that expands
-    # a /prompts reference does not count as a new turn.
-    #
-    # Placed HERE, below every local-command return and above the turn machinery,
-    # for the same reason the Slack entry points expire here: `/goal`, a
-    # `/prompts` listing or error, and a blocked slash command all return without
-    # starting an agent turn, and spending the control on one of those would
-    # strike a still-valid question through with nothing to answer it. Moved once,
-    # rather than guarded per command, so a new local command inherits the right
-    # behaviour by default.
-    if _prompt_depth == 0:
-        await expire_slack_options(state, session_key)
-
-    # Publish the identity of the turn this call is about to run. From here down
-    # the local `session_key` is what the turn acquires, audits and releases,
-    # while `slot.linked_session_key` stays mutable underneath it: a cron
-    # injection binds an existing slot with no `running` gate, so a turn that
-    # started on `dashboard:<slot>` can find the slot routed at `cron:<id>`
-    # before it ends. A cancel that re-derived the key would then address a
-    # session this turn never ran on, so the cancel routes read this instead.
-    #
-    # Placed at the same boundary as the OPTIONS expiry above, and for the same
-    # reason: `/goal`, a `/prompts` listing or error, and a blocked slash command
-    # all return without starting an agent turn, so none of them owns a turn
-    # identity. `/prompts get` re-enters at `_prompt_depth=1`, and it is that
-    # depth-1 call which reaches the machinery below while its depth-0 wrapper
-    # returns above — so keying on the BOUNDARY is what puts the identity on the
-    # invocation that actually runs the turn. Keying on `_prompt_depth == 0`
-    # would put it on the wrapper instead.
-    #
-    # BELOW the expiry, not above it: that await is the only thing between the
-    # boundary and the try, so installing after it means every exit that can
-    # happen while the identity is live reaches the teardown that retires it.
-    # Only plain assignments separate this line from the try.
-    slot._active_turn_session_key = session_key
-
     _is_monitor_wake = message.startswith(MONITOR_WAKE_PREFIX)
     _acquired = False
     _mirror_stream_ts: str = ""
@@ -6814,12 +6921,43 @@ async def _run_chat(
     _mirror_active_task_title = ""
     _mirror_thread: str | None = ""
     _mirror_task_counter = 0
+    _memory_preparation_admitted = False
+    # Bound before the try because cancellation may land while this turn waits
+    # for shared memory preparation, before any provider is allocated.
+    client: Any = None
     try:
+        # The gateway publishes this shared task before READY, then performs the
+        # restore/open/rebuild work after READY. Wait at the one dashboard turn
+        # admission seam before expiring controls, publishing a turn identity,
+        # resolving bindings, allocating a provider or writing metadata. The
+        # turn's grace period is bounded; timeout and Stop leave the shared
+        # worker alive and retain queued intent until a later admitted turn.
+        from kiro_crew.memory_startup import wait_for_memory_preparation
+
+        await wait_for_memory_preparation(getattr(state, "memory_startup_task", None))
+        _memory_preparation_admitted = True
+
+        # A new turn supersedes whatever question the previous one ended on, so
+        # any OPTIONS control still live in this session's Slack thread stops
+        # being answerable. Guarded on _prompt_depth so the in-turn re-entry that
+        # expands a /prompts reference does not count as a new turn. Local
+        # commands returned above, so they do not consume a still-valid control.
+        if _prompt_depth == 0:
+            await expire_slack_options(state, session_key)
+
+        # Publish the immutable identity only after every admission await. From
+        # here down the local session_key is what the turn acquires, audits and
+        # releases while slot.linked_session_key remains mutable underneath it.
+        # The enclosing finally compare-and-clears only an identity this turn
+        # actually published.
+        slot._active_turn_session_key = session_key
+
         # Resolve agent bindings early so we pass the correct kiro-cli
         # agent name (e.g. "kirocrew") instead of the KiroCrew slot name
         # (e.g. "default") which has no matching ~/.kiro/agents/ config.
         kiro_agent: str | None = None
         memory_store: str | None = None
+        private_member = ""
         # The KiroCrew agent's own default model ("" = inherit). Ranks below the
         # slot's explicit pick and above the bound kiro agent's pin / the global
         # agent.model fallback.
@@ -6846,19 +6984,49 @@ async def _run_chat(
         # after the resolve block). Captured inside the try so the raise below
         # lives OUTSIDE it and is not swallowed by the resolve except.
         _app_agent_unresolved = False
+
+        def _current_binding() -> tuple:
+            return (
+                slot.agent,
+                slot.project,
+                slot.workspace,
+                slot.memory_store,
+                slot._memory_assignment_from_history,
+                effective_session_key(slot),
+            )
+
+        selected_binding = _current_binding()
+        registered_slot = state._slots.get(slot.key)
+
+        def _require_current_binding() -> None:
+            if (
+                registered_slot is slot and state._slots.get(slot.key) is not slot
+            ) or _current_binding() != selected_binding:
+                raise _MemoryUnavailable(
+                    "memory_unavailable: conversation binding changed during preparation; "
+                    "retry the turn"
+                )
+
         try:
             cfg = KiroCrewConfig.load()
             loaded_cfg = cfg
             provider_name = cfg.agent.provider
-            # Warm the project agent index OFF the loop, then resolve inline. Only
-            # the warm is offloaded: resolve_agent_bindings can raise StopIteration
-            # on a malformed config, and StopIteration cannot be delivered through a
-            # Future, so awaiting it would hang instead of surfacing the error.
+            # Project discovery and private memory validation both access files.
+            # Resolve the captured selection off-loop, then reject any concurrent
+            # change before publishing memory authority or allocating a provider.
             # source="unknown", not "dashboard": Slack-triggered turns reach
             # _run_chat too (slack/gateway.py and slack/handler.py call it
             # directly), so this hop serves multiple channels.
-            await warm_project_agent_names(slot.project, operation="chat_turn", source="unknown")
-            bindings = resolve_agent_bindings(cfg, slot.agent or None, slot.project or None)
+            await warm_project_agent_names(
+                selected_binding[1], operation="chat_turn", source="unknown"
+            )
+            bindings = await asyncio.to_thread(
+                resolve_agent_bindings,
+                cfg,
+                selected_binding[0] or None,
+                selected_binding[1] or None,
+            )
+            _require_current_binding()
             kiro_agent = bindings.kiro_agent
             crew_alias = bindings.resolved_alias
             memory_store = bindings.memory_store_name
@@ -6892,22 +7060,107 @@ async def _run_chat(
                         slot.key,
                         exc_info=True,
                     )
-                bindings = resolve_agent_bindings(cfg, slot.agent or None, slot.project or None)
+                bindings = await asyncio.to_thread(
+                    resolve_agent_bindings,
+                    cfg,
+                    selected_binding[0] or None,
+                    selected_binding[1] or None,
+                )
+                _require_current_binding()
                 kiro_agent = bindings.kiro_agent
                 crew_alias = bindings.resolved_alias
                 memory_store = bindings.memory_store_name
                 agent_model = normalize_agent_model(bindings.model)
                 if not bindings.requested_resolved:
                     bindings = await _recover_app_agent_binding(
-                        cfg, slot, project=slot.project or None
+                        cfg, slot, project=selected_binding[1] or None
                     )
+                    _require_current_binding()
                     kiro_agent = bindings.kiro_agent
                     crew_alias = bindings.resolved_alias
                     memory_store = bindings.memory_store_name
                     agent_model = normalize_agent_model(bindings.model)
             _app_agent_unresolved = bool(slot._app) and not bindings.requested_resolved
-        except Exception:
+            if slot.agent and not slot._app and not bindings.requested_resolved:
+                from kiro_crew.memory_stores import UnknownMemoryStore
+
+                raise UnknownMemoryStore(
+                    f"Crew Member '{slot.agent}' is unavailable; restore it or choose a member"
+                )
+        except Exception as exc:
             logger.warning("Failed to resolve agent bindings in _run_chat", exc_info=True)
+            from kiro_crew.memory_stores import UnknownMemoryStore
+
+            if isinstance(exc, _MemoryUnavailable):
+                raise
+            if slot.memory_store or isinstance(exc, UnknownMemoryStore):
+                raise _MemoryUnavailable(f"memory_unavailable: {exc}") from exc
+
+        _require_current_binding()
+        try:
+            await asyncio.to_thread(_require_session_memory_assignment, session_key, memory_store)
+        except Exception as exc:
+            raise _MemoryUnavailable(f"memory_unavailable: {exc}") from exc
+        _require_current_binding()
+        if slot.memory_store:
+            from kiro_crew.memory_stores import require_memory_store
+
+            # Persisted identity wins over an unresolved/deleted member alias.
+            # A deliberate member switch updates the slot binding atomically.
+            await asyncio.to_thread(require_memory_store, slot.memory_store)
+            _require_current_binding()
+            if memory_store != slot.memory_store:
+                raise _MemoryUnavailable(
+                    "memory_unavailable: this conversation's member binding changed; "
+                    "restore the member or open a new conversation"
+                )
+        if memory_store and memory_store != "default":
+            from kiro_crew.memory_stores import require_memory_store
+
+            if loaded_cfg is None:
+                raise _MemoryUnavailable(
+                    "memory_unavailable: cannot verify this conversation's owner"
+                )
+            # Freeze the validated V2 owner before acquiring a provider. Schema
+            # migrations also apply to V1, so schema lineage cannot identify a
+            # private turn. Missing ownership must fail before classification.
+            await asyncio.to_thread(require_memory_store, memory_store, config=loaded_cfg)
+            _require_current_binding()
+            record = loaded_cfg.memory_stores[memory_store]
+            if record.memory_version == 2:
+                private_member = record.owner_member
+                await asyncio.to_thread(
+                    _bind_private_slot_memory,
+                    session_key,
+                    memory_store,
+                    restored=slot._memory_assignment_from_history,
+                    conversation_log=state.conversation_log,
+                    native_context=(
+                        state.sessions.get_provider(session_key) is not None
+                        or bool(state.sessions.resumable_sid(session_key))
+                        or any(
+                            row.get("role") in ("assistant", "tool", "chunk")
+                            for row in slot.messages
+                        )
+                    ),
+                )
+                _require_current_binding()
+            # Bind writes before allocating a provider as well as reads. This
+            # also initializes a legacy member chat after explicit V2 setup.
+            slot.memory_store = memory_store
+            selected_binding = _current_binding()
+            if state.conversation_log is None:
+                raise _MemoryUnavailable(
+                    "memory_unavailable: cannot persist this conversation's binding"
+                )
+            await asyncio.to_thread(
+                state.conversation_log.update_metadata,
+                session_key,
+                {"memory_store": memory_store, "agent": crew_alias},
+            )
+            await prepare_store_vectors(
+                state.context_builder, memory_store, session_key=session_key
+            )
 
         # FAIL-LOUD: an app-owned slot whose agent STILL did not resolve after the
         # self-heal must NOT run the default agent — that generic-substitution is
@@ -6946,6 +7199,7 @@ async def _run_chat(
         # as is gone. Retiring it here means this turn cold-starts on the current
         # account instead of running as the previous one.
         await _retire_sessions_on_identity_change(state)
+        _require_current_binding()
         client, is_new, resumed = await state.sessions.get_or_create(
             session_key,
             agent=kiro_agent or slot.agent or None,
@@ -7477,6 +7731,17 @@ async def _run_chat(
             # context, taking the skills index with it. Read-and-clear the flag
             # here so this turn re-injects the index exactly once.
             _needs_reinjection = state.sessions.consume_needs_reinjection(session_key)
+            # Stand up this crew's OWN vector store before the offloaded build.
+            # It has to happen here, on the loop, because init() is blocking file
+            # IO (sqlite connect, migrations, a FAISS load) that build_message's
+            # sync resolver may not perform. A no-op for the default store.
+            #
+            # V2 preparation is required: unavailable ownership, files or vector
+            # storage stop the turn. Legacy V1 named stores retain their existing
+            # Markdown/keyword preparation fallback within that same store.
+            await prepare_store_vectors(
+                state.context_builder, memory_store, session_key=session_key
+            )
             full_message, _ = await run_in_embed_pool(
                 state.context_builder.build_message,
                 message,
@@ -10023,9 +10288,14 @@ async def _run_chat(
             elif event.kind == EVENT_AGENT_SWITCHED:
                 new_agent, _ = redact_credentials(event.text)
                 new_agent, _ = redact_exfiltration_urls(new_agent)
-                if new_agent and slot.mode == "member" and new_agent != slot.agent:
-                    # Member DM threads are pinned to their crew, and this is
-                    # the one writer the HTTP guards cannot reach: kiro-cli has
+                if new_agent and (
+                    private_member or (slot.mode == "member" and new_agent != slot.agent)
+                ):
+                    pinned_member = private_member or slot.agent
+                    # V2 turns are pinned in every slot mode. Any provider-side
+                    # switch ends the turn, including a template whose spelling
+                    # happens to equal the member alias. HTTP guards cannot
+                    # reach this writer: kiro-cli has
                     # ALREADY switched its own session's agent by the time this
                     # event arrives. Veto by keeping slot.agent (no broadcast —
                     # nothing changed for the UI) and forcing a session reset,
@@ -10035,7 +10305,7 @@ async def _run_chat(
                         "agent switch to %r vetoed on member thread %s (pinned to %r)",
                         new_agent,
                         slot.key,
-                        slot.agent,
+                        pinned_member,
                     )
                     # SEL: this veto is a permission denial — the one pin
                     # enforcement site the HTTP guards cannot reach (kiro-cli
@@ -10048,7 +10318,7 @@ async def _run_chat(
                         outcome="denied",
                         source="member_pin",
                         resources=f"slot={slot.key} agent={new_agent}",
-                        error=f"member thread pinned to {slot.agent}",
+                        error=f"member thread pinned to {pinned_member}",
                     )
                     # The veto must be VISIBLE: kiro-cli has already switched,
                     # so the remainder of this turn executes as the foreign
@@ -10060,7 +10330,7 @@ async def _run_chat(
                     slot.append(
                         "notice",
                         f"📌 Agent switch to {new_agent} was blocked — this thread is "
-                        f"pinned to {slot.agent}. The next turn restarts on the pinned crew.",
+                        f"pinned to {pinned_member}. The next turn restarts on the pinned crew.",
                         "msg msg-info",
                     )
                     needs_session_reset = True
@@ -12600,8 +12870,15 @@ async def _run_chat(
         logger.exception("Dashboard chat error in slot %s", slot.key)
         _err_text, _ = redact_exfiltration_urls(str(exc))
         _err_text, _ = redact_credentials(_err_text)
-        slot.append("error", _err_text, "msg msg-err")
-        await state.sessions.record_failure(session_key)
+        from kiro_crew.memory_startup import MemoryStartupUnavailable
+        from kiro_crew.memory_stores import UnknownMemoryStore
+
+        _err_meta: dict | None = None
+        if isinstance(exc, (_MemoryUnavailable, UnknownMemoryStore)):
+            _err_meta = {"code": "memory_unavailable"}
+        slot.append("error", _err_text, "msg msg-err", meta=_err_meta)
+        if not (isinstance(exc, MemoryStartupUnavailable) and not _memory_preparation_admitted):
+            await state.sessions.record_failure(session_key)
     finally:
         # Poisoned-conversation streak break — in the FINALLY on purpose (fork
         # GPT review): several recovery paths (stale-turn, tool-stall,
@@ -12837,11 +13114,11 @@ async def _run_chat(
         # "hold the queue for post-login resume" guard on its end-of-plan handoff.
         slot._last_turn_auth_required = _auth_required
         next_turn_started = False
-        if slot._queue and not _auth_required:
-            # No readiness gate before the next queued turn. Readiness is latched
-            # at boot, so parking the queue on a stale not-ready value would
-            # strand it indefinitely; the successor's own ACP attempt reports a
-            # signed-out CLI as an AcpAuthRequired error card instead.
+        if slot._queue and not _auth_required and _memory_preparation_admitted:
+            # After startup admission, the successor's own ACP attempt remains
+            # the authority for a later sign-out. A turn cancelled while waiting
+            # on shared preparation retains the queue instead of walking every
+            # item through the same unfinished or cancelled gateway task.
             #
             # `_auth_required` is the ONE exception: this turn just proved the CLI
             # is signed out, so every queued prompt would fail identically. The
@@ -12852,4 +13129,8 @@ async def _run_chat(
             next_turn_started = await _start_next_queued_turn(state, slot)
 
         if not next_turn_started:
-            _finish_queue_cycle(state, slot)
+            _finish_queue_cycle(
+                state,
+                slot,
+                allow_automatic_successor=_memory_preparation_admitted,
+            )

@@ -278,6 +278,16 @@ class ContinuationCoordinator(ManagerComponent):
         - ``conversation_gone`` — no resumable session files remain.
         """
         conv_key = f"subagent:{conv_id}"
+        try:
+            memory_store = self._manager._inherited_memory_store(conv_id)
+        except (OSError, ValueError) as exc:
+            return SubagentInfo(
+                id=_preassigned_id or uuid.uuid4().hex[:8],
+                task=_redact(task),
+                done=True,
+                parent_session_key=parent_session_key,
+                error=f"memory_unavailable: {exc}",
+            )
         busy = self._manager._conversation_busy(conv_key)
         if busy is not None:
             info = SubagentInfo(
@@ -394,7 +404,21 @@ class ContinuationCoordinator(ManagerComponent):
             include_memory=inc_memory,
             include_lessons=inc_lessons,
             include_project=inc_project,
+            # Inherited for the same reason as the context groups above: a
+            # continuation is another turn of the SAME run. Without it a crew
+            # topic's first message reads the crew's silo and every routed
+            # follow-up reads the global store -- a split nothing reports.
+            memory_store=memory_store,
         )
+
+    def _inherited_memory_store_impl(self, conv_id: str) -> str:
+        """Restore this run's identity from live state or the protected record."""
+        live = self._manager._agents.get(conv_id)
+        if live is not None:
+            return live.memory_store
+        from kiro_crew.subagent_persistence import read_run_memory_store
+
+        return read_run_memory_store(conv_id)
 
     def recorded_cwd_impl(self, conv_id: str) -> str:
         """The cwd run *conv_id* executed in, or "" if it never had one.

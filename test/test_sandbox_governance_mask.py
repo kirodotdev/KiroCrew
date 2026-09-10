@@ -83,6 +83,7 @@ class TestKeystonesAreSealedInEveryMode:
     #: THESE paths are covered, so a test derived from the same tuple the production
     #: code reads would pass just as happily after someone emptied it.
     KEYSTONES = (
+        "member-memory-bindings",
         "security_policy.json",
         "admission_policy.json",
         "app_admission.json",
@@ -151,6 +152,7 @@ class TestSecretsAreMaskedInEveryMode:
     """Crew-home leaves with no in-sandbox reader are bind-masked, not merely sealed."""
 
     MASKED = (
+        "memory_stores",
         "token_signing.key",
         "refresh_chains.json",
         "kas",

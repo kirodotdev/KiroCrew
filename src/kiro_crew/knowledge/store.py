@@ -219,6 +219,28 @@ def _validated_aliases(value: object) -> str:
     return text
 
 
+def _validated_embedding_sig(value: object) -> str | None:
+    """``items.embedding_sig``: an opaque signature string, or NULL.
+
+    Deliberately shape-only. The value's grammar belongs to its producer
+    (:func:`kiro_crew.knowledge.embedder.embed_signature`), and a signature this
+    store cannot recognise is safe in the only direction that matters: it fails
+    to equal the importing store's own signature, so ``_vector_search`` refuses
+    the vector instead of scoring it across spaces. What is NOT safe is a
+    non-string reaching the bind, which raises past the typed-error contract --
+    hence the guard here rather than at one HTTP path.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value:
+        raise KnowledgeBundleError("'items.embedding_sig' must be a non-empty string or null")
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        raise KnowledgeBundleError("'items.embedding_sig' must be valid UTF-8 text") from None
+    return value
+
+
 def _without_sync_status(properties):
     """*properties* with any ``sync_status`` key removed.
 
@@ -2389,12 +2411,22 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
                         raw_emb = base64.b64decode(raw_emb)
                     except Exception:
                         raw_emb = None
+                # ``embedding_sig`` travels WITH the blob. It is the only thing
+                # that says which vector space the imported vector belongs to,
+                # and ``HybridRetriever._vector_search`` pins it -- so dropping
+                # it lands every imported item at NULL, which the vector leg
+                # reads as unproven provenance and refuses. The vectors are in
+                # the bundle and would simply never be scored again until a full
+                # re-embed. A foreign-space signature is exactly as welcome: it
+                # will not match the importing store's own signature, so those
+                # vectors are refused on purpose rather than by accident.
                 cursor = self.db.execute(
-                    "INSERT OR IGNORE INTO items (id, title, content, item_type, source_id, chunk_index, namespace, summary, tags, embedding, status, created_at, updated_at) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "INSERT OR IGNORE INTO items (id, title, content, item_type, source_id, chunk_index, namespace, summary, tags, embedding, embedding_sig, status, created_at, updated_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (item["id"], item["title"], item["content"], item["item_type"],
                      item.get("source_id"), item.get("chunk_index", 0), item.get("namespace", "default"), item.get("summary"),
-                     item.get("tags", "[]"), raw_emb, item.get("status", "active"),
+                     item.get("tags", "[]"), raw_emb, _validated_embedding_sig(item.get("embedding_sig")),
+                     item.get("status", "active"),
                      item.get("created_at", now), now))
                 if cursor.rowcount > 0:
                     items_imported += 1

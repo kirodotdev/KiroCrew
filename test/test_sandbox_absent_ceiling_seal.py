@@ -96,6 +96,28 @@ def _run_seal_loop(targets: list[str]) -> list[tuple[str, int]]:
 
 
 @_POSIX_ONLY
+def test_member_run_identity_is_sealed_before_any_run_exists(crew_home):
+    target = crew_home / "member-memory-bindings"
+    assert not target.exists()
+    sandbox._materialize_sealable_ceilings()
+    assert target.is_dir()
+    calls = _run_seal_loop([str(target)])
+    assert (str(target), _MS_BIND) in calls
+    assert (str(target), _MS_REMOUNT | _MS_BIND | _MS_RDONLY) in calls
+
+
+@_POSIX_ONLY
+def test_private_memory_root_is_maskable_before_the_first_member_exists(crew_home):
+    target = crew_home / "memory_stores"
+    assert not target.exists()
+    sandbox.namespace_argv(["/bin/true"])
+    assert target.is_dir()
+    script = sandbox._build_launcher_script("standard")
+    match = re.search(r"SENSITIVE_DIRS = (\[.*?\])\n", script, re.S)
+    assert match and str(target) in json.loads(match.group(1))
+
+
+@_POSIX_ONLY
 class TestSealAppliesToAPreviouslyAbsentCeiling:
     def test_bind_and_remount_pair_is_emitted(self, crew_home):
         """The seal reaches a ceiling that did not exist when the spawn started.

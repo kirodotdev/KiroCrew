@@ -6,9 +6,17 @@ import json
 from unittest.mock import MagicMock, patch
 
 import pytest
+from member_memory_helpers import PRIVATE_EXECUTION_GATE
 
 from kiro_crew.agent_discovery import AgentInfo
 from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig
+from kiro_crew.config.sections import MemoryConfig
+from kiro_crew.memory_stores import (
+    UnknownMemoryStore,
+    archive_member_memory_store,
+    provision_member_memory,
+    require_member_memory_store,
+)
 
 
 def _make_aim_agent(name: str) -> AgentInfo:
@@ -26,6 +34,9 @@ def _make_config(agents: dict[str, KiroCrewAgentConfig]) -> KiroCrewConfig:
     """Create a MagicMock standing in for KiroCrewConfig with the given agents dict."""
     cfg = MagicMock(spec=KiroCrewConfig)
     cfg.agents = agents
+    cfg.memory_stores = {}
+    cfg.memory = MemoryConfig()
+    cfg.degraded_sections = frozenset()
     cfg.default_agent = "kirocrew"
     cfg.save = MagicMock()
     return cfg
@@ -47,7 +58,7 @@ async def _run_sync(cfg: KiroCrewConfig, aim_agents_list: list[AgentInfo]) -> di
     sel_mock = MagicMock()
 
     def _fake_update_config_locked(*args, **kwargs):
-        doc: dict = {"agents": {}}
+        doc: dict = {"agents": {}, "memory_stores": {}}
         result = kwargs["mutate"](doc)
         cfg.save()
         cfg.written_doc = result
@@ -61,6 +72,7 @@ async def _run_sync(cfg: KiroCrewConfig, aim_agents_list: list[AgentInfo]) -> di
             new=_fake_update_config_locked,
         ),
         patch("kiro_crew.dashboard.handlers.agents._sel", return_value=sel_mock),
+        patch(PRIVATE_EXECUTION_GATE, return_value=True),
     ):
         response = await _do_agents_sync(request)
 
@@ -190,6 +202,38 @@ class TestAgentSyncPrune:
         assert body["pruned"] == []
         cfg.save.assert_not_called()
 
+    @pytest.mark.asyncio
+    async def test_package_prune_archives_private_generation(self):
+        from kiro_crew.dashboard.handlers.agents import _do_agents_sync
+
+        cfg = KiroCrewConfig.load()
+        cfg.agents["stale-package"] = KiroCrewAgentConfig(
+            kiro_agent="stale-package", source="package"
+        )
+        cfg.agents["live"] = KiroCrewAgentConfig(kiro_agent="live", source="package")
+        store = provision_member_memory(cfg, "stale-package")
+        cfg.save()
+        request = MagicMock()
+        request.get.return_value = "dashboard"
+        request.app = {}
+        with (
+            patch(
+                "kiro_crew.dashboard.handlers.agents.list_agents",
+                return_value=[_make_aim_agent("live")],
+            ),
+            patch("kiro_crew.dashboard.handlers.agents._sel", return_value=MagicMock()),
+        ):
+            response = await _do_agents_sync(request)
+        assert json.loads(response.body)["pruned"] == ["stale-package"]
+
+        rebind = KiroCrewConfig.load()
+        rebind.agents["stale-package"] = KiroCrewAgentConfig(
+            kiro_agent="stale-package", source="package", memory_store=store
+        )
+        rebind.save()
+        with pytest.raises(UnknownMemoryStore, match="archived"):
+            require_member_memory_store(KiroCrewConfig.load(), "stale-package")
+
 
 class TestSyncRefusesCredentialShapedNames:
     """The SECOND way a name reaches `cfg.agents`, which the create route cannot see.
@@ -215,6 +259,30 @@ class TestSyncRefusesCredentialShapedNames:
         cfg = _make_config({})
         await _run_sync(cfg, [_make_aim_agent("oncall-triage")])
         assert "oncall-triage" in cfg.agents
+        store = cfg.agents["oncall-triage"].memory_store
+        assert cfg.written_doc["agents"]["oncall-triage"]["memory_store"] == store
+        assert cfg.written_doc["memory_stores"][store] == {
+            "owner_member": "oncall-triage",
+            "memory_version": 2,
+            "description": "",
+            "embedding_provider": "",
+        }
+
+    @pytest.mark.asyncio
+    async def test_reinstalled_package_member_gets_fresh_memory(self):
+        """A retired store is retained but never inherited by a same-name reinstall."""
+        cfg = _make_config({"oncall": KiroCrewAgentConfig(kiro_agent="oncall", source="package")})
+        retired_store = provision_member_memory(cfg, "oncall")
+        assert archive_member_memory_store(retired_store, "oncall")
+        del cfg.agents["oncall"]
+
+        body = await _run_sync(cfg, [_make_aim_agent("oncall")])
+
+        assert body["synced"] == ["oncall"]
+        fresh = cfg.agents["oncall"].memory_store
+        assert fresh != retired_store
+        assert retired_store in cfg.memory_stores
+        assert cfg.written_doc["memory_stores"][fresh]["owner_member"] == "oncall"
 
 
 class TestAgentSyncFsCheckIsOffloaded:
@@ -274,6 +342,7 @@ class TestPruneOnlySnapshotMatchedEntries:
                 new=_fake_update_config_locked,
             ),
             patch("kiro_crew.dashboard.handlers.agents._sel", return_value=MagicMock()),
+            patch(PRIVATE_EXECUTION_GATE, return_value=True),
         ):
             await _do_agents_sync(request)
 

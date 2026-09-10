@@ -1052,6 +1052,21 @@ SPAWN_RUN_SCHEMA = ToolSchema(
         FieldSpec("include_memory", bool, default=True),
         FieldSpec("include_lessons", bool, default=True),
         FieldSpec("include_project", bool, default=True),
+        # DELEGATE TO A CREW BY NAME. A crew is a crew-member alias in
+        # ``cfg.agents``; ``agent`` above is a kiro-cli template id, a disjoint
+        # namespace. Naming the crew is what lets the child inherit that crew's
+        # memory silo and its template together, so an orchestrator can hand work
+        # to the coding crew without the email crew's memory travelling with it.
+        # Resolved through ``resolve_agent_bindings``, never by deriving a store
+        # from ``agent``, which answers `default` for exactly the crew that
+        # configured otherwise.
+        # NOT pattern-validated, for the reason SELECT_CREW_SCHEMA states above:
+        # crew creation only strips the name, so a crew may legitimately contain
+        # spaces or dots, and a regex here would refuse a crew the operator can
+        # see in the roster. The deny-by-default gate is the `crew not in
+        # cfg.agents` membership check at the endpoint, which answers 400 with an
+        # `unknown_crew` code rather than degrading to the global store.
+        FieldSpec("crew", str, max_len=MAX_SHORT_STRING),
     ],
 )
 
@@ -2343,6 +2358,7 @@ CRON_ADD_SCHEMA = ToolSchema(
         FieldSpec("delay", (int, float), min_val=1, max_val=86400 * 30),  # 1s to 30 days
         FieldSpec("at_time", str, max_len=100),
         FieldSpec("agent", str, max_len=MAX_SHORT_STRING, pattern=_AGENT_NAME_RE),
+        FieldSpec("member_id", str, max_len=MAX_SHORT_STRING),
         FieldSpec("model", str, max_len=MAX_SHORT_STRING, pattern=_MODEL_NAME_RE),
         FieldSpec("silent", bool),
         FieldSpec("channel", str, max_len=CHANNEL_MAX_LEN, pattern=CHANNEL_ID_RE),
@@ -2744,6 +2760,13 @@ REGISTER_HOOK_SCHEMA = ToolSchema(
     ],
 )
 
+ROUTE_CREW_SCHEMA = ToolSchema(
+    tool_name="route_crew",
+    fields=[
+        FieldSpec("task", str, required=True, max_len=MAX_MEDIUM_STRING),
+    ],
+)
+
 # select_crew: `crew` is optional — omitted/empty returns the roster. When
 # present it is NOT pattern-validated here: crew creation only strips the name
 # (agents.py), so names may contain spaces/dots; the deny-by-default gate is the
@@ -2888,6 +2911,7 @@ SESSION_READ_MESSAGE_SCHEMA = ToolSchema(
 # ── Schema Registry ──
 
 MCP_CORE_SCHEMAS: dict[str, ToolSchema] = {
+    "route_crew": ROUTE_CREW_SCHEMA,
     "spawn_run": SPAWN_RUN_SCHEMA,
     "spawn_sub_agents": SPAWN_SUB_AGENTS_SCHEMA,
     "spawn_list": SPAWN_LIST_SCHEMA,

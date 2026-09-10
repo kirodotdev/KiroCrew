@@ -346,6 +346,12 @@ def test_ci_blocking_scans_are_covered_by_the_floor():
     # future blocking CI check disappear from later prepare-pr passes.
     floor = "\n".join(data["gates"])
 
+    # CI-only capability gate: "Require real FAISS edit invalidation regressions"
+    # installs an optional native accelerator in an isolated Linux venv and
+    # requires all four versioned cases to pass. The local scoped-test gate
+    # retains those tests with their declared capability skips; prepare-pr does
+    # not provision optional native runtimes, just as it does not grant Linux
+    # namespaces or supply the Darwin kernel. Its absence is not FAISS evidence.
     exempt_scripts = {
         # Chooses WHICH tests to run for the changed surface; not itself a gate.
         "scripts/ci-surface-tests.py",
@@ -363,6 +369,10 @@ def test_ci_blocking_scans_are_covered_by_the_floor():
         # Invoked BY packaging/build-desktop.sh to write the beacon provenance
         # module, never standalone. Gating on it would gate on the build script.
         "scripts/stamp-distribution.sh",
+        # Optional synthetic Qwen measurement, not a blocking score gate. The
+        # bounded CI step records unavailable evidence on failure; local
+        # prepare-pr must not download a model or claim a calibration score.
+        "scripts/ci-member-memory-benchmark.py",
     }
 
     invoked = set(re.findall(r"\bscripts/[A-Za-z0-9_.-]+\.(?:py|sh)", run_text))

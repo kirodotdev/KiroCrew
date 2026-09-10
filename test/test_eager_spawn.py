@@ -10,10 +10,12 @@ and the handler wiring on project set.
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig, MemoryStoreConfig
 from kiro_crew.dashboard import chat_runner
 from kiro_crew.dashboard.chat_runner import _eager_spawn, schedule_eager_spawn
 from kiro_crew.dashboard.state import DashboardState, _ChatSlot
@@ -44,13 +46,74 @@ def _mock_state(slot: _ChatSlot) -> DashboardState:
 
 
 def _cfg(enabled: bool) -> MagicMock:
-    cfg = MagicMock()
+    cfg = KiroCrewConfig(agents={"default": KiroCrewAgentConfig()})
     cfg.session.eager_spawn = enabled
-    bindings = MagicMock()
-    bindings.kiro_agent = "kirocrew"
-    bindings.model = ""
     cfg_loader = MagicMock(return_value=cfg)
     return cfg_loader
+
+
+def _bindings(
+    *,
+    agent: str = "kirocrew",
+    alias: str = "default",
+    memory_store: str = "default",
+) -> SimpleNamespace:
+    """Concrete resolver result for fields consumed by the eager path."""
+    return SimpleNamespace(
+        kiro_agent=agent,
+        model="",
+        resolved_alias=alias,
+        requested_resolved=True,
+        memory_store_name=memory_store,
+    )
+
+
+def _cfg_with_store(name: str, *, version: int, owner: str = "") -> KiroCrewConfig:
+    cfg = KiroCrewConfig(
+        agents={"default": KiroCrewAgentConfig()},
+        memory_stores={
+            "default": MemoryStoreConfig(),
+            name: MemoryStoreConfig(memory_version=version, owner_member=owner),
+        },
+    )
+    cfg.session.eager_spawn = True
+    return cfg
+
+
+def _private_alice_cfg() -> KiroCrewConfig:
+    return _cfg_with_store("member-alice", version=2, owner="alice")
+
+
+def _private_default_member_cfg() -> KiroCrewConfig:
+    cfg = _private_alice_cfg()
+    cfg.agents["alice"] = KiroCrewAgentConfig(memory_store="member-alice")
+    cfg.default_agent = "alice"
+    return cfg
+
+
+def _alice_bindings() -> SimpleNamespace:
+    return _bindings(agent="alice-agent", alias="alice", memory_store="member-alice")
+
+
+def _unresolved_bindings() -> SimpleNamespace:
+    bindings = _bindings()
+    bindings.requested_resolved = False
+    return bindings
+
+
+def _unresolved_member_cfg() -> KiroCrewConfig:
+    return _cfg(True).return_value
+
+
+# id -> (slot agent, restored slot store, config factory, resolver-result factory):
+# every row must stand the eager path down without touching the provider.
+_NO_SPECULATION_CASES = {
+    "private-v2-fresh": ("alice", "", _private_alice_cfg, _alice_bindings),
+    "private-v2-restored": ("alice", "member-alice", _private_alice_cfg, _alice_bindings),
+    "empty-slot-private-default": ("", "", _private_default_member_cfg, _alice_bindings),
+    "restored-store-mismatch": ("missing-member", "member-alice", _private_alice_cfg, _bindings),
+    "unresolved-member": ("missing-member", "", _unresolved_member_cfg, _unresolved_bindings),
+}
 
 
 class TestScheduleEagerSpawn:
@@ -126,9 +189,7 @@ class TestEagerSpawn:
         slot.agent = "wfe-oncall"
         slot.project = str(tmp_path)
         state = _mock_state(slot)
-        bindings = MagicMock()
-        bindings.kiro_agent = "wfe-oncall"
-        bindings.model = ""
+        bindings = _bindings(agent="wfe-oncall", alias="wfe-oncall")
         with (
             patch.object(chat_runner.KiroCrewConfig, "load", _cfg(True)),
             patch.object(chat_runner, "resolve_agent_bindings", return_value=bindings),
@@ -143,6 +204,150 @@ class TestEagerSpawn:
         # real message.
         key = state.sessions.get_or_create.await_args.args[0]
         state.sessions.release.assert_called_once_with(key)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("allow_resume", [False, True])
+    @pytest.mark.parametrize(
+        ("agent", "restored_store", "make_cfg", "make_bindings"),
+        list(_NO_SPECULATION_CASES.values()),
+        ids=list(_NO_SPECULATION_CASES),
+    )
+    async def test_private_or_unresolved_member_leaves_provider_allocation_to_first_turn(
+        self, agent, restored_store, make_cfg, make_bindings, allow_resume
+    ):
+        """Neither a fresh nor a resume prefetch may pre-register an ordinary
+        provider when the real turn pins a protected V2 store (fresh, restored,
+        or inherited through an empty slot), when a restored store disagrees
+        with today's resolver, or when an explicit member is unavailable.
+        Classification follows resolved bindings, never the resolver's Global
+        fallback, and an empty slot resolves as the default member."""
+        slot = _ChatSlot("t1")
+        slot.agent = agent
+        slot.memory_store = restored_store
+        state = _mock_state(slot)
+        cfg = make_cfg()
+        with (
+            patch.object(chat_runner.KiroCrewConfig, "load", return_value=cfg),
+            patch.object(
+                chat_runner, "resolve_agent_bindings", return_value=make_bindings()
+            ) as resolve,
+        ):
+            await _eager_spawn(state, slot, allow_resume=allow_resume)
+        resolve.assert_called_once_with(cfg, agent or None)
+        state.sessions.get_or_create.assert_not_awaited()
+        state.sessions.release.assert_not_called()
+        state.sessions.remove.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_valid_named_v1_keeps_speculative_spawn(self):
+        """The private guard is version-specific; legacy named V1 keeps its
+        existing startup behavior and does not inherit V2's first-turn delay."""
+        slot = _ChatSlot("t1")
+        slot.agent = "legacy"
+        slot.memory_store = "legacy-v1"
+        state = _mock_state(slot)
+        cfg = _cfg_with_store("legacy-v1", version=1)
+        with (
+            patch.object(chat_runner.KiroCrewConfig, "load", return_value=cfg),
+            patch.object(
+                chat_runner,
+                "resolve_agent_bindings",
+                return_value=_bindings(
+                    agent="legacy-agent", alias="legacy", memory_store="legacy-v1"
+                ),
+            ),
+        ):
+            await _eager_spawn(state, slot)
+        state.sessions.get_or_create.assert_awaited_once()
+        key = state.sessions.get_or_create.await_args.args[0]
+        state.sessions.release.assert_called_once_with(key)
+
+    @pytest.mark.asyncio
+    async def test_private_assignment_blocks_legacy_speculation_without_slot_metadata(self):
+        from kiro_crew.member_memory_auth import bind_private_session_store
+        from kiro_crew.memory_stores import provision_member_memory
+
+        slot = _ChatSlot("private-history")
+        slot.agent = "legacy"
+        state = _mock_state(slot)
+        key = chat_runner.effective_session_key(slot)
+
+        def seed():
+            cfg = KiroCrewConfig.load()
+            cfg.session.eager_spawn = True
+            cfg.agents["writer"] = KiroCrewAgentConfig()
+            cfg.agents["legacy"] = KiroCrewAgentConfig()
+            store = provision_member_memory(cfg, "writer")
+            cfg.save()
+            bind_private_session_store(key, store)
+
+        await asyncio.to_thread(seed)
+        await _eager_spawn(state, slot)
+
+        state.sessions.get_or_create.assert_not_awaited()
+        assert slot.memory_store == ""
+
+    @pytest.mark.asyncio
+    async def test_store_change_during_model_resolution_stands_down_before_allocation(self):
+        """Store identity is part of the pre-allocation snapshot. An agent
+        switch landing during an awaited model read must win without creating
+        a provider from the old binding."""
+        slot = _ChatSlot("t1")
+        state = _mock_state(slot)
+        real_to_thread = asyncio.to_thread
+        model_lookups = []
+
+        async def _switch_store(_func, *_args, **_kwargs):
+            if _func is not chat_runner._default_session_model:
+                return await real_to_thread(_func, *_args, **_kwargs)
+            model_lookups.append(_func)
+            slot.memory_store = "member-new"
+            return ""
+
+        with (
+            patch.object(chat_runner.KiroCrewConfig, "load", _cfg(True)),
+            patch.object(chat_runner.asyncio, "to_thread", side_effect=_switch_store),
+        ):
+            await _eager_spawn(state, slot)
+        assert len(model_lookups) == 1
+        state.sessions.get_or_create.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("change", ["none", "store", "replacement", "turn"])
+    async def test_binding_lookup_is_off_loop_and_rechecks_before_eager_allocation(self, change):
+        slot = _ChatSlot("t1")
+        state = _mock_state(slot)
+        loop = asyncio.get_running_loop()
+        original = chat_runner.resolve_agent_bindings
+        calls = []
+
+        def resolve(cfg, agent):
+            with pytest.raises(RuntimeError, match="no running event loop"):
+                asyncio.get_running_loop()
+            calls.append(agent)
+            result = original(cfg, agent)
+            if change == "store":
+                loop.call_soon_threadsafe(setattr, slot, "memory_store", "member-new")
+            elif change == "replacement":
+                loop.call_soon_threadsafe(setattr, state.get_slot, "return_value", _ChatSlot("t1"))
+            elif change == "turn":
+                loop.call_soon_threadsafe(
+                    setattr, slot, "task", MagicMock(done=MagicMock(return_value=False))
+                )
+            return result
+
+        with (
+            patch.object(chat_runner.KiroCrewConfig, "load", _cfg(True)),
+            patch.object(chat_runner, "resolve_agent_bindings", side_effect=resolve),
+        ):
+            await _eager_spawn(state, slot)
+        assert calls == [None]
+        if change == "none":
+            state.sessions.get_or_create.assert_awaited_once()
+            state.sessions.release.assert_called_once()
+        else:
+            state.sessions.get_or_create.assert_not_awaited()
+            state.sessions.remove.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_bails_when_slot_replaced(self):
@@ -972,9 +1177,7 @@ class TestFreshSpawnPopulationCap:
     async def test_fresh_spawn_registers_in_live_population(self):
         slot = _ChatSlot("t1")
         state = _mock_state(slot)
-        bindings = MagicMock()
-        bindings.kiro_agent = "kirocrew"
-        bindings.model = ""
+        bindings = _bindings()
         with (
             patch.object(chat_runner.KiroCrewConfig, "load", _cfg(True)),
             patch.object(chat_runner, "resolve_agent_bindings", return_value=bindings),
@@ -991,9 +1194,7 @@ class TestFreshSpawnPopulationCap:
         shared_sessions.reset = AsyncMock()
         shared_sessions.remove = AsyncMock()
         shared_sessions.remove_if_unclaimed = AsyncMock(return_value=True)
-        bindings = MagicMock()
-        bindings.kiro_agent = "kirocrew"
-        bindings.model = ""
+        bindings = _bindings()
         keys: list[str] = []
         with (
             patch.object(chat_runner.KiroCrewConfig, "load", _cfg(True)),
@@ -1019,9 +1220,7 @@ class TestFreshSpawnPopulationCap:
         slot = _ChatSlot("t1")
         state = _mock_state(slot)
         state.sessions.get_or_create = AsyncMock(return_value=(MagicMock(), False, False))
-        bindings = MagicMock()
-        bindings.kiro_agent = "kirocrew"
-        bindings.model = ""
+        bindings = _bindings()
         with (
             patch.object(chat_runner.KiroCrewConfig, "load", _cfg(True)),
             patch.object(chat_runner, "resolve_agent_bindings", return_value=bindings),

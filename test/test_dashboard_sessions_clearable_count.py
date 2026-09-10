@@ -18,6 +18,7 @@ Two properties carry the feature and each has tests here:
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import json
 from typing import Iterator
@@ -27,7 +28,7 @@ import pytest
 from aiohttp import web
 
 from kiro_crew.dashboard.handlers import api_sessions_clear, api_sessions_clearable_count
-from kiro_crew.dashboard.handlers.sessions import _clearable_history_keys
+from kiro_crew.dashboard.handlers.sessions import _clearable_history_keys, api_session_delete
 from kiro_crew.history import ConversationLog
 
 CLOSED_AT = 1_700_000_000.0
@@ -199,28 +200,21 @@ def test_rows_without_a_key_are_ignored() -> None:
 
 
 @pytest.mark.asyncio
-async def test_unparseable_metadata_is_counted_because_the_delete_takes_it(
+async def test_unparseable_metadata_is_excluded_from_count_and_bulk_delete(
     tmp_path,
 ) -> None:
-    """Present-but-unparseable metadata is NOT an exclusion, and must not be
-    described as one.
-
-    ``get_metadata_status`` reports a malformed first line as
-    readable-with-no-metadata (``({}, True)``) rather than raising or reporting
-    unreadable, so the session reads as unpinned. ``delete_session`` resolves it
-    the same way and deletes it, so counting it is the honest answer — the count
-    tracks the delete, including where the delete is arguably wrong.
-    """
+    """Unreadable identity cannot authorize deletion or inflate its preview."""
     log = ConversationLog(base_dir=tmp_path)
-    log.append("malformed", "user", "hello")
+    await asyncio.to_thread(log.append, "malformed", "user", "hello")
     path = tmp_path / "malformed.jsonl"
     lines = path.read_text(encoding="utf-8").splitlines()
     lines[0] = "{this is not json"
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    before = path.read_bytes()
 
-    # The premise: readable, with no metadata, so nothing marks it pinned.
+    # Broken JSON is unreadable even though the display projection is empty.
     meta, readable = log.get_metadata_status("malformed")
-    assert readable is True
+    assert readable is False
     assert meta == {}
 
     state = MagicMock()
@@ -230,7 +224,47 @@ async def test_unparseable_metadata_is_counted_because_the_delete_takes_it(
     status, body = await _call_count(state)
 
     assert status == 200
-    assert body == {"sessions": 1}
+    assert body == {"sessions": 0}
+    with patch("kiro_crew.dashboard.handlers.sel"):
+        resp = await api_sessions_clear(_request(state))
+    assert resp.status == 200
+    assert json.loads(resp.body)["cleared"] == 0
+    assert await asyncio.to_thread(log.delete_session, "malformed", skip_pinned=True) is None
+    assert path.read_bytes() == before
+
+
+@pytest.mark.asyncio
+async def test_an_individual_delete_can_remove_unparseable_metadata(tmp_path) -> None:
+    """A corrupt session excluded from bulk clear still has an explicit recovery path."""
+    log = ConversationLog(base_dir=tmp_path)
+    await asyncio.to_thread(log.append, "malformed", "user", "hello")
+    await asyncio.to_thread(log.append, "keep", "user", "keep this conversation")
+    path = tmp_path / "malformed.jsonl"
+    lines = path.read_text(encoding="utf-8").splitlines()
+    lines[0] = "{this is not json"
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    survivor = tmp_path / "keep.jsonl"
+    survivor_before = survivor.read_bytes()
+    assert await asyncio.to_thread(log.get_metadata_status, "malformed") == ({}, False)
+
+    state = MagicMock()
+    state.conversation_log = log
+    request = _request(state)
+    request.match_info = {"key": "malformed"}
+    # Slot/provider teardown has its own coverage. Keep the HTTP handler and the
+    # locked transcript deletion real, including the metadata readability check.
+    with patch(
+        "kiro_crew.dashboard.handlers.sessions._remove_slot_for_history_key",
+        new_callable=AsyncMock,
+    ) as remove_slot:
+        response = await api_session_delete(request)
+
+    assert response.status == 200
+    assert json.loads(response.body) == {"ok": True}
+    assert not path.exists()
+    assert survivor.read_bytes() == survivor_before
+    remove_slot.assert_awaited_once_with(state, "malformed")
+    state.push_refresh.assert_called_once_with("history")
 
 
 # ── one selector: the count and the delete agree ──

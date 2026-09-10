@@ -24,6 +24,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import dashboardReducer from '../store/dashboardSlice'
 import chatReducer from '../store/chatSlice'
 import notificationsReducer from '../store/notificationsSlice'
+import { i18nT } from '../i18n/t'
 
 /* Render framer-motion elements as plain DOM. The side sheet is an
    AnimatePresence child with a 240ms x-translate exit, so a real
@@ -197,7 +198,7 @@ async function openEditor(name: string): Promise<HTMLElement> {
 /** Open the editor dialog in create mode and return the dialog element. */
 async function openCreate(): Promise<HTMLElement> {
   fireEvent.click(screen.getByTestId('new-crew'))
-  return await screen.findByRole('dialog', { name: 'Create a new agent' })
+  return await screen.findByRole('dialog', { name: 'Add crew member' })
 }
 
 /**
@@ -258,9 +259,15 @@ describe('crew roster — cards', () => {
   })
 })
 
-describe('crew roster — isolation preview notice', () => {
-  const NOTICE = /Isolated memory per agent is on the way/
-  const TIP = /Isolated memory per agent is still being built/
+describe('crew roster — memory ownership notice', () => {
+  /* Anchored on the one clause of each string that carries the disclosure, not
+     on the whole sentence: the copy is reworded whenever the isolation surface
+     grows, and a whole-sentence match would then fail for a wording change
+     while a match on incidental words would keep passing after the disclosure
+     itself was dropped. The assertions below are about STRUCTURE — one
+     page-level notice, two per-binding tips. */
+  const NOTICE = i18nT('pages.kiroCrewAgentsPage.bindings_preview_notice')
+  const TIP = i18nT('pages.kiroCrewAgentsPage.bindings_preview_info')
 
   /* The view choice persists to localStorage, so a test here that switches to
      List would otherwise hand every later block a table instead of the cards
@@ -269,7 +276,7 @@ describe('crew roster — isolation preview notice', () => {
   beforeEach(() => localStorage.clear())
   afterEach(() => localStorage.clear())
 
-  it('says the bindings are a preview, in both views', async () => {
+  it('keeps the ownership explanation in both views', async () => {
     await renderRoster()
     // Page-level, so it is on screen before the user picks a view.
     expect(screen.getByText(NOTICE)).toBeInTheDocument()
@@ -288,14 +295,17 @@ describe('crew roster — isolation preview notice', () => {
     expect(screen.getAllByText(NOTICE)).toHaveLength(1)
   })
 
-  it('hangs the same caveat off the workspace and memory bindings', async () => {
+  it('keeps workspace guidance and describes the current V1 memory before opt-in', async () => {
     await renderRoster()
     const sheet = await openEditor('oncall')
     gotoPane(sheet, 'place')
     // Two tips, one per binding the notice is about. The editor is an overlay,
     // so the page-level notice is not readable from here — the tooltip is the
     // only place this caveat reaches a user who is mid-edit.
-    expect(within(sheet).getAllByTitle(TIP)).toHaveLength(2)
+    expect(within(sheet).getAllByTitle(TIP)).toHaveLength(1)
+    const memory = within(sheet).getByText(/This member uses its current memory \(V1\)\./)
+    expect(memory).toHaveTextContent(/^This member uses its current memory \(V1\)\.$/)
+    expect(within(sheet).queryByText(/This member cannot return to its previous memory/)).toBeNull()
   })
 
   it('marks the workspace and memory columns in the list view', async () => {
@@ -536,7 +546,8 @@ describe('crew editor — opening', () => {
     // routes to the right one.
     gotoPane(sheet, 'place')
     expect(within(sheet).getByRole('combobox', { name: 'Workspace' })).toHaveTextContent('oncall')
-    expect(within(sheet).getByRole('combobox', { name: 'Memory Store' })).toHaveTextContent('oncall-mem')
+    expect(within(sheet).getByText('oncall-mem')).toBeInTheDocument()
+    expect(within(sheet).queryByRole('combobox', { name: 'Memory Store' })).not.toBeInTheDocument()
 
     gotoPane(sheet, 'template')
     expect(within(sheet).getByRole('combobox', { name: 'Agent Template' })).toHaveTextContent('oncall-agent')
@@ -545,12 +556,13 @@ describe('crew editor — opening', () => {
     expect(within(sheet).getByRole('combobox', { name: 'Edit default model' })).toHaveTextContent('claude-opus-5')
   })
 
-  it('opens the create dialog from "New agent"', async () => {
+  it('opens the create dialog from "Add crew member"', async () => {
     await renderRoster()
     const sheet = await openCreate()
     // Create mode has no crew to edit yet, so the bindings start on the defaults.
     expect(within(sheet).getByRole('combobox', { name: 'Workspace' })).toHaveTextContent('default')
-    expect(within(sheet).getByRole('combobox', { name: 'Memory Store' })).toHaveTextContent('default')
+    expect(within(sheet).queryByRole('combobox', { name: 'Memory Store' })).not.toBeInTheDocument()
+    expect(within(sheet).getByText(/own empty private memory/i)).toBeInTheDocument()
     // The Agent Template is the exception: it has NO safe default, because
     // pre-filling the built-in made a new crew an alias for the default agent.
     expect(within(sheet).getByRole('combobox', { name: 'Agent Template' }))
@@ -568,7 +580,7 @@ describe('crew editor — create', () => {
     expect(await within(sheet).findByText('Name is required')).toBeInTheDocument()
     expect(mockApi.createKirocrewAgent).not.toHaveBeenCalled()
     // The dialog stays open so the user can fix it in place.
-    expect(screen.getByRole('dialog', { name: 'Create a new agent' })).toBeInTheDocument()
+    expect(screen.getByRole('dialog', { name: 'Add crew member' })).toBeInTheDocument()
   })
 
   it('refuses a crew with no Agent Template chosen, without calling the api', async () => {
@@ -761,7 +773,7 @@ describe('crew editor — stale writes', () => {
     await renderRoster()
 
     const sheet = await openEditor('oncall')
-    fireEvent.click(within(sheet).getByRole('button', { name: 'Chat with this agent' }))
+    fireEvent.click(within(sheet).getByRole('button', { name: 'Chat with this member' }))
     pressEscape()
     await waitFor(() =>
       expect(screen.queryByRole('dialog', { name: 'Edit agent oncall' })).not.toBeInTheDocument(),
@@ -819,7 +831,7 @@ describe('crew editor — chat with this crew', () => {
     await renderRoster()
     const sheet = await openEditor('oncall')
 
-    fireEvent.click(within(sheet).getByRole('button', { name: 'Chat with this agent' }))
+    fireEvent.click(within(sheet).getByRole('button', { name: 'Chat with this member' }))
 
     await waitFor(() => expect(within(sheet).getByText('gateway is offline')).toBeInTheDocument())
     expect(screen.getByRole('dialog', { name: 'Edit agent oncall' })).toBeInTheDocument()
@@ -1260,7 +1272,7 @@ describe('avatar editor entry — discoverability (issue #9103)', () => {
   it('deep link ?new=1 opens the create form directly, then strips the param', async () => {
     renderPage('/capabilities?tab=crews&new=1')
     // A "New crew" deep link with no origin is this page's own form.
-    await screen.findByRole('dialog', { name: 'Create a new agent' })
+    await screen.findByRole('dialog', { name: 'Add crew member' })
     // Consumed: closing the form must not re-open it on the next render, and
     // Back must not land on a form the user already left.
     await waitFor(() => expect(screen.getByTestId('location-search')).toHaveTextContent(/^\?tab=crews$/))

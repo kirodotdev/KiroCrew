@@ -79,6 +79,8 @@ with no row here.
      - pre-session registry query (subagent session allocation)
    * - ``ACP_BACKENDS_MEMBER_DISPATCH``
      - driver-internal (whether a per-session tool set can be mounted)
+   * - ``ACP_BACKENDS_PRIVATE_MEMORY_MCP``
+     - pre-session registry query (whether private member tools run directly inside the member sandbox)
    * - ``ACP_BACKENDS_STEER``
      - pre-session registry query (whether ``_session/steer`` exists)
    * - ``ACP_BACKENDS_COMPACT``
@@ -169,6 +171,13 @@ ACP_BACKENDS_KNOWN: FrozenSet[str] = frozenset(
 #: spec belongs here, and the next such harness should join the set rather than
 #: add a second branch at the call site (harness-parity H6).
 ACP_BACKENDS_SESSION_MCP_ARRAY: FrozenSet[str] = frozenset({ACP_BACKEND_CLAUDE})
+
+# Private member tools must execute inside the owned sandbox. A backend joins
+# only after its direct MCP launch path is verified; selectability grants none
+# of this authority. The public Codex adapter uses the shared broker instead.
+ACP_BACKENDS_PRIVATE_MEMORY_MCP: FrozenSet[str] = frozenset(
+    {ACP_BACKEND_KIRO, ACP_BACKEND_CLAUDE, ACP_BACKEND_KAS}
+)
 
 # ── The selectable registry ──
 

@@ -1015,13 +1015,14 @@ class TestEmbedThreads:
 
     def test_default_when_unset(self, monkeypatch) -> None:
         monkeypatch.setattr(embeddings_mod, "_read_memory_config", lambda: {})
-        assert embeddings_mod._embed_threads() == embeddings_mod._DEFAULT_EMBED_THREADS
+        monkeypatch.setattr(embeddings_mod.os, "cpu_count", lambda: 8)
+        assert embeddings_mod._DEFAULT_EMBED_THREADS == 4
+        assert embeddings_mod._embed_threads() == 4
 
     def test_configured_value_is_used(self, monkeypatch) -> None:
-        monkeypatch.setattr(
-            embeddings_mod, "_read_memory_config", lambda: {"embedding_threads": 2}
-        )
-        assert embeddings_mod._embed_threads() == 2
+        monkeypatch.setattr(embeddings_mod, "_read_memory_config", lambda: {"embedding_threads": 6})
+        monkeypatch.setattr(embeddings_mod.os, "cpu_count", lambda: 8)
+        assert embeddings_mod._embed_threads() == 6
 
     @pytest.mark.parametrize("bad", [0, -1, True, False, "4", 2.5, None])
     def test_invalid_values_fall_back_to_the_default(self, monkeypatch, bad) -> None:
@@ -1029,22 +1030,23 @@ class TestEmbedThreads:
         monkeypatch.setattr(
             embeddings_mod, "_read_memory_config", lambda: {"embedding_threads": bad}
         )
-        assert embeddings_mod._embed_threads() == embeddings_mod._DEFAULT_EMBED_THREADS
+        monkeypatch.setattr(embeddings_mod.os, "cpu_count", lambda: 8)
+        assert embeddings_mod._embed_threads() == 4
 
-    def test_clamped_to_the_core_count(self, monkeypatch) -> None:
+    @pytest.mark.parametrize("cores,expected", [(1, 1), (8, 8)])
+    def test_clamped_to_core_count(self, monkeypatch, cores, expected) -> None:
         monkeypatch.setattr(
             embeddings_mod, "_read_memory_config", lambda: {"embedding_threads": 9999}
         )
-        monkeypatch.setattr("os.cpu_count", lambda: 8)
-        assert embeddings_mod._embed_threads() == 8
+        monkeypatch.setattr("os.cpu_count", lambda: cores)
+        assert embeddings_mod._embed_threads() == expected
 
     def test_threads_reach_the_llama_constructor(self, tmp_path: Path, monkeypatch) -> None:
         """BOTH pools are pinned, not only the batch pool that runs inference."""
         fake_cls = _make_fake_llama_class()
         monkeypatch.setattr("kiro_crew.embeddings._load_llama_class", lambda: fake_cls)
-        monkeypatch.setattr(
-            embeddings_mod, "_read_memory_config", lambda: {"embedding_threads": 3}
-        )
+        monkeypatch.setattr(embeddings_mod, "_read_memory_config", lambda: {"embedding_threads": 3})
+        monkeypatch.setattr(embeddings_mod.os, "cpu_count", lambda: 8)
         emb = LlamaCppEmbedder(model_path=_write_model_file(tmp_path / "model.gguf"))
         assert emb.wait_ready(timeout=5)
         kwargs = fake_cls.instances[0].kwargs

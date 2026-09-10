@@ -25,6 +25,7 @@ from kiro_crew.config.paths import config_dir
 from kiro_crew.context import ContextBuilder
 from kiro_crew.llm_helpers import run_bg_oneliner
 from kiro_crew.loop_lock import LoopBoundLock
+from kiro_crew.memory_stores import DEFAULT_MEMORY_STORE
 from kiro_crew.platform import PROFILE_STANDALONE, current_context, safe_context_call
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.tips_allowlist import TIP_DOC_ALLOWLIST
@@ -775,7 +776,10 @@ def _build_context(state: DashboardState) -> str:
     """Assemble context for the tips prompt from memory and recent activity."""
     parts: list[str] = []
     try:
-        memory = ContextBuilder.get_memory_for(None)
+        # The GLOBAL store by name, not by omission. This surface summarizes the
+        # operator's own memory for a dashboard panel, so it stays on the v1
+        # path deliberately rather than inheriting whichever crew spoke last.
+        memory = ContextBuilder.get_memory_for(memory_store=DEFAULT_MEMORY_STORE)
         prefs = memory.read_preferences()
         if prefs and prefs.strip() != "# User Preferences\n\n<!-- Learned from conversations -->":
             parts.append(f"## User Preferences\n{prefs[:2000]}")

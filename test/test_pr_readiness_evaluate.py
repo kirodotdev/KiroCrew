@@ -252,7 +252,12 @@ class Runner:
             json.dumps(
                 {
                     "check_runs": [
-                        {"status": "completed", "conclusion": "success"}
+                        {
+                            "id": 88001,
+                            "status": "completed",
+                            "conclusion": "success",
+                            "app": {"slug": "github-advanced-security"},
+                        }
                     ]
                 }
             )
@@ -606,6 +611,138 @@ class TestLaneStateIsLoggedNotOnlySummarized:
         assert "pending=[CodeQL" in log_line
 
 
+class TestCodeQLSecurityResultIsPartOfTheVerdict:
+    """A green analyzer workflow is not the CodeQL security verdict.
+
+    GitHub default setup publishes the alert result as a separate exact-commit
+    check-run. PR Readiness is the repository's sole required status, so it must
+    read that result instead of allowing a successful analysis workflow to mask
+    high-severity alerts.
+    """
+
+    @staticmethod
+    def _results(runner: Runner, rows: list[dict]) -> None:
+        (runner.fixtures / "check_runs.json").write_text(
+            json.dumps({"check_runs": rows})
+        )
+
+    def test_a_failed_security_result_blocks_a_green_analysis(self, runner: Runner):
+        self._results(
+            runner,
+            [
+                {
+                    "id": 91,
+                    "status": "completed",
+                    "conclusion": "failure",
+                    "app": {"slug": "github-advanced-security"},
+                }
+            ],
+        )
+
+        proc, outputs = runner.evaluate()
+
+        assert proc.returncode == 0, proc.stderr
+        assert outputs["status_state"] == "failure"
+        assert outputs["label"] == "readiness: action required"
+        assert "CodeQL (failure)" in _lane_log(proc)
+
+    @pytest.mark.parametrize(
+        ("rows", "detail"),
+        [
+            ([], "results not reported"),
+            (
+                [
+                    {
+                        "id": 92,
+                        "status": "completed",
+                        "conclusion": "neutral",
+                        "app": {"slug": "github-advanced-security"},
+                    }
+                ],
+                "results pending",
+            ),
+            (
+                [
+                    {
+                        "id": 93,
+                        "status": "in_progress",
+                        "conclusion": "",
+                        "app": {"slug": "github-advanced-security"},
+                    }
+                ],
+                "results in_progress",
+            ),
+        ],
+    )
+    def test_an_absent_or_interim_default_setup_result_stays_pending(
+        self, runner: Runner, rows: list[dict], detail: str
+    ):
+        self._results(runner, rows)
+
+        proc, outputs = runner.evaluate()
+
+        assert proc.returncode == 0, proc.stderr
+        assert outputs["status_state"] == "pending"
+        assert outputs["label"] == "readiness: checking"
+        assert f"CodeQL ({detail})" in _lane_log(proc)
+
+    def test_an_unrelated_apps_success_cannot_answer_for_codeql(self, runner: Runner):
+        self._results(
+            runner,
+            [
+                {
+                    "id": 94,
+                    "status": "completed",
+                    "conclusion": "success",
+                    "app": {"slug": "another-app"},
+                }
+            ],
+        )
+
+        proc, outputs = runner.evaluate()
+
+        assert proc.returncode == 0, proc.stderr
+        assert outputs["status_state"] == "pending"
+        assert "CodeQL (results not reported)" in _lane_log(proc)
+
+    def test_an_unreadable_security_result_uses_the_nonterminal_fallback(
+        self, runner: Runner
+    ):
+        proc, outputs = runner.evaluate(
+            flaky_substr="check-runs", flaky_fails=99
+        )
+
+        assert proc.returncode == 0, proc.stderr
+        assert outputs["status_state"] == "pending"
+        assert outputs["label"] == "readiness: checking"
+        assert "could not be evaluated" in outputs["description"]
+
+    def test_the_newest_security_result_is_authoritative(self, runner: Runner):
+        self._results(
+            runner,
+            [
+                {
+                    "id": 96,
+                    "status": "completed",
+                    "conclusion": "failure",
+                    "app": {"slug": "github-advanced-security"},
+                },
+                {
+                    "id": 95,
+                    "status": "completed",
+                    "conclusion": "success",
+                    "app": {"slug": "github-advanced-security"},
+                },
+            ],
+        )
+
+        proc, outputs = runner.evaluate()
+
+        assert proc.returncode == 0, proc.stderr
+        assert outputs["status_state"] == "failure"
+        assert "CodeQL (failure)" in _lane_log(proc)
+
+
 class TestSameSecondRunCollapse:
     """The per-workflow collapse must be deterministic on the monotonic run
     id, not on second-granularity created_at: two runs of one workflow on one
@@ -757,12 +894,13 @@ class TestSameSecondRunCollapse:
         assert outputs["label"] == "readiness: passed"
 
     def test_every_collapse_site_carries_identical_logic(self):
-        # The workflow resolves runs at four separately-written sites: the
+        # The workflow resolves runs/results at five separately-written sites: the
         # monitored-workflow loop, the dynamic CodeQL read, the trigger-run read
         # that dates an attempt-bound fork check-run, and the fork check-run
         # read itself (collapsing to the newest row sharing a trigger-bound id,
         # so a human-override rerun of the lane cannot have its stale failure
-        # outvote a fresh success). Behavioral tests exercise one shape each;
+        # outvote a fresh success), plus the exact-SHA CodeQL security result.
+        # Behavioral tests exercise one shape each;
         # this pins the collapse FRAGMENT itself so an edit to one site cannot
         # drift from the others for shapes no fixture covers. The fragment
         # starts after the site-specific select() line and runs to the terminal
@@ -771,9 +909,10 @@ class TestSameSecondRunCollapse:
         fragment = "| max_by(.id) // empty"
         lines = [ln.strip() for ln in script.splitlines()]
         count = lines.count(fragment)
-        assert count == 4, (
-            "expected exactly the four run-collapse sites (monitored"
-            " workflows + dynamic CodeQL + fork trigger run + fork check-run),"
+        assert count == 5, (
+            "expected exactly the five result-collapse sites (monitored"
+            " workflows + dynamic CodeQL + CodeQL security result + fork"
+            " trigger run + fork check-run),"
             f" found {count}"
         )
         # No site may re-grow a filter stage between the select() and the

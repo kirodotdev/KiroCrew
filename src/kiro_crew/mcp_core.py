@@ -50,27 +50,31 @@ from kiro_crew.history import _SEARCH_SCAN_WINDOW as SEARCH_SCAN_WINDOW
 from kiro_crew.history import ConversationLog, is_incognito_transcript, snippet_needles
 from kiro_crew.knowledge.dedup import dedup_sweep
 from kiro_crew.knowledge.embedder import create_embedder_from_config
-from kiro_crew.knowledge.retrieval import HybridRetriever
+from kiro_crew.knowledge.retrieval import HybridRetriever, vector_leg
 from kiro_crew.knowledge.store import KnowledgeStore
 from kiro_crew.loopback_http import loopback_urlopen
 from kiro_crew.mcp_caller import CallerContext, current_caller, set_current_caller
 from kiro_crew.mcp_shared import (
     call_tool_with_logging,
     internal_caller,
+    member_proof_header_value,
     run_mcp_stdio_loop,
 )
 from kiro_crew.mcp_tools import build_tool_list, dispatch
 from kiro_crew.members import record_activity
+from kiro_crew.memory_stores import UnknownMemoryStore
 from kiro_crew.messaging.link import is_legacy_slack_key, legacy_key
 from kiro_crew.platform import redact_via_context as redact
 from kiro_crew.port_resolution import port_is_gateway_owned, resolve_client_port_src
 from kiro_crew.security import (
     redact_credentials,
     redact_exfiltration_urls,
+    redact_local_paths,
 )
 from kiro_crew.sel import sel
 from kiro_crew.session_directive import DIRECTIVE_TOOLS, refuse_if_markerless
 from kiro_crew.skills import SkillsLoader
+from kiro_crew.trigger_match import rank_triggered
 from kiro_crew.validation import (
     MCP_CORE_SCHEMAS,
     validate_tool_args,
@@ -91,6 +95,7 @@ _HANDLER_SURFACE = (
     sel,
     summarize_result,
     time,
+    vector_leg,
 )
 
 
@@ -717,6 +722,11 @@ def _resolve_session_key() -> str:
     ctx = current_caller()
     if ctx is not None and ctx.session_key:
         return ctx.session_key
+    from kiro_crew.member_memory_auth import protected_member_session_for_pid
+
+    protected = protected_member_session_for_pid(os.getpid())
+    if protected is not None:
+        return protected
     sk = os.environ.get("KIROCREW_SESSION_KEY", "")
     if sk:
         return sk
@@ -795,6 +805,11 @@ def _resolve_session_key_strict() -> str:
     ctx = current_caller()
     if ctx is not None and ctx.session_key:
         return ctx.session_key
+    from kiro_crew.member_memory_auth import protected_member_session_for_pid
+
+    protected = protected_member_session_for_pid(os.getpid())
+    if protected is not None:
+        return protected
     sk = os.environ.get("KIROCREW_SESSION_KEY", "")
     if sk:
         return sk
@@ -852,10 +867,12 @@ def strict_identity_diagnosis(server: str = "kirocrew-core") -> str:
 
 #: The REFLEXIVE tool surface: every module whose MCP tools embed "my session"
 #: in their semantics (ledger writes, monitor loops, session-scoped control,
-#: attributed channel sends, crew/app state, cron ownership). Each of these
-#: resolves the caller STRICTLY through :func:`require_strict_session_key` —
-#: never the lenient :func:`_resolve_session_key`, whose ``/proc`` ancestor
-#: walk hands a subagent its PARENT slot's identity. This is data, not lore:
+#: attributed channel sends, crew/app state, cron ownership). These operations
+#: resolve the caller STRICTLY through :func:`require_strict_session_key`, never
+#: the lenient resolver whose ``/proc`` ancestor walk can return a parent slot.
+#: Shared protocol-log access is conditional: private memory boundaries require
+#: strict Global identity; pure V1 keeps read-only diagnostics attribution.
+#: The registry includes every module with a strict operation. This is data:
 #: ``test/test_identity_topology.py`` scans the source tree and fails when a
 #: module calls the strict resolver directly (bypassing the gate) or calls the
 #: gate without being registered here, so the NEXT reflexive tool cannot skip
@@ -868,8 +885,11 @@ REFLEXIVE_TOOL_MODULES: frozenset[str] = frozenset(
         "mcp_work.py",
         "mcp_tools/apps.py",
         "mcp_tools/control.py",
+        "mcp_tools/learn.py",
         "mcp_tools/ledger.py",
+        "mcp_tools/logs.py",
         "mcp_tools/messaging.py",
+        "mcp_tools/sessions.py",
         "mcp_tools/workflows.py",
     }
 )
@@ -1231,7 +1251,7 @@ def _session_key_header_error(sk: str) -> str | None:
 
 
 def _caller_header() -> dict[str, str]:
-    """``X-Internal-Caller`` for this process, when it has declared one.
+    """Component attribution plus this invocation's private-member authority.
 
     MCP stdio servers declare their component name via
     ``mcp_shared.set_internal_caller`` (done centrally in
@@ -1242,9 +1262,25 @@ def _caller_header() -> dict[str, str]:
     authenticates on ``X-Internal-Secret`` and validates this name against a
     known set before trusting it into an audit line. Processes that never
     declared an identity (CLI, tests) send no header rather than a guess.
+
+    A pooled backend additionally forwards the current caller's short-lived
+    member proof. It is independent of component attribution and is verified
+    against the live runtime binding by the private-memory HTTP authorizer.
     """
+    from kiro_crew.mcp_caller import current_caller
+    from kiro_crew.member_memory_auth import PROOF_HEADER
+
     name = internal_caller()
-    return {"X-Internal-Caller": name} if name else {}
+    headers = {"X-Internal-Caller": name} if name else {}
+    caller = current_caller()
+    if caller is not None and caller.from_gateway and caller.member_memory_proof:
+        # Only this invocation's gateway-minted proof may cross the pooled
+        # backend boundary. Environment and process-lifetime identity caches do
+        # not establish member authority. Malformed metadata earns no header.
+        proof = member_proof_header_value(caller.member_memory_proof)
+        if proof:
+            headers[PROOF_HEADER] = proof
+    return headers
 
 
 def _transport_failure(message: str, mark: bool) -> dict:
@@ -2187,6 +2223,71 @@ def _format_anchor(anchor: dict) -> str:
     return f' [on: "{head}" [TRUNCATED: {omitted} chars omitted' f'{offset_info}] "{tail}"]'
 
 
+def _crew_memory_unavailable_reason(error: UnknownMemoryStore) -> str:
+    return redact_local_paths(redact(str(error)))[0][:1000]
+
+
+def _do_route_crew(task: str) -> str:
+    """Rank the crews whose triggers match *task* (the route_crew tool body).
+
+    The SCORED half of routing, next to ``select_crew``'s roster. Both exist
+    because they answer different questions: the roster asks the model to judge,
+    which is right when the task is prose and the crews are described in prose;
+    this ranks the same triggers mechanically, which is right when a caller wants
+    the same task to reach the same crew every time.
+
+    Shares ``trigger_match`` with the skills loader rather than scoring its own
+    way, so "this phrasing matches" cannot mean two things in one product. A
+    crew with no triggers is not a candidate — that is the operator's opt-out,
+    and it is the same rule the roster applies.
+
+    Reports rather than binds. Binding happens where a run is created
+    (``spawn_run(crew=...)``), because that is the only place the decision can be
+    honoured on both halves the caller cares about, memory and template.
+    """
+    if not task or not task.strip():
+        return json.dumps({"error": "task must be a non-empty string"}, ensure_ascii=False)
+    cfg = KiroCrewConfig.load()
+    default = cfg.default_agent
+    candidates = [(n, c.triggers) for n, c in cfg.agents.items() if n != default]
+    ranked = rank_triggered(task, candidates)
+    matches = []
+    unavailable = []
+    for name, score in ranked:
+        try:
+            binding = resolve_agent_bindings(cfg, name, validate_memory_files=False)
+        except UnknownMemoryStore as exc:
+            unavailable.append({"crew": name, "reason": _crew_memory_unavailable_reason(exc)})
+            continue
+        matches.append(
+            {
+                "crew": name,
+                "score": round(score, 3),
+                "description": (cfg.agents[name].description or "").strip(),
+                "memory_store": binding.memory_store_name,
+            }
+        )
+    return json.dumps(
+        {
+            "task": task[:200],
+            "default_agent": default,
+            "matches": matches,
+            "unavailable": unavailable,
+            "guidance": (
+                "Ranked by trigger overlap, best first. If both matches and "
+                "unavailable are empty, no crew claims this task -- handle it "
+                "on the default crew rather than picking the least-bad match. "
+                "Unavailable crews matched but their memory binding was refused: "
+                "report that refusal; do not substitute Global memory for them. "
+                "To act on a healthy match, spawn with "
+                "crew=<name>: that is what gives the run that crew's memory and "
+                "template, and what keeps another crew's memory out of it."
+            ),
+        },
+        ensure_ascii=False,
+    )
+
+
 def _do_select_crew(crew: str) -> str:
     """Orchestrator crew routing (the select_crew tool body).
 
@@ -2226,7 +2327,13 @@ def _do_select_crew(crew: str) -> str:
             {"error": f"unknown crew '{crew}'", "available": available},
             ensure_ascii=False,
         )
-    b = resolve_agent_bindings(cfg, crew)
+    try:
+        b = resolve_agent_bindings(cfg, crew, validate_memory_files=False)
+    except UnknownMemoryStore as exc:
+        return json.dumps(
+            {"crew": crew, "error": _crew_memory_unavailable_reason(exc)},
+            ensure_ascii=False,
+        )
     # Routing-decision pointer. This is the one place a member's identity is
     # unambiguous on the delegation path: `spawn_run`'s `agent` is validated
     # against the installed TEMPLATES, so by the time a sub-agent starts the

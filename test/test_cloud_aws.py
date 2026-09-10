@@ -67,7 +67,7 @@ class TestRunAws:
                 return "out", "err"
 
         monkeypatch.setattr(aws, "wrap_argv", lambda argv, mode: (argv, ""))
-        monkeypatch.setattr(aws.subprocess, "Popen", lambda *a, **k: FakeProc())
+        monkeypatch.setattr(aws, "popen_limited", lambda *a, **k: FakeProc())
 
         assert aws.run_aws(["sts", "get-caller-identity"]) == (0, "out", "err")
 
@@ -77,7 +77,7 @@ class TestRunAws:
         def raise_fnf(*a, **k):
             raise FileNotFoundError("aws not found")
 
-        monkeypatch.setattr(aws.subprocess, "Popen", raise_fnf)
+        monkeypatch.setattr(aws, "popen_limited", raise_fnf)
         rc, out, err = aws.run_aws(["sts", "get-caller-identity"])
         assert rc == 127
         assert "aws CLI not found" in err
@@ -116,7 +116,7 @@ class TestRunAws:
 
         proc = FakeProc()
         monkeypatch.setattr(aws, "wrap_argv", lambda argv, mode: (argv, ""))
-        monkeypatch.setattr(aws.subprocess, "Popen", lambda *a, **k: proc)
+        monkeypatch.setattr(aws, "popen_limited", lambda *a, **k: proc)
 
         with pytest.raises(KeyboardInterrupt):
             aws.run_aws(["cloudformation", "deploy"])
@@ -220,7 +220,7 @@ class TestChokepointHumanActionGuard:
             def communicate(self, timeout):
                 return "out", ""
 
-        monkeypatch.setattr(aws.subprocess, "Popen", lambda *a, **k: FakeProc())
+        monkeypatch.setattr(aws, "popen_limited", lambda *a, **k: FakeProc())
         for readonly in (
             ["sts", "get-caller-identity"],
             ["ec2", "describe-instances"],
@@ -233,9 +233,7 @@ class TestChokepointHumanActionGuard:
 
     def test_mutations_and_token_mint_refused_under_agent_session(self, monkeypatch):
         monkeypatch.setenv("KIROCREW_SESSION_KEY", "sess-1")
-        monkeypatch.setattr(
-            aws.subprocess, "Popen", lambda *a, **k: pytest.fail("must not spawn aws")
-        )
+        monkeypatch.setattr(aws, "popen_limited", lambda *a, **k: pytest.fail("must not spawn aws"))
         for sensitive in (
             ["cloudformation", "delete-stack", "--stack-name", "kirocrew-x"],
             ["cloudformation", "deploy"],
@@ -252,9 +250,7 @@ class TestChokepointHumanActionGuard:
         # An EXACT allowlist (not a get-*/list-* prefix) must deny secret-bearing
         # reads even though they start with get-/list-.
         monkeypatch.setenv("KIROCREW_SESSION_KEY", "sess-1")
-        monkeypatch.setattr(
-            aws.subprocess, "Popen", lambda *a, **k: pytest.fail("must not spawn aws")
-        )
+        monkeypatch.setattr(aws, "popen_limited", lambda *a, **k: pytest.fail("must not spawn aws"))
         for secret_read in (
             ["secretsmanager", "get-secret-value", "--secret-id", "x"],
             ["ssm", "get-parameter", "--name", "x", "--with-decryption"],
@@ -275,7 +271,7 @@ class TestChokepointHumanActionGuard:
             def communicate(self, timeout):
                 return "", ""
 
-        monkeypatch.setattr(aws.subprocess, "Popen", lambda *a, **k: FakeProc())
+        monkeypatch.setattr(aws, "popen_limited", lambda *a, **k: FakeProc())
         # A human terminal (no session key) can run a mutation.
         rc, _o, _e = aws.run_aws(["cloudformation", "delete-stack", "--stack-name", "x"])
         assert rc == 0

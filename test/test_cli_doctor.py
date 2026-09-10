@@ -1706,6 +1706,22 @@ class TestEffectiveModelSection:
         assert "effective:" in out
         assert "tracking:" in out
 
+    def test_broken_default_member_is_reported_without_hiding_the_binding(self, capsys):
+        from kiro_crew.config.loader import KiroCrewAgentConfig
+
+        cfg = self._cfg("auto")
+        cfg.agents["writer"] = KiroCrewAgentConfig(
+            kiro_agent="kirocrew", memory_store="missing-store"
+        )
+        cfg.default_agent = "writer"
+        issues: list[str] = []
+        cli_doctor._doctor_effective_model(cfg, "", issues)
+        out = capsys.readouterr().out
+        assert "default agent binding unavailable" in issues
+        assert "See the member memory binding diagnostics below." in out
+        assert "missing or invalid memory binding" in out
+        assert "writer" in out
+
 
 class TestWhatsAppSection:
     """`kirocrew doctor`'s WhatsApp Integration section.

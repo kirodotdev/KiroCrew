@@ -10,8 +10,10 @@ common path, not an edge.
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 from aiohttp import web
@@ -96,20 +98,16 @@ async def test_unloadable_config_still_creates_with_empty_agent(
 
 
 def _alias_config(**aliases: Any) -> KiroCrewConfig:
-    """A real config whose ``agents`` map holds the given alias entries.
-
-    Any alias's ``memory_store`` is also registered in ``memory_stores`` —
-    resolution silently falls back to the default store for unknown names,
-    which would collapse the distinct-store case this helper exists to build.
-    """
-    from kiro_crew.config.loader import KiroCrewAgentConfig, MemoryStoreConfig
+    """A real config with each named member bound to its own private store."""
+    from kiro_crew.config.loader import KiroCrewAgentConfig
+    from kiro_crew.memory_stores import provision_member_memory
 
     cfg = KiroCrewConfig()
     cfg.agents = {name: KiroCrewAgentConfig(**fields) for name, fields in aliases.items()}
     cfg.default_agent = next(iter(cfg.agents))
-    for entry in cfg.agents.values():
-        if entry.memory_store not in cfg.memory_stores:
-            cfg.memory_stores[entry.memory_store] = MemoryStoreConfig()
+    for name in cfg.agents:
+        if name != "default":
+            provision_member_memory(cfg, name)
     return cfg
 
 
@@ -123,6 +121,46 @@ async def _post_chat(state: Any, payload: dict[str, Any]) -> Any:
 
 class TestSameBindingGuard:
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("change_project", [False, True])
+    async def test_comparison_runs_off_loop_and_refuses_changed_selection(
+        self, dashboard_state, monkeypatch, change_project
+    ):
+        import kiro_crew.config.loader as loader_mod
+
+        cfg = _alias_config(default={"kiro_agent": "kirocrew"})
+        monkeypatch.setattr(loader_mod, "_MATERIALIZED_AGENTS_READY", True)
+        monkeypatch.setattr(loader_mod, "_MATERIALIZED_AGENTS", {"kirocrew"})
+        monkeypatch.setattr(chat_handlers, "KiroCrewConfig", SimpleNamespace(load=lambda: cfg))
+        slot = dashboard_state.get_or_create_slot("comparison", agent="default")
+        loop = asyncio.get_running_loop()
+        original = chat_handlers.resolve_agent_bindings
+        calls = []
+
+        def resolve(config, agent, project=None):
+            with pytest.raises(RuntimeError, match="no running event loop"):
+                asyncio.get_running_loop()
+            calls.append((agent, project))
+            result = original(config, agent, project)
+            if change_project and len(calls) == 1:
+                loop.call_soon_threadsafe(setattr, slot, "project", "/changed-project")
+            return result
+
+        monkeypatch.setattr(chat_handlers, "resolve_agent_bindings", resolve)
+        app = web.Application()
+        app["state"] = dashboard_state
+        app.router.add_post("/api/chat", chat_handlers.api_chat)
+        async with TestClient(TestServer(app)) as client:
+            response = await client.post(
+                "/api/chat?ws=1", json={"message": "", "slot": slot.key, "agent": "kirocrew"}
+            )
+            data = await response.json()
+        assert [call[0] for call in calls] == ["default", "kirocrew"]
+        assert calls[0][1] == calls[1][1]
+        assert response.status == (409 if change_project else 400)
+        assert data["code"] == ("session_rebound" if change_project else "message_required")
+        assert slot.messages == []
+
+    @pytest.mark.asyncio
     async def test_different_memory_store_still_409s(
         self, dashboard_state: Any, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -131,10 +169,11 @@ class TestSameBindingGuard:
         alias's memory store."""
         cfg = _alias_config(
             **{
-                "alias-a": {"kiro_agent": "kirocrew", "memory_store": "store-a"},
-                "alias-b": {"kiro_agent": "kirocrew", "memory_store": "store-b"},
+                "alias-a": {"kiro_agent": "kirocrew"},
+                "alias-b": {"kiro_agent": "kirocrew"},
             }
         )
+        assert cfg.agents["alias-a"].memory_store != cfg.agents["alias-b"].memory_store
         monkeypatch.setattr(chat_handlers, "KiroCrewConfig", SimpleNamespace(load=lambda: cfg))
         slot = dashboard_state.get_or_create_slot("pinned")
         slot.agent = "alias-a"
@@ -156,15 +195,14 @@ class TestSameBindingGuard:
     ) -> None:
         """Two names resolving to the same binding pass the guard, and the
         bypass of the 409 boundary emits its own SEL outcome."""
-        cfg = _alias_config(
-            **{
-                "alias-a": {"kiro_agent": "kirocrew"},
-                "alias-b": {"kiro_agent": "kirocrew"},
-            }
-        )
+        import kiro_crew.config.loader as loader_mod
+
+        cfg = _alias_config(default={"kiro_agent": "kirocrew"})
+        monkeypatch.setattr(loader_mod, "_MATERIALIZED_AGENTS_READY", True)
+        monkeypatch.setattr(loader_mod, "_MATERIALIZED_AGENTS", {"kirocrew"})
         monkeypatch.setattr(chat_handlers, "KiroCrewConfig", SimpleNamespace(load=lambda: cfg))
         slot = dashboard_state.get_or_create_slot("pinned2")
-        slot.agent = "alias-a"
+        slot.agent = "default"
         events: list[str] = []
         monkeypatch.setattr(
             chat_handlers,
@@ -172,7 +210,7 @@ class TestSameBindingGuard:
             lambda key, agent, outcome="applied": events.append(outcome),
         )
         resp, _ = await _post_chat(
-            dashboard_state, {"message": "hi", "slot": "pinned2", "agent": "alias-b"}
+            dashboard_state, {"message": "hi", "slot": "pinned2", "agent": "kirocrew"}
         )
         assert resp.status == 200
         assert "allowed_same_binding" in events
@@ -187,7 +225,7 @@ class TestSameBindingGuard:
         through while dispatch runs the project agent."""
         import kiro_crew.config.loader as loader_mod
 
-        cfg = _alias_config(**{"kirocrew": {"kiro_agent": "kirocrew"}})
+        cfg = _alias_config(default={"kiro_agent": "kirocrew"})
         monkeypatch.setattr(chat_handlers, "KiroCrewConfig", SimpleNamespace(load=lambda: cfg))
         # The project declares "proj-agent"; resolution must see it ONLY when
         # the guard passes the slot's project scope through.
@@ -213,7 +251,7 @@ class TestSameBindingGuard:
             lambda key, agent, outcome="applied": events.append(outcome),
         )
         resp, _ = await _post_chat(
-            dashboard_state, {"message": "hi", "slot": "proj-slot", "agent": "kirocrew"}
+            dashboard_state, {"message": "hi", "slot": "proj-slot", "agent": "default"}
         )
         assert resp.status == 409
         assert events == ["denied_mismatch"]
@@ -243,3 +281,104 @@ class TestSameBindingGuard:
         )
         assert resp.status == 409
         assert events == ["denied_resolution_failed"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("replace_slot", [False, True])
+async def test_create_resolves_off_loop_without_adopting_a_concurrent_slot(
+    dashboard_state, monkeypatch, replace_slot
+):
+    from kiro_crew.dashboard.state import _ChatSlot
+
+    cfg = _alias_config(default={"kiro_agent": "kirocrew"}, worker={"kiro_agent": "kirocrew"})
+    monkeypatch.setattr(chat_handlers, "KiroCrewConfig", SimpleNamespace(load=lambda: cfg))
+    monkeypatch.setattr(chat_handlers, "schedule_eager_spawn", lambda *args, **kwargs: None)
+    loop = asyncio.get_running_loop()
+    original = chat_handlers.resolve_agent_bindings
+    calls = []
+    replacement = _ChatSlot("offloop-create", agent="another-owner")
+
+    def resolve(config, agent):
+        with pytest.raises(RuntimeError, match="no running event loop"):
+            asyncio.get_running_loop()
+        calls.append(agent)
+        result = original(config, agent)
+        if replace_slot:
+            loop.call_soon_threadsafe(
+                dashboard_state._slots.__setitem__, replacement.key, replacement
+            )
+        return result
+
+    monkeypatch.setattr(chat_handlers, "resolve_agent_bindings", resolve)
+    app = web.Application()
+    app["state"] = dashboard_state
+    app.router.add_post("/api/chat/slots", chat_handlers.api_chat_slot_create)
+    async with TestClient(TestServer(app)) as client:
+        response = await client.post(
+            "/api/chat/slots", json={"name": replacement.key, "agent": "worker"}
+        )
+        data = await response.json()
+    assert calls == ["worker"]
+    if replace_slot:
+        assert response.status == 409
+        assert data["code"] == "session_rebound"
+        assert dashboard_state._slots[replacement.key] is replacement
+        assert replacement.agent == "another-owner"
+        assert replacement.memory_store == ""
+    else:
+        assert response.status == 200
+        assert dashboard_state._slots[replacement.key].agent == "worker"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("change", ["none", "replacement", "session"])
+async def test_switch_resolves_off_loop_and_refuses_rebound_slot_before_reset(
+    dashboard_state, monkeypatch, change
+):
+    from kiro_crew.dashboard.state import _ChatSlot
+
+    cfg = _alias_config(default={"kiro_agent": "kirocrew"}, worker={"kiro_agent": "kirocrew"})
+    monkeypatch.setattr(chat_handlers, "KiroCrewConfig", SimpleNamespace(load=lambda: cfg))
+    monkeypatch.setattr(chat_handlers, "schedule_eager_spawn", lambda *args, **kwargs: None)
+    slot = dashboard_state.get_or_create_slot("offloop-switch", agent="default")
+    replacement = _ChatSlot(slot.key, agent="another-owner")
+    dashboard_state.sessions.reset = AsyncMock(return_value=True)
+    dashboard_state.sessions.get_provider.return_value = None
+    loop = asyncio.get_running_loop()
+    original = chat_handlers.resolve_agent_bindings
+    calls = []
+
+    def resolve(config, agent, project=None):
+        with pytest.raises(RuntimeError, match="no running event loop"):
+            asyncio.get_running_loop()
+        calls.append((agent, project))
+        result = original(config, agent, project)
+        if change == "replacement":
+            loop.call_soon_threadsafe(dashboard_state._slots.__setitem__, slot.key, replacement)
+        elif change == "session":
+            loop.call_soon_threadsafe(setattr, slot, "linked_session_key", "slack:other-session")
+        return result
+
+    monkeypatch.setattr(chat_handlers, "resolve_agent_bindings", resolve)
+    app = web.Application()
+    app["state"] = dashboard_state
+    app.router.add_post("/api/chat/slots/{slot}/agent", chat_handlers.api_chat_slot_agent)
+    async with TestClient(TestServer(app)) as client:
+        response = await client.post(f"/api/chat/slots/{slot.key}/agent", json={"agent": "worker"})
+        data = await response.json()
+    assert len(calls) == 1
+    assert calls[0][0] == "worker"
+    if change == "none":
+        assert response.status == 200
+        assert slot.agent == "worker"
+        assert slot.memory_store == cfg.agents["worker"].memory_store
+        dashboard_state.sessions.reset.assert_awaited_once()
+    else:
+        assert response.status == 409
+        assert data["code"] == "session_rebound"
+        dashboard_state.sessions.reset.assert_not_awaited()
+        assert slot.agent == "default"
+        assert slot.memory_store == ""
+        if change == "replacement":
+            assert dashboard_state._slots[slot.key] is replacement
+            assert replacement.agent == "another-owner"

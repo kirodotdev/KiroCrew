@@ -55,7 +55,7 @@ from kiro_crew.knowledge.ingestion import (
 )
 from kiro_crew.knowledge.llm_pool import DEFAULT_EXTRACTION_EFFORT, LLMPool
 from kiro_crew.knowledge.readers import FileReader
-from kiro_crew.knowledge.retrieval import HybridRetriever
+from kiro_crew.knowledge.retrieval import HybridRetriever, vector_leg
 from kiro_crew.knowledge.spend import source_spend
 from kiro_crew.knowledge.store import (
     AUTO_REGISTRATION_RETIRED_PROP,
@@ -422,13 +422,14 @@ async def list_items(request: web.Request) -> web.Response:
 
     if q:
         # Use hybrid search: FTS5 keyword + graph traversal + optional vector + RRF fusion.
-        # The availability probe and retriever.search (blocking query embed to
-        # Ollama) both do synchronous network I/O — run off-loop, mirroring
+        # The availability probe and retriever.search (its blocking query embed)
+        # both occupy the shared in-process model — run off-loop, mirroring
         # search_for_context below.
         embedder = request.app.get("knowledge_embedder")
-        embed_fn = embedder.embed if embedder and await embedder.is_available_async() else None
-        retriever = HybridRetriever(store, embedder=embed_fn)
-        # mc-embed bulkhead: the search's query embed blocks on Ollama.
+        available = bool(embedder) and await embedder.is_available_async()
+        embed_fn, embed_sig = vector_leg(embedder if available else None)
+        retriever = HybridRetriever(store, embedder=embed_fn, embed_sig=embed_sig)
+        # mc-embed bulkhead: the search's query embed blocks on the shared model.
         # The retriever ranks globally, so post-retrieval filtering can discard
         # an unbounded share of any fixed window: if enough higher-ranked hits
         # belong to other sources, a scoped search would report zero matches and
@@ -2235,6 +2236,11 @@ async def _rebuild_embeddings_job(app: web.Application, store, embedder, job_id:
     the watcher self-heal path shares one implementation. Vectors are overwritten
     one item at a time, so existing vectors stay queryable throughout -- search
     degrades gracefully during the rebuild instead of going dark.
+
+    PRIORITY_NORMAL, stated rather than defaulted: this is the ATTENDED rebuild --
+    a user clicked it and is polling the job row for progress -- so it keeps the
+    full interactive pool. The watcher's unattended twin passes PRIORITY_BULK, and
+    the difference is the point.
     """
     try:
         # pace=False: this job exists because a human clicked Rebuild and is
@@ -2401,12 +2407,13 @@ async def search_for_context(request: web.Request) -> web.Response:
         limit = top_n
 
     embedder = request.app.get("knowledge_embedder")
-    embed_fn = embedder.embed if embedder and await embedder.is_available_async() else None
-    retriever = HybridRetriever(store, embedder=embed_fn)
+    available = bool(embedder) and await embedder.is_available_async()
+    embed_fn, embed_sig = vector_leg(embedder if available else None)
+    retriever = HybridRetriever(store, embedder=embed_fn, embed_sig=embed_sig)
     # HybridRetriever.search runs on an mc-embed worker thread; KnowledgeStore
     # hands each thread its own sqlite connection, so all sqlite
-    # access is thread-safe here. mc-embed bulkhead: the query embed
-    # blocks on Ollama.
+    # access is thread-safe here. mc-embed bulkhead: the query embed occupies
+    # the shared model.
     results = await run_in_embed_pool(retriever.search, q, limit=limit)
 
     cards = []

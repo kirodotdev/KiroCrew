@@ -388,6 +388,9 @@ def publish_session_pid(pid: int, session_key: str) -> None:
     else:
         body = session_key
     atomic_write(_txt_path(pid, cfg), body)
+    from kiro_crew.member_memory_auth import publish_member_session_pid
+
+    publish_member_session_pid(pid, session_key, home=cfg)
     key = _load_hmac_key()
     if key is None:
         _report_signing_unavailable()

@@ -99,6 +99,8 @@ def _make_ready_kiro_prerequisite() -> KiroPrerequisiteService:
 def _make_state(tmp_path, **kwargs):
     """Create a DashboardState with mocked services and real ConversationLog."""
     sessions = MagicMock(count=0)
+    sessions.get_provider = MagicMock(return_value=None)
+    sessions.resumable_sid = MagicMock(return_value=None)
     sessions.remove = AsyncMock()
     sessions.discard_conversation = AsyncMock()
     sessions.aflush = AsyncMock()

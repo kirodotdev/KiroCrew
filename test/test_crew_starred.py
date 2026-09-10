@@ -151,6 +151,7 @@ class TestRosterExposesFilterKeys:
                 "pkg": KiroCrewAgentConfig(kiro_agent="pkg", source="package"),
             },
             default_agent="conductor",
+            memory_stores={},
         )
         state = _make_state(tmp_path)
         with patch("kiro_crew.dashboard.handlers.members.KiroCrewConfig.load", return_value=fake):
@@ -175,6 +176,7 @@ class TestRosterExposesFilterKeys:
         fake = SimpleNamespace(
             agents={"weird": KiroCrewAgentConfig(kiro_agent="weird", source=raw)},
             default_agent="weird",
+            memory_stores={},
         )
         state = _make_state(tmp_path)
         with patch("kiro_crew.dashboard.handlers.members.KiroCrewConfig.load", return_value=fake):

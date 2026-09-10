@@ -41,6 +41,7 @@ runs by pre-seeding both cached slices, the manifest runs by failing their gate.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -334,6 +335,27 @@ requires_shell_and_node = pytest.mark.skipif(
 )
 
 
+def _symbolizer_path(*extra: Path) -> str:
+    """Keep the detected shell and Node available in the isolated environment."""
+    tool_dirs = [
+        str(Path(binary).parent)
+        for name in ("bash", "node")
+        if (binary := shutil.which(name)) is not None
+    ]
+    return os.pathsep.join(
+        dict.fromkeys(
+            [
+                *(str(path) for path in extra),
+                *tool_dirs,
+                "/usr/bin",
+                "/bin",
+                "/usr/local/bin",
+                "/opt/homebrew/bin",
+            ]
+        )
+    )
+
+
 def _manifest(tmp_path: Path, name: str, url: str) -> Path:
     """A one-asset darwin manifest in the shape the emitter produces."""
     path = tmp_path / "symbols-manifest.json"
@@ -411,7 +433,7 @@ def _symbolize(tmp_path: Path, manifest: Path) -> subprocess.CompletedProcess[st
         # relative mktemp; TMPDIR steers the absolute default it uses here.
         cwd=tmp_path,
         env={
-            "PATH": "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin",
+            "PATH": _symbolizer_path(),
             "HOME": str(tmp_path),
             "TMPDIR": str(tmp_path),
             "KIROCREW_SYMBOL_CACHE": str(cache),
@@ -624,7 +646,7 @@ def _symbolize_ips(tmp_path: Path, report: Path, *args: str) -> subprocess.Compl
         # relative mktemp; TMPDIR steers the absolute default it uses here.
         cwd=tmp_path,
         env={
-            "PATH": "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin",
+            "PATH": _symbolizer_path(),
             "HOME": str(tmp_path),
             "TMPDIR": str(tmp_path),
             "KIROCREW_SYMBOL_CACHE": str(cache),
@@ -747,7 +769,7 @@ def _symbolize_ips_at_uuid_gate(
         timeout=120,
         cwd=tmp_path,
         env={
-            "PATH": f"{fakebin}:/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin",
+            "PATH": _symbolizer_path(fakebin),
             "HOME": str(tmp_path),
             "TMPDIR": str(tmp_path),
             "KIROCREW_SYMBOL_CACHE": str(cache),

@@ -5,6 +5,12 @@ The cross-platform process / signal / file-lock / metrics behavior is routed
 through `kiro_crew.platform_compat`, so macOS + Linux behavior is unchanged and
 the same code path also runs on Windows.
 
+Existing Memory V1 members remain usable on native Windows. New members require
+private Memory V2, so creation and explicit V1-to-V2 setup refuse before writing
+private files on a native Windows gateway. Use a WSL/Linux gateway with Crew's
+namespace sandbox and a supported member backend for those operations. Viewing
+and managing an already-owned V2 store remains available from the owner dashboard.
+
 ## Desktop installer
 
 CI's Windows lane (`build-windows.yml`) builds a Windows desktop app: an NSIS

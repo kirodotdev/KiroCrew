@@ -352,6 +352,7 @@ export function createTranscriptRenderers(
         return ctx.row(
           <ErrorCard
             content={m.content}
+            meta={m.meta}
             // A rejection the backend says no retry can fix never offers Continue,
             // even when this row is the newest and the turn was interrupted:
             // resuming would replay the identical rejection (or the same

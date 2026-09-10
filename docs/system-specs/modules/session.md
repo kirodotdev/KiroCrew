@@ -45,6 +45,66 @@ existing facade/import/monkeypatch seam requires it. Individual adapters may be
 retired in follow-up changes after repository-wide callers and characterization
 tests have moved off the corresponding legacy seam.
 
+## Private member session ownership
+
+An ordinary dashboard chat that has already used private member memory keeps
+that ownership for its lifetime. The agent-switch endpoint reads the protected
+binding for the effective session key before changing any slot fields, resetting
+the provider or writing history. Choosing another member (including the default
+assistant) returns `409 private_memory_session_pinned` and asks the owner to start
+a new conversation. An unreadable binding returns 503; resetting the same member
+and switching an unbound V1 conversation keep their existing behavior.
+
+The provider's in-turn agent-switch event follows the same private boundary in
+every dashboard slot mode. Before provider allocation, the runner validates the
+store off the event loop and freezes its V2 owner from the memory version and
+ownership record. Database schema migrations do not identify a V2 turn. Any
+provider-reported switch on that private turn leaves the selected member intact,
+shows a pinned-member notice, stops consuming further events and resets the
+provider. The notice prevents an empty-response retry from replaying completed
+tool actions. Ordinary unbound V1 chats retain their agent-switch behavior.
+
+Member chat turns validate the member's private memory before provider
+allocation and persist the binding used by memory tools and consolidation.
+Binding resolution runs off-loop using captured member, project and session
+selections. The runner rechecks those fields before private binding and again
+before provider allocation; a changed or replaced slot refuses. Owner
+create/switch paths recheck slot identity after resolution;
+switches retain their commit-token rollback and last pre-reset busy checks. This
+does not allow a protected session key to acquire a different member's store.
+History can restore a displayed agent and recorded store, but cannot grant a
+new private assignment. Recent-session restore, explicit resume, dormant-slot
+rehydration and channel surfacing require an existing protected session binding
+before a V2 turn. This also applies when an empty historical agent now resolves
+to a private configured default. An unresolved member, changed binding or
+unreadable private store surfaces an error instead of borrowing Global Memory V1.
+
+An owner creating a private chat pins the selected member before saving history.
+Opening a member from Members can pin its canonical session after positive owner
+authorization. A transcript's linked key and the legacy DM binding file cannot
+authorize another session; a colliding member slug needs an existing protected
+match. Uninitialized legacy members remain openable for explicit initialization.
+An explicit owner agent choice on an unbound restored ordinary chat admits its
+next turn only after the existing switch rollback checks succeed. Restarting
+before that turn requires the owner to choose again. Internal callers and
+restored metadata cannot perform that admission.
+
+Cron tabs require the protected assignment published by private cron dispatch.
+A legacy job's provider-template alias cannot become a private member on a
+dashboard follow-up; if it resolves to V2 without that assignment, the turn
+refuses and explains how the owner can select a member explicitly.
+
+Speculative eager allocation stops for every private V2 binding, including
+resume prefetch. The actual turn verifies the protected binding and persists
+the slot before provider allocation.
+It also stops when an explicitly selected member is unresolved, when a restored
+store disagrees with the current resolver, or when its declaration is
+unavailable or inconsistent, and leaves the user-facing explanation to that
+turn. Global Memory V1 and a valid named V1 declaration retain speculative
+eager allocation. Store identity is part of the eager binding snapshot, and
+slot replacement, a running real turn or any binding change after an awaited
+lookup makes the eager task stand down before allocation.
+
 ## Background Session
 
 `BACKGROUND_KEY = "_bg"` is a persistent shared session for lightweight
@@ -1529,6 +1589,31 @@ a trust root on its own; publication therefore also writes a
   re-signs the mapping. Benign and self-healing — no migration step.
 - **Stale cleanup**: the orphan sweep removes `session_pid_<pid>.sig`
   alongside its `.txt` for dead pids (`session_pid.py`).
+- **Private member API authority**: the trusted publisher also writes the live
+  private process incarnation, session and immutable target store to
+  `member-memory-bindings/pids/<pid>.json`, under the precreated sandbox-readonly
+  root. Private V2 recall, lesson writes, and consolidation require a positive
+  kernel peer/ancestor match to this record, or a live-process-bound delegated proof
+  issued by the trusted MCP gateway after the same check. The shared internal
+  secret and legacy writable sidecars alone grant no private member authority.
+  A rekey, recycled process, unreadable record, or expired proof refuses the
+  request. Proof signing material is under the sandbox-hidden `memory_stores`
+  root; pooled backends receive proof only in the current call's trusted metadata.
+  Global V1 publication leaves no private PID binding, preserving shared V1 tab
+  behavior. A private session's first trusted preparation additionally pins
+  `member-memory-bindings/sessions/<sha256-key>/memory.json`; later metadata must
+  agree, including after restart. Neither erasing the metadata nor changing it
+  to another store can change this permanent private identity.
+- **Private runtime allocation**: every allocation resolves that trusted binding
+  off the event loop before reusing a provider or claiming a warm process. Private
+  cron, consolidation, delegated and interactive sessions bypass the V1 warm pool
+  and cannot share an ACP runtime. A task with a private parent or target uses its
+  own provider; a private parent with an unbound child refuses execution until the
+  child's trusted memory binding is established. An already-live provider whose isolation differs from its binding
+  is explicitly refused until the session is restarted. Global V1 allocation and
+  sharing stay unchanged. MCP caller discovery checks protected process ancestry
+  before cached identity, environment or legacy sidecars; a malformed protected
+  record remains unresolved and never falls back to those legacy sources.
 - **Threat model** (full version in the `session_pid_sig.py` module
   docstring): file forgery, cross-pid replay, tampering, and symlink
   planting are blocked; deliberate same-uid impersonation via

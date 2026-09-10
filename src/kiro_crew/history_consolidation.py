@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import copy
 import json
 import logging
+import math
 import re
 import time as _time
 from collections.abc import Awaitable, Callable
@@ -41,6 +43,7 @@ if TYPE_CHECKING:
     from kiro_crew.history import ConversationLog
     from kiro_crew.learn import LessonStore
     from kiro_crew.memory import MemoryStore
+    from kiro_crew.memory_schema import MemoryFacets
     from kiro_crew.session import SessionManager
     from kiro_crew.skills import SkillsLoader
     from kiro_crew.vector_memory import VectorMemoryStore
@@ -53,6 +56,31 @@ _CONSOLIDATION_MAX_ATTEMPTS = 5
 _CONSOLIDATION_BACKOFF_BASE_SECS = 900.0
 _CONSOLIDATION_BACKOFF_MAX_SECS = 86400.0
 _SKILL_DETECTION_WINDOW = 200
+
+#: Default for the two write helpers' store arguments, meaning "argument not
+#: supplied — use the global handle off ``self``". It cannot be ``None``, because
+#: ``ContextBuilder.ensure_store`` may answer ``None`` for an unavailable legacy
+#: V1 silo (private V2 raises), and that answer must skip the tier rather than
+#: inherit the global store:
+#: inheriting files one crew's rows into the operator's own memory, which is the
+#: misfiling the resolved handles exist to prevent. Typed ``Any`` so each parameter
+#: keeps its real annotation.
+
+
+class _InheritGlobal:
+    """Sentinel type for "argument omitted, inherit the consolidator's handle".
+
+    A CLASS rather than a bare ``object()`` so the parameters it defaults can keep
+    their real annotations. Typed ``Any``, the sentinel erased mypy's view of both
+    store parameters — and ``_save_lessons`` is called positionally, so a swapped
+    ``(vector_store, lesson_store)`` pair would have written one crew's lessons
+    through the other's handle with nothing to catch it.
+    """
+
+    __slots__ = ()
+
+
+_INHERIT_GLOBAL = _InheritGlobal()
 
 _CONSOLIDATION_META_KEYS: frozenset[str] = frozenset(
     {
@@ -67,7 +95,7 @@ _CONSOLIDATION_META_KEYS: frozenset[str] = frozenset(
 
 
 class _ConsolidationRefusedSentinel:
-    """A retry gate refused a span without running a consolidation pass."""
+    """A retry gate or changed source declined a pass without accepting its writes."""
 
     __slots__ = ()
 
@@ -132,6 +160,46 @@ def _is_plausible_memory_file(content: str, header: str) -> bool:
         return False
     normalized = body.strip().lower().strip(" \t\"'`*_~.,!()[]")
     return normalized not in _PLACEHOLDER_BODIES
+
+
+def _session_facets(meta: dict, key: str) -> "MemoryFacets":
+    """The carve axes for everything this session's consolidation writes.
+
+    The consolidator is the writer worth threading first: it is the one that
+    produces most rows and it already holds every axis one line away. The others
+    have no identity in scope and would have to invent one.
+
+    ``crew`` comes from the session's ``agent`` metadata, which is the CREW alias
+    (``cfg.agents`` key) rather than the kiro-cli agent template. Confusing the two
+    is a named bug -- resolving a store from the template answers ``default`` for
+    exactly the crew that configured otherwise -- so this reads ``meta["agent"]`` and
+    never ``kiro_agent``. Note that is a DIFFERENT key from the one
+    :func:`kiro_crew.context.store_of_session` reads (``meta["memory_store"]``): a crew
+    alias and the store it binds to are separate facts. Each named member now owns a
+    unique private store; recording the alias separately preserves its provenance.
+
+    ``surface`` uses ``telemetry_channel_of``, whose output is a BOUNDED label and
+    never the key itself, so the column cannot acquire one value per conversation.
+    Not ``sel._infer_source``, which fails OPEN to ``"slack"`` for an unrecognised
+    key and would file dashboard rows inside a slack carve.
+
+    Never raises: a facet is an index projection, and no carve axis is worth
+    failing a consolidation over.
+    """
+    from kiro_crew.memory_schema import MemoryFacets
+
+    try:
+        from kiro_crew.messaging.link import telemetry_channel_of
+
+        surface = telemetry_channel_of(key)
+    except Exception:
+        surface = ""
+    crew = meta.get("agent")
+    return MemoryFacets(
+        surface=surface,
+        crew=crew if isinstance(crew, str) else "",
+        session_key=key,
+    )
 
 
 def _facade_sel() -> Any:
@@ -695,7 +763,9 @@ class HistoryConsolidator:
         """Run LLM consolidation for a session.
 
         Returns :data:`_CONSOLIDATION_REFUSED` when the retry-eligibility gate
-        refuses the span; every other completion returns ``None``.
+        refuses the span or its transcript changes during extraction; every
+        other completion returns ``None``. A changed source remains pending
+        rather than consuming the failure/abandon budget of a different span.
         """
         # Capture the gateway loop so the thread-offloaded _process_auto_skills
         # can schedule the async dedupe judge back onto it.
@@ -726,6 +796,9 @@ class HistoryConsolidator:
                 total,
                 generation_at_snapshot,
             ) = await asyncio.to_thread(self._log.snapshot_for_consolidation, key)
+            # Transcript caches may share nested message dictionaries with an
+            # editor. Freeze the submitted evidence before awaiting the model.
+            unconsolidated = copy.deepcopy(unconsolidated)
             if not unconsolidated:
                 return None
             # Retry-eligibility choke point: every entry point funnels through
@@ -760,20 +833,62 @@ class HistoryConsolidator:
                 offset=total - len(unconsolidated),
             )
 
-            # Resolve workspace-scoped memory from session metadata
+            # Resolve this session's memory target from its metadata. A NAMED
+            # memory store is the tighter scope and takes all three handles --
+            # markdown, lessons and vectors -- because the vector handle is what
+            # actually creates isolation: without it a crew reads its own markdown
+            # and writes its semantic, episodic and lesson rows into the global
+            # table. The workspace arm below is byte-identical to the v1 path.
+            from kiro_crew.context import store_of_session
+            from kiro_crew.memory_stores import memory_store_version
+
+            # Resolve through the same strict metadata reader as interactive
+            # turns before any consolidation provider or memory write starts.
+            def _resolve_memory_identity() -> tuple[str, bool]:
+                store_name = store_of_session(self._log, key)
+                return store_name, bool(store_name and memory_store_version(store_name) == 2)
+
+            store_name, private_memory = await asyncio.to_thread(_resolve_memory_identity)
+            # V2 anchors are owner-managed essentials. Extract proposed facts
+            # through the revision-aware structured path; never let a legacy
+            # whole-file rewrite remove their rules or age out project guides.
+            allow_markdown_updates = not self._migrated and not private_memory
+            if private_memory:
+                from kiro_crew.member_memory_auth import require_private_memory_execution
+
+                await asyncio.to_thread(require_private_memory_execution)
             meta = self._log.get_metadata(key)
+            facets = _session_facets(meta, key)
             ws_name = meta.get("workspace")
-            if ws_name:
+            lessons_store = self._lesson_store
+            if store_name:
+                from kiro_crew.context import ContextBuilder
+
+                vector_store = await ContextBuilder.ensure_store(store_name)
+                memory = await asyncio.to_thread(
+                    ContextBuilder.get_memory_for, memory_store=store_name
+                )
+                lessons_store = await asyncio.to_thread(
+                    ContextBuilder.get_lessons_for, memory_store=store_name
+                )
+                # May be None when the store could not be stood up; the writes
+                # below then skip the vector tier rather than falling back to the
+                # global store. Losing a semantic row is recoverable, writing it
+                # into another crew's memory is not.
+            elif ws_name:
                 from kiro_crew.context import ContextBuilder
 
                 memory = ContextBuilder.get_memory_for(ws_name)
+                vector_store = self._vector_store
             else:
                 memory = self._memory
+                vector_store = self._vector_store
 
             conversation = "\n".join(_fmt_message(m) for m in unconsolidated)
 
-            current_prefs = memory.read_preferences()
-            current_projects = memory.read_projects()
+            current_prefs, current_projects = await asyncio.to_thread(
+                lambda: (memory.read_preferences(), memory.read_projects())
+            )
 
             # Build prompt keys dynamically based on consolidation type
             keys: list[str] = []
@@ -784,14 +899,19 @@ class HistoryConsolidator:
                     "decisions, outcomes, facts. Use user's real name if known."
                 )
 
-            # Structured memory extraction (when vector store is available)
-            has_vector = self._vector_store is not None
-            if has_vector and self._vector_store is not None:
+            # Structured memory extraction (when vector store is available).
+            # Reads the RESOLVED store, never ``self._vector_store``: the rows
+            # fetched here go into the prompt, and the prompt instructs the model
+            # to update and delete them. Fetching globally would show crew B the
+            # operator's semantic table and let its consolidation turn delete it.
+            has_vector = vector_store is not None
+            if has_vector and vector_store is not None:
+                private_policy = getattr(vector_store, "algorithm_version", "v1") == "v2"
                 # Offload: the fetch serializes on the store's _db_lock,
                 # and this coroutine runs on the gateway event loop — a worker
                 # holding the lock (backfill's FAISS rebuild, reconcile's bulk
                 # UPDATEs) would otherwise block the whole loop here.
-                current_semantic = await asyncio.to_thread(self._vector_store.get_all_semantic)
+                current_semantic = await asyncio.to_thread(vector_store.get_all_semantic)
 
                 def _prompt_value(e: dict) -> object:
                     # A lesson row stores a mapping; the consolidation model
@@ -807,6 +927,10 @@ class HistoryConsolidator:
                         return _lesson_display_text(decoded) or e["value_json"]
                     return e["value_json"]
 
+                if private_policy:
+                    current_semantic = await run_in_embed_pool(
+                        vector_store.with_record_metadata, current_semantic
+                    )
                 semantic_json = (
                     json.dumps(
                         [
@@ -814,6 +938,14 @@ class HistoryConsolidator:
                                 "key": e["key"],
                                 "value_json": _prompt_value(e),
                                 "confidence": e["confidence"],
+                                **(
+                                    {
+                                        "record_revision": e.get("record_revision", 0),
+                                        "metadata": e.get("record_metadata", {}),
+                                    }
+                                    if private_policy
+                                    else {}
+                                ),
                             }
                             for e in current_semantic
                         ],
@@ -822,20 +954,38 @@ class HistoryConsolidator:
                     if current_semantic
                     else "[]"
                 )
+                semantic_fields = (
+                    '"delete": false, "metadata": {"category": "contact", "subject": "user", '
+                    '"predicate": "work_email", "scope": "", "source_ref": "brief evidence", '
+                    '"valid_from": "ISO date only if stated", "valid_until": "ISO date only if stated"}}. '
+                    "Metadata is optional: omit unknown dates/identity; do not guess them. "
+                    "For an explicit user replacement, add correction_quote containing an exact user quote "
+                    "with both old and new values and replacement language. Never fabricate a quote. "
+                    "Keep one atomic fact per key. The subject/predicate/scope tuple is exact identity, "
+                    "so retain it for updates and do not reuse it for a different person or project. "
+                    if private_policy
+                    else '"delete": false}. '
+                )
+                deletion_policy = (
+                    'To propose removal of a stale/invalidated key, set "delete": true. '
+                    "Changes to existing values and deletions require owner review; confidence does not authorize overwrites. "
+                    if private_policy
+                    else 'To DELETE a stale/invalidated key, set "delete": true (e.g. pet died → delete '
+                    "user.pet.name; project cancelled → delete project.x.status). "
+                )
                 keys.append(
                     '"semantic": Array of structured facts to remember long-term. '
                     'Each: {"key": "<dotted.key>", "value": <json_value>, "confidence": 0.0-1.0, '
-                    '"delete": false}. '
-                    "Rules: keys must start with pref.*, project.*, or user.* "
+                    + semantic_fields
+                    + "Rules: keys must start with pref.*, project.*, or user.* "
                     "(e.g. pref.color, user.favorite_language, project.name). "
                     "confidence 1.0 = user stated, 0.8-0.9 = clearly implied, <0.8 = uncertain (rejected). "
                     "value must be a JSON primitive (string, number, boolean) — NOT objects or arrays. "
                     "IMPORTANT: Check existing semantic memory above. If a key already covers "
                     "the same topic, UPDATE that key instead of creating a new one. "
                     "Do NOT create near-duplicate keys (e.g. project.x.approach AND project.x.refined). "
-                    'To DELETE a stale/invalidated key, set "delete": true (e.g. pet died → delete '
-                    "user.pet.name; project cancelled → delete project.x.status). "
-                    f"Max {_MAX_SEMANTIC_PER_CONSOLIDATION} items."
+                    + deletion_policy
+                    + f"Max {_MAX_SEMANTIC_PER_CONSOLIDATION} items."
                 )
                 keys.append(
                     '"episodic": Array of conversation fragments worth remembering. '
@@ -849,7 +999,7 @@ class HistoryConsolidator:
                 )
 
             # Markdown memory (backward compat when not migrated)
-            if not self._migrated:
+            if allow_markdown_updates:
                 keys.append(
                     '"preferences_update": The COMPLETE updated preferences file, '
                     "included ONLY if the file needs changes. Merge duplicates, keep "
@@ -895,7 +1045,14 @@ class HistoryConsolidator:
             ]
             if has_vector:
                 prompt_parts.append(f"\n\n## Current Semantic Memory\n{semantic_json}")
-            if not self._migrated:
+            if allow_markdown_updates or private_memory:
+                if private_memory:
+                    prompt_parts.append(
+                        "\n\nThe following member anchors are read-only. Do not return "
+                        "preferences_update or projects_update; preserve the owner's core "
+                        "guides. Extract new facts or proposed corrections into semantic "
+                        "memory with their evidence instead."
+                    )
                 prompt_parts.append(f"\n\n## Current Preferences\n{current_prefs or '(empty)'}")
                 prompt_parts.append(f"\n\n## Current Projects\n{current_projects or '(empty)'}")
             prompt_parts.append(f"\n\n## Conversation to Process\n{conversation}")
@@ -903,7 +1060,11 @@ class HistoryConsolidator:
             prompt = "".join(prompt_parts)
 
             try:
-                result = await self._call_llm(prompt)
+                result = (
+                    await self._call_llm(prompt, memory_store=store_name)
+                    if private_memory
+                    else await self._call_llm(prompt)
+                )
             except _ConsolidationNotDispatched as exc:
                 # Nothing was sent, so nothing was billed. Charging this to the
                 # attempt cap would let a handful of environment failures abandon
@@ -926,6 +1087,25 @@ class HistoryConsolidator:
                     await self._note_failed_attempt(key, attempted, "empty LLM result")
                 return None
 
+            # A pending model result cannot authorize writes from a deleted or
+            # edited transcript, or outrank a newer user turn. Appended assistant
+            # replies may remain unconsolidated without invalidating the original
+            # span. Recheck at the write boundary, before history or fact changes.
+            latest, latest_total, latest_generation = await asyncio.to_thread(
+                self._log.snapshot_for_consolidation, key
+            )
+            if (
+                latest_generation != generation_at_snapshot
+                or latest_total < total
+                or latest[: len(unconsolidated)] != unconsolidated
+                or any(row.get("role") == "user" for row in latest[len(unconsolidated) :])
+            ):
+                self._logger.info(
+                    "Discarding consolidation result for %s: conversation changed during extraction",
+                    key,
+                )
+                return _CONSOLIDATION_REFUSED
+
             if entry := result.get("history_entry"):
                 # Offloaded to a worker thread: append_history takes a blocking
                 # advisory file lock (cross-process) and does synchronous file
@@ -940,15 +1120,23 @@ class HistoryConsolidator:
             # to the in-process embedder, and _consolidate runs on the event loop thread (fired via
             # asyncio.create_task). Running it inline stalls the whole gateway loop
             # if the embedding endpoint is slow/hung (heartbeats, Slack, dashboard).
-            if self._vector_store:
-                await run_in_embed_pool(self._write_structured_memory, result, key)
+            if vector_store:
+                await run_in_embed_pool(
+                    self._write_structured_memory,
+                    result,
+                    key,
+                    vector_store,
+                    facets=facets,
+                    snapshot={row["key"]: row for row in current_semantic},
+                    messages=unconsolidated,
+                )
 
-            # Markdown writes (backward compat — skip if migrated). Each value
+            # Legacy V1 Markdown writes (skip if migrated or private V2). Each value
             # replaces the whole file, so a non-file answer (e.g. the literal
             # word "unchanged") must be discarded, not written: once written it
             # re-enters the next prompt as the file's current content and primes
             # every later pass to repeat it (see _is_plausible_memory_file).
-            if not self._migrated:
+            if allow_markdown_updates:
                 if prefs := result.get("preferences_update"):
                     if not _is_plausible_memory_file(prefs, "# User Preferences"):
                         self._logger.warning(
@@ -999,16 +1187,27 @@ class HistoryConsolidator:
             # Lesson extraction: _save_lessons calls write_lesson which embeds
             # each rule (+ up to 5 lazy backfills) via blocking urllib to Ollama.
             # Same rationale as _write_structured_memory above — must offload.
-            if (self._lesson_store or self._vector_store) and (
-                raw_lessons := result.get("lessons")
-            ):
-                await run_in_embed_pool(self._save_lessons, raw_lessons)
+            if (lessons_store or vector_store) and (raw_lessons := result.get("lessons")):
+                await run_in_embed_pool(
+                    self._save_lessons,
+                    raw_lessons,
+                    vector_store,
+                    lessons_store,
+                    facets=facets,
+                )
 
             # Auto skill detection — a SEPARATE LLM pass over the full-session
             # window (see _run_skill_detection), not the incremental tail. Runs
             # only on history consolidation, guarded by flag + loader; failures
             # are logged, never fatal.
-            if include_history and self._auto_skills_enabled and self._skills_loader is not None:
+            # Auto-skills are shared install-wide. Private member experience
+            # must not be published or contribute to another member's skills.
+            if (
+                not private_memory
+                and include_history
+                and self._auto_skills_enabled
+                and self._skills_loader is not None
+            ):
                 try:
                     await self._run_skill_detection(key)
                 except Exception:
@@ -1019,7 +1218,11 @@ class HistoryConsolidator:
             # their own (create/approve were the only triggers). Consolidation is
             # the existing idle/periodic path; throttle to at most once/hour
             # across all sessions so frequent consolidations don't rescan the set.
-            if self._skills_loader is not None and (_time.time() - self._last_lifecycle) > 3600:
+            if (
+                not private_memory
+                and self._skills_loader is not None
+                and (_time.time() - self._last_lifecycle) > 3600
+            ):
                 self._last_lifecycle = _time.time()
                 try:
                     await asyncio.to_thread(
@@ -1056,6 +1259,10 @@ class HistoryConsolidator:
             # attempt here is what converts that tight loop into backoff.
             if billed and include_history:
                 await self._note_failed_attempt(key, attempted, "exception after the LLM call")
+            elif include_history and attempted.total > 0:
+                # Setup has a durable retry budget too, but consumes no model
+                # attempt and must never abandon a span the model did not read.
+                await self._note_environment_failure(key, "memory setup failed before the LLM call")
             raise
         finally:
             self._running.discard(key)
@@ -1215,8 +1422,34 @@ class HistoryConsolidator:
         # thread-offloaded dedupe judge can marshal back onto the gateway loop.
         await asyncio.to_thread(self._process_auto_skills, result, key)
 
-    def _save_lessons(self, raw: object) -> None:
-        """Save extracted lessons from consolidation result."""
+    def _save_lessons(
+        self,
+        raw: object,
+        vector_store: "VectorMemoryStore | None | _InheritGlobal" = _INHERIT_GLOBAL,
+        lesson_store: "LessonStore | None | _InheritGlobal" = _INHERIT_GLOBAL,
+        *,
+        facets: "MemoryFacets | None" = None,
+    ) -> None:
+        """Save extracted lessons from consolidation result.
+
+        Both stores are passed in rather than read off ``self`` so a crew's
+        corrections land in its own silo. Omitting them keeps the historical
+        behaviour (the global handles), which is what the workspace and default
+        arms of the caller want.
+
+        An explicitly passed ``None`` is NOT omission (:data:`_INHERIT_GLOBAL`):
+        it means the silo has no store of that tier, so the tier is skipped. The
+        caller reaches this method whenever EITHER store is live, so a silo whose
+        vector store could not be stood up arrives here with
+        ``vector_store=None`` and a real ``lesson_store`` — and inheriting the
+        global vector store there would take the dedup-aware branch below and
+        file the crew's corrections into the operator's own table, never touching
+        the silo's ``lessons.jsonl`` at all.
+        """
+        if isinstance(vector_store, _InheritGlobal):
+            vector_store = self._vector_store
+        if isinstance(lesson_store, _InheritGlobal):
+            lesson_store = self._lesson_store
         if not isinstance(raw, list):
             return
 
@@ -1233,15 +1466,16 @@ class HistoryConsolidator:
             raw = raw[:max_lessons]
 
         # Prefer vector store (dedup-aware) over JSONL
-        if self._vector_store:
+        if vector_store:
             count = 0
             for item in raw:
                 if isinstance(item, dict) and item.get("rule"):
-                    ok = self._vector_store.write_lesson(
+                    ok = vector_store.write_lesson(
                         rule=item["rule"],
                         category=item.get("category", "knowledge"),
                         negative=item.get("negative"),
                         source="consolidation",
+                        facets=facets,
                     )
                     if ok:
                         count += 1
@@ -1249,7 +1483,7 @@ class HistoryConsolidator:
                 self._logger.info("Extracted %d lesson(s) from chat (vector store)", count)
             return
 
-        if not self._lesson_store:
+        if not lesson_store:
             return
         from datetime import timezone as _tz
 
@@ -1258,7 +1492,7 @@ class HistoryConsolidator:
         count = 0
         for item in raw:
             if isinstance(item, dict) and item.get("rule"):
-                self._lesson_store.save(
+                lesson_store.save(
                     Lesson(
                         ts=datetime.now(tz=_tz.utc).isoformat(),
                         rule=item["rule"],
@@ -1270,11 +1504,29 @@ class HistoryConsolidator:
         if count:
             self._logger.info("Extracted %d lesson(s) from chat", count)
 
-    def _write_structured_memory(self, result: dict, key: str) -> None:
-        """Write semantic + episodic entries from consolidation result."""
-        if not self._vector_store:
+    def _write_structured_memory(
+        self,
+        result: dict,
+        key: str,
+        vector_store: "VectorMemoryStore | None | _InheritGlobal" = _INHERIT_GLOBAL,
+        *,
+        facets: "MemoryFacets | None" = None,
+        snapshot: dict | None = None,
+        messages: list[dict] | None = None,
+    ) -> None:
+        """Write semantic + episodic entries from consolidation result.
+
+        *vector_store* is the session's RESOLVED store. Omitting it keeps the
+        global handle, which is what the workspace and default arms want; an
+        explicit ``None`` means the silo has no vector store and the tier is
+        skipped, the same distinction :meth:`_save_lessons` draws.
+        """
+        if isinstance(vector_store, _InheritGlobal):
+            vector_store = self._vector_store
+        if not vector_store:
             return
         source = f"consolidation:{key}"
+        private_policy = getattr(vector_store, "algorithm_version", "v1") == "v2"
 
         # Semantic entries
         semantic_items = result.get("semantic")
@@ -1284,11 +1536,14 @@ class HistoryConsolidator:
             skipped = 0
             refused = 0
             for item in semantic_items[:_MAX_SEMANTIC_PER_CONSOLIDATION]:
-                if not isinstance(item, dict) or "key" not in item:
+                if not isinstance(item, dict) or not isinstance(item.get("key"), str):
                     continue
                 # Handle deletion of stale keys
                 if item.get("delete"):
-                    if self._vector_store.delete_semantic(item["key"], source):
+                    if private_policy:
+                        if vector_store.propose_semantic_delete(item["key"], source):
+                            refused += 1
+                    elif vector_store.delete_semantic(item["key"], source):
                         deleted += 1
                     continue
                 if "value" not in item or item["value"] is None:
@@ -1299,17 +1554,43 @@ class HistoryConsolidator:
                         "Semantic consolidation skipped %r: item carries no value", item["key"]
                     )
                     continue
-                conf = float(item.get("confidence", 0.5))
+                try:
+                    conf = float(item.get("confidence", 0.5))
+                except (ValueError, TypeError):
+                    skipped += 1
+                    continue
+                if not math.isfinite(conf) or not 0 <= conf <= 1:
+                    skipped += 1
+                    continue
                 # Always our own source, never "user_explicit": a confidence of 1.0 is the
                 # LLM's claim that the user stated the fact, not proof of it. Under
                 # `consolidation:<key>` the conflict resolution in _write_semantic protects
                 # a genuine user-stated row from a re-summarization (conflict_skip) while
                 # still letting consolidation create new keys and update its own.
-                err = self._vector_store.set_semantic(
+                extra = {}
+                if private_policy and item.get("metadata") is not None:
+                    extra["metadata"] = item["metadata"]
+                if private_policy and snapshot and messages and item["key"] in snapshot:
+                    from kiro_crew.memory_record_metadata import verified_correction
+
+                    evidence = verified_correction(
+                        key=item["key"],
+                        before=snapshot[item["key"]],
+                        value=item["value"],
+                        quote=item.get("correction_quote"),
+                        messages=messages,
+                        session_key=key,
+                    )
+                    if evidence:
+                        extra["correction"] = evidence
+                        extra["expected_revision"] = evidence.revision
+                err = vector_store.set_semantic(
                     key=item["key"],
                     value=item["value"],
                     confidence=conf,
                     source=source,
+                    facets=facets,
+                    **extra,
                 )
                 if err is None:
                     written += 1
@@ -1336,14 +1617,24 @@ class HistoryConsolidator:
         if isinstance(episodic_items, list):
             written = 0
             for item in episodic_items[:_MAX_EPISODIC_PER_CONSOLIDATION]:
-                if not isinstance(item, dict) or "text" not in item:
+                if not isinstance(item, dict) or not isinstance(item.get("text"), str):
                     continue
-                ep_ok = self._vector_store.write_episodic(
+                tags = item.get("tags", [])
+                if not isinstance(tags, list) or any(not isinstance(tag, str) for tag in tags):
+                    continue
+                try:
+                    importance = float(item.get("importance", 0.5))
+                except (ValueError, TypeError):
+                    continue
+                if not math.isfinite(importance) or not 0 <= importance <= 1:
+                    continue
+                ep_ok = vector_store.write_episodic(
                     text=item["text"],
                     conversation_id=key,
-                    tags=item.get("tags", []),
-                    importance=float(item.get("importance", 0.5)),
+                    tags=tags,
+                    importance=importance,
                     source=source,
+                    facets=facets,
                 )
                 if ep_ok:
                     written += 1
@@ -1924,7 +2215,7 @@ class HistoryConsolidator:
                     metadata={"name": name, "reason": "update_failed"},
                 )
 
-    async def _call_llm(self, prompt: str) -> dict | None:
+    async def _call_llm(self, prompt: str, *, memory_store: str = "") -> dict | None:
         """Call LLM for consolidation via the persistent background session.
 
         Uses the shared background kiro-cli process (no spawn/teardown cost).
@@ -1958,7 +2249,12 @@ class HistoryConsolidator:
         async with contextlib.AsyncExitStack() as stack:
             try:
                 client = await stack.enter_async_context(
-                    background_turn(self._sessions, task="consolidation", agent="kirocrew-lite")
+                    background_turn(
+                        self._sessions,
+                        task="consolidation",
+                        agent="kirocrew-lite",
+                        **({"memory_store": memory_store} if memory_store else {}),
+                    )
                 )
             except Exception as exc:
                 self._logger.warning(

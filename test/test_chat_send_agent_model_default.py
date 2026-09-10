@@ -25,12 +25,14 @@ import unittest.mock
 from pathlib import Path
 
 import pytest
+from member_memory_helpers import patch_private_memory_supported
 from test_chat_runner_coverage import _complete, _drive, _runner_state, _set_stream, _slot
 
 from kiro_crew.acp.types import EVENT_TEXT_CHUNK
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.dashboard import chat_runner
 from kiro_crew.dashboard.chat_runner import _eager_spawn
+from kiro_crew.memory_stores import provision_member_memory
 from kiro_crew.providers.base import LLMEvent
 
 GLOBAL_DEFAULT = "claude-opus-5"
@@ -48,18 +50,26 @@ def _load_config(tmp_path: Path, data: dict) -> KiroCrewConfig:
 
 def _config(tmp_path: Path, *, crew_model: str = "") -> KiroCrewConfig:
     """Global ``agent.model`` set; the crews pin nothing unless *crew_model*."""
-    return _load_config(
+    cfg = _load_config(
         tmp_path,
         {
             "agent": {"model": GLOBAL_DEFAULT, "provider": "acp"},
-            "agents": {"researcher": {"kiro_agent": "kirocrew", "model": crew_model}},
-            "default_agent": "kirocrew",
+            "agents": {
+                "default": {"kiro_agent": "kirocrew", "memory_store": "default"},
+                "researcher": {"kiro_agent": "kirocrew", "model": crew_model},
+            },
+            "default_agent": "default",
         },
     )
+    provision_member_memory(cfg, "researcher")
+    return cfg
 
 
 def _turn_state(tmp_path: Path):
-    state, client = _runner_state(tmp_path)
+    builder = unittest.mock.MagicMock()
+    builder.ensure_store = unittest.mock.AsyncMock(return_value=object())
+    builder.build_message.return_value = ("fixture context", None)
+    state, client = _runner_state(tmp_path, context_builder=builder)
     _set_stream(client, [LLMEvent(kind=EVENT_TEXT_CHUNK, text="hi"), _complete()])
     return state, client
 
@@ -70,8 +80,11 @@ def _session_model(state) -> str | None:
 
 
 @pytest.fixture
-def _runner_config(tmp_path):
+def _runner_config(tmp_path, monkeypatch):
     """Serve the real config object to every ``KiroCrewConfig.load()`` in the turn."""
+    # These turns use a fake provider and exercise model selection. Supply only
+    # the host capability result; member provisioning and binding remain real.
+    patch_private_memory_supported(monkeypatch)
 
     def _install(cfg: KiroCrewConfig):
         patcher = unittest.mock.patch.object(

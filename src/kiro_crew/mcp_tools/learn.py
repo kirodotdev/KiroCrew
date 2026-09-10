@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from typing import Any
+from urllib.parse import urlencode
 
 from kiro_crew import mcp_core
 from kiro_crew.validation import LEARN_ADD_SCHEMA, MAX_SHORT_STRING
@@ -42,6 +43,24 @@ def schemas() -> list[dict[str, Any]]:
         MAX_SHORT_STRING,
     )
     return [
+        {
+            "name": "memory_recall",
+            "description": (
+                "Retrieve relevant facts, experiences and corrections from the memory "
+                "bound to this session: Global V1 for an unowned session, or this Crew "
+                "Member's private V2. Search is on demand, not run automatically for "
+                "every message. Ask a specific question when earlier decisions or "
+                "events are needed; skip it if the current conversation suffices. "
+                "Returns bounded context and sources. The caller cannot choose another "
+                "store; private members cannot access Global V1 or sibling memories."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {"query": {"type": "string", "minLength": 1, "maxLength": 2000}},
+                "required": ["query"],
+                "additionalProperties": False,
+            },
+        },
         {
             "name": "learn_add",
             "description": (
@@ -113,6 +132,23 @@ def schemas() -> list[dict[str, Any]]:
             },
         },
     ]
+
+
+def memory_recall(name: str, args: dict[str, Any]) -> str:
+    from kiro_crew.memory_recall import recall_json
+
+    query = args.get("query")
+    if not isinstance(query, str) or not query.strip() or len(query) > 2000:
+        return "Error: query must contain 1–2000 characters"
+    session, refusal = mcp_core.require_strict_session_key(
+        "Error: memory recall requires an established session"
+    )
+    if not session:
+        return refusal
+    result = mcp_core._get(
+        "/api/memory/recall?" + urlencode({"q": query.strip()}), session_key=session
+    )
+    return recall_json(result, ensure_ascii=False, context_cap=3000, mcp_envelope=True)
 
 
 def learn_add(name: str, args: dict[str, Any]) -> str:
@@ -341,6 +377,7 @@ def learn_remove(name: str, args: dict[str, Any]) -> str:
 
 
 HANDLERS: dict[str, Callable[[str, dict[str, Any]], str]] = {
+    "memory_recall": memory_recall,
     "learn_add": learn_add,
     "learn_list": learn_list,
     "learn_remove": learn_remove,

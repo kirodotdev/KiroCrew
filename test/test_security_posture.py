@@ -965,6 +965,9 @@ class TestRedactionSinkRegistry:
             "redact_and_truncate",
             "redact_via_context",
             "display_safe",
+            # The shared dashboard memory helper recursively runs the exfil
+            # scanner followed by the credential scanner for every text value.
+            "_redact_memory_field(",
             # redact_mcp_error runs redact_exfiltration_urls THEN redact_credentials
             # (mcp_discovery.py) and then scrubs the exact configured header values
             # the generic scanners cannot know about — strictly more than either

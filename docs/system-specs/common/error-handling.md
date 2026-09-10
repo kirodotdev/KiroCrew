@@ -48,6 +48,16 @@ walked. `AcpRequestTimeout` subclasses its base so existing
 | Process spawn | `shutil.which` check before spawn; clear error if missing |
 | asyncio loop callback | A Windows Proactor reset repeated by its `connection_lost` close callback is warning-only; task-level connection resets and other exceptions remain ERRORs with crash breadcrumbs |
 
+## Dashboard Error Codes
+
+Dashboard JSON errors include a stable lower-snake `code` alongside advisory
+`error` text, preserving the route's HTTP status. Redact untrusted text fields
+before putting them in a transparent response dictionary. A computed status is
+compliant when that dictionary carries an explicit code; an uncoded or opaque
+body remains debt in `test/test_error_code_contract.py`. That guard also checks
+literal code values on computed-status responses and refuses dictionary spreads
+that could replace the code.
+
 ## Backend Error Classification
 
 `acp/client.py` rewrites raw JSON-RPC backend errors into actionable user text

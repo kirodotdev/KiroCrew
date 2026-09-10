@@ -54,6 +54,8 @@ from kiro_crew.dashboard.chat_utils import (
 )
 from kiro_crew.dashboard.handlers._shared import (
     _pip_install_channel_available,
+    guard_owner_surface_routes,
+    internal_memory_scope,
     pip_extra_install_command,
     read_bounded_json,
 )
@@ -168,6 +170,39 @@ def _sel():
 _SPAWN_REJECTED_CODE = "spawn_rejected"
 
 
+async def _spawn_scope_refusal(
+    request: web.Request, *, claimed_session: str | None = None
+) -> web.Response | None:
+    """Refuse a private member's access to a run outside its own memory store.
+
+    The run is the route's ``{agent_id}``; owner and non-private callers pass.
+    Applied to the per-run ``api_spawn_*`` routes by the guard table at the
+    bottom of this module, and called directly where the caller's claimed
+    parent session has to be checked as well.
+    """
+    scope, refusal = await internal_memory_scope(
+        request, "spawn.access", claimed_session=claimed_session
+    )
+    if refusal is not None or scope is None:
+        return refusal
+    state = request.app["state"]
+    try:
+        if state.subagents and scope == await asyncio.to_thread(
+            state.subagents._inherited_memory_store, request.match_info["agent_id"]
+        ):
+            return None
+    except (OSError, ValueError):
+        pass
+    _sel().log_api_access(
+        caller="internal",
+        operation="spawn.access",
+        outcome="denied",
+        source="member_memory",
+        error="The requested run is outside the member's private memory.",
+    )
+    return web.json_response({"error": "not found", "code": "task_scope_denied"}, status=404)
+
+
 async def api_spawn(request: web.Request) -> web.Response:
     """POST /api/spawn — spawn a subagent.
 
@@ -195,6 +230,12 @@ async def api_spawn(request: web.Request) -> web.Response:
                 "include_memory": body.get("include_memory", True),
                 "include_lessons": body.get("include_lessons", True),
                 "include_project": body.get("include_project", True),
+                # The dict is CLOSED -- validate_tool_args only sees what is
+                # listed here -- so omitting a schema field silently disables it
+                # rather than failing. That is what made the crew delegation
+                # below unreachable: the block, its unknown_crew refusal and its
+                # store resolution all ran off a value that was always None.
+                "crew": body.get("crew", ""),
             },
             SPAWN_RUN_SCHEMA,
         )
@@ -204,6 +245,16 @@ async def api_spawn(request: web.Request) -> web.Response:
     if not task:
         return web.json_response({"error": "task is required"}, status=400)
     parent_session = body.get("parent_session", "")
+    if not isinstance(parent_session, str):
+        return web.json_response(
+            {"error": "parent_session must be a string", "code": "invalid_parent_session"},
+            status=400,
+        )
+    caller_store, refusal = await internal_memory_scope(
+        request, "spawn.create", claimed_session=parent_session
+    )
+    if refusal is not None:
+        return refusal
     # approval_mode and silent are HTTP API parameters passed by the SDK,
     # NOT MCP tool arguments from the LLM.  The LLM's spawn_run tool
     # (mcp_core.py) does not expose these params — they are added by the
@@ -226,6 +277,95 @@ async def api_spawn(request: web.Request) -> web.Response:
     if not isinstance(keep, bool):
         keep = str(keep).lower() in ("true", "1", "yes")
     agent = cleaned.get("agent") or ""
+    # DELEGATION TO A NAMED CREW. Resolved once, here, through the shared
+    # binding resolver -- the store must never be derived from `agent`, which
+    # holds a kiro-cli template id and would answer `default` for exactly the
+    # crew that configured otherwise, silently, toward the operator's own memory.
+    #
+    # An unknown crew is REFUSED rather than degraded. Everywhere else an
+    # unresolvable store falls back to the global one, which is the safe
+    # direction; here it is the unsafe one: the caller's whole reason for naming
+    # a crew is to keep this task inside that crew's memory, so quietly running
+    # it against the operator's store is the leak the parameter exists to
+    # prevent. Fail loudly and let the caller pick a real crew.
+    crew = cleaned.get("crew") or ""
+    child_memory_store = ""
+    if crew:
+        from kiro_crew.config.loader import KiroCrewConfig, resolve_agent_bindings
+
+        try:
+            _cfg = await asyncio.to_thread(KiroCrewConfig.load)
+        except Exception:
+            return web.json_response(
+                {"error": "cannot read the crew roster", "code": "crew_unresolvable"}, status=503
+            )
+        if crew not in _cfg.agents:
+            return web.json_response(
+                {
+                    "error": f"unknown crew '{crew}'",
+                    "code": "unknown_crew",
+                    "available": ", ".join(sorted(_cfg.agents)) or "(none)",
+                },
+                status=400,
+            )
+        try:
+            _b = await asyncio.to_thread(resolve_agent_bindings, _cfg, crew)
+        except (OSError, ValueError) as exc:
+            return web.json_response({"error": str(exc), "code": "memory_unavailable"}, status=409)
+        child_memory_store = _b.memory_store_name
+        if crew != "default" and not _cfg.agents[crew].triggers.strip():
+            return web.json_response(
+                {
+                    "error": f"Crew Member '{crew}' has not enabled delegated tasks.",
+                    "code": "crew_delegation_disabled",
+                },
+                status=409,
+            )
+        # The crew's template too: a crew is its memory AND its harness, and
+        # honouring one without the other hands the task a persona the operator
+        # did not bind to that work. An explicit `agent` still wins -- a caller
+        # naming both is overriding deliberately.
+        agent = agent or _b.kiro_agent
+    elif parent_session:
+        from kiro_crew.context import store_of_session
+
+        try:
+            child_memory_store = await asyncio.to_thread(
+                store_of_session, state.conversation_log, parent_session
+            )
+            if parent_session.startswith("subagent:"):
+                child_memory_store = await asyncio.to_thread(
+                    state.subagents._inherited_memory_store,
+                    parent_session.removeprefix("subagent:"),
+                )
+        except (OSError, ValueError) as exc:
+            return web.json_response({"error": str(exc), "code": "memory_unavailable"}, status=409)
+    from kiro_crew.context import require_memory_delegation
+
+    if caller_store is not None and child_memory_store != caller_store:
+        _sel().log_api_access(
+            caller="internal",
+            operation="spawn.create",
+            outcome="denied",
+            source="member_memory",
+            error="The requested delegation changes the member's private memory.",
+        )
+        return web.json_response(
+            {
+                "error": "A Crew Member can delegate only within its own private memory.",
+                "code": "memory_unavailable",
+            },
+            status=409,
+        )
+    try:
+        await asyncio.to_thread(
+            require_memory_delegation,
+            state.conversation_log,
+            parent_session,
+            child_memory_store,
+        )
+    except (OSError, ValueError) as exc:
+        return web.json_response({"error": str(exc), "code": "memory_unavailable"}, status=409)
     max_turns = cleaned.get("max_turns") or 0
     cwd = cleaned.get("cwd") or ""
     model = cleaned.get("model") or ""
@@ -259,6 +399,7 @@ async def api_spawn(request: web.Request) -> web.Response:
         include_memory=cleaned.get("include_memory", True) is not False,
         include_lessons=cleaned.get("include_lessons", True) is not False,
         include_project=cleaned.get("include_project", True) is not False,
+        memory_store=child_memory_store,
     )
     if not info:
         # Reached mgr.spawn (submission COUNTED at the top of spawn()) but
@@ -344,6 +485,9 @@ async def api_spawn_continue(request: web.Request) -> web.Response:
     if not task:
         return web.json_response({"error": "task is required", "code": "task_required"}, status=400)
     parent_session = str(body.get("parent_session", "") or "")
+    refusal = await _spawn_scope_refusal(request, claimed_session=parent_session)
+    if refusal is not None:
+        return refusal
     agent = str(body.get("agent", "") or "")
     model = str(body.get("model", "") or "")
     try:
@@ -487,6 +631,9 @@ async def api_spawn_lost(request: web.Request) -> web.Response:
         batch_total = 0
     reason = str(body.get("reason", "") or "spawn submission failed")[:300]
     parent_session = str(body.get("parent_session", "") or "")
+    _, refusal = await internal_memory_scope(request, "spawn.batch", claimed_session=parent_session)
+    if refusal is not None:
+        return refusal
     state.subagents.record_lost_submission(
         batch_id, batch_total, reason, parent_session_key=parent_session
     )
@@ -514,6 +661,9 @@ async def api_spawn_mark_collected(request: web.Request) -> web.Response:
             {"error": "'ids' array required", "code": "ids_required"}, status=400
         )
     parent_session = str(body.get("parent_session", "") or "")
+    _, refusal = await internal_memory_scope(request, "spawn.batch", claimed_session=parent_session)
+    if refusal is not None:
+        return refusal
     slot_name = dashboard_slot_key(parent_session)
     if not slot_name:
         return web.json_response({"status": "no_slot"})
@@ -710,8 +860,13 @@ async def api_spawn_list(request: web.Request) -> web.Response:
     state: DashboardState = request.app["state"]
     if not state.subagents:
         return web.json_response({"agents": []})
+    scope, refusal = await internal_memory_scope(request, "spawn.list")
+    if refusal is not None:
+        return refusal
     agents = []
     for info in state.subagents.all_agents:
+        if scope is not None and info.memory_store != scope:
+            continue
         entry: dict[str, object] = {
             "id": info.id,
             "task": _redact(info.task),
@@ -806,6 +961,10 @@ async def api_spawn_retry(request: web.Request) -> web.Response:
         include_memory=old.include_memory,
         include_lessons=old.include_lessons,
         include_project=old.include_project,
+        # Same scope the original ran under. Omitting it makes a retry widen to
+        # the global store, so the failure mode is "retrying a delegation leaks
+        # it" -- and a retry is exactly when nobody re-reads the scope.
+        memory_store=old.memory_store,
     )
     if not info:
         return web.json_response(
@@ -917,6 +1076,11 @@ async def api_spawn_stop_all(request: web.Request) -> web.Response:
     slot = state.get_slot(slot_name)
     if slot is None:
         return web.json_response({"error": "slot not found", "code": "slot_not_found"}, status=404)
+    _, refusal = await internal_memory_scope(
+        request, "spawn.stop_all", claimed_session=effective_session_key(slot)
+    )
+    if refusal is not None:
+        return refusal
     running, queued = await state.subagents.cancel_for_parent(effective_session_key(slot))
     return web.json_response(
         {"ok": True, "stopped": running + queued, "running": running, "queued": queued}
@@ -928,7 +1092,14 @@ async def api_spawn_clear(request: web.Request) -> web.Response:
     state: DashboardState = request.app["state"]
     if not state.subagents:
         return web.json_response({"ok": True})
-    done_ids = [a.id for a in state.subagents.all_agents if a.done]
+    scope, refusal = await internal_memory_scope(request, "spawn.clear")
+    if refusal is not None:
+        return refusal
+    done_ids = [
+        a.id
+        for a in state.subagents.all_agents
+        if a.done and (scope is None or a.memory_store == scope)
+    ]
     for aid in done_ids:
         state.subagents._agents.pop(aid, None)
         state.subagents._tasks.pop(aid, None)
@@ -6894,3 +7065,34 @@ async def _feishu_config_save_locked(request: web.Request) -> web.Response:
             "verify_warning": "",
         }
     )
+
+
+# A private member reaches only the runs its own memory store owns: the per-run
+# routes run behind ``_spawn_scope_refusal``, the listed routes scope their own
+# caller in their body, and any other ``api_spawn*`` handler is refused to
+# private members until it is listed here on purpose.
+guard_owner_surface_routes(
+    globals(),
+    prefix="api_spawn",
+    member_scoped=frozenset(
+        {
+            "api_spawn",
+            "api_spawn_continue",
+            "api_spawn_lost",
+            "api_spawn_mark_collected",
+            "api_spawn_list",
+            "api_spawn_stop_all",
+            "api_spawn_clear",
+        }
+    ),
+    resource_scoped={
+        name: _spawn_scope_refusal
+        for name in (
+            "api_spawn_steer",
+            "api_spawn_release",
+            "api_spawn_status",
+            "api_spawn_retry",
+            "api_spawn_delete",
+        )
+    },
+)

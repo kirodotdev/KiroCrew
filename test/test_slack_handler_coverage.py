@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 import time
 from pathlib import Path
 from unittest.mock import ANY, AsyncMock, MagicMock
@@ -1110,35 +1111,121 @@ class TestAgentResolution:
 # thread-override hydration
 # ──────────────────────────────────────────────────────────────────────
 class TestThreadOverrideHydration:
-    def test_second_call_is_a_no_op(self):
-        log = MagicMock()
-        log.get_metadata.return_value = {}
-        h._hydrate_thread_overrides("t1", log)
-        h._hydrate_thread_overrides("t1", log)
-        log.get_metadata.assert_called_once()
+    @pytest.mark.asyncio
+    async def test_private_identity_reads_run_off_loop_and_live_maps_stay_on_loop(
+        self, monkeypatch
+    ):
+        from kiro_crew import memory_stores
+        from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig
+        from kiro_crew.config.sections import MemoryStoreConfig
 
-    def test_without_log_only_marks_hydrated(self):
-        h._hydrate_thread_overrides("t1", None)
+        loop_thread = threading.get_ident()
+
+        class LoopOwnedMap(dict):
+            def __setitem__(self, key, value):
+                assert threading.get_ident() == loop_thread
+                super().__setitem__(key, value)
+
+        monkeypatch.setattr(h, "_thread_agents", LoopOwnedMap())
+        monkeypatch.setattr(h, "_thread_projects", LoopOwnedMap())
+        cfg = KiroCrewConfig.load()
+        cfg.agents["reviewer"] = KiroCrewAgentConfig(
+            kiro_agent="kirocrew", memory_store="member-reviewer"
+        )
+        cfg.memory_stores["member-reviewer"] = MemoryStoreConfig(
+            owner_member="reviewer", memory_version=2
+        )
+        monkeypatch.setattr(KiroCrewConfig, "load", lambda: cfg)
+        original = memory_stores.require_member_memory_not_archived
+        archive_reads = []
+
+        def read_archive(store):
+            with pytest.raises(RuntimeError, match="no running event loop"):
+                asyncio.get_running_loop()
+            archive_reads.append(store)
+            return original(store)
+
+        monkeypatch.setattr(memory_stores, "require_member_memory_not_archived", read_archive)
+
+        def read_metadata(_key):
+            with pytest.raises(RuntimeError, match="no running event loop"):
+                asyncio.get_running_loop()
+            return {"agent": "reviewer", "memory_store": "member-reviewer", "project": "/srv/app"}
+
+        log = MagicMock(get_metadata=MagicMock(side_effect=read_metadata))
+        await h._hydrate_thread_overrides("t1", log)
+        await h._hydrate_thread_overrides("t1", log)
+        log.get_metadata.assert_called_once_with("t1")
+        assert archive_reads == ["member-reviewer"]
+        assert h._thread_agents["t1"] == "kirocrew"
+        assert h._thread_projects["t1"] == "/srv/app"
         assert "t1" in h._hydrated_sessions
 
-    def test_metadata_failure_is_swallowed(self):
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("clear", [False, True])
+    async def test_worker_result_cannot_overwrite_a_newer_live_selection(self, monkeypatch, clear):
+        loop = asyncio.get_running_loop()
+        started = asyncio.Event()
+        release = threading.Event()
+        h._thread_agents["t1"] = "before-agent"
+        h._thread_projects["t1"] = "before-project"
+
+        def read(_key, _log):
+            loop.call_soon_threadsafe(started.set)
+            assert release.wait(5), "test did not release the metadata read"
+            return "saved-agent", "saved-project"
+
+        monkeypatch.setattr(h, "_read_thread_overrides", read)
+        task = asyncio.create_task(h._hydrate_thread_overrides("t1", MagicMock()))
+        try:
+            await asyncio.wait_for(started.wait(), 5)
+            assert "t1" not in h._hydrated_sessions
+            if clear:
+                h._thread_agents.pop("t1")
+                h._thread_projects.pop("t1")
+            else:
+                h._thread_agents["t1"] = "new-agent"
+                h._thread_projects["t1"] = "new-project"
+        finally:
+            release.set()
+            await asyncio.wait_for(task, 5)
+        assert h._thread_agents.get("t1") == (None if clear else "new-agent")
+        assert h._thread_projects.get("t1") == (None if clear else "new-project")
+
+    @pytest.mark.asyncio
+    async def test_second_call_is_a_no_op(self):
+        log = MagicMock()
+        log.get_metadata.return_value = {}
+        await h._hydrate_thread_overrides("t1", log)
+        await h._hydrate_thread_overrides("t1", log)
+        log.get_metadata.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_without_log_only_marks_hydrated(self):
+        await h._hydrate_thread_overrides("t1", None)
+        assert "t1" in h._hydrated_sessions
+
+    @pytest.mark.asyncio
+    async def test_metadata_failure_is_swallowed(self):
         log = MagicMock()
         log.get_metadata.side_effect = OSError("corrupt")
-        h._hydrate_thread_overrides("t1", log)
+        await h._hydrate_thread_overrides("t1", log)
         assert "t1" not in h._thread_agents
 
-    def test_agent_and_project_hydrated(self):
+    @pytest.mark.asyncio
+    async def test_agent_and_project_hydrated(self):
         log = MagicMock()
         log.get_metadata.return_value = {"agent": "demo", "project": "/srv/app"}
-        h._hydrate_thread_overrides("t1", log)
+        await h._hydrate_thread_overrides("t1", log)
         assert h._thread_agents["t1"] == "demo"
         assert h._thread_projects["t1"] == "/srv/app"
 
-    def test_sensitive_project_is_dropped(self, monkeypatch):
+    @pytest.mark.asyncio
+    async def test_sensitive_project_is_dropped(self, monkeypatch):
         monkeypatch.setattr(h, "is_sensitive_path", lambda p: True)
         log = MagicMock()
         log.get_metadata.return_value = {"project": "/home/u/.aws"}
-        h._hydrate_thread_overrides("t1", log)
+        await h._hydrate_thread_overrides("t1", log)
         assert "t1" not in h._thread_projects
 
 

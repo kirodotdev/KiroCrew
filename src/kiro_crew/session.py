@@ -449,6 +449,7 @@ POOL_DECISIONS: frozenset[str] = frozenset(
         "miss_empty",
         "bypass_resume",
         "bypass_stateless",
+        "bypass_private_memory",
         "bypass_cwd",
         "bypass_effort",
         "bypass_env",

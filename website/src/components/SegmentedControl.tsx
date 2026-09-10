@@ -148,7 +148,7 @@ export default function SegmentedControl<T extends string = string>({ segments, 
 
   return (
     <>
-      <div ref={containerRef} className="inline-flex rounded-lg bg-bg-elevated border border-border p-0.5 gap-0.5">
+      <div ref={containerRef} role="group" className="inline-flex rounded-lg bg-bg-elevated border border-border p-0.5 gap-0.5">
         {segments.map(s => {
           const isActive = s.key === value
           const isDisabled = s.disabled === true

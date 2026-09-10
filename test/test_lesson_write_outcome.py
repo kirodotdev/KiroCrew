@@ -20,6 +20,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from body_stream_helpers import attach_body
 
+from kiro_crew.history import ConversationLog
 from kiro_crew.vector_memory import (
     LessonWriteOutcome,
     LessonWriteResult,
@@ -361,6 +362,7 @@ class TestLessonsRouteReportsTheOutcome:
     def _request(self):
         request = MagicMock()
         state = MagicMock()
+        state.conversation_log = ConversationLog()
         state._background_tasks = set()
         request.app = {"state": state}
         request.headers = {"X-Session-Key": "dashboard:ui"}

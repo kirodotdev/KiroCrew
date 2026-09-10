@@ -4219,9 +4219,16 @@ def _preserve_replaced_json(payload: Any, destination: Path) -> str:
 def _lessons_overlap(incoming: str, existing: str) -> bool:
     """Whether two lesson rules are close enough to treat as the same lesson.
 
-    Mirrors ``VectorMemoryStore.write_lesson``'s own dedupe (substring, then
-    >50% significant-word overlap) so import RECOGNIZES the same collisions --
-    but reports them instead of replacing, which is what that writer would do.
+    Tracks ``VectorMemoryStore.write_lesson``'s own dedupe (substring, then
+    significant-word overlap) so import RECOGNIZES the same collisions -- but
+    reports them instead of replacing, which is what that writer would do.
+
+    The overlap divisor is deliberately the SMALLER word set here, which is
+    stricter than the writer's (that one divides by the larger set, because a
+    false positive there DELETES the stored lesson). Import is merge-only, so a
+    false positive costs at most a skipped foreign directive that the user can
+    still teach by hand -- the conservative direction for a boundary that
+    ingests another agent's instructions.
     """
 
     left = incoming.lower().strip()

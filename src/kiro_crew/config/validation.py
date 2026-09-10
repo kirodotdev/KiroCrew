@@ -170,6 +170,10 @@ def _actual_type_name(value: object) -> str:
 #:   segments it is already past ``_apply_field_default``'s depth cap, so a
 #:   malformed list value is kept today.
 #:
+#: * ``memory``: new private provisioning defaults to enabled. Preserve an
+#:   unreadable section so the loader records its degradation and the creation
+#:   guard refuses instead of treating the operator's setting as absent.
+#:
 #: Exact-match only: this is a per-path judgment, not a subtree rule. The
 #: registry is only half of a fix — a preserved value changes nothing unless
 #: the loader RECORDS the degradation and a gate reads
@@ -181,6 +185,7 @@ _FAIL_CLOSED_PATHS = frozenset(
         "publish.allowed_destinations",
         "dashboard",
         "dashboard.tailscale",
+        "memory",
     }
 )
 

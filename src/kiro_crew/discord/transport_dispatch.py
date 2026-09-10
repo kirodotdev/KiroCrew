@@ -30,6 +30,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
 from kiro_crew.config.loader import KiroCrewConfig
+from kiro_crew.context import session_store_for_turn
 from kiro_crew.discord.attachments import (
     append_attachment_context,
     process_discord_attachments,
@@ -58,6 +59,7 @@ from kiro_crew.discord.transport import DISCORD_CAPABILITIES
 from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.history import mint_row_mid
 from kiro_crew.hooks import TOOL_AUTO_APPROVE, TOOL_DENY
+from kiro_crew.memory_stores import UnknownMemoryStore
 from kiro_crew.messaging.attachments import IngestLimits
 from kiro_crew.messaging.attachments import cleanup as cleanup_attachments
 from kiro_crew.messaging.commands import (
@@ -89,7 +91,12 @@ from kiro_crew.messaging.upload_gate import session_is_restricted, uploads_restr
 from kiro_crew.monitoring.completion import MonitorCompletionHook
 from kiro_crew.monitoring.models import MonitorDispatchResult
 from kiro_crew.safety_override import describe_grant_lifetime, safety_override
-from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.security import (
+    redact,
+    redact_credentials,
+    redact_exfiltration_urls,
+    redact_local_paths,
+)
 from kiro_crew.sel import sel
 from kiro_crew.session import SessionBusyError
 from kiro_crew.session_allocation import SessionClosingError
@@ -551,6 +558,7 @@ class DiscordDispatcher:
             if resumed_key is not None:
                 return MonitorDispatchResult.UNAVAILABLE
             try:
+                _memory_store = await session_store_for_turn(self.ctx_builder, session_key)
                 provider, is_new, resumed = await self.sessions.get_or_create(
                     session_key,
                     agent=agent,
@@ -669,6 +677,7 @@ class DiscordDispatcher:
             # leaving the session idle in that window lets a later message run
             # first and persist the conversation in reverse order.
             if not _acquired:
+                _memory_store = await session_store_for_turn(self.ctx_builder, session_key)
                 # ``model`` applies only when this call COLD-STARTS the session: the
                 # fast path returns a reused session before it consults the argument.
                 # That is exactly what ``!model``'s reply promises ("applies to your
@@ -740,6 +749,14 @@ class DiscordDispatcher:
             # Publish this turn's session identity so managed MCP tools resolve
             # X-Session-Key; one shared writer lives in messaging.identity.
             await publish_turn_identity(self.sessions, session_key)
+            # This conversation's own silo, from the session's RECORDED binding and
+            # never from ``agent``: that value is a kiro agent name, a namespace
+            # disjoint from ``cfg.agents``, so a store derived from it resolves to
+            # ``default`` for exactly the crew that configured otherwise. A resumed
+            # dashboard session carries its crew's key here, which is what keeps a
+            # `!sessions` resume of a crew-bound conversation out of the operator's
+            # own memory. Its private tier was prepared before provider
+            # acquisition; an unavailable member store refuses the turn.
             # Off-loop: build_message embeds the episodic query (blocking urllib).
             full_message, _ = await run_in_embed_pool(
                 self.ctx_builder.build_message,
@@ -748,6 +765,7 @@ class DiscordDispatcher:
                 session_key,
                 channel_id=chan_id,
                 agent=agent,
+                memory_store=_memory_store,
                 resumed=resumed,
                 runtime_source="discord",
             )
@@ -945,6 +963,12 @@ class DiscordDispatcher:
                         attachments_dropped=len(getattr(msg, "attachments", None) or ()),
                     ),
                 )
+        except UnknownMemoryStore as exc:
+            logger.warning("Discord member memory unavailable: %s", exc)
+            if monitor_completion is not None:
+                return MonitorDispatchResult.UNAVAILABLE
+            await out_renderer.on_text_chunk(redact_local_paths(redact(str(exc)))[0][:1000])
+            await out_renderer.on_done()
         except Exception:
             logger.exception("Discord transport_dispatch: error handling message")
             if monitor_completion is not None:

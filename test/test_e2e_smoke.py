@@ -17,6 +17,7 @@ import http.cookiejar
 import json
 import os
 import time
+import urllib.error
 import urllib.request
 
 import pytest
@@ -92,8 +93,25 @@ def _api_post(gateway, path: str, body: dict) -> dict:
     data = json.dumps(body).encode()
     req = urllib.request.Request(f"http://localhost:{gateway.port}{path}", data=data, method="POST")
     req.add_header("Content-Type", "application/json")
-    with _opener(gateway).open(req, timeout=30) as resp:
-        return json.loads(resp.read())
+    try:
+        with _opener(gateway).open(req, timeout=30) as resp:
+            return json.loads(resp.read())
+    except urllib.error.HTTPError as exc:
+        with exc:
+            error_body = exc.read(4096)
+        try:
+            failure = json.loads(error_body)
+        except (ValueError, UnicodeError):
+            failure = None
+        code = failure.get("code") if isinstance(failure, dict) else None
+        safe_code = (
+            code
+            if isinstance(code, str)
+            and 0 < len(code) <= 64
+            and all(char in "abcdefghijklmnopqrstuvwxyz0123456789_" for char in code)
+            else "unavailable"
+        )
+        raise AssertionError(f"HTTP {exc.code}, code={safe_code}") from None
 
 
 # --- Smoke tests ---
@@ -287,15 +305,18 @@ def test_chat_send_receives_reply(acp_gateway):
     ``agent_message_chunk``, reply assembly + persistence) with a deterministic
     offline backend -- no Bedrock, no network, no auth.
     """
-    slot = _api_post(acp_gateway, "/api/chat/slots", {})["key"]
+    created = _api_post(acp_gateway, "/api/chat/slots", {})
+    slot = created["key"]
+    agent = created["agent"]
     assert slot
+    assert isinstance(agent, str) and agent.strip()
 
     # ws=1: POST returns immediately; the reply is delivered over the WebSocket
     # AND persisted to the slot's message history, which we poll below.
     _api_post(
         acp_gateway,
         "/api/chat?ws=1",
-        {"message": "ping", "slot": slot, "agent": "kirocrew"},
+        {"message": "ping", "slot": slot, "agent": agent},
     )
 
     reply = _await_assistant_reply(acp_gateway, slot)
@@ -314,13 +335,16 @@ def test_chat_tool_call_renders(acp_gateway):
     ``[[PERMISSION]]`` approval-modal path needs a UI to resolve the modal, so
     it is exercised by Playwright, not this headless suite.
     """
-    slot = _api_post(acp_gateway, "/api/chat/slots", {})["key"]
+    created = _api_post(acp_gateway, "/api/chat/slots", {})
+    slot = created["key"]
+    agent = created["agent"]
     assert slot
+    assert isinstance(agent, str) and agent.strip()
 
     _api_post(
         acp_gateway,
         "/api/chat?ws=1",
-        {"message": "please [[TOOL]] run the demo", "slot": slot, "agent": "kirocrew"},
+        {"message": "please [[TOOL]] run the demo", "slot": slot, "agent": agent},
     )
 
     reply = _await_assistant_reply(acp_gateway, slot)

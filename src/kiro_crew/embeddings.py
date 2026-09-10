@@ -47,6 +47,7 @@ import types
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections import OrderedDict
 from pathlib import Path
 from typing import Callable, NamedTuple, Protocol
 
@@ -124,9 +125,13 @@ _INFER_STOP_TIMEOUT_SECS = 30.0
 # 16-core host EVERY embed, even an 8-character one, fanned out across all 16
 # cores and measured ~4.5 cores sustained inside the gateway. A 0.6B model over
 # short text does not need that, and oversubscribing the box makes the pool both
-# suffer and cause contention. Pinned low here, overridable via
-# memory.embedding_threads.
+# suffer and cause contention. Pinned to the established four-thread default
+# here, overridable via memory.embedding_threads.
 _DEFAULT_EMBED_THREADS = 4
+# One shared model and worker serve every store within this queue budget.
+_MAX_PENDING_EMBEDS = 8
+_INTERACTIVE_QUEUE_RESERVE = 2
+_MAX_EMBED_BATCH_TEXTS = 8
 # Bulk corpus loops (the post-migration re-embed sweep above all) run for as long
 # as the corpus takes: measured 429 ms/row at 4 threads on ~500-character rows,
 # so a 3,000-row migrated memory is ~21 minutes at a SUSTAINED 3.7 cores. That is
@@ -601,9 +606,8 @@ def _embed_threads() -> int:
 
     Read from the RAW ``memory`` config section for the same reason the rest of
     this module does: the download thread and the backend factory must not pull
-    in the full config dataclass import graph. Clamped to ``[1, cpu_count]`` so a
-    typo cannot hand llama.cpp a zero, a negative, or a count far above the
-    machine's cores.
+    in the full config dataclass import graph. Explicit operator settings are
+    honoured up to the host's CPU count.
     """
     raw = _read_memory_config().get("embedding_threads")
     if isinstance(raw, bool) or not isinstance(raw, int) or raw <= 0:
@@ -618,8 +622,7 @@ def bulk_embed_threads() -> int:
     waiting on bulk work and a single thread is what keeps it off the fans. An
     explicit 0 means "inherit :func:`_embed_threads`", which is how a deployment
     opts back into the interactive pool for its sweeps. A value above the
-    interactive count is honoured (a server that wants the sweep done fast is a
-    legitimate choice) but still clamped to the machine's cores.
+    interactive count is honoured but still clamped to the machine's cores.
     """
     raw = _read_memory_config().get("embedding_bulk_threads")
     if isinstance(raw, bool) or not isinstance(raw, int) or raw < 0:
@@ -674,10 +677,11 @@ def bulk_pace_delay(elapsed: float) -> float:
     long as it worked. Returns 0.0 when pacing is off, and never returns more
     than :data:`_MAX_BULK_PACE_SLEEP`.
 
-    Callers sleep in their OWN thread and hold no model lock while doing so, so
-    an interactive embed arriving mid-pause is served at full speed rather than
-    waiting out the pause. That is why this returns a delay for the caller to
-    honour instead of sleeping inside the shared inference worker.
+    Corpus callers sleep without a model lock. The shared inference worker also
+    applies this delay between bulk jobs, with an interruptible wait so an
+    interactive query can wake it immediately. Independent stores therefore
+    share one duty cycle rather than keeping the worker busy during each other's
+    pauses.
     """
     if elapsed <= 0:
         return 0.0
@@ -907,9 +911,11 @@ def build_gated_bundled() -> LlamaCppEmbedder:
     # custom path — so omitting it would load the custom model here and label it
     # with the bundled model_id, stamping custom vectors as bundled and keeping
     # them across restarts.
-    return LlamaCppEmbedder(
+    backend = LlamaCppEmbedder(
         model_path=default_model_path(), dim=_DEFAULT_DIM, model_id=_MODEL_ID, serving=False
     )
+    backend._uses_bundled_identity = True
+    return backend
 
 
 def activate_shared_embedder() -> bool:
@@ -1053,9 +1059,11 @@ def embedding_space_signature(model_id: str, dim: int) -> str:
 
     Single source of truth so vector memory and the knowledge library cannot
     disagree about whether stored vectors are still valid. The knowledge
-    library folds this model identity into its own per-item signature (which
+    library hashes this value into its own per-item signature (which
     additionally covers its content budget); vector memory compares it against
-    the signature the database was last embedded under.
+    the signature the database was last embedded under. Because the KB's
+    identity is DERIVED from this one rather than assembled beside it, any input
+    added here necessarily reaches both consumers.
     """
     return hashlib.sha256(f"{model_id}|{dim}".encode()).hexdigest()[:16]
 
@@ -1228,8 +1236,9 @@ class EmbeddingBackend(abc.ABC):
     - ``model_id`` + ``dim`` identify the vector space. Vectors produced under
       a different ``model_id`` or ``dim`` are incomparable — a swap requires
       re-embedding stored vectors (the knowledge library's sig-gated rebuild
-      keys off :func:`kiro_crew.knowledge.embedder.embed_signature`, which
-      folds ``model_id`` in; vector memory re-embeds via ``migrate``).
+      keys off :func:`kiro_crew.knowledge.embedder.embed_signature`, which is
+      built on :func:`embedding_space_signature` and so folds BOTH in; vector
+      memory re-embeds via ``migrate``).
     - Implementations must be thread-safe (callers invoke from worker threads).
     """
 
@@ -1316,6 +1325,9 @@ class LlamaCppEmbedder(EmbeddingBackend):
         self._model_path = model_path or active_model_path()
         self._dim = dim
         self._model_id = model_id
+        # Only the bundled factory paths set this. A custom model may declare
+        # the same id and width without containing the same weights.
+        self._uses_bundled_identity = False
         self._llm: object | None = None
         # Gate: a candidate installed by a model change LOADS but serves nobody
         # until activate(). Returning None from embed* is the ABC's documented
@@ -1335,7 +1347,11 @@ class LlamaCppEmbedder(EmbeddingBackend):
         # increasing tiebreaker, which makes the ordering stable — equal
         # priorities stay FIFO — and also means the heap never has to compare two
         # _InferJob objects, which are not orderable.
-        self._jobs: "queue.PriorityQueue[tuple[int, int, _InferJob | None]]" = queue.PriorityQueue()
+        self._jobs: "queue.PriorityQueue[tuple[int, int, _InferJob | None]]" = queue.PriorityQueue(
+            maxsize=_MAX_PENDING_EMBEDS + 1  # the extra slot is reserved for shutdown
+        )
+        self._jobs_changed = threading.Event()
+        self._bulk_ready_at = 0.0
         self._seq = 0
         self._seq_lock = threading.Lock()
         # Thread count currently programmed into the loaded context, and whether
@@ -1565,6 +1581,28 @@ class LlamaCppEmbedder(EmbeddingBackend):
             logger.debug("Could not probe embedding dim", exc_info=True)
             return None
 
+    def _next_infer_job(
+        self, jobs: "queue.PriorityQueue[tuple[int, int, _InferJob | None]]"
+    ) -> "tuple[int, int, _InferJob | None]":
+        """Apply one shared bulk duty cycle, interruptible by interactive work."""
+        while True:
+            self._jobs_changed.clear()
+            delay = None
+            with self._dispatch_lock:
+                # Peek under PriorityQueue's mutex; only this owned worker removes
+                # jobs, and dispatch/close serialize every producer with this lock.
+                with jobs.mutex:
+                    head = jobs.queue[0] if jobs.queue else None
+                if head is not None:
+                    if head[2] is not None and head[0] >= PRIORITY_BULK:
+                        delay = max(0.0, self._bulk_ready_at - time.monotonic())
+                    if not delay:
+                        return jobs.get_nowait()
+            # A later interactive call or the shutdown sentinel wakes the worker
+            # immediately. Bulk loops cannot bypass the shared cooldown by each
+            # sleeping independently on another store's thread.
+            self._jobs_changed.wait(delay)
+
     def _infer_loop(self, jobs: "queue.PriorityQueue[tuple[int, int, _InferJob | None]]") -> None:
         """Worker body: run queued ``create_embedding`` calls, one at a time.
 
@@ -1586,7 +1624,7 @@ class LlamaCppEmbedder(EmbeddingBackend):
         strictly no more concurrent than a single caller holding it was.
         """
         while True:
-            prio, _seq, job = jobs.get()
+            prio, _seq, job = self._next_infer_job(jobs)
             if job is None:
                 # close() has already dropped the model. Anything queued behind
                 # the sentinel would otherwise wait on job.done forever, since
@@ -1601,6 +1639,10 @@ class LlamaCppEmbedder(EmbeddingBackend):
             except BaseException as exc:  # noqa: BLE001 - relayed to the caller verbatim
                 job.error = exc
             finally:
+                if prio >= PRIORITY_BULK and job.started:
+                    self._bulk_ready_at = time.monotonic() + bulk_pace_delay(
+                        time.monotonic() - job.started
+                    )
                 job.done.set()
 
     def _apply_thread_class(self, llm: object, priority: int) -> None:
@@ -1669,9 +1711,9 @@ class LlamaCppEmbedder(EmbeddingBackend):
 
         The caller does NOT hold ``_lock`` — the worker takes it around the
         actual inference — so several callers can have work queued at once and
-        *priority* decides who the single model serves next. The wait is
-        unbounded, matching the previous inline call: a wedged native inference
-        blocked the caller then too.
+        *priority* decides who the single model serves next. Pending work is
+        bounded; overload returns an unavailable embedding so the stored row can
+        remain pending and retrieval can use its lexical path.
         """
         job = _InferJob(llm, texts)
         with self._dispatch_lock:
@@ -1694,7 +1736,7 @@ class LlamaCppEmbedder(EmbeddingBackend):
                 # New worker, new queue. A straggler left behind by a timed-out
                 # close() join keeps draining its OWN queue, so it can neither
                 # consume this worker's jobs nor eat this worker's future sentinel.
-                self._jobs = queue.PriorityQueue()
+                self._jobs = queue.PriorityQueue(maxsize=_MAX_PENDING_EMBEDS + 1)
                 thread = threading.Thread(
                     target=self._infer_loop,
                     args=(self._jobs,),
@@ -1703,7 +1745,15 @@ class LlamaCppEmbedder(EmbeddingBackend):
                 )
                 self._infer_thread = thread
                 thread.start()
+            capacity = _MAX_PENDING_EMBEDS
+            if priority >= PRIORITY_NORMAL:
+                capacity -= _INTERACTIVE_QUEUE_RESERVE
+            if self._jobs.qsize() >= capacity:
+                job.error = RuntimeError("embedding queue is busy; retry deferred work later")
+                job.done.set()
+                return job
             self._jobs.put((priority, self._next_seq(), job))
+            self._jobs_changed.set()
         # Wait OUTSIDE the lock: the wait is unbounded, and holding the dispatch
         # lock across it would serialize every submitter behind this one job.
         job.done.wait()
@@ -1735,6 +1785,16 @@ class LlamaCppEmbedder(EmbeddingBackend):
         """
         if not texts or not any(t.strip() for t in texts):
             return None
+        if len(texts) > _MAX_EMBED_BATCH_TEXTS:
+            result = []
+            for start in range(0, len(texts), _MAX_EMBED_BATCH_TEXTS):
+                batch = self.embed_batch(
+                    texts[start : start + _MAX_EMBED_BATCH_TEXTS], priority=priority
+                )
+                if batch is None:
+                    return None
+                result.extend(batch)
+            return result
         if self._closed or not self._serving:
             # Closed: terminal, never reload. Not serving: a candidate mid-swap,
             # whose vectors would be in a space the store has not reconciled to.
@@ -1834,13 +1894,14 @@ class LlamaCppEmbedder(EmbeddingBackend):
                 thread, self._infer_thread = self._infer_thread, None
                 # Retire the queue at the same time as the thread, so a late caller
                 # cannot enqueue onto a queue that is shutting down.
-                jobs, self._jobs = self._jobs, queue.PriorityQueue()
+                jobs, self._jobs = self._jobs, queue.PriorityQueue(maxsize=_MAX_PENDING_EMBEDS + 1)
                 if thread is not None and thread.is_alive():
                     # The sentinel outranks queued work, so a large sweep already
                     # in the queue cannot delay shutdown. The worker fails
                     # anything still queued on its way out (_drain_orphans)
                     # rather than leaving a caller waiting on job.done.
                     jobs.put((_PRIORITY_SENTINEL, self._next_seq(), None))
+                    self._jobs_changed.set()
         # Join OUTSIDE _lock. The WORKER now holds _lock around inference, so
         # joining while holding it would deadlock against a job that was dequeued
         # just before the sentinel until the timeout expired.
@@ -1879,7 +1940,9 @@ def default_embedding_backend() -> EmbeddingBackend:
     """
     spec = resolve_custom_model()
     if spec is None:
-        return LlamaCppEmbedder()
+        backend = LlamaCppEmbedder()
+        backend._uses_bundled_identity = True
+        return backend
     # A broken custom path is still honoured as "custom": the embedder will not
     # load, embeddings stay unavailable, and memory degrades to keyword search.
     # Falling back to the bundled model here would silently swap the vector
@@ -1918,6 +1981,52 @@ def get_shared_embedder() -> EmbeddingBackend:
         if _shared_embedder is None:
             _shared_embedder = (_backend_factory or default_embedding_backend)()
         return _shared_embedder
+
+
+def peek_ready_shared_embedder() -> EmbeddingBackend | None:
+    """Return an existing ready backend without constructing or warming one."""
+    with _shared_embedder_lock:
+        backend = _shared_embedder
+    if backend is None or not backend.is_ready():
+        return None
+    return backend
+
+
+def peek_shared_embedding_identity() -> tuple[str | None, str]:
+    """Snapshot declared identity without constructing or loading a backend.
+
+    This does not inspect model files, infer, check readiness or prove model
+    equivalence. Custom/registered backends remain qualified as such even when
+    they declare the bundled id and width. Metadata getters are the backend's
+    existing constructor-time identity contract.
+    """
+    with _shared_embedder_lock:
+        backend = _shared_embedder
+        registered = _backend_factory is not None
+    source = "custom_or_registered" if registered else "unknown"
+    if backend is None:
+        return None, source
+    source = (
+        "bundled"
+        if not registered
+        and type(backend) is LlamaCppEmbedder
+        and getattr(backend, "_uses_bundled_identity", False)
+        else "custom_or_registered"
+    )
+    try:
+        model_id, dim = backend.model_id, backend.dim
+    except Exception:
+        return None, source
+    if (
+        not isinstance(model_id, str)
+        or not model_id
+        or len(model_id) > 512
+        or isinstance(dim, bool)
+        or not isinstance(dim, int)
+        or not 0 < dim <= 65_536
+    ):
+        return None, source
+    return embedding_space_signature(model_id, dim), source
 
 
 def reset_shared_embedder() -> None:
@@ -2306,61 +2415,52 @@ def start_background_model_download() -> "asyncio.Task[bool] | None":
 _EMBED_CACHE_MAX = 128
 
 
-class _EmbedFailed(Exception):
-    """Raised to prevent lru_cache from caching failed embedding attempts."""
+_sync_embed_cache: "OrderedDict[tuple[str, str], tuple[float, ...]]" = OrderedDict()
+_sync_embed_cache_lock = threading.Lock()
+_sync_embed_cache_backend: EmbeddingBackend | None = None
+# Fixed stripes coalesce concurrent identical requests without an unbounded map
+# of in-flight work. A hash collision only makes another query wait briefly.
+_sync_embed_stripes = tuple(threading.Lock() for _ in range(16))
+
+
+def _shared_sync_embed(text: str, *, priority: int = PRIORITY_NORMAL) -> list[float] | None:
+    global _sync_embed_cache_backend
+    text = text[:_MAX_EMBED_CHARS]
+    backend = get_shared_embedder()
+    # The backend identity also gates the cache below: replacing a backend with
+    # another instance of the same model id must not reuse its old vectors.
+    key = (backend.model_id, text)
+    with _sync_embed_stripes[hash(key) % len(_sync_embed_stripes)]:
+        with _sync_embed_cache_lock:
+            if _sync_embed_cache_backend is not backend:
+                _sync_embed_cache.clear()
+                _sync_embed_cache_backend = backend
+            cached = _sync_embed_cache.get(key)
+            if cached is not None:
+                _sync_embed_cache.move_to_end(key)
+                return list(cached)
+        vector = backend.embed(text, priority=priority)
+        if vector is None:
+            return None
+        with _sync_embed_cache_lock:
+            if _sync_embed_cache_backend is backend:
+                _sync_embed_cache[key] = tuple(vector)
+                _sync_embed_cache.move_to_end(key)
+                while len(_sync_embed_cache) > _EMBED_CACHE_MAX:
+                    _sync_embed_cache.popitem(last=False)
+        return list(vector)
+
+
+_shared_sync_embed.accepts_priority = True  # type: ignore[attr-defined]
 
 
 def make_sync_embed_fn() -> Callable[[str], "list[float] | None"]:
     """Return a sync callable ``(str) -> list[float] | None`` over the shared embedder.
 
-    Successful results are cached via ``functools.lru_cache`` keyed by input
-    text AND the producing backend's ``model_id`` — after a backend swap
-    (:func:`register_embedding_backend` + :func:`reset_shared_embedder`) the
-    old model's cached vectors can never be served for the new model, which
-    would silently mix incomparable vector spaces. Bounded to
-    ``_EMBED_CACHE_MAX`` entries (see constant for size math). Failures
-    (None) are not cached so a still-downloading model is retried. Embedding
-    never blocks on the model load (kicked in the background); callers get
-    ``None`` until the model is resident.
+    All stores and callers share ONE bounded cache and inference backend.
+    Concurrent identical texts are coalesced; failures are never cached, so a
+    missing model or saturated queue can be retried. Backend replacement clears
+    the cache even when the new backend advertises the same model id.
     """
 
-    # Priority travels OUT OF BAND rather than as a cached argument: adding it to
-    # the lru_cache key would re-embed the same text once per priority, losing the
-    # reuse that currently lets episodic recall ride on the lessons embed of the
-    # identical query. Thread-local is safe because embed() blocks on the calling
-    # thread — the hand-off to kc-embed-infer happens inside it.
-    _call_priority = threading.local()
-
-    @functools.lru_cache(maxsize=_EMBED_CACHE_MAX)
-    def _cached_embed(text: str, model_id: str) -> tuple[float, ...]:
-        del model_id  # cache-key only — routes stale entries away after a backend swap
-        info = _cached_embed.cache_info()
-        if info.misses % 20 == 0:
-            logger.info(
-                "Embedding cache: hits=%d misses=%d size=%d/%d",
-                info.hits,
-                info.misses,
-                info.currsize,
-                info.maxsize,
-            )
-        vec = get_shared_embedder().embed(
-            text, priority=getattr(_call_priority, "value", PRIORITY_NORMAL)
-        )
-        if vec is None:
-            raise _EmbedFailed
-        return tuple(vec)
-
-    def _embed(text: str, *, priority: int = PRIORITY_NORMAL) -> list[float] | None:
-        _call_priority.value = priority
-        try:
-            return list(_cached_embed(text, get_shared_embedder().model_id))
-        except _EmbedFailed:
-            return None
-        finally:
-            _call_priority.value = PRIORITY_NORMAL
-
-    # Explicit capability flag rather than a TypeError probe: a TypeError raised
-    # from INSIDE a custom embed_fn must not be misread as "does not take a
-    # priority", which would silently downgrade every call to the default.
-    _embed.accepts_priority = True  # type: ignore[attr-defined]
-    return _embed
+    return _shared_sync_embed

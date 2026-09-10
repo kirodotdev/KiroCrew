@@ -48,11 +48,95 @@ from kiro_crew.config.loader import (
     validate_kiro_agent_references,
     workspace_dir_for,
 )
+from kiro_crew.memory_stores import (
+    UnknownMemoryStore,
+    memory_store_name_defect,
+    provision_member_memory,
+)
 from kiro_crew.stt import limits as stt_limits
 from kiro_crew.stt import models as stt_models
 
+
+@pytest.mark.parametrize("enabled,keep", [(False, 30), (True, 2)])
+def test_memory_backup_controls_survive_load_and_save(tmp_path, monkeypatch, enabled, keep):
+    path = tmp_path / "config.json"
+    path.write_text(
+        json.dumps({"memory": {"backup_enabled": enabled, "backup_keep": keep}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(loader_module, "config_path", lambda: path)
+    config = KiroCrewConfig.load()
+    assert config.memory.backup_enabled is enabled
+    assert config.memory.backup_keep == keep
+    config.save()
+    saved = json.loads(path.read_text(encoding="utf-8"))
+    assert saved["memory"]["backup_enabled"] is enabled
+    assert saved["memory"]["backup_keep"] == keep
+
+
+@pytest.mark.parametrize(
+    ("memory_data", "expected"),
+    [
+        pytest.param({}, True, id="missing-defaults-on"),
+        pytest.param({"backup_enabled": False}, False, id="boolean-false"),
+        pytest.param({"backup_enabled": True}, True, id="boolean-true"),
+        pytest.param({"backup_enabled": 0}, True, id="integer-zero-is-invalid"),
+        pytest.param({"backup_enabled": ""}, True, id="empty-string-is-invalid"),
+        pytest.param({"backup_enabled": "false"}, True, id="string-false-is-invalid"),
+        pytest.param({"backup_enabled": [False]}, True, id="list-is-invalid"),
+    ],
+)
+def test_memory_backup_enabled_requires_json_boolean_without_jsonschema(
+    tmp_path, monkeypatch, memory_data, expected
+):
+    """The shipped runtime still enforces the config field's bool contract."""
+    from kiro_crew.config import validation
+
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps({"memory": memory_data}), encoding="utf-8")
+    monkeypatch.setattr(validation, "_HAS_JSONSCHEMA", False)
+    monkeypatch.setattr(loader_module, "config_path", lambda: path)
+    monkeypatch.setattr(loader_module, "config_local_path", lambda: tmp_path / "missing.local.json")
+
+    config = KiroCrewConfig.load()
+
+    assert config.memory.backup_enabled is expected
+
+
 # Logger used by the loader module — needed for capturing warnings in tests
 logger = logging.getLogger("kiro_crew.config.loader")
+
+
+@pytest.mark.parametrize("without_jsonschema", [False, True])
+@pytest.mark.parametrize(
+    "memory_data,expected",
+    [
+        ({}, True),
+        ({"private_provisioning_enabled": True}, True),
+        ({"private_provisioning_enabled": False}, False),
+        ({"private_provisioning_enabled": "false"}, False),
+        ({"private_provisioning_enabled": 1}, False),
+        ({"private_provisioning_enabled": None}, False),
+    ],
+)
+def test_private_provisioning_control_round_trip_and_invalid_value_pause(
+    tmp_path, monkeypatch, memory_data, expected, without_jsonschema
+):
+    from kiro_crew.config import validation
+
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps({"memory": memory_data}), encoding="utf-8")
+    monkeypatch.setattr(loader_module, "config_path", lambda: path)
+    monkeypatch.setattr(loader_module, "config_local_path", lambda: tmp_path / "absent.local.json")
+    if without_jsonschema:
+        monkeypatch.setattr(validation, "_HAS_JSONSCHEMA", False)
+    config = KiroCrewConfig.load()
+    assert config.memory.private_provisioning_enabled is expected
+    config.save()
+    saved = json.loads(path.read_text(encoding="utf-8"))
+    assert saved["memory"]["private_provisioning_enabled"] is expected
+    assert KiroCrewConfig.load().memory.private_provisioning_enabled is expected
+
 
 # ---------------------------------------------------------------------------
 # Helpers / Strategies
@@ -594,6 +678,19 @@ _safe_name_st = st.text(
     min_size=1,
     max_size=15,
 )
+
+# Memory-store names are stricter than the generic identifier alphabet above: a
+# store name becomes a single path segment, so ``memory_store_name_defect``
+# refuses an underscore, an outer hyphen and a Windows device basename. Such a
+# name is UNDECLARED for resolution however the config spells it, which is what
+# stops ``resolve_agent_bindings`` from handing a crew a store no resolver will
+# compose a path for. A property about a store a crew is genuinely BOUND to
+# therefore has to generate a name the shape rule accepts.
+_store_name_st = st.text(
+    alphabet=st.sampled_from("abcdefghijklmnopqrstuvwxyz0123456789-"),
+    min_size=1,
+    max_size=15,
+).filter(lambda n: memory_store_name_defect(n) is None)
 
 # Strategy for KiroCrewAgentConfig instances
 _kirocrew_agent_config_st = st.builds(
@@ -1252,7 +1349,7 @@ class TestAgentWorkspaceBindingsProperties:
     @given(
         agent_name=_safe_name_st,
         ws_name=_safe_name_st,
-        store_name=_safe_name_st,
+        store_name=_store_name_st,
         kiro_agent_name=st.text(min_size=1, max_size=20),
         ws_dir=st.text(min_size=1, max_size=30),
         store_desc=st.text(min_size=0, max_size=20),
@@ -1295,17 +1392,21 @@ class TestAgentWorkspaceBindingsProperties:
             default_memory_store=store_name,
         )
 
+        expected_store = (
+            "default" if agent_name == "default" else provision_member_memory(config, agent_name)
+        )
+
         # Resolve via explicit agent_name
         result = resolve_agent_bindings(config, agent_name=agent_name)
         assert isinstance(result, ResolvedBindings)
         assert result.workspace_dir == Path(ws_dir)
-        assert result.memory_store_name == store_name
+        assert result.memory_store_name == expected_store
         assert result.kiro_agent == kiro_agent_name
 
         # Resolve via default_agent (no explicit agent_name)
         result2 = resolve_agent_bindings(config)
         assert result2.workspace_dir == Path(ws_dir)
-        assert result2.memory_store_name == store_name
+        assert result2.memory_store_name == expected_store
         assert result2.kiro_agent == kiro_agent_name
 
     # Feature: agent-workspace-bindings, Property 4: Resolver fallback on missing references
@@ -1314,7 +1415,7 @@ class TestAgentWorkspaceBindingsProperties:
         missing_ws=_safe_name_st,
         missing_store=_safe_name_st,
         fallback_ws_name=_safe_name_st,
-        fallback_store_name=_safe_name_st,
+        fallback_store_name=_store_name_st,
         fallback_ws_dir=st.text(min_size=1, max_size=30),
     )
     @settings(deadline=None)
@@ -1327,11 +1428,7 @@ class TestAgentWorkspaceBindingsProperties:
         fallback_store_name: str,
         fallback_ws_dir: str,
     ) -> None:
-        """When an agent references a non-existent workspace or store,
-        the resolver falls back to default_workspace / default_memory_store.
-
-        **Validates: Requirements 7.3, 7.4, 2.3**
-        """
+        """Workspace fallback never repairs an invalid member memory binding."""
         # Ensure the agent references names that do NOT exist in the maps
         assume(missing_ws != fallback_ws_name)
         assume(missing_store != fallback_store_name)
@@ -1351,12 +1448,17 @@ class TestAgentWorkspaceBindingsProperties:
             default_memory_store=fallback_store_name,
         )
 
+        if agent_name != "default":
+            with pytest.raises(UnknownMemoryStore):
+                resolve_agent_bindings(config, agent_name=agent_name)
+        expected_store = (
+            "default" if agent_name == "default" else provision_member_memory(config, agent_name)
+        )
         result = resolve_agent_bindings(config, agent_name=agent_name)
 
         # Should fall back to default_workspace dir
         assert result.workspace_dir == Path(fallback_ws_dir)
-        # Should fall back to default_memory_store name
-        assert result.memory_store_name == fallback_store_name
+        assert result.memory_store_name == expected_store
 
     # Feature: agent-workspace-bindings, Property 8: Kiro agent validation warnings
     @given(
@@ -1601,6 +1703,59 @@ class TestAgentWorkspaceBindingsProperties:
         # Resolve bindings → uses migrated default agent
         result = resolve_agent_bindings(cfg)
         assert result.kiro_agent == expected_kiro
+
+
+class TestMemoryStoreBindingFloor:
+    """Legacy bindings stay exact, and explicit V2 selection creates a new store."""
+
+    @pytest.mark.parametrize(
+        "bound",
+        ["default", "", None],
+        ids=["explicit-default", "empty-string", "key-absent"],
+    )
+    def test_default_assistant_retains_v1_without_repairing_member_bindings(self, bound) -> None:
+        # ``None`` stands for the key being absent from the crew's config entry: the
+        # field's own default is the floor, and this pins that the two agree.
+        assert KiroCrewAgentConfig().memory_store == "default"
+        agent_kwargs: dict = {"kiro_agent": "kirocrew", "workspace": "default"}
+        if bound is not None:
+            agent_kwargs["memory_store"] = bound
+
+        config = KiroCrewConfig(
+            agents={
+                "default": KiroCrewAgentConfig(**agent_kwargs),
+                "floor": KiroCrewAgentConfig(**agent_kwargs),
+                "chose": KiroCrewAgentConfig(kiro_agent="kirocrew", memory_store="work"),
+                "broken": KiroCrewAgentConfig(kiro_agent="kirocrew", memory_store="gone"),
+            },
+            default_agent="floor",
+            workspaces={"default": WorkspaceConfig(dir="workspace")},
+            default_workspace="default",
+            # The operator's table names ONLY other stores, and ``default_memory_store``
+            # is one of them. This is the exact config shape that relocated every crew.
+            memory_stores={"work": MemoryStoreConfig(), "email": MemoryStoreConfig()},
+            default_memory_store="work",
+        )
+        assert "default" not in config.memory_stores, "the floor must not be declared here"
+
+        assert resolve_agent_bindings(config, agent_name="default").memory_store_name == "default"
+        with pytest.raises(UnknownMemoryStore, match="missing or invalid"):
+            resolve_agent_bindings(config, agent_name="broken")
+        if bound == "":
+            with pytest.raises(UnknownMemoryStore, match="invalid memory store name"):
+                resolve_agent_bindings(config)
+        else:
+            assert resolve_agent_bindings(config, agent_name="floor").memory_store_name == "default"
+            assert resolve_agent_bindings(config).memory_store_name == "default"
+        assert (
+            resolve_agent_bindings(
+                config, agent_name="chose", validate_memory_files=False
+            ).memory_store_name
+            == "work"
+        )
+
+        private_store = provision_member_memory(config, "chose")
+        assert resolve_agent_bindings(config, agent_name="chose").memory_store_name == private_store
 
 
 class TestResourceIndependence:
@@ -2066,7 +2221,7 @@ class TestMultiAgentOrchestrationProperties:
     @given(
         agent_name=_safe_name_st,
         ws_name=_safe_name_st,
-        store_name=_safe_name_st,
+        store_name=_store_name_st,
         kiro_agent_name=st.text(min_size=1, max_size=15),
         ws_dir=st.text(min_size=1, max_size=20),
     )
@@ -2100,10 +2255,13 @@ class TestMultiAgentOrchestrationProperties:
             default_memory_store=store_name,
         )
 
+        expected_store = (
+            "default" if agent_name == "default" else provision_member_memory(config, agent_name)
+        )
         result = resolve_agent_bindings(config, agent_name=agent_name)
 
         assert result.workspace_dir == Path(ws_dir)
-        assert result.memory_store_name == store_name
+        assert result.memory_store_name == expected_store
         assert result.kiro_agent == kiro_agent_name
 
     # Feature: multi-agent-orchestration, Property 6: Non-KiroCrew agent names resolve via default agent
@@ -2145,6 +2303,9 @@ class TestMultiAgentOrchestrationProperties:
             memory_stores={store_name: MemoryStoreConfig()},
             default_memory_store=store_name,
         )
+
+        if default_name != "default":
+            provision_member_memory(config, default_name)
 
         # Isolate from host ~/.kiro/agents/: pin the materialized-agent snapshot
         # as empty and ready so _materialized_kiro_agent never scans the host
@@ -2303,10 +2464,12 @@ class TestMultiAgentMigrationEdgeCases:
             default_memory_store="default",
         )
 
+        private_store = provision_member_memory(config, "test")
         result = resolve_agent_bindings(config, agent_name="test")
 
         # Falls back to default_workspace dir
         assert result.workspace_dir == Path("my-fallback-dir")
+        assert result.memory_store_name == private_store
 
     def test_resolver_with_empty_agent_name_uses_default(self) -> None:
         """Resolver with empty agent name uses default_agent.
@@ -2328,15 +2491,19 @@ class TestMultiAgentMigrationEdgeCases:
             default_memory_store="default",
         )
 
+        private_store = provision_member_memory(config, "mydefault")
+
         # Empty string agent_name → uses default_agent
         result = resolve_agent_bindings(config, agent_name="")
         assert result.kiro_agent == "kirocrew"
         assert result.workspace_dir == Path("ws-dir")
+        assert result.memory_store_name == private_store
 
         # None agent_name → uses default_agent
         result2 = resolve_agent_bindings(config, agent_name=None)
         assert result2.kiro_agent == "kirocrew"
         assert result2.workspace_dir == Path("ws-dir")
+        assert result2.memory_store_name == private_store
 
 
 class TestReactionsEmptyStringFiltering:
@@ -5012,11 +5179,13 @@ class TestAppAgentDispatch(unittest.TestCase):
 
         cfg = self._config()
         cfg.agents["mochi"] = KiroCrewAgentConfig(kiro_agent="explicitly-bound")
+        private_store = provision_member_memory(cfg, "mochi")
         with tempfile.TemporaryDirectory() as td:
             d = self._agents_dir(Path(td), {"mochi--mochi.json": {"name": "mochi"}})
             with unittest.mock.patch.object(loader, "kiro_agents_dir", lambda: d):
                 r = loader.resolve_agent_bindings(cfg, agent_name="mochi")
         assert r.kiro_agent == "explicitly-bound"
+        assert r.memory_store_name == private_store
 
     def test_non_object_json_in_agents_dir_is_skipped(self):
         import kiro_crew.config.loader as loader
@@ -5152,6 +5321,7 @@ class TestAppAgentDispatch(unittest.TestCase):
         cfg = self._config()
         cfg.agents["default"] = KiroCrewAgentConfig(kiro_agent="worker")
         cfg.agents["worker"] = KiroCrewAgentConfig(kiro_agent="other")
+        private_store = provision_member_memory(cfg, "worker")
 
         with tempfile.TemporaryDirectory() as td:
             d = self._agents_dir(Path(td), {"unrelated.json": {"name": "unrelated"}})
@@ -5167,6 +5337,7 @@ class TestAppAgentDispatch(unittest.TestCase):
                 # Whereas the physical name resolves elsewhere — the bug avoided.
                 trap = loader.resolve_agent_bindings(cfg, agent_name=first.kiro_agent)
                 assert trap.kiro_agent == "other"
+                assert trap.memory_store_name == private_store
 
     def test_stale_refresh_cannot_erase_a_published_agent(self):
         # The race: a refresh globs the directory BEFORE a registration writes into

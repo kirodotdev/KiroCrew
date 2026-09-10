@@ -308,7 +308,7 @@ def _open_verified(target: str, root_real: str) -> int | None:
     were reached through is still the path that was verified.
     """
     try:
-        fd = platform_compat.open_file_no_reparse(target)
+        fd = platform_compat.open_file_no_reparse(target, nonblocking=True)
     except OSError:
         return None
     try:

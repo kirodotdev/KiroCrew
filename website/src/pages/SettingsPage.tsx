@@ -203,10 +203,16 @@ export default function SettingsPage() {
   const baseTabs = embedded ? allTabs.filter(t => t.key !== 'instances') : allTabs
   const tabs = updateAvailable ? baseTabs.map(t => (t.key === 'about' ? { ...t, dot: true } : t)) : baseTabs
 
+  const memorySelection = new URLSearchParams(search)
+  const memberMemoryView = pathname.replace(/\/$/, '') === '/settings/overview'
+    && memorySelection.get('view') === 'memory' && !!memorySelection.get('store')
+    && memorySelection.get('store') !== 'default'
+
   return (
     <SidePanelLayout
       title={i18nT('pages.settingsPage.settings')}
       tabs={tabs}
+      paneOwnsHeader={memberMemoryView}
       basePath={SETTINGS_BASE_PATH}
       headerRightDock="bottom-float"
       // Keyed apart from the main window: an embedded pane has a different tab

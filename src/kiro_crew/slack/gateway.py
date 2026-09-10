@@ -92,7 +92,7 @@ from kiro_crew.config.loader import (
 )
 from kiro_crew.config.paths import kiro_agents_dir
 from kiro_crew.constants import DATA_WARNING, SUBAGENT_COMPLETION_META_KEY, strip_control_comments
-from kiro_crew.context import ContextBuilder
+from kiro_crew.context import ContextBuilder, session_store_for_turn
 from kiro_crew.context_management import summarize_result
 from kiro_crew.cron import (
     _SUBPROC_CLEANUP_ALLOWANCE_SECS,
@@ -160,7 +160,9 @@ from kiro_crew.embeddings import (
     get_shared_embedder,
     make_sync_embed_fn,
     model_file_present,
+    peek_ready_shared_embedder,
     reconcile_store_embedding_space,
+    reembed_progress,
     start_background_model_download,
     store_embedding_space_is_stale,
 )
@@ -340,6 +342,7 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.state import _ChatSlot
     from kiro_crew.discord.client import DiscordClient
     from kiro_crew.imessage.client import IMessageClient
+    from kiro_crew.memory_startup import MemoryStartup
     from kiro_crew.messaging.registry import ChannelDescriptor
     from kiro_crew.providers.base import LLMProvider
     from kiro_crew.subagent_scale import SubagentEventCoalescer
@@ -1088,8 +1091,8 @@ class _ClaimHandoff:
 class CronVetOverran(Exception):
     """The claim-time vet spent more than the allowance the deadline carries for it.
 
-    Starting the payload anyway is the harm: the remaining budget no longer
-    covers the subprocess bound plus
+    Starting the payload anyway is the harm: the remaining budget does not
+    cover the subprocess bound plus
     :data:`~kiro_crew.cron._SUBPROC_CLEANUP_ALLOWANCE_SECS`, so the deadline
     would fire with the subprocess already running -- and a thread cannot be
     interrupted, so the overlap guard would clear while it runs on and the next
@@ -1188,7 +1191,7 @@ def _vet_at_claim_then(
     caller's backstop carries an allowance for it (:func:`_claim_backstop`), and
     an allowance is only a guarantee if the thing it covers cannot exceed it --
     so a vet that overruns refuses its payload instead of starting one whose
-    remaining margin no longer covers the subprocess and its teardown.  Measured
+    remaining margin cannot cover the subprocess and its teardown.  Measured
     on ``monotonic`` so a clock adjustment cannot make an overrun look fine.
     """
     started_at = time.monotonic()
@@ -1780,6 +1783,8 @@ class GatewayOrchestrator:
         self.conv_log: ConversationLog | None = None
         self.consolidator: HistoryConsolidator | None = None
         self.cron_svc: CronService | None = None
+        self._cron_reconciled = False
+        self._cron_armed = False
         self.heartbeat_svc: HeartbeatService | None = None
         # Declared here, not just assigned in `_init_autonudge`: that method
         # returns early when `KIROCREW_AUTONUDGE=0`, BEFORE its only assignment,
@@ -1802,6 +1807,11 @@ class GatewayOrchestrator:
         self.channel_history: ChannelHistory | None = None
         self.dashboard_state: DashboardState | None = None
         self._background_tasks: set[asyncio.Task] = set()  # prevent GC of fire-and-forget tasks
+        self._memory_startup: MemoryStartup | None = None
+        self._memory_startup_task: asyncio.Task | None = None
+        self._memory_repair_task: asyncio.Task | None = None
+        self._memory_repair_stop = threading.Event()
+        self._memory_repair_cursor = ""
         # Dedicated ownership for the repair's dep_sync/pip process tree. The
         # general set only prevents task GC; shutdown must cancel and await this
         # task so _check_console_script can kill and reap its child group.
@@ -2822,9 +2832,9 @@ class GatewayOrchestrator:
     async def _init_services(self) -> None:
         """Initialize memory, skills, hooks, context, history, sessions.
 
-        Async so the blocking pieces — the kiro-cli version probe, the pip dep
-        repair, ``VectorMemoryStore.init()`` and ``memory.rebuild_index()`` —
-        run off the event loop. Object
+        Async so the kiro-cli version probe and pip dep repair run off the
+        event loop. Memory restore, database initialization and FTS rebuilding
+        belong to the tracked worker started after dashboard readiness. Object
         CONSTRUCTION deliberately stays on the loop thread:
         ``SessionManager.__init__`` creates asyncio primitives (locks,
         semaphores, queues), so hopping the whole method into a worker thread
@@ -2929,9 +2939,15 @@ class GatewayOrchestrator:
         self.slack = RealSlackClient(self._bot_token) if self._slack_enabled else None
         factory = build_provider_factory(self._cfg)
 
+        # Only in-memory wiring belongs on the boot path. The closed barrier
+        # refuses memory consumers until the preparation worker has restored and
+        # initialized every shared tier. No old store is opened in the meantime.
+        from kiro_crew.memory_startup import MemoryStartup
+
+        self._memory_startup = MemoryStartup.begin()
+
         # Memory, skills, hooks, lessons
         memory = MemoryStore()
-        memory.init()
 
         # Vector memory (structured semantic store)
         from kiro_crew.vector_memory import VectorMemoryStore
@@ -2944,10 +2960,8 @@ class GatewayOrchestrator:
             decay_rates=self._cfg.memory.decay_rates or None,
             dedup_threshold=self._cfg.memory.episodic_dedup_threshold,
         )
-        # Off-loop: init() connects sqlite and runs schema migrations, which
-        # scale with store size (VectorMemoryStore's own docs say async
-        # contexts should wrap it in asyncio.to_thread).
-        await asyncio.to_thread(self.vector_memory.init)
+        # Preserve one object for context, consolidation and the dashboard;
+        # its database opens only in the authorized preparation worker.
         memory.vector_store = self.vector_memory
 
         # Bind-fast: construct the loader WITHOUT syncing (it reads whatever
@@ -3031,10 +3045,8 @@ class GatewayOrchestrator:
             if ch_cfg.activation == ACTIVATION_OBSERVE:
                 self.channel_history.set_observe(ch_id)
 
-        # FTS index. Off-loop: rebuild_index globs every history *.md and
-        # rewrites the index, so it scales with usage.
-        indexed = await asyncio.to_thread(memory.rebuild_index)
-        logger.info("FTS index built: %d files", indexed)
+        # FTS rebuild is part of deferred memory initialization: it scans user
+        # history and must complete before memory is released to consumers.
 
     async def _open_dm_with_retry(
         self, user_id: str, job_name: str, max_attempts: int = 3
@@ -3627,8 +3639,8 @@ class GatewayOrchestrator:
         job = self.cron_svc.get_job(parts[1])
         return bool(job and job.silent)
 
-    async def _init_cron(self) -> None:
-        """Initialize and start the cron service."""
+    async def _init_cron(self, *, arm: bool = True) -> None:
+        """Initialize the cron service, optionally arming it immediately."""
 
         async def _deliver_script_result(
             job: CronJob, message: str, *, remove: bool = False
@@ -3861,6 +3873,10 @@ class GatewayOrchestrator:
             # helper picks stable vs ephemeral session key and
             # decides whether to prepend last_result, based on job.persistent_session.
             session_key, msg = build_cron_session_context(job)
+
+            from kiro_crew.cron import resolve_cron_memory
+
+            cron_memory_store, cron_agent = await asyncio.to_thread(resolve_cron_memory, job)
 
             # ── Concurrent execution guard ──
             if (job.script or job.command) and job.id in self._running_script_ids:
@@ -4707,6 +4723,28 @@ class GatewayOrchestrator:
                 unavailable, retry once with the registry default.
                 Returns (client, is_new, resumed, downgraded)."""
                 assert self.sessions is not None
+                if cron_memory_store:
+                    from kiro_crew.context import prepare_store_vectors
+                    from kiro_crew.member_memory_auth import bind_private_session_store
+                    from kiro_crew.memory_stores import memory_store_version
+
+                    log = getattr(self.ctx_builder, "conversation_log", None)
+                    if log is None:
+                        raise RuntimeError(
+                            "memory_unavailable: cannot persist scheduled member identity"
+                        )
+                    # resolve_cron_memory validated the persisted member task;
+                    # the transcript only mirrors this trusted assignment.
+                    if await asyncio.to_thread(memory_store_version, cron_memory_store) == 2:
+                        await asyncio.to_thread(bind_private_session_store, key, cron_memory_store)
+                    await asyncio.to_thread(
+                        log.update_metadata,
+                        key,
+                        {"memory_store": cron_memory_store, "agent": job.member_id},
+                    )
+                    await prepare_store_vectors(
+                        self.ctx_builder, cron_memory_store, session_key=key
+                    )
                 try:
                     client, is_new, resumed = await self.sessions.get_or_create(
                         key,
@@ -4790,6 +4828,7 @@ class GatewayOrchestrator:
                             True,
                             interactive=False,
                             agent=agent,
+                            memory_store=cron_memory_store or None,
                         )
                         # Wall clock for the cron agent turn: acp never assigns
                         # TurnUsage.duration_ms, so the row falls back to this.
@@ -4908,7 +4947,7 @@ class GatewayOrchestrator:
                 assert self.sessions is not None
                 assert self.ctx_builder is not None
                 client, is_new, _resumed, _model_downgraded = await _acquire_with_model_fallback(
-                    session_key, job.agent_id or None
+                    session_key, cron_agent or None
                 )
                 _acquired = True
                 # Same identity publish as the sequential site above — the
@@ -4929,6 +4968,7 @@ class GatewayOrchestrator:
                     True,
                     interactive=False,
                     agent=job.agent_id or None,
+                    memory_store=cron_memory_store or None,
                     provider_type=_provider,
                     minimal_context=job.minimal_context,
                 )
@@ -5597,6 +5637,8 @@ class GatewayOrchestrator:
                             self.cron_svc.clear_active_session_key(job.id)
                 # Per-job env vars (single-agent path) travel via extra_env passthrough
 
+        self._cron_reconciled = False
+        self._cron_armed = False
         self.cron_svc = await CronService.create(base_dir=data_home(), on_job=_cron_callback)
         if self.dashboard_state:
             self.cron_svc.set_refresh_callback(self.dashboard_state.push_refresh)
@@ -5617,14 +5659,31 @@ class GatewayOrchestrator:
                     "the cron scheduler"
                 )
                 return
-            await self.cron_svc.start()
-            if self.sessions:
-                self.cron_svc.start_reaper(self.sessions)
-            else:
-                logger.warning("Cron reaper not started: sessions not available")
+            self._cron_reconciled = True
+            if arm:
+                await self._start_cron_after_memory_ready()
+
+    async def _start_cron_after_memory_ready(self) -> None:
+        """Arm overdue jobs only after the memory preparation fence completes."""
+        if self._no_crons or self.cron_svc is None or not self._cron_reconciled:
+            return
+        if self._cron_armed:
+            return
+        startup = getattr(self, "_memory_startup", None)
+        if startup is not None and (startup.stopped or not startup.ready):
+            raise RuntimeError("Cron scheduler cannot start before memory preparation completes")
+        await self.cron_svc.start()
+        self._cron_armed = True
+        if self.sessions:
+            self.cron_svc.start_reaper(self.sessions)
+        else:
+            logger.warning("Cron reaper not started: sessions not available")
 
     async def _init_heartbeat(self) -> None:
         """Initialize and start the heartbeat service."""
+        startup = getattr(self, "_memory_startup", None)
+        if startup is not None and (startup.stopped or not startup.ready):
+            raise RuntimeError("Heartbeat service cannot start before memory preparation completes")
         memory = self.ctx_builder.memory if self.ctx_builder else MemoryStore()
 
         # Heartbeat-scoped hooks: drops the user's ``auto_approve_tools`` so
@@ -5877,6 +5936,7 @@ class GatewayOrchestrator:
         _raw_dispositions: list[MonitorActionDisposition] = []
         _completion_reported = False
         try:
+            _memory_store = await session_store_for_turn(self.ctx_builder, key)
             if wake_message is None:
                 client, is_new, _resumed = await self.sessions.get_or_create(key)
             else:
@@ -5885,8 +5945,19 @@ class GatewayOrchestrator:
                 )
             _acquired = True
             _provider = self._cfg.agent.provider if hasattr(self, "_cfg") else "acp"
+            # An auto-nudge cycle continues the NUDGED session's own conversation,
+            # so it reads that session's silo — resolved from its recorded binding,
+            # the same key its consolidations are filed under. Without it a
+            # crew-bound conversation gets nudged with the operator's own memory in
+            # the prompt, and the reply it produces is then filed into the crew's
+            # store as if the crew had said it.
             full_msg, _ = await run_in_embed_pool(
-                self.ctx_builder.build_message, tagged, is_new, key, provider_type=_provider
+                self.ctx_builder.build_message,
+                tagged,
+                is_new,
+                key,
+                memory_store=_memory_store,
+                provider_type=_provider,
             )
             _completion_hook = self._monitor_completion_hook(loop)
             if wake_message is not None and _completion_hook is None:
@@ -8355,16 +8426,24 @@ class GatewayOrchestrator:
                             _MAX_INJECT_ATTEMPTS,
                             parent_key,
                         )
+                        _memory_store = await session_store_for_turn(self.ctx_builder, parent_key)
                         client, is_new, _resumed = await self.sessions.get_or_create(parent_key)
                         _acquired = True
                         _footer_client = client
                         _provider = self._cfg.agent.provider if hasattr(self, "_cfg") else "acp"
                         if self.ctx_builder:
+                            # The completion is injected into the PARENT's
+                            # conversation, so it reads the parent session's silo,
+                            # resolved from that session's recorded binding. The
+                            # child's own store is not the answer here: this turn
+                            # continues the parent, and the reply it produces is
+                            # consolidated into the parent's store.
                             msg, _ = await run_in_embed_pool(
                                 self.ctx_builder.build_message,
                                 announce,
                                 is_new,
                                 parent_key,
+                                memory_store=_memory_store,
                                 provider_type=_provider,
                             )
                         else:
@@ -8574,15 +8653,20 @@ class GatewayOrchestrator:
                 acquired = False
                 cron_response: str | None = None
                 try:
+                    _memory_store = await session_store_for_turn(self.ctx_builder, parent_key)
                     client, is_new, _resumed = await self.sessions.get_or_create(parent_key)
                     acquired = True
                     _provider = self._cfg.agent.provider if hasattr(self, "_cfg") else "acp"
                     if self.ctx_builder:
+                        # Same rule as the interactive injection above: the turn
+                        # continues the PARENT conversation, so it reads the parent
+                        # session's silo from that session's recorded binding.
                         msg, _ = await run_in_embed_pool(
                             self.ctx_builder.build_message,
                             announce,
                             is_new,
                             parent_key,
+                            memory_store=_memory_store,
                             provider_type=_provider,
                         )
                     else:
@@ -8914,6 +8998,15 @@ class GatewayOrchestrator:
         )
         self.subagent_mgr.start_reaper()
 
+    def _start_dashboard_workers_after_memory_ready(self) -> None:
+        """Start dashboard workers whose restored jobs may enter memory."""
+        if self.dashboard_state is None:
+            return
+        resume_channel_agents = self.dashboard_state.resume_channel_agents
+        self.dashboard_state.resume_channel_agents = None
+        if resume_channel_agents is not None:
+            resume_channel_agents()
+
     def _init_task_runner(self) -> None:
         """Initialize the task runner."""
 
@@ -9038,6 +9131,8 @@ class GatewayOrchestrator:
             slack_client=self.slack,
             owner_id=self._owner_id,
             assume_kiro_ready=self._test_mode,
+            defer_channel_agent_resume=True,
+            schedule_memory_preparation=self._schedule_memory_preparation,
         )
         # When --port auto was requested, read the OS-assigned ephemeral port
         # back from the runner so subsequent URL building and the READY line
@@ -9079,6 +9174,7 @@ class GatewayOrchestrator:
             configured_host=configured_host,
             assume_kiro_ready=self._test_mode,
             conversation_log=self.conv_log,
+            schedule_memory_preparation=self._schedule_memory_preparation,
         )
         if dashboard_port == 0 and self._dashboard_runner is not None:
             addresses = self._dashboard_runner.addresses
@@ -9086,6 +9182,204 @@ class GatewayOrchestrator:
                 self._dashboard_port = addresses[0][1]
         if self.dashboard_state:
             self.dashboard_state.no_crons = self._no_crons  # API-only mode
+
+    def _initialize_memory_worker(self) -> bool:
+        """Restore and open the already-wired memory objects after readiness."""
+        from kiro_crew.context import reset_memory_caches
+        from kiro_crew.memory_backup import apply_pending_member_restores
+
+        startup = self._memory_startup
+        if startup is None:
+            return False
+        try:
+            with startup.worker():
+                try:
+                    assert self.ctx_builder is not None
+                    memory = self.ctx_builder.memory
+                    reset_memory_caches(memory)
+                    restored = apply_pending_member_restores(
+                        should_stop=lambda: startup.stopped, on_error=startup.fail_store
+                    )
+                    if startup.stopped:
+                        return False
+                    if "default" not in startup.store_errors:
+                        try:
+                            memory.init()
+                            self.vector_memory.init()
+                            indexed = memory.rebuild_index()
+                            logger.info("Global memory ready: FTS indexed %d files", indexed)
+                        except Exception as exc:
+                            startup.fail_store("default", exc)
+                            self.vector_memory.close()
+                    if restored:
+                        logger.info("Activated memory restores for %s", ", ".join(restored))
+                    if startup.store_errors:
+                        logger.error(
+                            "Memory preparation completed with unavailable stores: %s",
+                            ", ".join(startup.store_errors),
+                        )
+                    return startup.complete()
+                finally:
+                    if startup.stopped:
+                        # Stop cannot cancel a worker thread. Close its late
+                        # handle before worker() releases the startup barrier.
+                        self.vector_memory.close()
+        except Exception as exc:
+            startup.fail(exc)
+            logger.error(
+                "Memory startup failed; memory operations remain unavailable", exc_info=True
+            )
+            return False
+
+    def _stop_memory_startup(self) -> None:
+        """Called off-loop; an in-flight initializer owns its own final close."""
+        self._memory_repair_stop.set()
+        startup = self._memory_startup
+        if startup is not None and startup.stop():
+            vector = getattr(self, "vector_memory", None)
+            if vector is not None:
+                vector.close()
+            startup.release()
+
+    def _start_memory_after_ready(self) -> None:
+        """Start migrations and repair only after preparation and readiness."""
+        startup = self._memory_startup
+        if startup is None or startup.stopped or not startup.ready:
+            return
+        if "default" not in startup.store_errors and self._auto_migrate_task is None:
+            self._auto_migrate_task = asyncio.create_task(self._auto_migrate_memory())
+            self._background_tasks.add(self._auto_migrate_task)
+            self._auto_migrate_task.add_done_callback(self._background_tasks.discard)
+        if self._memory_repair_task is None:
+            self._memory_repair_task = asyncio.create_task(self._repair_member_memory())
+            self._background_tasks.add(self._memory_repair_task)
+            self._memory_repair_task.add_done_callback(self._background_tasks.discard)
+
+    def _schedule_memory_preparation(self) -> "asyncio.Task[None] | None":
+        """Publish the one restore/open task without yielding to its worker."""
+        if self._memory_startup is None:
+            return None
+        if self._memory_startup_task is None:
+
+            async def initialize() -> None:
+                try:
+                    await asyncio.to_thread(self._initialize_memory_worker)
+                except asyncio.CancelledError:
+                    await asyncio.to_thread(self._stop_memory_startup)
+                    raise
+
+            task = asyncio.create_task(initialize())
+            self._memory_startup_task = task
+            self._background_tasks.add(task)
+            task.add_done_callback(self._background_tasks.discard)
+        dashboard_state = self.dashboard_state
+        if dashboard_state is not None:
+            dashboard_state.memory_startup_task = self._memory_startup_task
+        return self._memory_startup_task
+
+    async def _wait_for_memory_preparation(self) -> bool:
+        """Keep consumers dormant during recovery while observing owner shutdown."""
+        from kiro_crew.memory_startup import MemoryStartupUnavailable, require_memory_prepared
+
+        task = self._schedule_memory_preparation()
+        if task is None:
+            return True
+        startup = self._memory_startup
+        if startup is None:
+            raise MemoryStartupUnavailable(
+                "Memory preparation has no lifecycle owner. Restart the gateway."
+            )
+        stopping = asyncio.create_task(shutdown_event.wait())
+        try:
+            done, _ = await asyncio.wait({task, stopping}, return_when=asyncio.FIRST_COMPLETED)
+            if stopping in done or shutdown_event.is_set():
+                startup.stop()
+                return False
+            await task
+            if startup.stopped:
+                return False
+            try:
+                require_memory_prepared()
+            except MemoryStartupUnavailable:
+                # A failed pass has no consumers to start. Keep its owner
+                # recovery shell reachable until the owner requests shutdown.
+                logger.error("Memory preparation failed; dashboard recovery remains available")
+                await stopping
+                startup.stop()
+                return False
+        except asyncio.CancelledError:
+            startup.stop()
+            task.cancel()
+            raise
+        finally:
+            stopping.cancel()
+            await asyncio.gather(stopping, return_exceptions=True)
+        # Cancelling the event waiter yielded once more. Observe a stop that
+        # arrived during its cleanup before run() starts any consumers.
+        if shutdown_event.is_set():
+            startup.stop()
+            return False
+        return not startup.stopped
+
+    def _repair_member_memory_once(self) -> None:
+        """Visit one already-open memory store using the ready shared model."""
+        from kiro_crew.context import cached_vector_store_entries
+        from kiro_crew.memory_stores import DEFAULT_MEMORY_STORE, require_memory_store
+
+        if (
+            self._memory_repair_stop.is_set()
+            or reembed_progress().is_active()
+            or peek_ready_shared_embedder() is None
+        ):
+            return
+        entries_by_name = dict(cached_vector_store_entries())
+        global_store = getattr(self, "vector_memory", None)
+        if global_store is not None:
+            # Global is wired directly onto the gateway rather than into the
+            # named-store cache. Prefer that active handle if a malformed cache
+            # ever repeats the reserved identity; repair must never open a store.
+            entries_by_name[DEFAULT_MEMORY_STORE] = global_store
+        entries = sorted(entries_by_name.items())
+        if not entries:
+            return
+        name, store = next(
+            (entry for entry in entries if entry[0] > self._memory_repair_cursor), entries[0]
+        )
+        # Advance before validation/inference so a broken member cannot starve
+        # healthy members. Cache access never creates or opens another store.
+        self._memory_repair_cursor = name
+        require_memory_store(name)
+        if name == DEFAULT_MEMORY_STORE:
+            migration = self._auto_migrate_task
+            if migration is not None and not migration.done():
+                # The boot migration owns Global until both its migration and
+                # full repair phases finish. It runs on another executor, so a
+                # standing repair here would otherwise mutate the same store.
+                return
+        if self._memory_repair_stop.is_set():
+            return
+        if not store.has_pending_embeddings() and not store_embedding_space_is_stale(store):
+            return
+        if store.embed_fn is None:
+            store.embed_fn = make_sync_embed_fn()
+        reconcile_store_embedding_space(store)
+        store.backfill_missing_embeddings(
+            max_rows_per_kind=16, should_stop=self._memory_repair_stop.is_set
+        )
+
+    async def _repair_member_memory(self) -> None:
+        """Run one paced repair loop across already-open V1 and V2 stores."""
+        loop = asyncio.get_running_loop()
+        while not self._memory_repair_stop.is_set():
+            try:
+                await loop.run_in_executor(embed_executor(), self._repair_member_memory_once)
+            except asyncio.CancelledError:
+                self._memory_repair_stop.set()
+                raise
+            except Exception:
+                if not self._memory_repair_stop.is_set():
+                    logger.warning("Memory embedding repair deferred", exc_info=True)
+            await asyncio.sleep(30)
 
     async def _start_embeddings(self) -> None:
         """Wire in-process embeddings and kick background model download.
@@ -9137,6 +9431,11 @@ class GatewayOrchestrator:
         the next boot retries. Boot survives regardless.
         """
         from kiro_crew.memory import legacy_memory_present
+        from kiro_crew.memory_startup import memory_store_startup_error
+
+        if memory_store_startup_error():
+            logger.warning("Global memory migration deferred until owner recovery and restart")
+            return
 
         # Every dereference lives inside the try so the "never raises" contract
         # above holds even on a boot where ``_init_services`` never ran (or was
@@ -9594,6 +9893,12 @@ class GatewayOrchestrator:
 
     async def _shutdown(self) -> None:
         """Graceful cleanup of all services."""
+        self._memory_repair_stop.set()
+        if self._memory_repair_task is not None:
+            self._memory_repair_task.cancel()
+            await asyncio.gather(self._memory_repair_task, return_exceptions=True)
+        if self._memory_startup is not None:
+            self._memory_startup.stop()
         # Stop the boot-time inbound-spool notice pass before the transports it
         # sends through are closed. Nothing is lost by cancelling: an entry is
         # removed from disk only AFTER its notice is confirmed, so an entry cut
@@ -9717,6 +10022,8 @@ class GatewayOrchestrator:
 
         if cleanup_tasks:
             await asyncio.gather(*cleanup_tasks, return_exceptions=True)
+
+        await asyncio.to_thread(self._stop_memory_startup)
 
     # ------------------------------------------------------------------
     # Auto-update
@@ -11279,14 +11586,7 @@ class GatewayOrchestrator:
         # Wire in-process embeddings (always-on) and kick background model download
         await self._start_embeddings()
 
-        # Auto-migrate legacy markdown memory to the vector store in the
-        # background (fire-and-forget) — never blocks boot. Idempotent: gated on
-        # memory.migrated for the migrate phase; the re-embed sweep probes for
-        # pending rows with plain SQL and returns without loading the embedding
-        # model when there is nothing to embed.
-        self._auto_migrate_task = asyncio.create_task(self._auto_migrate_memory())
-        self._background_tasks.add(self._auto_migrate_task)
-        self._auto_migrate_task.add_done_callback(self._background_tasks.discard)
+        # Auto-migration starts only after deferred restore and memory init.
 
         # Start MCP gateway sidecar before any ACP session can spawn.  The
         # rewriter writes the agent-JSON overlay first so kiro-cli picks up
@@ -11295,12 +11595,13 @@ class GatewayOrchestrator:
         await cautious_boot.pause_before("MCP gateway sidecar")
         await self._init_mcp_gateway()
 
-        # Arming the cron scheduler fires any overdue jobs immediately, so
-        # under cautious boot this pause also defers the post-restart cron
-        # catch-up burst out of the app/MCP launch window.
+        # Loading the cron scheduler reads and reconciles durable jobs. Under
+        # cautious boot this pause keeps that work out of the app/MCP launch
+        # window; overdue callbacks remain disarmed until memory is prepared.
         await cautious_boot.pause_before("cron scheduler")
-        await self._init_cron()
-        await self._init_heartbeat()
+        # Load and reconcile durable jobs for the dashboard, but do not arm
+        # overdue callbacks while the restore/open worker still owns memory.
+        await self._init_cron(arm=False)
         self._init_mcp_discovery()
         self._init_subagents()
         self._init_task_runner()
@@ -11348,6 +11649,10 @@ class GatewayOrchestrator:
         # Printed BEFORE bg_session and other startup chatter so the harness
         # can read it deterministically with a single readline() in the
         # KIROCREW_READY: prefix matcher.
+        #
+        # The dashboard/API factory synchronously published the memory task at
+        # its ready=True boundary. No suspension has followed its return, so the
+        # restore/open worker still cannot run before this process-ready marker.
         if self._json_ready:
             ready_token = generate_token(
                 self._owner_id or "local-startup", ttl_seconds=MAX_SESSION_TTL_SECS
@@ -11359,6 +11664,25 @@ class GatewayOrchestrator:
                 "home": str(data_home()),
             }
             print(f"KIROCREW_READY:{json.dumps(ready_payload)}", flush=True)
+
+        self._install_shutdown_signal_handlers()
+        if not await self._wait_for_memory_preparation():
+            await self._shutdown_and_exit()
+            return
+
+        # Persisted Crew work and legacy channel agents can dispatch providers
+        # immediately when resumed, so start them only after the shared memory
+        # barrier. The dashboard control shell existed throughout preparation.
+        if not self._no_dashboard:
+            self._start_dashboard_workers_after_memory_ready()
+
+        # These services can run memory-backed work as soon as they start.
+        # Arm them only after preparation; the dashboard socket remains bound
+        # throughout recovery so status and owner controls stay available.
+        await self._start_cron_after_memory_ready()
+        await self._init_heartbeat()
+
+        self._start_memory_after_ready()
 
         # ── Central governance-policy refresh ──
         # Started HERE, after readiness, not on the boot path: the
@@ -11454,57 +11778,6 @@ class GatewayOrchestrator:
         await init_socket_mode(self, seen)
 
         await self._start_channel_transports()
-
-        # ── Signal handlers ──
-        # Installed BEFORE the update check (below) is started. The check runs
-        # five sequential git subprocesses whose timeouts sum to ~70s, so while
-        # it was inline-awaited here a stalled network left the gateway with no
-        # SIGINT/SIGTERM handler for over a minute: Ctrl-C did nothing and the
-        # process looked wedged. Handlers first means the boot is interruptible
-        # from this point on regardless of what the check does.
-        loop = asyncio.get_running_loop()
-        _shutting_down = False
-
-        def _on_signal(*_args: object) -> None:
-            nonlocal _shutting_down
-            if _shutting_down:
-                print("\n👻 Force exit!")
-                cleanup_orphaned_sessions()
-                # os._exit skips atexit, so the log queue's drain hook never
-                # runs — flush the queued gateway.log tail here, bounded so a
-                # wedged disk cannot hang the force exit.
-                try:
-                    from kiro_crew.cli import _stop_log_queue_listener
-
-                    _stop_log_queue_listener(timeout=2.0)
-                except Exception:
-                    pass  # force exit must never be blocked by logging
-                os._exit(0)
-            _shutting_down = True
-            shutdown_event.set()
-
-        for sig in (signal.SIGINT, signal.SIGTERM):
-            try:
-                loop.add_signal_handler(sig, _on_signal)
-            except (RuntimeError, ValueError):
-                # Not in main thread (e.g. pytest-xdist worker) — skip.
-                pass
-            except NotImplementedError:
-                # Windows ProactorEventLoop does not support add_signal_handler.
-                # Fall back to signal.signal for SIGINT so shutdown_event still
-                # gets set; SIGTERM is not meaningfully deliverable on Windows.
-                if sig == signal.SIGINT:
-
-                    def _sigint_fallback(*_a: object) -> None:
-                        try:
-                            loop.call_soon_threadsafe(_on_signal)
-                        except RuntimeError:
-                            _on_signal()  # loop already closed
-
-                    try:
-                        signal.signal(sig, _sigint_fallback)
-                    except (ValueError, OSError):
-                        pass  # not in main thread
 
         # Update check — fire-and-forget, NOT awaited. It runs five sequential
         # git subprocesses (fetch/rev-parse/...) whose timeouts sum to ~70s, and
@@ -11639,6 +11912,64 @@ class GatewayOrchestrator:
 
         # Block until shutdown
         await shutdown_event.wait()
+        await self._shutdown_and_exit(_watchdog)
+
+    def _install_shutdown_signal_handlers(self) -> None:
+        """Make owner stop effective before waiting on memory preparation."""
+        from kiro_crew.session import cleanup_orphaned_sessions
+
+        # ── Signal handlers ──
+        # Installed after READY and before memory preparation or update checks
+        # are awaited. A slow worker must not prevent Ctrl-C from setting the
+        # same event used by the authenticated owner shutdown route.
+        loop = asyncio.get_running_loop()
+        _shutting_down = False
+
+        def _on_signal(*_args: object) -> None:
+            nonlocal _shutting_down
+            if _shutting_down:
+                print("\n👻 Force exit!")
+                cleanup_orphaned_sessions()
+                # os._exit skips atexit, so the log queue's drain hook never
+                # runs — flush the queued gateway.log tail here, bounded so a
+                # wedged disk cannot hang the force exit.
+                try:
+                    from kiro_crew.cli import _stop_log_queue_listener
+
+                    _stop_log_queue_listener(timeout=2.0)
+                except Exception:
+                    pass  # force exit must never be blocked by logging
+                os._exit(0)
+            _shutting_down = True
+            shutdown_event.set()
+
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            try:
+                loop.add_signal_handler(sig, _on_signal)
+            except (RuntimeError, ValueError):
+                # Not in main thread (e.g. pytest-xdist worker) — skip.
+                pass
+            except NotImplementedError:
+                # Windows ProactorEventLoop does not support add_signal_handler.
+                # Fall back to signal.signal for SIGINT so shutdown_event still
+                # gets set; SIGTERM is not meaningfully deliverable on Windows.
+                if sig == signal.SIGINT:
+
+                    def _sigint_fallback(*_a: object) -> None:
+                        try:
+                            loop.call_soon_threadsafe(_on_signal)
+                        except RuntimeError:
+                            _on_signal()  # loop already closed
+
+                    try:
+                        signal.signal(sig, _sigint_fallback)
+                    except (ValueError, OSError):
+                        pass  # not in main thread
+
+    async def _shutdown_and_exit(self, watchdog: asyncio.Future | None = None) -> None:
+        """Use the same bounded cleanup for early owner stop and normal shutdown."""
+        from kiro_crew.session import cleanup_orphaned_sessions
+
         print("👻 Shutting down…")
 
         # Exit status for the os._exit below. 0 for an operator stop (SIGTERM,
@@ -11650,7 +11981,7 @@ class GatewayOrchestrator:
         # gateway for hours on exactly this path. The watchdog has already
         # returned (True on the vanish path) by the time it sets the event, so
         # its task result is the signal; see shutdown_exit_code.
-        exit_code = shutdown_exit_code(_watchdog)
+        exit_code = shutdown_exit_code(watchdog)
 
         # Drop this gateway's run-marker BEFORE _shutdown() releases the
         # listener: once the port is free a replacement gateway can bind it
@@ -11774,30 +12105,30 @@ class GatewayOrchestrator:
         # never reads. whatsapp/imessage enablement is config-only (no
         # credential operand), so they have no row.
         uncredentialed_probe_rows: tuple[
-            tuple[str, str, bool, tuple[tuple[str, str], ...]], ...
+            tuple[str, str, bool, tuple[tuple[str, bool], ...]], ...
         ] = (
             (
                 "wecom",
                 "WeCom",
                 self._cfg.wecom.enabled,
                 (
-                    (CRED_WECOM_BOT_ID, self._wecom_bot_id),
-                    (CRED_WECOM_SECRET, self._wecom_secret),
+                    (CRED_WECOM_BOT_ID, bool(self._wecom_bot_id)),
+                    (CRED_WECOM_SECRET, bool(self._wecom_secret)),
                 ),
             ),
             (
                 "telegram",
                 "Telegram",
                 bool(self._cfg.telegram.enabled and not self._cfg.telegram.accounts),
-                ((CRED_TELEGRAM_BOT_TOKEN, self._telegram_bot_token),),
+                ((CRED_TELEGRAM_BOT_TOKEN, bool(self._telegram_bot_token)),),
             ),
             (
                 "weixin",
                 "WeChat",
                 self._cfg.weixin.enabled,
                 (
-                    (CRED_WEIXIN_TOKEN, self._weixin_token),
-                    ("weixin.account_id", self._weixin_account_id),
+                    (CRED_WEIXIN_TOKEN, bool(self._weixin_token)),
+                    ("weixin.account_id", bool(self._weixin_account_id)),
                 ),
             ),
             (
@@ -11805,34 +12136,34 @@ class GatewayOrchestrator:
                 "Feishu",
                 self._cfg.feishu.enabled,
                 (
-                    (CRED_FEISHU_APP_ID, self._feishu_app_id),
-                    (CRED_FEISHU_APP_SECRET, self._feishu_app_secret),
+                    (CRED_FEISHU_APP_ID, bool(self._feishu_app_id)),
+                    (CRED_FEISHU_APP_SECRET, bool(self._feishu_app_secret)),
                 ),
             ),
             (
                 "discord",
                 "Discord",
                 self._cfg.discord.enabled,
-                ((CRED_DISCORD_BOT_TOKEN, self._discord_bot_token),),
+                ((CRED_DISCORD_BOT_TOKEN, bool(self._discord_bot_token)),),
             ),
             (
                 "webex",
                 "Webex",
                 self._cfg.webex.enabled,
-                ((CRED_WEBEX_BOT_TOKEN, self._webex_bot_token),),
+                ((CRED_WEBEX_BOT_TOKEN, bool(self._webex_bot_token)),),
             ),
             (
                 "teams",
                 "Teams",
                 self._cfg.teams.enabled,
                 (
-                    (CRED_MICROSOFT_APP_ID, self._teams_app_id),
-                    (CRED_MICROSOFT_APP_PASSWORD, self._teams_app_password),
+                    (CRED_MICROSOFT_APP_ID, bool(self._teams_app_id)),
+                    (CRED_MICROSOFT_APP_PASSWORD, bool(self._teams_app_password)),
                 ),
             ),
         )
-        for channel_type, settings_name, cfg_enabled, credentials in uncredentialed_probe_rows:
-            warn_if_channel_uncredentialed(channel_type, settings_name, cfg_enabled, credentials)
+        for channel_type, settings_name, cfg_enabled, presence in uncredentialed_probe_rows:
+            warn_if_channel_uncredentialed(channel_type, settings_name, cfg_enabled, presence)
         loop = asyncio.get_running_loop()
         permitted = await loop.run_in_executor(
             maintenance_executor(),
@@ -12102,4 +12433,9 @@ async def run_gateway(
         approval_mode=approval_mode,
         test_mode=test_mode,
     )
-    await orchestrator.run()
+    try:
+        await orchestrator.run()
+    finally:
+        # Includes failures before READY, when the restore worker was never
+        # scheduled. Release only this gateway's latch after closing its handle.
+        await asyncio.to_thread(orchestrator._stop_memory_startup)

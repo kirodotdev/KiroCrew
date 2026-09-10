@@ -209,7 +209,7 @@ class TestBug3DoubleCommitOnReviewRetry:
 
         review_count = 0
 
-        async def _review_fail_then_pass(r, s, sessions, agent, session_key=""):
+        async def _review_fail_then_pass(r, s, sessions, agent, session_key="", *, ctx=None):
             nonlocal review_count
             review_count += 1
             if review_count == 1:
@@ -1199,7 +1199,7 @@ class TestBug5ReviewFailRevertBeforeRetry:
 
         review_count = 0
 
-        async def _review_fail_once(r, s, sessions, agent, session_key=""):
+        async def _review_fail_once(r, s, sessions, agent, session_key="", *, ctx=None):
             nonlocal review_count
             review_count += 1
             return review_count > 1  # fail first, pass second
@@ -1407,7 +1407,7 @@ class TestScenarioReviewRetryNoSecondReview:
 
         review_calls = 0
 
-        async def _review_once(r, s, sessions, agent, session_key=""):
+        async def _review_once(r, s, sessions, agent, session_key="", *, ctx=None):
             nonlocal review_calls
             review_calls += 1
             return review_calls > 1  # fail first, pass second would need 2 calls
@@ -2506,7 +2506,7 @@ class TestScenarioReviewRetrySuccessGetsReview:
 
         review_calls = 0
 
-        async def _mock_review(run, step, sessions, agent, session_key=""):
+        async def _mock_review(run, step, sessions, agent, session_key="", *, ctx=None):
             nonlocal review_calls
             review_calls += 1
             if review_calls == 1:
@@ -2673,7 +2673,7 @@ class TestScenarioGitCommitAfterReviewRetry:
 
         review_count = 0
 
-        async def _review(run, step, sessions, agent, session_key=""):
+        async def _review(run, step, sessions, agent, session_key="", *, ctx=None):
             nonlocal review_count
             review_count += 1
             if review_count == 1:

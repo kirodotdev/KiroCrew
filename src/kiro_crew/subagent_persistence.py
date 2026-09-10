@@ -41,6 +41,7 @@ _SUBAGENTS_DIR: Path | None = None
 SUBAGENT_CONVERSATION_PREFIX = "subagent:"
 _CLEANUP_IDENTITIES_FILE = "cleanup-identities.json"
 _CLEANUP_IDENTITIES_TRUST_DIR = "subagent-cleanup-identities"
+_RUN_MEMORY_BINDINGS_DIR = "member-memory-bindings"
 _CLEANUP_IDENTITY_LOCK = threading.Lock()
 _LIVE_CLEANUP_IDENTITIES: dict[str, list[dict[str, object]]] = {}
 _LIVE_CLEANUP_HINTS: set[str] = set()
@@ -86,6 +87,16 @@ def _protect_cleanup_identities_path(agent_id: str) -> Path:
 def _delete_cleanup_identities_file(agent_id: str) -> None:
     """Remove the protected generation record after its run folder is gone."""
     shutil.rmtree(_cleanup_identities_path(agent_id).parent, ignore_errors=True)
+    shutil.rmtree(_run_memory_identity_path(agent_id).parent, ignore_errors=True)
+
+
+def _run_memory_identity_path(agent_id: str) -> Path:
+    """A top-level, sandbox-readonly identity tree, never the writable trust tree."""
+    _agent_dir(agent_id)
+    path = _subagents_dir().parent.resolve() / _RUN_MEMORY_BINDINGS_DIR / agent_id / "memory.json"
+    if path.resolve() != path:
+        raise ValueError("memory binding unavailable: protected identity path is redirected")
+    return path
 
 
 def _read_cleanup_identities_file(agent_id: str) -> list[dict[str, object]]:
@@ -359,6 +370,7 @@ def create_agent_folder(
     parent_session: str = "",
     max_turns: int = 0,
     context_groups: str = "",
+    memory_store: str = "",
 ) -> Path:
     """Create ``~/.kiro/crew/subagents/{id}/`` with ``state.json``.
 
@@ -371,6 +383,13 @@ def create_agent_folder(
     withheld — distinct from the key being absent, which marks a run from before
     the field existed and resolves to all-on.
     """
+    # Resume identity is gateway-owned; the run folder itself is agent writable.
+    memory_path = _run_memory_identity_path(agent_id)
+    for directory in (memory_path.parent.parent, memory_path.parent):
+        platform_compat.make_owner_only_dir(directory)
+        platform_compat.restrict_dir_to_owner(directory)
+    _atomic_write(memory_path, {"memory_store": memory_store, "version": 2})
+    platform_compat.restrict_to_owner(memory_path)
     d = _agent_dir(agent_id)
     d.mkdir(parents=True, exist_ok=True)
     state = {
@@ -385,10 +404,51 @@ def create_agent_folder(
         "turns": 0,
         "last_tool": "",
         "context_groups": context_groups,
+        "memory_store": memory_store,
+        "memory_binding_version": 2,
         "updated_at": time.time(),
     }
     _atomic_write(d / "state.json", state)
     return d
+
+
+def read_run_memory_store(agent_id: str, *, validate_memory_files: bool = True) -> str:
+    """Restore a run's protected memory identity, preserving legacy global runs."""
+    path = _run_memory_identity_path(agent_id)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        # A known protected directory cannot become a legacy run when its record
+        # disappears. The former trust-tree record was agent-writable and must
+        # never be imported as authority.
+        old_path = _cleanup_identities_path(agent_id).parent / "memory.json"
+        if path.parent.exists() or old_path.exists():
+            raise ValueError(
+                "memory binding unavailable: restore this run's protected memory record"
+            )
+        try:
+            state = json.loads((_agent_dir(agent_id) / "state.json").read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            state = {}
+        except (OSError, ValueError, RecursionError) as exc:
+            raise ValueError("memory binding unavailable: run metadata is unreadable") from exc
+        if not isinstance(state, dict):
+            raise ValueError("memory binding unavailable: run metadata is unreadable")
+        if "memory_binding_version" in state or state.get("memory_store"):
+            raise ValueError(
+                "memory binding unavailable: restore this run's protected memory record"
+            )
+        return ""
+    if not isinstance(payload, dict) or payload.get("version") != 2:
+        raise ValueError("memory binding unavailable: invalid protected memory record")
+    store = payload.get("memory_store")
+    if not isinstance(store, str):
+        raise ValueError("memory binding unavailable: invalid protected memory store")
+    if store:
+        from kiro_crew.memory_stores import require_memory_store
+
+        require_memory_store(store, require_directory=validate_memory_files)
+    return store
 
 
 # ── read / update ────────────────────────────────────────────────────

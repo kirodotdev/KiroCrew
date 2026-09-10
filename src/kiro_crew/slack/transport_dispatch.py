@@ -23,6 +23,7 @@ import re
 import time
 from typing import TYPE_CHECKING, Any, cast
 
+from kiro_crew.context import session_store_for_turn
 from kiro_crew.dashboard.chat_utils import (
     expire_slack_options,
     mint_options_token,
@@ -31,12 +32,14 @@ from kiro_crew.dashboard.chat_utils import (
 from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.hooks import HOOK_REPLY, TOOL_AUTO_APPROVE, TOOL_DENY
 from kiro_crew.llm_helpers import save_conversation_turn_off_loop
+from kiro_crew.memory_stores import UnknownMemoryStore
 from kiro_crew.messaging import auto_title
 from kiro_crew.messaging.dispatch import build_directive_consumer
 from kiro_crew.messaging.driver import APPROVAL_INTERACTIVE, TurnDriver
 from kiro_crew.messaging.identity import channel_inbound_permitted, publish_turn_identity
 from kiro_crew.messaging.link import canonical_key
 from kiro_crew.platform import current_context
+from kiro_crew.security import redact, redact_local_paths
 from kiro_crew.sel import sel
 from kiro_crew.session_allocation import SessionClosingError
 from kiro_crew.slack.handler import (
@@ -170,7 +173,7 @@ async def handle_message_transport(
     # still the Slack timestamp we post and react to.
     linked_session_key: str | None = None
 
-    def _resolve_thread_owner(stage: str) -> None:
+    async def _resolve_thread_owner(stage: str) -> None:
         """Re-read which session owns this thread, and route this turn there.
 
         Ownership is RE-READ at each decision point rather than cached, because
@@ -184,29 +187,28 @@ async def handle_message_transport(
         an in-memory dict read off the thread index.
         """
         nonlocal session_key, linked_session_key
-        owner = sessions.get_session_for_thread(reply_ts)
-        if not owner:
+        while True:
+            owner = sessions.get_session_for_thread(reply_ts)
+            candidate_key = owner or canonical_key(reply_ts)
+            if candidate_key != session_key:
+                await _hydrate_thread_overrides(candidate_key, conversation_log)
+                # The worker read may yield to a new thread owner. Resolve that
+                # owner before publishing either routing key; cached hydration
+                # returns without yielding when an owner is already known.
+                if sessions.get_session_for_thread(reply_ts) != owner:
+                    continue
+                _hydrate_conv_flags(sessions, candidate_key)
+                logger.info(
+                    "🔗 Slack thread %s owned by %s (at %s) — routing there",
+                    session_key,
+                    candidate_key,
+                    stage,
+                )
+                session_key = candidate_key
+            linked_session_key = owner
             return
-        if owner != session_key:
-            logger.info(
-                "🔗 Slack thread %s owned by %s (at %s) — routing there",
-                session_key,
-                owner,
-                stage,
-            )
-            session_key = owner
-            # Durable privacy state is keyed BY SESSION, and the hydration at
-            # entry ran for the previous key. Re-hydrate for the new owner in
-            # the same breath as the reroute -- otherwise _is_slack_restricted()
-            # consults an unpopulated flag map, and an incognito or temporary
-            # session's turn gets persisted to disk. Keeping this inside the
-            # helper makes it structurally impossible to reroute without it.
-            # Both helpers guard repeated I/O per session, so this is cheap.
-            _hydrate_thread_overrides(session_key, conversation_log)
-            _hydrate_conv_flags(sessions, session_key)
-        linked_session_key = owner
 
-    _resolve_thread_owner("inbound")
+    await _resolve_thread_owner("inbound")
 
     # Inbound channels-governance gate (off-loop), same as native handle_message:
     # a ``channels`` policy that denies ``slack`` drops the message before any
@@ -226,7 +228,8 @@ async def handle_message_transport(
     # get logged before the durable flag was reloaded. Native hydrates right
     # after session_key, so we match it. Idempotent:
     # _hydrate_thread_overrides guards repeated I/O per session.
-    _hydrate_thread_overrides(session_key, conversation_log)
+    await _hydrate_thread_overrides(session_key, conversation_log)
+    await _resolve_thread_owner("post-hydration")
     _hydrate_conv_flags(sessions, session_key)
 
     # Resolve the agent early so ALL persist paths can forward it — including
@@ -299,7 +302,7 @@ async def handle_message_transport(
     # unconditionally (handler.py), so acting on a key that went stale while
     # governance and the hook path awaited would overwrite a dashboard binding
     # created in that window and misroute every later reply in this thread.
-    _resolve_thread_owner("pre-privacy")
+    await _resolve_thread_owner("pre-privacy")
     _cmd_text = re.sub(r"^<@[A-Z0-9]+(?:\|[^>]*)?>\s*", "", text.strip())
     text, _cmd_text, _only_modifier = await maybe_apply_privacy_modifiers(
         text, _cmd_text, session_key, user_id, channel, slack, sessions, reply_ts
@@ -414,7 +417,17 @@ async def handle_message_transport(
         # session_key. A change that lands DURING get_or_create is not handled
         # here: the turn stays in whoever owned the thread at acquisition, and
         # the self-link guard below keeps the index uncorrupted either way.
-        _resolve_thread_owner("pre-acquisition")
+        while True:
+            await _resolve_thread_owner("pre-acquisition")
+            owner_before_memory = linked_session_key
+            try:
+                _memory_store = await session_store_for_turn(context_builder, session_key)
+            except UnknownMemoryStore:
+                if sessions.get_session_for_thread(reply_ts) != owner_before_memory:
+                    continue
+                raise
+            if sessions.get_session_for_thread(reply_ts) == owner_before_memory:
+                break
         if decider is not None:
             # The decider was constructed with the pre-reroute key, and that key
             # is what maps a human's Trust click back to a session. Leaving it
@@ -538,6 +551,12 @@ async def handle_message_transport(
 
         # ── Build message with context ──
         if context_builder:
+            # This conversation's own silo, from the session's RECORDED binding and
+            # never from ``_agent``: the values above are kiro agent names, a
+            # namespace disjoint from ``cfg.agents``, so a store derived from one
+            # resolves to ``default`` for exactly the crew that configured
+            # otherwise. Its private tier was validated and prepared before
+            # provider acquisition; an unavailable member store refuses the turn.
             # Off-loop: build_message embeds the episodic query (blocking urllib).
             full_message, _ = await run_in_embed_pool(
                 context_builder.build_message,
@@ -547,6 +566,7 @@ async def handle_message_transport(
                 channel_id=channel,
                 thread_ts=thread_ts or msg_ts,
                 agent=_agent,
+                memory_store=_memory_store,
                 resumed=resumed,
                 user_display_name=user_display_name,
                 # Temporary mode reads NO memory, and that is the half the
@@ -870,7 +890,7 @@ async def handle_message_transport(
         logger.info("Aborting Slack dispatch for %s — gateway is shutting down", session_key)
         with contextlib.suppress(Exception):
             await slack.set_thread_status(channel, reply_ts, "")
-    except Exception:
+    except Exception as exc:
         logger.exception("transport_dispatch: error handling message")
         Stats().inc_message_failed()
         if client and _acquired:
@@ -979,7 +999,13 @@ async def handle_message_transport(
         else:
             try:
                 await slack.post_message(
-                    channel, "🔧 Something went wrong (transport path). Please try again.", reply_ts
+                    channel,
+                    (
+                        redact_local_paths(redact(str(exc)))[0][:1000]
+                        if isinstance(exc, UnknownMemoryStore)
+                        else "🔧 Something went wrong (transport path). Please try again."
+                    ),
+                    reply_ts,
                 )
             except Exception:
                 pass

@@ -11,6 +11,7 @@ time-decay retrieval via FAISS (falls back to FTS5 without embeddings).
 
 from __future__ import annotations
 
+import dataclasses
 import functools
 import hashlib
 import heapq
@@ -20,6 +21,7 @@ import math
 import re
 import struct
 import threading
+import unicodedata
 from collections import OrderedDict
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
@@ -27,7 +29,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from fnmatch import fnmatch
 from pathlib import Path
-from typing import Callable, Literal
+from typing import Callable, Literal, cast
 from uuid import uuid4
 
 from snowballstemmer import stemmer as _snowball_stemmer
@@ -58,8 +60,10 @@ except ImportError:
 
 import time
 
-from kiro_crew import platform_compat
+from kiro_crew import memory_record_metadata as record_meta
+from kiro_crew import memory_schema, memory_stores, memory_v2, platform_compat
 from kiro_crew.config.loader import config_dir
+from kiro_crew.memory_stores import MEMORY_DB_FILE
 from kiro_crew.metrics.db_metrics import timed
 from kiro_crew.project_scope import (
     canonical_scope,
@@ -76,6 +80,7 @@ from kiro_crew.validation import ALLOWED_LESSON_CATEGORIES, normalize_lesson_cat
 from kiro_crew.vector_memory_constants import (  # noqa: F401
     _INJECTION_PATTERNS,
     _MAX_EPISODIC_PER_CONSOLIDATION,
+    _MAX_EPISODIC_RETIRED_PER_WRITE,
     _MAX_LESSONS_PER_CONSOLIDATION,
     _MAX_SEMANTIC_PER_CONSOLIDATION,
     _contains_injection,
@@ -103,13 +108,52 @@ except ImportError:
 
 # ── Constants ──
 
-_DB_FILE = "memory.db"
+# One owner for the filename: `memory_stores.resolve_store_path` composes the
+# same name for a named store, and two spellings of it would silo a crew's
+# vector memory into a file nothing else opens.
+_DB_FILE = MEMORY_DB_FILE
 _FAISS_FILE = "memory.faiss"
 _KEY_PATTERN = re.compile(r"^[a-z][a-z0-9_.]*[a-z0-9]$")
 _MAX_KEY_LEN = 100
 _MAX_VALUE_BYTES = 4096
 # Serialized forms, not truthiness: 0/false/[]/{} are legitimate values.
 _EMPTY_VALUE_JSON = frozenset({"null", '""'})
+MAX_MEMORY_SEARCH_QUERY = 2000
+
+
+def _normalize_memory_search_query(query: str) -> str:
+    if not isinstance(query, str) or len(query) > MAX_MEMORY_SEARCH_QUERY:
+        raise ValueError(
+            f"Memory search query must be at most {MAX_MEMORY_SEARCH_QUERY} characters"
+        )
+    return unicodedata.normalize("NFKC", query.strip()).casefold()
+
+
+def _contains_memory_search_text(value: str | None, query: str, json_encoded: int) -> int:
+    """SQLite predicate for literal Unicode substring search over visible text.
+
+    JSON is decoded before searching so escaped Unicode, quotes and nested values
+    match the text users see. This is list filtering, not semantic retrieval.
+    """
+    decoded: object = value or ""
+    if json_encoded:
+        try:
+            decoded = json.loads(value or "null")
+        except (ValueError, TypeError, RecursionError):
+            pass
+    pending = [decoded]
+    while pending:
+        part = pending.pop()
+        if isinstance(part, dict):
+            pending.extend(part.keys())
+            pending.extend(part.values())
+        elif isinstance(part, list):
+            pending.extend(part)
+        else:
+            text = part if isinstance(part, str) else json.dumps(part, ensure_ascii=False)
+            if query in unicodedata.normalize("NFKC", text).casefold():
+                return 1
+    return 0
 
 
 class SemanticRejectCode(str, Enum):
@@ -257,7 +301,16 @@ _DEFAULT_CONFIDENCE_THRESHOLD = 0.8
 _DEFAULT_DEDUP_THRESHOLD = 0.88
 _DEFAULT_EPISODIC_MAX = 10_000
 _DEFAULT_EPISODIC_LIMIT = 8  # must match MemoryConfig.episodic_max_results default
-_EPISODIC_RELEVANCE_THRESHOLD = 0.55  # min cosine sim for short texts (empirical)
+# Minimum raw cosine for admission into injected context. NOT a tuned pair of
+# values: measured over the real embedder, the relevant and irrelevant cosine
+# distributions OVERLAP, so no threshold separates them, and both branches sit
+# looser than the best achievable cut (which admits nothing irrelevant at the cost
+# of ~8% of relevant fragments). The long-text relaxation is roughly twice the
+# dilution it compensates for. Evidence, and the harness that produced it, in
+# docs/system-specs/modules/memory-skills-hooks.md § "The admission gate is a loose
+# cut, not a tuned one" — read it before treating either number as calibrated.
+# Changing either changes what is admitted on every existing install.
+_EPISODIC_RELEVANCE_THRESHOLD = 0.55
 _EPISODIC_LONG_TEXT_CHARS = 300  # texts longer than this get a relaxed threshold
 _EPISODIC_LONG_TEXT_THRESHOLD = 0.42  # relaxed threshold for long entries
 _EPISODIC_TEXT_MIN = 10
@@ -376,6 +429,77 @@ def _stem_words(words: set[str]) -> set[str]:
     return words | {_stem_one(word) for word in words}
 
 
+# Tokenizing + stemming a STORED row depends only on that row's own text, yet
+# hybrid retrieval re-derives it for every row on every query — and again from
+# scratch after a gateway restart. Memoizing per word (above) removes the
+# stemmer call but not the regex scan, the set build, or the set union, which
+# together are the majority of a warm hybrid semantic retrieval.
+#
+# Keyed on the text itself, not on a row key or rowid: a row whose value changes
+# hashes to a DIFFERENT entry, so a stale token set can never be served for text
+# absent from the row, and there is no invalidation step for a write path
+# (upsert, dashboard delete, import, migration) to forget. Module level rather
+# than per-store for the same reason it is safe: the result is a pure function of
+# the text, so two stores holding the same text share one entry instead of each
+# paying for its own.
+#
+# ONLY the row side belongs here. Query text has one distinct value per user
+# message, so caching it would evict the bounded row population this exists to
+# keep while never being read twice — an unbounded log of user prompts. The query
+# side is derived once per call, outside the row loop, and thrown away.
+#
+# Bounded because the keys ARE user content. A stored value is capped at
+# _MAX_VALUE_BYTES and a key at _MAX_KEY_LEN, so an entry's retained text is
+# bounded, and a full pass over N rows touches at most 2N entries (one for the
+# key, one for the value).
+#
+# The bound is in ENTRIES, so it does not bound bytes: an entry retains the text
+# plus the frozenset of its words and stems, and the frozenset dominates.
+# Measured retention per entry — ~2.3 KiB for a 120-char value, ~39 KiB for a
+# _MAX_VALUE_BYTES value of 12-char words, ~76 KiB for one of 4-char words — so a
+# filled cache spans ~9 MiB to ~296 MiB depending on the population, held for the
+# process's life. Size it against that ceiling, not against the entry count.
+#
+# A bound BELOW the scan width is worse than no cache at all: a repeated full-table
+# scan is LRU's worst case, so once 2N exceeds the bound every access evicts the
+# entry the next one needs and the hit rate is not merely degraded but exactly
+# zero, leaving only the wrapper cost and the retention. Measured: 4,096 hits and
+# 4,096 misses at 2,048 rows, then 0 hits and 10,000 misses at 2,500. Nothing caps
+# `semantic_memory`, so a store crosses that width on its own — which is why the
+# scan checks its own width against the bound rather than trusting it.
+_ROW_STEM_CACHE_SIZE = 4_096
+
+
+def _row_stem_tokens_uncached(text: str) -> frozenset[str]:
+    """Word + stem tokens of a stored row's *text*.
+
+    The caller still owns case folding, because the key and value sides fold
+    differently.
+    """
+    return frozenset(_stem_words(set(re.findall(r"\w+", text))))
+
+
+#: Memoized on the text itself, so a row whose value changes hashes to a different
+#: entry and no write path owns an invalidation step.
+_row_stem_tokens = functools.lru_cache(maxsize=_ROW_STEM_CACHE_SIZE)(_row_stem_tokens_uncached)
+
+
+def _row_stem_tokens_for_scan(entries_touched: int) -> Callable[[str], frozenset[str]]:
+    """The row-side tokenizer for a pass that will touch *entries_touched* entries.
+
+    Returns the memoized form only when the whole pass fits the cache. Past that
+    width the memo cannot hit at all (see ``_ROW_STEM_CACHE_SIZE``), so serving the
+    uncached function is strictly cheaper than paying the wrapper and retaining
+    entries nothing will read.
+
+    The count is the caller's to compute because arity differs: the semantic scan
+    tokenizes a key AND a value per row, while lesson ranking tokenizes one text.
+    """
+    if entries_touched > _ROW_STEM_CACHE_SIZE:
+        return _row_stem_tokens_uncached
+    return _row_stem_tokens
+
+
 _BUILTIN_PREFIXES = [
     "pref.*",
     "project.*",
@@ -385,7 +509,7 @@ _BUILTIN_PREFIXES = [
 
 # ── Schema ──
 
-_SCHEMA_V1 = """
+_SCHEMA_V1 = f"""
 CREATE TABLE IF NOT EXISTS schema_version (
     version INTEGER PRIMARY KEY,
     applied_at TEXT NOT NULL
@@ -416,20 +540,7 @@ CREATE TABLE IF NOT EXISTS episodic_memories (
 CREATE INDEX IF NOT EXISTS idx_episodic_deleted ON episodic_memories(is_deleted);
 CREATE INDEX IF NOT EXISTS idx_episodic_created ON episodic_memories(created_at);
 CREATE INDEX IF NOT EXISTS idx_episodic_conversation ON episodic_memories(conversation_id);
-
-CREATE TABLE IF NOT EXISTS memory_events (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    event_type TEXT NOT NULL,
-    memory_type TEXT NOT NULL,
-    memory_key TEXT NOT NULL,
-    old_value TEXT,
-    new_value TEXT,
-    source TEXT NOT NULL,
-    created_at TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_events_type ON memory_events(memory_type, created_at);
-CREATE INDEX IF NOT EXISTS idx_events_key ON memory_events(memory_key);
-"""
+{memory_schema.MEMORY_EVENTS_SQL}"""
 
 
 def _migrate_v2(db: sqlite3.Connection) -> None:
@@ -441,13 +552,10 @@ def _migrate_v2(db: sqlite3.Connection) -> None:
             raise
 
 
-_MEMORY_META_TABLE = """
-CREATE TABLE IF NOT EXISTS memory_meta (
-    key TEXT PRIMARY KEY,
-    value TEXT NOT NULL,
-    updated_at TEXT NOT NULL
-);
-"""
+# Named separately because it is v1's THIRD migration, applied to files that
+# already carry v1's first two. The DDL itself is lineage-agnostic and lives with
+# ``memory_events`` in ``memory_schema``.
+_MEMORY_META_TABLE = memory_schema.MEMORY_META_SQL
 
 # memory_meta key holding the embedding_space_signature() the stored vectors
 # were produced under. Absent means "unknown" — see reconcile_embedding_space.
@@ -932,6 +1040,9 @@ class VectorMemoryStore:
         decay_rates: dict[str, float] | None = None,
     ):
         self._db_path = db_path or (config_dir() / _DB_FILE)
+        from kiro_crew.memory_stores import named_store_of_db
+
+        self._memory_store_name = named_store_of_db(self._db_path)
         self._faiss_path = self._db_path.parent / _FAISS_FILE
         self._confidence_threshold = confidence_threshold
         self._dedup_threshold = dedup_threshold
@@ -951,6 +1062,20 @@ class VectorMemoryStore:
         if extra_prefixes:
             self._prefixes.extend(extra_prefixes)
         self._db: sqlite3.Connection | None = None
+        # POSIX permits replacing an open SQLite file. Private V2 stores hold a
+        # shared lock outside the swappable store directory for the full
+        # connection lifetime so startup restore can refuse rather than move a
+        # generation that a CLI process can keep writing. Windows keeps this
+        # ``None`` because SQLite's native file handle denies the directory
+        # rename and platform_compat has no non-serializing shared lock there.
+        self._store_use_lock_fd: int | None = None
+        # Which schema lineage this FILE is. v1 is the floor and the only value a
+        # store that never calls init() can have, so every derived statement
+        # below renders in its v1 spelling until init() proves otherwise.
+        # Resolved ONCE there rather than branched at each use, so the runtime
+        # write path carries no per-statement conditional.
+        self._lineage: str = memory_schema.LINEAGE_V1
+        self._bind_lineage(memory_schema.LINEAGE_V1)
         # Serializes the db + FAISS critical sections. Writes are offloaded to
         # worker threads (history consolidation, dashboard handlers) while reads
         # (search_episodic via context assembly) run on the event loop thread, so
@@ -968,6 +1093,7 @@ class VectorMemoryStore:
         self._faiss_index: object | None = None  # faiss.IndexFlatIP (untyped)
         self._faiss_id_map: list[str] = []
         self._faiss_writes_since_save = 0
+        self._faiss_data_version: int | None = None
         # Resident episodic scoring set for the numpy sqlite tier, plus the
         # in-process half of its validity token. The generation is bumped by
         # every writer that changes which rows are scored or what they score as;
@@ -1089,8 +1215,60 @@ class VectorMemoryStore:
                     exc_info=True,
                 )
 
+    def _bind_lineage(self, lineage: str) -> None:
+        """Set the lineage and every statement fragment derived from it.
+
+        ONE derivation, called from both ``__init__`` (the v1 floor) and ``init()`` (the
+        detected answer). Written twice, the two omissions are not symmetric: a new
+        attribute missing from ``__init__`` is an ``AttributeError``, but one missing
+        from ``init()`` leaves its V1 SPELLING on a crew file — and while a wrong
+        RELATION raises "cannot modify a view", a wrong GUARD raises nothing at all and
+        simply reaches rows of the other kind.
+        """
+        self._lineage = lineage
+        self._sem_rel = memory_schema.semantic_relation(lineage)
+        self._epi_rel = memory_schema.episodic_relation(lineage)
+        self._sem_guard = memory_schema.semantic_guard(lineage)
+        self._epi_guard = memory_schema.episodic_guard(lineage)
+
+    @property
+    def algorithm_version(self) -> str:
+        """Global and unowned legacy files never opt in to member algorithms."""
+        return "v2" if getattr(self, "_memory_version", 1) == 2 else "v1"
+
+    @property
+    def policy_revision(self) -> str:
+        return memory_v2.ALGORITHM_VERSION if self.algorithm_version == "v2" else "v1"
+
     def init(self) -> None:
-        """Create DB, apply migrations, set permissions."""
+        """Create DB and hold a private V2 generation until :meth:`close`."""
+        from kiro_crew.memory_startup import require_memory_ready
+
+        require_memory_ready(self._memory_store_name)
+        if self._memory_store_name and self._store_use_lock_fd is None:
+            from kiro_crew import member_memory_backup
+
+            # The config fallback keeps the admission lock mandatory during
+            # the restore's brief directory-absent rename window, when the V2
+            # manifest cannot be read from its usual path.
+            if member_memory_backup.is_member_store(self._db_path):
+                self._store_use_lock_fd = member_memory_backup.acquire_store_use_lock(self._db_path)
+        try:
+            self._init_database()
+        except BaseException:
+            try:
+                self.close()
+            except Exception:
+                logger.warning(
+                    "Failed to close a partially initialized memory store", exc_info=True
+                )
+            raise
+
+    def _init_database(self) -> None:
+        """Create DB, apply migrations, and set permissions under admission."""
+        from kiro_crew.memory_startup import require_memory_ready
+
+        require_memory_ready(self._memory_store_name)
         # Owner-only lockdown, in two halves. This directory call covers everything
         # SQLite and FAISS create from here on -- inheritable on Windows, because
         # `make_owner_only_dir` routes through `restrict_dir_to_owner`. The per-file
@@ -1100,10 +1278,13 @@ class VectorMemoryStore:
         # file set, the every-init rationale, the Windows lockdown cost, the fail-soft
         # contract -- lives in docs/guides/windows-install.md, "The memory store".
         #
-        # SCOPE: with the default `db_path` this directory IS the data home
-        # (`config_dir()`), so a memory init tightens the whole home. That is wider
-        # than this class and the only place in the tree that does it -- named here
-        # rather than left to be discovered.
+        # SCOPE: this covers the DB's own directory and nothing above it. With the
+        # default `db_path` that directory happens to BE the data home
+        # (`config_dir()`); with a named memory store it is that store's own
+        # directory under `memory_stores/`. The whole-home guarantee does not rest
+        # on which of those it is -- `config.paths.ensure_data_home` tightens the
+        # home where the home is established, so a home whose crews all use named
+        # stores is covered too.
         platform_compat.make_owner_only_dir(self._db_path.parent)
         # BEFORE the connect so the migrations do not run against a file another
         # local user can still write; repeated after it to cover what SQLite created.
@@ -1132,7 +1313,31 @@ class VectorMemoryStore:
         applied = {
             row[0] for row in self._db.execute("SELECT version FROM schema_version").fetchall()
         }
-        for ver, sql, fn in _MIGRATIONS:
+        # WHICH lineage, decided here and nowhere else. This is the single gate:
+        # nine call sites construct a store, one of which (security.scan_memory)
+        # sits outside the memory subsystem entirely and reaches the default store
+        # as a bare VectorMemoryStore(), so a per-call-site check could not cover it.
+        #
+        # A file that already holds product tables answers itself, so no path is
+        # consulted for it and the operator's running memory.db cannot take the
+        # crew branch however the predicate below is later edited. Only a file
+        # with no product tables asks where it lives.
+        detected = memory_schema.detect_lineage(self._db)
+        self._bind_lineage(detected or memory_schema.lineage_for_new_file(self._db_path))
+        named_store = memory_stores.named_store_of_db(self._db_path)
+        self._memory_version = memory_stores.memory_store_version(named_store or "default")
+        if self._memory_version == 2 and self._lineage != memory_schema.LINEAGE_CREW:
+            self._db.close()
+            self._db = None
+            raise ValueError(
+                "Member V2 memory requires its private schema; explicit migration is required"
+            )
+        migrations = (
+            memory_schema.MIGRATIONS_CREW
+            if self._lineage == memory_schema.LINEAGE_CREW
+            else _MIGRATIONS
+        )
+        for ver, sql, fn in migrations:
             if ver not in applied:
                 if sql:
                     self._db.executescript(sql)
@@ -1144,6 +1349,85 @@ class VectorMemoryStore:
                 )
                 self._db.commit()
                 logger.info("Applied memory schema migration v%s", ver)
+
+        # A durable private marker makes the external manifest mandatory on
+        # every later open, including callers that construct this path directly
+        # without config. Markerless crew-schema files remain accepted as the
+        # established unowned legacy V1 case.
+        private_marker = (
+            self._read_meta(memory_schema.PRIVATE_MEMORY_VERSION_META_KEY)
+            if self._lineage == memory_schema.LINEAGE_CREW
+            else None
+        )
+        if private_marker is not None:
+            try:
+                if private_marker != "2" or not named_store:
+                    raise ValueError("private database marker is invalid")
+                manifest_owner, manifest_version = memory_stores.member_memory_identity(named_store)
+                if (
+                    manifest_version != 2
+                    or self._read_meta(memory_schema.STORE_NAME_META_KEY) != named_store
+                    or self._read_meta(memory_schema.OWNER_MEMBER_META_KEY) != manifest_owner
+                ):
+                    raise ValueError("private database identity does not match its manifest")
+            except (memory_stores.UnknownMemoryStore, ValueError) as exc:
+                self._db.close()
+                self._db = None
+                raise ValueError(
+                    "Private V2 memory ownership is missing or does not match its database"
+                ) from exc
+            self._memory_version = 2
+
+        # Additive revision metadata is shared by both lineages. It never changes
+        # their physical rows or version series; old binaries remain readable.
+        with self._db:
+            record_meta.ensure_schema(self._db)
+            record_meta.reconcile(self._db)
+            if self.algorithm_version == "v1":
+                record_meta.limit_v1_accepted_history(self._db)
+
+        # A crew silo describes itself, so a file restored or copied into the wrong
+        # directory is detectable instead of silently serving another crew. The
+        # lineage row is advisory; the private marker and its identity rows are a
+        # fail-closed ownership proof once written. Deliberately not written on
+        # the v1 lineage — that would add rows to the operator's own memory.db,
+        # which is the one thing this whole seam exists to avoid.
+        # Both stamps READ before writing, so opening a silo is not itself a mutation.
+        # An unconditional write would re-mtime every declared store on every init --
+        # including the read-only injection audit, which opens each one in turn.
+        if self._lineage == memory_schema.LINEAGE_CREW:
+            if self._read_meta(memory_schema.LINEAGE_META_KEY) != self._lineage:
+                self._write_meta(memory_schema.LINEAGE_META_KEY, self._lineage)
+            store_name = memory_stores.named_store_of_db(self._db_path)
+            stored_name = self._read_meta(memory_schema.STORE_NAME_META_KEY)
+            if self._memory_version == 2 and stored_name not in (None, store_name):
+                self._db.close()
+                self._db = None
+                raise ValueError("Private V2 memory store name does not match its database")
+            if self._memory_version == 2:
+                owner, _version = memory_stores.member_memory_identity(store_name)
+                stored_owner = self._read_meta(memory_schema.OWNER_MEMBER_META_KEY)
+                if stored_owner is not None and stored_owner != owner:
+                    self._db.close()
+                    self._db = None
+                    raise ValueError("Private V2 memory ownership does not match its database")
+                # Publish the complete durable identity in one transaction. A
+                # crash cannot leave only the advisory store name and later let
+                # a manifest-less private file look like markerless legacy V1.
+                if stored_name is None or stored_owner is None or private_marker is None:
+                    now = _now_iso()
+                    with self._db_lock, self._db:
+                        self._db.executemany(
+                            "INSERT OR IGNORE INTO memory_meta (key, value, updated_at) "
+                            "VALUES (?, ?, ?)",
+                            (
+                                (memory_schema.STORE_NAME_META_KEY, store_name, now),
+                                (memory_schema.OWNER_MEMBER_META_KEY, owner, now),
+                                (memory_schema.PRIVATE_MEMORY_VERSION_META_KEY, "2", now),
+                            ),
+                        )
+            elif store_name and stored_name is None:
+                self._write_meta(memory_schema.STORE_NAME_META_KEY, store_name)
 
         # Second pass, after the connect: covers what SQLite has just created. Runs
         # on EVERY init, not only when init created the files -- an existing DB is
@@ -1174,12 +1458,32 @@ class VectorMemoryStore:
             )
 
     def close(self) -> None:
-        if self._db:
-            self._db.close()
-            self._db = None
+        with self._db_lock:
+            try:
+                if self._db:
+                    self._db.close()
+                    self._db = None
+                self._space_generation += 1
+                self._faiss_index = None
+                self._faiss_id_map.clear()
+                self._faiss_data_version = None
+                self._episodic_scoring = None
+                self._episodic_scoring_refused = None
+            finally:
+                self._release_store_use_lock()
+
+    def _release_store_use_lock(self) -> None:
+        fd, self._store_use_lock_fd = self._store_use_lock_fd, None
+        if fd is not None:
+            from kiro_crew.member_memory_backup import release_store_use_lock
+
+            release_store_use_lock(fd)
 
     @property
     def db(self) -> sqlite3.Connection:
+        from kiro_crew.memory_startup import require_memory_ready
+
+        require_memory_ready(self._memory_store_name)
         if self._db is None:
             raise RuntimeError("VectorMemoryStore not initialized — call init() first")
         return self._db
@@ -1364,12 +1668,21 @@ class VectorMemoryStore:
 
     def get_semantic(self, key: str) -> dict | None:
         """Get a single semantic memory entry by key."""
+        if self.algorithm_version == "v2":
+            row = self._fetch_one_locked(
+                f"SELECT * FROM {self._sem_rel} WHERE key = ? AND is_deleted = 0"
+                f"{self._sem_guard}",
+                (key,),
+            )
+            return dict(row) if row else None
         row = self._fetch_one_locked(
             "SELECT * FROM semantic_memory WHERE key = ? AND is_deleted = 0", (key,)
         )
         return dict(row) if row else None
 
-    def get_all_semantic(self, limit: int | None = None, offset: int = 0) -> list[dict]:
+    def get_all_semantic(
+        self, limit: int | None = None, offset: int = 0, *, q: str = ""
+    ) -> list[dict]:
         """Get active semantic memory entries.
 
         A ``limit`` (with optional ``offset``) bounds the result so callers such
@@ -1377,14 +1690,72 @@ class VectorMemoryStore:
         (unbounded, continuously-written) table in one response (CWE-770).
         ``limit=None`` preserves the return-everything behavior for internal
         callers (consolidation, export, audit).
+
+        Optional ``q`` matches literal Unicode text in keys and decoded values
+        before pagination. Omitting it keeps the existing unfiltered read path.
         """
-        sql = "SELECT * FROM semantic_memory WHERE is_deleted = 0 ORDER BY key"
+        query = _normalize_memory_search_query(q)
+        sql = "SELECT * FROM semantic_memory WHERE is_deleted = 0"
+        if self.algorithm_version == "v2":
+            # Compatibility views intentionally omit facets. Private lifecycle readers
+            # need the canonical row so an explicit copy keeps its visible provenance.
+            sql = f"SELECT * FROM {self._sem_rel} WHERE is_deleted = 0" f"{self._sem_guard}"
         params: tuple = ()
+        if query:
+            sql += (
+                " AND (memory_text_contains(key, ?, 0) OR memory_text_contains(value_json, ?, 1))"
+            )
+            params = (query, query)
+        sql += " ORDER BY key"
         if limit is not None:
             sql += " LIMIT ? OFFSET ?"
-            params = (int(limit), int(offset))
-        rows = self._fetch_all_locked(sql, params)
+            params += (int(limit), int(offset))
+        if query:
+            with self._db_lock:
+                self.db.create_function(
+                    "memory_text_contains", 3, _contains_memory_search_text, deterministic=True
+                )
+                rows = self._fetch_all_locked(sql, params)
+        else:
+            rows = self._fetch_all_locked(sql, params)
         return [dict(r) for r in rows]
+
+    def _stamp_facets(self, item_id: str, facets: "memory_schema.MemoryFacets | None") -> None:
+        """Stamp the carve axes on a crew row. A no-op on the v1 lineage.
+
+        NEVER RAISES, and that is a hard requirement rather than caution. The
+        consolidator calls its writers inside a try whose ``billed`` flag is still
+        False at this point, so an exception escaping here is recorded as "the
+        consolidation attempt did not happen" and every entry point re-arms on the
+        next idle tick — forever, every 60s, with no backoff. A facet is an index
+        projection; losing one costs a carve filter, and nothing else reads it.
+
+        Silent on v1 because the columns do not exist there: the facet kwarg is the
+        additive-with-a-safe-default shape, so a caller threads identity once and
+        both lineages accept it.
+        """
+        if self._lineage != memory_schema.LINEAGE_CREW or facets is None or facets.is_empty():
+            return
+        try:
+            with self._db_lock:
+                self.db.execute(
+                    memory_schema.FACET_STAMP_SQL,
+                    memory_schema.facet_stamp_params(item_id, facets),
+                )
+                self.db.commit()
+        except Exception:
+            # ROLLBACK, not just a log. The connection runs with isolation_level = ""
+            # so a failed DML leaves an implicit transaction OPEN, and the next
+            # `BEGIN IMMEDIATE` on it -- the merge-only episodic write -- would raise
+            # "cannot start a transaction within a transaction". A busy_timeout expiry
+            # under WAL contention is enough to get here, no bad value needed. Inside
+            # its own try so the never-raises contract holds even if the rollback fails.
+            try:
+                with self._db_lock:
+                    self.db.rollback()
+            except Exception:
+                logger.warning("Facet stamp rollback failed for %r", item_id)
+            logger.warning("Facet stamp failed for %r (row kept, carve axes absent)", item_id)
 
     @timed("vector", "write")
     def set_semantic(
@@ -1393,10 +1764,19 @@ class VectorMemoryStore:
         value: object,
         confidence: float,
         source: str,
+        *,
+        facets: "memory_schema.MemoryFacets | None" = None,
+        metadata: dict | None = None,
+        expected_revision: int | None = None,
+        correction: record_meta.CorrectionEvidence | None = None,
     ) -> tuple[SemanticRejectCode, str] | None:
         """Write a semantic memory entry with full validation pipeline.
 
         Returns None if written, (code, message) if rejected.
+
+        *facets* stamps the crew lineage's carve axes and is ignored on v1. It is
+        applied only on a SUCCESSFUL write, so a rejected value leaves no axis
+        behind pointing at a row that does not exist.
         """
         value_json = json.dumps(value)
         result = self.validate_semantic(key, value, confidence, source, value_json=value_json)
@@ -1406,10 +1786,32 @@ class VectorMemoryStore:
             log("Semantic write rejected for %r: %s", key, reason)
             self.log_reject_event(code, key, value, source, value_json=value_json)
             return result
-        conflict = self._write_semantic(key, value_json, confidence, source)
+        try:
+            metadata = record_meta.normalize_metadata(metadata) if metadata is not None else None
+        except ValueError as exc:
+            return (SemanticRejectCode.CONFLICT, str(exc))
+        if metadata and metadata.get("subject") and metadata.get("predicate"):
+            with self._db_lock:
+                identity = self.db.execute(
+                    "SELECT record_id FROM memory_record_meta WHERE scope=? AND subject=? "
+                    "AND predicate=? AND status='active' AND kind IN ('fact','directive')",
+                    (metadata.get("scope", ""), metadata["subject"], metadata["predicate"]),
+                ).fetchone()
+            if identity:
+                key = identity[0].removeprefix("key:")
+        conflict = self._write_semantic(
+            key,
+            value_json,
+            confidence,
+            source,
+            metadata=metadata,
+            expected_revision=expected_revision,
+            correction=correction,
+        )
         if conflict is not None:
             logger.info("Semantic write rejected for %r: %s", key, conflict)
             return (SemanticRejectCode.CONFLICT, conflict)
+        self._stamp_facets(memory_schema.semantic_item_id(key), facets)
         return None
 
     def set_semantic_if_absent(
@@ -1418,6 +1820,8 @@ class VectorMemoryStore:
         value: object,
         confidence: float,
         source: str,
+        *,
+        facets: "memory_schema.MemoryFacets | None" = None,
     ) -> str:
         """Insert a semantic value without replacing a concurrent native write."""
         value_json = json.dumps(value)
@@ -1436,17 +1840,243 @@ class VectorMemoryStore:
             now = _now_iso()
             try:
                 self.db.execute(
-                    "INSERT INTO semantic_memory "
-                    "(key, value_json, confidence, source, created_at, updated_at, is_deleted) "
-                    "VALUES (?, ?, ?, ?, ?, ?, 0)",
-                    (key, value_json, confidence, source, now, now),
+                    memory_schema.semantic_insert(self._lineage),
+                    memory_schema.semantic_insert_params(
+                        self._lineage, key, value_json, confidence, source, now
+                    ),
+                )
+                if self._lineage == memory_schema.LINEAGE_CREW and facets is not None:
+                    self.db.execute(
+                        memory_schema.FACET_STAMP_SQL,
+                        memory_schema.facet_stamp_params(
+                            memory_schema.semantic_item_id(key), facets
+                        ),
+                    )
+                self._record_mutation(
+                    "directive" if key.startswith("lesson.") else "fact",
+                    key,
+                    None,
+                    source,
+                    metadata=(
+                        {"source_ref": facets.derived_from}
+                        if facets and facets.derived_from
+                        else None
+                    ),
+                    operation="create",
                 )
                 self.db.commit()
             except sqlite3.IntegrityError:
                 self.db.rollback()
                 return "existing"
+            except Exception:
+                # Both versions write audit metadata in this transaction. A
+                # failed stamp must not leak an INSERT into the next operation.
+                self.db.rollback()
+                raise
         self._log_event("create", "semantic", key, None, value_json, source)
         return "imported"
+
+    def seed_item_if_absent(
+        self,
+        item: Mapping[str, object],
+        *,
+        source_store: str,
+        source_id: str,
+        kind: str,
+    ) -> dict:
+        """Explicit owner-selected copy; authorization belongs to the API caller.
+
+        No source vector or timestamp is transplanted. Copies are new memories,
+        with a durable source reference, and cannot replace or retire a target
+        row. Their deferred vectors are repaired by the normal backfill sweep.
+        """
+        if self.algorithm_version != "v2":
+            raise ValueError("Explicit member seeding requires a private V2 destination")
+        if not source_store or not source_id or kind not in memory_schema.ALL_KINDS:
+            raise ValueError("A source store, item identity and valid memory kind are required")
+        provenance = json.dumps(
+            {
+                "store": source_store,
+                "item_id": source_id,
+                "kind": kind,
+                "copied_at": _now_iso(),
+                "source": str(item.get("source", "")),
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        facets = memory_schema.MemoryFacets(derived_from=provenance, surface="owner_seed")
+        if kind != memory_schema.KIND_EPISODE:
+            key = str(item.get("key", ""))
+            try:
+                value = (
+                    json.loads(str(item["value_json"])) if "value_json" in item else item["value"]
+                )
+            except (ValueError, TypeError, KeyError):
+                return {"outcome": "rejected", "reason": "Invalid semantic value", "id": key}
+            outcome = self.set_semantic_if_absent(key, value, 1.0, "user_seed", facets=facets)
+            return {"outcome": outcome, "id": memory_schema.semantic_item_id(key)}
+        text = str(item.get("text", ""))
+        raw_tags = item.get("tags", [])
+        try:
+            tags = json.loads(raw_tags) if isinstance(raw_tags, str) else raw_tags
+        except ValueError:
+            tags = []
+        if not isinstance(tags, list):
+            tags = []
+        try:
+            raw_importance = item.get("importance", 0.5)
+            importance = (
+                float(raw_importance) if isinstance(raw_importance, (int, float, str)) else 0.5
+            )
+        except (ValueError, TypeError):
+            importance = 0.5
+        with self._db_lock:
+            # Source identity survives owner corrections and forgetting. A
+            # retry must not re-import the old text after either operation.
+            for previous in self.db.execute(
+                f"SELECT id, derived_from FROM {self._epi_rel} "
+                f"WHERE derived_from != ''{self._epi_guard}"
+            ).fetchall():
+                try:
+                    origin = json.loads(previous["derived_from"])
+                except (ValueError, TypeError):
+                    continue
+                if isinstance(origin, dict) and (
+                    origin.get("store"),
+                    origin.get("item_id"),
+                    origin.get("kind"),
+                ) == (source_store, source_id, kind):
+                    return {"outcome": "existing", "id": previous["id"]}
+            if self.has_episodic_text(text):
+                return {"outcome": "existing", "id": ""}
+            written = self.write_episodic(
+                text,
+                tags=tags,
+                importance=importance,
+                source="user_seed",
+                preserve_existing=True,
+                defer_embedding=True,
+                facets=facets,
+            )
+            if not written:
+                return {
+                    "outcome": "rejected",
+                    "reason": "Duplicate, capacity or invalid episode",
+                    "id": "",
+                }
+            row = self._fetch_one_locked(
+                f"SELECT id, derived_from FROM {self._epi_rel} "
+                f"WHERE text = ? AND is_deleted = 0{self._epi_guard}",
+                (text.strip(),),
+            )
+            if row is None or row["derived_from"] != provenance:
+                # Provenance is essential for owner-selected copies, unlike a
+                # best-effort carve facet. Never report a successful untraced copy.
+                if row is not None:
+                    self.delete_episodic(row["id"], source="seed_provenance_failed")
+                raise RuntimeError("Memory copy provenance could not be saved")
+        return {"outcome": "imported", "id": row["id"]}
+
+    def with_record_metadata(self, rows: list[dict]) -> list[dict]:
+        """Attach the current revision to the trusted pre-extraction snapshot."""
+        with self._db_lock:
+            result = []
+            for raw in rows:
+                row = dict(raw)
+                metadata = record_meta.get_record_metadata(self.db, f"key:{row['key']}")
+                result.append(
+                    {
+                        **row,
+                        "record_revision": metadata.get("revision", 0),
+                        "record_metadata": {
+                            field: metadata[field]
+                            for field in (
+                                "category",
+                                "subject",
+                                "predicate",
+                                "scope",
+                                "valid_from",
+                                "valid_until",
+                            )
+                            if metadata.get(field)
+                        },
+                    }
+                )
+            return result
+
+    def _ineligible_ids(self, record_ids: list[str] | None = None) -> set[str]:
+        """Filter before rank/cap; validity is evaluated again on every recall."""
+        predicate = "status != 'active' OR valid_from != '' OR valid_until != ''"
+        if record_ids is None:
+            rows = self._fetch_all_locked(
+                "SELECT record_id, status, valid_from, valid_until "
+                f"FROM memory_record_meta WHERE {predicate}"
+            )
+        else:
+            unique = list(dict.fromkeys(record_ids))
+            rows = []
+            for start in range(0, len(unique), _MAX_SQL_PARAMS):
+                chunk = unique[start : start + _MAX_SQL_PARAMS]
+                if not chunk:
+                    continue
+                placeholders = ",".join("?" * len(chunk))
+                rows.extend(
+                    self._fetch_all_locked(
+                        "SELECT record_id, status, valid_from, valid_until "
+                        f"FROM memory_record_meta WHERE record_id IN ({placeholders}) "
+                        f"AND ({predicate})",
+                        tuple(chunk),
+                    )
+                )
+        return {row["record_id"] for row in rows if not record_meta.eligible(dict(row))}
+
+    def _eligible_rows(self, rows, kind: str) -> list:
+        blocked = self._ineligible_ids()
+        if not blocked:
+            return list(rows)
+        return [
+            row
+            for row in rows
+            if record_meta.record_id_for(kind, row["id"] if kind == "episode" else row["key"])
+            not in blocked
+        ]
+
+    def _record_mutation(
+        self,
+        kind: str,
+        item_id: str,
+        before: dict | None,
+        source: str,
+        *,
+        metadata: dict | None = None,
+        operation: str = "update",
+    ) -> dict:
+        """Caller holds the lock and transaction; preserve canonical view shape."""
+        with self._db_lock:
+            relation = "episodic_memories" if kind == "episode" else "semantic_memory"
+            column = "id" if kind == "episode" else "key"
+            raw_id = item_id if kind == "episode" else item_id.removeprefix("key:")
+            if metadata and metadata.get("status") in {"superseded", "expired", "forgotten"}:
+                physical = self._epi_rel if kind == "episode" else self._sem_rel
+                guard = self._epi_guard if kind == "episode" else self._sem_guard
+                self.db.execute(
+                    f"UPDATE {physical} SET is_deleted=1 WHERE {column}=?{guard}", (raw_id,)
+                )
+            row = self.db.execute(
+                f"SELECT * FROM {relation} WHERE {column}=?", (raw_id,)
+            ).fetchone()
+            return record_meta.sync_record(
+                self.db,
+                kind=kind,
+                record_id=item_id,
+                before=before,
+                after=dict(row) if row is not None else None,
+                source=source,
+                metadata=metadata,
+                operation=operation,
+                limit_v1_history=self.algorithm_version == "v1",
+            )
 
     def _write_semantic(
         self,
@@ -1454,89 +2084,156 @@ class VectorMemoryStore:
         value_json: str,
         confidence: float,
         source: str,
+        *,
+        metadata: dict | None = None,
+        expected_revision: int | None = None,
+        correction: record_meta.CorrectionEvidence | None = None,
     ) -> str | None:
-        """Write a pre-validated semantic entry (conflict resolution + DB upsert).
-
-        Returns None on success, or a human-readable conflict reason string.
-        """
-
-        # Steps 7-8 (SELECT→conflict-resolve→UPSERT) are serialized: semantic
-        # writes are offloaded to worker threads (consolidation, dashboard), so
-        # without this the read-modify-write can interleave with a concurrent
-        # writer on the shared sqlite connection (lost update / "recursive use of
-        # cursors"). The lock is NOT held across step 9's _retire_stale_episodic,
-        # which issues a blocking embed — holding _db_lock across network I/O
-        # would defeat the whole point of offloading to a thread.
+        """Retain V1 conflict scoring; propose inferred changes in private V2."""
+        private_policy = self.algorithm_version == "v2"
         with self._db_lock:
-            # 7. Conflict resolution
-            existing = self.db.execute(
-                "SELECT * FROM semantic_memory WHERE key = ?", (key,)
-            ).fetchone()
-
-            if existing and not existing["is_deleted"]:
-                old_conf = existing["confidence"]
-                if source == "user_explicit":
-                    pass  # user_explicit always wins
-                elif existing["source"] == "user_explicit":
-                    # Existing is user_explicit — only another user_explicit can overwrite
+            self.db.execute("BEGIN IMMEDIATE")
+            try:
+                existing = self.db.execute(
+                    "SELECT * FROM semantic_memory WHERE key = ?", (key,)
+                ).fetchone()
+                if not private_policy and existing and not existing["is_deleted"]:
+                    reason = None
+                    old_conf = existing["confidence"]
+                    if source != "user_explicit":
+                        if existing["source"] == "user_explicit":
+                            reason = "Existing entry set by user cannot be overwritten by automated source"
+                        elif confidence <= old_conf and abs(confidence - old_conf) >= 0.1:
+                            reason = f"Existing entry has higher confidence ({old_conf:.2f} vs {confidence:.2f})"
+                    if reason:
+                        self.db.rollback()
+                        self._log_event(
+                            "conflict_skip",
+                            "semantic",
+                            key,
+                            existing["value_json"],
+                            value_json,
+                            source,
+                        )
+                        return reason
+                before = dict(existing) if existing is not None else None
+                kind = "directive" if key.startswith("lesson.") else "fact"
+                current = record_meta.get_record_metadata(self.db, f"key:{key}")
+                if expected_revision is not None and expected_revision != current.get(
+                    "revision", 0
+                ):
+                    self.db.rollback()
+                    return "Memory changed since it was read; reload before correcting"
+                verified = bool(
+                    isinstance(correction, record_meta.CorrectionEvidence)
+                    and existing is not None
+                    and not existing["is_deleted"]
+                    and correction.key == key
+                    and correction.old_value_json == existing["value_json"]
+                    and correction.new_value_json == value_json
+                    and correction.revision == current.get("revision")
+                )
+                if verified and correction is not None:
+                    metadata = {
+                        **(metadata or {}),
+                        "source_ref": correction.source_ref,
+                        "observed_at": correction.observed_at,
+                    }
+                metadata_changed = bool(
+                    existing
+                    and metadata
+                    and any(current.get(field, "") != value for field, value in metadata.items())
+                )
+                changed = bool(
+                    existing and (existing["value_json"] != value_json or existing["is_deleted"])
+                )
+                if (
+                    private_policy
+                    and (changed or metadata_changed)
+                    and source != "user_explicit"
+                    and not verified
+                ):
+                    proposal = dict(
+                        before or {},
+                        value_json=value_json,
+                        confidence=confidence,
+                        source=source,
+                        is_deleted=0,
+                    )
+                    proposal_id = record_meta.propose_conflict(
+                        self.db,
+                        kind=kind,
+                        record_id=key,
+                        before=before or {},
+                        after=proposal,
+                        source=source,
+                        metadata=metadata,
+                    )
+                    self.db.commit()
                     self._log_event(
                         "conflict_skip", "semantic", key, existing["value_json"], value_json, source
                     )
-                    return "Existing entry set by user cannot be overwritten by automated source"
-                elif confidence > old_conf:
-                    pass  # higher confidence wins
-                elif abs(confidence - old_conf) < 0.1:
-                    pass  # similar confidence → newer wins (same or different source)
-                else:
-                    self._log_event(
-                        "conflict_skip",
-                        "semantic",
-                        key,
-                        existing["value_json"],
-                        value_json,
-                        source,
-                    )
-                    return (
-                        f"Existing entry has higher confidence ({old_conf:.2f} vs {confidence:.2f})"
-                    )
-                self._log_event(
-                    "update",
-                    "semantic",
-                    key,
-                    existing["value_json"],
-                    value_json,
-                    source,
+                    return f"Conflicting update saved for review (proposal {proposal_id}); current fact retained"
+                if private_policy and existing and not changed and source != "user_explicit":
+                    # A model reaffirming an owner fact must not erase its origin.
+                    if metadata:
+                        self._record_mutation(
+                            kind, key, before, source, metadata=metadata, operation="observe"
+                        )
+                    self.db.commit()
+                    return None
+                now = _now_iso()
+                self.db.execute(
+                    memory_schema.semantic_upsert(self._lineage),
+                    memory_schema.semantic_upsert_params(
+                        self._lineage, key, value_json, confidence, source, now
+                    ),
                 )
-            else:
-                self._log_event("create", "semantic", key, None, value_json, source)
-
-            # 8. Upsert. The conflict clause keeps the stored vector ONLY when
-            # the value is unchanged (a re-affirmation with a new confidence or
-            # source — consolidation rewrites the same keys every cycle) and
-            # clears it when the value changed, so a row never keeps ranking by
-            # a vector computed from superseded text. Step 8.5 below
-            # (or the backfill sweep) refills a cleared vector.
-            now = _now_iso()
-            self.db.execute(
-                "INSERT INTO semantic_memory (key, value_json, confidence, source, created_at, updated_at, is_deleted) "
-                "VALUES (?, ?, ?, ?, ?, ?, 0) "
-                "ON CONFLICT(key) DO UPDATE SET value_json=?, confidence=?, source=?, updated_at=?, is_deleted=0, "
-                "embedding=CASE WHEN semantic_memory.value_json = excluded.value_json "
-                "THEN semantic_memory.embedding ELSE NULL END",
-                (
+                if metadata and metadata.get("status") in {"superseded", "expired", "forgotten"}:
+                    self.db.execute(
+                        f"UPDATE {self._sem_rel} SET is_deleted=1 WHERE key=?{self._sem_guard}",
+                        (key,),
+                    )
+                self._record_mutation(
+                    kind,
                     key,
-                    value_json,
-                    confidence,
+                    before,
                     source,
-                    now,
-                    now,
-                    value_json,
-                    confidence,
-                    source,
-                    now,
-                ),
+                    metadata=metadata,
+                    operation="update" if existing else "create",
+                )
+                if private_policy:
+                    self.db.execute(
+                        "INSERT INTO memory_events (event_type,memory_type,memory_key,old_value,"
+                        "new_value,source,created_at) VALUES (?,?,?,?,?,?,?)",
+                        (
+                            "update" if existing else "create",
+                            "semantic",
+                            key,
+                            existing["value_json"] if existing else None,
+                            value_json,
+                            source,
+                            now,
+                        ),
+                    )
+                self.db.commit()
+            except (ValueError, sqlite3.IntegrityError) as exc:
+                self.db.rollback()
+                return str(exc)
+            except Exception:
+                self.db.rollback()
+                raise
+
+        if not private_policy:
+            active_before = bool(existing and not existing["is_deleted"])
+            self._log_event(
+                "update" if active_before else "create",
+                "semantic",
+                key,
+                existing["value_json"] if active_before else None,
+                value_json,
+                source,
             )
-            self.db.commit()
 
         # 8.5. Persist the value's embedding so retrieval can rank this row from
         # the stored vector instead of re-embedding the whole table per request
@@ -1582,8 +2279,9 @@ class VectorMemoryStore:
                         # repairs it.
                         try:
                             self.db.execute(
-                                "UPDATE semantic_memory SET embedding = ? "
-                                "WHERE key = ? AND value_json = ? AND is_deleted = 0",
+                                f"UPDATE {self._sem_rel} SET embedding = ? "
+                                f"WHERE key = ? AND value_json = ? AND is_deleted = 0"
+                                f"{self._sem_guard}",
                                 (blob, key, value_json),
                             )
                             self.db.commit()
@@ -1613,7 +2311,11 @@ class VectorMemoryStore:
         # (history consolidation writes N semantic + M episodic items in one
         # thread), and an exception raised after a successful commit discarded
         # every remaining item in the batch.
-        if existing and not existing["is_deleted"]:
+        if (
+            existing
+            and not existing["is_deleted"]
+            and (self.algorithm_version != "v2" or existing["value_json"] != value_json)
+        ):
             old_val = existing["value_json"]
             try:
                 old_text = json.loads(old_val) if isinstance(old_val, str) else str(old_val)
@@ -1631,22 +2333,111 @@ class VectorMemoryStore:
 
         return None
 
-    def delete_semantic(self, key: str, source: str) -> bool:
-        """Tombstone a semantic memory entry."""
-        existing = self.get_semantic(key)
-        if not existing:
-            return False
-        now = _now_iso()
-        with self._db_lock:
-            self.db.execute(
-                "UPDATE semantic_memory SET is_deleted = 1, updated_at = ? WHERE key = ?",
-                (now, key),
+    def propose_semantic_delete(self, key: str, source: str) -> bool:
+        """An inferred deletion is a review proposal, never owner authorization."""
+        with self._db_lock, self.db:
+            row = self.db.execute(
+                "SELECT * FROM semantic_memory WHERE key=? AND is_deleted=0", (key,)
+            ).fetchone()
+            if row is None:
+                return False
+            record_meta.propose_conflict(
+                self.db,
+                kind="directive" if key.startswith("lesson.") else "fact",
+                record_id=key,
+                before=dict(row),
+                after=dict(row, is_deleted=1),
+                source=source,
+                operation="forget",
             )
-            self.db.commit()
-        self._log_event("delete", "semantic", key, existing["value_json"], None, source)
         return True
 
+    def delete_semantic(self, key: str, source: str) -> bool:
+        """Tombstone a semantic memory entry with its full prior revision."""
+        now = _now_iso()
+        with self._db_lock, self.db:
+            row = self.db.execute(
+                "SELECT * FROM semantic_memory WHERE key=? AND is_deleted=0", (key,)
+            ).fetchone()
+            if row is None:
+                return False
+            self.db.execute(
+                f"UPDATE {self._sem_rel} SET is_deleted=1, updated_at=? WHERE key=?{self._sem_guard}",
+                (now, key),
+            )
+            self._record_mutation(
+                "directive" if key.startswith("lesson.") else "fact",
+                key,
+                dict(row),
+                source,
+                operation="forget",
+            )
+        self._log_event("delete", "semantic", key, row["value_json"], None, source)
+        return True
+
+    def _retire_one_episodic(self, mem_id: str, text: str, superseded_by: str) -> None:
+        """Tombstone one episode as superseded, recording enough to undo it.
+
+        Takes ``_db_lock`` itself rather than relying on the caller's hold. The lock is
+        an ``RLock`` precisely so a locked section can call a helper that re-acquires,
+        and taking it here makes the helper correct at any call site instead of at the
+        two that happen to exist.
+
+        ``conflict_retire`` and ``semantic_update`` are the event/source pair
+        :meth:`get_retired_episodic` reads to tell a supersession apart from a user's
+        own delete, so both spellings are part of the contract rather than log text.
+
+        *superseded_by* — the semantic KEY whose new value triggered this — goes in the
+        event's ``new_value``, which these events otherwise leave empty.
+        ``memory_key`` has to be the EPISODE's id for the recovery listing to join on
+        it, so without this the record says a row was superseded and never says by
+        what: the one question a reader deciding whether to restore it actually asks.
+        """
+        with self._db_lock:
+            before = self.db.execute(
+                "SELECT * FROM episodic_memories WHERE id=?", (mem_id,)
+            ).fetchone()
+            self.db.execute(
+                f"UPDATE {self._epi_rel} SET is_deleted = 1 WHERE id = ?{self._epi_guard}",
+                (mem_id,),
+            )
+            self._record_mutation(
+                "episode",
+                mem_id,
+                dict(before) if before else None,
+                "semantic_update",
+                metadata={"status": "superseded"},
+                operation="supersede",
+            )
+        self._log_event(
+            "conflict_retire", "episodic", mem_id, text[:200], superseded_by, "semantic_update"
+        )
+
     def _retire_stale_episodic(self, key: str, old_value: str) -> None:
+        """V1 keeps its original heuristic; member V2 requires literal evidence."""
+        if self.algorithm_version != "v2":
+            self._retire_stale_episodic_v1(key, old_value)
+            return
+        # No embedding/similarity can prove a contradiction. Require the old
+        # value in an assertion about this key, then keep an undoable audit row.
+        with self._db_lock:
+            rows = self.db.execute(
+                "SELECT id, text FROM episodic_memories WHERE is_deleted = 0 "
+                "ORDER BY created_at DESC, id"
+            ).fetchall()
+            retired = 0
+            for row in rows:
+                if not memory_v2.superseded_value_is_asserted(row["text"], key, old_value):
+                    continue
+                self._retire_one_episodic(row["id"], row["text"], key)
+                retired += 1
+                if retired >= _MAX_EPISODIC_RETIRED_PER_WRITE:
+                    break
+            if retired:
+                self.db.commit()
+                self._invalidate_episodic_scoring()
+
+    def _retire_stale_episodic_v1(self, key: str, old_value: str) -> None:
         """Soft-delete episodic entries that reference a superseded semantic value.
 
         Uses vector similarity search when embeddings are available (catches
@@ -1680,7 +2471,8 @@ class VectorMemoryStore:
                     if r.get("cosine_sim", 0) > 0.7 and r["id"] not in seen:
                         seen.add(r["id"])
                         self.db.execute(
-                            "UPDATE episodic_memories SET is_deleted = 1 WHERE id = ?", (r["id"],)
+                            f"UPDATE {self._epi_rel} SET is_deleted = 1 WHERE id = ?{self._epi_guard}",
+                            (r["id"],),
                         )
                         self._log_event(
                             "conflict_retire",
@@ -1701,7 +2493,8 @@ class VectorMemoryStore:
                     if r["id"] not in seen:
                         seen.add(r["id"])
                         self.db.execute(
-                            "UPDATE episodic_memories SET is_deleted = 1 WHERE id = ?", (r["id"],)
+                            f"UPDATE {self._epi_rel} SET is_deleted = 1 WHERE id = ?{self._epi_guard}",
+                            (r["id"],),
                         )
                         self._log_event(
                             "conflict_retire",
@@ -1729,6 +2522,98 @@ class VectorMemoryStore:
 
     # ── Context Injection ──
 
+    def _fact_identities(self) -> dict[str, dict]:
+        """Explicit entity/attribute terms expand sparse keys without fuzzy merging."""
+        rows = self._fetch_all_locked(
+            "SELECT record_id, subject, predicate, scope FROM memory_record_meta "
+            "WHERE kind IN ('fact','directive') AND (subject != '' OR predicate != '')"
+        )
+        return {
+            row["record_id"].removeprefix("key:"): {
+                field: row[field] for field in ("subject", "predicate", "scope")
+            }
+            for row in rows
+        }
+
+    @staticmethod
+    def _fact_label(row: dict) -> str:
+        identity = row.get("identity", {})
+        details = ", ".join(
+            str(identity[field])
+            for field in ("subject", "predicate", "scope")
+            if identity.get(field)
+        )
+        return f"{row['key']} ({details})" if details else row["key"]
+
+    def _semantic_candidates_v1(self, query_text: str) -> list[dict]:
+        """The existing V1 hybrid policy, exposed to explicit bounded recall."""
+        query_words = _stem_words(set(re.findall(r"\w+", query_text.lower())))
+        query_embedding = (
+            self._try_embed(query_text, PRIORITY_INTERACTIVE) if self.embed_fn else None
+        )
+
+        # Context assembly runs on executor threads (subagent context builds,
+        # run_in_embed_pool) concurrent with writers on worker threads, and
+        # context.py does not guard this call — an unserialized fetch here
+        # kills the whole subagent run (see the locked-fetch helper
+        # contract). The helper materializes the rows.
+        all_rows = self._fetch_all_locked(
+            "SELECT key, value_json, updated_at, embedding FROM semantic_memory "
+            "WHERE is_deleted = 0 AND key NOT LIKE 'lesson.%'",
+            scan="semantic",
+        )
+
+        # Stored write-time vectors only — one embed per request (the query),
+        # same as the lessons path. Re-embedding every row here was an
+        # unbounded O(table) loop of blocking embeds per context build. Rows
+        # the write path or backfill has not embedded yet contribute 0.0 on
+        # the vector term of the same weighted scale (see _hybrid_score).
+        similarity = self._stored_similarity_scorer(query_embedding)
+
+        # Both token sets depend only on the row's own text, so re-deriving
+        # them per query is the bulk of a warm call — but only a scan that
+        # fits the cache can hit it, so the width decides which form runs.
+        # Two entries per row: one for the key, one for the value.
+        row_tokens = _row_stem_tokens_for_scan(2 * len(all_rows))
+
+        identities = self._fact_identities()
+        scored_rows: list[tuple[float, dict]] = []
+        for raw in self._eligible_rows(all_rows, "fact"):
+            r = dict(raw)
+            if r["key"] in identities:
+                r["identity"] = identities[r["key"]]
+            key_words = row_tokens(self._fact_label(r).replace("_", " ").replace(".", " "))
+            val_words = row_tokens(r["value_json"].lower())
+            key_overlap = len(query_words & key_words)
+            val_overlap = len(query_words & val_words)
+            kw_raw = key_overlap * 3 + val_overlap
+            kw_score = _keyword_score(kw_raw)
+
+            # Vector score (when a stored vector is present). The mixed
+            # population is real — legacy rows stay NULL until the backfill
+            # sweep or a re-write reaches them — so score them on the same
+            # weighted scale as embedded rows (see _hybrid_score).
+            # Clamped here (not inside the scorer): this caller passes
+            # query_has_vector=True below, so a negative raw cosine would
+            # otherwise reach _hybrid_score's weighted sum instead of the
+            # keyword-only floor a merely-dissimilar row should get.
+            vec_score = max(0.0, similarity(r))
+
+            score = _hybrid_score(kw_score, vec_score, query_has_vector=query_embedding is not None)
+
+            if score > 0:
+                r["retrieval"] = {
+                    "reason": "v1_hybrid_match",
+                    "score": score,
+                    "matched_terms": sorted(query_words & (key_words | val_words)),
+                    "cosine": vec_score if query_embedding is not None else None,
+                }
+                scored_rows.append((score, r))
+
+        scored_rows.sort(key=lambda x: (-x[0], x[1]["updated_at"]))
+        rows = [r[1] for r in scored_rows]
+        return rows
+
     def get_semantic_context(self, query_text: str = "", cap: int = 1500) -> str:
         """Format semantic memory for prompt injection with hybrid retrieval.
 
@@ -1739,62 +2624,10 @@ class VectorMemoryStore:
         max_rows = max(cap // 15, 20)
 
         # Query-aware filtering: hybrid vector + keyword scoring
-        if query_text:
-            query_words = _stem_words(set(re.findall(r"\w+", query_text.lower())))
-            query_embedding = (
-                self._try_embed(query_text, PRIORITY_INTERACTIVE) if self.embed_fn else None
-            )
-
-            # Context assembly runs on executor threads (subagent context builds,
-            # run_in_embed_pool) concurrent with writers on worker threads, and
-            # context.py does not guard this call — an unserialized fetch here
-            # kills the whole subagent run (see the locked-fetch helper
-            # contract). The helper materializes the rows.
-            all_rows = self._fetch_all_locked(
-                "SELECT key, value_json, updated_at, embedding FROM semantic_memory "
-                "WHERE is_deleted = 0 AND key NOT LIKE 'lesson.%'",
-                scan="semantic",
-            )
-
-            # Stored write-time vectors only — one embed per request (the query),
-            # same as the lessons path. Re-embedding every row here was an
-            # unbounded O(table) loop of blocking embeds per context build. Rows
-            # the write path or backfill has not embedded yet contribute 0.0 on
-            # the vector term of the same weighted scale (see _hybrid_score).
-            similarity = self._stored_similarity_scorer(query_embedding)
-
-            scored_rows: list[tuple[float, dict]] = []
-            for raw in all_rows:
-                r = dict(raw)
-                # Keyword score (always available)
-                key_words = _stem_words(
-                    set(re.findall(r"\w+", r["key"].replace("_", " ").replace(".", " ")))
-                )
-                val_words = _stem_words(set(re.findall(r"\w+", r["value_json"].lower())))
-                key_overlap = len(query_words & key_words)
-                val_overlap = len(query_words & val_words)
-                kw_raw = key_overlap * 3 + val_overlap
-                kw_score = _keyword_score(kw_raw)
-
-                # Vector score (when a stored vector is present). The mixed
-                # population is real — legacy rows stay NULL until the backfill
-                # sweep or a re-write reaches them — so score them on the same
-                # weighted scale as embedded rows (see _hybrid_score).
-                # Clamped here (not inside the scorer): this caller passes
-                # query_has_vector=True below, so a negative raw cosine would
-                # otherwise reach _hybrid_score's weighted sum instead of the
-                # keyword-only floor a merely-dissimilar row should get.
-                vec_score = max(0.0, similarity(r))
-
-                score = _hybrid_score(
-                    kw_score, vec_score, query_has_vector=query_embedding is not None
-                )
-
-                if score > 0:
-                    scored_rows.append((score, r))
-
-            scored_rows.sort(key=lambda x: (-x[0], x[1]["updated_at"]))
-            rows = [r[1] for r in scored_rows[:max_rows]]
+        if self.algorithm_version == "v2":
+            rows = self._semantic_candidates_v2(query_text)[:max_rows]
+        elif query_text:
+            rows = self._semantic_candidates_v1(query_text)[:max_rows]
         else:
             # No query: recent entries. Same serialization requirement as the
             # query path above.
@@ -1808,15 +2641,17 @@ class VectorMemoryStore:
             return ""
         lines: list[str] = []
         total = 0
-        for r in rows:
+        for r in self._eligible_rows(rows, "fact"):
             try:
                 val = json.loads(r["value_json"])
             except (json.JSONDecodeError, TypeError):
                 val = r["value_json"]
             # Format complex values as JSON, simple values as-is
             val_str = json.dumps(val) if isinstance(val, (dict, list)) else str(val)
-            line = f"{r['key']}: {val_str}"
+            line = f"{self._fact_label(dict(r))}: {val_str}"
             if total + len(line) > cap:
+                if self.algorithm_version == "v2":
+                    continue
                 break
             lines.append(line)
             total += len(line) + 1
@@ -1828,6 +2663,48 @@ class VectorMemoryStore:
             + "\n".join(lines)
             + "\n[End of semantic memory]\n"
         )
+
+    def _semantic_candidates_v2(self, query_text: str) -> list[dict]:
+        """Keep member preferences; retrieve facts only with relevant evidence."""
+        query_embedding = (
+            self._try_embed(query_text, PRIORITY_INTERACTIVE)
+            if query_text and self.embed_fn
+            else None
+        )
+        query_terms = memory_v2.terms(query_text)
+        similarity = self._stored_similarity_scorer(query_embedding)
+        rows = self._fetch_all_locked(
+            f"SELECT * FROM {self._sem_rel} WHERE key NOT LIKE 'lesson.%' "
+            f"AND is_deleted = 0{self._sem_guard}",
+            scan="semantic",
+        )
+        identities = self._fact_identities()
+        selected = []
+        for raw in self._eligible_rows(rows, "fact"):
+            row = dict(raw)
+            blob = row.get("embedding")
+            comparable = (
+                query_embedding is not None and blob and len(blob) == len(query_embedding) * 4
+            )
+            cosine = round(similarity(row), 4) if comparable else None
+            visible_value = memory_v2.visible_json(row["value_json"])
+            if row["key"] in identities:
+                row["identity"] = identities[row["key"]]
+            text = f"{self._fact_label(row).replace('.', ' ').replace('_', ' ')} {visible_value}"
+            evidence = memory_v2.relevance_evidence(query_terms, text, cosine)
+            # Preferences are stable instructions supplied by this member's own
+            # owner/context, not episodic guesses that must match every task.
+            preference = row["key"].startswith("pref.")
+            if query_text and not preference and not evidence["admitted"]:
+                continue
+            if preference:
+                evidence = {**evidence, "admitted": True, "reason": "member_preference"}
+            row.pop("embedding", None)
+            row["retrieval"] = evidence
+            row["score"] = max(0.0, cosine or 0.0) + evidence["query_coverage"]
+            selected.append(row)
+        selected.sort(key=lambda row: (-row["score"], row["key"]))
+        return selected
 
     # ── Event Log ──
 
@@ -1880,10 +2757,37 @@ class VectorMemoryStore:
 
     # ── FAISS Index ──
 
+    def invalidate_episode_content(self) -> None:
+        """Drop derived vectors after a content edit; SQLite stays authoritative.
+
+        Call after the edit transaction commits. No fallible filesystem/SQL write
+        follows the accepted edit: saved indexes are separately checked against
+        current SQLite vectors when loaded, including across process restarts.
+        """
+        with self._db_lock:
+            self._faiss_index = None
+            self._faiss_id_map = []
+            self._faiss_data_version = None
+            self._invalidate_episodic_scoring()
+
+    def _faiss_content_signature(self) -> str:
+        digest = hashlib.sha256()
+        for row in self._fetch_all_locked(
+            "SELECT id, embedding FROM episodic_memories "
+            "WHERE is_deleted=0 AND embedding IS NOT NULL ORDER BY id"
+        ):
+            identity = row["id"].encode("utf-8")
+            vector = bytes(row["embedding"])
+            digest.update(struct.pack("!II", len(identity), len(vector)))
+            digest.update(identity)
+            digest.update(vector)
+        return digest.hexdigest()
+
     def build_faiss_index(self) -> int:
         """Rebuild FAISS index from all episodic embeddings in SQLite. Returns count."""
         if not _HAS_FAISS or not _HAS_NUMPY:
             return 0
+        version = self._sqlite_data_version()
         self._faiss_index = faiss.IndexFlatIP(self._embedding_dim)
         self._faiss_id_map = []
         rows = self._fetch_all_locked(
@@ -1904,19 +2808,47 @@ class VectorMemoryStore:
                 skipped,
                 self._embedding_dim,
             )
+        if version != self._sqlite_data_version():
+            self._faiss_index = None
+            self._faiss_id_map = []
+        self._faiss_data_version = version
         logger.info("Built FAISS index with %d vectors", len(self._faiss_id_map))
         return len(self._faiss_id_map)
 
     def save_faiss_index(self) -> None:
-        """Persist FAISS index to disk."""
+        """Save a SQLite-derived snapshot and stamp both files in the same epoch."""
         if not _HAS_FAISS or self._faiss_index is None:
             return
         try:
-            faiss.write_index(self._faiss_index, str(self._faiss_path))
-            # Save id map alongside
-            id_map_path = self._faiss_path.with_suffix(".ids.json")
-            id_map_path.write_text(json.dumps(self._faiss_id_map), encoding="utf-8")
-            self._faiss_writes_since_save = 0
+            with self._db_lock:
+                self.db.execute("BEGIN IMMEDIATE")
+                try:
+                    # An external editor may have changed vectors since this
+                    # process built its index. Rebuild while SQLite owns the
+                    # write reservation; a file stamp can never bless old data.
+                    self.build_faiss_index()
+                    faiss.write_index(cast("faiss.Index", self._faiss_index), str(self._faiss_path))
+                    id_map_path = self._faiss_path.with_suffix(".ids.json")
+                    id_map_path.write_text(json.dumps(self._faiss_id_map), encoding="utf-8")
+                    stamp = json.dumps(
+                        {
+                            "database": self._faiss_content_signature(),
+                            "index": hashlib.sha256(self._faiss_path.read_bytes()).hexdigest(),
+                            "ids": hashlib.sha256(id_map_path.read_bytes()).hexdigest(),
+                        },
+                        sort_keys=True,
+                    )
+                    self.db.execute(
+                        "INSERT INTO memory_meta (key,value,updated_at) VALUES (?,?,?) "
+                        "ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at",
+                        ("faiss_content_signature", stamp, _now_iso()),
+                    )
+                    self._faiss_data_version = self._sqlite_data_version()
+                    self.db.commit()
+                    self._faiss_writes_since_save = 0
+                except Exception:
+                    self.db.rollback()
+                    raise
         except Exception:
             logger.warning("Failed to save FAISS index", exc_info=True)
 
@@ -1927,6 +2859,15 @@ class VectorMemoryStore:
         id_map_path = self._faiss_path.with_suffix(".ids.json")
         if self._faiss_path.exists() and id_map_path.exists():
             try:
+                version = self._sqlite_data_version()
+                stamp = json.loads(self._read_meta("faiss_content_signature") or "{}")
+                if stamp != {
+                    "database": self._faiss_content_signature(),
+                    "index": hashlib.sha256(self._faiss_path.read_bytes()).hexdigest(),
+                    "ids": hashlib.sha256(id_map_path.read_bytes()).hexdigest(),
+                }:
+                    self.build_faiss_index()
+                    return False
                 loaded_index = faiss.read_index(str(self._faiss_path))
                 self._faiss_index = loaded_index
                 self._faiss_id_map = json.loads(id_map_path.read_text(encoding="utf-8"))
@@ -1946,6 +2887,10 @@ class VectorMemoryStore:
                     )
                     self.build_faiss_index()
                     return False
+                if version != self._sqlite_data_version():
+                    self.build_faiss_index()
+                    return False
+                self._faiss_data_version = version
                 logger.info("Loaded FAISS index: %d vectors", len(self._faiss_id_map))
                 return True
             except Exception:
@@ -1966,8 +2911,15 @@ class VectorMemoryStore:
         *,
         preserve_existing: bool = False,
         defer_embedding: bool = False,
+        facets: "memory_schema.MemoryFacets | None" = None,
+        metadata: dict | None = None,
     ) -> bool:
         """Write an episodic memory with optional embedding and dedup.
+
+        *facets* stamps the crew lineage's carve axes and is ignored on v1. An
+        episode is the kind that most needs them: it is delivered ONLY by
+        per-prompt similarity search, so the carve is the only thing that can
+        bound which episodes a query is even allowed to surface.
 
         ``preserve_existing`` rejects similarity and capacity conflicts instead
         of tombstoning an active entry. Import paths use it to remain merge-only.
@@ -1983,6 +2935,9 @@ class VectorMemoryStore:
         (which needs a vector), so the caller keeps its own duplicate check.
         """
         text = text.strip()
+        metadata = record_meta.normalize_metadata(metadata) if metadata is not None else None
+        if facets and facets.derived_from:
+            metadata = {**(metadata or {}), "source_ref": facets.derived_from}
         if len(text) < _EPISODIC_TEXT_MIN or len(text) > _EPISODIC_TEXT_MAX:
             logger.debug(
                 "Episodic rejected: len=%d (min=%d max=%d)",
@@ -1999,10 +2954,8 @@ class VectorMemoryStore:
         # drop the entry on match, emitting an auditable reject event.
         if _contains_injection(text):
             logger.warning("Episodic write rejected: blocked content patterns (src=%s)", source)
-            # The rejected text is untrusted conversation content and the snippet
-            # is surfaced verbatim on the dashboard (/api/memory/events -> get_events).
-            # Scrub exfiltration URLs + credentials before persisting the audit
-            # snippet so poisoned text can't smuggle secrets onto that surface.
+            # Scrub untrusted rejected content before persisting its audit snippet.
+            # The dashboard also redacts all memory events before returning them.
             safe_snippet = redact_and_truncate(text, 200)
             self._log_event(
                 SemanticRejectCode.INJECTION.value,
@@ -2020,11 +2973,13 @@ class VectorMemoryStore:
         # Text-hash dedup: reject near-identical text before expensive embedding.
         # The store shares one SQLite connection across worker threads, so even
         # this read must use the same lock as the write-side double-check.
-        text_prefix = text[:80].lower()
+        text_prefix = text if self.algorithm_version == "v2" else text[:80].lower()
+        dedup_predicate = (
+            "text = ?" if self.algorithm_version == "v2" else "LOWER(SUBSTR(text, 1, 80)) = ?"
+        )
         with self._db_lock:
             existing = self.db.execute(
-                "SELECT id FROM episodic_memories WHERE is_deleted = 0 "
-                "AND LOWER(SUBSTR(text, 1, 80)) = ?",
+                "SELECT id FROM episodic_memories WHERE is_deleted = 0 " f"AND {dedup_predicate}",
                 (text_prefix,),
             ).fetchone()
         if existing:
@@ -2079,8 +3034,7 @@ class VectorMemoryStore:
             # writer from inserting the same text between that check and this
             # critical section.
             existing = self.db.execute(
-                "SELECT id FROM episodic_memories WHERE is_deleted = 0 "
-                "AND LOWER(SUBSTR(text, 1, 80)) = ?",
+                "SELECT id FROM episodic_memories WHERE is_deleted = 0 " f"AND {dedup_predicate}",
                 (text_prefix,),
             ).fetchone()
             if existing is not None:
@@ -2096,7 +3050,8 @@ class VectorMemoryStore:
             # (UnboundLocalError), losing the memory entirely. Degrade to a
             # non-deduped write instead (the text-prefix dedup above still applies).
             if (
-                embedding_blob is not None
+                self.algorithm_version != "v2"
+                and embedding_blob is not None
                 and self._faiss_index is not None
                 and self._faiss_index.ntotal > 0  # type: ignore[attr-defined]
             ):
@@ -2159,15 +3114,13 @@ class VectorMemoryStore:
                     active_count = self.db.execute(
                         "SELECT COUNT(*) FROM episodic_memories WHERE is_deleted = 0"
                     ).fetchone()[0]
-                    if active_count >= self._episodic_max:
+                    if self.algorithm_version != "v2" and active_count >= self._episodic_max:
                         self.db.commit()
                         return False
                     self.db.execute(
-                        "INSERT INTO episodic_memories "
-                        "(id, conversation_id, text, embedding, tags, "
-                        "importance, created_at, is_deleted) "
-                        "VALUES (?, ?, ?, ?, ?, ?, ?, 0)",
-                        (
+                        memory_schema.episodic_insert(self._lineage),
+                        memory_schema.episodic_insert_params(
+                            self._lineage,
                             mem_id,
                             conversation_id,
                             text,
@@ -2175,7 +3128,11 @@ class VectorMemoryStore:
                             json.dumps(clean_tags),
                             importance,
                             now,
+                            source,
                         ),
+                    )
+                    self._record_mutation(
+                        "episode", mem_id, None, source, metadata=metadata, operation="create"
                     )
                     self.db.commit()
                 except Exception:
@@ -2185,22 +3142,25 @@ class VectorMemoryStore:
                 self._enforce_episodic_cap()
                 mem_id = str(uuid4())
                 now = _now_iso()
-                self.db.execute(
-                    "INSERT INTO episodic_memories "
-                    "(id, conversation_id, text, embedding, tags, "
-                    "importance, created_at, is_deleted) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, 0)",
-                    (
-                        mem_id,
-                        conversation_id,
-                        text,
-                        embedding_blob,
-                        json.dumps(clean_tags),
-                        importance,
-                        now,
-                    ),
-                )
-                self.db.commit()
+                with self.db:
+                    self.db.execute(
+                        memory_schema.episodic_insert(self._lineage),
+                        memory_schema.episodic_insert_params(
+                            self._lineage,
+                            mem_id,
+                            conversation_id,
+                            text,
+                            embedding_blob,
+                            json.dumps(clean_tags),
+                            importance,
+                            now,
+                            source,
+                        ),
+                    )
+                    self._record_mutation(
+                        "episode", mem_id, None, source, metadata=metadata, operation="create"
+                    )
+                    self.db.commit()
 
             # Add to FAISS. The C++ index and the Python _faiss_id_map MUST commit
             # together — if index.ntotal ends up ahead of len(_faiss_id_map) a later
@@ -2220,6 +3180,7 @@ class VectorMemoryStore:
                 if self._faiss_writes_since_save >= _FAISS_SAVE_INTERVAL:
                     self.save_faiss_index()
 
+        self._stamp_facets(mem_id, facets)
         self._log_event("create", "episodic", mem_id, None, text[:200], source)
         has_vec = embedding_blob is not None
         logger.debug(
@@ -2249,6 +3210,8 @@ class VectorMemoryStore:
         Long texts dilute cosine similarity, so the gate relaxes above the
         long-text cutoff.
         """
+        if self.algorithm_version == "v2":
+            return memory_v2.cosine_floor(text)
         return (
             _EPISODIC_LONG_TEXT_THRESHOLD
             if len(text) > _EPISODIC_LONG_TEXT_CHARS
@@ -2296,6 +3259,17 @@ class VectorMemoryStore:
         callers still receive the full ranked set.
         Falls back to FTS5 text search if no embedding provided.
         """
+        if self.algorithm_version == "v2":
+            return self._search_episodic_v2(
+                query_embedding, query_text, limit, mmr, tag_filter, relevance_filter
+            )
+        if (
+            self._faiss_index is not None
+            and self._faiss_data_version is not None
+            and self._faiss_data_version != self._sqlite_data_version()
+        ):
+            self._faiss_index = None
+            self._faiss_id_map = []
         if (
             query_embedding is not None
             and _HAS_NUMPY
@@ -2320,7 +3294,13 @@ class VectorMemoryStore:
             now = datetime.now(tz=timezone.utc)
             candidates: list[dict] = []
             with self._db_lock:
-                k = min(limit * 2, self._faiss_index.ntotal)  # type: ignore[attr-defined]
+                # Keep native work bounded independently of lifetime tombstones.
+                # If invalid/missing/tag-filtered hits starve this window, the
+                # SQLite tier below supplies the complete active population.
+                k = min(
+                    max(limit * 2, 16),
+                    self._faiss_index.ntotal,  # type: ignore[attr-defined]
+                )
                 distances, indices = self._faiss_index.search(vec.reshape(1, -1), k)  # type: ignore[attr-defined]
                 # FAISS returns ids and distances only. Every hit is resolved in
                 # a single IN (...) query over an explicit column list: one
@@ -2332,8 +3312,14 @@ class VectorMemoryStore:
                     if idx == -1:
                         break
                     hits.append((self._faiss_id_map[int(idx)], float(dist)))
-                rows_by_id = self._get_episodic_batch([mem_id for mem_id, _ in hits])
+                hit_ids = [mem_id for mem_id, _ in hits]
+                blocked = self._ineligible_ids(
+                    [record_meta.record_id_for("episode", mem_id) for mem_id in hit_ids]
+                )
+                rows_by_id = self._get_episodic_batch(hit_ids)
                 for mem_id, cosine_sim in hits:
+                    if record_meta.record_id_for("episode", mem_id) in blocked:
+                        continue
                     # Absent from the mapping == row missing or tombstoned; the
                     # per-hit lookup treated both the same way.
                     mem = rows_by_id.get(mem_id)
@@ -2355,6 +3341,17 @@ class VectorMemoryStore:
 
             if relevance_filter:
                 candidates = self._filter_by_relevance(candidates)
+            expected = min(limit, k)
+            if len(candidates) < expected:
+                return self._sqlite_vector_search(
+                    query_embedding,
+                    query_text,
+                    limit,
+                    mmr=mmr,
+                    tag_filter=tag_filter,
+                    relevance_filter=relevance_filter,
+                )
+
             candidates.sort(key=lambda x: x["score"], reverse=True)
             result = _mmr_rerank(candidates, limit=limit) if mmr else candidates[:limit]
 
@@ -2383,10 +3380,74 @@ class VectorMemoryStore:
         # Fallback 2: FTS5 keyword search (no embeddings — MMR not useful here)
         logger.debug("Episodic keyword fallback: query=%s…", query_text[:60])
         return (
-            self._fts5_episodic_search(query_text, limit, tag_filter=tag_filter)
+            self._eligible_rows(
+                self._fts5_episodic_search(
+                    query_text, max(limit, self._episodic_max), tag_filter=tag_filter
+                ),
+                "episode",
+            )[:limit]
             if query_text
             else []
         )
+
+    def _search_episodic_v2(
+        self,
+        query_embedding: list[float] | None,
+        query_text: str,
+        limit: int,
+        mmr: bool,
+        tag_filter: list[str] | None,
+        relevance_filter: bool,
+    ) -> list[dict]:
+        """Fuse both evidence sources before admission and the result budget.
+
+        Scanning the active private population also includes rows awaiting an
+        embedding and avoids the FAISS top-k/tag-filter starvation of V1. No
+        model calls happen inside this scan or while holding the store lock.
+        """
+        if limit <= 0 or (not query_text.strip() and query_embedding is None):
+            return []
+        rows = self._fetch_all_locked(
+            f"SELECT * FROM {self._epi_rel} WHERE is_deleted = 0{self._epi_guard}",
+            scan="episodic",
+        )
+        query_terms = memory_v2.terms(query_text)
+        similarity = self._stored_similarity_scorer(query_embedding)
+        now = datetime.now(tz=timezone.utc)
+        candidates = []
+        for raw in self._eligible_rows(rows, "episode"):
+            row = dict(raw)
+            if tag_filter and not self._matches_tags(row, tag_filter):
+                continue
+            blob = row.get("embedding")
+            has_vector = (
+                query_embedding is not None and blob and len(blob) == len(query_embedding) * 4
+            )
+            cosine = round(similarity(row), 4) if has_vector else None
+            evidence = memory_v2.relevance_evidence(query_terms, row["text"], cosine)
+            if relevance_filter and not evidence["admitted"]:
+                continue
+            # Even an unfiltered search needs evidence: an absent query vector
+            # must not turn an unrelated lexical search into a table listing.
+            if cosine is None and not evidence["matched_terms"]:
+                continue
+            created = datetime.fromisoformat(row["created_at"])
+            if created.tzinfo is None:
+                created = created.replace(tzinfo=timezone.utc)
+            days_old = max(0, (now - created).days)
+            score = memory_v2.rank_score(
+                evidence,
+                importance=row["importance"],
+            )
+            row.pop("embedding", None)
+            row.update(score=score, retrieval={**evidence, "age_days": days_old})
+            if cosine is not None:
+                row["cosine_sim"] = cosine
+            candidates.append(row)
+        candidates.sort(key=lambda row: (-row["score"], row["id"]))
+        result = _mmr_rerank(candidates, limit=limit) if mmr else candidates[:limit]
+        self._touch_last_accessed([row["id"] for row in result])
+        return result
 
     def _sqlite_vector_search(
         self,
@@ -2401,6 +3462,9 @@ class VectorMemoryStore:
 
         Scoring is vectorized with numpy when available (one mat-vec over all
         surviving rows); falls back to the stdlib-only per-row loop otherwise.
+        numpy is an optional accelerator here rather than a declared dependency,
+        so both rungs have to stay — the same shape as
+        ``_stored_similarity_scorer``.
 
         With numpy, the scoring columns are held resident between calls
         (:class:`_EpisodicScoringSet`) and only the ranked pool's row bodies are
@@ -2410,12 +3474,19 @@ class VectorMemoryStore:
         it, against ~6% for the mat-vec. The per-call read below stays as the
         path for a store too large to hold and for a library with no
         ``data_version`` pragma.
+
+        Every numpy rung dots in float32, matching the stored dtype and the FAISS
+        path, so the resident tier and the per-call read cannot hand the same
+        query two different cosines — and that number is not only a ranking key,
+        it is what ``_filter_by_relevance`` compares against a fixed admission
+        threshold.
         """
         # Normalize query
         norm = math.sqrt(sum(x * x for x in query_embedding))
         q = [x / norm for x in query_embedding] if norm > 0 else query_embedding
         q_len = len(q)
 
+        blocked = self._ineligible_ids()
         if _HAS_NUMPY:
             scoring = self._episodic_scoring_set(q_len)
             if scoring is not None:
@@ -2432,6 +3503,7 @@ class VectorMemoryStore:
                     tag_filter,
                     relevance_filter,
                     datetime.now(tz=timezone.utc),
+                    blocked,
                 )
 
         # Serialized via the locked helper — two threads running a statement at
@@ -2452,6 +3524,7 @@ class VectorMemoryStore:
             len(rows),
         )
 
+        rows = self._eligible_rows(rows, "episode")
         now = datetime.now(tz=timezone.utc)
         candidates: list[dict] = []
         if _HAS_NUMPY:
@@ -2666,6 +3739,7 @@ class VectorMemoryStore:
         tag_filter: list[str] | None,
         relevance_filter: bool,
         now: datetime,
+        blocked: set[str] | None = None,
     ) -> list[dict]:
         """Score, filter and rank from the resident set; resolve winner bodies.
 
@@ -2686,6 +3760,15 @@ class VectorMemoryStore:
         sims_rounded = np.round(sims, 4)
 
         keep = np.ones(len(scoring.ids), dtype=bool)
+        if blocked:
+            keep &= np.fromiter(
+                (
+                    record_meta.record_id_for("episode", mem_id) not in blocked
+                    for mem_id in scoring.ids
+                ),
+                dtype=bool,
+                count=len(scoring.ids),
+            )
         if tag_filter:
             wanted = {t.lower() for t in tag_filter}
             keep &= np.fromiter(
@@ -2758,9 +3841,10 @@ class VectorMemoryStore:
         }
 
     def get_episodic_list(
-        self, limit: int = 50, offset: int = 0, tag_filter: list[str] | None = None
+        self, limit: int = 50, offset: int = 0, tag_filter: list[str] | None = None, *, q: str = ""
     ) -> list[dict]:
-        """Paginated list of active episodic memories, newest first."""
+        """Active episodes, with optional literal text/tag search before pagination."""
+        query = _normalize_memory_search_query(q)
         if tag_filter:
             # Use JSON-quoted exact match to avoid substring false positives
             # e.g. "cr" should not match "cron" or "datacraft"
@@ -2769,21 +3853,116 @@ class VectorMemoryStore:
         else:
             tag_conds = ""
             tag_params = ()
+        columns = "id, conversation_id, text, tags, importance, created_at, last_accessed_at"
+        relation = "episodic_memories"
+        if self.algorithm_version == "v2":
+            columns += ", source, scope, surface, crew, session_key, derived_from"
+            relation = "memory_items"
+            tag_conds = " AND kind = 'episode'" + tag_conds
+        if query:
+            tag_conds += (
+                " AND (memory_text_contains(text, ?, 0) OR memory_text_contains(tags, ?, 1))"
+            )
+            tag_params += (query, query)
+        sql = (
+            f"SELECT {columns} FROM {relation} WHERE is_deleted = 0{tag_conds} "
+            "ORDER BY created_at DESC LIMIT ? OFFSET ?"
+        )
+        params = (*tag_params, limit, offset)
+        if query:
+            with self._db_lock:
+                self.db.create_function(
+                    "memory_text_contains", 3, _contains_memory_search_text, deterministic=True
+                )
+                rows = self._fetch_all_locked(sql, params)
+        else:
+            rows = self._fetch_all_locked(sql, params)
+        return [dict(r) for r in rows]
+
+    def get_retired_episodic(self, limit: int = 50, offset: int = 0) -> list[dict]:
+        """Episodes a semantic write SUPERSEDED, newest first, with what superseded them.
+
+        The recovery half of :meth:`_retire_stale_episodic`. A tombstone there is a
+        similarity judgement about what is now false, and nothing in this module ever
+        hard-deletes an episode — so the row and its full text survive, and the only
+        thing missing was a way to look. Without this the rule is indistinguishable
+        from data loss: every reader filters ``is_deleted = 0``.
+
+        Joined to ``memory_events`` on the ``conflict_retire`` / ``semantic_update``
+        pair, so a user's own delete is NOT listed: those two paths mean different
+        things and only one of them was a guess. ``retired_at`` is the event's stamp,
+        which is when the row went rather than when it was written.
+
+        GROUPED BY episode, because the event log is append-only and a row that was
+        retired, restored and retired again has one event per retirement — so an
+        ungrouped join lists the same episode several times and makes ``limit`` page a
+        number of EVENTS while the caller asked for a number of episodes. ``retired_at``
+        is therefore the MOST RECENT retirement, and ``retired_times`` carries the count:
+        a row that keeps coming back is the signal that the rule and the operator
+        disagree about it, which is worth seeing rather than flattening away.
+        """
         rows = self._fetch_all_locked(
-            "SELECT id, conversation_id, text, tags, importance, created_at, last_accessed_at "
-            f"FROM episodic_memories WHERE is_deleted = 0{tag_conds} "
-            "ORDER BY created_at DESC LIMIT ? OFFSET ?",
-            (*tag_params, limit, offset),
+            "SELECT e.id, e.conversation_id, e.text, e.tags, e.importance, e.created_at, "
+            "       MAX(v.created_at) AS retired_at, "
+            "       v.new_value AS superseded_by, COUNT(*) AS retired_times "
+            "FROM episodic_memories e "
+            "JOIN memory_events v ON v.memory_key = e.id "
+            "WHERE e.is_deleted = 1 AND v.event_type = 'conflict_retire' "
+            "  AND v.memory_type = 'episodic' AND v.source = 'semantic_update' "
+            "GROUP BY e.id "
+            "ORDER BY retired_at DESC LIMIT ? OFFSET ?",
+            (limit, offset),
         )
         return [dict(r) for r in rows]
+
+    def restore_episodic(self, mem_id: str, source: str = "user_explicit") -> bool:
+        """Un-tombstone one episode. False when it is absent or already active.
+
+        Restores rather than re-inserting, so the row keeps its id, its text, its
+        vector and its ``created_at`` — a re-insert would look like a new memory and
+        would re-enter the similarity dedup that may have been what removed it.
+        """
+        with self._db_lock, self.db:
+            row = self.db.execute(
+                "SELECT * FROM episodic_memories WHERE id = ? AND is_deleted = 1",
+                (mem_id,),
+            ).fetchone()
+            if row is None:
+                return False
+            self.db.execute(
+                f"UPDATE {self._epi_rel} SET is_deleted = 0 WHERE id = ?{self._epi_guard}",
+                (mem_id,),
+            )
+            self._record_mutation(
+                "episode",
+                mem_id,
+                dict(row),
+                source,
+                metadata={"status": "active"},
+                operation="restore",
+            )
+            self.db.commit()
+            # A warm NumPy set or FAISS index may have been built while this
+            # episode was retired. A commit on this connection does not bump
+            # PRAGMA data_version, so invalidate both derived populations now.
+            self.invalidate_episode_content()
+        # Logged so a restore is as auditable as the retire was, and so a row that keeps
+        # being retired and restored is visible as a loop rather than as churn.
+        self._log_event("restore", "episodic", mem_id, None, row["text"][:200], source)
+        logger.info("Restored retired episodic entry %s", mem_id[:8])
+        return True
 
     def delete_episodic(self, mem_id: str, source: str = "user_explicit") -> bool:
         """Tombstone an episodic memory."""
         existing = self._get_episodic(mem_id)
         if not existing:
             return False
-        with self._db_lock:
-            self.db.execute("UPDATE episodic_memories SET is_deleted = 1 WHERE id = ?", (mem_id,))
+        with self._db_lock, self.db:
+            self.db.execute(
+                f"UPDATE {self._epi_rel} SET is_deleted = 1 WHERE id = ?{self._epi_guard}",
+                (mem_id,),
+            )
+            self._record_mutation("episode", mem_id, existing, source, operation="forget")
             self.db.commit()
             self._invalidate_episodic_scoring()
         self._log_event("delete", "episodic", mem_id, existing["text"][:200], None, source)
@@ -2816,7 +3995,11 @@ class VectorMemoryStore:
         for i, r in enumerate(results, 1):
             text = r["text"][:1500]
             line = f"{i}. {text}"
+            if self.algorithm_version == "v2":
+                line = f"{i}. [memory:{r['id']}] {text}"
             if total + len(line) > cap:
+                if self.algorithm_version == "v2":
+                    continue
                 break
             lines.append(line)
             total += len(line) + 1
@@ -2827,6 +4010,79 @@ class VectorMemoryStore:
             + "\n".join(lines)
             + "\n[End of episodic memory]\n"
         )
+
+    # ── Facets: reading a carve back out ──
+
+    def _require_facets(self) -> None:
+        """Refuse a facet read unless this file is on the crew lineage.
+
+        The discrimination is ``self._lineage``, resolved once in :meth:`init` from
+        the file's own schema — never a ``hasattr`` probe and never a
+        ``try``/``except`` around ``no such column``, both of which would answer
+        for whatever the last statement happened to touch.
+
+        REFUSAL rather than an empty result, and the same answer at every surface.
+        See :class:`memory_schema.FacetsUnsupported`: on v1 the columns do not
+        exist, so an empty page would report "this crew has no memories" for a
+        store holding thousands of unfaceted rows — a wrong answer to the one
+        question these methods exist to answer.
+        """
+        if self._lineage != memory_schema.LINEAGE_CREW:
+            raise memory_schema.FacetsUnsupported(
+                "this memory store is on the v1 schema lineage and carries no carve "
+                "facets; a facet query is answerable only on a crew memory store"
+            )
+
+    def list_by_facets(
+        self,
+        filters: Mapping[str, str] | None = None,
+        *,
+        kind: str = "",
+        limit: int = memory_schema.DEFAULT_FACET_PAGE,
+        offset: int = 0,
+    ) -> list[dict]:
+        """One page of live rows matching every named facet, newest first.
+
+        *filters* maps facet names (:data:`memory_schema.FACET_NAMES`) to exact
+        values and ANDs them together; *kind* narrows to one row type. An axis the
+        mapping omits is unconstrained, while an axis mapped to ``""`` selects the
+        rows no writer attributed — the two are different questions, which is why
+        this takes a mapping rather than a :class:`memory_schema.MemoryFacets`.
+
+        Raises :class:`memory_schema.FacetsUnsupported` on the v1 lineage and
+        :class:`memory_schema.UnknownFacet` for a name outside the closed set.
+        Live rows only, like every other reader here; paging is stable because the
+        order breaks ``created_at`` ties on ``id``. No ``embedding`` column is read
+        or returned: a facet partitions and never scores.
+        """
+        self._require_facets()
+        sql, params = memory_schema.facet_page_query(filters or {}, kind, limit, offset)
+        return [dict(row) for row in self._fetch_all_locked(sql, params)]
+
+    def count_by_facet(
+        self,
+        group_by: str,
+        filters: Mapping[str, str] | None = None,
+        *,
+        kind: str = "",
+    ) -> dict[str, int]:
+        """Live-row counts per distinct value of *group_by*, most populous first.
+
+        The "what is actually in this store's memory" question: which crews,
+        surfaces, scopes or kinds filled it, and how much each contributed.
+        *filters* and *kind* narrow the population first, so a count can be asked
+        within a carve (``count_by_facet("surface", {"crew": "finance"})``).
+
+        A ``dict`` keyed by the stored value, mirroring
+        :meth:`get_rejection_stats`; ``""`` is a legitimate key and means the rows
+        on which that axis was never stamped. Truncated to
+        :data:`memory_schema.MAX_FACET_GROUPS` values because ``session_key``
+        cardinality is unbounded, and the order makes that the least populous
+        tail. Same two refusals as :meth:`list_by_facets`.
+        """
+        self._require_facets()
+        sql, params = memory_schema.facet_count_query(group_by, filters or {}, kind)
+        return {str(row["value"]): int(row["total"]) for row in self._fetch_all_locked(sql, params)}
 
     def memory_stats(self) -> dict:
         """Return counts and sizes for dashboard display."""
@@ -2906,7 +4162,7 @@ class VectorMemoryStore:
         tombstoned ids are simply absent from the returned mapping. Chunked at
         ``_MAX_SQL_PARAMS`` because the sqlite tier resolves a whole MMR pool
         here (up to ``_MMR_MAX_POOL``), which is well past the bound-parameter
-        ceiling of a pre-3.32 sqlite; the FAISS path's ``2 * limit`` is one chunk.
+        ceiling of a pre-3.32 sqlite; the bounded FAISS window is normally one chunk.
         """
         if not mem_ids:
             return {}
@@ -2954,7 +4210,7 @@ class VectorMemoryStore:
                 return
             stamp = _now_iso()
             self.db.executemany(
-                "UPDATE episodic_memories SET last_accessed_at = ? WHERE id = ?",
+                f"UPDATE {self._epi_rel} SET last_accessed_at = ? WHERE id = ?{self._epi_guard}",
                 [(stamp, m) for m in due],
             )
             self.db.commit()
@@ -2966,13 +4222,24 @@ class VectorMemoryStore:
                 }
 
     def _delete_episodic_row(self, mem_id: str) -> None:
-        with self._db_lock:
-            self.db.execute("UPDATE episodic_memories SET is_deleted = 1 WHERE id = ?", (mem_id,))
+        with self._db_lock, self.db:
+            before = self.db.execute(
+                "SELECT * FROM episodic_memories WHERE id=?", (mem_id,)
+            ).fetchone()
+            self.db.execute(
+                f"UPDATE {self._epi_rel} SET is_deleted = 1 WHERE id = ?{self._epi_guard}",
+                (mem_id,),
+            )
+            self._record_mutation(
+                "episode", mem_id, dict(before) if before else None, "dedup", operation="forget"
+            )
             self.db.commit()
             self._invalidate_episodic_scoring()
 
     def _enforce_episodic_cap(self) -> None:
-        """Tombstone lowest-importance oldest entries if over cap."""
+        """Enforce the legacy V1 cap; private V2 memory is retained until corrected or forgotten."""
+        if self.algorithm_version == "v2":
+            return
         with self._db_lock:
             count = self.db.execute(
                 "SELECT COUNT(*) FROM episodic_memories WHERE is_deleted = 0"
@@ -2981,13 +4248,17 @@ class VectorMemoryStore:
                 return
             excess = count - self._episodic_max + 1
             rows = self.db.execute(
-                "SELECT id FROM episodic_memories WHERE is_deleted = 0 "
+                "SELECT * FROM episodic_memories WHERE is_deleted = 0 "
                 "ORDER BY importance ASC, created_at ASC LIMIT ?",
                 (excess,),
             ).fetchall()
             for row in rows:
                 self.db.execute(
-                    "UPDATE episodic_memories SET is_deleted = 1 WHERE id = ?", (row["id"],)
+                    f"UPDATE {self._epi_rel} SET is_deleted = 1 WHERE id = ?{self._epi_guard}",
+                    (row["id"],),
+                )
+                self._record_mutation(
+                    "episode", row["id"], dict(row), "capacity", operation="forget"
                 )
             self.db.commit()
             self._invalidate_episodic_scoring()
@@ -3003,6 +4274,8 @@ class VectorMemoryStore:
         rule_emb: list[float] | None = None,
         rule_emb_generation: int | None = None,
         repo_scope: str | None = None,
+        *,
+        facets: "memory_schema.MemoryFacets | None" = None,
     ) -> LessonWriteResult:
         """Write a lesson as a semantic entry with key lesson.<hash>.
 
@@ -3016,7 +4289,8 @@ class VectorMemoryStore:
 
         Deduplicates against existing lessons:
         - Substring match: if existing contains new (or vice versa), longer wins
-        - Topic overlap: if >50% of significant words match, newer replaces older
+        - Topic overlap: if the shared significant words are >=50% of the LARGER of
+          the two keyword sets, newer replaces older
         - Semantic similarity: if >85% cosine similarity, newer replaces older --
           unless a stored near-duplicate outranks this write (``user_explicit``
           over a lower-authority source, or strictly higher stored confidence).
@@ -3167,7 +4441,8 @@ class VectorMemoryStore:
                             logger.debug("Dropping a lazy lesson backfill from a previous space")
                             continue
                         self.db.execute(
-                            "UPDATE semantic_memory SET embedding = ? WHERE key = ?", (blob, bk)
+                            f"UPDATE {self._sem_rel} SET embedding = ? WHERE key = ?{self._sem_guard}",
+                            (blob, bk),
                         )
                     self.db.commit()
 
@@ -3386,7 +4661,12 @@ class VectorMemoryStore:
         # delete-then-decline route, via ``substring_covered``, predates this
         # change and is spec-documented); scan-wide authority ordering is a
         # tracked follow-up decision.
-        if similarity is not None and source != "user_explicit" and not matched:
+        if (
+            self.algorithm_version != "v2"
+            and similarity is not None
+            and source != "user_explicit"
+            and not matched
+        ):
             for existing in lesson_rows:
                 pre_text = _as_text(existing)
                 if pre_text is None:
@@ -3404,8 +4684,7 @@ class VectorMemoryStore:
                 if rule_words:
                     pre_words = self._lesson_keywords(pre_lower)
                     if pre_words and (
-                        len(rule_words & pre_words) / min(len(rule_words), len(pre_words))
-                        >= 0.5
+                        len(rule_words & pre_words) / max(len(rule_words), len(pre_words)) >= 0.5
                     ):
                         continue
                 existing_emb_blob = existing.get("embedding")
@@ -3474,7 +4753,10 @@ class VectorMemoryStore:
                             tuple(superseded),
                         )
 
-        for existing in [] if matched else lesson_rows:
+        # Private V2 keeps exact-rule enrichment above, but similarity cannot
+        # authorize deleting a different instruction. Corrections target a key
+        # explicitly; uncertain conflicts remain visible for owner review.
+        for existing in [] if matched or self.algorithm_version == "v2" else lesson_rows:
             existing_text = _as_text(existing)
             if existing_text is None:
                 continue
@@ -3536,7 +4818,14 @@ class VectorMemoryStore:
                 existing_words = self._lesson_keywords(existing_lower)
                 if existing_words:
                     overlap = rule_words & existing_words
-                    ratio = len(overlap) / min(len(rule_words), len(existing_words))
+                    # Divided by the LARGER keyword set, not the smaller one. Against
+                    # the smaller set the ratio measures "how much of the shorter rule
+                    # the longer one covers", so a two-word rule whose words both
+                    # appear in a nineteen-word rule scores 100% and DELETES it —
+                    # detailed guidance destroyed by a terse near-truism. Against the
+                    # larger set the score is symmetric, and reaching 0.5 requires the
+                    # two rules to genuinely be about the same thing.
+                    ratio = len(overlap) / max(len(rule_words), len(existing_words))
                     if ratio >= 0.5:
                         logger.info(
                             "Lesson conflict: %s replaces %s [%s] (%.0f%% overlap)",
@@ -3639,7 +4928,18 @@ class VectorMemoryStore:
 
         _flush_backfills()
 
-        err = self.set_semantic(key, value, confidence, source)
+        # ``repo_scope`` mirrors onto the ``scope`` carve axis when the caller named
+        # no scope facet of its own. ``value_json`` stays authoritative -- the lesson
+        # reader keeps reading it -- so this is an index projection, never a second
+        # source of truth for what a lesson is scoped to.
+        if repo_scope and (facets is None or not facets.scope):
+            # ``replace`` rather than a field-by-field rebuild: naming the four other
+            # axes here would silently DROP any axis added to MemoryFacets later.
+            prior: memory_schema.MemoryFacets = (
+                facets if facets is not None else memory_schema.MemoryFacets()
+            )
+            facets = dataclasses.replace(prior, scope=repo_scope)
+        err = self.set_semantic(key, value, confidence, source, facets=facets)
         if err is not None:
             # Carries ``superseded`` too, and this is the path where it matters most:
             # the scan above already deleted, so a refusal here means rows were
@@ -3658,7 +4958,7 @@ class VectorMemoryStore:
                     logger.debug("Dropping a lesson embedding produced in a previous space")
                 else:
                     self.db.execute(
-                        "UPDATE semantic_memory SET embedding = ? WHERE key = ?",
+                        f"UPDATE {self._sem_rel} SET embedding = ? WHERE key = ?{self._sem_guard}",
                         (emb_blob, key),
                     )
                     self.db.commit()
@@ -3879,7 +5179,7 @@ class VectorMemoryStore:
         # the budget", and conflating the two would tell the model that rules it
         # should never see are being kept from it for space.
         entries: list[tuple[dict, str]] = []
-        for row in self.get_lessons():
+        for row in self._eligible_rows(self.get_lessons(), "directive"):
             decoded = json.loads(row["value_json"])
             text = _lesson_display_text(decoded)
             if not text:
@@ -3941,13 +5241,17 @@ class VectorMemoryStore:
         query_words = _stem_words(set(re.findall(r"\w+", query_text.lower())))
         query_emb = self._try_embed(query_text, PRIORITY_INTERACTIVE) if self.embed_fn else None
         similarity = self._stored_similarity_scorer(query_emb)
+        # Same row-side derivation, and the same width rule, as the semantic scan:
+        # a lesson's tokens depend only on its own rendered text, and only a pass
+        # that fits the cache can hit it.
+        row_tokens = _row_stem_tokens_for_scan(len(entries))
         scored: list[tuple[float, tuple[dict, str]]] = []
         for entry in entries:
             row, text = entry
             # Only the rendered text is matched. A lesson key is
             # ``lesson.<md5hash>``, which carries no words, so there is no key
             # term to weight here the way get_semantic_context() weights its own.
-            overlap = len(query_words & _stem_words(set(re.findall(r"\w+", text.lower()))))
+            overlap = len(query_words & row_tokens(text.lower()))
             score = _hybrid_score(_keyword_score(overlap), similarity(row))
             scored.append((score, entry))
         scored.sort(key=lambda pair: -pair[0])
@@ -4127,6 +5431,21 @@ class VectorMemoryStore:
         so concurrent writers share at most one factory call + probe per cooldown
         window.
         """
+        if self.embed_fn is not None:
+            # Every production memory store uses the process singleton. During
+            # a live same-width swap, a lazily opened store may not yet have
+            # reached reconciliation; refuse its new-space query/write vector
+            # rather than compare or persist it beside old-space rows.
+            from kiro_crew import embeddings
+
+            if self.embed_fn is embeddings.make_sync_embed_fn():
+                if self.recorded_embedding_space() is None and not self.has_stored_embeddings():
+                    # An empty store has no legacy vectors to protect. Let a
+                    # ready custom backend establish its identity before the
+                    # first write; reconciliation still refuses an unready one.
+                    embeddings.reconcile_store_embedding_space(self)
+                if embeddings.store_embedding_space_is_stale(self):
+                    return None
         if self.embed_fn is None and self.embed_fn_factory is not None:
             # Hold the rebind lock for the cooldown check + factory call + probe so
             # the "once per cooldown window" invariant holds under multi-threaded
@@ -4263,6 +5582,14 @@ class VectorMemoryStore:
         """
         return self._read_meta(_EMBED_SIG_KEY)
 
+    def has_stored_embeddings(self) -> bool:
+        """Whether any persisted vector needs an existing space attribution."""
+        queries = (
+            "SELECT 1 FROM episodic_memories WHERE embedding IS NOT NULL LIMIT 1",
+            "SELECT 1 FROM semantic_memory WHERE embedding IS NOT NULL LIMIT 1",
+        )
+        return any(self._fetch_one_locked(query) is not None for query in queries)
+
     def reconcile_embedding_space(self, signature: str, *, clear_when_unknown: bool = False) -> int:
         """Discard embeddings produced by a DIFFERENT model. Returns rows invalidated.
 
@@ -4321,10 +5648,12 @@ class VectorMemoryStore:
         with self._db_lock:
             try:
                 episodic = self.db.execute(
-                    "UPDATE episodic_memories SET embedding = NULL WHERE embedding IS NOT NULL"
+                    f"UPDATE {self._epi_rel} SET embedding = NULL WHERE embedding IS NOT NULL"
+                    f"{self._epi_guard}"
                 ).rowcount
                 semantic = self.db.execute(
-                    "UPDATE semantic_memory SET embedding = NULL WHERE embedding IS NOT NULL"
+                    f"UPDATE {self._sem_rel} SET embedding = NULL WHERE embedding IS NOT NULL"
+                    f"{self._sem_guard}"
                 ).rowcount
                 self.db.commit()
             except Exception:
@@ -4408,18 +5737,42 @@ class VectorMemoryStore:
         )
         return any(self._fetch_one_locked(sql) is not None for sql in probes)
 
+    def _backfill_rows(
+        self, sql: str, *, kind: str, identity: str, limit: int | None
+    ) -> list[sqlite3.Row]:
+        """Page bounded repair fairly, including past rows whose inference failed."""
+        if limit is None:
+            return self._fetch_all_locked(sql)
+        with self._db_lock:
+            cursors: dict[str, str] | None = getattr(self, "_backfill_cursors", None)
+            if cursors is None:
+                cursors = {}
+                self._backfill_cursors = cursors
+            cursor = cursors.get(kind, "")
+            query = sql + f" AND {identity} > ? ORDER BY {identity} LIMIT ?"
+            rows = self._fetch_all_locked(query, (cursor, max(0, limit)))
+            if not rows and cursor:
+                rows = self._fetch_all_locked(query, ("", max(0, limit)))
+            cursors[kind] = rows[-1][identity] if rows else ""
+            return rows
+
     def backfill_missing_embeddings(
-        self, progress: "Callable[[int, int], None] | None" = None, *, pace: bool = True
+        self,
+        progress: "Callable[[int, int], None] | None" = None,
+        *,
+        pace: bool = True,
+        max_rows_per_kind: int | None = None,
+        should_stop: "Callable[[], bool] | None" = None,
     ) -> int:
-        """Compute embeddings for episodic rows that have none, then rebuild FAISS.
+        """Compute missing episodic embeddings and extend the resident index.
 
         Entries written while the embedding model was still downloading (first
         boot, or a migration that ran before the model landed) are stored with a
         NULL ``embedding`` and are keyword-searchable only. So are rows written
         with ``write_episodic(defer_embedding=True)`` by a bulk writer such as
         the onboarding importer. Once the model is present and ``embed_fn`` is
-        bound, this sweep embeds those rows and rebuilds the vector index so they
-        become semantically searchable.
+        bound, this sweep embeds those rows and adds them to the resident vector
+        index so they become semantically searchable.
 
         Rows cleared by :meth:`reconcile_embedding_space` after an embedding-model
         change arrive here the same way, so a model swap re-embeds through this
@@ -4441,7 +5794,7 @@ class VectorMemoryStore:
         install — every deferred row stayed NULL forever. ``search_episodic``
         already falls back to ``_sqlite_vector_search`` (a stdlib cosine scan
         over these blobs), so the stored vectors are useful either way; the
-        index rebuild below is simply skipped when faiss is absent.
+        resident index extension below is simply skipped when faiss is absent.
 
         *pace* (default on) idles between rows so the sweep targets
         ``memory.embedding_bulk_duty`` of wall time — the same total CPU work
@@ -4451,7 +5804,10 @@ class VectorMemoryStore:
         more than :data:`~kiro_crew.embeddings._MAX_BULK_PACE_SLEEP` of idle is
         capped there, so that row runs at a higher effective duty. Pass
         ``pace=False`` for a sweep a human explicitly asked for and is waiting
-        on.
+        on. Gateway maintenance can bound each kind with ``max_rows_per_kind``;
+        successive visits page past failed rows and wrap for retries. A supplied
+        ``should_stop`` fences commits after shutdown. Defaults retain the full
+        sweep for existing callers.
         """
         if self.embed_fn is None:
             return 0
@@ -4459,17 +5815,24 @@ class VectorMemoryStore:
         # compared directly, never indexed), and they must be rebuilt even when
         # there is not a single NULL episodic row — which is exactly the state
         # after reconcile_embedding_space() on a memory that holds only lessons.
-        self._backfill_lesson_embeddings(progress, pace=pace)
+        self._backfill_lesson_embeddings(
+            progress, pace=pace, max_rows=max_rows_per_kind, should_stop=should_stop
+        )
         # Same for non-lesson semantic KV rows: struct-packed, no numpy, no
         # FAISS — get_semantic_context ranks them straight from the stored blob.
         # No progress callback: the (done,total) stream belongs to the episodic
         # loop below, and a second denominator would make the dashboard bar
         # jump backward when both row types need re-embedding.
-        self._backfill_semantic_kv_embeddings(pace=pace)
+        self._backfill_semantic_kv_embeddings(
+            pace=pace, max_rows=max_rows_per_kind, should_stop=should_stop
+        )
         if not _HAS_NUMPY:
             return 0
-        rows = self._fetch_all_locked(
-            "SELECT id, text FROM episodic_memories " "WHERE is_deleted = 0 AND embedding IS NULL"
+        rows = self._backfill_rows(
+            "SELECT id, text FROM episodic_memories WHERE is_deleted = 0 AND embedding IS NULL",
+            kind="episode",
+            identity="id",
+            limit=max_rows_per_kind,
         )
         if not rows:
             return 0
@@ -4486,8 +5849,12 @@ class VectorMemoryStore:
             # already swept past this row, so nothing would ever clear it). The
             # window existed before pacing but was sub-second; idling between
             # rows widens it to seconds, which makes the guard load-bearing.
+            if should_stop is not None and should_stop():
+                break
             backfill_generation = self._space_generation
             vec = self._embed_bulk_row(row["text"], pace=pace)
+            if should_stop is not None and should_stop():
+                break
             if not vec:
                 if progress is not None:
                     progress(embedded, total)
@@ -4513,6 +5880,8 @@ class VectorMemoryStore:
                 arr = arr / norm
             blob = arr.tobytes()
             with self._db_lock:
+                if should_stop is not None and should_stop():
+                    break
                 if backfill_generation != self._space_generation:
                     logger.debug("Dropping an episodic backfill from a previous space")
                     if progress is not None:
@@ -4526,32 +5895,51 @@ class VectorMemoryStore:
                 # sweeps: `episodic_memories.text` is never rewritten in place
                 # (rows are tombstoned instead), so `id` pins the text we
                 # embedded.
-                self.db.execute(
-                    "UPDATE episodic_memories SET embedding = ? "
-                    "WHERE id = ? AND embedding IS NULL AND is_deleted = 0",
+                updated = self.db.execute(
+                    f"UPDATE {self._epi_rel} SET embedding = ? "
+                    f"WHERE id = ? AND embedding IS NULL AND is_deleted = 0{self._epi_guard}",
                     (blob, row["id"]),
-                )
+                ).rowcount
                 self.db.commit()
-                # Outside the _HAS_FAISS rebuild below on purpose: a newly
-                # embedded row is a row the resident scoring set has never seen,
-                # and the sqlite tier this matters for is the one that runs when
-                # faiss is absent. A winner-body lookup cannot repair it — it
-                # drops ids that vanished but can never surface ids that
-                # appeared, so recall would degrade with no error.
-                self._invalidate_episodic_scoring()
-            embedded += 1
+                # A newly embedded row is a row neither resident scoring tier has
+                # seen. A winner-body lookup can drop vanished ids but cannot
+                # surface new ones, so update both derived populations here.
+                if updated:
+                    self._invalidate_episodic_scoring()
+                    if _HAS_FAISS and self._faiss_index is not None:
+                        self._faiss_id_map.append(row["id"])
+                        try:
+                            cast("faiss.Index", self._faiss_index).add(arr.reshape(1, -1))
+                        except Exception:
+                            # SQLite already owns the vector. Disable the
+                            # accelerator rather than leave its id map desynced;
+                            # the complete SQLite tier remains available.
+                            self._faiss_index = None
+                            self._faiss_id_map = []
+                            self._faiss_data_version = None
+                            logger.warning(
+                                "FAISS rejected an episodic backfill; using SQLite search",
+                                exc_info=True,
+                            )
+                        else:
+                            # Keep the resident accelerator current without the
+                            # O(total rows) rebuild and index-file rewrite required
+                            # after each bounded 16-row maintenance page.
+                            self._faiss_writes_since_save += 1
+            embedded += int(bool(updated))
             if progress is not None:
                 progress(embedded, total)
-        if embedded:
-            if _HAS_FAISS:
-                with self._db_lock:
-                    self.build_faiss_index()
-                    self.save_faiss_index()
+        if embedded and not (should_stop is not None and should_stop()):
             logger.info("Backfilled embeddings for %d episodic entries", embedded)
         return embedded
 
     def _backfill_lesson_embeddings(
-        self, progress: "Callable[[int, int], None] | None" = None, *, pace: bool = True
+        self,
+        progress: "Callable[[int, int], None] | None" = None,
+        *,
+        pace: bool = True,
+        max_rows: int | None = None,
+        should_stop: "Callable[[], bool] | None" = None,
     ) -> int:
         """Embed lesson rows whose vector is NULL. Returns the count embedded.
 
@@ -4574,9 +5962,12 @@ class VectorMemoryStore:
         """
         if self.embed_fn is None:
             return 0
-        rows = self._fetch_all_locked(
+        rows = self._backfill_rows(
             "SELECT key, value_json FROM semantic_memory "
-            "WHERE is_deleted = 0 AND embedding IS NULL AND key LIKE 'lesson.%'"
+            "WHERE is_deleted = 0 AND embedding IS NULL AND key LIKE 'lesson.%'",
+            kind="directive",
+            identity="key",
+            limit=max_rows,
         )
         if not rows:
             return 0
@@ -4600,14 +5991,20 @@ class VectorMemoryStore:
             # Same guard as the episodic and semantic-KV sweeps: sampled before
             # the embed, re-checked under the lock, so a model swap landing
             # across the (now paced) embed cannot commit an old-space vector.
+            if should_stop is not None and should_stop():
+                break
             lesson_generation = self._space_generation
             vec = self._embed_bulk_row(text, pace=pace)
+            if should_stop is not None and should_stop():
+                break
             if not vec:
                 continue
             # Stored un-normalized to match write_lesson(): _cosine_sim()
             # normalizes both operands itself.
             blob = struct.pack(f"{len(vec)}f", *vec)
             with self._db_lock:
+                if should_stop is not None and should_stop():
+                    break
                 if lesson_generation != self._space_generation:
                     logger.debug("Dropping a lesson backfill from a previous space")
                     continue
@@ -4620,9 +6017,9 @@ class VectorMemoryStore:
                 # and `is_deleted = 0` keeps a vector off a row tombstoned in the
                 # same window.
                 self.db.execute(
-                    "UPDATE semantic_memory SET embedding = ? "
-                    "WHERE key = ? AND value_json = ? AND embedding IS NULL "
-                    "AND is_deleted = 0",
+                    f"UPDATE {self._sem_rel} SET embedding = ? "
+                    f"WHERE key = ? AND value_json = ? AND embedding IS NULL "
+                    f"AND is_deleted = 0{self._sem_guard}",
                     (blob, row["key"], row["value_json"]),
                 )
                 self.db.commit()
@@ -4634,7 +6031,12 @@ class VectorMemoryStore:
         return embedded
 
     def _backfill_semantic_kv_embeddings(
-        self, progress: "Callable[[int, int], None] | None" = None, *, pace: bool = True
+        self,
+        progress: "Callable[[int, int], None] | None" = None,
+        *,
+        pace: bool = True,
+        max_rows: int | None = None,
+        should_stop: "Callable[[], bool] | None" = None,
     ) -> int:
         """Embed non-lesson semantic rows whose vector is NULL. Returns the count.
 
@@ -4654,9 +6056,12 @@ class VectorMemoryStore:
         """
         if self.embed_fn is None:
             return 0
-        rows = self._fetch_all_locked(
+        rows = self._backfill_rows(
             "SELECT key, value_json FROM semantic_memory "
-            "WHERE is_deleted = 0 AND embedding IS NULL AND key NOT LIKE 'lesson.%'"
+            "WHERE is_deleted = 0 AND embedding IS NULL AND key NOT LIKE 'lesson.%'",
+            kind="fact",
+            identity="key",
+            limit=max_rows,
         )
         if not rows:
             return 0
@@ -4668,14 +6073,20 @@ class VectorMemoryStore:
             # Sampled BEFORE the embed, re-checked under the lock: a model swap
             # landing across the embed must not commit a vector from the old
             # space (reconcile has already swept past this row).
+            if should_stop is not None and should_stop():
+                break
             backfill_generation = self._space_generation
             vec = self._embed_bulk_row(f"{row['key']} {row['value_json']}", pace=pace)
+            if should_stop is not None and should_stop():
+                break
             if not vec:
                 if progress is not None:
                     progress(embedded, total)
                 continue
             blob = struct.pack(f"{len(vec)}f", *vec)
             with self._db_lock:
+                if should_stop is not None and should_stop():
+                    break
                 if backfill_generation != self._space_generation:
                     logger.debug("Dropping a semantic backfill from a previous space")
                     continue
@@ -4686,9 +6097,9 @@ class VectorMemoryStore:
                 # a row tombstoned during the pause must not come
                 # back carrying a vector.
                 self.db.execute(
-                    "UPDATE semantic_memory SET embedding = ? "
-                    "WHERE key = ? AND value_json = ? AND embedding IS NULL "
-                    "AND is_deleted = 0",
+                    f"UPDATE {self._sem_rel} SET embedding = ? "
+                    f"WHERE key = ? AND value_json = ? AND embedding IS NULL "
+                    f"AND is_deleted = 0{self._sem_guard}",
                     (blob, row["key"], row["value_json"]),
                 )
                 self.db.commit()
@@ -4949,7 +6360,19 @@ class VectorMemoryStore:
                 continue
 
             value = self._extract_value_from_text(text)
-            reject = self.set_semantic(key, value, 0.9, "promotion")
+            # ``derived_from`` names the episode this fact was synthesized out of.
+            # The cluster's own rows are tombstoned immediately below, so without it
+            # the promoted fact is the only surviving trace and nothing records what
+            # it came from -- the one provenance question a reader of a promoted row
+            # actually asks. The canonical member is the representative the cluster
+            # was collapsed onto.
+            reject = self.set_semantic(
+                key,
+                value,
+                0.9,
+                "promotion",
+                facets=memory_schema.MemoryFacets(derived_from=str(canonical["id"])),
+            )
             if reject is None:
                 promoted += 1
                 for m in members:
@@ -5023,6 +6446,8 @@ class VectorMemoryStore:
         change any observed output, and a knob nobody turns still has to be read
         and trusted by whoever comes next.
         """
+        if self.algorithm_version == "v2":
+            return self.recall(query_text)
         semantic = self.get_semantic_context(query_text=query_text)
         episodic = self.get_episodic_context(query_text=query_text)
         lessons = self.get_lessons_context(query_text=query_text)
@@ -5035,3 +6460,139 @@ class VectorMemoryStore:
             "episodic_preview": episodic[:500],
             "lessons_count": len(self.get_lessons()),
         }
+
+    def recall(
+        self, query_text: str, *, cap: int = 3000, project_dir: str | Path | None = None
+    ) -> dict:
+        """Bounded on-demand member context with the evidence actually selected.
+
+        Reads only this store, using its existing V1 or V2 ranking policy.
+        """
+        from kiro_crew import memory_recall
+        from kiro_crew.memory_recall import (
+            bound_recall_payload,
+            recall_evidence,
+            v2_operating_point,
+        )
+
+        def retrieval(facts: list[dict], episodes: list[dict]) -> dict:
+            evidence: dict = {"facts": facts, "episodes": episodes}
+            if self.algorithm_version == "v2":
+                evidence["operating_point"] = v2_operating_point(
+                    self.recorded_embedding_space(), embed_fn=self.embed_fn
+                )
+            return evidence
+
+        cap = min(max(0, int(cap)), 12000)
+        if not query_text.strip() or cap == 0:
+            return {
+                "algorithm_version": self.algorithm_version,
+                "policy_revision": self.policy_revision,
+                "semantic_context": "",
+                "episodic_context": "",
+                "lessons_context": "",
+                "retrieval": retrieval([], []),
+                "semantic_chars": 0,
+                "episodic_chars": 0,
+                "lessons_chars": 0,
+                "total_chars": 0,
+                "semantic_preview": "",
+                "episodic_preview": "",
+                "lessons_count": 0,
+            }
+        query_embedding = (
+            self._try_embed(query_text, PRIORITY_INTERACTIVE) if self.embed_fn else None
+        )
+        facts = (
+            self._semantic_candidates_v2(query_text)
+            if self.algorithm_version == "v2"
+            else self._semantic_candidates_v1(query_text)
+        )
+        for fact in facts:
+            fact.setdefault("id", f"key:{fact['key']}")
+            fact.pop("embedding", None)
+            fact.setdefault("retrieval", {"reason": "v1_hybrid_match"})
+        episodes = self.search_episodic(
+            query_embedding=query_embedding,
+            query_text=query_text,
+            limit=self._episodic_limit,
+            relevance_filter=True,
+        )
+
+        for episode in episodes:
+            episode.pop("embedding", None)
+            episode.setdefault(
+                "retrieval",
+                {
+                    "reason": (
+                        "v1_vector_match" if query_embedding is not None else "v1_keyword_match"
+                    )
+                },
+            )
+
+        def fit(rows: list[dict], budget: int, *, episodic: bool) -> tuple[int, list[dict]]:
+            """Select evidence that fits *budget* chars of ``[memory:id] body`` lines.
+
+            Returns the characters those lines consume and the selected evidence.
+            ``bound_recall_payload`` renders the model-facing context from the
+            evidence, so there is one formatter and the two cannot drift.
+            """
+            chosen = []
+            remaining = budget
+            for row in rows:
+                truncated = False
+                display_id = row["id"]
+                if episodic:
+                    body = row["text"][:1500]
+                else:
+                    body = f"{self._fact_label(row)}: {memory_v2.visible_json(row['value_json'])}"
+                line = f"[memory:{display_id}] {body}\n"
+                if len(line) > remaining:
+                    # V2 admitted this evidence already. Preserve one bounded,
+                    # locatable snippet when its full text alone exceeds this
+                    # section's share rather than silently dropping the row.
+                    if self.algorithm_version != "v2":
+                        continue
+                    framing = len(f"[memory:{display_id}] \n")
+                    available = remaining - framing
+                    marker = "… [truncated]"
+                    if available < 32 or available <= len(marker):
+                        continue
+                    if not episodic:
+                        label = self._fact_label(row)[: min(96, max(8, available // 3))]
+                        value = memory_v2.visible_json(row["value_json"])
+                        body = f"{label}: {value}"
+                    body = body[: available - len(marker)] + marker
+                    line = f"[memory:{display_id}] {body}\n"
+                    truncated = True
+                evidence = recall_evidence(row, body, episodic=episodic)
+                if truncated:
+                    evidence["text_truncated" if episodic else "snippet_truncated"] = True
+                chosen.append(evidence)
+                remaining -= len(line)
+            return budget - remaining, chosen
+
+        # Reserve the rules budget first; context never exceeds the requested
+        # cap, including wrappers. Small caps may safely return no memory.
+        lessons = self.get_lessons_context(query_text, cap=cap // 3, project_dir=project_dir)
+        if len(lessons) > cap // 3:
+            lessons = ""
+        remainder = cap - len(lessons)
+        wrapper_size = memory_recall.CONTEXT_WRAPPER_CHARS
+        semantic_chars, facts = fit(facts, max(0, remainder // 2 - wrapper_size), episodic=False)
+        if semantic_chars:
+            semantic_chars += wrapper_size
+        _, episodes = fit(
+            episodes, max(0, remainder - semantic_chars - wrapper_size), episodic=True
+        )
+        # Contexts, char counts and previews are rendered from the evidence here.
+        return bound_recall_payload(
+            {
+                "algorithm_version": self.algorithm_version,
+                "policy_revision": self.policy_revision,
+                "lessons_context": lessons,
+                "retrieval": retrieval(facts, episodes),
+                "lessons_count": self.count_lessons(),
+            },
+            context_cap=cap,
+        )

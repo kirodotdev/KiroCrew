@@ -3,12 +3,41 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 
 import { ErrorCard, isAuthRequired, isModelUnentitled } from '../pages/chat/ErrorCard'
 
+const setupMeta = (member = 'reviewer') => ({
+  code: 'memory_unavailable',
+  recovery: { kind: 'initialize_member_memory', member },
+})
+
 /**
  * The error row used to be an actionless div whose own copy told the reader to
  * retry. These tests pin the two shapes: settled (no action) and resumable
  * (Continue), plus the guard that a press cannot double-fire.
  */
 describe('ErrorCard', () => {
+  it('treats retained setup metadata as an ordinary retryable error', () => {
+    const content = 'memory_unavailable: Owner setup required.'
+    render(<ErrorCard content={content} meta={setupMeta()} onContinue={() => {}} />)
+    expect(screen.getByTestId('error-card')).toHaveTextContent('Owner setup required.')
+    expect(screen.getByTestId('error-card')).not.toHaveTextContent('memory_unavailable:')
+    expect(screen.queryByRole('link')).toBeNull()
+    expect(screen.getByTestId('error-card-continue')).toBeVisible()
+  })
+
+  it('does not derive a setup action or strip diagnostic text from untyped prose', () => {
+    const content = 'memory_unavailable: Create private memory.'
+    render(<ErrorCard content={content} onContinue={() => {}} />)
+    expect(screen.getByTestId('error-card')).toHaveTextContent(content)
+    expect(screen.queryByRole('link')).toBeNull()
+    expect(screen.getByTestId('error-card-continue')).toBeTruthy()
+  })
+
+  it('hides the typed code without inventing initialization recovery for other memory errors', () => {
+    render(<ErrorCard content="memory_unavailable: Restore the original binding." meta={{ code: 'memory_unavailable' }} />)
+    expect(screen.getByTestId('error-card')).toHaveTextContent('Restore the original binding.')
+    expect(screen.getByTestId('error-card')).not.toHaveTextContent('memory_unavailable:')
+    expect(screen.queryByRole('link')).toBeNull()
+  })
+
   it('renders the prose verbatim with no action when the turn is not resumable', () => {
     render(<ErrorCard content="⟳ Connection lost — please retry." />)
     expect(screen.getByTestId('error-card')).toHaveTextContent('⟳ Connection lost — please retry.')

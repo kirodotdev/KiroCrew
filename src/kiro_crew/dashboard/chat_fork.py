@@ -11,6 +11,7 @@ from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.dashboard.chat_persistence import save_slot_off_loop, session_was_deleted
 from kiro_crew.dashboard.chat_utils import (
     _sync_dashboard_slots,
+    drained_to_thread,
     effective_session_key,
     history_corpus_unreadable,
     slot_history_key,
@@ -50,6 +51,42 @@ def drop_persisted_tail_prefix(full_disk: list[dict], tail: list[dict]) -> list[
     where callers and tests reach for it.
     """
     return _drop_persisted_tail_prefix(full_disk, tail)
+
+
+def _fork_private_memory_store(session_key: str, agent: str, recorded_store: str) -> str:
+    """A fork inherits private authority from its parent, never from copied rows."""
+    from kiro_crew.member_memory_auth import read_private_session_store
+    from kiro_crew.memory_stores import UnknownMemoryStore, require_member_memory_store
+
+    protected = read_private_session_store(session_key)
+    config = KiroCrewConfig.load()
+    selected = agent or config.default_agent
+    if selected not in config.agents:
+        if protected or recorded_store not in ("", "default"):
+            raise UnknownMemoryStore("The fork source's member binding is unavailable")
+        return ""
+    store = require_member_memory_store(config, selected)
+    if recorded_store and recorded_store != store:
+        raise UnknownMemoryStore("The fork source's recorded memory binding has changed")
+    record = config.memory_stores.get(store)
+    if record is not None and record.memory_version == 2:
+        if protected != store:
+            raise UnknownMemoryStore(
+                "The fork source has no verified assignment to this member's private memory"
+            )
+        return store
+    if protected:
+        raise UnknownMemoryStore("The fork source retains a different private memory assignment")
+    return ""
+
+
+def _bind_private_fork_memory(source: tuple[str, str, str], child_key: str, store: str) -> None:
+    from kiro_crew.member_memory_auth import bind_private_session_store
+    from kiro_crew.memory_stores import UnknownMemoryStore
+
+    if _fork_private_memory_store(*source) != store:
+        raise UnknownMemoryStore("The fork source's private memory assignment changed")
+    bind_private_session_store(child_key, store)
 
 
 async def api_chat_slot_fork(request: web.Request) -> web.Response:
@@ -118,6 +155,14 @@ async def api_chat_slot_fork(request: web.Request) -> web.Response:
             # app-scoped caller enumerating slots across the isolation boundary
             # (CWE-204). The true reason is recorded server-side via SEL above.
             return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
+
+    source_memory_identity = (
+        effective_session_key(slot),
+        slot.agent,
+        slot.memory_store,
+        slot.memory_mode,
+        slot_history_key(slot),
+    )
 
     # Incognito and temporary sessions fork like any other. Nothing about a fork
     # engages what those modes actually guarantee -- no consolidation or lessons
@@ -855,6 +900,27 @@ async def api_chat_slot_fork(request: web.Request) -> web.Response:
             status=409,
         )
 
+    from kiro_crew.dashboard.handlers.memory import _store_unavailable_response
+    from kiro_crew.memory_stores import UnknownMemoryStore
+
+    def _source_identity_unchanged() -> bool:
+        return state._slots.get(name) is slot and source_memory_identity == (
+            effective_session_key(slot),
+            slot.agent,
+            slot.memory_store,
+            slot.memory_mode,
+            slot_history_key(slot),
+        )
+
+    try:
+        inherited_store = await asyncio.to_thread(
+            _fork_private_memory_store, *source_memory_identity[:3]
+        )
+        if not _source_identity_unchanged():
+            raise UnknownMemoryStore("The fork source changed while its memory was verified")
+    except (OSError, ValueError) as exc:
+        return _store_unavailable_response(source_memory_identity[2], exc)
+
     new_slot = state.get_or_create_slot(
         name=None,
         agent=slot.agent,
@@ -874,6 +940,25 @@ async def api_chat_slot_fork(request: web.Request) -> web.Response:
         # origin conjunct in state.py still excludes app-token callers.
         count_user_session=True,
     )
+    if inherited_store:
+        try:
+            # The destination is still empty: no transcript can grant this pin,
+            # and the unchanged first-turn guard will verify it on continuation.
+            await drained_to_thread(
+                _bind_private_fork_memory,
+                source_memory_identity[:3],
+                effective_session_key(new_slot),
+                inherited_store,
+            )
+            if not _source_identity_unchanged():
+                raise UnknownMemoryStore("The fork source changed before its history was copied")
+            new_slot.memory_store = inherited_store
+        except BaseException as exc:
+            state._slots.pop(new_slot.key, None)
+            state._restricted_keys.discard(effective_session_key(new_slot))
+            if isinstance(exc, (OSError, ValueError)):
+                return _store_unavailable_response(inherited_store, exc)
+            raise
     new_slot.forked_from = effective_session_key(slot)
     new_slot.reasoning_effort = slot.reasoning_effort
     # Inherit the active project directory so the fork keeps the parent's working

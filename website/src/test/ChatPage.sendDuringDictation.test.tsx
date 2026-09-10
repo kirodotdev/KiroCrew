@@ -453,6 +453,8 @@ describe('ChatPage — sending while dictating', () => {
     await act(async () => { fireEvent.change(ta, { target: { value: 'Hello world' } }) })
     await act(async () => { ta.setSelectionRange(5, 5); fireEvent.select(ta) })
 
+    // React updates must not consume the hold threshold on a busy test worker.
+    vi.useFakeTimers()
     await act(async () => {
       document.dispatchEvent(new KeyboardEvent('keydown', { code: 'AltRight', altKey: true, bubbles: true, cancelable: true }))
     })
@@ -465,6 +467,7 @@ describe('ChatPage — sending while dictating', () => {
 
     // Sub-threshold release in hold-only mode: discarded, and the draft must be
     // exactly what the user had typed.
+    act(() => { vi.advanceTimersByTime(100) })
     await act(async () => {
       document.dispatchEvent(new KeyboardEvent('keyup', { code: 'AltRight', bubbles: true }))
     })

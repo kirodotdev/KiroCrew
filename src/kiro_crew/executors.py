@@ -144,18 +144,10 @@ _CRON_QUEUE_WAIT_SECS = 900
 # the maintenance pool's orphan-sweep workers.
 _MAX_DISCOVERY_WORKERS = 4
 
-# Ollama embed/probe offloads (consolidation lesson writes, memory import,
-# context-preview, and every build_message call — its episodic recall embeds
-# the query) block on network I/O for up to embedding_timeout_secs per call —
-# and against a HUNG endpoint every call eats the full timeout, since failures
-# are deliberately not cached.  Give them their own bounded pool so a wedged
-# Ollama parks mc-embed threads and queues further embed work behind ITSELF,
-# instead of exhausting asyncio's default executor (which the loop shares for
-# DNS resolution and every other asyncio.to_thread user).  Sized above the
-# other pools because build_message runs on every new session across all
-# surfaces (dashboard + Slack + cron + heartbeat + subagent can land
-# concurrently after a restart); with a healthy endpoint each call is fast,
-# so the cap only bites — deliberately — when Ollama is wedged.
+# Memory filesystem work and explicit embedding requests stay off the default
+# executor used by DNS. Prompt construction shares this pool but never embeds.
+# run_in_embed_pool admits work before submission, so a burst waits as cancellable
+# coroutines instead of growing ThreadPoolExecutor's unbounded work-item queue.
 _MAX_EMBED_WORKERS = 8
 
 # Governance checks for EXTERNALLY-triggered surfaces: the per-inbound-message
@@ -454,13 +446,12 @@ def path_resolve_executor() -> ThreadPoolExecutor:
 
 
 def embed_executor() -> ThreadPoolExecutor:
-    """Return the process-wide Ollama embed/probe pool, creating it on first use.
+    """Return the process-wide memory/embedding pool, creating it on first use.
 
-    Threads are named ``mc-embed``.  Separate from asyncio's default executor
-    so a hung embedding endpoint (every call eats the full
-    ``embedding_timeout_secs``; failures are deliberately not cached) parks
-    only these workers — embed work queues behind ITSELF instead of starving
-    the loop's DNS resolution and every other ``asyncio.to_thread`` user.
+    Threads are named ``mc-embed``. Separate from asyncio's default executor so
+    memory I/O and explicit retrieval cannot occupy the workers used for DNS
+    resolution. ``run_in_embed_pool`` admits work before creating executor jobs;
+    native inference has its own bounded queue in ``embeddings``.
     """
     global _embed_pool
     if _embed_pool is None:
@@ -797,14 +788,33 @@ async def run_in_cron_gate_pool(func: Callable[..., _T], /, *args: Any, timeout:
 
 
 async def run_in_embed_pool(func: Callable[..., _T], /, *args: Any, **kwargs: Any) -> _T:
-    """Run a blocking Ollama embed/probe callable on :func:`embed_executor`.
+    """Offload bounded memory work, waiting without rejecting ordinary prompts.
 
-    Drop-in replacement for ``asyncio.to_thread`` at embed call sites: same
-    signature, but the work lands on the bounded ``mc-embed`` bulkhead pool
-    instead of asyncio's shared default executor.
+    Submission is bounded to the worker count for this gateway event loop. A
+    cancelled caller releases a slot only when its underlying thread actually
+    finishes (or the queued future is successfully cancelled).
     """
     loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(embed_executor(), functools.partial(func, *args, **kwargs))
+    admission = getattr(loop, "_kirocrew_memory_admission", None)
+    if admission is None:
+        admission = asyncio.Semaphore(_MAX_EMBED_WORKERS)
+        setattr(loop, "_kirocrew_memory_admission", admission)
+    await admission.acquire()
+    try:
+        future = embed_executor().submit(functools.partial(func, *args, **kwargs))
+    except BaseException:
+        admission.release()
+        raise
+
+    def finished(_future: object) -> None:
+        try:
+            loop.call_soon_threadsafe(admission.release)
+        except RuntimeError:
+            # The owning loop has closed; no new task can await its admission.
+            pass
+
+    future.add_done_callback(finished)
+    return await asyncio.wrap_future(future, loop=loop)
 
 
 def shutdown_maintenance_executor() -> None:

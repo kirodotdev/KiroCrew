@@ -23,6 +23,7 @@ from chat_test_helpers import (
     _make_ready_kiro_prerequisite,
     _make_state,
 )
+from member_memory_helpers import patch_private_memory_supported
 
 from kiro_crew.acp.types import ACP_BACKEND_CLAUDE, ACP_BACKEND_KIRO, TurnUsage
 from kiro_crew.agent_sdk.capabilities import capabilities_for
@@ -3661,6 +3662,86 @@ class TestPrepareMessages:
 
 
 class TestKiroReadinessQueueHandoff:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("wait_end", ["stop", "deadline"])
+    async def test_memory_preparation_wait_precedes_turn_identity_and_survives_stop(
+        self, tmp_path, monkeypatch, wait_end
+    ):
+        """A transient startup fence delays a turn without becoming its failure."""
+        from kiro_crew.dashboard.chat import _run_chat
+        from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
+
+        release = asyncio.Event()
+
+        async def prepare_memory():
+            await release.wait()
+
+        state = _make_state(tmp_path)
+        state.broadcast_ws = MagicMock()
+        state.push_slots_update = MagicMock()
+        state.push_refresh = MagicMock()
+        state.refresh_slot_source_status = MagicMock()
+        state.context_builder = None
+        state.consolidator = None
+        state._hook_store = None
+        state._yolo = False
+
+        async def stream(_message):
+            yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="ready")
+            yield LLMEvent(kind=EVENT_COMPLETE)
+
+        client = MagicMock()
+        client.stream = stream
+        client.stream_command = stream
+        client.context_usage_pct = MagicMock(return_value=1.0)
+        state.sessions.get_or_create = AsyncMock(return_value=(client, True, False))
+        state.sessions.record_failure = AsyncMock()
+        state.conversation_log = MagicMock()
+        state.conversation_log.read_messages.return_value = []
+        if wait_end == "deadline":
+            monkeypatch.setattr("kiro_crew.memory_startup.MEMORY_ADMISSION_WAIT_SECONDS", 0.0)
+        state.memory_startup_task = asyncio.create_task(prepare_memory())
+        slot = state.get_or_create_slot("memory-startup-admission")
+        slot.queue_append("keep queued during startup")
+        turn = asyncio.create_task(_run_chat(state, slot, "first message"))
+        slot.task = turn
+        try:
+            await asyncio.sleep(0)
+            assert slot._active_turn_session_key == ""
+            state.sessions.get_or_create.assert_not_awaited()
+
+            if wait_end == "stop":
+                turn.cancel()
+            await turn
+            assert not state.memory_startup_task.cancelled()
+            assert not state.memory_startup_task.done()
+            assert slot.task is None
+            assert slot.messages[-1]["role"] == "done"
+            assert [item["content"] for item in slot._queue] == ["keep queued during startup"]
+            assert any(call.args[0] == "chat_done" for call in state.broadcast_ws.call_args_list)
+            assert slot._active_turn_session_key == ""
+            state.sessions.get_or_create.assert_not_awaited()
+            state.sessions.record_failure.assert_not_awaited()
+            state.conversation_log.update_metadata.assert_not_called()
+            if wait_end == "deadline":
+                error = next(message for message in slot.messages if message["role"] == "error")
+                assert error["meta"]["code"] == "memory_unavailable"
+                assert "Retry shortly" in error["content"]
+
+            slot._queue.clear()
+            release.set()
+            await state.memory_startup_task
+            await _run_chat(state, slot, "retry after preparation")
+            state.sessions.get_or_create.assert_awaited_once()
+            state.sessions.record_failure.assert_not_awaited()
+            assert any(
+                message.get("role") == "assistant" and message.get("content") == "ready"
+                for message in slot.messages
+            )
+        finally:
+            release.set()
+            await state.memory_startup_task
+
     @pytest.mark.asyncio
     async def test_dequeued_turn_runs_without_a_readiness_probe(
         self,
@@ -8337,7 +8418,10 @@ class TestRuntimeWiring:
         assert state.get_or_create_slot("ws-default").mode == ""
 
     @pytest.mark.asyncio
-    async def test_run_chat_passes_memory_store_to_build_message(self, tmp_path, monkeypatch):
+    @pytest.mark.parametrize("binding_change", ["none", "project", "replacement", "unavailable"])
+    async def test_run_chat_passes_memory_store_to_build_message(
+        self, tmp_path, monkeypatch, binding_change
+    ):
         """_run_chat resolves agent bindings and passes memory_store to build_message.
 
         Requirements: 3.1
@@ -8351,14 +8435,25 @@ class TestRuntimeWiring:
             build_message_calls.append({"text": text, "session_key": session_key, "kwargs": kwargs})
             return text, MagicMock(action=None, text="")
 
-        # Mock config loading
-        mock_cfg = MagicMock()
-        mock_cfg.agents = {"oncall": MagicMock(workspace="oncall-ws", memory_store="oncall-mem")}
-        mock_cfg.default_agent = "default"
+        from kiro_crew.config.loader import (
+            KiroCrewAgentConfig,
+            KiroCrewConfig,
+            WorkspaceConfig,
+            resolve_agent_bindings,
+        )
+        from kiro_crew.memory_stores import provision_member_memory
 
-        mock_bindings = MagicMock()
-        mock_bindings.memory_store_name = "oncall-mem"
-        mock_bindings.model = ""
+        mock_cfg = KiroCrewConfig.load()
+        mock_cfg.agents["oncall"] = KiroCrewAgentConfig(
+            kiro_agent="kirocrew", workspace="oncall-ws"
+        )
+        mock_cfg.workspaces["oncall-ws"] = WorkspaceConfig(dir=str(tmp_path / "oncall-ws"))
+        private_store = provision_member_memory(mock_cfg, "oncall")
+        mock_cfg.save()
+        mock_bindings = resolve_agent_bindings(mock_cfg, "oncall")
+        # The provider and context are doubles; model a supported runtime while
+        # keeping member ownership and persisted conversation metadata real.
+        patch_private_memory_supported(monkeypatch)
 
         monkeypatch.setattr("kiro_crew.dashboard.chat.KiroCrewConfig.load", lambda: mock_cfg)
         monkeypatch.setattr(
@@ -8383,11 +8478,18 @@ class TestRuntimeWiring:
         monkeypatch.setattr(
             ctx_builder, "build_message", lambda *a, **kw: mock_build_message(ctx_builder, *a, **kw)
         )
+        monkeypatch.setattr(ctx_builder, "ensure_store", AsyncMock(return_value=object()))
+        monkeypatch.setattr("kiro_crew.dashboard.chat_runner._maybe_auto_title", AsyncMock())
+        monkeypatch.setattr("kiro_crew.dashboard.chat_runner.generate_session_summary", AsyncMock())
 
         state = _make_state(tmp_path, context_builder=ctx_builder)
 
         # Create a slot with retained history, then verify a cold start replays it.
         slot = state.get_or_create_slot("mem-test", agent="oncall")
+        if binding_change == "none":
+            from kiro_crew.member_memory_auth import bind_private_session_store
+
+            await asyncio.to_thread(bind_private_session_store, "dashboard:mem-test", private_store)
         conversation_log = ConversationLog(base_dir=tmp_path / "sessions")
         conversation_log.init()
         await asyncio.to_thread(
@@ -8409,21 +8511,71 @@ class TestRuntimeWiring:
         slot.append("user", "test message", "msg msg-u")
 
         # Mock session manager to return a mock client
+        from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
+
         mock_client = MagicMock()
-        mock_client.stream = MagicMock(return_value=AsyncIterator([]))
+        mock_client.stream = MagicMock(
+            return_value=AsyncIterator(
+                [LLMEvent(kind=EVENT_TEXT_CHUNK, text="done"), LLMEvent(kind=EVENT_COMPLETE)]
+            )
+        )
         state.sessions.get_or_create = AsyncMock(return_value=(mock_client, True, False))
         state.sessions.get_pid = MagicMock(return_value=None)
         state.sessions.consume_replay_suppression = MagicMock(return_value=False)
+        state.sessions.record_failure = AsyncMock()
+
+        loop = asyncio.get_running_loop()
+        binding_reads = []
+
+        def checked_bindings(cfg, name, project_dir=None):
+            from kiro_crew.memory_stores import UnknownMemoryStore
+
+            with pytest.raises(RuntimeError, match="no running event loop"):
+                asyncio.get_running_loop()
+            binding_reads.append((name, project_dir))
+            if binding_change == "unavailable":
+                raise UnknownMemoryStore("member identity offline")
+            resolved = resolve_agent_bindings(cfg, name, project_dir)
+            if binding_change == "project":
+                loop.call_soon_threadsafe(setattr, slot, "project", str(tmp_path / "new-project"))
+            elif binding_change == "replacement":
+                loop.call_soon_threadsafe(state._slots.__setitem__, slot.key, _ChatSlot(slot.key))
+            return resolved
+
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_runner.resolve_agent_bindings", checked_bindings
+        )
 
         # Import and run _run_chat
         from kiro_crew.dashboard.chat import _run_chat
 
         await _run_chat(state, slot, "test message")
+        await asyncio.gather(*state._background_tasks)
+
+        assert len(binding_reads) == 1
+        assert binding_reads[0][0] == "oncall"
+        if binding_change != "none":
+            from kiro_crew.member_memory_auth import read_private_session_store
+
+            state.sessions.get_or_create.assert_not_awaited()
+            state.sessions.record_failure.assert_awaited_once_with("dashboard:mem-test")
+            assert build_message_calls == []
+            assert read_private_session_store("dashboard:mem-test") is None
+            assert any(
+                message.get("role") == "error"
+                and message.get("meta", {}).get("code") == "memory_unavailable"
+                for message in slot.messages
+            )
+            return
 
         # Verify build_message was called with memory_store
+        state.sessions.record_failure.assert_not_awaited()
         assert len(build_message_calls) == 1
-        assert build_message_calls[0]["kwargs"].get("memory_store") == "oncall-mem"
+        assert build_message_calls[0]["kwargs"].get("memory_store") == private_store
         assert build_message_calls[0]["session_key"] == "dashboard:mem-test"
+        metadata = conversation_log.get_metadata("dashboard:mem-test")
+        assert metadata["memory_store"] == private_store
+        assert metadata["agent"] == "oncall"
         replay = build_message_calls[0]["kwargs"].get("compressed_history")
         assert "frozen retained question" in replay
         assert "frozen retained answer" in replay

@@ -31,6 +31,9 @@ from unittest.mock import patch
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from member_memory_helpers import patch_private_memory_supported
+
+from kiro_crew.config.sections import MemoryConfig
 
 
 @pytest.fixture(autouse=True)
@@ -43,6 +46,7 @@ def _owner_caller(monkeypatch):
         "kiro_crew.dashboard.handlers.source_providers.is_owner_dashboard_request",
         lambda request: True,
     )
+    patch_private_memory_supported(monkeypatch)
 
 
 def _fake_config():
@@ -56,7 +60,10 @@ def _fake_config():
     saved: list[bool] = []
     return SimpleNamespace(
         agent=SimpleNamespace(provider="acp"),
+        memory=MemoryConfig(),
+        degraded_sections=frozenset(),
         agents={},
+        memory_stores={},
         default_agent="kirocrew",
         save=lambda: saved.append(True),
         saved=saved,
@@ -100,7 +107,7 @@ async def _post(body, cfg, installed=(), spy=None):
             return_value=cfg,
         ),
         patch(
-            "kiro_crew.dashboard.handlers.agents.update_config_locked",
+            "kiro_crew.config.loader.update_config_locked",
             new=_fake_update_config_locked,
         ),
         patch(

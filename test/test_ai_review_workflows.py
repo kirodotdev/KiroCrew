@@ -828,7 +828,9 @@ class TestPrReadiness:
             "design-review.yml|Design Review",
         ):
             assert workflow_name in workflow
-        assert 'success|skipped) passed+=("$label")' in workflow
+        assert 'skipped) passed+=("$label")' in workflow
+        assert '(.app.slug // "") == "github-advanced-security"' in workflow
+        assert 'neutral|"") pending+=("$label (results pending)")' in workflow
 
     def test_readiness_listens_for_the_fast_gate_run_and_carves_it_out_when_stacked(
         self,

@@ -23,11 +23,19 @@ test.describe('Fork Session E2E', { tag: '@needs-agent' }, () => {
     if (await letsGo.isVisible({ timeout: 2000 }).catch(() => false)) {
       await letsGo.click()
     }
-    // /chat shows an empty state until a slot exists. Click "New chat" first.
-    const newChatButton = page.getByRole('button', { name: /new chat|\+/i }).first()
-    if (await newChatButton.isVisible({ timeout: 5000 }).catch(() => false)) {
-      await newChatButton.click()
-    }
+    // The old session's composer remains visible while creation is pending.
+    // Wait for this new slot to activate before typing or observing its reply.
+    const newChatButton = page.getByRole('button', { name: 'New chat session', exact: true })
+    await expect(newChatButton).toBeVisible()
+    const createdResponse = page.waitForResponse(response =>
+      response.request().method() === 'POST' && new URL(response.url()).pathname === '/api/chat/slots',
+    )
+    await newChatButton.click()
+    const created = await createdResponse
+    expect(created.ok(), await created.text()).toBeTruthy()
+    const { key } = await created.json() as { key: string }
+    expect(key).toBeTruthy()
+    await expect(page).toHaveURL(url => url.searchParams.get('sid') === key)
     await expect(page.getByPlaceholder(/message/i)).toBeVisible({ timeout: 10000 })
     // Let paint settle so the recording isn't black for the first frames.
     if (process.env.PLAYWRIGHT_VIDEO === '1') await page.waitForTimeout(500)

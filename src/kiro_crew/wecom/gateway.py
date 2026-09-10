@@ -66,7 +66,7 @@ def warn_if_channel_uncredentialed(
     channel_type: str,
     settings_name: str,
     cfg_enabled: bool,
-    credentials: "Sequence[tuple[str, str]]",
+    credential_presence: "Sequence[tuple[str, bool]]",
 ) -> None:
     """Log WHY a channel will not start when enabled but missing credentials.
 
@@ -78,20 +78,21 @@ def warn_if_channel_uncredentialed(
     ever report the difference. This helper is therefore called by
     ``_start_channel_transports`` at the start decision point (after
     ``KIROCREW_READY``, off the boot-path window), once per collapsed-flag
-    channel, from the raw ingredients each flag was computed from.
+    channel, from the presence checks each flag was computed from.
 
-    ``credentials`` holds ``(name, value)`` pairs for exactly the operands the
-    channel's enabled-flag predicate reads -- no more (a name that does not
+    ``credential_presence`` holds ``(name, present)`` pairs for exactly the
+    operands the channel's enabled-flag predicate reads -- no more (a name that does not
     gate the flag would send the operator to configure something that cannot
     start the channel) and no fewer. When the operator enabled the channel but
     at least one operand is absent, it emits exactly one WARNING (visible at
     the default log level) on the channel's own gateway logger, naming the
     missing credential NAME(s), never values; when the channel is disabled, or
-    fully credentialed, it stays completely silent.
+    fully credentialed, it stays completely silent. Callers pass booleans so
+    the diagnostic never receives credential values.
     """
-    if not cfg_enabled or all(value for _, value in credentials):
+    if not cfg_enabled or all(present for _, present in credential_presence):
         return
-    missing = " and ".join(name for name, value in credentials if not value)
+    missing = " and ".join(name for name, present in credential_presence if not present)
     channel_logger = logging.getLogger(f"kiro_crew.{channel_type}.gateway")
     # The rule keys on the word "credential" in the format string; the call
     # logs only the MISSING credential variable name(s) and a static
@@ -109,19 +110,19 @@ def warn_if_channel_uncredentialed(
 def warn_if_wecom_uncredentialed(cfg_enabled: bool, bot_id: str, secret: str) -> None:
     """WeCom-shaped wrapper over :func:`warn_if_channel_uncredentialed`.
 
-    Preserves the public contract pinned by
-    ``test_wecom_gateway.py::TestSkipReasonWarning``: exactly one WARNING on
+    Preserves the public contract (pinned by
+    ``test_wecom_gateway.py::TestSkipReasonWarning``): exactly one WARNING on
     this module's logger naming the missing credential name(s)
     (``WECOM_BOT_ID`` / ``WECOM_SECRET``), values never logged, silence when
     disabled or fully credentialed. Production routes through the
-    six-channel table in ``_start_channel_transports``, which
-    feeds the generic helper the same ``(name, value)`` pairs.
+    channel table in ``_start_channel_transports``, which
+    feeds the generic helper the same ``(name, present)`` pairs.
     """
     warn_if_channel_uncredentialed(
         "wecom",
         "WeCom",
         cfg_enabled,
-        (("WECOM_BOT_ID", bot_id), ("WECOM_SECRET", secret)),
+        (("WECOM_BOT_ID", bool(bot_id)), ("WECOM_SECRET", bool(secret))),
     )
 
 

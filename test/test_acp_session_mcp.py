@@ -471,6 +471,53 @@ class TestClientSeam:
         client = self._seeded(tmp_path, agent="kirocrew", acp_backend=ACP_BACKEND_CLAUDE)
         assert "foo" in _by_name(client._session_mcp_servers())
 
+    @pytest.mark.parametrize("private", [False, True])
+    def test_private_claude_keeps_the_original_server_in_its_projection(
+        self,
+        tmp_path,
+        agents_dir,
+        private,
+    ):
+        from kiro_crew.mcp_gateway.rewriter import _WRAPPER_MARKER
+
+        _write_spec(
+            agents_dir,
+            servers={"foo": {"command": "/bin/foo", "args": ["serve"], "env": {"K": "V"}}},
+            tools=["@foo"],
+        )
+        overlay = tmp_path / "broker-overlay"
+        overlay.mkdir()
+        (overlay / "kirocrew.json").write_text(
+            json.dumps(
+                {
+                    "name": "kirocrew",
+                    "mcpServers": {
+                        "foo": {
+                            _WRAPPER_MARKER: True,
+                            "command": "broker-stub",
+                            "args": [],
+                            "env": {},
+                        }
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        client = self._seeded(
+            tmp_path,
+            agent="kirocrew",
+            acp_backend=ACP_BACKEND_CLAUDE,
+            private_memory=private,
+            mcp_gateway_overlay=overlay,
+        )
+        original = _by_name(client._session_mcp_servers()).get("foo")
+        assert (original is not None) is private
+        if private:
+            assert original["command"] == "/bin/foo"
+            assert original["args"] == ["serve"]
+            assert original["env"] == [{"name": "K", "value": "V"}]
+        assert bool(client._pooled_mcp_servers()) is (not private)
+
     def test_neither_gate_is_an_identity_check(self, tmp_path, agents_dir, monkeypatch):
         """Two gates decide the seam, and neither reads the harness's identity.
 

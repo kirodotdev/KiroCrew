@@ -616,6 +616,7 @@ class TestPipInstallChannel:
         resolves to the BASE interpreter's directory where distro pythons put
         the marker — the recommended install layout (venv on a Debian/brew
         python) must not be misread as unsupported."""
+        monkeypatch.setattr(shared_mod.importlib.util, "find_spec", lambda name: object())
         monkeypatch.setattr(shared_mod.sys, "prefix", str(tmp_path / "venv"))
         monkeypatch.setattr(shared_mod.sys, "base_prefix", str(tmp_path / "base"))
         (tmp_path / "EXTERNALLY-MANAGED").write_text("", encoding="utf-8")
@@ -623,6 +624,7 @@ class TestPipInstallChannel:
         assert core_mod._pip_install_channel_available() is True
 
     def test_ordinary_venv_has_a_channel(self, monkeypatch, tmp_path) -> None:
+        monkeypatch.setattr(shared_mod.importlib.util, "find_spec", lambda name: object())
         monkeypatch.setattr(shared_mod.sys, "prefix", shared_mod.sys.base_prefix)
         monkeypatch.setattr(shared_mod.sysconfig, "get_path", lambda name: str(tmp_path))
         assert core_mod._pip_install_channel_available() is True

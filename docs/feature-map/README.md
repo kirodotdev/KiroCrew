@@ -132,15 +132,58 @@ full page.
 Not a rail destination. The user-facing memory browser is a drill-in under
 Settings → Overview; the graph visualizer is a Developer internals view.
 
+The picker separates Global Memory V1 from each member's private V2. Member
+creation allocates its empty memory automatically; the editor shows an immutable
+binding and links directly to `/settings/overview?view=memory&store=<name>`. Legacy members
+offer explicit empty initialization. The member panel scopes facts, directives,
+experiences, recall evidence, preferences, projects, carve, retirement and backups
+to its store. Copying selected starting knowledge is an explicit owner action
+with provenance and no overwrite. Global settings and embedding controls appear
+only on the global surface. Global V1's shared editor also keeps the Key/Value/Set
+action for creating facts through `PUT /api/memory/semantic`; the form never
+appears on a member's private store. An absent `?store=` continues to serve V1.
+
+Private memory cards show the remembered content; their internal keys are in
+Memory details. Selection controls occupy a separate row from Find and replace
+and Forget. Legacy schedule rows state that the run uses Global Memory V1.
+
 | Feature | What it is | Reach it | Page | Handler | Endpoints |
 |---|---|---|---|---|---|
-| Memory browser | Preferences, projects, history, lessons, vector store | `/settings/overview?view=memory` | `pages/overview/MemoryTab.tsx` | `handlers/memory.py`, `handlers/cron.py` | `GET,PUT /api/memory/preferences`, `GET /api/memory/semantic`, `GET,POST /api/lessons` |
+| Memory browser | Paged facts, rules and experiences; text search, memory-type filters, single correction and bulk preview/apply; preferences, history and diagnostics | `/settings/overview?view=memory` | `pages/overview/MemoryTab.tsx`, `pages/overview/MemoryRecordsEditor.tsx` | `handlers/memory.py`, `handlers/memory_edit.py` | `GET /api/memory/records`, `POST /api/memory/records/refresh`, `POST /api/memory/bulk/preview`, `POST /api/memory/bulk/apply` |
+| Store picker | Choose Global Memory V1 or one member's private store | Memory browser → store card | `pages/overview/MemoryStoreCard.tsx` | `handlers/memory_admin.py` | `GET /api/memory/stores` |
+| Member memory V2 | Browse, correct and bulk-edit private facts, rules and experiences; inspect recall and explicitly copy starting knowledge | Member drawer/editor → Manage memory; `/settings/overview?view=memory&store=<name>` | `pages/overview/MemberMemoryPanel.tsx`, `pages/overview/MemoryRecordsEditor.tsx`, `pages/overview/MemoryDocCard.tsx` | `handlers/memory_member.py`, `handlers/memory_edit.py` | `GET /api/memory/records`, `POST /api/memory/bulk/preview`, `POST /api/memory/bulk/apply`, `GET /api/memory/recall`, `POST /api/memory/seed` |
+| Explore memory | Group a store's memories by facet and drill into one group | Global memory → Explore memory; member memory → Recovery → Advanced | `pages/overview/MemoryCarveCard.tsx` | `handlers/memory.py` | `GET /api/memory/carve` |
+| Replaced experiences | List experiences excluded from recall after replacement, and restore one | Global memory → Replaced experiences; member memory → Recovery | `pages/overview/MemoryRetiredCard.tsx` | `handlers/memory_admin.py` | `GET /api/memory/retired`, `POST /api/memory/retired/restore` |
+| Backups | Snapshot a store; stage or cancel a member restore for gateway restart | Memory browser → backups card | `pages/overview/MemoryBackupsCard.tsx` | `handlers/memory_admin.py` | `GET /api/memory/backups`, `POST /api/memory/backup`, `POST /api/memory/restore`, `POST /api/memory/restore/cancel` |
 | Episodic search | Search past episodic memories | Memory browser → search | `pages/overview/MemoryTab.tsx` | `handlers/memory.py` | `GET /api/memory/episodic/search`, `GET /api/memory/episodic`, `DELETE /api/memory/episodic/{id}` |
 | Embeddings | Enable the vector store and pick its model | Memory browser → vector card | `pages/overview/VectorMemoryCard.tsx` | `handlers/memory.py` | `GET /api/memory/embedding-status`, `POST /api/memory/enable-embeddings`, `POST /api/memory/embedding-model` |
 | Memory graph | Entity/relation visualizer over the memory store | `/developer?tab=memory` | `pages/overview/MemoryGraphTab.tsx` | `handlers/memory.py` | `GET /api/memory/graph`, `GET /api/memory/observability` |
 | Usage | Token and turn usage over time | `/settings/overview?view=usage` | `pages/overview/UsageTab.tsx` | `handlers/usage.py`, `handlers/telemetry.py` | `GET /api/usage`, `GET /api/usage/kiro`, `GET /api/usage/turns` |
 | WakaTime coding activity and export | Coding stats for a named range plus project-grouped hours over a date range as a CSV or JSON download, for the productivity view and billable-hours invoicing | `/settings/overview?view=wakatime` | `pages/overview/WakaTimeTab.tsx` | `handlers/wakatime.py` | `GET /api/wakatime/stats`, `GET /api/wakatime/export` |
 | Portability | Export and import the whole memory/config bundle | `/settings/imports` | `pages/overview/PortabilityTab.tsx` | `handlers/portability.py` | `GET /api/portability/export`, `POST /api/portability/import`, `POST /api/portability/preview` |
+
+Private-memory boundary coverage lives in `test/test_member_memory_ownership.py`,
+`test/test_member_memory_runtime.py`, `test/test_member_memory_algorithm.py`,
+`test/test_member_memory_api.py` and `test/test_member_memory_backup.py`.
+Pooled member authority is covered by `test/test_mcp_caller.py`,
+`test/test_mcp_gateway_recaller.py` and `test/test_mcp_gateway_backend_coverage.py`:
+kernel-bound per-call proof issuance, forged caller removal and concurrent
+header isolation.
+`website/src/test/MemberMemoryIdentity.test.tsx` covers automatic identity and
+scheduled-member binding; `MemberMemoryPanel.test.tsx` covers scoped lifecycle
+requests, server search, explicit copy limits and partial outcomes, structured
+correction (including stable-identity experiences), full detail expansion from
+three-line card previews, retired-memory pagination and live refresh, persisted
+recovery staging/cancellation, unavailable-store retry, exact member avatars,
+empty-member conversation links, and profile drafts across tab/store/browser
+navigation and saves in flight.
+`MemoryStorePicker.test.tsx` retains the global-versus-member read assertions.
+`MemoryRecordsEditor.test.tsx` covers cross-page selection, stale-preview draft
+refresh, proposal acceptance/retention, JSON scalar editing and recall query
+changes. `website/playwright/member-memory.spec.ts` exercises the real isolated
+gateway: member lifecycle, recovery staging, persisted conversations and both
+V1/V2 65-record Email batches with concurrent edits and mobile previews.
+It also verifies accepting and rejecting conflict proposals in each lineage.
 
 ## Schedules and loops
 

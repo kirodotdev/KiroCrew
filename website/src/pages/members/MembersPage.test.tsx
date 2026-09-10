@@ -3,6 +3,14 @@ import { screen, fireEvent, waitFor, act, within } from '@testing-library/react'
 import { Route, Routes, useLocation, useNavigate } from 'react-router-dom'
 import { renderWithProviders } from '../../test/helpers'
 import { markSlotUnread, sseConnected, sseSlots } from '../../store/dashboardSlice'
+import { memberThreadQueryKey } from '../../api/membersQuery'
+import {
+  __resetErrorJournalForTests,
+  __resetNavSeamForTests,
+  consumeChatHandoff,
+  installSoftNavigate,
+  recordError,
+} from '../../utils/errorReport'
 
 /* ── api client mock ─────────────────────────────────────────────────────
  * The page reads exactly two endpoints; mocking them keeps every case
@@ -191,6 +199,8 @@ const rosterRow = async (name: string) =>
 
 beforeEach(() => {
   vi.clearAllMocks()
+  __resetErrorJournalForTests()
+  __resetNavSeamForTests()
   // clearAllMocks keeps implementations, so a case that made the drawer's
   // fetches reject would leak its error alerts into the next one. Reinstall
   // the quiet defaults.
@@ -299,13 +309,52 @@ describe('MembersPage roster cache (React Query)', () => {
     const utils = await renderPage([row()])
     expect(await screen.findByTestId('chat-pane-stub')).toHaveTextContent('member-oncall')
     utils.rerender(<LocationProbe />)
-    ;(api.memberThread as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('boom'))
+    const rawReason = 'The recorded private memory is unavailable. token=repair-secret-value'
+    const report = recordError({ source: 'api', message: rawReason, status: 409, code: 'memory_unavailable' })
+    vi.mocked(api.memberThread).mockRejectedValue(new Error(rawReason))
     utils.rerender(page)
     const notice = await screen.findByTestId('member-thread-error')
     expect(notice).toHaveTextContent(/Couldn't reconnect this conversation/i)
+    expect(notice).not.toHaveTextContent('The recorded private memory is unavailable.')
     // "Could not open" would contradict the conversation still rendered below.
     expect(notice).not.toHaveTextContent(/Could not open/i)
-    expect(screen.getByTestId('chat-pane-stub')).toHaveTextContent('member-oncall')
+    expect(within(notice).queryByRole('button', { name: /ask the agent/i })).toBeNull()
+    const pane = screen.getByTestId('chat-pane-stub')
+    expect(pane).toHaveTextContent('member-oncall')
+    expect(utils.queryClient.getQueryData(memberThreadQueryKey('oncall'))).toEqual({
+      slot_key: 'member-oncall', failed: true, errorReport: report,
+    })
+    const details = screen.getByTestId('member-thread-error-details') as HTMLDetailsElement
+    const reason = within(details).getByText(report.message)
+    expect(within(details).getByText('Details').tagName).toBe('SUMMARY')
+    expect(details.open).toBe(false)
+    expect(reason).not.toBeVisible()
+    // Exercise the native disclosure state without relying on happy-dom to
+    // emulate the browser's default summary-click action.
+    details.open = true
+    expect(reason).toBeVisible()
+    expect(reason).toHaveTextContent('token=[redacted]')
+    expect(details).not.toHaveTextContent('repair-secret-value')
+    expect(within(details).queryByRole('button', { name: /ask the agent/i })).toBeNull()
+
+    let completeRepair!: (value: Awaited<ReturnType<typeof api.memberThread>>) => void
+    vi.mocked(api.memberThread).mockReturnValueOnce(new Promise((resolve) => { completeRepair = resolve }))
+    fireEvent.click(await rosterRow('oncall'))
+    await waitFor(() => {
+      expect(api.memberThread).toHaveBeenCalledTimes(3)
+      expect(utils.queryClient.getQueryData(memberThreadQueryKey('oncall'))).toEqual({ slot_key: 'member-oncall' })
+      expect(screen.queryByTestId('member-thread-error')).toBeNull()
+    })
+    expect(screen.queryByTestId('member-thread-error-details')).toBeNull()
+    expect(screen.getByTestId('chat-pane-stub')).toBe(pane)
+    await act(async () => {
+      completeRepair({ slot_key: 'member-oncall-confirmed', slug: 'oncall', member: 'oncall', created: false })
+    })
+    await waitFor(() => expect(screen.getByTestId('chat-pane-stub')).toHaveTextContent('member-oncall-confirmed'))
+    expect(utils.queryClient.getQueryData(memberThreadQueryKey('oncall'))).toEqual({
+      slot_key: 'member-oncall-confirmed',
+    })
+    expect(screen.queryByTestId('member-thread-error-details')).toBeNull()
   })
 
   it('invalidating the crew-registry prefix (what the crew editor and the websocket hook do) refreshes the roster in place', async () => {
@@ -338,13 +387,56 @@ describe('MembersPage roster cache (React Query)', () => {
 })
 
 describe('MembersPage thread', () => {
+  it('opens a memory-page deep link by exact member name rather than a lossy slug', async () => {
+    vi.mocked(api.members).mockResolvedValue({ members: [row({ name: 'Review & QA', slug: 'review-qa' }), row({ name: 'Review QA', slug: 'review-qa-other' })], default_agent: 'default' })
+    vi.mocked(api.memberThread).mockResolvedValue({ slot_key: 'member-review-qa', slug: 'review-qa', member: 'Review & QA', created: false })
+    renderWithProviders(<MembersPage />, { route: '/members?member=Review%20%26%20QA' })
+    expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-review-qa')
+    expect(api.memberThread).toHaveBeenCalledExactlyOnceWith('review-qa')
+  })
+
+  it('shows the concrete private memory refusal when opening a member conversation fails', async () => {
+    const rawReason = 'Private memory database is unreadable; restore the oncall backup. token=private-secret-value'
+    const report = recordError({
+      source: 'api', message: rawReason, status: 409, code: 'memory_unavailable',
+      endpoint: '/api/members/oncall/thread', detail: rawReason,
+    })
+    const { queryClient } = await renderPage([row()], 'kirocrew', { thread: new Error(rawReason) })
+    const notice = await screen.findByTestId('member-thread-error')
+    expect(notice).toHaveTextContent(/Could not open this member's conversation/i)
+    expect(notice).not.toHaveTextContent('Private memory database is unreadable')
+    expect(queryClient.getQueryData(memberThreadQueryKey('oncall'))).toEqual({
+      slot_key: '', failed: true, errorReport: report,
+    })
+    const details = screen.getByTestId('member-thread-error-details') as HTMLDetailsElement
+    const reason = within(details).getByText(report.message)
+    expect(reason).not.toBeVisible()
+    details.open = true
+    expect(reason).toBeVisible()
+    expect(reason).toHaveTextContent('restore the oncall backup')
+    expect(details).not.toHaveTextContent('private-secret-value')
+    expect(screen.queryByTestId('chat-pane-stub')).toBeNull()
+    // The localized banner cannot recover this report by matching its own
+    // text. The endpoint/code in the hand-off prove the explicit prop survives.
+    const handoffNavigate = vi.fn()
+    installSoftNavigate(handoffNavigate)
+    fireEvent.click(within(notice).getByRole('button', { name: /ask the agent/i }))
+    const handoff = consumeChatHandoff()
+    expect(handoff).toContain('/api/members/oncall/thread')
+    expect(handoff).toContain('memory_unavailable')
+    expect(handoff).toContain('restore the oncall backup')
+    expect(handoff).not.toContain('private-secret-value')
+    expect(handoffNavigate).toHaveBeenCalled()
+    installSoftNavigate(null)
+  })
+
   it('opens the pinned DM thread on click: creates the thread and mounts the chat stack on its slot', async () => {
     await renderPage()
     fireEvent.click(await rosterRow('oncall'))
     await waitFor(() => expect(api.memberThread).toHaveBeenCalledWith('oncall'))
     // The stub echoes the slot key: proves ChatPane received THE member slot,
     // not a fresh ordinary slot. Mutating the mounted key breaks this line.
-    const pane = await screen.findByTestId('chat-pane-stub', PANE_READY)
+    const pane = await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)
     expect(pane).toHaveTextContent('member-oncall')
     // The host declares the pin: ChatPane must not offer the agent picker
     // (every selection would 409 against the server-side pin).
@@ -387,16 +479,20 @@ describe('MembersPage thread', () => {
     await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
     fireEvent.click(await rosterRow('oncall'))
     await waitFor(() => expect(api.memberThread).toHaveBeenCalledWith('oncall'))
-    expect(await screen.findByTestId('chat-pane-stub', PANE_READY)).toHaveTextContent('member-oncall')
+    expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-oncall')
   })
 
   it('surfaces a visible error when thread creation fails', async () => {
     // Installed BEFORE mount: the page opens the first member on its own, so
     // the failing POST is the auto-open itself.
-    await renderPage([row()], 'kirocrew', { thread: new Error('409') })
+    await renderPage([row()], 'kirocrew', { thread: new Error('Create private memory in the member editor.') })
     expect(
       await screen.findByText(/Could not open this member's conversation/i),
     ).toBeInTheDocument()
+    // Non-API exceptions have no journal report; do not invent a diagnostic
+    // object or leak an unredacted thrown message into the localized banner.
+    expect(screen.getByTestId('member-thread-error')).not.toHaveTextContent('Create private memory in the member editor.')
+    expect(screen.queryByTestId('member-thread-error-details')).toBeNull()
     expect(screen.queryByTestId('chat-pane-stub')).toBeNull()
   })
 
@@ -419,13 +515,13 @@ describe('MembersPage thread', () => {
     const pendingA = new Promise((_, reject) => {
       rejectA = reject
     })
-    await renderPage([
+    const { queryClient } = await renderPage([
       row({ name: 'alpha', slug: 'alpha' }),
       row({ name: 'beta', slug: 'beta' }),
     ])
     // Let the page's own first open (alpha, first row) settle before queuing
     // the one-shot responses, so the re-click below is the call that hangs.
-    expect(await screen.findByTestId('chat-pane-stub', PANE_READY)).toHaveTextContent('member-alpha')
+    expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-alpha')
     ;(api.memberThread as ReturnType<typeof vi.fn>)
       .mockReturnValueOnce(pendingA)
       .mockResolvedValueOnce({
@@ -437,55 +533,70 @@ describe('MembersPage thread', () => {
     fireEvent.click(await rosterRow('alpha'))
     fireEvent.click(await rosterRow('beta'))
     await waitFor(() => expect(screen.getByTestId('chat-pane-stub')).toHaveTextContent('member-beta'))
-    rejectA(new Error('late'))
+    const report = recordError({ source: 'api', message: 'alpha-private-memory-unavailable', code: 'memory_unavailable' })
+    await act(async () => { rejectA(new Error(report.message)) })
     // The stale rejection lands in alpha's bucket; beta's view stays clean.
-    await waitFor(() =>
-      expect(screen.queryByText(/Could not open this member's conversation/i)).toBeNull(),
-    )
+    await waitFor(() => expect(queryClient.getQueryData(memberThreadQueryKey('alpha'))).toEqual({
+      slot_key: 'member-alpha', failed: true, errorReport: report,
+    }))
+    expect(queryClient.getQueryData(memberThreadQueryKey('beta'))).toEqual({ slot_key: 'member-beta' })
+    expect(screen.queryByTestId('member-thread-error')).toBeNull()
+    expect(screen.queryByTestId('member-thread-error-details')).toBeNull()
     expect(screen.getByTestId('chat-pane-stub')).toHaveTextContent('member-beta')
+    expect(screen.queryByText('alpha-private-memory-unavailable', { exact: false })).toBeNull()
   })
 })
 
 describe('MembersPage side panel (Crew summary tab) and edit jump', () => {
-  it('shows the read-only config summary and the shared-memory disclosure', async () => {
-    await renderPage([row({ bound: true, slot_key: 'member-oncall', model: 'claude-opus-5' })])
+  it('shows the read-only config summary and the usable V1 migration choice', async () => {
+    await renderPage([row({ bound: true, slot_key: 'member-oncall', model: 'claude-opus-5', memory_version: 1 })])
     fireEvent.click(await rosterRow('oncall'))
-    const summary = await screen.findByTestId('member-crew-summary')
-    expect(summary).toHaveTextContent('kirocrew')
-    expect(summary).toHaveTextContent('claude-opus-5')
-    expect(summary).toHaveTextContent(/share one memory/i)
+    const drawer = await screen.findByTestId('member-crew-summary')
+    expect(drawer).toHaveTextContent('kirocrew')
+    expect(drawer).toHaveTextContent('claude-opus-5')
+    expect(drawer).toHaveTextContent('This member uses its current memory (V1).')
+    expect(drawer).not.toHaveTextContent('Private memory (V2) starts empty in a new chat')
+    expect(drawer).not.toHaveTextContent('Existing data and chats stay.')
+    expect(within(drawer).getByRole('button', { name: 'Set up private memory' })).toBeVisible()
   })
 
-  it('words the disclosure for a member on a dedicated store: markdown separate, conversation shared', async () => {
-    // A named memory_store scopes only the markdown layer (preferences,
-    // project notes). Conversation memory and lessons live in the one global
-    // vector store every member reads, so the drawer must say BOTH halves
-    // rather than go silent — silence would imply an isolation that does
-    // not exist.
+  it('shows private V2 only when owner metadata matches the member', async () => {
     await renderPage([
-      row({ bound: true, slot_key: 'member-oncall', memory_store: 'oncall-own' }),
-      row({ name: 'beta', slug: 'beta', memory_store: 'default' }),
+      row({ bound: true, slot_key: 'member-oncall', memory_store: 'oncall-own', memory_version: 2, memory_owner: 'oncall' }),
     ])
     fireEvent.click(await screen.findByText('oncall'))
-    const summary = await screen.findByTestId('member-crew-summary')
-    expect(summary).toHaveTextContent(/from the oncall-own store/i)
-    expect(summary).toHaveTextContent(/not separated yet/i)
-    expect(summary).toHaveTextContent(/still known to every member/i)
-    expect(summary).not.toHaveTextContent(/share one memory/i)
+    const drawer = await screen.findByTestId('member-crew-summary')
+    expect(drawer).toHaveTextContent(/only this member can use it/i)
+    expect(screen.getByRole('button', { name: 'Manage memory' })).toBeInTheDocument()
   })
 
-  it('keys the wording on the store itself, not on roster membership', async () => {
-    // Two members on the same named store still get the store-scoped note:
-    // whether the store is shared is a backend fact about which layers it
-    // scopes, not something to infer client-side from who else uses it.
+  it('does not describe a legacy shared named store as private V2', async () => {
     await renderPage([
-      row({ bound: true, slot_key: 'member-oncall', memory_store: 'triage' }),
-      row({ name: 'beta', slug: 'beta', memory_store: 'triage' }),
+      row({ bound: true, slot_key: 'member-oncall', memory_store: 'triage', memory_version: 1 }),
+      row({ name: 'beta', slug: 'beta', memory_store: 'triage', memory_version: 1 }),
     ])
     fireEvent.click(await screen.findByText('oncall'))
-    const summary = await screen.findByTestId('member-crew-summary')
-    expect(summary).toHaveTextContent(/from the triage store/i)
-    expect(summary).not.toHaveTextContent(/share one memory/i)
+    const drawer = await screen.findByTestId('member-crew-summary')
+    expect(drawer).toHaveTextContent('This member uses its current memory (V1).')
+    expect(drawer).not.toHaveTextContent('Private memory (V2) starts empty in a new chat')
+    expect(within(drawer).getByRole('button', { name: 'Set up private memory' })).toBeVisible()
+    expect(drawer).not.toHaveTextContent(/only this member can use it/i)
+  })
+
+  it.each([
+    ['a V2 store owned by another member', { memory_store: 'beta-own', memory_version: 2, memory_owner: 'beta' }, /configured memory store belongs to another member/i],
+    ['an undeclared named store', { memory_store: 'missing-store' }, /configured memory store is unavailable/i],
+    ['a V2 store with no known owner', { memory_store: 'ownerless', memory_version: 2, memory_owner: '' }, /configured memory store is unavailable/i],
+  ] as const)('explains %s without offering a V1 downgrade', async (_case, memory, reason) => {
+    await renderPage([row({ bound: true, slot_key: 'member-oncall', ...memory })])
+    fireEvent.click(await screen.findByText('oncall'))
+    const drawer = await screen.findByTestId('member-crew-summary')
+    expect(drawer).toHaveTextContent(reason)
+    expect(drawer).not.toHaveTextContent(/unavailable or belongs/i)
+    expect(drawer).not.toHaveTextContent(/This member uses its current memory \(V1\)\./)
+    expect(drawer).not.toHaveTextContent(/only this member can use it/i)
+    fireEvent.click(screen.getByRole('button', { name: 'Open crew manager' }))
+    expect(navigateSpy).toHaveBeenCalledWith('/capabilities?tab=crews&crew=oncall')
   })
 
   it('docks the chat SidePanel beside the thread on a wide window: permanent, no Details toggle, no close control', async () => {
@@ -969,10 +1080,10 @@ describe('MembersPage side panel (Crew summary tab) and edit jump', () => {
   it('the Crew summary lists wake sources filtered to the member, via the shared predicates', async () => {
     vi.mocked(api.crons).mockResolvedValue({
       jobs: [
-        { id: 'j1', name: 'nightly-triage', message: '', enabled: true, schedule: '0 2 * * *', last_status: '', agent: 'oncall' },
-        { id: 'j2', name: 'other-crew-job', message: '', enabled: true, schedule: '@hourly', last_status: '', agent: 'research' },
+        { id: 'j1', name: 'nightly-triage', message: '', enabled: true, schedule: '0 2 * * *', last_status: '', agent: 'shared-template', member_id: 'oncall' },
+        { id: 'j2', name: 'other-crew-job', message: '', enabled: true, schedule: '@hourly', last_status: '', agent: 'shared-template', member_id: 'research' },
         // Script jobs open no session — they wake NO crew (shared wakesCrew rule).
-        { id: 'j3', name: 'script-job', message: '', enabled: true, schedule: '@daily', last_status: '', agent: 'oncall', script: 'x.py:f' },
+        { id: 'j3', name: 'script-job', message: '', enabled: true, schedule: '@daily', last_status: '', agent: 'shared-template', member_id: 'oncall', script: 'x.py:f' },
       ],
     })
     vi.mocked(api.webhooks).mockResolvedValue({
@@ -1080,7 +1191,7 @@ describe('MembersPage unread drain', () => {
       store.dispatch(markSlotUnread('member-oncall'))
     })
     fireEvent.click(await rosterRow('oncall'))
-    await screen.findByTestId('chat-pane-stub', PANE_READY)
+    await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)
     await waitFor(() =>
       expect(store.getState().dashboard.unreadSlots).not.toContain('member-oncall'),
     )
@@ -1089,7 +1200,7 @@ describe('MembersPage unread drain', () => {
   it('a live message re-flagging the MOUNTED thread is drained again, not left as a stuck badge', async () => {
     const { store } = await renderPage()
     fireEvent.click(await rosterRow('oncall'))
-    await screen.findByTestId('chat-pane-stub', PANE_READY)
+    await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)
     // Simulate the websocket marker firing while the user is looking at the
     // thread (its check is against chat.activeSlot, which this page never sets).
     act(() => {
@@ -1107,7 +1218,7 @@ describe('MembersPage unread drain', () => {
       store.dispatch(markSlotUnread('chat-123'))
     })
     fireEvent.click(await rosterRow('oncall'))
-    await screen.findByTestId('chat-pane-stub', PANE_READY)
+    await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)
     expect(store.getState().dashboard.unreadSlots).toEqual(
       expect.arrayContaining(['member-research', 'chat-123']),
     )
@@ -1121,7 +1232,7 @@ describe('MembersPage unread drain', () => {
       row({ bound: true, slot_key: 'member-oncall' }),
       row({ name: 'scout', slug: 'scout' }),
     ])
-    expect(await screen.findByTestId('chat-pane-stub', PANE_READY)).toHaveTextContent('member-scout')
+    expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-scout')
     expect(screen.queryByTestId('member-unread-dot')).toBeNull()
     act(() => {
       store.dispatch(markSlotUnread('member-oncall'))
@@ -1136,7 +1247,7 @@ describe('MembersPage unread drain', () => {
       row({ bound: true, slot_key: 'member-oncall' }),
       row({ name: 'scout', slug: 'scout' }),
     ])
-    expect(await screen.findByTestId('chat-pane-stub', PANE_READY)).toHaveTextContent('member-scout')
+    expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-scout')
     act(() => {
       store.dispatch(markSlotUnread('member-oncall'))
     })
@@ -1676,7 +1787,7 @@ describe('MembersPage default member, memory and URL', () => {
     ])
     // No click: the most-recently-active member (the roster's first row) is
     // opened on arrival, its thread mounted, and the URL says so.
-    expect(await screen.findByTestId('chat-pane-stub', PANE_READY)).toHaveTextContent('member-fresh-talker')
+    expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-fresh-talker')
     expect(api.memberThread).toHaveBeenCalledWith('fresh-talker')
     expect(screen.queryByText(/Pick a member/i)).toBeNull()
     expect(currentUrl()).toBe('/members?member=fresh-talker')
@@ -1731,7 +1842,7 @@ describe('MembersPage default member, memory and URL', () => {
   it('restores the remembered member on return (and after a reload)', async () => {
     localStorage.setItem(LAST_MEMBER_KEY, 'beta')
     await renderPage(alphaBeta())
-    expect(await screen.findByTestId('chat-pane-stub', PANE_READY)).toHaveTextContent('member-beta')
+    expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-beta')
     expect(api.memberThread).toHaveBeenCalledTimes(1)
     expect(api.memberThread).toHaveBeenCalledWith('beta')
     expect(currentUrl()).toBe('/members?member=beta')
@@ -1740,7 +1851,7 @@ describe('MembersPage default member, memory and URL', () => {
   it('a remembered member that was deleted or renamed falls back to the first row, without an error', async () => {
     localStorage.setItem(LAST_MEMBER_KEY, 'ghost')
     await renderPage(alphaBeta())
-    expect(await screen.findByTestId('chat-pane-stub', PANE_READY)).toHaveTextContent('member-alpha')
+    expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-alpha')
     expect(screen.queryByRole('alert')).toBeNull()
     // Nobody was named, so nothing is announced: the memory just moves on.
     expect(screen.queryByTestId('member-gone-notice')).toBeNull()
@@ -1752,7 +1863,7 @@ describe('MembersPage default member, memory and URL', () => {
   it('a URL naming a member wins over the remembered one (shallow link)', async () => {
     localStorage.setItem(LAST_MEMBER_KEY, 'alpha')
     await renderPage(alphaBeta(), 'kirocrew', { route: '/members?member=beta' })
-    expect(await screen.findByTestId('chat-pane-stub', PANE_READY)).toHaveTextContent('member-beta')
+    expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-beta')
     expect(api.memberThread).toHaveBeenCalledTimes(1)
     // Opening via the link also becomes the memory for the next visit.
     expect(localStorage.getItem(LAST_MEMBER_KEY)).toBe('beta')
@@ -1760,7 +1871,7 @@ describe('MembersPage default member, memory and URL', () => {
 
   it('a URL naming a member that is gone falls back to the first row and SAYS so', async () => {
     await renderPage(alphaBeta(), 'kirocrew', { route: '/members?member=ghost' })
-    expect(await screen.findByTestId('chat-pane-stub', PANE_READY)).toHaveTextContent('member-alpha')
+    expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-alpha')
     // The user asked for a specific member: the swap is announced above the
     // thread (a status, not an error — the fallback did open something).
     const notice = screen.getByTestId('member-gone-notice')
@@ -1785,7 +1896,7 @@ describe('MembersPage default member, memory and URL', () => {
     localStorage.setItem(LAST_MEMBER_KEY, 'beta')
     await renderPage(alphaBeta(), 'kirocrew', { route: '/members?member=ghost' })
     // The remembered member, not the first row, is the stand-in.
-    expect(await screen.findByTestId('chat-pane-stub', PANE_READY)).toHaveTextContent('member-beta')
+    expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-beta')
     expect(screen.getByTestId('member-gone-notice')).toHaveTextContent(/^Showing beta/)
     expect(currentUrl()).toBe('/members?member=beta')
     expect(localStorage.getItem(LAST_MEMBER_KEY)).toBe('beta')
@@ -1802,7 +1913,7 @@ describe('MembersPage default member, memory and URL', () => {
 
   it('clicking a member writes the URL and the memory', async () => {
     await renderPage(alphaBeta())
-    expect(await screen.findByTestId('chat-pane-stub', PANE_READY)).toHaveTextContent('member-alpha')
+    expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-alpha')
     fireEvent.click(await rosterRow('beta'))
     await waitFor(() => expect(screen.getByTestId('chat-pane-stub')).toHaveTextContent('member-beta'))
     expect(currentUrl()).toBe('/members?member=beta')
@@ -1931,7 +2042,7 @@ describe('MembersPage default member, memory and URL', () => {
     )
     fireEvent.click(screen.getByTestId('go-members'))
     // Arrival: the auto-open REPLACES the bare /members entry.
-    expect(await screen.findByTestId('chat-pane-stub', PANE_READY)).toHaveTextContent('member-alpha')
+    expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-alpha')
     expect(currentUrl()).toBe('/members?member=alpha')
     // Walk two members.
     fireEvent.click(await rosterRow('beta'))
@@ -2000,7 +2111,7 @@ describe('MembersPage default member, memory and URL', () => {
     it('tapping a member opens it; the header back POPS the entry the roster pushed', async () => {
       await renderPage(alphaBeta())
       fireEvent.click(await rosterRow('beta'))
-      expect(await screen.findByTestId('chat-pane-stub', PANE_READY)).toHaveTextContent('member-beta')
+      expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-beta')
       expect(currentUrl()).toBe('/members?member=beta')
       navigateSpy.mockClear()
       fireEvent.click(screen.getByTestId('member-back'))
@@ -2014,7 +2125,7 @@ describe('MembersPage default member, memory and URL', () => {
 
     it('from a deep link the header back drops the param in place — there is no roster entry behind it', async () => {
       await renderPage(alphaBeta(), 'kirocrew', { route: '/members?member=beta' })
-      expect(await screen.findByTestId('chat-pane-stub', PANE_READY)).toHaveTextContent('member-beta')
+      expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-beta')
       navigateSpy.mockClear()
       fireEvent.click(screen.getByTestId('member-back'))
       await waitFor(() => expect(screen.queryByTestId('chat-pane-stub')).toBeNull())

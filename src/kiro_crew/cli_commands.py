@@ -9,6 +9,7 @@ import importlib
 import importlib.util
 import inspect
 import json
+import logging
 import os
 import re
 import shutil
@@ -81,7 +82,19 @@ from kiro_crew.history import ConversationLog
 from kiro_crew.hooks import safe_read_file
 from kiro_crew.learn import LessonStore
 from kiro_crew.loopback_http import loopback_urlopen
+from kiro_crew.member_memory_auth import require_member_memory_creation
 from kiro_crew.memory import MemoryStore
+from kiro_crew.memory_stores import (
+    DEFAULT_MEMORY_STORE,
+    UnknownMemoryStore,
+    archive_member_memory_store,
+    memory_store_binding_defect,
+    named_store_or_empty,
+    persist_member_config,
+    provision_member_memory,
+    retire_unpublished_member_memory_store,
+    rollback_member_memory_archive_if_active,
+)
 from kiro_crew.port_resolution import resolve_client_port_ex
 from kiro_crew.secrets.migrate import (
     MigrationConflictError,
@@ -1018,6 +1031,57 @@ def _handle_app(args: argparse.Namespace) -> None:
         print("Usage: kirocrew app {install|list|enable|disable|uninstall|info|init}")
 
 
+def _memory_store_or_exit(raw: str) -> str:
+    """Return *raw* when it may bind a crew to a memory store, else exit 1.
+
+    The same predicate the dashboard verbs apply, so the two surfaces cannot
+    persist different sets of values into one ``config.json``. Only the SHAPE is
+    refused: an undeclared but well-formed name is accepted and warned about, since
+    no verb here can declare a store either.
+
+    ``repr`` on the value, not the bare string: it arrives from a shell argument
+    and can carry an OSC/ANSI sequence, and this message goes to a terminal.
+    """
+    defect = memory_store_binding_defect(raw)
+    if defect is not None:
+        print(
+            f"Error: memory store {raw!r} is not a usable store name ({defect}); use "
+            "lowercase letters, digits and hyphens, or '' for the default store",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    return raw
+
+
+def _finding_store_suffix(finding: dict) -> str:
+    """`` (store <name>)`` for a NAMED store's finding, ``""`` for the default's.
+
+    ``security.scan_memory`` returns one flat list spanning every declared store,
+    and an unlabelled row reads as the global memory's — so a crew silo's rows
+    have to say which silo, or one crew's memory text lands in another crew's
+    report with nothing marking it.
+
+    Empty for the default store rather than ``(store default)`` so an install
+    with no named stores prints exactly the bytes it always printed.
+    ``named_store_or_empty`` is the positive predicate for "this is a named
+    store", so the literal ``"default"`` and a missing key answer the same way.
+    """
+    name = named_store_or_empty(finding.get("store", ""))
+    return f" (store {name})" if name else ""
+
+
+def _retire_failed_cli_member_allocation(cfg: KiroCrewConfig, name: str, prior_store: str) -> None:
+    try:
+        store = cfg.agents[name].memory_store
+        if store == prior_store:
+            return
+        retire_unpublished_member_memory_store(store, name)
+    except BaseException:
+        logging.getLogger(__name__).warning(
+            "Could not retire unpublished memory for member %s", name, exc_info=True
+        )
+
+
 def _handle_agent(args: argparse.Namespace) -> None:
     """Dispatch agent subcommands: list, create, update, delete."""
 
@@ -1042,42 +1106,68 @@ def _handle_agent(args: argparse.Namespace) -> None:
         if args.name in cfg.agents:
             print(f"Error: agent '{args.name}' already exists", file=sys.stderr)
             sys.exit(1)
-
-        def _mutate_agent_create(doc: dict) -> dict:
-            agents = coerce_dict_section(doc, "agents")
-            if args.name in agents:
-                raise _CliConflict(f"agent '{args.name}' already exists")
-            agents[args.name] = dataclasses.asdict(
-                KiroCrewAgentConfig(
-                    kiro_agent=args.kiro_agent,
-                    workspace=args.workspace,
-                    memory_store=args.memory_store,
-                )
+        memory_store = _memory_store_or_exit(args.memory_store)
+        if memory_store not in ("", DEFAULT_MEMORY_STORE):
+            print(
+                "Error: members receive an empty private memory store automatically",
+                file=sys.stderr,
             )
-            return doc
-
-        _locked_config_write(_mutate_agent_create)
+            sys.exit(1)
+        cfg.agents[args.name] = KiroCrewAgentConfig(
+            kiro_agent=args.kiro_agent,
+            workspace=args.workspace,
+            memory_store=memory_store,
+        )
+        try:
+            require_member_memory_creation(args.name)
+            provision_member_memory(cfg, args.name)
+            persist_member_config(cfg, args.name, create=True)
+        except BaseException as exc:
+            _retire_failed_cli_member_allocation(cfg, args.name, memory_store)
+            if not isinstance(exc, (OSError, UnknownMemoryStore)):
+                raise
+            print(f"Error: {exc}", file=sys.stderr)
+            sys.exit(1)
         print(f"Created agent: {args.name}")
 
     elif action == "update":
         if args.name not in cfg.agents:
             print(f"Error: agent '{args.name}' not found", file=sys.stderr)
             sys.exit(1)
-
-        def _mutate_agent_update(doc: dict) -> dict:
-            agents = coerce_dict_section(doc, "agents")
-            entry = agents.get(args.name)
-            if not isinstance(entry, dict):
-                raise _CliConflict(f"agent '{args.name}' not found")
-            if args.kiro_agent is not None:
-                entry["kiro_agent"] = args.kiro_agent
-            if args.workspace is not None:
-                entry["workspace"] = args.workspace
-            if args.memory_store is not None:
-                entry["memory_store"] = args.memory_store
-            return doc
-
-        _locked_config_write(_mutate_agent_update)
+        agent = cfg.agents[args.name]
+        prior_memory_store = agent.memory_store
+        if args.memory_store is not None and args.memory_store != prior_memory_store:
+            print("Error: a member's private memory cannot be rebound or shared", file=sys.stderr)
+            sys.exit(1)
+        if args.kiro_agent is not None:
+            agent.kiro_agent = args.kiro_agent
+        if args.workspace is not None:
+            agent.workspace = args.workspace
+        try:
+            if getattr(args, "provision_memory", False):
+                prior_record = cfg.memory_stores.get(prior_memory_store)
+                if prior_record is None or prior_record.memory_version != 2:
+                    require_member_memory_creation(args.name)
+                provision_member_memory(cfg, args.name)
+            changed_fields = {
+                field
+                for field in ("kiro_agent", "workspace")
+                if getattr(args, field, None) is not None
+            }
+            if agent.memory_store != prior_memory_store:
+                changed_fields.add("memory_store")
+            persist_member_config(
+                cfg,
+                args.name,
+                expected_store=prior_memory_store,
+                changed_fields=changed_fields,
+            )
+        except BaseException as exc:
+            _retire_failed_cli_member_allocation(cfg, args.name, prior_memory_store)
+            if not isinstance(exc, (OSError, UnknownMemoryStore)):
+                raise
+            print(f"Error: {exc}", file=sys.stderr)
+            sys.exit(1)
         print(f"Updated agent: {args.name}")
 
     elif action == "delete":
@@ -1091,6 +1181,8 @@ def _handle_agent(args: argparse.Namespace) -> None:
             )
             sys.exit(1)
 
+        created_archive: list[tuple[str, str]] = []
+
         def _mutate_agent_delete(doc: dict) -> dict:
             agents = coerce_dict_section(doc, "agents")
             if args.name not in agents:
@@ -1103,10 +1195,32 @@ def _handle_agent(args: argparse.Namespace) -> None:
                 isinstance(agent_section, dict) and agent_section.get("default_agent") == args.name
             ):
                 raise _CliConflict(f"cannot delete default agent '{args.name}'")
+            entry = agents[args.name]
+            stores = coerce_dict_section(doc, "memory_stores")
+            store_name = entry.get("memory_store", "") if isinstance(entry, dict) else ""
+            record = stores.get(store_name)
+            if isinstance(record, dict) and record.get("memory_version") == 2:
+                if record.get("owner_member") != args.name:
+                    raise _CliConflict(
+                        f"memory store '{store_name}' ownership changed concurrently"
+                    )
+                if archive_member_memory_store(store_name, args.name):
+                    created_archive.append((store_name, args.name))
             del agents[args.name]
             return doc
 
-        _locked_config_write(_mutate_agent_delete)
+        def _rollback_archive() -> None:
+            for store_name, owner in reversed(created_archive):
+                try:
+                    rollback_member_memory_archive_if_active(store_name, owner)
+                except Exception:
+                    logging.getLogger(__name__).error(
+                        "failed to roll back member memory retirement for %s",
+                        store_name,
+                        exc_info=True,
+                    )
+
+        _locked_config_write(_mutate_agent_delete, cleanup_failure=_rollback_archive)
         print(f"Deleted agent: {args.name}")
 
     elif action == "reset-model":
@@ -1679,7 +1793,7 @@ def _security(args: argparse.Namespace) -> None:
         if mem_findings:
             print(f"\n⚠️  {len(mem_findings)} suspicious memory entries:\n")
             for f in mem_findings:
-                print(f"  [{f['type']}] {f['key']}: {f['warning']}")
+                print(f"  [{f['type']}] {f['key']}{_finding_store_suffix(f)}: {f['warning']}")
                 print(f"    {f['value'][:120]}\n")
         elif not findings:
             pass
@@ -2519,6 +2633,177 @@ def _memory_search_embedding(store: VectorMemoryStore, query: str) -> list[float
     return store._try_embed(query)
 
 
+def _memory_backup_cmd(action: str, args: argparse.Namespace) -> None:
+    """The three verbs that must work on a store too broken to open.
+
+    Split out rather than inlined so the ordering above is visible: none of these
+    touches ``VectorMemoryStore``, which is what lets them run against a file that
+    fails ``PRAGMA journal_mode=WAL``.
+    """
+    if action == "backup":
+        from kiro_crew import memory_backup
+
+        keep = getattr(args, "keep", None)
+        if keep is None:
+            keep = KiroCrewConfig.load().memory.backup_keep
+        result = memory_backup.back_up_all_stores(int(keep))
+        print(
+            f"Backed up {result['backed_up']} store(s); "
+            f"removed {result['pruned']} old; {result['failed']} failed."
+        )
+
+    elif action == "backups":
+        from kiro_crew import memory_backup
+        from kiro_crew.memory_stores import declared_store_names, owned_store_path
+
+        only = getattr(args, "store", None)
+        # ``declared_store_names`` so the listing order matches the pass that WROTE the
+        # backups (default first, then sorted), and ``owned_store_path`` so an undeclared
+        # name cannot be listed at all: ``resolve_store_path`` degrades onto the DEFAULT
+        # store's file, which exists -- so without the guard this prints the operator's
+        # own backups under the heading the caller typed.
+        for name in [only] if only else declared_store_names():
+            path = owned_store_path(name)
+            if path is None:
+                print(f"{name}: not a declared memory store")
+                continue
+            backups = memory_backup.list_backups(path)
+            print(f"{name}:")
+            if not backups:
+                # Named plainly: "none" for the store an operator is about to rely on is
+                # the answer they need, and silence reads as "fine".
+                print("  (no backups yet)")
+            for backup in backups:
+                print(f"  {backup.name}  {backup.stat().st_size / 1_048_576:.1f} MiB")
+
+    elif action == "restore":
+        from kiro_crew import memory_backup
+        from kiro_crew.member_memory_backup import is_member_store
+        from kiro_crew.memory_stores import DEFAULT_MEMORY_STORE
+
+        target_store = getattr(args, "store", None) or DEFAULT_MEMORY_STORE
+        chosen = getattr(args, "from_backup", None)
+        if getattr(args, "cancel_pending", False):
+            from kiro_crew.memory_stores import owned_store_path
+
+            path = owned_store_path(target_store)
+            if chosen or path is None:
+                raise ValueError("Cancel requires an available memory store and cannot use --from")
+            cancelled = memory_backup.cancel_pending_restore(path)
+            print("Staged restore cancelled." if cancelled else "No staged restore to cancel.")
+            print("Current memory and backups are unchanged.")
+            return
+        source = Path(chosen) if chosen else memory_backup.newest_backup(target_store)
+        if source is None:
+            # This handler returns None; raising is how the surrounding command
+            # surfaces a failure, and a restore that found nothing must not read as
+            # success to whoever is relying on it.
+            raise FileNotFoundError(f"no backup found for memory store {target_store!r}")
+        restored = memory_backup.restore_from_backup(source, target_store)
+        print(f"Staged restore for {target_store!r} from {source.name}.")
+        print("Restart the gateway to activate it. Current memory is unchanged.")
+        if is_member_store(restored):
+            print("Activation preserves any existing member memory directory in full.")
+            return
+        print("Activation preserves the prior database and WAL as memory.db.superseded.*")
+
+
+def _memory_carve(args: argparse.Namespace) -> None:
+    """Filter or count one memory store's rows by their carve facets.
+
+    Reads the store NAMED on the command line, which is the whole point of the
+    verb: facets exist only on a crew silo, and ``_memory_cmd``'s shared store is
+    the default one.
+
+    The name is RESOLVED before it is reported. ``resolve_store_path`` degrades an
+    undeclared name onto the default store and raises on a malformed one, so
+    echoing the requested name would attribute the default store's answer — the
+    refusal included — to a store that was never opened.
+
+    Operator-facing, and deliberately not an MCP tool: no verb in the
+    ``kirocrew memory`` group has an MCP twin, the facets are attribution metadata
+    rather than recallable content (an agent already receives its memory through
+    context injection), and letting a session name an arbitrary store is exactly
+    the cross-crew read a silo exists to prevent — which is why the HTTP route
+    requires the dashboard owner to select a named store.
+    """
+    from kiro_crew import memory_schema
+    from kiro_crew.memory_stores import (
+        DEFAULT_MEMORY_STORE,
+        UnknownMemoryStore,
+        resolve_declared_store,
+        resolve_store_path,
+    )
+
+    requested = getattr(args, "store", None) or DEFAULT_MEMORY_STORE
+    try:
+        name = resolve_declared_store(requested)
+    except UnknownMemoryStore as exc:
+        # A shape defect raises rather than degrading, because repairing `../work`
+        # or `Work` onto `work` is the one case that would silently point two crews
+        # at one directory. Reported as one line, not a traceback.
+        print(f"Error: {exc}")
+        return
+    if name != requested:
+        print(f"Note: memory store {requested!r} is not declared; reading {name!r}.")
+    cfg = KiroCrewConfig.load()
+    store = VectorMemoryStore(
+        db_path=resolve_store_path(name), embedding_dim=cfg.memory.embedding_dim
+    )
+    store.init()
+    try:
+        # Keyed by facet NAME, read off the namespace by that name: an omitted flag
+        # is absent from the mapping (the axis is unconstrained), while an
+        # explicitly empty one filters for the rows no writer attributed.
+        filters = {
+            facet: value
+            for facet in memory_schema.FACET_NAMES
+            for value in [getattr(args, facet, None)]
+            if value is not None
+        }
+        kind = getattr(args, "kind", None) or ""
+        group_by = getattr(args, "count_by", None)
+        if group_by:
+            counts = store.count_by_facet(group_by, filters, kind=kind)
+            if not counts:
+                print(f"No live rows in {name!r} match that carve.")
+                return
+            for value, total in counts.items():
+                label = _TERMINAL_CTRL_RE.sub("", value) if value else "(unattributed)"
+                print(f"  {label}: {total}")
+            return
+        rows = store.list_by_facets(
+            filters,
+            kind=kind,
+            limit=int(getattr(args, "limit", 50)),
+            offset=int(getattr(args, "offset", 0)),
+        )
+        if not rows:
+            print(f"No live rows in {name!r} match that carve.")
+            return
+        for row in rows:
+            # The key for a semantic row, the id for an episode, which has none.
+            handle = row["key"] or row["id"]
+            text = _TERMINAL_CTRL_RE.sub("", str(row["text"]))[:120]
+            print(f"  [{row['kind']}] {_TERMINAL_CTRL_RE.sub('', str(handle))}: {text}")
+            axes = " ".join(
+                f"{facet}={_TERMINAL_CTRL_RE.sub('', str(row[facet]))}"
+                for facet in memory_schema.FACET_NAMES
+                if row[facet]
+            )
+            if axes:
+                print(f"        {axes}")
+    except memory_schema.FacetsUnsupported as exc:
+        # Named, never answered with an empty list: "no rows carry that crew" and
+        # "this store cannot record a crew at all" are different facts, and only
+        # one of them means the carve is empty.
+        print(f"Cannot carve {name!r}: {exc}")
+    except memory_schema.UnknownFacet as exc:
+        print(f"Error: {exc}")
+    finally:
+        store.close()
+
+
 def _memory_cmd(args: argparse.Namespace) -> None:
     """Manage the memory system (vector store + markdown layer)."""
     action = getattr(args, "mem_action", None)
@@ -2531,6 +2816,21 @@ def _memory_cmd(args: argparse.Namespace) -> None:
     # (or create) the vector store for it — same reason as "show" above.
     if action == "search" and getattr(args, "layer", "all") == "history":
         _memory_search_history(args)
+        return
+    # The backup verbs run BEFORE the store is opened, and that ordering is the whole
+    # point of them: `restore` and `backups` are what an operator reaches for when the
+    # store is corrupt, and `store.init()` below runs `PRAGMA journal_mode=WAL`, which
+    # raises "file is not a database" on exactly that file. Opening first would make the
+    # recovery path unreachable in the only situation it exists for.
+    if action in ("backup", "backups", "restore"):
+        _memory_backup_cmd(action, args)
+        return
+    # "carve" opens the store NAMED on the command line, so it must not go through
+    # the shared open below, which is hardwired to the default store's path. Same
+    # ordering rule as the backup verbs: a verb whose target is not the default
+    # store dispatches before anything opens one.
+    if action == "carve":
+        _memory_carve(args)
         return
     cfg = KiroCrewConfig.load()
     store = VectorMemoryStore(embedding_dim=cfg.memory.embedding_dim)
@@ -2643,7 +2943,7 @@ def _memory_cmd(args: argparse.Namespace) -> None:
             if findings:
                 print(f"⚠️  {len(findings)} suspicious entries:\n")
                 for f in findings:
-                    print(f"  [{f['type']}] {f['key']}: {f['warning']}")
+                    print(f"  [{f['type']}] {f['key']}{_finding_store_suffix(f)}: {f['warning']}")
                     print(f"    {f['value'][:120]}\n")
             else:
                 print("✅ No suspicious content in memory.")
@@ -2672,6 +2972,19 @@ def _memory_cmd(args: argparse.Namespace) -> None:
             print(f"  Semantic: {counts['semantic']}")
             print(f"  Episodic: {counts['episodic']}")
             print(f"  Skipped:  {counts['skipped']}")
+
+        elif action == "retired":
+            restore_id = getattr(args, "restore_id", None)
+            if restore_id:
+                ok = store.restore_episodic(restore_id)
+                print("Restored." if ok else "Not found, or already active.")
+            else:
+                rows = store.get_retired_episodic(limit=int(getattr(args, "limit", 20)))
+                if not rows:
+                    print("No episodes were superseded by a semantic write.")
+                for row in rows:
+                    print(f"  {row['id']}  superseded by {row['superseded_by']}")
+                    print(f"    {row['text'][:120]}")
 
         elif action == "import":
             import_file = getattr(args, "file", None)

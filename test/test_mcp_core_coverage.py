@@ -435,12 +435,18 @@ class TestDoSelectCrew:
     def test_named_crew_returns_resolved_bindings(self, monkeypatch: pytest.MonkeyPatch, tmp_path):
         cfg = _crew_config({"docs": SimpleNamespace(triggers="d", model="opus")}, "main")
         self._patch_cfg(monkeypatch, cfg)
+
+        def resolve(_cfg, _name, *, validate_memory_files=True):
+            assert _cfg is cfg and _name == "docs"
+            assert validate_memory_files is False
+            return SimpleNamespace(
+                kiro_agent="ka", workspace_dir=tmp_path / "ws", memory_store_name="ms"
+            )
+
         monkeypatch.setattr(
             mcp_core,
             "resolve_agent_bindings",
-            lambda _cfg, _name: SimpleNamespace(
-                kiro_agent="ka", workspace_dir=tmp_path / "ws", memory_store_name="ms"
-            ),
+            resolve,
         )
         out = json.loads(_do_select_crew("docs"))
         assert out["crew"] == "docs"

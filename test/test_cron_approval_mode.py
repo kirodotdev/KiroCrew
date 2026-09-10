@@ -52,6 +52,7 @@ class TestCronApprovalModeGateway:
         gw.sessions = MagicMock()
         gw.sessions.get_pid = MagicMock(return_value=None)
         gw.ctx_builder = MagicMock()
+        gw.ctx_builder.conversation_log.get_metadata_status.return_value = ({}, True)
         gw.slack = MagicMock()
         gw.conv_log = None
         gw.dashboard_state = None
@@ -456,6 +457,7 @@ class TestCronSubagentInjection:
         gw.sessions = MagicMock()
         gw.sessions.get_pid = MagicMock(return_value=None)
         gw.ctx_builder = MagicMock()
+        gw.ctx_builder.conversation_log.get_metadata_status.return_value = ({}, True)
         gw.slack = None
         gw.conv_log = None
         gw.dashboard_state = None

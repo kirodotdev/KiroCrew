@@ -373,6 +373,8 @@ class TestGateParityWithCi:
             "check_comment_history.py",
             "check_focus_cue.py",
             "check_harness_parity.py",
+            # Only added lines are enforced; the whole-tree backlog is a report.
+            "check_memory_store_seam.py",
             "check_changelog_history.py",
             "check_per_file_coverage.py",
         }

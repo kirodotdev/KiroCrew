@@ -46,10 +46,20 @@ function renderErrorRow(m: ChatMessage) {
     wrapper: children => <div data-testid="wrapper">{children}</div>,
     row: children => <div data-testid="row">{children}</div>,
   })
+  // The SDK transcript explicitly supports hosts without React Router.
   return render(<>{node}</>)
 }
 
 describe('app-sdk error entry — ErrorCard parity (#6209)', () => {
+  it('renders old memory setup errors without requiring or inventing navigation', () => {
+    renderErrorRow(msg({ content: 'memory_unavailable: Owner setup required.', meta: {
+      code: 'memory_unavailable', recovery: { kind: 'initialize_member_memory', member: 'reviewer' },
+    } }))
+    expect(screen.getByTestId('error-card')).not.toHaveTextContent('memory_unavailable:')
+    expect(screen.queryByRole('link', { name: 'Set up private memory' })).toBeNull()
+    expect(screen.queryByTestId('error-card-continue')).toBeNull()
+  })
+
   it('renders the shared ErrorCard, not a hand-rolled div', () => {
     renderErrorRow(msg())
     // Present only via ErrorCard — the duplicated div carried no testid.

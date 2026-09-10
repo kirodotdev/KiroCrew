@@ -16,6 +16,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from hypothesis import given, settings
 from hypothesis import strategies as st
+from member_memory_helpers import patch_private_memory_supported
 
 from kiro_crew.config.schema import (
     SCHEMA_REGISTRY,
@@ -33,6 +34,7 @@ def _owner_caller(monkeypatch):
         "kiro_crew.dashboard.handlers.source_providers.is_owner_dashboard_request",
         lambda request: True,
     )
+    patch_private_memory_supported(monkeypatch)
 
 
 # ---------------------------------------------------------------------------
@@ -266,7 +268,7 @@ class TestAgentCrudProperties:
         ),
         kiro_agent=st.sampled_from(["kirocrew", "oncall", "research", "coding"]),
         workspace=st.sampled_from(["default", "oncall", "research"]),
-        memory_store=st.sampled_from(["default", "oncall-kb", "research-mem"]),
+        memory_store=st.sampled_from(["default", "", "oncall-kb", "research-mem"]),
     )
     @pytest.mark.asyncio
     async def test_crud_create_round_trip(
@@ -276,7 +278,7 @@ class TestAgentCrudProperties:
         workspace: str,
         memory_store: str,
     ) -> None:
-        """Creating an agent via POST and listing via GET returns the agent."""
+        """Create allocates owned V2 memory and refuses caller-selected stores."""
         name = name.strip()
         if not name or name == "default":
             return  # skip empty/default names
@@ -298,7 +300,15 @@ class TestAgentCrudProperties:
                             "memory_store": memory_store,
                         },
                     )
+                    create_data = await resp.json()
+                    if memory_store not in ("", "default"):
+                        assert resp.status == 400
+                        assert create_data["code"] == "private_memory_required"
+                        assert json.loads(tmp.read_text()) == _seed_config()
+                        return
                     assert resp.status == 200
+                    private_store = create_data["memory_store"]
+                    assert private_store != "default"
 
                     # List and verify
                     resp = await client.get("/api/agents")
@@ -309,9 +319,15 @@ class TestAgentCrudProperties:
                     created = agents_by_name[name]
                     assert created["kiro_agent"] == kiro_agent
                     assert created["workspace"] == workspace
-                    assert created["memory_store"] == memory_store
+                    assert created["memory_store"] == private_store
+                    persisted = json.loads(tmp.read_text())
+                    assert persisted["agents"][name]["memory_store"] == private_store
+                    store = persisted["memory_stores"][private_store]
+                    assert store["owner_member"] == name
+                    assert store["memory_version"] == 2
         finally:
             tmp.unlink(missing_ok=True)
+            tmp.with_name(f"{tmp.name}.lock").unlink(missing_ok=True)
 
     # Feature: multi-agent-orchestration, Property 9: CRUD update round-trip
     # **Validates: Requirements 4.3**
@@ -323,7 +339,7 @@ class TestAgentCrudProperties:
     )
     @pytest.mark.asyncio
     async def test_crud_update_round_trip(self, data: st.DataObject) -> None:
-        """Updating an agent's fields via PUT and listing returns updated values."""
+        """Metadata round-trips; rebinding refuses the entire update atomically."""
         # Draw which fields to update
         update_kiro = data.draw(st.booleans())
         update_ws = data.draw(st.booleans())
@@ -333,14 +349,7 @@ class TestAgentCrudProperties:
 
         new_kiro = data.draw(st.sampled_from(["kirocrew", "oncall", "research"]))
         new_ws = data.draw(st.sampled_from(["default", "oncall"]))
-        new_ms = data.draw(st.sampled_from(["default", "oncall-kb"]))
-
         seed = _seed_config()
-        seed["agents"]["test-agent"] = {
-            "kiro_agent": "kirocrew",
-            "workspace": "default",
-            "memory_store": "default",
-        }
 
         with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
             json.dump(seed, f)
@@ -349,6 +358,15 @@ class TestAgentCrudProperties:
         try:
             with unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=tmp):
                 async with TestClient(TestServer(_make_crud_app())) as client:
+                    resp = await client.post(
+                        "/api/agents",
+                        json={"name": "test-agent", "kiro_agent": "kirocrew"},
+                    )
+                    assert resp.status == 200
+                    private_store = (await resp.json())["memory_store"]
+                    assert private_store != "default"
+                    new_ms = data.draw(st.sampled_from([private_store, "default", "oncall-kb"]))
+
                     body: dict = {}
                     if update_kiro:
                         body["kiro_agent"] = new_kiro
@@ -358,27 +376,36 @@ class TestAgentCrudProperties:
                         body["memory_store"] = new_ms
 
                     resp = await client.put("/api/agents/test-agent", json=body)
-                    assert resp.status == 200
+                    refused_rebinding = update_ms and new_ms != private_store
+                    if refused_rebinding:
+                        assert resp.status == 409
+                        assert (await resp.json())["code"] == "private_memory_immutable"
+                    else:
+                        assert resp.status == 200
 
                     resp = await client.get("/api/agents")
+                    assert resp.status == 200
                     data_resp = await resp.json()
                     agents_by_name = {a["name"]: a for a in data_resp["agents"]}
                     agent = agents_by_name["test-agent"]
 
-                    if update_kiro:
+                    if update_kiro and not refused_rebinding:
                         assert agent["kiro_agent"] == new_kiro
                     else:
                         assert agent["kiro_agent"] == "kirocrew"
-                    if update_ws:
+                    if update_ws and not refused_rebinding:
                         assert agent["workspace"] == new_ws
                     else:
                         assert agent["workspace"] == "default"
-                    if update_ms:
-                        assert agent["memory_store"] == new_ms
-                    else:
-                        assert agent["memory_store"] == "default"
+                    assert agent["memory_store"] == private_store
+                    persisted = json.loads(tmp.read_text())
+                    assert persisted["agents"]["test-agent"]["memory_store"] == private_store
+                    store = persisted["memory_stores"][private_store]
+                    assert store["owner_member"] == "test-agent"
+                    assert store["memory_version"] == 2
         finally:
             tmp.unlink(missing_ok=True)
+            tmp.with_name(f"{tmp.name}.lock").unlink(missing_ok=True)
 
     # Feature: multi-agent-orchestration, Property 10: CRUD delete round-trip
     # **Validates: Requirements 4.4**
@@ -420,6 +447,7 @@ class TestAgentCrudProperties:
                     assert name not in agent_names
         finally:
             tmp.unlink(missing_ok=True)
+            tmp.with_name(f"{tmp.name}.lock").unlink(missing_ok=True)
 
 
 # ---------------------------------------------------------------------------
@@ -449,6 +477,7 @@ class TestAgentCrudEdgeCases:
                     assert "already exists" in data["error"]
         finally:
             tmp.unlink(missing_ok=True)
+            tmp.with_name(f"{tmp.name}.lock").unlink(missing_ok=True)
 
     @pytest.mark.asyncio
     async def test_update_nonexistent_returns_404(self) -> None:
@@ -469,6 +498,7 @@ class TestAgentCrudEdgeCases:
                     assert "not found" in data["error"]
         finally:
             tmp.unlink(missing_ok=True)
+            tmp.with_name(f"{tmp.name}.lock").unlink(missing_ok=True)
 
     @pytest.mark.asyncio
     async def test_delete_default_agent_returns_409(self) -> None:
@@ -486,6 +516,7 @@ class TestAgentCrudEdgeCases:
                     assert "Cannot delete default agent" in data["error"]
         finally:
             tmp.unlink(missing_ok=True)
+            tmp.with_name(f"{tmp.name}.lock").unlink(missing_ok=True)
 
     @pytest.mark.asyncio
     async def test_delete_nonexistent_returns_404(self) -> None:
@@ -503,6 +534,7 @@ class TestAgentCrudEdgeCases:
                     assert "not found" in data["error"]
         finally:
             tmp.unlink(missing_ok=True)
+            tmp.with_name(f"{tmp.name}.lock").unlink(missing_ok=True)
 
     @pytest.mark.asyncio
     async def test_create_empty_name_returns_400(self) -> None:
@@ -523,6 +555,7 @@ class TestAgentCrudEdgeCases:
                     assert "required" in data["error"].lower()
         finally:
             tmp.unlink(missing_ok=True)
+            tmp.with_name(f"{tmp.name}.lock").unlink(missing_ok=True)
 
     @pytest.mark.asyncio
     async def test_create_whitespace_name_returns_400(self) -> None:
@@ -541,6 +574,7 @@ class TestAgentCrudEdgeCases:
                     assert resp.status == 400
         finally:
             tmp.unlink(missing_ok=True)
+            tmp.with_name(f"{tmp.name}.lock").unlink(missing_ok=True)
 
 
 @pytest.mark.asyncio
@@ -576,6 +610,7 @@ async def test_crud_triggers_create_and_update_round_trip() -> None:
                 assert by_name["oncall"]["triggers"] == "sev2, sev1, page"
     finally:
         tmp.unlink(missing_ok=True)
+        tmp.with_name(f"{tmp.name}.lock").unlink(missing_ok=True)
 
 
 class TestDefaultAgentGuard:
@@ -614,6 +649,7 @@ class TestDefaultAgentGuard:
                     assert json.loads(tmp.read_text())["default_agent"] == "default"
         finally:
             tmp.unlink(missing_ok=True)
+            tmp.with_name(f"{tmp.name}.lock").unlink(missing_ok=True)
 
     @pytest.mark.asyncio
     async def test_non_string_name_is_rejected_not_500(self) -> None:
@@ -631,6 +667,7 @@ class TestDefaultAgentGuard:
                     assert json.loads(tmp.read_text())["default_agent"] == "default"
         finally:
             tmp.unlink(missing_ok=True)
+            tmp.with_name(f"{tmp.name}.lock").unlink(missing_ok=True)
 
     @pytest.mark.asyncio
     async def test_unreadable_config_fails_closed(self) -> None:
@@ -657,6 +694,7 @@ class TestDefaultAgentGuard:
                 assert json.loads(tmp.read_text())["default_agent"] == "default"
         finally:
             tmp.unlink(missing_ok=True)
+            tmp.with_name(f"{tmp.name}.lock").unlink(missing_ok=True)
 
     @pytest.mark.asyncio
     async def test_alias_name_is_accepted(self) -> None:
@@ -671,6 +709,7 @@ class TestDefaultAgentGuard:
                     assert json.loads(tmp.read_text())["default_agent"] == "default"
         finally:
             tmp.unlink(missing_ok=True)
+            tmp.with_name(f"{tmp.name}.lock").unlink(missing_ok=True)
 
 
 # ---------------------------------------------------------------------------
@@ -699,6 +738,7 @@ class TestAgentMutationNonObjectBody:
                     assert (await resp.json())["code"] == "body_not_object"
         finally:
             tmp.unlink(missing_ok=True)
+            tmp.with_name(f"{tmp.name}.lock").unlink(missing_ok=True)
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("bad_body", [["session_color"], "session_color", 123, True])
@@ -715,6 +755,7 @@ class TestAgentMutationNonObjectBody:
                     assert (await resp.json())["code"] == "body_not_object"
         finally:
             tmp.unlink(missing_ok=True)
+            tmp.with_name(f"{tmp.name}.lock").unlink(missing_ok=True)
 
 
 @pytest.mark.asyncio

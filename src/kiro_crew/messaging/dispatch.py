@@ -32,8 +32,10 @@ from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Optional
 
 from kiro_crew.acp.types import STOP_REASON_COMPACTION_FAILED
+from kiro_crew.context import session_store_for_turn
 from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.hooks import HOOK_REPLY, TOOL_AUTO_APPROVE, TOOL_DENY, event_is_spawn_run
+from kiro_crew.memory_stores import UnknownMemoryStore
 from kiro_crew.messaging.driver import DirectiveConsumer, TurnDriver
 from kiro_crew.messaging.identity import channel_inbound_permitted, publish_turn_identity
 from kiro_crew.messaging.inbound_spool import InboundRoute, spool_refused_turn
@@ -45,7 +47,12 @@ from kiro_crew.messaging.link import (
     is_channel_session_key,
 )
 from kiro_crew.messaging.renderer import SilentRenderer
-from kiro_crew.security import redact, redact_credentials, redact_exfiltration_urls
+from kiro_crew.security import (
+    redact,
+    redact_credentials,
+    redact_exfiltration_urls,
+    redact_local_paths,
+)
 from kiro_crew.sel import sel
 
 # Imported from the leaf that DEFINES it rather than through kiro_crew.session:
@@ -557,6 +564,9 @@ async def drive_turn(turn: ChannelTurn, *, sessions: Any, ctx_builder: Any) -> N
         # always did. Widening the call for everyone would make the new field's
         # cost fall on channels that gain nothing from it.
         extra: dict[str, Any] = {"model": turn.model} if turn.model else {}
+        # A linked member session must validate its own memory before a cold
+        # provider start. The same identity is then used for this turn's prompt.
+        memory_store = await session_store_for_turn(ctx_builder, session_key)
         provider, is_new, resumed = await sessions.get_or_create(
             session_key, agent=turn.agent, channel_id=turn.conversation_id, **extra
         )
@@ -637,6 +647,15 @@ async def drive_turn(turn: ChannelTurn, *, sessions: Any, ctx_builder: Any) -> N
         # Publish this turn's session identity so managed MCP tools resolve
         # X-Session-Key; one shared writer lives in messaging.identity.
         await publish_turn_identity(sessions, session_key)
+        # This conversation's own silo, from the session's RECORDED binding and
+        # never from ``turn.agent``: that field carries a kiro-cli template id, a
+        # namespace disjoint from ``cfg.agents``, so a store derived from it
+        # resolves to ``default`` for exactly the crew that configured otherwise.
+        # Resolved on the shared seam rather than per adopter for the same reason
+        # ``minimal_context`` is: every channel on this pipeline has the same
+        # exposure, and one that forgot would silently read the operator's memory.
+        # The member tier was prepared before provider acquisition; unavailable
+        # private memory refuses the turn instead of substituting global memory.
         # Off-loop: build_message embeds the episodic query (blocking urllib).
         full_message, _ = await run_in_embed_pool(
             ctx_builder.build_message,
@@ -645,6 +664,7 @@ async def drive_turn(turn: ChannelTurn, *, sessions: Any, ctx_builder: Any) -> N
             session_key,
             channel_id=turn.conversation_id,
             agent=turn.agent,
+            memory_store=memory_store,
             resumed=resumed,
             minimal_context=turn.minimal_context,
             runtime_source=turn.channel_type,
@@ -771,6 +791,13 @@ async def drive_turn(turn: ChannelTurn, *, sessions: Any, ctx_builder: Any) -> N
         # whose text is empty is a media-only entry (or nothing), not a cue to
         # reach for the prompt.
         await spool_refused_turn(channel_type=turn.channel_type, route=turn.inbound_route)
+    except UnknownMemoryStore as exc:
+        logger.warning("%s member memory unavailable: %s", turn.channel_type, exc)
+        try:
+            await renderer.on_text_chunk(redact_local_paths(redact(str(exc)))[0][:1000])
+            await renderer.on_done()
+        except Exception:
+            logger.warning("%s: could not display memory refusal", turn.channel_type, exc_info=True)
     except Exception:
         logger.exception("%s transport_dispatch: error handling message", turn.channel_type)
         if _acquired:

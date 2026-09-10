@@ -309,7 +309,7 @@ class TestApiSpawnHandler:
         mgr = MagicMock()
         mgr.spawn.return_value = SimpleNamespace(id="a1", done=False, error="")
         mgr.max_concurrent = 4
-        state = SimpleNamespace(subagents=mgr)
+        state = SimpleNamespace(subagents=mgr, conversation_log=MagicMock())
         request = MagicMock()
         request.app = {"state": state}
 
@@ -434,6 +434,9 @@ class TestRecordAndRetry:
             include_memory=True,
             include_lessons=True,
             include_project=True,
+            # Reused by the retry alongside the context triple: a retry must not
+            # widen a delegated run to the global store.
+            memory_store="",
             done=True,
             outcome="failed",
         )
@@ -711,6 +714,7 @@ class TestApiSpawnEffortDropped:
         state = SimpleNamespace(
             subagents=mgr,
             sessions=SimpleNamespace(get_agent=lambda key: parent_agent),
+            conversation_log=SimpleNamespace(get_metadata_status=lambda key: ({}, True)),
         )
         request = MagicMock()
         request.app = {"state": state}
@@ -921,7 +925,11 @@ class TestAppliedLineRendering:
 
         mgr = MagicMock()
         mgr.spawn.return_value = SimpleNamespace(id="a1", done=False, error="")
-        state = SimpleNamespace(subagents=mgr, sessions=SimpleNamespace(get_agent=lambda key: ""))
+        state = SimpleNamespace(
+            subagents=mgr,
+            sessions=SimpleNamespace(get_agent=lambda key: ""),
+            conversation_log=SimpleNamespace(get_metadata_status=lambda key: ({}, True)),
+        )
         request = MagicMock()
         request.app = {"state": state}
         request.json = AsyncMock(
@@ -953,7 +961,11 @@ class TestAppliedLineRendering:
 
         mgr = MagicMock()
         mgr.spawn.return_value = SimpleNamespace(id="a1", done=False, error="")
-        state = SimpleNamespace(subagents=mgr, sessions=SimpleNamespace(get_agent=lambda key: ""))
+        state = SimpleNamespace(
+            subagents=mgr,
+            sessions=SimpleNamespace(get_agent=lambda key: ""),
+            conversation_log=SimpleNamespace(get_metadata_status=lambda key: ({}, True)),
+        )
         request = MagicMock()
         request.app = {"state": state}
         request.json = AsyncMock(
@@ -1064,7 +1076,11 @@ class TestVerdictOffTheEventLoop:
 
         mgr = MagicMock()
         mgr.spawn.return_value = SimpleNamespace(id="a1", done=False, error="")
-        state = SimpleNamespace(subagents=mgr, sessions=SimpleNamespace(get_agent=lambda key: ""))
+        state = SimpleNamespace(
+            subagents=mgr,
+            sessions=SimpleNamespace(get_agent=lambda key: ""),
+            conversation_log=SimpleNamespace(get_metadata_status=lambda key: ({}, True)),
+        )
         request = MagicMock()
         request.app = {"state": state}
         request.json = AsyncMock(

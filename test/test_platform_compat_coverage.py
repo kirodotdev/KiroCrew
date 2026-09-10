@@ -25,6 +25,7 @@ import errno
 import io
 import logging
 import os
+import struct
 import subprocess
 import sys
 import types
@@ -582,8 +583,17 @@ class TestGetProcessStartId:
         _fake_libproc(monkeypatch, payload=None, ret=-1)
         assert pc.get_process_start_id(5) is None
 
-    def test_windows_is_unknown_rather_than_a_mismatch(self, monkeypatch):
+    def test_windows_uses_query_only_creation_identity(self, monkeypatch):
         monkeypatch.setattr(pc.sys, "platform", "win32")
+        monkeypatch.setattr(
+            pc, "process_start_time", lambda pid: "133000123456789" if pid == 5 else None
+        )
+        assert pc.get_process_start_id(5) == "133000123456789"
+        assert pc.get_process_start_id(6) is None
+
+    def test_windows_unreadable_identity_is_unknown(self, monkeypatch):
+        monkeypatch.setattr(pc.sys, "platform", "win32")
+        monkeypatch.setattr(pc, "process_start_time", lambda pid: None)
         assert pc.get_process_start_id(5) is None
 
     def test_identity_never_contains_a_colon(self, monkeypatch):
@@ -591,6 +601,43 @@ class TestGetProcessStartId:
         _fake_libproc(monkeypatch, payload=_bsdinfo(sec=17, usec=1), ret=136)
         value = pc.get_process_start_id(5)
         assert value is not None and ":" not in value
+
+
+@pytest.mark.parametrize(
+    "scenario", ["unique", "duplicate", "closed", "truncated", "denied", "oversize"]
+)
+def test_windows_tcp_peer_table_refuses_uncertain_identity(monkeypatch, scenario):
+    monkeypatch.setattr(pc, "IS_WINDOWS", True)
+    row = struct.pack(
+        "<I4sI4sII",
+        1 if scenario == "closed" else 5,
+        b"\x7f\x00\x00\x01",
+        0xD007,
+        b"\x7f\x00\x00\x01",
+        0xE803,
+        2468,
+    )
+    count = 2 if scenario in {"duplicate", "truncated"} else 1
+    raw = struct.pack("<I", count) + row * (2 if scenario == "duplicate" else 1)
+
+    def query(buffer, size_pointer, *_args):
+        size = ctypes.cast(size_pointer, ctypes.POINTER(pc.wintypes.DWORD))
+        if scenario == "denied":
+            return 5
+        size.contents.value = 16 * 1024 * 1024 if scenario == "oversize" else len(raw)
+        if buffer is None:
+            return 122
+        ctypes.memmove(buffer, raw, len(raw))
+        return 0
+
+    monkeypatch.setattr(
+        pc.ctypes,
+        "WinDLL",
+        lambda *a, **kw: types.SimpleNamespace(GetExtendedTcpTable=_Fn(query)),
+        raising=False,
+    )
+    result = pc.get_tcp_peer_pid(("127.0.0.1", 1000), ("127.0.0.1", 2000))
+    assert result == (2468 if scenario == "unique" else None)
 
 
 # ---------------------------------------------------------------------------

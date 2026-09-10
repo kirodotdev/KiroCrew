@@ -613,6 +613,29 @@ def test_reflexive_tools_route_through_the_strict_gate() -> None:
     )
 
 
+@pytest.mark.parametrize("identified", [True, False])
+def test_memory_recall_uses_the_shared_gate_identity_once(monkeypatch, identified):
+    from kiro_crew import mcp_core
+    from kiro_crew.mcp_tools import learn
+
+    key = "subagent:memory-recall" if identified else ""
+    refusal = "Error: unresolved session. Fixture installation diagnosis."
+    gate = MagicMock(return_value=(key, "" if identified else refusal))
+    gateway = MagicMock(return_value={"store": "member-alice"})
+    monkeypatch.setattr(mcp_core, "require_strict_session_key", gate)
+    monkeypatch.setattr(mcp_core, "_get", gateway)
+
+    result = learn.memory_recall("memory_recall", {"query": "database"})
+
+    gate.assert_called_once_with("Error: memory recall requires an established session")
+    if identified:
+        gateway.assert_called_once_with("/api/memory/recall?q=database", session_key=key)
+        assert "member-alice" in result
+    else:
+        gateway.assert_not_called()
+        assert result == refusal
+
+
 # ---------------------------------------------------------------------------
 # Class-level publisher guard
 # ---------------------------------------------------------------------------

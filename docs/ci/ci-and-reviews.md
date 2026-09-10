@@ -209,6 +209,7 @@ Widening that is a separate decision from moving the gates.
 | `loop-bound-locks` | `scripts/check_loop_bound_locks.py`, self-test first. Fails on any module-global `asyncio.Lock()`/`Event()`/`Queue()` declaration — those bind to the import-time (or first-use) event loop and raise `RuntimeError` when acquired from another loop (Python 3.10+). #4800 converted the tree to `kiro_crew.loop_lock.LoopBoundLock`; whole-tree, since the backlog is zero |
 | `testpaths-coverage` | `scripts/check_testpaths_coverage.py`, self-test first. Fails on a `test_*.py` file outside the roots `setup.cfg` pins in `testpaths` — such a file is never collected, so it is green by omission and rots against the code it claims to cover (#6577 found twelve). Whole-tree, since the backlog is zero |
 | `harness-parity` | `scripts/check_harness_parity.py`, self-test first. Fails on a newly added line that expresses "this is the Kiro harness" as the absence of another one — a shape that fails toward the permissive answer, so nothing else goes red. Diff-scoped; the whole-tree backlog is a non-failing report |
+| `memory-store-seam` | `scripts/check_memory_store_seam.py`, self-test first, with `MEMSTORE_BASE_REF` resolved to the diff base. Enforces explicit store selection on added memory-context calls. The prepare-pr floor runs both commands; the main ratchet lane classifies this as a diff-only gate because its whole-tree backlog is a non-failing report |
 | `docs-lint` | `scripts/docs_lint.py --test` then `scripts/docs-lint.sh`. Every internal link resolves, every doc is reachable from its directory index, every directory holding docs has one, no code comment cites a doc that does not exist, no doc cites a source LINE past the end of the file it names, no module spec names a source file that exists nowhere, and no doc whose filename is hardcoded in code has been renamed out from under its consumer. Four trees are walked: `docs/`, the packaged `src/kiro_crew/docs/`, `website/docs/`, and the markdown a builtin app ships under `src/kiro_crew/apps/builtins/`. Plus the fact checks below, behind a shrink-only baseline |
 
 Each of these runs its own self-test in the same step, ahead of the real check. A
@@ -269,7 +270,7 @@ Every job here is blocking. Every job that costs real runner time also `needs:`
 | `changes` | "Detect changed surface". Resolves the path filters every other job reads, so a diff that cannot affect a surface does not pay for it |
 | `await-fast-gate` | Polls the `Fast Gate` run for this exact head commit and **fails closed** in all three ways it can go wrong: a run that never appears (180s budget), one that never completes (720s budget), and one that completes non-success. A barrier that passed when it could not read its subject would be worse than none, because the matrix would run anyway and the log would claim it was cleared to. One extra ~1-minute job buys the whole matrix the right to not start |
 | `backend-lint` | `isort --check-only`, `flake8`, `mypy` on Python 3.12, plus `scripts/check_black_formatting.py` — black enforced on every file outside `.github/black-baseline.txt`, which can only shrink — and `scripts/check_subprocess_encoding.py` (self-test first) — no text-mode subprocess call without an explicit `encoding=`, `**UTF8_TEXT`, or a `# subprocess-encoding: locale` marker, outside `.github/subprocess-encoding-baseline.txt`, which can only shrink — and `scripts/check_sync_io_in_async.py` (self-test first) — no blocking db / subprocess / http / `time.sleep` call inside an `async def` under `src/`, outside `.github/sync-io-in-async-baseline.txt`, which can only shrink. A stall past `dashboard.loop_stall_exit_after_secs` (25s) makes the watchdog kill the gateway and drop every in-flight turn (#3057, #1572); the escape is an offload (`await asyncio.to_thread(...)`, or a named lane from `src/kiro_crew/executors.py`) or a `# on-loop-io-ok: <why it cannot block>` marker whose reason is mandatory. All four baselined gates in this job read their diff scope from the one shared resolver in `scripts/ratchet_scope.py`, so they cannot disagree about which lines a change added; the env-base gates (`check_brand_name.py`, `check_harness_parity.py`, `check_focus_cue.py`) share the same diff parsing through its explicit-base entry points while keeping their `*_BASE_REF` base semantics |
-| `backend-test` | 4 duration-balanced pytest-split shards on Python 3.12, `-n auto` within each |
+| `backend-test` | 4 pytest-split shards on Python 3.12, `-n auto` within each; 50-minute job budget includes coverage upload, with the 120-second per-test timeout retained |
 | `backend-test-windows` | windows-latest, 4 shards, `--no-cov`, 180s per-test timeout. The backend supports Windows natively via `platform_compat`, and nothing else in CI holds that line |
 | `backend-test-macos` | macos-14, deliberately SCOPED (gateway, socketsec, platform-compat, pod and MCP-apps suites via a glob). A full macOS run needs its own exclusion burn-down first, and a job that is red on arrival trains people to ignore it |
 | `backend-test-sandbox` | The one job that clears the AppArmor userns restriction, so the tests guarded by `skipif(not userns_available())` EXECUTE instead of skipping. Runs all eleven sandbox-dependent suites. The shards collect the same files — nothing is deselected — but there the sandbox-guarded tests skip, so this is the only lane where those 85 assertions (the `~/.kiro/crew` keystone among them) actually execute |
@@ -896,9 +897,13 @@ commit status plus one `readiness:` label**.
   because the lane fails its own check *only* on a `BLOCK` verdict — an errored,
   throttled or verdict-less run exits 0 — so a `failure` here can only mean a
   design judged wrong, never infrastructure noise.
-- **CodeQL is not a checked-in workflow.** It runs via GitHub default setup and is
-  resolved by `path == "dynamic/github-code-scanning/codeql"`. `skipped` counts as
-  passed for it.
+- **CodeQL is not a checked-in workflow.** It runs via GitHub default setup. The
+  aggregator first resolves the analysis run by
+  `path == "dynamic/github-code-scanning/codeql"`, then reads the exact head SHA's
+  `CodeQL` check from the `github-advanced-security` app. A successful analysis
+  run does not mask a failed security result. An absent, running, or interim
+  neutral result remains `checking`; `skipped` still counts as passed for the
+  managed workflow.
 - **Labels:** `readiness: checking` (pending), `readiness: action required` (a
   blocker), `readiness: passed`. Exactly one is ever present.
 - **It also enforces the disposition rule.** Besides scoring lanes, readiness runs
@@ -1288,10 +1293,14 @@ or ruleset setting outside the workflow.
 
 The aggregate covers the latest PR run for CI, Build,
 Code Review, Opus 4.8 Review, GPT 5.6 Review (the reconciled result of its three
-calls), and Design Review, plus the managed dynamic CodeQL workflow conclusion.
-Grading the CodeQL
-workflow conclusion, rather than its neutral summary check, preserves failures
-from any managed Analyze job. Fork PRs cannot receive repository secrets or
+calls), and Design Review. For managed CodeQL it requires both the dynamic
+analysis workflow and the exact-head `CodeQL` security result published by the
+`github-advanced-security` app. This preserves failures from an Analyze job and
+also prevents a successful analysis workflow from masking alert-driven failure.
+Default setup can publish a neutral interim result before every configured
+language reports; that state remains `checking` and the existing stale-pending
+sweep requests another evaluation if no workflow event follows the final result.
+Fork PRs cannot receive repository secrets or
 OIDC credentials, and this repository's managed default-setup CodeQL workflow
 is not scheduled for fork heads. The secret-backed AI reviews therefore run for
 forks from the trusted base branch via the `fork-*` pipeline and are graded from

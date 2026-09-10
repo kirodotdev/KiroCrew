@@ -6,6 +6,15 @@ The ACP layer spans **five** modules: the legacy per-session client (`acp/client
 
 ## Backend Selection
 
+The trusted `private_memory` constructor flag is preserved from provider creation
+through client/runtime spawn and recovery. Only private member processes pass it
+to the sandbox; the default `False` keeps existing V1 spawn arguments. The OS
+wrapper enforces the actual resolved mode and member-only Global V1 file masks,
+including denial of internal-sandbox delegation or unconfined fallback. Private
+MCP session discovery reads protected real-process ancestry before mutable
+environment or legacy flat PID sidecars, so a stable private root view need not
+expose new global files in order for later MCP callbacks to identify themselves.
+
 `AcpClient(acp_backend=...)` selects which subprocess to launch:
 
 - `""` (default): `kiro-cli acp --agent <name>` (resolved by `_resolve_kiro_bin`). Per-session kiro settings are layered in via the workspace overlay `<work_dir>/.kiro/settings/cli.json` (written by `AcpProvider`, not the client): reasoning **effort** (`chat.modelDefaults`) and **MCP Tool Search** (`toolSearch.enabled` + activation thresholds from `agent.tool_search_min_pct` / `tool_search_min_tokens`, gated by `agent.tool_search`, default on) — see providers.md.
@@ -575,6 +584,30 @@ Subprocess lifecycle:
   OS sandbox posture ACP already uses, with the KiroCrew data home hidden.
 - 10MB stdout buffer for large JSON-RPC lines
 - stderr drained in background (`_drain_stderr`) to prevent pipe deadlock. Each line bumps `_last_activity` (liveness for `is_responsive`), is appended to the bounded 20-entry `_stderr_lines` diagnostic ring buffer, and is forwarded as a redacted `WARNING`. **Exception — suppression filter:** lines matching a marker in the module-level `_SUPPRESSED_STDERR_MARKERS` tuple (currently `thinking_tokens`) are dropped — no `WARNING`, not appended to the ring buffer — but **still** bump `_last_activity`. This handles the claude-agent-acp "Unexpected case: {...thinking_tokens...}" stderr noise. **Mechanism** (confirmed by reading the vendored adapter's `dist/acp-agent.js`): claude-code emits a `system` message with subtype `thinking_tokens`, but the adapter's `switch (message.subtype)` enumerates only ~18 known subtypes (`init`, `status`, `compact_boundary`, `memory_recall`, `api_retry`, …) and routes anything else to `default: unreachable(message)`, which writes `logger.error("Unexpected case: " + JSON.stringify(message))` to stderr — one line per token delta, measured at ~10 lines/sec during active thinking (one per 2–4 thinking tokens). The payload is only `estimated_tokens`/`_delta`/`uuid`/`session_id`, so dropping it loses no response content. This is a forward-compat gap in the vendored adapter, **not** new behavior in a specific claude-code build — the `thinking_tokens` event is present in both `2.1.165.357` and `2.1.168.358` (verified by string-matching both bundled `claude` binaries), so it predates the `.168` update that drew attention to it. The cleaner long-term fix is upstream (add a `thinking_tokens` case to the adapter or bump the vendored version); this filter is the version-agnostic stopgap that also absorbs the next unenumerated subtype's flood. (Note `thinking_tokens` is by far the dominant subtype hitting `unreachable` — ~14k occurrences vs. a handful of rare `permission_denied` across retained logs — which is why the marker tuple stays narrow rather than suppressing all "Unexpected case" lines.) Two concrete reasons to drop rather than downgrade the level: (1) **log hygiene** — `gateway.log` uses `RotatingFileHandler(maxBytes=2MB, backupCount=3)` (`cli.py`), so a sustained burst rolls genuine diagnostics out of the retained 8MB window; (2) **event-loop load** — the file handler is a plain *synchronous* handler and `_drain_stderr` runs on the gateway event loop, so each forwarded line costs a synchronous file write + two regex redaction passes on the same loop that streams responses (small per session, compounding across concurrent thinking sessions). Keeping liveness prevents the idle watchdog from killing an actively-thinking turn; skipping the ring buffer stops a burst from evicting the last real errors. A throttled `DEBUG` summary (≥ `_SUPPRESSED_STDERR_SUMMARY_INTERVAL_SECS` apart, plus a flush at EOF) keeps the suppression observable. Match substrings are kept narrow so a genuine error is never silently swallowed. This is a log-volume / event-loop-load reduction — **not** a fix for any turn-stall or "agent not responding" symptom (no such causal link was established).
+
+### Private member MCP routing
+
+Private V2 clients and runtimes discard the shared MCP broker overlay and socket
+before session creation. Tool mirroring, reload, resume and runtime recreation
+use direct MCP servers confined to that member's sandbox. Original agent server
+definitions remain available to direct-MCP-capable backends. V1 retains its
+existing broker routing.
+
+The original trusted broker endpoint remains available only for sandbox
+validation. Private execution cannot reach that endpoint or its aliases. A
+configured endpoint outside the reserved broker namespaces refuses private
+startup rather than hiding an arbitrary project directory.
+
+The current public Codex ACP backend has no direct MCP projection. Private V2
+execution with that backend therefore refuses before allocation and names the
+remedy: choose a member backend that supports direct MCP. Ordinary V1 Codex
+sessions retain their existing behavior.
+
+The public provider factory uses `agent.member_acp_backend` for member private
+chat and the configured default backend for Crew work and private background
+consolidation. Each effective backend must support direct MCP. Selecting a
+supported member-chat backend alone does not change a Codex default used by
+background work.
 
 ### Cold-start admission and startup telemetry
 

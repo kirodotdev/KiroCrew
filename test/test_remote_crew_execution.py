@@ -1113,14 +1113,16 @@ class TestBoundCreateDefaults:
     @pytest.fixture
     def local_default(self, monkeypatch):
         """A config whose default agent exists only on THIS machine."""
+        from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig
+        from kiro_crew.memory_stores import provision_member_memory
+
+        config = KiroCrewConfig()
+        config.agents["local-only-crew"] = KiroCrewAgentConfig(kiro_agent="local-only-crew")
+        config.default_agent = "local-only-crew"
+        provision_member_memory(config, "local-only-crew")
         monkeypatch.setattr(
             "kiro_crew.dashboard.chat_handlers.KiroCrewConfig.load",
-            staticmethod(
-                lambda: SimpleNamespace(
-                    default_agent="local-only-crew",
-                    dashboard=SimpleNamespace(default_project=""),
-                )
-            ),
+            staticmethod(lambda: config),
         )
 
     @pytest.mark.asyncio

@@ -819,14 +819,29 @@ class TestPushGuardCredentialRedaction:
     tokens/passwords never reach agent transcripts or logs.
     """
 
-    def test_fetch_error_redacts_credentials(self, tmp_path):
+    @staticmethod
+    def _run_fetch_failure(
+        monkeypatch, tmp_path, repo_dir, *, prefix="fatal: Authentication failed for "
+    ):
+        """Emit raw synthetic fetch stderr through the real guard subprocess path."""
+        remote = _git(repo_dir, "remote", "get-url", "origin")
+        fake_cmd = TestReplayFailClosed._make_fake_git_cmd(
+            tmp_path,
+            "args and args[0] == 'fetch'",
+            failure_message=prefix + remote,
+        )
+        result = TestReplayFailClosed._run_push_guard_inprocess(monkeypatch, repo_dir, fake_cmd)
+        assert "error class:" in result[2], "The fetch diagnostic did not reach classification"
+        return result
+
+    def test_fetch_error_redacts_credentials(self, tmp_path, monkeypatch):
         """Fetch stderr containing https://user:token@host → refusal redacts the token."""
         repo_dir = str(tmp_path / "repo")
         os.makedirs(repo_dir)
         _git(repo_dir, "init")
         _git(repo_dir, "commit", "--allow-empty", "-m", "init")
 
-        # Set origin to a credential-bearing URL that will fail to fetch.
+        # Record a synthetic remote. Only the injected fetch emits its raw URL.
         _git(
             repo_dir,
             "remote",
@@ -835,7 +850,7 @@ class TestPushGuardCredentialRedaction:
             "https://user:someSecretToken123@example.com/repo.git",
         )
 
-        rc, stdout, stderr = _run_push_guard(repo_dir)
+        rc, stdout, stderr = self._run_fetch_failure(monkeypatch, tmp_path, repo_dir)
         assert rc == 40, f"Expected refused (40), got {rc}.\nstdout: {stdout}\nstderr: {stderr}"
         assert "REFUSED" in stderr
         # The token must NOT appear in any output — regardless of whether git
@@ -849,7 +864,7 @@ class TestPushGuardCredentialRedaction:
         assert "user:someSecretToken123" not in stderr
         assert "user:someSecretToken123" not in stdout
 
-    def test_fetch_error_redacts_bare_token_url(self, tmp_path):
+    def test_fetch_error_redacts_bare_token_url(self, tmp_path, monkeypatch):
         """Fetch stderr containing https://ghp_token@host → redacts the token."""
         repo_dir = str(tmp_path / "repo")
         os.makedirs(repo_dir)
@@ -865,7 +880,7 @@ class TestPushGuardCredentialRedaction:
             "https://ghp_aBcDeFgHiJkLmNoPqRsT@github.com/org/repo.git",
         )
 
-        rc, stdout, stderr = _run_push_guard(repo_dir)
+        rc, stdout, stderr = self._run_fetch_failure(monkeypatch, tmp_path, repo_dir)
         assert rc == 40, f"Expected refused (40), got {rc}.\nstdout: {stdout}\nstderr: {stderr}"
         assert "REFUSED" in stderr
         # The PAT must NOT appear in any output.
@@ -893,7 +908,7 @@ class TestPushGuardCredentialRedaction:
         # No redaction needed — no credentials to strip.
         assert "<redacted>" not in stderr
 
-    def test_fetch_error_redacts_query_string_credentials(self, tmp_path):
+    def test_fetch_error_redacts_query_string_credentials(self, tmp_path, monkeypatch):
         """Fetch stderr with query-string credentials → refusal redacts the secret.
 
         Regression: query-string tokens (private_token=, access_token=,
@@ -915,7 +930,7 @@ class TestPushGuardCredentialRedaction:
             "https://git.example.com/team/Repo?private_token=secret123",
         )
 
-        rc, stdout, stderr = _run_push_guard(repo_dir)
+        rc, stdout, stderr = self._run_fetch_failure(monkeypatch, tmp_path, repo_dir)
         assert rc == 40, f"Expected refused (40), got {rc}.\nstdout: {stdout}\nstderr: {stderr}"
         assert "REFUSED" in stderr
         # The query-string token must NOT appear in any output.
@@ -931,7 +946,7 @@ class TestPushGuardCredentialRedaction:
         # no raw stderr (even redacted) is passed through.
         assert "error class:" in stderr, "Classified error diagnostic not found in refusal output"
 
-    def test_fetch_error_redacts_access_token_query(self, tmp_path):
+    def test_fetch_error_redacts_access_token_query(self, tmp_path, monkeypatch):
         """access_token= query parameter → redacted."""
         repo_dir = str(tmp_path / "repo")
         os.makedirs(repo_dir)
@@ -946,13 +961,13 @@ class TestPushGuardCredentialRedaction:
             "https://git.example.com/org/project.git?access_token=ghp_TopSecret99",
         )
 
-        rc, stdout, stderr = _run_push_guard(repo_dir)
+        rc, stdout, stderr = self._run_fetch_failure(monkeypatch, tmp_path, repo_dir)
         assert rc == 40
         assert "REFUSED" in stderr
         assert "ghp_TopSecret99" not in stderr, "access_token value leaked"
         assert "ghp_TopSecret99" not in stdout, "access_token value leaked"
 
-    def test_fetch_error_redacts_path_embedded_credentials(self, tmp_path):
+    def test_fetch_error_redacts_path_embedded_credentials(self, tmp_path, monkeypatch):
         """Fetch stderr with path-embedded token → refusal redacts the secret.
 
         Regression: some forges and CI proxies embed PATs or deploy tokens
@@ -975,7 +990,7 @@ class TestPushGuardCredentialRedaction:
             "https://git.example.com/tok_secret123/Repo.git",
         )
 
-        rc, stdout, stderr = _run_push_guard(repo_dir)
+        rc, stdout, stderr = self._run_fetch_failure(monkeypatch, tmp_path, repo_dir)
         assert rc == 40, f"Expected refused (40), got {rc}.\nstdout: {stdout}\nstderr: {stderr}"
         assert "REFUSED" in stderr
         # The path-embedded token must NOT appear in any output.
@@ -992,7 +1007,7 @@ class TestPushGuardCredentialRedaction:
             stdout + stderr
         ), "Classified error diagnostic not found in refusal output"
 
-    def test_fetch_error_redacts_query_only_credentials(self, tmp_path):
+    def test_fetch_error_redacts_query_only_credentials(self, tmp_path, monkeypatch):
         """Fetch stderr with query-only URL (no path) → refusal redacts the secret.
 
         Regression: a URL like https://host?private_token=x has no path
@@ -1012,7 +1027,7 @@ class TestPushGuardCredentialRedaction:
             "https://git.example.com?private_token=qsecret1",
         )
 
-        rc, stdout, stderr = _run_push_guard(repo_dir)
+        rc, stdout, stderr = self._run_fetch_failure(monkeypatch, tmp_path, repo_dir)
         assert rc == 40, f"Expected refused (40), got {rc}.\nstdout: {stdout}\nstderr: {stderr}"
         assert "REFUSED" in stderr
         assert (
@@ -1027,7 +1042,7 @@ class TestPushGuardCredentialRedaction:
             stdout + stderr
         ), "Classified error diagnostic not found in refusal output"
 
-    def test_fetch_error_redacts_ipv6_path_credentials(self, tmp_path):
+    def test_fetch_error_redacts_ipv6_path_credentials(self, tmp_path, monkeypatch):
         """Fetch stderr with bracketed IPv6 authority → refusal redacts the secret.
 
         Regression: the prior regex used [^\\s/:\"']+ for the host charset,
@@ -1047,7 +1062,7 @@ class TestPushGuardCredentialRedaction:
             "https://[2001:db8::7]:8443/tok_v6secret/Repo.git",
         )
 
-        rc, stdout, stderr = _run_push_guard(repo_dir)
+        rc, stdout, stderr = self._run_fetch_failure(monkeypatch, tmp_path, repo_dir)
         assert rc == 40, f"Expected refused (40), got {rc}.\nstdout: {stdout}\nstderr: {stderr}"
         assert "REFUSED" in stderr
         assert (
@@ -1062,7 +1077,7 @@ class TestPushGuardCredentialRedaction:
             stdout + stderr
         ), "Classified error diagnostic not found in refusal output"
 
-    def test_fetch_error_redacts_credential_at_truncation_boundary(self, tmp_path):
+    def test_fetch_error_redacts_credential_at_truncation_boundary(self, tmp_path, monkeypatch):
         """Token straddling the old 300-byte slice boundary must still be redacted.
 
         Redaction must run before truncation. Doing ``redact_credentials(fetch_err[:300])``
@@ -1086,10 +1101,7 @@ class TestPushGuardCredentialRedaction:
         # puts the '@' at offset ~308.
         token = "ghp_" + "A" * 36  # 40 chars total
         cred_url = "https://{}@git.example.com/org/repo.git".format(token)
-        # Construct the origin URL so git's fetch stderr will contain the token.
-        # We embed the preamble in the remote URL path so it appears in the
-        # error output — but the critical credential is in the userinfo.
-        # Simpler approach: use a remote URL with the token in userinfo.
+        # The injected fetch emits this full raw URL after a known preamble.
         _git(
             repo_dir,
             "remote",
@@ -1098,7 +1110,9 @@ class TestPushGuardCredentialRedaction:
             cred_url,
         )
 
-        rc, stdout, stderr = _run_push_guard(repo_dir)
+        prefix = "remote: " + "X" * 252
+        assert (prefix + cred_url).index(token) < 300 < (prefix + cred_url).index("@")
+        rc, stdout, stderr = self._run_fetch_failure(monkeypatch, tmp_path, repo_dir, prefix=prefix)
         assert rc == 40, f"Expected refused (40), got {rc}.\nstdout: {stdout}\nstderr: {stderr}"
         assert "REFUSED" in stderr
         # The token MUST NOT appear anywhere in the output.
@@ -1354,7 +1368,12 @@ class TestReplayFailClosed:
     """
 
     @staticmethod
-    def _make_fake_git_cmd(tmp_path: Path, fail_condition: str) -> list[str]:
+    def _make_fake_git_cmd(
+        tmp_path: Path,
+        fail_condition: str,
+        *,
+        failure_message: str = "fatal: bad revision/object",
+    ) -> list[str]:
         """Create a cross-platform fake git that fails on a specific condition.
 
         Uses a Python script assigned directly to push_guard._GIT_CMD (no
@@ -1366,6 +1385,7 @@ class TestReplayFailClosed:
             tmp_path: pytest tmp dir for writing script files.
             fail_condition: Python expression evaluated against ``args``
                 (the list of git arguments) that triggers the failure.
+            failure_message: Raw stderr emitted by the failing subprocess.
 
         Returns:
             Command list suitable for assignment to push_guard._GIT_CMD.
@@ -1381,7 +1401,7 @@ class TestReplayFailClosed:
             "import subprocess, sys\n"
             "args = sys.argv[1:]\n"
             f"if {fail_condition}:\n"
-            "    print('fatal: bad revision/object', file=sys.stderr)\n"
+            f"    print({failure_message!r}, file=sys.stderr)\n"
             "    sys.exit(128)\n"
             "real_git = {}\n".format(repr(real_git)) + "r = subprocess.run([real_git] + args)\n"
             "sys.exit(r.returncode)\n"

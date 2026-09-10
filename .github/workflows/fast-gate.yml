@@ -340,6 +340,42 @@ jobs:
           python3 scripts/check_harness_parity.py --test
           python3 scripts/check_harness_parity.py
 
+  memory-store-seam:
+    name: Memory Store Seam Gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # persist-credentials retained: memory-store-seam/Check that memory-context call sites name their store runs `git fetch origin`
+      # against the same remote, through the shared diff-base resolver script.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Check that memory-context call sites name their store
+        # A named memory store is a separate SQLite silo. A build_message /
+        # build_session_context call site that does not name one reads whatever
+        # the resolver defaults to -- the operator's own `default` store -- for a
+        # crew that configured otherwise, and nothing goes red: the prompt is
+        # well-formed and the content is plausible. Deriving the store from
+        # `agent=` is the same failure with a plausible-looking cause, because
+        # that argument carries a kiro-cli modeId from a namespace disjoint from
+        # cfg.agents.
+        #
+        # Diff-scoped for the same reason as the harness gate above, and only
+        # until the last call site is converted: a whole-tree gate would charge
+        # the remaining backlog to whoever pushed next. The backlog is printed as
+        # a non-failing report and pinned by test/test_memory_store_seam.py.
+        env:
+          # `base.sha` for the same reason as the brand gate: the merge ref this
+          # run checks out was computed against that exact commit.
+          MEMSTORE_BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          MEMSTORE_BASE_REF="$(bash "$GITHUB_WORKSPACE/.github/scripts/resolve-i18n-base.sh" \
+            "$MEMSTORE_BASE_REF" 'the memory-store-seam gate')" || exit 1
+          export MEMSTORE_BASE_REF
+          # Self-test first: it plants one probe per rule, so a walk that stopped
+          # matching fails here instead of shipping a gate that passes everything.
+          python3 scripts/check_memory_store_seam.py --test
+          python3 scripts/check_memory_store_seam.py
+
   docs-lint:
     name: Docs Lint
     runs-on: ubuntu-latest

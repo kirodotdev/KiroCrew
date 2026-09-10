@@ -54,6 +54,7 @@ from kiro_crew.context import (
     ContextBuilder,
     build_cancelled_turn_preamble,
     compress_thread_history,
+    session_store_for_turn,
     window_for_provider_client,
 )
 from kiro_crew.cron import CronService
@@ -80,6 +81,7 @@ from kiro_crew.llm_helpers import (
     record_interaction_event,
     save_conversation_turn_off_loop,
 )
+from kiro_crew.memory_stores import UnknownMemoryStore
 from kiro_crew.messaging import auto_title, privacy_mode
 from kiro_crew.messaging.commands import (
     compact_unsupported_backend,
@@ -120,6 +122,7 @@ from kiro_crew.security import (
     redact,
     redact_credentials,
     redact_exfiltration_urls,
+    redact_local_paths,
 )
 from kiro_crew.sel import sel
 from kiro_crew.session import SessionClosingError, SessionManager
@@ -913,20 +916,21 @@ def _get_default_agent() -> str:
     return _cached_default_agent
 
 
-def _hydrate_thread_overrides(session_key: str, conversation_log: ConversationLog | None) -> None:
-    """Populate in-memory caches from conversation log metadata if not already set."""
-    if session_key in _hydrated_sessions:
-        return
-    _hydrated_sessions.add(session_key)
+def _read_thread_overrides(
+    session_key: str, conversation_log: ConversationLog | None
+) -> tuple[str, str]:
+    """Read and resolve persisted overrides without mutating the live maps."""
     if not conversation_log:
-        return
+        return "", ""
     try:
         meta = conversation_log.get_metadata(session_key)
     except Exception:
         logger.debug("Failed to hydrate thread overrides for %s", session_key, exc_info=True)
-        return
-    if meta.get("agent"):
-        _thread_agents[session_key] = meta["agent"]
+        return "", ""
+    from kiro_crew.messaging.session_resume import session_agent_from_metadata
+
+    resolved_agent = session_agent_from_metadata(meta) or meta.get("agent") or ""
+    project = ""
     if meta.get("project"):
         # Defense-in-depth: re-validate the persisted path at this input
         # boundary. Conversation-log metadata is normally written through the
@@ -934,12 +938,36 @@ def _hydrate_thread_overrides(session_key: str, conversation_log: ConversationLo
         # with, a sensitive credential path (~/.aws, ~/.ssh, …) must never be
         # loaded into the in-memory cache.
         if not is_sensitive_path(meta["project"]):
-            _thread_projects[session_key] = meta["project"]
+            project = meta["project"]
         else:
             logger.warning(
                 "Ignoring sensitive project path from thread metadata for %s",
                 session_key,
             )
+    return resolved_agent, project
+
+
+async def _hydrate_thread_overrides(
+    session_key: str, conversation_log: ConversationLog | None
+) -> None:
+    """Resolve private identity off-loop, then preserve any newer live selections."""
+    if session_key in _hydrated_sessions:
+        return
+    if not conversation_log:
+        _hydrated_sessions.add(session_key)
+        return
+    agent_before = _thread_agents.get(session_key)
+    project_before = _thread_projects.get(session_key)
+    agent, project = await asyncio.to_thread(_read_thread_overrides, session_key, conversation_log)
+    # A concurrent hydration/command may have settled this session while the
+    # worker read it. Never publish a stale result over that live selection.
+    if session_key in _hydrated_sessions:
+        return
+    _hydrated_sessions.add(session_key)
+    if agent and _thread_agents.get(session_key) == agent_before:
+        _thread_agents[session_key] = agent
+    if project and _thread_projects.get(session_key) == project_before:
+        _thread_projects[session_key] = project
 
 
 def _get_agent_for_session(session_key: str) -> str:
@@ -2780,7 +2808,7 @@ async def handle_message(
         logger.info("slack inbound dropped: denied by channels governance policy")
         return
 
-    _hydrate_thread_overrides(session_key, conversation_log)
+    await _hydrate_thread_overrides(session_key, conversation_log)
     _hydrate_conv_flags(sessions, session_key)
 
     # Resolve agent early so ALL persist paths (hook auto-reply, command
@@ -3255,7 +3283,7 @@ async def handle_message(
     # namespaced session key. A self-linked Slack thread resolves to our own
     # canonical key (no-op rewrite); a dashboard-linked thread resolves to its
     # ``dashboard:chat-N`` key.
-    # Read the thread's owner ONCE and keep it truthful. Three separate decisions
+    # Keep the thread's owner truthful. Three separate decisions
     # below consume it -- whether to re-route this turn, whether to CLAIM the
     # thread, and whether to mirror into a dashboard slot -- and a pinned answer
     # needs a different answer for each. Falsifying this single value to steer all
@@ -3285,26 +3313,43 @@ async def handle_message(
             # the asker's own metadata records correctly. The pinned path needs it
             # exactly as much: `asker_key` is a different conversation, which is
             # the whole reason it is substituted here.
-            _hydrate_thread_overrides(session_key, conversation_log)
-    elif thread_owner_key and thread_owner_key != session_key:
-        logger.info(
-            "🔗 Slack thread %s linked to dashboard session %s — routing there",
-            session_key,
-            thread_owner_key,
-        )
-        session_key = thread_owner_key
-        # Thread overrides are keyed BY SESSION, and the hydration at entry ran
-        # for the previous key. Re-hydrate for the new owner in the same breath
-        # as the reroute -- otherwise the agent re-resolution below reads a key
-        # that was never hydrated and falls through to the channel or default
-        # agent, discarding a binding the session's own metadata records
-        # correctly. Same shape as transport_dispatch._resolve_thread_owner.
-        # The helper guards repeated I/O per session, so this is cheap.
-        _hydrate_thread_overrides(session_key, conversation_log)
+            await _hydrate_thread_overrides(session_key, conversation_log)
 
     client: LLMProvider | None = None
     try:
         task.start()
+        while True:
+            candidate_key = session_key
+            if not route_pinned:
+                thread_owner_key = sessions.get_session_for_thread(reply_ts)
+                candidate_key = thread_owner_key or canonical_key(reply_ts)
+                if candidate_key != session_key:
+                    await _hydrate_thread_overrides(candidate_key, conversation_log)
+                    if sessions.get_session_for_thread(reply_ts) != thread_owner_key:
+                        continue
+            # Both private identity hydration and store resolution can yield to
+            # a link/unlink. Commit the route only after those reads agree with
+            # the current owner; a pinned answer always keeps its asker instead.
+            memory_error = None
+            try:
+                _memory_store = await session_store_for_turn(context_builder, candidate_key)
+            except UnknownMemoryStore as exc:
+                memory_error = exc
+            if not route_pinned:
+                if sessions.get_session_for_thread(reply_ts) != thread_owner_key:
+                    continue
+                if candidate_key != session_key:
+                    logger.info(
+                        "🔗 Slack thread %s linked to dashboard session %s — routing there",
+                        session_key,
+                        candidate_key,
+                    )
+                session_key = candidate_key
+                linked_session_key = thread_owner_key
+                _hydrate_conv_flags(sessions, session_key)
+            if memory_error is not None:
+                raise memory_error
+            break
         # Re-resolve _agent against (possibly linked) session_key for the main
         # LLM path — linked dashboard sessions may carry a different thread agent.
         _agent = _thread_agents.get(session_key) or channel_agent or _get_default_agent() or None
@@ -3443,6 +3488,16 @@ async def handle_message(
                         thread_ts,
                     )
 
+            # This conversation's own silo, resolved from the session's RECORDED
+            # binding and never from ``_agent`` -- on Slack that value is a kiro
+            # agent name, a namespace disjoint from ``cfg.agents``, so deriving a
+            # store from it answers ``default`` for exactly the crew that
+            # configured otherwise. A thread taken over from a crew-bound
+            # dashboard session carries that crew's key here, which is what stops
+            # the takeover from reading the operator's own memory instead.
+            #
+            # The private tier was prepared before provider acquisition. Missing
+            # or unreadable member memory refuses the turn with its own error.
             # Off-loop: build_message embeds the episodic query (blocking urllib).
             full_message, _ = await run_in_embed_pool(
                 context_builder.build_message,
@@ -3452,6 +3507,7 @@ async def handle_message(
                 channel_id=channel,
                 thread_ts=thread_ts or msg_ts,
                 agent=_agent,
+                memory_store=_memory_store,
                 resumed=resumed,
                 user_display_name=user_display_name,
                 compressed_history=compressed,
@@ -3935,6 +3991,11 @@ async def handle_message(
         accumulated = f"❌ {e}"
         task.fail(str(e))
         await sessions.record_failure(session_key)
+        Stats().inc_message_failed()
+    except UnknownMemoryStore as exc:
+        _had_error = True
+        accumulated = redact_local_paths(redact(str(exc)))[0][:1000]
+        task.fail("memory_unavailable")
         Stats().inc_message_failed()
     except Exception:
         _had_error = True

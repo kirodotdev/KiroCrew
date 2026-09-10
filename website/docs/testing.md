@@ -174,6 +174,13 @@ or a weakened assertion. Poll for the condition you actually care about.
 
 ## Determinism: establish the state you assert on
 
+Reset owned API mocks before reseeding per-test defaults. `vi.clearAllMocks()`
+clears call history but preserves queued `mockResolvedValueOnce` and
+`mockRejectedValueOnce` responses. If a test stops before consuming one, that
+response can override the next test's default implementation. Call `mockReset()`
+on those API mocks, then supply the next test's defaults, preserving unrelated
+shared setup mocks.
+
 Every CI-only failure this suite has produced so far reduces to one mistake: **the
 test asserted against a state it did not establish**, and got away with it locally
 because the component happened to be slower than the assertion. The shard runs four
@@ -334,6 +341,10 @@ of the four runs. Nine were the "real async chain behind the 1000ms default" sha
 above, and got a **named** ceiling next to the helper that owns the wait (`TREE_READY`,
 `PANE_READY`, `NOTICE_READY`; the approval ghost's 150ms settle-guard timer; the
 `['artifact', slug]` fetch). Two were new shapes, and each one is a rule:
+
+For Testing Library's bound `findBy*` queries, pass a named timeout as the third
+argument, for example `screen.findByTestId(id, undefined, PANE_READY)`. The second
+argument configures matching and does not change the wait timeout.
 
 - **A wait that resolves on a row from the WRONG query.** The path bar's `complete` mock
   answers every key with the same entry, so the suggestion row first rendered for the

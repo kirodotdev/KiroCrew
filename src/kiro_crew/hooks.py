@@ -2399,6 +2399,18 @@ def validate_file_path(raw: str) -> str | None:
     return path
 
 
+def _opened_file_matches_validated_path(fd: int, path: str) -> bool:
+    """Check the opened regular file without resolving its original name again."""
+    if not _stat.S_ISREG(os.fstat(fd).st_mode):
+        return False
+    opened_path = _fd_real_path(fd)
+    return (
+        opened_path is not None
+        and os.path.normcase(os.path.normpath(opened_path)) == os.path.normcase(path)
+        and not is_sensitive_path(opened_path)
+    )
+
+
 def safe_read_file(path: str) -> str:
     """Read a file after enforcing ``is_sensitive_path``.
 
@@ -2425,7 +2437,7 @@ def safe_read_file(path: str) -> str:
         # would forge a second record.
         raise PermissionError(f"Blocked: access to sensitive path: {resolved!r}")
     try:
-        fd = platform_compat.open_file_no_reparse(resolved)
+        fd = platform_compat.open_file_no_reparse(resolved, nonblocking=True)
     except OSError as exc:
         # ELOOP on the canonical (symlink-free) path means a concurrent TOCTOU
         # swap of the final component into a symlink — refuse it. Any other
@@ -2433,8 +2445,13 @@ def safe_read_file(path: str) -> str:
         if exc.errno in (errno.ELOOP, getattr(errno, "EMLINK", -1)):
             raise PermissionError(f"Blocked: refusing to follow symlink at {resolved!r}") from exc
         raise
-    with os.fdopen(fd, "r", encoding="utf-8") as fh:
-        return fh.read()
+    try:
+        if not _opened_file_matches_validated_path(fd, resolved):
+            raise PermissionError(f"Blocked: opened file no longer matches safe path: {resolved!r}")
+        with os.fdopen(fd, "r", encoding="utf-8", closefd=False) as fh:
+            return fh.read()
+    finally:
+        os.close(fd)
 
 
 MAX_FILE_BYTES = 50 * 1024 * 1024  # 50 MB safety cap
@@ -2454,6 +2471,11 @@ def safe_read_file_bytes(raw: str) -> bytes | None:
     against a TOCTOU swap of the final component into a link after the check —
     a refusal that holds on Windows as well, where ``O_NOFOLLOW`` does not exist.
 
+    Before reading, the opened descriptor must be a regular file whose kernel
+    path still matches the canonical name validated above and is not sensitive.
+    This also refuses an ancestor-directory swap. The comparison is lexical:
+    resolving the original name again could authorize the swapped destination.
+
     Returns file content as bytes, or None if path is rejected or unreadable.
     """
     path = validate_file_path(raw)
@@ -2461,17 +2483,21 @@ def safe_read_file_bytes(raw: str) -> bytes | None:
         return None
 
     try:
-        fd = platform_compat.open_file_no_reparse(path)
+        fd = platform_compat.open_file_no_reparse(path, nonblocking=True)
     except OSError:
         return None
     try:
-        with os.fdopen(fd, "rb") as fh:
+        if not _opened_file_matches_validated_path(fd, path):
+            return None
+        with os.fdopen(fd, "rb", closefd=False) as fh:
             data = fh.read(MAX_FILE_BYTES + 1)
         if len(data) > MAX_FILE_BYTES:
             raise FileTooLargeError(f"File exceeds {MAX_FILE_BYTES // (1024 * 1024)} MB safety cap")
         return data
     except OSError:
         return None
+    finally:
+        os.close(fd)
 
 
 def safe_read_file_bytes_with_identity(
@@ -2502,14 +2528,14 @@ def safe_read_file_bytes_with_identity(
         return None
 
     try:
-        fd = platform_compat.open_file_no_reparse(path)
+        fd = platform_compat.open_file_no_reparse(path, nonblocking=True)
     except OSError as exc:
         if exc.errno in (errno.ELOOP, getattr(errno, "EMLINK", -1)):
             raise PermissionError(f"Blocked: refusing to follow symlink at {path!r}") from exc
         return None
     try:
         st = os.fstat(fd)
-        if (st.st_dev, st.st_ino) not in allowed_identities:
+        if not _stat.S_ISREG(st.st_mode) or (st.st_dev, st.st_ino) not in allowed_identities:
             raise PermissionError("Blocked: file is not in the authorized set")
         with os.fdopen(fd, "rb", closefd=False) as fh:
             data = fh.read(MAX_FILE_BYTES + 1)
@@ -2594,12 +2620,14 @@ def safe_read_file_bytes_nolink(
         return None
 
     try:
-        fd = platform_compat.open_file_no_reparse(path)
+        fd = platform_compat.open_file_no_reparse(path, nonblocking=True)
     except OSError:
         return None
     try:
         st = os.fstat(fd)
         if st.st_nlink > 1 or not _stat.S_ISREG(st.st_mode):
+            return None
+        if not _opened_file_matches_validated_path(fd, path):
             return None
         if within_root is not None:
             fd_real = _fd_real_path(fd)
@@ -3170,7 +3198,7 @@ def safe_copy_file_nolink(raw: str, dest_dir: str) -> str | None:
         return None
 
     try:
-        fd = platform_compat.open_file_no_reparse(path)
+        fd = platform_compat.open_file_no_reparse(path, nonblocking=True)
     except OSError:
         return None
     tmp_fd = -1
@@ -3236,14 +3264,18 @@ def safe_read_prefix(raw: str, n: int) -> bytes | None:
     if path is None:
         return None
     try:
-        fd = platform_compat.open_file_no_reparse(path)
+        fd = platform_compat.open_file_no_reparse(path, nonblocking=True)
     except OSError:
         return None
     try:
-        with os.fdopen(fd, "rb") as fh:
+        if not _opened_file_matches_validated_path(fd, path):
+            return None
+        with os.fdopen(fd, "rb", closefd=False) as fh:
             return fh.read(n)
     except OSError:
         return None
+    finally:
+        os.close(fd)
 
 
 # ---------------------------------------------------------------------------
@@ -3393,7 +3425,7 @@ def safe_read_file_internal(read_id: str) -> bytes | None:
     import stat
 
     try:
-        fd = platform_compat.open_file_no_reparse(resolved)
+        fd = platform_compat.open_file_no_reparse(resolved, nonblocking=True)
     except FileNotFoundError:
         _emit_internal_read_audit(read_id, "missing")
         return None
