@@ -29,7 +29,7 @@ import logging
 import os
 import sys
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from aiohttp import web
@@ -66,7 +66,8 @@ def _isolated_module_state(monkeypatch, tmp_path):
     updates._changelog_cache = saved_cache
     updates._last_update_check = saved_clock
     updates._check_generation = saved_generation
-    updates._check_in_flight = False
+    updates._check_task = None
+    updates._check_task_generation = None
 
 
 def _request(body: object = None, *, query: dict[str, str] | None = None) -> MagicMock:
@@ -1738,17 +1739,23 @@ class TestExternallyManagedCheck:
         assert updates._last_update_check > 0
 
     @pytest.mark.asyncio
-    async def test_a_second_caller_no_ops_while_a_check_is_in_flight(self, monkeypatch):
+    async def test_a_second_caller_awaits_the_shared_check(self, monkeypatch):
         calls: list[str] = []
+        started = asyncio.Event()
+        release = asyncio.Event()
 
         async def _count(capability) -> None:
             calls.append(capability.managed_by)
+            started.set()
+            await release.wait()
 
         monkeypatch.setattr("kiro_crew.platform.update_capability.distribution", lambda: "wheel")
         monkeypatch.setattr(updates, "_check_release_feed", _count)
-        with patch.object(updates, "_check_in_flight", True):
-            await updates._do_update_check()
-        assert calls == []
-
-        await updates._do_update_check()
+        leader = asyncio.create_task(updates._do_update_check())
+        await asyncio.wait_for(started.wait(), timeout=1)
+        follower = asyncio.create_task(updates._do_update_check())
+        await asyncio.sleep(0)
+        assert not follower.done()
+        release.set()
+        await asyncio.gather(leader, follower)
         assert calls == ["kirocrew"]

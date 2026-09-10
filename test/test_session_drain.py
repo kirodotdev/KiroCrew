@@ -390,6 +390,36 @@ async def test_close_all_sets_closing_state(cfg):
 
 
 @pytest.mark.asyncio
+async def test_update_admission_pause_blocks_and_resumes_turns(cfg):
+    mgr = SessionManager(cfg, provider_factory=lambda **k: _FakeProvider())
+
+    assert mgr.admission_closed is False
+    assert await mgr.pause_turn_admission_for_update() is True
+    assert mgr.admission_closed is True
+    with pytest.raises(SessionClosingError):
+        mgr.begin_turn("s1")
+    with pytest.raises(SessionClosingError):
+        await mgr.get_or_create("s-new")
+
+    await mgr.resume_turn_admission_after_update()
+    assert mgr.admission_closed is False
+    assert mgr.begin_turn("s1") is None
+
+
+@pytest.mark.asyncio
+async def test_real_shutdown_revokes_update_pause_ownership(cfg):
+    mgr = SessionManager(cfg, provider_factory=lambda **k: _FakeProvider())
+
+    assert await mgr.pause_turn_admission_for_update() is True
+    await mgr.close_all()
+    await mgr.resume_turn_admission_after_update()
+
+    assert mgr._closing is True
+    assert mgr.admission_closed is True
+    assert mgr._update_pause_owned is False
+
+
+@pytest.mark.asyncio
 async def test_registration_refused_when_closing_began_during_startup(cfg):
     """GPT BLOCKING — late-registration leak. The entry gate runs BEFORE the
     multi-second provider.start(); if close_all() begins during the handshake,

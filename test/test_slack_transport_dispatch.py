@@ -167,6 +167,46 @@ class TestTransportAgentResolution:
             gp.reset_store()
 
 
+class TestTransportAdmissionSpool:
+    def test_session_closing_spools_the_unopened_slack_turn(self, monkeypatch):
+        from kiro_crew.session_allocation import SessionClosingError
+
+        async def reject_turn(*_args, **_kwargs):
+            raise SessionClosingError("automatic update owns admission")
+
+        spool = AsyncMock()
+        monkeypatch.setattr(_CapturingSessions, "get_or_create", reject_turn)
+        monkeypatch.setattr(transport_dispatch, "spool_refused_turn", spool)
+        monkeypatch.setattr(transport_dispatch, "_is_slack_restricted", lambda _key: False)
+
+        sessions = _run_transport(monkeypatch)
+
+        spool.assert_awaited_once()
+        assert spool.await_args.kwargs["channel_type"] == "slack"
+        route = spool.await_args.kwargs["route"]
+        assert route.conversation_id == "C1"
+        assert route.text == "hello"
+        assert route.user_id == "U_OWNER"
+        assert route.thread_id == _MSG_TS
+        assert route.message_id == _MSG_TS
+        assert sessions.agents == []
+
+    def test_session_closing_does_not_spool_restricted_slack_turn(self, monkeypatch):
+        from kiro_crew.session_allocation import SessionClosingError
+
+        async def reject_turn(*_args, **_kwargs):
+            raise SessionClosingError("automatic update owns admission")
+
+        spool = AsyncMock()
+        monkeypatch.setattr(_CapturingSessions, "get_or_create", reject_turn)
+        monkeypatch.setattr(transport_dispatch, "spool_refused_turn", spool)
+        monkeypatch.setattr(transport_dispatch, "_is_slack_restricted", lambda _key: True)
+
+        _run_transport(monkeypatch)
+
+        spool.assert_not_awaited()
+
+
 class TestTransportBookkeepingIsolation:
     """A raise in the final success SEL audit must not fall through to the
     outer except and re-record the already-successful turn as a failure."""

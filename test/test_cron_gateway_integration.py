@@ -1054,6 +1054,36 @@ async def _run_llm_callback(gw, job, *, get_or_create_side_effect=None):
         return result, _stream_mock
 
 
+class TestLlmCronAdmission:
+    @pytest.mark.asyncio
+    async def test_session_closing_retains_undispatched_one_shot(self):
+        from kiro_crew.session import SessionClosingError
+
+        gw = _make_gw_for_llm()
+        job = _make_llm_job(
+            delete_after_run=True,
+            last_result="stale result",
+            consecutive_failures=2,
+        )
+
+        async def _side_effect(*_args, **_kwargs):
+            raise SessionClosingError("automatic update owns admission")
+
+        result, stream = await _run_llm_callback(
+            gw,
+            job,
+            get_or_create_side_effect=_side_effect,
+        )
+
+        assert result is None
+        assert job.run_never_started is True
+        assert job.last_status == "error"
+        assert job.last_error == "gateway admission is closed"
+        assert job.last_result == ""
+        assert job.consecutive_failures == 2
+        stream.assert_not_awaited()
+
+
 class TestModelFallback:
     """Test _acquire_with_model_fallback and _annotate_model_downgrade paths."""
 

@@ -11,17 +11,20 @@
  * that never ran, or one that failed — and must never be read as either "an
  * update is waiting" or "you are up to date".
  */
-export type UpdateAffordance = 'apply' | 'command' | 'none'
+export type UpdateAffordance = 'apply' | 'arm' | 'command' | 'none'
 
 export function updateAffordance(input: {
   /** The gateway's verdict. `null`/`undefined` = no verdict. */
   updateAvailable: boolean | null | undefined
   /** Can the gateway replace its own code in-process? */
   canApply: boolean | undefined
+  /** Can this managed install use the host-local arm/approve flow? */
+  canArm?: boolean
   /** Copyable installer command, when one applies to this shape. */
   command: string | undefined
 }): UpdateAffordance {
   if (input.updateAvailable !== true) return 'none'
   if (input.canApply === true) return 'apply'
+  if (input.canArm === true) return 'arm'
   return input.command ? 'command' : 'none'
 }

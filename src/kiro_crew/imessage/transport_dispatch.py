@@ -44,6 +44,7 @@ from kiro_crew.messaging.dispatch import (
     inbound_permitted,
 )
 from kiro_crew.messaging.driver import APPROVAL_INTERACTIVE
+from kiro_crew.messaging.inbound_spool import InboundRoute
 from kiro_crew.messaging.link import build_dm_session_key, seed_generation
 from kiro_crew.messaging.pre_turn import resolve_pre_turn
 from kiro_crew.safety_override import safety_override
@@ -227,6 +228,12 @@ class IMessageDispatcher:
             ChannelTurn(
                 channel_type="imessage",
                 session_key=session_key,
+                inbound_route=InboundRoute(
+                    conversation_id=handle,
+                    text=inbound.text,
+                    user_id=handle,
+                    message_id=inbound.guid,
+                ),
                 # Session-directive consumer: monitor_start / autonudge_stop /
                 # ... return a marker TurnDriver decodes; apply it against THIS
                 # turn's session key (dashboard-only directives stay refused

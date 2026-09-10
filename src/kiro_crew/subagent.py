@@ -2473,6 +2473,11 @@ class SubagentManager:
     def _queued_depth(self, parent_session_key: str) -> int:
         return self._run_events._queued_depth_impl(parent_session_key)
 
+    @property
+    def queued_count(self) -> int:
+        """Return all not-yet-registered spawns in the stagger queue."""
+        return len(self._queue)
+
     def queued_count_for(self, parent_session_key: str) -> int:
         return self._run_events.queued_count_for_impl(parent_session_key)
 

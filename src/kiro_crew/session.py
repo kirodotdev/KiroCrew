@@ -1346,6 +1346,25 @@ class SessionManager:
         self._registry_state().closing = value
 
     @property
+    def admission_closed(self) -> bool:
+        """Return the shared shutdown/update admission gate without yielding.
+
+        Background launchers read this immediately before registering work. On
+        the event loop that check-and-register span is atomic with respect to
+        ``pause_turn_admission_for_update()``, which sets the same state under
+        the registry lock.
+        """
+        return self._closing
+
+    @property
+    def _update_pause_owned(self) -> bool:
+        return self._registry_state().update_pause_owned
+
+    @_update_pause_owned.setter
+    def _update_pause_owned(self, value: bool) -> None:
+        self._registry_state().update_pause_owned = value
+
+    @property
     def _start_sem(self) -> asyncio.Semaphore:
         return self._registry_state().start_sem
 
@@ -2379,6 +2398,23 @@ class SessionManager:
     def begin_turn(self, key: str) -> None:
         """Apply the yield-free pre-dispatch closing gate."""
         self._allocation_boundary().begin_turn(key)
+
+    async def pause_turn_admission_for_update(self) -> bool:
+        """Block new turns for update apply without overriding real shutdown."""
+        async with self._lock:
+            if self._closing and not self._update_pause_owned:
+                return False
+            self._closing = True
+            self._update_pause_owned = True
+            return True
+
+    async def resume_turn_admission_after_update(self) -> None:
+        """Release this caller's temporary update pause, if it still owns it."""
+        async with self._lock:
+            if not self._update_pause_owned:
+                return
+            self._update_pause_owned = False
+            self._closing = False
 
     # ── Per-session semaphore ──
 

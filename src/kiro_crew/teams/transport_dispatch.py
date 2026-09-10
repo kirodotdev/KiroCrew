@@ -61,6 +61,7 @@ from kiro_crew.messaging.dispatch import (
     inbound_permitted,
 )
 from kiro_crew.messaging.driver import APPROVAL_INTERACTIVE
+from kiro_crew.messaging.inbound_spool import InboundRoute
 from kiro_crew.messaging.link import (
     ChannelLink,
     bind_origin_mirror,
@@ -462,6 +463,13 @@ class TeamsDispatcher:
                 ChannelTurn(
                     channel_type="teams",
                     session_key=session_key,
+                    inbound_route=InboundRoute(
+                        conversation_id=inbound.conversation_id,
+                        text=inbound.text,
+                        user_id=email,
+                        message_id=inbound.activity_id,
+                        attachments_dropped=len(inbound.attachments),
+                    ),
                     # Session-directive consumer: monitor_start / autonudge_stop /
                     # ... return a marker TurnDriver decodes; apply it against THIS
                     # turn's session key (dashboard-only directives stay refused

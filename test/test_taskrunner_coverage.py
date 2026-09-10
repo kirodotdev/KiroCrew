@@ -716,6 +716,50 @@ class TestExecutePlan:
         assert run.status == "completed"
 
     @pytest.mark.asyncio
+    async def test_pause_during_execute_preparation_keeps_prior_results(
+        self, tmp_path: Path
+    ) -> None:
+        sessions = _sessions()
+        sessions.admission_closed = False
+        runner = _runner(tmp_path, sessions=sessions)
+        run = _seed_run(
+            runner,
+            tmp_path,
+            status="failed",
+            tasks=[
+                Task(
+                    index=1,
+                    title="kept",
+                    description="d",
+                    status=TaskStatus.PASSED,
+                    result="keep me",
+                ),
+                Task(index=2, title="retry", description="d", status=TaskStatus.FAILED),
+            ],
+        )
+        visible_during_pause: list[bool] = []
+
+        async def persist_and_pause() -> None:
+            if not visible_during_pause:
+                sessions.admission_closed = True
+                visible_during_pause.append(runner.running)
+
+        runner._apersist_runs = persist_and_pause  # type: ignore[method-assign]
+        with (
+            patch.object(TaskRunner, "_execute_tasks", AsyncMock()),
+            patch.object(TaskRunner, "_watchdog_loop", AsyncMock()),
+            patch.object(tr.git_coord, "init_workspace", AsyncMock()),
+        ):
+            task_id = await runner.execute_plan("plan_1")
+            await runner._tasks[task_id]
+
+        assert visible_during_pause == [True]
+        assert run.tasks[0].status == TaskStatus.PASSED
+        assert run.tasks[0].result == "keep me"
+        assert run.status == "completed"
+        assert runner._start_ids_in_flight == set()
+
+    @pytest.mark.asyncio
     async def test_fresh_resets_passed_tasks_too(self, tmp_path: Path) -> None:
         runner = _runner(tmp_path)
         run = _seed_run(
@@ -1278,6 +1322,54 @@ class TestRetryFromTask:
         assert run.tasks[1].attempts == 0
         assert run.status == "completed"
         assert run.finished_at > 123.0
+
+    @pytest.mark.asyncio
+    async def test_pause_during_retry_preparation_keeps_prior_results(self, tmp_path: Path) -> None:
+        sessions = _sessions()
+        sessions.admission_closed = False
+        runner = _runner(tmp_path, sessions=sessions)
+        run = _seed_run(
+            runner,
+            tmp_path,
+            status="failed",
+            tasks=[
+                Task(
+                    index=1,
+                    title="kept",
+                    description="d",
+                    status=TaskStatus.PASSED,
+                    result="keep me",
+                ),
+                Task(
+                    index=2,
+                    title="retry",
+                    description="d",
+                    status=TaskStatus.FAILED,
+                    result="replace me",
+                ),
+            ],
+        )
+        visible_during_pause: list[bool] = []
+
+        async def persist_and_pause() -> None:
+            if not visible_during_pause:
+                sessions.admission_closed = True
+                visible_during_pause.append(runner.running)
+
+        runner._apersist_runs = persist_and_pause  # type: ignore[method-assign]
+        with (
+            patch.object(TaskRunner, "_execute_tasks", AsyncMock()),
+            patch.object(TaskRunner, "_watchdog_loop", AsyncMock()),
+        ):
+            task_id = await runner.retry_from_task("plan_1", 2)
+            await runner._tasks[task_id]
+
+        assert visible_during_pause == [True]
+        assert run.tasks[0].status == TaskStatus.PASSED
+        assert run.tasks[0].result == "keep me"
+        assert run.tasks[1].result == ""
+        assert run.status == "completed"
+        assert runner._start_ids_in_flight == set()
 
     @pytest.mark.asyncio
     async def test_reinits_git_when_work_dir_is_missing(self, tmp_path: Path) -> None:

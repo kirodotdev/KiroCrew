@@ -113,10 +113,7 @@ async def test_definition_run_reports_executor_rejection_instead_of_not_found() 
     service = FakeService()
 
     async def reject_start(_workflow_ref, **_kwargs):
-        return {
-            "error": "Too many concurrent tasks (3/3).",
-            "admission_rejected": True,
-        }
+        return {"error": "Too many concurrent tasks (3/3)."}
 
     service.start_definition = reject_start  # type: ignore[method-assign]
     async with TestClient(TestServer(_app(service))) as client:

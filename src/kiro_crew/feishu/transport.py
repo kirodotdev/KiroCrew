@@ -63,6 +63,13 @@ FEISHU_CAPABILITIES = TransportCapabilities(
     returns_message_id=False,
 )
 
+# A contextual reply anchor is safe only when paired with the authorized inbound
+# route that produced it. These markers are written exclusively into the
+# protected refused-inbound spool; normal proactive calls carry neither and stay
+# denied by ``may_send_to``.
+SPOOL_DM_ROUTE_PREFIX = "inbound-spool:dm:"
+SPOOL_GROUP_ROUTE_PREFIX = "inbound-spool:group:"
+
 
 class FeishuTransport(MessagingTransport):
     """Concrete Feishu transport over the low-level :class:`LarkClient`."""
@@ -216,21 +223,22 @@ class FeishuTransport(MessagingTransport):
     def may_send_to(
         self, conversation_id: str, thread_id: str | None = None, *, principal: str = ""
     ) -> bool:
-        """Never. Feishu has no proactive send in this v1 integration.
+        """Re-authorize a contextual reply anchor from the inbound spool.
 
-        Not conservatism -- the address is wrong. ``send_message`` takes an inbound
-        ``message_id`` as its ``conversation_id``, so it is a reply anchor rather
-        than a durable destination, and a proactive send resolves a PERSISTED link
-        whose anchor named a message from some earlier turn. Answering True would
-        reply to whatever that message was, on behalf of a turn nobody connected to
-        it. ``configured_targets`` already reports every target unavailable for the
-        same reason; this is the enforcing half of that claim.
-
-        The override exists rather than inheriting the ABC's permissive default
-        because the default is a decision each transport owes explicitly -- an
-        inherited one is invisible, and this reason is the thing worth being able
-        to grep for when a proactive path is added.
+        ``conversation_id`` remains the original message id used by
+        :meth:`send_message`. The protected spool pairs it with a marker naming
+        the authorized DM sender or group chat. Normal proactive calls carry no
+        marker and remain denied; replay rechecks the embedded identity against
+        the current live roster.
         """
+        if not conversation_id or not thread_id:
+            return False
+        if thread_id.startswith(SPOOL_DM_ROUTE_PREFIX):
+            open_id = thread_id[len(SPOOL_DM_ROUTE_PREFIX) :]
+            return bool(open_id) and open_id in self._allowed
+        if thread_id.startswith(SPOOL_GROUP_ROUTE_PREFIX):
+            chat_id = thread_id[len(SPOOL_GROUP_ROUTE_PREFIX) :]
+            return bool(chat_id) and self._allow_group and chat_id in self._allowed_group_ids
         return False
 
     async def resolve_conversation(self, user_id: str) -> str:

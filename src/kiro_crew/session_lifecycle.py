@@ -81,6 +81,7 @@ class SessionLifecycleOwner(Protocol):
     _sessions: MutableMapping[str, _SessionEntry]
     _lock: asyncio.Lock
     _closing: bool
+    _update_pause_owned: bool
     _start_sem: asyncio.Semaphore
     _starting_pids: set[int]
 
@@ -987,6 +988,7 @@ class SessionLifecycleService:
         # landing in the multi-second window after that snapshot.
         async with owner._lock:
             owner._closing = True
+            owner._update_pause_owned = False
 
         try:
             await owner.drain_active_turns(timeout=drain_timeout)
