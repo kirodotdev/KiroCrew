@@ -6045,6 +6045,7 @@
       "artifact": "아티팩트",
       "changed": "변경됨",
       "file_other": "파일 {{count}}개",
+      "large_file_change_region_view": "큰 파일 — 음영 띠는 영역을 표시하며 정확한 줄을 뜻하지 않습니다",
       "large_file_simplified_view": "큰 파일 — 간소화된 보기",
       "more": "더 보기",
       "no_changes": "변경 없음",

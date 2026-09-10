@@ -6241,6 +6241,7 @@
       "file_many": "{{count}} fichiers",
       "file_one": "{{count}} fichier",
       "file_other": "{{count}} fichiers",
+      "large_file_change_region_view": "Fichier volumineux — la bande ombrée indique la zone, pas les lignes exactes",
       "large_file_simplified_view": "Fichier volumineux — vue simplifiée",
       "more": "de plus",
       "no_changes": "aucun changement",

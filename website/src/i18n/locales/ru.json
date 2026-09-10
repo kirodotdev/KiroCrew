@@ -6339,6 +6339,7 @@
       "file_many": "{{count}} файлов",
       "file_one": "{{count}} файл",
       "file_other": "{{count}} файла",
+      "large_file_change_region_view": "Большой файл — затенённая полоса отмечает область, а не точные строки",
       "large_file_simplified_view": "Большой файл — упрощённый вид",
       "more": "ещё",
       "no_changes": "нет изменений",

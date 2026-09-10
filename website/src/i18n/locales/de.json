@@ -6143,6 +6143,7 @@
       "changed": "geändert",
       "file_one": "{{count}} Datei",
       "file_other": "{{count}} Dateien",
+      "large_file_change_region_view": "Große Datei — das Schattierungsband markiert den Bereich, nicht die genauen Zeilen",
       "large_file_simplified_view": "Große Datei — vereinfachte Ansicht",
       "more": "mehr",
       "no_changes": "keine Änderungen",

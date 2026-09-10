@@ -6143,6 +6143,7 @@
       "changed": "बदली गई",
       "file_one": "{{count}} फ़ाइल",
       "file_other": "{{count}} फ़ाइलें",
+      "large_file_change_region_view": "बड़ी फ़ाइल — छायांकित पट्टी क्षेत्र दिखाती है, सटीक पंक्तियाँ नहीं",
       "large_file_simplified_view": "बड़ी फ़ाइल — सरल दृश्य",
       "more": "और",
       "no_changes": "कोई बदलाव नहीं",

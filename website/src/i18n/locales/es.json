@@ -6241,6 +6241,7 @@
       "file_many": "{{count}} archivos",
       "file_one": "{{count}} archivo",
       "file_other": "{{count}} archivos",
+      "large_file_change_region_view": "Archivo grande — la franja sombreada marca la región, no las líneas exactas",
       "large_file_simplified_view": "Archivo grande — vista simplificada",
       "more": "más",
       "no_changes": "sin cambios",

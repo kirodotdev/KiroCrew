@@ -6143,6 +6143,7 @@
       "changed": "পরিবর্তিত",
       "file_one": "{{count}}টি ফাইল",
       "file_other": "{{count}}টি ফাইল",
+      "large_file_change_region_view": "বড় ফাইল — ছায়াযুক্ত ব্যান্ডটি অঞ্চল চিহ্নিত করে, নির্দিষ্ট লাইন নয়",
       "large_file_simplified_view": "বড় ফাইল — সরলীকৃত ভিউ",
       "more": "আরও",
       "no_changes": "কোনো পরিবর্তন নেই",

@@ -6045,6 +6045,7 @@
       "artifact": "アーティファクト",
       "changed": "変更",
       "file_other": "{{count}} 個のファイル",
+      "large_file_change_region_view": "大きなファイル — 網掛け帯は領域を示し、正確な行は示しません",
       "large_file_simplified_view": "大きなファイル — 簡易表示",
       "more": "その他",
       "no_changes": "変更なし",
