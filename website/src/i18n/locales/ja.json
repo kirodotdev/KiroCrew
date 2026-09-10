@@ -7450,7 +7450,8 @@
       "media_failed": "機能紹介動画を読み込めませんでした",
       "share": "共有",
       "share_description": "この機能紹介動画を、どこにでも投稿できる共有カードにします。",
-      "share_include_title": "動画のタイトルを含める"
+      "share_include_title": "動画のタイトルを含める",
+      "streaming": "オンライン再生"
     },
     "tagManagerList": {
       "change_color": "{{name}}の色を変更",
@@ -12784,7 +12785,14 @@
         "your_role": "あなたの役割",
         "session_card_source_links": "セッションカードの PR / Issue チップ",
         "session_card_source_links_desc": "各セッションのサイドバーカードに、そのセッションで言及されたプルリクエスト、マージリクエスト、Issue ごとにチップを表示します。オフにすると、チップの状態を保つ定期的なプロバイダー呼び出しも停止します。",
-        "failed_to_load_tips_preference": "ヒントの設定を読み込めませんでした。"
+        "failed_to_load_tips_preference": "ヒントの設定を読み込めませんでした。",
+        "feature_videos": "機能紹介動画",
+        "feature_videos_cached": "この端末に保存済み: {{total}} 件中 {{cached}} 件 · リリース {{release}}",
+        "feature_videos_downloading": "{{id}} をダウンロード中…",
+        "feature_videos_downloads_disabled": "動画のダウンロードは無効です。保存済みのクリップのみ再生されます。",
+        "feature_videos_download_all": "すべて今すぐダウンロード",
+        "failed_to_load_feature_video_status": "機能紹介動画のキャッシュ状態を読み込めませんでした",
+        "failed_to_start_feature_video_download": "ダウンロードを開始できませんでした"
       },
       "computerUsePanel": {
         "accessibility": "アクセシビリティ",

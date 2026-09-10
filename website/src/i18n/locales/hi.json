@@ -7561,7 +7561,8 @@
       "media_failed": "फ़ीचर वीडियो लोड नहीं हो सका",
       "share": "साझा करो",
       "share_description": "इस फ़ीचर वीडियो को शेयर कार्ड बनाओ जिसे कहीं भी पोस्ट कर सकते हो।",
-      "share_include_title": "वीडियो का शीर्षक शामिल करो"
+      "share_include_title": "वीडियो का शीर्षक शामिल करो",
+      "streaming": "ऑनलाइन चलता है"
     },
     "tagManagerList": {
       "change_color": "{{name}} का रंग बदलें",
@@ -12963,7 +12964,14 @@
         "your_role": "आपकी भूमिका",
         "session_card_source_links": "सत्र कार्ड पर PR और इश्यू चिप",
         "session_card_source_links_desc": "हर सत्र के साइडबार कार्ड पर उस सत्र में उल्लिखित प्रत्येक पुल रिक्वेस्ट, मर्ज रिक्वेस्ट और इश्यू के लिए एक चिप दिखाएँ। बंद करने पर इन चिप को अद्यतन रखने वाली नियमित प्रोवाइडर कॉल भी रुक जाती हैं।",
-        "failed_to_load_tips_preference": "टिप्स की प्राथमिकता लोड नहीं हो सकी।"
+        "failed_to_load_tips_preference": "टिप्स की प्राथमिकता लोड नहीं हो सकी।",
+        "feature_videos": "फ़ीचर वीडियो",
+        "feature_videos_cached": "इस डिवाइस पर सहेजे गए: {{total}} में से {{cached}} · रिलीज़ {{release}}",
+        "feature_videos_downloading": "{{id}} डाउनलोड हो रहा है…",
+        "feature_videos_downloads_disabled": "वीडियो डाउनलोड बंद हैं। केवल पहले से सहेजे गए क्लिप चलेंगे।",
+        "feature_videos_download_all": "सभी अभी डाउनलोड करें",
+        "failed_to_load_feature_video_status": "फ़ीचर वीडियो कैश स्थिति लोड नहीं हो सकी",
+        "failed_to_start_feature_video_download": "डाउनलोड शुरू नहीं हो सका"
       },
       "computerUsePanel": {
         "accessibility": "सुगम्यता",

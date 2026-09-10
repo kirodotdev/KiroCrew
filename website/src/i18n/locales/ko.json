@@ -7450,7 +7450,8 @@
       "media_failed": "기능 소개 동영상을 불러올 수 없습니다",
       "share": "공유",
       "share_description": "이 기능 소개 영상을 어디에나 게시할 수 있는 공유 카드로 만듭니다.",
-      "share_include_title": "영상 제목 포함"
+      "share_include_title": "영상 제목 포함",
+      "streaming": "온라인 재생"
     },
     "tagManagerList": {
       "change_color": "{{name}}의 색상 변경",
@@ -12784,7 +12785,14 @@
         "your_role": "사용자 역할",
         "session_card_source_links": "세션 카드의 PR·이슈 칩",
         "session_card_source_links_desc": "각 세션의 사이드바 카드에 그 세션에서 언급된 풀 리퀘스트, 머지 리퀘스트, 이슈마다 칩을 표시합니다. 끄면 칩 상태를 최신으로 유지하는 주기적인 공급자 호출도 중단됩니다.",
-        "failed_to_load_tips_preference": "팁 설정을 불러올 수 없습니다."
+        "failed_to_load_tips_preference": "팁 설정을 불러올 수 없습니다.",
+        "feature_videos": "기능 소개 영상",
+        "feature_videos_cached": "이 기기에 저장됨: {{total}}개 중 {{cached}}개 · 릴리스 {{release}}",
+        "feature_videos_downloading": "{{id}} 다운로드 중…",
+        "feature_videos_downloads_disabled": "동영상 다운로드가 꺼져 있습니다. 이미 저장된 클립만 재생됩니다.",
+        "feature_videos_download_all": "지금 모두 다운로드",
+        "failed_to_load_feature_video_status": "기능 소개 영상 캐시 상태를 불러오지 못했습니다",
+        "failed_to_start_feature_video_download": "다운로드를 시작할 수 없습니다"
       },
       "computerUsePanel": {
         "accessibility": "손쉬운 사용",

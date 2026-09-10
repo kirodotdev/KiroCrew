@@ -71,6 +71,7 @@ vi.mock('../api/client', () => ({
     dashboardConfig: vi.fn().mockResolvedValue({ social_share_enabled: false }),
     featureVideoNext: vi.fn(),
     featureVideoFeedback: vi.fn().mockResolvedValue({ ok: true }),
+    featureVideoProbe: vi.fn().mockResolvedValue({ ok: true }),
   },
   isAuthBannerShown: vi.fn(() => false),
   ApiError: class ApiError extends Error {
@@ -102,6 +103,7 @@ const clip = {
   src: '/app-assets/feature-videos/placeholder.mp4',
   poster: '/app-assets/feature-videos/placeholder.jpg',
   duration_s: 10,
+  source: 'local' as const,
 }
 
 const startupVideo = () => screen.queryByTestId('startup-video')
@@ -126,12 +128,17 @@ beforeEach(() => {
   localStorage.clear()
   resetStartupVideoLaunchGuardForTests()
   statusOverride.value = {}
-  // The modal HEAD-probes the clip through the global `fetch` before it opens.
-  // The `api` mock above never sees that request, so answer it here -- 2xx, so the
-  // positive control in the first test can actually open.
+  // App's boot path still reaches `fetch` directly in places the `api` mock does
+  // not cover, so a permissive stub stands in for the network. The clip's
+  // reachability is NOT one of those places any more -- it goes through
+  // `api.featureVideoProbe`, answered below.
   vi.stubGlobal('fetch', vi.fn<typeof fetch>().mockResolvedValue(new Response(null, { status: 200 })))
   mockedApi.featureVideoNext.mockReset()
-  mockedApi.featureVideoNext.mockResolvedValue({ video: clip, enabled: true } as never)
+  mockedApi.featureVideoNext.mockResolvedValue({
+    video: clip, enabled: true, download_enabled: true,
+  } as never)
+  mockedApi.featureVideoProbe.mockReset()
+  mockedApi.featureVideoProbe.mockResolvedValue({ ok: true } as never)
   mockedApi.featureVideoFeedback.mockClear()
   mockedApi.chatSlots.mockResolvedValue([] as never)
   // Restore the completed-first-run boot. The first-run cases below override this per

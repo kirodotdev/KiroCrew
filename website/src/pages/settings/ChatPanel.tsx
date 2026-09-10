@@ -3,7 +3,8 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { SettingsSection, SettingsCard, SettingsToggle, SettingsSelect, SettingsInput, SettingsButtonGroup } from '../../components/settings'
 import { Btn } from '../../components/ui'
 import { loadChatConfig, saveChatConfig, type ChatConfig, type ContentWidth, type DashboardConfig, type MemoryMode, type SendMode } from '../chat/ChatSettings'
-import { api } from '../../api/client'
+import { api, type FeatureVideoStatus } from '../../api/client'
+import { useAppSelector } from '../../store'
 import { serializeDefaultMemoryModeUpdate } from '../../api/queryClient'
 import { useOptimisticConfigPaths, setConfigPathValue } from './useOptimisticConfigPaths'
 import { useAvailableModels } from '../../hooks/useAvailableModels'
@@ -36,6 +37,9 @@ const RESTORE_OPTIONS = ['15', '30', '60', '120', '360', '720', '1440', '0']
 function restoreLabels(): string[] {
   return ['15m', '30m', '1h', '2h', '6h', '12h', '24h', i18nT('pages.settings.chatPanel.no_limit')]
 }
+/** How often the feature-video cache readout re-reads while the panel is open. */
+const FEATURE_VIDEO_POLL_MS = 15_000
+
 const COMPACT_OPTIONS = ['20', '40', '60', '70', '80', '90']
 const COMPACT_LABELS = ['20% (aggressive)', '40%', '60%', '70% (default)', '80%', '90%']
 
@@ -212,6 +216,66 @@ export function ChatPanel() {
   })
   const tipsConfigOff = tipsQ.data ? !tipsQ.data.enabled_config : false
   const shownOptedOut = overlay.shown('tipsStatus.opted_out', tipsQ.data?.opted_out)
+
+  // ── Feature-video cache (read-only readout + one manual action) ──
+  //
+  // Both calls carry the ACTIVE SLOT's key. The status route's read gate reads
+  // "not restricted" for a missing key and for the shared `dashboard:ui`
+  // placeholder alike, so a request without one is served the permanent
+  // engagement history even from a temporary session -- the one kind of session
+  // whose contract is that reads are withheld. Naming the slot is what makes the
+  // server's own gate reachable, exactly as the startup modal does for the two
+  // routes it calls.
+  const activeSlot = useAppSelector(s => s.chat.activeSlot)
+  const fvSessionKey = activeSlot ? `dashboard:${activeSlot}` : undefined
+  //
+  // Polled rather than pushed, and only while this panel is mounted: the clips
+  // are fetched by a background pass that reports no events, so the only way to
+  // watch it move is to ask. 15s is slow enough to be free and quick enough that
+  // a clip finishing feels live. Closing the panel unmounts this and the polling
+  // stops with it -- which is why the interval is safe to leave running.
+  //
+  // The key is IN the query key: a restricted slot and an ordinary one get
+  // different answers from the same route, so one cache entry for both would
+  // serve whichever landed first.
+  const fvQ = useQuery<FeatureVideoStatus>({
+    queryKey: ['featureVideoStatus', fvSessionKey],
+    queryFn: () => api.featureVideoStatus(fvSessionKey),
+    refetchInterval: FEATURE_VIDEO_POLL_MS,
+  })
+  // Kicks the background pass and returns immediately; the readout above is what
+  // reports progress, so this refetches once rather than tracking the work.
+  const fvFetchMut = useMutation({
+    mutationFn: () => api.featureVideoFetchAll(fvSessionKey),
+    onSuccess: () => { void qc.invalidateQueries({ queryKey: ['featureVideoStatus'] }) },
+  })
+  const fv = fvQ.data
+  /**
+   * One line, three states, in the order that the most specific wins.
+   *
+   * Returns null while the read is still out, when the feature is off, and when
+   * the gateway reports no cache at all -- so the row is absent rather than
+   * showing a zero-of-zero that reads like an empty cache, or a policy that was
+   * never stated.
+   */
+  const featureVideoStatusLine = (): string | null => {
+    if (!fv || !fv.enabled) return null
+    // No `download_enabled` means this gateway has no cache to report -- the
+    // route answers 200 with an older payload that carries none of these
+    // fields. Show nothing rather than reading the absence as `false`, which
+    // would put a download policy on screen that does not exist.
+    if (fv.download_enabled === undefined) return null
+    if (fv.downloading) {
+      return i18nT('pages.settings.chatPanel.feature_videos_downloading', { id: fv.downloading })
+    }
+    if (!fv.download_enabled) {
+      return i18nT('pages.settings.chatPanel.feature_videos_downloads_disabled')
+    }
+    return i18nT('pages.settings.chatPanel.feature_videos_cached', {
+      cached: fv.cached, total: fv.total, release: fv.release,
+    })
+  }
+  const featureVideoLine = featureVideoStatusLine()
 
   // Only the CHANGED keys go on the wire, the way `BrowserPanel`'s own dashboard
   // mutation already does it: the config handler applies whichever keys the body
@@ -799,6 +863,59 @@ export function ChatPanel() {
           <ErrorNotice
             variant="inline"
             message={tipsQ.isError ? i18nT('pages.settings.chatPanel.failed_to_load_tips_preference') : null}
+          />
+          {/* Feature-video cache. A READOUT, not a setting: whether the clips play
+              at all is `feature_videos.enabled` on the backend, and this row only
+              says what is on disk for the current release plus the one action that
+              is the user's to take. It sits beside Feature Tips because the two
+              are the same discovery surface, and it is absent entirely when the
+              feature is off -- a cache count for something that never plays is
+              noise.
+
+              The geometry below is `SettingsToggle`'s, copied deliberately rather
+              than approximated: `py-1.5`, a `flex-1 min-w-0 mr-4` caption block, a
+              13px semibold label and a 12px muted sub-line. This row sits between
+              two toggles, and a few pixels of drift in the label's left edge or
+              size reads as a foreign component dropped into the list. It is not a
+              `SettingsToggle` itself because it writes no config -- the only
+              control here is an action. */}
+          {featureVideoLine && (
+            <div className="flex items-center justify-between py-1.5">
+              <div className="flex-1 min-w-0 mr-4">
+                <div className="text-[13px] font-semibold text-text">
+                  {i18nT('pages.settings.chatPanel.feature_videos')}
+                </div>
+                <p data-testid="feature-video-status" className="text-[12px] text-muted mt-0.5 mb-0">
+                  {featureVideoLine}
+                </p>
+              </div>
+              {/* Hidden, not disabled, when policy forbids downloads: a control
+                  whose only outcome is a refusal explains a policy the user
+                  cannot act on. Same render-gate posture as the share entry on
+                  the startup clip. Disabled only while a fetch is already
+                  running, where pressing again would queue the same work twice. */}
+              {fv?.download_enabled && (
+                <Btn
+                  onClick={() => fvFetchMut.mutate()}
+                  disabled={fvFetchMut.isPending || !!fv.downloading}
+                  aria-busy={fvFetchMut.isPending}
+                >
+                  {i18nT('pages.settings.chatPanel.feature_videos_download_all')}
+                </Btn>
+              )}
+            </div>
+          )}
+          {/* Two separate failures, and the user can act on neither by retrying a
+              toggle, so each says which half broke. No hand-off: this panel's
+              `localRoleOther` / `localBudget` / `localKeepChars` drafts would be
+              unmounted by the navigation. */}
+          <ErrorNotice
+            variant="inline"
+            message={
+              fvQ.isError ? i18nT('pages.settings.chatPanel.failed_to_load_feature_video_status')
+              : fvFetchMut.isError ? i18nT('pages.settings.chatPanel.failed_to_start_feature_video_download')
+              : null
+            }
           />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.folder_suggestions')} description={i18nT('pages.settings.chatPanel.offer_to_file_a_new_session_into_a_matching_fold')} checked={dashCfg.folder_suggestions_enabled} onChange={v => setDash({ folder_suggestions_enabled: v })} disabled={dashDisabled} />
         </SettingsCard>

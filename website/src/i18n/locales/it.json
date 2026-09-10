@@ -7672,7 +7672,8 @@
       "media_failed": "Non è stato possibile caricare il video della funzionalità",
       "share": "Condividi",
       "share_description": "Trasforma questo video della funzione in una scheda che puoi pubblicare dove vuoi.",
-      "share_include_title": "Includi il titolo del video"
+      "share_include_title": "Includi il titolo del video",
+      "streaming": "Riproduce online"
     },
     "tagManagerList": {
       "change_color": "Cambia il colore di {{name}}",
@@ -13140,7 +13141,14 @@
         "your_role": "Il tuo ruolo",
         "session_card_source_links": "Chip di PR e issue sulle schede di sessione",
         "session_card_source_links_desc": "Mostra sulla scheda di ogni sessione nella barra laterale un chip per ogni pull request, merge request e issue citata in quella sessione. Se disattivato, si fermano anche le chiamate periodiche al provider che tengono aggiornati quei chip.",
-        "failed_to_load_tips_preference": "Impossibile caricare la preferenza dei suggerimenti."
+        "failed_to_load_tips_preference": "Impossibile caricare la preferenza dei suggerimenti.",
+        "feature_videos": "Video sulle funzionalità",
+        "feature_videos_cached": "Salvati su questo dispositivo: {{cached}} su {{total}} · versione {{release}}",
+        "feature_videos_downloading": "Download di {{id}} in corso…",
+        "feature_videos_downloads_disabled": "I download dei video sono disattivati. Verranno riprodotti solo i clip già salvati.",
+        "feature_videos_download_all": "Scarica tutto ora",
+        "failed_to_load_feature_video_status": "Impossibile caricare lo stato della cache dei video sulle funzionalità",
+        "failed_to_start_feature_video_download": "Impossibile avviare il download"
       },
       "computerUsePanel": {
         "accessibility": "Accessibilità",

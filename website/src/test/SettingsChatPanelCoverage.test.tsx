@@ -87,20 +87,37 @@ vi.mock('../api/client', () => ({
     updateSttConfig: () => Promise.resolve({}),
     tipsStatus: tipsStatusMock,
     tipsFeedback: tipsFeedbackMock,
+    // The panel reads the feature-video cache on mount. Downloads OFF here, so
+    // the readout renders its policy line and no button -- these files measure
+    // other settings, and a live control would put a stray button in their reach.
+    featureVideoStatus: () => Promise.resolve({
+      enabled: true, download_enabled: false, release: 'r1',
+      cached: 0, total: 0, downloading: null,
+    }),
+    featureVideoFetchAll: () => Promise.resolve({ ok: true }),
   },
 }))
 
 import { ChatPanel } from '../pages/settings/ChatPanel'
 import { resolveDefaultMemoryMode } from '../api/queryClient'
 
+import { Provider } from 'react-redux'
+
+// ChatPanel reads the active slot from redux to name the session on its
+// feature-video calls, so these renders need a store. A FRESH one per file,
+// not the app singleton: a shared store would carry `activeSlot` across suites.
+import { createTestStore } from './helpers'
+
 const LS_KEY = 'mc-chat-config'
 
 function wrap() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
+    <Provider store={createTestStore()}>
     <QueryClientProvider client={qc}>
       <ChatPanel />
     </QueryClientProvider>
+    </Provider>
   )
 }
 

@@ -7672,7 +7672,8 @@
       "media_failed": "No se pudo cargar el vídeo de la función",
       "share": "Compartir",
       "share_description": "Convierte este vídeo de la función en una tarjeta que puedes publicar donde quieras.",
-      "share_include_title": "Incluir el título del vídeo"
+      "share_include_title": "Incluir el título del vídeo",
+      "streaming": "Se reproduce en línea"
     },
     "tagManagerList": {
       "change_color": "Cambiar el color de {{name}}",
@@ -13141,7 +13142,14 @@
         "your_role": "Tu rol",
         "session_card_source_links": "Chips de PR e incidencias en las tarjetas de sesión",
         "session_card_source_links_desc": "Muestra en la tarjeta de cada sesión de la barra lateral un chip por cada pull request, merge request o incidencia mencionada en esa sesión. Al desactivarlo también se detienen las llamadas periódicas al proveedor que mantienen esos chips al día.",
-        "failed_to_load_tips_preference": "No se pudo cargar la preferencia de consejos."
+        "failed_to_load_tips_preference": "No se pudo cargar la preferencia de consejos.",
+        "feature_videos": "Vídeos de funciones",
+        "feature_videos_cached": "Guardados en este dispositivo: {{cached}} de {{total}} · versión {{release}}",
+        "feature_videos_downloading": "Descargando {{id}}…",
+        "feature_videos_downloads_disabled": "Las descargas de vídeo están desactivadas. Solo se reproducirán los clips ya guardados.",
+        "feature_videos_download_all": "Descargar todo ahora",
+        "failed_to_load_feature_video_status": "No se pudo cargar el estado de la caché de vídeos de funciones",
+        "failed_to_start_feature_video_download": "No se pudo iniciar la descarga"
       },
       "computerUsePanel": {
         "accessibility": "Accesibilidad",

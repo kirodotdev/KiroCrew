@@ -18,6 +18,12 @@
  *     acknowledgement; nothing that reaches an intent URL exists until it is
  *     pressed.
  *
+ *   ?scene=streaming — the clip is still on the CDN. The frame shows the hint
+ *     beside the title that says the bytes come over the network, which is the
+ *     disclosure the remote path adds. The `src` stays the local fixture file so
+ *     the poster still draws for the photograph; what the scene exercises is the
+ *     `source` field, which is what the component actually branches on.
+ *
  * `?motion=reduce` forces the reduce-motion branch, so the entrance frame can be
  * shown to be static rather than mid-transition.
  */
@@ -32,7 +38,9 @@ import { applyFallbackTheme } from '../src/apps/mochi/src/shared/themes'
 import '../src/index.css'
 
 const params = new URLSearchParams(location.search)
-const shareEnabled = params.get('scene') === 'share-on'
+const scene = params.get('scene')
+const shareEnabled = scene === 'share-on'
+const streaming = scene === 'streaming'
 
 document.documentElement.setAttribute('data-theme', 'kiro-dark')
 applyFallbackTheme()
@@ -56,8 +64,14 @@ const FIXTURE = {
     // The real contract shape: `feature_videos.CATALOG` stores a bare docs
     // filename, and no resolved `doc_link` ships beside it. Never rendered.
     doc: 'feature-tips.md',
+    // Which of the two offers this is. `'remote'` is what puts the streaming hint
+    // on the card and switches the player to `preload="metadata"`.
+    source: streaming ? 'remote' : 'local',
   },
   enabled: true,
+  // Required for a remote offer to be shown at all: the modal fails closed when
+  // the install may not pull bytes.
+  download_enabled: true,
 }
 
 // Transport-only stub. The component still goes through `api.featureVideoNext`,
@@ -76,12 +90,14 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
       status: 200, headers: { 'Content-Type': 'application/json' },
     }))
   }
-  // The modal's pre-open HEAD probe on the clip. Vite's dev server would answer
-  // this 200 on its own; answering here keeps the capture independent of how the
-  // dev server treats HEAD, so the dialog opens for the screenshot the same way
-  // regardless.
-  if (init?.method === 'HEAD' && url.includes('/capture/assets/')) {
-    return Promise.resolve(new Response(null, { status: 200 }))
+  // The modal's pre-open reachability probe, asked for the streamed scene only --
+  // a cached clip never probes. It is a real API route with no gateway behind this
+  // page, so without an answer here that scene's dialog never opens and the
+  // capture photographs an empty viewport.
+  if (url.includes('/api/feature-videos/probe')) {
+    return Promise.resolve(new Response(JSON.stringify({ ok: true }), {
+      status: 200, headers: { 'Content-Type': 'application/json' },
+    }))
   }
   return realFetch(input as RequestInfo, init)
 }) as typeof window.fetch

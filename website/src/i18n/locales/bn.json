@@ -7561,7 +7561,8 @@
       "media_failed": "ফিচার ভিডিওটি লোড করা যায়নি",
       "share": "ভাগ করো",
       "share_description": "এই ফিচার ভিডিওকে শেয়ার কার্ডে পরিণত করো যা যেকোনো জায়গায় পোস্ট করা যায়।",
-      "share_include_title": "ভিডিওর শিরোনাম যোগ করো"
+      "share_include_title": "ভিডিওর শিরোনাম যোগ করো",
+      "streaming": "অনলাইনে চলে"
     },
     "tagManagerList": {
       "change_color": "{{name}} এর রং পরিবর্তন করুন",
@@ -12963,7 +12964,14 @@
         "your_role": "আপনার ভূমিকা",
         "session_card_source_links": "সেশন কার্ডে PR ও ইস্যু চিপ",
         "session_card_source_links_desc": "প্রতিটি সেশনের সাইডবার কার্ডে, সেই সেশনে উল্লেখ করা প্রতিটি পুল রিকোয়েস্ট, মার্জ রিকোয়েস্ট ও ইস্যুর জন্য একটি চিপ দেখায়। বন্ধ করলে এই চিপগুলোর অবস্থা হালনাগাদ রাখা নিয়মিত প্রোভাইডার কলও বন্ধ হয়ে যায়।",
-        "failed_to_load_tips_preference": "টিপস পছন্দ লোড করা যায়নি।"
+        "failed_to_load_tips_preference": "টিপস পছন্দ লোড করা যায়নি।",
+        "feature_videos": "ফিচার ভিডিও",
+        "feature_videos_cached": "এই ডিভাইসে সংরক্ষিত: {{total}}-এর মধ্যে {{cached}} · রিলিজ {{release}}",
+        "feature_videos_downloading": "{{id}} ডাউনলোড হচ্ছে…",
+        "feature_videos_downloads_disabled": "ভিডিও ডাউনলোড বন্ধ আছে। শুধু আগে সংরক্ষিত ক্লিপগুলিই চলবে।",
+        "feature_videos_download_all": "এখনই সব ডাউনলোড করুন",
+        "failed_to_load_feature_video_status": "ফিচার ভিডিও ক্যাশের অবস্থা লোড করা যায়নি",
+        "failed_to_start_feature_video_download": "ডাউনলোড শুরু করা যায়নি"
       },
       "computerUsePanel": {
         "accessibility": "সহজগম্যতা",

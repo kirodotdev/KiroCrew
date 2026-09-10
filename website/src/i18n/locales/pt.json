@@ -7672,7 +7672,8 @@
       "media_failed": "Não foi possível carregar o vídeo do recurso",
       "share": "Compartilhar",
       "share_description": "Transforme este vídeo do recurso em um card que você pode publicar em qualquer lugar.",
-      "share_include_title": "Incluir o título do vídeo"
+      "share_include_title": "Incluir o título do vídeo",
+      "streaming": "Reproduz online"
     },
     "tagManagerList": {
       "change_color": "Alterar a cor de {{name}}",
@@ -13140,7 +13141,14 @@
         "your_role": "Sua função",
         "session_card_source_links": "Chips de PR e issues nos cartões de sessão",
         "session_card_source_links_desc": "Mostra no cartão de cada sessão, na barra lateral, um chip para cada pull request, merge request e issue mencionada nessa sessão. Ao desativar, também param as chamadas periódicas ao provedor que mantêm esses chips atualizados.",
-        "failed_to_load_tips_preference": "Não foi possível carregar a preferência de dicas."
+        "failed_to_load_tips_preference": "Não foi possível carregar a preferência de dicas.",
+        "feature_videos": "Vídeos de recursos",
+        "feature_videos_cached": "Salvos neste dispositivo: {{cached}} de {{total}} · versão {{release}}",
+        "feature_videos_downloading": "Baixando {{id}}…",
+        "feature_videos_downloads_disabled": "Os downloads de vídeo estão desativados. Só os clipes já salvos serão reproduzidos.",
+        "feature_videos_download_all": "Baixar tudo agora",
+        "failed_to_load_feature_video_status": "Não foi possível carregar o estado da cache de vídeos de recursos",
+        "failed_to_start_feature_video_download": "Não foi possível iniciar o download"
       },
       "computerUsePanel": {
         "accessibility": "Acessibilidade",

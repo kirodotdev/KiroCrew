@@ -7561,7 +7561,8 @@
       "media_failed": "Feature-Video konnte nicht geladen werden",
       "share": "Teilen",
       "share_description": "Verwandeln Sie dieses Feature-Video in eine Karte, die Sie überall posten können.",
-      "share_include_title": "Videotitel einschließen"
+      "share_include_title": "Videotitel einschließen",
+      "streaming": "Läuft online"
     },
     "tagManagerList": {
       "change_color": "Farbe von {{name}} ändern",
@@ -12962,7 +12963,14 @@
         "your_role": "Ihre Rolle",
         "session_card_source_links": "PR- und Issue-Chips auf Sitzungskarten",
         "session_card_source_links_desc": "Zeigt auf der Seitenleistenkarte jeder Sitzung einen Chip für jeden Pull Request, jeden Merge Request und jedes Issue, das in dieser Sitzung erwähnt wird. Ausgeschaltet entfallen auch die regelmäßigen Anbieteraufrufe, die diese Chips aktuell halten.",
-        "failed_to_load_tips_preference": "Die Einstellung für Tipps konnte nicht geladen werden."
+        "failed_to_load_tips_preference": "Die Einstellung für Tipps konnte nicht geladen werden.",
+        "feature_videos": "Feature-Videos",
+        "feature_videos_cached": "Auf diesem Gerät gespeichert: {{cached}} von {{total}} · Release {{release}}",
+        "feature_videos_downloading": "{{id}} wird heruntergeladen…",
+        "feature_videos_downloads_disabled": "Video-Downloads sind ausgeschaltet. Es laufen nur bereits gespeicherte Clips.",
+        "feature_videos_download_all": "Jetzt alle herunterladen",
+        "failed_to_load_feature_video_status": "Cache-Status der Feature-Videos konnte nicht geladen werden",
+        "failed_to_start_feature_video_download": "Download konnte nicht gestartet werden"
       },
       "computerUsePanel": {
         "accessibility": "Bedienungshilfen",

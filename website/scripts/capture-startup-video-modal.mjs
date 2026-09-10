@@ -11,6 +11,10 @@
  *   02-share-on.png   governance granted — the share entry appears.
  *   03-share-card.png the existing chat share card, reached from that entry,
  *                     carrying the clip's title and its blurb + doc link.
+ *   04-streaming.png  a clip still on the CDN — the hint beside the title that
+ *                     says the bytes come over the network, on a player that still
+ *                     preloads nothing. Asserted, since "which preload" is a claim
+ *                     about the DOM, not a look.
  *   open-and-play.webm the entrance, an attempted play, and the acknowledgement
  *                     closing it — a still cannot show an animated entrance. The
  *                     play only appears when the capture browser has an H.264
@@ -68,6 +72,12 @@ async function scene(name, query) {
   for (const id of ['share-x', 'share-linkedin']) {
     if (await page.locator(`[data-testid="${id}"]`).count() !== 0) fail(`${id} reachable with governance off`)
   }
+  // A cached clip fetches nothing until the user presses play.
+  const preload = await page.locator('[data-testid="startup-video"]').getAttribute('preload')
+  if (preload !== 'none') fail(`cached clip preloads "${preload}" — expected "none"`)
+  if (await page.locator('[data-testid="startup-video-streaming"]').count() !== 0) {
+    fail('streaming hint shown for a cached clip')
+  }
   await page.screenshot({ path: join(OUT, '01-share-off.png') })
   await page.close()
 }
@@ -89,6 +99,20 @@ async function scene(name, query) {
   await page.waitForSelector('[data-testid="share-card"]', { timeout: 15_000 })
   await page.waitForTimeout(400)
   await page.screenshot({ path: join(OUT, '03-share-card.png') })
+  await page.close()
+}
+
+/* ── 04 a clip that streams from the CDN ─────────────────────────────────── */
+{
+  const page = await scene('streaming', 'scene=streaming')
+  if (await page.locator('[data-testid="startup-video-streaming"]').count() !== 1) {
+    fail('streaming hint missing for a remote clip')
+  }
+  // Nothing preloads, for either source: the chip discloses a cost the user has
+  // not paid, so reading the header first would make it false.
+  const preload = await page.locator('[data-testid="startup-video"]').getAttribute('preload')
+  if (preload !== 'none') fail(`remote clip preloads "${preload}" — expected "none"`)
+  await page.screenshot({ path: join(OUT, '04-streaming.png') })
   await page.close()
 }
 

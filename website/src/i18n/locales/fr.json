@@ -7672,7 +7672,8 @@
       "media_failed": "Impossible de charger la vidéo de la fonctionnalité",
       "share": "Partager",
       "share_description": "Transformez cette vidéo de fonctionnalité en carte à publier où vous voulez.",
-      "share_include_title": "Inclure le titre de la vidéo"
+      "share_include_title": "Inclure le titre de la vidéo",
+      "streaming": "Lecture en ligne"
     },
     "tagManagerList": {
       "change_color": "Changer la couleur de {{name}}",
@@ -13141,7 +13142,14 @@
         "your_role": "Votre rôle",
         "session_card_source_links": "Puces PR et issues sur les cartes de session",
         "session_card_source_links_desc": "Affiche sur la carte de chaque session, dans la barre latérale, une puce pour chaque pull request, merge request ou issue mentionnée dans cette session. Désactivé, cela arrête aussi les appels périodiques au fournisseur qui tiennent ces puces à jour.",
-        "failed_to_load_tips_preference": "Impossible de charger la préférence des astuces."
+        "failed_to_load_tips_preference": "Impossible de charger la préférence des astuces.",
+        "feature_videos": "Vidéos de fonctionnalités",
+        "feature_videos_cached": "Enregistrés sur cet appareil : {{cached}} sur {{total}} · version {{release}}",
+        "feature_videos_downloading": "Téléchargement de {{id}}…",
+        "feature_videos_downloads_disabled": "Le téléchargement des vidéos est désactivé. Seuls les clips déjà enregistrés seront lus.",
+        "feature_videos_download_all": "Tout télécharger maintenant",
+        "failed_to_load_feature_video_status": "Impossible de charger l’état du cache des vidéos de fonctionnalités",
+        "failed_to_start_feature_video_download": "Impossible de démarrer le téléchargement"
       },
       "computerUsePanel": {
         "accessibility": "Accessibilité",

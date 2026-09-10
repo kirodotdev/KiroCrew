@@ -1426,7 +1426,8 @@
       "media_failed": "Feature video could not be loaded",
       "share": "Share",
       "share_description": "Turn this feature video into a share card you can post anywhere.",
-      "share_include_title": "Include the video title"
+      "share_include_title": "Include the video title",
+      "streaming": "Plays online"
     },
     "tailnetMobile": {
       "automatic_https": "After HTTPS is enabled for this tailnet, Tailscale creates and renews the private certificate automatically.",
@@ -5284,7 +5285,14 @@
         "failed_to_save_fallback_model": "Failed to save fallback model",
         "session_card_source_links": "PR and Issue Chips on Session Cards",
         "session_card_source_links_desc": "Show a chip on each session's sidebar card for every pull request, merge request and issue mentioned in that session. Turning it off also stops the periodic provider calls that keep those chips up to date.",
-        "failed_to_load_tips_preference": "Failed to load tips preference."
+        "failed_to_load_tips_preference": "Failed to load tips preference.",
+        "feature_videos": "Feature Videos",
+        "feature_videos_cached": "Saved on this device: {{cached}} of {{total}} · release {{release}}",
+        "feature_videos_downloading": "Downloading {{id}}…",
+        "feature_videos_downloads_disabled": "Video downloads are turned off. Only clips already saved will play.",
+        "feature_videos_download_all": "Download all now",
+        "failed_to_load_feature_video_status": "Failed to load feature-video cache status",
+        "failed_to_start_feature_video_download": "Failed to start the download"
       },
       "displayPanel": {
         "color": "Color {{n}}",

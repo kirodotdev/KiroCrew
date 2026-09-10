@@ -7450,7 +7450,8 @@
       "media_failed": "无法加载功能视频",
       "share": "共享",
       "share_description": "把这个功能视频变成可以发布到任何地方的分享卡片。",
-      "share_include_title": "包含视频标题"
+      "share_include_title": "包含视频标题",
+      "streaming": "在线播放"
     },
     "tagManagerList": {
       "change_color": "更改{{name}}的颜色",
@@ -12784,7 +12785,14 @@
         "your_role": "你的角色",
         "session_card_source_links": "会话卡片上的 PR 与 issue 标签",
         "session_card_source_links_desc": "在每个会话的侧边栏卡片上，为该会话中提到的每个拉取请求、合并请求和 issue 显示一个标签。关闭后，也会停止用于更新这些标签状态的定期服务商调用。",
-        "failed_to_load_tips_preference": "无法加载提示偏好设置。"
+        "failed_to_load_tips_preference": "无法加载提示偏好设置。",
+        "feature_videos": "功能视频",
+        "feature_videos_cached": "已保存在本机：{{total}} 个中的 {{cached}} 个 · 版本 {{release}}",
+        "feature_videos_downloading": "正在下载 {{id}}…",
+        "feature_videos_downloads_disabled": "视频下载已关闭。只有已保存的片段才能播放。",
+        "feature_videos_download_all": "立即下载全部",
+        "failed_to_load_feature_video_status": "无法加载功能视频缓存状态",
+        "failed_to_start_feature_video_download": "无法开始下载"
       },
       "computerUsePanel": {
         "accessibility": "辅助功能",

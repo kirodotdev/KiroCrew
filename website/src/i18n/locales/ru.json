@@ -7783,7 +7783,8 @@
       "media_failed": "Не удалось загрузить видео о функции",
       "share": "Поделиться",
       "share_description": "Превратите это видео о функции в карточку, которую можно опубликовать где угодно.",
-      "share_include_title": "Добавить название видео"
+      "share_include_title": "Добавить название видео",
+      "streaming": "Играет из сети"
     },
     "tagManagerList": {
       "change_color": "Изменить цвет {{name}}",
@@ -13319,7 +13320,14 @@
         "your_role": "Ваша роль",
         "session_card_source_links": "Чипы пул-реквестов и задач на карточках сессий",
         "session_card_source_links_desc": "Показывает на карточке каждой сессии в боковой панели чип для каждого пул-реквеста, мерж-реквеста и задачи, упомянутых в этой сессии. Если выключить, прекратятся и периодические обращения к провайдеру, которые обновляют состояние этих чипов.",
-        "failed_to_load_tips_preference": "Не удалось загрузить настройку подсказок."
+        "failed_to_load_tips_preference": "Не удалось загрузить настройку подсказок.",
+        "feature_videos": "Видео о возможностях",
+        "feature_videos_cached": "Сохранено на этом устройстве: {{cached}} из {{total}} · выпуск {{release}}",
+        "feature_videos_downloading": "Загрузка {{id}}…",
+        "feature_videos_downloads_disabled": "Загрузка видео отключена. Будут воспроизводиться только уже сохранённые клипы.",
+        "feature_videos_download_all": "Загрузить все сейчас",
+        "failed_to_load_feature_video_status": "Не удалось загрузить состояние кэша видео о возможностях",
+        "failed_to_start_feature_video_download": "Не удалось начать загрузку"
       },
       "computerUsePanel": {
         "accessibility": "Универсальный доступ",
