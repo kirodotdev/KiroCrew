@@ -582,8 +582,8 @@ class TestCcExposePreReadIsNonFatal:
 
         The read sits in sandbox setup, so the exception killed the spawn
         outright. Measured consequence on one host: every cc-mode spawn died,
-        which is the whole ``command`` cron kind (``run_command_sandboxed`` uses
-        ``mode="cc"`` while ``run_script_sandboxed`` uses ``mode="standard"``),
+        which is both cron kinds (``run_command_sandboxed`` and
+        ``run_script_sandboxed`` both use ``mode="cc"``),
         and the repeated failures latched three jobs into auto-pause.
         """
         src = tmp_path / "config"

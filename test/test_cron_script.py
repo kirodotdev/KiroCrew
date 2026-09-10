@@ -2236,3 +2236,95 @@ class TestPostKillDrainTimeoutHardening:
         }
         mock_proc.stdout.close.assert_called_once()
         mock_proc.stderr.close.assert_called_once()
+
+
+class TestCronSpawnTiersAreAligned:
+    """The two cron spawn paths must ask for the SAME sandbox tier.
+
+    A script body is agent-written and a command body is a fixed string the vet
+    already narrowed, so the script path is the HIGHER-capability surface of the
+    two. It nonetheless ran ``standard`` while the command path ran ``cc``,
+    leaving ``~/.aws/credentials``, the SSO cache, ``~/.kube``, ``~/.netrc``,
+    ``~/.git-credentials``, ``~/.npmrc`` and ``~/.pypirc`` readable by the more
+    capable child. These tests pin the alignment rather than the literal, so a
+    later change that moves ONE path re-fails here instead of silently
+    re-opening the gap.
+    """
+
+    def _capture_mode(self, monkeypatch):
+        """Record the ``mode`` each wrap_argv call asks for."""
+        seen: list[str] = []
+
+        def _fake(argv, **kwargs):
+            seen.append(kwargs.get("mode", "<default>"))
+            return (list(argv), None)
+
+        monkeypatch.setattr("kiro_crew.cron_script.wrap_argv", _fake)
+        return seen
+
+    def test_an_ungranted_script_asks_for_the_same_tier_as_a_command(
+        self, tmp_path, monkeypatch, posix_test_shell
+    ):
+        """The alignment itself: neither path may be wider than the other."""
+        monkeypatch.setattr(
+            "kiro_crew.cron_script._resolve_command_shell", lambda: posix_test_shell
+        )
+        monkeypatch.setattr("kiro_crew.cron_script.Path.home", lambda: tmp_path)
+        crons_dir = tmp_path / ".kirocrew" / "crons"
+        crons_dir.mkdir(parents=True)
+        script = crons_dir / "aligned.py"
+        script.write_text("def run(ctx):\n    return None\n")
+
+        script_modes = self._capture_mode(monkeypatch)
+        run_script_sandboxed(f"{script}:run", job_id="job-align", timeout=10)
+
+        command_modes = self._capture_mode(monkeypatch)
+        run_command_sandboxed("true", timeout=10)
+
+        assert script_modes, "the script path never reached wrap_argv"
+        assert command_modes, "the command path never reached wrap_argv"
+        # The ungranted script spawn is the LAST wrap_argv call the script path
+        # makes (a shell probe may precede it); same for the command path.
+        assert script_modes[-1] == command_modes[-1]
+
+    def test_an_ungranted_script_is_not_handed_the_wide_profile(self, tmp_path, monkeypatch):
+        """``standard`` leaves every credential store open — never the default here."""
+        monkeypatch.setattr("kiro_crew.cron_script.Path.home", lambda: tmp_path)
+        crons_dir = tmp_path / ".kirocrew" / "crons"
+        crons_dir.mkdir(parents=True)
+        script = crons_dir / "narrow.py"
+        script.write_text("def run(ctx):\n    return None\n")
+
+        modes = self._capture_mode(monkeypatch)
+        run_script_sandboxed(f"{script}:run", job_id="job-narrow", timeout=10)
+
+        assert modes[-1] == "cc"
+        assert "standard" not in modes
+
+    def test_a_secret_granted_script_still_takes_the_narrowest_tier(self, tmp_path, monkeypatch):
+        """A grant is the operator-approved route, and it tightens rather than widens.
+
+        This is the escape hatch a script needing a host credential uses, so it
+        must keep running ``strict`` — the alignment above must not have widened
+        the granted branch to ``cc``.
+        """
+        monkeypatch.setattr("kiro_crew.cron_script.Path.home", lambda: tmp_path)
+        crons_dir = tmp_path / ".kirocrew" / "crons"
+        crons_dir.mkdir(parents=True)
+        script = crons_dir / "granted.py"
+        script.write_text("def run(ctx):\n    return None\n")
+
+        modes = self._capture_mode(monkeypatch)
+        monkeypatch.setattr(
+            "kiro_crew.cron_script._secret_env_precheck",
+            lambda *a, **k: ({"TOKEN": "v"}, ""),
+        )
+        run_script_sandboxed(
+            f"{script}:run",
+            job_id="job-granted",
+            timeout=10,
+            secret_env={"TOKEN": "vault:t"},
+            secret_env_pin="pin",
+        )
+
+        assert modes[-1] == "strict"

@@ -798,12 +798,16 @@ def _vet_script_contents(text: str) -> str | None:
     A ``cron_add`` ``script`` job points at a file under ``~/.kiro/crew/crons/``
     that the agent itself can write (via its file-write tool) and then register.
     ``resolve_script_path`` validates only the *path*, so without this the body
-    is never inspected. The script runs under ``mode="standard"`` (user scripts
-    may legitimately use creds), which does NOT hide ``~/.aws`` -- so a body that
-    reads ``~/.aws/credentials`` or ``os.environ["AWS_SECRET_ACCESS_KEY"]`` and
-    POSTs it out would succeed. Credential exfiltration -- which a human
-    rubber-stamping the ``cron_add`` approval prompt would not catch -- is the
-    threat this gate closes.
+    is never inspected. An ungranted script runs under ``mode="cc"`` and a
+    secret-granted one under ``strict``. ``cc`` hides the credential stores on
+    Linux; on macOS it deliberately leaves ``~/.aws`` readable (it is the
+    Claude Code provider's tier, and that provider authenticates to Bedrock
+    through ``credential_process`` under ``~/.aws``), and Windows has no OS
+    sandbox backend at all. So a body that names ``~/.aws/credentials`` or
+    ``os.environ["AWS_SECRET_ACCESS_KEY"]`` and POSTs it out is worth refusing
+    at storage time rather than relying on one runtime control alone.
+    Credential exfiltration -- which a human rubber-stamping the ``cron_add``
+    approval prompt would not catch -- is the threat this gate closes.
 
     The body is PYTHON SOURCE, not a shell command line, so it is scanned only with
     the detectors that are meaningful on source text and are all linear, whole-body
@@ -824,8 +828,8 @@ def _vet_script_contents(text: str) -> str | None:
     analysis of a Turing-complete body cannot be the fence. The runtime control for
     what a script may OPEN is the sandbox ``run_script`` spawns it in (``wrap_argv``
     bind-masks the crew home's credential leaves, the vault and the keystone in
-    ``standard`` mode); this gate stops the obvious register-a-malicious-script case
-    and nothing more. Destructive-op risk is covered by the required ``cron_add``
+    ``cc`` mode, and ``strict`` for a secret-granted run); this gate stops the
+    obvious register-a-malicious-script case and nothing more. Destructive-op risk is covered by the required ``cron_add``
     approval prompt.
 
     ``_vet_script_file`` keeps its own ``is_sensitive_path`` on the resolved path.
