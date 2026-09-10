@@ -3506,7 +3506,13 @@ class AcpClient:
         self._jsonl_pos: int = 0  # track read position in session JSONL for tool results
         self._stderr_task: asyncio.Task | None = None  # type: ignore[type-arg]
         self._last_activity: float = time.monotonic()
+        # Idle == done. An idle client (spawned, no prompt sent yet) must read
+        # as NOT in a turn: has_active_turn() is the 409 turn_in_flight gate
+        # on set-model / set-agent, so an unset Event on a live warm process
+        # blocks the user until a real turn's finally runs. Every prompt
+        # entry clear()s this before sending, so a real turn still reads active.
         self._turn_done: asyncio.Event = asyncio.Event()
+        self._turn_done.set()
         # Serializes whole read turns on this client's single stdout StreamReader.
         # An asyncio StreamReader permits exactly ONE waiting reader; the shared
         # `_bg` session is streamed by ~8 callers and the per-session Semaphore(1)
@@ -6007,7 +6013,14 @@ class AcpClient:
         self._cancel_ts = 0.0
         self._cancel_grace_secs = _CANCEL_GRACE_SECS
         self._resumed = False
-        self._turn_done = asyncio.Event()
+        # _turn_done is deliberately NOT rebuilt here. Its state is the truth
+        # about the TURN, not the process: the prompt entries clear() it before
+        # ensure_ready(), and ensure_ready() reaches this reset on the
+        # dead-process respawn branch -- rebuilding the Event there (set OR
+        # unset) would misreport the whole respawned turn. Cleared stays
+        # cleared (turn in flight, the shutdown drain must wait for it); set
+        # stays set (idle, see __init__). Waiters on the old object also keep
+        # their Event instead of being orphaned.
         self._last_stop_reason = ""
         self._pending_oauth_requests.clear()
         self._oauth_emitted_servers.clear()

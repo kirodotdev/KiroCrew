@@ -410,6 +410,11 @@ class TestClientAccessors:
         client._process = _live_process()
         assert client.is_process_alive() is True
         assert client.exit_code is None
+        # Idle == done: a live process with no prompt sent is NOT an unfinished
+        # turn (see test_acp_turn_done_idle_init). A turn begins when the prompt
+        # entry clear()s the Event.
+        assert client.has_unfinished_turn() is False
+        client._turn_done.clear()
         assert client.has_unfinished_turn() is True  # turn not done + process alive
 
         client._process.returncode = 3
