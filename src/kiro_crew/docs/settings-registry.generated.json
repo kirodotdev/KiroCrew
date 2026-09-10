@@ -481,6 +481,14 @@
       "description": "Compact is the original view. Comfortable and Full use more screen space."
     },
     {
+      "id": "chat.default-memory-mode",
+      "label": "Default Memory Mode",
+      "tab": "chat",
+      "route": "/settings/chat?highlight=key%3Adashboard.default_memory_mode",
+      "description": "Persistent uses what it knows and saves new memory. Incognito uses what it knows but saves no new memory. Temporary starts blank and saves no new memory. Every chat still appears in History. You can change the mode for any chat.",
+      "configKey": "dashboard.default_memory_mode"
+    },
+    {
       "id": "chat.default-model",
       "label": "Default Model",
       "tab": "chat",
@@ -810,6 +818,14 @@
       "description": "Inbound webhook tokens, registered contexts, and run history. The API works; the page is not finished."
     },
     {
+      "id": "display.command-completion",
+      "label": "Command completion",
+      "tab": "display",
+      "route": "/settings/display?highlight=key%3Adashboard.terminal.completion.enabled",
+      "description": "Show the completion popup while typing in the Terminal. Enter runs the line you typed; to take a suggestion, press ↑/↓ then Enter, or Tab. Off hides the popup; your shell's own Tab completion still works.",
+      "configKey": "dashboard.terminal.completion.enabled"
+    },
+    {
       "id": "display.default-for-new-sessions",
       "label": "Default for New Sessions",
       "tab": "display",
@@ -1031,6 +1047,20 @@
       "route": "/settings/privacy?highlight=key%3Atelemetry.beacon_enabled",
       "description": "Saved for future launches.",
       "configKey": "telemetry.beacon_enabled"
+    },
+    {
+      "id": "secrets.jira-api-token",
+      "label": "Jira API token",
+      "tab": "secrets",
+      "route": "/settings/secrets?highlight=secrets.jira-api-token",
+      "description": "Authenticates Jira issue lookups for the configured instance."
+    },
+    {
+      "id": "secrets.wakatime-api-key",
+      "label": "WakaTime API key",
+      "tab": "secrets",
+      "route": "/settings/secrets?highlight=secrets.wakatime-api-key",
+      "description": "Authenticates coding-activity sync when WakaTime is enabled."
     },
     {
       "id": "security.denied-commands",
