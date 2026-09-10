@@ -1,9 +1,9 @@
 """Tests for the Personal Shopper HTTP routes.
 
 The load-bearing ones here pin the boundary between a CLIENT error and a SERVER
-error. Every field these handlers read used to go straight into a string or int
-operation, so a wrong TYPE — not a wrong value — raised inside the handler and
-surfaced as a 500. A 500 tells a caller "the server is broken" and is what gets
+error. A field these handlers read must not go straight into a string or int
+operation: a wrong TYPE — not a wrong value — then raises inside the handler and
+surfaces as a 500. A 500 tells a caller "the server is broken" and is what gets
 paged on; the correct answer to ``{"text": 1}`` is a 400 naming the offending
 field, which is what these assert.
 
@@ -135,8 +135,8 @@ class TestJsonObjectCatchWidth(unittest.IsolatedAsyncioTestCase):
 
     async def test_an_unknown_charset_codec_is_a_400_not_a_500(self) -> None:
         # An unknown ``charset=`` on the request makes aiohttp's decode step raise
-        # LookupError (not a ValueError), which used to escape ``_json_object`` as
-        # a 500. It is a client-input mistake and must answer 400.
+        # LookupError (not a ValueError), which escapes ``_json_object`` as a 500
+        # unless it is caught. It is a client-input mistake and must answer 400.
         body, err = await routes_mod._json_object(
             _req_raising(LookupError("unknown encoding: bogus-codec"))
         )

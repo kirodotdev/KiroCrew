@@ -136,7 +136,7 @@ Handler = Callable[[web.Request], Awaitable[web.StreamResponse]]
 #: an out-of-band delete + hostile re-creation of the same name. Numbers can
 #: be stale; the identity of the bucket we write to cannot.
 #: Serializes drive creation (see _handle_drive_bootstrap). LoopBoundLock so
-#: the module global never binds an import-time loop (#4800).
+#: the module global never binds an import-time loop.
 #: How long the RENDER path waits for the Library lock before giving up on the
 #: reconcile. The lock is also held across a push, whose upload allows up to 600s,
 #: so waiting on it unbounded would let one large push hang every Library page
@@ -162,7 +162,7 @@ _bootstrap_lock = LoopBoundLock()
 #: surface where a human clicks buttons, so the contention is theoretical, and a
 #: per-slug map would need eviction to stay bounded. LoopBoundLock for the same
 #: reason ``_bootstrap_lock`` uses it: a module global must not bind an
-#: import-time loop (#4800).
+#: import-time loop.
 _library_lock = LoopBoundLock()
 
 #: Per-object-key write locks for the drive surface. A move promises "never
@@ -238,7 +238,7 @@ class _SectionRWLock:
 
     Writer-preferent: a waiting sweep blocks NEW shared holders, so a steady
     stream of uploads cannot starve a folder delete forever. State lives in
-    a per-loop map for the same reason ``LoopBoundLock`` exists (#4800): a
+    a per-loop map for the same reason ``LoopBoundLock`` exists: a
     module-global asyncio primitive must not bind an import-time loop.
     """
 
@@ -395,8 +395,8 @@ def _ledger_corrupt(code: str) -> web.Response:
     """Map a ledger reader's corruption refusal to a coded response.
 
     The share and library ledger update readers refuse a corrupt document
-    rather than replacing it (#7805), so mutation handlers can see a
-    ``json.JSONDecodeError`` that previously could not happen. Letting it
+    rather than replacing it, so mutation handlers can see a
+    ``json.JSONDecodeError`` at all. Letting it
     escape gives aiohttp's bare 500 -- no ``code`` for the UI to branch on --
     and letting a handler's ``except ValueError`` arm claim it (it IS a
     ``ValueError``) reports corruption as a client mistake. 500 rather than
@@ -1102,7 +1102,7 @@ async def _handle_drive_download(request: web.Request) -> web.Response:
     if isinstance(section, web.Response):
         return section
     if section == "backup":
-        # Backups stay owner-only by construction: no share (round 8) and no
+        # Backups stay owner-only by construction: no share and no
         # download presign either — a bearer URL to raw gateway state is the
         # same exposure class regardless of which route mints it. Recovery
         # goes through the restore endpoint, which downloads server-side.
@@ -1113,9 +1113,9 @@ async def _handle_drive_download(request: web.Request) -> web.Response:
         return _bad_request(err, "invalid_key")
     try:
         # Presigning is LOCAL signing - S3 is never consulted - so a stale or
-        # typo'd key mints a URL that looks fine and 404s when opened. Share has
-        # required this head-object since round 3; download mints the same kind
-        # of bearer URL and needs the same precondition. The same HEAD carries
+        # typo'd key mints a URL that looks fine and 404s when opened. Share
+        # requires this head-object; download mints the same kind of bearer URL
+        # and needs the same precondition. The same HEAD carries
         # the stored Content-Type, returned so the preview can tell a real PDF
         # from a `.pdf`-named object served as octet-stream (uploaded before
         # content types were set), which a sandboxed iframe shows as blank.
@@ -1381,7 +1381,7 @@ async def _handle_drive_upload(request: web.Request) -> web.Response:
             # Same per-key lock the move handler holds across its probe+copy:
             # an upload put inside the lock either finishes before a move's
             # destination probe (the probe then answers 409) or starts after
-            # the move released — it can no longer land inside the move's
+            # the move released — it cannot land inside the move's
             # probe-to-copy window and be silently overwritten. Only the
             # re-authorization and the put are inside the lock; the spool
             # transfer above must not hold it.
@@ -1675,8 +1675,8 @@ async def _handle_drive_share(request: web.Request) -> web.Response:
     note = str(body.get("note", ""))
     try:
         # The mint joins the coordination net: holding the KEY for the whole
-        # exists-check -> presign -> ledger-record sequence means a share can
-        # no longer land on a file mid-move (the race: move checks the share
+        # exists-check -> presign -> ledger-record sequence means a share cannot
+        # land on a file mid-move (the race: move checks the share
         # ledger, THEN this mints a share for the source, THEN the move
         # deletes it — a broken URL the ledger reports live until expiry).
         # With the lock, the mint either completes before the move's ledger
@@ -1757,7 +1757,7 @@ async def _drive_object_keys(request: web.Request, account: str) -> tuple[set[st
         # failing: the profile became unavailable or now names another account.
         # `_guarded`'s rule is that such a decision reaches SEL, and degrading
         # quietly would drop the one event an incident review asks about.
-        # `_audit` routes the SEL write off the loop itself (issue #8139).
+        # `_audit` routes the SEL write off the loop itself.
         await _audit("shares_list", request.path, "denied", error="account_unavailable")
         return None, "no working connection for this account"
     _account, profile, region = target
@@ -1886,7 +1886,7 @@ async def _reauthorize_in_lock(
     can be disabled, the profile can be repointed at another account, consent
     can be withdrawn, publish governance can start denying, or the drive tags
     can move to a different bucket -- and the call would then run on an
-    authorization that no longer holds.
+    authorization that does not hold.
 
     The order is deliberate: app, then IDENTITY, then consent. Consent is asked
     ABOUT a profile and region, so verifying it against a stale pair proves
@@ -2020,7 +2020,7 @@ async def _reconciled_remote_slugs(request: web.Request) -> tuple[set[str] | Non
         try:
             await asyncio.to_thread(library_mod.reconcile, account, slugs, observed_at=observed_at)
         except json.JSONDecodeError:
-            # The strict update reader refused a corrupt ledger (#7805). Same
+            # The strict update reader refuses a corrupt ledger. Same
             # degradation as the OSError arm below -- this route is best-effort by
             # contract and the LIST must keep rendering (its rows come from the
             # lenient display read) -- but the reason differs on the axis the
@@ -2161,7 +2161,7 @@ async def _handle_library_push(request: web.Request) -> web.Response:
         return _not_found("unknown artifact", "unknown_artifact")
     except json.JSONDecodeError:
         # MUST precede the ``ValueError`` arm below: ``JSONDecodeError`` subclasses
-        # ``ValueError``, so without this the ledger's corruption refusal (#7805)
+        # ``ValueError``, so without this the ledger's corruption refusal
         # would be reported as ``not_pushable`` -- a 400 blaming the artifact for a
         # store the operator has to repair. The objects may already be in the
         # bucket (upload precedes the ledger write); the honest answer is that the
@@ -2315,15 +2315,15 @@ async def _handle_backup_run(request: web.Request) -> web.Response:
     ``_jobs`` surface, which withholds ``dedupe_key`` and so cannot answer
     "is a backup running for THIS account".
 
-    The pre-flight below stays, but its job has changed. It is no longer the
-    authorization gate -- ``backup._authorize_upload`` is, inside the worker,
+    The pre-flight below is not the authorization gate --
+    ``backup._authorize_upload`` is, inside the worker,
     immediately before the upload, and it holds for a run started through the
     generic ``_jobs`` surface too. What the pre-flight buys is a FAST, specific
     refusal: an unreconnected account, unconfirmed S3, or a missing drive answers
     409 with a code the UI can localise, instead of accepting the run and
     reporting the same thing thirty seconds later as a failed record.
 
-    The terminal record is no longer in this response, because there is no
+    There is no terminal record in this response, because there is no
     terminal record yet. It reaches the client through ``GET /backup/{account}``,
     whose ``runs`` ledger the worker writes on success -- unchanged, and still
     the app's own record of what a backup PRODUCED (key, size, when). The Job SDK

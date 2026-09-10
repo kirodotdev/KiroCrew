@@ -392,7 +392,7 @@ class TestMcpResultsAreRedacted:
 
     def test_redaction_runs_before_truncation(self) -> None:
         """Truncating first could split a credential across the cut and leave a fragment
-        the scanner no longer matches."""
+        the scanner does not match."""
         import inspect
 
         from kiro_crew.apps.builtins.auto_improvement.backend import mcp_server
@@ -451,10 +451,10 @@ class TestMcpArgumentsAreValidated:
         assert out["error"]["code"] == mcp_server._INVALID_PARAMS
 
     def test_a_non_dict_arguments_payload_is_rejected_not_coerced(self, data_home: Path) -> None:
-        """`"arguments": [1,2]` or a bare string must return INVALID_PARAMS. The handler
-        used to coerce any non-dict to `{}`, so a malformed call SUCCEEDED with `result`
-        for a no-required-arg tool instead of being refused — the schema validator only
-        ever saw the emptied dict. Raised by the GPT review of this branch."""
+        """`"arguments": [1,2]` or a bare string must return INVALID_PARAMS. Coercing any
+        non-dict to `{}` makes a malformed call SUCCEED with `result` for a
+        no-required-arg tool instead of being refused, because the schema validator then
+        only ever sees the emptied dict."""
         for bad in ([1, 2, 3], "garbage", 5, True):
             out = self._call("get_status", bad)
             assert "error" in out, f"non-dict arguments {bad!r} was accepted"

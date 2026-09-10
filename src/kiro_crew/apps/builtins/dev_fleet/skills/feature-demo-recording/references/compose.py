@@ -204,8 +204,8 @@ def main() -> int:
     # The gate cannot hand a descriptor across a process boundary: the browser and
     # ffmpeg open these during `npm run render`, long after this script exits. So the
     # check is on the RESOLVED path (realpath, sensitive-path refused) and the HTML
-    # references that resolved file -- a symlink re-pointed afterwards no longer
-    # decides what gets baked into the film.
+    # references that resolved file -- a symlink re-pointed afterwards does not
+    # decide what gets baked into the film.
     footage_real = safe_input_path(args.footage)
     footage_src = os.path.relpath(footage_real, out_dir).replace(os.sep, "/")
     audio_real = safe_input_path(narr_dir / "narration.mp3")

@@ -22,18 +22,17 @@ Architecture — three parts, no separate application:
   main-process APIs, so they live in Kiro Crew's existing shell rather than
   shipping a second Electron runtime.
 
-WHAT THIS REPLACED, AND WHY IT MATTERS
---------------------------------------
-The companion used to be a SEPARATE macOS application. This builtin was a
-connector to it: the manifest declared ``mcpServers.crew-companion.url =
-http://127.0.0.1:7778/mcp`` and ran ``open "$HOME/Applications/Crew
-Companion.app"`` as an ``onEnable`` script. Because the enable path rolls back
-when that script fails, and because the app was never shipped, downloadable or in
-any registry, **the tile could not be enabled by anyone but its author** — on
-whose machine the app happened to exist from a local build.
+NO SEPARATE PROCESS, AND WHY IT MATTERS
+---------------------------------------
+The companion is not a SEPARATE macOS application and this builtin is not a
+connector to one: the manifest declares no ``mcpServers.crew-companion.url``
+pointing at a loopback port, and no ``open "$HOME/Applications/Crew
+Companion.app"`` ``onEnable`` script. Because the enable path rolls back when
+such a script fails, a launch step would make **the tile impossible to enable
+for anyone without that app already on disk**.
 
 Nothing here launches anything, so there is nothing to fail and nothing to roll
-back. Enabling the app and the app working are now the same state.
+back. Enabling the app and the app working are the same state.
 """
 
 # Required re-export: dashboard/server.py's startup route registration imports

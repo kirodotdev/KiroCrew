@@ -157,7 +157,7 @@ def _collect_spec_documents(spec_dir: Path) -> tuple[str, dict, dict | None, dic
     scoping that consumes it, so a delete-and-re-import in that window handed the
     replacement's slot a stale ``meta`` -- and the agent's next turn ran in the old
     project directory. The ledger is scoped by ``spec_dir``, and the fresh index
-    read refuses outright when that no longer matches, so reading it here is either
+    read refuses outright when that does not match, so reading it here is either
     consistent with the response or the whole request is refused.
     """
     phase = _derive_phase(spec_dir)
@@ -475,7 +475,7 @@ async def _handle_create(request: web.Request) -> web.Response:
     safe_wd = await asyncio.to_thread(_safe_dir, working_dir)
     if safe_wd is None:
         # Covers "missing", "not a directory" and "sensitive location" with one
-        # response so the endpoint can't be used to probe the filesystem.
+        # response so the endpoint cannot serve as a filesystem probe.
         return web.json_response(
             {
                 "code": "working_dir_not_a_directory",
@@ -824,7 +824,7 @@ async def _handle_create(request: web.Request) -> web.Response:
         # conversation. Only already-indexed specs may adopt a closed transcript.
         slot = await _ensure_worker_slot(state, name, entry, adopt_closed=False)
         if slot is None:
-            # Another app owns this slot key, or the working dir no longer validates.
+            # Another app owns this slot key, or the working dir does not validate.
             await _unwind_create()
             return web.json_response(
                 {
@@ -1010,7 +1010,7 @@ async def _handle_get(request: web.Request) -> web.Response:
             "running": bool(getattr(slot, "running", False)) if slot is not None else False,
             "phase": phase,
             "files": files,
-            # Per-document raw hash, used to bind approval to the exact stored
+            # Per-document raw hash, which binds approval to the exact stored
             # revision even when the rendered text required redaction.
             "docs": doc_meta["docs"],
             # tasks.md's checklist, enumerated and individually addressable, plus
@@ -1128,8 +1128,8 @@ async def _handle_message(request: web.Request) -> web.Response:
     # index we just read: comparing the index to itself always matches, so the
     # check was vacuous. The SPA sends the spec_dir it rendered (from the detail
     # payload), which is what makes a stale tab detectable -- if the spec was
-    # deleted and recreated elsewhere under the same name, that value no longer
-    # matches and the instruction must not reach the replacement's agent. A caller
+    # deleted and recreated elsewhere under the same name, that value does not
+    # match and the instruction must not reach the replacement's agent. A caller
     # that sends no spec_dir cannot be pinned; it is then treated as unpinned
     # rather than refused, so an older client keeps working.
     # The slot key rides along because a directory does NOT identify a creation:
@@ -1939,9 +1939,9 @@ async def _handle_handoff(request: web.Request) -> web.Response:
         # spec the delete had already removed.
         # Arming awaits too, so re-verify the creation once more. A DELETE landing in
         # that window tears down the slot and the loops it can see BY NAME -- ours
-        # arrives after, and would be left nudging a spec that no longer exists. The
-        # old arm-then-commit order caught this at the commit; the reorder above has to
-        # catch it here instead.
+        # arrives after, and would be left nudging a spec the delete removed.
+        # Committing before arming would catch this at the commit; arming last means
+        # it has to be caught here.
         refreshed = await _touch_spec(
             name,
             expect_spec_dir=str(spec_dir),
@@ -2041,7 +2041,7 @@ async def _handle_handoff(request: web.Request) -> web.Response:
     return web.json_response({"ok": True, "status": "executing"})
 
 
-#: Returned when the client's rendered spec identity no longer matches the index.
+#: Returned when the client's rendered spec identity does not match the index.
 _STALE_CLIENT_ERROR = "spec was deleted or recreated; reload and retry"
 
 
@@ -2378,7 +2378,7 @@ async def _handle_run_task(request: web.Request) -> web.Response:
                 status=409,
             )
         # Slot setup and status reconciliation both await. The IDE can edit
-        # tasks.md during either window, so the earlier snapshot is no longer safe
+        # tasks.md during either window, so the earlier snapshot is not safe
         # to dispatch. Execute and Delete cannot cross this final awaited reread,
         # and _dispatch_turn publishes slot.task synchronously before the lock is
         # released.
@@ -2994,7 +2994,7 @@ async def _handle_stop_execution(request: web.Request) -> web.Response:
             # Kept alongside the slot-key check because it answers a different question:
             # the index is agent-writable, so an entry can be repointed at another
             # directory WITHOUT a recreate, leaving the slot key intact while the lock
-            # held is no longer the one guarding these documents.
+            # held is not the one guarding these documents.
             # now would serialize against nothing that matters and could cancel the
             # replacement's run. Refuse and let the client retry against what exists.
             return web.json_response(

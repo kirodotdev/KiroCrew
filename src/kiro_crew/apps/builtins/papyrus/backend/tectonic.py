@@ -680,9 +680,10 @@ def _download_to(asset: TectonicAsset, staging: Path) -> tuple[bool, str]:
         _set_progress(downloaded, downloaded)
     # `http.client.HTTPException` is in the tuple deliberately: it is NOT an
     # `OSError`, a `URLError` or a `ValueError`, so `InvalidURL` (a malformed mirror
-    # override — the credentialed case) used to pass through this handler entirely
-    # and be reported by the outer catch-all as "provisioning crashed". Handling it
-    # here turns an unexplained crash into the accurate "download failed", and keeps
+    # override — the credentialed case) would otherwise pass through this handler
+    # entirely and be reported by the outer catch-all as "provisioning crashed".
+    # Handling it here turns an unexplained crash into the accurate "download failed",
+    # and keeps
     # the redaction and the retry loop that go with it.
     except (
         urllib.error.URLError,

@@ -120,8 +120,8 @@ class TestIsDeadRecord:
             assert la.is_dead_record(_row("f", "filed", cr=ref)) is True
 
     def test_both_key_spellings_are_read(self) -> None:
-        """The on-disk field is historically ``cr``; newer writers use ``pr``. Reading
-        only one spelling would judge half the ledger dead."""
+        """Both spellings appear on disk: ``cr`` in older records, ``pr`` in newer
+        ones. Reading only one spelling would judge half the ledger dead."""
         assert la.pr_reference({"cr": REAL_PR}) == REAL_PR
         assert la.pr_reference({"pr": REAL_PR}) == REAL_PR
         assert la.pr_reference({"cr": "", "pr": REAL_PR}) == REAL_PR
@@ -409,7 +409,7 @@ class TestPurgeDead:
 
     def test_is_idempotent(self, data_home: Path) -> None:
         """A second sweep must find nothing: the purged event supersedes ``filed``, so
-        the record is no longer dead."""
+        the record does not count as dead."""
         _write_ledger(data_home, [_row("dead1", "filed", cr="")])
         assert la.purge_dead()["count"] == 1
         assert la.purge_dead() == {"ok": True, "purged": [], "count": 0}

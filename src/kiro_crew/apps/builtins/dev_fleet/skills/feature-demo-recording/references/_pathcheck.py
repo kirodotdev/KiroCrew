@@ -289,8 +289,8 @@ def safe_open_output(path, workdir=None, mode="w", replace=False):
         # cannot be pinned against a link swap. A pathname-based fallback was
         # tried and is worse than nothing: it looks like the same guarantee while
         # a concurrent swap can still redirect the write. Refusing keeps the
-        # contract honest AND is still a clean, explained exit rather than the
-        # AttributeError this used to raise.
+        # contract honest AND is still a clean, explained exit rather than an
+        # opaque AttributeError.
         _fail(
             "this platform has no directory-descriptor support, so an output "
             "cannot be pinned against a link swap -- run the pipeline on a POSIX host"

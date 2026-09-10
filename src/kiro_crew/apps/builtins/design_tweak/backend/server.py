@@ -218,7 +218,7 @@ MAX_DRAFT_COMMENTS = 200
 MAX_THREAD_ENTRIES = 500
 # On-disk ceiling for ONE queue record. The SAME number gates the write and the
 # read deliberately: a record the writer accepts but the reader refuses is a
-# draft the user can no longer see, and silently losing queued work is worse than
+# draft the user cannot see, and silently losing queued work is worse than
 # refusing the append that would have caused it. Kept distinct from
 # `MAX_BODY_BYTES` (which bounds ONE inbound payload) because a record
 # accumulates many payloads over its life — they are equal today, and conflating

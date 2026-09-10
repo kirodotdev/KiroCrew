@@ -598,12 +598,12 @@ async def _discover_worktrees() -> list[dict]:
             # git never ran: the HOST has no git the resolver is willing to
             # execute. Checked before the .git probe because the probe's
             # outcome is irrelevant here — wrapping this in "worktree
-            # discovery failed in <repo>" (the old behavior) sent users to
-            # debug a healthy checkout (#2530). The trusted-PATH detail is
+            # discovery failed in <repo>" would send users to debug a healthy
+            # checkout. The trusted-PATH detail is
             # operator-diagnostic, so it goes to the log, not the banner.
             runtime.logger.warning("dev-fleet: %s", raw)
             raise RepoUnreadable(runtime._unresolved_tool_message("git"))
-        # Every other git failure was previously swallowed into a silent [] —
+        # Every other git failure must NOT be swallowed into a silent [] —
         # which the UI renders as the "No worktrees found / Nothing under the
         # worktrees root yet" empty state. When MAIN_REPO is wrong that empty
         # state is a lie: the fleet is not empty, it is unreadable. Reaching here

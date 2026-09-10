@@ -146,16 +146,15 @@ def test_no_absolute_user_path_in_builtin_dir() -> None:
 
 
 def test_declares_no_separate_process_backend() -> None:
-    """The inverse of the assertion this replaced, and the point of the migration.
+    """No loopback backend URL may appear in this manifest.
 
-    This manifest used to declare ``mcpServers.crew-companion.url =
-    http://127.0.0.1:7778/mcp`` — a SEPARATE macOS app the gateway proxied to.
-    That single field is what made the whole class of defects reachable: the
-    ``.app_secret`` the proxy signs with, the malformed-port crash that could
-    stop gateway startup, and the hole where a never-enabled app still had an
-    authenticated route to its backend.
+    An ``mcpServers.crew-companion.url = http://127.0.0.1:7778/mcp`` field means a
+    SEPARATE macOS app the gateway proxies to, and that single field is what makes
+    a whole class of defects reachable: the ``.app_secret`` the proxy signs with, a
+    malformed-port crash that can stop gateway startup, and the hole where a
+    never-enabled app still has an authenticated route to its backend.
 
-    There is no second process now, so there must be no loopback backend URL to
+    The backend runs in-process, so there must be no loopback backend URL to
     resolve. Asserting the absence is what stops someone reintroducing it.
     """
     servers = _raw().get("mcpServers", {})
@@ -170,12 +169,11 @@ def test_declares_no_separate_process_backend() -> None:
 def test_does_not_launch_anything_on_enable() -> None:
     """Enabling must not run a command that can fail.
 
-    ``setup.onEnable`` used to be ``open "$HOME/Applications/Crew Companion.app"``,
-    and ``handle_app_api_proxy`` rolls an enable BACK when that script fails. On
-    every machine without that app already present — which is every machine but
-    the author's — the tile therefore could not be switched on at all. Nothing
-    here may reintroduce a launch step: the window follows the enabled state
-    instead, so there is nothing to fail and nothing to roll back.
+    ``handle_app_api_proxy`` rolls an enable BACK when a ``setup.onEnable`` script
+    fails, so a launch step such as ``open "$HOME/Applications/Crew
+    Companion.app"`` makes the tile impossible to switch on for anyone without
+    that app already present. The window follows the enabled state instead, so
+    there is nothing to fail and nothing to roll back.
     """
     raw = _raw()
     assert "onEnable" not in raw.get("setup", {}), (

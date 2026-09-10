@@ -1531,9 +1531,9 @@ DEPS_CACHE_SCHEMA = 1
 # This constant has TWO consumers with DIFFERENT needs, which is why it stays at
 # ten minutes even though the /deps route alone would be happy with hours:
 #
-#   * the /deps route, which since serve-stale-revalidate-behind no longer blocks
-#     a request on an expired cache (it returns the stale graph and refreshes in
-#     the background), so for the route this TTL governs how often a BACKGROUND
+#   * the /deps route, which does not block a request on an expired cache (it
+#     serves the stale graph and revalidates behind, refreshing in the
+#     background), so for the route this TTL governs how often a BACKGROUND
 #     rebuild fires and a long value would be harmless;
 #   * crew_runtime._read_or_refresh_deps, the sweep that feeds SIG_DEP_UNBLOCKED.
 #     For the sweep this TTL IS the freshness horizon on which a crew waiting for
@@ -1788,7 +1788,7 @@ def apply_state_change_to_caches(
     *, root: Path | None = None,
 ) -> None:
     """Patch an issue's state in the detail cache and drop it from the list
-    cache it no longer belongs to (the open list on close, the closed list on
+    cache it does not belong in (the open list on close, the closed list on
     reopen). The issue reappears in the correct list on the next refresh."""
     dpath = issue_detail_cache_path(owner, repo, number, root)
     if dpath.is_file():

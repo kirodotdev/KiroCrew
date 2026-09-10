@@ -227,8 +227,8 @@ def never_block(labels: Sequence[str] = (), terms: Mapping[str, str] | None = No
     ``crew:``-prefixed label — one left behind on an issue, or one a differently
     configured install writes — does carry it and is still not this crew's to write.
 
-    The CI clause names NO PATH. It used to say ``.github/``, which is wrong on
-    GitLab and names a directory that does not exist on an Azure DevOps repo — and
+    The CI clause names NO PATH. ``.github/`` is wrong on GitLab and names a
+    directory that does not exist on an Azure DevOps repo — and
     a per-provider path would be no better, because the prohibition is not about a
     location: a GitHub repo can be gated by a CircleCI or Jenkins config outside
     ``.github/``, and an Azure pipeline definition can live anywhere under any
@@ -324,8 +324,8 @@ def compose_nudge(snapshot: dict[str, Any]) -> str:
     vocab = vocabulary(provider.RepoKey(provider=str(snapshot.get("provider") or "")))
     # An empty label list means EVERY open tracked item, not none. The editor
     # defaults a new crew to no labels and does not require any, so the opposite
-    # reading — which this line used to give — told every default-configured crew to
-    # pick up nothing, and it would idle for its whole life without an error
+    # reading would tell every default-configured crew to pick up nothing, and such
+    # a crew would idle for its whole life without an error
     # anywhere. No backend code filters on this list; it is advisory text the crew
     # self-applies from the brief, so the wording here IS the contract, and the
     # brief's filter step is conditioned to match.
@@ -1027,7 +1027,7 @@ def _slot_key(crew: dict[str, Any]) -> str:
 
 
 async def _rehydrate(state: Any, slot_key: str) -> Any:
-    """Rebuild a slot the gateway no longer holds in memory (tab closed, restart).
+    """Rebuild a slot the gateway does not hold in memory (tab closed, restart).
 
     ``autonudge`` cannot do this for us: arming and firing both gate on the slot
     being resident, so a crew whose slot left ``_slots`` is unreachable by nudge
@@ -1305,7 +1305,7 @@ async def watchdog_cycle(
       (:func:`sync_trust`), so an unattended crew silently loses it on restart, and
       on a watchdog that stopped — which is the point — and the next tool call parks
       it in an approval prompt nobody is watching. Trust needs a slot to hold the
-      scope key, so a crew whose slot the gateway no longer holds is rehydrated
+      scope key, so a crew whose slot the gateway does not hold is rehydrated
       first — an armed loop fires against the slot key regardless, and it must land
       on a trusted session.
     * **The loop.** A crew whose autonudge loop is missing or deactivated has no
@@ -1315,7 +1315,7 @@ async def watchdog_cycle(
       resident keeps its trust until something takes it away. The BACKSTOP, not the
       first line: pause and retire revoke inline before they answer, and this cycle
       catches what they cannot — a record edited directly, and a restart that
-      re-armed a loop for a crew that is no longer live.
+      re-arms a loop for a crew that is not live.
     * **Both hooks.** The dismissal hook and the app-disable hook are process
       memory, so a restart empties them. Re-registering here is what keeps a ✕ and
       an app disable from going quiet for the rest of a process's life.
@@ -1895,7 +1895,7 @@ async def sweep_repo(app: Any, key: provider.RepoKey, root: Path | None = None) 
             if _is_due(item, entry if isinstance(entry, dict) else None, now):
                 due.append((crew, item))
 
-    # A mark for an item that is no longer open is dead weight — a crew that works
+    # A mark for an item that is not open is dead weight — a crew that works
     # for a month would otherwise carry every issue it ever finished in a file it
     # rewrites every minute. Dropping it also makes a REOPENED item re-seed, which
     # is right: its old fingerprint describes a different state of the world.

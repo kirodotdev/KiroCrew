@@ -139,8 +139,8 @@ class TestCountUnresolved:
     def test_counts_only_explicit_false(self) -> None:
         """Uses the keys the PROVIDER really writes (`resolvable` + `resolved`).
 
-        This fixture previously used `isResolved`, which `source_providers.py` never emits — so
-        it passed while the production counter returned 0 for every real payload, leaving both
+        A fixture keyed on `isResolved`, which `source_providers.py` never emits, passes
+        while the production counter returns 0 for every real payload, leaving both
         open-thread guards dead. A fixture that invents its own key shape tests nothing but
         itself. `resolvable` is required because a plain issue comment is not a thread.
         """

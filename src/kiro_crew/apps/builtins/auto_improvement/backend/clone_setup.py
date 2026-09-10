@@ -191,13 +191,12 @@ def _origin_urls(repo: Path, *, push: bool) -> list[str] | None:
     executed, identified by the launcher's own stderr signature. This module
     spawns git directly, so no launcher exists in this probe's chain on a
     stock install — the signature appears only on deployments that route the
-    gateway's subprocesses through the sandbox (the issue #8151 host, where
-    every ``git remote get-url`` probe carried the launcher's traceback), and
-    the classification is inert everywhere else because the structural
-    matching in :func:`_launcher_failure_detail` cannot be satisfied by git's
-    own output. Collapsing that crash into the fail-closed path reported
-    "push is not disabled" for a clone whose remotes were never read — the
-    misleading 409 in issue #8151.
+    gateway's subprocesses through the sandbox, where every ``git remote
+    get-url`` probe carries the launcher's traceback, and the classification is
+    inert everywhere else because the structural matching in
+    :func:`_launcher_failure_detail` cannot be satisfied by git's own output.
+    Collapsing that crash into the fail-closed path would report "push is not
+    disabled" for a clone whose remotes were never read — a misleading 409.
     """
     key = "remote.origin.pushurl" if push else "remote.origin.url"
     try:
@@ -240,7 +239,7 @@ def _repository_is_safe(repo: Path) -> bool:
     unsafe-keys probe's sandbox launcher died before git executed — a crashed
     launcher exits 1, indistinguishable from git's own "no unsafe keys", so
     reading the exit code alone would report an unscanned config as safe (the
-    one probe in the isolation chain that failed OPEN, issue #8493).
+    one probe in the isolation chain that would otherwise fail OPEN).
     """
     git_dir = repo / ".git"
     if first_linked_ancestor(git_dir) or is_link_or_junction(git_dir):
@@ -326,11 +325,11 @@ def _repository_is_safe(repo: Path) -> bool:
         # Exit 1 means "no unsafe keys" only when git itself ran. A sandbox
         # launcher that dies before git executes also exits 1, so reading the
         # exit code alone makes this the one probe in the isolation chain that
-        # fails OPEN during a launcher outage (issue #8493): metadata unsafety
+        # fails OPEN during a launcher outage: metadata unsafety
         # becomes invisible exactly when the host cannot run the probes. Same
         # classifier as :func:`_origin_urls` — the structural stderr match is
         # what keeps git's own output unable to satisfy it, and the raise says
-        # "the probe could not run" instead of an isolation verdict (#8151).
+        # "the probe could not run" instead of an isolation verdict.
         detail = _launcher_failure_detail(proc.stderr or "")
         if detail is not None:
             raise IsolationProbeError(detail)
@@ -588,7 +587,7 @@ def _repository_is_isolated(repo: Path) -> bool:
     Fails CLOSED (``False``) for ambiguous git errors, but raises
     :class:`IsolationProbeError` when the probe's sandbox launcher crashed
     before git executed — that exit is not evidence about the remotes, and
-    reporting it as "push is not disabled" hid the real failure (#8151). Both
+    reporting it as "push is not disabled" would hide the real failure. Both
     outcomes refuse to start; only the surfaced reason differs.
     """
     return _repository_is_safe(repo) and _push_disabled(repo)
@@ -999,15 +998,12 @@ def resolve_origin_url(config: dict) -> str:
     Returns ``""`` when it does not validate, and every caller treats ``""`` as "no push
     target" — fail closed.
 
-    ``origin_url`` used to be returned VERBATIM while only the legacy fallback validated,
-    which made the docstring's own promise false for the preferred path. Measured:
-    ``{"origin_url": "https://attacker.example.com/exfil.git"}`` was returned unchanged and
-    became the push destination, while the identical string under ``target_url`` was
-    correctly refused ("Only github.com URLs are supported"). This is the one place the push
-    destination is resolved for the draft-PR push, the F10 direct push and one-click commit,
-    so an unvalidated value here redirects all three. Raised by the GPT review of this branch;
-    the security guidance on untrusted URL destinations asks for exactly this — allowlist the
-    destination rather than trusting persisted input.
+    ``origin_url`` must be validated on this path too, not returned VERBATIM: an
+    ``{"origin_url": "https://attacker.example.com/exfil.git"}`` that is passed through
+    unchanged becomes the push destination. This is the one place the push destination is
+    resolved for the draft-PR push, the F10 direct push and one-click commit, so an
+    unvalidated value here redirects all three — allowlist the destination rather than
+    trusting persisted input.
     """
     direct = str((config or {}).get("origin_url") or "").strip()
     if direct:
@@ -1202,7 +1198,7 @@ def checkout_branch(clone: Path, branch: str, *, timeout_s: int = 120) -> tuple[
         if co.returncode == 0:
             return True, f"checked out {bare} @ {remote_ref} (no fetch — origin is disabled)"
 
-    # Then a local branch, so a previously-fetched branch still runs offline.
+    # Then a local branch, so an already-fetched branch still runs offline.
     local = _run("rev-parse", "--verify", "--quiet", bare, tmo=30)
     if local.returncode == 0:
         co = _run("checkout", bare)

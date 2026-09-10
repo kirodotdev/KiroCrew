@@ -1952,7 +1952,7 @@ def set_issue_assignees(
     hazard is not the same: a tag edit is a read-modify-write of a delimited
     string shared with every other tag, while this field is replaced wholesale.
     The lost-update guard for a wholesale replace lives one level up, where
-    ``routes._replace_assignees_checked`` refuses when the forge no longer holds
+    ``routes._replace_assignees_checked`` refuses when the forge does not hold
     the set the editor was rendered from.
     """
     org, project = _split_owner(owner)
@@ -2172,7 +2172,7 @@ def _list_pulls(
 
     ``searchCriteria.status`` is passed EXPLICITLY on every call: Azure defaults it
     to ``active`` server-side, so an omitted status would silently return only
-    open PRs on the closed tab. The app's "closed" means "no longer open", which
+    open PRs on the closed tab. The app's "closed" means "not open", which
     covers both ``completed`` and ``abandoned`` -- two separate Azure statuses --
     so the closed listing asks for ``all`` and filters, rather than hiding every
     abandoned PR (or every merged one).
@@ -2475,8 +2475,8 @@ def list_pr_checks(
     """Check-run-shaped rows for commit ``sha``: its builds plus its PR's policies.
 
     Keyed on the head SHA to match the other two clients, and because that is the
-    correct semantics: a run against an older commit describes code that no longer
-    exists. Azure needs one extra step for the policy half -- evaluations are
+    correct semantics: a run against an older commit describes code that does not
+    exist. Azure needs one extra step for the policy half -- evaluations are
     addressed by pull request, so the PR whose head is ``sha`` is resolved first;
     if no PR matches (a commit on a branch with no open PR), the builds are still
     returned rather than nothing.
@@ -3014,8 +3014,8 @@ def merge_pull_request(
     which surfaces as an error.
 
     ``head_sha`` is REQUIRED and rides as ``lastMergeSourceCommit``, which Azure
-    treats as a real precondition: it refuses the completion when that is no longer
-    the PR's last source commit, so a push landing between the review and the click
+    treats as a real precondition: it refuses the completion when that is not the
+    PR's last source commit, so a push landing between the review and the click
     cannot merge unreviewed code. It is a positional parameter with an empty default
     only so the three module signatures stay identical; an empty value is refused
     here, never defaulted.

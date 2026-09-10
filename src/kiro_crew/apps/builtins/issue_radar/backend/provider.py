@@ -121,7 +121,7 @@ def normalize_host(raw: object, provider: str) -> str:
 
     A provider in ``_PINNED_HOSTS`` has its host replaced by that constant
     regardless of what the client sent -- otherwise a crafted host would become
-    part of a cache path and of the identity used to look a repo up. GitHub
+    part of a cache path and of the identity a repo is looked up by. GitHub
     Enterprise and on-premises Azure DevOps Server are both out of scope, so both
     providers are pinned to their public host. Azure's legacy
     ``{org}.visualstudio.com`` form is accepted when PARSING a pasted URL and

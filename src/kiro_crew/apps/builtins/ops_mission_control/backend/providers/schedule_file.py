@@ -35,11 +35,11 @@ Schedule format (``rotation.yaml`` at the repo root)::
     leader: octocat                   # optional; runs nightly ledger hygiene ALONE
     timezone: America/Los_Angeles     # optional; UTC when absent
     shifts:
-      - from: 2026-08-01
-        to: 2026-08-08
+      - from: YYYY-MM-DD              # a date-only ``to`` covers that whole day
+        to: YYYY-MM-DD
         who: octocat                  # a GitHub login
-      - from: 2026-08-08T09:00
-        to: 2026-08-15T09:00
+      - from: YYYY-MM-DDTHH:MM        # or a wall-clock time in ``timezone`` above
+        to: YYYY-MM-DDTHH:MM
         who: [octocat, hubot]         # co-primary is allowed
 
 See ``docs/system-specs/modules/ops-mission-control.md`` § Rotation.
@@ -162,9 +162,10 @@ def _parse_moment(raw: Any, tz: Any, *, end: bool) -> datetime | None:
     """Parse a ``from``/``to`` value into an aware datetime.
 
     Accepts ``YYYY-MM-DD`` and ``YYYY-MM-DDTHH:MM``. A DATE-only ``to`` is treated as
-    the END of that day, not midnight at its start: a human writing ``to: 2026-08-08``
-    means "through the 8th", and reading it as 00:00 would silently drop the last day of
-    every shift written that way. That off-by-one-day is the single most likely way this
+    the END of that day, not midnight at its start: a human writing a date-only ``to``
+    means "through that whole day", and reading it as 00:00 would silently drop the last
+    day of every shift written that way. That off-by-one-day is the single most likely
+    way this
     file gets misread, so it is handled here rather than left to the operator.
     """
     if isinstance(raw, datetime):

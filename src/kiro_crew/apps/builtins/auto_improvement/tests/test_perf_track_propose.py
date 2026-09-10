@@ -160,7 +160,7 @@ class TestProposerDispatch:
         from kiro_crew.apps.builtins.auto_improvement.spine import proposer as P
 
         src = Path(P.__file__).read_text(encoding="utf-8")
-        # The dispatch is by track, and no longer gated on TRACK_BUG alone.
+        # The dispatch is by track, not gated on TRACK_BUG alone.
         assert "author_bug_fix if candidate.kind == TRACK_BUG else author_perf_fix" in src
         assert "if not produced and candidate.kind == TRACK_BUG" not in src
 

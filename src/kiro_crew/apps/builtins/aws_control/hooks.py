@@ -210,7 +210,7 @@ async def on_shutdown(ctx: Any) -> None:  # noqa: ARG001 — kept for the hook A
     The residual is one in-flight object: an ``aws s3 cp`` already mid-stream
     finishes, into the owner's own bucket, and the SEL record above says it did.
     Revoking that would mean tracking and terminating the CLI subprocess itself,
-    which is the same containment work tracked in #5430.
+    which this hook does not do.
     """
     global _task
     backup_mod.signal_stop()

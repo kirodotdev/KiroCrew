@@ -446,8 +446,8 @@ def _list_issues(
 ) -> list[dict]:
     """List issues of ``state``, most-recently-updated first.
 
-    ``scope=all`` is REQUIRED: GitLab's project-issues endpoint historically
-    defaults to issues created by the caller, which on someone else's project
+    ``scope=all`` is REQUIRED: GitLab's project-issues endpoint defaults to
+    issues created by the caller, which on someone else's project
     silently returns almost nothing — the exact failure mode that would make the
     triage view look empty rather than broken.
     """
@@ -1081,7 +1081,7 @@ def _norm_pull(raw: dict) -> dict:
 
 def _list_pulls(owner: str, repo: str, state: str, *, host: str, timeout: float, paginate: bool) -> list[dict]:
     # "closed" on GitLab excludes merged MRs, but the app's closed tab means
-    # "no longer open" — so a closed listing asks for all and filters, rather
+    # "not open" — so a closed listing asks for all and filters, rather
     # than silently hiding every merged MR.
     gl_state = "opened" if state == "open" else "all"
     # Full page on the single-page path, for the same reason as the issue list:
@@ -1223,7 +1223,7 @@ def list_pr_checks(
     Keyed on the head SHA (not the MR iid) to match
     ``github_client.list_pr_checks``, and because that is the correct semantics:
     an MR accumulates one pipeline per pushed commit, and a pipeline for an
-    older commit describes code that no longer exists. Asking GitLab for the
+    older commit describes code that does not exist. Asking GitLab for the
     pipelines of a specific SHA gets the run that matches what the user is
     looking at.
 

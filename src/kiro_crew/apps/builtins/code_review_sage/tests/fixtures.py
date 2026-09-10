@@ -70,7 +70,7 @@ SENSITIVE_TINY_FILES = [{
 
 # A GitHub PR payload as the worker assembles it from `gh api`: the pulls/{n}
 # object merged with a `files` array (each carrying its per-file `patch`) and
-# a `comments` list. Mirrors the private kiro-team/kiro-cli PR #3361 shape.
+# a `comments` list. Mirrors the shape of a private kiro-team/kiro-cli pull request.
 GITHUB_PAYLOAD = {
     "number": 3361,
     "title": "Fix set_mode deadlock in SwapAgent handler",

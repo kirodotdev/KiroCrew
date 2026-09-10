@@ -216,8 +216,8 @@ def _path_escapes_app_root(rel_path: str, app_root: Path | None) -> bool:
     return False
 
 
-# Expected JSON type per CronEntry field that from_dict type-gates, used to turn
-# a recorded parse-time violation into a message an app author can act on.
+# Expected JSON type per CronEntry field that from_dict type-gates; turns a
+# recorded parse-time violation into a message an app author can act on.
 _CRON_FIELD_JSON_TYPES = {
     "every": "a number of seconds",
     "agent_sequence": "an array of agent names",
@@ -276,8 +276,8 @@ class CronEntry:
     # non-null but of the wrong JSON type. Parsing degrades them to the field's
     # empty value so /api/apps/register cannot 500, and validate() reports each
     # one -- erasing a wrong-typed value SILENTLY would be its own bug: an
-    # author who wrote "skip_dates": "2026-12-25" (a string, not an array) asked
-    # for a skip, and dropping it without a word lets the job fire on the
+    # author who wrote ``skip_dates`` as one date string instead of an array
+    # asked for a skip, and dropping it without a word lets the job fire on the
     # excluded date. Same shape as enabled_type_invalid; never serialized.
     type_invalid_fields: list[str] = field(default_factory=list)
 
@@ -557,9 +557,9 @@ def _normalize_status_path(raw: Any) -> str:
 class SessionControlContribution:
     """A compact control an app contributes to the session (composer) bar.
 
-    The slot exists because per-session app configuration previously had nowhere
-    to live: an app could contribute a sidebar page and nothing else, so a
-    setting scoped to "this chat" had to be set on a separate page against an
+    The slot exists because per-session app configuration has nowhere else to
+    live: without it an app contributes a sidebar page and nothing else, so a
+    setting scoped to "this chat" has to be set on a separate page against an
     opaque session key the app cannot even discover.
 
     Rendered by the dashboard as a lazily-imported ESM module, exactly like a
@@ -2111,8 +2111,9 @@ class Contributes:
     #: Outermost case of the same shape. Not serialized.
     bad_block: bool = False
     #: How many ENTRIES of a well-formed ``commands`` array were not objects. The array
-    #: being a list is not enough: a single bad element used to be filtered out here, so
-    #: an app declaring five commands with one typo installed with four and no warning.
+    #: being a list is not enough: silently filtering out a single bad element would
+    #: let an app declaring five commands with one typo install with four and no
+    #: warning.
     #: Counted rather than flagged so the error can say how many vanished. Not
     #: serialized.
     dropped_commands: int = 0

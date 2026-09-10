@@ -139,7 +139,7 @@ class TestPostRecorded(_Base):
         self.assertEqual(out["posted_comments"], 0)
 
     async def test_an_unresolvable_host_aborts_the_post_fail_closed(self):
-        """A link whose host is no longer in `allowed_hosts()` (the GHE host was
+        """A link whose host is absent from `allowed_hosts()` (the GHE host
         removed from `github_hosts` between run start and posting) must abort
         BEFORE any poster runs. A prompt built anyway would carry no
         `--hostname`, every `gh api` call in it would default to PUBLIC

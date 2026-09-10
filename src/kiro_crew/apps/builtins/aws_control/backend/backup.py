@@ -838,7 +838,7 @@ def make_job_runner(sdk: Any, kind: str) -> Any:
     Every resolution step is therefore sync. ``accounts.resolve_account_profile``
     and ``aws_consent.authorize`` are coroutines and are NOT reachable from a
     worker thread -- ``asyncio.run`` would build a second event loop, which is
-    the #4800 failure this package already carries a ``LoopBoundLock`` to avoid
+    the failure this package already carries a ``LoopBoundLock`` to avoid
     -- so this uses the sync cached resolver and lets the sync
     :func:`_authorize_upload` gate inside each runner make the paid-service
     decision. That gate is the real one: it re-checks the LIVE account against
@@ -921,7 +921,7 @@ def restore_download(
 
     The staging dir is agent-writable, so the download never writes through the
     final name: a link planted at that path would have the S3 bytes land on its
-    target. Two separate checks are needed, and round 17 only had the second:
+    target. Two separate checks are needed:
 
     * The staging DIRECTORY itself, and every component of it under the app data
       dir, must be a real directory. A linked ``restore/`` puts both the

@@ -299,8 +299,8 @@ class TestSettingsRoute(_HomeIsolatedAsync):
     async def test_the_failure_fallback_has_the_same_shape_as_a_real_status(self):
         """One shape, so the UI can read every field instead of guarding each one.
 
-        The fallback used to carry two keys out of six. A panel reading it therefore had to
-        guard each field individually, and forgetting one renders ``undefined`` as the team's
+        A fallback carrying two keys out of six makes a panel guard each field
+        individually, and forgetting one renders ``undefined`` as the team's
         remote — which reads as a repo called "undefined" rather than as "we could not tell".
         """
         from kiro_crew.apps.builtins.ops_mission_control.backend import ledger_sync

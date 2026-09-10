@@ -689,7 +689,7 @@ def append_translation(
     both be writing, and ``atomic_write`` makes the WRITE atomic, not the
     read-modify-write around it.
 
-    Returns ``None`` without writing when the meeting no longer exists: the
+    Returns ``None`` without writing when the meeting does not exist: the
     worker's persistence runs on a thread and can lose a race with
     ``delete_meeting`` — without this guard, ``_write_json``'s ``mkdir`` would
     silently recreate the deleted meeting's directory. Both sides take

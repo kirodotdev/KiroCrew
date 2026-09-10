@@ -48,7 +48,7 @@ _PROBE_TTL_SECS = 300.0
 #: once.
 _PROBE_CONCURRENCY = 4
 
-#: ``aws configure get`` reads used to classify a profile's auth mechanism.
+#: ``aws configure get`` reads that classify a profile's auth mechanism.
 #: Values are setting names passed to the CLI — the CLI parses the config
 #: files itself, so the names-only invariant holds.
 _KIND_SSO_SESSION = "sso_session"
@@ -61,7 +61,7 @@ KIND_CREDENTIAL_PROCESS = "credential-process"
 KIND_OTHER = "other"
 
 #: LoopBoundLock, not asyncio.Lock: a module-global asyncio primitive binds
-#: to the import-time loop and raises when acquired from another (#4800).
+#: to the import-time loop and raises when acquired from another.
 _snapshot_lock = LoopBoundLock()
 _snapshot: dict[str, Any] | None = None
 _snapshot_at: float = 0.0
@@ -470,7 +470,7 @@ def resolve_account_profile_cached(account: str) -> tuple[str, str] | None:
     runners, which are plain ``def`` by the SDK's contract. The async twin cannot
     be reached from there — ``asyncio.run`` in a worker thread builds a second
     event loop, and a module-global asyncio primitive binds to the loop that
-    imported it and raises when acquired from another (#4800, which is why
+    imported it and raises when acquired from another (which is why
     ``_snapshot_lock`` is a :class:`LoopBoundLock` at all). So this reads the
     snapshot the loop already built rather than building one of its own.
 

@@ -674,11 +674,8 @@ class TestToolingArtifactsIgnored:
 class TestMeasureEnvDoesNotUndoTheSandboxScrub:
     """`_run` layers `_measure_env` ON TOP of the sandbox's credential-scrubbed
     environment, so anything `_measure_env` inherits is put back after the sandbox removed
-    it. It used to be `dict(os.environ)`.
-
-    Measured before fixing: an `AWS_SECRET_ACCESS_KEY` that the sandbox had scrubbed
-    reappeared in the child env once this dict was applied — handing the operator's
-    credentials to agent-authored test code. Raised by review of this branch.
+    it. A `dict(os.environ)` here therefore restores an `AWS_SECRET_ACCESS_KEY` the sandbox
+    scrubbed, handing the operator's credentials to agent-authored test code.
     """
 
     def test_measure_env_carries_no_credentials(self, tmp_path, monkeypatch) -> None:

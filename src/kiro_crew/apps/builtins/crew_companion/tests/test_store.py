@@ -471,10 +471,10 @@ class TestPendingSurvivesRestart:
 
     The window this pins: a due reminder is consumed from `reminders` the moment
     the tick queues it, so between that tick and the overlay's poll the fire
-    exists ONLY in `_pending`. A restart in that window used to lose it — the
-    reminder row was already gone, the queue was memory-only, and the client's
-    refetch-from-zero restart recovery found nothing to refetch. The user's
-    promise silently evaporated. `seq` persists with it so a restart cannot
+    exists ONLY in `_pending`. A restart in that window loses it unless the queue
+    is persisted — the reminder row is already gone, and the client's
+    refetch-from-zero restart recovery finds nothing to refetch, so the user's
+    promise evaporates silently. `seq` persists with it so a restart cannot
     reissue numbers below a client's stored cursor.
     """
 

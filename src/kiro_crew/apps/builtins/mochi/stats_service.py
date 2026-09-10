@@ -270,7 +270,7 @@ class StatsService:
 
         Dispatched off the event loop (``asyncio.to_thread``) and held under
         ``self._lock`` so it is mutually exclusive with tick()/flush(): a due
-        flush running in another worker thread can no longer rewrite a stale
+        flush running in another worker thread cannot rewrite a stale
         in-memory snapshot back over the wipe. The dirty flag, the pending flush
         deadline, and the session counter are cleared first so a tick right after
         the lock is released cannot resurrect pre-reset state. Returns True if a

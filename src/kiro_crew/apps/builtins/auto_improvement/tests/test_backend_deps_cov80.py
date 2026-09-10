@@ -251,7 +251,7 @@ class TestInstallDeps:
     ) -> None:
         """Redact-before-bound invariant: the credential is laid out so the
         200-char bound falls INSIDE the token. Bound-before-redact would keep
-        an unredacted token prefix that no longer matches the credential regex
+        an unredacted token prefix that does not match the credential regex
         — the exact fragment shape the serving route's own redaction pass
         cannot recognise — so this test goes red if the redact and the bound
         are ever reordered.
