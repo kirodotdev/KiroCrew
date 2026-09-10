@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import threading
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -28,6 +29,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 import kiro_crew.dashboard.handlers.files as files_mod
+from kiro_crew import platform_compat
 from kiro_crew.dashboard.handlers.files import api_directory_upload
 
 
@@ -77,6 +79,41 @@ async def test_uploads_a_file_into_the_target_directory(tmp_path: Path, mock_sel
 
 
 @pytest.mark.asyncio
+async def test_directory_validation_runs_off_the_event_loop_thread(
+    tmp_path: Path, mock_sel, monkeypatch
+) -> None:
+    """``_validate_dashboard_path`` (``realpath`` plus ``is_sensitive_path``'s
+    candidate-form walk) and the directory-existence check are blocking
+    filesystem calls. AUTOSDE's ``no-blocking-call-on-event-loop`` rule
+    (``blocking: true`` -- see ``AUTOSDE.yaml``) is authoritative here: a
+    stalled network-mounted ``dir`` resolving or stat-ing directly on the
+    gateway's event loop would freeze every other request and the heartbeat
+    for as long as that mount takes to time out. Both validation calls
+    (``target_dir``'s own, and the destination re-check) must run on a
+    worker thread, never on the thread driving this test's own event loop.
+    """
+    main_thread_ident = threading.get_ident()
+    seen_idents: list[int] = []
+
+    real_validate = files_mod._validate_dashboard_path
+
+    def _recording_validate(raw: str) -> str | None:
+        seen_idents.append(threading.get_ident())
+        return real_validate(raw)
+
+    monkeypatch.setattr(files_mod, "_validate_dashboard_path", _recording_validate)
+
+    async with TestClient(TestServer(_make_app())) as client:
+        resp = await _upload(client, directory=str(tmp_path), content=b"hello", filename="c.txt")
+        assert resp.status == 200, await resp.text()
+
+    # target_dir's own validation, plus the destination re-check -- both
+    # calls this handler makes to _validate_dashboard_path.
+    assert len(seen_idents) == 2
+    assert all(ident != main_thread_ident for ident in seen_idents)
+
+
+@pytest.mark.asyncio
 async def test_name_collision_is_refused_without_overwrite(tmp_path: Path, mock_sel) -> None:
     existing = tmp_path / "report.txt"
     existing.write_bytes(b"original")
@@ -108,6 +145,13 @@ async def test_overwrite_flag_replaces_the_existing_file(tmp_path: Path, mock_se
 
 
 @pytest.mark.asyncio
+@pytest.mark.skipif(
+    platform_compat.IS_WINDOWS,
+    reason="Windows has no POSIX permission bits -- os.chmod there only "
+    "toggles the read-only attribute, so a file's mode always reports as "
+    "0o666 (or 0o444 read-only) regardless of what was requested, and this "
+    "assertion could never hold there",
+)
 async def test_overwrite_preserves_the_existing_files_mode(tmp_path: Path, mock_sel) -> None:
     """A replace must carry the ORIGINAL file's permission bits onto the
     replacement, mirroring ``_file_write_blocking``'s own carry for
@@ -161,8 +205,35 @@ async def test_overwrite_carries_the_existing_files_acl(
             overwrite=True,
         )
         assert resp.status == 200, await resp.text()
-    monkeypatch.undo()
     assert ("system.posix_acl_access", b"acl") in recorded
+
+
+@pytest.mark.asyncio
+async def test_overwrite_refused_when_access_control_cannot_be_carried(
+    tmp_path: Path, mock_sel, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """On a platform with no xattr syscalls (Windows, macOS) the ACL half of
+    the carry can read nothing, so a replacement inode would take the parent
+    directory's inheritable entries and could end up broader than the file it
+    replaced. The overwrite is refused with ``acl_carry_unsupported`` rather
+    than silently widening permissions. Simulated so it is reachable from a
+    Linux dev box and from CI."""
+    existing = tmp_path / "secret.txt"
+    existing.write_bytes(b"original")
+    monkeypatch.setattr(files_mod, "ACCESS_CONTROL_XATTRS_SUPPORTED", False)
+
+    async with TestClient(TestServer(_make_app())) as client:
+        resp = await _upload(
+            client,
+            directory=str(tmp_path),
+            content=b"replacement",
+            filename="secret.txt",
+            overwrite=True,
+        )
+        assert resp.status == 501, await resp.text()
+        body = await resp.json()
+    assert body["code"] == "acl_carry_unsupported"
+    assert existing.read_bytes() == b"original"
 
 
 @pytest.mark.asyncio
@@ -506,6 +577,13 @@ async def test_by_name_floor_still_classifies_the_destination_correctly(
     pins.
     """
     monkeypatch.setattr(files_mod.pinned_fs, "supports_pinned_walk", lambda: False)
+    # Also forces IS_WINDOWS so the handler takes its Windows ancestor-guard
+    # branch (platform_compat.pin_directory) rather than failing closed with
+    # ancestor_pin_unsupported -- that branch's own real POSIX pin_directory
+    # implementation still works fine here (IS_POSIX is untouched), so this
+    # reaches the same by-name classify/publish floor the test's docstring
+    # describes, guarded exactly as Windows would guard it for real.
+    monkeypatch.setattr(files_mod.platform_compat, "IS_WINDOWS", True)
     target = tmp_path / "report.txt"
     if existing_kind == "dir":
         target.mkdir()
@@ -609,6 +687,85 @@ async def test_a_failed_publish_leaves_the_original_untouched(
 
 
 @pytest.mark.asyncio
+async def test_windows_without_pinned_walk_guards_ancestors_via_pin_directory(
+    tmp_path: Path, mock_sel, monkeypatch
+) -> None:
+    """Windows has no O_NOFOLLOW + dir_fd combination to pin a parent CHAIN
+    with (``pinned_fs.supports_pinned_walk()`` is False there), so a bare
+    by-name write there would leave open the exact ancestor-swap window this
+    fix closes: ``platform_compat.pin_directory(target_dir)`` is called and
+    its handle held across the whole classify-then-publish -- which, for
+    real on Windows, blocks renaming ANY ancestor while the handle lives
+    (``TestPinDirectory::test_a_pinned_directory_cannot_be_renamed_or_removed``
+    in ``test_platform_compat.py``).
+
+    Simulated here (this test runs on POSIX dev machines) by forcing the
+    "not pinned" branch plus ``IS_WINDOWS``, and replacing ``pin_directory``
+    with a fake that raises exactly as the real one does when a reparse
+    point already sits at the name. Before this fix there was no such call
+    and no such branch at all: the handler fell straight through to an
+    unguarded by-name write, so this fake would never even be reached and
+    the upload would have SUCCEEDED instead of being refused.
+    """
+    monkeypatch.setattr(files_mod.pinned_fs, "supports_pinned_walk", lambda: False)
+    monkeypatch.setattr(files_mod.platform_compat, "IS_WINDOWS", True)
+
+    calls: list[str] = []
+
+    def _fake_pin_directory(path):
+        calls.append(str(path))
+        raise OSError("simulated: a reparse point already sits at this name")
+
+    monkeypatch.setattr(files_mod.platform_compat, "pin_directory", _fake_pin_directory)
+
+    async with TestClient(TestServer(_make_app())) as client:
+        resp = await _upload(client, directory=str(tmp_path), content=b"attacker", filename="a.txt")
+        assert resp.status == 403, await resp.text()
+        body = await resp.json()
+    assert body["code"] == "symlink_refused"
+    assert calls == [str(tmp_path)]
+    assert not (tmp_path / "a.txt").exists()
+
+
+@pytest.mark.asyncio
+async def test_windows_without_pinned_walk_still_uploads_when_pin_succeeds(
+    tmp_path: Path, mock_sel, monkeypatch
+) -> None:
+    """Companion to the refusal test above: when ``pin_directory`` succeeds,
+    the upload still proceeds normally (by name, exactly as the by-name
+    floor already did) with the guard held for the duration and released
+    afterward -- the fix adds a held guard, not a new failure mode for the
+    ordinary case."""
+    monkeypatch.setattr(files_mod.pinned_fs, "supports_pinned_walk", lambda: False)
+    monkeypatch.setattr(files_mod.platform_compat, "IS_WINDOWS", True)
+
+    real_pin_directory = files_mod.platform_compat.pin_directory
+    opened: list[int] = []
+    closed: list[int] = []
+
+    def _tracking_pin_directory(path):
+        fd = real_pin_directory(path)
+        opened.append(fd)
+        return fd
+
+    real_close = os.close
+
+    def _tracking_close(fd, *a, **k):
+        if fd in opened:
+            closed.append(fd)
+        return real_close(fd, *a, **k)
+
+    monkeypatch.setattr(files_mod.platform_compat, "pin_directory", _tracking_pin_directory)
+    monkeypatch.setattr(os, "close", _tracking_close)
+
+    async with TestClient(TestServer(_make_app())) as client:
+        resp = await _upload(client, directory=str(tmp_path), content=b"hello", filename="b.txt")
+        assert resp.status == 200, await resp.text()
+    assert (tmp_path / "b.txt").read_bytes() == b"hello"
+    assert opened and opened == closed
+
+
+@pytest.mark.asyncio
 async def test_no_file_part_is_rejected(tmp_path: Path, mock_sel) -> None:
     async with TestClient(TestServer(_make_app())) as client:
         form = aiohttp.FormData()
@@ -617,3 +774,114 @@ async def test_no_file_part_is_rejected(tmp_path: Path, mock_sel) -> None:
         assert resp.status == 400, await resp.text()
         body = await resp.json()
     assert body["code"] == "missing_required_fields"
+
+
+@pytest.mark.asyncio
+async def test_fresh_upload_succeeds_on_linkless_filesystem(
+    tmp_path: Path, mock_sel, monkeypatch
+) -> None:
+    """On a filesystem without hard-link support (FAT/exFAT, SMB/CIFS), the
+    ``create_only`` publish falls back to ``platform_compat.rename_noreplace``
+    -- still one atomic only-if-absent syscall, never a claim-then-replace
+    two-step. Where that primitive is available (Linux/macOS via
+    ``renameat2``/``renameatx_np``) the upload must land the file exactly
+    once, not crash with a 500. Where it is NOT available (Windows, which has
+    neither hard links working here NOR ``RENAME_NOREPLACE_AVAILABLE``), the
+    fix's own contract is to fail closed rather than risk an unconditional
+    replace -- asserted here as ``atomic_create_unsupported`` (501), honestly
+    gated rather than asserting the POSIX success path on a platform that
+    cannot safely provide it.
+    """
+    from windows_sim import link_unsupported
+
+    with link_unsupported():
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await _upload(
+                client,
+                directory=str(tmp_path),
+                content=b"payload on a linkless fs",
+                filename="new-file.txt",
+            )
+            if platform_compat.RENAME_NOREPLACE_AVAILABLE:
+                assert resp.status == 200, await resp.text()
+            else:
+                assert resp.status == 501, await resp.text()
+                body = await resp.json()
+                assert body["code"] == "atomic_create_unsupported"
+    if platform_compat.RENAME_NOREPLACE_AVAILABLE:
+        assert (tmp_path / "new-file.txt").read_bytes() == b"payload on a linkless fs"
+    else:
+        assert not (tmp_path / "new-file.txt").exists()
+
+
+@pytest.mark.asyncio
+async def test_linkless_filesystem_collision_still_reports_name_collision(
+    tmp_path: Path, mock_sel, monkeypatch
+) -> None:
+    """Even without hard links, a name collision is still detected and
+    reported as ``name_collision`` — the ``O_CREAT|O_EXCL`` fallback
+    fails with ``FileExistsError`` just like ``os.link`` would."""
+    from windows_sim import link_unsupported
+
+    (tmp_path / "existing.txt").write_bytes(b"rival")
+    with link_unsupported():
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await _upload(
+                client,
+                directory=str(tmp_path),
+                content=b"mine",
+                filename="existing.txt",
+            )
+            assert resp.status == 409, await resp.text()
+            body = await resp.json()
+    assert body["code"] == "name_collision"
+    assert (tmp_path / "existing.txt").read_bytes() == b"rival"
+
+
+@pytest.mark.asyncio
+async def test_linkless_fallback_refuses_a_rival_planted_at_the_last_instant(
+    tmp_path: Path, mock_sel, monkeypatch
+) -> None:
+    """The linkless (``os.link``-unsupported) fallback publishes through
+    ``platform_compat.rename_noreplace`` -- ONE atomic only-if-absent
+    syscall -- rather than an ``O_CREAT|O_EXCL`` claim followed by a separate
+    replacing rename. The claim-then-replace shape only narrows the race
+    between two concurrent creates: the claim proves the name was free AT
+    CLAIM TIME, and a rival's own publish landing in the window before an
+    unconditional replace following it would be silently clobbered by that
+    replace. Injecting the rival's write immediately
+    before the REAL ``rename_noreplace`` call (skipping ``os.link`` via
+    ``link_unsupported``) proves the new publish still refuses even a plant
+    that lands at the very last possible instant -- there is no window left
+    to land it in, atomically or otherwise.
+
+    Skipped where ``platform_compat.RENAME_NOREPLACE_AVAILABLE`` is False
+    (pre-5.3 Linux kernels, Windows, most non-Linux/macOS platforms): there
+    the fix's own behavior is to FAIL rather than fall back further, which
+    is exercised by a separate test rather than asserted here as if the
+    primitive existed.
+    """
+    if not platform_compat.RENAME_NOREPLACE_AVAILABLE:
+        pytest.skip("platform_compat.rename_noreplace is unavailable on this platform")
+    from windows_sim import link_unsupported
+
+    real_rename_noreplace = platform_compat.rename_noreplace
+
+    def _rival_wins_then_publish(src, dst, **kwargs):
+        # dst is a bare basename here (dir_fd-relative); resolve it against
+        # tmp_path (the only directory this test ever targets) to plant the
+        # rival at the real destination the syscall is about to name.
+        (tmp_path / dst).write_bytes(b"rival's bytes")
+        return real_rename_noreplace(src, dst, **kwargs)
+
+    monkeypatch.setattr(platform_compat, "rename_noreplace", _rival_wins_then_publish)
+
+    with link_unsupported():
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await _upload(
+                client, directory=str(tmp_path), content=b"mine", filename="race.txt"
+            )
+            assert resp.status == 409, await resp.text()
+            body = await resp.json()
+    assert body["code"] == "name_collision"
+    assert (tmp_path / "race.txt").read_bytes() == b"rival's bytes"
