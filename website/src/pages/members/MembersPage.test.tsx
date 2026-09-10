@@ -2021,5 +2021,28 @@ describe('MembersPage default member, memory and URL', () => {
       expect(currentUrl()).toBe('/members')
       expect(navigateSpy).not.toHaveBeenCalledWith(-1)
     })
+
+    it('the overlay fills the phone: the panel is handed the window width, not left to a 100% it cannot resolve (#9979)', async () => {
+      // 390 is the audit's phone frame. Below SIDE_PANEL_MIN_W the panel would
+      // clamp up to its minimum instead; 390 is above it, so the width the
+      // panel carries must be the window's own.
+      setWindowWidth(390)
+      await renderPage(alphaBeta(), 'kirocrew', { route: '/members?member=beta' })
+      expect(await screen.findByTestId('chat-pane-stub', PANE_READY)).toHaveTextContent('member-beta')
+      fireEvent.click(screen.getByTestId('member-panel-toggle'))
+      const summary = await screen.findByTestId('member-crew-summary')
+      const overlay = screen.getByTestId('member-side-panel')
+      expect(overlay).toHaveAttribute('data-placement', 'overlay')
+      // The SidePanel root is the first element inside the overlay's inner
+      // wrapper that carries an inline width; with fillWidth it is an explicit
+      // px value equal to the window, never the '100%' fallback.
+      const panelRoot = Array.from(overlay.querySelectorAll<HTMLElement>('div'))
+        .find((el) => el.style.width !== '' && el.contains(summary))
+      expect(panelRoot).toBeDefined()
+      expect(panelRoot!.style.width).toBe('390px')
+      // A filled panel has no left-edge splitter: there is nothing to drag
+      // against when the panel already spans the window (the chat page's rule).
+      expect(overlay.querySelector('[role="separator"][aria-orientation="vertical"]')).toBeNull()
+    })
   })
 })

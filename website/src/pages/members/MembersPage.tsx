@@ -399,6 +399,16 @@ export default function MembersPage() {
     return () => window.removeEventListener('resize', onResize)
   }, [])
   const beside = panelSitsBeside({ winW, rosterW: roster.width, isMobile })
+  // On a phone the overlay must FILL its scrim. SidePanel's own mobile
+  // fallback is `width: 100%`, which cannot resolve here: the overlay's inner
+  // wrapper is a shrink-to-fit flex item, so a percentage child falls back to
+  // the panel's max-content width and the panel lands at SIDE_PANEL_MIN_W
+  // with a dimmed sliver of the thread showing beside it (issue #9979). The
+  // chat page hands its panel an explicit px width for exactly this reason
+  // (sidePanelFillWidth's mobile branch); this is that branch. `undefined` off
+  // the phone, where the panel keeps its own resizable width in both
+  // placements — the docked/overlay split is panelSitsBeside's, not this.
+  const panelFillWidth = isMobile ? Math.max(SIDE_PANEL_MIN_W, winW) : undefined
   const [overlayOpen, setOverlayOpen] = useState(false)
   // `overlayOpen` is overlay-mode state only. Reset it whenever the panel docks
   // (a widening window, a narrower roster), so an open overlay does not lie in
@@ -2510,10 +2520,10 @@ export default function MembersPage() {
                     ? 'h-full overflow-visible flex justify-end shrink-0'
                     /* The overlay MUST be dismissable, so it is the one placement
                        that hands the panel an onClose — and the scrim is a second
-                       dismiss, the drawer convention. On a phone the panel's
-                       mobile `100%` width fills the scrim; on a tablet-width
-                       window the panel keeps its own (resizable, persisted)
-                       width against the dimmed chat. */
+                       dismiss, the drawer convention. On a phone the panel is
+                       handed the window width (`fillWidth`) so it fills the
+                       scrim; on a tablet-width window the panel keeps its own
+                       (resizable, persisted) width against the dimmed chat. */
                     : 'fixed top-safe-offset-[42px] bottom-safe left-safe right-safe z-40 flex justify-end bg-bg/60 backdrop-blur-sm'}
                   style={panelHidden ? { display: 'none' } : undefined}
                   onClick={beside ? undefined : (e) => { if (e.target === e.currentTarget) closeOverlay() }}
@@ -2539,6 +2549,10 @@ export default function MembersPage() {
                          covers the thread, so nothing to reserve. */
                       onClose={beside ? undefined : closeOverlay}
                       extraReserveW={beside ? roster.width + PANEL_GAPS_W : 0}
+                      /* Phone only (see panelFillWidth): the overlay fills the
+                         window. Off the phone this is undefined and the panel
+                         sizes itself. */
+                      fillWidth={panelFillWidth}
                     />
                   </motion.div>
                 </motion.div>
