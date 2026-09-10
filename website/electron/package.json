@@ -141,6 +141,7 @@
       "native-theme.js",
       "zoom.js",
       "instance-guard.js",
+      "linux-desktop-integration.js",
       "context-menu.js",
       "find-bin.js",
       "gateway-env.js",

@@ -32,6 +32,7 @@ const { isLocalGatewayEnabled } = require("./local-gateway");
 const { seedRenamedStore } = require("./store-rename");
 const { resolveHome, secretCandidates } = require("./home-dir");
 const { identityFamily } = require("./instance-guard");
+const { integrateLinuxDesktop } = require("./linux-desktop-integration");
 const { initNativeLogging } = require("./native-logging");
 const { armCrashCollector, collectCrashReports } = require("./crash-collector");
 const { initGpuPolicy } = require("./disable-gpu");
@@ -515,6 +516,25 @@ app.whenReady().then(async () => {
   ipcRegistrar.registerShell();
   windows.createTray();
   const mainWindow = windows.createMainWindow();
+
+  // First-run desktop integration (Linux AppImage only). An AppImage does not
+  // install its own icon/launcher, so do it here — silently, once per version.
+  // Scheduled with setImmediate AFTER the main window is created, so the
+  // synchronous icon copy and launcher write run on a later tick and cannot
+  // delay the first window; it no-ops on every non-AppImage platform.
+  setImmediate(() => {
+    try {
+      integrateLinuxDesktop({
+        fs, path, os, env: process.env,
+        version: app.getVersion(),
+        stampDir: app.getPath("userData"),
+        run: (cmd, args) => { try { if (typeof cmd === "string" && cmd.startsWith("/")) require("child_process").execFile(cmd, args, () => {}); } catch { /* best-effort */ } },
+        log: (m) => { try { glog(`desktop-integration: ${m}`); } catch { /* ignore */ } },
+      });
+    } catch (e) {
+      try { glog(`desktop-integration: skipped: ${e && e.message}`); } catch { /* ignore */ }
+    }
+  });
 
   // The global accelerator needs an existing main window. The updater needs
   // that same window for notifications, but MUST be fully registered before
