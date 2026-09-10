@@ -4049,6 +4049,9 @@ class KiroCrewConfig:
                 feature_videos_enabled=_safe_bool(
                     dashboard_data.get("feature_videos_enabled"), False
                 ),
+                feature_videos_cache_max_mb=_safe_float(
+                    dashboard_data.get("feature_videos_cache_max_mb", 500.0), 500.0, lo=0.0
+                ),
                 folder_suggestions_enabled=bool(
                     dashboard_data.get("folder_suggestions_enabled", True)
                 ),

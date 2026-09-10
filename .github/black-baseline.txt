@@ -125,12 +125,10 @@ src/kiro_crew/apps/builtins/papyrus/backend/gitops.py
 src/kiro_crew/apps/builtins/papyrus/backend/latex.py
 src/kiro_crew/apps/builtins/papyrus/backend/routes.py
 src/kiro_crew/apps/builtins/papyrus/backend/store.py
-src/kiro_crew/apps/builtins/papyrus/backend/tectonic.py
 src/kiro_crew/apps/builtins/personal_shopper/backend/routes.py
 src/kiro_crew/apps/builtins/personal_shopper/backend/store.py
 src/kiro_crew/apps/builtins/personal_shopper/tests/test_routes.py
 src/kiro_crew/apps/builtins/personal_shopper/tests/test_store.py
-src/kiro_crew/apps/builtins/pptx_maker/backend/engine_source.py
 src/kiro_crew/apps/builtins/pptx_maker/backend/library.py
 src/kiro_crew/apps/builtins/workflows/server.py
 src/kiro_crew/apps/cron_sdk.py

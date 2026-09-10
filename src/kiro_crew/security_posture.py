@@ -1302,6 +1302,14 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # goes out to a human.
         "context.py",
         "agent.py",
+        # Transfer-side log hygiene: both redact a URL down to scheme+host before it
+        # reaches a gateway log line ("Downloading %s from %s", a fetch failure, a
+        # manifest that overran its byte bound). The url is operator- or
+        # manifest-supplied and its path or query can carry a token, so the redaction
+        # keeps that out of the log ring and /api/logs. Neither module writes to a
+        # human-bound or third-party output, so neither is an egress boundary.
+        "asset_downloader.py",
+        "feature_videos_manifest.py",
         # Gate-side log hygiene: the update provider redacts an update command's
         # stderr before writing it to the gateway log. It is a boot-time
         # operational log line, not an output boundary bound for a human or a

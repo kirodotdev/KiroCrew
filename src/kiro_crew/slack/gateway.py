@@ -1777,6 +1777,7 @@ class GatewayOrchestrator:
         # Held on the instance so the task is not garbage-collected mid-flight.
         self._inbound_replay_task: "asyncio.Task[None] | None" = None
         self._model_download_task: "asyncio.Task[bool] | None" = None
+        self._feature_video_task: "asyncio.Task[bool] | None" = None
         self._auto_migrate_task: "asyncio.Task[None] | None" = None
         # Boot-time update check, started fire-and-forget after the signal
         # handlers are installed (see start()). Cancelled on shutdown so a
@@ -10175,6 +10176,9 @@ class GatewayOrchestrator:
         # Cancel background model download if still in flight
         if self._model_download_task is not None and not self._model_download_task.done():
             self._model_download_task.cancel()
+        # Cancel the feature-video transfer if still in flight
+        if self._feature_video_task is not None and not self._feature_video_task.done():
+            self._feature_video_task.cancel()
         # Cancel background auto-migration if still in flight
         if self._auto_migrate_task is not None and not self._auto_migrate_task.done():
             self._auto_migrate_task.cancel()
@@ -11945,6 +11949,27 @@ class GatewayOrchestrator:
                 prime_ceiling_projection()
                 register_post_install_hook(reproject_for_ceiling_change)
                 await asyncio.to_thread(start_refresher)
+
+        # ── Hosted feature-video clips ──
+        # Started HERE, after readiness, for the same reason the refresher above is:
+        # the no-new-work-on-gateway-boot-path rule. Nothing downstream needs a clip
+        # before the gateway can serve.
+        #
+        # The import sits INSIDE the flag test so that the TRANSFER's startup is
+        # deferred behind the switch: with the feature off, no task is scheduled,
+        # no config beyond the flag is read, and no manifest is looked for. The
+        # modules themselves are already loaded — the dashboard imports both at
+        # route setup — so this is about work, not import cost.
+        #
+        # The kill switch is read here because it decides whether this subsystem
+        # exists for this process. The ceiling and the manifest stay inside the
+        # task, where blocking work is allowed.
+        if self._cfg.dashboard.feature_videos_enabled:
+            from kiro_crew.feature_videos_cache import (
+                start_background_feature_video_download,
+            )
+
+            self._feature_video_task = start_background_feature_video_download()
 
         # Claim the install-scoped telemetry reporter role for this process.
         # Install-level inventory (crons, skills, knowledge, config toggles) is the

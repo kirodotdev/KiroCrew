@@ -607,6 +607,12 @@ SPA_FALLBACK_EXCLUDED_PREFIXES = (
     "/app-assets/",
     "/artifact-app/",
     "/sandbox-doc/",
+    # Cached feature-video clips and posters (feature_videos_cache.py). A data
+    # route: a GET with no session must be refused, never answered with the
+    # shell — the browser's <video> would otherwise receive index.html with a
+    # 200 and render nothing, and a future non-/api GET registered beside it in
+    # routes/realtime.py would inherit the same silent fallback.
+    "/feature-videos/",
 )
 
 # App window entries (`/app-windows/<app>/<name>.html`) are their own Vite bundles, served

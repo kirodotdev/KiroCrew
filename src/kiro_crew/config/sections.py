@@ -3166,6 +3166,14 @@ class DashboardConfig:
             "yet. Instance-wide kill switch.",
         ),
     )
+    feature_videos_cache_max_mb: float = field(
+        default=500.0,
+        metadata=_meta(
+            "Feature Videos Cache Size (MB)",
+            "Disk budget for downloaded clips. Whole release folders are evicted "
+            "oldest-first to fit; the running release is never evicted. 0 = no cap.",
+        ),
+    )
     folder_suggestions_enabled: bool = field(
         default=True,
         metadata=_meta(
