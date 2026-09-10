@@ -10723,3 +10723,38 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
+
+---
+
+## Ported rule sets
+
+The following are reimplementations, in this project's own languages, of
+rule sets first published in another project. No source code is copied; the
+notice is carried because the classification rules and their ordering are a
+translation of the original's, and the original's license asks that its
+notice travel with derivative work.
+
+### OpenAI Codex — `codex-rs/shell-command/src/parse_command.rs`
+
+- License: Apache-2.0
+- Homepage: https://github.com/openai/codex
+- Reimplemented in: `website/src/utils/shellCommandParse.ts` (TypeScript) and
+  `src/kiro_crew/tool_call_title.py` (Python) — the shell-command classifier
+  behind the chat transcript's tool-call titles (Read / List files / Search
+  and the formatting-helper, `cd`-tracking and simplification rules).
+
+```
+Copyright 2025 OpenAI
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+```

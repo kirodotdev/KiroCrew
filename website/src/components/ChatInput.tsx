@@ -27,6 +27,7 @@ import { sanitizeLlmOutput } from '../utils/sanitize'
 import { useSimplifiedToolNames } from '../hooks/useSimplifiedToolNames'
 import { useLanguage } from '../i18n/LanguageProvider'
 import { pickToolLabel } from '../utils/toolLabel'
+import { deriveToolCallTitle } from '../utils/toolCallTitle'
 import { toApiDecision } from '../utils/approvalDecision'
 import TrustDropdown from './TrustDropdown'
 import type { AutomationRecord } from '../monitoring/automation'
@@ -1094,7 +1095,21 @@ function ChatInput({
   const approvalPurpose = approvalToolEntry?.purpose || ''
   const approvalTs = approvalToolEntry?.ts || 0
 
-  const approvalLabel = pickToolLabel({ simplified, purpose: approvalPurpose, rawLabel: approvalLabelRaw, uiLang })
+  // The same label rule as the tool pill (ToolCallLine): simplified mode shows
+  // the purpose, else the argument-derived title; raw mode keeps the verbatim
+  // title unless it is a stub. The permission meta carries `tool_kind` /
+  // `is_shell` / `tool_name` / `mcp_server` for exactly this derivation, and the
+  // verbatim command stays in the ToolDetails payload below — the human vets
+  // the bytes, the title only says what they do.
+  const approvalDerived = deriveToolCallTitle({
+    title: approvalLabelRaw,
+    kind: (approvalMeta?.tool_kind as string) || '',
+    rawInput: approvalMeta?.tool_input,
+    isShell: approvalMeta?.is_shell === '1' || approvalMeta?.is_shell === true,
+    toolName: (approvalMeta?.tool_name as string) || '',
+    mcpServer: (approvalMeta?.mcp_server as string) || '',
+  })
+  const approvalLabel = pickToolLabel({ simplified, purpose: approvalPurpose, rawLabel: approvalLabelRaw, derivedTitle: approvalDerived.title, uiLang })
 
   // Subscribe to the inline pill's viewport visibility. While the pill is in
   // view, the bar collapses to just the always-visible button row; the moment

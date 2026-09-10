@@ -134,6 +134,7 @@ from kiro_crew.slack.format import (
     TRUNCATION_NOTICE,
     _convert_tables,
     extract_options,
+    is_wait_identity,
     render_one_for_slack,
     split_message,
     strip_thinking_tags,
@@ -3888,7 +3889,13 @@ async def handle_message(
                 # streaming message now so Slack doesn't show an error.
                 # _ensure_stream_started() will open a new message when
                 # the next text chunk arrives after wait returns.
-                if tool_name == "wait" and use_slack_stream and stream_ts:
+                # Keyed on the tool's programmatic identity when the transport
+                # sent one (same rule as SlackRenderer); the title compare is the
+                # fallback for a frame without ``_meta.kiro``.
+                _is_wait = (
+                    is_wait_identity(event.tool_name) if event.tool_name else tool_name == "wait"
+                )
+                if _is_wait and use_slack_stream and stream_ts:
                     if _active_task_id:
                         _elapsed = _tool_elapsed_str()
                         _cancel_tool_timer()

@@ -23,6 +23,7 @@ import { api } from '../api/client'
 import { AUTONUDGE_LOOPS_QUERY_KEY } from '../components/autoNudgeLoop'
 import { forgetUnobservedMemberThreads } from '../api/membersQuery'
 import { sanitizeLlmOutput } from '../utils/sanitize'
+import { deriveToolCallTitle } from '../utils/toolCallTitle'
 import { applyStatusDelta, parseStatusDelta } from '../utils/pullRequestStatusDelta'
 import { slotChangeUrls } from '../utils/pullRequestLinks'
 import type { StatusData, ChatMessage, ChatSlot, ChatFolder, Notification, PullRequestStatusBatch, TodoList, McpSessionReport } from '../types'
@@ -1699,7 +1700,7 @@ export function useWebSocket() {
             // panel from this event, and a reducer that throws on a malformed
             // payload must not also cost the panel its only signal.
             window.dispatchEvent(new CustomEvent('kirocrew-tool-call', { detail: data }))
-            dispatch(sseToolActivity({ ...data as { slot: string; tool: string; kind: string; purpose: string; input_preview: string; is_shell?: boolean }, auto: (data as Record<string, unknown>).auto === true, tool_call_id: (data as Record<string, unknown>).tool_call_id as string | undefined, is_update: (data as Record<string, unknown>).is_update === true, is_shell: (data as Record<string, unknown>).is_shell === true }))
+            dispatch(sseToolActivity({ ...data as { slot: string; tool: string; kind: string; purpose: string; input_preview: string; is_shell?: boolean; tool_name?: string; mcp_server?: string }, auto: (data as Record<string, unknown>).auto === true, tool_call_id: (data as Record<string, unknown>).tool_call_id as string | undefined, is_update: (data as Record<string, unknown>).is_update === true, is_shell: (data as Record<string, unknown>).is_shell === true }))
             if (data.slot) {
               // A refinement (`is_update`) carries only the fields it refines,
               // so merge it into the live status the way sseToolActivity merges
@@ -1719,10 +1720,31 @@ export function useWebSocket() {
               // and a purpose-less call would then pin the initial stub title
               // ("Terminal") for the whole call instead of advancing to the
               // refined command.
+              //
+              // `toolName` stays the RAW title, and `derivedTitle` carries the
+              // argument-derived one (see utils/toolCallTitle) — a shell call's
+              // `List files in src`, an MCP call's `Session send: …`. The label
+              // rule that picks between them per the raw-titles preference lives
+              // in toolStatusLabel, so this frame handler only stores the parts.
               const tcid = (data as Record<string, unknown>).tool_call_id as string | undefined
               const isUpdate = (data as Record<string, unknown>).is_update === true
               const purpose = sanitizeLlmOutput((data as Record<string, unknown>).purpose as string || '')
+              const frame = data as Record<string, unknown>
               const toolName = sanitizeLlmOutput(data.tool || '')
+              const derivedInfo = deriveToolCallTitle({
+                title: (data.tool as string) || '',
+                kind: (frame.kind as string) || '',
+                rawInput: frame.input_preview,
+                isShell: frame.is_shell === true,
+                toolName: (frame.tool_name as string) || '',
+                mcpServer: (frame.mcp_server as string) || '',
+              })
+              // A template's language-neutral action is stored and rendered at read
+              // time (toolStatusLabel), so a language switch re-renders the status
+              // line; only the backend's own description (R0.0), transport text that
+              // is not localized, is stored as a string.
+              const derivedAction = derivedInfo.action
+              const derivedTitle = derivedInfo.derived && !derivedAction ? sanitizeLlmOutput(derivedInfo.title) : ''
               const prev = store.getState().chat.slotStatusDetail[data.slot]
               const mergeInto = isUpdate && tcid && prev?.kind === 'tool' && prev.toolCallId === tcid
                 ? prev
@@ -1732,6 +1754,12 @@ export function useWebSocket() {
                 kind: 'tool',
                 text: purpose || mergeInto?.text || '',
                 toolName: toolName || mergeInto?.toolName || '',
+                derivedTitle: derivedTitle || mergeInto?.derivedTitle || '',
+                ...(derivedAction
+                  ? { derivedAction, derivedMore: derivedInfo.more || 0 }
+                  : mergeInto?.derivedAction
+                    ? { derivedAction: mergeInto.derivedAction, derivedMore: mergeInto.derivedMore || 0 }
+                    : {}),
                 ...(tcid ? { toolCallId: tcid } : {}),
                 ts: Date.now(),
               }))

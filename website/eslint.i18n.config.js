@@ -99,6 +99,18 @@ export default [
       // filename IS the boundary and its consumer (SettingRef.tsx) stays fully
       // covered by the gate.
       'src/components/settingRef/envShellCommands.ts',
+      // Shell-command classifier behind the tool-call titles (a port of Codex's
+      // `parse_command.rs`): every string is CLI syntax the parser matches on —
+      // command names (`rg`, `sed`), option flags (`--max-count`), marker
+      // substrings (`os.walk`) — never user-visible copy; translating one would
+      // break the parser. Same named-boundary idiom as `envShellCommands.ts`
+      // above: the module may contain ONLY parser data, and every title a person
+      // reads is rendered by its consumer `toolCallTitle.ts` through `i18nT`,
+      // which stays fully covered.
+      //
+      // Stated as a false-negative class, per this file's convention: copy added
+      // to this module will not be reported. Keep it syntax-only.
+      'src/utils/shellCommandParse.ts',
       // Generated and data-only.
       'src/i18n/locales/**',
       // Generated sources: the copy's real home is the panel that declares the

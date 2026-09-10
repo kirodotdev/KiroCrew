@@ -53,7 +53,7 @@ describe('ToolCallLine simplifiedToolNames', () => {
     expect(screen.getByText('Running: echo hello')).toBeTruthy()
   })
 
-  it('falls back to raw label when purpose is unavailable', () => {
+  it('falls back to the derived title when purpose is unavailable', () => {
     localStorage.setItem(LS_KEY, JSON.stringify({ simplifiedToolNames: true }))
     const msg = toolMsg({ meta: { tool_call_id: 'tc_2' } })
     const store = createTestStore({
@@ -64,13 +64,17 @@ describe('ToolCallLine simplifiedToolNames', () => {
       } as unknown as ChatState,
     })
     renderWithProviders(<ToolCallLine message={msg} running={false} />, { store })
-    expect(screen.getByText('Running: echo hello')).toBeTruthy()
+    // A lone `echo` is the Print action (utils/toolCallTitle); the raw command
+    // stays reachable from the pill's tooltip and the expanded chip.
+    expect(screen.getByText('Print')).toBeTruthy()
+    expect(screen.getByRole('button', { name: /Show details/i }).getAttribute('title')).toBe('echo hello')
   })
 
-  it('substitutes a derived summary for a flood-length purpose-less shell label', () => {
-    // No purpose + simplified ON: pickToolLabel falls back to the raw command,
-    // and a multi-line heredoc label is substituted with a command digest. The
-    // collapsed row's CSS truncate bounds VISIBILITY; this bounds MEANING.
+  it('substitutes the command digest for a purpose-less shell label that does not parse', () => {
+    // No purpose + simplified ON: a heredoc has a redirect, which the shell
+    // classifier refuses, so the row falls back to the command digest
+    // (binaries + redirect target). The collapsed row's CSS truncate bounds
+    // VISIBILITY; this bounds MEANING — the heredoc body never reaches the pill.
     localStorage.setItem(LS_KEY, JSON.stringify({ simplifiedToolNames: true }))
     const heredoc = "cat > /tmp/desc.md <<'EOF'\n### Notes\nbody line one\nbody line two\nEOF"
     const msg = toolMsg({ content: `🔧 Running: ${heredoc}`, meta: { tool_call_id: 'tc_3' } })
@@ -82,11 +86,57 @@ describe('ToolCallLine simplifiedToolNames', () => {
       } as unknown as ChatState,
     })
     renderWithProviders(<ToolCallLine message={msg} running={false} />, { store })
-    expect(screen.getByText('Running: cat → /tmp/desc.md')).toBeTruthy()
+    expect(screen.getByText('cat → /tmp/desc.md')).toBeTruthy()
     expect(screen.queryByText(/body line two/)).toBeNull()
   })
 
-  it('leaves a short raw shell label untouched in simplified mode', () => {
+  it('keeps the raw first line when the digest would be a lone binary', () => {
+    // A loop the classifier refuses digests to just `wc`, which says less than
+    // the command; the row keeps the raw first line instead.
+    localStorage.setItem(LS_KEY, JSON.stringify({ simplifiedToolNames: true }))
+    const loop = 'for f in src/utils/tool*.ts; do wc -l "$f"; done'
+    const msg = toolMsg({ content: `🔧 Running: ${loop}`, meta: { tool_call_id: 'tc_4' } })
+    const store = createTestStore({
+      chat: {
+        messages: [msg],
+        toolLog: [{ type: 'tool', text: loop, tool_call_id: 'tc_4', output: '12', ts: 1 }],
+        slotRunning: false,
+      } as unknown as ChatState,
+    })
+    renderWithProviders(<ToolCallLine message={msg} running={false} />, { store })
+    expect(screen.getByText(loop)).toBeTruthy()
+    expect(screen.queryByText('wc')).toBeNull()
+  })
+
+  it('sets a verbatim shell command in the code face, and a derived title in prose', () => {
+    // The row that shows the exact command is styled as code so it is
+    // visibly different in kind from the prose titles around it.
+    localStorage.setItem(LS_KEY, JSON.stringify({ simplifiedToolNames: true }))
+    const loop = 'for f in src/utils/tool*.ts; do wc -l "$f"; done'
+    const verbatim = toolMsg({ content: `🔧 Running: ${loop}`, meta: { tool_call_id: 'tc_4m' } })
+    const derived = toolMsg({ content: '🔧 Running: git status', meta: { tool_call_id: 'tc_5m' } })
+    const store = createTestStore({
+      chat: {
+        messages: [verbatim, derived],
+        toolLog: [
+          { type: 'tool', text: loop, tool_call_id: 'tc_4m', output: '12', ts: 1 },
+          { type: 'tool', text: 'git status', tool_call_id: 'tc_5m', output: 'clean', ts: 2 },
+        ],
+        slotRunning: false,
+      } as unknown as ChatState,
+    })
+    renderWithProviders(
+      <>
+        <ToolCallLine message={verbatim} running={false} />
+        <ToolCallLine message={derived} running={false} />
+      </>,
+      { store },
+    )
+    expect(screen.getByText(loop).className).toContain('font-mono')
+    expect(screen.getByText('Git status').className).not.toContain('font-mono')
+  })
+
+  it('derives a title for a short shell label in simplified mode', () => {
     localStorage.setItem(LS_KEY, JSON.stringify({ simplifiedToolNames: true }))
     const msg = toolMsg({ content: '🔧 Running: git status', meta: { tool_call_id: 'tc_5' } })
     const store = createTestStore({
@@ -97,7 +147,31 @@ describe('ToolCallLine simplifiedToolNames', () => {
       } as unknown as ChatState,
     })
     renderWithProviders(<ToolCallLine message={msg} running={false} />, { store })
+    expect(screen.getByText('Git status')).toBeTruthy()
+  })
+
+  it('keeps the verbatim command on the row in raw mode', () => {
+    localStorage.setItem(LS_KEY, JSON.stringify({ simplifiedToolNames: false }))
+    const msg = toolMsg({ content: '🔧 Running: git status', meta: { tool_call_id: 'tc_6' } })
+    const store = createTestStore({
+      chat: {
+        messages: [msg],
+        toolLog: [{ type: 'tool', text: 'git status', tool_call_id: 'tc_6', output: 'clean', ts: 1 }],
+        slotRunning: false,
+      } as unknown as ChatState,
+    })
+    renderWithProviders(<ToolCallLine message={msg} running={false} />, { store })
     expect(screen.getByText('Running: git status')).toBeTruthy()
+  })
+
+  it('replaces a replay stub title even in raw mode', () => {
+    localStorage.setItem(LS_KEY, JSON.stringify({ simplifiedToolNames: false }))
+    const msg = toolMsg({ content: '🔧 shell', meta: { tool_call_id: 'tc_7', kind: 'execute', input: '{"command":"ls -la src"}' } })
+    const store = createTestStore({
+      chat: { messages: [msg], toolLog: [], slotRunning: false } as unknown as ChatState,
+    })
+    renderWithProviders(<ToolCallLine message={msg} running={false} />, { store })
+    expect(screen.getByText('List files in src')).toBeTruthy()
   })
 })
 
@@ -170,8 +244,24 @@ describe('ToolCallLine inline expansion', () => {
     expect(screen.getByText('only-output')).toBeTruthy()
   })
 
-  it('shows historical-message message when no toolLog entry exists and no purpose meta', () => {
+  it('shows the verbatim command in the expanded header of a bare historical row', () => {
+    // No toolLog entry, no persisted input/output, no purpose: the pill shows
+    // the derived title (`Print`), so the expanded header's tool chip carries
+    // the verbatim command — the one detail a bare historical row still has.
     const msg = toolMsg({ meta: { tool_call_id: 'tc_orphan' } })
+    const store = createTestStore({
+      chat: { messages: [msg], toolLog: [], slotRunning: false } as unknown as ChatState,
+    })
+    renderWithProviders(<ToolCallLine message={msg} running={false} />, { store })
+    fireEvent.click(screen.getByRole('button', { name: /Show details/i }))
+    expect(screen.getByText('echo hello')).toBeTruthy()
+    expect(screen.queryByText('Details unavailable for historical tool calls.')).toBeNull()
+  })
+
+  it('shows the historical-message hint when the pill already shows the only detail', () => {
+    // A title the derivation cannot improve (kiro-cli's own `Fetch URL`) IS
+    // the pill label, so the chip would duplicate it and the hint shows instead.
+    const msg = toolMsg({ content: '🔧 Fetch URL', meta: { tool_call_id: 'tc_orphan2', kind: 'fetch' } })
     const store = createTestStore({
       chat: { messages: [msg], toolLog: [], slotRunning: false } as unknown as ChatState,
     })
