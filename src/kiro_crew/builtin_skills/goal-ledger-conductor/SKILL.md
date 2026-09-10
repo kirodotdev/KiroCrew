@@ -47,6 +47,7 @@ A candidate qualifies only if **all three** hold:
    work — CI runs the suite, and its verdict is the one that counts. If an item's
    completion genuinely cannot be stated as one of these, it is not assertable:
    say so and treat it as a needs-human item rather than inventing a condition.
+   A `pr_checks` condition names a NON-DRAFT pull request: while a pull request is a draft, a repository that gates readiness on draft state holds its checks incomplete, so the verdict stays `pending` for as long as the draft lasts and the item can never pass.
 3. **Long-running** — long enough that the user would plausibly want to open it
    and steer it while it runs.
 
@@ -129,6 +130,8 @@ For each item in the round, in **exactly this order**:
    The seed is the item's whole contract: the child session gets no other
    context from you.
 
+**A `pr_checks` seed says how the pull request is opened.** Tell the worker to open it non-draft — `gh pr create` without `--draft` — or to run `gh pr ready` before it reports done. A completion claim that arrives on a draft costs a whole verify cycle that can only answer `pending`.
+
 **Bind BEFORE you seed.** This inverts `goal-conductor`'s "seed before you
 record" rule, deliberately. That rule protects against a ledger row with no
 session behind it; this one protects against a running worker with no binding,
@@ -199,8 +202,10 @@ Each cycle:
    ```
 
    **The filter is yours to apply, and it is not optional.** `accept_batch` is
-   composed from every open item that has a concrete acceptance, whatever its
-   status — it is the two-phase promotion seam, not a verdict gate. The evaluator
+   composed from every open item whose acceptance is concrete, whatever its
+   status — it is the two-phase promotion seam, not a verdict gate. Each entry
+   carries that item's `status` beside its condition, and that field is the one
+   you filter on; the server does not filter by it. The evaluator
    answers a world-state question ("does this file exist", "are this PR's checks
    green"), and a worker that is still `progress` can have made that true early:
    a stub written before the real content, a PR that is green before the last
@@ -241,12 +246,17 @@ Each cycle:
    `pr_checks` is the common case. Store the condition with the value marked TBD
    at `create`, tell the child in its seed to report the number through
    `work_report`'s `pr`, and `accept_batch` will leave that item OUT of the batch
-   until the stored `acceptance` is concrete. **The worker's claimed `pr` is
+   until the stored `acceptance` is concrete — the item's `acceptance_concrete`
+   flag is what says whether its bar is real yet. **The worker's claimed `pr` is
    never read as the bar.** Promote it yourself with `work_ledger_record`
    `action=accept` once you have looked at it, and verify on the next cycle. A
    worker that could fill in its own acceptance could point it at anybody's
    already-green pull request, which is exactly why the claim and the condition
    are separate fields.
+
+   **A `human_approval` item is verified by asking, and the ask is fragile.** The evaluator answers `pending` for it forever, so put the decision to the user with `ask_question` — then `monitor_update` `interval_secs=1800`, or the largest interval the goal tolerates, until the answer arrives, and restore the interval once it does.
+
+   If the user says the card is gone, re-issue it. A report that the card vanished is not an answer.
 4. `work_ledger_record` `action=close` with the item's `state` when an item is
    finally done with — that is what ends it. `action=decide` records an
    instruction you want the worker to read out of `work_brief`; it is the ONE
@@ -388,6 +398,7 @@ what the composer renders:
   arm that instead and the quiet cycles stop costing a turn. Until then, size
   the interval for the report cadence you expect rather than for the latency you
   want.
+- **A question card can be displaced by your own later turns.** `ask_question` posts a card into the dashboard transcript, and every patrol turn you take while it is outstanding can push it out of the user's view. Slow patrol while a card is open, and treat "the card is gone" as a re-issue rather than an answer.
 - **The session and ledger tools may not be in your tool list yet.** With MCP
   Tool Search active their specs are deferred, so a first `session_create` fails
   with `A tool with the name 'session_create' does not exist`. That means
