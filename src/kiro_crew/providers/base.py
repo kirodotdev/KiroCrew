@@ -120,6 +120,15 @@ class LLMProvider(ABC):
         return False
 
     @property
+    def is_kiro_backend(self) -> bool:
+        """True only when the provider positively identifies as kiro-cli.
+
+        The safe default is False: adapters added later cannot accidentally earn
+        Kiro-only behavior merely by omitting this capability.
+        """
+        return False
+
+    @property
     def is_claude_backend(self) -> bool:
         """True when this provider drives claude-agent-acp."""
         return False

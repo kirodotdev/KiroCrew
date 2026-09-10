@@ -70,6 +70,9 @@ def _deep_chain_client(stream, *, primary="primary-model", advertised=("fallback
             self.client = inner
             self.stream = stream
             self.stream_command = stream
+            # This deliberately non-ABC wrapper still models a provider seam;
+            # capabilities it does not implement must take the ABC-safe default.
+            self.is_kiro_backend = False
             # The public served_model seam the poisoned-conversation canary and
             # the fallback witness read; delegates to the handle like the real
             # AcpProvider.served_model property does.

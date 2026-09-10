@@ -309,6 +309,7 @@ from kiro_crew.dashboard.chat_utils import (  # noqa: E402
     EMPTY_RUNG_CONTINUE,
     EMPTY_RUNG_GIVE_UP,
     EMPTY_RUNG_REPLAY,
+    FALSE_TOOL_BLOCKER_REPLAY_KIND,
     MODEL_UNENTITLED_KIND,
     SUBAGENT_COMPLETION_KIND,
     SYNTHETIC_RECOVERY_KIND,
@@ -316,6 +317,8 @@ from kiro_crew.dashboard.chat_utils import (  # noqa: E402
     EmptyTurnActivity,
     RecoveryPayload,
     classify_empty_turn,
+    is_false_current_tool_blocker,
+    is_false_current_tool_blocker_near_miss,
     is_promise_only_terminal,
     is_synthetic_payload_item,
     is_synthetic_recovery_item,
@@ -327,6 +330,7 @@ from kiro_crew.dashboard.chat_utils import (  # noqa: E402
     should_notice_mixed_turn_leak,
     should_recover_promise_only,
     subagents_attached,
+    tool_calls_are_read_only_preparation,
 )
 
 
@@ -5357,11 +5361,11 @@ async def _start_next_queued_turn(state: DashboardState, slot: _ChatSlot) -> boo
     # can never survive a turn to dispatch later. No await before the decision =>
     # atomic on the single event loop.
     #
-    # Identity is STRUCTURAL (`is_synthetic_payload_item`), never content alone: a
-    # user who pastes the transcript-visible continuation text verbatim carries no
-    # synthetic payload, so it is never purged; the content check only narrows AMONG
-    # synthetic items to the promise-only one, leaving sibling recovery
-    # continuations (reset/refusal/stall) untouched.
+    # Identity is STRUCTURAL, never content alone. Fixed runner-authored
+    # continuations require a synthetic payload plus one of their fixed bodies. The
+    # dynamic false-blocker replay carries ORIGINAL user text, so its unforgeable
+    # dedicated kind is the purge marker. A user pasting either body or choosing
+    # the same words carries neither structural marker and is never purged.
     #
     # A Stop pressed AND resolved back to idle in the post-turn awaits (between the
     # continuation's enqueue and this drain) is invisible to `_should_suppress_requeue`
@@ -5382,7 +5386,8 @@ async def _start_next_queued_turn(state: DashboardState, slot: _ChatSlot) -> boo
         superseded = [
             q
             for q in slot._queue
-            if is_synthetic_payload_item(q) and q.get("content") in _purgeable
+            if q.get("kind") == FALSE_TOOL_BLOCKER_REPLAY_KIND
+            or (is_synthetic_payload_item(q) and q.get("content") in _purgeable)
         ]
         if superseded:
             for q in superseded:
@@ -5922,6 +5927,12 @@ async def _run_chat(
 ) -> None:
     """Stream LLM response into *slot*.  Survives browser disconnect."""
 
+    # Immutable authority for ORIGINAL replay. ``message`` is enriched later
+    # with cancelled-turn preambles, subagent failures, and silent app context;
+    # those bytes belong only in the current provider prompt and must never be
+    # reclassified or mirrored as authenticated-human speech.
+    _incoming_message = message
+
     # Chokepoint invariant: a crew-bound slot NEVER executes locally. Its turns go
     # through ``relay_remote_turn``; ``_run_chat`` is the LOCAL runner. Every
     # dispatch entry point (the primary send, regenerate, edit-resend, rewind,
@@ -6411,6 +6422,14 @@ async def _run_chat(
     # subtract them (see _answer_text_only) without re-parsing the prose.
     _compaction_notice_chunks: list[str] = []
     _turn_tool_calls = 0  # tool dispatches this turn (refusal diagnostic)
+    # Positive backend provenance for builtin identity. It starts fail-closed and
+    # is set only after get_or_create returns the live provider below.
+    _builtin_identity_trusted = False
+    # One provider-canonical identity tuple per dispatch plus the ids whose final
+    # result reported status=completed. Recovery requires exact set equality;
+    # model/agent-influenced ACP tool_kind remains telemetry only.
+    _turn_tool_identities: list[tuple[str, str, str, bool]] = []
+    _turn_successful_tool_call_ids: set[str] = set()
     # Snapshot of slot._stop_generation at turn start. `_stop_state` snaps back
     # to "idle" once a Stop resolves, so a Stop pressed AND resolved during the
     # turn is invisible to a point-in-time state check at completion. This
@@ -6922,6 +6941,10 @@ async def _run_chat(
             reasoning_effort_override=slot.reasoning_effort or None,
         )
         _acquired = True
+        # AcpProvider exposes an exact bool; ``is True`` prevents a truthy mock
+        # or fallback from authorizing replay. KAS and every future backend fail
+        # closed even if they populate a familiar ``tool_name``.
+        _builtin_identity_trusted = client.is_kiro_backend is True
         # A member DM's first turn carries the four-layer member section as
         # session-start context. Record that it is at stake HERE — the moment
         # the session client exists — not at the context build: every early
@@ -7898,6 +7921,14 @@ async def _run_chat(
                 _turn_thought = True
             elif event.kind == EVENT_TOOL_CALL:
                 _turn_tool_calls += 1
+                _turn_tool_identities.append(
+                    (
+                        event.tool_call_id or "",
+                        event.mcp_server_name or "",
+                        event.tool_name or "",
+                        event.tool_identity_trusted is True,
+                    )
+                )
                 # Flush pre-tool text silently (no broadcast) so it persists,
                 # but keep the streaming message in place for correct tool ordering.
                 _flush_text_stream()
@@ -8215,6 +8246,8 @@ async def _run_chat(
                         exc_info=True,
                     )
             elif event.kind == EVENT_TOOL_RESULT:
+                if event.tool_final and event.tool_call_id:
+                    _turn_successful_tool_call_ids.add(event.tool_call_id)
                 _out = _redact_tool_field(event.tool_output)
                 # Redact the join key once for the WS broadcast and the
                 # message-meta comparison below. `_tool_meta` stores the
@@ -11147,6 +11180,28 @@ async def _run_chat(
                 slot._stage_titles, slot._plan_goal, slot._stage_descriptions = (
                     _extract_and_redact_plan_metadata(_orch_plan_buf)
                 )
+        # Diagnostic-only drift sensor: exact matching stays the replay authority,
+        # while a blocker-adjacent near miss after proven read-only Kiro work is
+        # observable for future grammar decisions. Never log the model text.
+        if (
+            not _armed_final
+            and _stop_reason == STOP_REASON_END_TURN
+            and not _refusal_reasons
+            and tool_calls_are_read_only_preparation(
+                _turn_tool_calls,
+                tuple(_turn_tool_identities),
+                frozenset(_turn_successful_tool_call_ids),
+                builtin_identity_trusted=_builtin_identity_trusted,
+            )
+            and is_false_current_tool_blocker_near_miss(assistant_text)
+        ):
+            logger.warning(
+                "False tool-blocker wording drift after %d proven read-only call(s) "
+                "for slot %s; replay skipped",
+                _turn_tool_calls,
+                slot.key,
+            )
+
         # Leaked tool-call notice: the turn ended NORMALLY with an
         # invoke block emitted as TEXT and zero tool calls — the model wrote
         # the invocation into the prose channel instead of executing it, so
@@ -11256,9 +11311,18 @@ async def _run_chat(
             refusal_reasons=_refusal_reasons,
             # A completed side-effecting tool this turn (e.g. send_message) followed
             # by trailing promise-shaped text would otherwise let the continuation
-            # REISSUE the action; the promise-only bug is by definition a zero-tool-
-            # call turn, so gate on that count.
+            # REISSUE the action. The only non-zero exception requires a unique,
+            # provider-canonical read/search/fetch builtin identity per dispatch and
+            # a final completed result for the exact same id set, followed by the
+            # model's false current-turn blocker claim.
             turn_tool_calls=_turn_tool_calls,
+            turn_tool_identities=tuple(_turn_tool_identities),
+            successful_tool_call_ids=frozenset(_turn_successful_tool_call_ids),
+            builtin_identity_trusted=_builtin_identity_trusted,
+            # A tool-bearing false-blocker retry may replay ONLY the exact prompt
+            # admitted from an authenticated human. App, cron, subagent,
+            # and synthetic recovery text cannot mint user authority.
+            directive_user_origin=_directive_user_origin and not _synthetic_payload,
             # A soft Stop pressed while the promise streamed can arrive here as a
             # normal end_turn (cancel race); re-queueing then would dispatch the
             # stopped action. Gate on the same stop-state every sibling path uses,
@@ -11318,6 +11382,36 @@ async def _run_chat(
                 # matching the non-yolo arm; otherwise auto-approve mode silently
                 # counts the un-acted turn as a clean land.
                 _recovering_promise = True
+            elif _turn_tool_calls:
+                # This is the false-current-tool-blocker exception: the pure
+                # predicate admitted it only after count-aligned read/search/fetch
+                # calls AND only for a prompt carrying authenticated-human
+                # provenance. Replay that exact user message, as the first-empty
+                # retry already does, rather than turning model-authored blocker or
+                # action prose into synthetic authority. Static allowedTools,
+                # MCP autoApprove, and hook grants may skip a later approval, but
+                # the request they act on is still the user's own text.
+                slot._promise_only_retries += 1
+                logger.info(
+                    "False tool blocker after read-only preparation for slot %s — "
+                    "replaying the authenticated user request once (credits=%.4f)",
+                    slot.key,
+                    _turn_credits,
+                )
+                slot.append(
+                    "notice",
+                    "ℹ️ The model incorrectly stopped after read-only preparation — "
+                    "retrying your request once.",
+                    "msg msg-info",
+                )
+                _queue_recovery(
+                    0,
+                    _incoming_message,
+                    kind=FALSE_TOOL_BLOCKER_REPLAY_KIND,
+                    payload=RecoveryPayload.ORIGINAL,
+                )
+                slot._promise_only_stop_gen = getattr(slot, "_stop_generation", 0)
+                _recovering_promise = True
             else:
                 slot._promise_only_retries += 1
                 logger.info(
@@ -11357,14 +11451,30 @@ async def _run_chat(
             # landing silently, the exact thing this arm exists to prevent. A
             # non-empty final segment IS visible output.
             and (bool(assistant_text.strip()) or _produced_visible_output)
-            and _turn_tool_calls == 0
             and _stop_reason == STOP_REASON_END_TURN
             and not _refusal_reasons
             and not _should_suppress_requeue(slot)
             and getattr(slot, "_stop_generation", _stop_gen_turn_start) == _stop_gen_turn_start
             and not _has_user_queued_followup(slot)
             and not getattr(slot, "_pending_steers", None)
-            and is_promise_only_terminal(assistant_text)
+            and (
+                (
+                    _turn_tool_calls == 0
+                    and (
+                        is_promise_only_terminal(assistant_text)
+                        or is_false_current_tool_blocker(assistant_text)
+                    )
+                )
+                or (
+                    tool_calls_are_read_only_preparation(
+                        _turn_tool_calls,
+                        tuple(_turn_tool_identities),
+                        frozenset(_turn_successful_tool_call_ids),
+                        builtin_identity_trusted=_builtin_identity_trusted,
+                    )
+                    and is_false_current_tool_blocker(assistant_text)
+                )
+            )
         ):
             # Spent-budget arm: a SECOND consecutive promise-only turn. The one-shot
             # recovery above already fired and did not stick, so we do NOT re-queue

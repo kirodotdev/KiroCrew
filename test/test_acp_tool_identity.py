@@ -89,6 +89,7 @@ class TestBuildToolCallEventIdentity:
         assert event.kind == EVENT_TOOL_CALL
         assert event.tool_name == "monitor_start"
         assert event.mcp_server_name == "kirocrew-core"
+        assert event.tool_identity_trusted is True
         # This builder populates the identity pair exclusively from _meta.kiro
         # (non-model-authored), so it earns the explicit provenance flag.
         assert event.mcp_identity_trusted is True
@@ -115,6 +116,7 @@ class TestBuildToolCallEventIdentity:
         event = _build_tool_call_event(shell_update, None)
         assert event.tool_name == ""
         assert event.mcp_server_name == ""
+        assert event.tool_identity_trusted is False
         # No _meta.kiro → nothing was populated, so no provenance is asserted.
         assert event.mcp_identity_trusted is False
         # is_shell must still be derived from the kind (unrelated to identity).
@@ -162,6 +164,7 @@ class TestClientToolCallEventIdentityProvenance:
         assert event is not None
         assert event.tool_name == "monitor_start"
         assert event.mcp_server_name == "kirocrew-core"
+        assert event.tool_identity_trusted is True
         assert event.mcp_identity_trusted is True
         # Counterfactual: a frame with no _meta.kiro populates nothing, so the
         # builder asserts no provenance.
@@ -181,6 +184,7 @@ class TestClientToolCallEventIdentityProvenance:
         assert event_no_meta is not None
         assert event_no_meta.tool_name == ""
         assert event_no_meta.mcp_server_name == ""
+        assert event_no_meta.tool_identity_trusted is False
         assert event_no_meta.mcp_identity_trusted is False
 
 

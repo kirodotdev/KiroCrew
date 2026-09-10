@@ -16422,6 +16422,7 @@ class TestEmptyResponseRetry:
         slot.append("user", "hello", "msg msg-u")
 
         mock_client = state.sessions.get_or_create.return_value[0]
+        mock_client.is_kiro_backend = True
         mock_client.context_usage_pct = MagicMock(return_value=50.0)
         mock_client.shutdown = AsyncMock()
         return state, slot, mock_client, _run_chat
@@ -16452,6 +16453,444 @@ class TestEmptyResponseRetry:
             task.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("resumed", (False, True))
+    async def test_read_then_false_tool_budget_claim_auto_continues(
+        self, tmp_path: Path, resumed: bool
+    ) -> None:
+        """A false blocker after a read replays only the authenticated request."""
+        from kiro_crew.acp.types import STOP_REASON_END_TURN
+        from kiro_crew.dashboard.chat_utils import (
+            FALSE_TOOL_BLOCKER_REPLAY_KIND,
+            RecoveryPayload,
+        )
+        from kiro_crew.providers.base import (
+            EVENT_COMPLETE,
+            EVENT_TEXT_CHUNK,
+            EVENT_TOOL_CALL,
+            EVENT_TOOL_RESULT,
+            LLMEvent,
+        )
+
+        state, slot, client, _run_chat = self._make_state_and_slot(tmp_path)
+        state.sessions.get_or_create.return_value = (client, False, resumed)
+        state.context_builder = MagicMock()
+        state.context_builder.conversation_log = None
+        state.context_builder.build_message.side_effect = lambda message, *_args, **_kwargs: (
+            message,
+            None,
+        )
+        hidden_context = "SECRET APP CONTEXT: never mirror this"
+        slot._pending_context = [{"content": hidden_context, "source": "test-app"}]
+        provider_prompts: list[str] = []
+
+        async def _stream(msg):
+            provider_prompts.append(msg)
+            yield LLMEvent(
+                kind=EVENT_TOOL_CALL,
+                title="Reading CR workflow",
+                tool_kind="read",
+                tool_input="{}",
+                tool_call_id="read-1",
+                tool_name="fs_read",
+                tool_identity_trusted=True,
+            )
+            yield LLMEvent(
+                kind=EVENT_TOOL_RESULT,
+                tool_call_id="read-1",
+                tool_output="workflow loaded",
+                tool_final=True,
+            )
+            yield LLMEvent(
+                kind=EVENT_TEXT_CHUNK,
+                text=(
+                    "I’m proceeding, but this turn’s tool budget was exhausted immediately "
+                    "after loading the workflow. No publish or deployment has happened yet."
+                ),
+            )
+            yield LLMEvent(kind=EVENT_COMPLETE, stop_reason=STOP_REASON_END_TURN)
+
+        client.stream = _stream
+        client.stream_command = _stream
+
+        request = "Publish and deploy the demo"
+        with patch(
+            "kiro_crew.dashboard.chat_runner._start_next_queued_turn",
+            new=AsyncMock(return_value=False),
+        ):
+            await _run_chat(
+                state,
+                slot,
+                request,
+                _directive_user_origin=True,
+            )
+            await self._cancel_background_tasks(state)
+
+        replay = next(item for item in slot._queue if item.get("content") == request)
+        assert hidden_context in provider_prompts[0]
+        assert replay["content"] == request
+        assert hidden_context not in replay["content"]
+        assert replay["kind"] == FALSE_TOOL_BLOCKER_REPLAY_KIND
+        assert replay["payload"] == RecoveryPayload.ORIGINAL
+        assert replay["_directive_user_origin"] is True
+        assert slot._promise_only_retries == 1
+        state.sessions.record_success.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("result_shape", ["failed", "missing"])
+    async def test_uncompleted_read_then_false_blocker_does_not_replay(
+        self, tmp_path: Path, result_shape: str
+    ) -> None:
+        """Canonical read identity is insufficient without completed result proof."""
+        from kiro_crew.acp.types import STOP_REASON_END_TURN
+        from kiro_crew.providers.base import (
+            EVENT_COMPLETE,
+            EVENT_TEXT_CHUNK,
+            EVENT_TOOL_CALL,
+            EVENT_TOOL_RESULT,
+            LLMEvent,
+        )
+
+        state, slot, client, _run_chat = self._make_state_and_slot(tmp_path)
+
+        async def _stream(msg):
+            yield LLMEvent(
+                kind=EVENT_TOOL_CALL,
+                title="Reading workflow",
+                tool_kind="read",
+                tool_call_id="read-1",
+                tool_name="fs_read",
+                tool_identity_trusted=True,
+            )
+            if result_shape == "failed":
+                yield LLMEvent(
+                    kind=EVENT_TOOL_RESULT,
+                    tool_call_id="read-1",
+                    tool_output="read failed",
+                    tool_final=False,
+                )
+            yield LLMEvent(
+                kind=EVENT_TEXT_CHUNK,
+                text=(
+                    "I’m blocked from further tool execution in the resumed session: "
+                    "the screenshot delivery tools are no longer callable here."
+                ),
+            )
+            yield LLMEvent(kind=EVENT_COMPLETE, stop_reason=STOP_REASON_END_TURN)
+
+        client.stream = _stream
+        client.stream_command = _stream
+
+        with patch(
+            "kiro_crew.dashboard.chat_runner._start_next_queued_turn",
+            new=AsyncMock(return_value=False),
+        ):
+            await _run_chat(
+                state,
+                slot,
+                "Publish and deploy the demo",
+                _directive_user_origin=True,
+            )
+            await self._cancel_background_tasks(state)
+
+        assert not slot._queue
+        assert slot._promise_only_retries == 0
+        state.sessions.record_success.assert_called_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("identity_trusted", "kiro_backend"),
+        ((False, True), (True, False)),
+    )
+    async def test_untrusted_or_non_kiro_identity_does_not_replay(
+        self,
+        tmp_path: Path,
+        identity_trusted: bool,
+        kiro_backend: bool,
+    ) -> None:
+        """A familiar name needs extractor provenance and a Kiro backend."""
+        from kiro_crew.acp.types import STOP_REASON_END_TURN
+        from kiro_crew.providers.base import (
+            EVENT_COMPLETE,
+            EVENT_TEXT_CHUNK,
+            EVENT_TOOL_CALL,
+            EVENT_TOOL_RESULT,
+            LLMEvent,
+        )
+
+        state, slot, client, _run_chat = self._make_state_and_slot(tmp_path)
+        client.is_kiro_backend = kiro_backend
+
+        async def _stream(msg):
+            yield LLMEvent(
+                kind=EVENT_TOOL_CALL,
+                title="grep",
+                tool_kind="read",
+                tool_call_id="read-1",
+                tool_name="grep",
+                tool_identity_trusted=identity_trusted,
+            )
+            yield LLMEvent(
+                kind=EVENT_TOOL_RESULT,
+                tool_call_id="read-1",
+                tool_output="matches",
+                tool_final=True,
+            )
+            yield LLMEvent(
+                kind=EVENT_TEXT_CHUNK,
+                text=(
+                    "I’m blocked from further tool execution in the resumed session: "
+                    "the screenshot delivery tools are no longer callable here."
+                ),
+            )
+            yield LLMEvent(kind=EVENT_COMPLETE, stop_reason=STOP_REASON_END_TURN)
+
+        client.stream = _stream
+        client.stream_command = _stream
+
+        with patch(
+            "kiro_crew.dashboard.chat_runner._start_next_queued_turn",
+            new=AsyncMock(return_value=False),
+        ):
+            await _run_chat(
+                state,
+                slot,
+                "Publish and deploy the demo",
+                _directive_user_origin=True,
+            )
+            await self._cancel_background_tasks(state)
+
+        assert not slot._queue
+        assert slot._promise_only_retries == 0
+        state.sessions.record_success.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_kiro_blocker_near_miss_logs_without_replay(self, tmp_path: Path, caplog) -> None:
+        """Wording drift is observable but never grants replay authority."""
+        from kiro_crew.acp.types import STOP_REASON_END_TURN
+        from kiro_crew.providers.base import (
+            EVENT_COMPLETE,
+            EVENT_TEXT_CHUNK,
+            EVENT_TOOL_CALL,
+            EVENT_TOOL_RESULT,
+            LLMEvent,
+        )
+
+        state, slot, client, _run_chat = self._make_state_and_slot(tmp_path)
+        near_miss = "I'm blocked from further tool execution."
+
+        async def _stream(msg):
+            yield LLMEvent(
+                kind=EVENT_TOOL_CALL,
+                title="Reading workflow",
+                tool_kind="read",
+                tool_call_id="read-1",
+                tool_name="fs_read",
+                tool_identity_trusted=True,
+            )
+            yield LLMEvent(
+                kind=EVENT_TOOL_RESULT,
+                tool_call_id="read-1",
+                tool_output="workflow loaded",
+                tool_final=True,
+            )
+            yield LLMEvent(kind=EVENT_TEXT_CHUNK, text=near_miss)
+            yield LLMEvent(kind=EVENT_COMPLETE, stop_reason=STOP_REASON_END_TURN)
+
+        client.stream = _stream
+        client.stream_command = _stream
+
+        with (
+            caplog.at_level("WARNING", logger="kiro_crew.dashboard.chat_runner"),
+            patch(
+                "kiro_crew.dashboard.chat_runner._start_next_queued_turn",
+                new=AsyncMock(return_value=False),
+            ),
+        ):
+            await _run_chat(
+                state,
+                slot,
+                "Publish and deploy the demo",
+                _directive_user_origin=True,
+            )
+            await self._cancel_background_tasks(state)
+
+        assert not slot._queue
+        assert slot._promise_only_retries == 0
+        assert "False tool-blocker wording drift" in caplog.text
+        assert near_miss not in caplog.text
+        state.sessions.record_success.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_yolo_read_then_false_blocker_stays_notice_only(self, tmp_path: Path) -> None:
+        """Auto-approve never dispatches even an authenticated blocker replay."""
+        from kiro_crew.acp.types import STOP_REASON_END_TURN
+        from kiro_crew.providers.base import (
+            EVENT_COMPLETE,
+            EVENT_TEXT_CHUNK,
+            EVENT_TOOL_CALL,
+            EVENT_TOOL_RESULT,
+            LLMEvent,
+        )
+
+        state, slot, client, _run_chat = self._make_state_and_slot(tmp_path)
+        state.is_yolo_active.return_value = True
+
+        async def _stream(msg):
+            yield LLMEvent(
+                kind=EVENT_TOOL_CALL,
+                title="Reading workflow",
+                tool_kind="read",
+                tool_input="{}",
+                tool_call_id="read-1",
+                tool_name="fs_read",
+                tool_identity_trusted=True,
+            )
+            yield LLMEvent(
+                kind=EVENT_TOOL_RESULT,
+                tool_call_id="read-1",
+                tool_output="workflow loaded",
+                tool_final=True,
+            )
+            yield LLMEvent(
+                kind=EVENT_TEXT_CHUNK,
+                text=(
+                    "I’m blocked from further tool execution in the resumed session: "
+                    "the screenshot delivery tools are no longer callable here."
+                ),
+            )
+            yield LLMEvent(kind=EVENT_COMPLETE, stop_reason=STOP_REASON_END_TURN)
+
+        client.stream = _stream
+        client.stream_command = _stream
+
+        with patch(
+            "kiro_crew.dashboard.chat_runner._start_next_queued_turn",
+            new=AsyncMock(return_value=False),
+        ):
+            await _run_chat(
+                state,
+                slot,
+                "Publish and deploy the demo",
+                _directive_user_origin=True,
+            )
+            await self._cancel_background_tasks(state)
+
+        assert not slot._queue
+        assert slot._promise_only_retries == 0
+        notices = [m.get("content", "") for m in slot.messages if m.get("role") == "notice"]
+        assert any("Auto-continue is skipped under auto-approve mode" in m for m in notices)
+        state.sessions.record_success.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_non_user_read_then_false_blocker_does_not_replay(self, tmp_path: Path) -> None:
+        """App/system text cannot acquire authenticated-user replay provenance."""
+        from kiro_crew.acp.types import STOP_REASON_END_TURN
+        from kiro_crew.providers.base import (
+            EVENT_COMPLETE,
+            EVENT_TEXT_CHUNK,
+            EVENT_TOOL_CALL,
+            EVENT_TOOL_RESULT,
+            LLMEvent,
+        )
+
+        state, slot, client, _run_chat = self._make_state_and_slot(tmp_path)
+
+        async def _stream(msg):
+            yield LLMEvent(
+                kind=EVENT_TOOL_CALL,
+                title="Reading workflow",
+                tool_kind="read",
+                tool_input="{}",
+                tool_call_id="read-1",
+                tool_name="fs_read",
+                tool_identity_trusted=True,
+            )
+            yield LLMEvent(
+                kind=EVENT_TOOL_RESULT,
+                tool_call_id="read-1",
+                tool_output="workflow loaded",
+                tool_final=True,
+            )
+            yield LLMEvent(
+                kind=EVENT_TEXT_CHUNK,
+                text=(
+                    "I’m blocked from further tool execution in the resumed session: "
+                    "the screenshot delivery tools are no longer callable here."
+                ),
+            )
+            yield LLMEvent(kind=EVENT_COMPLETE, stop_reason=STOP_REASON_END_TURN)
+
+        client.stream = _stream
+        client.stream_command = _stream
+
+        with patch(
+            "kiro_crew.dashboard.chat_runner._start_next_queued_turn",
+            new=AsyncMock(return_value=False),
+        ):
+            await _run_chat(state, slot, "Untrusted app injection")
+            await self._cancel_background_tasks(state)
+
+        assert not slot._queue
+        assert slot._promise_only_retries == 0
+        state.sessions.record_success.assert_called_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("intervention", ["stop", "followup", "steer"])
+    async def test_late_user_intervention_purges_false_blocker_replay(
+        self, tmp_path: Path, intervention: str
+    ) -> None:
+        """A revocation landing after enqueue still wins at dispatch time."""
+        from kiro_crew.dashboard.chat_runner import _start_next_queued_turn
+        from kiro_crew.dashboard.chat_utils import (
+            FALSE_TOOL_BLOCKER_REPLAY_KIND,
+            RecoveryPayload,
+        )
+
+        state = _make_state(tmp_path)
+        state.broadcast_ws = MagicMock()
+        slot = state.get_or_create_slot(f"late-{intervention}")
+        request = "Delete the deployment"
+        slot.queue_insert(
+            0,
+            request,
+            kind=FALSE_TOOL_BLOCKER_REPLAY_KIND,
+            payload=RecoveryPayload.ORIGINAL,
+            directive_user_origin=True,
+        )
+        slot._promise_only_retries = 1
+        slot._promise_only_stop_gen = slot._stop_generation
+
+        if intervention == "stop":
+            slot._stop_generation += 1
+        elif intervention == "followup":
+            slot.queue_append("Never mind", directive_user_origin=True)
+            slot._in_stage_execution = True  # hold the replacement after purge
+        else:
+            slot._pending_steers = [{"content": "Stop; keep it"}]
+
+        cfg = MagicMock()
+        cfg.dashboard.merge_queued_messages = False
+        with patch(
+            "kiro_crew.dashboard.chat_runner.KiroCrewConfig.load",
+            return_value=cfg,
+        ):
+            started = await _start_next_queued_turn(state, slot)
+
+        assert started is False
+        assert all(item.get("kind") != FALSE_TOOL_BLOCKER_REPLAY_KIND for item in slot._queue)
+        assert slot._promise_only_retries == 0
+        corrections = [
+            msg.get("content", "")
+            for msg in slot.messages
+            if msg.get("role") == "notice" and "Auto-continue cancelled" in msg.get("content", "")
+        ]
+        assert len(corrections) == 1
+        if intervention == "stop":
+            assert "nothing was run" in corrections[0]
+        else:
+            assert "takes over" in corrections[0]
 
     @pytest.mark.asyncio
     async def test_first_empty_response_requeues_message(self, tmp_path: Path) -> None:

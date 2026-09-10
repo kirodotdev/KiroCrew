@@ -8557,6 +8557,7 @@ class AcpClient:
                 is_shell=is_shell,
                 tool_name=_kiro_tool_name(update),
                 mcp_server_name=_kiro_mcp_server_name(update),
+                tool_identity_trusted=bool(_kiro_tool_name(update)),
                 # The pair above comes exclusively from the _kiro_* extractors
                 # over the frame's _meta.kiro (non-model-authored) — the
                 # trusted tool_call path. Earned only when an identity pair was
