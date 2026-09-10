@@ -7,6 +7,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -25,6 +26,7 @@ FORK_REVIEW_LANES = (
     "fork-design-review.yml",
     "fork-ux-review.yml",
     "fork-first-principles-review.yml",
+    "fork-security-scope-review.yml",
 )
 REVIEW_PROMPTS = ROOT / ".github" / "review-prompts"
 PREPARE_PR_SKILL = (
@@ -40,6 +42,39 @@ PREPARE_PR_FINDINGS = (
     / "scripts"
     / "pr_findings.py"
 )
+
+
+#: Variables a Windows child needs even when the test controls the rest of its
+#: environment. A from-scratch `env=` dict is harmless on POSIX, where these tests
+#: were written, but on Windows dropping `SystemRoot` / `COMSPEC` leaves the child
+#: unable to resolve system DLLs or a shell -- which is how a step that runs fine
+#: locally comes back from the Windows shard with no usable output at all. Only
+#: names the OS itself needs; nothing about the test's own inputs leaks in.
+_WINDOWS_CHILD_KEEP = ("SystemRoot", "SYSTEMROOT", "COMSPEC", "SystemDrive", "TEMP", "TMP")
+
+
+def _child_env(env: "dict[str, str]") -> "dict[str, str]":
+    """`env` plus the variables a Windows child cannot start without."""
+    if os.name != "nt":
+        return env
+    merged = dict(env)
+    for name in _WINDOWS_CHILD_KEEP:
+        value = os.environ.get(name)
+        if value is not None:
+            merged.setdefault(name, value)
+    return merged
+
+
+def _proc_log(result: "subprocess.CompletedProcess[str]") -> str:
+    """A failure message from a completed process that cannot itself raise.
+
+    `result.stdout + result.stderr` raises when either stream is None -- observed on
+    the Windows shard even with `capture_output=True`, cause not established. Since
+    these streams exist only to explain a failed assertion, build the message by
+    repr: a None then READS as `stdout=None` in the report rather than replacing the
+    diagnostic with a TypeError or, worse, with an empty string.
+    """
+    return f"rc={result.returncode}\nstdout={result.stdout!r}\nstderr={result.stderr!r}"
 
 
 def _bash() -> str | None:
@@ -210,8 +245,8 @@ class TestHumanOverrideHandler:
         assert "pull_request_target:" not in workflow
         assert "actions/checkout@" not in workflow
         assert (
-            "/ai-review override <fable|gpt|design|ux|first-principles|all> <current-sha>: <reason>"
-            in workflow
+            "/ai-review override <fable|gpt|design|ux|first-principles|scope|all> "
+            "<current-sha>: <reason>" in workflow
         )
 
     def test_handler_covers_the_design_family_lanes(self) -> None:
@@ -220,10 +255,18 @@ class TestHumanOverrideHandler:
         # design-family targets and re-run those lanes -- the re-run's
         # human-override step then skips the model and the gate passes.
         workflow = _workflow("ai-review-human-override.yml")
-        assert "(fable|gpt|design|ux|first-principles|all)" in workflow
+        assert "(fable|gpt|design|ux|first-principles|scope|all)" in workflow
         assert 'rerun_reviewer "design-review.yml"' in workflow
         assert 'rerun_reviewer "ux-review.yml"' in workflow
         assert 'rerun_reviewer "first-principles-review.yml"' in workflow
+        # Security Scope Review is blocking too, so it needs the same escape
+        # hatch. On a same-repo PR the re-run's own override step skips the whole
+        # review -- model call, candidate validation and differential alike -- and
+        # the gate passes on the marker, so a script-confirmed regression clears
+        # here just as a model-side BLOCK does. On a fork PR the Stage-2 lane reads
+        # no marker, so its re-run recomputes the same verdict and the override
+        # does not clear it.
+        assert 'rerun_reviewer "security-scope-review.yml"' in workflow
 
     def test_rerun_resolves_fork_lane_runs_from_the_stamped_check_run(self) -> None:
         # A fork PR's reviewers are the workflow_run-triggered Stage-2 lanes.
@@ -253,6 +296,7 @@ class TestHumanOverrideHandler:
             "fork-design-review.yml",
             "fork-ux-review.yml",
             "fork-first-principles-review.yml",
+            "fork-security-scope-review.yml",
         ):
             assert f'"{fork_lane}"' in script
 
@@ -284,15 +328,30 @@ class TestHumanOverrideHandler:
         # must supply WR_RUN_ID and WR_RUN_ATTEMPT so a future edit cannot drop
         # the attempt dimension silently.
         stamp = '-f details_url="$GITHUB_SERVER_URL/$REPO/actions/runs/$GITHUB_RUN_ID"'
-        for name, lane in (
-            ("fork-opus-review.yml", "opus"),
-            ("fork-gpt-review.yml", "gpt"),
-            ("fork-design-review.yml", "design"),
-            ("fork-ux-review.yml", "ux"),
-            ("fork-first-principles-review.yml", "first-principles"),
+        # `posts` is how many check-run POSTs the lane makes, and it is a
+        # PERMISSION fact, not a style choice. The five lanes below open a
+        # check-run early and re-POST a finalize fallback, so both POSTs must
+        # carry the stamp. fork-security-scope-review.yml POSTs exactly once
+        # because `checks: write` is held only by its publishing job -- the one
+        # that executes nothing -- and the job that would open a check-run early
+        # is the one running the fork's own classifier code, which is precisely
+        # what that permission split exists to keep write scope away from. So it
+        # gets its own arm rather than a lowered bar for the other five: its one
+        # POST still has to carry the stamp and the attempt-scoped external_id,
+        # since that single row is the only link from the PR head to the run.
+        for name, lane, posts in (
+            ("fork-opus-review.yml", "opus", 2),
+            ("fork-gpt-review.yml", "gpt", 2),
+            ("fork-design-review.yml", "design", 2),
+            ("fork-ux-review.yml", "ux", 2),
+            ("fork-first-principles-review.yml", "first-principles", 2),
+            ("fork-security-scope-review.yml", "scope", 1),
         ):
             workflow = _workflow(name)
-            assert workflow.count(stamp) >= 2, name
+            assert workflow.count(stamp) >= posts, name
+            assert (
+                workflow.count('gh api --method POST "repos/$REPO/check-runs"') == posts
+            ), f"{name}: expected {posts} check-run POST(s)"
             assert (
                 f'ext_args=(-f external_id="{lane}-pr-$PR-$WR_RUN_ID-$WR_RUN_ATTEMPT")' in workflow
             ), name
@@ -583,7 +642,13 @@ class TestPrReadiness:
         via env instead), and any run block that does carry an expression
         must keep clear headroom under the cap.
         """
-        for name in ("codex-review.yml", "fork-gpt-review.yml", "claude-review.yml"):
+        for name in (
+            "codex-review.yml",
+            "fork-gpt-review.yml",
+            "claude-review.yml",
+            "security-scope-review.yml",
+            "fork-security-scope-review.yml",
+        ):
             path = WORKFLOWS / name
             if not path.exists():
                 continue
@@ -643,10 +708,11 @@ class TestPrReadiness:
             "claude-review.yml": 2,
             "fork-gpt-review.yml": 3,
             "fork-opus-review.yml": 2,
+            "security-scope-review.yml": 1,
+            "fork-security-scope-review.yml": 1,
         }
-        for name, expected_calls in lanes.items():
-            doc = yaml.safe_load((WORKFLOWS / name).read_text(encoding="utf-8"))
-            steps = list(doc["jobs"].values())[0]["steps"]
+
+        def _assumes_and_calls(steps: list) -> tuple[list, list]:
             creds, calls = [], []
             for i, step in enumerate(steps):
                 uses, run = step.get("uses") or "", step.get("run") or ""
@@ -654,6 +720,27 @@ class TestPrReadiness:
                     creds.append(i)
                 elif "claude-code-action" in uses or 'timeout "$PASS_WALL"' in run:
                     calls.append((i, step.get("name")))
+            return creds, calls
+
+        for name, expected_calls in lanes.items():
+            doc = yaml.safe_load((WORKFLOWS / name).read_text(encoding="utf-8"))
+            # Read the job that HOLDS the model calls, not the file's first job.
+            # A staged lane splits the model call, the deterministic adjudication
+            # and the publishing into separate jobs so the stage carrying the
+            # Bedrock credential never executes reviewed code, and the model
+            # stage is only incidentally first there. Indexing position 0 would
+            # let a reordering move this test onto a job with no model call,
+            # where zero calls beside zero assumes reads as a pass.
+            staged = {
+                job_id: _assumes_and_calls(job.get("steps") or [])
+                for job_id, job in doc["jobs"].items()
+            }
+            holders = sorted(job_id for job_id, (_c, calls) in staged.items() if calls)
+            assert len(holders) == 1, (
+                f"{name}: expected exactly one job to carry the model calls, "
+                f"found {holders} -- a second one would spend its own session"
+            )
+            creds, calls = staged[holders[0]]
             assert len(calls) == expected_calls, (
                 f"{name}: expected {expected_calls} model calls, found " f"{[n for _, n in calls]}"
             )
@@ -2975,6 +3062,11 @@ class TestUxReviewReadsTheScreenshotsBlindFirst:
         assert "at least one screenshot the PR supplies" in fork_prompt
 
 
+# The lanes whose missing head marker degrades to a NON-BLOCKING UNKNOWN.
+# The Security Scope Review lanes are deliberately absent: a missing marker REDS
+# them, because "no confirmed regression" over a tightening nobody measured is
+# the exact false green that lane exists to prevent. Adding them here would
+# assert the opposite of their contract.
 ADVISORY_LANES = {
     "design-review.yml": "DESIGN-REVIEWED",
     "fork-design-review.yml": "DESIGN-REVIEWED",
@@ -3928,6 +4020,7 @@ OVERRIDE_READ_LANES = (
     "claude-review.yml",
     "codex-review.yml",
     "first-principles-review.yml",
+    "security-scope-review.yml",
 )
 
 
@@ -4265,15 +4358,38 @@ class TestProtectedCheckNameHasOnePublisherPerPrType:
             "fork-first-principles-review.yml",
         ),
         ("ux-review.yml", "UX Review", "fork-ux-review.yml"),
+        (
+            "security-scope-review.yml",
+            "Security Scope Review",
+            "fork-security-scope-review.yml",
+        ),
     )
 
     GUARD = "github.event.pull_request.head.repo.full_name == github.repository"
 
     def _job(self, workflow: str) -> dict:
+        """Return the job that PUBLISHES the protected check name.
+
+        Counting jobs was a proxy for the property this class owns -- exactly
+        one publisher of the protected name per PR type -- and it stops being
+        one as soon as a lane needs stages. The scope lane has four jobs
+        because the stage holding the Bedrock credential must not also execute
+        the reviewed change's classifier code -- neither the differential's nor
+        the validator's -- nor hold the write scope that publishes a verdict. So
+        select on the thing that makes a job a
+        publisher: its `name:` carries the fork guard, which IS the rename that
+        keeps a fork PR's required status off this lane. Two such jobs would be
+        two publishers, which is the hazard; more non-publishing jobs are not.
+        """
         spec = yaml.safe_load(_workflow(workflow))
-        jobs = spec["jobs"]
-        assert len(jobs) == 1, f"{workflow}: expected a single review job"
-        return next(iter(jobs.values()))
+        publishers = sorted(
+            job_id for job_id, job in spec["jobs"].items() if self.GUARD in str(job.get("name", ""))
+        )
+        assert len(publishers) == 1, (
+            f"{workflow}: expected exactly one job publishing the protected "
+            f"name, found {publishers}"
+        )
+        return spec["jobs"][publishers[0]]
 
     @pytest.mark.parametrize("workflow,check,fork", PAIRS)
     def test_same_repo_lane_keeps_the_protected_name_only_for_same_repo_prs(
@@ -4296,9 +4412,20 @@ class TestProtectedCheckNameHasOnePublisherPerPrType:
         # The guard must NOT be job-level: a skipped job's `name:` is never
         # evaluated, so that placement publishes the raw expression above as the
         # fork PR's check name -- the exact rendering bug the rename caused.
-        assert "if" not in job, (
-            f"{workflow}: fork guard is job-level again, which makes GitHub "
-            "publish the raw name expression on fork PRs"
+        #
+        # `always()` is the one exempt expression, and it is exempt because it
+        # can never evaluate false: a job carrying exactly that is never
+        # skipped, so its `name:` is always evaluated and the bug is
+        # unreachable. A staged lane needs it -- the publishing job must report
+        # a verdict when an upstream stage failed, which is precisely the run
+        # whose verdict matters. Nothing weaker qualifies: any other condition
+        # can be false on a fork PR, and then the raw expression is the check
+        # name again.
+        job_if = str(job.get("if", "")).strip()
+        assert job_if in ("", "always()"), (
+            f"{workflow}: job-level `if: {job_if}` can evaluate false, so "
+            "GitHub skips the job and publishes the raw name expression on "
+            "fork PRs"
         )
 
     @pytest.mark.parametrize("workflow,check,fork", PAIRS)
@@ -4950,7 +5077,7 @@ class TestBlockAdjudicationArithmetic:
         result = subprocess.run(
             [bash, "-c", script],
             cwd=tmp_path,
-            env=env,
+            env=_child_env(env),
             check=False,
             capture_output=True,
             text=True,
@@ -5281,7 +5408,7 @@ class TestBlockAdjudicationArithmetic:
         result = subprocess.run(
             [bash, "-c", script],
             cwd=tmp_path,
-            env=env,
+            env=_child_env(env),
             check=False,
             capture_output=True,
             text=True,
@@ -5472,7 +5599,7 @@ class TestAdjudicatorVersionFloor:
         result = subprocess.run(
             [bash, "-c", script],
             cwd=tmp_path,
-            env=env,
+            env=_child_env(env),
             check=False,
             capture_output=True,
             text=True,
@@ -5601,7 +5728,7 @@ class TestBlockAdjudicationExtraction:
         result = subprocess.run(
             [bash, "-c", script],
             cwd=tmp_path,
-            env=env,
+            env=_child_env(env),
             check=False,
             capture_output=True,
             text=True,
@@ -5775,7 +5902,7 @@ class TestGptVerdictVisibility:
             check=False,
             capture_output=True,
             cwd=cwd,
-            env=env,
+            env=_child_env(env),
         )
         return calls_dir, result
 
@@ -5906,6 +6033,75 @@ def _exec_transcript(runner_temp: Path, review_text: str) -> dict[str, str]:
     exec_file = runner_temp / "execution.json"
     exec_file.write_text(json.dumps({"result": review_text}), encoding="utf-8")
     return {"EXEC_FILE": str(exec_file), "REVIEW_OUTCOME": "success"}
+
+
+def _fork_scope_comment(
+    cwd: Path, runner_temp: Path, head: str, *, marker_head: str | None, rows: bool = True
+) -> dict[str, str]:
+    """Write the fork scope lane's comment body the way the lane itself writes it.
+
+    That lane's upsert step consumes ``$RUNNER_TEMP/scope-comment.md``, which a
+    SEPARATE step composes, so the fixture runs the real "Assemble the comment
+    body" bash rather than hand-writing a body. Hand-writing it would pin a shape
+    the lane never emits, and the withheld-notice wording is the exact thing the
+    guard reads -- a fixture that drifted there would report a guarantee about
+    text no run produces.
+
+    ``marker_head`` is the sha the model's own text claims: this run's head for a
+    completed verdict, a different sha (or ``None`` for no text at all) for
+    output that cannot be attributed to this revision.
+
+    ``rows`` says whether the CLASSIFIER folded a verdict. It is a separate axis
+    from the marker: the classifier measured both refs itself, so its rows are
+    attributable to this head even when the model half produced nothing. With
+    ``rows=False`` nothing was measured at all, which is the state that leaves the
+    body with no stamp of any kind.
+    """
+    bash = _bash()
+    if bash is None:
+        pytest.skip("the assemble step is Bash; skip where Bash is absent")
+    review = cwd / "review" / "scope-review-output.md"
+    review.parent.mkdir(parents=True, exist_ok=True)
+    if marker_head is None:
+        review.write_text("", encoding="utf-8")
+    else:
+        review.write_text(
+            "Scope-Verdict: PASS\n\nno legitimate operation newly refused\n\n"
+            f"[SCOPE-REVIEWED] {marker_head}\n",
+            encoding="utf-8",
+        )
+    folded = ""
+    if rows:
+        folded = (
+            "### Adjudicated candidates\n\n| operation | base | head |\n"
+            "| --- | --- | --- |\n| `git status` | allowed | allowed |\n"
+        )
+    body = runner_temp / "scope-verdict.md"
+    body.write_text(folded, encoding="utf-8")
+    present = marker_head == head
+    script = _step_script(_workflow("fork-security-scope-review.yml"), "Assemble the comment body")
+    result = subprocess.run(
+        [bash, "-e", "-c", script],
+        check=False,
+        capture_output=True,
+        cwd=cwd,
+        env={
+            **os.environ,
+            "HEAD": head,
+            "CONCLUSION": "success" if present else "failure",
+            "TITLE": (
+                "PASS - no legitimate operation newly refused"
+                if present
+                else "no [SCOPE-REVIEWED] marker for this head"
+            ),
+            "MARKER_STATE": "present" if present else "absent",
+            "REVIEW": "review/scope-review-output.md",
+            "BODY": str(body),
+            "OUT": str(runner_temp / "scope-comment.md"),
+        },
+    )
+    assert result.returncode == 0, result.stderr.decode()
+    return {}
 
 
 # One entry per review lane that carries the guarded comment upsert. Each
@@ -6060,7 +6256,85 @@ _GUARDED_LANES = [
         )[1],
         "incomplete": lambda cwd, rt, head: {"VERDICT": "UNKNOWN", "REVIEW_OUTCOME": "failure"},
     },
+    {
+        # The incomplete case is the ordinary one: the candidate stage succeeded
+        # and left no current-head marker, so the review cannot be attributed to
+        # this revision. `FOLDED=clean` keeps the classifier half silent, which
+        # is what makes this an incomplete run rather than a script-confirmed
+        # one -- the confirmed-rows path is a different contract and has its own
+        # cases below.
+        "id": "security-scope",
+        "workflow": "security-scope-review.yml",
+        "step": "Post the scope verdict",
+        "marker": "<!-- security-scope-review -->",
+        "stamp": "[SCOPE-REVIEWED]",
+        "incomplete_text": "could not complete",
+        "needs_perl": False,
+        # This lane's posting step scrubs with the base-owned redactor rather than
+        # an embedded program, so the harness supplies the same two things the
+        # workflow does: the staged script's path, and a `python` that runs it.
+        "needs_redactor": True,
+        "env": {
+            "HUMAN_OVERRIDE": "false",
+            "OVERRIDE_ACTOR": "",
+            "ACTOR": "someone",
+            # A folded verdict of `clean` keeps the script half out of the way,
+            # so each case turns on the model half exactly as the lane scores it.
+            "FOLDED": "clean",
+            "ADJUDICATED": "true",
+            "GENERATE_RESULT": "success",
+            "VALIDATE_RESULT": "success",
+            "ADJUDICATE_RESULT": "success",
+            # The post step runs the shared conclusion table from the staged
+            # committed-blob harness ($HARNESS/scope_candidates.py), through the
+            # `python` shim `needs_redactor` installs. Point it at the real script.
+            "HARNESS": str(ROOT / "scripts"),
+        },
+        "completed": lambda cwd, rt, head: (
+            (cwd / "scope-review.md").write_text(
+                f"Scope-Verdict: PASS\n\nnothing newly refused\n\n[SCOPE-REVIEWED] {head}\n",
+                encoding="utf-8",
+            ),
+            {},
+        )[1],
+        "incomplete": lambda cwd, rt, head: (
+            (cwd / "scope-review.md").write_text(
+                "Scope-Verdict: PASS\n\nstale reasoning\n\n[SCOPE-REVIEWED] feedbead\n",
+                encoding="utf-8",
+            ),
+            {},
+        )[1],
+    },
+    {
+        # The body this lane upserts is composed by a different step, so both
+        # cases run that step's real bash through `_fork_scope_comment` instead
+        # of describing its output.
+        "id": "fork-security-scope",
+        "workflow": "fork-security-scope-review.yml",
+        "step": "Post/update the scope review comment",
+        "marker": "<!-- security-scope-review -->",
+        "stamp": "[SCOPE-REVIEWED]",
+        "incomplete_text": "the model's text is withheld",
+        "needs_perl": False,
+        "env": {},
+        "completed": lambda cwd, rt, head: _fork_scope_comment(cwd, rt, head, marker_head=head),
+        # `rows=False`: the shared incomplete contract is a run that measured
+        # NOTHING, which is what leaves a body with no stamp at all. A run whose
+        # classifier folded rows while the model half died is a different case and
+        # has its own test, matching how the same-repo entry above is driven.
+        "incomplete": lambda cwd, rt, head: _fork_scope_comment(
+            cwd, rt, head, marker_head="feedbead", rows=False
+        ),
+    },
 ]
+
+# Both scope lanes are registered above, and they behave the same way in the state
+# that separates a review from a measurement: when the model half leaves no marker
+# for this head but the classifier folded rows, each lane publishes those rows and
+# stamps them on the CLASSIFIER's authority, with the model's own prose withheld.
+# `deny_diff.py` read both refs itself, so the rows describe this revision whatever
+# the model produced -- and without the stamp the guarded upsert withholds the whole
+# comment, leaving the broken operation and its tier readable only in the job logs.
 
 _GUARDED_LANE_PARAMS = [pytest.param(lane, id=lane["id"]) for lane in _GUARDED_LANES]
 
@@ -6068,7 +6342,7 @@ _GUARDED_LANE_PARAMS = [pytest.param(lane, id=lane["id"]) for lane in _GUARDED_L
 class TestReviewLaneVerdictVisibility:
     """No review lane may bury a posted verdict under an incomplete body.
 
-    Covers the eight lanes that upsert a marker-keyed summary comment outside
+    Covers every lane that upserts a marker-keyed summary comment outside
     codex-review.yml. Each lane defines the guarded upsert as a byte-identical
     ``guarded_comment_upsert`` bash function; the identity test pins every
     copy to one canonical body so the invariant cannot drift lane by lane, and
@@ -6104,6 +6378,7 @@ class TestReviewLaneVerdictVisibility:
         existing_body: str | None,
         kind: str,
         extra_env: dict[str, str] | None = None,
+        prepare: object | None = None,
     ) -> tuple[Path, "subprocess.CompletedProcess[bytes]"]:
         bash = _bash()
         if bash is None or shutil.which("jq") is None:
@@ -6115,6 +6390,20 @@ class TestReviewLaneVerdictVisibility:
 
         stub_dir = tmp_path / "stub"
         stub_dir.mkdir()
+        redactor_env: dict[str, str] = {}
+        if lane.get("needs_redactor"):
+            # The REAL redactor, not a stub: the step's refusal branch turns on
+            # this file being present and runnable, so a stand-in would let the
+            # branch pass while the actual scrub was broken. `python` is shimmed
+            # onto the stub PATH because the workflow's own runner gets it from
+            # setup-python, and a host that spells it only `python3` would send
+            # this step down its refusal branch for the wrong reason.
+            python_shim = stub_dir / "python"
+            python_shim.write_text(
+                f'#!/usr/bin/env bash\nexec "{sys.executable}" "$@"\n', encoding="utf-8"
+            )
+            python_shim.chmod(0o755)
+            redactor_env["REDACTOR"] = str(ROOT / "scripts" / "scope_redact.py")
         calls_dir = tmp_path / "calls"
         calls_dir.mkdir()
         runner_temp = tmp_path / "runner-temp"
@@ -6146,6 +6435,11 @@ class TestReviewLaneVerdictVisibility:
             case_env = lane["incomplete"](cwd, runner_temp, self.HEAD)
         else:
             case_env = {}
+        # A case that needs a file the lane's own kind fixtures do not write
+        # (the classifier's folded verdict, say) adds it here, so the shared
+        # fixtures keep meaning exactly what the seven contracts above assert.
+        if prepare is not None:
+            case_env = {**case_env, **prepare(cwd, runner_temp, self.HEAD)}
 
         gh_stub = stub_dir / "gh"
         gh_stub.write_text(
@@ -6222,6 +6516,7 @@ class TestReviewLaneVerdictVisibility:
             "FINDER_COMMENTS_FILE": str(finder_file),
             "GITHUB_OUTPUT": str(tmp_path / "github-output.txt"),
             **lane["env"],
+            **redactor_env,
             **case_env,
             **(extra_env or {}),
         }
@@ -6231,7 +6526,7 @@ class TestReviewLaneVerdictVisibility:
             check=False,
             capture_output=True,
             cwd=cwd,
-            env=env,
+            env=_child_env(env),
         )
         return calls_dir, result
 
@@ -6381,6 +6676,157 @@ class TestReviewLaneVerdictVisibility:
         assert created.startswith(f"{lane['marker']}\n")
         assert lane["incomplete_text"] in created
         assert not (calls / "patched-body.md").exists()
+
+    # A row the classifier flipped: the whole point of the lane, and the thing a
+    # reader needs in order to act -- which legitimate operation broke, at which
+    # tier.
+    ROWS = "| `chmod 0700 ~/.ssh` | allowed | REFUSED |"
+
+    def _scope_lane(self) -> dict:
+        return next(entry for entry in _GUARDED_LANES if entry["id"] == "security-scope")
+
+    def _fold_rows(self, cwd: Path, runner_temp: Path, head: str) -> dict[str, str]:
+        """Leave the folded verdict `scope_candidates.py verdict --out-md` writes."""
+        (cwd / "verdict-body.md").write_text(
+            "### Confirmed newly-refused operations\n\n"
+            "| operation | base | head |\n| --- | --- | --- |\n"
+            f"{self.ROWS}\n",
+            encoding="utf-8",
+        )
+        return {}
+
+    def test_a_confirmed_regression_publishes_its_rows_with_no_model_marker(
+        self, tmp_path: Path
+    ) -> None:
+        # `deny_diff.py` classified these rows at the base ref and at this head,
+        # so they describe this revision whatever the model produced. Before,
+        # a run whose model half left no marker wrote a body the guard could not
+        # accept as complete, so nothing was posted at all: the author saw a red
+        # badge and had to open the job logs to learn what the script had
+        # already decided.
+        lane = self._scope_lane()
+        calls, result = self._run_step(
+            lane,
+            tmp_path,
+            existing_body=self._verdict_body(lane, self.OLD),
+            kind="incomplete",
+            prepare=self._fold_rows,
+            extra_env={"FOLDED": "regression"},
+        )
+
+        assert result.returncode == 0, result.stderr.decode()
+        patched = (calls / "patched-body.md").read_text(encoding="utf-8")
+        assert self.ROWS in patched
+        assert f"[SCOPE-REVIEWED] {self.HEAD}" in patched
+        # The model's own text is withheld exactly as it was: with no
+        # current-head marker it is a review of something else, and printing it
+        # beside a verdict would read as that verdict's reasoning.
+        assert "stale reasoning" not in patched
+        assert "[SCOPE-REVIEWED] feedbead" not in patched
+        assert "its text is withheld" in patched
+
+    def test_an_accepted_override_replaces_a_standing_block(self, tmp_path: Path) -> None:
+        # An override body is a completed verdict FOR THIS HEAD: the record the
+        # generate stage read is keyed to this sha, so the acceptance describes
+        # this revision on the human's own authority. Unstamped, the guard reads
+        # it as a failure notice and leaves the prior BLOCK comment standing --
+        # the pull request then shows a red block over an override a human has
+        # accepted, and nothing later clears it, because every subsequent run on
+        # this head takes the same override branch.
+        lane = self._scope_lane()
+        calls, result = self._run_step(
+            lane,
+            tmp_path,
+            existing_body=self._verdict_body(lane, self.OLD),
+            kind="completed",
+            extra_env={"HUMAN_OVERRIDE": "true", "OVERRIDE_ACTOR": "maintainer"},
+        )
+
+        assert result.returncode == 0, result.stderr.decode()
+        patched = (calls / "patched-body.md").read_text(encoding="utf-8")
+        assert "human override accepted" in patched
+        assert "@maintainer" in patched
+        assert f"[SCOPE-REVIEWED] {self.HEAD}" in patched
+        # The BLOCK it replaced is gone from the slot, not merged into it.
+        assert "changes requested" not in patched
+
+    def _fork_scope_lane(self) -> dict:
+        return next(entry for entry in _GUARDED_LANES if entry["id"] == "fork-security-scope")
+
+    def _fork_rows(self, cwd: Path, runner_temp: Path, head: str) -> dict[str, str]:
+        """Re-compose the fork body with a folded verdict the model cannot claim."""
+        return _fork_scope_comment(cwd, runner_temp, head, marker_head="feedbead", rows=True)
+
+    def test_the_fork_lane_publishes_its_rows_with_no_model_marker_too(
+        self, tmp_path: Path
+    ) -> None:
+        # The fork lane reaches the author through the same one comment slot, so a
+        # row its classifier confirmed has to survive a dead model half there as
+        # well. Withholding the body instead loses the row entirely on a re-run:
+        # candidates are re-sampled every run, and the carry-forward that keeps a
+        # confirmed row reachable reads it back out of THIS comment.
+        lane = self._fork_scope_lane()
+        calls, result = self._run_step(
+            lane,
+            tmp_path,
+            existing_body=self._verdict_body(lane, self.OLD),
+            kind="incomplete",
+            prepare=self._fork_rows,
+        )
+
+        assert result.returncode == 0, result.stderr.decode()
+        patched = (calls / "patched-body.md").read_text(encoding="utf-8")
+        # The classifier's row, and the stamp that makes the guard accept it.
+        assert "`git status`" in patched
+        assert f"[SCOPE-REVIEWED] {self.HEAD}" in patched
+        # The model's prose stays withheld: with no current-head marker it is a
+        # review of something else, and printing it beside the rows would read as
+        # the reasoning behind them.
+        assert "no legitimate operation newly refused" not in patched
+        assert "[SCOPE-REVIEWED] feedbead" not in patched
+        assert "the model's text is withheld" in patched
+
+    def test_a_no_verdict_run_still_carries_whatever_the_classifier_measured(
+        self, tmp_path: Path
+    ) -> None:
+        # The fail-closed notice branch, where no verdict parsed at all. A leg
+        # that reported NO VERDICT is still this head's measurement and names the
+        # surface left unadjudicated, so it rides along with the notice.
+        lane = self._scope_lane()
+        calls, result = self._run_step(
+            lane,
+            tmp_path,
+            existing_body=self._verdict_body(lane, self.OLD),
+            kind="incomplete",
+            prepare=self._fold_rows,
+        )
+
+        assert result.returncode == 0, result.stderr.decode()
+        patched = (calls / "patched-body.md").read_text(encoding="utf-8")
+        assert "could not complete" in patched
+        assert self.ROWS in patched
+        assert f"[SCOPE-REVIEWED] {self.HEAD}" in patched
+        assert "stale reasoning" not in patched
+
+    def test_a_run_that_measured_nothing_still_withholds_the_comment(self, tmp_path: Path) -> None:
+        # The stamp comes from the classifier's OUTPUT, never from the fact that
+        # the step ran. With no folded verdict nothing is attributable to this
+        # head, so the shared slot is left alone -- otherwise publishing on the
+        # classifier's authority would become a licence to bury a live verdict
+        # under a notice, which is the very loss the guard exists to stop.
+        lane = self._scope_lane()
+        calls, result = self._run_step(
+            lane,
+            tmp_path,
+            existing_body=self._verdict_body(lane, self.OLD),
+            kind="incomplete",
+            extra_env={"FOLDED": "regression"},
+        )
+
+        assert result.returncode == 0, result.stderr.decode()
+        assert not (calls / "patched-body.md").exists()
+        assert not (calls / "created-body.md").exists()
+        assert "left existing comment #123 untouched" in result.stdout.decode()
 
     def test_withheld_fork_fp_body_leaves_a_posted_verdict_alone(self, tmp_path: Path) -> None:
         # The fork first-principles lane posts its withheld notice from a
@@ -6784,6 +7230,10 @@ CONCERNS_FORK_LANES = (
 
 # Their same-repo twins, which own a JOB rather than a check-run and so cannot
 # report themselves neutral: (workflow, posting step, status step, lane label).
+# security-scope-review.yml is not one of them: it emits no CONCERNS digest into
+# `GITHUB_STEP_SUMMARY` -- its summary carries the folded per-platform verdict
+# and the confirmed rows instead -- so an entry here could only be satisfied by
+# inventing a digest the lane does not have.
 CONCERNS_SAME_LANES = (
     (
         "design-review.yml",
@@ -7646,7 +8096,7 @@ class TestForkLaneSurfacesAnUnstampedReviewBody:
             check=False,
             capture_output=True,
             cwd=cwd,
-            env=env,
+            env=_child_env(env),
         )
         return calls_dir, result
 
@@ -8074,3 +8524,1890 @@ class TestModelStepsRunAfterTheCredentialFilesAreScrubbed:
             env={**os.environ, "RUNNER_TEMP": str(tmp_path / "absent")},
         )
         assert proc.returncode == 0, proc.stderr
+
+
+class TestTheScopeSurfaceIsResolvedOnce:
+    """Both scope lanes ask "is this in scope?" of ONE list, and skip green.
+
+    The surface was already spelled twice before this lane existed
+    (``denial-differential.yml``'s ``on.paths`` and the same-repo lane's resolve
+    step) with nothing pinning them equal. A third copy in the fork lane would be
+    the one that matters most: it is the copy that decides whether a FORK pull
+    request is reviewed at all, so a list that drifts short there skips the review
+    silently, on exactly the changes nobody in this repository wrote.
+    """
+
+    SENTINELS = ("SCOPE-SURFACE-BEGIN", "SCOPE-SURFACE-END")
+
+    def _surface(self) -> list[str]:
+        text = _workflow("security-scope-review.yml")
+        begin, end = self.SENTINELS
+        body = text.split(begin, 1)[1].split(end, 1)[0]
+        return re.findall(r"^\s*'([^']+)'\s*$", body, re.M)
+
+    def test_the_same_repo_lane_carries_the_extractable_list(self) -> None:
+        text = _workflow("security-scope-review.yml")
+        for sentinel in self.SENTINELS:
+            assert text.count(sentinel) == 1, sentinel
+        surface = self._surface()
+        # Every entry is on its own line and quoted, because that IS the
+        # extraction contract: the fork lane's sed drops anything else, so a
+        # reformatted entry narrows the surface it resolves rather than failing.
+        assert len(surface) >= 8, surface
+        assert "src/kiro_crew/security/" in surface
+        assert "scripts/deny_diff.py" in surface
+
+    def test_the_fork_lane_extracts_that_list_and_spells_none_of_it(self) -> None:
+        fork = _workflow("fork-security-scope-review.yml")
+        script = _step_script(fork, "Resolve review scope")
+        for sentinel in self.SENTINELS:
+            assert sentinel in script, sentinel
+        assert "LANE: .github/workflows/security-scope-review.yml" in fork
+        # The pin that matters: not one path from the shared list is written out
+        # here. A copy is how the fork lane comes to disagree with the same-repo
+        # lane about what the security surface is.
+        for path in self._surface():
+            if path == ".github/workflows/security-scope-review.yml":
+                continue  # the file it READS the list out of, not a copied entry
+            assert path not in script, f"fork lane re-spells {path}"
+
+    def test_a_short_extraction_refuses_instead_of_skipping_the_review(self) -> None:
+        # An empty or truncated extraction resolves to "no surface touched" for
+        # nearly every change, which is a silent global skip of a blocking lane.
+        script = _step_script(_workflow("fork-security-scope-review.yml"), "Resolve review scope")
+        assert 'if [ "${#surface[@]}" -lt 2 ]; then' in script
+        assert "exit 1" in script
+        # An unreadable label list buys the expensive answer, never the cheap one.
+        assert 'echo "in_scope=true" >> "$GITHUB_OUTPUT"' in script
+
+    #: Both scope lanes, because this property is the one the fail-closed ruling
+    #: rests on and it was pinned on the fork lane alone for eleven rounds.
+    #: ``_UNSETTLED_CONCLUSION = "error"`` is defensible only because an
+    #: off-surface pull request never reaches the model at all -- otherwise a
+    #: Bedrock outage would red a PR this lane would not have judged, which is the
+    #: cost `docs/ci/ci-and-reviews.md` says the ruling does NOT pay. One lane
+    #: keeping the gate while its twin lost it would make the doc true of half the
+    #: PRs and silently false of the other half.
+    OUT_OF_SCOPE_GATED_LANES = ("security-scope-review.yml", "fork-security-scope-review.yml")
+
+    def test_both_floor_reads_ask_for_every_check_run_not_just_the_latest(self) -> None:
+        """`GET /commits/{ref}/check-runs` defaults to `filter=latest`.
+
+        `latest` is one check-run PER NAME, and while the floor step runs, that one is
+        this run's OWN in-progress check-run -- so the default returns a listing with
+        no prior in it, every prior reads as "never judged", and the floor silently
+        holds nothing. A resampled clean re-run then publishes success over a
+        confirmed regression, which is the single thing the floor exists to stop.
+        The gate was inert exactly this way until it was measured.
+
+        Both lanes, and only these two reads: a check-runs read whose purpose is the
+        CURRENT state (pr-readiness) is correct on the default, so this is not a
+        repo-wide rule about the parameter -- it is a rule about a read of history.
+        """
+        for lane, job, step in (
+            ("security-scope-review.yml", "publish", "Enforce the per-head monotonic floor"),
+            ("fork-security-scope-review.yml", "publish", "Decide the lane's conclusion"),
+        ):
+            body = str(_step_by_name(lane, job, step)["run"])
+            reads = [line for line in body.splitlines() if "check-runs?check_name=" in line]
+            assert reads, f"{lane}: the floor step no longer reads the check-runs listing"
+            for line in reads:
+                assert "filter=all" in line, (
+                    f"{lane}: a floor read without `filter=all` sees only this run's own "
+                    f"in-progress check-run, so the floor holds nothing: {line.strip()}"
+                )
+
+    def test_neither_lane_pays_a_model_call_out_of_scope(self) -> None:
+        gated = {
+            "aws-actions/configure-aws-credentials",
+            "anthropics/claude-code-action",
+        }
+        for lane in self.OUT_OF_SCOPE_GATED_LANES:
+            doc = yaml.safe_load(_workflow(lane))
+            steps = doc["jobs"]["generate"]["steps"]
+            seen = 0
+            for step in steps:
+                uses = str(step.get("uses", ""))
+                if not any(g in uses for g in gated):
+                    continue
+                seen += 1
+                assert "steps.scope.outputs.in_scope == 'true'" in str(
+                    step.get("if", "")
+                ), f"{lane}: {uses} is not gated on the resolved scope"
+            assert seen == 2, f"{lane}: expected the assume and the model call to be gated"
+            # The scope step has to resolve BEFORE the credential is minted, or the
+            # gate saves nothing.
+            names = [str(s.get("name") or s.get("uses")) for s in steps]
+            scope_at = names.index("Resolve review scope")
+            creds_at = next(i for i, n in enumerate(names) if "configure-aws-credentials" in n)
+            assert scope_at < creds_at, f"{lane}: the credential is minted before the scope gate"
+
+    def test_the_fork_scope_step_runs_where_its_two_inputs_exist(self) -> None:
+        """Order is a correctness input here, and both ways of getting it wrong are silent.
+
+        The step diffs ``base...head``, and a fork head is reachable only through
+        ``refs/pull/N/head`` -- so before the fetch step there is no head object,
+        the diff resolves empty, and EVERY fork pull request reads as touching
+        nothing: a global skip of a blocking lane, reported as a pass. And the
+        contract step is gated on this step's output, so ahead of it that gate
+        reads an unset value and the contract is never extracted at all.
+        """
+        doc = yaml.safe_load(_workflow("fork-security-scope-review.yml"))
+        names = [
+            str(step.get("name") or step.get("uses")) for step in doc["jobs"]["generate"]["steps"]
+        ]
+        fetch = next(i for i, n in enumerate(names) if n.startswith("Fetch authentic diff"))
+        scope = names.index("Resolve review scope")
+        contract = names.index("Extract the review contract from the base commit")
+        assert fetch < scope, "the scope diff would have no head object to read"
+        assert scope < contract, "the contract's scope gate would read an unset output"
+        # And the gate is really there, so the order above is load-bearing rather
+        # than incidental.
+        for step in doc["jobs"]["generate"]["steps"]:
+            if step.get("name") == "Extract the review contract from the base commit":
+                assert "steps.scope.outputs.in_scope == 'true'" in str(step.get("if", ""))
+
+    def test_an_out_of_scope_fork_pr_completes_success_and_posts_no_comment(self) -> None:
+        fork = _workflow("fork-security-scope-review.yml")
+        decide = _step_script(fork, "Decide the lane's conclusion")
+        # SUCCESS, not neutral and not skipped: pr-readiness reads a lane that only
+        # reports `skipped` as one that has not posted yet, and waits forever.
+        assert 'conclusion="success"; title="nothing to scope' in decide
+        # The LITERAL `false`, never "not true": an empty value means `generate`
+        # died before the scope step ran, which is unmeasured and must stay red.
+        assert 'if [ "${IN_SCOPE:-}" = "false" ]; then' in decide
+        assert "IN_SCOPE: ${{ needs.generate.outputs.in_scope }}" in fork
+        assert "in_scope: ${{ steps.scope.outputs.in_scope }}" in fork
+        # No comment for a pull request this lane did not review, matching the
+        # same-repo lane -- and still a comment when in_scope is merely UNKNOWN.
+        doc = yaml.safe_load(fork)
+        for step in doc["jobs"]["publish"]["steps"]:
+            name = str(step.get("name", ""))
+            if name in ("Assemble the comment body", "Post/update the scope review comment"):
+                assert "needs.generate.outputs.in_scope != 'false'" in str(step.get("if", "")), name
+
+
+# The two Security Scope Review lanes publish only text a base-owned redactor has
+# rewritten. That is one property with two halves, and each half fails silently on
+# its own: a scrub that CORRUPTS its input makes the report unparseable, which the
+# verdict folder answers with a hard block naming no rows, and an upload that runs
+# on `always()` republishes the raw file a refused scrub withheld. So both halves
+# are pinned here rather than left to a reader comparing copies of a regex.
+_SCOPE_LANES = ("security-scope-review.yml", "fork-security-scope-review.yml")
+
+
+#: A scrub call, by either spelling the lanes use. A step whose workspace IS a
+#: trusted tree runs `scripts/scope_redact.py` by name; a step handed a staged copy
+#: runs `"$REDACTOR"`, the path of a blob taken from the base ref. Matching only the
+#: first spelling silently drops every staged call out of the pins below, which is
+#: how a staged call with no `--mode` would reach a job log instead of a test.
+_REDACTOR_CALL = re.compile(r'python3?\s+"?(?:\$\{?REDACTOR\}?|[^\s"]*scope_redact\.py)"?')
+
+
+def _scrub_calls(workflow_name: str) -> list[str]:
+    return [line for line in _workflow(workflow_name).splitlines() if _REDACTOR_CALL.search(line)]
+
+
+def _scope_steps(workflow_name: str) -> list[tuple[str, dict]]:
+    doc = yaml.safe_load(_workflow(workflow_name))
+    pairs: list[tuple[str, dict]] = []
+    for job_name, job in (doc.get("jobs") or {}).items():
+        for step in job.get("steps") or []:
+            pairs.append((job_name, step))
+    return pairs
+
+
+class TestTheScopeLanesScrubThroughOneRedactor:
+    """One implementation, called everywhere, and no upload that outruns it."""
+
+    @pytest.mark.parametrize("workflow", _SCOPE_LANES)
+    def test_no_embedded_redaction_program_survives(self, workflow: str) -> None:
+        """A copied regex is the defect generator this replaces.
+
+        A copy that is wrong is wrong on every surface it guards, and a program
+        embedded in a ``run:`` body has no seam a test can call. A new copy would
+        re-open exactly that, so the absence is the pin.
+        """
+        assert "perl -i -pe" not in _workflow(workflow)
+
+    @pytest.mark.parametrize("workflow", _SCOPE_LANES)
+    def test_every_scrub_calls_the_shared_redactor(self, workflow: str) -> None:
+        text = _workflow(workflow)
+        assert "scope_redact.py" in text
+        # Every invocation declares its file shape. A call with no --mode is
+        # argparse-refused at runtime, which reds the lane rather than publishing
+        # unscrubbed -- but it is still a defect a reader can catch here instead of
+        # in a job log.
+        calls = _scrub_calls(workflow)
+        assert calls, f"{workflow}: no scrub call found"
+        for line in calls:
+            assert "--mode json" in line or "--mode text" in line, line
+
+    @pytest.mark.parametrize("workflow", _SCOPE_LANES)
+    def test_the_redactor_is_never_taken_from_the_reviewed_tree(self, workflow: str) -> None:
+        """The change under review must not supply the program that redacts its output.
+
+        Two admissible sources: a ``git show`` from the base ref into a staging
+        directory, or a workspace that IS a trusted tree (the base commit, or the
+        default branch). Both are proven the way the harness's other two files are
+        -- by refusing when the file is absent -- so the pin is that the lane
+        carries that refusal.
+        """
+        text = _workflow(workflow)
+        assert "if [ ! -s scripts/scope_redact.py ]" in text or (
+            'git show "$BASE_SHA:scripts/scope_redact.py"' in text
+        )
+        assert "Refusing to publish" in text
+
+    @pytest.mark.parametrize("workflow", _SCOPE_LANES)
+    def test_an_always_upload_of_derived_text_reads_the_scrub_verdict(self, workflow: str) -> None:
+        """``if: always()`` may not outlive the scrub that gates the file.
+
+        An artifact is world-readable on a public repository, so an upload is an
+        outbound surface of its own. ``always()`` is legitimate on one whose
+        content is lane-authored or already proven scrubbed; on one that can carry
+        unscrubbed derived text it republishes precisely what the refusal
+        withheld. The corpus upload is the deliberate exception -- it is not
+        scrubbed at all, and is gated on the probe's verdict instead, which the
+        test below pins.
+        """
+        for job_name, step in _scope_steps(workflow):
+            if "upload-artifact" not in str(step.get("uses", "")):
+                continue
+            condition = str(step.get("if", ""))
+            path = str((step.get("with") or {}).get("path", ""))
+            where = f"{workflow}:{job_name}:{step.get('name')}"
+            name = str((step.get("with") or {}).get("name", ""))
+            if name.endswith("-raw"):
+                # The deliberate exception, and the whole cost of the credential
+                # split: the scrub is a program this repository ships, so it cannot
+                # run in the job that holds the credential, and the file crosses to
+                # the job that scrubs it unscrubbed. Bounded rather than waved
+                # through -- one day of retention, and the test below pins that no
+                # publisher reads this name.
+                assert (step.get("with") or {}).get("retention-days") == 1, (
+                    f"{where}: the unscrubbed transfer artifact {name} outlives the run "
+                    f"it was made for"
+                )
+                continue
+            if "always()" not in condition:
+                # Not unconditional, so it already cannot outrun a refused scrub:
+                # a failed scrub step skips this one too.
+                assert condition, f"{where}: an ungated upload of {path}"
+                continue
+            assert "scrub_ok" in condition, f"{where}: always() upload of {path}, no scrub gate"
+
+    @pytest.mark.parametrize("workflow", _SCOPE_LANES)
+    def test_no_publisher_reads_an_unscrubbed_transfer_artifact(self, workflow: str) -> None:
+        """A `-raw` upload exists to cross ONE job boundary, and no further.
+
+        The scrub moved out of the credentialed job, so the review text crosses to
+        the scrubbing job unscrubbed. That is admissible only while nothing else
+        consumes it: a `publish` that read the raw name would post exactly the text
+        the scrub exists to rewrite, and the whole move would have bought nothing.
+        So every `-raw` artifact is downloaded by exactly one job, that job holds no
+        `id-token`, and it scrubs.
+        """
+        doc = yaml.safe_load(_workflow(workflow))
+        jobs = doc.get("jobs") or {}
+        raw = {
+            str((step.get("with") or {}).get("name", ""))
+            for _, step in _scope_steps(workflow)
+            if "upload-artifact" in str(step.get("uses", ""))
+            and str((step.get("with") or {}).get("name", "")).endswith("-raw")
+        }
+        assert raw, f"{workflow}: the transfer artifacts are not named for being unscrubbed"
+        for name in sorted(raw):
+            readers = [
+                job_id
+                for job_id, job in jobs.items()
+                for step in job.get("steps") or []
+                if "download-artifact" in str(step.get("uses", ""))
+                and str((step.get("with") or {}).get("name", "")) == name
+            ]
+            assert len(readers) == 1, f"{workflow}: {name} is read by {readers}"
+            reader = jobs[readers[0]]
+            perms = reader.get("permissions") or {}
+            assert (
+                perms.get("id-token") != "write"
+            ), f"{workflow}: {name} is read beside a credential"
+            assert not [
+                k for k, v in perms.items() if v == "write"
+            ], f"{workflow}: {readers[0]} reads {name} and holds a write scope"
+            bodies = "\n".join(str(step.get("run") or "") for step in reader.get("steps") or [])
+            assert _REDACTOR_CALL.search(
+                bodies
+            ), f"{workflow}: {readers[0]} reads {name} and never scrubs it"
+
+    @pytest.mark.parametrize("workflow", _SCOPE_LANES)
+    def test_the_corpus_upload_is_gated_on_the_probe_not_on_a_scrub(self, workflow: str) -> None:
+        """The one upload that must stay byte-faithful, and how it is still safe.
+
+        Redacting the corpus would hand the classifier a command nobody ever
+        refused, which classifies as allowed -- a false green in its least visible
+        shape. So the corpus is probed on a COPY, the run is refused when the probe
+        changes anything, and the upload is gated on that verdict.
+        """
+        corpus_uploads = [
+            step
+            for _, step in _scope_steps(workflow)
+            if "upload-artifact" in str(step.get("uses", ""))
+            and "normalized.json" in str((step.get("with") or {}).get("path", ""))
+        ]
+        assert corpus_uploads, f"{workflow}: no corpus upload found"
+        for step in corpus_uploads:
+            condition = str(step.get("if", ""))
+            assert "adjudicate == 'true'" in condition, f"{workflow}: corpus upload not probe-gated"
+            assert "always()" not in condition
+
+    @pytest.mark.parametrize("workflow", _SCOPE_LANES)
+    def test_a_json_surface_is_redacted_in_json_mode(self, workflow: str) -> None:
+        """The report and the rows are parsed by their readers, so their mode is fixed.
+
+        A raw-bytes substitution over either can leave text that fails to parse,
+        and an unparseable report is exit 2 in the folder: a hard block that names
+        no rows, from the lane whose purpose is preventing that over-refusal.
+        """
+        json_surfaces = [
+            line
+            for line in _scrub_calls(workflow)
+            if ".json" in line or '"$ROWS"' in line or "$NORMALIZED" in line
+        ]
+        assert json_surfaces, f"{workflow}: no JSON surface is redacted"
+        for line in json_surfaces:
+            assert "--mode json" in line, line
+
+    @pytest.mark.parametrize("workflow", _SCOPE_LANES)
+    def test_the_model_s_own_job_scrubs_nothing(self, workflow: str) -> None:
+        """The reviewer must not be able to replace the program that scrubs it.
+
+        `Write` is granted so the model can produce `candidates.json`, and the tool
+        takes an ABSOLUTE path -- so no directory on the runner is provably out of
+        its reach, the checkout and `runner.temp` alike. Staging the redactor after
+        the call was the earlier answer, and it was one ordering away from being
+        wrong. The answer now is that the model's job does not scrub at ALL: it
+        holds the Bedrock credential, so it runs no program this repository ships,
+        and the captured text crosses to a job holding nothing. Nothing there to
+        replace, and nothing there to steal.
+        """
+        for job_name, job in (yaml.safe_load(_workflow(workflow)).get("jobs") or {}).items():
+            steps = job.get("steps") or []
+            if not any("claude-code-action" in str(s.get("uses", "")) for s in steps):
+                continue
+            where = f"{workflow}:{job_name}"
+            for i, step in enumerate(steps):
+                for line in (step.get("run") or "").splitlines():
+                    stripped = line.strip()
+                    if stripped.startswith("#"):
+                        continue
+                    assert not _REDACTOR_CALL.search(
+                        stripped
+                    ), f"{where}: step {i} scrubs beside the model: {stripped}"
+            assert not any(
+                "Materialize the base-owned outbound redactor" in str(s.get("name", ""))
+                for s in steps
+            ), f"{where}: a redactor is staged in a job that scrubs nothing"
+
+    @pytest.mark.parametrize("workflow", _SCOPE_LANES)
+    def test_the_marker_spellings_the_seed_path_greps_for_are_unchanged(
+        self, workflow: str
+    ) -> None:
+        """Both lanes read a redaction marker back as a refusal on the way IN.
+
+        A renamed marker stops matching, and a row nobody can read then travels
+        into the next run's candidate set, so the grep and the redactor's
+        vocabulary are one contract.
+        """
+        assert "[REDACTED-" in _workflow(workflow)
+        redactor = (ROOT / "scripts" / "scope_redact.py").read_text(encoding="utf-8")
+        for marker in ("[REDACTED-AWS-KEY-ID]", "[REDACTED-ARN]", "[REDACTED-ACCT]"):
+            assert marker in redactor, marker
+
+
+#: Anything that makes a job worth attacking. `id-token: write` mints an AWS
+#: credential; the three write scopes hand it a token that can speak for the repo.
+_PRIVILEGED_SCOPES = ("id-token", "contents", "pull-requests", "checks", "issues", "actions")
+
+
+def _privileged_jobs(workflow_name: str) -> list[tuple[str, dict, list[str]]]:
+    """Every job holding a credential or a write scope, with what it holds."""
+    doc = yaml.safe_load(_workflow(workflow_name))
+    out: list[tuple[str, dict, list[str]]] = []
+    for job_id, job in (doc.get("jobs") or {}).items():
+        perms = job.get("permissions") or {}
+        if not isinstance(perms, dict):
+            continue
+        held = [
+            f"{scope}: {perms[scope]}"
+            for scope in _PRIVILEGED_SCOPES
+            if perms.get(scope) == "write"
+        ]
+        if held:
+            out.append((job_id, job, held))
+    return out
+
+
+def _workspace_is_trusted(workflow_name: str, job: dict) -> bool:
+    """Is this job's checked-out tree a trusted one, or the change under review?
+
+    An explicit `ref:` naming the base commit is trusted. No `ref:` at all is the
+    workflow's own default: the pull request's MERGE ref on a `pull_request` event
+    (so, untrusted), and the repository default branch on any other trigger.
+    """
+    doc = yaml.safe_load(_workflow(workflow_name))
+    triggers = doc.get("on") or doc.get(True) or {}
+    on_pull_request = "pull_request" in set(triggers)
+    for step in job.get("steps") or []:
+        if "actions/checkout" not in str(step.get("uses", "")):
+            continue
+        ref = str((step.get("with") or {}).get("ref", ""))
+        if ref:
+            return "base" in ref
+        return not on_pull_request
+    return True
+
+
+class TestAPrivilegedScopeJobRunsNoProgramFromTheReviewedTree:
+    """The recurring defect this closes, stated once for every job in both lanes.
+
+    A job holding the Bedrock role or a write-scoped token must not execute a
+    program the change under review can supply. Four separate fixes each protected
+    one path while its sibling kept the defect, so the pin is per JOB and per
+    SPELLING rather than on the branch that was last reported: the base-ref read is
+    the normal path, and the bootstrap window -- absent at base, present in the
+    working tree -- is where every one of those fixes leaked.
+    """
+
+    #: The lane's own programs. A privileged job may run these only from a staged
+    #: copy of a COMMITTED blob, which is a path under `runner.temp`, never a path
+    #: in the workspace and never a `cp` out of it.
+    HARNESS = ("scope_candidates.py", "deny_diff.py", "scope_redact.py")
+
+    @pytest.mark.parametrize("workflow", _SCOPE_LANES)
+    def test_no_privileged_job_copies_a_program_out_of_the_workspace(self, workflow: str) -> None:
+        """`cp` out of `scripts/` is the spelling that reintroduced this each time.
+
+        A `git show <sha>:scripts/<program>` reads committed content, which the
+        reviewer's `Write` cannot reach and no earlier step in the job can rewrite.
+        A `cp` reads the checked-out tree, which on a `pull_request` event IS the
+        change under review. The two are one line apart and only one of them is safe
+        in a job that holds something.
+
+        The subject is the SOURCE DIRECTORY, not the file name: the staging loops
+        spell their file as `$f`, so a pin naming `scope_candidates.py` matches
+        nothing and reports green over exactly the line it was written for. `scripts/`
+        is also the whole of what must not be copied -- the review contract is data
+        the model reads, and its own bootstrap is not program execution.
+        """
+        for job_id, job, held in _privileged_jobs(workflow):
+            for index, step in enumerate(job.get("steps") or []):
+                for line in (step.get("run") or "").splitlines():
+                    stripped = line.strip()
+                    if stripped.startswith("#") or not stripped.startswith("cp "):
+                        continue
+                    source = stripped.split()[1].strip('"').strip("'")
+                    assert not source.startswith("scripts/"), (
+                        f"{workflow}:{job_id} (holds {held}) step {index} copies a "
+                        f"program out of the workspace: {stripped}"
+                    )
+
+    @pytest.mark.parametrize("workflow", _SCOPE_LANES)
+    def test_a_privileged_job_executes_no_program_from_an_untrusted_workspace(
+        self, workflow: str
+    ) -> None:
+        """Whether a `scripts/` path is safe to run is a property of the CHECKOUT.
+
+        A job whose checkout is the base commit or the default branch has a
+        workspace that IS a trusted tree, and running `scripts/<program>` there is
+        running the committed harness. A job whose checkout resolves to the pull
+        request's merge ref has the change under review on disk, and the same line
+        runs the change's own code -- so such a job may execute only a staged copy
+        of a committed blob. Both lanes are asserted against the same rule, which is
+        what keeps one lane's posture from drifting from the other's.
+        """
+        for job_id, job, held in _privileged_jobs(workflow):
+            if _workspace_is_trusted(workflow, job):
+                continue
+            for index, step in enumerate(job.get("steps") or []):
+                for line in (step.get("run") or "").splitlines():
+                    stripped = line.strip()
+                    if stripped.startswith("#"):
+                        continue
+                    if "python " not in stripped and "python3 " not in stripped:
+                        continue
+                    for program in self.HARNESS:
+                        assert f"scripts/{program}" not in stripped, (
+                            f"{workflow}:{job_id} (holds {held}, untrusted workspace) "
+                            f"step {index} runs the workspace copy: {stripped}"
+                        )
+
+    @pytest.mark.parametrize("workflow", _SCOPE_LANES)
+    def test_a_job_holding_aws_credentials_executes_no_repository_python(
+        self, workflow: str
+    ) -> None:
+        """The rule, stated once, positively, for both lanes.
+
+        `id-token: write` is an AWS credential: the job can assume the Bedrock role
+        whenever it likes, so "the credential is only live after this step" is not a
+        property anything can check. Repository Python is the code a pull request
+        can supply -- every one of this lane's three programs has a bootstrap window
+        in which the executed copy comes from the change under review -- so the two
+        must not share a job. `jq`, `gh`, `git` and `awk` may: they are the runner's
+        own tools, and a pull request cannot rewrite them.
+
+        Stated as "no python at all" rather than as an allowlist of programs,
+        because the previous shape of this pin permitted exactly one -- the outbound
+        scrubber -- and that permission is what kept a PR-suppliable blob executing
+        beside the role for four rounds of fixes.
+        """
+        for job_id, job in (yaml.safe_load(_workflow(workflow)).get("jobs") or {}).items():
+            if (job.get("permissions") or {}).get("id-token") != "write":
+                continue
+            for index, step in enumerate(job.get("steps") or []):
+                for line in (step.get("run") or "").splitlines():
+                    stripped = line.strip()
+                    if stripped.startswith("#"):
+                        continue
+                    assert not re.search(r"\bpython3?\s", stripped), (
+                        f"{workflow}:{job_id} holds an AWS credential and step {index} "
+                        f"runs python: {stripped}"
+                    )
+
+    def test_the_execution_the_credentialed_jobs_gave_up_still_happens(self) -> None:
+        """Otherwise the rule above is satisfied by deleting the checks.
+
+        Each lane's validation, its credential-shape probe and its outbound scrub
+        all still run -- in a job with no `id-token` -- so the move traded the
+        exposure for nothing but a job boundary.
+        """
+        same = _step_script(
+            _workflow("security-scope-review.yml"),
+            "Validate the candidates against the base corpus",
+        )
+        assert 'python "$HARNESS/scope_candidates.py"' in same
+        fork = _step_script(
+            _workflow("fork-security-scope-review.yml"),
+            "Validate candidates against the base-owned corpus",
+        )
+        assert 'python3 "$HARNESS/scope_candidates.py" validate' in fork
+        for workflow, step, job in (
+            ("security-scope-review.yml", "Scrub the review text", "validate"),
+            ("fork-security-scope-review.yml", "Redact credential shapes", "validate"),
+            (
+                "security-scope-review.yml",
+                "Probe the candidate set for credential shapes",
+                "validate",
+            ),
+        ):
+            doc = yaml.safe_load(_workflow(workflow))
+            names = [str(s.get("name", "")) for s in doc["jobs"][job]["steps"]]
+            assert step in names, f"{workflow}: {step} is not in {job}"
+
+    def test_the_same_repo_validation_job_holds_read_scope_only(self) -> None:
+        """The job that can execute the checked-out harness holds exactly one read.
+
+        `contents: read` is what a checkout needs and is the whole grant. A
+        `pull-requests: read` here would be a comment feed for a program the pull
+        request supplied, and any write at all would be the defect moved rather
+        than fixed.
+        """
+        doc = yaml.safe_load(_workflow("security-scope-review.yml"))
+        assert doc["jobs"]["validate"]["permissions"] == {"contents": "read"}
+        # It is the only job in the lane that reads the harness out of the working
+        # tree, and it says so where the bootstrap happens.
+        script = _step_script(
+            _workflow("security-scope-review.yml"),
+            "Validate the candidates against the base corpus",
+        )
+        assert 'cp "scripts/$f" "$HARNESS/$f"' in script
+        assert "exit 1" in script
+
+    def test_the_candidate_set_is_probed_before_the_classifier_reads_it(self) -> None:
+        """The probe survived the move, and what it can still buy is what it buys.
+
+        The rows must reach the classifier byte-faithful: a placeholder standing
+        where a command belongs is a command nobody ever refused, and it classifies
+        as allowed. So the file cannot be redacted, and the answer is to probe a
+        copy and refuse the run. The probe is `scope_redact.py`, though, so it may
+        not run beside the credential -- it runs in `validate`, which means the rows
+        are already public when it fires. What it still prevents is the part that
+        lasts: a row carrying a credential shape is never adjudicated, and the
+        normalized corpus the legs read never travels.
+        """
+        workflow = _workflow("security-scope-review.yml")
+        script = _step_script(workflow, "Probe the candidate set for credential shapes")
+        assert "--fail-if-changed" in script
+        assert "cp candidates.json scrub-probe-candidates.json" in script
+        assert 'if [ "$probe" = "10" ]; then' in script
+        assert "candidates_ok=false" in script
+        doc = yaml.safe_load(workflow)
+        probes = [
+            job_id
+            for job_id, job in doc["jobs"].items()
+            for step in job.get("steps") or []
+            if str(step.get("name", "")) == "Probe the candidate set for credential shapes"
+        ]
+        assert probes == ["validate"], probes
+        uploads = [
+            (job_id, step)
+            for job_id, job in doc["jobs"].items()
+            for step in job.get("steps") or []
+            if "upload-artifact" in str(step.get("uses", ""))
+            and (step.get("with") or {}).get("path") == "candidates.json"
+        ]
+        assert len(uploads) == 1, "the candidate set must travel exactly once"
+        job_id, upload = uploads[0]
+        assert job_id == "generate"
+        # NAMED for being unprobed, so no reader can mistake it for the checked
+        # corpus, and retained for a day rather than a week.
+        assert (upload.get("with") or {}).get("name") == "security-scope-candidates-raw"
+        assert (upload.get("with") or {}).get("retention-days") == 1
+        assert "always()" not in str(upload["if"])
+
+    @pytest.mark.parametrize("workflow", _SCOPE_LANES)
+    def test_every_needs_reference_resolves_to_a_declared_job(self, workflow: str) -> None:
+        """A job move breaks these silently: the expression reads empty, not red.
+
+        `needs.<job>.outputs.<name>` where `<job>` is not in this job's `needs`
+        evaluates to the empty string, so a gate keyed on it turns off and a lane
+        skips itself while reporting success -- the same failure shape as a scope
+        diff with no head object to read.
+        """
+        doc = yaml.safe_load(_workflow(workflow))
+        jobs = doc["jobs"]
+        for job_id, job in jobs.items():
+            needs = job.get("needs") or []
+            declared = {needs} if isinstance(needs, str) else set(needs)
+            for producer in declared:
+                assert producer in jobs, f"{workflow}:{job_id} needs absent job {producer}"
+            body = yaml.safe_dump(job)
+            for producer in sorted(set(re.findall(r"needs\.([A-Za-z0-9_-]+)\.", body))):
+                assert (
+                    producer in declared
+                ), f"{workflow}:{job_id} reads needs.{producer} with needs={sorted(declared)}"
+            for producer, name in re.findall(
+                r"needs\.([A-Za-z0-9_-]+)\.outputs\.([A-Za-z0-9_-]+)", body
+            ):
+                produced = jobs[producer].get("outputs") or {}
+                assert name in produced, (
+                    f"{workflow}:{job_id} reads needs.{producer}.outputs.{name}, "
+                    f"which {producer} does not produce"
+                )
+
+
+def _claude_args(workflow_name: str) -> list[tuple[str, str, list[str]]]:
+    """Every ``claude-code-action`` call in a lane, as (job, step, ARGUMENT lines).
+
+    The arguments come off the PARSED ``claude_args`` block, so a flag that reaches
+    this list is one the action is actually handed: a commented-out or prose mention
+    of the same flag lives in a YAML comment outside the block scalar and never
+    appears here. A ``#`` line INSIDE the block would be literal text in the
+    argument string, so those are dropped too.
+    """
+    doc = yaml.safe_load(_workflow(workflow_name))
+    calls: list[tuple[str, str, list[str]]] = []
+    for job_id, job in (doc.get("jobs") or {}).items():
+        for step in job.get("steps") or []:
+            if "claude-code-action" not in str(step.get("uses", "")):
+                continue
+            raw = str((step.get("with") or {}).get("claude_args", ""))
+            args = [
+                line.strip()
+                for line in raw.splitlines()
+                if line.strip() and not line.strip().startswith("#")
+            ]
+            calls.append((job_id, str(step.get("name", "?")), args))
+    return calls
+
+
+class TestTheScopeLanesLoadNoProjectSettingsFromTheReviewedTree:
+    """A model call is code execution beside the credential unless this flag is set.
+
+    ``claude-code-action`` auto-loads the CHECKOUT's ``CLAUDE.md`` (and what it
+    imports) and ``.claude/`` as instructions, and a ``.claude/settings.json``
+    ``SessionStart`` hook EXECUTES. The same-repo ``generate`` job checks out with no
+    explicit ``ref``, which on a ``pull_request`` event is the merge ref -- so a pull
+    request that adds such a hook runs its own code while the Bedrock credential is
+    live, through a channel that is not a ``run:`` step and that no
+    ``--allowedTools`` grant bounds. ``--setting-sources user`` consults the
+    runner's (empty) home and nothing from the checkout.
+
+    Pinned per LANE and per CALL rather than on the site that was last fixed: this
+    defect class has recurred on this pull request by being closed at one lane and
+    left at its sibling. The fork lane checks out ``base_sha``, so its project
+    settings are base-owned and it is not exposed today -- the flag is still
+    required there, because the exposure is one checkout-ref edit away.
+    """
+
+    @pytest.mark.parametrize("workflow", _SCOPE_LANES)
+    def test_every_model_call_reads_only_the_user_setting_source(self, workflow: str) -> None:
+        calls = _claude_args(workflow)
+        assert calls, f"{workflow}: no claude-code-action call found"
+        for job_id, step_name, args in calls:
+            assert "--setting-sources user" in args, (
+                f"{workflow}:{job_id} step {step_name!r} passes no `--setting-sources "
+                f"user`, so the action loads the checkout's CLAUDE.md/.claude as "
+                f"instructions: {args}"
+            )
+
+    @pytest.mark.parametrize("workflow", _SCOPE_LANES)
+    def test_no_model_call_widens_the_setting_sources(self, workflow: str) -> None:
+        """``user`` is the whole grant: ``project`` or ``local`` is the defect back.
+
+        Adding a source is how this would be reintroduced while the flag stays
+        present, so the pin is on the VALUE and not on the flag's existence.
+        """
+        for job_id, step_name, args in _claude_args(workflow):
+            for arg in args:
+                if not arg.startswith("--setting-sources"):
+                    continue
+                assert arg == "--setting-sources user", (
+                    f"{workflow}:{job_id} step {step_name!r} widens the setting " f"sources: {arg}"
+                )
+
+
+class TestBothScopeLanesTolerateAnIndentedVerdictHeader:
+    """The contract DISPLAYS the header indented, so both captures must accept it.
+
+    ``.github/review-prompts/security-scope.md`` shows ``Scope-Verdict:`` indented
+    four spaces inside its output-contract block. A model that copies that
+    indentation writes a header an anchored ``^Scope-Verdict:`` grep cannot see, and
+    the lane then reads ``UNKNOWN`` on a clean, fully-adjudicated review -- the fork
+    lane turns that into ``conclusion=failure``. Fail-closed, so not a hole, but it
+    is this lane over-refusing a legitimate outcome, which is the failure class the
+    lane exists to catch. The two lanes must answer identically, so the pin runs one
+    input through each lane's OWN expression.
+    """
+
+    def _capture_line(self, workflow: str) -> str:
+        for line in _workflow(workflow).splitlines():
+            stripped = line.strip()
+            if stripped.startswith("#"):
+                continue
+            if "grep -iE" in stripped and "Scope-Verdict:" in stripped:
+                return stripped
+        raise AssertionError(f"{workflow}: no Scope-Verdict capture expression")
+
+    def test_the_contract_still_displays_the_header_indented(self) -> None:
+        """If it stops, the pin below is measuring nothing that happens."""
+        contract = _prompt("security-scope.md")
+        header = [line for line in contract.splitlines() if "Scope-Verdict:" in line]
+        assert header, "the contract names no Scope-Verdict header"
+        assert any(line != line.lstrip() for line in header), header
+
+    @pytest.mark.parametrize("workflow", _SCOPE_LANES)
+    @pytest.mark.parametrize("indent", ("", "    ", "\t"))
+    def test_each_lane_reads_the_same_verdict_however_it_is_indented(
+        self, workflow: str, indent: str, tmp_path: Path
+    ) -> None:
+        bash = _bash()
+        if bash is None:
+            pytest.skip("the capture is Bash; skip where Bash is absent")
+        review = tmp_path / "scope-review.md"
+        review.write_text(
+            f"{indent}Scope-Verdict: PASS\n\n[SCOPE-REVIEWED] deadbeef\n", encoding="utf-8"
+        )
+        line = self._capture_line(workflow)
+        name = line.split("=", 1)[0]
+        # Both spellings of the input are supplied, because the two lanes read
+        # different ones: the same-repo lane pipes a `$summary` variable, the fork
+        # lane greps the `$OUT` file it just wrote. The expression itself is taken
+        # from the workflow verbatim -- a test that retyped it would pass while the
+        # lane it describes stayed broken.
+        script = "\n".join(
+            [
+                "set -uo pipefail",
+                'summary="$(cat "$IN")"',
+                'OUT="$IN"',
+                line,
+                f'printf %s "${name}"',
+            ]
+        )
+        # No `bash -e`: the lane's step runs `set -uo pipefail` and nothing else, so
+        # a grep that matches nothing leaves the capture EMPTY and the lane carries
+        # on to read `UNKNOWN`. Running this under `-e` would abort at the failed
+        # assignment and hide which verdict the expression actually yields.
+        out = subprocess.run(
+            [bash, "-c", script],
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            env={**os.environ, "IN": str(review)},
+            cwd=tmp_path,
+        )
+        assert out.stdout == "PASS", (
+            f"{workflow}: indent {indent!r} captured {out.stdout!r} "
+            f"(rc={out.returncode}) {out.stderr.strip()}"
+        )
+
+
+class TestTheScopeLanesKeepTheCredentialOutOfTheModelsReach:
+    """Neither scope model call can read the Bedrock credential it runs beside.
+
+    Both lanes upload the model's text from the job that holds the credential, and
+    the credential-shape probe runs LATER, in `validate` -- so a value the model
+    wrote is already public by the time anything looks at it. Filtering the way out
+    therefore cannot be the control: a value that is chunked, delimited or
+    re-encoded matches no shape rule. The control is that the credential is not
+    reachable, which takes all three of these at once:
+
+    * no `Bash` grant, so there is no shell to print an environment with;
+    * `Read(//proc/**)` + `Read(//sys/**)` DENIED, because `Read` is path-unscoped
+      and `/proc/self/environ` is an ordinary file that needs no shell;
+    * the runner's own on-disk copy of the exported credential
+      (`$RUNNER_TEMP/_runner_file_commands/set_env_*`) truncated first, because it
+      is a FILE and so is covered by neither of the other two.
+
+    Asserted over the PARSED `claude_args` and the parsed step list, never a
+    substring grep of the file: a NEW model call added without the fence is the
+    regression this exists to catch, and a whole-file assertion passes with one
+    unfenced step sitting beside a fenced sibling.
+    """
+
+    ACTION = "anthropics/claude-code-action"
+    SCRUB = "Scrub persisted credential files before the model runs"
+    #: One canonical scrub across every lane holding this credential. Read from the
+    #: reference lane rather than restated, so a fix there cannot leave these two
+    #: behind -- which is this pull request's recurring defect.
+    REFERENCE_LANE = "fork-opus-review.yml"
+
+    def _steps(self, workflow: str) -> list[dict]:
+        doc = yaml.safe_load(_workflow(workflow))
+        return [step for job in (doc["jobs"] or {}).values() for step in (job.get("steps") or [])]
+
+    def _model_steps(self) -> list[tuple[str, dict]]:
+        found: list[tuple[str, dict]] = []
+        for workflow in _SCOPE_LANES:
+            steps = [s for s in self._steps(workflow) if self.ACTION in str(s.get("uses") or "")]
+            assert steps, f"{workflow}: found no {self.ACTION} step to check"
+            found.extend((workflow, step) for step in steps)
+        # Both lanes make exactly ONE model call. A second one is not covered by
+        # this class's reasoning until someone has thought about it.
+        assert len(found) == 2, f"expected 2 scope model calls, found {len(found)}"
+        return found
+
+    @staticmethod
+    def _flags(step: dict) -> dict[str, str]:
+        """`claude_args` as {flag: value}, quotes stripped. Parsed, never grepped."""
+        flags: dict[str, str] = {}
+        for line in str(step.get("with", {}).get("claude_args") or "").splitlines():
+            line = line.strip()
+            if not line.startswith("--"):
+                continue
+            flag, _, value = line.partition(" ")
+            flags[flag] = value.strip().strip('"')
+        return flags
+
+    @staticmethod
+    def _where(workflow: str, step: dict) -> str:
+        return f"{workflow}:{step.get('name') or step.get('id') or '<unnamed>'}"
+
+    def test_no_scope_model_call_grants_a_shell(self) -> None:
+        # Bash grants are PREFIX-matched, so `Bash(git diff:*)` also admits
+        # `git diff ... > somewhere`: a grant is a redirection primitive beside a
+        # live credential, not just a reader.
+        for workflow, step in self._model_steps():
+            flags = self._flags(step)
+            where = self._where(workflow, step)
+            granted = flags["--allowedTools"].split(",")
+            # `Write` is granted plainly and bounded by DENY rules instead, which is
+            # not laziness: bounding it here to `Write(candidates.json)` was tried and
+            # broke the lane (the matcher resolves to an absolute path, so the narrow
+            # allow never matched the write the prompt asks for). The escalation is
+            # bounded by the two out-of-workspace denies asserted in the fence test
+            # below. What this pin still guarantees is the shape of the ALLOW list:
+            # the read trio, `Write`, and nothing else -- above all no Bash.
+            assert granted == ["Read", "Grep", "Glob", "Write"], f"{where}: {granted}"
+            assert not any(
+                tool.startswith("Bash") for tool in granted
+            ), f"{where}: a Bash grant is back"
+
+    def test_every_scope_model_call_denies_the_kernel_filesystems(self) -> None:
+        for workflow, step in self._model_steps():
+            flags = self._flags(step)
+            where = self._where(workflow, step)
+            denied = flags.get("--disallowedTools", "").split(",")
+            assert "Read(//proc/**)" in denied, f"{where}: /proc is still readable"
+            assert "Read(//sys/**)" in denied, f"{where}: /sys is still readable"
+
+    def test_the_fence_is_a_deny_not_a_narrowed_allow(self) -> None:
+        # A deny rule outranks every allow rule and CLI flag. An allow rule that
+        # fails to match falls back to PROMPTING, which in a non-interactive run is
+        # not a guarantee about what was read -- so the fence must not be expressed
+        # by narrowing the allow list.
+        for workflow, step in self._model_steps():
+            flags = self._flags(step)
+            where = self._where(workflow, step)
+            assert "proc" not in flags["--allowedTools"], f"{where}: /proc named as an allow rule"
+            # Same rule for the WRITE bound, which is the other fence in this step.
+            # It must be a DENY: a narrowed allow rests on the prompt fallback this
+            # test exists to reject, and bounding the allow was also measured to break
+            # the lane outright. The two regions are the ones that carry the
+            # escalation, and BOTH are required -- `_actions` holds the action's own
+            # later-executing JavaScript, and the runner temp holds `$GITHUB_ENV`,
+            # a write to which injects environment into every later step. Denying one
+            # is half a fence.
+            denied = flags.get("--disallowedTools", "").split(",")
+            assert (
+                "Write(//home/runner/work/_actions/**)" in denied
+            ), f"{where}: the action's own code is writable by the model"
+            assert any(
+                tool.startswith("Write(") and "runner.temp" in tool for tool in denied
+            ), f"{where}: the workflow command files ($GITHUB_ENV) are writable: {denied}"
+            for tool in ("Edit", "MultiEdit", "NotebookEdit"):
+                assert tool in denied, f"{where}: {tool} is another path to the same write"
+
+    def test_the_persisted_credential_file_is_truncated_first(self) -> None:
+        for workflow in _SCOPE_LANES:
+            steps = self._steps(workflow)
+            models = [i for i, s in enumerate(steps) if self.ACTION in str(s.get("uses") or "")]
+            assert models, f"{workflow}: no model step"
+            for index in models:
+                where = f"{workflow}:{steps[index].get('name')}"
+                assert index > 0, f"{where}: model step is first, so nothing was scrubbed"
+                assert (
+                    steps[index - 1].get("name") == self.SCRUB
+                ), f"{where}: the step before it is {steps[index - 1].get('name')!r}"
+
+    def test_the_scrub_is_the_reference_lanes_scrub_byte_for_byte(self) -> None:
+        reference = [
+            s.get("run") for s in self._steps(self.REFERENCE_LANE) if s.get("name") == self.SCRUB
+        ]
+        assert reference, f"{self.REFERENCE_LANE}: the reference scrub is gone"
+        bodies = [
+            s.get("run")
+            for w in _SCOPE_LANES
+            for s in self._steps(w)
+            if s.get("name") == self.SCRUB
+        ]
+        assert len(bodies) == 2, f"expected one scrub per scope lane, found {len(bodies)}"
+        assert set(bodies) == {
+            reference[0]
+        }, "the scope lanes' scrub has drifted from the reference"
+
+    def test_neither_prompt_asks_the_model_to_compute_the_diff(self) -> None:
+        # The grants existed only because the same-repo PROMPT told the model to run
+        # `git diff` itself. Dropping the grants without dropping that instruction
+        # would leave the lane asking for something it cannot do -- and the model
+        # reporting on nothing.
+        for workflow, step in self._model_steps():
+            prompt = str(step.get("with", {}).get("prompt") or "")
+            where = self._where(workflow, step)
+            assert "git diff" not in prompt, f"{where}: the prompt still asks for a shell diff"
+            assert "authentic.patch" in prompt, f"{where}: the prompt names no prefetched diff"
+
+    def test_the_same_repo_diff_is_prefetched_before_any_credential_exists(self) -> None:
+        steps = self._steps("security-scope-review.yml")
+        names = [str(s.get("name") or s.get("uses") or "") for s in steps]
+        prefetch = next(i for i, n in enumerate(names) if n.startswith("Prefetch the diff"))
+        creds = next(i for i, n in enumerate(names) if "configure-aws-credentials" in n)
+        model = next(i for i, s in enumerate(steps) if self.ACTION in str(s.get("uses") or ""))
+        assert prefetch < creds < model, (prefetch, creds, model)
+
+
+class TestTheForkLaneNamesARemedyThatClearsAForkPullRequest:
+    """A fork PR cannot clear this lane with `/ai-review override`.
+
+    The Stage-2 lane consumes no override marker -- it recomputes both halves from
+    the same two refs and reaches the same verdict -- so naming that command as the
+    remedy sends a contributor to a command that does nothing, on the one lane that
+    blocks their pull request.
+    """
+
+    #: The ways a line may name the override: each states, in the same sentence,
+    #: that this lane does not consume it. The list is spellings of ONE property --
+    #: a mention carrying no negation sends a fork contributor to a command that
+    #: does nothing on the one lane blocking their pull request -- so a new phrasing
+    #: is added here only when it carries the negation itself.
+    NEGATIONS = (
+        "does NOT clear",
+        "reads no /ai-review override",
+        "consumes NO `/ai-review override",
+        "consumes no override marker",
+    )
+
+    def test_no_fork_lane_message_offers_the_override_as_a_remedy(self) -> None:
+        fork = _workflow("fork-security-scope-review.yml")
+        for line in fork.splitlines():
+            if "/ai-review override" not in line:
+                continue
+            assert any(negation in line for negation in self.NEGATIONS), line
+
+    def test_the_same_repo_lane_still_offers_it(self) -> None:
+        # The same-repo lane's "Resolve human override" step does consume the
+        # marker, so the remedy is real there and must not be edited out with it.
+        assert "/ai-review override scope" in _workflow("security-scope-review.yml")
+
+
+class TestTheTwoSecurityGatesScopeOneSurface:
+    """`SCOPE-SURFACE` and `denial-differential.yml`'s `paths:` share a core.
+
+    Both same-repo gates answer a question about the same thing -- a tightened deny
+    rule -- from different sides: the differential gates the committed corpus, the
+    scope review probes the boundary it does not cover yet. Each carries its own
+    hand-written list of the files that make a change a security change, and they
+    overlap on seven entries with nothing holding those seven equal. A file added to
+    one list and not the other is a change one gate measures and the other skips,
+    which reads as a gate that passed rather than a gate that never ran.
+
+    Pinned rather than merged into one file: each list has entries the other must
+    NOT carry (each names its own workflow, and the scope lane also names the model
+    prompt and the two scripts only it runs), so a single shared list would need a
+    per-gate exclusion mechanism to express what two literals already say. The pin
+    reads one workflow to hold another, the same idiom the fork lane uses to read
+    this very array out of the same-repo lane at the base ref.
+    """
+
+    #: Entries each gate carries alone, with the reason it is not shared.
+    _SCOPE_ONLY = frozenset(
+        {
+            "scripts/scope_candidates.py",  # only this lane runs it
+            "scripts/scope_redact.py",  # only this lane runs it
+            ".github/review-prompts/security-scope.md",  # only this lane has a model
+            ".github/workflows/security-scope-review.yml",  # its own workflow
+        }
+    )
+    _DIFFERENTIAL_ONLY = frozenset({".github/workflows/denial-differential.yml"})
+
+    @staticmethod
+    def _normalize(entry: str) -> str:
+        """One spelling for one surface.
+
+        The scope lane's array is `git diff` pathspecs, where a trailing `/` means
+        the directory; the differential's is an Actions `paths:` glob, where `/**`
+        means the same. Comparing them raw reports a difference that is only the
+        two tools' syntax.
+        """
+        return entry.rstrip("/").removesuffix("/**").rstrip("/")
+
+    def _scope_surface(self) -> list[str]:
+        """The array between the extraction sentinels, as the fork lane reads it."""
+        lane = _workflow("security-scope-review.yml")
+        inside: list[str] = []
+        collecting = False
+        for line in lane.splitlines():
+            if "SCOPE-SURFACE-BEGIN" in line:
+                collecting = True
+                continue
+            if "SCOPE-SURFACE-END" in line:
+                collecting = False
+                continue
+            if not collecting:
+                continue
+            stripped = line.strip()
+            if stripped.startswith("'") and stripped.endswith("'"):
+                inside.append(stripped.strip("'"))
+        assert len(inside) > 5, f"extracted only {len(inside)} surface path(s)"
+        return inside
+
+    def _differential_paths(self) -> list[str]:
+        doc = yaml.safe_load(_workflow("denial-differential.yml"))
+        triggers = doc.get("on") or doc.get(True) or {}
+        paths = ((triggers.get("pull_request") or {}).get("paths")) or []
+        assert len(paths) > 5, f"extracted only {len(paths)} path(s)"
+        return [str(entry) for entry in paths]
+
+    def test_the_shared_core_is_identical(self) -> None:
+        scope_surface = {self._normalize(e) for e in self._scope_surface()}
+        differential = {self._normalize(e) for e in self._differential_paths()}
+        scope_only = {self._normalize(e) for e in self._SCOPE_ONLY}
+        differential_only = {self._normalize(e) for e in self._DIFFERENTIAL_ONLY}
+
+        assert scope_surface - scope_only == differential - differential_only, (
+            "the two same-repo security gates disagree about the security surface. "
+            f"only in the scope lane: {sorted(scope_surface - scope_only - differential)}; "
+            f"only in the differential: {sorted(differential - differential_only - scope_surface)}. "
+            "Add the file to BOTH lists, or declare it gate-specific in this test's "
+            "_SCOPE_ONLY / _DIFFERENTIAL_ONLY with the reason it is not shared"
+        )
+
+    def test_every_declared_exclusive_entry_is_really_in_its_own_list(self) -> None:
+        # Otherwise an exclusion outlives the entry it excused, and the next file
+        # added to one list slips through under a stale name.
+        scope_surface = {self._normalize(e) for e in self._scope_surface()}
+        differential = {self._normalize(e) for e in self._differential_paths()}
+        for entry in self._SCOPE_ONLY:
+            assert self._normalize(entry) in scope_surface, entry
+        for entry in self._DIFFERENTIAL_ONLY:
+            assert self._normalize(entry) in differential, entry
+
+
+def _step_by_name(workflow_name: str, job_id: str, name_fragment: str) -> dict:
+    """One step of one job, addressed by a fragment of its `name:`."""
+    job = (yaml.safe_load(_workflow(workflow_name)).get("jobs") or {})[job_id]
+    for step in job.get("steps") or []:
+        if name_fragment in str(step.get("name", "")):
+            return step
+    raise AssertionError(f"{workflow_name}:{job_id} has no step named like {name_fragment!r}")
+
+
+def _credentialed_jobs(workflow_name: str) -> list[tuple[str, dict]]:
+    """Every job that can mint the Bedrock credential.
+
+    `id-token: write` is the whole test: the job may assume the role whenever it
+    likes, so "the credential is only live after this step" is not a property
+    anything can check.
+    """
+    doc = yaml.safe_load(_workflow(workflow_name))
+    out: list[tuple[str, dict]] = []
+    for job_id, job in (doc.get("jobs") or {}).items():
+        perms = job.get("permissions") or {}
+        if isinstance(perms, dict) and perms.get("id-token") == "write":
+            out.append((job_id, job))
+    return out
+
+
+class TestAnUnmeasuredScopeNeverPassesTheRequiredStatus:
+    """`in_scope` is a TRI-STATE, and the gate that carries the check name reads it.
+
+    `generate` writes that output in ONE step, `Resolve review scope`. Anything
+    failing before it -- the runner hardening, the checkout, the resolver itself --
+    leaves the output EMPTY, and a `!= "true"` test reads empty as "measured, and
+    there was nothing to scope". The required status then exits 0 with no model call
+    and no differential: an infrastructure failure publishes a green gate over a
+    change nobody measured, on the one lane whose whole purpose is to refuse that.
+
+    So the skip is bought by the resolver's own literal `false` and by nothing else.
+    The step is executed here rather than grepped, because what matters is the exit
+    code each value produces -- it shells out to nothing, so it runs as written.
+    """
+
+    STEP = ("security-scope-review.yml", "publish", "Security scope status")
+
+    def _run(self, tmp_path: Path, **overrides: str) -> subprocess.CompletedProcess[str]:
+        bash = _bash()
+        if bash is None:
+            pytest.skip("the required-status step is Bash")
+        script = tmp_path / "status.sh"
+        script.write_text(_step_by_name(*self.STEP)["run"])
+        env = {
+            "PATH": os.environ.get("PATH", ""),
+            "HEAD": "cafe1234cafe1234cafe1234cafe1234cafe1234",
+            "ACTOR": "some-author",
+            "IN_SCOPE": "",
+            "VERDICT": "",
+            "WHY": "",
+            "HUMAN_OVERRIDE": "",
+            "OVERRIDE_ACTOR": "",
+        }
+        env.update(overrides)
+        return subprocess.run(
+            [bash, str(script)],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            env=_child_env(env),
+        )
+
+    def test_an_empty_in_scope_fails_the_lane(self, tmp_path: Path) -> None:
+        """The defect itself: `generate` died before it could answer."""
+        got = self._run(tmp_path)
+        assert got.returncode == 1, f"an unmeasured change passed the gate: {got.stdout}"
+        assert "never resolved" in got.stdout, got.stdout
+
+    def test_an_unrecognized_in_scope_fails_the_lane(self, tmp_path: Path) -> None:
+        """Anything but the two known answers is also "never measured"."""
+        assert self._run(tmp_path, IN_SCOPE="TRUE").returncode == 1
+        assert self._run(tmp_path, IN_SCOPE="maybe").returncode == 1
+
+    def test_the_resolvers_own_false_still_passes(self, tmp_path: Path) -> None:
+        """The honest skip must stay green, or every out-of-scope PR reds."""
+        got = self._run(tmp_path, IN_SCOPE="false")
+        assert got.returncode == 0, _proc_log(got)
+        assert "nothing to scope" in got.stdout
+
+    def test_in_scope_true_still_reaches_the_verdict_ladder(self, tmp_path: Path) -> None:
+        """The tri-state replaced a guard, and must not swallow the ladder below it."""
+        passed = self._run(tmp_path, IN_SCOPE="true", VERDICT="PASS", WHY="zero rows")
+        assert passed.returncode == 0, passed.stdout + passed.stderr
+        blocked = self._run(tmp_path, IN_SCOPE="true", VERDICT="BLOCK", WHY="a row")
+        assert blocked.returncode == 1
+        unmeasured = self._run(tmp_path, IN_SCOPE="true", VERDICT="", WHY="no verdict")
+        assert unmeasured.returncode == 1
+
+    def test_a_human_override_is_still_read_first(self, tmp_path: Path) -> None:
+        """An override clears the lane even when `generate` never resolved scope."""
+        got = self._run(tmp_path, HUMAN_OVERRIDE="true", OVERRIDE_ACTOR="maintainer")
+        assert got.returncode == 0, _proc_log(got)
+
+    @pytest.mark.parametrize("workflow", _SCOPE_LANES)
+    def test_neither_lane_decides_a_skip_on_not_true(self, workflow: str) -> None:
+        """The CLASS, not the site. Both lanes, every step that binds the output.
+
+        A tri-state read as a boolean is what this closes, so the pin is on the
+        spelling that does it -- `!= "true"` on a variable fed from
+        `needs.<job>.outputs.in_scope` -- rather than on the one step that was
+        reported. The fork lane's `Decide the lane's conclusion` already matches the
+        literal `false`; this keeps both from drifting back.
+        """
+        for job_id, job in (yaml.safe_load(_workflow(workflow)).get("jobs") or {}).items():
+            for index, step in enumerate(job.get("steps") or []):
+                bound = [
+                    name
+                    for name, expr in (step.get("env") or {}).items()
+                    if "outputs.in_scope" in str(expr)
+                ]
+                if not bound:
+                    continue
+                for line in (step.get("run") or "").splitlines():
+                    stripped = line.strip()
+                    if stripped.startswith("#"):
+                        continue
+                    for name in bound:
+                        assert f'"${name}" != "true"' not in stripped, (
+                            f"{workflow}:{job_id} step {index} decides on "
+                            f"NOT-true, so an empty {name} takes the skip: {stripped}"
+                        )
+
+
+class TestNoCredentialedScopeJobMaterializesTheChangeUnderReview:
+    """The credential and the reviewed tree must never be on the same runner.
+
+    The model is granted `Read`/`Grep`/`Glob` and the credential fence is a PATH
+    deny, `Read(//proc/**)`. A TRACKED SYMLINK committed in the pull request --
+    `notes.md -> /proc/self/environ` -- is materialized at a WORKSPACE path, and
+    reading THAT path matches no glob in the fence: the value reaches the review
+    text this lane uploads as a world-readable artifact, before anything has probed
+    a byte of it. No deny list closes that, because a symlink is precisely how a
+    workspace path becomes a kernel-filesystem path.
+
+    So the head reaches the runner as the prefetched unified diff and not as files.
+    Both lanes are asserted against the one rule: the fork lane has always run this
+    posture, and the same-repo lane diverging from it is this pull request's
+    recurring defect class.
+    """
+
+    def test_each_lane_has_exactly_one_credentialed_job(self) -> None:
+        """A vacuous pass is the failure mode: assert the subject exists."""
+        for workflow in _SCOPE_LANES:
+            jobs = _credentialed_jobs(workflow)
+            assert len(jobs) == 1, f"{workflow}: {[job_id for job_id, _ in jobs]}"
+
+    @pytest.mark.parametrize("workflow", _SCOPE_LANES)
+    def test_the_credentialed_job_checks_out_a_base_ref(self, workflow: str) -> None:
+        """Read off the PARSED workflow, per checkout step, never off a substring.
+
+        An ABSENT `ref:` is the defect's own spelling -- on a `pull_request` event
+        that resolves to the merge ref, which is the change under review -- so a
+        missing key fails here rather than being skipped.
+        """
+        for job_id, job in _credentialed_jobs(workflow):
+            checkouts = [
+                step
+                for step in (job.get("steps") or [])
+                if "actions/checkout" in str(step.get("uses", ""))
+            ]
+            assert checkouts, f"{workflow}:{job_id} holds the credential and no checkout"
+            for index, step in enumerate(checkouts):
+                ref = str((step.get("with") or {}).get("ref", ""))
+                assert ref, (
+                    f"{workflow}:{job_id} checkout {index} names no `ref:`, so it "
+                    "resolves to the merge ref -- the tree under review, beside a "
+                    "live Bedrock credential"
+                )
+                assert "base" in ref and "head" not in ref, (
+                    f"{workflow}:{job_id} checkout {index} checks out {ref!r}, "
+                    "which is not the trusted base"
+                )
+
+    @pytest.mark.parametrize("workflow", _SCOPE_LANES)
+    def test_the_credentialed_workspace_is_trusted_by_the_shared_rule(self, workflow: str) -> None:
+        """The same predicate the program-execution pins use, on the same jobs.
+
+        One rule with two readers: a workspace judged trusted for "may this job run
+        `scripts/x.py`" is the same workspace judged here for "may the model read
+        it". Splitting them is how the two lanes came apart in the first place.
+        """
+        for job_id, job in _credentialed_jobs(workflow):
+            assert _workspace_is_trusted(workflow, job), (
+                f"{workflow}:{job_id} holds the Bedrock credential with the change "
+                "under review checked out"
+            )
+
+    def test_the_same_repo_prompt_no_longer_offers_head_side_files(self) -> None:
+        """Prose that implies readable head files is the same defect, in words."""
+        prompt = str(
+            _step_by_name("security-scope-review.yml", "generate", "Security scope review")["with"][
+                "prompt"
+            ]
+        )
+        assert "authentic.patch" in prompt
+        assert "trusted BASE tree" in prompt
+        assert "checked-out tree" not in prompt, prompt
+
+    def test_the_contract_is_read_from_a_commit_and_never_from_the_workspace(self) -> None:
+        """The bootstrap window is where the base-owned rule has leaked every time.
+
+        With the base checked out there is no head copy on disk, so the bootstrap
+        reads the head BLOB -- committed content -- exactly as `publish`'s own
+        bootstraps do. A `cp` here would be the head-side read arriving by another
+        name.
+        """
+        body = str(
+            _step_by_name(
+                "security-scope-review.yml", "generate", "Materialize the base-owned contract"
+            )["run"]
+        )
+        assert 'git show "$BASE_SHA:.github/review-prompts/security-scope.md"' in body
+        assert 'git show "$HEAD_SHA:.github/review-prompts/security-scope.md"' in body
+        for line in body.splitlines():
+            stripped = line.strip()
+            assert not stripped.startswith("cp "), f"contract copied out of the tree: {stripped}"
+
+    def test_neither_scope_resolver_answers_false_unless_it_measured(self) -> None:
+        """A base checkout has no head object until the resolver fetches it.
+
+        That is the trap the fork lane's step ordering exists for: with no head
+        object the surface diff names nothing, and the `else` branch writes
+        `in_scope=false` -- an honest-looking skip the tri-state gate above is
+        REQUIRED to honor. So an unreachable ref and a failed diff both fail closed
+        here, where the tri-state cannot see them.
+
+        BOTH lanes, because this pin read the same-repo lane alone while the fork
+        twin kept `2>/dev/null || true` on the identical diff -- and the fork side
+        is the worse half: `in_scope=false` there publishes a GREEN check-run and
+        sets no per-head floor, so a fork tightening whose diff merely failed to
+        run would pass unmeasured on the more hostile source.
+        """
+        for lane in ("security-scope-review.yml", "fork-security-scope-review.yml"):
+            body = str(_step_by_name(lane, "generate", "Resolve review scope")["run"])
+            assert "could not diff" in body, f"{lane}: a failed surface diff is not reported"
+            assert 'git diff --name-only "$BASE_SHA...$HEAD_SHA"' in body, lane
+            assert "rc=$?" in body, f"{lane}: the surface diff's exit status is not captured"
+            assert '2>/dev/null || true)"' not in body, (
+                f"{lane}: the surface diff still swallows its own failure into an "
+                "empty result, which the else branch publishes as a measured `false`"
+            )
+        # The head-object guard is same-repo-only BY DESIGN: the fork lane reaches
+        # its head through `refs/pull/N/head`, and that its fetch precedes this
+        # step is pinned separately by
+        # `test_the_fork_scope_step_runs_where_its_two_inputs_exist`.
+        same_repo = str(
+            _step_by_name("security-scope-review.yml", "generate", "Resolve review scope")["run"]
+        )
+        assert "is not present after fetching it" in same_repo
+
+
+class TestScopeConclusionLadderLivesInOnePlace:
+    """The scope-review conclusion ladder -- fold result x model header x marker x
+    platform gap -> lane conclusion -- was a ~40-line shell `case`/`if` block
+    hand-copied into BOTH lanes, and the two copies had already diverged on the
+    platform-gap source. It now lives once, in `scripts/scope_candidates.py
+    conclude`, and each lane only normalizes its signals, calls the script, and
+    maps the returned word to its surface. These tests fail if a shell ladder
+    reappears in either workflow -- the whole point of the collapse is that they
+    cannot drift again. Same shape as the credential-scrub pins above: read one
+    workflow to hold another to a contract.
+    """
+
+    SAME_REPO = "security-scope-review.yml"
+    FORK = "fork-security-scope-review.yml"
+
+    def test_both_lanes_delegate_the_conclusion_to_the_shared_table(self) -> None:
+        # Same-repo invokes the staged harness via a $SC variable; the fork runs
+        # the trusted default-branch checkout by path. Both name the subcommand
+        # and the lane.
+        assert "conclude --lane same-repo" in _workflow(self.SAME_REPO)
+        assert "scope_candidates.py conclude --lane fork" in _workflow(self.FORK)
+
+    def test_same_repo_keeps_no_shell_conclusion_ladder(self) -> None:
+        run = _step_script(_workflow(self.SAME_REPO), "Post the scope verdict")
+        # The model-verdict `case` was the heart of the old shell ladder; it may
+        # not live in the lane again. (Normalizing $FOLDED to the table's
+        # vocabulary is not a ladder -- it hands a signal to the script.)
+        assert 'case "$model" in' not in run
+        # The mapping's own decisions -- BLOCK-from-gap, the CONCERNS downgrade --
+        # must not be re-derived in shell here.
+        assert 'why="a demonstrated platform gap' not in run
+        assert 'verdict="CONCERNS"; why="the reviewer wrote BLOCK' not in run
+        assert "conclude --lane same-repo" in run
+
+    def test_fork_keeps_no_shell_conclusion_ladder(self) -> None:
+        run = _step_script(_workflow(self.FORK), "Decide the lane's conclusion")
+        assert 'case "${MODEL_VERDICT' not in run
+        # The fork's old single-source gap flag and its BLOCK branch are gone.
+        assert 'gap="yes"' not in run
+        assert 'title="BLOCK ' not in run
+        assert "conclude --lane fork" in run
+
+    def test_both_lanes_feed_both_gap_sources_to_the_table(self) -> None:
+        # The divergence that motivated the collapse was the fork reading the
+        # script's gap alone. Both lanes must now compute BOTH the script gap
+        # (NO VERDICT) and the model-prose gap (UNADJUDICATED:) and hand them over.
+        for name, step in (
+            (self.SAME_REPO, "Post the scope verdict"),
+            (self.FORK, "Decide the lane's conclusion"),
+        ):
+            run = _step_script(_workflow(name), step)
+            assert "NO VERDICT" in run, name
+            assert "UNADJUDICATED:" in run, name
+            assert "--gap-script" in run and "--gap-model" in run, name
+
+    def test_the_conclusion_table_is_run_from_a_trusted_copy_on_both_lanes(self) -> None:
+        # Same-repo holds the comment-write token on a merge-ref checkout, so it
+        # must run the base-owned STAGED harness ($HARNESS), not `scripts/` from
+        # the tree. The $SC path is assigned from $HARNESS and then executed.
+        same = _step_script(_workflow(self.SAME_REPO), "Post the scope verdict")
+        assert 'SC="${HARNESS:-}/scope_candidates.py"' in same
+        assert '"$SC" conclude --lane same-repo' in same
+        # The fork publish job checks out the DEFAULT branch (the trusted harness)
+        # and runs no PR tree, so `scripts/scope_candidates.py` there is trusted.
+        fork = _step_script(_workflow(self.FORK), "Decide the lane's conclusion")
+        assert "scripts/scope_candidates.py conclude" in fork
+
+
+_SCOPE_HEAD = "cafe1234cafe1234cafe1234cafe1234cafe1234"
+
+
+def _checkruns_json(
+    *conclusions: str,
+    external_id: str | None = "scope-pr-7-11-1",
+    pr: int | None = 7,
+) -> str:
+    """A check-runs listing envelope, as the Checks API returns one.
+
+    ``external_id`` is the fork lane's own stamp (``None`` for a same-repo job
+    row, which cannot set one); ``pr`` is what the API attributes the row to.
+    """
+    rows = []
+    for conclusion in conclusions:
+        row: dict = {"status": "completed", "conclusion": conclusion}
+        if external_id is not None:
+            row["external_id"] = external_id
+        if pr is not None:
+            row["pull_requests"] = [{"number": pr}]
+        rows.append(row)
+    return json.dumps({"total_count": len(rows), "check_runs": rows})
+
+
+class TestPerHeadMonotonicFloor:
+    """A re-run of the SAME head must never publish a conclusion SOFTER than one
+    the lane already stands behind for that head. The candidate set is
+    model-sampled, so a confirmed row is not guaranteed to be re-proposed, and
+    without this floor a clean re-run replaces a prior BLOCK. State is the lane's
+    OWN completed check-run conclusion for the head, read from the Checks API.
+    Both lanes, because a fix in one is the failure mode this change closes.
+    """
+
+    def _stub_dir(
+        self, tmp_path: Path, checkruns: str | None, *, gh_fail: bool, floor_rc: int = 0
+    ) -> Path:
+        stub = tmp_path / "stub"
+        stub.mkdir(exist_ok=True)
+        # `python` / `python3` shims -- the same-repo step calls `python`, the fork
+        # step calls `python3`. `floor_rc` makes the harness exit non-zero with no
+        # stdout, which is what a bad flag or a defect in the table looks like to
+        # the step: a floor computation that did not settle.
+        for name in ("python", "python3"):
+            shim = stub / name
+            if floor_rc:
+                shim.write_text(f"#!/usr/bin/env bash\nexit {floor_rc}\n", encoding="utf-8")
+            else:
+                shim.write_text(
+                    f'#!/usr/bin/env bash\nexec "{sys.executable}" "$@"\n', encoding="utf-8"
+                )
+            shim.chmod(0o755)
+        # `gh` shim: emits the fixture VERBATIM and exits 0. Verbatim is the
+        # point -- the step hands the whole response to the shared table, so a
+        # malformed or empty body has to reach it byte for byte. `None` means
+        # "use a well-formed empty listing"; `""` means the API answered with no
+        # body at all, which is a distinct case and must stay distinct.
+        fixture = tmp_path / "checkruns.json"
+        body = '{"total_count":0,"check_runs":[]}' if checkruns is None else checkruns
+        fixture.write_text(body, encoding="utf-8")
+        gh = stub / "gh"
+        gh.write_text(
+            "#!/usr/bin/env bash\n"
+            + ("exit 1\n" if gh_fail else "")
+            + 'if [ "$1" = "api" ]; then\n'
+            f'  cat "{fixture}"\n'
+            "  exit 0\n"
+            "fi\n"
+            "exit 0\n",
+            encoding="utf-8",
+        )
+        gh.chmod(0o755)
+        return stub
+
+    # ---- same-repo lane: a separate step whose exit code is the floor ---------
+
+    def _run_same_repo(
+        self,
+        tmp_path: Path,
+        *,
+        checkruns: str | None = None,
+        gh_fail: bool = False,
+        floor_rc: int = 0,
+        **overrides: str,
+    ) -> subprocess.CompletedProcess[str]:
+        bash = _bash()
+        if bash is None or shutil.which("jq") is None:
+            pytest.skip("the floor step is Bash and encodes the check name with jq")
+        stub = self._stub_dir(tmp_path, checkruns, gh_fail=gh_fail, floor_rc=floor_rc)
+        harness = tmp_path / "harness"
+        harness.mkdir(exist_ok=True)
+        shutil.copy(ROOT / "scripts" / "scope_candidates.py", harness / "scope_candidates.py")
+        script = tmp_path / "floor.sh"
+        script.write_text(
+            _step_by_name(
+                "security-scope-review.yml", "publish", "Enforce the per-head monotonic floor"
+            )["run"]
+        )
+        env = {
+            "PATH": f"{stub}{os.pathsep}{os.environ.get('PATH', '')}",
+            "GH_TOKEN": "x",
+            "REPO": "example/repo",
+            "PR": "7",
+            "HEAD": _SCOPE_HEAD,
+            "ACTOR": "some-author",
+            "IN_SCOPE": "true",
+            "VERDICT": "PASS",
+            "HUMAN_OVERRIDE": "false",
+            "HARNESS": str(harness),
+        }
+        env.update(overrides)
+        return subprocess.run(
+            [bash, str(script)],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            env=_child_env(env),
+        )
+
+    def test_same_repo_prior_failure_holds_a_soft_rerun_red(self, tmp_path: Path) -> None:
+        got = self._run_same_repo(
+            tmp_path, checkruns=_checkruns_json("failure", "success", external_id=None)
+        )
+        assert got.returncode == 1, _proc_log(got)
+        assert "held at the harder verdict" in got.stdout
+
+    def test_same_repo_new_head_with_no_prior_stays_green(self, tmp_path: Path) -> None:
+        got = self._run_same_repo(tmp_path, checkruns='{"total_count":0,"check_runs":[]}')
+        assert got.returncode == 0, _proc_log(got)
+
+    def test_same_repo_unreadable_prior_fails_closed(self, tmp_path: Path) -> None:
+        got = self._run_same_repo(tmp_path, gh_fail=True)
+        assert got.returncode == 1, _proc_log(got)
+
+    def test_same_repo_human_override_is_not_refloored(self, tmp_path: Path) -> None:
+        # The override's clearance for this head is a deliberate softening; the
+        # floor must leave it standing or the SHA-scoped escape hatch is unusable.
+        got = self._run_same_repo(
+            tmp_path,
+            checkruns=_checkruns_json("failure", external_id=None),
+            HUMAN_OVERRIDE="true",
+        )
+        assert got.returncode == 0, _proc_log(got)
+
+    def test_same_repo_out_of_scope_enforces_no_floor(self, tmp_path: Path) -> None:
+        got = self._run_same_repo(
+            tmp_path,
+            checkruns=_checkruns_json("failure", external_id=None),
+            IN_SCOPE="false",
+        )
+        assert got.returncode == 0, _proc_log(got)
+
+    # ---- fork lane: the decide step raises its own published conclusion -------
+
+    def _run_fork_decide(
+        self,
+        tmp_path: Path,
+        *,
+        checkruns: str | None = None,
+        gh_fail: bool = False,
+        floor_rc: int = 0,
+        model: str = "PASS",
+    ) -> tuple[int, dict[str, str], str]:
+        bash = _bash()
+        if bash is None or shutil.which("jq") is None:
+            pytest.skip("the decide step is Bash and encodes the check name with jq")
+        stub = self._stub_dir(tmp_path, checkruns, gh_fail=gh_fail, floor_rc=floor_rc)
+        review = tmp_path / "scope-review-output.md"
+        review.write_text(
+            f"Scope-Verdict: {model}\n\n[SCOPE-REVIEWED] {_SCOPE_HEAD}\n", encoding="utf-8"
+        )
+        body = tmp_path / "scope-verdict.md"
+        body.write_text("no confirmed rows\n", encoding="utf-8")
+        outputs = tmp_path / "github-output"
+        outputs.touch()
+        script = tmp_path / "decide.sh"
+        script.write_text(
+            _step_by_name(
+                "fork-security-scope-review.yml", "publish", "Decide the lane's conclusion"
+            )["run"]
+        )
+        env = {
+            "PATH": f"{stub}{os.pathsep}{os.environ.get('PATH', '')}",
+            "GH_TOKEN": "x",
+            "REPO": "example/repo",
+            "PR": "7",
+            "HEAD": _SCOPE_HEAD,
+            "ADJUDICATE": "true",
+            "IN_SCOPE": "true",
+            "VALIDATE_RC": "0",
+            "FOLD_RC": "0",
+            "MODEL_VERDICT": model,
+            "REVIEW": str(review),
+            "BODY": str(body),
+            "GITHUB_OUTPUT": str(outputs),
+            "RUNNER_TEMP": str(tmp_path),
+        }
+        result = subprocess.run(
+            [bash, str(script)],
+            cwd=str(ROOT),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            env=_child_env(env),
+        )
+        parsed = dict(
+            line.split("=", 1)
+            for line in outputs.read_text(encoding="utf-8").splitlines()
+            if "=" in line
+        )
+        return result.returncode, parsed, _proc_log(result)
+
+    def test_fork_prior_failure_raises_a_clean_run_to_failure(self, tmp_path: Path) -> None:
+        rc, out, log = self._run_fork_decide(tmp_path, checkruns=_checkruns_json("failure"))
+        assert rc == 0, log
+        assert out.get("conclusion") == "failure", out
+
+    def test_fork_new_head_with_no_prior_publishes_clean(self, tmp_path: Path) -> None:
+        rc, out, log = self._run_fork_decide(
+            tmp_path, checkruns='{"total_count":0,"check_runs":[]}'
+        )
+        assert rc == 0, log
+        assert out.get("conclusion") == "success", out
+
+    def test_fork_unreadable_prior_fails_closed(self, tmp_path: Path) -> None:
+        rc, out, log = self._run_fork_decide(tmp_path, gh_fail=True)
+        assert rc == 0, log
+        assert out.get("conclusion") == "failure", out
+
+    def test_fork_only_this_prs_prior_sets_the_floor(self, tmp_path: Path) -> None:
+        # A failure row from ANOTHER PR on a shared head must not floor this PR.
+        other = _checkruns_json("failure", external_id="scope-pr-999-1-1")
+        rc, out, log = self._run_fork_decide(tmp_path, checkruns=other)
+        assert rc == 0, log
+        assert out.get("conclusion") == "success", out
+
+    def test_fork_a_prior_unsettled_flake_clears_on_a_clean_rerun(self, tmp_path: Path) -> None:
+        # THE fix: a prior fork run that could not measure marked its own check-run
+        # unsettled (a [scope-floor:unsettled] title prefix). It reds its own run,
+        # but sets no floor, so this clean re-run publishes clean -- a flake no
+        # longer reds the head forever.
+        flake = json.dumps(
+            {
+                "total_count": 1,
+                "check_runs": [
+                    {
+                        "status": "completed",
+                        "conclusion": "failure",
+                        "external_id": "scope-pr-7-11-1",
+                        "output": {
+                            "title": "[scope-floor:unsettled] Security Scope Review — incomplete"
+                        },
+                    }
+                ],
+            }
+        )
+        rc, out, log = self._run_fork_decide(tmp_path, checkruns=flake)
+        assert rc == 0, log
+        assert out.get("conclusion") == "success", out
+
+    def test_fork_a_prior_confirmed_block_still_floors_a_clean_rerun(self, tmp_path: Path) -> None:
+        # A confirmed block carries NO unsettled marker, so it still holds the head
+        # across a re-run the model does not re-propose -- the defect the floor was
+        # added for stays closed.
+        block = json.dumps(
+            {
+                "total_count": 1,
+                "check_runs": [
+                    {
+                        "status": "completed",
+                        "conclusion": "failure",
+                        "external_id": "scope-pr-7-11-1",
+                        "output": {"title": "Security Scope Review — a platform gap"},
+                    }
+                ],
+            }
+        )
+        rc, out, log = self._run_fork_decide(tmp_path, checkruns=block)
+        assert rc == 0, log
+        assert out.get("conclusion") == "failure", out
+
+    # ---- static contract pins ------------------------------------------------
+
+    def test_the_fork_lane_marks_an_unsettled_run_on_its_own_check_run(self) -> None:
+        # The fork lane can carry the settled/unsettled distinction because it
+        # authors its own check-run: decide emits `settled`, and publish stamps the
+        # marker as a title PREFIX (ahead of any model-derived why) only when the
+        # run could not measure.
+        decide = _step_by_name(
+            "fork-security-scope-review.yml", "publish", "Decide the lane's conclusion"
+        )["run"]
+        assert 'echo "settled=$settled" >> "$GITHUB_OUTPUT"' in decide
+        publish = _step_by_name("fork-security-scope-review.yml", "publish", "Publish check-run")[
+            "run"
+        ]
+        assert 'scope_prefix="[scope-floor:unsettled] "' in publish
+        assert '-f "output[title]=${scope_prefix}Security Scope Review' in publish
+
+    def test_the_same_repo_lane_cannot_mark_an_unsettled_run(self) -> None:
+        # The same-repo prior IS the publish job's own conclusion, created by the
+        # API, so it carries no settable output: the asymmetry resolves to the
+        # stricter same-repo semantics (a flake there clears only via the override).
+        same_repo = _workflow("security-scope-review.yml")
+        assert "scope-floor:unsettled" not in same_repo
+
+    def test_both_lanes_delegate_the_floor_to_the_shared_table(self) -> None:
+        same_repo = _step_by_name(
+            "security-scope-review.yml", "publish", "Enforce the per-head monotonic floor"
+        )["run"]
+        assert "monotonic --current success" in same_repo
+        assert '--lane same-repo --pr "$PR"' in same_repo
+        fork = _step_by_name(
+            "fork-security-scope-review.yml", "publish", "Decide the lane's conclusion"
+        )["run"]
+        assert 'monotonic --current "$conclusion"' in fork
+        assert '--lane fork --pr "$PR"' in fork
+
+    def test_neither_lane_pre_extracts_the_conclusions_in_shell(self) -> None:
+        # The envelope has to reach the shared table intact: a `--jq` that pulls
+        # conclusions out in shell makes a no-body response indistinguishable from
+        # a well-formed empty listing, and that reads as "no prior".
+        for workflow, step in (
+            ("security-scope-review.yml", "Enforce the per-head monotonic floor"),
+            ("fork-security-scope-review.yml", "Decide the lane's conclusion"),
+        ):
+            run = _step_by_name(workflow, "publish", step)["run"]
+            assert "check-runs?check_name=$enc" in run, workflow
+            assert ".check_runs[]" not in run, (
+                f"{workflow}: the read still extracts conclusions in shell, so an "
+                "empty response cannot be told from an empty listing"
+            )
+
+    def test_the_same_repo_floor_reads_the_trusted_harness_not_the_merge_ref(self) -> None:
+        run = _step_by_name(
+            "security-scope-review.yml", "publish", "Enforce the per-head monotonic floor"
+        )["run"]
+        assert 'SC="${HARNESS:-}/scope_candidates.py"' in run
+        assert "python scripts/scope_candidates.py" not in run
+
+    def test_the_same_repo_publish_job_reads_checks_not_writes(self) -> None:
+        perms = yaml.safe_load(_workflow("security-scope-review.yml"))["jobs"]["publish"][
+            "permissions"
+        ]
+        assert perms.get("checks") == "read", perms
+        assert "checks" not in [k for k, v in perms.items() if v == "write"]
+
+    def test_same_repo_another_pull_requests_failure_does_not_red_this_one(
+        self, tmp_path: Path
+    ) -> None:
+        # Two pull requests can share a head SHA. A sibling's block must not red
+        # the pull request under test.
+        got = self._run_same_repo(
+            tmp_path, checkruns=_checkruns_json("failure", external_id=None, pr=999)
+        )
+        assert got.returncode == 0, _proc_log(got)
+
+    def test_same_repo_ignores_a_fork_lane_check_run_on_the_same_sha(self, tmp_path: Path) -> None:
+        # Both lanes publish under one check name; the fork stamp names the lane.
+        got = self._run_same_repo(
+            tmp_path, checkruns=_checkruns_json("failure", external_id="scope-pr-7-11-1", pr=7)
+        )
+        assert got.returncode == 0, _proc_log(got)
+
+    def test_same_repo_an_exit_zero_empty_read_fails_closed(self, tmp_path: Path) -> None:
+        # The API answers, with no body. That is not "there are no priors".
+        got = self._run_same_repo(tmp_path, checkruns="")
+        assert got.returncode == 1, _proc_log(got)
+        assert "held at the harder verdict" in got.stdout
+
+    def test_same_repo_a_well_formed_empty_listing_publishes_clean(self, tmp_path: Path) -> None:
+        got = self._run_same_repo(tmp_path, checkruns='{"total_count":0,"check_runs":[]}')
+        assert got.returncode == 0, _proc_log(got)
+
+    def test_fork_an_exit_zero_empty_read_fails_closed(self, tmp_path: Path) -> None:
+        rc, out, log = self._run_fork_decide(tmp_path, checkruns="")
+        assert rc == 0, log
+        assert out.get("conclusion") == "failure", out
+
+    def test_fork_a_well_formed_empty_listing_publishes_clean(self, tmp_path: Path) -> None:
+        rc, out, log = self._run_fork_decide(
+            tmp_path, checkruns='{"total_count":0,"check_runs":[]}'
+        )
+        assert rc == 0, log
+        assert out.get("conclusion") == "success", out
+
+    def test_same_repo_an_errored_floor_computation_reds_the_lane(self, tmp_path: Path) -> None:
+        # The harness exits 2 with no stdout. A floor that cannot be computed is a
+        # could-not-settle outcome, not a pass.
+        got = self._run_same_repo(tmp_path, floor_rc=2)
+        assert got.returncode == 1, _proc_log(got)
+        assert "did not settle" in got.stdout, got.stdout
+
+    def test_fork_an_errored_floor_computation_reds_the_lane(self, tmp_path: Path) -> None:
+        # The same input on the fork lane must reach the same verdict: a script
+        # error may not buy the softer conclusion on the more hostile source.
+        rc, out, log = self._run_fork_decide(tmp_path, floor_rc=2)
+        assert rc == 0, log
+        assert out.get("conclusion") == "failure", out
+        assert "could not be computed" in out.get("title", ""), out
+
+    def test_both_lanes_agree_when_the_floor_errors(self, tmp_path: Path) -> None:
+        # One assertion on the ASYMMETRY itself: an errored floor is red on both
+        # lanes, so neither publishes a verdict the other refuses.
+        sr, fk = tmp_path / "sr", tmp_path / "fk"
+        sr.mkdir()
+        fk.mkdir()
+        same_repo_red = self._run_same_repo(sr, floor_rc=2).returncode != 0
+        fork_conclusion = self._run_fork_decide(fk, floor_rc=2)[1].get("conclusion")
+        assert same_repo_red is True
+        assert fork_conclusion == "failure"
+
+    def test_same_repo_a_truncated_prior_page_reds_the_lane(self, tmp_path: Path) -> None:
+        # `total_count` outruns the rows in hand, so the page is partial and the
+        # row naming a block can be the row that fell off it.
+        truncated = json.dumps(
+            {
+                "total_count": 150,
+                "check_runs": [
+                    {
+                        "status": "completed",
+                        "conclusion": "success",
+                        "pull_requests": [{"number": 7}],
+                    }
+                ],
+            }
+        )
+        got = self._run_same_repo(tmp_path, checkruns=truncated)
+        assert got.returncode == 1, _proc_log(got)
+
+    def test_fork_a_truncated_prior_page_reds_the_lane(self, tmp_path: Path) -> None:
+        truncated = json.dumps(
+            {
+                "total_count": 150,
+                "check_runs": [
+                    {
+                        "status": "completed",
+                        "conclusion": "success",
+                        "external_id": "scope-pr-7-11-1",
+                    }
+                ],
+            }
+        )
+        rc, out, log = self._run_fork_decide(tmp_path, checkruns=truncated)
+        assert rc == 0, log
+        assert out.get("conclusion") == "failure", out
+
+    def test_the_fork_lane_still_posts_exactly_one_check_run(self) -> None:
+        # The floor read is a GET; it must not add a second POST to the job that
+        # holds checks:write and executes no fork code.
+        assert (
+            _workflow("fork-security-scope-review.yml").count(
+                'gh api --method POST "repos/$REPO/check-runs"'
+            )
+            == 1
+        )

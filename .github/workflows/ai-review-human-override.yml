@@ -3,7 +3,7 @@ name: AI Review Human Override
 # Human judgment is authoritative over the three AI review gates. A repository
 # writer can record a SHA-scoped false-positive / not-applicable decision with:
 #
-#   /ai-review override <fable|gpt|design|ux|first-principles|all> <current-sha>: <reason>
+#   /ai-review override <fable|gpt|design|ux|first-principles|scope|all> <current-sha>: <reason>
 #
 # issue_comment workflows execute from the trusted default branch, never from
 # the PR head. The handler validates identity + commit freshness, records a
@@ -55,9 +55,9 @@ jobs:
           }
 
           first_line="${COMMENT_BODY%%$'\n'*}"
-          pattern='^/ai-review override (fable|gpt|design|ux|first-principles|all) ([0-9a-fA-F]{7,40}):[[:space:]]*(.+)$'
+          pattern='^/ai-review override (fable|gpt|design|ux|first-principles|scope|all) ([0-9a-fA-F]{7,40}):[[:space:]]*(.+)$'
           if [[ ! "$first_line" =~ $pattern ]]; then
-            post_notice 'AI-review override not recorded. Use `/ai-review override <fable|gpt|all> <current-sha>: <one-sentence reason>`.'
+            post_notice 'AI-review override not recorded. Use `/ai-review override <fable|gpt|design|ux|first-principles|scope|all> <current-sha>: <one-sentence reason>`.'
             exit 1
           fi
           target="${BASH_REMATCH[1]}"
@@ -166,6 +166,7 @@ jobs:
           || steps.context.outputs.target == 'design'
           || steps.context.outputs.target == 'ux'
           || steps.context.outputs.target == 'first-principles'
+          || steps.context.outputs.target == 'scope'
           || steps.context.outputs.target == 'all'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -316,6 +317,23 @@ jobs:
           fi
           if [ "$TARGET" = "first-principles" ] || [ "$TARGET" = "all" ]; then
             rerun_reviewer "first-principles-review.yml" "First Principles Review" "First Principles Review" "first-principles" "fork-first-principles-review.yml"
+          fi
+          # What an override does to Security Scope Review, on each PR type.
+          #
+          # SAME-REPO: the re-run's "Resolve human override" step finds this marker
+          # and skips the review WHOLE -- the model call, the candidate validation
+          # and the per-platform differential -- and the lane's gate step passes on
+          # the marker alone. So a script-confirmed newly-refused operation clears
+          # here, exactly as a model-side BLOCK does. That uniformity is the point:
+          # the alternative is a pull request whose only path to green is withdrawing
+          # the corpus row the classifier flipped, which this lane refuses to accept
+          # as a fix, leaving human judgment with nothing to act through.
+          #
+          # FORK: the Stage-2 lane reads no override marker, so the re-run below
+          # recomputes both halves from the same two refs and reaches the same
+          # verdict. Recording an override for a fork PR does not clear that lane.
+          if [ "$TARGET" = "scope" ] || [ "$TARGET" = "all" ]; then
+            rerun_reviewer "security-scope-review.yml" "Security Scope Review" "Security Scope Review" "scope" "fork-security-scope-review.yml"
           fi
 
           if [ -n "$failed_lanes" ]; then

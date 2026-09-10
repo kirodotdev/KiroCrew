@@ -30,6 +30,9 @@ on:
       - Design Review
       - UX Review
       - First Principles Review
+      # Blocking and fail-closed: a script-confirmed newly-refused operation reds
+      # it, and so does a run that measured nothing.
+      - Security Scope Review
       - CodeQL
       # Stage-2 fork AI reviewers. They run from the default branch via
       # `workflow_run` (on CI's completion), so their own completion must
@@ -40,6 +43,7 @@ on:
       - Fork Design Review
       - Fork UX Review
       - Fork First Principles Review
+      - Fork Security Scope Review
       # Without these two, a finished scan never re-triggers readiness and the
       # lane sits at "(not started)" with no event able to clear it.
       - Internal Content Scan Gate
@@ -590,6 +594,7 @@ jobs:
               "checkrun:Design Review|Design Review|design-pr-|fast-gate.yml"
               "checkrun:UX Review|UX Review|ux-pr-|fast-gate.yml"
               "checkrun:First Principles Review|First Principles Review|first-principles-pr-|fast-gate.yml"
+              "checkrun:Security Scope Review|Security Scope Review|scope-pr-|fast-gate.yml"
             )
           else
             if [ "$stacked" = "true" ]; then
@@ -609,6 +614,7 @@ jobs:
               "design-review.yml|Design Review"
               "ux-review.yml|UX Review"
               "first-principles-review.yml|First Principles Review"
+              "security-scope-review.yml|Security Scope Review"
             )
           fi
           passed=()
@@ -779,6 +785,16 @@ jobs:
                 else
                   pending+=("$label (not started)")
                 fi
+              # Security Scope Review is deliberately NOT in the branch above.
+              # That branch exists for lanes that resolve NEUTRAL when the run
+              # itself errored, so a `failure` there can only be a judged-wrong
+              # verdict. This lane fails CLOSED instead: an unreadable report, a
+              # missing head marker and a stage that never ran all red it, and
+              # each of those means the tightening went unmeasured. Relabeling
+              # its failure as "(BLOCK)" would claim a verdict was reached, and
+              # moving it out of `failed[]` would let an unmeasured tightening
+              # merge. The default branch below already attributes it as a plain
+              # blocker, which is true of both of its failing causes.
               elif [ "$fail" -gt 0 ]; then
                 failed+=("$label (failure)")
               elif [ "$pass" -gt 0 ]; then
@@ -915,6 +931,11 @@ jobs:
                   success|neutral|skipped) passed+=("$label") ;;
                   *) failed+=("$label (BLOCK)") ;;
                 esac
+              # Security Scope Review is deliberately absent here too, for the
+              # same reason as in the fork reader above: it is fail-closed, so a
+              # `failure` conclusion covers both a confirmed regression and a run
+              # that measured nothing, and only the default branch's plain
+              # "(failure)" attribution is true of both.
               else
                 case "$conclusion" in
                   success|neutral) passed+=("$label") ;;
