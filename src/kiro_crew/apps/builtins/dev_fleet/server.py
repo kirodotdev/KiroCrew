@@ -23,6 +23,7 @@ Routes (as seen by the backend after prefix stripping by gateway):
   POST /api/pod/token {name}
   POST /api/pod/provision {name}  -> start async build, returns {run_id}
   POST /api/rebase  {name}
+  POST /api/release-channel/create   -> materialize the channel's detached worktree
   GET  /api/health            -> {"status": "ok", "start_id": ...}  (restart handshake; proxied)
   GET  /health                -> same body, HMAC-exempt (gateway-internal liveness poll only)
 """
@@ -42,6 +43,7 @@ from kiro_crew.apps.builtins.dev_fleet import (
     http_api,
     live,
     pointer_broker,
+    release_channel_pin,
     repository,
     runtime,
     worktree_ops,
@@ -49,10 +51,15 @@ from kiro_crew.apps.builtins.dev_fleet import (
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.platform import boot_platform
 
+# Ordered lowest-level first; the ownership DAG test enforces that no component
+# imports one listed after it. ``release_channel_pin`` sits above ``live``
+# (it needs only runtime + repository) and below ``fleet_state``, which reads it
+# to publish per-lane state, and ``worktree_ops``, which mutates against it.
 _COMPONENTS = (
     runtime,
     repository,
     live,
+    release_channel_pin,
     fleet_state,
     worktree_ops,
     http_api,
@@ -213,6 +220,9 @@ def create_app() -> web.Application:
     app.router.add_post("/api/pod/provision", http_api.api_dev_fleet_pod_provision)
     app.router.add_post("/api/pod/provision/dismiss", http_api.api_dev_fleet_pod_provision_dismiss)
     app.router.add_post("/api/rebase", http_api.api_dev_fleet_rebase)
+    app.router.add_post(
+        "/api/release-channel/create", http_api.api_dev_fleet_release_channel_create
+    )
     # NOT here: /api/make-live and /api/restart-gateway. Both touch the live-target
     # pointer (or its cutover latch), which this sandboxed backend must never reach —
     # they are served by the GATEWAY process under /api/apps/dev-fleet/ (see
