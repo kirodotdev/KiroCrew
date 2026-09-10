@@ -1684,7 +1684,8 @@
         "highlight_7": "Os pods rodam em Linux (systemd --user) e macOS (launchd) — mas o pod do macOS não tem limite de memória/CPU aplicado; Make Live continua só no Linux; a visão da frota, o status de PR, a sincronização, o rebase e a limpeza funcionam em qualquer plataforma",
         "page_label": "Dev Fleet",
         "use_case_1": "Opere worktrees de recursos do Kiro Crew e pods isolados de pré-visualização sem alterar o gateway ativo.",
-        "configuration_1": "Aponte o app para um checkout do Kiro Crew; ações de PR precisam do gh autenticado, enquanto pods precisam de systemd --user no Linux ou launchd no macOS e devem ser provisionados primeiro."
+        "configuration_1": "Aponte o app para um checkout do Kiro Crew; ações de PR precisam do gh autenticado, enquanto pods precisam de systemd --user no Linux ou launchd no macOS e devem ser provisionados primeiro.",
+        "highlight_8": "Um worktree fixado na release estável mais recente, para você subir em pod uma build publicada ao lado do seu branch; o canal de atualização da sua própria instalação não muda"
       }
     },
     "designTweak": {
@@ -11237,7 +11238,34 @@
       "orphan_pods_label": "Homes de pods órfãos: {{value}}",
       "total_disk_used_by_running_pod_homes": "Disco total usado pelos homes de pods em execução",
       "pod_homes_left_on_disk_with_no_live_pod": "Homes de pods deixados no disco sem um pod ativo",
-      "disk_usage_unavailable": "Uso de disco indisponível"
+      "disk_usage_unavailable": "Uso de disco indisponível",
+      "creating": "Criando…",
+      "release_channel_unpublished": "Nenhuma release {{lane}} buscada ainda — Create busca a mais recente",
+      "release_channel_create_fetches": "Create busca as tags de release {{lane}} e faz checkout da mais recente, em estado detached",
+      "release_channel_no_release": "fora de um release",
+      "release_channel_unresolved_short": "Não foi possível resolver o canal de release {{lane}}",
+      "no_worktree_yet": "ainda sem worktree",
+      "not_applicable_short": "n/d",
+      "release_channel_has_no_pr": "Um worktree de release fica desanexado em uma tag, portanto não tem pull request",
+      "release_channel_create_failed": "Não foi possível criar o worktree do canal de release",
+      "create_worktree": "Criar worktree",
+      "release_channel_created": "Worktree {{lane}} criado em {{ref}}",
+      "release_channel_would_create_at": "Create faz checkout da release {{lane}} mais recente, {{version}}, em estado detached",
+      "release_channel_pinned_at": "Fixado no canal de release {{lane}} em {{ref}}",
+      "release_channel_unresolved": "Não foi possível resolver o canal de release {{lane}}: {{error}}",
+      "release_channel_on_older_release": "Em {{version}}; a ponta do canal {{lane}} agora é {{tip}}",
+      "release_channel_version_behind_tip": "{{version}} · última {{tip}}",
+      "release_channel_on_release_tip_unknown": "Em {{version}}; a ponta do canal {{lane}} não pôde ser resolvida",
+      "release_channel_on_no_release": "Não está em uma tag de release de {{lane}}; a ponta do canal é {{tip}}",
+      "release_channel_on_no_release_tip_unknown": "Não está em uma tag de release de {{lane}}, e a ponta do canal não pôde ser resolvida",
+      "release_channel_name_taken_by_branch": "{{name}} está reservado para o worktree de release do canal {{lane}}, mas este checkout está em um branch. Para liberar o nome, renomeie ou remova o checkout: “Limpar mescladas” o remove assim que o PR dele for mesclado, ou execute `git worktree move` / `git worktree remove` em um shell",
+      "next_step": "próximo",
+      "reserved_name_on_a_branch": "Em um branch, então a release {{lane}} não pode usar este nome — renomeie-o ou remova-o para liberá-lo",
+      "rows_pending_one": "{{count}} worktree · {{pending}} a criar",
+      "rows_pending_many": "{{count}} worktrees · {{pending}} a criar",
+      "rows_pending_other": "{{count}} worktrees · {{pending}} a criar",
+      "release_rows_measured_by_version": "Linhas de release são medidas por versão — veja o selo",
+      "no_worktree_yet_create_checks_out": "Ainda sem worktree — Create faz checkout de {{version}}"
     },
     "developer": {
       "agentBackendTab": {

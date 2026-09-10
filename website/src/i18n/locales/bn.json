@@ -1647,7 +1647,8 @@
         "highlight_5": "UI থেকেই pod-এর লগ স্ট্রিম করো আর pod অ্যাক্সেস টোকেন তৈরি করো",
         "highlight_6": "যারা Kiro Crew নিজেই ডেভেলপ করে তাদের জন্য বানানো — রোজকার ব্যবহারে দরকার নেই",
         "highlight_7": "Pod চলে Linux (systemd --user) ও macOS (launchd)-এ — তবে macOS pod-এ মেমরি/CPU-র কোনো বাধ্যতামূলক সীমা নেই; Make Live এখনও শুধু Linux-এ; ফ্লিট ভিউ, PR অবস্থা, সিঙ্ক, rebase ও prune সব প্ল্যাটফর্মেই কাজ করে",
-        "page_label": "Dev Fleet"
+        "page_label": "Dev Fleet",
+        "highlight_8": "সর্বশেষ স্টেবল রিলিজে পিন করা একটি ওয়ার্কট্রি, যাতে তুমি নিজের ব্রাঞ্চের পাশে একটি প্রকাশিত বিল্ড পড করতে পারো; এটি তোমার নিজের ইনস্টল কোন চ্যানেল থেকে আপডেট হয় তা বদলায় না"
       }
     },
     "designTweak": {
@@ -11080,7 +11081,33 @@
       "orphan_pods_label": "অনাথ পড হোম: {{value}}",
       "total_disk_used_by_running_pod_homes": "চলমান পড হোম দ্বারা ব্যবহৃত মোট ডিস্ক",
       "pod_homes_left_on_disk_with_no_live_pod": "কোনও সক্রিয় পড ছাড়াই ডিস্কে থাকা পড হোম",
-      "disk_usage_unavailable": "ডিস্ক ব্যবহার অনুপলব্ধ"
+      "disk_usage_unavailable": "ডিস্ক ব্যবহার অনুপলব্ধ",
+      "creating": "তৈরি হচ্ছে…",
+      "release_channel_unpublished": "এখনও কোনো {{lane}} রিলিজ আনা হয়নি — Create সবচেয়ে নতুনটি আনে",
+      "release_channel_create_fetches": "Create {{lane}} রিলিজ ট্যাগগুলো আনে এবং সবচেয়ে নতুনটি বিচ্ছিন্ন অবস্থায় চেকআউট করে",
+      "release_channel_no_release": "কোনো রিলিজে নেই",
+      "release_channel_unresolved_short": "{{lane}} রিলিজ চ্যানেল সমাধান করা যায়নি",
+      "no_worktree_yet": "এখনও কোনো ওয়ার্কট্রি নেই",
+      "not_applicable_short": "প্রযোজ্য নয়",
+      "release_channel_has_no_pr": "রিলিজ ওয়ার্কট্রি একটি ট্যাগে ডিটাচড থাকে, তাই এর কোনো পুল রিকোয়েস্ট নেই",
+      "release_channel_create_failed": "রিলিজ-চ্যানেল ওয়ার্কট্রি তৈরি করা যায়নি",
+      "create_worktree": "ওয়ার্কট্রি তৈরি করো",
+      "release_channel_created": "{{ref}}-এ {{lane}} ওয়ার্কট্রি তৈরি হয়েছে",
+      "release_channel_would_create_at": "Create সর্বশেষ {{lane}} রিলিজ {{version}} বিচ্ছিন্ন অবস্থায় চেকআউট করে",
+      "release_channel_pinned_at": "{{ref}}-এ রিলিজ চ্যানেল {{lane}}-এ পিন করা হয়েছে",
+      "release_channel_unresolved": "{{lane}} রিলিজ চ্যানেল সমাধান করা যায়নি: {{error}}",
+      "release_channel_on_older_release": "{{version}}-এ আছে; {{lane}} চ্যানেলের শীর্ষ এখন {{tip}}",
+      "release_channel_version_behind_tip": "{{version}} · সর্বশেষ {{tip}}",
+      "release_channel_on_release_tip_unknown": "{{version}}-এ আছে; {{lane}} চ্যানেলের শীর্ষ সমাধান করা যায়নি",
+      "release_channel_on_no_release": "কোনও {{lane}} রিলিজ ট্যাগে নেই; চ্যানেলের শীর্ষ {{tip}}",
+      "release_channel_on_no_release_tip_unknown": "কোনো {{lane}} রিলিজ ট্যাগে নেই, আর চ্যানেলের শীর্ষ সমাধান করা যায়নি",
+      "release_channel_name_taken_by_branch": "{{name}} {{lane}} চ্যানেলের রিলিজ ওয়ার্কট্রির জন্য সংরক্ষিত, কিন্তু এই চেকআউট একটি ব্রাঞ্চে আছে। নামটি খালি করতে চেকআউটের নাম বদলাও বা এটি সরাও: “মার্জ হওয়াগুলো ছাঁটাই করো” এর PR মার্জ হওয়ার পর এটি সরিয়ে দেয়, অথবা শেলে `git worktree move` / `git worktree remove` চালাও",
+      "next_step": "পরবর্তী",
+      "reserved_name_on_a_branch": "একটি ব্রাঞ্চে আছে, তাই {{lane}} রিলিজ এই নামটি ব্যবহার করতে পারছে না — নামটি খালি করতে এর নাম বদলাও বা এটি সরাও",
+      "rows_pending_one": "{{count}}টি ওয়ার্কট্রি · {{pending}}টি তৈরি করতে বাকি",
+      "rows_pending_other": "{{count}}টি ওয়ার্কট্রি · {{pending}}টি তৈরি করতে বাকি",
+      "release_rows_measured_by_version": "রিলিজ সারি সংস্করণ দিয়ে মাপা হয় — ব্যাজ দেখো",
+      "no_worktree_yet_create_checks_out": "এখনও কোনো ওয়ার্কট্রি নেই — Create {{version}} চেকআউট করে"
     },
     "developer": {
       "agentBackendTab": {

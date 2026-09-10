@@ -159,6 +159,7 @@
   "pages.chatSidebar.switch_session",
   "pages.chatSidebar.workflow_running",
   "pages.devFleetPage.commits_behind_main_2",
+  "pages.devFleetPage.rows_pending",
   "pages.discoverPage.updates_badge_label",
   "pages.knowledge.index.stats_entities",
   "pages.knowledge.index.stats_items",

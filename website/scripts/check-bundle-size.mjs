@@ -82,7 +82,16 @@ export const CHUNK_BUDGETS = {
   // lazy import() boundary can move a catalog string out of `all`, which is why
   // shrinking is not an option here. Back to the 5% convention over the
   // measurement that includes this branch (11,930,130 B).
-  all: 12240 * KB, // measured 11650.5 KB on fix/gatewayd-overload-liveness 2026-09-16 (5.1% headroom)
+  // Re-measured 2026-09-20: main @ f2ea1261e alone builds the chunk at
+  // 12,498,868 B (12206 KB) against the 12240 KB ceiling -- 34 KB left, or
+  // 0.28% headroom. Same recurrence again. Attribution measured, not assumed:
+  // the Dev Fleet release-channel row adds its strings (row states, Create
+  // outcomes, the reserved-name sentence and its tooltip) across 13 catalogs,
+  // 35,124 B on top of main, and the chunk holds the same 14 modules (13
+  // catalogs plus the entry) on both refs -- no library reached it, and no lazy
+  // import() boundary can move a catalog string out of `all`. Back to the 5%
+  // convention over the measurement that includes this branch (12,533,992 B).
+  all: 12853 * KB, // measured 12240.2 KB on feat/dev-fleet-release-channel-worktrees 2026-09-20 (5.0% headroom)
 
   // The i18n RUNTIME — the i18next singleton, `initI18n`, the English catalog —
   // named after `src/i18n/t.ts`. Held separately from `all` above because
