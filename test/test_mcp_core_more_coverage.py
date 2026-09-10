@@ -860,6 +860,20 @@ class TestLearnListAndRemoveTools:
         assert out == "Removed lessons matching: always X"
         assert d.call_args.args == ("/api/lessons", {"rule": "always X"})
 
+    def test_learn_remove_forwards_repo_scope_when_supplied(self) -> None:
+        # #9137: the scope discriminator must ride the delete payload, else a
+        # scoped and a global lesson sharing rule text still delete together.
+        with patch.object(mcp_core, "_delete", return_value={"removed": 1}) as d:
+            _call_tool_inner("learn_remove", {"query": "always X", "repo_scope": "src/pkg"})
+        assert d.call_args.args == ("/api/lessons", {"rule": "always X", "repo_scope": "src/pkg"})
+
+    def test_learn_remove_forwards_an_empty_scope_to_target_global_rows(self) -> None:
+        # An empty string is a PRESENT selector -- it targets the unscoped rows --
+        # so it must be forwarded, not dropped the way ``or None`` would.
+        with patch.object(mcp_core, "_delete", return_value={"removed": 1}) as d:
+            _call_tool_inner("learn_remove", {"query": "always X", "repo_scope": ""})
+        assert d.call_args.args == ("/api/lessons", {"rule": "always X", "repo_scope": ""})
+
     def test_learn_remove_surfaces_a_backend_error(self) -> None:
         with patch.object(mcp_core, "_delete", return_value={"error": "HTTP 500"}):
             assert _call_tool_inner("learn_remove", {"query": "q"}) == "Error: HTTP 500"

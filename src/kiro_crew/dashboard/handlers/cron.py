@@ -2335,11 +2335,27 @@ async def api_lessons_delete(request: web.Request) -> web.Response:
     if not rule_sub:
         return web.json_response({"error": "rule substring required"}, status=400)
     scope = body.get("scope", "global")
+    # Optional repo_scope discriminator (#9137). Since #4556 a lesson's identity is
+    # the pair ``(rule, repo_scope)``; the delete path ignored the scope, so a
+    # substring that matched a scoped row AND a same-rule global row removed both,
+    # and the two could not be deleted independently. This is a DIFFERENT axis from
+    # the legacy ``scope`` selector above (global/workspace tier), so it is a
+    # distinct body field.
+    #
+    # Absent key -> not selective: scope stays out of the match and every substring
+    # hit is removed, exactly as before, so an existing client is unaffected and no
+    # stored row migrates. Present key -> selective, including an empty string,
+    # which targets the unscoped (global) rows. ``sentinel`` distinguishes the two:
+    # ``body.get(..., sentinel)`` cannot collapse a present empty string into
+    # "absent" the way ``or None`` would.
+    _no_scope_key = object()
+    _rs = body.get("repo_scope", _no_scope_key)
+    repo_scope = None if _rs is _no_scope_key else (_rs if isinstance(_rs, str) else "")
     # Delete from vector store if active, else JSONL
     vs = _get_memory(state).vector_store
     vs_lessons = await asyncio.to_thread(vs.get_lessons) if vs else None
     if vs_lessons:
-        ok = await asyncio.to_thread(vs.delete_lesson, rule_sub)
+        ok = await asyncio.to_thread(vs.delete_lesson, rule_sub, repo_scope)
     else:
         store = (
             _get_lessons(state, body.get("workspace")) if scope == "workspace" else (state.lessons)
@@ -2348,7 +2364,7 @@ async def api_lessons_delete(request: web.Request) -> web.Response:
         # thread can be holding across file I/O for a concurrent save_or_enrich --
         # so calling it inline would let one lessons write stall every task on the
         # event loop. Same reason api_lessons_create offloads its write.
-        ok = await asyncio.to_thread(store.remove, rule_sub)
+        ok = await asyncio.to_thread(store.remove, rule_sub, repo_scope)
     if ok:
         state.push_refresh("lessons")
     return web.json_response({"ok": ok})

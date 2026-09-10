@@ -2343,9 +2343,16 @@ def _learn(args: argparse.Namespace) -> None:
                     )
 
         elif action == "remove":
-            if vs.get_lessons() and vs.delete_lesson(args.query):
+            # #9137: a lesson's identity is (rule, repo_scope) since #4556, so a
+            # scoped and a global lesson can share rule text. ``--repo-scope`` (None
+            # when absent) restricts the delete to one scope; omitted, it matches
+            # every scope exactly as before. Passed to whichever store is live so
+            # both callers -- this CLI and the agent-facing MCP path -- gained the
+            # discriminator together.
+            repo_scope = getattr(args, "repo_scope", None)
+            if vs.get_lessons() and vs.delete_lesson(args.query, repo_scope):
                 print(f"Removed lessons matching: {args.query}")
-            elif jsonl_store.remove(args.query):
+            elif jsonl_store.remove(args.query, repo_scope):
                 print(f"Removed lessons matching: {args.query}")
             else:
                 print(f"No lessons match: {args.query}")

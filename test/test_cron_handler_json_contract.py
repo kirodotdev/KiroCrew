@@ -220,3 +220,37 @@ async def test_lessons_delete_keeps_the_object_path() -> None:
 
     assert response.status == 400
     assert body == {"error": "rule substring required"}
+
+
+async def test_lessons_delete_threads_repo_scope_to_the_store() -> None:
+    """#9137: a ``repo_scope`` in the body reaches the store, so a scoped and a
+    global lesson sharing rule text can be deleted independently. Absent it, the
+    store still receives None -- the every-scope match callers already relied on."""
+    app = _lessons_app()
+    # context_builder present with a falsy vector_store routes the delete to the
+    # JSONL store (state.lessons), whose remove() is the mock we assert on.
+    app["state"].context_builder = SimpleNamespace(memory=SimpleNamespace(vector_store=None))
+
+    guards = (
+        patch("kiro_crew.dashboard.handlers.cron._recognize_session", AsyncMock(return_value=None)),
+        patch("kiro_crew.dashboard.handlers.cron._blocks_reads_session", return_value=False),
+        patch("kiro_crew.dashboard.handlers.cron._sel"),
+    )
+    with guards[0], guards[1], guards[2]:
+        async with TestClient(TestServer(app)) as client:
+            with_scope = await client.delete(
+                "/api/lessons",
+                json={"rule": "run the gate", "repo_scope": "src/pkg"},
+                headers={"X-Session-Key": "dashboard:ui"},
+            )
+            assert with_scope.status == 200
+            app["state"].lessons.remove.assert_called_once_with("run the gate", "src/pkg")
+
+            app["state"].lessons.remove.reset_mock()
+            no_scope = await client.delete(
+                "/api/lessons",
+                json={"rule": "run the gate"},
+                headers={"X-Session-Key": "dashboard:ui"},
+            )
+            assert no_scope.status == 200
+            app["state"].lessons.remove.assert_called_once_with("run the gate", None)

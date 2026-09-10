@@ -3843,9 +3843,22 @@ class VectorMemoryStore:
         )
         return int(rows[0]["n"]) if rows else 0
 
-    def delete_lesson(self, rule_substring: str) -> bool:
-        """Delete lessons whose value contains rule_substring."""
+    def delete_lesson(self, rule_substring: str, repo_scope: str | None = None) -> bool:
+        """Delete lessons whose value contains rule_substring.
+
+        Substring matching is preserved. Since #4556 a lesson's identity is the
+        pair ``(rule, repo_scope)`` -- the scope is folded into the semantic key so
+        a scoped and a global lesson sharing rule text are two distinct rows. This
+        method ignored scope, so deleting either took both. When *repo_scope* is
+        None (the default) scope stays out of the match and every substring hit is
+        deleted, exactly as before. When it is given, a row is deleted only when it
+        ALSO carries that scope -- compared canonically on both sides, so the two
+        never disagree over trailing-slash / backslash forms and the canonical form
+        of an empty selector targets the unscoped (global) rows specifically.
+        """
         deleted = False
+        scope_selective = repo_scope is not None
+        wanted_scope = canonical_scope(repo_scope) if scope_selective else None
         for e in self.get_lessons():
             val = json.loads(e["value_json"])
             # Match against the rendered lesson text so a mapping-shaped row is
@@ -3853,9 +3866,16 @@ class VectorMemoryStore:
             # substring like "category" delete every imported lesson). Rows with
             # no lesson shape fall back to str() so junk rows stay deletable.
             text = _lesson_display_text(val) or str(val)
-            if rule_substring.lower() in text.lower():
-                self.delete_semantic(e["key"], "user_explicit")
-                deleted = True
+            if rule_substring.lower() not in text.lower():
+                continue
+            # ``_lesson_scope`` reads a mapping row's scope and normalises a legacy
+            # string row (which cannot carry one) to None -- the same reader the
+            # injection gate uses, so delete and inject agree on what a row's scope
+            # is. Canonicalise it before comparing so the two sides fold identically.
+            if scope_selective and canonical_scope(_lesson_scope(val)) != wanted_scope:
+                continue
+            self.delete_semantic(e["key"], "user_explicit")
+            deleted = True
         return deleted
 
     def get_lessons_context(

@@ -108,6 +108,20 @@ def schemas() -> list[dict[str, Any]]:
                 "type": "object",
                 "properties": {
                     "query": {"type": "string", "description": "Substring to match"},
+                    "repo_scope": {
+                        "type": "string",
+                        "maxLength": _scope_max,
+                        "description": (
+                            "Optional. Only remove lessons carrying this repo "
+                            "scope, given as the same path fragment used to store "
+                            "them (e.g. 'src/kiro_crew'). A lesson's identity is "
+                            "the pair (rule, repo_scope), so the same rule scoped "
+                            "to a repo and stored globally are two separate "
+                            "lessons; without this the substring removes both. "
+                            "Omit to match every scope. Pass an empty string to "
+                            "remove only the unscoped (global) lessons."
+                        ),
+                    },
                 },
                 "required": ["query"],
             },
@@ -321,7 +335,17 @@ def learn_list(name: str, args: dict[str, Any]) -> str:
 
 def learn_remove(name: str, args: dict[str, Any]) -> str:
     query = args["query"]
-    d = mcp_core._delete("/api/lessons", {"rule": query})
+    payload: dict[str, Any] = {"rule": query}
+    # #9137: forward the scope discriminator only when the caller supplied the
+    # key. An absent key leaves scope out of the match (delete every scope, the
+    # historical behaviour); a present key -- INCLUDING an empty string, which
+    # targets the unscoped/global rows -- makes the delete scope-selective. The
+    # route distinguishes the two the same way, so a bare rule still deletes across
+    # scopes and no existing caller changes.
+    if "repo_scope" in args:
+        rs = args["repo_scope"]
+        payload["repo_scope"] = rs if isinstance(rs, str) else ""
+    d = mcp_core._delete("/api/lessons", payload)
     err_val = d.get("error")
     if err_val:
         # Same session-scope mapping as ``learn_add``, but dispatched on the

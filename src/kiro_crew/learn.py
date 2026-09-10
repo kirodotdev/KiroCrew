@@ -297,8 +297,28 @@ class LessonStore:
         logger.info("%s lesson: %s", outcome.capitalize(), lesson.rule)
         return outcome
 
-    def remove(self, rule_substring: str) -> bool:
+    def remove(self, rule_substring: str, repo_scope: str | None = None) -> bool:
         """Remove lessons whose rule contains *rule_substring*. Returns True if any removed.
+
+        Substring matching on the rule text is DELIBERATE and preserved: a user
+        targets a lesson by a fragment of its rule rather than retyping the whole
+        thing (``test_remove_matching`` deletes "Use tool-b" by passing "tool-b").
+
+        Since #4556 a lesson's identity is the pair ``(rule, repo_scope)`` -- the
+        same rule scoped to a repo and stored globally are two distinct rows. This
+        method used to ignore ``repo_scope`` entirely, so deleting either matching
+        row took BOTH: a scoped lesson and a global one sharing rule text could not
+        be removed independently. ``repo_scope`` restores that independence.
+
+        When *repo_scope* is None (the default) the scope is not part of the match:
+        every row whose rule contains the substring is removed, exactly as before,
+        so no caller changes and no stored row needs migrating. When *repo_scope*
+        is given, a row is removed only when it ALSO carries that scope, compared
+        after ``canonical_scope`` on both sides so trailing-slash and backslash
+        variants fold together (matching the write path's identity). Passing the
+        canonical form of ``None`` -- an empty or whitespace-only selector -- targets
+        the unscoped (global) rows specifically, which is how a caller deletes the
+        global row while leaving a same-rule scoped one in place.
 
         Holds the lock. It previously did an unlocked read-modify-write, so a
         concurrent ``save`` could be lost outright -- and without that lock the
@@ -307,7 +327,22 @@ class LessonStore:
         with self._lock:
             lessons = self.load_all()
             lower = rule_substring.lower()
-            kept = [le for le in lessons if lower not in le.rule.lower()]
+            # A missing selector (the historical caller) leaves scope out of the
+            # match. A present one -- including the canonical form of an empty
+            # string, which is None and targets the unscoped rows -- is compared
+            # canonically against each row's own canonical scope, so the two never
+            # disagree with the write path over trailing-slash / backslash forms.
+            scope_selective = repo_scope is not None
+            wanted_scope = canonical_scope(repo_scope) if scope_selective else None
+
+            def _matches(le: Lesson) -> bool:
+                if lower not in le.rule.lower():
+                    return False
+                if scope_selective and canonical_scope(le.repo_scope) != wanted_scope:
+                    return False
+                return True
+
+            kept = [le for le in lessons if not _matches(le)]
             if len(kept) == len(lessons):
                 return False
             self._write_all(kept)

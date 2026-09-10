@@ -1652,6 +1652,30 @@ class TestLearnCli:
             cc._learn(_ns(learn_action="remove", query="q"))
         assert "No lessons match: q" in capsys.readouterr().out
 
+    def test_remove_forwards_repo_scope_to_vector_store(self) -> None:
+        # #9137: the scope selector must reach the store, or a scoped and a global
+        # lesson sharing rule text still cannot be deleted independently.
+        with _LearnHarness() as h:
+            h.vs.get_lessons.return_value = [{"value_json": "{}"}]
+            h.vs.delete_lesson.return_value = True
+            cc._learn(_ns(learn_action="remove", query="q", repo_scope="src/pkg"))
+        h.vs.delete_lesson.assert_called_once_with("q", "src/pkg")
+
+    def test_remove_forwards_repo_scope_to_jsonl_store(self) -> None:
+        with _LearnHarness() as h:
+            h.vs.get_lessons.return_value = []
+            h.jsonl.remove.return_value = True
+            cc._learn(_ns(learn_action="remove", query="q", repo_scope="src/pkg"))
+        h.jsonl.remove.assert_called_once_with("q", "src/pkg")
+
+    def test_remove_without_the_flag_passes_none_scope(self) -> None:
+        # Absent flag -> None -> the historical every-scope match, unchanged.
+        with _LearnHarness() as h:
+            h.vs.get_lessons.return_value = []
+            h.jsonl.remove.return_value = True
+            cc._learn(_ns(learn_action="remove", query="q"))
+        h.jsonl.remove.assert_called_once_with("q", None)
+
     def test_unknown_action_prints_usage_and_closes_store(
         self, capsys: pytest.CaptureFixture[str]
     ) -> None:
