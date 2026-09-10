@@ -11,6 +11,7 @@ from kiro_crew.providers.mirrors.base import (
     Concern,
     Disposition,
     Ruling,
+    SessionProjection,
 )
 from kiro_crew.providers.mirrors.registry import MIRRORS, NO_MIRROR, mirror_for
 
@@ -21,5 +22,6 @@ __all__ = [
     "Concern",
     "Disposition",
     "Ruling",
+    "SessionProjection",
     "mirror_for",
 ]

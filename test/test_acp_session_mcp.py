@@ -37,6 +37,9 @@ def agents_dir(tmp_path, monkeypatch):
     d = tmp_path / "agents"
     d.mkdir()
     monkeypatch.setattr(agent_mod, "KIRO_AGENTS_DIR", d)
+    # The global settings file is a second source of per-tool restrictions;
+    # these tests supply it (or leave it absent) rather than read the machine's.
+    monkeypatch.setattr(agent_mod, "_KIRO_MCP_JSON", tmp_path / "settings-mcp.json")
     # Materialization would try to REBUILD the managed default from bundled
     # defaults; these tests supply the spec themselves.
     monkeypatch.setattr(session_mcp, "ensure_agent_materialized", lambda _a: True)
@@ -352,6 +355,124 @@ class TestMounting:
         ]
         # And without the checkout it is silently lost -- the defect, pinned.
         assert session_mcp.session_mcp_deny_rules("kirocrew") == []
+
+    def test_disabled_tools_is_the_structured_form_and_exempts_no_server(self, agents_dir):
+        """``(server, tool)`` pairs, the control plane included.
+
+        The deny-rule spelling is lossy (``mcp__a__b__c`` splits on the LAST
+        ``__``), so a consumer comparing against a two-field identity must take the
+        pairs. And this set answers "what did the user switch off", which is as true
+        of ``kirocrew-core`` as of any server -- HOW a backend honours it is the
+        caller's question (the restricted set exempts the control plane from
+        withholding; this does not exempt it from anything).
+        """
+        _write_spec(
+            agents_dir,
+            servers={
+                "kirocrew-core": {"command": "/x", "disabledTools": ["spawn_run"]},
+                "third": {"command": "/y", "disabledTools": ["a__b", 3, ""]},
+                "clean": {"command": "/z"},
+            },
+            tools=["@kirocrew-core", "@third", "@clean"],
+        )
+        pairs = session_mcp.session_mcp_disabled_tools("kirocrew")
+        assert pairs == frozenset({("kirocrew-core", "spawn_run"), ("third", "a__b")})
+        # The rule spelling is derived from the same pairs, so the two cannot drift.
+        assert session_mcp.session_mcp_deny_rules("kirocrew") == [
+            "mcp__kirocrew-core__spawn_run",
+            "mcp__third__a__b",
+        ]
+        assert session_mcp.session_mcp_disabled_tools(None) == frozenset()
+
+    def test_disabled_tools_written_by_the_dashboard_to_the_global_file_count(
+        self, tmp_path, agents_dir
+    ):
+        """The dashboard's tool-off action writes ``disabledTools`` to the GLOBAL
+        ``settings/mcp.json`` and nowhere else, and the spec rebuild never copies a
+        global entry onto a managed server -- so a restriction on ``kirocrew-core``
+        written the ordinary way lives only there. kiro-cli reads both; so must this,
+        or the one path a user actually takes is the one that is missed."""
+        _write_spec(
+            agents_dir,
+            servers={"kirocrew-core": {"command": "/x"}, "third": {"command": "/y"}},
+            tools=["@kirocrew-core", "@third"],
+        )
+        (tmp_path / "settings-mcp.json").write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "kirocrew-core": {"disabledTools": ["spawn_run"]},
+                        "third": {"command": "/y", "disabledTools": ["a"]},
+                        "elsewhere": {"disabledTools": ["b"]},
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        pairs = session_mcp.session_mcp_disabled_tools("kirocrew")
+        assert {("kirocrew-core", "spawn_run"), ("third", "a"), ("elsewhere", "b")} <= pairs
+        # The withhold set is derived from the SAME pairs: a third-party server the
+        # dashboard narrowed globally is withheld, the control plane never is, and a
+        # server named only in the global file is a harmless name nothing mounts.
+        restricted = session_mcp.session_mcp_projection("kirocrew").restricted
+        assert "third" in restricted
+        assert "kirocrew-core" not in restricted
+        assert "elsewhere" in restricted
+        # Both sources reach claude's deny rules too.
+        assert "mcp__kirocrew-core__spawn_run" in session_mcp.session_mcp_deny_rules("kirocrew")
+        # A malformed or missing global file switches nothing off from that source.
+        (tmp_path / "settings-mcp.json").write_text("[not a dict]", encoding="utf-8")
+        assert session_mcp.session_mcp_disabled_tools("kirocrew") == frozenset()
+
+    def test_an_explicit_none_spec_is_honoured_not_re_read(self, agents_dir, monkeypatch):
+        """``None`` means "there is no spec"; only "not supplied" reads.
+
+        The projection reads once and threads the ANSWER. If ``None`` also meant
+        "read it", a read that came back empty would have every helper read again,
+        and a spec appearing in between would be translated by one helper while
+        the allowlist -- computed from the ``None`` -- granted everything.
+        """
+        _write_spec(
+            agents_dir, servers={"srv": {"command": "/s", "disabledTools": ["t"]}}, tools=["@srv"]
+        )
+        reads: list[str] = []
+        real = session_mcp._agent_spec_for
+
+        def counting(agent, work_dir=None):
+            reads.append(agent)
+            return real(agent, work_dir)
+
+        monkeypatch.setattr(session_mcp, "_agent_spec_for", counting)
+        # Explicit None: no spec, nothing read, control plane only, nothing switched off.
+        names = [e["name"] for e in session_mcp.session_mcp_servers("kirocrew", spec=None)]
+        assert names == ["kirocrew-core", "kirocrew-cron"]
+        assert session_mcp.session_mcp_restricted_servers(frozenset()) == frozenset()
+        assert session_mcp.session_mcp_disabled_tools("kirocrew", spec=None) == frozenset()
+        assert reads == []
+        # Not supplied: read, once per call, and the spec's own answer applies.
+        assert "srv" in [e["name"] for e in session_mcp.session_mcp_servers("kirocrew")]
+        assert reads == ["kirocrew"]
+
+    def test_the_projection_threads_the_answer_even_when_it_is_no_spec(
+        self, agents_dir, monkeypatch
+    ):
+        """The window itself: the first read finds nothing, a spec appears, and no
+        helper may see it. Every part of the projection reflects the SAME read."""
+        spec_path = agents_dir / "kirocrew.json"
+        _write_spec(agents_dir, servers={"late": {"command": "/l"}}, tools=["@late"])
+        real = session_mcp._agent_spec_for
+        calls = {"n": 0}
+
+        def flapping(agent, work_dir=None):
+            calls["n"] += 1
+            return None if calls["n"] == 1 else real(agent, work_dir)
+
+        monkeypatch.setattr(session_mcp, "_agent_spec_for", flapping)
+        projection = session_mcp.session_mcp_projection("kirocrew")
+        assert calls["n"] == 1, "a helper read the spec behind the projection's back"
+        assert "late" not in [e["name"] for e in projection.servers]
+        assert projection.allowlist.applies is False
+        assert spec_path.exists()
 
     def test_a_stubbed_server_yields_to_its_broker_stub(self, agents_dir):
         """The caller appends the stub under the SAME name; two would collide.

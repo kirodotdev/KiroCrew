@@ -241,8 +241,18 @@ default backend, so a warm hit would skip both the member backend route and
 the mount. The member backend is `agent.member_acp_backend` (default `kas`),
 and requires a wire-capable backend (`ACP_BACKENDS_MEMBER_DISPATCH`: the
 claude seam and KAS); kiro-cli v2 reads its template from disk and exposes no
-per-session channel, so a member session on it runs as plain chat — the tools
-are simply not mounted, never mounted-and-refused. Because the mount is
+per-session channel, so a member session on it runs as plain chat — the
+tools are simply not mounted, never mounted-and-refused. Codex is excluded by a
+scope decision rather than a capability gap: it HAS the per-session mount
+(`providers/mirrors/codex.py`), and its precondition needs no gate of its own —
+`tool_gate.is_enforced` is true for codex because its routing is
+`SESSION_CONFIG`, the one member of `ENFORCED_ROUTINGS`, so
+`_apply_session_permission_routing` refuses the session outright when
+`mode=read-only` cannot be armed. Claude's routing is `SEEDED_SETTINGS`, which
+this core declares and does not enforce, which is why claude must instead OWN
+the `settings.local.json` that decides whether a call asks
+(`_claude_settings_authored`). Mounting session control into a codex DM thread
+is a separate capability and needs its own decision. Because the mount is
 session-scoped, no other session on the same agent template gains the tools,
 preserving the two-part grant for ordinary agents (the switch AND the
 per-agent server assignment).

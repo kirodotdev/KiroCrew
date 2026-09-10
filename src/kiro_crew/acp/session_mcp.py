@@ -1,17 +1,21 @@
 """Kiro agent spec -> the ACP ``session/new`` ``mcpServers`` array.
 
 For a harness in :data:`~kiro_crew.acp_backends.ACP_BACKENDS_SESSION_MCP_ARRAY`,
-the ``session/new`` / ``session/load`` ``mcpServers`` parameter is where MCP
-servers come from and the only place: claude-agent-acp, its one member today,
-does not read ``~/.kiro/agents/<name>.json``. kiro-cli reaches the same servers
+the ``session/new`` / ``session/load`` ``mcpServers`` parameter is where Kiro
+Crew's MCP servers come from and the only place: neither claude-agent-acp nor
+codex-acp reads ``~/.kiro/agents/<name>.json``. kiro-cli reaches the same servers
 through ``--agent``, which is why that backend passes no array at all. Without
 the translation here such a session runs with ZERO Kiro Crew tools -- the harness
 itself works (prompts, streaming, permissions) but ``send_message``,
 ``spawn_run``, ``cron_add`` and every user-installed server are simply absent.
 
 Nothing here is Anthropic-specific by design: the module is keyed on the
-capability, not on the harness, so the next adapter that reads no agent spec
-joins the set rather than growing a second translator.
+capability, not on the harness, so the next adapter that reads no agent spec of
+Crew's joins the set rather than growing a second translator. What is genuinely
+per-adapter stays with that adapter's mirror -- codex narrows this output in
+:mod:`kiro_crew.providers.mirrors.codex` (it drops any transport this session's
+adapter did not advertise, and its child processes inherit no environment), and
+the shape notes below are claude-agent-acp's own zod schema.
 
 The agent spec stays the single source of truth; there is no second,
 claude-shaped registry to keep in sync. It is read per spawn, so installing or
@@ -72,9 +76,11 @@ import json
 import logging
 from collections.abc import Collection
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
+from kiro_crew import agent as _agent_mod
 from kiro_crew.agent import (
+    _load_json,
     _mcp_registry_mode,
     agent_spec_path,
     ensure_agent_materialized,
@@ -92,7 +98,13 @@ logger = logging.getLogger(__name__)
 # install is broken. Re-derived, not read from the spec, is also what keeps them
 # out of the registry filter below: they are the host's own process, not a
 # third-party server the admin's catalog governs.
-_CONTROL_PLANE_SERVERS = ("kirocrew-core", "kirocrew-cron")
+#
+# PUBLIC because the codex projection carries this session's identity onto these
+# two entries and onto NOTHING else. Naming the same tuple twice is how the two
+# decisions drift apart, and the safety of that carriage rests on this being the
+# set the loop below REPLACES from the managed source: the element's command, args
+# and env are Crew's own by construction, not the spec's.
+CONTROL_PLANE_SERVERS = ("kirocrew-core", "kirocrew-cron")
 
 # kiro-cli's enterprise-governance discriminator, mirrored rather than imported
 # (``agent._MCP_REGISTRY_TYPE`` is private; a ratchet test pins the two equal).
@@ -162,31 +174,91 @@ def acp_server_element(name: str, spec: Any) -> dict[str, Any] | None:
     }
 
 
-def _tools_grant(tools: list[Any], name: str) -> bool:
-    """True when a spec's ``tools`` list mounts MCP server *name*.
+class _Unread:
+    """Marker for "the caller did not hand in a parsed spec", distinct from None.
 
-    kiro-cli loads a server only when ``tools`` references it (``@server`` or
-    ``@server/tool``), so an ``mcpServers`` entry with no reference is declared
-    but never mounted. The claude array has no such indirection -- everything in
-    it is mounted -- so the reference is applied here instead. Without this, an
-    entry the user deliberately left unreferenced (the shape every ``opt_in``
-    grant uses, and what a narrowed-by-hand spec looks like) would come alive the
-    moment the session happened to run on claude.
-
-    Reads the refs through :func:`~kiro_crew.agent_sdk.mcp_refs.parse_tools_refs`
-    rather than scanning the list here, so this module and the unresolved-ref
-    detector cannot disagree about what an entry names -- a guard that read ``@srv``
-    where this read nothing would report a ref as unresolved while the server
-    mounted, and the reverse would mount a server the guard called absent. Only
-    the bare ``*`` grants everything: ``@*`` is a server LITERALLY named ``*``
-    there, matching this repo's other readers, so treating it as grant-all would
-    mount every declared server on this backend while kiro-cli mounted none.
-    ``@builtin`` is not special-cased -- a server actually called ``builtin`` is
-    mountable, and the namespace exclusion belongs to the guard asking whether a
-    ref resolves.
+    ``None`` is a real answer -- "there is no spec" -- and the projection must be
+    able to say it. If ``None`` also meant "please read it", a projection whose
+    one read came back empty would have every helper re-read behind its back, and
+    a spec that became readable between those reads would be translated by one
+    helper while the allowlist, computed from the ``None``, granted everything: an
+    unreferenced pooled stub mounted past a grant-all allowlist. The sentinel makes
+    "not supplied" and "supplied, and it is nothing" different values.
     """
-    grant_all, refs = parse_tools_refs(tools)
-    return grant_all or name in refs
+
+
+_UNREAD = _Unread()
+
+
+def _global_settings() -> dict[str, Any]:
+    """The user's global ``~/.kiro/settings/mcp.json``, ``{}`` when absent or bad.
+
+    Read here because the dashboard's tool-off action (``/api/mcp/toggle-tool``)
+    writes ``disabledTools`` to THIS file and to nothing else -- kiro-cli reads it
+    for enforcement alongside the agent spec, and the spec rebuild copies a global
+    entry into the spec only when the spec lacks that server, never onto Crew's
+    own managed servers. So a restriction on ``kirocrew-core`` written the ordinary
+    way lives only here, and a deny set read from the spec alone would miss the one
+    path a user actually takes. Resolved through the ``agent`` module attribute at
+    call time so a test can point it at a temp file the same way it points the
+    agents directory.
+    """
+    try:
+        return _load_json(_agent_mod._KIRO_MCP_JSON)
+    except Exception:  # pragma: no cover - _load_json is already fail-soft
+        logger.debug("session MCP: global settings unreadable", exc_info=True)
+        return {}
+
+
+class ToolsAllowlist(NamedTuple):
+    """The spec's ``tools`` allowlist, as a value rather than a filter pass.
+
+    Exists so the SAME allowlist can gate every element that reaches a session
+    -- the translated entries inside :func:`session_mcp_servers`, and the pooled
+    broker stubs a mirror appends beside them. A stub carries the name of the
+    entry it rewrites, so a stub for a server the spec's ``tools`` never
+    references is an unreferenced server mounted anyway, which is the exact
+    thing the filter on the translated half exists to prevent.
+
+    ``applies`` is False when there is no spec at all: then there is no allowlist
+    to apply and everything stands, the same reading :func:`session_mcp_servers`
+    takes for the control plane. A spec whose ``tools`` is missing or not a list
+    is an EMPTY allowlist, not "no filter" (see the filter's own comment).
+
+    Why an allowlist at all: kiro-cli loads a server only when ``tools`` references
+    it (``@server`` or ``@server/tool``), so an ``mcpServers`` entry with no
+    reference is declared but never mounted. An ACP array has no such indirection
+    -- everything in it is mounted -- so the reference is applied here instead.
+    Without it, an entry the user deliberately left unreferenced (the shape every
+    ``opt_in`` grant uses, and what a narrowed-by-hand spec looks like) would come
+    alive the moment the session ran on a mirrored backend.
+
+    The refs are read through :func:`~kiro_crew.agent_sdk.mcp_refs.parse_tools_refs`
+    rather than scanned here, so this module and the unresolved-ref detector cannot
+    disagree about what an entry names -- a guard that read ``@srv`` where this
+    read nothing would report a ref as unresolved while the server mounted, and the
+    reverse would mount a server the guard called absent. Only the bare ``*``
+    grants everything: ``@*`` is a server LITERALLY named ``*`` there, matching
+    this repo's other readers. ``@builtin`` is not special-cased -- a server
+    actually called ``builtin`` is mountable, and the namespace exclusion belongs
+    to the guard asking whether a ref resolves.
+    """
+
+    applies: bool
+    grant_all: bool
+    refs: frozenset[str]
+
+    def grants(self, name: str) -> bool:
+        return (not self.applies) or self.grant_all or name in self.refs
+
+
+def _tools_allowlist(spec: dict[str, Any] | None) -> ToolsAllowlist:
+    """The allowlist *spec* declares; see :class:`ToolsAllowlist` for the two edges."""
+    if spec is None:
+        return ToolsAllowlist(applies=False, grant_all=False, refs=frozenset())
+    tools = spec.get("tools")
+    grant_all, refs = parse_tools_refs(tools if isinstance(tools, list) else [])
+    return ToolsAllowlist(applies=True, grant_all=grant_all, refs=frozenset(refs))
 
 
 def _project_spec_path_for(agent: str, work_dir: str | Path | None) -> Path | None:
@@ -293,7 +365,9 @@ def session_mcp_deny_rules(agent: str | None, *, work_dir: str | Path | None = N
 
     Returned as rules for the settings writer rather than applied here: this
     module owns the array, ``settings.local.json`` belongs to the client. Ordered
-    and de-duplicated so a re-seed produces a byte-identical file.
+    and de-duplicated so a re-seed produces a byte-identical file. The pairs come
+    from :func:`session_mcp_disabled_tools`, so a restriction the dashboard wrote
+    to the global settings file is carried too, not only one written in the spec.
 
     Note the asymmetry this does NOT close: a ``tools`` reference of the
     ``@server/tool`` form grants ONE tool on kiro-cli, while the array mounts the
@@ -301,23 +375,125 @@ def session_mcp_deny_rules(agent: str | None, *, work_dir: str | Path | None = N
     connecting to the server. Those extra tools still reach the host permission
     gate; they are a wider surface, not an ungated one.
     """
-    spec = _agent_spec_for(agent, work_dir) if agent else None
-    if spec is None:
-        return []
-    raw = spec.get("mcpServers")
-    if not isinstance(raw, dict):
-        return []
-    rules: set[str] = set()
-    for name, entry in raw.items():
-        if not isinstance(entry, dict):
+    return sorted(
+        f"mcp__{server}__{tool}"
+        for server, tool in session_mcp_disabled_tools(agent, work_dir=work_dir)
+    )
+
+
+def session_mcp_disabled_tools(
+    agent: str | None,
+    *,
+    work_dir: str | Path | None = None,
+    spec: dict[str, Any] | None | _Unread = _UNREAD,
+    settings: dict[str, Any] | _Unread = _UNREAD,
+) -> frozenset[tuple[str, str]]:
+    """Every ``(server, tool)`` pair switched off for this session, from BOTH sources.
+
+    The structured form of :func:`session_mcp_deny_rules`, which spells the same
+    pairs as claude ``permissions.deny`` rules. Kept as PAIRS here because the
+    ``mcp__server__tool`` spelling is lossy -- it splits on the last ``__``, so a
+    tool name containing ``__`` reads back as part of the server -- and a consumer
+    that compares against an identity the adapter reports as two separate fields
+    (codex's ``rawInput.server`` / ``rawInput.tool``) must not go through it.
+
+    No server is exempt, the control plane included. This set answers "what did
+    the user switch off", and that is true of ``kirocrew-core`` exactly as it is
+    of a third-party server: the dashboard writes the key on an ordinary tool-off
+    action for any of them. What differs per server is how -- or whether -- a
+    given backend can HONOUR it, and that is the caller's question, not this one's
+    (see :func:`session_mcp_restricted_servers` for the one place the control
+    plane is treated differently, and why).
+
+    Two sources, unioned. The agent spec carries the key when a spec author wrote
+    it or the rebuild copied a global entry in. The global ``settings/mcp.json``
+    carries it when the dashboard's tool-off action wrote it -- and for Crew's own
+    managed servers that is the ONLY place it can be, because the spec rebuild
+    never copies a global entry onto a managed server (see
+    :func:`_global_settings`). kiro-cli reads both for enforcement; so does this.
+    A union is the only safe combination: a restriction can only ever restrict.
+
+    ``spec`` and ``settings`` let a caller hand in what it has ALREADY parsed; an
+    explicit ``None`` spec means "there is no spec" and is honoured as such, never
+    re-read (see :class:`_Unread`). Never raises: an unreadable source switches
+    nothing off from that source.
+    """
+    if isinstance(spec, _Unread):
+        spec = _agent_spec_for(agent, work_dir) if agent else None
+    if isinstance(settings, _Unread):
+        settings = _global_settings()
+    pairs: set[tuple[str, str]] = set()
+    for source in (spec, settings):
+        if not isinstance(source, dict):
             continue
-        disabled = entry.get("disabledTools")
-        if not isinstance(disabled, list):
+        raw = source.get("mcpServers")
+        if not isinstance(raw, dict):
             continue
-        for tool in disabled:
-            if isinstance(tool, str) and tool:
-                rules.add(f"mcp__{name}__{tool}")
-    return sorted(rules)
+        for name, entry in raw.items():
+            if not isinstance(entry, dict):
+                continue
+            disabled = entry.get("disabledTools")
+            if not isinstance(disabled, list):
+                continue
+            for tool in disabled:
+                if isinstance(tool, str) and tool:
+                    pairs.add((str(name), tool))
+    return frozenset(pairs)
+
+
+def session_mcp_restricted_servers(disabled_tools: Collection[tuple[str, str]]) -> frozenset[str]:
+    """Servers whose per-TOOL narrowing no transport can carry as an element.
+
+    The sibling of :func:`session_mcp_deny_rules`, for a backend that has no file
+    to put deny rules in. Same input, same reason to exist: ``disabledTools`` is a
+    RESTRICTION, and a backend that forwards the server while dropping it widens
+    the session's tool surface behind the user's back -- the dashboard writes that
+    key on an ordinary tool-off action, and this repo already treats losing it as a
+    defect ("dropping ``disabledTools`` on a save would silently widen the agent's
+    tool surface").
+
+    Claude re-applies the restriction as ``permissions.deny`` rules and so may keep
+    the server. A backend with no deny channel has only one faithful option, which
+    is to not mount the server at all -- so this returns the NAMES and lets that
+    backend omit them. Withholding a server is an availability cost; forwarding an
+    un-narrowed one is a capability the user switched off.
+
+    **Crew's own control plane is exempt from WITHHOLDING, not from the
+    restriction.** ``kirocrew-core`` / ``kirocrew-cron`` are re-derived from
+    ``managed_mcp_spec_entry``, which emits only command/args/env, so a
+    ``disabledTools`` on their spec entry never reaches the element -- and
+    withholding the whole server on the strength of it would leave the session
+    unable to report back to its channel at all, which is the exact defect this
+    module exists to fix. The restriction itself is still honoured, on the one
+    channel this transport does have: every call to one of these servers reaches
+    Crew as a ``session/request_permission`` (their tools carry no annotations, so
+    codex prompts for each), and the client answers a call to a switched-off tool
+    with the adapter's reject option before anything runs. The pairs it checks
+    come from :func:`session_mcp_disabled_tools`, on the same parse as this set.
+    That channel is complete for the control plane and NOT for a third-party
+    server -- a tool annotated ``readOnlyHint`` is auto-approved inside codex and
+    never prompts -- which is why the two are treated differently here rather
+    than both being mounted.
+
+    ``disabled`` is deliberately NOT part of this. A disabled server is already
+    absent from the array by a different mechanism: ``agent.build_agent_config``
+    strips its ``@alias`` from ``tools``, and the allowlist filter in
+    :func:`session_mcp_servers` mounts nothing ``tools`` does not name. Re-checking
+    it here would be a second spelling of a rule that already holds.
+
+    Derived from the ``(server, tool)`` PAIRS :func:`session_mcp_disabled_tools`
+    resolved, never from the spec on its own, so the two decisions a restriction
+    drives -- withhold the server, or refuse the call -- read the same sources. The
+    dashboard's tool-off action writes to the global settings file and not to the
+    spec, so a withhold set read from the spec alone would miss a third-party server
+    narrowed the ordinary way; that server would mount, and the per-call refusal
+    cannot reach it (a tool annotated ``readOnlyHint`` is approved inside codex
+    without asking), so the switched-off tool would run. Its one caller is
+    :func:`session_mcp_projection`, which hands in the pairs it already resolved
+    from one read of each source. A server named only in the global file and not in
+    the spec lands here too and is harmless: nothing mounts it. Free of I/O.
+    """
+    return frozenset(server for server, _tool in disabled_tools) - frozenset(CONTROL_PLANE_SERVERS)
 
 
 def _registry_mode() -> bool:
@@ -346,11 +522,70 @@ def _registry_mode() -> bool:
         return True
 
 
+class SessionMcpProjection(NamedTuple):
+    """Everything a backend derives from the agent spec, from ONE parse of it."""
+
+    #: The translated ``mcpServers`` array (:func:`session_mcp_servers`).
+    servers: list[dict[str, Any]]
+    #: Servers whose per-tool narrowing forces withholding them
+    #: (:func:`session_mcp_restricted_servers`).
+    restricted: frozenset[str]
+    #: Every ``(server, tool)`` the spec switches off, no server exempt
+    #: (:func:`session_mcp_disabled_tools`).
+    disabled_tools: frozenset[tuple[str, str]]
+    #: The ``tools`` allowlist the translated half was filtered by, so a caller
+    #: appending elements of its own (pooled stubs) can hold them to the same one.
+    allowlist: ToolsAllowlist
+
+
+def session_mcp_projection(
+    agent: str | None,
+    *,
+    stub_server_names: Collection[str] = (),
+    work_dir: str | Path | None = None,
+) -> SessionMcpProjection:
+    """The array, the withhold set AND the per-tool restrictions, from ONE parse.
+
+    A backend that translates the spec, withholds part of it on the strength of the
+    spec, and refuses individual calls on the strength of the spec must derive all
+    three from the same bytes. Independent parses of a user-writable file are a
+    consistency window: an entry that gains ``disabledTools`` between two of them
+    produces a restriction set that does not mention it and a translation that
+    carries it, so the narrowed server mounts un-narrowed -- or a deny set that
+    names a tool on a server the array, read a moment earlier, never mounted.
+
+    Returning them from one call makes that structural rather than a convention. The
+    alternative -- documenting that callers should thread a ``spec=`` through three
+    functions -- is a rule a future caller can forget, and forgetting it is silent.
+    The read's ANSWER is what is threaded, including "there is no spec": a helper
+    handed ``None`` honours it rather than reading again (see :class:`_Unread`), so
+    a spec that appears between this read and a helper's cannot be translated by
+    one helper and ignored by another.
+
+    Blocking (parses the spec and the global settings file once each), so callers
+    run it off the event loop.
+    """
+    spec = _agent_spec_for(agent, work_dir) if agent else None
+    settings = _global_settings()
+    disabled_tools = session_mcp_disabled_tools(
+        agent, work_dir=work_dir, spec=spec, settings=settings
+    )
+    return SessionMcpProjection(
+        servers=session_mcp_servers(
+            agent, stub_server_names=stub_server_names, work_dir=work_dir, spec=spec
+        ),
+        restricted=session_mcp_restricted_servers(disabled_tools),
+        disabled_tools=disabled_tools,
+        allowlist=_tools_allowlist(spec),
+    )
+
+
 def session_mcp_servers(
     agent: str | None,
     *,
     stub_server_names: Collection[str] = (),
     work_dir: str | Path | None = None,
+    spec: dict[str, Any] | None | _Unread = _UNREAD,
 ) -> list[dict[str, Any]]:
     """The ACP ``mcpServers`` array for a session running as *agent*.
 
@@ -367,13 +602,18 @@ def session_mcp_servers(
     projection resolves the same set for the same reason; the caller owns the
     overlay, so it resolves the set and passes it down.
 
-    Blocking (reads the agent spec), so callers run it off the event loop.
-    Deterministically ordered by server name, which keeps the array comparable
-    across a session/new and the session/load that resumes it.
+    ``spec`` lets a caller hand in a spec it has already parsed; see
+    :func:`session_mcp_projection` for why a second parse is a consistency window
+    rather than a cost.
+
+    Blocking when it parses (so callers run it off the event loop). Deterministically
+    ordered by server name, which keeps the array comparable across a session/new and
+    the session/load that resumes it.
     """
     servers: dict[str, Any] = {}
     tools: Any = None
-    spec = _agent_spec_for(agent, work_dir) if agent else None
+    if isinstance(spec, _Unread):
+        spec = _agent_spec_for(agent, work_dir) if agent else None
     if spec is not None:
         raw = spec.get("mcpServers")
         if isinstance(raw, dict):
@@ -431,7 +671,7 @@ def session_mcp_servers(
             )
             servers.pop(name)
 
-    for name in _CONTROL_PLANE_SERVERS:
+    for name in CONTROL_PLANE_SERVERS:
         managed = managed_mcp_spec_entry(name)
         if managed is not None:
             servers[name] = managed
@@ -463,8 +703,8 @@ def session_mcp_servers(
                 agent,
                 type(tools).__name__,
             )
-        grants = tools if isinstance(tools, list) else []
-        servers = {n: e for n, e in servers.items() if _tools_grant(grants, n)}
+        allow = _tools_allowlist(spec)
+        servers = {n: e for n, e in servers.items() if allow.grants(n)}
 
     out: list[dict[str, Any]] = []
     for name in sorted(servers):

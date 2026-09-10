@@ -77,7 +77,7 @@ def parse_tools_refs(tools: Any) -> tuple[bool, list[str]]:
     """Split a spec ``tools`` list into ``(grants_every_server, server names)``.
 
     The ONE reader of the ``tools`` ref vocabulary for MCP-server questions, so
-    ``acp.session_mcp._tools_grant`` and this module cannot drift into
+    ``acp.session_mcp.ToolsAllowlist`` and this module cannot drift into
     disagreeing about what an entry names -- a detector reading ``@srv`` where
     the projection read nothing reports a ref as unresolved while the server
     mounts, and the reverse mounts a server the detector called absent. Both

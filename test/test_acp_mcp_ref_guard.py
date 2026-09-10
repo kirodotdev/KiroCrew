@@ -155,10 +155,16 @@ class TestRefParsing:
         server the guard called absent. Both directions are the same defect, so the
         two must not have separate parsers.
         """
-        assert session_mcp._tools_grant(["@srv/tool"], "srv") is True
-        assert session_mcp._tools_grant(["*"], "anything") is True
-        assert session_mcp._tools_grant(["@*"], "srv") is False
-        assert session_mcp._tools_grant(["fs_read"], "srv") is False
+        allow = lambda tools: session_mcp._tools_allowlist({"tools": tools})  # noqa: E731
+        assert allow(["@srv/tool"]).grants("srv") is True
+        assert allow(["*"]).grants("anything") is True
+        assert allow(["@*"]).grants("srv") is False
+        assert allow(["fs_read"]).grants("srv") is False
+        # No spec at all: nothing to apply, everything stands. A spec with no list:
+        # an EMPTY allowlist, not "no filter".
+        assert session_mcp._tools_allowlist(None).grants("anything") is True
+        assert session_mcp._tools_allowlist({}).grants("srv") is False
+        assert session_mcp._tools_allowlist({"tools": "@srv"}).grants("srv") is False
 
 
 class TestResolution:
@@ -168,12 +174,15 @@ class TestResolution:
             unresolved_server_refs(spec, _wire("kirocrew-core"), backend=ACP_BACKEND_CLAUDE) == []
         )
 
-    def test_codex_today_reports_every_ref(self):
-        """The live state of a plain public build, which is why the guard exists.
+    def test_an_empty_array_on_a_mirrored_backend_reports_every_ref(self):
+        """The shape that made the guard necessary, held as a pure-function case.
 
-        ``_codex_session_mcp_servers`` returns ``[]``, so with the shared gateway
-        off a codex session receives nothing at all -- while its spec declares and
-        references Crew's whole control plane.
+        A backend in ``ACP_BACKENDS_SESSION_MCP_ARRAY`` whose array comes out empty
+        receives nothing at all while its spec declares and references Crew's whole
+        control plane -- the defect this guard reports, and the reason a session
+        could be fully broken with nothing anywhere saying so. Driven here with the
+        wire passed in, so it stays true of any backend that reaches this state
+        rather than of one release's hook.
         """
         spec = {
             "tools": ["@kirocrew-core", "@kirocrew-cron", "fs_read"],
@@ -242,7 +251,7 @@ class TestResolution:
     def test_a_server_actually_called_builtin_is_still_mountable(self):
         # The exclusion belongs to the guard, not to the parser: session_mcp must
         # still mount a server whose real name is `builtin`.
-        assert session_mcp._tools_grant(["@builtin"], "builtin") is True
+        assert session_mcp._tools_allowlist({"tools": ["@builtin"]}).grants("builtin") is True
 
     def test_grant_all_does_not_satisfy_a_ref_naming_nothing(self):
         # `*` grants every DEFINED server; it defines none, so a ref beside it to
@@ -566,6 +575,9 @@ class TestTheCompositionPath:
         d = tmp_path / "agents"
         d.mkdir()
         monkeypatch.setattr(agent_mod, "KIRO_AGENTS_DIR", d)
+        # The global settings file is a second source of per-tool restrictions;
+        # these tests supply it (or leave it absent) rather than read the machine's.
+        monkeypatch.setattr(agent_mod, "_KIRO_MCP_JSON", tmp_path / "settings-mcp.json")
         monkeypatch.setattr(session_mcp, "ensure_agent_materialized", lambda _a: True)
         monkeypatch.setattr(
             session_mcp,
@@ -604,17 +616,29 @@ class TestTheCompositionPath:
         client._guard_unresolved_mcp_refs(wire)
         return wire
 
-    def test_a_codex_session_today_records_the_finding(self, tmp_path, agents_dir, caplog):
+    def test_a_codex_session_records_what_its_mirror_withholds(self, tmp_path, agents_dir, caplog):
+        """On a mirrored codex session the finding narrows to the withheld set.
+
+        The refs the mirror projects resolve, so the guard is silent about them.
+        What it still reports is what the mirror deliberately WITHHOLDS: an
+        identity-bound Crew server reaches codex from the spec unreplaced and would
+        answer ``not_bound`` to every call, so it is not mounted -- and this guard's
+        own sentence is then exactly right, the tools are absent from the session.
+        Two lines, two jobs: the mirror logs WHY it withheld, and this one records
+        that the spec asked for it.
+        """
         self._spec(
             agents_dir,
-            servers={"kirocrew-core": dict(_CORE)},
-            tools=["@kirocrew-core", "@kirocrew-cron"],
+            servers={"kirocrew-core": dict(_CORE), "kirocrew-work": dict(_CORE)},
+            tools=["@kirocrew-core", "@kirocrew-cron", "@kirocrew-work"],
         )
         client = self._client(tmp_path, agents_dir, ACP_BACKEND_CODEX)
         with caplog.at_level(logging.WARNING, logger=mcp_ref_guard.__name__):
-            assert self._compose(client) == []
-        assert client.mcp_session_report().unresolved_refs == ("@kirocrew-core", "@kirocrew-cron")
-        assert "@kirocrew-core" in caplog.text
+            names = {e["name"] for e in self._compose(client)}
+        assert {"kirocrew-core", "kirocrew-cron"} <= names
+        assert "kirocrew-work" not in names
+        assert client.mcp_session_report().unresolved_refs == ("@kirocrew-work",)
+        assert "@kirocrew-work" in caplog.text
 
     def test_a_claude_session_whose_mirror_projects_the_server_is_silent(
         self, tmp_path, agents_dir, caplog
@@ -703,7 +727,10 @@ class TestTheCallSitesAreWired:
     @pytest.mark.asyncio
     async def test_session_new_reaches_the_guard(self, tmp_path, monkeypatch):
         client = AcpClient(work_dir=tmp_path, agent="kirocrew", acp_backend=ACP_BACKEND_CODEX)
-        client._mcp_ref_spec = {"tools": ["@kirocrew-core"], "mcpServers": {}}
+        # A ref no projection can resolve, so this proves the CALL SITE rather than
+        # re-testing the mirror: codex's array re-derives the control plane, so
+        # ``@kirocrew-core`` would resolve and leave the guard nothing to report.
+        client._mcp_ref_spec = {"tools": ["@ghost"], "mcpServers": {}}
 
         async def _work_dir():
             return str(tmp_path)
@@ -721,7 +748,7 @@ class TestTheCallSitesAreWired:
         resp = await client._new_session_following_substitution()
 
         assert resp["sessionId"] == "s-1"
-        assert client.mcp_session_report().unresolved_refs == ("@kirocrew-core",)
+        assert client.mcp_session_report().unresolved_refs == ("@ghost",)
 
     def test_every_roster_handoff_is_paired_with_the_guard(self):
         """Both call sites, held to the pairing by structure.

@@ -65,6 +65,15 @@ register it in `registry.py`.
   shared with kiro-cli, and adapter work must not add a scheduling or failure
   point to kiro-cli's construction path (harness-parity H13). Warm a cache on the
   spawn path.
+- **`session_projection()`** — the structured face the CLIENT actually calls:
+  the wire params plus any obligation the same spec parse hands the client
+  (`SessionProjection.denied_tools`, the `(server, tool)` pairs the client must
+  refuse when the backend asks permission for them). The default returns the
+  wire params with nothing off-wire, so a mirror that has no such obligation
+  implements only `session_params()`. A mirror that does (codex) overrides this
+  and defines `session_params()` as its `.params`, so the two faces cannot drift.
+  Also the seam a mirror that must place the gateway's pooled stubs itself takes
+  them through (`stub_elements`).
 - **`write_files()`** — the file face, for native config the harness loads itself.
   **Create-or-decline**: create the file, or leave the path entirely alone. Never
   read, merge into, rewrite or delete a file Crew did not author.
@@ -102,8 +111,7 @@ the question. Both are needed — a folder alone is just a tidier place to forge
 
 Beside the mirror, not inside it, when it is substantial:
 
-- `acp/session_mcp.py` — Claude Code's spec-entry to array-element translation,
-  the `tools` allowlist and the registry filter.
+- `acp/session_mcp.py` — the spec-entry to array-element translation, the `tools` allowlist and the registry filter. Shared: both session-array backends read it, and what is genuinely per-adapter stays in that adapter's mirror (codex's `codex_elements` narrows this output).
 - `acp/kas_permissions.py` — KAS's `allowedTools` to `permissions` mapping.
 - `agent_sdk/mcp_refs.py` — the provider-agnostic unresolved-ref resolver above,
   and the one reader of the `tools` ref vocabulary that `session_mcp` mounts
@@ -117,6 +125,22 @@ A mirror declares and routes; a helper translates.
 | Backend | Mirror | Notes |
 |---|---|---|
 | `claude` | `claude_code.py` | both faces; `hooks` is its one open `no-channel` |
+| `codex` | `codex.py` | wire face only — Crew writes no codex file, so the `session/new` array is its whole channel. `hooks` is its one open `no-channel`; `disabledTools` is honoured by withholding a third-party server it narrows, and by refusing the call at the approval request for Crew's own control plane; the array, the withhold set and the deny pairs all come from one spec parse |
 | `` (kiro-cli) | `NO_MIRROR` | reads the spec itself via `--agent`; only a small `cli.json` overlay, whose home is still an open decision |
 | `kas` | `NO_MIRROR`, pending | has the most complete projection of any backend, not yet moved here |
-| `codex` | `NO_MIRROR` | selectable on a plain build and serving sessions today; the projection is unwritten, so the runtime guard above warns on every codex session whose spec references a server |
+
+## Verify against the adapter, not against the last mirror
+
+Codex is the reason this section exists. Its hook sat at `[]` behind a docstring
+that stated, as the one established constraint, that codex-acp answers `-32602`
+for the whole `session/new` when it meets a transport it does not advertise. A
+real adapter says otherwise: a malformed stdio element — and even an array member
+that is not an object — leaves `session/new` succeeding with that element
+dropped, while `sse` is the one fatal shape and fails with `-32600`. The fear was
+the wrong code AND the wrong scope, and it had been load-bearing for a whole
+harness's tool surface.
+
+So a new mirror's transport and environment rules are MEASURED. `codex.py` cites
+what was run and `test/test_codex_session_mcp.py` pins it against an installed
+adapter, skipping cleanly when there is none. Copying the neighbouring mirror's
+shape is the cheap half; only the adapter can tell you whether it is accepted.

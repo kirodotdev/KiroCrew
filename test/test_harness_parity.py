@@ -59,6 +59,7 @@ from kiro_crew.acp_backends import (
 from kiro_crew.agent_sdk import backends as acp_backends
 from kiro_crew.config.loader import AgentConfig, _normalize_acp_backend
 from kiro_crew.providers import acp as providers_acp
+from kiro_crew.providers import mirrors
 
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _GATE_PATH = os.path.join(_REPO_ROOT, "scripts", "check_harness_parity.py")
@@ -591,15 +592,23 @@ def test_each_mcp_seam_is_spliced_only_for_its_own_harness() -> None:
         assert "if self._is_claude" in source, f"{fn.__name__}: claude seam spliced ungated"
 
 
-def test_codex_mcp_seam_defaults_to_empty() -> None:
-    """The public core sends no mcpServers for codex, exactly as for claude.
+def test_codex_mcp_seam_projects_through_its_mirror() -> None:
+    """The seam is FILLED, and it fills from the mirror rather than from itself.
 
-    kiro-cli receives its servers through ``--agent``; an edition overrides the seam.
-    A non-empty default here would put servers on a public session that the adapter
-    was never configured for.
+    An empty array is byte-identical for kiro-cli (``--agent`` carries its
+    servers) and a real gap for codex: the adapter reads no spec of Crew's, so a
+    selectable public backend would serve sessions with no ``spawn_run``, no
+    ``cron_add``, no ``send_message`` and no error anywhere.
+
+    What this pins is WHERE the array comes from. A translator written here rather
+    than in ``providers/mirrors/codex.py`` is the shape the mirror folder exists to
+    stop: one per-harness override per author, each rediscovering the same
+    projection.
     """
-    client = acp_client.AcpClient.__new__(acp_client.AcpClient)
-    assert client._codex_session_mcp_servers() == []
+    source = inspect.getsource(acp_client.AcpClient._codex_session_mcp_servers)
+    assert "self._session_mcp_servers()" in source
+    assert acp_backends.ACP_BACKEND_CODEX in acp_backends.ACP_BACKENDS_SESSION_MCP_ARRAY
+    assert mirrors.mirror_for(acp_backends.ACP_BACKEND_CODEX) is not None
 
 
 def test_model_preflight_allows_unknown_advertised_set() -> None:

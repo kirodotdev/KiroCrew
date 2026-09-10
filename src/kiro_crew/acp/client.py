@@ -46,6 +46,7 @@ from typing import (
 )
 
 from kiro_crew import acp_tool_gate, agent_scratch, model_registry, platform_compat
+from kiro_crew import sel as sel_module
 from kiro_crew.acp import seed_provenance
 from kiro_crew.acp._dispatch import (
     _kiro_mcp_server_name,
@@ -179,6 +180,7 @@ from kiro_crew.mcp_gateway.session_servers import injection_server_names, pooled
 from kiro_crew.metrics.tool_calls import note_tool_call_started, record_tool_call_finished
 from kiro_crew.platform.context import redact_log_via_context
 from kiro_crew.providers.mirrors import mirror_for
+from kiro_crew.providers.mirrors.codex import drop_unadvertised_transports
 from kiro_crew.resource_status import inject_xdist_auto_cap
 from kiro_crew.sandbox import (
     RLIMIT_PROFILE_SESSION_HOST,
@@ -1334,6 +1336,37 @@ def _mentions_skill_file(raw_params: dict | None, command: str | None) -> bool:
 # yielded so the user/agent sees what happened.  We use an exact (stripped) match so
 # the detection does not fire if the model merely quotes the marker string in prose.
 _TOOL_INTERRUPTED_MARKER = "Tool uses were interrupted, waiting for the next user prompt"
+
+
+def _identified_mcp_call(event: AcpEvent) -> tuple[str, str] | None:
+    """The ``(server, tool)`` a permission event PROVABLY refers to, or None.
+
+    Only the params cached from the preceding ``tool_call`` frame count
+    (``raw_params_trusted``); the permission payload's own fields are a different
+    shape (``serverName`` and prose) and could be anything. Both keys are the
+    adapter's resolution of which server and tool run -- codex-acp's
+    ``createMcpRawInput`` -- not model text.
+    """
+    if not event.raw_params_trusted:
+        return None
+    params = event.raw_tool_params if isinstance(event.raw_tool_params, dict) else {}
+    server = params.get("server")
+    tool = params.get("tool")
+    if isinstance(server, str) and isinstance(tool, str) and server and tool:
+        return server, tool
+    return None
+
+
+def _is_mcp_tool_approval(msg: JsonRpcMessage) -> bool:
+    """Whether a ``session/request_permission`` is an MCP tool-call approval.
+
+    codex-acp marks one with ``_meta.is_mcp_tool_approval`` on the request
+    (``buildMcpPermissionRequest``), for the correlated and the standalone shape
+    alike. Absent on a shell or edit approval and on every other backend.
+    """
+    params = msg.params if isinstance(msg.params, dict) else {}
+    meta = params.get("_meta")
+    return isinstance(meta, dict) and meta.get("is_mcp_tool_approval") is True
 
 
 def _is_tool_interrupted_marker(chunk: str) -> bool:
@@ -3430,6 +3463,24 @@ class AcpClient:
         # unreadable), which makes the guard a no-op rather than a disk read on
         # the loop. Cleared on reset so the next spawn re-reads the spec.
         self._mcp_ref_spec: dict[str, Any] | None = None
+        # What THIS session's agent said it can carry MCP over, straight from
+        # initialize's ``agentCapabilities.mcpCapabilities``. Held because the codex
+        # projection must not send a transport the adapter did not claim -- one such
+        # element fails the WHOLE session/new there, so the array that is its only
+        # channel takes every other server down with it. Read rather than
+        # remembered: a constant would encode one adapter version's answer and be
+        # silently wrong on the next. Empty until the handshake, and cleared on
+        # reset so a re-spawned session re-reads it.
+        self._agent_mcp_capabilities: dict[str, Any] = {}
+        # The mirror's CLIENT OBLIGATION from the same spec parse as the array
+        # (``SessionProjection.denied_tools``): ``(server, tool)`` pairs the spec
+        # switched off that the backend cannot refuse on the wire, so this client
+        # refuses them when the backend asks permission (``_deny_spec_disabled_tool``).
+        # Codex fills it; a backend that honours the restriction natively (kiro-cli)
+        # or through a file Crew writes (claude's ``permissions.deny``) leaves it
+        # empty, and an empty set makes the refusal a no-op. Cleared on reset with
+        # the array.
+        self._spec_denied_tools: frozenset[tuple[str, str]] = frozenset()
         self._session_key = session_key
         # When set, this client emits a per-tool-call SEL audit from the ACP
         # dispatch loop. Used by app/worker-pool clients (e.g. code-review-sage,
@@ -3722,8 +3773,14 @@ class AcpClient:
         agent spec, so injecting the stubs here is what actually pools the
         servers — nothing is written to the user's project or to
         ``~/.kiro/agents/``. Empty when the shared gateway is disabled.
+
+        Empty for codex as well, because its own projection already appended the
+        stubs it may have (``_resolve_session_mcp_servers``). A second unnarrowed
+        append here would re-add, as an UNRESTRICTED broker stub, exactly the
+        servers that projection withheld — a stub carries the same name as the entry
+        it rewrites, so the withhold and the re-add are the same server.
         """
-        return pooled_session_servers(self._mcp_gateway_overlay, self._agent, self._channel_id)
+        return [] if self._is_codex else self._pooled_broker_stubs()
 
     def _resolve_session_mcp_servers(self) -> list[dict[str, Any]]:
         """Translate the agent spec into this session's ``mcpServers`` array.
@@ -3764,15 +3821,40 @@ class AcpClient:
         mirror = mirror_for(self.backend)
         if mirror is None:
             return []
-        params = mirror.session_params(
+        # The STRUCTURED face rather than the wire one, for every mirror alike: two
+        # things can come out of the one spec parse and only one of them is wire
+        # data -- the array, and a per-tool deny set this client enforces at the
+        # approval request. The wire dict must not carry the second, and a second
+        # parse for it would be the consistency window the projection exists to
+        # close. A mirror with nothing off-wire to say answers with an empty set.
+        projection = mirror.session_projection(
             self._agent,
             stub_server_names=stubbed,
+            # The broker stubs as ELEMENTS, for a mirror that must place them itself
+            # so one withhold rule covers both halves of the array (codex). A mirror
+            # that leaves them to the shared append ignores them.
+            stub_elements=self._pooled_broker_stubs(),
             permission_surface_owned=getattr(self, "_claude_settings_authored", False),
             work_dir=self._work_dir,
+            # A codex stdio child starts from env_clear() plus an allowlist, so
+            # Crew's own servers reach it with an identity only if the ELEMENT
+            # carries one. A mirror cannot discover either value; the client can.
+            session_key=self._session_key or "",
+            channel_id=self._channel_id or "",
         )
-        servers = params.get("mcpServers") or []
+        self._spec_denied_tools = projection.denied_tools
+        servers = projection.params.get("mcpServers") or []
         out = list(servers) if isinstance(servers, list) else []
         return self._append_member_dispatch_server(out)
+
+    def _pooled_broker_stubs(self) -> list[dict[str, Any]]:
+        """The raw broker stubs for this session, with no per-backend narrowing.
+
+        Split from :meth:`_pooled_mcp_servers` so codex can take them through its
+        own withholding rules while that method keeps returning ``[]`` for codex at
+        the shared call site. Blocking; both callers are already off the loop.
+        """
+        return pooled_session_servers(self._mcp_gateway_overlay, self._agent, self._channel_id)
 
     def _append_member_dispatch_server(self, servers: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Mount the dashboard session-control server into a member DM session.
@@ -3897,9 +3979,11 @@ class AcpClient:
 
         Empty for kiro-cli, which receives the same servers through ``--agent``.
         For a harness in ``ACP_BACKENDS_SESSION_MCP_ARRAY`` the array is the ONLY
-        channel — the adapter reads no agent spec of its own — so it is built by
+        channel — the adapter reads no agent spec of CREW'S — so it is built by
         translating this session's agent spec (see
-        :mod:`kiro_crew.acp.session_mcp`).
+        :mod:`kiro_crew.acp.session_mcp`). "Of Crew's" is the load-bearing half:
+        codex-acp does load a config file of its own, and being a member says only
+        that this array is the sole channel from HERE to there.
 
         **In-memory, and deliberately so.** The translation reads disk, but it
         runs once per spawn in :meth:`_resolve_session_mcp_servers` and lands in
@@ -3961,31 +4045,51 @@ class AcpClient:
     def _codex_session_mcp_servers(self) -> list:
         """MCP server array passed to a codex ``session/new`` / ``session/load``.
 
-        The codex twin of :meth:`_claude_session_mcp_servers`, still ``[]`` -- and
-        codex IS in ``BASELINE_SELECTABLE_BACKENDS``, so this is a state a plain
-        public build reaches TODAY, not a dormant seam. Nothing is PROJECTED onto a
-        codex session: the only entries it gets are the pooled broker stubs
-        ``_pooled_mcp_servers`` appends for every backend alike, empty when the
-        shared gateway is off. So Crew's own control plane -- ``kirocrew-core``,
-        ``kirocrew-cron`` -- is never projected here, but it is NOT thereby absent:
-        a stub the overlay wrapped still mounts, which makes the gateway rather than
-        this hook the thing that decides. With the gateway off, a codex session has
-        no MCP tools at all.
+        The codex twin of :meth:`_claude_session_mcp_servers`, and it must stay
+        non-empty. An empty array here is byte-identical for kiro-cli, which gets
+        its servers through ``--agent``, and a REAL GAP for codex: codex-acp reads
+        no ``~/.kiro/agents/<name>.json``, so nothing Crew declares reaches the
+        session and only the shared gateway's broker stubs arrive -- which makes the
+        GATEWAY rather than this hook decide whether Crew's own control plane is
+        there at all, and with that gateway off (the default) leaves the session
+        with no MCP tools whatsoever. codex is in ``BASELINE_SELECTABLE_BACKENDS``,
+        so a plain public build reaches exactly that.
 
-        It stays ``[]`` because no projection has been written and the shape this
-        adapter accepts is unverified, NOT because nobody can reach it. The registry
-        in :mod:`kiro_crew.providers.mirrors` records that as codex's declared state
-        rather than leaving the omission unexplained; when the mirror is written it
-        goes in that folder beside claude's and this hook returns it.
+        The translation lives in the mirror
+        (:mod:`kiro_crew.providers.mirrors.codex`), not here, for the same reason
+        claude's does: projecting the agent spec onto a backend's native shape is
+        one named contract with one implementation per backend. Two rules there are
+        codex's own and both were MEASURED against a real adapter rather than
+        assumed -- an ``sse`` element is dropped (codex-acp answers ``-32600`` for
+        the WHOLE ``session/new``), and Crew's own servers carry
+        ``KIROCREW_SESSION_KEY`` on the element because codex-rs launches a stdio
+        server with ``env_clear()`` plus an allowlist and inherits nothing.
 
-        Empty rather than guessed is the fail-safe direction, and the one
-        established constraint is why: codex-acp answers ``session/new`` with
-        ``-32602`` for a transport it does not advertise rather than skipping that
-        one server, so a single bad entry costs the whole session. An edition
-        overriding this must drop any entry whose transport the adapter does not
-        advertise.
+        Only ``sse`` is fatal, and the scope matters because it is tempting to
+        generalise it into sending nothing at all: a malformed stdio element, or an
+        array member that is not an object, leaves ``session/new`` SUCCEEDING with
+        that element dropped, and ``sse`` fails with ``-32600`` rather than the
+        ``-32602`` an unadvertised transport is easy to assume. See
+        ``test/test_codex_session_mcp.py::test_real_codex_acp_accepts_the_crew_stdio_element``.
+
+        The transport narrowing runs HERE rather than inside the cached translation,
+        for a timing reason: the array is translated on the spawn path, before the
+        adapter process exists, while the set of transports it accepts is not known
+        until ``initialize`` answers. Reading it here uses what THIS session was
+        told instead of what some version once said, and it stays a pure in-memory
+        narrowing of an already-cached list.
+
+        The seam is deliberately KEPT rather than replaced by a capability-set
+        call: an edition may override this method, and swapping the call site for a
+        set membership test would silently stop calling that override.
+
+        In-memory only. The spawn path warms ``_session_mcp_cache`` off the loop, so
+        this accessor adds no scheduling or failure point to a call site shared with
+        kiro-cli (harness-parity H13).
         """
-        return []
+        return drop_unadvertised_transports(
+            self._session_mcp_servers(), self._agent_mcp_capabilities
+        )
 
     def _claude_local_settings_path(self) -> Path:
         return self._work_dir / ".claude" / "settings.local.json"
@@ -5416,6 +5520,18 @@ class AcpClient:
                     f"The 'codex' CLI alone does not serve ACP."
                 )
             argv = codex_argv
+            # Translate the agent spec into this session's MCP array HERE, on
+            # codex's own arm, for exactly the reason the claude arm above does it
+            # on its own: the translation reads disk, and doing it at the shared
+            # session/new call site would put an executor hop and a new failure
+            # mode on EVERY backend's construction path, kiro-cli included
+            # (harness-parity H13). No ordering constraint of claude's applies --
+            # codex has no settings file to author first, because its permission
+            # routing is asserted per session over session/set_config_option
+            # rather than seeded to a file. Correctness does not depend on this
+            # warm: _session_mcp_servers resolves a cold cache itself; the warm is
+            # what keeps the read off the loop.
+            self._session_mcp_cache = await asyncio.to_thread(self._resolve_session_mcp_servers)
             # Fail closed BEFORE the spawn when the mask below would be dropped:
             # several wrap_argv paths return without applying extra_hidden_dirs,
             # which would start an enforced adapter with no compensating control
@@ -6161,6 +6277,8 @@ class AcpClient:
         # Same per-spawn freshness rule as the array above: an edited spec must be
         # what the next session's guard judges, not this one's.
         self._mcp_ref_spec = None
+        self._agent_mcp_capabilities = {}
+        self._spec_denied_tools = frozenset()
         # Save PIDs before clearing state — needed for untracking
         saved_pid = self._pid
         saved_child_pids = self._child_pids
@@ -6390,6 +6508,11 @@ class AcpClient:
 
         # Check if kiro-cli supports session/load
         self._can_load_session = init_resp.get("agentCapabilities", {}).get("loadSession", False)
+        # Which MCP transports this agent will accept in the session array. Only the
+        # codex projection consults it (see _codex_session_mcp_servers); every other
+        # backend either reads no array or accepts the shapes Crew already sends.
+        advertised = (init_resp.get("agentCapabilities") or {}).get("mcpCapabilities")
+        self._agent_mcp_capabilities = dict(advertised) if isinstance(advertised, dict) else {}
         self._agent_version = agent_version_from_init(init_resp)
 
         # 2. Try session/load if we have a resume ID and kiro-cli supports it
@@ -7661,7 +7784,19 @@ class AcpClient:
                             # drain tool results before EVENT_COMPLETE), we just
                             # return — no further text will arrive from kiro-cli.
                             return
-                    self._track_tool_call(msg)
+                    # On a session with a spec deny set, the full extractor rather
+                    # than the stats-only tracker: this loop answers permission
+                    # requests through _handle_permission, and the refusal there
+                    # identifies a call ONLY from the provenance the extractor caches
+                    # (raw params by toolCallId) -- stats alone would leave every
+                    # request unidentified, and the auto-approve site then refuses
+                    # them all rather than run a switched-off tool. With no deny set
+                    # nothing is refused, so the tracker's byte-identical behaviour on
+                    # every other backend is kept.
+                    if self._spec_denied_tools:
+                        self._extract_tool_event(msg)
+                    else:
+                        self._track_tool_call(msg)
                 elif action == "metadata":
                     self._track_metadata(msg)
                 elif action == "compaction":
@@ -7794,7 +7929,9 @@ class AcpClient:
                     return
                 _raise_acp_error(msg.error, self._advertised_model_ids(), backend=self.backend)
             if action == "permission":
-                yield self._build_permission_event(msg)
+                permission_event = self._build_permission_event(msg)
+                if not await self._deny_spec_disabled_tool(permission_event):
+                    yield permission_event
             elif action == "server_request_unknown":
                 await self._reject_unknown_server_request(msg)
             elif action == "update":
@@ -7884,6 +8021,7 @@ class AcpClient:
                     # unless audit_source is set.
                     self._maybe_credit_skill_read(tool_result_event)
                     await self._maybe_fire_post_tool_hooks(tool_result_event)
+                    self._tripwire_spec_disabled_tool(tool_result_event)
                     yield tool_result_event
                 # claude-agent-acp emits a separate `tool_call_update` carrying
                 # the refined title / kind / rawInput once `chunk.input` finishes
@@ -8409,6 +8547,7 @@ class AcpClient:
                 if tool_result_event:
                     self._maybe_credit_skill_read(tool_result_event)
                     await self._maybe_fire_post_tool_hooks(tool_result_event)
+                    self._tripwire_spec_disabled_tool(tool_result_event)
             elif action == "metadata":
                 self._track_metadata(msg)
             elif action == "compaction":
@@ -8419,7 +8558,38 @@ class AcpClient:
         raise AcpTimeoutError(partial_output="".join(output))
 
     async def _handle_permission(self, msg: JsonRpcMessage) -> None:
-        """Auto-approve tool permissions."""
+        """Auto-approve tool permissions.
+
+        When this session carries a spec deny set, the refusal runs first, because
+        this site answers the request with no consumer's gate in between and the
+        restriction must hold on every path that answers. And because there is no
+        human here, "unidentified" cannot fall toward asking: an MCP tool approval
+        (the adapter marks one with ``_meta.is_mcp_tool_approval``) whose call this
+        client cannot identify is REFUSED rather than approved blind. With an empty
+        deny set nothing is checked and nothing is built -- other backends' behaviour
+        here is unchanged, and building the event would record advertised option
+        ids these sites never consulted.
+        """
+        if self._spec_denied_tools:
+            event = self._build_permission_event(msg)
+            if await self._deny_spec_disabled_tool(event):
+                return
+            if _is_mcp_tool_approval(msg) and not _identified_mcp_call(event):
+                logger.warning(
+                    "session MCP: refusing an MCP tool approval this client cannot identify "
+                    "on an auto-approve path -- the spec switches tools off on this session "
+                    "and an unidentified call cannot be checked against it [session=%s]",
+                    self._session_id,
+                )
+                # A permission decision, so it reaches the SEL like the identified
+                # refusal does; the tool name is the one thing this record cannot say.
+                self._audit_spec_restriction(
+                    tool_name="mcp__unidentified",
+                    outcome="denied",
+                    reason="spec_disabled_tool_unidentified_call",
+                )
+                await self.reject_tool(event.request_id)
+                return
         request_id = msg.id if msg.id is not None else ""
 
         params = msg.params or {}
@@ -8428,6 +8598,125 @@ class AcpClient:
         logger.info("Auto-approving tool: %s", title)
 
         await self.approve_tool(request_id)
+
+    def _tripwire_spec_disabled_tool(self, result: AcpEvent) -> None:
+        """Make a switched-off tool that RAN loud, whatever let it run.
+
+        The refusal in :meth:`_deny_spec_disabled_tool` fires only on a permission
+        request, and whether codex sends one for a given call is the adapter's
+        behaviour, read from its source rather than measured here. This is the
+        in-band check that does not depend on it: the result frame for a completed
+        call carries the same ``toolCallId`` the ``tool_call`` frame cached its
+        ``rawInput = {server, tool}`` under, so a completed call whose pair is in the
+        deny set is detectable from Crew's own side of the wire. It is a TRIPWIRE,
+        not enforcement -- the call has already run -- so it logs at WARNING and
+        audits as a security-relevant observation, which turns an adapter release
+        that stopped prompting from a silent drift into a red line in the log and
+        the SEL. Cheap (two dict lookups) and a no-op with an empty deny set.
+        """
+        if not self._spec_denied_tools or not result.tool_final:
+            return
+        params = self._tool_call_params.get(result.tool_call_id or "")
+        if not isinstance(params, dict):
+            return
+        server, tool = params.get("server"), params.get("tool")
+        if not (isinstance(server, str) and isinstance(tool, str)):
+            return
+        if (server, tool) not in self._spec_denied_tools:
+            return
+        logger.warning(
+            "session MCP: a call to %r on %r COMPLETED although the agent spec switches it off; "
+            "the backend ran it without asking permission, so the per-call refusal never saw "
+            "it -- check the adapter's approval behaviour [session=%s]",
+            tool,
+            server,
+            self._session_id,
+        )
+        self._audit_spec_restriction(
+            tool_name=f"mcp__{server}__{tool}",
+            outcome="ran_despite_spec_disable",
+            reason="spec_disabled_tool_completed",
+        )
+
+    def _audit_spec_restriction(self, *, tool_name: str, outcome: str, reason: str) -> None:
+        """One SEL record shape for every decision the spec's per-tool restrictions drive.
+
+        Three sites emit it -- the identified refusal, the unidentified-approval
+        refusal on the auto-approve path, and the completed-call tripwire -- and a
+        permission decision that reaches the log but not the SEL is one an operator
+        cannot find later. Best-effort like every other ACP-layer audit: a failure to
+        write the record must not change the decision it records.
+        """
+        try:
+            # Resolved through the MODULE at call time: the file-scope ``sel`` name
+            # is bound once at import, so only this attribute lookup sees an emitter
+            # a test substituted on ``kiro_crew.sel``.
+            sel_module.sel().log_tool_invocation(
+                session_key=self._session_key or "",
+                source="acp",
+                tool_name=tool_name,
+                tool_kind="mcp",
+                outcome=outcome,
+                metadata={"reason": reason, "backend": self.backend},
+            )
+        except Exception:  # pragma: no cover - audit is best-effort
+            logger.debug("session MCP: audit of a spec-restriction decision failed", exc_info=True)
+
+    async def _deny_spec_disabled_tool(self, event: AcpEvent) -> bool:
+        """Refuse a codex permission request for a tool the agent spec switched off.
+
+        The deny channel codex does not have on the wire, supplied at the one point
+        this transport does offer: codex asks ``session/request_permission`` for an
+        MCP tool call, and this answers it with the adapter's own reject option
+        before anything runs. Returns True when the request was answered here, so
+        the caller neither yields it to a consumer nor approves it.
+
+        Identity comes from the PRECEDING ``tool_call`` frame, never from the
+        permission payload: codex-acp emits the MCP call as ``rawInput = {server,
+        tool, arguments}`` (``createMcpRawInput``), the client caches that dict by
+        ``toolCallId``, and the permission event carries it as ``raw_tool_params``
+        with ``raw_params_trusted`` set only when it came from that cache. Both
+        fields are the adapter's resolution of WHICH server and tool run -- the
+        model chooses a tool, it does not get to mis-report which one -- and a deny
+        can only ever deny, so no further provenance is needed. The permission
+        frame's own ``rawInput`` is a different shape (``serverName`` and a prose
+        description) and is not consulted.
+
+        Server names in the deny set are spelled as codex registers them, because
+        ``rawInput.server`` is the registered spelling; the mirror folds them
+        (:func:`~kiro_crew.providers.mirrors.codex.codex_projection`).
+
+        A False here means "not refused BY THIS", nothing more: a cache miss, an
+        untrusted params source, or a pair not in the set all return False and the
+        caller decides. On the event-yielding path that is the ordinary gate and its
+        human; on the auto-approve path, which has no human, ``_handle_permission``
+        refuses an unidentified MCP approval itself rather than approve it blind.
+        Codex's reject option for an MCP tool approval is ``cancel``, which codex-rs
+        handles as a skip of THAT call with an error result to the model
+        (``ReviewDecision::Abort`` in ``handle_mcp_tool_call`` ->
+        ``notify_mcp_tool_call_skip``), not a turn abort. Audited as a denied
+        invocation like kiro-cli's own security filter, because it is a permission
+        decision a user should be able to find later.
+        """
+        if not self._spec_denied_tools:
+            return False
+        identity = _identified_mcp_call(event)
+        if identity is None or identity not in self._spec_denied_tools:
+            return False
+        server, tool = identity
+        logger.warning(
+            "codex session MCP: refusing %r on %r -- the agent spec's disabledTools "
+            "switches it off, and this transport has no wire channel for that "
+            "restriction, so it is honoured at the permission request [session=%s]",
+            tool,
+            server,
+            self._session_id,
+        )
+        self._audit_spec_restriction(
+            tool_name=f"mcp__{server}__{tool}", outcome="denied", reason="spec_disabled_tool"
+        )
+        await self.reject_tool(event.request_id)
+        return True
 
     async def _reject_unknown_server_request(self, msg: JsonRpcMessage) -> None:
         """Answer an unrecognized server→client request with -32601.

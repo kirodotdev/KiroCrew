@@ -107,6 +107,53 @@ class TestRulingRejectsAnIncoherentClaim:
             Ruling(Disposition.DELIVERED, "sent on the wire", channel="somewhere")
 
 
+class TestCodexMirror:
+    """Codex is the folder's second mirror, and the first to use ONE face.
+
+    Claude proved both faces are ordinary. Codex proves the wire face alone is
+    too, which matters because ``write_files`` is create-or-decline and Crew
+    writes no codex file at all -- ``~/.codex/config.toml`` is the operator's.
+    """
+
+    def test_codex_uses_only_the_wire_face(self, tmp_path):
+        mirror = mirror_for("codex")
+        before = set(tmp_path.rglob("*"))
+        assert mirror.write_files("kirocrew", work_dir=tmp_path) is None
+        assert set(tmp_path.rglob("*")) == before
+
+    def test_hooks_is_the_ONE_open_gap_and_it_is_addressed(self):
+        """Exactly one thing codex can do that this transport cannot carry.
+
+        Recorded as ``no-channel`` with a destination, because an unaddressed gap is
+        indistinguishable from a decision — the documented cause of the hooks
+        regression (``UNSUPPORTED_SPEC_KEYS`` in ``acp/kas_agents.py``).
+
+        ``disabledTools`` is NOT one, and the asymmetry is the point: it is a
+        RESTRICTION, and a restriction with no channel is honoured by withholding the
+        server it narrows, so it rules ``translated``. A lost capability can be
+        recorded as a gap and lived with; a lost restriction cannot.
+        """
+        rulings = mirror_for("codex").rulings()
+        gaps = {c.value for c, r in rulings.items() if r.disposition is Disposition.NO_CHANNEL}
+        assert gaps == {"hooks"}
+
+    def test_the_wire_face_returns_the_mcp_servers_key(self):
+        params = mirror_for("codex").session_params(None)
+        assert isinstance(params["mcpServers"], list)
+
+    def test_the_wire_face_does_NOT_fail_closed_on_claudes_precondition(self):
+        """The one place copying claude would have been actively wrong.
+
+        ``permission_surface_owned`` names a claude file. Failing closed on it here
+        would withhold every Crew tool from every codex session on the strength of
+        a condition that does not describe the backend -- which is the defect this
+        folder exists to catch, arriving through the fix for it.
+        """
+        assert mirror_for("codex").session_params(None) == mirror_for("codex").session_params(
+            None, permission_surface_owned=False
+        )
+
+
 class TestClaudeCodeMirror:
     def test_hooks_is_the_one_open_gap_and_it_is_addressed(self):
         """Pins the state the RFC's hooks plan starts from.

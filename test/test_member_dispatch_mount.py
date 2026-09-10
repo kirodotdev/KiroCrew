@@ -32,6 +32,7 @@ from kiro_crew.acp.client import AcpClient
 from kiro_crew.acp.kas_agents import to_client_custom_agent
 from kiro_crew.acp.types import (
     ACP_BACKEND_CLAUDE,
+    ACP_BACKEND_CODEX,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
     ACP_BACKENDS_MEMBER_DISPATCH,
@@ -52,6 +53,12 @@ class TestCapabilitySet:
         plain chat rather than mounted-and-refused."""
         assert ACP_BACKENDS_MEMBER_DISPATCH == frozenset({ACP_BACKEND_CLAUDE, ACP_BACKEND_KAS})
         assert ACP_BACKEND_KIRO not in ACP_BACKENDS_MEMBER_DISPATCH
+        # codex has the per-session mount now (providers/mirrors/codex.py) and its
+        # precondition is stronger than claude's, so its exclusion is a scope
+        # decision rather than a capability gap: mounting session control into a
+        # codex DM thread is a NEW capability and belongs to whoever decides member
+        # threads run on codex at all.
+        assert ACP_BACKEND_CODEX not in ACP_BACKENDS_MEMBER_DISPATCH
 
 
 class TestMemberDispatchSessionServer:
@@ -201,7 +208,7 @@ class TestKasMemberProjection:
 
 
 class _ClientStub:
-    """The four attributes ``_append_member_dispatch_server`` reads."""
+    """The three attributes ``_append_member_dispatch_server`` reads."""
 
     backend = ACP_BACKEND_CLAUDE
     _session_key = MEMBER_KEY
@@ -237,6 +244,17 @@ class TestClaudeMemberAppend:
     def test_kiro_backend_is_untouched(self):
         stub = _ClientStub()
         stub.backend = ACP_BACKEND_KIRO
+        assert self._run(stub) == _base_servers()
+
+    def test_codex_is_untouched_because_it_is_not_a_member(self):
+        """The capability set withholds the mount, and it is checked FIRST.
+
+        Codex has the per-session mount and an enforced permission routing, so its
+        exclusion is a scope decision rather than a failed precondition. Pinning it
+        here means a later change that adds codex to the set cannot do so silently.
+        """
+        stub = _ClientStub()
+        stub.backend = ACP_BACKEND_CODEX
         assert self._run(stub) == _base_servers()
 
     def test_same_named_entry_is_replaced_not_duplicated(self):
