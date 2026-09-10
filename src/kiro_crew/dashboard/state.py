@@ -2362,13 +2362,20 @@ def append_and_surface(
     return msg
 
 
-#: Roles whose LIVE append starts the slot's next turn, and so consumes the answer
-#: channel an unanswered stateless question card was waiting on. Mirrors the
-#: frontend's ``QUESTION_RETIRING_ROLES``: the two must agree, or a session reports
-#: needs_input with no card on screen (client retired, server did not) or renders a
-#: card whose answer channel is already gone (server retired, client did not).
-#: Widening coverage is a data edit here.
-_QUESTION_RETIRING_ROLES = frozenset({"user", "nudge"})
+#: Roles whose LIVE append IS the next message an unanswered stateless question
+#: card was waiting on, and so retires it. Only ``user`` qualifies: the card's
+#: answer arrives as the user's next message, so only the human can spend it.
+#: ``nudge`` deliberately does NOT: an auto-nudge cycle wakes the SAME agent in
+#: the SAME conversation, so the answer channel survives it, and retiring there
+#: destroys both the card and the record a reload rehydrates from while the
+#: question is still open. A card whose question is genuinely dead is retired by
+#: its own Dismiss control, which clears this record through
+#: ``/api/ask-question/dismiss``.
+#: Mirrors the frontend's ``QUESTION_RETIRING_ROLES``: the two must agree, or a
+#: session reports needs_input with no card on screen (client retired, server did
+#: not) or renders a card whose answer channel is already gone (server retired,
+#: client did not). Widening coverage is a data edit here.
+_QUESTION_RETIRING_ROLES = frozenset({"user"})
 #: Roles that carry an inbound PROMPT -- the rows that ask this session to do
 #: something, as opposed to the rows produced while it works. ``user`` is a human
 #: send from any surface; ``inject`` is automation delivering a cron notification
@@ -4272,12 +4279,12 @@ class _ChatSlot:
         meta: dict | None = None,
         mint_mid: bool = True,
     ) -> dict[str, Any]:
-        # A LIVE turn-consuming row retires every unanswered STATELESS question:
-        # the card's own submit path sends one, and anything else that starts the
-        # slot's next turn consumes the answer channel the card was waiting on.
+        # A LIVE user row retires every unanswered STATELESS question: that row
+        # IS the next message the card's answer was contracted to arrive as.
         # Retiring here rather than at the composer covers every entrance —
-        # queued dispatch, an auto-nudge cycle, a channel row relayed from Slack —
-        # instead of the one send site that happens to be in front of the user.
+        # queued dispatch, a channel row relayed from Slack — instead of the one
+        # send site that happens to be in front of the user. An auto-nudge cycle
+        # is NOT one of them: see ``_QUESTION_RETIRING_ROLES``.
         #
         # The role set mirrors the frontend's `QUESTION_RETIRING_ROLES`, which
         # drops the card on the same frames. They must agree: a role the client

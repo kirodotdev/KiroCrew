@@ -361,6 +361,26 @@ describe('QuestionCard — collapsing', () => {
     expect(onDraftChange).toHaveBeenLastCalledWith(false)
   })
 
+  it('says what Dismiss does, on the row and on the control', () => {
+    // Dismiss is the only exit for a question nobody will answer, and the bare
+    // label reads as "hide this for now": a user who suspects it might discard
+    // the question leaves the dead card parked above the composer. The
+    // consequence is stated as a visible line (a tooltip is not there for touch
+    // or for a keyboard user reading the row) and repeated as the control's own
+    // title.
+    render(<QuestionCard questions={singleQuestion} onSubmit={vi.fn()} onDismiss={vi.fn()} />)
+    const hint = /stops the agent waiting for an answer/i
+    expect(screen.getByText(hint)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /dismiss question without answering/i }))
+      .toHaveAttribute('title', expect.stringMatching(hint) as unknown as string)
+  })
+
+  it('shows no dismiss consequence line when the card cannot be dismissed', () => {
+    // The line describes a control, so it must not appear without it.
+    render(<QuestionCard questions={singleQuestion} onSubmit={vi.fn()} />)
+    expect(screen.queryByText(/stops the agent waiting for an answer/i)).toBeNull()
+  })
+
   it('caps its height and scrolls the questions, keeping the action row out of the scroller', () => {
     // A card taller than the column it mounts in grew PAST the top of the
     // viewport and was clipped there, so the first questions were neither

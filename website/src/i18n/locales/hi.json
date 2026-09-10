@@ -7072,6 +7072,7 @@
       "collapse_all": "सभी संक्षिप्त करें",
       "custom_answer": "कस्टम उत्तर",
       "dismiss": "खारिज करें",
+      "dismiss_hint": "प्रश्न खारिज करने पर एजेंट उत्तर की प्रतीक्षा करना बंद कर देगा।",
       "dismiss_question_without_answering": "उत्तर दिए बिना प्रश्न खारिज करें",
       "expand_all": "सभी विस्तृत करें",
       "not_answered_yet": "अभी उत्तर नहीं दिया",

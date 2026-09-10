@@ -62,7 +62,7 @@ For a single-select question, selecting a different option replaces the previous
 
 Every question must have an answer before Submit becomes available. The card emits answers keyed by question text; the stateless wrapper sends the answer values as newline-separated message text. Dismiss removes the stateless card and its `needs_input` status without sending an answer.
 
-Only one stateless card is retained per slot; a later card replaces the earlier one. A live user or nudge message retires an unanswered stateless card. Reloads and websocket reconnects reconcile pending cards with `GET /api/ask-question/pending`.
+Only one stateless card is retained per slot; a later card replaces the earlier one. A live user message retires an unanswered stateless card; an auto-nudge cycle does not, because it wakes the same agent in the same conversation and the answer still reaches it. Anything else needs the card's own Dismiss control. Reloads and websocket reconnects reconcile pending cards with `GET /api/ask-question/pending`.
 
 The blocking `POST /api/ask-question` round trip is a separate owner-only HTTP
 path that no agent tool uses; its endpoint contract is a contributor reference

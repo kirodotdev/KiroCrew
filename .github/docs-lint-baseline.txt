@@ -625,7 +625,6 @@ line-ref	docs/request-for-change/rfc-transcript-section-markers.md	dashboard/cha
 line-ref	docs/request-for-change/rfc-transcript-section-markers.md	dashboard/chat_utils.py:1367
 line-ref	docs/request-for-change/rfc-transcript-section-markers.md	dashboard/routes/chat.py:75
 line-ref	docs/request-for-change/rfc-transcript-section-markers.md	dashboard/state.py:2018
-line-ref	docs/request-for-change/rfc-transcript-section-markers.md	dashboard/state.py:2063
 line-ref	docs/request-for-change/rfc-transcript-section-markers.md	dashboard/state.py:2069
 line-ref	docs/request-for-change/rfc-transcript-section-markers.md	dashboard/state.py:3564
 line-ref	docs/request-for-change/rfc-transcript-section-markers.md	dashboard/state.py:3588-3591

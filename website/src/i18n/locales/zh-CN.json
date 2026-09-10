@@ -6965,6 +6965,7 @@
       "collapse_all": "全部折叠",
       "custom_answer": "自定义回答",
       "dismiss": "忽略",
+      "dismiss_hint": "忽略问题后，智能体将不再等待回答。",
       "dismiss_question_without_answering": "忽略问题而不回答",
       "expand_all": "全部展开",
       "not_answered_yet": "尚未回答",

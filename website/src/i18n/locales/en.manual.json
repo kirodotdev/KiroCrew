@@ -3017,6 +3017,9 @@
       "guardrails_hint": "Commands that are never allowed to run.",
       "save_failed": "That change didn’t save — try again.",
       "origin_diff_failed": "Could not load the original template to compare changes."
+    },
+    "questionCard": {
+      "dismiss_hint": "Dismissing the question stops the agent waiting for an answer."
     }
   },
   "hooks": {

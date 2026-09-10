@@ -7179,6 +7179,7 @@
       "collapse_all": "Contraer todo",
       "custom_answer": "Respuesta personalizada",
       "dismiss": "Descartar",
+      "dismiss_hint": "Descartar la pregunta hace que el agente deje de esperar una respuesta.",
       "dismiss_question_without_answering": "Descartar la pregunta sin responder",
       "expand_all": "Expandir todo",
       "not_answered_yet": "Sin responder",

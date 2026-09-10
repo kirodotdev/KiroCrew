@@ -6965,6 +6965,7 @@
       "collapse_all": "모두 접기",
       "custom_answer": "직접 입력한 답변",
       "dismiss": "무시",
+      "dismiss_hint": "질문을 닫으면 에이전트가 답변 대기를 중단합니다.",
       "dismiss_question_without_answering": "답변하지 않고 질문 무시",
       "expand_all": "모두 펼치기",
       "not_answered_yet": "아직 답변하지 않음",

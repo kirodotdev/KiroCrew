@@ -7179,6 +7179,7 @@
       "collapse_all": "Recolher tudo",
       "custom_answer": "Resposta personalizada",
       "dismiss": "Descartar",
+      "dismiss_hint": "Descartar a pergunta faz o agente parar de esperar uma resposta.",
       "dismiss_question_without_answering": "Descartar pergunta sem responder",
       "expand_all": "Expandir tudo",
       "not_answered_yet": "Ainda sem resposta",

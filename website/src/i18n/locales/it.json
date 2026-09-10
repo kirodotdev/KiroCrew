@@ -7179,6 +7179,7 @@
       "collapse_all": "Comprimi tutto",
       "custom_answer": "Risposta personalizzata",
       "dismiss": "Ignora",
+      "dismiss_hint": "Ignorare la domanda fa sì che l’agente smetta di attendere una risposta.",
       "dismiss_question_without_answering": "Ignora la domanda senza rispondere",
       "expand_all": "Espandi tutto",
       "not_answered_yet": "Nessuna risposta",

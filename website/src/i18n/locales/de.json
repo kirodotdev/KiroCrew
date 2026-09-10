@@ -7072,6 +7072,7 @@
       "collapse_all": "Alle einklappen",
       "custom_answer": "Benutzerdefinierte Antwort",
       "dismiss": "Schließen",
+      "dismiss_hint": "Das Verwerfen der Frage beendet das Warten des Agenten auf eine Antwort.",
       "dismiss_question_without_answering": "Frage ohne Antwort schließen",
       "expand_all": "Alle ausklappen",
       "not_answered_yet": "Noch nicht beantwortet",

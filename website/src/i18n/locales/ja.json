@@ -6965,6 +6965,7 @@
       "collapse_all": "すべて折りたたむ",
       "custom_answer": "カスタム回答",
       "dismiss": "却下",
+      "dismiss_hint": "質問を却下すると、エージェントは回答を待つのをやめます。",
       "dismiss_question_without_answering": "質問に答えずに却下",
       "expand_all": "すべて展開",
       "not_answered_yet": "まだ回答されていません",

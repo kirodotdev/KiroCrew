@@ -7286,6 +7286,7 @@
       "collapse_all": "Свернуть все",
       "custom_answer": "Свой ответ",
       "dismiss": "Скрыть",
+      "dismiss_hint": "Если скрыть вопрос, агент перестанет ждать ответа.",
       "dismiss_question_without_answering": "Скрыть вопрос без ответа",
       "expand_all": "Развернуть все",
       "not_answered_yet": "Нет ответа",

@@ -7072,6 +7072,7 @@
       "collapse_all": "সব সংকুচিত করুন",
       "custom_answer": "কাস্টম উত্তর",
       "dismiss": "খারিজ করুন",
+      "dismiss_hint": "প্রশ্নটি বাতিল করলে এজেন্ট উত্তরের জন্য অপেক্ষা করা বন্ধ করবে।",
       "dismiss_question_without_answering": "উত্তর না দিয়ে প্রশ্নটি খারিজ করুন",
       "expand_all": "সব প্রসারিত করুন",
       "not_answered_yet": "এখনও উত্তর দেওয়া হয়নি",

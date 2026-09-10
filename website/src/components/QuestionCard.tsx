@@ -280,6 +280,7 @@ function QuestionCard({ questions, onSubmit, onDismiss, busy = false, onDraftCha
             onClick={onDismiss}
             disabled={busy}
             aria-label={i18nT('components.questionCard.dismiss_question_without_answering')}
+            title={i18nT('components.questionCard.dismiss_hint')}
             className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[13px] font-medium cursor-pointer transition-all disabled:opacity-30 disabled:cursor-not-allowed bg-transparent text-muted hover:text-text border border-border"
           >
             {i18nT('components.questionCard.dismiss')}
@@ -293,6 +294,17 @@ function QuestionCard({ questions, onSubmit, onDismiss, busy = false, onDraftCha
           <MessageSquare size={14} /> {i18nT('components.questionCard.submit')}
         </button>
       </div>
+      {/* Dismiss is the only control that ends a question nobody is going to
+          answer, so it has to say what it does: the label alone reads as "hide
+          this for now" and a user who suspects it might throw the question away
+          leaves a dead card parked above the composer instead. Rendered as a
+          line rather than only as the button's title, because a tooltip does not
+          exist for touch or for a keyboard user reading the row. */}
+      {onDismiss && (
+        <div className="px-4 pb-3 -mt-1.5 text-[12px] text-muted shrink-0 text-right">
+          {i18nT('components.questionCard.dismiss_hint')}
+        </div>
+      )}
     </div>
   )
 }
