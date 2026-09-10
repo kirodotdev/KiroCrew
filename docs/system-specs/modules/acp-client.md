@@ -1,5 +1,16 @@
 # ACP Client Module
 
+## Opt-in app-scoped dispatch receipt
+
+`AcpClient._send_request` consults `ucam_consumer.before_prompt` before encoding
+the request. It is a no-op unless the fixed synthetic App Kit run has installed
+a task-local callback, and then applies only to that dedicated client's
+`session/prompt`. The callback fetches an approved projection after readiness
+and prompt-block construction; the lease is checked again just before stdin
+write. Successful drain triggers an injected receipt, which establishes local
+transport handoff, not model comprehension. No provider registration changes.
+Other sessions retain the existing message bytes and transport semantics.
+
 ## Overview
 
 The ACP layer spans **five** modules: the legacy per-session client (`acp/client.py`, one subprocess per session), the multiplexed runtime (`acp/runtime.py`, one subprocess fanned out to N sessions), the per-session handle (`acp/session_handle.py`, one `sessionId` + queue + prompt/approve/reject loop), a shared dispatch parser (`acp/_dispatch.py`, pure frame-shaping/redaction helpers all paths route through), and the session provider (`acp/session_provider.py`, `AcpSessionProvider` adapting an `AcpSessionHandle` to the `LLMProvider` ABC so runtime-backed sessions are interchangeable with `AcpClient`). All are JSON-RPC 2.0 over stdio for `kiro-cli acp` or `claude-agent-acp`, managing subprocess lifecycle, session initialization, prompt streaming, and tool permissions. All protocol constants in `acp/types.py`.

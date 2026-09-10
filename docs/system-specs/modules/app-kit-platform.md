@@ -1,5 +1,34 @@
 # App Kit platform contracts (agents, MCP scoping, window entries)
 
+## Fixed synthetic consumer addon
+
+Expired consumer reservations become durable `failed/ucam_run_deadline` rows
+within the store's existing transaction when read. This is not a read-only
+projection: idempotent callers and quiescence checks observe the same terminal
+state. Late native completion cannot reopen a deadline failure or replace its
+text/outcome; trusted observer evidence can still advance without erasing true
+send/ACK flags. Native-manager idleness remains a separate restart prerequisite.
+
+`addons/ucam-synthetic-consumer` demonstrates a narrowly opt-in consumer of an
+external approved-memory ledger. Its route requires both verified app and
+subject equal to its app name: app-secret exchange mints an app subject, not an
+end-user subject. Operator-owned configuration maps only that identity to one
+synthetic scope; caller-supplied owner/workspace/agent overrides are refused.
+It uses the existing named-agent Spawn SDK, not an independent spawner. The
+executable-app trust gate still applies; do not enable all third-party apps or
+forge builtin provenance to activate this example. Its README describes the
+additional host dispatch callback and deployment prerequisites.
+The synthetic consume route reserves a caller request ID durably before dispatch;
+same ID/task reuses the native run, changed tasks conflict, and ambiguous dispatch
+is never automatically repeated. Only an app-created run in the fixed binding's
+namespace is visible through its authenticated result route. Output is bounded
+to 64 KiB and native streaming to 120 seconds. Scheduling, native injection,
+completion and canonical acknowledgement are distinct states.
+The host SDK's done probe reports a pre-observer failure immediately instead of
+leaving it queued until the result deadline. The original reservation deadline
+is also checked immediately before native stdin writes, so a delayed startup
+cannot send a prompt after its request has expired.
+
 Everything here is **generic App Kit surface**, not one app's arrangement: each
 item is what the FIRST app to need it exposed, and every later app builds on the
 same contract. The manifest field reference lives in

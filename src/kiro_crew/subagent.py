@@ -4140,7 +4140,11 @@ class SubagentManager:
         if info.keep:
             self._sessions.mark_continuable(session_key)
             self._conversations[session_key] = time.time()
-        use_session_sharing = (not info.keep) and self._should_use_session_sharing(info)
+        from kiro_crew.ucam_consumer import consumer_for, synthetic_app
+
+        use_session_sharing = (
+            not synthetic_app(info) and (not info.keep) and self._should_use_session_sharing(info)
+        )
         # A per-spawn or per-role model / reasoning-effort override cannot be
         # applied to the parent's already-started shared runtime (it was spawned
         # with the parent's model and cannot switch model per session). Force the
@@ -4200,6 +4204,7 @@ class SubagentManager:
             is_cc = self._is_cc_provider(client)
         # Intentionally check info.agent (not resolved `agent`) so only
         # explicitly requested agents skip _SYSTEM_PREFIX (defense-in-depth).
+        ucam_run = await consumer_for(info, is_new, _resumed, is_cc)
         named_agent = bool(info.agent and _AGENT_NAME_RE.fullmatch(info.agent))
         raw_task = info._raw_task or info.task
         message = raw_task if named_agent else (_SYSTEM_PREFIX + raw_task)
@@ -4226,6 +4231,7 @@ class SubagentManager:
             session_key,
             provider_type="claude_code" if is_cc else "acp",
             model_window=_sub_window,
+            **({"agent": info.agent, "blocks_reads": True} if ucam_run else {}),
         )
 
         result_text = ""
@@ -4314,7 +4320,8 @@ class SubagentManager:
             msg = full_message
             while True:
                 try:
-                    async for _ev in client.stream(msg):
+                    stream = ucam_run.stream(client, msg) if ucam_run else client.stream(msg)
+                    async for _ev in stream:
                         yield _ev
                     return
                 except asyncio.CancelledError:
