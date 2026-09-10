@@ -27,8 +27,8 @@ while the code holding credentials is not. `pr-readiness.yml` does not read this
 | `scripts/gui-user-test/teardown.sh` | Kills the three process groups and removes the scratch home and browser profile. |
 | `test/gui_user/harness.py` | The screenshot -> Bedrock Messages API -> action loop with the step, time and budget gates. |
 | `test/gui_user/x11.py` | Screenshots (Pillow `ImageGrab`) and input (`xdotool`); coordinate scaling, key aliases and argv building are pure and unit-tested. |
-| `test/gui_user/scenarios.py` + `scenarios/*.yaml` | The scenario DSL and the shipped scenarios. |
-| `test/gui_user/report.py` | Renders `summary.json` into `verdict.md`, the PR comment and the nightly issue. |
+| `test/gui_user/scenarios.py` + `scenarios/*.yaml` | The scenario DSL (including the `FEATURES` registry) and the shipped scenarios. |
+| `test/gui_user/report.py` | Renders `summary.json` into `verdict.md`, the PR comment and the nightly issue, all grouped by feature; renders `features.md` from the scenario directory. |
 
 The unit tests under `test/gui_user/` run in the ordinary Backend Tests shards; they
 need no display and never call Bedrock.
@@ -58,7 +58,8 @@ need no display and never call Bedrock.
    hard stops.
 5. Everything lands in the `gui-user-test-<run id>` artifact: `results/<scenario>/attempt-N/NN-<action>.png`,
    `steps.jsonl` (every action with parameters and the screenshot it produced),
-   `summary.json`, `verdict.md`, plus `gateway.log` / `gateway.err` / `chrome.log` /
+   `summary.json`, `verdict.md`, `features.md` (the feature catalog joined with this
+   run's verdicts), plus `gateway.log` / `gateway.err` / `chrome.log` /
    `xvfb.log` with the one-time token scrubbed.
 
 ### The model and the tool shape
@@ -88,6 +89,11 @@ Create `test/gui_user/scenarios/<name>.yaml`; the file stem must equal `name`:
 ```yaml
 name: settings-theme-toggle
 tier: smoke                 # smoke = runs on PRs and nightly; nightly = nightly only
+feature: settings           # product area -- a key of scenarios.FEATURES (see below)
+user_story: >-              # one sentence a person can read: who wants what, and why
+  As a user, I want to switch the dashboard theme in Settings, so that the app
+  matches my environment and the change is visible at once.
+docs_url: docs/system-specs/modules/themes.md   # optional: where the feature is specified
 summary: Switch the dashboard theme in Settings and confirm the colours change
 preconditions:
   seed: rich                # KIROCREW_HOME fixture (kirocrew gateway --seed NAME)
@@ -107,6 +113,47 @@ click -- and `expectations` as things that are true or false on the final screen
 a scenario to one flow; the cheapest scenario is the one that needs the fewest
 screenshots. `test_scenarios_and_report.py` loads every shipped file, so a malformed
 scenario fails the unit tests before it costs a model call.
+
+### `feature` and `user_story`: the scenario directory is also the feature catalog
+
+`feature` and `user_story` are required and are never shown to the model. They exist
+for the readers of the report: the verdict table, the step summary and the nightly
+issue are grouped by feature, each row carries the user story, and
+`report.py --format features` renders **`features.md`** -- one section per feature
+listing its user stories with the latest verdict, followed by the features that have no
+scenario yet. The workflow uploads `results/features.md` with the artifact and appends
+it to the run's step summary, so "what does the product do, and is it healthy" is
+answered from any run page without opening the YAML.
+
+- `feature` is a slug from the closed registry `scenarios.FEATURES` (`chat`, `sidebar`,
+  `members`, `settings`, `apps`, `schedule`, `knowledge`, `artifacts`, `files`,
+  `browser-panel`, `voice`, `notifications`, `onboarding`, `search`, `developer`). A closed
+  list, not a free-form slug, so a typo cannot split one feature into two report groups.
+  To add a product area, add `slug: "Human title"` to `FEATURES` in the order you want
+  it reported and mention it in the list above; a scenario naming an unknown feature
+  is rejected at load time.
+- `user_story` is one sentence of at most 300 characters, in the user's voice: `As a
+  <who>, I want <what>, so that <why>`, or a plain use case when the persona adds
+  nothing. Say what the user is trying to achieve, not which control they press --
+  that is what `steps` are for. The shipped scenarios all start with `As a`, and the
+  unit tests hold them to it.
+- `docs_url` is optional: an `https://` URL or a repo path under `docs/` ending in
+  `.md` (an anchor is allowed). It becomes the **Docs** link in `features.md`.
+
+Scenario names should start with the feature they belong to where that reads
+naturally (`settings-theme-toggle`, `members-dm-hello`) so the artifact directory
+sorts the same way the report groups.
+
+### Keeping a scenario true as the product moves
+
+A step that names a control by its exact label goes stale when the label changes.
+When a surface is mid-transition, describe it by what does not change: the Feature
+Previews card for Crew Members was relabelled from "Crew Members and Crew Mode" to
+"Crew Members" as Crew Mode retired (#9519), so `members-dm-hello` asks for the card
+"whose title starts with `Crew Members`" and names both readings, and finds the page by
+its rail label, which was the same on both sides of the change. When a scenario does
+need to move with the product, change the YAML in the same PR as the UI and re-run it
+on demand (below) before merging.
 
 `boot.sh` seeds one home per run from `GUI_SEED` (default `rich`) with `GUI_MEMBERS`
 (default `nova-sky`); a scenario's `preconditions.seed` / `members` document what it

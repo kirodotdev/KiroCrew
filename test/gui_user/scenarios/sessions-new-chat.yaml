@@ -4,6 +4,11 @@
 # from the seeded ones on screen.
 name: sessions-new-chat
 tier: smoke
+feature: chat
+user_story: >-
+  As a user, I want to start a new chat from the sidebar and get a reply, so
+  that I can begin a piece of work without leaving what I was doing.
+docs_url: docs/system-specs/modules/session.md
 summary: Create a new chat from the sidebar and confirm it appears in the session list
 preconditions:
   seed: rich

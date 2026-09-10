@@ -243,6 +243,23 @@ jobs:
         if: always()
         run: bash scripts/gui-user-test/teardown.sh
 
+      # features.md is the "what does the product do, and is it healthy"
+      # catalog: every scenario's feature + user story, joined with this run's
+      # verdicts. Built from the repo-authored YAML, so it renders even when
+      # the target never booted (the verdict column then reads "not run").
+      - name: Render the feature catalog
+        if: always()
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -uo pipefail
+          mkdir -p "$GUI_OUT/results"
+          summary="$GUI_OUT/results/summary.json"
+          summary_args=()
+          [ -f "$summary" ] && summary_args=(--summary "$summary")
+          python test/gui_user/report.py --format features --run-url "$RUN_URL" "${summary_args[@]}" \
+            > "$GUI_OUT/results/features.md"
+
       - name: Upload screenshots, steps and verdict
         id: artifact
         if: always()
@@ -275,6 +292,16 @@ jobs:
           else
             verdict="ERROR"
             echo "## GUI user test — ERROR (no summary.json: the target did not boot or the harness crashed)" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if [ -f "$GUI_OUT/results/features.md" ]; then
+            {
+              echo
+              echo "<details><summary>Feature catalog (what the scenarios cover)</summary>"
+              echo
+              cat "$GUI_OUT/results/features.md"
+              echo
+              echo "</details>"
+            } >> "$GITHUB_STEP_SUMMARY"
           fi
           echo "verdict=$verdict" >> "$GITHUB_OUTPUT"
 

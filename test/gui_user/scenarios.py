@@ -4,6 +4,10 @@
 
     name: settings-theme-toggle          # slug, also the artifact sub-directory
     tier: smoke                          # smoke (PR + nightly) | nightly (nightly only)
+    feature: settings                    # product area, a key of FEATURES (groups the report)
+    user_story: >-                       # one user-readable sentence: what the user wants and why
+      As a user, I want to switch the dashboard theme so that it matches my desk.
+    docs_url: docs/build/gui-user-test.md   # optional: where the feature is documented
     summary: one line for the report table
     preconditions:
       seed: rich                         # KIROCREW_HOME fixture the target boots from
@@ -20,6 +24,12 @@ The harness turns ``steps`` + ``expectations`` into the task prompt and asks the
 model for a ``VERDICT`` block; the workflow only ever sees the resulting
 ``summary.json``. Everything here is data: the loader validates shape and
 bounds, it never interprets the natural language.
+
+``feature`` and ``user_story`` are not read by the harness at all: they exist so
+the report can be read as "which product areas are healthy" and so the scenario
+directory doubles as a catalog of what the product does (``report.py --format
+features``). A scenario without them is rejected, because a catalog with
+unclassified entries is not a catalog.
 """
 
 from __future__ import annotations
@@ -33,6 +43,42 @@ import yaml
 
 TIERS: tuple[str, ...] = ("smoke", "nightly")
 _SLUG_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$")
+
+#: Product areas a scenario may claim, slug -> human title. A closed list rather
+#: than a free-form slug so a typo cannot split one feature into two report
+#: groups; adding an area is a one-line data change here plus a row in
+#: ``docs/build/gui-user-test.md``. Order is the order the report groups appear in.
+FEATURES: dict[str, str] = {
+    "chat": "Chat sessions",
+    "sidebar": "Sessions sidebar & folders",
+    "members": "Crew Members",
+    "settings": "Settings",
+    "apps": "Apps & App Store",
+    "schedule": "Schedule (cron jobs)",
+    "knowledge": "Knowledge library",
+    "artifacts": "Artifacts",
+    "files": "File viewer & project files",
+    "browser-panel": "Browser panel",
+    "voice": "Voice",
+    "notifications": "Notifications",
+    "onboarding": "Onboarding & login",
+    "search": "Search everywhere & command palette",
+    "developer": "Developer tools",
+}
+
+#: A user story is one sentence a product manager could read aloud; the bound is
+#: generous enough for "As a …, I want …, so that …" and tight enough to refuse a
+#: pasted paragraph.
+USER_STORY_MAX = 300
+
+#: An ``https://`` URL, or a repo path under ``docs/`` ending in ``.md`` (optional
+#: anchor). Path segments are letters, digits, ``.``, ``_`` and ``-`` and never
+#: start with ``.``, so ``docs/../x.md`` and hidden files are refused.
+_DOCS_URL_RE = re.compile(
+    r"^(https://[^\s]+"
+    r"|docs/(?:[A-Za-z0-9_-][A-Za-z0-9._-]*/)*[A-Za-z0-9_-][A-Za-z0-9._-]*\.md"
+    r"(#[A-Za-z0-9._-]+)?)$"
+)
 
 #: Hard ceilings, independent of what a scenario asks for. A scenario that
 #: wants more is a design smell (split it), and the ceiling is what bounds the
@@ -49,11 +95,14 @@ class ScenarioError(ValueError):
 class Scenario:
     name: str
     tier: str
+    feature: str
+    user_story: str
     summary: str
     steps: tuple[str, ...]
     expectations: tuple[str, ...]
     max_steps: int
     max_seconds: int
+    docs_url: str = ""
     seed: str = "rich"
     members: tuple[str, ...] = ()
     start_url: str = "/"
@@ -104,6 +153,9 @@ def parse_scenario(doc: Any, path: Path) -> Scenario:
     unknown = set(doc) - {
         "name",
         "tier",
+        "feature",
+        "user_story",
+        "docs_url",
         "summary",
         "preconditions",
         "steps",
@@ -123,6 +175,30 @@ def parse_scenario(doc: Any, path: Path) -> Scenario:
     tier = doc.get("tier", "nightly")
     if tier not in TIERS:
         raise ScenarioError(f"{path}: 'tier' must be one of {TIERS}")
+
+    feature = doc.get("feature")
+    if not isinstance(feature, str) or feature not in FEATURES:
+        raise ScenarioError(
+            f"{path}: 'feature' is required and must be one of {sorted(FEATURES)} "
+            "(add a new product area to scenarios.FEATURES first)"
+        )
+
+    user_story = doc.get("user_story")
+    if (
+        not isinstance(user_story, str)
+        or not user_story.strip()
+        or len(user_story.strip()) > USER_STORY_MAX
+    ):
+        raise ScenarioError(
+            f"{path}: 'user_story' is required: one sentence of at most {USER_STORY_MAX} chars "
+            "('As a …, I want …, so that …' or a use case)"
+        )
+
+    docs_url = doc.get("docs_url", "")
+    if not isinstance(docs_url, str) or (docs_url and not _DOCS_URL_RE.match(docs_url)):
+        raise ScenarioError(
+            f"{path}: 'docs_url' must be an https:// URL or a repo path under docs/ ending in .md"
+        )
 
     summary = doc.get("summary")
     if not isinstance(summary, str) or not summary.strip() or len(summary) > 200:
@@ -154,6 +230,8 @@ def parse_scenario(doc: Any, path: Path) -> Scenario:
     return Scenario(
         name=name,
         tier=tier,
+        feature=feature,
+        user_story=user_story.strip(),
         summary=summary.strip(),
         steps=_str_list(doc.get("steps"), "steps", path),
         expectations=_str_list(doc.get("expectations"), "expectations", path),
@@ -161,6 +239,7 @@ def parse_scenario(doc: Any, path: Path) -> Scenario:
         max_seconds=_bounded_int(
             doc.get("max_seconds", 300), "max_seconds", MAX_SECONDS_CEILING, path
         ),
+        docs_url=docs_url,
         seed=seed,
         members=tuple(members),
         start_url=start_url,
@@ -204,3 +283,11 @@ def select(
     if missing:
         raise ScenarioError(f"unknown scenario name(s): {sorted(missing)}")
     return out
+
+
+def by_feature(scenarios: Iterable[Scenario]) -> dict[str, list[Scenario]]:
+    """Group scenarios by ``feature`` in :data:`FEATURES` order (empty groups omitted)."""
+    groups: dict[str, list[Scenario]] = {slug: [] for slug in FEATURES}
+    for s in scenarios:
+        groups[s.feature].append(s)
+    return {slug: group for slug, group in groups.items() if group}
