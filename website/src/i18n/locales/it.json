@@ -6873,6 +6873,28 @@
       "system_default": "Predefinito di sistema",
       "unnamed_input": "Ingresso senza nome"
     },
+    "moveToCrew": {
+      "error_target_required": "È necessario un crew di destinazione.",
+      "error_no_plan": "Il crew non ha restituito un piano.",
+      "heading": "Anteprima: sposta {{unitKind}} <0>{{unitId}}</0> in un altro crew",
+      "menu_label": "Anteprima dello spostamento in un altro crew…",
+      "more_actions": "Altre azioni",
+      "target_crew_label": "Crew di destinazione",
+      "target_crew_placeholder": "ID del crew",
+      "planning": "Pianificazione…",
+      "plan_move": "Anteprima spostamento",
+      "cancel": "Annulla",
+      "handoff_id": "ID di trasferimento",
+      "bundle": "Pacchetto",
+      "fields_shipped": "Campi che verrebbero spostati",
+      "completed_kept": "Attività completate che verrebbero mantenute (non rieseguite)",
+      "requirements_heading": "La destinazione dovrebbe soddisfare",
+      "findings_heading": "Non verrà trasferito",
+      "plan_only_note_prefix": "Niente è stato spostato.",
+      "plan_only_note_emphasis": "Questa è un'anteprima",
+      "plan_only_note_suffix": "— spostare il lavoro stesso non è ancora disponibile.",
+      "error_suggestions_unavailable": "Impossibile caricare i suggerimenti dei crew. Puoi comunque digitare un ID crew."
+    },
     "migrationBanner": {
       "install_app_from_apps": "Installa \"{{app}}\" da App prima del prossimo aggiornamento di {{productName}} per continuare a usarla.",
       "install_from_apps": "Installa da App",
@@ -12098,6 +12120,7 @@
       "failed_to_update_task": "Impossibile aggiornare l'attività"
     },
     "projectsPage": {
+      "optimize_plan_prompt": "Ottimizziamo questo piano:\n\n{{context}}",
       "agent": "Agente:",
       "analyzing_task_and_building_step_by_step_plan": "Analisi dell'attività e creazione del piano passo a passo",
       "auto_approve": "Approva automaticamente",

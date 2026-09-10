@@ -1,5 +1,12 @@
 import { useState, useEffect, useCallback, useRef, type ReactNode } from 'react'
-import { Hourglass, ClipboardList, ClipboardCheck, RefreshCw, CheckCircle, XCircle, Square, Sparkles, FileText, Settings, X, MessageSquare, Pencil, Clock, Pause, Play, RotateCcw, Plus, PanelLeftOpen, Zap } from 'lucide-react'
+import { Hourglass, ClipboardList, ClipboardCheck, RefreshCw, CheckCircle, XCircle, Square, Sparkles, FileText, Settings, X, MessageSquare, Pencil, Clock, Pause, Play, RotateCcw, Plus, PanelLeftOpen, Zap, ArrowRightLeft, MoreHorizontal } from 'lucide-react'
+import MoveToCrewDialog from '../components/MoveToCrewDialog'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '../components/ui/dropdown-menu'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useAppSelector, useAppDispatch } from '../store'
 import { setPendingInput, switchSlot } from '../store/chatSlice'
@@ -65,6 +72,8 @@ function TextInputPanel({ text, setText, rows, placeholder, accept, onUpload, on
 
 export default function ProjectsPage() {
   const ime = useImeGuard()
+  // Crew-to-crew work migration (issue #7577): which run's move plan is open.
+  const [movingRunId, setMovingRunId] = useState<string | null>(null)
   const refreshTrigger = useAppSelector(s => s.dashboard.refreshTrigger)
   const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
@@ -582,6 +591,100 @@ export default function ProjectsPage() {
     </div>
   )
 
+  const taskRunOverflow = selectedRun && !selectedRun.running ? (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button
+          type="button"
+          className="grid h-8 w-8 shrink-0 place-items-center rounded-md border border-border bg-transparent text-muted transition-colors hover:border-accent hover:text-accent"
+          aria-label={i18nT('components.moveToCrew.more_actions')}
+          title={i18nT('components.moveToCrew.more_actions')}
+        >
+          <MoreHorizontal size={16} aria-hidden="true" />
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end">
+        {selectedRun.status === 'planned' && (
+          <DropdownMenuItem
+            onSelect={() =>
+              runAction(async () => {
+                const res = await api.planContext(selectedRun.task_id)
+                // A body without the context is a failed hand-off, not a
+                // different kind of success — there is nothing to open chat with.
+                if (!res.ok || !res.context) return { ok: false, error: res.error }
+                dispatch(
+                  setPendingInput(
+                    i18nT('pages.projectsPage.optimize_plan_prompt', { context: res.context }),
+                  ),
+                )
+                navigate('/chat?autoSend=1&newSession=1')
+                return res
+              })
+            }
+          >
+            <MessageSquare size={14} aria-hidden="true" />
+            {i18nT('pages.projectsPage.chat')}
+          </DropdownMenuItem>
+        )}
+        {selectedRun.status === 'planned' && (
+          <DropdownMenuItem
+            className="text-danger focus:text-danger"
+            onSelect={() =>
+              runAction(
+                () => api.deleteTaskRun(selectedRun.task_id),
+                () => {
+                  setSelectedRun(null)
+                  load()
+                },
+              )
+            }
+          >
+            <X size={14} aria-hidden="true" />
+            {i18nT('pages.projectsPage.discard')}
+          </DropdownMenuItem>
+        )}
+        <DropdownMenuItem onSelect={() => setMovingRunId(selectedRun.task_id)}>
+          <ArrowRightLeft size={14} aria-hidden="true" />
+          {i18nT('components.moveToCrew.menu_label')}
+        </DropdownMenuItem>
+        {(selectedRun.status === 'completed' || selectedRun.status === 'cancelled') && (
+          <DropdownMenuItem
+            onSelect={() => runAction(() => api.retryTaskRun(selectedRun.task_id, 1), load)}
+          >
+            <RotateCcw size={14} aria-hidden="true" />
+            {i18nT('pages.projectsPage.restart')}
+          </DropdownMenuItem>
+        )}
+        {selectedRun.status !== 'planned' && selectedRun.status !== 'planning' && (
+          <DropdownMenuItem
+            onSelect={() => {
+              const name = selectedRun.name || selectedRun.spec_name || selectedRun.task_id
+              const spec = selectedRun.spec_content || selectedRun.original_input || ''
+              if (!spec) {
+                alert(i18nT('pages.projectsPage.no_spec_idea_to_schedule'))
+                return
+              }
+              void runAction(
+                () =>
+                  api.createCron({
+                    name: `Project: ${name}`,
+                    // Machine protocol consumed by the cron runner, not UI copy;
+                    // translating `run __inline__:` would make the job unexecutable.
+                    message: `run __inline__:${spec}`,
+                    every: 86400,
+                  }),
+                () => alert(i18nT('pages.projectsPage.scheduled_as_daily_cron_job')),
+              )
+            }}
+          >
+            <Clock size={14} aria-hidden="true" />
+            {i18nT('pages.projectsPage.schedule')}
+          </DropdownMenuItem>
+        )}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  ) : null
+
   // Three-part workspace shell, matching Issue Radar: a resizable/collapsible
   // rail, its drag handle, then a flush main column. The rail is present in
   // every state (including "no runs yet") so the page never reflows out from
@@ -589,6 +692,17 @@ export default function ProjectsPage() {
   // its own padding rather than inheriting page gutters.
   return (
     <div className={`flex h-full bg-bg text-text ${railBar ? 'flex-col' : ''}`}>
+      {/* Crew-to-crew work migration (issue #7577): the task-run move surface.
+          Plans from the LIVE run record, which carries WorkingMemory and
+          current_task -- neither of which runs.json persists. */}
+      {movingRunId && (
+        <MoveToCrewDialog
+          unitKind="taskrun"
+          unitId={movingRunId}
+          onPlan={toCrew => api.planTaskRunMove(movingRunId, toCrew)}
+          onClose={() => setMovingRunId(null)}
+        />
+      )}
       {rail.collapsed ? (
         <CollapsedRail width={rail.width} onExpand={rail.expand} horizontal={railBar} />
       ) : (
@@ -674,18 +788,13 @@ export default function ProjectsPage() {
                   {i18nT('pages.projectsPage.auto_approve_tool_calls')}
                 </label>
                 <button className="btn-sweep bg-accent text-accent-fg border-none rounded-lg px-4 h-8 text-[13px] font-semibold cursor-pointer hover:bg-accent-hover transition-all" onClick={() => runAction(() => api.executePlan(selectedRun.task_id, agent, autoApprove), load)}><Play className="lucide-inline" /> {i18nT('pages.projectsPage.execute')}</button>
-                <button className="px-3 h-8 rounded-md border border-border text-muted text-[13px] cursor-pointer hover:text-accent hover:border-accent transition-all" onClick={() => runAction(async () => {
-                  const res = await api.planContext(selectedRun.task_id)
-                  // A body without the context is a failed hand-off, not a
-                  // different kind of success — there is nothing to open chat with.
-                  if (!res.ok || !res.context) return { ok: false, error: res.error }
-                  dispatch(setPendingInput("Let's optimize this plan:\n\n" + res.context)); navigate('/chat?autoSend=1&newSession=1')
-                  return res
-                })}><MessageSquare className="lucide-inline" /> {i18nT('pages.projectsPage.chat')}</button>
-                <button className="px-3 h-8 rounded-md border border-border text-muted text-[13px] cursor-pointer hover:text-danger hover:border-danger transition-all" onClick={() => runAction(() => api.deleteTaskRun(selectedRun.task_id), () => { setSelectedRun(null); load() })}><X className="lucide-inline" /> {i18nT('pages.projectsPage.discard')}</button>
               </>}
               {selectedRun.status === 'planning' && <button className="px-3 h-8 rounded-md border border-border text-muted text-[13px] cursor-pointer hover:text-danger hover:border-danger transition-all" onClick={() => runAction(() => api.cancelPlan(), () => setSelectedRun(null))}><X className="lucide-inline" /> {i18nT('pages.projectsPage.cancel')}</button>}
               {selectedRun.running && <button className="px-3 h-8 rounded-md border border-border text-muted text-[13px] cursor-pointer hover:text-warn hover:border-warn transition-all" onClick={() => runAction(() => api.pauseTaskRun(selectedRun.task_id), load)}><Pause className="lucide-inline" /> {i18nT('pages.projectsPage.pause')}</button>}
+              {/* Secondary actions live behind one overflow trigger. This keeps
+                  every status row at primary + overflow (two controls), rather
+                  than adding Move as a fourth peer to legacy-status rows. */}
+              {taskRunOverflow}
               {selectedRun.running && <button className="px-3 h-8 rounded-md border border-border text-muted text-[13px] cursor-pointer hover:text-danger hover:border-danger transition-all" onClick={() => runAction(() => api.cancelTaskRunner(selectedRun.task_id), load)}><Square className="lucide-inline" /> {i18nT('pages.projectsPage.cancel')}</button>}
               {!selectedRun.running && selectedRun.status !== 'planned' && selectedRun.status !== 'planning' && <>
                 {selectedRun.status === 'paused' && (
@@ -707,16 +816,8 @@ export default function ProjectsPage() {
                     return res
                   })}><MessageSquare className="lucide-inline" /> {i18nT('pages.projectsPage.chat')}</button>
                 )}
-                {selectedRun.status !== 'paused' && <button className="px-3 h-8 rounded-md border border-accent bg-transparent text-accent text-[13px] font-semibold cursor-pointer hover:bg-accent hover:text-accent-fg transition-all" onClick={() => runAction(() => api.retryTaskRun(selectedRun.task_id, 1), load)}><RotateCcw className="lucide-inline" /> {i18nT('pages.projectsPage.restart')}</button>}
-                <button className="px-3 h-8 rounded-md border border-border text-muted text-[13px] cursor-pointer hover:text-accent hover:border-accent transition-all" onClick={() => {
-                  const name = selectedRun.name || selectedRun.spec_name || selectedRun.task_id
-                  const spec = selectedRun.spec_content || selectedRun.original_input || ''
-                  if (!spec) { alert(i18nT('pages.projectsPage.no_spec_idea_to_schedule')); return }
-                  void runAction(
-                    () => api.createCron({ name: `Project: ${name}`, message: `run __inline__:${spec}`, every: 86400 }),
-                    () => alert(i18nT('pages.projectsPage.scheduled_as_daily_cron_job')),
-                  )
-                }}><Clock className="lucide-inline" /> {i18nT('pages.projectsPage.schedule')}</button>
+                {selectedRun.status !== 'paused' && selectedRun.status !== 'completed' && selectedRun.status !== 'cancelled' && <button className="px-3 h-8 rounded-md border border-accent bg-transparent text-accent text-[13px] font-semibold cursor-pointer hover:bg-accent hover:text-accent-fg transition-all" onClick={() => runAction(() => api.retryTaskRun(selectedRun.task_id, 1), load)}><RotateCcw className="lucide-inline" /> {i18nT('pages.projectsPage.restart')}</button>}
+
               </>}
             </div>
             <div className="flex-1 min-h-0 min-w-0 flex">

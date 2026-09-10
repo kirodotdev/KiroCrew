@@ -6669,6 +6669,28 @@
       "system_default": "系统默认",
       "unnamed_input": "未命名输入设备"
     },
+    "moveToCrew": {
+      "error_target_required": "必须指定目标 crew。",
+      "error_no_plan": "Crew 未返回迁移计划。",
+      "heading": "预览将 {{unitKind}} <0>{{unitId}}</0> 移至其他 crew",
+      "menu_label": "预览移至其他 crew…",
+      "more_actions": "更多操作",
+      "target_crew_label": "目标 crew",
+      "target_crew_placeholder": "Crew 标识符",
+      "planning": "正在规划…",
+      "plan_move": "预览移动",
+      "cancel": "取消",
+      "handoff_id": "交接 ID",
+      "bundle": "迁移包",
+      "fields_shipped": "将会移动的字段",
+      "completed_kept": "将会保留的已完成任务（不重跑）",
+      "requirements_heading": "目标端需要满足",
+      "findings_heading": "不会一起移动",
+      "plan_only_note_prefix": "尚未移动任何内容。",
+      "plan_only_note_emphasis": "这是预览",
+      "plan_only_note_suffix": "—— 移动工作本身的功能还不可用。",
+      "error_suggestions_unavailable": "无法加载 crew 建议。你仍可直接输入 crew ID。"
+    },
     "migrationBanner": {
       "install_app_from_apps": "从“应用”安装“{{app}}”，以便在下次 {{productName}} 更新后继续使用。",
       "install_from_apps": "从“应用”安装",
@@ -11766,6 +11788,7 @@
       "failed_to_update_task": "更新任务失败"
     },
     "projectsPage": {
+      "optimize_plan_prompt": "让我们优化这个计划：\n\n{{context}}",
       "agent": "代理：",
       "analyzing_task_and_building_step_by_step_plan": "正在分析任务并制定分步计划",
       "auto_approve": "自动审批",

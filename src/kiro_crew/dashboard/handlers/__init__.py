@@ -329,6 +329,11 @@ from kiro_crew.dashboard.handlers.messaging import (  # noqa: E402, F401
     api_wecom_config_get,
     api_wecom_config_save,
 )
+from kiro_crew.dashboard.handlers.migration import (  # noqa: E402, F401
+    api_cron_move,
+    api_session_move,
+    api_taskrun_move,
+)
 from kiro_crew.dashboard.handlers.prompts import (  # noqa: E402, F401
     MAX_PROMPT_BYTES,
     _extract_sop_description,

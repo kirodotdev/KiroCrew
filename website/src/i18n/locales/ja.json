@@ -6669,6 +6669,28 @@
       "system_default": "システムのデフォルト",
       "unnamed_input": "名前のない入力"
     },
+    "moveToCrew": {
+      "error_target_required": "移行先の crew を指定してください。",
+      "error_no_plan": "Crew からプランが返されませんでした。",
+      "heading": "{{unitKind}} <0>{{unitId}}</0> を別の crew へ移動するプレビュー",
+      "menu_label": "別の crew への移動をプレビュー…",
+      "more_actions": "その他の操作",
+      "target_crew_label": "移行先 crew",
+      "target_crew_placeholder": "crew の識別子",
+      "planning": "計画中…",
+      "plan_move": "移動をプレビュー",
+      "cancel": "キャンセル",
+      "handoff_id": "引き継ぎ ID",
+      "bundle": "バンドル",
+      "fields_shipped": "移動するフィールド",
+      "completed_kept": "保持される完了タスク（再実行しない）",
+      "requirements_heading": "移動先が満たす必要があるもの",
+      "findings_heading": "移動しないもの",
+      "plan_only_note_prefix": "まだ何も移動していません。",
+      "plan_only_note_emphasis": "これはプレビューです",
+      "plan_only_note_suffix": "— 作業そのものの移動は未対応です。",
+      "error_suggestions_unavailable": "crew の候補を読み込めませんでした。crew ID を直接入力できます。"
+    },
     "migrationBanner": {
       "install_app_from_apps": "次の {{productName}} 更新前に Apps から「{{app}}」をインストールして、引き続き使用してください。",
       "install_from_apps": "Apps からインストール",
@@ -11766,6 +11788,7 @@
       "failed_to_update_task": "タスクの更新に失敗しました"
     },
     "projectsPage": {
+      "optimize_plan_prompt": "このプランを改善しましょう：\n\n{{context}}",
       "agent": "エージェント:",
       "analyzing_task_and_building_step_by_step_plan": "タスクを分析してステップバイステップのプランを構築中",
       "auto_approve": "自動承認",

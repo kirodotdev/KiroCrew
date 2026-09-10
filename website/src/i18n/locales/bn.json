@@ -6771,6 +6771,28 @@
       "system_default": "সিস্টেম ডিফল্ট",
       "unnamed_input": "নামবিহীন ইনপুট"
     },
+    "moveToCrew": {
+      "error_target_required": "একটি লক্ষ্য crew দিতে হবে।",
+      "error_no_plan": "Crew কোনো পরিকল্পনা ফেরত দেয়নি।",
+      "heading": "প্রিভিউ: {{unitKind}} <0>{{unitId}}</0> অন্য crew-তে সরানো",
+      "menu_label": "অন্য crew-তে সরানোর প্রিভিউ…",
+      "more_actions": "আরও কাজ",
+      "target_crew_label": "লক্ষ্য crew",
+      "target_crew_placeholder": "ক্রু আইডি",
+      "planning": "পরিকল্পনা করা হচ্ছে…",
+      "plan_move": "সরানোর প্রিভিউ",
+      "cancel": "বাতিল",
+      "handoff_id": "হ্যান্ডঅফ ID",
+      "bundle": "বান্ডেল",
+      "fields_shipped": "যে ফিল্ডগুলি সরানো হবে",
+      "completed_kept": "সম্পন্ন কাজ যা রাখা হবে (পুনরায় চলবে না)",
+      "requirements_heading": "লক্ষ্যকে পূরণ করতে হবে",
+      "findings_heading": "সঙ্গে যাবে না",
+      "plan_only_note_prefix": "কিছুই সরানো হয়নি।",
+      "plan_only_note_emphasis": "এটি একটি প্রিভিউ",
+      "plan_only_note_suffix": "— কাজটি নিজে সরানো এখনও উপলভ্য নয়।",
+      "error_suggestions_unavailable": "Crew-এর প্রস্তাব লোড করা যায়নি। আপনি এখনও একটি crew ID টাইপ করতে পারেন।"
+    },
     "migrationBanner": {
       "install_app_from_apps": "ইনস্টল করুন \"{{app}}\" — Apps থেকে, পরবর্তী {{productName}} আপডেটের আগে, যাতে এটি ব্যবহার করা চালিয়ে যেতে পারেন।",
       "install_from_apps": "Apps থেকে ইনস্টল করুন",
@@ -11932,6 +11954,7 @@
       "failed_to_update_task": "টাস্ক আপডেট করা যায়নি"
     },
     "projectsPage": {
+      "optimize_plan_prompt": "চলুন এই পরিকল্পনাটি উন্নত করি:\n\n{{context}}",
       "agent": "এজেন্ট:",
       "analyzing_task_and_building_step_by_step_plan": "টাস্ক বিশ্লেষণ করে ধাপে ধাপে পরিকল্পনা তৈরি হচ্ছে",
       "auto_approve": "স্বয়ংক্রিয় অনুমোদন",

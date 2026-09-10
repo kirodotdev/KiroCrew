@@ -6873,6 +6873,28 @@
       "system_default": "Predeterminado del sistema",
       "unnamed_input": "Entrada sin nombre"
     },
+    "moveToCrew": {
+      "error_target_required": "Se requiere un crew de destino.",
+      "error_no_plan": "El crew no devolvió un plan.",
+      "heading": "Vista previa: mover {{unitKind}} <0>{{unitId}}</0> a otro crew",
+      "menu_label": "Previsualizar un traslado a otro crew…",
+      "more_actions": "Más acciones",
+      "target_crew_label": "Crew de destino",
+      "target_crew_placeholder": "ID del crew",
+      "planning": "Planificando…",
+      "plan_move": "Previsualizar traslado",
+      "cancel": "Cancelar",
+      "handoff_id": "ID de transferencia",
+      "bundle": "Paquete",
+      "fields_shipped": "Campos que se moverían",
+      "completed_kept": "Tareas completadas que se conservarían (sin volver a ejecutar)",
+      "requirements_heading": "El destino tendría que cumplir",
+      "findings_heading": "No se llevará",
+      "plan_only_note_prefix": "No se ha movido nada.",
+      "plan_only_note_emphasis": "Esto es una vista previa",
+      "plan_only_note_suffix": "— mover el trabajo en sí aún no está disponible.",
+      "error_suggestions_unavailable": "No se pudieron cargar las sugerencias de crew. Aún puedes escribir un ID de crew."
+    },
     "migrationBanner": {
       "install_app_from_apps": "Instala \"{{app}}\" desde Apps antes de la próxima actualización de {{productName}} para seguir usándola.",
       "install_from_apps": "Instalar desde Apps",
@@ -12098,6 +12120,7 @@
       "failed_to_update_task": "No se pudo actualizar la tarea"
     },
     "projectsPage": {
+      "optimize_plan_prompt": "Optimicemos este plan:\n\n{{context}}",
       "agent": "Agente:",
       "analyzing_task_and_building_step_by_step_plan": "Analizando la tarea y creando un plan paso a paso",
       "auto_approve": "Aprobar automáticamente",

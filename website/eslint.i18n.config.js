@@ -346,6 +346,13 @@ export default [
               // real copy ('Preview (', 'Rotate the image') is still reported.
               String.raw`^(?:(?:translate|translateX|translateY|rotate|scale|scaleX|scaleY|matrix)\(|px|deg|[-\d.%,\s()])+$`,
 
+              // The task-runner inline-command prefix is a MACHINE PROTOCOL
+              // consumed by the cron runner, never user-visible copy. Translating
+              // `run __inline__:` makes the scheduled job unexecutable. Exact
+              // full-string shape: it cannot exempt prose before or after it,
+              // and the interpolated spec remains outside this literal quasi.
+              String.raw`^run __inline__:$`,
+
               // A region-qualified BCP-47 language tag (`zh-CN`, `pt-PT`). These are
               // protocol identifiers handed to libraries that ship their own
               // translations (Excalidraw's `langCode`, Intl APIs), never rendered
