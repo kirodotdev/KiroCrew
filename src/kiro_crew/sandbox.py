@@ -366,6 +366,12 @@ _CREW_READONLY_LEAVES: tuple[str, ...] = (
     # READONLY note above says a kernel write denial is what holds regardless of
     # how a command spells the way there.
     "file_delivery_consent.json",
+    # The browser launcher and its vendored Node package tree. Agent browser
+    # commands must read and execute this directory, while a write would choose
+    # the binary the unsandboxed gateway executes during startup reclamation or
+    # an owner address-bar launch. The gateway installer runs outside the agent
+    # sandbox, so it can still replace the managed copy.
+    "playwright-cli",
     # The app dev-mode AUTHORIZATION record (operator grants binding each dev
     # app to its resolved ui root — see apps/dev_mode.py). Sealing it makes
     # "operator, not agent" kernel-enforced: a sandboxed process cannot mint,
@@ -692,6 +698,9 @@ def carveout_shadowed_by_foreign_mask(path: str, mode: str = "standard") -> bool
 #:    * ``member-memory-bindings`` — an empty dir identifies no runs; its
 #:      directory bind shows records the gateway publishes later without
 #:      granting agent processes the ability to create or replace one;
+#:    * ``playwright-cli`` — an empty dir means the launcher is absent,
+#:      exactly as a missing dir does; its directory bind shows a later gateway
+#:      install while withholding every agent-side write;
 #:    * ``computer_use.json`` — ``computer_use.enable_state.load_state`` reads ``{}``
 #:      as DISABLED, which is what an absent keystone means;
 #:    * ``oauth_endpoints.json`` — ``security._validate_operator_oauth_entries``
@@ -737,7 +746,16 @@ def carveout_shadowed_by_foreign_mask(path: str, mode: str = "standard") -> bool
 #: this list closes: a mask needs the opposite treatment (an empty bind OVER the
 #: name), and ``_CREW_HIDDEN_LEAVES`` has no reader to prove an empty document is
 #: absent-equivalent, so each leaf needs its own argument.
-_CREW_PRECREATE_READONLY_DIR_LEAVES: tuple[str, ...] = ("profiles", "member-memory-bindings")
+_CREW_PRECREATE_READONLY_DIR_LEAVES: tuple[str, ...] = (
+    "profiles",
+    "member-memory-bindings",
+    "playwright-cli",
+)
+#: Read-only directory leaves whose NAME must remain the mounted name. A resolving
+#: symlink is unsafe here: the mount follows its target and leaves the lexical name
+#: replaceable, which would let an agent choose the executable the gateway runs.
+_CREW_NOFOLLOW_READONLY_DIR_LEAVES: tuple[str, ...] = ("playwright-cli",)
+assert set(_CREW_NOFOLLOW_READONLY_DIR_LEAVES) <= set(_CREW_PRECREATE_READONLY_DIR_LEAVES)
 _CREW_PRECREATE_READONLY_FILE_LEAVES: tuple[str, ...] = (
     "computer_use.json",
     "oauth_endpoints.json",
@@ -978,10 +996,10 @@ def _warn_if_alias_backed(target: str) -> None:
 def _refuse_if_dangling_symlink(target: str) -> None:
     """Refuse the spawn when *target* is a symlink that resolves to nothing.
 
-    A RESOLVING symlink is left alone deliberately: it reads as present, so the launcher
-    seals the inode it resolves to. The residual exposure there — the link NAME stays
-    replaceable in a writable parent — is pre-existing for every ceiling, not specific to
-    one this function materialises, and closing it needs the data-home root sealed.
+    A RESOLVING symlink is left to the caller. Most legacy ceilings report that
+    alias and seal its referent; a strict directory such as the gateway launcher
+    follows this check with :func:`_refuse_if_symlink_leaf` because its lexical name
+    selects executable code and must remain the mounted name.
     """
     if not os.path.islink(target) or os.path.exists(target):
         return
@@ -997,20 +1015,15 @@ def _refuse_if_dangling_symlink(target: str) -> None:
 
 
 def _refuse_if_symlink_leaf(target: str) -> None:
-    """Refuse the spawn when a HIDDEN-dir leaf is itself a symlink or junction.
+    """Refuse when a masked or strict read-only directory leaf is a link.
 
     Stronger than :func:`_refuse_if_dangling_symlink`, which refuses only a link that
     resolves to nothing. A leaf that RESOLVES -- a link pointing at a real directory --
     is the attacker's entry here: ``os.path.isdir`` follows it and reports a directory,
-    so the mask loop binds over the link's TARGET, not the leaf name. The leaf name
+    so the mask or seal binds over the link's TARGET, not the leaf name. The leaf name
     lives in the writable data home, so a sandboxed process can unlink it and drop an
-    agent-controlled directory in its place, and the pre-created staging directory the
-    preview CLI writes into is then one the agent owns. Unlike a ceiling -- where a
-    resolving link is a pre-existing property closable only by sealing the data-home
-    root -- these leaves are ones this module CREATES, so refusing a link at the name is
-    in scope and costs nothing legitimate: the gateway makes the staging leaf a plain
-    directory, never a link. Refused, not removed, for the same reason as the dangling
-    case: ``lstat`` then ``unlink`` is not atomic.
+    agent-controlled directory in its place. Refused, not removed, because ``lstat``
+    then ``unlink`` is not atomic.
     """
     try:
         info = os.lstat(target)
@@ -1147,9 +1160,11 @@ def _materialize_sealable_ceilings() -> list[str]:
     * a **creation failure** other than ``EEXIST`` — a read-only mount, or a filesystem
       with no hardlink support.
 
-    ``EEXIST`` is the one benign outcome, in both loops: the racing spawn that got there
-    first, or the operator's real document. Either way the path now exists, so the
-    launcher seals it and there is nothing to report.
+    ``EEXIST`` is benign for ordinary ceilings: another spawn or the operator won
+    the race and the launcher seals the winner. Strict executable directories have
+    a higher bar. Their winner is re-checked with ``lstat`` and must be a real
+    directory, because a symlink would move the mount off the name the gateway later
+    resolves.
 
     Never TRUNCATES and never REMOVES: an existing ceiling is left byte-for-byte alone,
     so this can only ever add the absent default.
@@ -1158,11 +1173,17 @@ def _materialize_sealable_ceilings() -> list[str]:
     dir_targets, file_targets = _sealable_absent_ceilings()
 
     for target in dir_targets:
+        strict_nofollow = os.path.basename(target) in _CREW_NOFOLLOW_READONLY_DIR_LEAVES
         _refuse_if_dangling_symlink(target)
+        if strict_nofollow:
+            _refuse_if_symlink_leaf(target)
         if os.path.exists(target):
-            # Present, so the launcher will seal it -- but say so when the seal is
-            # reachable around rather than through this path.
-            _warn_if_alias_backed(target)
+            if strict_nofollow:
+                _require_real_dir_nofollow(target)
+            else:
+                # Present, so the launcher will seal it -- but say so when the seal is
+                # reachable around rather than through this path.
+                _warn_if_alias_backed(target)
             continue
         if not os.path.isdir(os.path.dirname(target)):
             continue
@@ -1170,6 +1191,10 @@ def _materialize_sealable_ceilings() -> list[str]:
             # 0o700 needs no reassertion: a umask can only clear bits, never add them.
             os.mkdir(target, 0o700)
         except FileExistsError:
+            if strict_nofollow:
+                # A competing creator may have planted a link after the check above.
+                # Re-check the winner without following it before trusting the name.
+                _require_real_dir_nofollow(target)
             continue
         except OSError as exc:
             _warn_unsealed_ceiling(target, exc)

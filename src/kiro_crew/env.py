@@ -16,7 +16,7 @@ from collections.abc import Iterable, Mapping, MutableMapping
 from pathlib import Path
 
 from kiro_crew import platform_compat
-from kiro_crew.config.paths import data_home
+from kiro_crew.config.paths import data_home, peek_data_home
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
 logger = logging.getLogger(__name__)
@@ -626,6 +626,27 @@ def git_build_info() -> tuple[str, str]:
     )
 
 
+def _managed_browser_cli_dirs() -> list[str]:
+    """Managed browser CLI directories exposed to agent shell commands.
+
+    The resolver in ``browser_cli.install`` never consumes this search path. It
+    resolves the same crew-home leaf by absolute path. These entries exist only
+    so an approved agent shell command can spell ``playwright-cli`` normally;
+    the OS sandbox seals the whole prefix read-only before that shell starts.
+    """
+    try:
+        root = peek_data_home() / "playwright-cli"
+    except Exception:
+        logger.debug("could not resolve managed browser CLI path", exc_info=True)
+        return []
+    entries: tuple[Path, ...]
+    if platform_compat.IS_WINDOWS:
+        entries = (root / "managed-bin", root / "bin", root)
+    else:
+        entries = (root / "managed-bin", root / "bin")
+    return [value for entry in entries if (value := _validated_bin_dir(str(entry)))]
+
+
 def augmented_path(base_path: str = "", *, home: str | None = None) -> str:
     """Return *base_path* prepended with well-known MCP binary directories.
 
@@ -665,7 +686,8 @@ def augmented_path(base_path: str = "", *, home: str | None = None) -> str:
     # would otherwise put a relative "{mise_data}/shims" entry on every spawned
     # subprocess's PATH, re-resolved against the CHILD's cwd — letting a
     # work-dir-relative executable shadow the configured command.
-    extra = [
+    extra = _managed_browser_cli_dirs() if home is None else []
+    extra += [
         e
         for d in _EXTRA_PATH_DIRS
         if (e := _validated_bin_dir(d.format(home=resolved_home, mise_data=mise_data)))
@@ -1055,9 +1077,7 @@ def sanitize_spec_env(pairs: Iterable[tuple[str, str]]) -> dict[str, str]:
             continue
         folded = key.upper()
         if any(folded.startswith(p) for p in _SPEC_ENV_DENIED_PREFIXES):
-            logger.warning(
-                "dropping spec env key %r: loader/interpreter injection channel", key
-            )
+            logger.warning("dropping spec env key %r: loader/interpreter injection channel", key)
             continue
         if any(folded.startswith(p) for p in _SPEC_ENV_RESERVED_PREFIXES):
             # Distinct message on purpose: reporting a forged KIROCREW_CLI as a
@@ -1098,8 +1118,7 @@ def denied_spec_env_keys(env: "Mapping[str, object]") -> list[str]:
     return [
         k
         for k in env
-        if isinstance(k, str)
-        and any(k.upper().startswith(p) for p in _SPEC_ENV_DENIED_PREFIXES)
+        if isinstance(k, str) and any(k.upper().startswith(p) for p in _SPEC_ENV_DENIED_PREFIXES)
     ]
 
 

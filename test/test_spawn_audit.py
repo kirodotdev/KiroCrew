@@ -891,10 +891,21 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # ``view.py::stop`` spawns nothing: it reaps its own child's process
         # group rather than issuing a global ``show --kill``, which would take
         # an operator's independent session down with ours.
+        #   * ``launcher.py::_run_cli`` runs ``playwright-cli --json list`` and ``-s=panel-<8hex>
+        #     goto|open <url>`` (and ``close`` at shutdown) for the Browser
+        #     panel's address bar. The ONE free argv element is a URL the
+        #     dashboard OWNER typed: the route is owner-only, refuses
+        #     internal-secret (agent) callers, and ``validate_url`` admits only
+        #     http(s) with a host and no credentials before it reaches argv.
+        #     The session name is hex derived from the slot key. Not sandboxed
+        #     for the same reason ``show`` is not: the CLI launches the
+        #     operator's real browser daemon, which needs the real cache and
+        #     network, and the human at the dashboard is the approval.
         # The agent's OWN browser commands are not spawned by us at all -- it
         # runs them as ordinary shell tool calls through the standard approval
         # path.
         "browser_cli/install.py::_run",
+        "browser_cli/launcher.py::_run_cli",
         "browser_cli/view.py::_spawn",
         "cli.py::_consolidate_cmd",
         "cli.py::_ensure_node",

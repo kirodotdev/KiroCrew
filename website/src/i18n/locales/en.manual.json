@@ -2620,7 +2620,17 @@
       "responsive_desktop": "Responsive (desktop)",
       "can_t_preview_this_dashboard_here": "Can't preview this dashboard here",
       "this_url_is_the_dashboard_s_own_server_which_ref": "This URL is the dashboard's own server, which refuses to be embedded. Enter a dev server URL instead.",
-      "more_actions": "More actions"
+      "more_actions": "More actions",
+      "opening_in_the_browser": "Opening in the browser…",
+      "couldn_t_open_this_page_in_the_browser": "Couldn't open this page in the browser",
+      "the_gateway_could_not_open_a_browser_for_this_page": "The gateway could not open a browser for this page.",
+      "try_again": "Try again",
+      "browser_view_can_t_be_reached_from_this_browser": "Browser view can't be reached from this browser",
+      "the_view_runs_on_the_gateway_host_pin_and_forward": "The view is served on the gateway host's loopback address, and this browser could not connect to it. If you reach the dashboard over an SSH tunnel, pin the view's port with the setting below and forward that port too.",
+      "this_chat_s_browser_session": "This chat's browser",
+      "to_open_another_site_unlock_the_view_s_address_bar": "Click the padlock above the page to type another address there; the monitor button (top right) brings the preview bar back.",
+      "your_page_is_in_pick_it_in_the_sidebar": "Your page is in {{session}} — pick it in the frame's sidebar.",
+      "links_with_a_query_or_hash_part_go_in_the_frame_s_own_address_bar": "Links with a ? or # part can't go through this address bar — open the site's plain address first, then click the padlock above the page and type the full link into the frame's own address bar."
     },
     "welcomeView": {
       "autopilot": "Autopilot",

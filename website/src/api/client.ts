@@ -341,6 +341,31 @@ export interface BrowserViewData {
   reason: string | null
 }
 
+/** Answer of POST /api/browser/open: the Browser panel's address bar on the
+ * non-native transport, where the gateway host's Playwright CLI browser is the
+ * only thing that can render an external site.
+ *
+ * A launch that FAILED is a 200 with `ok: false`, exactly as a failed view start
+ * comes back as a `stopped` status: `error` is the CLI's own text (a Chromium
+ * sandbox refusal, a missing browser build), rendered verbatim so the panel
+ * explains the cause instead of showing a blank frame. `view` is the post-attempt
+ * status of the `show` dashboard, so the panel can frame it without a second
+ * read. `session` is the CLI session name (`panel-<8hex>`), one per chat slot. */
+export interface BrowserOpenData {
+  ok: boolean
+  /** The CLI session this chat slot's browser lives in (`panel-<8hex>`), shown
+   * in the view's header so the human can tell it from the other sessions in
+   * the framed dashboard's sidebar. */
+  session: string
+  error: string | null
+  /** Whether the framed `show` dashboard attached its viewport to the session.
+   * `false` means the page is open but the reader is looking at the frame's
+   * session grid and has to pick `session` in its sidebar; the panel says so
+   * only in that case. */
+  attached: boolean
+  view: BrowserViewData
+}
+
 /** ADVISORY macOS permission rows. Never a gate — macOS attributes a TCC grant
  * to the responsible parent process, so `missing` can coexist with a working
  * capture, and `unknown` means the probe could not be run. */
@@ -4356,6 +4381,11 @@ export const api = {
   installBrowserEngine: (engine: string) => post('/api/browser/engine', { engine }).then(j) as Promise<BrowserInstallData>,
   getBrowserView: () => get('/api/browser/view').then(j) as Promise<BrowserViewData>,
   startBrowserView: () => post('/api/browser/view/start', {}).then(j) as Promise<BrowserViewData>,
+  // The address bar's launcher: opens an owner-typed URL in the gateway host's
+  // Playwright CLI browser (starting the view first) and returns the view status
+  // alongside the verdict, so a success frames the view with no follow-up read.
+  openInBrowser: (url: string, sessionKey: string) =>
+    post('/api/browser/open', { url, session_key: sessionKey }).then(j) as Promise<BrowserOpenData>,
   // Computer use (desktop automation). The PUT returns the refreshed snapshot so
   // the panel re-renders from server truth rather than its optimistic guess.
   getComputerUseConfig: () => get('/api/computer-use/config').then(j) as Promise<ComputerUseConfigData>,

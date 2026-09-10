@@ -145,19 +145,23 @@ def _operator_base(configured: str) -> Path | None:
     to prevent.
 
     Recognition is by SHAPE -- a ``<root>/<8hex>/{s,d}`` tail, which is what
-    :func:`socket_dir` and :func:`daemon_dir` build -- not by location under the
-    current ``config_dir()``. Every trigger flow changes the data home
-    (``dev-backend.sh`` exports ``KIROCREW_HOME``, and a pod runs an isolated
-    one), so an inherited root sits under the PARENT's home and a location test
-    would read it as foreign and keep nesting. Shape is also why the sibling
-    ``kc-`` prefix guard survives crossing installations. The residual cost is
-    an operator root that happens to end in ``<8hex>/s``, which is treated as
-    ours; that is the same collision the reserved prefix already accepts.
+    :func:`socket_dir` and :func:`daemon_dir` build, or the ``<root>/ui/s`` tail
+    :func:`ui_socket_dir` builds for the gateway's own CLI children -- not by
+    location under the current ``config_dir()``. Every trigger flow changes the
+    data home (``dev-backend.sh`` exports ``KIROCREW_HOME``, and a pod runs an
+    isolated one), so an inherited root sits under the PARENT's home and a
+    location test would read it as foreign and keep nesting. Shape is also why
+    the sibling ``kc-`` prefix guard survives crossing installations. The
+    residual cost is an operator root that happens to end in ``<8hex>/s`` or
+    ``ui/s``, which is treated as ours; that is the same collision the reserved
+    prefix already accepts.
     """
     if not configured:
         return None
     path = Path(configured)
-    if path.name in _LIFECYCLE_LEAVES and _is_generated_leaf(path.parent.name):
+    if path.name in _LIFECYCLE_LEAVES and (
+        _is_generated_leaf(path.parent.name) or path.parent.name == _UI_LEAF
+    ):
         return None
     return path
 
@@ -232,6 +236,87 @@ def browser_socket_env(env: Mapping[str, str]) -> dict[str, str]:
             return {}
         additions[key] = str(path)
     return additions
+
+
+#: Leaf of the socket root for the CLI children the GATEWAY itself runs -- the
+#: ``show`` dashboard and the Browser panel's launcher. Not 8-hex on purpose, so
+#: it can never read as a generated session's namespace to :func:`_session_leaf`
+#: or :func:`_operator_base`.
+_UI_LEAF = "ui"
+
+
+def ui_socket_dir(base: Path | None = None) -> Path:
+    """Socket root shared by the gateway's own CLI children (``<root>/ui/s``)."""
+    root = base if base is not None else config_dir() / _LIFECYCLE_DIR
+    return root / _UI_LEAF / "s"
+
+
+def ui_daemon_dir(socket_dir: Path) -> Path:
+    """Daemon session registry beside the ui socket root (``<root>/ui/d``).
+
+    Derived from the socket root rather than the config dir so the two always
+    sit under one namespace, whichever base the operator configured.
+    """
+    return socket_dir.parent / "d"
+
+
+def ui_socket_env(env: Mapping[str, str]) -> dict[str, str]:
+    """Environment addition giving the gateway's own CLI children one socket root.
+
+    The ``show`` dashboard claims its singleton socket under ``SOCKETS_ENV`` and
+    the Browser panel's launcher sends its reveal request to that socket, so the
+    two children must agree on the root and the gateway must KNOW it -- which is
+    the whole reason to set it rather than inherit the CLI's default (a path
+    derived from the temp directory and a hash of the user name that the gateway
+    would otherwise have to re-derive). An operator-configured root is honoured
+    as a BASE and namespaced under it, the same doctrine as
+    :func:`browser_socket_env`; one of our own roots arriving by inheritance is
+    regenerated. Empty -- leaving the children on the CLI's default -- when the
+    installed CLI does not expose the hook, when the path would overflow the
+    AF_UNIX budget (a pod's long home), or when the directory cannot be
+    prepared owner-only. Performs filesystem I/O; event-loop callers offload it.
+    """
+    if not cli_lifecycle_env_supported():
+        return {}
+    configured = env.get(SOCKETS_ENV, "").strip()
+    if configured and not Path(configured).is_absolute():
+        return {}
+    path = ui_socket_dir(_operator_base(configured))
+    # Upstream builds `<root>/cli/<16-char-workspace>-<11-char-session>.sock` and
+    # `<root>/dashboard/app.sock`; check the longer of the two shortest forms.
+    worst_case = path / "cli" / "0000000000000000-panel-00000.sock"
+    if (
+        not platform_compat.IS_WINDOWS
+        and len(os.fsencode(str(worst_case))) > _UNIX_SOCKET_PATH_MAX_BYTES
+    ):
+        logger.warning(
+            "browser view socket directory is too long for AF_UNIX (%d bytes): %s",
+            len(os.fsencode(str(worst_case))),
+            path,
+        )
+        return {}
+    try:
+        platform_compat.make_owner_only_dir(path)
+        platform_compat.restrict_dir_to_owner(path)
+    except OSError:
+        logger.warning("could not prepare the browser view socket directory at %s", path)
+        return {}
+    # The daemon session REGISTRY is pinned beside the socket root, for the same
+    # reason: a gateway started from inside an agent's shell inherits that
+    # agent's registry, the panel's sessions would register there, and after a
+    # crash and an ordinary restart (a clean environment) the sweep would list
+    # the default registry and never find the logged-in browser. Deterministic
+    # and gateway-owned, both children (the `show` dashboard that lists the
+    # sessions and the launcher that opens, reclaims and closes them) read the
+    # same one across every gateway life.
+    daemons = ui_daemon_dir(path)
+    try:
+        platform_compat.make_owner_only_dir(daemons)
+        platform_compat.restrict_dir_to_owner(daemons)
+    except OSError:
+        logger.warning("could not prepare the browser view daemon registry at %s", daemons)
+        return {}
+    return {SOCKETS_ENV: str(path), DAEMON_DIR_ENV: str(daemons)}
 
 
 def launch_config_path() -> Path:

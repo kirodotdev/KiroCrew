@@ -157,9 +157,10 @@ on retries, and do not present a screenshot of a login page as the requested pag
 
 ## Prerequisite
 
-`playwright-cli` on PATH (`npm install -g @playwright/cli@latest`, Node.js 20 or
-newer). Its presence is what makes browsing available, so if it is missing the
-answer is to install it, and there is no setting to enable.
+`playwright-cli` on PATH through the product-managed install (**Settings → Browser**,
+Node.js 20 or newer). Its vetted presence makes browsing available; agent commands
+still follow the ordinary shell approval ladder, and there is no capability toggle
+to enable.
 
 ## Security
 

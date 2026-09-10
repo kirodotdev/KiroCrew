@@ -493,6 +493,39 @@ class TestADanglingSymlinkRefusesTheSpawn:
 
 
 @_POSIX_ONLY
+class TestGatewayLauncherDirectoryNeedsARealLeaf:
+    def test_a_resolving_symlink_refuses_the_spawn(self, crew_home, tmp_path):
+        real = tmp_path / "attacker-controlled"
+        real.mkdir()
+        target = crew_home / "playwright-cli"
+        target.symlink_to(real, target_is_directory=True)
+
+        with pytest.raises(sandbox.SandboxCeilingUnsealable):
+            sandbox._materialize_sealable_ceilings()
+
+        assert target.is_symlink(), "the operator must remove the refused link"
+
+    def test_a_symlink_winning_the_create_race_refuses(self, crew_home, tmp_path, monkeypatch):
+        target = crew_home / "playwright-cli"
+        real = tmp_path / "race-winner"
+        real.mkdir()
+        real_mkdir = os.mkdir
+
+        def _mkdir(path, mode=0o777, *, dir_fd=None):
+            if os.fspath(path) == os.fspath(target):
+                target.symlink_to(real, target_is_directory=True)
+                raise FileExistsError("symlink won the race")
+            return real_mkdir(path, mode, dir_fd=dir_fd)
+
+        monkeypatch.setattr(os, "mkdir", _mkdir)
+
+        with pytest.raises(sandbox.SandboxCeilingUnsealable):
+            sandbox._materialize_sealable_ceilings()
+
+        assert target.is_symlink()
+
+
+@_POSIX_ONLY
 class TestAnAliasBackedCeilingIsReported:
     """``MS_RDONLY`` binds a MOUNT, not an inode, so a second name survives the seal.
 

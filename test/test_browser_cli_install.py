@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 from pathlib import Path
@@ -20,18 +21,12 @@ _REAL_REQUIRED_REVISIONS = mod._required_revisions
 
 @pytest.fixture(autouse=True)
 def _clear_node_bin_dir_caches() -> None:
-    """``node_bin_dirs`` / ``_node_all_bin_dirs`` are ``lru_cache``d for the
-    process lifetime, keyed on nothing (the former) or on ``(home, mise_data)``
-    (the latter). ``cli_path()`` reaches both via ``find_node_tool`` ->
-    ``node_augmented_path`` -> ``node_bin_dirs()``. Once any earlier test in
-    this worker (this file or another) resolves a node tool with the real
-    ``$HOME``, the memoized real-machine mise/volta/nvm directories stay
-    prepended to every later PATH lookup regardless of a test's own ``HOME``
-    override -- ``test_the_cli_is_found_where_the_standalone_installer_puts_it``
-    got the operator's real mise-installed ``playwright-cli`` shim instead of
-    the ``tmp_path``-rooted wrapper it wrote, only when an earlier test had
-    warmed the cache first (no-test-side-effects; mirrors the fixture in
-    test_node_toolchain_resolution.py)."""
+    """Clear the Node-tool search caches used by ``_node_version`` and npm install.
+
+    ``cli_path()`` uses a separate absolute managed/system resolver. Node and npm
+    still resolve through ``find_node_tool`` and must not inherit a real-machine version-manager path
+    from an earlier test in the worker.
+    """
     env_mod.node_bin_dirs.cache_clear()
     env_mod._node_all_bin_dirs.cache_clear()
     yield
@@ -45,10 +40,9 @@ def isolated_browser_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> P
 
     Also defaults ``_required_revisions`` to ``None`` so a test that does not
     opt into revision-awareness exercises the documented degradation path
-    (presence-only prefix match) deterministically -- independent of whether the
-    host running the suite happens to have a ``playwright-cli`` on PATH whose
-    ``browsers.json`` would otherwise be read. Tests that assert revision-exact
-    behaviour override this explicitly.
+    (presence-only prefix match) deterministically, independent of any vetted
+    CLI install on the host. Tests that assert revision-exact behaviour override
+    this explicitly.
     """
     cache = tmp_path / "ms-playwright"
     cache.mkdir()
@@ -83,7 +77,35 @@ def _wire(
     calls: list[list[str]] = []
     outcomes = results or {}
 
-    monkeypatch.setattr(mod, "find_node_tool", lambda name, base_path=None: tools.get(name))
+    monkeypatch.setattr(
+        mod,
+        "find_node_tool",
+        lambda name, base_path=None: tools.get(name)
+        or ("/n/node" if name == "node" and tools.get("npm") else None),
+    )
+    monkeypatch.setattr(mod, "cli_path", lambda: tools.get(mod.CLI_BIN))
+    monkeypatch.setattr(
+        mod,
+        "_pinned_managed_cli_root",
+        lambda: contextlib.nullcontext(mod._managed_cli_root()),
+    )
+    monkeypatch.setattr(
+        mod,
+        "_node_runtime_executable",
+        lambda node: node,
+    )
+    monkeypatch.setattr(
+        mod,
+        "_stage_managed_node",
+        lambda source: Path("/managed/gateway-node"),
+    )
+    monkeypatch.setattr(
+        mod,
+        "cli_command",
+        lambda cli=None: (
+            [resolved] if (resolved := cli or tools.get(mod.CLI_BIN)) is not None else None
+        ),
+    )
 
     def fake_run(argv: list[str], timeout: float) -> tuple[int, str, str]:
         calls.append(list(argv))
@@ -117,6 +139,23 @@ def test_detect_reports_version_when_present(monkeypatch: pytest.MonkeyPatch) ->
     assert d["installed"] is True
     assert d["cli_path"] == "/n/playwright-cli"
     assert d["cli_version"] == "0.1.18"
+
+
+def test_detect_reports_a_launcher_without_a_safe_runtime_as_absent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _wire(
+        monkeypatch,
+        {"node": "/n/node", "playwright-cli": "/n/playwright-cli"},
+        {"/n/node": (0, "v22.1.0", "")},
+    )
+    monkeypatch.setattr(mod, "cli_command", lambda cli=None: None)
+
+    detected = mod.detect()
+
+    assert detected["installed"] is False
+    assert detected["cli_path"] is None
+    assert detected["cli_version"] is None
 
 
 @pytest.mark.parametrize(
@@ -187,10 +226,10 @@ def test_available_is_presence_only(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_no_consent_flag_is_consulted(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Availability reads PATH and nothing else -- no flag file, no config key.
+    """Availability resolves a vetted launcher and no consent flag.
 
-    An empty data home must not make an installed CLI unavailable, which is what
-    a capability flag would do. Approval remains outside this module.
+    An empty data home means no managed launcher, not "browser disabled". Approval
+    remains outside this module and is decided by the ordinary shell ladder.
     """
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "empty-home"))
     _wire(
@@ -213,9 +252,76 @@ def test_install_aborts_when_npm_is_missing(monkeypatch: pytest.MonkeyPatch) -> 
     assert calls == []
 
 
-def test_install_runs_all_three_steps_and_scopes_browser_to_chromium(
-    monkeypatch: pytest.MonkeyPatch,
+def test_install_refuses_a_linked_managed_prefix_before_npm_runs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    crew = tmp_path / "crew"
+    target = tmp_path / "agent-chosen-target"
+    crew.mkdir()
+    target.mkdir()
+    (crew / "playwright-cli").symlink_to(target, target_is_directory=True)
+    monkeypatch.setattr(
+        Path,
+        "is_dir",
+        lambda self: (_ for _ in ()).throw(AssertionError("pre-pin type probe followed the name")),
+    )
+    calls: list[list[str]] = []
+    monkeypatch.setattr(mod, "config_dir", lambda: crew)
+    monkeypatch.setattr(
+        mod,
+        "find_node_tool",
+        lambda name, base_path=None: "/n/npm" if name == "npm" else "/n/node",
+    )
+    monkeypatch.setattr(
+        mod,
+        "_run",
+        lambda argv, timeout: (calls.append(list(argv)), (0, "", ""))[1],
+    )
+
+    result = mod.install()
+
+    assert result["ok"] is False
+    assert calls == []
+    assert list(target.iterdir()) == []
+    assert "real directory" in result["steps"][0]["stderr"]
+
+
+def test_install_stops_before_npm_when_the_platform_pin_refuses(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    crew = tmp_path / "crew"
+    crew.mkdir()
+    calls: list[list[str]] = []
+    monkeypatch.setattr(mod, "config_dir", lambda: crew)
+    monkeypatch.setattr(
+        mod,
+        "find_node_tool",
+        lambda name, base_path=None: "/n/npm" if name == "npm" else "/n/node",
+    )
+    monkeypatch.setattr(
+        mod.platform_compat,
+        "pin_directory",
+        lambda path: (_ for _ in ()).throw(OSError("reparse point")),
+    )
+    monkeypatch.setattr(
+        mod,
+        "_run",
+        lambda argv, timeout: (calls.append(list(argv)), (0, "", ""))[1],
+    )
+
+    result = mod.install()
+
+    assert result["ok"] is False
+    assert calls == []
+    assert "real directory" in result["steps"][0]["stderr"]
+
+
+def test_install_runs_all_steps_and_scopes_browser_to_chromium(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    crew = tmp_path / "crew"
+    monkeypatch.setattr(mod, "config_dir", lambda: crew)
     calls = _wire(monkeypatch, {"npm": "/n/npm", "playwright-cli": "/n/playwright-cli"})
 
     result = mod.install()
@@ -223,10 +329,18 @@ def test_install_runs_all_three_steps_and_scopes_browser_to_chromium(
     assert result["ok"] is True
     assert [s["name"] for s in result["steps"]] == [
         "npm-install-global",
+        "stage-node",
         "install-browser",
         "install-skills",
     ]
-    assert calls[0] == ["/n/npm", "install", "-g", "@playwright/cli@latest"]
+    assert calls[0] == [
+        "/n/npm",
+        "install",
+        "-g",
+        "--prefix",
+        str(crew / "playwright-cli"),
+        "@playwright/cli@latest",
+    ]
     # Omitting the argument installs every engine. Optional WebKit dependencies
     # must not veto a baseline Chromium install on a host where Chromium works.
     assert calls[1] == ["/n/playwright-cli", "install-browser", "chromium"]
@@ -294,14 +408,15 @@ def test_install_falls_back_without_deps_when_the_package_step_is_refused(
     assert result["ok"] is True
     assert [s["name"] for s in result["steps"]] == [
         "npm-install-global",
+        "stage-node",
         "install-browser",
         "install-browser-no-deps",
         "install-skills",
     ]
     # The refused attempt stays visible rather than being swallowed...
-    assert result["steps"][1]["ok"] is False
+    assert result["steps"][2]["ok"] is False
     # ...but it must not veto an install the retry completed.
-    assert result["steps"][2]["ok"] is True
+    assert result["steps"][3]["ok"] is True
     assert ["/n/pw", "install-browser", "chromium", "--with-deps"] in calls
     assert ["/n/pw", "install-browser", "chromium"] in calls
 
@@ -331,7 +446,7 @@ def test_a_zero_exit_carrying_the_host_validation_warning_is_a_failure(
     result = mod.install()
 
     assert result["ok"] is False
-    browser_step = result["steps"][1]
+    browser_step = result["steps"][2]
     assert browser_step["name"] == "install-browser"
     assert browser_step["ok"] is False
     # rc stays 0 -- the exit code is honestly reported, it is just not the verdict.
@@ -339,7 +454,11 @@ def test_a_zero_exit_carrying_the_host_validation_warning_is_a_failure(
     assert "missing dependencies" in browser_step["stderr"]
     assert "sudo dnf install -y nss" in browser_step["stderr"]
     # The skills step never runs behind a browser that cannot launch.
-    assert [s["name"] for s in result["steps"]] == ["npm-install-global", "install-browser"]
+    assert [s["name"] for s in result["steps"]] == [
+        "npm-install-global",
+        "stage-node",
+        "install-browser",
+    ]
 
 
 def test_the_host_validation_warning_is_caught_on_stdout_too(
@@ -356,8 +475,8 @@ def test_the_host_validation_warning_is_caught_on_stdout_too(
     result = mod.install()
 
     assert result["ok"] is False
-    assert result["steps"][1]["ok"] is False
-    assert "missing dependencies" in result["steps"][1]["stderr"]
+    assert result["steps"][2]["ok"] is False
+    assert "missing dependencies" in result["steps"][2]["stderr"]
 
 
 def test_an_ordinary_zero_exit_browser_step_still_succeeds(
@@ -376,6 +495,7 @@ def test_an_ordinary_zero_exit_browser_step_still_succeeds(
     assert result["ok"] is True
     assert [s["name"] for s in result["steps"]] == [
         "npm-install-global",
+        "stage-node",
         "install-browser",
         "install-skills",
     ]
@@ -404,11 +524,12 @@ def test_install_still_fails_when_the_no_deps_retry_also_fails(
     assert result["ok"] is False
     assert [s["name"] for s in result["steps"]] == [
         "npm-install-global",
+        "stage-node",
         "install-browser",
         "install-browser-no-deps",
     ]
-    assert "sudo dnf install -y nss" not in result["steps"][1]["stderr"]
-    assert "sudo dnf install -y nss" in result["steps"][2]["stderr"]
+    assert "sudo dnf install -y nss" not in result["steps"][2]["stderr"]
+    assert "sudo dnf install -y nss" in result["steps"][3]["stderr"]
     assert all("--skills" not in argv for argv in calls)
 
 
@@ -489,6 +610,7 @@ def test_install_reports_binary_unresolvable_after_npm_success(
     assert result["ok"] is False
     assert [s["name"] for s in result["steps"]] == [
         "npm-install-global",
+        "stage-node",
         "resolve-binary",
     ]
 
@@ -503,7 +625,11 @@ def test_install_browser_failure_skips_skills(monkeypatch: pytest.MonkeyPatch) -
     result = mod.install()
 
     assert result["ok"] is False
-    assert [s["name"] for s in result["steps"]] == ["npm-install-global", "install-browser"]
+    assert [s["name"] for s in result["steps"]] == [
+        "npm-install-global",
+        "stage-node",
+        "install-browser",
+    ]
     assert all("--skills" not in argv for argv in calls)
 
 
@@ -566,6 +692,26 @@ def test_cli_env_integration_puts_mise_home_bin_on_path(
     assert str(local_bin) in path_entries
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX managed npm bin layout")
+def test_agent_path_leads_with_the_sealed_managed_cli(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    crew = tmp_path / "crew"
+    home = tmp_path / "home"
+    monkeypatch.setattr(env_mod, "peek_data_home", lambda: crew)
+    monkeypatch.setattr(mod, "config_dir", lambda: crew)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("MISE_DATA_DIR", raising=False)
+    monkeypatch.delenv("XDG_DATA_HOME", raising=False)
+
+    entries = env_mod.augmented_path("/usr/bin").split(os.pathsep)
+
+    assert entries[0] == str(crew / "playwright-cli" / "managed-bin")
+    assert Path(entries[0]).parent == mod._managed_cli_root()
+    assert entries.index(str(home / ".local" / "bin")) > 0
+
+
 class TestPerEngineDownloads:
     """Each engine is its own download, and the engine name never reaches argv raw."""
 
@@ -607,6 +753,7 @@ class TestPerEngineDownloads:
         fake_cli = tmp_path / "playwright-cli"
         fake_cli.write_text("")
         monkeypatch.setattr(mod, "cli_path", lambda: str(fake_cli))
+        monkeypatch.setattr(mod, "cli_command", lambda cli=None: [cli or str(fake_cli)])
         seen: list[list[str]] = []
 
         def _fake_step(name, argv, timeout, hint="", failure_signal=None):
@@ -634,6 +781,7 @@ class TestPerEngineDownloads:
         fake_cli = tmp_path / "playwright-cli"
         fake_cli.write_text("")
         monkeypatch.setattr(mod, "cli_path", lambda: str(fake_cli))
+        monkeypatch.setattr(mod, "cli_command", lambda cli=None: [cli or str(fake_cli)])
 
         seen: list[list[str]] = []
 
@@ -663,6 +811,7 @@ class TestPerEngineDownloads:
         fake_cli = tmp_path / "playwright-cli"
         fake_cli.write_text("")
         monkeypatch.setattr(mod, "cli_path", lambda: str(fake_cli))
+        monkeypatch.setattr(mod, "cli_command", lambda cli=None: [cli or str(fake_cli)])
         seen: list[list[str]] = []
         monkeypatch.setattr(mod, "_run", lambda argv, t: (seen.append(list(argv)), (0, "", ""))[1])
 
@@ -864,35 +1013,176 @@ class TestCliEnvIsPublic:
         assert env["PATH"] == "/nvm/bin:/usr/local/bin"
 
 
-@pytest.mark.skipif(
-    os.name == "nt",
-    reason=(
-        "POSIX-only three times over: ntpath.expanduser reads USERPROFILE and ignores "
-        "HOME, so the fake profile is never consulted; shutil.which needs a PATHEXT "
-        "match, which an extension-less wrapper has not; and the exec bit does not "
-        "carry. The Windows layout is ~\\.local\\bin\\playwright-cli.cmd, which the "
-        "same augmented_path entry covers -- untestable here, not unhandled."
-    ),
-)
-def test_the_cli_is_found_where_the_standalone_installer_puts_it(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """`npm install -g` leaves the wrapper beside npm, but `playwright-cli.sh`
-    writes it to `~/.local/bin` -- a directory a systemd/launchd/service-manager
-    gateway does not inherit on $PATH, and one `node_bin_dirs()` never reports
-    because it holds no `node`. Searched over the bare PATH, a SUCCESSFUL
-    standalone install would keep reading as "not installed": the panel would go
-    on offering the command the user just ran, with nothing anywhere reporting an
-    error."""
-    local_bin = tmp_path / ".local" / "bin"
-    local_bin.mkdir(parents=True)
-    wrapper = local_bin / mod.CLI_BIN
-    wrapper.write_text("#!/bin/sh\n", encoding="utf-8")
-    wrapper.chmod(0o755)
-    monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.setenv("PATH", "/usr/bin")
+@pytest.mark.skipif(os.name == "nt", reason="POSIX executable and permission semantics")
+class TestCliPathTrust:
+    @staticmethod
+    def _executable(path: Path) -> Path:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        path.chmod(0o755)
+        return path
 
-    assert mod.cli_path() == str(wrapper)
+    @staticmethod
+    def _isolate(
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> tuple[Path, Path]:
+        home = tmp_path / "home"
+        crew = home / ".kiro" / "crew"
+        crew.mkdir(parents=True)
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setenv("PATH", "")
+        monkeypatch.setattr(mod, "config_dir", lambda: crew)
+        monkeypatch.setattr(mod, "_system_cli_candidates", lambda: (), raising=False)
+        monkeypatch.setattr(mod, "_agent_writable_roots", lambda: (), raising=False)
+        monkeypatch.setattr(mod, "_warned_cli_refusals", set(), raising=False)
+        return home, crew
+
+    def test_the_vetted_top_level_managed_leaf_is_resolved(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        _home, crew = self._isolate(tmp_path, monkeypatch)
+        cli = self._executable(crew / "playwright-cli" / "bin" / mod.CLI_BIN)
+
+        assert mod.cli_path() == str(cli.resolve())
+
+    def test_a_path_first_shim_is_not_resolved(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        self._isolate(tmp_path, monkeypatch)
+        shim = self._executable(tmp_path / "path-bin" / mod.CLI_BIN)
+        monkeypatch.setenv("PATH", str(shim.parent))
+
+        with caplog.at_level("WARNING", logger=mod.__name__):
+            assert mod.cli_path() is None
+
+        warnings = [record.getMessage() for record in caplog.records if record.levelno >= 30]
+        assert len(warnings) == 1
+        assert repr(str(shim.resolve())) in warnings[0]
+        assert "PATH" in warnings[0]
+
+    def test_a_legacy_user_local_shim_is_ignored(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        home, _crew = self._isolate(tmp_path, monkeypatch)
+        shim = self._executable(home / ".local" / "bin" / mod.CLI_BIN)
+        monkeypatch.setenv("PATH", str(shim.parent))
+
+        with caplog.at_level("WARNING", logger=mod.__name__):
+            assert mod.cli_path() is None
+
+        warning = next(record.getMessage() for record in caplog.records if record.levelno >= 30)
+        assert repr(str(shim.resolve())) in warning
+        assert ".local" in warning
+
+    def test_a_project_shim_is_not_resolved(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        self._isolate(tmp_path, monkeypatch)
+        project = tmp_path / "project"
+        shim = self._executable(project / "bin" / mod.CLI_BIN)
+        monkeypatch.setenv("PATH", str(shim.parent))
+        monkeypatch.setattr(mod, "_agent_writable_roots", lambda: (project.resolve(),))
+
+        with caplog.at_level("WARNING", logger=mod.__name__):
+            assert mod.cli_path() is None
+
+        warning = next(record.getMessage() for record in caplog.records if record.levelno >= 30)
+        assert repr(str(shim.resolve())) in warning
+        assert "agent-writable" in warning
+
+    def test_a_gateway_user_writable_system_candidate_is_refused(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        self._isolate(tmp_path, monkeypatch)
+        candidate = self._executable(tmp_path / "system-bin" / mod.CLI_BIN)
+        monkeypatch.setattr(mod, "_system_cli_candidates", lambda: (candidate,))
+
+        with caplog.at_level("WARNING", logger=mod.__name__):
+            assert mod.cli_path() is None
+
+        warning = next(record.getMessage() for record in caplog.records if record.levelno >= 30)
+        assert repr(str(candidate.resolve())) in warning
+        assert "writable by the gateway user" in warning
+
+
+class TestWindowsGatewayCommand:
+    @staticmethod
+    def _managed_tree(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Path, Path]:
+        crew = tmp_path / "crew"
+        root = crew / "playwright-cli"
+        package = root / "node_modules" / "@playwright" / "cli"
+        package.mkdir(parents=True)
+        cmd = root / "playwright-cli.cmd"
+        cmd.write_text("@echo off\n", encoding="utf-8")
+        cmd.chmod(0o755)
+        node = root / "node.exe"
+        node.write_bytes(b"node")
+        node.chmod(0o755)
+        entry = package / "playwright-cli.js"
+        entry.write_text("// cli\n", encoding="utf-8")
+        monkeypatch.setattr(mod.platform_compat, "IS_WINDOWS", True)
+        monkeypatch.setattr(mod, "config_dir", lambda: crew)
+        monkeypatch.setattr(mod, "_system_cli_candidates", lambda: ())
+        monkeypatch.setattr(mod, "_agent_writable_roots", lambda: ())
+        monkeypatch.setattr(mod, "_warned_cli_refusals", set())
+        return root, node, entry
+
+    def test_gateway_invocation_uses_node_and_javascript_not_cmd(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _root, node, entry = self._managed_tree(tmp_path, monkeypatch)
+
+        command = mod.cli_command()
+
+        assert command == [str(node.resolve()), str(entry.resolve())]
+        assert not any(part.casefold().endswith((".cmd", ".bat")) for part in command)
+
+    def test_javascript_entrypoint_cannot_escape_the_sealed_root(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _root, _node, entry = self._managed_tree(tmp_path, monkeypatch)
+        outside = tmp_path / "outside.js"
+        outside.write_text("// attacker\n", encoding="utf-8")
+        entry.unlink()
+        entry.symlink_to(outside)
+
+        assert mod.cli_command() is None
+
+    def test_install_stages_node_inside_the_managed_root(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        crew = tmp_path / "crew"
+        source = tmp_path / "node.exe"
+        source.write_bytes(b"trusted node")
+        source.chmod(0o755)
+        monkeypatch.setattr(mod.platform_compat, "IS_WINDOWS", True)
+        monkeypatch.setattr(mod, "config_dir", lambda: crew)
+
+        staged = mod._stage_managed_node(str(source))
+
+        assert staged == crew / "playwright-cli" / "node.exe"
+        assert staged.read_bytes() == b"trusted node"
+
+        source.write_bytes(b"replacement node")
+        replaced = mod._stage_managed_node(str(source))
+
+        assert replaced == staged
+        assert replaced.read_bytes() == b"replacement node"
 
 
 def test_the_standalone_command_writes_no_fixed_name_into_the_working_directory(
@@ -1439,3 +1729,127 @@ def test_lifecycle_contract_never_falls_through_to_stale_package(
     mod._source_contains.cache_clear()
 
     assert mod.cli_lifecycle_env_supported() is False
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX executable and permission semantics")
+class TestPosixGatewayCommand:
+    @staticmethod
+    def _managed_tree(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> tuple[Path, Path, Path, Path]:
+        crew = tmp_path / "crew"
+        root = crew / "playwright-cli"
+        package = root / "lib" / "node_modules" / "@playwright" / "cli"
+        package.mkdir(parents=True)
+        wrapper = root / "managed-bin" / "playwright-cli"
+        wrapper.parent.mkdir(parents=True)
+        wrapper.write_text("#!/bin/sh\nexec /agent/node ...\n", encoding="utf-8")
+        wrapper.chmod(0o755)
+        node = root / "gateway-node"
+        node.write_bytes(b"node")
+        node.chmod(0o755)
+        entry = package / "playwright-cli.js"
+        entry.write_text("// cli\n", encoding="utf-8")
+        attacker_node = tmp_path / "agent-bin" / "node"
+        attacker_node.parent.mkdir(parents=True)
+        attacker_node.write_text("#!/bin/sh\nexit 99\n", encoding="utf-8")
+        attacker_node.chmod(0o755)
+        monkeypatch.setenv("PATH", str(attacker_node.parent))
+        monkeypatch.setattr(mod.platform_compat, "IS_WINDOWS", False)
+        monkeypatch.setattr(mod, "config_dir", lambda: crew)
+        monkeypatch.setattr(mod, "_system_cli_candidates", lambda: ())
+        monkeypatch.setattr(mod, "_agent_writable_roots", lambda: ())
+        monkeypatch.setattr(mod, "_warned_cli_refusals", set())
+        return wrapper, node, entry, attacker_node
+
+    def test_gateway_invocation_uses_sealed_node_and_javascript_not_the_wrapper(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        wrapper, node, entry, attacker_node = self._managed_tree(tmp_path, monkeypatch)
+
+        command = mod.cli_command()
+
+        assert command == [str(node.resolve()), str(entry.resolve())]
+        assert str(wrapper.resolve()) not in command
+        assert str(attacker_node.resolve()) not in command
+
+    def test_javascript_entrypoint_cannot_escape_the_sealed_root(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _wrapper, _node, entry, _attacker_node = self._managed_tree(tmp_path, monkeypatch)
+        outside = tmp_path / "outside.js"
+        outside.write_text("// attacker\n", encoding="utf-8")
+        entry.unlink()
+        entry.symlink_to(outside)
+
+        assert mod.cli_command() is None
+
+    def test_install_stages_node_inside_the_managed_root(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        crew = tmp_path / "crew"
+        source = tmp_path / "node"
+        source.write_bytes(b"trusted node")
+        source.chmod(0o755)
+        monkeypatch.setattr(mod.platform_compat, "IS_WINDOWS", False)
+        monkeypatch.setattr(mod, "config_dir", lambda: crew)
+
+        staged = mod._stage_managed_node(str(source))
+
+        assert staged == crew / "playwright-cli" / "gateway-node"
+        assert staged.read_bytes() == b"trusted node"
+        assert staged.stat().st_mode & 0o777 == 0o500
+
+
+class TestSystemGatewayCommand:
+    def test_posix_node_candidates_never_consume_path(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        launcher = tmp_path / "system" / "playwright-cli"
+        package = tmp_path / "system" / "lib" / "node_modules" / "@playwright" / "cli"
+        package.mkdir(parents=True)
+        launcher.parent.mkdir(parents=True, exist_ok=True)
+        launcher.write_text("#!/usr/bin/env node\n", encoding="utf-8")
+        attacker = tmp_path / "agent-bin" / "node"
+        attacker.parent.mkdir()
+        attacker.write_text("#!/bin/sh\n", encoding="utf-8")
+        monkeypatch.setenv("PATH", str(attacker.parent))
+        monkeypatch.setattr(mod.platform_compat, "IS_WINDOWS", False)
+        monkeypatch.setattr(mod.platform_compat, "trusted_system_path", lambda: "/usr/bin")
+        monkeypatch.setattr(mod.github_runner, "PROVIDER_EXECUTABLE_DIRS", ())
+
+        candidates = mod._system_node_candidates(launcher, package)
+
+        assert Path("/usr/bin/node") in candidates
+        assert attacker not in candidates
+
+    def test_a_path_only_node_cannot_complete_a_system_command(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        launcher = tmp_path / "system" / "playwright-cli"
+        launcher.parent.mkdir()
+        launcher.write_text("#!/usr/bin/env node\n", encoding="utf-8")
+        launcher.chmod(0o755)
+        package = tmp_path / "system" / "package"
+        package.mkdir()
+        entry = package / "playwright-cli.js"
+        entry.write_text("// cli\n", encoding="utf-8")
+        attacker = tmp_path / "agent-bin" / "node"
+        attacker.parent.mkdir()
+        attacker.write_text("#!/bin/sh\n", encoding="utf-8")
+        attacker.chmod(0o755)
+        monkeypatch.setenv("PATH", str(attacker.parent))
+        monkeypatch.setattr(mod, "_cli_package_for_launcher", lambda _launcher: package)
+        monkeypatch.setattr(mod, "_managed_cli_root", lambda: tmp_path / "absent-managed")
+        monkeypatch.setattr(mod, "_system_node_candidates", lambda _launcher, _package: ())
+        monkeypatch.setattr(
+            mod,
+            "_resolve_executable_file_for_system",
+            lambda _entry: (entry.resolve(), None),
+        )
+
+        command, reason = mod._direct_cli_command(str(launcher))
+
+        assert command is None
+        assert reason is not None and "no fixed non-writable Node" in reason
+        assert str(attacker) not in reason

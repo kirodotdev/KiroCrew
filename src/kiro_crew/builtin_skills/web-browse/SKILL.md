@@ -95,11 +95,12 @@ If it is absent, do NOT attempt this. Read the page with `web_fetch` instead and
 tell the user:
 
 > "I can't open pages in the Browser panel: `playwright-cli` isn't installed on
->  this host. **Settings → Browser** has an Install button that sets it up, or
->  install it yourself with `npm install -g @playwright/cli@latest` (needs
->  Node.js 20 or newer). For now, here's what I read from the page."
+>  this host. **Settings → Browser** has an Install button that writes the vetted,
+>  sandbox-sealed copy. For now, here's what I read from the page."
 
-Installing it is what grants browsing on this host. There is one toggle:
+Installing the vetted copy makes browsing available on this host. It does not
+skip shell approval: the first agent command still follows the ordinary approval
+ladder. There is one toggle:
 **Settings → Browser** can turn the *built-in panel* off
 (`dashboard.use_builtin_browser`). Browsing still works when it is off — the
 `browser` tool simply answers that the built-in browser is disabled and to use
@@ -180,7 +181,9 @@ alongside your own, and then pass the same name to every command including the
 `attach` or `open` that created it.
 
 `playwright-cli list` shows every browser on the machine, including other
-sessions'. Only close one you opened.
+sessions'. Only close one you opened. A session named `panel-<owner6>-<slot8>` is the
+user's own — the dashboard's Browser panel opened it from its address bar — so
+never `close`, `goto` or reuse it: the human is looking at that page.
 
 Never `close` an attached session: it closes the windows the user is working in.
 Leave the connection open instead, which costs them nothing.

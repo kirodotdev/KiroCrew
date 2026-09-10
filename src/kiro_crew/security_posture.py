@@ -207,6 +207,19 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "redacts at the source rather than at either boundary.",
     ),
     (
+        "Browser panel launch failures",
+        "browser_cli/launcher.py",
+        "The CLI's own words when the Browser panel's address bar could not open a "
+        "page (`playwright-cli -s=panel-… open|goto` failing), shown VERBATIM in the "
+        "panel's failure card; the gateway log gets only the session name and the "
+        "exit code, never the text. The daemon's stack quotes its "
+        "environment and the URL the human typed, so the text can carry a "
+        "query-string credential or a `*_TOKEN=` echo; `_error_text` distills the "
+        "message and runs the shared credential + exfiltration-URL chain on the "
+        "kept lines BEFORE the cap, so a truncated head cannot leak what the tail "
+        "would have matched.",
+    ),
+    (
         "Azure DevOps comment bodies",
         "apps/builtins/issue_radar/backend/azure_client.py",
         "The text Issue Radar posts as a work-item or pull-request comment on Azure "

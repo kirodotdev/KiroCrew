@@ -1963,6 +1963,7 @@ def test_module_exposes_every_route_handler_under_test() -> None:
         "api_browser_install_start",
         "api_browser_view_get",
         "api_browser_view_start",
+        "api_browser_open",
         "api_teams_config_save",
     ):
         assert callable(getattr(mod, name)), name

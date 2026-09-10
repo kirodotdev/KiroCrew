@@ -65,6 +65,7 @@ def reset_state(monkeypatch: pytest.MonkeyPatch) -> Iterator[list[int]]:
     monkeypatch.setattr(mod, "_relay", None)
     monkeypatch.setattr(mod, "_child_port", None)
     monkeypatch.setattr(mod, "_last_reason", None)
+    monkeypatch.setattr(mod, "cli_command", lambda cli=None: [cli] if cli else None)
     # Ownership lookups are undecidable by default, so no test shells out to
     # lsof/netstat by accident. `_port_owner` then answers UNPROVEN, which is the
     # pre-identity behaviour every existing test was written against; the tests
@@ -153,7 +154,7 @@ def redirecting_server() -> Iterator[int]:
 
 def test_show_argv_binds_explicit_loopback_host() -> None:
     """The default listener is IPv6-only, so ``--host 127.0.0.1`` must be passed."""
-    argv = mod._show_argv("/n/playwright-cli", 45613)
+    argv = mod._show_argv(["/n/playwright-cli"], 45613)
 
     assert "--host" in argv
     assert argv[argv.index("--host") + 1] == "127.0.0.1"
@@ -163,10 +164,19 @@ def test_show_argv_binds_explicit_loopback_host() -> None:
 
 def test_show_argv_never_binds_a_routable_address() -> None:
     """A non-loopback bind would publish remote browser input to the network."""
-    argv = mod._show_argv("/n/playwright-cli", 45613)
+    argv = mod._show_argv(["/n/playwright-cli"], 45613)
 
     assert "0.0.0.0" not in argv
     assert "::" not in argv
+    assert argv[argv.index("--host") + 1] == mod.LOOPBACK_HOST
+
+
+def test_show_argv_preserves_the_direct_node_and_javascript_prefix() -> None:
+    command = ["/sealed/gateway-node", "/sealed/playwright-cli.js"]
+
+    argv = mod._show_argv(command, 45613)
+
+    assert argv[:3] == [*command, "show"]
     assert argv[argv.index("--host") + 1] == mod.LOOPBACK_HOST
 
 
@@ -207,8 +217,8 @@ def test_ensure_running_spawns_with_loopback_host(monkeypatch: pytest.MonkeyPatc
     monkeypatch.setattr(mod, "cli_path", lambda: "/n/pw")
     monkeypatch.setattr(mod, "_healthy", lambda port: True)
 
-    def fake_spawn(cli: str, port: int) -> FakeProc:
-        recorded.append(mod._show_argv(cli, port))
+    def fake_spawn(command: list[str], port: int) -> FakeProc:
+        recorded.append(mod._show_argv(command, port))
         return FakeProc()
 
     monkeypatch.setattr(mod, "_spawn", fake_spawn)
@@ -221,6 +231,26 @@ def test_ensure_running_spawns_with_loopback_host(monkeypatch: pytest.MonkeyPatc
     assert argv[argv.index("--host") + 1] == "127.0.0.1"
     assert info.url == f"http://127.0.0.1:{info.port}"
     assert argv[argv.index("--port") + 1] == str(info.port)
+
+
+def test_ensure_running_spawns_the_direct_node_and_javascript_prefix(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    direct = ["/sealed/gateway-node", "/sealed/playwright-cli.js"]
+    recorded: list[list[str]] = []
+    monkeypatch.setattr(mod, "cli_path", lambda: "/sealed/playwright-cli")
+    monkeypatch.setattr(mod, "cli_command", lambda cli=None: direct)
+    monkeypatch.setattr(mod, "_healthy", lambda port: True)
+    monkeypatch.setattr(
+        mod,
+        "_spawn",
+        lambda command, port: recorded.append(list(command)) or FakeProc(),
+    )
+
+    info = mod.ensure_running()
+
+    assert info is not None
+    assert recorded == [direct]
 
 
 def test_ensure_running_pins_the_configured_port(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -256,8 +286,8 @@ def test_ensure_running_pins_the_configured_port(monkeypatch: pytest.MonkeyPatch
 
     monkeypatch.setattr(mod, "_Relay", FakeRelay)
 
-    def fake_spawn(cli: str, port: int) -> FakeProc:
-        recorded.append(mod._show_argv(cli, port))
+    def fake_spawn(command: list[str], port: int) -> FakeProc:
+        recorded.append(mod._show_argv(command, port))
         return FakeProc()
 
     monkeypatch.setattr(mod, "_spawn", fake_spawn)
@@ -875,3 +905,36 @@ def test_stop_clears_the_recorded_child_port(monkeypatch: pytest.MonkeyPatch) ->
     mod.stop()
 
     assert mod._child_port is None
+
+
+def test_show_child_registers_in_the_gateway_owned_session_registry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """FP item 6: the ``show`` grid still lists the panel sessions.
+
+    The grid (the documented CAPTCHA/2FA takeover surface) lists whatever is in
+    the CLI session registry the ``show`` child runs against. The launcher
+    registers each ``panel-`` session under the gateway-owned registry that
+    :func:`ui_socket_env` pins (``<root>/ui/d``); this test proves ``_spawn``
+    hands the ``show`` child that SAME env, so the grid and the launched
+    sessions share one registry and the grid lists what a launch created.
+    """
+    captured: dict[str, dict[str, str]] = {}
+
+    def fake_popen(argv, **kwargs):  # noqa: ANN001, ANN003
+        captured["env"] = dict(kwargs["env"])
+        return FakeProc()
+
+    monkeypatch.setattr(mod, "cli_env", lambda: {"PATH": "/n"})
+    monkeypatch.setattr(
+        mod,
+        "ui_socket_env",
+        lambda env: {"PWTEST_SOCKETS_DIR": "/root/ui/s", "PWTEST_DAEMON_SESSION_DIR": "/root/ui/d"},
+    )
+    monkeypatch.setattr(mod.subprocess, "Popen", fake_popen)
+
+    proc = mod._spawn(["/n/pw"], 7777)
+
+    assert proc is not None
+    assert captured["env"]["PWTEST_SOCKETS_DIR"] == "/root/ui/s"
+    assert captured["env"]["PWTEST_DAEMON_SESSION_DIR"] == "/root/ui/d"

@@ -25,6 +25,7 @@ from kiro_crew.browser.command_bus import (
     get_command_bus,
 )
 from kiro_crew.browser_cli import install as browser_cli_install
+from kiro_crew.browser_cli import launcher as browser_cli_launcher
 from kiro_crew.browser_cli import token as browser_cli_token
 from kiro_crew.browser_cli import view as browser_cli_view
 from kiro_crew.config import live
@@ -3686,6 +3687,87 @@ async def api_browser_view_start(request: web.Request) -> web.Response:
 
     await asyncio.to_thread(_start_view)
     return web.json_response(await asyncio.to_thread(browser_cli_view.status))
+
+
+async def api_browser_open(request: web.Request) -> web.Response:
+    """POST /api/browser/open -- show a URL the owner typed in the gateway's browser.
+
+    Body: ``{"url": "https://...", "session_key": "<chat slot>"}``. The Browser
+    panel calls this on the non-native transport (a plain browser tab, including
+    one reaching a remote gateway over a tunnel) when the typed host is not
+    loopback: nothing else can render an external site there, because the
+    dashboard CSP refuses to frame it. The handler makes sure the ``show`` view is
+    serving, runs ``playwright-cli -s=<session> goto|open <url>`` as a supervised
+    child (see :mod:`kiro_crew.browser_cli.launcher`), and answers ``{ok,
+    session, error, view}`` -- ``error`` is the CLI's own text, verbatim, so the
+    panel can show WHY (``No usable sandbox!``, a missing Chromium build) instead
+    of a blank frame; ``view`` is the post-attempt ``show`` status so the panel
+    can frame it without a second round trip.
+
+    Owner-only, like the view routes, and it additionally REFUSES a caller
+    authenticated by the internal secret: agent browsing goes through the shell
+    approval ladder (capability model), and an agent reaching this endpoint would
+    bypass it. A human pressing Enter in an authenticated dashboard is the consent
+    this route rests on. Off-loaded to a thread because ``open`` waits on a
+    Chromium launch, which must not stall the event loop.
+    """
+    denied = _deny_non_owner_browser_request(request, "browser_open")
+    if denied is not None:
+        return denied
+    if request.get("internal_auth"):
+        # Belt and braces: the route is not on any internal-path list, so the
+        # secret is ignored before this handler runs; this pins the refusal even
+        # if the route is ever added to one.
+        _sel().log_api_access(
+            caller="internal",
+            operation="browser_open",
+            outcome="denied",
+            source="browser_api",
+            resources=request.path,
+            error="internal-secret callers may not drive the browser panel",
+        )
+        return web.json_response(
+            {"error": "forbidden for internal callers", "code": "internal_caller"}, status=403
+        )
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001 - a malformed body is a client error, not a crash
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
+    if not isinstance(body, dict):
+        return web.json_response(
+            {"error": "body must be a JSON object", "code": "invalid_json"}, status=400
+        )
+    raw_url = body.get("url")
+    session_key = body.get("session_key")
+    if not isinstance(raw_url, str) or not isinstance(session_key, str) or not session_key.strip():
+        return web.json_response(
+            {"error": "url and session_key are required", "code": "invalid_request"}, status=400
+        )
+    url = browser_cli_launcher.validate_url(raw_url)
+    if url is None:
+        return web.json_response(
+            {
+                "error": (
+                    "url must be http(s) with a host and no credentials, "
+                    "query, or fragment (a secret in the URL would leak via argv)"
+                ),
+                "code": "invalid_url",
+            },
+            status=400,
+        )
+
+    def _launch() -> dict[str, Any]:
+        # Same start path as api_browser_view_start, in the worker thread with the
+        # child-process wait: the view must be up for the human to see the page,
+        # and its singleton socket is what the launcher's reveal talks to.
+        pinned = KiroCrewConfig.load().dashboard.browser_view_port
+        browser_cli_view.ensure_running(pinned or None)
+        result = browser_cli_launcher.open_url(url, session_key.strip())
+        payload = result.as_dict()
+        payload["view"] = browser_cli_view.status()
+        return payload
+
+    return web.json_response(await asyncio.to_thread(_launch))
 
 
 async def _validate_slack_token(key: str, token: str) -> str | None:

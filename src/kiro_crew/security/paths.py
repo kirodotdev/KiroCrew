@@ -342,6 +342,11 @@ _CREW_SECRET_LEAVES: list[str] = [
     # operator's logged-in browser without them seeing a prompt. The gateway hands
     # it to the CLI through the environment, so nothing legitimate opens the file.
     "playwright-extension-token",
+    # Gateway-executed browser launcher and its vendored package tree. Agent
+    # subprocesses receive a READONLY sandbox view so their browser commands can
+    # run it; file tools must not inspect or replace the executable the
+    # unsandboxed gateway later uses for startup cleanup and owner launches.
+    "playwright-cli",
     # Legacy SEL HMAC key location (pre-``trust/`` installs, and any stale file
     # a backup restore resurrects). Kept alongside the ``trust``
     # directory entry below so the key is gated at BOTH locations.

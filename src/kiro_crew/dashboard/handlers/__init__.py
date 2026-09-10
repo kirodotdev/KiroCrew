@@ -308,6 +308,7 @@ from kiro_crew.dashboard.handlers.messaging import (  # noqa: E402, F401
     api_browser_engine_install,
     api_browser_install_get,
     api_browser_install_start,
+    api_browser_open,
     api_browser_token_put,
     api_browser_view_get,
     api_browser_view_start,

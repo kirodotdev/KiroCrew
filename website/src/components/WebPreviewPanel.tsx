@@ -12,6 +12,9 @@ import {
   type AnnotationItem, type PreviewAnnotateDetail,
 } from '../utils/browserAnnotations'
 import { formatAnnotationDraft } from '../utils/browserAnnotations.prompt'
+import { ApiError } from '../api/apiError'
+import { Btn } from './ui'
+import { SettingRef } from './settingRef/SettingRef'
 import { isScreenSnipSupported } from '../hooks/useScreenSnip'
 import { useIsMobile } from '../hooks/useIsMobile'
 import { useBrowserView } from '../hooks/useBrowserView'
@@ -33,19 +36,31 @@ import { i18nT } from '../i18n/t'
  * one is served by another process — but it is NOT read-only: the CLI dashboard
  * carries its own tab bar, navigation and full remote mouse/keyboard input, so
  * the frame is the control surface and nothing may be layered over it.
+ * On that second transport the address bar is also how a human opens a REAL
+ * website: an external host cannot render in the iframe (sites refuse to be
+ * framed, and the dashboard CSP refuses to frame them), so `commit` hands it to
+ * the gateway (`POST /api/browser/open`), which opens it in the gateway host's
+ * Playwright CLI browser and the panel shows that through the CLI view — whose
+ * own URL bar, tab bar and input then carry the navigation from there.
  * The dev-server iframe is a real embedded browser view: the dev server's own
  * HMR live-reloads it as the user edits, and Reload covers static servers.
  *
  * Session-scoped: the chosen URL is remembered PER chat slot (`sessionKey`), so
- * each session keeps its own preview target. Frontend-only — no gateway round
- * trip; the browser fetches the URL directly, so only servers reachable from
- * the user's browser (localhost dev servers) can be previewed.
+ * each session keeps its own preview target. The dev-server preview is
+ * frontend-only — no gateway round trip; the browser fetches the URL directly,
+ * so only servers reachable from the user's browser (localhost dev servers) can
+ * be previewed. The launcher above is the one gateway round trip, and only for a
+ * non-loopback host.
  */
 
 const URL_KEY_PREFIX = 'mc-webpreview-url:'
 /** localStorage prefix for a chat-fed URL that is PENDING an explicit "Load
  *  preview" click — surfaced as a card, never auto-navigated (click-to-load). */
 const PENDING_KEY_PREFIX = 'mc-webpreview-pending:'
+/** localStorage flag: the reader dismissed the padlock hint under the browser
+ *  view once. Per browser, not per chat -- the hint explains a control that is
+ *  the same in every chat, so one reading is enough. */
+const PADLOCK_HINT_DISMISSED_KEY = 'mc-webpreview-padlock-hint-dismissed'
 /** Window event that feeds a URL into a mounted panel from outside (ChatPage). */
 const PREVIEW_URL_EVENT = 'kirocrew-web-preview-url'
 /** Window event feeding a PENDING url (shown as a Load-preview card, NOT
@@ -237,9 +252,13 @@ function deviceLabel(d: DevicePreset): string {
 }
 
 /** Coerce free-form input into a safe http(s) URL, or null if unusable. A bare
- *  `host:port` / `localhost:5173` gets an `http://` scheme; any explicit scheme
- *  that isn't http(s) (javascript:, file:, data:, ftp://, …) is rejected so the
- *  iframe can't be pointed at a dangerous target. */
+ *  host gets a scheme: `http://` for a loopback host or anything carrying an
+ *  explicit port or IP literal (`localhost:5173`, `192.168.1.4:3000` — the
+ *  dev-server shapes, which are plain http), `https://` for a bare public host
+ *  (`google.com`), which is what a real site answers on and what a browser's own
+ *  address bar would try. Any explicit scheme that isn't http(s) (javascript:,
+ *  file:, data:, ftp://, …) is rejected so the iframe can't be pointed at a
+ *  dangerous target. */
 export function normalizeUrl(raw: string): string | null {
   const trimmed = raw.trim()
   if (!trimmed) return null
@@ -253,8 +272,10 @@ export function normalizeUrl(raw: string): string | null {
     if (!/^https?$/i.test(schemeSep[1])) return null
   } else {
     // No scheme (e.g. `localhost:5173`, where `localhost` is a host, not a
-    // scheme) — default to http.
-    candidate = `http://${trimmed}`
+    // scheme). Parse once as http to read the host and port back, then decide.
+    let probe: URL
+    try { probe = new URL(`http://${trimmed}`) } catch { return null }
+    candidate = `${defaultSchemeFor(probe)}://${trimmed}`
   }
   try {
     const u = new URL(candidate)
@@ -263,6 +284,18 @@ export function normalizeUrl(raw: string): string | null {
   } catch {
     return null
   }
+}
+
+/** `https` for a bare PUBLIC hostname, `http` for everything a dev server looks
+ *  like: a loopback host, an IP literal, or any host with an explicit port. A
+ *  `host:port` typed bare is a local or LAN server in practice, and a public site
+ *  is never typed with one. */
+function defaultSchemeFor(u: URL): 'http' | 'https' {
+  if (u.port) return 'http'
+  const h = u.hostname
+  if (isLoopbackHost(h)) return 'http'
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(h) || h.startsWith('[')) return 'http'
+  return 'https'
 }
 
 /** Query param carrying the reload counter (see `withCacheBuster`). Deliberately
@@ -495,6 +528,91 @@ function pushNav(n: NavState, url: string): NavState {
   return { stack, index: stack.length - 1 }
 }
 
+/** Probe interval and the per-probe deadline of `useLivenessProbe`. */
+const PROBE_EVERY_MS = 5000
+const PROBE_TIMEOUT_MS = 2500
+
+/**
+ * Whether a framed server has stopped answering. A cross-origin iframe cannot
+ * tell us its server died (it keeps showing the last document, or the browser's
+ * own error page), so while `enabled` the URL is polled with a no-cors GET; a
+ * connection failure throws. Two consecutive failures ⇒ unreachable; a later
+ * success auto-restores. (Two strikes tolerates a brief HMR/dev-server restart.)
+ * Any change of `url` or `resetKey` starts a fresh, reachable-until-proven-
+ * otherwise cycle — which is how a Reload clears the state.
+ *
+ * Used for BOTH framed servers: the dev-server preview and the Playwright CLI
+ * view, which is served on the GATEWAY host's loopback and is unreachable from a
+ * browser on another machine unless its port is pinned and forwarded.
+ */
+function useLivenessProbe(url: string, enabled: boolean, resetKey = 0): boolean {
+  const [unreachable, setUnreachable] = useState(false)
+  useEffect(() => {
+    setUnreachable(false)
+    if (!url || !enabled) return
+    let fails = 0
+    let cancelled = false
+    const probe = async () => {
+      const ctrl = new AbortController()
+      const t = setTimeout(() => ctrl.abort(), PROBE_TIMEOUT_MS)
+      try {
+        await fetch(url, { mode: 'no-cors', cache: 'no-store', signal: ctrl.signal })
+        if (cancelled) return
+        fails = 0
+        setUnreachable(false)
+      } catch {
+        if (cancelled) return
+        fails += 1
+        if (fails >= 2) setUnreachable(true)
+      } finally {
+        clearTimeout(t)
+      }
+    }
+    void probe()
+    const id = setInterval(() => { void probe() }, PROBE_EVERY_MS)
+    return () => { cancelled = true; clearInterval(id) }
+  }, [url, enabled, resetKey])
+  return unreachable
+}
+
+/** The address bar's launcher flow on the non-native transport, while a URL is
+ *  being opened in the gateway host's browser or after that failed. `error` is
+ *  the gateway's text — the CLI's own words — rendered verbatim. */
+interface LaunchState {
+  url: string
+  status: 'opening' | 'failed'
+  error: string | null
+  /** The URL's shape is one the launcher refuses: credentials, a `?` query,
+   * or a `#` fragment would enter host-visible CLI argv. `local` means the
+   * panel caught query/fragment data before any request — a plain validation
+   * hint. `gateway` means the request went out and the gateway answered
+   * `invalid_url` — a real failed request whose own bounded reason is shown.
+   * Neither offers retry: the same address would be refused again. */
+  refused?: 'local' | 'gateway'
+}
+
+/** Whether the launcher would refuse *url* for its shape alone (see `refused`).
+ * Mirrors the gateway's `validate_url`: a non-empty query or fragment. A bare
+ * trailing `?` or `#` carries nothing and passes there, so it passes here. */
+function hasQueryOrFragment(url: string): boolean {
+  try {
+    const u = new URL(url)
+    return u.search !== '' || u.hash !== ''
+  } catch {
+    return false
+  }
+}
+
+/** The gateway's own refusal of a URL shape (`code: "invalid_url"` on a 400). */
+function isInvalidUrlRefusal(err: unknown): boolean {
+  if (!(err instanceof ApiError) || err.status !== 400) return false
+  try {
+    return (JSON.parse(err.body) as { code?: unknown }).code === 'invalid_url'
+  } catch {
+    return false
+  }
+}
+
 export default function WebPreviewPanel({ sessionKey, active = true }: { sessionKey?: string | null; active?: boolean }) {
   const storageKey = sessionKey ? `${URL_KEY_PREFIX}${sessionKey}` : null
   const pendingKey = sessionKey ? `${PENDING_KEY_PREFIX}${sessionKey}` : null
@@ -502,10 +620,35 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
   const [draft, setDraft] = useState('')
   // A chat-fed URL awaiting an explicit "Load preview" click (null = none).
   const [pending, setPending] = useState<string | null>(null)
-  // The loaded dev server stopped responding (connection refused / down). A
-  // cross-origin iframe keeps showing its last document after its server dies,
-  // so we probe liveness and unmount it here instead of showing a stale page.
-  const [unreachable, setUnreachable] = useState(false)
+  // The address bar's launcher flow (non-native transport, external host): the
+  // URL is being opened in the gateway host's browser, or that failed and the
+  // gateway's own words explain why. Null = no launch in progress or failed.
+  const [launch, setLaunch] = useState<LaunchState | null>(null)
+  // The one guard against a stale launch answer: only the LATEST launch may
+  // paint. Every launchInBrowser call takes the next number, both of its
+  // callbacks paint only while that number is still current, and the
+  // slot-change effect below bumps it. That drops a late failure of launch A
+  // after launch B succeeded on the same slot (mistype, retype fast) and an
+  // answer for a slot the user has left, with one mechanism.
+  const launchSeqRef = useRef(0)
+  // The CLI session THIS slot's launches land in (`panel-<owner6>-<slot8>`), from the
+  // gateway's answer. Shown in the view's header: the framed dashboard lists
+  // every browser session on the host by name, and the name is the only thing
+  // that tells this chat's session apart from the others.
+  const [launchedSession, setLaunchedSession] = useState<string | null>(null)
+  // Whether the framed dashboard attached its viewport to that session, from the
+  // same answer. False is the one case where the reader is looking at the
+  // frame's session grid with no page, so the panel names the session to pick;
+  // null = no launch answered yet.
+  const [launchedAttached, setLaunchedAttached] = useState<boolean | null>(null)
+  // The padlock hint under the view header, dismissed once per browser.
+  const [padlockHintDismissed, setPadlockHintDismissed] = useState<boolean>(() => {
+    try { return localStorage.getItem(PADLOCK_HINT_DISMISSED_KEY) === '1' } catch { return false }
+  })
+  const dismissPadlockHint = useCallback(() => {
+    setPadlockHintDismissed(true)
+    safeSetItem(PADLOCK_HINT_DISMISSED_KEY, '1')
+  }, [])
   // Reload counter. Bumping it remounts the iframe AND varies its src (see
   // `withCacheBuster`) — the remount alone would re-request the same URL and the
   // browser could answer from cache, which is no reload at all for a static
@@ -1048,6 +1191,13 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
     // about THIS session's panel, and carrying it into another session would hide
     // a running view (or pin an explanatory card) the user never asked for there.
     setViewOverride(null)
+    // Same for an in-flight or failed launch: it names a URL typed for another
+    // slot. Bumping the sequence retires any launch still in flight for the old
+    // slot, so its late answer paints nothing here.
+    launchSeqRef.current += 1
+    setLaunch(null)
+    setLaunchedSession(null)
+    setLaunchedAttached(null)
   }, [storageKey, pendingKey])
 
   // Live external feed: ChatPage (or any caller of setSessionPreviewUrl) can
@@ -1100,9 +1250,90 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
     setDraft(u)
   }, [nativeOpen, native.state?.url])
 
+  /**
+   * Open `target` in the gateway host's browser and show it through the CLI view.
+   *
+   * The non-native transport's only way to render an external site: the
+   * dashboard CSP refuses to frame it, so the preview iframe and its liveness
+   * probe are left exactly as they were and the URL goes to the gateway instead,
+   * which starts the view if needed and drives the CLI. On success the view
+   * takes the panel (its status came back with the answer, so it frames at
+   * once). On failure the gateway's text — the CLI's own words — is shown in the
+   * panel, never a blank frame and never the dev-server "stopped responding" copy.
+   */
+  const openInView = view.open
+  // A launch resolves seconds later. By then the user may have typed another
+  // address on this slot, or switched chats; either way only the newest launch
+  // may paint, so each callback checks that its sequence number is still the
+  // current one (see launchSeqRef) and drops a stale answer.
+  const launchInBrowser = useCallback((target: string) => {
+    if (!sessionKey) return
+    const seq = ++launchSeqRef.current
+    const isLatest = () => launchSeqRef.current === seq
+    setDraft(target)
+    // The gateway refuses a `?` query or `#` fragment (the URL becomes CLI argv,
+    // readable by same-host accounts, and those parts are where a token
+    // travels). Refuse the same shape here, before the round trip, and say
+    // where such a link goes instead of showing the refusal text.
+    if (hasQueryOrFragment(target)) {
+      setLaunch({ url: target, status: 'failed', error: null, refused: 'local' })
+      setViewOverride(false)
+      return
+    }
+    setLaunch({ url: target, status: 'opening', error: null })
+    openInView(target, sessionKey).then(
+      (data) => {
+        if (!isLatest()) return
+        if (data.ok) {
+          setLaunch(null)
+          setLaunchedSession(data.session || null)
+          // Only an explicit false means "not attached": an older gateway that
+          // does not answer the field is treated as attached, so no line appears.
+          setLaunchedAttached(data.attached !== false)
+          setViewOverride(true)
+        } else {
+          // The explanatory card lives in the preview body, so make sure the
+          // view overlay is not covering it.
+          setLaunch({ url: target, status: 'failed', error: data.error || null })
+          setViewOverride(false)
+        }
+      },
+      (err: unknown) => {
+        if (!isLatest()) return
+        // A caller that skipped the local query/fragment check may still reach
+        // the gateway with credentials or another refused shape. Preserve the
+        // gateway's bounded reason: only it knows which invariant rejected the
+        // request, and substituting query/hash copy misdiagnoses userinfo.
+        if (isInvalidUrlRefusal(err)) {
+          setLaunch({
+            url: target,
+            status: 'failed',
+            error: err instanceof Error ? err.message : String(err),
+            refused: 'gateway',
+          })
+        } else {
+          setLaunch({ url: target, status: 'failed', error: err instanceof Error ? err.message : String(err) })
+        }
+        setViewOverride(false)
+      },
+    )
+  }, [sessionKey, openInView])
+
   const commit = useCallback((raw: string) => {
     const norm = normalizeUrl(raw)
     if (!norm) return
+    let host = ''
+    try { host = new URL(norm).hostname } catch { /* normalizeUrl validated it */ }
+    const external = !!host && !isLoopbackHost(host)
+    // A NON-loopback target on the NON-native transport (remote gateway / plain
+    // browser) cannot render in the iframe: external sites refuse to be framed
+    // and the dashboard CSP refuses to frame them anyway. Hand it to the gateway
+    // host's browser instead — and do not touch the iframe or its probe, which
+    // would otherwise report the site as a dead dev server.
+    if (external && !native.available) {
+      launchInBrowser(norm)
+      return
+    }
     const isolated = isolateFrameTarget(norm)
     setNav(n => pushNav(n, isolated))
     setDraft(isolated)
@@ -1117,11 +1348,11 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
     // blank — a real embedded browser is the only thing that can show them.
     // Loopback dev servers keep using the iframe: that is the local-preview
     // feature, and framing works there.
-    if (!native.available) return
-    let host = ''
-    try { host = new URL(isolated).hostname } catch { /* normalizeUrl validated it */ }
-    if (host && !isLoopbackHost(host)) native.open(isolated)
-  }, [persist, pendingKey, native])
+    if (external && native.available) native.open(isolated)
+  }, [persist, pendingKey, native, launchInBrowser])
+
+  // Bumped by the unreachable-view card's retry, restarting that probe.
+  const [viewProbeKey, setViewProbeKey] = useState(0)
 
   const dismissPending = useCallback(() => {
     setPending(null)
@@ -1197,37 +1428,28 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
   // probe passes) — detect it so we explain instead of framing a blank page.
   const selfOrigin = useMemo(() => !!url && isDashboardOrigin(url), [url])
 
-  // Liveness probe: a cross-origin iframe cannot tell us its server died — it
-  // just keeps showing the last document. While a URL is actually framed (loaded,
-  // embeddable, tab active) poll it with a no-cors GET; a connection-refused error
-  // throws. Two consecutive failures ⇒ the dev server stopped, so we mark it
-  // unreachable and unmount the iframe (clearing the stale page). A later success
-  // auto-restores it. (Two strikes tolerates a brief HMR/dev-server restart.)
-  useEffect(() => {
-    if (!url || mixedContent || selfOrigin || pending || !active) return
-    setUnreachable(false)
-    let fails = 0
-    let cancelled = false
-    const probe = async () => {
-      const ctrl = new AbortController()
-      const t = setTimeout(() => ctrl.abort(), 2500)
-      try {
-        await fetch(url, { mode: 'no-cors', cache: 'no-store', signal: ctrl.signal })
-        if (cancelled) return
-        fails = 0
-        setUnreachable(false)
-      } catch {
-        if (cancelled) return
-        fails += 1
-        if (fails >= 2) setUnreachable(true)
-      } finally {
-        clearTimeout(t)
-      }
-    }
-    void probe()
-    const id = setInterval(() => { void probe() }, 5000)
-    return () => { cancelled = true; clearInterval(id) }
-  }, [url, reloadKey, mixedContent, selfOrigin, pending, active])
+  // Liveness of the framed dev server: probed only while a URL is actually
+  // framed (loaded, embeddable, tab active); two strikes unmount the stale iframe
+  // in favour of the stopped state, a later success restores it.
+  const unreachable = useLivenessProbe(
+    url,
+    !!url && !mixedContent && !selfOrigin && !pending && active,
+    reloadKey,
+  )
+
+  // Liveness of the framed CLI view, from THIS browser's point of view. The view
+  // is served on the gateway host's loopback, so from a browser on another
+  // machine (a laptop reaching a remote gateway over an SSH tunnel) the frame is
+  // dead unless `dashboard.browser_view_port` is pinned and that port forwarded
+  // too. The gateway's status says "running" either way — it is reachable from
+  // where IT stands — so the panel has to find out for itself and explain the
+  // pin + forward instead of showing the browser's own error page in the frame.
+  // Same probe as the dev server's, and CSP admits it (loopback connect-src).
+  const viewUnreachable = useLivenessProbe(
+    viewUrl || '',
+    !!viewUrl && viewRunning && showBrowserView && active,
+    viewProbeKey,
+  )
 
   const iconBtn = 'flex items-center justify-center w-7 h-7 rounded-md text-muted hover:text-text '
     + 'hover:bg-bg-hover transition-colors bg-transparent border-none cursor-pointer shrink-0 '
@@ -1247,10 +1469,36 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
       <div className="flex items-center gap-2 px-3 py-1.5 border-b border-border shrink-0" style={{ backgroundColor: 'var(--bg-elevated)' }}>
         <Monitor size={14} className="shrink-0 text-muted" />
         <span className="shrink-0 text-[13px] font-medium text-text">{i18nT('components.webPreviewPanel.browser_view')}</span>
+        {/* The dot is what THIS browser sees, not gateway-side truth: green while
+            the view answers from here, danger-coloured while the probe below says
+            it does not — a green dot beside an "unreachable" card contradicted it. */}
         {viewRunning && (
-          <span className="inline-block w-1.5 h-1.5 rounded-full animate-pulse" style={{ backgroundColor: 'var(--ok)' }} aria-hidden />
+          <span
+            className={`inline-block w-1.5 h-1.5 rounded-full ${viewUnreachable ? '' : 'animate-pulse'}`}
+            style={{ backgroundColor: viewUnreachable ? 'var(--danger)' : 'var(--ok)' }}
+            data-testid="web-preview-view-dot"
+            aria-hidden
+          />
         )}
-        <div className="flex-1" />
+        {/* This chat's browser, by the session name the framed dashboard lists it
+            under — the sidebar lists the gateway's own browser sessions, and the
+            name is what tells this one apart. The label is visible text, not a
+            tooltip, and deliberately does not say "session": that word is already
+            what the app calls its chats and what the frame's own list is headed,
+            so the name chip carries the identity. Rendered only once a launch has
+            named it. The group is the row's only flexible item: at narrow widths
+            (320px) it gives way first — label, then name, each truncating — so
+            the controls to its right, including the only way back to the preview
+            bar, always fit. */}
+        {launchedSession && (
+          <span className="flex min-w-0 flex-1 items-center gap-1 text-[11px] text-muted overflow-hidden" data-testid="web-preview-session-label">
+            <span className="min-w-0 truncate">{i18nT('components.webPreviewPanel.this_chat_s_browser_session')}</span>
+            <code className="font-mono px-1.5 py-0.5 rounded bg-bg-elevated text-text truncate shrink min-w-[6ch] max-w-[180px]" data-testid="web-preview-session-name">
+              {launchedSession}
+            </code>
+          </span>
+        )}
+        <div className={launchedSession ? 'shrink' : 'flex-1'} />
         {viewUrl && (
           <a
             href={viewUrl}
@@ -1276,11 +1524,81 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
           <Monitor size={13} />
         </button>
       </div>
+      {/* One sentence naming the two ways to the next page, because both are
+          behind controls whose meaning a first-time reader cannot see: the
+          framed dashboard's own address bar unlocks with its padlock (which
+          only turns on typing and clicking inside that browser), and the
+          panel's bar comes back with the toggle above. Dismissed once per
+          browser: the controls are the same in every chat, so a second reading
+          buys nothing and daily chrome should not carry how-to prose. Chrome
+          above the frame, never on it. Only where this view IS the browser for
+          an external site. */}
+      {!native.available
+        && launchedSession
+        && launchedAttached !== false
+        && viewRunning
+        && !viewUnreachable
+        && !padlockHintDismissed && (
+        <div
+          className="flex items-center gap-2 px-3 py-1 border-b border-border shrink-0 text-[11px] text-muted leading-snug"
+          data-testid="web-preview-padlock-hint"
+        >
+          <span className="min-w-0 flex-1">
+            {i18nT('components.webPreviewPanel.to_open_another_site_unlock_the_view_s_address_bar')}
+          </span>
+          <Btn aria-label={i18nT('app.dismiss')} onClick={dismissPadlockHint} className="shrink-0">
+            <X className="lucide-inline" />
+          </Btn>
+        </div>
+      )}
+      {/* The framed dashboard did not attach to the launched session (no shared
+          socket root, an unsupported bundle layout, Windows), so the reader is
+          looking at its session grid with no page: name the session to pick.
+          Said only in that case -- an attached view needs no instruction. */}
+      {!native.available && launchedSession && launchedAttached === false && (
+        <div
+          className="px-3 py-1 border-b border-border shrink-0 text-[11px] text-muted leading-snug"
+          data-testid="web-preview-pick-session"
+        >
+          {i18nT('components.webPreviewPanel.your_page_is_in_pick_it_in_the_sidebar', { session: launchedSession })}
+        </div>
+      )}
       <div className="relative flex-1 min-h-0 bg-bg-elevated">
         {view.pending || view.starting ? (
           <div className="flex flex-col items-center justify-center h-full gap-2 px-6 text-center">
             <Loader2 size={18} className="text-muted animate-spin" aria-hidden />
             <span className="text-[11px] text-muted">{i18nT('components.webPreviewPanel.loading_the_browser_view')}</span>
+          </div>
+        ) : viewRunning && viewUnreachable ? (
+          // Running on the gateway, dead from HERE. The view binds the gateway
+          // host's loopback, so a browser on another machine reaches it only
+          // through a forwarded port — explain the pin + forward instead of
+          // leaving the browser's own connection-refused page in the frame.
+          // Hand-off on: there is no draft to lose (the address bar's URL is
+          // state, not an unsaved form), and the side panel stays open across
+          // the chat navigation the hand-off performs.
+          <div className="flex flex-col items-center justify-center h-full gap-3 px-6 text-center bg-bg">
+            <Monitor size={22} className="text-muted" />
+            <ErrorNotice
+              title={i18nT('components.webPreviewPanel.browser_view_can_t_be_reached_from_this_browser')}
+              message={i18nT('components.webPreviewPanel.the_view_runs_on_the_gateway_host_pin_and_forward')}
+              className="max-w-[420px] text-left"
+              testId="web-preview-view-unreachable"
+              askAgent
+            />
+            <code className="text-[11px] font-mono px-2 py-1 rounded bg-bg-elevated text-text break-all max-w-[360px]">
+              {viewUrl}
+            </code>
+            {/* The pin lives in config.json; the chip links to the setting where
+                the UI edits it, or shows the CLI command where it does not. */}
+            <SettingRef configKey="dashboard.browser_view_port" />
+            <button
+              type="button"
+              onClick={() => setViewProbeKey(k => k + 1)}
+              className="inline-flex items-center gap-1.5 text-[12px] px-3 py-1.5 rounded-md border border-border text-text hover:bg-bg-hover transition-colors cursor-pointer bg-transparent"
+            >
+              <RotateCw size={13} /> {i18nT('components.webPreviewPanel.try_again')}
+            </button>
           </div>
         ) : viewRunning ? (
           // The CLI dashboard, framed. It brings its own session grid, tab bar,
@@ -1705,7 +2023,89 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
 
       {/* Body */}
       <div className="relative flex-1 min-h-0 bg-white">
-        {pending ? (
+        {launch ? (
+          // The address bar's launcher (non-native transport, external host):
+          // the URL is being opened in the gateway host's browser, or that
+          // failed. The gateway's text is the CLI's own words and is shown
+          // verbatim — it names the real cause (a Chromium sandbox refusal, a
+          // missing browser build) and, for the sandbox case, the operator's
+          // remedy. Never a blank frame, never the dev-server copy.
+          <div className="flex flex-col items-center justify-center h-full gap-3 px-6 text-center bg-bg">
+            {launch.status === 'opening' ? (
+              <>
+                <Loader2 size={18} className="text-muted animate-spin" aria-hidden />
+                <div className="text-[13px] font-medium text-text">{i18nT('components.webPreviewPanel.opening_in_the_browser')}</div>
+                <code className="text-[11px] font-mono px-2 py-1 rounded bg-bg-elevated text-text break-all max-w-[320px]">
+                  {launch.url}
+                </code>
+              </>
+            ) : launch.refused === 'local' ? (
+              <>
+                <Globe size={22} className="text-muted" />
+                <code className="text-[11px] font-mono px-2 py-1 rounded bg-bg-elevated text-text break-all max-w-[320px]">
+                  {launch.url}
+                </code>
+                {/* Nothing failed here: the panel's own check stopped a URL shape
+                    the launcher refuses before any request went out. That is a
+                    validation hint, not an error, so it is plain text — no
+                    ErrorNotice, no alert role, no danger colour — that says where
+                    such a link goes. No retry: the same address would be refused
+                    again. */}
+                <div
+                  className="flex items-start gap-2 max-w-[420px] text-left text-[12px] text-text rounded-md border border-border bg-bg-elevated px-3 py-2"
+                  data-testid="web-preview-launch-refused"
+                >
+                  <span className="min-w-0 flex-1 leading-snug">
+                    {i18nT('components.webPreviewPanel.links_with_a_query_or_hash_part_go_in_the_frame_s_own_address_bar')}
+                  </span>
+                  <Btn aria-label={i18nT('app.dismiss')} onClick={() => setLaunch(null)} className="shrink-0">
+                    <X className="lucide-inline" />
+                  </Btn>
+                </div>
+              </>
+            ) : (
+              <>
+                <Globe size={22} className="text-muted" />
+                <code className="text-[11px] font-mono px-2 py-1 rounded bg-bg-elevated text-text break-all max-w-[320px]">
+                  {launch.url}
+                </code>
+                {/* The gateway's own words when it gave any (never translated —
+                    they report the real cause, whether a URL-credential refusal,
+                    a Chromium sandbox refusal and its remedy, or another launch
+                    failure); our generic copy only when it did not. No hand-off:
+                    the address bar beside this notice holds an unsaved draft URL. */}
+                <ErrorNotice
+                  title={i18nT('components.webPreviewPanel.couldn_t_open_this_page_in_the_browser')}
+                  message={launch.error || i18nT('components.webPreviewPanel.the_gateway_could_not_open_a_browser_for_this_page')}
+                  // The title is the plain-language cause. Gateway validation
+                  // reasons keep body styling; verbatim CLI diagnostics are
+                  // visibly demoted (muted, smaller monospace) as evidence.
+                  messageClassName={
+                    launch.refused === 'gateway'
+                      ? 'block text-[12px] text-text pt-1 text-left'
+                      : 'block font-mono text-[10.5px] text-muted pt-1 max-h-[30vh] overflow-auto text-left'
+                  }
+                  className="max-w-[420px] text-left"
+                  onDismiss={() => setLaunch(null)}
+                  testId="web-preview-launch-error"
+                />
+                {/* One action in the row; the notice's own dismiss is the way out.
+                    Same outlined style as the unreachable card's retry: one look
+                    for one job. No retry for a refused shape: the same address
+                    would be refused again. */}
+                {launch.refused !== 'gateway' && (
+                  <button
+                    type="button"
+                    onClick={() => launchInBrowser(launch.url)}
+                    className="inline-flex items-center gap-1.5 text-[12px] px-3 py-1.5 rounded-md border border-border text-text hover:bg-bg-hover transition-colors cursor-pointer bg-transparent"
+                  >
+                    <RotateCw size={13} /> {i18nT('components.webPreviewPanel.try_again')}
+                  </button>
+                )}
+              </>
+            )}
+          </div>
+        ) : pending ? (
           // Click-to-load: a chat-fed URL is surfaced here but NOT navigated
           // until the user explicitly clicks Load (no auto-GET from agent output).
           <div className="flex flex-col items-center justify-center h-full gap-3 px-6 text-center bg-bg">
@@ -1808,7 +2208,7 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
             </div>
             <button
               type="button"
-              onClick={() => { setUnreachable(false); reload() }}
+              onClick={reload}
               className="inline-flex items-center gap-1.5 text-[12px] px-3 py-1.5 rounded-md border border-border text-text hover:bg-bg-hover transition-colors cursor-pointer bg-transparent"
             >
               <RotateCw size={13} /> {i18nT('components.webPreviewPanel.reload')}

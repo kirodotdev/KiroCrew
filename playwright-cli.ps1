@@ -127,7 +127,7 @@ Options:
   -DownloadHost <url>    PLAYWRIGHT_DOWNLOAD_HOST for the browser binaries
   -SkipBrowsers          do not download browser binaries during install
   -Prefix <dir>          private install prefix
-  -BinDir <dir>          where the playwright-cli.cmd wrapper is written
+  -BinDir <dir>          wrapper directory (default <prefix>\managed-bin)
   -Force                 reinstall even when the pinned version is present
   -DryRun                print the resolved plan and exit without changes
   -Help                  this text
@@ -297,7 +297,7 @@ if ([string]::IsNullOrWhiteSpace($Prefix)) {
     }
 }
 if ([string]::IsNullOrWhiteSpace($BinDir)) {
-    $BinDir = Join-Path $HOME ".local\bin"
+    $BinDir = Join-Path $Prefix "managed-bin"
 }
 $Prefix = $Prefix.TrimEnd('\', '/')
 $BinDir = $BinDir.TrimEnd('\', '/')
@@ -403,6 +403,32 @@ function Try-Node([string]$Candidate) {
     # each be relative.
     $script:NodeBinDir = Get-AbsolutePath (Split-Path -Parent $Candidate)
     return $true
+}
+
+function Get-NodeProcessPath([string]$Candidate) {
+    if ([string]::IsNullOrWhiteSpace($Candidate)) { return "" }
+    if (-not (Test-Path -LiteralPath $Candidate -PathType Leaf)) { return "" }
+    $previous = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        $reported = @(& $Candidate -p 'process.execPath' 2>$null)
+        $exitCode = $LASTEXITCODE
+    } catch {
+        return ""
+    } finally {
+        $ErrorActionPreference = $previous
+    }
+    if ($exitCode -ne 0 -or $reported.Count -ne 1) { return "" }
+    $raw = ([string]$reported[0]).Trim()
+    if ([string]::IsNullOrWhiteSpace($raw) -or
+        -not [System.IO.Path]::IsPathRooted($raw)) { return "" }
+    try {
+        $full = [System.IO.Path]::GetFullPath($raw)
+    } catch {
+        return ""
+    }
+    if (-not (Test-Path -LiteralPath $full -PathType Leaf)) { return "" }
+    return $full
 }
 
 # Preference order, most specific first: a Node this installer bootstrapped
@@ -930,6 +956,41 @@ if (-not $skipInstall) {
 $target = Join-Path $Prefix "$WrapperName.cmd"
 if (-not (Test-Path -LiteralPath $target -PathType Leaf)) {
     Die $ExVerify "npm reported success but $target does not exist; see $logPath"
+}
+
+# Gateway-owned launches never execute the .cmd wrapper: owner URL characters
+# would be re-parsed by cmd.exe. A version-manager node.exe may itself be a
+# forwarding shim, so ask the process which native executable it reached before
+# copying anything into the sealed prefix.
+$nativeNode = Get-NodeProcessPath $script:NodeExe
+if ([string]::IsNullOrWhiteSpace($nativeNode)) {
+    Die $ExVerify "Node did not report a native process.execPath"
+}
+$gatewayNode = Join-Path $Prefix "node.exe"
+if ([System.IO.Path]::GetFullPath($nativeNode) -ne [System.IO.Path]::GetFullPath($gatewayNode)) {
+    $gatewayNodeTmp = "$gatewayNode.$([guid]::NewGuid().ToString('N')).incoming"
+    try {
+        Copy-Item -LiteralPath $nativeNode -Destination $gatewayNodeTmp -Force
+        Move-Item -LiteralPath $gatewayNodeTmp -Destination $gatewayNode -Force
+    } catch {
+        Remove-Item -LiteralPath $gatewayNodeTmp -Force -ErrorAction SilentlyContinue
+        Die $ExNotWritable ("cannot stage Node for direct gateway execution at " +
+            "$gatewayNode ($($_.Exception.Message))")
+    }
+}
+# Execute the published file itself. Try-Node rechecks the version floor and also
+# pins the interactive wrapper's PATH to the managed copy rather than to the
+# source version-manager directory.
+if (-not (Try-Node $gatewayNode)) {
+    Die $ExVerify "the staged Node at $gatewayNode does not run"
+}
+$stagedRuntime = Get-NodeProcessPath $gatewayNode
+if ([string]::IsNullOrWhiteSpace($stagedRuntime)) {
+    Die $ExVerify "the staged Node at $gatewayNode did not report process.execPath"
+}
+if ([System.IO.Path]::GetFullPath($stagedRuntime) -ne
+    [System.IO.Path]::GetFullPath($gatewayNode)) {
+    Die $ExVerify "the staged Node at $gatewayNode still forwards to another executable"
 }
 
 $wrapper = Join-Path $BinDir "$WrapperName.cmd"
