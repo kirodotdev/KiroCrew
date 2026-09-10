@@ -48,6 +48,7 @@ import FlyingQuote from './FlyingQuote'
 import { revealComposer } from '../pages/chat/composerFocus'
 import { triggerRefresh, updateSlot } from '../store/dashboardSlice'
 import { performSlotSwitch } from '../lib/slotSwitch'
+import { drainPendingChunks } from '../lib/pendingChunkDrain'
 import { performAgentSlotSwitch } from '../lib/agentSwitch'
 import { api } from '../api/client'
 import { resolveAskAfterSend } from '../lib/resolveAskAfterSend'
@@ -881,6 +882,10 @@ export default function ChatPane({
     // channel itself is text-only, but the echo reconciles by merging meta
     // onto this bubble, so the index rides the row from here.
     const steerMeta = { sendId, ...(filePaths.length ? { files: filePaths } : {}) }
+    // Drain the per-frame chunk buffer first, same as ChatPage's steer(): a
+    // pre-steer chunk still pending in useWebSocket's buffer would otherwise
+    // flush BELOW this card (see lib/pendingChunkDrain.ts).
+    drainPendingChunks()
     dispatch(appendSlotMessage({
       slot: slotKey,
       message: { role: 'user', content: txt, cls: 'msg msg-u', ts: new Date().toISOString(), meta: { steer: true, optimistic: true, ...steerMeta } },

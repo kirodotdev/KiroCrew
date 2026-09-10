@@ -56,6 +56,7 @@ import { addTab as addDockTerminal } from '../hooks/useBottomTerminal'
 import { interceptSlashCommand, isInterceptedSlashCommand } from './chat/ChatInput'
 import { sseSlotTitle, triggerRefresh, updateSlot } from '../store/dashboardSlice'
 import { performSlotSwitch } from '../lib/slotSwitch'
+import { drainPendingChunks } from '../lib/pendingChunkDrain'
 import { performAgentSlotSwitch } from '../lib/agentSwitch'
 import { api } from '../api/client'
 import { resolveAskAfterSend } from '../lib/resolveAskAfterSend'
@@ -4787,6 +4788,11 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // races chat_done falls onto — so the bubble is resolvable by id identity
     // whichever path the server took (#6075).
     const steerSendId = mintSendId()
+    // Drain the per-frame chunk buffer first: a pre-steer chunk still pending
+    // in useWebSocket's buffer means appendMessage's finalize-on-steer finds
+    // no streaming row to freeze, so that text would flush BELOW this card
+    // and post-steer chunks would append to it (see lib/pendingChunkDrain.ts).
+    drainPendingChunks()
     dispatch(appendMessage({ role: 'user', content: llmTxt, cls: 'msg msg-u', ts: new Date().toISOString(), meta: { steer: true, optimistic: true, sendId: steerSendId } }))
     steerMutation.mutate({ text: llmTxt, sendId: steerSendId, slot: activeSlot })
     // Staged session references are deliberately NOT part of steering: neither

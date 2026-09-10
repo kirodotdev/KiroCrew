@@ -10,6 +10,7 @@ import { dispatchMcNotification, TURN_DONE_KIND, APPROVAL_KIND, shouldChimeOnTur
 import { shouldNotifyOnChatComplete } from './chatCompleteNotify'
 import { emitThemeSound } from './themeSound'
 import { streamingFlushHoldMs } from '../lib/streamHold'
+import { registerPendingChunkDrain } from '../lib/pendingChunkDrain'
 import { VoicePcmPlayer, voiceBoundary, createVoiceRequestId } from '../lib/voicePlayback'
 import { reportVoiceFailure } from '../lib/voiceFailure'
 import {
@@ -807,6 +808,13 @@ export function useWebSocket() {
     }
   }, [dispatch, enqueueVoiceSynthesis, voiceProgressFor])
 
+  // Expose the synchronous flush to steer initiators (ChatPage / ChatPane):
+  // an optimistic steer card dispatched while a chunk is still in this
+  // buffer would land ABOVE text that belongs before it (see
+  // lib/pendingChunkDrain.ts). Identity-guarded unregister, so a StrictMode
+  // double-mount cannot strip the live registration.
+  useEffect(() => registerPendingChunkDrain(flushChunks), [flushChunks])
+
   const scheduleChunkFlush = useCallback(() => {
     if (chunkFlushScheduledRef.current) return
     chunkFlushScheduledRef.current = true
@@ -1560,6 +1568,11 @@ export function useWebSocket() {
             // target slot's transcript. Uses appendSlotMessage so the bubble
             // appears whether or not the slot is currently active (background
             // tabs). Persisted server-side — survives page reload.
+            // Drain the per-frame chunk buffer FIRST: a pre-steer chunk still
+            // pending here means the reducer's finalize-on-steer would find no
+            // streaming row to freeze, so that text would later flush BELOW
+            // this card and post-steer chunks would append to the same row.
+            flushChunks()
             // `sendId` (present when the initiating client minted one) rides
             // into the meta so the reconcile in appendSlotMessage can match the
             // optimistic bubble by id instead of by content (#6075).
