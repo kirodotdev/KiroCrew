@@ -544,14 +544,12 @@ def _serialize_bounded(state: dict[str, Any], source: str = "") -> str:
 
 
 def purge(slot_key: str) -> None:
-    """Delete *slot_key*'s ledger directory. Best-effort, never raises.
+    """Delete *slot_key*'s ledger directory. Best-effort maintenance API.
 
-    Ledger content is disposable intermediate state — nothing reconstructs
-    from it — so this runs unconditionally on permanent session deletion.
-    A write racing the delete can at worst recreate an orphan directory that
-    the next delete sweeps; it can never touch another session's ledger, so
-    the funnel narrows the window (purge after the slot's turn is torn down)
-    instead of buying a tombstone protocol for disposable state.
+    History deletion deliberately does not call this function: a transcript can
+    be reclaimed while another process claims the same logical session. Callers
+    must establish their own ownership boundary before using this irreversible
+    primitive.
     """
     try:
         dir_path = ledger_dir(slot_key)
@@ -561,25 +559,11 @@ def purge(slot_key: str) -> None:
 
 
 def purge_matching(exact_keys: set[str], folded_keys: set[str], fold: Any) -> int:
-    """Purge every ledger whose breadcrumb key matches a delete candidate.
+    """Purge ledgers matching exact keys or a caller-supplied fold.
 
-    The delete funnel names a session by whatever spellings it has on hand
-    (history key, slot key, folded transcript spelling), but a channel
-    session's ledger is keyed by its EXACT session key — a spelling the
-    funnel may not hold once the slot is gone. This sweep closes that gap:
-    it walks the ledger root, reads each directory's ``slot_key`` breadcrumb,
-    and removes the ledger when the breadcrumb matches a candidate exactly or
-    under the caller-supplied *fold* (the transcript-filename fold, so the
-    folded history spelling the funnel does hold reaches the exact-key
-    ledger it names). The fold is used only to MATCH deletion targets, never
-    as storage identity; in the rare case two exact keys share a folded
-    spelling, both ledgers are removed — acceptable for disposable state,
-    where the alternative is one of them silently surviving its session.
-
-    Best-effort, never raises. Returns the number of ledgers removed. The
-    root holds one directory per session that ever recorded, so the walk is
-    small; a breadcrumbless directory (breadcrumb write is best-effort) is
-    still covered by the direct :func:`purge` calls the funnel makes first.
+    This is an explicit best-effort maintenance API. The fold selects targets;
+    it is never a storage identity. Callers must establish that every matching
+    exact key is safe to remove before invoking it.
     """
     removed = 0
     try:

@@ -87,6 +87,8 @@ class _CompactionOwner(Protocol):
 
     def _fold_key(self, key: str) -> str: ...
 
+    def _advance_session_generation(self, key: str) -> int: ...
+
     def _trigger_compaction(
         self, key: str, reason: str, pct: float, provider: LLMProvider
     ) -> str | None: ...
@@ -246,24 +248,6 @@ class CompactionCoordinator:
         return self.state.pct_overrides.get(
             self._owner._fold_key(key), self._owner._cfg.session.autocompact_pct
         )
-
-    def drop_autocompact_overrides_matching(
-        self, exact_keys: set[str], folded_keys: set[str], fold: Callable[[str], str]
-    ) -> int:
-        """Drop overrides for permanently deleted sessions with NO live session.
-
-        ``destroy()`` clears a live session's override, but a permanent delete
-        of ARCHIVED history has no session to destroy — and channel keys are
-        deterministic, so a recreated session would silently inherit the
-        deleted conversation's threshold. Same fold-matching contract as the
-        session-ledger purge sweep: an override matches when its stored key is
-        in ``exact_keys`` or its ``fold``-ed spelling is in ``folded_keys``.
-        Returns the number of entries dropped.
-        """
-        doomed = [k for k in self.state.pct_overrides if k in exact_keys or fold(k) in folded_keys]
-        for k in doomed:
-            self.state.pct_overrides.pop(k, None)
-        return len(doomed)
 
     def _compaction_gate_decision(self, key: str, provider: LLMProvider, pct: float) -> str | None:
         """Return the first compaction gate decline, in lifecycle order.
@@ -443,6 +427,7 @@ class CompactionCoordinator:
                 popped = None
                 if owner._sessions.get(key) is session:
                     popped = owner._sessions.pop(key, None)
+                    owner._advance_session_generation(key)
                     # Same tick as the pop. Only this branch records: on the
                     # other one the registry already holds a SUCCESSOR under
                     # this key, whose start must stay its own.

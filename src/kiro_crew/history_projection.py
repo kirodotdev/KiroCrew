@@ -1338,8 +1338,8 @@ class SessionMetadataProjection:
         only_if_closed_before: float | None = None,
     ) -> None:
         """Remove a stale closed marker with an optional compare-and-clear."""
-        path = self._log._path(key)
         with self._log._locked(key):
+            path = self._log._path(key)
             if not path.exists():
                 return
             previous_mtime = _history_facade()._safe_mtime(path)

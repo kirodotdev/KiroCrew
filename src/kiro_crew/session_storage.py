@@ -97,6 +97,8 @@ from kiro_crew.history import (
     ARCHIVE_SEGMENT_DELIMITER,
     SESSIONS_DIR_NAME,
     ConversationLog,
+    HistoryLockTimeout,
+    transcript_lock_stems,
 )
 from kiro_crew.history_index import INDEX_FILENAME, SessionSearchIndex
 from kiro_crew.session_map import SESSION_MAP_FILENAME
@@ -2939,34 +2941,87 @@ def _restore_locked(batch_id: str, uids: list[str] | None = None) -> int:
         if blocked or not planned:
             remaining.append(entry)
             continue
-        done: list[tuple[Path, Path]] = []
+        crew_sessions = _crew_sessions_dir()
+        live_transcripts: list[tuple[Path, Path]] = []
+        prelock_files: list[tuple[Path, Path]] = []
+        for item in planned:
+            _src, origin = item
+            if origin.parent == crew_sessions and origin.suffix == _TRANSCRIPT_SUFFIX:
+                live_transcripts.append(item)
+            else:
+                prelock_files.append(item)
+        done_prelock: list[tuple[Path, Path]] = []
+        done_transcripts: list[tuple[Path, Path]] = []
         try:
             lost_race = False
-            for src, origin in planned:
+            # Replay logs and archive segments can require unbounded
+            # cross-filesystem copies. Restore them first, with no history lock
+            # held; every failure rolls them back before the live transcript is
+            # published.
+            for src, origin in prelock_files:
                 origin.parent.mkdir(parents=True, exist_ok=True)
                 if not _move_file_exclusive(src, origin):
-                    # The session came back between the preflight and now. The
-                    # occupant is newer, so the whole session is put back and the
-                    # entry retained — restoring the rest would splice two
-                    # generations of one session together.
                     logger.warning(
-                        "session %r was recreated while being restored; leaving it " "staged",
+                        "session %r was recreated while being restored; leaving it staged",
                         uid,
                     )
                     lost_race = True
                     break
-                done.append((origin, src))
+                done_prelock.append((origin, src))
             if lost_race:
-                _rollback(done)
+                _rollback(done_prelock)
                 remaining.append(entry)
                 continue
-        except OSError:
+
+            transcript_keys: set[str] = set()
+            for _src, origin in live_transcripts:
+                transcript_keys.update(transcript_lock_stems(origin.stem))
+            transcript_log = ConversationLog(base_dir=crew_sessions)
+            with transcript_log.locked_stems(transcript_keys):
+                # The original preflight ran before replay restoration and lock
+                # acquisition. Recheck every physical alias of each live
+                # transcript here; prelock origins now exist because this
+                # transaction restored them and are tracked separately for
+                # rollback.
+                if any(
+                    (origin.parent / f"{stem}{_TRANSCRIPT_SUFFIX}").exists()
+                    for _src, origin in live_transcripts
+                    for stem in transcript_lock_stems(origin.stem)
+                ):
+                    lost_race = True
+                else:
+                    try:
+                        for src, origin in live_transcripts:
+                            origin.parent.mkdir(parents=True, exist_ok=True)
+                            if not _move_file_exclusive(src, origin):
+                                logger.warning(
+                                    "session %r was recreated while being restored; "
+                                    "leaving it staged",
+                                    uid,
+                                )
+                                lost_race = True
+                                break
+                            done_transcripts.append((origin, src))
+                    except OSError:
+                        # Put any published live transcript back while its alias
+                        # locks are still held. Large replay files roll back only
+                        # after this scope exits.
+                        _rollback(done_transcripts)
+                        done_transcripts.clear()
+                        raise
+                if lost_race:
+                    _rollback(done_transcripts)
+                    done_transcripts.clear()
+            if lost_race:
+                _rollback(done_prelock)
+                remaining.append(entry)
+                continue
+        except (OSError, HistoryLockTimeout):
             logger.warning("could not fully restore session %r", uid, exc_info=True)
-            # Without this the session is split *and* wedged: the files that did
-            # move are gone from the batch while the manifest still lists them, so
-            # every later retry fails its own "staged file present" check and the
-            # session can never be restored or cleanly emptied again.
-            _rollback(done)
+            # Live transcript rollback happens under its lock above. Replay and
+            # archive rollback stays outside that lock because it can copy
+            # unbounded files across filesystems.
+            _rollback(done_prelock)
             remaining.append(entry)
             continue
         restored += 1

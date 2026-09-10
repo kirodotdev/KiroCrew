@@ -15,7 +15,7 @@ from __future__ import annotations
 import contextlib
 import json
 from typing import Iterator
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from aiohttp import web
@@ -25,6 +25,7 @@ from kiro_crew.dashboard.handlers import api_sessions_clear
 
 def _history_key_for(key: str) -> str:
     from kiro_crew.dashboard.chat import _history_key_for as _hkf
+
     return _hkf(key)
 
 
@@ -81,6 +82,7 @@ def _make_request(
 
     conv_log = MagicMock()
     conv_log.list_sessions.return_value = sessions
+    conv_log.list_sessions_with_status.return_value = (sessions, True)
     conv_log.get_metadata.side_effect = lambda k: metadata.get(k, {})
 
     def _get_metadata_status(k: str) -> tuple[dict, bool]:
@@ -133,12 +135,13 @@ def _make_request(
 
 async def _call_and_parse(request: web.Request) -> tuple[int, dict]:
     """Invoke the handler and return (status, JSON body)."""
-    from unittest.mock import patch
-
-    with patch(
-        "kiro_crew.dashboard.handlers._remove_slot_for_history_key",
-        new=AsyncMock(return_value=None),
-    ), patch("kiro_crew.dashboard.handlers.sel"):
+    with (
+        patch(
+            "kiro_crew.dashboard.handlers.sessions._remove_slot_for_history_key",
+            new=AsyncMock(return_value=None),
+        ),
+        patch("kiro_crew.dashboard.handlers.sel"),
+    ):
         resp = await api_sessions_clear(request)
     return resp.status, json.loads(resp.body.decode("utf-8"))
 
@@ -154,6 +157,31 @@ async def test_clears_all_when_nothing_protected() -> None:
     assert status == 200
     assert body == {"ok": True, "cleared": 2, "skipped": 0, "failed": 0}
     assert set(deleted) == {k1, k2}
+
+
+@pytest.mark.asyncio
+async def test_bulk_cleanup_uses_only_preunlink_claims() -> None:
+    keys = [_history_key_for(f"chat-{index}") for index in range(3)]
+    sessions = [{"key": key} for key in keys]
+    request, state, deleted = _make_request(sessions)
+    cleanup = AsyncMock(return_value=None)
+
+    with (
+        patch(
+            "kiro_crew.dashboard.handlers.sessions._remove_slot_for_history_key",
+            new=cleanup,
+        ),
+        patch("kiro_crew.dashboard.handlers.sel"),
+    ):
+        resp = await api_sessions_clear(request)
+
+    assert resp.status == 200
+    assert deleted == keys
+    assert state.conversation_log.list_sessions.call_count == 1
+    state.conversation_log.list_sessions_with_status.assert_not_called()
+    assert cleanup.await_count == 3
+    assert all("delete_claim" in call.kwargs for call in cleanup.await_args_list)
+    assert all("persisted_owner_snapshot" not in call.kwargs for call in cleanup.await_args_list)
 
 
 @pytest.mark.asyncio
@@ -417,6 +445,22 @@ async def test_skips_the_transcript_a_bound_channel_tab_is_reading() -> None:
 
     assert status == 200
     assert deleted == [other]
+
+
+@pytest.mark.asyncio
+async def test_skips_legacy_bare_transcript_of_open_bound_slack_tab() -> None:
+    thread_ts = "1783733803.877979"
+    stem = f"slack_{thread_ts}"
+    other = _history_key_for("chat-9-1")
+    sessions = [{"key": thread_ts}, {"key": other}]
+    slots = {stem: _FakeSlot(stem, linked_session_key=f"slack:{thread_ts}")}
+    request, _state, deleted = _make_request(sessions, slots=slots)
+
+    status, body = await _call_and_parse(request)
+
+    assert status == 200
+    assert deleted == [other]
+    assert body == {"ok": True, "cleared": 1, "skipped": 1, "failed": 0}
 
 
 @pytest.mark.asyncio

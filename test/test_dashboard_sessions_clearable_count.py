@@ -263,7 +263,10 @@ async def test_an_individual_delete_can_remove_unparseable_metadata(tmp_path) ->
     assert json.loads(response.body) == {"ok": True}
     assert not path.exists()
     assert survivor.read_bytes() == survivor_before
-    remove_slot.assert_awaited_once_with(state, "malformed")
+    remove_slot.assert_awaited_once()
+    assert remove_slot.await_args.args == (state, "malformed")
+    claim = remove_slot.await_args.kwargs["delete_claim"]
+    assert claim.slot is None
     state.push_refresh.assert_called_once_with("history")
 
 

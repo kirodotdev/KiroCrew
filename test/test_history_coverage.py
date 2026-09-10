@@ -258,6 +258,23 @@ class TestTranscriptStems:
                 H._safe_key("dashboard:chat-1"),
             )
 
+    @pytest.mark.parametrize(
+        "key",
+        (
+            "slack:1699999999.000100",
+            "slack_1699999999.000100",
+            "1699999999.000100",
+        ),
+    )
+    def test_every_slack_spelling_has_the_same_lock_stems(self, key: str) -> None:
+        assert H.transcript_lock_stems(key) == (
+            "slack_1699999999.000100",
+            "1699999999.000100",
+        )
+
+    def test_plain_key_has_one_lock_stem(self) -> None:
+        assert H.transcript_lock_stems("dashboard:chat-1") == ("dashboard_chat-1",)
+
 
 class TestToolCallScanners:
     def test_count_tool_call_messages_counts_each_message_once(self) -> None:

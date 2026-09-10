@@ -44,6 +44,7 @@ def test_history_facade_keeps_composed_entrypoints_callable(tmp_path: Path) -> N
         "transcript_sort_key",
         "transcript_stem",
         "transcript_stems",
+        "transcript_lock_stems",
     )
     for name in module_entrypoints:
         assert callable(getattr(history, name, None)), f"history facade lost callable {name}"
@@ -61,6 +62,7 @@ def test_history_facade_keeps_composed_entrypoints_callable(tmp_path: Path) -> N
         "get_metadata_status",
         "set_title",
         "update_metadata",
+        "locked_stems",
         "delete_session",
         "rewrite_session",
         "rotation_generation",

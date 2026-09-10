@@ -556,7 +556,6 @@ test/test_dashboard_no_legacy.py
 test/test_dashboard_reset_sessions.py
 test/test_dashboard_route_table.py
 test/test_dashboard_server_coverage.py
-test/test_dashboard_sessions_clear.py
 test/test_dashboard_sessions_memory.py
 test/test_dashboard_sessions_search.py
 test/test_dashboard_start_site.py
@@ -909,7 +908,6 @@ test/test_registry_hero_fields.py
 test/test_release_promotion.py
 test/test_release_promotion_contract.py
 test/test_remote_artifacts.py
-test/test_remove_slot_for_history_key.py
 test/test_resolve_session_key.py
 test/test_resolve_skill_root_package.py
 test/test_resource_health_endpoint.py

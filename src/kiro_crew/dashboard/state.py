@@ -7062,7 +7062,7 @@ class DashboardState:
         )
 
     async def remove_chat_pins_for_slots(self, slot_keys: set[str]) -> int:
-        """Remove pins when their persisted history sessions are permanently deleted."""
+        """Explicitly remove pins for the supplied dashboard slot keys."""
         keys = {key for key in slot_keys if key}
         if not keys:
             return 0

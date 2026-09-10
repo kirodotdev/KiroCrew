@@ -1281,6 +1281,7 @@ class TestOnLoopCallersOffload:
 
         state = MagicMock()
         state.conversation_log = log
+        state._slots = {}
         state.push_slots_update = MagicMock()
         state.push_refresh = MagicMock()
         monkeypatch.setattr(

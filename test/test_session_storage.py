@@ -18,6 +18,7 @@ import json
 import logging
 import os
 import shutil
+import threading
 import time
 from pathlib import Path, PurePosixPath
 from typing import Callable
@@ -26,7 +27,7 @@ import pytest
 
 from kiro_crew import session_storage
 from kiro_crew.config import paths
-from kiro_crew.history import transcript_stem
+from kiro_crew.history import ConversationLog, transcript_stem
 from kiro_crew.session_storage import SessionIndex, SessionStorageError
 
 _NOW = 1_700_000_000.0
@@ -691,6 +692,173 @@ class TestRestoreIsAllOrNothing:
         seg = crew_home / "sessions" / "archive" / "dashboard_chat-1__20260730-211852.jsonl"
         assert seg.read_bytes() == b"a" * 16
         assert session_storage.list_trash() == []
+
+    def test_restore_publishes_transcript_under_history_lock(
+        self,
+        stores: tuple[Path, Path],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        crew_home, kiro_home = stores
+        _cli_half(kiro_home, "aaaa1111", log_bytes=8, age_days=40)
+        _transcript(crew_home, "dashboard_chat-1", size=8, age_days=40)
+        batch = session_storage.move_to_trash(
+            ["aaaa1111"],
+            reason="manual",
+            index=_index({"aaaa1111": "dashboard_chat-1"}),
+            now=_NOW,
+        )
+        active_locks: set[str] = set()
+        real_locked = ConversationLog._locked_stem
+        real_move = session_storage._move_file_exclusive
+        transcript = crew_home / "sessions" / "dashboard_chat-1.jsonl"
+        replay = kiro_home / "sessions" / "cli" / "aaaa1111.jsonl"
+
+        @contextlib.contextmanager
+        def recording_lock(log: ConversationLog, key: str):
+            with real_locked(log, key):
+                active_locks.add(key)
+                try:
+                    yield
+                finally:
+                    active_locks.remove(key)
+
+        def observed_move(src: Path, dst: Path) -> bool:
+            if dst == replay:
+                assert active_locks == set()
+            if dst == transcript:
+                assert "dashboard_chat-1" in active_locks
+            return real_move(src, dst)
+
+        monkeypatch.setattr(ConversationLog, "_locked_stem", recording_lock)
+        monkeypatch.setattr(session_storage, "_move_file_exclusive", observed_move)
+
+        assert session_storage.restore(batch.batch_id) == 1
+        assert transcript.is_file()
+
+    @pytest.mark.parametrize(
+        "stem",
+        ["slack_1785370133.085469", "1785370133.085469"],
+    )
+    def test_restore_locks_both_slack_transcript_aliases(
+        self,
+        stores: tuple[Path, Path],
+        monkeypatch: pytest.MonkeyPatch,
+        stem: str,
+    ) -> None:
+        crew_home, kiro_home = stores
+        thread_ts = "1785370133.085469"
+        _cli_half(kiro_home, "aaaa1111", log_bytes=8, age_days=40)
+        _transcript(crew_home, stem, size=8, age_days=40)
+        batch = session_storage.move_to_trash(
+            ["aaaa1111"],
+            reason="manual",
+            index=_index({"aaaa1111": stem}),
+            now=_NOW,
+        )
+        active_locks: set[str] = set()
+        real_locked = ConversationLog._locked_stem
+        real_move = session_storage._move_file_exclusive
+        transcript = crew_home / "sessions" / f"{stem}.jsonl"
+
+        @contextlib.contextmanager
+        def recording_lock(log: ConversationLog, key: str):
+            with real_locked(log, key):
+                active_locks.add(key)
+                try:
+                    yield
+                finally:
+                    active_locks.remove(key)
+
+        def observed_move(src: Path, dst: Path) -> bool:
+            if dst == transcript:
+                assert {thread_ts, f"slack_{thread_ts}"} <= active_locks
+            return real_move(src, dst)
+
+        monkeypatch.setattr(ConversationLog, "_locked_stem", recording_lock)
+        monkeypatch.setattr(session_storage, "_move_file_exclusive", observed_move)
+
+        assert session_storage.restore(batch.batch_id) == 1
+        assert transcript.is_file()
+
+    def test_waiting_canonical_append_re_resolves_after_bare_restore(
+        self,
+        stores: tuple[Path, Path],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        crew_home, kiro_home = stores
+        thread_ts = "1785370133.085469"
+        _cli_half(kiro_home, "aaaa1111", log_bytes=8, age_days=40)
+        _transcript(crew_home, thread_ts, size=8, age_days=40)
+        batch = session_storage.move_to_trash(
+            ["aaaa1111"],
+            reason="manual",
+            index=_index({"aaaa1111": thread_ts}),
+            now=_NOW,
+        )
+        sessions_dir = crew_home / "sessions"
+        log = ConversationLog(base_dir=sessions_dir)
+        writer_waiting = threading.Event()
+        release_writer = threading.Event()
+        errors: list[BaseException] = []
+        real_locked = ConversationLog._locked
+        writer: threading.Thread
+
+        @contextlib.contextmanager
+        def paused_writer_lock(current_log: ConversationLog, key: str):
+            if threading.current_thread() is writer:
+                writer_waiting.set()
+                if not release_writer.wait(timeout=5):
+                    raise TimeoutError("restore never released the waiting append")
+            with real_locked(current_log, key):
+                yield
+
+        def append_after_restore() -> None:
+            try:
+                log.append(f"slack:{thread_ts}", "user", "writer")
+            except BaseException as exc:
+                errors.append(exc)
+
+        monkeypatch.setattr(ConversationLog, "_locked", paused_writer_lock)
+        writer = threading.Thread(target=append_after_restore)
+        started = False
+        try:
+            writer.start()
+            started = True
+            assert writer_waiting.wait(timeout=5)
+            assert session_storage.restore(batch.batch_id) == 1
+        finally:
+            release_writer.set()
+            if started:
+                writer.join(timeout=5)
+                assert not writer.is_alive(), "restore race worker outlived its test"
+
+        canonical = sessions_dir / f"slack_{thread_ts}.jsonl"
+        bare = sessions_dir / f"{thread_ts}.jsonl"
+        assert errors == []
+        assert not canonical.exists()
+        assert b'"content": "writer"' in bare.read_bytes()
+
+    def test_canonical_occupant_blocks_bare_alias_restore(
+        self,
+        stores: tuple[Path, Path],
+    ) -> None:
+        crew_home, kiro_home = stores
+        thread_ts = "1785370133.085469"
+        _cli_half(kiro_home, "aaaa1111", log_bytes=8, age_days=40)
+        _transcript(crew_home, thread_ts, size=8, age_days=40)
+        batch = session_storage.move_to_trash(
+            ["aaaa1111"],
+            reason="manual",
+            index=_index({"aaaa1111": thread_ts}),
+            now=_NOW,
+        )
+        canonical = crew_home / "sessions" / f"slack_{thread_ts}.jsonl"
+        canonical.write_bytes(b"new canonical transcript")
+
+        assert session_storage.restore(batch.batch_id) == 0
+        assert canonical.read_bytes() == b"new canonical transcript"
+        assert not (crew_home / "sessions" / f"{thread_ts}.jsonl").exists()
+        assert [item.batch_id for item in session_storage.list_trash()] == [batch.batch_id]
 
     def test_a_full_restore_never_writes_to_the_batch_it_is_leaving(
         self, stores: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch

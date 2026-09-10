@@ -9,6 +9,7 @@ import logging
 import os
 import re
 import time
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -24,10 +25,14 @@ from aiohttp import web
 # binds via sys.modules and defers attribute access to call time, which also
 # keeps tests' monkeypatching of handlers.redact_* effective (late binding).
 import kiro_crew.dashboard.handlers as _h
-from kiro_crew import session_directive, session_ledger
+from kiro_crew import session_directive
 from kiro_crew.acp.client import _resolve_kiro_bin_for_spawn
 from kiro_crew.config.paths import kiro_agents_dir
 from kiro_crew.dashboard import directive_queue
+from kiro_crew.dashboard.chat_utils import (
+    effective_session_key,
+    slot_history_key,
+)
 from kiro_crew.dashboard.handlers import kiro_usage_api
 from kiro_crew.dashboard.handlers._shared import (
     SESSION_SEARCH_TEXT_FIELDS,
@@ -36,11 +41,20 @@ from kiro_crew.dashboard.handlers._shared import (
 )
 from kiro_crew.dashboard.kiro_readiness import reject_if_kiro_unverified
 from kiro_crew.dashboard.session_memory import SessionMemorySampler
-from kiro_crew.dashboard.state import DashboardState
+from kiro_crew.dashboard.state import DashboardState, _normalize_slot_key
 from kiro_crew.executors import subprocess_executor
-from kiro_crew.history import SEARCH_MIN_CHARS, _archive_dir, is_incognito_transcript
+from kiro_crew.history import (
+    SEARCH_MIN_CHARS,
+    ConversationLog,
+    HistoryLockTimeout,
+    _archive_dir,
+    is_incognito_transcript,
+    transcript_lock_stems,
+    transcript_stems,
+)
 from kiro_crew.llm_helpers import run_bg_oneliner
 from kiro_crew.mcp_discovery import sync_discovered_servers
+from kiro_crew.messaging.link import canonical_key
 from kiro_crew.sandbox import (
     cgroup_scope_argv,
     configured_sandbox_mode,
@@ -977,10 +991,10 @@ def _open_slot_transcript_keys(state: DashboardState) -> set[str]:
     Resolved FROM the slot, never derived from its name. A channel-born slot's
     transcript is its ``linked_session_key`` (``slack:<ts>``), so a hand-built
     ``dashboard:<slot>`` name would miss every channel tab. ``list_sessions``
-    reports filename STEMS, so each candidate contributes its key AND its stem:
-    ``_safe_key`` is the function that produced the filename, and a single-colon
-    replace would leave a multi-colon channel key like
-    ``discord:kirocrew:direct:123`` mapped to a stem that does not exist.
+    reports filename STEMS, so each candidate contributes its key and every
+    stem it can occupy. The latter includes the pre-migration bare Slack stem;
+    protecting only ``slack_<ts>`` would let Clear All unlink ``<ts>`` while
+    that same open tab was still reading it.
 
     Both candidates are included because a slot's write target and its DISPLAY
     source can differ: a channel tab the dashboard could not bind runs under
@@ -992,7 +1006,6 @@ def _open_slot_transcript_keys(state: DashboardState) -> set[str]:
     slot could itself be showing.
     """
     from kiro_crew.dashboard.chat_utils import slot_history_key, slot_transcript_key
-    from kiro_crew.history import _safe_key
 
     keys: set[str] = set()
     # Snapshot the values: a concurrent turn can add or remove a slot while this
@@ -1000,7 +1013,7 @@ def _open_slot_transcript_keys(state: DashboardState) -> set[str]:
     for slot in list(state._slots.values()):
         for candidate in (slot_history_key(slot), slot_transcript_key(slot.key)):
             keys.add(candidate)
-            keys.add(_safe_key(candidate))
+            keys.update(transcript_stems(candidate))
     return keys
 
 
@@ -1273,18 +1286,171 @@ async def api_session_detail(request: web.Request) -> web.Response:
     return web.json_response(messages)
 
 
+@dataclass(frozen=True)
+class _HistoryDeleteClaim:
+    """Slot and manager ownership observed before the transcript unlink awaits."""
+
+    registry_key: str | None
+    slot: Any | None
+    history_key: str | None
+    session_key: str | None
+    session_generation: int
+    path_match_verified: bool
+    complete: bool
+    slot_task: Any | None = None
+
+
+def _history_delete_candidate_keys(key: str) -> tuple[str, ...]:
+    """Every exact/legacy spelling that may index *key*'s dashboard slot."""
+    stripped = key
+    if stripped.startswith("dashboard:"):
+        stripped = stripped[len("dashboard:") :]
+    while stripped.startswith("dashboard_"):
+        stripped = stripped[len("dashboard_") :]
+    canonical = canonical_key(key)
+    return tuple(
+        dict.fromkeys(
+            (
+                key,
+                stripped,
+                "dashboard_" + key,
+                _normalize_slot_key(key),
+                canonical,
+                _normalize_slot_key(canonical),
+            )
+        )
+    )
+
+
+def _capture_history_delete_claim(state: DashboardState, key: str) -> _HistoryDeleteClaim:
+    """Capture exact slot identity and monotonic manager generation pre-unlink."""
+    deleted_stems = transcript_stems(key)
+    deleted_identities = {ConversationLog._canonical_key(stem) for stem in deleted_stems}
+    for candidate_key in _history_delete_candidate_keys(key):
+        candidate_slot = state._slots.get(candidate_key)
+        if candidate_slot is None:
+            continue
+        try:
+            history_key = slot_history_key(candidate_slot)
+            candidate_stems = transcript_stems(history_key)
+            owned_stems = {ConversationLog._canonical_key(stem) for stem in candidate_stems}
+        except Exception:
+            return _HistoryDeleteClaim(None, None, None, None, 0, True, False)
+        if deleted_identities.isdisjoint(owned_stems):
+            continue
+        # Only byte-identical filename-stem sets prove ownership without I/O.
+        # Canonicalization can collapse distinct stacked dashboard files, and
+        # canonical Slack keys may resolve to a pre-migration bare file. Resolve
+        # every other alias in the delete worker under the transcript lock.
+        path_match_verified = deleted_stems == candidate_stems
+        try:
+            session_key = effective_session_key(candidate_slot)
+            generation = state.sessions.session_generation(session_key)
+        except Exception:
+            return _HistoryDeleteClaim(
+                candidate_key,
+                candidate_slot,
+                history_key,
+                None,
+                0,
+                path_match_verified,
+                False,
+            )
+        return _HistoryDeleteClaim(
+            candidate_key,
+            candidate_slot,
+            history_key,
+            session_key,
+            generation,
+            path_match_verified,
+            True,
+            getattr(candidate_slot, "task", None),
+        )
+    return _HistoryDeleteClaim(None, None, None, None, 0, True, True)
+
+
+def _resolve_history_delete_claim(
+    log: ConversationLog,
+    key: str,
+    claim: _HistoryDeleteClaim,
+) -> _HistoryDeleteClaim:
+    """Verify ambiguous transcript ownership in the off-loop delete worker."""
+    if claim.slot is None or claim.path_match_verified:
+        return claim
+    if claim.history_key is None:
+        return replace(
+            claim,
+            registry_key=None,
+            slot=None,
+            session_key=None,
+            path_match_verified=True,
+            complete=False,
+        )
+    try:
+        matches = log._path(key).stem == log._path(claim.history_key).stem
+    except Exception:
+        logger.warning(
+            "History delete: could not resolve pre-unlink transcript ownership for %s",
+            key,
+            exc_info=True,
+        )
+        return replace(
+            claim,
+            registry_key=None,
+            slot=None,
+            session_key=None,
+            path_match_verified=True,
+            complete=False,
+        )
+    if matches:
+        return replace(claim, path_match_verified=True)
+    # The alias located a slot, but that slot currently resolves to another
+    # transcript (for example canonical and legacy Slack files coexist).
+    return _HistoryDeleteClaim(None, None, None, None, 0, True, claim.complete)
+
+
+def _delete_history_session(
+    log: ConversationLog,
+    key: str,
+    claim: _HistoryDeleteClaim,
+    *,
+    skip_pinned: bool = False,
+) -> tuple[bool | None, _HistoryDeleteClaim]:
+    """Resolve ambiguous ownership and delete under one off-loop transcript lock."""
+    # ``delete_session`` re-enters one of these locks on the same worker thread.
+    # Acquire every stable stem in deterministic order so canonical Slack restore
+    # and a legacy-file delete cannot synchronize on different sidecars.
+    try:
+        with log.locked_stems(transcript_lock_stems(key)):
+            resolved_claim = _resolve_history_delete_claim(log, key, claim)
+            if skip_pinned:
+                result = log.delete_session(key, skip_pinned=True)
+            else:
+                result = log.delete_session(key)
+    except HistoryLockTimeout:
+        logger.warning("delete_session: lock timeout, not deleting key=%s", key)
+        return False, claim
+    return result, resolved_claim
+
+
 async def api_session_delete(request: web.Request) -> web.Response:
     """DELETE /api/sessions/{key} — permanently delete a history session."""
     state: DashboardState = request.app["state"]
     key = request.match_info["key"]
     if not state.conversation_log:
         return web.json_response({"error": "no conversation log"}, status=400)
+    delete_claim = _capture_history_delete_claim(state, key)
     # delete_session enters _locked (flock acquire + os.close); offload off the
     # loop so a wedged cross-process peer can't freeze chat/WS/heartbeat.
-    ok = await asyncio.to_thread(state.conversation_log.delete_session, key)
+    ok, delete_claim = await asyncio.to_thread(
+        _delete_history_session,
+        state.conversation_log,
+        key,
+        delete_claim,
+    )
     if ok:
         try:
-            await _remove_slot_for_history_key(state, key)
+            await _remove_slot_for_history_key(state, key, delete_claim=delete_claim)
         except Exception:
             logger.warning("cleanup failed for session %s", key, exc_info=True)
         state.push_slots_update()
@@ -1292,49 +1458,70 @@ async def api_session_delete(request: web.Request) -> web.Response:
     return web.json_response({"ok": ok})
 
 
-async def _remove_slot_for_history_key(state: DashboardState, key: str) -> None:
-    """Remove the active chat slot corresponding to a history key.
+async def _remove_slot_for_history_key(
+    state: DashboardState,
+    key: str,
+    *,
+    delete_claim: _HistoryDeleteClaim | None = None,
+) -> None:
+    """Remove only the exact slot and manager generation captured before unlink."""
+    claim = delete_claim or _capture_history_delete_claim(state, key)
+    slot = None
+    if (
+        claim.slot is not None
+        and claim.registry_key is not None
+        and claim.complete
+        and claim.path_match_verified
+    ):
+        current_slot = state._slots.get(claim.registry_key)
+        ownership_current = False
+        if current_slot is claim.slot and claim.session_key is not None:
+            try:
+                ownership_current = (
+                    slot_history_key(current_slot) == claim.history_key
+                    and effective_session_key(current_slot) == claim.session_key
+                    and getattr(current_slot, "task", None) is claim.slot_task
+                    and state.sessions.session_generation(claim.session_key)
+                    == claim.session_generation
+                )
+            except Exception:
+                logger.warning(
+                    "History delete: captured slot ownership is unreadable for %s; "
+                    "preserving the slot",
+                    key,
+                    exc_info=True,
+                )
+        if current_slot is claim.slot and ownership_current:
+            popped = state._slots.pop(claim.registry_key, None)
+            if popped is claim.slot:
+                slot = claim.slot
+        else:
+            logger.info(
+                "History delete: slot %s was replaced, rerouted, or reclaimed; preserving it",
+                claim.registry_key,
+            )
 
-    Slot keys may be the raw history key (``dashboard_chat-X-TS`` when
-    resumed from history) or the stripped form (``chat-X-TS`` for
-    sessions that were never closed and resumed).  Try the exact key
-    first, then the stripped variant.  Also kills the kiro-cli session
-    to prevent orphaned processes.
-    """
-    from kiro_crew.dashboard.state import _normalize_slot_key
+    target_session_key = claim.session_key if slot is not None else None
+    target_session_generation = claim.session_generation
 
-    stripped = key
-    if stripped.startswith("dashboard:"):
-        stripped = stripped[len("dashboard:") :]
-    while stripped.startswith("dashboard_"):
-        stripped = stripped[len("dashboard_") :]
-    normalized = _normalize_slot_key(key)
-    pin_slot_keys = {key, stripped, "dashboard_" + key, normalized}
+    def live_slot_owns_session(session_key: str) -> bool:
+        """Fail safe when any current slot owns or cannot resolve *session_key*."""
+        canonical_session_key = canonical_key(session_key)
+        for current_slot in tuple(state._slots.values()):
+            try:
+                if canonical_key(effective_session_key(current_slot)) == canonical_session_key:
+                    return True
+            except Exception:
+                logger.warning(
+                    "History delete: current slot session owner unreadable for %s; "
+                    "skipping session destroy",
+                    key,
+                    exc_info=True,
+                )
+                return True
+        return False
 
-    slot = state._slots.pop(key, None)
-    if not slot:
-        slot = state._slots.pop(stripped, None)
-    if not slot:
-        # Reverse: history key has no prefix, but slot was stored with one
-        slot = state._slots.pop("dashboard_" + key, None)
-    if not slot:
-        # A channel-born slot's name is the key folded to the filename
-        # charset, which none of the prefix probes above produce. Without
-        # this the slot outlives its deleted history and keeps a kiro-cli
-        # process alive.
-        slot = state._slots.pop(normalized, None)
     if slot:
-        pin_slot_keys.add(slot.key)
-    try:
-        await state.remove_chat_pins_for_slots(pin_slot_keys)
-    except Exception:
-        logger.warning("History delete: pin cleanup failed for %s", key, exc_info=True)
-    if slot:
-        # A pending ask_question is owned by the slot's running turn, but its
-        # future lives in DashboardState rather than on slot.task. History
-        # deletion tears down that task and provider directly, bypassing the
-        # normal stop/delete handlers; resolve the wait first so the MCP HTTP
-        # request returns and its finally block retracts the now-stale card.
         cancelled = state.cancel_questions_for_slot(slot.key)
         if cancelled:
             logger.info(
@@ -1348,73 +1535,32 @@ async def _remove_slot_for_history_key(state: DashboardState, key: str) -> None:
             await asyncio.wait_for(slot.task, timeout=2.0)
         except (asyncio.CancelledError, asyncio.TimeoutError, Exception):
             pass
-    # Kill the kiro-cli subprocess to free resources
-    if slot:
-        try:
-            # Destroy the session the slot actually RUNS, not one derived from
-            # the history key. A channel-born slot runs the channel's own
-            # session, so ``_history_key_for`` would name a key no session has:
-            # the provider survives the delete and its next inbound message
-            # recreates the transcript the user just removed.
-            from kiro_crew.dashboard.chat_utils import effective_session_key
 
-            await state.sessions.destroy(effective_session_key(slot))
-        except Exception:
-            pass
-    # The work ledger persists independently of the transcript too, and its
-    # content is disposable intermediate state (nothing reconstructs from it),
-    # so a permanent delete reaps it unconditionally. Runs LAST — after the
-    # slot's turn is cancelled and its session destroyed — so an in-flight
-    # ledger write from the dying turn cannot land after the purge; a write
-    # racing in from another process can at worst recreate an orphan directory
-    # the next delete sweeps (see session_ledger.purge). Tab close
-    # (api_chat_slot_delete) deliberately does NOT reach here: the ledger is
-    # part of a session's resumable state.
-    ledger_candidates = set(pin_slot_keys)
-    if slot is not None:
-        # The AUTHORITATIVE session key: a channel-born slot runs the
-        # channel's own session, whose exact key (the ledger's identity) may
-        # appear in pin_slot_keys only as a folded spelling.
+    if slot and target_session_key is not None:
         try:
-            from kiro_crew.dashboard.chat_utils import effective_session_key
+            destroyed = await state.sessions.destroy_if(
+                target_session_key,
+                target_session_generation,
+                lambda: not live_slot_owns_session(target_session_key),
+                preserve_autocompact_override=True,
+            )
+            if not destroyed:
+                logger.info(
+                    "History delete: session %s was replaced, busy, reserved, or has "
+                    "a current slot owner; preserving it",
+                    target_session_key,
+                )
+        except Exception:
+            logger.warning(
+                "History delete: conditional session destroy failed for %s",
+                target_session_key,
+                exc_info=True,
+            )
 
-            ledger_candidates.add(effective_session_key(slot))
-        except Exception:
-            pass
-    exact_keys = {session_ledger.ledger_key(k) for k in ledger_candidates if k}
-    for candidate in exact_keys:
-        try:
-            await asyncio.to_thread(session_ledger.purge, candidate)
-        except Exception:
-            logger.warning("History delete: ledger purge failed for %s", candidate, exc_info=True)
-    # Breadcrumb sweep: a channel session's ledger is keyed by its EXACT
-    # session key, but a slotless delete only holds the folded transcript
-    # spelling — match each ledger's breadcrumb under the same fold so the
-    # exact-key ledger cannot outlive its session.
-    folded_keys = {_normalize_slot_key(k) for k in ledger_candidates if k}
-    try:
-        await asyncio.to_thread(
-            session_ledger.purge_matching, exact_keys, folded_keys, _normalize_slot_key
-        )
-    except Exception:
-        logger.warning("History delete: ledger sweep failed for %s", key, exc_info=True)
-    # The per-session compaction-threshold override dies with permanent
-    # deletion, and ``destroy()`` above only runs when a LIVE slot exists — a
-    # slotless delete of archived history would otherwise leave the override
-    # for a deterministic (channel) key to be silently inherited by a
-    # recreated session. Same fold-matching sweep as the ledger purge; safe to
-    # run unconditionally (the slot path's destroy already popped its entry).
-    try:
-        raw_candidates = set(pin_slot_keys) | {key}
-        dropped = state.sessions.drop_autocompact_overrides_matching(
-            raw_candidates | folded_keys,
-            {_normalize_slot_key(k) for k in raw_candidates} | folded_keys,
-            _normalize_slot_key,
-        )
-        if dropped:
-            logger.info("History delete: dropped %d autocompact override(s) for %s", dropped, key)
-    except Exception:
-        logger.warning("History delete: override sweep failed for %s", key, exc_info=True)
+    # Pins, work ledgers, and autocompact overrides are independent state. A
+    # transcript can be created or restored by another process after any owner
+    # scan, so deleting those sidecars cannot be made atomic here. Preserve them:
+    # stale state is reversible, while deleting a successor's state is not.
 
 
 async def api_sessions_clear(request: web.Request) -> web.Response:
@@ -1441,7 +1587,7 @@ async def api_sessions_clear(request: web.Request) -> web.Response:
 
     count = 0
     failed = 0
-    cleanup_tasks = []
+    cleanup_claims: list[tuple[str, _HistoryDeleteClaim]] = []
     for key in clearable:
         # Re-check per iteration: a resume publishing a slot during the selector's
         # scan OR during an earlier delete-await now appears here. The selector
@@ -1452,23 +1598,39 @@ async def api_sessions_clear(request: web.Request) -> web.Response:
             skipped += 1
             continue
 
+        delete_claim = _capture_history_delete_claim(state, key)
         try:
-            # Offload off the event loop — delete_session enters _locked (flock).
+            # Offload off the event loop — delete_session enters the transcript
+            # mutation lock and cross-process flock.
             # skip_pinned=True makes the pin-check-and-delete atomic so a
             # concurrent pin cannot sneak in between the metadata read and the
             # unlink. The invariant (lock, real test) now lives in history.py.
-            result = await asyncio.to_thread(log.delete_session, key, skip_pinned=True)
+            result, delete_claim = await asyncio.to_thread(
+                _delete_history_session,
+                log,
+                key,
+                delete_claim,
+                skip_pinned=True,
+            )
             if result is None:
                 skipped += 1
             elif result:
-                cleanup_tasks.append(_remove_slot_for_history_key(state, key))
+                cleanup_claims.append((key, delete_claim))
                 count += 1
             else:
                 failed += 1
         except Exception:
             failed += 1
             logger.warning("api_sessions_clear: delete raised for %s", key, exc_info=True)
-    if cleanup_tasks:
+    if cleanup_claims:
+        cleanup_tasks = [
+            _remove_slot_for_history_key(
+                state,
+                cleanup_key,
+                delete_claim=delete_claim,
+            )
+            for cleanup_key, delete_claim in cleanup_claims
+        ]
         await asyncio.gather(*cleanup_tasks, return_exceptions=True)
     if count:
         state.push_slots_update()

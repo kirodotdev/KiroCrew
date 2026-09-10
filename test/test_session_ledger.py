@@ -704,11 +704,11 @@ def test_routes_are_on_the_strict_internal_allowlist():
     assert "/api/session-ledger" in _STRICT_INTERNAL_API_PATHS
 
 
-# ── permanent-delete purge funnel ─────────────────────────────────────────
+# ── permanent-delete preservation boundary ─────────────────────────────────
 
 
 @pytest.mark.asyncio
-async def test_remove_slot_for_history_key_purges_ledger():
+async def test_remove_slot_for_history_key_preserves_ledger():
     from kiro_crew.dashboard.handlers.sessions import _remove_slot_for_history_key
 
     history_key = "dashboard_chat-88-123"
@@ -718,17 +718,13 @@ async def test_remove_slot_for_history_key_purges_ledger():
 
     state = MagicMock()
     state._slots = {}
-    state.crew = None
-    state.remove_chat_pins_for_slots = AsyncMock()
     await _remove_slot_for_history_key(state, history_key)
-    assert not sl.has_ledger(ledger_key)
+    assert sl.has_ledger(ledger_key)
 
 
 @pytest.mark.asyncio
-async def test_delete_with_folded_spelling_reaps_exact_channel_key_ledger():
-    """A channel session's ledger is keyed by its EXACT session key, but a
-    slotless permanent delete may only hold the folded transcript spelling —
-    the breadcrumb sweep must still reap the exact-key ledger."""
+async def test_delete_with_folded_spelling_preserves_exact_channel_key_ledger():
+    """A lossy transcript spelling never authorizes work-ledger deletion."""
     from kiro_crew.dashboard.handlers.sessions import _remove_slot_for_history_key
     from kiro_crew.dashboard.state import _normalize_slot_key
 
@@ -738,13 +734,10 @@ async def test_delete_with_folded_spelling_reaps_exact_channel_key_ledger():
 
     state = MagicMock()
     state._slots = {}
-    state.crew = None
-    state.remove_chat_pins_for_slots = AsyncMock()
-    # The funnel is handed only the folded spelling (what the transcript
-    # filename layer uses); the raw colon-structured key is not among the
-    # candidates.
+    # The route receives only the folded transcript spelling; that lossy alias
+    # does not authorize deletion of the exact channel ledger.
     await _remove_slot_for_history_key(state, _normalize_slot_key(channel_key))
-    assert not sl.has_ledger(channel_key)
+    assert sl.has_ledger(channel_key)
 
 
 def test_purge_matching_exact_and_folded_and_nonmatch():

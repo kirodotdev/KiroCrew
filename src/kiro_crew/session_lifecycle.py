@@ -35,6 +35,7 @@ from kiro_crew.metrics.sessions import (
 CancelOutcome = Literal["acked", "timeout", "no_turn", "error"]
 StopOutcome = Literal["soft", "hard", "idle"]
 ProviderFactory = Callable[..., Any]
+_ANY_SESSION = object()
 
 
 class _RecycleCallback(Protocol):
@@ -106,6 +107,12 @@ class SessionLifecycleOwner(Protocol):
     _session_map: _SessionMapPort
 
     def _fold_key(self, key: str) -> str: ...
+
+    def _has_allocation_reservation(self, key: str) -> bool: ...
+
+    def session_generation(self, key: str) -> int: ...
+
+    def _advance_session_generation(self, key: str) -> int: ...
 
     def set_autocompact_pct(self, key: str, pct: float | None) -> None: ...
 
@@ -377,6 +384,8 @@ class SessionLifecycleService:
                 # Intentionally clear only the registry: the original reload
                 # path does not rewrite session-map or compaction state here.
                 stale = list(owner._sessions.items())
+                for stale_key, _ in stale:
+                    owner._advance_session_generation(stale_key)
                 owner._sessions.clear()
                 # Same tick as the clear. This removal had no end record, so a
                 # replacement under a reused key inherited the old start and
@@ -427,6 +436,7 @@ class SessionLifecycleService:
             if skip_if_busy and current is not None and current.semaphore.locked():
                 return False
             session = owner._sessions.pop(key, None)
+            owner._advance_session_generation(key)
             owner._compact_cooldown_until.pop(key, None)
             self._suppress_replay.discard(key)
             owner._compact_pending_verdict.pop(key, None)
@@ -550,6 +560,7 @@ class SessionLifecycleService:
         key = owner._fold_key(key)
         async with owner._lock:
             session = owner._sessions.pop(key, None)
+            owner._advance_session_generation(key)
             owner._compact_cooldown_until.pop(key, None)
             self._suppress_replay.discard(key)
             owner._compact_pending_verdict.pop(key, None)
@@ -602,6 +613,7 @@ class SessionLifecycleService:
                             skipped = True
                             continue
                         del owner._sessions[key]
+                        owner._advance_session_generation(key)
                         owner._compact_cooldown_until.pop(key, None)
                         self._suppress_replay.discard(key)
                         self._origin_links.pop(key, None)
@@ -722,6 +734,7 @@ class SessionLifecycleService:
             ):
                 return False
             del owner._sessions[key]
+            owner._advance_session_generation(key)
             owner._compact_cooldown_until.pop(key, None)
             self._suppress_replay.discard(key)
             owner._compact_pending_verdict.pop(key, None)
@@ -737,26 +750,66 @@ class SessionLifecycleService:
         )
         return True
 
-    async def destroy(self, key: str) -> None:
-        """Permanently destroy a live session and its persistence entry."""
+    async def destroy(
+        self,
+        key: str,
+        *,
+        should_destroy: Callable[[], bool] | None = None,
+        expect_generation: object = _ANY_SESSION,
+        skip_if_busy: bool = False,
+        preserve_autocompact_override: bool = False,
+    ) -> bool:
+        """Destroy *key* only while every synchronous under-lock guard allows it."""
         owner = self._owner
         constants = self._deps.constants()
-        key = owner._fold_key(key)
         async with owner._lock:
+            key = owner._fold_key(key)
+            if expect_generation is not _ANY_SESSION and owner._has_allocation_reservation(key):
+                return False
+            current = owner._sessions.get(key)
+            if (
+                expect_generation is not _ANY_SESSION
+                and owner.session_generation(key) != expect_generation
+            ):
+                return False
+            if skip_if_busy and current is not None and current.semaphore.locked():
+                return False
+            if should_destroy is not None:
+                try:
+                    allowed = should_destroy()
+                except Exception:
+                    self._deps.logger.warning(
+                        "Conditional session destroy guard failed for %s; skipping",
+                        key,
+                        exc_info=True,
+                    )
+                    return False
+                if not allowed:
+                    return False
             session = owner._sessions.pop(key, None)
+            owner._advance_session_generation(key)
             owner._compact_cooldown_until.pop(key, None)
             self._suppress_replay.discard(key)
             owner._compact_pending_verdict.pop(key, None)
-            # The per-session compaction-threshold override dies with the
-            # session's permanent destruction (unlike reset/recycle, which it
-            # deliberately survives): a later session recreated on this key is
-            # a NEW conversation, and inheriting the deleted one's threshold
-            # while the slot reports "following global" is silent divergence.
-            owner.set_autocompact_pct(key, None)
+            # Ordinary permanent destroy starts a new conversation on reuse and
+            # therefore clears the old threshold. History deletion can race a
+            # same-key transcript claim in another process, so its explicit
+            # conditional mode preserves this independently owned sidecar.
+            if not preserve_autocompact_override:
+                owner.set_autocompact_pct(key, None)
             # _origin_links deliberately survives destroy; existing callers
             # rely on the historical asymmetry with reset/remove.
+            # The map delete is the destructive persistence linearization point.
+            # It must run before record_session_ended can suspend: dashboard slot
+            # publication does not take this registry lock and could otherwise
+            # adopt the predecessor's still-visible binding during that await.
+            owner._session_map.delete(
+                key,
+                reason=constants.unbind_reason_session_destroyed,
+            )
             if session is not None:
-                # Same tick as the pop: see reset.
+                # Still under the same lock as the pop; a manager successor cannot
+                # register until its predecessor's end record is sampled.
                 await record_session_ended(key, end_reason=END_REASON_DESTROYED)
         try:
             if session:
@@ -764,11 +817,25 @@ class SessionLifecycleService:
                 await session.provider.shutdown()
             await owner.release_subagent_runtime(key)
         finally:
-            owner._session_map.delete(
-                key,
-                reason=constants.unbind_reason_session_destroyed,
-            )
             self._deps.logger.info("Destroyed session (map deleted): %s", key)
+        return True
+
+    async def destroy_if(
+        self,
+        key: str,
+        expected_generation: int,
+        should_destroy: Callable[[], bool],
+        *,
+        preserve_autocompact_override: bool = False,
+    ) -> bool:
+        """Destroy the captured idle generation if its slot guard stays true."""
+        return await self.destroy(
+            key,
+            should_destroy=should_destroy,
+            expect_generation=expected_generation,
+            skip_if_busy=True,
+            preserve_autocompact_override=preserve_autocompact_override,
+        )
 
     async def discard_conversation(
         self, key: str, *, replay: bool = True, skip_if_busy: bool = False
@@ -805,6 +872,7 @@ class SessionLifecycleService:
             if skip_if_busy and current is not None and current.semaphore.locked():
                 return False
             session = owner._sessions.pop(key, None)
+            owner._advance_session_generation(key)
             owner._compact_cooldown_until.pop(key, None)
             owner._compact_pending_verdict.pop(key, None)
             # Store replay suppression atomically with the pop. Origin-link
@@ -1030,6 +1098,8 @@ class SessionLifecycleService:
                 logger.debug("close_all: session map flush failed", exc_info=True)
 
             sessions = dict(owner._sessions)
+            for session_key in sessions:
+                owner._advance_session_generation(session_key)
             owner._sessions.clear()
             owner._compact_cooldown_until.clear()
             self._suppress_replay.clear()
@@ -1228,6 +1298,7 @@ class SessionLifecycleService:
             ended: list[str] = []
             for key in keys:
                 session = owner._sessions.pop(key, None)
+                owner._advance_session_generation(key)
                 if session:
                     providers.append(session.provider)
                     popped.append(session)

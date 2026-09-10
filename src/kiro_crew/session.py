@@ -1532,6 +1532,22 @@ class SessionManager:
         """Return the live provider for a folded key."""
         return self._allocation_boundary().get_provider(key)
 
+    def session_generation(self, key: str) -> int:
+        """Capture the monotonic logical-key generation for conditional destruction."""
+        return self._allocation_boundary().session_generation(key)
+
+    def _advance_session_generation(self, key: str) -> int:
+        """Advance ownership generation after registry publication/removal."""
+        return self._allocation_boundary().advance_ownership_generation(key)
+
+    def session_keys(self) -> frozenset[str]:
+        """Snapshot current and in-flight registry keys for a same-tick fence."""
+        return self._allocation_boundary().session_keys()
+
+    def _has_allocation_reservation(self, key: str) -> bool:
+        """Return whether allocation/claim ownership is reserved for *key*."""
+        return self._allocation_boundary().has_allocation_reservation(key)
+
     async def try_acquire(self, key: str) -> bool:
         """Try to acquire an exact-key idle session."""
         return await self._allocation_boundary().try_acquire(key)
@@ -2168,16 +2184,6 @@ class SessionManager:
                 return
         self._compaction.set_autocompact_pct(key, pct)
 
-    def drop_autocompact_overrides_matching(
-        self, exact_keys: set[str], folded_keys: set[str], fold: Callable[[str], str]
-    ) -> int:
-        """Drop threshold overrides for permanently deleted, slotless sessions.
-
-        The slotless complement of ``destroy()``'s override clear — see the
-        coordinator method for the matching contract.
-        """
-        return self._compaction.drop_autocompact_overrides_matching(exact_keys, folded_keys, fold)
-
     async def compact_if_needed(self, key: str) -> str:
         """Delegate awaited between-turn compaction."""
         return await self._compaction.compact_if_needed(key)
@@ -2294,6 +2300,22 @@ class SessionManager:
     async def destroy(self, key: str) -> None:
         """Permanently destroy a session and its persistence entry."""
         await self._lifecycle_boundary().destroy(key)
+
+    async def destroy_if(
+        self,
+        key: str,
+        expected_generation: int,
+        should_destroy: Callable[[], bool],
+        *,
+        preserve_autocompact_override: bool = False,
+    ) -> bool:
+        """Destroy the captured idle generation if its slot guard stays true."""
+        return await self._lifecycle_boundary().destroy_if(
+            key,
+            expected_generation,
+            should_destroy,
+            preserve_autocompact_override=preserve_autocompact_override,
+        )
 
     async def discard_conversation(
         self, key: str, *, replay: bool = True, skip_if_busy: bool = False

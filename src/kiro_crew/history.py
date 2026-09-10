@@ -20,7 +20,7 @@ import re
 import threading
 import time as _time
 import uuid
-from collections.abc import Callable, Container, Iterator, Sequence
+from collections.abc import Callable, Container, Iterable, Iterator, Sequence
 from collections.abc import Set as AbstractSet
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -118,7 +118,7 @@ from kiro_crew.llm_helpers import (  # noqa: F401 - facade re-exports
     stream_and_collect,
     stream_and_collect_json,
 )
-from kiro_crew.messaging.link import canonical_key, legacy_key
+from kiro_crew.messaging.link import canonical_key, is_legacy_slack_key, legacy_key
 from kiro_crew.preview_text import strip_markdown_preview  # noqa: F401 - facade re-export
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel  # noqa: F401 - facade re-export
@@ -1173,6 +1173,24 @@ def transcript_stems(key: str) -> tuple[str, ...]:
     return tuple(stems)
 
 
+def transcript_lock_stems(key: str) -> tuple[str, ...]:
+    """Canonical and bare physical lock stems for either Slack spelling.
+
+    Unlike :func:`transcript_stems`, which preserves the caller's exact path
+    identity for ownership decisions, this helper is deliberately symmetric:
+    ``slack:<ts>``, ``slack_<ts>``, and bare ``<ts>`` all lock the same two
+    sidecars. Non-Slack keys have one lock stem.
+    """
+    bare = legacy_key(canonical_key(key))
+    if bare is None and key.startswith("slack_"):
+        candidate = key[len("slack_") :]
+        if is_legacy_slack_key(candidate):
+            bare = candidate
+    if bare is None:
+        return (_safe_key(key),)
+    return (_safe_key(f"slack:{bare}"), _safe_key(bare))
+
+
 def _redact_at_write_boundary(role: str, content: str) -> str:
     """Redact model-authored *content* on its way into a transcript.
 
@@ -1530,14 +1548,32 @@ class ConversationLog:
         fut.add_done_callback(lambda f: f.exception())
 
     @contextlib.contextmanager
-    def _locked(self, key: str) -> Iterator[None]:
-        """Hold BOTH the in-process RLock and a cross-process advisory flock.
+    def locked_stems(self, stems: Iterable[str]) -> Iterator[None]:
+        """Hold exact physical transcript stems in deterministic order."""
+        with contextlib.ExitStack() as locks:
+            for stem in sorted(set(stems)):
+                locks.enter_context(self._locked_stem(stem))
+            yield
 
-        Serializes create/append/rotate/rewrite/metadata mutations of a single
-        session file against every other writer — threads in this process (via
-        the RLock) *and* other processes such as subagents, crons, and the CLI
-        (via the ``flock`` on the sidecar lock file). Reentrant: a nested
-        ``_locked`` for the same key on the same thread reuses the held fd.
+    @contextlib.contextmanager
+    def _locked(self, key: str) -> Iterator[None]:
+        """Hold every physical lock that can represent one transcript.
+
+        Slack's canonical, sanitized, and pre-migration bare spellings all map
+        to one sorted lock set. Target-path resolution must happen inside this
+        context so a waiter cannot publish a filename choice made before a
+        concurrent restore.
+        """
+        with self.locked_stems(transcript_lock_stems(key)):
+            yield
+
+    @contextlib.contextmanager
+    def _locked_stem(self, key: str) -> Iterator[None]:
+        """Hold the in-process and cross-process locks for one physical stem.
+
+        Callers use :meth:`_locked`, which acquires every stable alias stem in
+        deterministic order. This primitive stays separate so that alias locking
+        never resolves a target path before all sidecars are held.
         """
         # Fail loud (strict) or diagnose (production) if a mutation reached the
         # lock ON the event loop — the un-offloaded-call-site guard (see
@@ -1956,13 +1992,14 @@ class ConversationLog:
         correct agent later.  (Has no effect if the file already exists;
         use :meth:`update_metadata` to change the agent after creation.)
         """
-        path = self._path(key)
         # Serialize the create-if-missing + append + rotate against concurrent
         # rewrites (compaction / consolidation) so no write is lost and readers
-        # never observe a torn file. ``_locked`` also takes a cross-process
-        # advisory flock so a subagent / cron / CLI writing the SAME session
-        # file in another process can't interleave and lose this append.
+        # never observe a torn file. ``_locked`` also takes every stable
+        # cross-process alias lock so a subagent / cron / CLI writing the same
+        # logical session in another process cannot interleave or split its
+        # canonical and pre-migration files.
         with self._locked(key):
+            path = self._path(key)
             created_with_tab_id = False
             created_now = False
             if not path.exists():
@@ -2232,10 +2269,11 @@ class ConversationLog:
         them from memory/history extraction). When neither trips, the offset is
         applied as-is.
         """
-        path = self._path(key)
-        # Serialize behind the cross-process lock and re-read under it so a
-        # concurrent append (in this or another process) is never lost.
+        # Serialize behind the cross-process lock and resolve/re-read under it so
+        # a concurrent append or restore cannot redirect this key after its path
+        # was chosen.
         with self._locked(key):
+            path = self._path(key)
             if not path.exists():
                 return
             prev_mtime = _safe_mtime(path)

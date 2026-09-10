@@ -358,7 +358,7 @@ class TestWarmPoolBypassesACrewPin:
 
         from kiro_crew import session_allocation
 
-        src = inspect.getsource(session_allocation.SessionAllocationService.get_or_create)
+        src = inspect.getsource(session_allocation.SessionAllocationService._get_or_create_impl)
         assert "_crew_pins_effort" in src
         assert 'pool_decision = "bypass_effort"' in src
 

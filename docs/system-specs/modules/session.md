@@ -540,6 +540,8 @@ send time.
 | `reset(key, *, expect_session=None, skip_if_busy=False, clear_conversation=False)` | Kill session; returns `bool` (True iff a session was actually torn down). Does NOT delete session map entry (kiro-cli file persists for future resume). Optional guards evaluated atomically under the lock with the pop, used by the RSS-recycle watchdog: `expect_session` only resets if that exact session object still occupies the key (guards against recycling a reset+recreated session on a stale off-lock RSS reading); `skip_if_busy` skips when the current session's semaphore is held so a live stream is never cut mid-turn. `clear_conversation=True` additionally clears the native resume sid in the SAME event-loop tick as the pop (entry + channel bindings survive, as in `_recycle_held`) — used by the still-critical post-compaction escalation so the overflowed conversation is not reloaded, without a delayed clear ever erasing a racing successor's sid. |
 | `discard_conversation(key)` | Kill session AND clear only the resume sid (`SessionMap.clear_sid`) — the map ENTRY survives, preserving Slack thread/channel linkage and the reverse thread→session index. The cleared sid is stashed as `discarded_sid` in the entry, so the discard is diagnosable and manually reversible (the native conversation persists on disk; only the pointer is dropped). The next turn cold-starts a fresh native conversation instead of `session/load`-ing the old one. Used by the poisoned-conversation escalation in `chat_runner` (canary-verified backend rejection of a specific persisted conversation) and by the Slack / Discord / Telegram `/compact` failure recovery: the conversation is unusable but the session's channel identity must persist. This is the shape every HOUSEKEEPING teardown takes — `SessionMap.prune` refuses to delete an entry carrying a channel binding, and `_recycle_held` clears the sid for the same reason. Only an explicit user action (`destroy`) may remove a channel identity. Sits between `reset` (sid kept, resume expected) and `remove` (entry deleted, no resume). |
 | `remove(key)` | Shut down a session but PRESERVE the session map entry — the kiro-cli session files remain on disk, so a future `get_or_create` restores the conversation losslessly via `session/load`. For revivable teardown (tab close, agent switch, idle kill). Permanent deletion is `destroy(key)`. |
+| `destroy(key)` | Permanently remove the live provider, compaction override, and session-map entry. The map entry is deleted in the yield-free registry-pop span before the awaited end metric, so a dashboard slot cannot adopt the predecessor binding during that metric write. |
+| `destroy_if(key, expected_generation, should_destroy, *, preserve_autocompact_override=False)` | Conditional permanent removal for the monotonic canonical-key generation captured by `session_generation(key)`. Under the manager lock it requires no current allocation/claim reservation, requires the generation to remain equal, requires the current session semaphore to be idle, then evaluates the synchronous slot-owner predicate immediately before the registry pop and yield-free session-map delete. Any reservation, generation mismatch (including absent→successor→absent ABA), busy session, false predicate, or predicate exception leaves provider, override, and map untouched. History deletion passes `preserve_autocompact_override=True` because another process can claim the same logical transcript; ordinary conditional and unconditional destroy keep clearing the old override. Returns whether destruction occurred. |
 | `remove_if_unclaimed(key)` | Conditional `remove` for the resume-prefetch TTL: removes the session only if the one-shot `first_turn` observation is still armed (not `NOTHING_ARMED` — no real turn claimed it) AND the per-session semaphore is unheld, checked atomically under the manager lock. Preserves the session map (mirrors `remove`'s revivable shape), so the next focus or first message resumes normally. Returns `True` iff a session was removed. A claimant handed the session object but not yet holding the semaphore loses benignly: its re-validate fails and it cold-starts. |
 | `close_all(drain_timeout=None)` | Pre-shutdown **drain** of in-flight turns (via `drain_active_turns`), then save all active session mappings, shut down every session, and drain the warm pool. `drain_timeout` bounds that drain (`None` = full default budget); a caller wrapping `close_all()` in its own hard deadline (Slack's restart wraps it in `wait_for(..., 5s)`) passes a smaller budget (e.g. `2.0`) so the kill path still fits inside the deadline. A cancel that fires mid-drain (outer deadline) **propagates** (CancelledError is deliberately not caught) so the caller's hard deadline stays honest; recovery of a still-held native-session lock is the next-startup orphan reaper's job. |
 | `drain_active_turns(timeout=None)` | Best-effort co-operative drain that brings in-flight prompts to a safe turn boundary **before** teardown, so kiro-cli closes its native turn and releases its session lock (`~/.kiro/sessions/cli/<uuid>.json`) on the subsequent SIGTERM — otherwise the next gateway's `session/load` hits "active in another process" and the slot returns empty completions (the Make-Live empty-response incident, #200). For each registered session with an **unfinished** turn (native turn-done not yet acked — independent of cancel state, so an already-cancelled-but-not-acked turn is still drained), it issues a graceful `session/cancel` and waits (bounded) for the ack; a turn already cancelled (`cancel()` → `"no_turn"`) is waited on directly via `wait_turn_done`. The whole operation is bounded by `timeout` (`None` → `_DRAIN_ACTIVE_TURNS_TIMEOUT_SECS`, default 5.0s; internal cap is `timeout+1.0`); on timeout it logs and returns so the caller falls through to the SIGTERM-first kill path — never hangs teardown, never raises. `timeout <= 0` disables the drain. Returns the count of unfinished turns (observability/tests). Only registered user sessions are drained; the warm pool holds never-prompted processes. |
@@ -1227,6 +1229,49 @@ fold on read so pre-fix snapshots carrying both key forms self-heal (the
 second form hits the dedup guard). When normalization changes the name, the
 original pretty form is preserved as the slot's initial title
 (redaction-scrubbed, non-pinned so auto-title can still override).
+
+**Permanent history deletion keeps ownership exact.**
+`DELETE /api/sessions/{key}` unlinks the selected transcript first. History
+aliases may locate a slot candidate, but they do not prove ownership. Before the
+unlink awaits, the route captures the slot object, its transcript key, its
+SessionManager key, and the key's monotonic ownership generation. Legacy Slack
+aliases can name either a canonical or pre-migration bare file, so the off-loop
+delete worker resolves the selected history key and captured slot transcript to
+the filename each one actually uses while holding that transcript's cross-process
+lock set. Slack deletion, restore, and ordinary transcript writers all use
+`ConversationLog.locked_stems` to take canonical `slack_<ts>` and legacy `<ts>`
+locks in sorted order; writers resolve their physical target only after that set
+is held, so none can publish through an alias the others did not serialize. A
+path mismatch rejects the candidate.
+
+Deferred cleanup compares object identity, task identity, current transcript and
+SessionManager routing, and the current manager generation with the immutable
+claim in the same yield-free span as the pop. Cron, workflow, and channel
+adoption can relink an existing slot object; a rerouted object is preserved even
+though its identity is unchanged. A new turn on the same route changes its task
+or generation and is preserved too. A captured absence never claims a later
+successor.
+
+Every `get_or_create` reserves its logical key under the registry lock before
+resume lookup or provider startup. Reservation publication/removal and every
+session registration/removal — including provider-reload and shutdown mass
+clears — advance the generation shared by canonical and legacy Slack aliases.
+Successful claims remove their token synchronously before returning, in the
+same yield-free span that owns the acquired lease. Failure and cancellation
+drain token removal under the registry lock. `destroy_if` requires the captured
+generation to remain current, requires no reservation and an idle session, then
+evaluates current live-slot ownership under the same manager lock as the
+provider pop. The session-map entry is deleted before the awaited end metric.
+History deletion uses the explicit override-preserving mode; ordinary destroy
+continues to clear the old conversation's threshold.
+
+Chat pins, work ledgers, and per-session autocompact overrides are preserved.
+They are independent stores that can be claimed by a transcript created or
+restored in another process after any owner scan or in-process epoch check.
+Making their deletion atomic would require every cross-process transcript writer
+and restore path to share one mutation protocol with in-memory dashboard state.
+The request path chooses the smaller fail-safe rule instead: stale sidecars are
+reversible, while deleting a successor's state is not.
 
 ## Slack Thread Linking
 
