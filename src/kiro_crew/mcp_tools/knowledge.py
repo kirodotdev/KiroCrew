@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from kiro_crew import mcp_core
+from kiro_crew.knowledge import store as knowledge_store
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.validation import (
     KNOWLEDGE_ADD_DOCUMENT_SCHEMA,
@@ -90,9 +91,13 @@ def schemas() -> list[dict[str, Any]]:
         {
             "name": "knowledge_list_sources",
             "description": (
-                "List the knowledge library's sources as 'name — id (N items)' "
-                "lines. Use it to discover a valid source_id before scoping "
-                "local_knowledge_search to a single source."
+                "Read-only counts for the user's knowledge library: how many "
+                "sources, documents and items it holds in total, then one "
+                "'name — id (N items)' line per source. Use it to answer 'how "
+                "much is in my knowledge base', and to discover a valid "
+                "source_id before scoping local_knowledge_search to a single "
+                "source. It only counts -- it never rebuilds, repairs or "
+                "flushes anything."
             ),
             "inputSchema": {
                 "type": "object",
@@ -112,7 +117,7 @@ def schemas() -> list[dict[str, Any]]:
                 "never opens files, so read the document with your own tools first, "
                 "then hand over the text. Also pass where it came from as "
                 "`source_uri` (the path or URL you read it from): that is what tells "
-                "two documents apart, so a second \"README\" does not silently "
+                'two documents apart, so a second "README" does not silently '
                 "replace the first. Adding the same document twice is harmless: "
                 "identical content is refused, not duplicated.\n\n"
                 "Do NOT add: source code, agent instruction files (AGENTS.md, "
@@ -127,8 +132,7 @@ def schemas() -> list[dict[str, Any]]:
                     "title": {
                         "type": "string",
                         "description": (
-                            "Human-readable document title, as the user would "
-                            "recognise it."
+                            "Human-readable document title, as the user would " "recognise it."
                         ),
                     },
                     "content": {
@@ -326,11 +330,16 @@ def knowledge_add_document(name: str, args: dict[str, Any]) -> str:
         return "Provide the document text as content."
     # Routed through the gateway, not the store: ingestion needs the chunker,
     # extraction pool and embedder, and only the gateway holds them.
-    resp = mcp_core._post("/api/knowledge/agent-document", {
-        "title": title, "content": content,
-        "reason": args.get("reason", ""),
-        "source_uri": args.get("source_uri", ""),
-    }, timeout=180)
+    resp = mcp_core._post(
+        "/api/knowledge/agent-document",
+        {
+            "title": title,
+            "content": content,
+            "reason": args.get("reason", ""),
+            "source_uri": args.get("source_uri", ""),
+        },
+        timeout=180,
+    )
     # The title arrives straight from the tool call, so it reaches the audit
     # log before the server-side redaction the document body gets. SEL is
     # persisted and readable, so redact it here.
@@ -354,25 +363,31 @@ def knowledge_add_document(name: str, args: dict[str, Any]) -> str:
         metadata={"title": audit_title, "items": resp.get("items", 0)},
     )
     if add_status == "duplicate":
-        return (f"Already in the knowledge library, nothing added "
-                f"({resp.get('reason', 'duplicate content')}).")
+        return (
+            f"Already in the knowledge library, nothing added "
+            f"({resp.get('reason', 'duplicate content')})."
+        )
     if add_status == "deferred":
         # The cross-file import budget refused this add, and the route reports that
         # as a 200 with no `error` key -- so without this branch it would fall into
         # the success line below and tell the agent a document that was never
         # written is searchable. Nothing was stored, and the reason carries the
         # budget, window and spend the agent needs to decide whether to wait.
-        return (f"Not added -- the knowledge import budget deferred it "
-                f"({resp.get('reason', 'import budget exhausted')}). Nothing was "
-                f"stored and it is NOT searchable. Retry once the window clears, or "
-                f"ask the operator to raise knowledge.import_chunk_budget.")
+        return (
+            f"Not added -- the knowledge import budget deferred it "
+            f"({resp.get('reason', 'import budget exhausted')}). Nothing was "
+            f"stored and it is NOT searchable. Retry once the window clears, or "
+            f"ask the operator to raise knowledge.import_chunk_budget."
+        )
     # audit_title, not title: a document name is caller-supplied and free-form
     # enough to carry a credential, and this string is rendered into chat and
     # persisted in the transcript -- a wider audience than the audit log that
     # already takes the redacted form. Redaction is a no-op for an ordinary name.
-    return (f"Added {audit_title!r} to the knowledge library "
-            f"({resp.get('items', 0)} chunk(s)). It is now searchable via "
-            f"local_knowledge_search.")
+    return (
+        f"Added {audit_title!r} to the knowledge library "
+        f"({resp.get('items', 0)} chunk(s)). It is now searchable via "
+        f"local_knowledge_search."
+    )
 
 
 def knowledge_dedup(name: str, args: dict[str, Any]) -> str:
@@ -425,33 +440,81 @@ def knowledge_list_sources(name: str, args: dict[str, Any]) -> str:
             outcome="not_configured",
         )
         return "Knowledge Library is not configured. Ingest documents via the dashboard first."
-    # Same cached (store, embedder) pair the search handler uses — skips the
-    # per-call schema-DDL/migrate/graph-load. The store is shared: never close it.
-    cfg_path = Path(mcp_core.config_dir()) / "config.json"
-    store, _embedder = mcp_core._get_knowledge_search(db_path, cfg_path)
-    # Count active items only — superseded/deduped copies would overstate
-    # how much a source_id scope is likely to surface. Membership matches the
-    # retriever's scoped seed queries: ownership (items.source_id) OR location
-    # (source_locations, for items surviving a cross-source dedup collapse).
-    rows = store.db.execute(
-        "SELECT s.id, s.name, COUNT(DISTINCT i.id) AS item_count "
-        "FROM sources s LEFT JOIN items i ON i.status = 'active' AND ("
-        "  i.source_id = s.id"
-        "  OR i.id IN (SELECT sl.item_id FROM source_locations sl WHERE sl.source_id = s.id)"
-        ") GROUP BY s.id, s.name ORDER BY s.name"
-    ).fetchall()
+    # The file is opened read-only (SQLite mode=ro), NOT through the cached
+    # search store: that cache is built by the migrating constructor, whose
+    # orphan sweep deletes itemless source rows -- a write a tool advertised as
+    # "only counts" must not make. The trade is that a library behind this
+    # schema is reported, not repaired here.
+    store = mcp_core.KnowledgeStore.open_read_only(str(db_path))
+    try:
+        # Count active items only — superseded/deduped copies would overstate
+        # how much a source_id scope is likely to surface. Membership matches the
+        # retriever's scoped seed queries: ownership (items.source_id) OR location
+        # (source_locations, for items surviving a cross-source dedup collapse).
+        rows = store.db.execute(
+            "SELECT s.id, s.name, COUNT(DISTINCT i.id) AS item_count "
+            "FROM sources s LEFT JOIN items i ON i.status = 'active' AND ("
+            "  i.source_id = s.id"
+            "  OR i.id IN (SELECT sl.item_id FROM source_locations sl WHERE sl.source_id = s.id)"
+            ") GROUP BY s.id, s.name ORDER BY s.name"
+        ).fetchall()
+        stats = store.aggregate_stats()
+    except knowledge_store.sqlite3.OperationalError as exc:
+        if "no such" not in str(exc):
+            raise
+        mcp_core.sel().log_tool_invocation(
+            session_key=mcp_core._resolve_session_key(),
+            source="mcp",
+            tool_name="knowledge_list_sources",
+            outcome="schema_behind",
+        )
+        return (
+            f"Knowledge database is behind this schema ({exc}). This tool opens it "
+            "read-only and does not migrate; start the gateway or run "
+            "`kirocrew knowledge dedup --apply` once to migrate it, then retry."
+        )
+    finally:
+        store.db.close()
     mcp_core.sel().log_tool_invocation(
         session_key=mcp_core._resolve_session_key(),
         source="mcp",
         tool_name="knowledge_list_sources",
         outcome="success",
-        metadata={"source_count": len(rows)},
+        metadata={
+            "source_count": len(rows),
+            "documents": stats.documents,
+            "items": stats.items,
+        },
+    )
+    totals = (
+        f"Knowledge library: {stats.sources} source(s), "
+        f"{stats.documents} document(s), {stats.items} item(s)."
     )
     if not rows:
-        return "The knowledge library has no sources yet."
-    lines = [f"Knowledge sources ({len(rows)}):"]
+        return f"{totals}\nThe knowledge library has no sources yet."
+    lines = [totals, f"Sources ({len(rows)}):"]
     for row in rows:
         lines.append(f"- {row['name']} — id: {row['id']} ({row['item_count']} item(s))")
+    # The lines and the total answer different questions, so each gap between
+    # them is named WITH its count rather than left for the reader to guess at.
+    # A per-source count is scope membership -- what a search scoped to that
+    # source_id reaches: ownership OR location -- so an item located under one
+    # source but owned by another is on two lines. The total counts each item
+    # once, and an item owned by no registered source is in it but on no line.
+    # Each caveat is spent only when this library is actually in that state.
+    unowned = sum(s.items for s in stats.per_source if s.source_id is None)
+    if unowned:
+        lines.append(
+            f"{unowned} item(s) are owned by no registered source: the total counts "
+            "them, the lines above do not, and no source_id scope reaches them."
+        )
+    shared = sum(int(row["item_count"]) for row in rows) - (stats.items - unowned)
+    if shared > 0:
+        lines.append(
+            f"The lines above count {shared} more membership(s) than the items they "
+            "own: an item surviving a cross-source dedup collapse stays in both "
+            "sources' search scope and is counted on each of their lines."
+        )
     output = "\n".join(lines)
     output, _ = redact_exfiltration_urls(output)
     output, _ = redact_credentials(output)

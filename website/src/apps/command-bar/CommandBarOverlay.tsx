@@ -772,7 +772,10 @@ export default function CommandBarOverlay({
       // to type into it. Leaning on "create makes the new slot active" is only true at
       // the instant it resolves -- and this callback can resolve long after the user
       // has moved on, at which point the seed lands in whatever they moved to.
-      void dispatch(createSlot({ activate: false }))
+      void dispatch(createSlot({
+        activate: false,
+        ...(contributed ? { memory_mode: 'persistent' } : {}),
+      }))
         .unwrap()
         .then(
           async slot => {

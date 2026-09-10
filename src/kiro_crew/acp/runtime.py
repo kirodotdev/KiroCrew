@@ -86,6 +86,7 @@ from kiro_crew.acp.types import (
     ACP_CLIENT_CAPABILITIES,
     KAS_CLIENT_CAPABILITIES,
     METHOD_KAS_SESSION_DELETE,
+    METHOD_KIRO_SESSION_UPDATE,
     METHOD_MCP_OAUTH_REQUEST,
     METHOD_MCP_SERVER_INIT_FAILURE,
     METHOD_MCP_SERVER_INITIALIZED,
@@ -2009,7 +2010,11 @@ class AcpRuntime:
         _m = method if isinstance(method, str) else ""
         if _m == METHOD_REQUEST_PERMISSION:
             _mclass = "permission"
-        elif _m == METHOD_SESSION_UPDATE:
+        elif _m in (METHOD_SESSION_UPDATE, METHOD_KIRO_SESSION_UPDATE):
+            # Both live session-update spellings classify as "update": a
+            # dashboard alerting on the pre-fix hang signature must see a
+            # dropped extension-method child update the same way it sees
+            # the plain spelling.
             _mclass = "update"
         else:
             _mclass = "other"
@@ -2257,6 +2262,7 @@ class AcpRuntime:
                         and (
                             msg.is_method(METHOD_REQUEST_PERMISSION)
                             or msg.is_method(METHOD_SESSION_UPDATE)
+                            or msg.is_method(METHOD_KIRO_SESSION_UPDATE)
                         )
                     ):
                         # A frame for a backend-internal subagent the backend
@@ -2264,10 +2270,17 @@ class AcpRuntime:
                         # runtime with an UNAMBIGUOUS consumer (exactly one
                         # registered session — the dashboard-slot shape).
                         #
-                        # - session/update: routed so the consumer's
-                        #   per-toolCallId caches capture the child's REAL
-                        #   command bytes; the handle re-tags them as crew
-                        #   activity, never as parent transcript.
+                        # - session/update — under EITHER spelling: kiro-cli
+                        #   2.21.x emits child updates as the extension method
+                        #   `_kiro.dev/session/update` where earlier versions
+                        #   used plain `session/update`. Routed so the
+                        #   consumer's per-toolCallId caches capture the
+                        #   child's REAL command bytes; the handle re-tags
+                        #   them as crew activity, never as parent transcript.
+                        #   Both spellings must route: a dropped child update
+                        #   leaves the caches empty, child MCP identity
+                        #   unverified, and every auto-approve path falls to
+                        #   the interactive card.
                         # - session/request_permission: routed so the child's
                         #   approval flows through the exact policy pipeline a
                         #   main-agent approval takes — with the command bytes
@@ -2317,6 +2330,21 @@ class AcpRuntime:
                             # drain; a genuinely wedged backend still
                             # accumulates blocked tasks and trips the cap.
                             await asyncio.sleep(0)
+                        elif not _owner_turn_active:
+                            # An UPDATE between the owner's turns (either
+                            # session/update spelling). Nothing reads the
+                            # queue until the next prompt's dispatch loop,
+                            # and _run_turn clears the per-toolCallId caches
+                            # at turn start and then discards stale
+                            # non-permission frames from the queue — so a
+                            # between-turns update can never contribute a
+                            # cache write or an activity event. Queueing it
+                            # would only grow an unbounded queue in gateway
+                            # memory while the slot idles (session queues
+                            # have no depth cap). Unlike a REQUEST there is
+                            # no protocol obligation to answer, so take the
+                            # counted-drop path.
+                            self._note_dropped_frame(session_id, msg.method)
                         else:
                             # Hang-resilience series: a child permission
                             # request delivered to the mode-parity pipeline.

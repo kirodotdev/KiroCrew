@@ -454,7 +454,8 @@ The LLM reaches retrieval through the `kirocrew-core` MCP tool `local_knowledge_
 - `_get_knowledge_search` caches the `(KnowledgeStore, embedder)` pair across calls and rebuilds only when the knowledge DB (or its `-wal`) or `config.json` changes — avoiding the per-call schema DDL / migrate / graph-load.
 - Default `limit` is 3; results below `min_score = 0.012` are dropped. The retriever may return `limit + 1` rows (the protected keyword rank-1 hit, §4) and the tool does **not** re-truncate, so the LLM can see one extra result — the `limit` property description says so. Output is run through `redact_exfiltration_urls()` + `redact_credentials()` before returning, and every call emits an SEL audit event (`success` / `no_results` / `not_configured` / `unknown_source`). Input is validated against `LOCAL_KNOWLEDGE_SEARCH_SCHEMA` (`validation.py`).
 - Optional `source_id` scopes the SEED legs only (FTS5 keyword + vector similarity, via parameterized WHERE clauses in `HybridRetriever`); the graph leg stays unfiltered so cross-source entity connections still contribute traversal context. Scope membership is ownership OR location — `items.source_id` or a `source_locations` row, so an item surviving a cross-source dedup collapse still belongs to the losing source's scope (the same rule as `/api/knowledge/graph`'s filter). Omitting it keeps the unscoped behavior. A nonexistent id returns a guidance message naming `knowledge_list_sources` (SEL `unknown_source`), not an exception.
-- The companion tool `knowledge_list_sources` (no arguments; `KNOWLEDGE_LIST_SOURCES_SCHEMA`) returns one `name — id (N item(s))` line per source, counting **active** items only (superseded/deduped copies would overstate a source's coverage) — so agents discover valid `source_id` values instead of guessing.
+- The companion tool `knowledge_list_sources` (no arguments; `KNOWLEDGE_LIST_SOURCES_SCHEMA`) opens with one `Knowledge library: N source(s), N document(s), N item(s).` totals line from `store.aggregate_stats()`, then one `name — id (N item(s))` line per source, counting **active** items only (superseded/deduped copies would overstate a source's coverage) — so agents both discover valid `source_id` values and answer "how much is in the library" without a dashboard round-trip. The per-source lines keep the ownership-OR-location scope rule above while the totals count ownership, so the lines and the total can disagree in either direction, and the tool names each gap WITH its count rather than leaving it to be guessed at: items owned by no registered source are in the total and on no line (the tool lists no sourceless bucket, since there is no `source_id` to scope by), and an item surviving a cross-source dedup collapse adds a membership to a second line. Each caveat is appended only when a given library is actually in that state, rather than spent on every call.
+- **`kirocrew knowledge stats [--json]` is the CLI twin of that surface** (§6), and both read `aggregate_stats()` — one aggregate, two renderings, no second copy of the SQL.
 - **The response is written through a private stdout descriptor, not fd 1.** The first search's availability probe (`InProcessEmbedder.is_available` → `embed`) kicks the background GGUF load, and the vendored llama-cpp wraps that load in `suppress_stdout_stderr`, which `dup2`s **fd 1 process-wide to `/dev/null`** for the duration (~0.7s) *and* rebinds the `sys.stdout` object. Because the probe returns `None` immediately, the search answers keyword-only in milliseconds — so its JSON-RPC response raced that window and was silently destroyed: no exception, no short write, SEL still logging `success`, and the client hanging until the ACP tool-stall watchdog (`acp/client.py::_TOOL_STALL_TIMEOUT`, 600s) killed the turn. `mcp_shared.run_mcp_stdio_loop` now takes an `os.dup(1)` snapshot (`snapshot_stdout_fd`) at server startup before any tool can run, and `respond()` writes through it under a lock, so responses (and `ping` / `tools/list` replies, which were equally exposed) always reach the client. Falls back to `sys.stdout` when stdout is not fd-backed. Note that "has `sys.stdout` been swapped?" is *not* a usable guard — the suppressor swaps the object too, so it reads as swapped exactly inside the window that must be survived.
 
 The dashboard Knowledge tab uses the same store via a lazily-initialized `KnowledgeStore` on `DashboardState` (`dashboard/state.py`).
@@ -500,6 +501,70 @@ Returns the item count per source **under the active filters**:
 - The list view derives its rows from these counts, which is what guarantees
   every source is visible at once regardless of relative size.
 
+## 6. Read-only stats (`store.aggregate_stats`, `kirocrew knowledge stats`)
+
+`KnowledgeStore.aggregate_stats()` returns the library's admitted content as a
+frozen `ContentStats`: `sources`, `documents`, `items`, and a `per_source` tuple
+of `SourceContentStats` carrying the same two counts per source. It is the single
+aggregate behind both the CLI verb and the MCP tool, so the two can never
+disagree.
+
+The two units it separates are the reason the verb exists at all:
+
+- an **item** is a row in `items` — a CHUNK. This is the unit
+  `knowledge_list_sources` and `/source-counts` already call an item, and the
+  count the release note names the "admitted item count".
+- a **document** is `(source_id, content_hash)`. Every chunk of one document
+  carries that document's whole-text hash, which is the identity `dedup` groups
+  on. An item written without a content hash counts in `items` and belongs to no
+  document.
+
+Two properties make the numbers auditable:
+
+- **`per_source` reconciles exactly** — its `items` sum to `items` and its
+  `documents` to `documents`. That is why membership here is plain ownership
+  (`items.source_id`), NOT the ownership-OR-location rule §4 uses to estimate a
+  scope's yield; under that rule an item surviving a cross-source dedup collapse
+  counts for two sources.
+- **Every registered source is listed, even at zero**, so a source that ingested
+  nothing is visible rather than absent. The sourceless bucket is the opposite:
+  it is not a registered row, so it appears only when it holds something, and it
+  reports `source_id = None`. It holds every active item no registered source
+  owns: rows with a NULL `source_id`, and rows whose `source_id` names a source
+  that no longer exists. The second kind is unreachable through the store's own
+  writes (`items.source_id REFERENCES sources(id)` under `foreign_keys=ON`), but a
+  database written before the constraint was enforced can hold one, and the
+  reconciliation is a promise about any database the verb reads, not only one
+  this store wrote. The store deliberately does not spell it with the
+  dashboard's `__none__` sentinel — that string is a contract between the items
+  API and the SPA, and a third copy in the store would have to change with them
+  while nothing in SQLite needs it. `sources` counts registered sources, so the
+  bucket is never one of them.
+
+`kirocrew knowledge stats` prints the totals line plus a `SOURCE / DOCS / ITEMS`
+table; `--json` emits `{sources, documents, items, per_source:[{id, name,
+documents, items}]}` with `id: null` for the bucket. A missing DB is reported
+(SEL `not_configured`), as JSON under `--json` so a script parses one shape
+either way; every call emits an SEL event under tool name `knowledge_stats`.
+
+**Read-only is the boundary, not a default.** There is no flush, rebuild, repair
+or reindex verb beside it, and a caller who finds the numbers wrong has a
+diagnosis rather than a fix — the existing repair paths (the watcher's sig-gated
+self-heal, `dedup`) keep owning that. The verb opens the FILE read-only:
+`KnowledgeStore.open_read_only` runs neither the schema DDL nor `_migrate()` --
+whose orphan sweep takes the writer lock and deletes itemless source rows on
+every ordinary open, as `knowledge dedup --apply` and the dashboard still do -- and opens
+every connection with SQLite's `mode=ro`, so a write is refused by the engine
+rather than by convention. The trade is that a library behind this schema is
+reported (SEL `schema_behind`, `{"error": "schema_behind"}` under `--json`) and
+not migrated; any migrating open (the gateway, `knowledge dedup --apply`) repairs it. The
+MCP twin, `knowledge_list_sources`, opens the file the same way -- its own
+`KnowledgeStore.open_read_only` connection, `mode=ro`, closed after the call --
+rather than borrowing the cached store `local_knowledge_search` builds with the
+migrating constructor, and it reports a schema-behind library (SEL
+`schema_behind`, with the same `knowledge dedup --apply` pointer) instead of
+migrating it.
+
 ## Invariants
 
 - **`sources.properties` / `entities.aliases` well-formedness is enforced at the writer** — `store.import_bundle()` validates that any present value is UTF-8-encodable JSON text parsing to an object / array of strings (absent/`null` falls back to the schema defaults `'{}'`/`'[]'`), raising `KnowledgeBundleError` before the INSERT. The dashboard import handler is the store's only production caller today; enforcing at the writer makes any future caller (MCP tool, CLI import, app backend) safe by construction. Several readers parse the raw column with `json.loads()` and no shape guard (source detail handlers index the parsed dict; `find_entity()` calls `.lower()` on each parsed alias), so a corrupt committed row would crash a later, unrelated read. The dashboard import handler maps the typed error to a 400 (`code: malformed_knowledge_bundle`).
@@ -513,6 +578,7 @@ Returns the item count per source **under the active filters**:
 - **The self-heal rebuild path never touches SQLite on the event loop** — `_maybe_reembed_stale`'s stale COUNT, `rebuild_embeddings`' total COUNT / page SELECTs / batch progress commits, and the success-path job finalize all run via `asyncio.to_thread` (`store.db` is a per-thread connection, so each worker thread uses its own connection to the same WAL db). On a large KB (observed: ~1.3GB after an embedder-sig change) an inline COUNT can stall past the 25s loop-watchdog threshold and crash-loop the gateway. The one deliberate exception is the CancelledError finalize in `_run_reembed_job`, which stays inline so cancellation cannot pre-empt the single-flight finalize. When the stale count exceeds `_LARGE_REBUILD_WARN_THRESHOLD` the watcher logs a prominent WARNING before starting the full re-embed.
 - **`__none__` is a shared wire contract** — the no-source sentinel is defined as `_NO_SOURCE` in `dashboard/handlers/knowledge.py` and mirrored as `NO_SOURCE` in `website/src/pages/knowledge/SourceGroup.tsx`. Both sides must change together; it is effectively un-renameable once shipped.
 - **A source-scoped `total` is scoped, never global** — `/items?source_id=` reports the count for that source alone, because the per-source pager computes its page count from it.
+- **`aggregate_stats` reconciles, and stays read-only** — `per_source` sums to the totals in both columns, which is what makes the numbers auditable and why it counts ownership rather than scope membership. Both the CLI verb and `knowledge_list_sources` render THAT call, so a second copy of the SQL cannot drift; the CLI verb and the MCP tool each open the file `mode=ro` (`KnowledgeStore.open_read_only`), so neither can run the constructor's orphan sweep; and no repair verb ships beside it, so a wrong count is a diagnosis and never a self-mutation.
 - **Per-source badge counts are filter-aware** — list-view badges come from `/source-counts` (which honours `type`/`status`/`namespace`), not from `/sources.item_count`, so a badge never disagrees with the group's contents under a filter.
 - **The search branch's candidate load runs off the event loop** — a scoped search escalates its candidate pool, so `_load_items_by_id` (batch `SELECT` plus per-row serialization) and the `source_counts` aggregate both run via `asyncio.to_thread`. `store.db` is a per-thread connection, so each worker thread uses its own. Run inline, either can stall the loop past the watchdog threshold on a large KB.
 - **Frontend selection is bounded to on-screen items** — in source-first mode item data lives in per-`SourceGroup` caches, so bulk actions read the items each expanded group reports as rendered, and selected IDs are pruned when a group collapses or pages away. Reading the react-query cache directly would let a bulk Delete reach a retained cache for a source the user can no longer see.

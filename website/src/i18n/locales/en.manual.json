@@ -2610,9 +2610,11 @@
       "suggestion_summarize_chat": "Summarize this week's chat activity",
       "suggestion_triage_tickets": "Triage my on-call tickets",
       "suggestion_write_design_doc": "Help me write a design doc",
-      "switch_back_to_default_mode": "Switch back to default mode",
-      "switch_to_ephemeral_mode": "Switch to ephemeral mode",
+      "choose_memory_mode": "Choose memory mode",
+      "incognito_active_switch_to_persistent": "Incognito — switch to persistent mode",
+      "switch_to_persistent_mode": "Switch to persistent mode",
       "temporary": "Temporary",
+      "temporary_active_switch_to_persistent": "Temporary — switch to persistent mode",
       "temporary_desc": "Blank slate — no memory reads or writes",
       "what_can_i_do_for_you": "What can I do for you?"
     },
@@ -5929,6 +5931,11 @@
   },
   "settings": {
     "chat": {
+      "defaultMemoryMode": {
+        "description": "Persistent uses what it knows and saves new memory. Incognito uses what it knows but saves no new memory. Temporary starts blank and saves no new memory. Every chat still appears in History. You can change the mode for any chat.",
+        "label": "Default Memory Mode",
+        "persistent": "Persistent"
+      },
       "plainDiff": {
         "description": "Render diffs as plain unified-diff text instead of syntax-highlighted colour. Uses less memory on large diffs.",
         "label": "Plain diffs"
@@ -5945,6 +5952,35 @@
     "groups": {
       "preferences": "Preferences",
       "system": "System"
+    },
+    "secrets": {
+      "managed_title": "Used automatically by {{productName}}",
+      "managed_description": "Credentials {{productName}} recognizes and uses automatically. Add or rotate their values here.",
+      "jira_api_token_label": "Jira API token",
+      "jira_api_token_description": "Authenticates Jira issue lookups for the configured instance.",
+      "jira_global_unused_multi_host": "Not used by Jira while multiple hosts are configured. Set each host’s credential above, or delete this entry.",
+      "jira_global_unused_host_token": "Not used because the host-specific Jira credential takes precedence. Delete this entry if you no longer need the fallback.",
+      "jira_host_token_label": "Jira host API token",
+      "jira_host_token_description": "Authenticates Jira issue lookups for one configured host.",
+      "wakatime_api_key_label": "WakaTime API key",
+      "wakatime_api_key_description": "Authenticates coding-activity sync when WakaTime is enabled.",
+      "other_stored_title": "Other stored secrets",
+      "other_stored_description": "Reference stored secrets by exact name as secret://NAME from an MCP server configuration or .env credential setting.",
+      "managed_config_error": "Some automatic credentials are hidden because $KIROCREW_HOME/config.json (default ~/.kiro/crew/config.json) could not be read.",
+      "wakatime_unused_hint": "Not used while WakaTime is disabled. Enable WakaTime or delete this entry.",
+      "managed_name_hint": "Saving here updates {{name}} under Used automatically by {{productName}}.",
+      "stored_title": "Stored secrets",
+      "managed_unconfigured_hint": "To use WakaTime or Jira automatically, enable WakaTime or add a Jira host in $KIROCREW_HOME/config.json (default ~/.kiro/crew/config.json).",
+      "managed_setup_guide": "Open the secrets setup guide",
+      "delete_managed_confirm": "Permanently delete “{{name}}”? The current value cannot be recovered.",
+      "delete_managed_name": "Delete {{name}}",
+      "save_managed_name": "Save {{name}}",
+      "managed_value_placeholder": "Paste secret value",
+      "wakatime_setup_link": "Open WakaTime API key settings",
+      "saved": "Saved",
+      "name_placeholder": "MY_API_KEY",
+      "value_placeholder": "sk-...",
+      "load_error": "Could not load secrets: {{error}}"
     },
     "tabs": {
       "about": {
@@ -6011,9 +6047,6 @@
         "description": "Text-to-speech and speech-to-text (dictation) settings",
         "label": "Voice"
       }
-    },
-    "secrets": {
-      "load_error": "Could not load secrets: {{error}}"
     }
   },
   "utils": {

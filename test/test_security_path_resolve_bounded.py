@@ -21,16 +21,24 @@ which must fence a symlinked ``$HOME`` by its logical spelling.
 
 from __future__ import annotations
 
+import errno
 import os
+import re
 import threading
 import time
 from collections.abc import Iterator
+from concurrent.futures import TimeoutError as FutureTimeoutError
 
 import pytest
 
 import kiro_crew.executors as ex
 from kiro_crew import security
 from kiro_crew.agent_sdk import host_auth
+
+# Captured BEFORE the autouse fixture below can stub it.  The fixture replaces this
+# helper for every test in the file, so a test that wants to exercise the real state
+# parsing has to hold its own reference or it silently asserts against the stub.
+_REAL_BLOCKED_IN_FILESYSTEM = security.paths._worker_blocked_in_filesystem
 
 
 @pytest.fixture(autouse=True)
@@ -41,6 +49,15 @@ def _fresh_resolver_state(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     # separately below.
     monkeypatch.setattr(security, "_PATH_RESOLVE_TIMEOUT_SECS", 0.2)
     monkeypatch.setattr(security, "_PATH_RESOLVE_COOLDOWN_SECS", 30.0)
+    # The stall doubles below stand in for a WEDGED MOUNT, so they must stand in for its
+    # kernel state too: a real ``lstat`` on a dead mount sits in uninterruptible sleep,
+    # whereas these block on a ``threading.Event`` and would read as merely descheduled.
+    # Without this, every cooldown assertion here would exercise the load arm instead.
+    # The tests that DO exercise that arm override this locally.
+    # Patched on the OWNING module, not the package alias: ``_resolve_with_deadline``
+    # calls this as a module global in ``security.paths``, so rebinding the re-exported
+    # name on the package would not be seen by the code under test.
+    monkeypatch.setattr(security.paths, "_worker_blocked_in_filesystem", lambda tid: True)
     yield
     # A stubbed resolver may still hold an mc-pathres worker; drop the pool so
     # the wedge cannot leak into the next test's timing.
@@ -640,3 +657,371 @@ def test_sandbox_mask_resolves_inline_and_never_sees_a_stall(monkeypatch, tmp_pa
         security._resolved_root_key()  # the gate's path refuses...
     mask = security.sandbox_credential_targets()  # ...the mask does not
     assert any(p.startswith(str(security.Path(crew_home).resolve())) for p in mask)
+
+
+def test_a_descheduled_worker_does_not_charge_the_prefix(monkeypatch) -> None:
+    # THE LOAD ARM.  A worker that STARTED and then lost the CPU has learned nothing
+    # about the mount, so charging the prefix converts ordinary contention into a
+    # cooldown that refuses every path under it -- including, in the field, every
+    # scheduled cron script for as long as the ceiling allowed.  The refusal of THIS
+    # resolution is unchanged: the gate still fails closed, it just stops generalising
+    # from one descheduled thread to a whole subtree.  kirodotdev/KiroCrew#9482.
+    monkeypatch.setattr(security.paths, "_worker_blocked_in_filesystem", lambda tid: False)
+    stalled = _StalledResolver()
+    monkeypatch.setattr(security, "_resolved_spellings", stalled)
+    try:
+        with pytest.raises(security.PathResolutionStalled):
+            security._candidate_forms("/home/someone/ws/file")
+    finally:
+        stalled.release.set()
+    assert os.path.normpath("/home/someone") not in security._path_resolve_degraded
+
+
+def test_a_worker_blocked_in_the_kernel_still_charges_the_prefix(monkeypatch) -> None:
+    # NEGATIVE CONTROL for the test above, and the reason it is not simply a weakening:
+    # with the SAME stall, a worker in uninterruptible sleep IS evidence about the
+    # filesystem and must still open the cooldown.  If this ever fails together with
+    # the test above, the discriminator has disabled the escalation wholesale rather
+    # than narrowed it to the case it was meant for.
+    monkeypatch.setattr(security.paths, "_worker_blocked_in_filesystem", lambda tid: True)
+    stalled = _StalledResolver()
+    monkeypatch.setattr(security, "_resolved_spellings", stalled)
+    try:
+        with pytest.raises(security.PathResolutionStalled):
+            security._candidate_forms("/home/someone/ws/file")
+    finally:
+        stalled.release.set()
+    assert os.path.normpath("/home/someone") in security._path_resolve_degraded
+
+
+def test_the_discriminator_reads_a_running_thread_as_not_blocked() -> None:
+    """The calling thread is on-CPU by definition, so it must read as NOT blocked.
+
+    This is the positive control proving ``/proc`` is really being parsed: a helper that
+    always returned True would pass every other assertion in this file while restoring the
+    behaviour the change exists to fix. The second half pins the opposite contract -- when
+    ``/proc`` cannot answer, the prefix is still charged.
+    """
+    if not os.path.isdir("/proc/self/task"):  # pragma: no cover - Linux-only probe
+        pytest.skip("/proc/self/task is Linux-only")
+    assert _REAL_BLOCKED_IN_FILESYSTEM(threading.get_native_id()) is False
+    # ...and it fails TOWARD the pre-existing behaviour when /proc cannot answer, so a
+    # non-Linux host or an exited thread keeps charging the prefix as it did before.
+    assert _REAL_BLOCKED_IN_FILESYSTEM(None) is True
+    assert _REAL_BLOCKED_IN_FILESYSTEM(2**31 - 1) is True
+
+
+def test_an_uncancellable_queued_future_is_still_tracked_as_wedged(monkeypatch) -> None:
+    # An uncancellable queued future is already running, so an untracked pinned worker makes
+    # the pool-exhaustion guard undercount -- surfacing later as unrelated exhaustion.
+    class _QueuedNeverCancels:
+        """Times out having never run, and refuses to be cancelled."""
+
+        def result(self, timeout=None):  # noqa: ANN001, ANN202, ARG002
+            raise FutureTimeoutError
+
+        def cancel(self) -> bool:
+            return False
+
+        def done(self) -> bool:
+            return False
+
+    class _Pool:
+        def submit(self, fn, arg):  # noqa: ANN001, ANN202, ARG002
+            # The callable is deliberately never invoked, so `started` stays unset and the
+            # queued arm is the one under test.
+            return _QueuedNeverCancels()
+
+    tracked: list = []
+    monkeypatch.setattr(security.paths, "_path_resolve_wedged", tracked)
+    monkeypatch.setattr(security.paths, "path_resolve_executor", lambda: _Pool())
+
+    with pytest.raises(security.PathResolutionStalled):
+        security._candidate_forms("/home/someone/ws/file")
+
+    assert (
+        security.paths._wedged_workers() == 1
+    ), "an uncancellable queued future must stay visible to the pool-exhaustion guard"
+
+
+def test_a_thread_stuck_in_a_monitored_syscall_reads_as_blocked(monkeypatch) -> None:
+    """A thread parked in a kernel wait holds ONE syscall number on every sample.
+
+    That stability is the property the discriminator rests on, and it is exactly what the
+    ``/proc`` state field cannot supply: measured on this host, a thread doing ordinary
+    ``lstat`` work and a thread doing nothing but burn CPU both alternate between ``R`` and
+    ``S``, so state cannot separate a wedged mount from CPU starvation. A pipe read stands in
+    for the wedged stat, which cannot be manufactured in a test.
+    """
+    if not os.path.isdir("/proc/self/task"):  # pragma: no cover - Linux-only probe
+        pytest.skip("/proc/self/task is Linux-only")
+    read_fd, write_fd = os.pipe()
+    ready = threading.Event()
+    tid_seen: list[int] = []
+
+    def _park() -> None:
+        tid_seen.append(threading.get_native_id())
+        ready.set()
+        os.read(read_fd, 1)
+
+    thread = threading.Thread(target=_park, daemon=True)
+    thread.start()
+    try:
+        assert ready.wait(5), "helper thread never started"
+        tid = tid_seen[0]
+        samples: list[bytes] = []
+        for _ in range(20):
+            time.sleep(0.02)
+            try:
+                with open(f"/proc/self/task/{tid}/syscall", "rb") as fh:
+                    head = fh.read().split()
+            except OSError:  # pragma: no cover - kernel without the syscall field
+                pytest.skip("/proc/<tid>/syscall is unreadable on this kernel")
+            if head:
+                samples.append(head[0])
+        blocking = {s for s in samples if s != b"running"}
+        if len(blocking) != 1:  # pragma: no cover - scheduler noise
+            pytest.skip(f"no single stable blocking syscall observed: {blocking!r}")
+        blocked_nr = int(next(iter(blocking)))
+
+        monkeypatch.setattr(security.paths, "_FS_BLOCKING_SYSCALLS", frozenset({blocked_nr}))
+        assert _REAL_BLOCKED_IN_FILESYSTEM(tid) is True
+        monkeypatch.setattr(security.paths, "_FS_BLOCKING_SYSCALLS", frozenset({blocked_nr + 1000}))
+        assert _REAL_BLOCKED_IN_FILESYSTEM(tid) is False
+        monkeypatch.setattr(security.paths, "_FS_BLOCKING_SYSCALLS", frozenset())
+        assert _REAL_BLOCKED_IN_FILESYSTEM(tid) is True, "an unmapped arch must charge"
+    finally:
+        os.write(write_fd, b"x")
+        thread.join(5)
+        os.close(read_fd)
+        os.close(write_fd)
+
+
+def test_a_load_arm_run_still_opens_a_cooldown_once_the_window_allowance_is_gone(
+    monkeypatch,
+) -> None:
+    """A run of descheduled probes under one prefix must still open a cooldown.
+
+    The per-prefix cooldown's second job is bounding event-loop wait: one call can carry many
+    path tokens, and ten tokens each paying the full budget puts the event loop back past the
+    watchdog. The load arm declines to charge the prefix, which removes that bound, so the arm
+    has to carry it -- no single descheduled probe is evidence of a stall, but a run of them is
+    still a liveness problem.
+
+    The throwaway ``_path_resolve_wedged`` matters: this test wedges more futures than any
+    other, and the autouse fixture patches the package alias rather than the owning module, so
+    without it they outlive the test and can trip the pool-exhaustion guard on the same worker.
+    """
+    monkeypatch.setattr(security.paths, "_worker_blocked_in_filesystem", lambda tid: False)
+    monkeypatch.setattr(security.paths, "_path_resolve_degraded", {})
+    monkeypatch.setattr(security.paths, "_path_resolve_load_probes", {})
+    monkeypatch.setattr(security.paths, "_path_resolve_wedged", [])
+    prefix = os.path.normpath("/home/someone")
+
+    def _probe() -> None:
+        stalled = _StalledResolver()
+        monkeypatch.setattr(security, "_resolved_spellings", stalled)
+        try:
+            with pytest.raises(security.PathResolutionStalled):
+                security._candidate_forms("/home/someone/ws/file")
+        finally:
+            stalled.release.set()
+
+    for _ in range(security.paths._PATH_RESOLVE_LOAD_MAX_PROBES):
+        _probe()
+    assert (
+        prefix not in security.paths._path_resolve_degraded
+    ), "probes inside the allowance must not charge the prefix"
+
+    _probe()
+    assert (
+        prefix in security.paths._path_resolve_degraded
+    ), "the probe past the allowance must charge the prefix and restore the bound"
+
+
+def test_a_success_between_load_arm_probes_does_not_refund_the_allowance(monkeypatch) -> None:
+    """An interleaved successful resolution must not reset the probe count.
+
+    The count measures event-loop time already spent, not the prefix's health, so a later
+    success cannot refund it. Clearing it on success let an alternating success /
+    CPU-starved-timeout run under one prefix pay the full budget on every timeout while never
+    crossing the allowance -- the watchdog exceedance the bound exists to stop, reachable from
+    ordinary bursty contention rather than any extreme case.
+    """
+    monkeypatch.setattr(security.paths, "_worker_blocked_in_filesystem", lambda tid: False)
+    monkeypatch.setattr(security.paths, "_path_resolve_degraded", {})
+    monkeypatch.setattr(security.paths, "_path_resolve_load_probes", {})
+    monkeypatch.setattr(security.paths, "_path_resolve_wedged", [])
+    prefix = os.path.normpath("/home/someone")
+
+    def _stall_once() -> None:
+        stalled = _StalledResolver()
+        monkeypatch.setattr(security, "_resolved_spellings", stalled)
+        try:
+            with pytest.raises(security.PathResolutionStalled):
+                security._candidate_forms("/home/someone/ws/file")
+        finally:
+            stalled.release.set()
+
+    def _succeed_once() -> None:
+        monkeypatch.setattr(security, "_resolved_spellings", lambda expanded: {expanded})
+        security._candidate_forms("/home/someone/ws/file")
+
+    for _ in range(security.paths._PATH_RESOLVE_LOAD_MAX_PROBES + 1):
+        _stall_once()
+        if prefix in security.paths._path_resolve_degraded:
+            break
+        _succeed_once()
+
+    assert (
+        prefix in security.paths._path_resolve_degraded
+    ), "an interleaved success must not refund the event-loop allowance"
+
+
+_DOCUMENTED_SYSCALL_TABLE: dict[str, dict[str, int]] = {
+    # /usr/include/asm/unistd_64.h
+    "x86_64": {
+        "stat": 4,
+        "fstat": 5,
+        "lstat": 6,
+        "readlink": 89,
+        "newfstatat": 262,
+        "readlinkat": 267,
+        "statx": 332,
+    },
+    # /usr/include/asm-generic/unistd.h, the aarch64 numbering: no stat/lstat/readlink there,
+    # since __NR_stat sits behind an undefined __NR3264_stat and __NR_readlink is absent.
+    "aarch64": {
+        "readlinkat": 78,
+        "newfstatat": 79,
+        "fstat": 80,
+        "statx": 291,
+    },
+}
+
+
+def test_the_syscall_table_matches_the_documented_numbers_on_every_architecture() -> None:
+    """Every documented entry, for BOTH architectures, must be in the shipped table.
+
+    ``realpath`` blocks in more than ``lstat``: CPython's ``posixpath.realpath`` calls
+    ``os.lstat`` AND ``os.readlink`` per component, and modern glibc can route ``stat`` through
+    ``statx``. A mount that answers one of those from cache and hangs another would read as not
+    blocked, take the load arm, and pay an uncharged full-budget probe per token instead of
+    opening one cooldown. Asserting only the host architecture would also let the other one
+    regress unnoticed, since the discriminator silently returns True for an unmapped machine.
+    """
+    shipped = security.paths._FS_BLOCKING_SYSCALLS_BY_ARCH
+    assert set(shipped) == set(
+        _DOCUMENTED_SYSCALL_TABLE
+    ), f"architecture coverage differs: shipped {sorted(shipped)}"
+    for arch, documented in _DOCUMENTED_SYSCALL_TABLE.items():
+        assert shipped[arch] == frozenset(documented.values()), (
+            f"{arch}: shipped {sorted(shipped[arch])} != documented "
+            f"{sorted(documented.values())} for {', '.join(sorted(documented))}"
+        )
+
+
+def test_the_documented_syscall_numbers_come_from_this_host_kernel_headers() -> None:
+    """The golden table is read back from the kernel headers, not taken on trust.
+
+    Without this, the table above would only restate the constant it checks, and both could
+    drift together. ``asm/unistd_64.h`` is the authority for x86_64; the aarch64 numbering
+    lives in ``asm-generic/unistd.h`` and is cross-checked wherever that header is present.
+    """
+    checked = 0
+    for header, arch, indirect in (
+        ("/usr/include/asm/unistd_64.h", "x86_64", {}),
+        (
+            "/usr/include/asm-generic/unistd.h",
+            "aarch64",
+            {"newfstatat": "__NR3264_fstatat", "fstat": "__NR3264_fstat"},
+        ),
+    ):
+        if not os.path.exists(header):  # pragma: no cover - header not installed
+            continue
+        with open(header, encoding="utf-8", errors="replace") as fh:
+            text = fh.read()
+        defines = dict(re.findall(r"^#define (\w+) (\d+)$", text, re.MULTILINE))
+        for name, number in _DOCUMENTED_SYSCALL_TABLE[arch].items():
+            symbol = indirect.get(name, f"__NR_{name}")
+            assert defines.get(symbol) == str(number), (
+                f"{header}: {symbol} is {defines.get(symbol)!r}, "
+                f"the table says {number} for {arch}/{name}"
+            )
+            checked += 1
+    if not checked:  # pragma: no cover - no kernel headers at all
+        pytest.skip("no kernel syscall headers available to cross-check")
+
+
+def test_an_in_s_filesystem_wait_is_sampled_stably_and_reads_as_blocked(
+    monkeypatch, tmp_path
+) -> None:
+    """An interruptible FILESYSTEM wait must sample stably, not just an uninterruptible one.
+
+    This is the state class the discriminator's premise depends on and the one prior evidence
+    did not cover: a wedged FUSE or CIFS mount waits in ``S``, while the earlier measurements
+    used a pipe ``read`` and a ``clock_nanosleep`` -- stable, but neither a filesystem
+    operation. An ``openat`` on a FIFO with no writer blocks interruptibly while operating on a
+    real filesystem path, which is an in-``S`` filesystem wait obtainable with no privileges and
+    no mount.
+
+    Measured on a 48-core x86_64 host: 15 of 15 samples reported state ``S`` and syscall 257
+    (``openat``), with no other value observed. A genuinely wedged NFS/FUSE/CIFS mount remains
+    un-observed -- see the helper's docstring -- but the sampling mechanism this rests on is
+    confirmed for interruptible filesystem waits by this test.
+    """
+    if not os.path.isdir("/proc/self/task"):  # pragma: no cover - Linux-only probe
+        pytest.skip("/proc/self/task is Linux-only")
+    fifo = tmp_path / "gate"
+    os.mkfifo(fifo)
+    ready = threading.Event()
+    tid_box: list[int] = []
+
+    def blocker() -> None:
+        tid_box.append(threading.get_native_id())
+        ready.set()
+        try:
+            fd = os.open(fifo, os.O_RDONLY)
+        except OSError:  # pragma: no cover - only on teardown races
+            return
+        os.close(fd)
+
+    thread = threading.Thread(target=blocker, daemon=True)
+    thread.start()
+    try:
+        assert ready.wait(5), "helper thread never started"
+        tid = tid_box[0]
+        states: set[str] = set()
+        calls: set[bytes] = set()
+        for _ in range(15):
+            time.sleep(0.05)
+            try:
+                with open(f"/proc/self/task/{tid}/stat", "rb") as fh:
+                    states.add(fh.read().rpartition(b")")[2].split()[0].decode())
+                with open(f"/proc/self/task/{tid}/syscall", "rb") as fh:
+                    head = fh.read().split()
+            except (OSError, IndexError):  # pragma: no cover - kernel without these fields
+                pytest.skip("/proc/<tid>/{stat,syscall} unreadable on this kernel")
+            if head:
+                calls.add(head[0])
+        if states != {"S"} or len(calls) != 1 or b"running" in calls:
+            # pragma: no cover - scheduler noise
+            pytest.skip(f"no stable in-S filesystem wait observed: {states} {calls}")
+
+        blocked_nr = int(next(iter(calls)))
+        monkeypatch.setattr(security.paths, "_FS_BLOCKING_SYSCALLS", frozenset({blocked_nr}))
+        assert _REAL_BLOCKED_IN_FILESYSTEM(tid) is True
+        monkeypatch.setattr(security.paths, "_FS_BLOCKING_SYSCALLS", frozenset({blocked_nr + 1000}))
+        assert _REAL_BLOCKED_IN_FILESYSTEM(tid) is False
+    finally:
+        # A one-shot O_NONBLOCK write-open gets ENXIO if the blocker has not reached os.open
+        # yet, leaving the reader blocked with no writer, so the writer must retry.
+        deadline = time.monotonic() + 10.0
+        while thread.is_alive() and time.monotonic() < deadline:
+            try:
+                os.close(os.open(fifo, os.O_WRONLY | os.O_NONBLOCK))
+            except OSError as exc:
+                if exc.errno != errno.ENXIO:
+                    raise
+            thread.join(0.05)
+    assert not thread.is_alive(), "the FIFO blocker thread survived teardown"

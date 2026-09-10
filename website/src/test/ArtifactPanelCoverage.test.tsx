@@ -168,7 +168,7 @@ const mkComment = (overrides: Partial<ArtifactComment> = {}): ArtifactComment =>
 interface PanelOverrides {
   kind?: Artifact['kind']
   content?: string
-  onSubmitComments?: (message: string) => void
+  onSubmitComments?: (message: string) => void | boolean | Promise<void | boolean>
   embedded?: boolean
   connected?: boolean
 }
@@ -210,6 +210,9 @@ describe('ArtifactPanel', () => {
     // clock moving so findBy*/waitFor behave as they do with real timers.
     vi.useFakeTimers({ shouldAdvanceTime: true })
     vi.clearAllMocks()
+    // Sent-to-chat tracking persists per artifact in localStorage; every test
+    // reuses SLUG, so a submit in one test must not mark comments sent for the next.
+    localStorage.clear()
     layerArgs.length = 0
     anchorRequests.length = 0
     stubComments = []
@@ -548,7 +551,7 @@ describe('ArtifactPanel', () => {
       expect(screen.queryByRole('button', { name: 'Submit' })).toBeNull()
     })
 
-    it('submits only the human comments and guards against a double fire', async () => {
+    it('submits only the human comments and clears the pending bar after submit', async () => {
       const onSubmitComments = vi.fn()
       stubComments = [
         mkComment(),
@@ -566,10 +569,87 @@ describe('ArtifactPanel', () => {
       expect(message).toContain('tighten this heading')
       expect(message).not.toContain('agent note')
 
-      // The guard disables the button for one short window, then releases it.
-      await waitFor(() => expect(screen.getByRole('button', { name: 'Submit' })).toBeDisabled())
+      // The batch is marked sent, so the bar clears instead of re-offering the
+      // same comments on the next Submit.
+      await waitFor(() => expect(screen.queryByRole('button', { name: 'Submit' })).toBeNull())
+      expect(screen.queryByText('1 comment to send to this chat')).toBeNull()
+    })
+
+    it('counts and submits only comments added after the previous submission', async () => {
+      // Regression guard: durable comments are never deleted by a submit, so
+      // without sent-id tracking the bar would stay on the old batch and a
+      // later Submit would re-send it alongside the new comments.
+      const onSubmitComments = vi.fn()
+      stubComments = [mkComment()]
+      renderPanel({ onSubmitComments })
+      await screen.findByText(NAME)
+      fireEvent.click(screen.getByRole('button', { name: 'Submit' }))
+      expect(onSubmitComments).toHaveBeenCalledTimes(1)
+      await waitFor(() => expect(screen.queryByRole('button', { name: 'Submit' })).toBeNull())
       await act(async () => { vi.advanceTimersByTime(SUBMIT_GUARD_MS) })
-      await waitFor(() => expect(screen.getByRole('button', { name: 'Submit' })).toBeEnabled())
+
+      // A new comment lands on the durable store (the stub is read on the next
+      // render — toggling fullscreen forces one, mirroring a live refetch).
+      stubComments = [mkComment(), mkComment({ id: 'c2', thread_id: 'c2', body: 'new feedback' })]
+      const dialog = await enterFullscreen()
+      expect(within(dialog).getByText('1 comment to send to this chat')).toBeInTheDocument()
+
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Submit' }))
+      expect(onSubmitComments).toHaveBeenCalledTimes(2)
+      const second = onSubmitComments.mock.calls[1][0] as string
+      expect(second).toContain('new feedback')
+      expect(second).not.toContain('tighten this heading')
+      expect(second).toContain('1 comment')
+    })
+
+    it('keeps sent comments cleared across a remount (persisted per artifact)', async () => {
+      const onSubmitComments = vi.fn()
+      stubComments = [mkComment()]
+      const first = renderPanel({ onSubmitComments })
+      await screen.findByText(NAME)
+      fireEvent.click(screen.getByRole('button', { name: 'Submit' }))
+      await waitFor(() => expect(screen.queryByRole('button', { name: 'Submit' })).toBeNull())
+      first.unmount()
+
+      // Same artifact, fresh mount (e.g. a chat-slot switch): the sent batch
+      // must not be re-offered.
+      renderPanel({ onSubmitComments })
+      await screen.findByText(NAME)
+      expect(screen.queryByRole('button', { name: 'Submit' })).toBeNull()
+    })
+
+    it('keeps the batch pending when the host reports a refused delivery', async () => {
+      // The host's delivery verdict gates the marking: a refused chat send
+      // (resolved `false`) must leave the bar re-offering the same batch,
+      // because sent ids are append-only and marking would drop it silently.
+      const onSubmitComments = vi.fn().mockResolvedValue(false)
+      stubComments = [mkComment()]
+      renderPanel({ onSubmitComments })
+      await screen.findByText(NAME)
+      fireEvent.click(screen.getByRole('button', { name: 'Submit' }))
+      expect(onSubmitComments).toHaveBeenCalledTimes(1)
+      // Let the verdict chain settle (it schedules the guard reset), THEN
+      // advance past the guard window.
+      await act(async () => {})
+      await act(async () => { vi.advanceTimersByTime(SUBMIT_GUARD_MS) })
+      expect(screen.getByText('1 comment to send to this chat')).toBeInTheDocument()
+
+      // Retry delivers: the same batch goes out and only then clears.
+      onSubmitComments.mockResolvedValue(undefined)
+      fireEvent.click(screen.getByRole('button', { name: 'Submit' }))
+      expect(onSubmitComments).toHaveBeenCalledTimes(2)
+      expect(onSubmitComments.mock.calls[1][0]).toContain('tighten this heading')
+      await waitFor(() => expect(screen.queryByRole('button', { name: 'Submit' })).toBeNull())
+    })
+
+    it('keeps the batch pending when the host send rejects', async () => {
+      const onSubmitComments = vi.fn().mockRejectedValue(new Error('gateway hiccup'))
+      stubComments = [mkComment()]
+      renderPanel({ onSubmitComments })
+      await screen.findByText(NAME)
+      fireEvent.click(screen.getByRole('button', { name: 'Submit' }))
+      await act(async () => { vi.advanceTimersByTime(SUBMIT_GUARD_MS) })
+      expect(screen.getByText('1 comment to send to this chat')).toBeInTheDocument()
     })
 
     it('threads an extra instruction through the message and clears it after submit', async () => {
@@ -609,10 +689,11 @@ describe('ArtifactPanel', () => {
       renderPanel({ onSubmitComments })
       await screen.findByText(NAME)
       const dialog = await enterFullscreen()
-      const overlaySubmit = within(dialog).getByRole('button', { name: 'Submit' })
-      fireEvent.click(overlaySubmit)
-      expect(onSubmitComments).toHaveBeenCalledTimes(1)
       expect(within(dialog).getByText('2 comments to send to this chat')).toBeInTheDocument()
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Submit' }))
+      expect(onSubmitComments).toHaveBeenCalledTimes(1)
+      // Sent batch clears here too — the overlay bar shares the pending set.
+      await waitFor(() => expect(within(dialog).queryByText('2 comments to send to this chat')).toBeNull())
     })
   })
 

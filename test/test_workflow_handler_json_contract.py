@@ -102,3 +102,38 @@ async def test_mutation_handlers_keep_valid_object_path(
 
     assert response.status == 200
     method.assert_awaited_once()
+
+
+async def test_runs_list_is_compact_and_detail_carries_result() -> None:
+    """GET /api/workflows/runs ships no result payloads; the detail does.
+
+    A finished run's result can be hundreds of KB, so the list view carries
+    metadata only and the payload rides on ``GET /api/workflows/runs/{id}``.
+    Both read endpoints redact + serialize on a worker thread; the response
+    must still be well-formed JSON.
+    """
+    from kiro_crew.dashboard.handlers.workflows import (
+        api_workflow_run_get,
+        api_workflow_runs,
+    )
+
+    big_result = {"report": "x" * 50_000}
+    compact_row = {"run_id": "wf_1", "name": "d", "status": "finished"}
+    detail = {"run_id": "wf_1", "status": "finished", "result": big_result, "events": []}
+    svc = SimpleNamespace(list_runs=lambda: [compact_row], result=lambda _rid: detail)
+    app = web.Application()
+    app["state"] = SimpleNamespace(workflow_service=svc)
+    app.router.add_get("/api/workflows/runs", api_workflow_runs)
+    app.router.add_get("/api/workflows/runs/{run_id}", api_workflow_run_get)
+
+    async with TestClient(TestServer(app)) as client:
+        listing = await client.get("/api/workflows/runs")
+        assert listing.status == 200
+        assert listing.content_type == "application/json"
+        rows = (await listing.json())["runs"]
+        assert rows == [compact_row]
+        assert "result" not in rows[0]
+
+        got = await client.get("/api/workflows/runs/wf_1")
+        assert got.status == 200
+        assert (await got.json())["result"] == big_result

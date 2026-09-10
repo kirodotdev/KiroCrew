@@ -104,13 +104,21 @@ class RunHandle:
     )
     _persist_generation: int = field(default=0, init=False, repr=False, compare=False)
 
-    def snapshot(self, *, include_events: bool = True) -> dict:
-        """JSON-serializable view of this run (never leaks the asyncio.Task)."""
+    def snapshot(self, *, include_events: bool = True, include_result: bool = True) -> dict:
+        """JSON-serializable view of this run (never leaks the asyncio.Task).
+
+        ``include_result=False`` omits the ``result`` payload. A finished run's
+        result can be hundreds of KB (a report, an RCA, a large JSON blob), so
+        the LIST view leaves it out and the detail view
+        (``GET /api/workflows/runs/{id}``) carries the payload — the same split
+        ``events``/``source``/``partial_results`` already follow. Completion
+        injection (``on_done``) and the single-run endpoints keep the default
+        and still see the full result.
+        """
         snap: dict[str, Any] = {
             "run_id": self.run_id,
             "name": self.name,
             "status": self.status,
-            "result": self.result,
             "error": self.error,
             "author": self.author,
             "session_key": self.session_key,
@@ -137,6 +145,8 @@ class RunHandle:
             "phase": self._current_phase(),
             "last_log": self._last_log(),
         }
+        if include_result:
+            snap["result"] = self.result
         # Work that outlived a run which ENDED WITHOUT a usable return value
         # (ceiling / cancel / crash). Keyed on STATUS, not on ``result is None``:
         # a run can finish and legitimately return None (a script with no return,
@@ -565,8 +575,12 @@ class RunRegistry:
         return h.snapshot(include_events=include_events) if h else None
 
     def list(self) -> list[dict]:
-        # Newest first; compact (no event bodies) for the list view.
-        return [h.snapshot(include_events=False) for h in reversed(self._runs.values())]
+        # Newest first; compact (no event bodies, no result payloads) for the
+        # list view — the detail snapshot carries the result.
+        return [
+            h.snapshot(include_events=False, include_result=False)
+            for h in reversed(self._runs.values())
+        ]
 
     async def cancel(self, run_id: str) -> bool:
         h = self._runs.get(run_id)

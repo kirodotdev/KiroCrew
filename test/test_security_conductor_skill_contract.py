@@ -32,27 +32,25 @@ SKILL_DIR = REPO_ROOT / "src" / "kiro_crew" / "builtin_skills" / "security-condu
 SKILL_MD = SKILL_DIR / "SKILL.md"
 ROE_JSON = SKILL_DIR / "rules-of-engagement.json"
 
-#: The four scripts the procedure delegates its deterministic half to. Named here
+#: The five scripts the procedure delegates its deterministic half to. Named here
 #: rather than globbed from the directory on purpose: the point is that the PROSE
 #: cites each one, and a glob would pass on a skill body that mentions none of
-#: them -- which is exactly the state while sibling changes are still building
 #: them.
+#:
+#: One list, not two. A wider "may ship" set existed while the scripts were landing
+#: one sibling change at a time and a script could be on disk before the clause it
+#: is cited by: ``verify_fix.py`` was the only entry it ever held. Now that the
+#: skill body cites all five, the two lists would answer the same question, and the
+#: wider one is the weaker contract -- an undocumented script would pass it. A
+#: script that lands ahead of its clause again re-splits this deliberately, in the
+#: change that needs it.
 BUNDLED_SCRIPTS = (
     "scope_check.py",
     "finding_entry.py",
     "verify_finding.py",
     "ledger.py",
+    "verify_fix.py",
 )
-
-#: Every script that may ship in the directory, which is a WIDER set than the one
-#: the prose must cite. The two lists answer different questions, and collapsing
-#: them made the narrower one govern both: a script whose skill-body clause lands
-#: in a later change has nowhere to be, so the choice becomes shipping an
-#: undocumented script (a glob would allow it) or blocking the script on prose it
-#: does not need yet. Splitting keeps the anti-glob property exactly where it
-#: earns its place -- every CITED script is named -- while an admitted script is
-#: still an explicit decision rather than whatever happens to be on disk.
-SHIPPABLE_SCRIPTS = BUNDLED_SCRIPTS + ("verify_fix.py",)
 
 #: Every field ``scope_check.py`` and the human reviewer read. Pinned as a set so
 #: an export that silently drops one fails, instead of reading as a target with
@@ -140,15 +138,28 @@ class TestSkillIsInstallable:
         for path in scripts_dir.iterdir():
             if path.suffix != ".py":
                 continue
-            assert path.name in SHIPPABLE_SCRIPTS, f"unlisted script shipped: {path.name}"
+            assert path.name in BUNDLED_SCRIPTS, f"unlisted script shipped: {path.name}"
             assert path.stat().st_size > 0, f"stub script shipped: {path.name}"
 
 
 class TestTheProcedureDelegatesToItsScripts:
-    def test_every_script_is_cited_by_name(self, skill_text: str) -> None:
+    def test_every_bundled_script_is_cited_by_name(self, skill_text: str) -> None:
+        """Every script that ships beside the body is named IN the body.
+
+        A shipped script the procedure never cites is a capability nothing tells the
+        conductor to use, which is how ``verify_fix.py`` sat on disk with the fixer
+        lane still accepting a fix on green checks alone."""
         flat = _flat(skill_text)
         for script in BUNDLED_SCRIPTS:
             assert script in flat, script
+
+    def test_the_fixer_lane_accepts_on_both_halves(self, skill_text: str) -> None:
+        """Checks green is half the question; the other half is whether a legitimate
+        operation still runs, and no ordinary test asserts that."""
+        gates = _flat(_section(skill_text, "## The two human gates"))
+        assert "verify_fix.py" in gates
+        assert "pr checks are green and" in gates
+        assert "never on checks alone" in gates
 
     def test_an_absent_script_is_unknown_and_not_permission(self, skill_text: str) -> None:
         """The scripts land in sibling changes, so "not installed yet" is the
@@ -175,6 +186,22 @@ class TestPolicyRefusalIsTheBoundary:
 
     def test_a_refusal_is_recorded_as_an_event(self, skill_text: str) -> None:
         assert "record it as an event" in _flat(skill_text)
+
+    def test_both_worker_briefs_name_the_event_kind(self, skill_text: str) -> None:
+        """The conductor rules on the event, so the WORKER has to have recorded one
+        under the name the retrospective looks for -- and without a secret in it."""
+        for heading in ("## Auditor seed template", "## Verifier seed template"):
+            body = _flat(_section(skill_text, heading))
+            assert "policy_block" in body, heading
+            assert "command shape" in body, heading
+
+    def test_the_retrospective_rules_on_every_block(self, skill_text: str) -> None:
+        """A block nobody rules on is the question that never reaches the corpus."""
+        body = _flat(_section(skill_text, "## Retrospective seed template"))
+        assert "policy_block" in body
+        assert "false positive" in body
+        assert "ledger.py propose-golden-path" in body
+        assert "approve-golden-path" in body
 
     def test_the_auditor_brief_carries_the_rule_itself(self, skill_text: str) -> None:
         """The conductor knowing it is not enough -- the worker is the one holding
@@ -274,10 +301,49 @@ class TestRetrospectiveBrief:
     def test_lessons_are_proposed_through_the_ledger_cli(self, skill_text: str) -> None:
         assert "ledger.py propose-lesson" in _flat(_section(skill_text, self.HEADING))
 
+    def test_the_lesson_half_is_gated_on_having_a_finding_to_cite(self, skill_text: str) -> None:
+        """`propose-lesson` requires `--source-finding` and refuses an id that
+        resolves to no finding, and a `policy_block` is an event rather than a
+        finding. An instruction to propose one anyway is an order to run a command
+        that exits 2, so the brief states the constraint and orders the half that
+        always works first."""
+        body = _flat(_section(skill_text, self.HEADING))
+        assert "golden-path row first" in body
+        assert "--source-finding" in body
+        assert "only when the block has a finding to cite" in body
+        assert "never invent a finding id" in body
+
     def test_an_unapproved_lesson_never_reaches_a_seed(self, skill_text: str) -> None:
         body = _flat(_section(skill_text, self.HEADING))
         assert "inactive until a human approves" in body
         assert "never inject an unapproved lesson" in body
+
+
+class TestCrossPlatform:
+    """A fix that only works on one platform locks the others out, and a
+    single-platform run cannot see it."""
+
+    HEADING = "## Cross-platform"
+
+    def test_all_three_platforms_are_named(self, skill_text: str) -> None:
+        body = _flat(_section(skill_text, self.HEADING))
+        for platform in ("linux", "macos", "windows"):
+            assert platform in body, platform
+
+    def test_a_branch_ships_with_its_counterpart(self, skill_text: str) -> None:
+        body = _flat(_section(skill_text, self.HEADING))
+        assert "in the same change" in body
+        assert "3-os matrix" in body
+
+    def test_an_unsupported_platform_is_never_confirmed(self, skill_text: str) -> None:
+        body = _flat(_section(skill_text, self.HEADING))
+        assert "needs-human" in body
+        assert "never" in body and "confirmed" in body
+
+    def test_the_label_covers_a_line_not_a_pr(self, skill_text: str) -> None:
+        body = _flat(_section(skill_text, self.HEADING))
+        assert "posix-only-approved" in body
+        assert "never a pr" in body
 
 
 class TestSeverityAdjudication:
@@ -380,6 +446,9 @@ class TestRulesOfEngagementExport:
             "policy-block",
             "network-egress",
             "scratch-worktree",
+            # The platform rule the posix-only-approved label is an exception to. A
+            # fix usable on one platform is an outage on the other two.
+            "platform",
         ):
             assert token in values, token
 
@@ -387,6 +456,15 @@ class TestRulesOfEngagementExport:
         values = " ".join(r["value"] for r in roe["rules"]["human_approval"])
         assert "active-testing" in values
         assert "fixer-dispatch" in values
+
+    def test_golden_path_approval_and_deactivation_are_one_gated_row(self, roe: dict) -> None:
+        """Asymmetry is the defeat: a fixer that can deactivate a row retires the
+        one its fix broke, and both gates then pass on a corpus missing it. So the
+        row names deactivation as well, and one row keeps the two inseparable."""
+        rows = [r for r in roe["rules"]["human_approval"] if "golden_paths" in r["value"]]
+        assert len(rows) == 1, [r["value"] for r in roe["rules"]["human_approval"]]
+        assert "deactivating" in rows[0]["value"]
+        assert "approving" in rows[0]["value"]
 
     def test_the_report_schema_matches_the_finding_record(self, roe: dict) -> None:
         fields = {r["value"] for r in roe["rules"]["report_schema"]}

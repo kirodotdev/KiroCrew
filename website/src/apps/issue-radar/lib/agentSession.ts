@@ -265,7 +265,15 @@ export function useAgentSession(): UseAgentSession {
 
         // ── Fresh session: folder → slot (filed + titled) → seed+run → link.
         const folderId = await resolveFolderId(repoRef.repo)
-        const slot = await dispatch(createSlot({ folder_id: folderId, title })).unwrap()
+        // App-owned workstreams choose their memory contract explicitly; a
+        // general chat preference must not silently alter their behavior.
+        const slot = await dispatch(
+          createSlot({
+            folder_id: folderId,
+            title,
+            memory_mode: 'persistent',
+          }),
+        ).unwrap()
         // The slot is persisted but not yet linked to an investigation record, so
         // a failure before the seed leaves an EMPTY session behind — and the next
         // attempt, finding no record, would create another one. Rollback covers

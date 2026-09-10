@@ -862,3 +862,83 @@ def test_no_config_file_stays_default_open(tmp_path):
 
     assert enterprise._allowlist_configured is False
     assert enterprise.check_message_origin("T_FOREIGN") is True
+
+
+class TestTrustedBotAdmission:
+    """The ONE trusted-bot admission rule, shared by both Slack drop sites.
+
+    These tests own the rule itself. The two call sites keep their own tests for
+    what they DO with the answer (audit line, subtype gate, normalization); the
+    point of the extraction is that the rule below is asserted once instead of
+    twice, so it cannot drift between the paths.
+    """
+
+    def test_a_human_event_is_not_a_bot_and_is_never_denied(self):
+        enterprise._validated_self_bot_id = "B_SELF"
+
+        assert enterprise.trusted_bot_admission("", {"B_PEER"}) == (False, "")
+
+    def test_an_allowlisted_peer_bot_is_admitted(self):
+        enterprise._validated_self_bot_id = "B_SELF"
+
+        assert enterprise.trusted_bot_admission("B_PEER", {"B_PEER"}) == (True, "")
+
+    def test_an_unlisted_bot_is_denied_as_untrusted(self):
+        enterprise._validated_self_bot_id = "B_SELF"
+
+        assert enterprise.trusted_bot_admission("B_OTHER", {"B_PEER"}) == (
+            False,
+            "untrusted_bot",
+        )
+
+    def test_an_empty_allowlist_admits_nobody(self):
+        """Deny by default: the feature unconfigured drops every bot event."""
+        enterprise._validated_self_bot_id = "B_SELF"
+
+        assert enterprise.trusted_bot_admission("B_PEER", frozenset()) == (
+            False,
+            "untrusted_bot",
+        )
+
+    def test_our_own_bot_id_is_never_trusted_even_when_listed(self):
+        """Admitting our own id makes every reply re-enter as fresh input."""
+        enterprise._validated_self_bot_id = "B_SELF"
+
+        assert enterprise.trusted_bot_admission("B_SELF", {"B_SELF", "B_PEER"}) == (
+            False,
+            "own_bot_id_never_trusted",
+        )
+
+    def test_an_unverified_self_id_fails_closed(self):
+        """auth.test unavailable -> the self-exclusion cannot be applied, so a
+        configured trust feature trusts nobody rather than trusting on faith."""
+        enterprise._validated_self_bot_id = ""
+
+        assert enterprise.trusted_bot_admission("B_PEER", {"B_PEER"}) == (
+            False,
+            "trusted_bot_requires_verified_self_id",
+        )
+
+    def test_the_deny_reason_distinguishes_listed_from_unlisted(self):
+        """A listed id blocked by an unverifiable self identity must NOT read as
+        `untrusted_bot`: the two need different operator action (fix auth.test
+        vs. fix the allowlist), and the reason string is what the audit line
+        carries."""
+        enterprise._validated_self_bot_id = ""
+
+        assert enterprise.trusted_bot_admission("B_STRANGER", {"B_PEER"})[1] == "untrusted_bot"
+        assert (
+            enterprise.trusted_bot_admission("B_PEER", {"B_PEER"})[1]
+            == "trusted_bot_requires_verified_self_id"
+        )
+
+    def test_the_set_is_an_argument_so_the_caller_owns_read_timing(self):
+        """The predicate never reads config: the event gate passes the live set
+        and the transport passes a constructor snapshot, and that difference is
+        the wiring's business, not the rule's."""
+        enterprise._validated_self_bot_id = "B_SELF"
+        live = {"B_PEER"}
+
+        assert enterprise.trusted_bot_admission("B_PEER", live) == (True, "")
+        live.clear()
+        assert enterprise.trusted_bot_admission("B_PEER", live) == (False, "untrusted_bot")

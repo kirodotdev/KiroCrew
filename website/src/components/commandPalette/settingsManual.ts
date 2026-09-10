@@ -253,4 +253,23 @@ export const SETTINGS_MANUAL: ManualSettingEntry[] = [
     occurrence: 1,
     configKey: 'instances.enabled',
   },
+  {
+    // Managed credential slots are server-provided, so the shared SecretField
+    // label is dynamic at extraction time. These entries index the two fixed
+    // integration labels and highlight the matching runtime SecretField.
+    id: 'secrets.wakatime-api-key',
+    labelKey: 'settings.secrets.wakatime_api_key_label',
+    descriptionKey: 'settings.secrets.wakatime_api_key_description',
+    tab: 'secrets',
+    type: 'input',
+    occurrence: 1,
+  },
+  {
+    id: 'secrets.jira-api-token',
+    labelKey: 'settings.secrets.jira_api_token_label',
+    descriptionKey: 'settings.secrets.jira_api_token_description',
+    tab: 'secrets',
+    type: 'input',
+    occurrence: 1,
+  },
 ]

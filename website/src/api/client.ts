@@ -46,7 +46,7 @@ export const SKILLS_TIMEOUT_MS = 15_000
 export const SLASH_COMMANDS_TIMEOUT_MS = 15_000
 import { installApiTransport } from './apiTransport'
 import type { SessionSummary } from '../types/sessionSummary'
-import { queryClient } from './queryClient'
+import { queryClient, resolveDefaultMemoryMode } from './queryClient'
 import { getStoredConsent } from '../utils/themeConsent'
 import { recordError, parseErrorCode, requestPath } from '../utils/errorReport'
 import { i18nT } from '../i18n/t'
@@ -2286,6 +2286,32 @@ export interface FeatureVideoNext {
   enabled: boolean
 }
 
+/**
+ * The saved filename a `Content-Disposition` asks for, or `fallback`.
+ *
+ * Prefers the RFC 5987 `filename*=UTF-8''<percent-encoded>` form, because that is
+ * what the dashboard's own download handlers emit so a non-Latin name survives an
+ * ASCII header. The bare `filename=` form is still read for anything that sends
+ * it. Exported so the precedence can be unit-tested without a DOM.
+ *
+ * A malformed percent sequence falls through to the next candidate rather than
+ * throwing: `decodeURIComponent` raises on bad input, and a broken header must not
+ * take the download with it.
+ */
+export function filenameFromDisposition(disposition: string, fallback: string): string {
+  const star = /filename\*=(?:UTF-8'')?([^;]+)/i.exec(disposition)
+  if (star) {
+    try {
+      const decoded = decodeURIComponent(star[1].trim())
+      if (decoded) return decoded
+    } catch {
+      // fall through to the bare form
+    }
+  }
+  const plain = /filename="?([^";]+)"?/.exec(disposition)
+  return (plain && plain[1].trim()) || fallback
+}
+
 export const api = {
   status: () => fetch('/api/status').then(j),
   tunnelStatus: () => fetch('/api/tunnel/status').then(j) as Promise<TunnelStatus>,
@@ -2542,6 +2568,41 @@ export const api = {
     }>,
   // Copies a session to another instance. The local session is left untouched:
   // the peer allocates its own key, so this is a copy and never a move.
+  /** Download one session as a single gzipped file.
+   *
+   *  Fetches rather than navigating, so a refusal (an incognito session, an
+   *  empty one) raises here and the menu row can report it, instead of replacing
+   *  the dashboard with a raw JSON error body. The saved filename comes from the
+   *  endpoint's own Content-Disposition, whose slug is built from the REDACTED
+   *  title — the frontend must not reconstruct a name from `slot.title`, which
+   *  is the unredacted copy. */
+  exportSession: async (slot: string) => {
+    const r = await get('/api/chat/slots/' + encodeURIComponent(slot) + '/export')
+    if (!r.ok) {
+      let message = `HTTP ${r.status}`
+      try {
+        const body = await r.json()
+        if (body?.error) message = body.error
+      } catch {
+        // A non-JSON error body is not worth a second failure mode; the status
+        // line above is still a usable message.
+      }
+      throw new ApiError(r.status, message)
+    }
+    const blob = await r.blob()
+    const filename = filenameFromDisposition(
+      r.headers.get('Content-Disposition') || '',
+      `${slot}.kcsession.json.gz`,
+    )
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = filename
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    URL.revokeObjectURL(url)
+  },
   sendSessionToInstance: (id: string, slot: string) =>
     post('/api/instances/' + encodeURIComponent(id) + '/send-session', { slot }).then(j) as Promise<{
       ok: boolean
@@ -3243,7 +3304,23 @@ export const api = {
    *  over there. The backend opens the peer's slot first, so a peer that is
    *  disconnected or on a different version fails the create rather than yielding
    *  a session that cannot send. */
-  createChatSlot: (name?: string, agent?: string, model?: string, mode?: string, memory_mode?: string, title?: string, clean_mode?: boolean, artifact?: string, folder_id?: string, instance_id?: string) => post('/api/chat/slots', { ...(name ? { name } : {}), ...(agent ? { agent } : {}), ...(model ? { model } : {}), ...(mode ? { mode } : {}), ...(memory_mode ? { memory_mode } : {}), ...(title ? { title } : {}), ...(clean_mode !== undefined ? { clean_mode } : {}), ...(artifact ? { artifact } : {}), ...(folder_id ? { folder_id } : {}), ...(instance_id ? { instance_id } : {}) }).then(j) as Promise<ChatSlot>,
+  createChatSlot: async (name?: string, agent?: string, model?: string, mode?: string, memory_mode?: string, title?: string, clean_mode?: boolean, artifact?: string, folder_id?: string, instance_id?: string) => {
+    const resolvedMemoryMode = memory_mode ?? await resolveDefaultMemoryMode(
+      () => fetch('/api/dashboard/config').then(j),
+    )
+    return post('/api/chat/slots', {
+      ...(name ? { name } : {}),
+      ...(agent ? { agent } : {}),
+      ...(model ? { model } : {}),
+      ...(mode ? { mode } : {}),
+      memory_mode: resolvedMemoryMode,
+      ...(title ? { title } : {}),
+      ...(clean_mode !== undefined ? { clean_mode } : {}),
+      ...(artifact ? { artifact } : {}),
+      ...(folder_id ? { folder_id } : {}),
+      ...(instance_id ? { instance_id } : {}),
+    }).then(j) as Promise<ChatSlot>
+  },
   /** Inject silent background context into a slot — consumed on the next user
    * message. Used by the artifact companion chat to name the bound artifact so
    * the user's first message needs no slug boilerplate. */

@@ -2654,6 +2654,18 @@ class AcpSessionHandle:
                     # text. Never trust backend-echoed steer text: redact before it
                     # can reach any surface. Mirrors AcpClient._dispatch_events.
                     params = msg.params or {}
+                    _steer_sid = str(params.get("sessionId") or "")
+                    if _steer_sid and _steer_sid != self._session_id:
+                        # A steer echo naming ANOTHER session — an announced
+                        # child's frame routed to this single-owner queue
+                        # (either session/update spelling). Only a frame this
+                        # session OWNS may settle this session's steer
+                        # ledger: surfacing a child's steering_consumed as a
+                        # parent EVENT_STEER_CONSUMED could settle a pending
+                        # user steer or policy-refusal continuation the
+                        # parent backend never consumed. Same trust boundary
+                        # the compaction branch draws with owns_frame.
+                        continue
                     _upd = params.get("update")
                     _upd = _upd if isinstance(_upd, dict) else {}
                     _disc = str(_upd.get("sessionUpdate") or "")
@@ -2750,6 +2762,52 @@ class AcpSessionHandle:
                     ssid = str(params.get("sessionId") or "")
                     upd = params.get("update") or {}
                     upd = upd if isinstance(upd, dict) else {}
+                    if ssid and ssid != self._session_id:
+                        # A backend-internal child's update under the
+                        # extension method `_kiro.dev/session/update`. BOTH
+                        # session-update spellings are live carriers, not a
+                        # version succession: kiro-cli 2.21.x uses the
+                        # extension method for the child stream regardless
+                        # of the plain/extension ordering the steer comment
+                        # in _dispatch.classify_notification describes. Run
+                        # the payload through the shared parser for its
+                        # cache SIDE EFFECTS ONLY — the origin-scoped
+                        # per-toolCallId writes (command bytes, raw params,
+                        # shell classification, and the `_meta.kiro`
+                        # server/tool identity) that a later child
+                        # permission request's trust split reads. Without
+                        # this parse the caches stay empty for the extension
+                        # spelling, a child MCP call cannot verify its
+                        # identity, and every auto-approve path falls to the
+                        # interactive UNVERIFIED card. Identity still comes
+                        # ONLY from a frame this client parsed: the runtime
+                        # routes the method solely for an announced child on
+                        # a single-owner runtime. Same
+                        # cache-side-effects-only shape as the KAS child
+                        # nested-tool path in _handle_update.
+                        #
+                        # The activity events stay the hand-rolled yields
+                        # below, and they INTENTIONALLY differ from
+                        # _handle_update's child re-tag path (the plain
+                        # spelling's route): this branch emits activity for
+                        # any update carrying a toolCallId — including
+                        # discriminant-less frames and tool_call_update
+                        # refinements the parser suppresses — a display
+                        # shape pinned by the pre-existing
+                        # test_dispatch_subagent_activity_* tests. The
+                        # security caches are the shared, parser-derived
+                        # part; the coarse crew-monitor display is not.
+                        parse_session_update(
+                            upd,
+                            tool_input_cache=self._tool_call_inputs,
+                            tool_input_redacted_cache=self._tool_call_input_redacted,
+                            shell_cache=self._tool_call_is_shell,
+                            raw_params_cache=self._tool_call_raw_params,
+                            diff_path_cache=self._tool_call_diff_path,
+                            mcp_server_name_cache=self._tool_call_mcp_server,
+                            tool_name_cache=self._tool_call_tool_name,
+                            cache_scope=ssid,
+                        )
                     tcid = str(upd.get("toolCallId") or "")
                     # Single-source the text-shape read via the shared parser so the
                     # sub-agent text path matches the main one (content.text + flat).

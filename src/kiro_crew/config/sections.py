@@ -2634,6 +2634,17 @@ class DashboardConfig:
             "not pushed straight back into the same collapse.",
         ),
     )
+    default_memory_mode: str = field(
+        default="persistent",
+        metadata=_meta(
+            "Default Memory Mode",
+            "Memory mode for new dashboard chat sessions. 'persistent' reads "
+            "and writes memory; 'incognito' reads but does not write; "
+            "'temporary' neither reads nor writes. Explicit per-session choices "
+            "still win.",
+            enum=["persistent", "incognito", "temporary"],
+        ),
+    )
     widget_density: str = field(
         default="more",
         metadata=_meta(

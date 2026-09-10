@@ -34,8 +34,10 @@ prefix until the mount answers again.
 
 from __future__ import annotations
 
+import functools
 import logging
 import os
+import platform
 import re
 import threading
 import time
@@ -1043,9 +1045,25 @@ def _oversize_refusal(length: int, limit: int) -> str:
 _PATH_RESOLVE_TIMEOUT_SECS = 2.0
 _PATH_RESOLVE_COOLDOWN_SECS = 30.0
 _PATH_RESOLVE_COOLDOWN_MAX_SECS = 1800.0
+# The load arm declines to charge the prefix, so it carries the event-loop bound the cooldown
+# would otherwise supply: this many uncharged probes per prefix per window.
+_PATH_RESOLVE_LOAD_WINDOW_SECS = 10.0
+_PATH_RESOLVE_LOAD_MAX_PROBES = 3
+# ``/proc/<tid>/syscall`` reports the syscall NUMBER, which is per-architecture. An unmapped
+# architecture yields an empty set, which fails toward charging the prefix.
+_FS_BLOCKING_SYSCALLS_BY_ARCH: dict[str, frozenset[int]] = {
+    "x86_64": frozenset(
+        {4, 5, 6, 89, 262, 267, 332}
+    ),  # stat fstat lstat readlink newfstatat readlinkat statx
+    "aarch64": frozenset({78, 79, 80, 291}),  # readlinkat newfstatat fstat statx
+}
+_FS_BLOCKING_SYSCALLS: frozenset[int] = _FS_BLOCKING_SYSCALLS_BY_ARCH.get(
+    platform.machine(), frozenset()
+)
 # stall prefix -> (monotonic deadline until which paths under it are refused,
 # consecutive stalls recorded under it -- drives the exponential backoff)
 _path_resolve_degraded: dict[str, tuple[float, int]] = {}
+_path_resolve_load_probes: dict[str, tuple[float, int]] = {}
 # futures that timed out and still hold an mc-pathres worker; pruned as they finish
 # (candidate spellings, root anchors and target rebuilds all land here)
 _path_resolve_wedged: list[Future[Any]] = []
@@ -1120,6 +1138,100 @@ def _wedged_workers() -> int:
     with _path_resolve_lock:
         _path_resolve_wedged[:] = [f for f in _path_resolve_wedged if not f.done()]
         return len(_path_resolve_wedged)
+
+
+def _worker_blocked_in_filesystem(tid: int | None) -> bool:
+    """True when thread ``tid`` is blocked inside a syscall a path resolution can block in.
+
+    Separates the two causes of a started-but-unfinished resolution, which the budget alone
+    cannot distinguish: a worker stuck on a wedged mount versus one that started and was then
+    starved of the CPU. Both consume almost no CPU, so a CPU-time comparison cannot tell them
+    apart, and neither can the ``/proc`` state field: measured on a 48-core host, a thread doing
+    ordinary ``lstat`` work and a thread doing nothing but burn CPU BOTH alternate between ``R``
+    and ``S`` from one sample to the next, because a Python thread spends most of its wall time
+    waiting on the GIL rather than inside a syscall.
+
+    What does separate them is WHICH syscall the thread is in. A thread genuinely blocked in a
+    kernel wait reports that syscall on every sample; one merely contending reports ``futex`` or
+    ``running``. And these syscalls complete in microseconds on a healthy filesystem, so
+    sampling one at all is itself evidence that it is not completing.
+
+    UNVERIFIED, and deliberately not claimed: that a thread stuck in one of these syscalls on a
+    real wedged NFS, FUSE or CIFS mount reports it stably. No wedged mount could be produced
+    where this was measured: an unprivileged ``fusermount3`` mount returns EPERM and
+    ``unshare(CLONE_NEWUSER)`` returns EPERM, so neither FUSE nor a user-namespace NFS mount is
+    available there.
+
+    What IS confirmed is the sampling this rests on, including for the state class a wedged FUSE
+    or CIFS mount actually waits in. An ``openat`` on a FIFO with no writer blocks
+    INTERRUPTIBLY while operating on a real filesystem path, and measured on a 48-core x86_64
+    host it reported state ``S`` with syscall 257 on 15 of 15 samples and no other value -- so
+    an in-``S`` filesystem wait samples exactly as stably as the uninterruptible waits (a pipe
+    ``read`` and a ``clock_nanosleep``, each 12 of 12). See
+    ``test_an_in_s_filesystem_wait_is_sampled_stably_and_reads_as_blocked``.
+
+    The table covers ``readlink`` as well as the stat family because CPython's
+    ``posixpath.realpath`` calls ``os.lstat`` AND ``os.readlink`` per component: a mount that
+    answers the lstat from cache and hangs the readlink would otherwise read as not blocked,
+    take the load arm, and pay an uncharged full-budget probe per token rather than opening one
+    cooldown.
+
+    Fails toward the EXISTING behaviour -- an unreadable ``/proc``, a thread that has already
+    exited, an architecture whose syscall numbers are not mapped -- by returning True, so the
+    caller still charges the prefix rather than silently withholding an escalation the gate
+    would otherwise make.
+    """
+    if tid is None or not _FS_BLOCKING_SYSCALLS:
+        return True
+    try:
+        with open(f"/proc/self/task/{tid}/syscall", "rb") as fh:
+            head = fh.read().split()
+    except OSError:
+        return True
+    if not head:
+        return True
+    sampled = head[0]
+    if sampled == b"running":
+        blocked = False
+    else:
+        try:
+            blocked = int(sampled) in _FS_BLOCKING_SYSCALLS
+        except ValueError:
+            blocked = True
+    logger.debug(
+        "resolver worker tid=%s syscall=%s blocked_in_filesystem=%s",
+        tid,
+        sampled.decode("ascii", "replace"),
+        blocked,
+    )
+    return blocked
+
+
+def _load_arm_budget_spent(prefix: str) -> bool:
+    """Record a load-arm probe under *prefix*; True once the window's allowance is gone.
+
+    The per-prefix cooldown has a second job besides remembering a dead mount: it BOUNDS how
+    much event-loop time one call can spend probing. A single tool call can carry many path
+    tokens, and ten tokens each paying the full budget puts the event loop back past the
+    watchdog this whole bound exists to protect. Declining to charge the prefix removes that
+    bound, so the load arm has to carry it: the first ``_PATH_RESOLVE_LOAD_MAX_PROBES`` probes
+    in a window are free, and the next one charges the prefix normally.
+
+    The count is cleared ONLY by the window expiring, never by a successful resolution. It
+    measures event-loop time already spent, which a later success cannot refund: clearing it on
+    success let an alternating success / CPU-starved-timeout run under one prefix pay the full
+    budget on every timeout while never crossing the allowance.
+    """
+    now = _path_resolve_clock()
+    with _path_resolve_lock:
+        if len(_path_resolve_load_probes) > 64:
+            _path_resolve_load_probes.clear()
+        window_end, probes = _path_resolve_load_probes.get(prefix, (0.0, 0))
+        if now >= window_end:
+            window_end, probes = now + _PATH_RESOLVE_LOAD_WINDOW_SECS, 0
+        probes += 1
+        _path_resolve_load_probes[prefix] = (window_end, probes)
+        return probes > _PATH_RESOLVE_LOAD_MAX_PROBES
 
 
 def _mark_stalled(prefix: str, budget: float) -> None:
@@ -1234,15 +1346,44 @@ def _run_resolution_bounded(
         )
         raise PathResolutionStalled(expanded, prefix)
     try:
-        future = path_resolve_executor().submit(worker, expanded)
+        started = threading.Event()
+        worker_tid: list[int] = []
+
+        @functools.wraps(worker)
+        def _tracked(arg: str) -> _ResolvedT:
+            worker_tid.append(threading.get_native_id())
+            started.set()
+            return worker(arg)
+
+        future = path_resolve_executor().submit(_tracked, expanded)
     except RuntimeError:
         # Pool already shut down (interpreter exit).  Lexical forms only.
         return None
     try:
         value = future.result(timeout=budget)
     except FutureTimeoutError:
+        if not started.is_set() and future.cancel():
+            # Only a future proven dead by cancel() may go untracked: one that refuses
+            # cancellation is running, and would pin a worker _wedged_workers() cannot see.
+            raise PathResolutionStalled(expanded, prefix) from None
         with _path_resolve_lock:
             _path_resolve_wedged.append(future)
+        tid = worker_tid[0] if worker_tid else None
+        if not _worker_blocked_in_filesystem(tid) and not _load_arm_budget_spent(prefix):
+            logger.debug(
+                "sensitive-path resolution timed out under load; prefix not charged (tid=%s)",
+                tid,
+            )
+            # The worker RAN but never got the CPU: the same conclusion as the queued
+            # arm above, reached one step later.  The future stays tracked as wedged
+            # (it does hold a worker until it finishes), but the prefix is NOT charged,
+            # so ordinary contention refuses THIS resolution instead of opening a
+            # cooldown across every path under the prefix.
+            raise PathResolutionStalled(expanded, prefix) from None
+        logger.debug(
+            "sensitive-path resolution timed out blocked in the filesystem (tid=%s)",
+            tid,
+        )
         _mark_stalled(prefix, budget)
         raise PathResolutionStalled(expanded, prefix) from None
     except Exception:

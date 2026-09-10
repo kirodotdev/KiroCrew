@@ -5986,6 +5986,13 @@
       "timestamp": "时间戳",
       "trigger": "触发方式"
     },
+    "exportSessionItem": {
+      "export_to_file": "导出为文件",
+      "exported": "已导出",
+      "failed": "失败",
+      "not_saved_to_disk": "会话未保存到磁盘",
+      "unknown_error": "导出失败"
+    },
     "feedbackPill": {
       "insider": "Insider 版",
       "nightly": "Nightly 版",
@@ -7744,9 +7751,11 @@
       "suggestion_summarize_chat": "总结本周的聊天活动",
       "suggestion_triage_tickets": "分类处理我的值班工单",
       "suggestion_write_design_doc": "帮我写一份设计文档",
-      "switch_back_to_default_mode": "切换回默认模式",
-      "switch_to_ephemeral_mode": "切换到临时模式",
+      "choose_memory_mode": "选择记忆模式",
+      "incognito_active_switch_to_persistent": "隐身 — 切换到持久模式",
+      "switch_to_persistent_mode": "切换到持久模式",
       "temporary": "临时",
+      "temporary_active_switch_to_persistent": "临时 — 切换到持久模式",
       "temporary_desc": "全新开始 — 不读写记忆",
       "try_create_a_plan_to_analyze_kirocrew_code_packa": "试试：“制定一个计划，分析 {{productName}} 代码包并按主要组件报告文件数”",
       "what_can_i_do_for_you": "我能帮你做什么？"
@@ -11664,7 +11673,7 @@
         "active_projects": "你参与的项目",
         "coding_time": "编码时间",
         "connect_body": "WakaTime 是一款免费工具，用于记录你在编辑器中编码所花的时间。",
-        "connect_hint": "在设置中添加名为 WAKATIME_API_KEY 的密钥，并在配置中将 wakatime.enabled 设为 true。可在 wakatime.com/settings/account 获取密钥。",
+        "connect_hint": "先在 $KIROCREW_HOME/config.json（默认 ~/.kiro/crew/config.json）中将 wakatime.enabled 设为 true，然后在“设置 → 密钥”的“由 {{productName}} 自动使用”中设置 WakaTime API 密钥。可在 wakatime.com/settings/account 获取密钥。",
         "connect_title": "连接 WakaTime",
         "daily_average": "每日平均",
         "export_csv": "导出工时（CSV）",
@@ -14308,6 +14317,11 @@
   },
   "settings": {
     "chat": {
+      "defaultMemoryMode": {
+        "description": "持久模式会使用已知信息并保存新记忆。隐身模式会使用已知信息，但不保存新记忆。临时模式从空白开始，不保存任何记忆。所有聊天仍会显示在历史记录中。你可以更改任意聊天的模式。",
+        "label": "默认记忆模式",
+        "persistent": "持久"
+      },
       "plainDiff": {
         "description": "以普通 unified diff 文本显示差异，不使用语法高亮着色。在大型差异上占用更少内存。",
         "label": "纯文本 diff"
@@ -14402,11 +14416,36 @@
     "secrets": {
       "title": "密钥保险库",
       "description": "安全存储API密钥和凭据。密钥在静态时加密，永远不会暴露给代理。",
+      "managed_title": "由 {{productName}} 自动使用",
+      "managed_description": "{{productName}} 可识别并自动使用的凭证。在此添加或轮换其值。",
+      "jira_api_token_label": "Jira API 令牌",
+      "jira_api_token_description": "用于已配置实例的 Jira 问题查询身份验证。",
+      "jira_global_unused_multi_host": "配置多个主机时，Jira 不会使用此密钥。请在上方设置每个主机的凭证，或删除此条目。",
+      "jira_global_unused_host_token": "不会使用，因为主机专用的 Jira 凭证优先。如果不再需要回退项，请删除此条目。",
+      "jira_host_token_label": "Jira 主机 API 令牌",
+      "jira_host_token_description": "用于一个已配置主机的 Jira 问题查询身份验证。",
+      "wakatime_api_key_label": "WakaTime API 密钥",
+      "wakatime_api_key_description": "启用 WakaTime 时用于编码活动同步的身份验证。",
+      "other_stored_title": "其他已存储密钥",
+      "other_stored_description": "可在 MCP 服务器配置或 .env 凭据设置中以 secret://NAME 按准确名称引用已存储的密钥。",
+      "managed_config_error": "无法读取 $KIROCREW_HOME/config.json（默认 ~/.kiro/crew/config.json），因此部分自动凭证已隐藏。",
+      "managed_name_hint": "在此保存会更新自动凭证部分中的 {{name}}。 — {{productName}}",
+      "stored_title": "已存储的密钥",
+      "managed_unconfigured_hint": "要自动使用 WakaTime 或 Jira，请在 $KIROCREW_HOME/config.json（默认 ~/.kiro/crew/config.json）中启用 WakaTime 或添加 Jira 主机。",
+      "managed_setup_guide": "打开密钥设置指南",
+      "delete_managed_confirm": "永久删除“{{name}}”？当前值无法恢复。",
+      "delete_managed_name": "删除{{name}}",
+      "save_managed_name": "保存 {{name}}",
+      "managed_value_placeholder": "粘贴密钥值",
+      "wakatime_setup_link": "打开 WakaTime API 密钥设置",
+      "saved": "已保存",
+      "name_placeholder": "MY_API_KEY",
+      "value_placeholder": "sk-...",
       "no_secrets": "尚未存储任何密钥。",
       "add_secret": "添加密钥",
       "name_label": "名称",
       "value_label": "值",
-      "delete_confirm": "删除此密钥？",
+      "delete_confirm": "永久删除“{{name}}”？当前值无法恢复。",
       "delete": "删除",
       "cancel": "取消",
       "save": "保存",
@@ -14417,7 +14456,8 @@
       "secret_value_aria": "密钥值",
       "save_error": "无法保存密钥：{{error}}",
       "delete_error": "无法删除密钥：{{error}}",
-      "load_error": "无法加载密钥：{{error}}"
+      "load_error": "无法加载密钥：{{error}}",
+      "wakatime_unused_hint": "WakaTime 禁用时不会使用。请启用 WakaTime 或删除此条目。"
     }
   },
   "store": {

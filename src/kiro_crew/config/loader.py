@@ -379,6 +379,11 @@ CRED_WEIXIN_TOKEN = "WEIXIN_TOKEN"  # iLink bot credential from the Settings QR 
 CRED_FEISHU_APP_ID = "FEISHU_APP_ID"  # Feishu custom-app id (developer console)
 CRED_FEISHU_APP_SECRET = "FEISHU_APP_SECRET"
 CRED_JIRA_API_TOKEN = "JIRA_API_TOKEN"  # Jira Cloud/Server API token (resolved from .env)
+CRED_WAKATIME_API_KEY = "WAKATIME_API_KEY"  # vault-only; never loaded from .env
+MANAGED_VAULT_FIXED_CONSUMERS = {
+    CRED_JIRA_API_TOKEN: "jira_api_token",
+    CRED_WAKATIME_API_KEY: "wakatime_api_key",
+}
 # kiro-cli's OWN model credential. Unlike the gateway-owned channel tokens
 # above, its rightful consumer is the agent subprocess itself (and the whoami
 # identity probe), so it is deliberately NOT in sandbox._AGENT_DENIED_ENV_KEYS:
@@ -409,6 +414,24 @@ _CREDENTIAL_KEYS = (
 # injected via multiline env values from reaching the eval-based value reader
 # in the Docker entrypoint.
 _JIRA_TOKEN_RE = _re.compile(r"^JIRA_TOKEN_[0-9A-Fa-f]+$")
+
+
+def normalize_jira_host(host: str) -> str:
+    """Normalize a Jira host exactly as auth lookup and managed-slot discovery do."""
+    return host.strip().lower().removesuffix(":443")
+
+
+def jira_host_token_name(host: str) -> str:
+    """Return the collision-free per-host Jira token name for *host*."""
+    normalized = normalize_jira_host(host)
+    return f"JIRA_TOKEN_{normalized.encode().hex().upper()}"
+
+
+def jira_global_token_applicable(entries: Iterable[JiraAuthEntry]) -> bool:
+    """Whether the global Jira token may serve one valid configured host."""
+    raw_entries = list(entries)
+    return len(raw_entries) == 1 and bool(normalize_jira_host(raw_entries[0].host))
+
 
 # Keys from .env that were already warned about (fire once per gateway boot).
 _warned_env_keys: set[str] = set()
@@ -1435,6 +1458,10 @@ def update_config_locked(
         if stamp_meta:
             result = stamp_config_meta(result)
         write_config_atomically(p, result, fsync=fsync)
+        # A same-size replacement can retain an indistinguishable fingerprint
+        # on a coarse-timestamp filesystem. Clear eagerly before reporting the
+        # write complete so the next load cannot serve the pre-write snapshot.
+        _invalidate_config_cache()
         return result
 
 
@@ -1823,6 +1850,14 @@ def _subagent_timeout_from(raw: object) -> int:
     return value if value == 0 else max(SUBAGENT_TIMEOUT_MIN, value)
 
 
+_DEFAULT_MEMORY_MODES = frozenset({"persistent", "incognito", "temporary"})
+
+
+def _default_memory_mode_from(raw: object) -> str:
+    """Normalize a stored dashboard default without failing open on corruption."""
+    return raw if isinstance(raw, str) and raw in _DEFAULT_MEMORY_MODES else "temporary"
+
+
 # (section, key, min, max) for each bounded field clamped at load time. The
 # mins match the runtime floors: subagent_auto_max has a floor of 3
 # (``subagent._LEGACY_DEFAULT_MAX`` — the auto-size minimum), so a value < 3 is
@@ -2035,15 +2070,27 @@ def _clamp_security_bounds(data: dict) -> None:
 def _config_fingerprint() -> tuple:
     """Cheap signature of the config files — changes whenever either is edited.
 
-    Uses st_mtime_ns + st_size + st_mode for both config.json and
-    config.local.json so any edit, truncation, or replacement busts the cache.
-    A missing file contributes a sentinel so create/delete also busts it.
+    Includes replacement identity (device + inode) and change time in addition
+    to mtime, size, and mode. Dashboard/CLI writers publish with atomic rename;
+    on a coarse-timestamp filesystem an Incognito→Temporary replacement can
+    otherwise keep the same mtime and size, making another process's cache look
+    current. A missing file contributes a sentinel so create/delete also busts.
     """
     sig: list = []
     for p in (config_path(), config_local_path()):
         try:
             st = p.stat()
-            sig.append((str(p), st.st_mtime_ns, st.st_size, st.st_mode))
+            sig.append(
+                (
+                    str(p),
+                    st.st_dev,
+                    st.st_ino,
+                    st.st_ctime_ns,
+                    st.st_mtime_ns,
+                    st.st_size,
+                    st.st_mode,
+                )
+            )
         except OSError:
             sig.append((str(p), None))
     return tuple(sig)
@@ -2064,9 +2111,20 @@ def _cached_validated_data(fp: tuple | None = None) -> dict | None:
     return _CONFIG_CACHE.get(fp if fp is not None else _config_fingerprint())
 
 
-def _store_validated_data(data: dict, fp: tuple, sidecar: dict | None = None) -> None:
-    """Cache a deep copy of *data* (+ *sidecar*) under *fp* (see ConfigCache.store)."""
-    _CONFIG_CACHE.store(data, fp, sidecar)
+def _store_validated_data(
+    data: dict,
+    fp: tuple,
+    sidecar: dict | None = None,
+    *,
+    expected_generation: int | None = None,
+) -> None:
+    """Cache validated data unless a write invalidated its disk-read generation."""
+    _CONFIG_CACHE.store(
+        data,
+        fp,
+        sidecar,
+        expected_generation=expected_generation,
+    )
 
 
 #: Sidecar key under which the loader caches the pre-overlay base values of the
@@ -2553,10 +2611,14 @@ class KiroCrewConfig:
             data, sidecar = cached
             base_shadow = sidecar.get(_SIDECAR_BASE_SHADOW, {})
         else:
+            # Capture the invalidation generation BEFORE disk I/O. A successful
+            # write advances it, so this read cannot repopulate pre-write data
+            # after the writer clears the cache even if the filesystem's coarse
+            # timestamp and unchanged size leave the fingerprint identical.
+            read_generation = _CONFIG_CACHE.generation()
             # fp was captured BEFORE reading, so a write landing during the read
-            # is detected: we cache under it, it won't match the post-write
-            # on-disk stat, and the next load() re-reads instead of serving
-            # content read mid-write (read->store TOCTOU).
+            # is detected: the fingerprint normally changes, and the generation
+            # fence covers filesystems where a same-size replacement does not.
             # _store_validated_data documents this contract.
             pre_read_fp = fp
             data = {}
@@ -2640,6 +2702,11 @@ class KiroCrewConfig:
                 # could not read what they configured". Carry the observation
                 # through so the caller can tell them apart (#4057).
                 cfg = cls(_degraded_sections=frozenset(_OBSERVED_DEGRADED_SECTIONS))
+                if (
+                    DEGRADED_WHOLE_CONFIG in _OBSERVED_DEGRADED_SECTIONS
+                    or "dashboard" in _OBSERVED_DEGRADED_SECTIONS
+                ):
+                    cfg.dashboard.default_memory_mode = "temporary"
                 cfg.skills.project_skills_enabled = (
                     data.get("skills", {}).get("project_skills_enabled", True) is True
                 )
@@ -2682,6 +2749,15 @@ class KiroCrewConfig:
             if isinstance(_agent_section, dict) and "member_dispatch" in _agent_section:
                 if not isinstance(_agent_section["member_dispatch"], bool):
                     _agent_section["member_dispatch"] = False
+            # Keep a genuinely absent default backward-compatible with older
+            # configs, but normalize a PRESENT malformed value before advisory
+            # schema validation can delete it and turn corruption into the
+            # missing-field Persistent default.
+            _dashboard_section = data.get("dashboard")
+            if isinstance(_dashboard_section, dict) and "default_memory_mode" in _dashboard_section:
+                _dashboard_section["default_memory_mode"] = _default_memory_mode_from(
+                    _dashboard_section["default_memory_mode"]
+                )
             # Validate against JSON Schema (advisory — never fatal)
             _validate_config_data(data)
             # Clamp security-relevant resource-limit knobs to their API ceilings
@@ -2689,11 +2765,17 @@ class KiroCrewConfig:
             # exceeds a ceiling cannot drive resource exhaustion (DoS). Runs only
             # on the disk-read path; cache hits below already serve clamped values.
             _clamp_security_bounds(data)
-            # Cache the validated, merged dict under the PRE-read fingerprint so
-            # a mid-read write self-heals (next load misses and re-reads). The
-            # base shadow rides along so a hit can capture unknown keys from the
-            # base document exactly as this disk read did.
-            _store_validated_data(data, pre_read_fp, {_SIDECAR_BASE_SHADOW: base_shadow})
+            # Cache under the PRE-read fingerprint and generation. A mid-read
+            # write either changes the fingerprint or advances the generation;
+            # both paths force the next load to re-read. The base shadow rides
+            # along so a hit can capture unknown keys from the base document
+            # exactly as this disk read did.
+            _store_validated_data(
+                data,
+                pre_read_fp,
+                {_SIDECAR_BASE_SHADOW: base_shadow},
+                expected_generation=read_generation,
+            )
 
         # Collected during the parse that discards them — the only moment the
         # evidence exists, since the migration below rewrites config.json in
@@ -2759,6 +2841,17 @@ class KiroCrewConfig:
         _wecom_key = "wecom" if "wecom" in data else "wechat"
         wecom_data = _coerced_section(data, _wecom_key, _degraded)
         dashboard_data = _coerced_section(data, "dashboard", _degraded)
+        # Persistent is the compatibility default only when a readable config
+        # genuinely omits this field. If the dashboard section or either config
+        # file was unreadable, the missing value may have been a privacy choice
+        # we could not recover, so new chats must fail closed to Temporary until
+        # the operator fixes the file and restarts the gateway.
+        if (
+            "dashboard" in _degraded
+            or "dashboard" in _OBSERVED_DEGRADED_SECTIONS
+            or DEGRADED_WHOLE_CONFIG in _OBSERVED_DEGRADED_SECTIONS
+        ):
+            dashboard_data["default_memory_mode"] = "temporary"
         stt_data = _coerced_section(data, "stt", _degraded)
         computer_use_data = _coerced_section(data, "computer_use", _degraded)
         instances_data = _coerced_section(data, "instances", _degraded)
@@ -3523,6 +3616,9 @@ class KiroCrewConfig:
                 auto_open_git_panel=_safe_bool(dashboard_data.get("auto_open_git_panel"), False),
                 session_card_source_links=_safe_bool(
                     dashboard_data.get("session_card_source_links"), True
+                ),
+                default_memory_mode=_default_memory_mode_from(
+                    dashboard_data.get("default_memory_mode", "persistent")
                 ),
                 widget_density=dashboard_data.get("widget_density", "more"),
                 use_builtin_browser=_safe_bool(dashboard_data.get("use_builtin_browser"), True),

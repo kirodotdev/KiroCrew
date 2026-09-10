@@ -52,6 +52,23 @@ class TestConfigCache:
         cache.clear()
         assert cache.get(fp) is None
 
+    def test_clear_rejects_store_from_an_older_generation(self) -> None:
+        cache = validation.ConfigCache()
+        fp = (("config.json", 1, 2, 0o600),)
+        read_generation = cache.generation()
+
+        cache.clear()
+
+        assert (
+            cache.store(
+                {"default_memory_mode": "incognito"},
+                fp,
+                expected_generation=read_generation,
+            )
+            is False
+        )
+        assert cache.get(fp) is None
+
 
 class TestSchemaIntrospectionHelpers:
     _SCHEMA = {

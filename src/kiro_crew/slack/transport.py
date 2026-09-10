@@ -29,7 +29,7 @@ from kiro_crew.messaging.transport import (
 )
 from kiro_crew.sel import sel
 from kiro_crew.slack.client import SlackClientOps
-from kiro_crew.slack.enterprise import validated_self_bot_id
+from kiro_crew.slack.enterprise import trusted_bot_admission
 from kiro_crew.slack.format import SLACK_MSG_LIMIT
 
 # A dispatch callback consumes a normalized, already-authorized message and
@@ -193,20 +193,13 @@ class SlackTransport(MessagingTransport):
         # Loop bounding (the per-thread trusted-bot turn cap) is the
         # dispatch layer's job; this transport decides admissibility only.
         bot_id = event.get("bot_id") or ""
-        self_bot_id = validated_self_bot_id()
-        from_trusted_bot = (
-            bool(bot_id)
-            and bool(self_bot_id)
-            and bot_id != self_bot_id
-            and bot_id in self._trusted_bot_ids
-        )
-        if bot_id and not from_trusted_bot:
-            if bot_id == self_bot_id and bot_id in self._trusted_bot_ids:
-                deny_error = "own_bot_id_never_trusted"
-            elif not self_bot_id and bot_id in self._trusted_bot_ids:
-                deny_error = "trusted_bot_requires_verified_self_id"
-            else:
-                deny_error = "untrusted_bot"
+        # READ TIMING: the transport passes its CONSTRUCTOR SNAPSHOT, matching
+        # its `allowed_users` pattern — a transport's admission set is fixed for
+        # its lifetime, so a live edit needs a reconstruction. The event gate
+        # deliberately passes the live config instead; the predicate takes the
+        # set as an argument precisely so each site owns that choice.
+        from_trusted_bot, deny_error = trusted_bot_admission(bot_id, self._trusted_bot_ids)
+        if deny_error:
             sel().log_api_access(
                 caller=bot_id,
                 operation="slack_transport.receive",
@@ -217,6 +210,17 @@ class SlackTransport(MessagingTransport):
             return
         if event.get("subtype") == "bot_message" and not from_trusted_bot:
             return
+        # TRUST PROVENANCE: the admitted peer bot is normalized into a plain
+        # InboundMessage below, which carries no trust flag — so a dispatcher
+        # reading it cannot tell a peer bot from a human. Whoever wires
+        # `_dispatch` to a real consumer MUST thread `from_trusted_bot` through
+        # to the layer enforcing the per-thread turn cap and error-reply
+        # suppression (`handle_message_transport` already accepts it), either by
+        # adding the field to InboundMessage at that point or by re-deriving it
+        # at the seam. It is deliberately NOT added here: widening the
+        # channel-neutral InboundMessage contract for a path with no consumer
+        # would ship an unenforced field, and an unenforced trust flag reads as
+        # a guarantee that nothing checks.
         msg = InboundMessage(
             channel_type="slack",
             user_id=event.get("user") or (bot_id if from_trusted_bot else ""),

@@ -301,7 +301,9 @@ export default function PptxMakerPage() {
   // this app's agents rather than embedding a reduced chat here.
   const startChat = useMutation({
     mutationFn: async (agent: string) => {
-      const result = await api.createChatSlot(undefined, agent)
+      const result = await api.createChatSlot(
+        undefined, agent, undefined, undefined, 'persistent',
+      )
       return result as { key?: string }
     },
     onSuccess: (result) => {

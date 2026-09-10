@@ -283,7 +283,7 @@ describe('create-button caret menu', () => {
     // peer fails the create instead of leaving a session that cannot send.
     await waitFor(() =>
       expect(mocks.createChatSlot).toHaveBeenCalledWith(
-        undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
+        undefined, undefined, undefined, undefined, 'persistent', undefined, undefined, undefined,
         undefined, 'i-nobita',
       ),
     )

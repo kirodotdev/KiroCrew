@@ -6178,6 +6178,13 @@
       "timestamp": "Data/hora",
       "trigger": "Acionador"
     },
+    "exportSessionItem": {
+      "export_to_file": "Exportar para um arquivo",
+      "exported": "Exportado",
+      "failed": "Falhou",
+      "not_saved_to_disk": "sessão não salva em disco",
+      "unknown_error": "A exportação falhou"
+    },
     "feedbackPill": {
       "insider": "Insider",
       "nightly": "Nightly",
@@ -7966,9 +7973,11 @@
       "suggestion_summarize_chat": "Resumir a atividade de chat desta semana",
       "suggestion_triage_tickets": "Triar meus tickets de plantão",
       "suggestion_write_design_doc": "Ajudar-me a escrever um documento de design",
-      "switch_back_to_default_mode": "Voltar ao modo padrão",
-      "switch_to_ephemeral_mode": "Alternar para o modo efêmero",
+      "choose_memory_mode": "Escolher modo de memória",
+      "incognito_active_switch_to_persistent": "Anônimo — mudar para o modo persistente",
+      "switch_to_persistent_mode": "Mudar para o modo persistente",
       "temporary": "Temporário",
+      "temporary_active_switch_to_persistent": "Temporário — mudar para o modo persistente",
       "temporary_desc": "Começo do zero — sem leituras ou gravações de memória",
       "try_create_a_plan_to_analyze_kirocrew_code_packa": "Tente: “Crie um plano para analisar o pacote de código do {{productName}} e informar a contagem de arquivos por componente principal”",
       "what_can_i_do_for_you": "O que posso fazer por você?"
@@ -11996,7 +12005,7 @@
         "active_projects": "Projetos em que você trabalhou",
         "coding_time": "Tempo de programação",
         "connect_body": "O WakaTime é uma ferramenta gratuita que registra o tempo que você passa programando no seu editor.",
-        "connect_hint": "Adicione um secret chamado WAKATIME_API_KEY em Configurações e defina wakatime.enabled como true na sua configuração. Obtenha uma chave em wakatime.com/settings/account.",
+        "connect_hint": "Primeiro defina wakatime.enabled como true em $KIROCREW_HOME/config.json (padrão: ~/.kiro/crew/config.json) e depois, em Configurações → Segredos, defina a chave de API do WakaTime em Usadas automaticamente pelo {{productName}}. Obtenha uma chave em wakatime.com/settings/account.",
         "connect_title": "Conectar o WakaTime",
         "daily_average": "Média por dia",
         "export_csv": "Exportar horas (CSV)",
@@ -14686,6 +14695,11 @@
   },
   "settings": {
     "chat": {
+      "defaultMemoryMode": {
+        "description": "Persistente usa o que já sabe e salva nova memória. Anônimo usa o que sabe, mas não salva nova memória. Temporário começa em branco e não salva nada. Todos os chats continuam aparecendo no histórico. Você pode mudar o modo de qualquer chat.",
+        "label": "Modo de memória padrão",
+        "persistent": "Persistente"
+      },
       "plainDiff": {
         "description": "Exibe os diffs como texto unified diff sem realce de sintaxe. Usa menos memória em diffs grandes.",
         "label": "Diffs em texto simples"
@@ -14780,11 +14794,36 @@
     "secrets": {
       "title": "Cofre de segredos",
       "description": "Armazene chaves de API e credenciais com segurança. Os segredos são criptografados em repouso e nunca expostos ao agente.",
+      "managed_title": "Usadas automaticamente pelo {{productName}}",
+      "managed_description": "Credenciais que o {{productName}} reconhece e usa automaticamente. Adicione ou altere os valores aqui.",
+      "jira_api_token_label": "Token de API do Jira",
+      "jira_api_token_description": "Autentica consultas de chamados do Jira para a instância configurada.",
+      "jira_global_unused_multi_host": "Não é usado pelo Jira quando vários hosts estão configurados. Defina acima a credencial de cada host ou exclua esta entrada.",
+      "jira_global_unused_host_token": "Não é usado porque a credencial do Jira específica do host tem precedência. Exclua esta entrada se não precisar mais do fallback.",
+      "jira_host_token_label": "Token de API do host Jira",
+      "jira_host_token_description": "Autentica consultas de chamados do Jira para um host configurado.",
+      "wakatime_api_key_label": "Chave de API do WakaTime",
+      "wakatime_api_key_description": "Autentica a sincronização da atividade de programação quando o WakaTime está ativado.",
+      "other_stored_title": "Outros segredos armazenados",
+      "other_stored_description": "Referencie segredos armazenados pelo nome exato como secret://NAME em uma configuração de servidor MCP ou credencial .env.",
+      "managed_config_error": "Algumas credenciais automáticas estão ocultas porque não foi possível ler $KIROCREW_HOME/config.json (padrão: ~/.kiro/crew/config.json).",
+      "managed_name_hint": "Salvar aqui atualiza {{name}} na seção de credenciais automáticas. — {{productName}}",
+      "stored_title": "Segredos armazenados",
+      "managed_unconfigured_hint": "Para usar WakaTime ou Jira automaticamente, ative o WakaTime ou adicione um host do Jira em $KIROCREW_HOME/config.json (padrão: ~/.kiro/crew/config.json).",
+      "managed_setup_guide": "Abrir o guia de configuração de segredos",
+      "delete_managed_confirm": "Excluir “{{name}}” permanentemente? O valor atual não pode ser recuperado.",
+      "delete_managed_name": "Excluir {{name}}",
+      "save_managed_name": "Salvar {{name}}",
+      "managed_value_placeholder": "Cole o valor do segredo",
+      "wakatime_setup_link": "Abrir configurações da chave de API do WakaTime",
+      "saved": "Salvo",
+      "name_placeholder": "MY_API_KEY",
+      "value_placeholder": "sk-...",
       "no_secrets": "Nenhum segredo armazenado.",
       "add_secret": "Adicionar segredo",
       "name_label": "Nome",
       "value_label": "Valor",
-      "delete_confirm": "Excluir este segredo?",
+      "delete_confirm": "Excluir “{{name}}” permanentemente? O valor atual não pode ser recuperado.",
       "delete": "Excluir",
       "cancel": "Cancelar",
       "save": "Salvar",
@@ -14795,7 +14834,8 @@
       "secret_value_aria": "Valor do segredo",
       "save_error": "Não foi possível salvar o segredo: {{error}}",
       "delete_error": "Não foi possível excluir o segredo: {{error}}",
-      "load_error": "Não foi possível carregar os segredos: {{error}}"
+      "load_error": "Não foi possível carregar os segredos: {{error}}",
+      "wakatime_unused_hint": "Não é usado enquanto o WakaTime está desativado. Ative o WakaTime ou exclua esta entrada."
     }
   },
   "store": {

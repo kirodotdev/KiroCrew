@@ -2994,6 +2994,182 @@ class TestWidgetDensityRoundTrip:
         assert loaded.dashboard.widget_density == "less"
 
 
+class TestDefaultMemoryModeRoundTrip:
+    """Tests for dashboard.default_memory_mode persistence."""
+
+    def test_defaults_to_persistent(self) -> None:
+        cfg = _load_from_dict({})
+        assert cfg.dashboard.default_memory_mode == "persistent"
+
+    def test_loads_from_config(self) -> None:
+        cfg = _load_from_dict({"dashboard": {"default_memory_mode": "incognito"}})
+        assert cfg.dashboard.default_memory_mode == "incognito"
+
+    def test_invalid_value_falls_back_to_temporary(self) -> None:
+        cfg = _load_from_dict({"dashboard": {"default_memory_mode": "surprise"}})
+        assert cfg.dashboard.default_memory_mode == "temporary"
+
+    def test_malformed_dashboard_section_falls_back_to_temporary(self) -> None:
+        cfg = _load_from_dict({"dashboard": "not-an-object"})
+        assert cfg.dashboard.default_memory_mode == "temporary"
+
+    def test_unreadable_config_falls_back_to_temporary(self) -> None:
+        cfg = _load_from_dict("not valid json {{{")
+        assert cfg.dashboard.default_memory_mode == "temporary"
+
+    def test_invalid_value_fails_closed_before_schema_validation(self) -> None:
+        """Schema cleanup must not erase corruption into the Persistent default."""
+
+        def assert_normalized(data: dict) -> dict:
+            assert data["dashboard"]["default_memory_mode"] == "temporary"
+            return data
+
+        with unittest.mock.patch(
+            "kiro_crew.config.loader._validate_config_data",
+            side_effect=assert_normalized,
+        ):
+            cfg = _load_from_dict({"dashboard": {"default_memory_mode": "surprise"}})
+
+        assert cfg.dashboard.default_memory_mode == "temporary"
+
+    def test_locked_write_invalidates_unchanged_fingerprint_cache(self, tmp_path: Path) -> None:
+        """A successful PUT-equivalent write must be visible with a coarse fingerprint."""
+        from kiro_crew.config.loader import (
+            _invalidate_config_cache,
+            update_config_locked,
+            write_config_atomically,
+        )
+
+        cfg_file = tmp_path / "config.json"
+        local_file = tmp_path / "config.local.json"
+        write_config_atomically(
+            cfg_file,
+            {
+                "agents": {"default": {"kiro_agent": "kirocrew"}},
+                "default_agent": "default",
+                "workspaces": {"default": {"dir": "~/workspace"}},
+                "dashboard": {"default_memory_mode": "incognito"},
+            },
+        )
+        _invalidate_config_cache()
+        try:
+            with (
+                unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=cfg_file),
+                unittest.mock.patch(
+                    "kiro_crew.config.loader.config_local_path", return_value=local_file
+                ),
+                unittest.mock.patch(
+                    "kiro_crew.config.loader._config_fingerprint",
+                    return_value=(("coarse-filesystem", 1, 1, 0o600),),
+                ),
+            ):
+                assert KiroCrewConfig.load().dashboard.default_memory_mode == "incognito"
+
+                def select_temporary(data: dict) -> dict:
+                    data.setdefault("dashboard", {})["default_memory_mode"] = "temporary"
+                    return data
+
+                update_config_locked(
+                    cfg_file,
+                    mutate=select_temporary,
+                    stamp_meta=False,
+                )
+                assert KiroCrewConfig.load().dashboard.default_memory_mode == "temporary"
+        finally:
+            _invalidate_config_cache()
+
+    def test_inflight_reader_cannot_restore_stale_cache_after_write(self, tmp_path: Path) -> None:
+        """A pre-write read cannot publish after a same-fingerprint write completes."""
+        from kiro_crew.config.loader import (
+            _invalidate_config_cache,
+            update_config_locked,
+            write_config_atomically,
+        )
+
+        cfg_file = tmp_path / "config.json"
+        local_file = tmp_path / "config.local.json"
+        write_config_atomically(
+            cfg_file,
+            {
+                "agents": {"default": {"kiro_agent": "kirocrew"}},
+                "default_agent": "default",
+                "workspaces": {"default": {"dir": "~/workspace"}},
+                "dashboard": {"default_memory_mode": "incognito"},
+            },
+        )
+        _invalidate_config_cache()
+
+        real_read_text = Path.read_text
+        old_read = threading.Event()
+        release_read = threading.Event()
+        blocked = {"done": False}
+        observed: list[str] = []
+        errors: list[BaseException] = []
+        reader: threading.Thread | None = None
+
+        def read_then_wait(self_path: Path, *args, **kwargs) -> str:
+            content = real_read_text(self_path, *args, **kwargs)
+            if self_path == cfg_file and not blocked["done"]:
+                blocked["done"] = True
+                old_read.set()
+                if not release_read.wait(timeout=5):
+                    raise TimeoutError("config write did not release the blocked reader")
+            return content
+
+        def load_during_write() -> None:
+            try:
+                observed.append(KiroCrewConfig.load().dashboard.default_memory_mode)
+            except BaseException as exc:  # pragma: no cover - surfaced below
+                errors.append(exc)
+
+        try:
+            with (
+                unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=cfg_file),
+                unittest.mock.patch(
+                    "kiro_crew.config.loader.config_local_path", return_value=local_file
+                ),
+                unittest.mock.patch(
+                    "kiro_crew.config.loader._config_fingerprint",
+                    return_value=(("coarse-filesystem", 1, 1, 0o600),),
+                ),
+                unittest.mock.patch.object(Path, "read_text", read_then_wait),
+            ):
+                reader = threading.Thread(target=load_during_write)
+                reader.start()
+                assert old_read.wait(timeout=5), "reader did not capture the pre-write config"
+
+                def select_temporary(data: dict) -> dict:
+                    data.setdefault("dashboard", {})["default_memory_mode"] = "temporary"
+                    return data
+
+                update_config_locked(
+                    cfg_file,
+                    mutate=select_temporary,
+                    stamp_meta=False,
+                )
+                release_read.set()
+                reader.join(timeout=5)
+                assert not reader.is_alive(), "blocked config reader did not finish"
+                assert not errors
+                assert observed == ["incognito"]
+                assert KiroCrewConfig.load().dashboard.default_memory_mode == "temporary"
+        finally:
+            release_read.set()
+            if reader is not None:
+                reader.join(timeout=5)
+            _invalidate_config_cache()
+
+    def test_survives_save_load(self, tmp_path: Path) -> None:
+        from unittest.mock import patch
+
+        cfg = _load_from_dict({"dashboard": {"default_memory_mode": "temporary"}})
+        cfg_file = tmp_path / "config.json"
+        with patch("kiro_crew.config.loader.config_path", return_value=cfg_file):
+            cfg.save()
+            loaded = KiroCrewConfig.load()
+        assert loaded.dashboard.default_memory_mode == "temporary"
+
+
 class TestArchiveRetentionDays:
     """session.archive_retention_days parsing and disable sentinel."""
 
@@ -3131,6 +3307,56 @@ class TestConfigCache:
             _os.utime(cfg_file, ns=(st.st_atime_ns + 1_000_000_000, st.st_mtime_ns + 1_000_000_000))
             second = KiroCrewConfig.load()
         assert second.agent.model == "model-bbbb"
+
+    def test_atomic_replacement_identity_busts_same_size_fingerprint(self, tmp_path: Path) -> None:
+        """Atomic mode writes differ even when legacy fingerprint fields match."""
+        import os as _os
+        from unittest.mock import patch
+
+        from kiro_crew.config.loader import (
+            _config_fingerprint,
+            update_config_locked,
+            write_config_atomically,
+        )
+
+        cfg_file = tmp_path / "config.json"
+        local = tmp_path / "config.local.json"
+        document = {
+            **self._CANON,
+            "dashboard": {"default_memory_mode": "incognito"},
+        }
+        with (
+            patch("kiro_crew.config.loader.config_path", return_value=cfg_file),
+            patch("kiro_crew.config.loader.config_local_path", return_value=local),
+        ):
+            write_config_atomically(cfg_file, document)
+            before_stat = cfg_file.stat()
+            before = _config_fingerprint()
+
+            def select_temporary(data: dict) -> dict:
+                data["dashboard"]["default_memory_mode"] = "temporary"
+                return data
+
+            update_config_locked(
+                cfg_file,
+                mutate=select_temporary,
+                stamp_meta=False,
+            )
+            after_write = cfg_file.stat()
+            assert after_write.st_size == before_stat.st_size
+            assert after_write.st_mode == before_stat.st_mode
+            _os.utime(
+                cfg_file,
+                ns=(after_write.st_atime_ns, before_stat.st_mtime_ns),
+            )
+            after = _config_fingerprint()
+
+        # mtime, size, and mode are deliberately identical: the old fingerprint
+        # would have reused another process's stale cache. Device/inode/ctime
+        # replacement identity must still distinguish the atomic write.
+        assert before[0][4:] == after[0][4:]
+        assert before[0][1:4] != after[0][1:4]
+        assert before != after
 
     def test_save_invalidates_cache(self, tmp_path: Path) -> None:
         """save() must drop the cache so the next load sees the written value."""

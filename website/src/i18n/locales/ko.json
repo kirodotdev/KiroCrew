@@ -5986,6 +5986,13 @@
       "timestamp": "타임스탬프",
       "trigger": "트리거"
     },
+    "exportSessionItem": {
+      "export_to_file": "파일로 내보내기",
+      "exported": "내보냈습니다",
+      "failed": "실패",
+      "not_saved_to_disk": "세션이 디스크에 저장되지 않음",
+      "unknown_error": "내보내기에 실패했습니다"
+    },
     "feedbackPill": {
       "insider": "Insider",
       "nightly": "Nightly",
@@ -7744,9 +7751,11 @@
       "suggestion_summarize_chat": "이번 주 채팅 활동 요약",
       "suggestion_triage_tickets": "온콜 티켓 분류",
       "suggestion_write_design_doc": "설계 문서 작성 지원",
-      "switch_back_to_default_mode": "기본 모드로 되돌리기",
-      "switch_to_ephemeral_mode": "임시 모드로 전환",
+      "choose_memory_mode": "메모리 모드 선택",
+      "incognito_active_switch_to_persistent": "시크릿 — 영구 모드로 전환",
+      "switch_to_persistent_mode": "영구 모드로 전환",
       "temporary": "임시",
+      "temporary_active_switch_to_persistent": "임시 — 영구 모드로 전환",
       "temporary_desc": "백지 상태 — 메모리 읽기와 쓰기 없음",
       "try_create_a_plan_to_analyze_kirocrew_code_packa": "예시: ‘{{productName}} 코드 패키지를 분석하고 주요 구성 요소별 파일 수를 보고하는 계획을 만드세요’",
       "what_can_i_do_for_you": "무엇을 도와드릴까요?"
@@ -11664,7 +11673,7 @@
         "active_projects": "작업한 프로젝트",
         "coding_time": "코딩 시간",
         "connect_body": "WakaTime은 편집기에서 코딩에 쓴 시간을 기록하는 무료 도구입니다.",
-        "connect_hint": "설정에서 WAKATIME_API_KEY 시크릿을 추가하고 구성에서 wakatime.enabled를 true로 설정하세요. 키는 wakatime.com/settings/account에서 받을 수 있습니다.",
+        "connect_hint": "먼저 $KIROCREW_HOME/config.json(기본값: ~/.kiro/crew/config.json)에서 wakatime.enabled를 true로 설정한 다음 설정 → 시크릿의 ‘{{productName}}에서 자동 사용’에서 WakaTime API 키를 설정하세요. 키는 wakatime.com/settings/account에서 받을 수 있습니다.",
         "connect_title": "WakaTime 연결",
         "daily_average": "하루 평균",
         "export_csv": "시간 내보내기(CSV)",
@@ -14308,6 +14317,11 @@
   },
   "settings": {
     "chat": {
+      "defaultMemoryMode": {
+        "description": "영구 모드는 이미 아는 내용을 사용하고 새 메모리를 저장합니다. 시크릿 모드는 아는 내용을 사용하지만 새 메모리를 저장하지 않습니다. 임시 모드는 빈 상태로 시작하고 아무것도 저장하지 않습니다. 모든 채팅은 기록에 계속 표시됩니다. 각 채팅의 모드를 바꿀 수 있습니다.",
+        "label": "기본 메모리 모드",
+        "persistent": "영구"
+      },
       "plainDiff": {
         "description": "차이를 구문 강조 없이 일반 unified diff 텍스트로 표시합니다. 큰 diff에서 메모리를 덜 사용합니다.",
         "label": "일반 diff"
@@ -14402,11 +14416,36 @@
     "secrets": {
       "title": "비밀 저장소",
       "description": "API 키와 자격 증명을 안전하게 저장합니다. 비밀은 암호화되어 저장되며 에이전트에 노출되지 않습니다.",
+      "managed_title": "{{productName}}에서 자동 사용",
+      "managed_description": "{{productName}}에서 인식하고 자동으로 사용하는 자격 증명입니다. 여기에서 값을 추가하거나 교체하세요.",
+      "jira_api_token_label": "Jira API 토큰",
+      "jira_api_token_description": "구성된 인스턴스의 Jira 이슈 조회를 인증합니다.",
+      "jira_global_unused_multi_host": "여러 호스트가 구성된 동안에는 Jira에서 사용되지 않습니다. 위에서 각 호스트의 자격 증명을 설정하거나 이 항목을 삭제하세요.",
+      "jira_global_unused_host_token": "호스트별 Jira 자격 증명이 우선하므로 사용되지 않습니다. 대체 항목이 더 이상 필요하지 않으면 이 항목을 삭제하세요.",
+      "jira_host_token_label": "Jira 호스트 API 토큰",
+      "jira_host_token_description": "구성된 호스트 하나의 Jira 이슈 조회를 인증합니다.",
+      "wakatime_api_key_label": "WakaTime API 키",
+      "wakatime_api_key_description": "WakaTime이 활성화된 경우 코딩 활동 동기화를 인증합니다.",
+      "other_stored_title": "기타 저장된 비밀",
+      "other_stored_description": "MCP 서버 구성 또는 .env 자격 증명 설정에서 저장된 보안 비밀의 정확한 이름을 secret://NAME으로 참조하세요.",
+      "managed_config_error": "$KIROCREW_HOME/config.json(기본값: ~/.kiro/crew/config.json)을 읽을 수 없어 일부 자동 자격 증명이 숨겨졌습니다.",
+      "managed_name_hint": "여기에 저장하면 자동 자격 증명 섹션의 {{name}} 항목이 업데이트됩니다. — {{productName}}",
+      "stored_title": "저장된 보안 비밀",
+      "managed_unconfigured_hint": "WakaTime 또는 Jira를 자동으로 사용하려면 $KIROCREW_HOME/config.json(기본값: ~/.kiro/crew/config.json)에서 WakaTime을 활성화하거나 Jira 호스트를 추가하세요.",
+      "managed_setup_guide": "시크릿 설정 가이드 열기",
+      "delete_managed_confirm": "‘{{name}}’을(를) 영구 삭제하시겠습니까? 현재 값은 복구할 수 없습니다.",
+      "delete_managed_name": "{{name}} 삭제",
+      "save_managed_name": "{{name}} 저장",
+      "managed_value_placeholder": "보안 비밀 값 붙여넣기",
+      "wakatime_setup_link": "WakaTime API 키 설정 열기",
+      "saved": "저장됨",
+      "name_placeholder": "MY_API_KEY",
+      "value_placeholder": "sk-...",
       "no_secrets": "저장된 비밀이 없습니다.",
       "add_secret": "비밀 추가",
       "name_label": "이름",
       "value_label": "값",
-      "delete_confirm": "이 비밀을 삭제하시겠습니까?",
+      "delete_confirm": "‘{{name}}’을(를) 영구 삭제하시겠습니까? 현재 값은 복구할 수 없습니다.",
       "delete": "삭제",
       "cancel": "취소",
       "save": "저장",
@@ -14417,7 +14456,8 @@
       "secret_value_aria": "시크릿 값",
       "save_error": "시크릿을 저장하지 못했습니다: {{error}}",
       "delete_error": "시크릿을 삭제하지 못했습니다: {{error}}",
-      "load_error": "시크릿을 불러오지 못했습니다: {{error}}"
+      "load_error": "시크릿을 불러오지 못했습니다: {{error}}",
+      "wakatime_unused_hint": "WakaTime이 비활성화된 동안에는 사용되지 않습니다. WakaTime을 활성화하거나 이 항목을 삭제하세요."
     }
   },
   "store": {

@@ -667,6 +667,27 @@ CLI commands and their MCP twins:
 | `kirocrew learn remove` | `learn_remove` | `kirocrew-core` |
 | `kirocrew run TASK.md` | `task_run` | `kirocrew-core` |
 | `kirocrew computer apps` | `computer_list_apps` | `kirocrew-computer` |
+| `kirocrew knowledge dedup` | `knowledge_dedup` | `kirocrew-core` |
+| `kirocrew knowledge stats` | `knowledge_list_sources` | `kirocrew-core` |
+
+The last row is the one place a twin does not share its command's name, and it is
+a placement decision rather than an oversight. A tool in `kirocrew-core` costs
+context in every request of every session for as long as the session lives, so a
+fifth knowledge tool would be advertised forever to answer a question
+`knowledge_list_sources` was already 90% of: it opens the same store, over the
+same active-items rule, to serve the same "what is in this library" purpose. The
+aggregate is a strict superset of what its own query already computed, so it
+lands as a leading totals line on that tool instead, and the CLI verb and the
+tool render ONE `aggregate_stats()` call.
+
+The rule the MCP-first section states is that the model must get a structured
+tool rather than a bash-shaped CLI command — the model has one. Two conditions
+have to hold for that reading to be honest, and both are checked in
+`test_knowledge_stats.py`: the tool must actually surface the numbers (its
+descriptor advertises them, so deferral still selects it), and the capability
+must not be one an agent should be granted SEPARATELY, which would make it a
+`kirocrew-dashboard`-shaped opt-in server instead. It is not: anyone who may list
+sources already reads this data from that store, so the counts add no reach.
 
 `kirocrew-core` tools with no CLI twin, grouped by concern (authoritative list:
 `kiro_crew.mcp_tools.build_tool_list()`, which is what `mcp_core._list_tools`
@@ -709,9 +730,10 @@ answers `tools/list` from):
   `artifact_folder_rename`, `artifact_folder_move`, `artifact_folder_delete`,
   `artifact_get_comments`, `artifact_post_comment`, `artifact_reply_comment`,
   `artifact_delete_comment`, `artifact_mark_review`, `deploy_artifact`
-- **Knowledge and skills:** `local_knowledge_search`, `knowledge_dedup`,
-  `knowledge_list_sources`, `skill_discover`, `skill_search`, `skill_fetch`,
-  `browse_outline`, `browse_search`
+- **Knowledge and skills:** `local_knowledge_search`, `knowledge_add_document`,
+  `skill_discover`, `skill_search`, `skill_fetch`,
+  `browse_outline`, `browse_search`. (`knowledge_dedup` and
+  `knowledge_list_sources` have CLI twins — see the table above.)
 - **Workflows and hooks:** `workflow_author`, `workflow_list`,
   `workflow_cancel`, `workflow_rerun_subtree`, `register_hook`
 - **Diagnostics:** `resource_status`, `issue_radar_record_investigation`,

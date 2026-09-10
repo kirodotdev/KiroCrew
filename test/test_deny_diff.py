@@ -22,11 +22,14 @@ One test stages a regression on each non-catalog tier, and another reads the tie
 list back out of ``hooks.py`` -- so the fidelity claim is pinned against the gate
 it claims to mirror rather than asserted in a comment.
 
-Two tests then run the real composite: ``base == head == HEAD`` over the fallback
-corpus must find zero regressions, and no corpus row may be refused at HEAD at
-all. Those are the properties the fakes cannot check -- that the corpus names
-operations the shipped rules actually allow, so a red on a future PR means that
-PR tightened something rather than that the corpus was wrong when written.
+Two tests then run the real composite over the corpus the gate itself classifies
+-- the security-conductor's committed ``golden-paths.json``, which is also what
+``verify_fix.py`` reads, so the fixer's acceptance gate and this one cannot judge a
+change against two corpora that disagree. ``base == head == HEAD`` must find zero
+regressions, and no corpus row may be refused at HEAD at all. Those are the
+properties the fakes cannot check -- that the corpus names operations the shipped
+rules actually allow, so a red on a future PR means that PR tightened something
+rather than that the corpus was wrong when written.
 
 The gate has no waiver mechanism to test. A row that stops being a golden path is
 withdrawn in its own pull request, which is what the base-owned corpus makes
@@ -48,7 +51,9 @@ from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "deny_diff.py"
-FALLBACK_CORPUS = ROOT / "scripts" / "deny_diff_fixture.json"
+GOLDEN_PATHS = (
+    ROOT / "src" / "kiro_crew" / "builtin_skills" / "security-conductor" / "golden-paths.json"
+)
 HOOKS = ROOT / "src" / "kiro_crew" / "hooks.py"
 
 
@@ -508,12 +513,12 @@ def test_real_composite_finds_no_regressions_between_head_and_itself():
     ref and classify it at all. Both are things the fake trees never touch.
     """
     code = deny_diff.main(
-        ["--base", "HEAD", "--head", "HEAD", "--corpus", str(FALLBACK_CORPUS), "--json"]
+        ["--base", "HEAD", "--head", "HEAD", "--corpus", str(GOLDEN_PATHS), "--json"]
     )
     assert code == 0
 
 
-def test_fallback_corpus_rows_are_all_allowed_by_the_shipped_composite(tmp_path):
+def test_corpus_rows_are_all_allowed_by_the_shipped_composite(tmp_path):
     """Stronger than the differential above: no row is refused at HEAD at all.
 
     A row refused at BOTH refs is 'unchanged' to the differential, so it would ride
@@ -521,9 +526,9 @@ def test_fallback_corpus_rows_are_all_allowed_by_the_shipped_composite(tmp_path)
     This also proves all four real tiers run outside an event loop in a hermetic
     child, which the differential alone would not show.
     """
-    rows = deny_diff.load_corpus(FALLBACK_CORPUS)
+    rows = deny_diff.load_corpus(GOLDEN_PATHS)
     shell_rows = [r for r in rows if r.kind == "shell" and r.applies_to("posix")]
-    assert shell_rows, "fallback corpus has no posix-applicable shell rows"
+    assert shell_rows, "the corpus has no posix-applicable shell rows"
 
     checkout = deny_diff.resolve_checkout(ROOT, "HEAD", tmp_path / "head")
     verdicts, absent = deny_diff.classify(

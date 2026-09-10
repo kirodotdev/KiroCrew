@@ -54,7 +54,11 @@ from kiro_crew.dashboard.chat_utils import (
 from kiro_crew.dashboard.file_index import _SKIP_DIRS as _WALK_SKIP_DIRS
 from kiro_crew.dashboard.handlers._shared import _probe_persisted_session, read_bounded_json
 from kiro_crew.dashboard.origin import is_direct_local_request
-from kiro_crew.dashboard.state import DashboardState, append_and_surface
+from kiro_crew.dashboard.state import (
+    VALID_MEMORY_MODES,
+    DashboardState,
+    append_and_surface,
+)
 from kiro_crew.doc_parser import extract_text
 from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes, safe_read_prefix
 from kiro_crew.messaging.display_safety import redact_for_display
@@ -4045,7 +4049,7 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
             )
             return body_err
         assert body is not None  # read_bounded_json returns (dict, None) on success
-        _allowed = {"restore_sessions", "restore_window_minutes", "merge_queued_messages", "widget_density", "use_builtin_browser", "verbosity", "quick_send", "session_grid", "tail_fork_enabled", "link_previews", "mcp_app_panel", "auto_open_git_panel", "folder_suggestions_enabled", "session_card_source_links"}
+        _allowed = {"restore_sessions", "restore_window_minutes", "merge_queued_messages", "default_memory_mode", "widget_density", "use_builtin_browser", "verbosity", "quick_send", "session_grid", "tail_fork_enabled", "link_previews", "mcp_app_panel", "auto_open_git_panel", "folder_suggestions_enabled", "session_card_source_links"}
         # One-release backward-compat shim for removed key; delete after all clients update.
         deprecated_ignored_keys = {"tail_fork_head_handling"}
         # Read-only keys the GET exposes: both settings surfaces save with
@@ -4098,6 +4102,23 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
                     {"error": "merge_queued_messages must be a boolean"}, status=400
                 )
             updates["merge_queued_messages"] = val
+        if "default_memory_mode" in body:
+            val = body["default_memory_mode"]
+            if val not in VALID_MEMORY_MODES:
+                _sel().log_tool_invocation(
+                    session_key="dashboard",
+                    tool_name="dashboard_config_write",
+                    outcome="failure",
+                )
+                return web.json_response(
+                    {
+                        "error": "default_memory_mode must be 'persistent', "
+                        "'incognito' or 'temporary'",
+                        "code": "invalid_default_memory_mode",
+                    },
+                    status=400,
+                )
+            updates["default_memory_mode"] = val
         if "widget_density" in body:
             val = body["widget_density"]
             if val not in ("more", "less"):
@@ -4362,6 +4383,7 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
             "restore_sessions": cfg.dashboard.restore_sessions,
             "restore_window_minutes": cfg.dashboard.restore_window_minutes,
             "merge_queued_messages": cfg.dashboard.merge_queued_messages,
+            "default_memory_mode": cfg.dashboard.default_memory_mode,
             "widget_density": cfg.dashboard.widget_density,
             "use_builtin_browser": cfg.dashboard.use_builtin_browser,
             "verbosity": cfg.dashboard.verbosity,

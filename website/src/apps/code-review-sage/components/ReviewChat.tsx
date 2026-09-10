@@ -153,7 +153,7 @@ export default function ReviewChat(
       // is given, so sending them again on a continue would revert a session the
       // user has since renamed or moved into a folder of their own.
       const slot = await api.createChatSlot(
-        prep.slot_key, prep.agent, undefined, undefined, undefined,
+        prep.slot_key, prep.agent, undefined, undefined, 'persistent',
         alreadyOpen ? undefined : prep.title, undefined, undefined,
         alreadyOpen ? undefined : (prep.folder_id || undefined),
       )

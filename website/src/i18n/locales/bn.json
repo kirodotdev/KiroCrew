@@ -6082,6 +6082,13 @@
       "timestamp": "টাইমস্ট্যাম্প",
       "trigger": "ট্রিগার"
     },
+    "exportSessionItem": {
+      "export_to_file": "একটি ফাইলে এক্সপোর্ট করুন",
+      "exported": "এক্সপোর্ট হয়েছে",
+      "failed": "ব্যর্থ",
+      "not_saved_to_disk": "সেশন ডিস্কে সংরক্ষিত নয়",
+      "unknown_error": "এক্সপোর্ট ব্যর্থ হয়েছে"
+    },
     "feedbackPill": {
       "insider": "Insider বিল্ড",
       "nightly": "Nightly বিল্ড",
@@ -7855,9 +7862,11 @@
       "suggestion_summarize_chat": "এই সপ্তাহের চ্যাট কার্যকলাপের সারসংক্ষেপ দিন",
       "suggestion_triage_tickets": "আমার অন-কল টিকিট ট্রায়াজ করুন",
       "suggestion_write_design_doc": "একটি ডিজাইন ডকুমেন্ট লিখতে আমাকে সাহায্য করুন",
-      "switch_back_to_default_mode": "ডিফল্ট মোডে ফিরে যাও",
-      "switch_to_ephemeral_mode": "ক্ষণস্থায়ী মোডে যাও",
+      "choose_memory_mode": "মেমরি মোড বেছে নিন",
+      "incognito_active_switch_to_persistent": "ছদ্মবেশী — স্থায়ী মোডে বদলান",
+      "switch_to_persistent_mode": "স্থায়ী মোডে বদলান",
       "temporary": "অস্থায়ী",
+      "temporary_active_switch_to_persistent": "অস্থায়ী — স্থায়ী মোডে বদলান",
       "temporary_desc": "নতুন শুরু — মেমরিতে পড়া বা লেখা হবে না",
       "try_create_a_plan_to_analyze_kirocrew_code_packa": "যেমন: “{{productName}} কোড প্যাকেজ বিশ্লেষণ করে প্রধান কম্পোনেন্ট অনুযায়ী ফাইলের সংখ্যা জানানোর একটি প্ল্যান তৈরি করো”",
       "what_can_i_do_for_you": "তোমার জন্য কী করতে পারি?"
@@ -11830,7 +11839,7 @@
         "active_projects": "আপনি যে প্রকল্পগুলোতে কাজ করেছেন",
         "coding_time": "কোডিং সময়",
         "connect_body": "WakaTime একটি বিনামূল্যের টুল যা আপনার এডিটরে কোডিংয়ে ব্যয় করা সময় রেকর্ড করে।",
-        "connect_hint": "সেটিংসে WAKATIME_API_KEY নামে একটি সিক্রেট যোগ করুন এবং আপনার কনফিগে wakatime.enabled true করুন। wakatime.com/settings/account থেকে একটি কী নিন।",
+        "connect_hint": "প্রথমে $KIROCREW_HOME/config.json (ডিফল্ট ~/.kiro/crew/config.json)-এ wakatime.enabled true করুন, তারপর সেটিংস → সিক্রেটসে “{{productName}} স্বয়ংক্রিয়ভাবে ব্যবহার করে” অংশে WakaTime API কী সেট করুন। wakatime.com/settings/account থেকে একটি কী নিন।",
         "connect_title": "WakaTime সংযুক্ত করুন",
         "daily_average": "দৈনিক গড়",
         "export_csv": "ঘণ্টা এক্সপোর্ট করুন (CSV)",
@@ -14498,6 +14507,11 @@
   },
   "settings": {
     "chat": {
+      "defaultMemoryMode": {
+        "description": "স্থায়ী মোড আগের জানা তথ্য ব্যবহার করে এবং নতুন মেমরি সংরক্ষণ করে। ছদ্মবেশী মোড জানা তথ্য ব্যবহার করে, কিন্তু নতুন মেমরি সংরক্ষণ করে না। অস্থায়ী মোড খালি অবস্থা থেকে শুরু করে এবং কিছু সংরক্ষণ করে না। সব চ্যাট এখনও ইতিহাসে দেখা যাবে। যেকোনো চ্যাটের মোড বদলানো যায়।",
+        "label": "ডিফল্ট মেমরি মোড",
+        "persistent": "স্থায়ী"
+      },
       "plainDiff": {
         "description": "পার্থক্য সিনট্যাক্স হাইলাইট ছাড়া সাধারণ unified diff টেক্সট হিসেবে দেখান। বড় diff-এ কম মেমরি লাগে।",
         "label": "সাধারণ diff"
@@ -14592,11 +14606,36 @@
     "secrets": {
       "title": "সিক্রেট ভল্ট",
       "description": "API কী এবং শংসাপত্র নিরাপদে সংরক্ষণ করুন। সিক্রেটগুলি এনক্রিপ্ট করা হয় এবং এজেন্টের কাছে কখনই প্রকাশিত হয় না।",
+      "managed_title": "{{productName}} স্বয়ংক্রিয়ভাবে ব্যবহার করে",
+      "managed_description": "{{productName}} যে ক্রেডেনশিয়াল স্বয়ংক্রিয়ভাবে চিনে ও ব্যবহার করে। এখানে মান যোগ বা পরিবর্তন করুন।",
+      "jira_api_token_label": "Jira API টোকেন",
+      "jira_api_token_description": "কনফিগার করা ইনস্ট্যান্সের Jira ইস্যু অনুসন্ধান প্রমাণীকরণ করে।",
+      "jira_global_unused_multi_host": "একাধিক হোস্ট কনফিগার থাকলে Jira এটি ব্যবহার করে না। উপরে প্রতিটি হোস্টের ক্রেডেনশিয়াল সেট করুন, অথবা এই এন্ট্রি মুছুন।",
+      "jira_global_unused_host_token": "হোস্ট-নির্দিষ্ট Jira ক্রেডেনশিয়াল অগ্রাধিকার পাওয়ায় এটি ব্যবহার করা হয় না। ফলব্যাকটি আর দরকার না হলে এই এন্ট্রি মুছুন।",
+      "jira_host_token_label": "Jira হোস্ট API টোকেন",
+      "jira_host_token_description": "একটি কনফিগার করা হোস্টের Jira ইস্যু অনুসন্ধান প্রমাণীকরণ করে।",
+      "wakatime_api_key_label": "WakaTime API কী",
+      "wakatime_api_key_description": "WakaTime সক্রিয় থাকলে কোডিং কার্যকলাপ সিঙ্ক প্রমাণীকরণ করে।",
+      "other_stored_title": "অন্যান্য সংরক্ষিত সিক্রেট",
+      "other_stored_description": "MCP সার্ভার কনফিগারেশন বা .env শংসাপত্র সেটিং থেকে সঠিক নামটি secret://NAME হিসেবে উল্লেখ করুন।",
+      "managed_config_error": "$KIROCREW_HOME/config.json (ডিফল্ট ~/.kiro/crew/config.json) পড়া যায়নি বলে কিছু স্বয়ংক্রিয় ক্রেডেনশিয়াল লুকানো আছে।",
+      "managed_name_hint": "এখানে সংরক্ষণ করলে স্বয়ংক্রিয় শংসাপত্র বিভাগে {{name}} আপডেট হবে। — {{productName}}",
+      "stored_title": "সংরক্ষিত সিক্রেট",
+      "managed_unconfigured_hint": "WakaTime বা Jira স্বয়ংক্রিয়ভাবে ব্যবহার করতে $KIROCREW_HOME/config.json (ডিফল্ট ~/.kiro/crew/config.json)-এ WakaTime সক্রিয় করুন বা Jira হোস্ট যোগ করুন।",
+      "managed_setup_guide": "সিক্রেট সেটআপ গাইড খুলুন",
+      "delete_managed_confirm": "“{{name}}” স্থায়ীভাবে মুছবেন? বর্তমান মানটি পুনরুদ্ধার করা যাবে না।",
+      "delete_managed_name": "{{name}} মুছুন",
+      "save_managed_name": "{{name}} সংরক্ষণ করুন",
+      "managed_value_placeholder": "সিক্রেট মান পেস্ট করুন",
+      "wakatime_setup_link": "WakaTime API কী সেটিংস খুলুন",
+      "saved": "সংরক্ষিত",
+      "name_placeholder": "MY_API_KEY",
+      "value_placeholder": "sk-...",
       "no_secrets": "এখনও কোনো সিক্রেট সংরক্ষিত নেই।",
       "add_secret": "সিক্রেট যোগ করুন",
       "name_label": "নাম",
       "value_label": "মান",
-      "delete_confirm": "এই সিক্রেটটি মুছবেন?",
+      "delete_confirm": "“{{name}}” স্থায়ীভাবে মুছবেন? বর্তমান মানটি পুনরুদ্ধার করা যাবে না।",
       "delete": "মুছুন",
       "cancel": "বাতিল",
       "save": "সংরক্ষণ",
@@ -14607,7 +14646,8 @@
       "secret_value_aria": "সিক্রেটের মান",
       "save_error": "সিক্রেট সংরক্ষণ করা যায়নি: {{error}}",
       "delete_error": "সিক্রেট মুছে ফেলা যায়নি: {{error}}",
-      "load_error": "সিক্রেট লোড করা যায়নি: {{error}}"
+      "load_error": "সিক্রেট লোড করা যায়নি: {{error}}",
+      "wakatime_unused_hint": "WakaTime নিষ্ক্রিয় থাকলে এটি ব্যবহার করা হয় না। WakaTime সক্রিয় করুন বা এই এন্ট্রি মুছুন।"
     }
   },
   "store": {

@@ -6082,6 +6082,13 @@
       "timestamp": "टाइमस्टैम्प",
       "trigger": "ट्रिगर"
     },
+    "exportSessionItem": {
+      "export_to_file": "फ़ाइल में एक्सपोर्ट करें",
+      "exported": "एक्सपोर्ट किया गया",
+      "failed": "विफल",
+      "not_saved_to_disk": "सत्र डिस्क पर सहेजा नहीं गया",
+      "unknown_error": "एक्सपोर्ट विफल रहा"
+    },
     "feedbackPill": {
       "insider": "Insider बिल्ड",
       "nightly": "Nightly बिल्ड",
@@ -7855,9 +7862,11 @@
       "suggestion_summarize_chat": "इस सप्ताह की चैट गतिविधि का सारांश दें",
       "suggestion_triage_tickets": "मेरे ऑन-कॉल टिकट का ट्राइएज करें",
       "suggestion_write_design_doc": "डिज़ाइन दस्तावेज़ लिखने में मेरी मदद करें",
-      "switch_back_to_default_mode": "डिफ़ॉल्ट मोड पर वापस जाएँ",
-      "switch_to_ephemeral_mode": "अस्थायी मोड पर जाएँ",
+      "choose_memory_mode": "मेमोरी मोड चुनें",
+      "incognito_active_switch_to_persistent": "गुप्त — स्थायी मोड पर जाएँ",
+      "switch_to_persistent_mode": "स्थायी मोड पर जाएँ",
       "temporary": "अस्थायी",
+      "temporary_active_switch_to_persistent": "अस्थायी — स्थायी मोड पर जाएँ",
       "temporary_desc": "नई शुरुआत — मेमोरी पढ़ना या लिखना नहीं",
       "try_create_a_plan_to_analyze_kirocrew_code_packa": "आज़माएँ: “{{productName}} कोड पैकेज का विश्लेषण करने और प्रमुख घटकों के अनुसार फ़ाइल संख्या बताने के लिए एक योजना बनाएँ”",
       "what_can_i_do_for_you": "तुम्हारे लिए क्या कर सकता हूँ?"
@@ -11830,7 +11839,7 @@
         "active_projects": "जिन परियोजनाओं पर तुमने काम किया",
         "coding_time": "कोडिंग समय",
         "connect_body": "WakaTime एक मुफ़्त टूल है जो तुम्हारे एडिटर में कोडिंग में बिताए गए समय को दर्ज करता है।",
-        "connect_hint": "सेटिंग्स में WAKATIME_API_KEY नाम का एक सीक्रेट जोड़ो और अपने कॉन्फ़िग में wakatime.enabled को true करो। कुंजी wakatime.com/settings/account पर लो।",
+        "connect_hint": "पहले $KIROCREW_HOME/config.json (डिफ़ॉल्ट: ~/.kiro/crew/config.json) में wakatime.enabled को true करें, फिर सेटिंग्स → सीक्रेट्स में “{{productName}} द्वारा अपने आप उपयोग किए जाते हैं” के तहत WakaTime API कुंजी सेट करें। कुंजी wakatime.com/settings/account पर लें।",
         "connect_title": "WakaTime कनेक्ट करो",
         "daily_average": "प्रतिदिन औसत",
         "export_csv": "घंटे निर्यात करो (CSV)",
@@ -14498,6 +14507,11 @@
   },
   "settings": {
     "chat": {
+      "defaultMemoryMode": {
+        "description": "स्थायी मोड पहले से ज्ञात जानकारी का उपयोग करता है और नई मेमोरी सहेजता है। गुप्त मोड ज्ञात जानकारी का उपयोग करता है, लेकिन नई मेमोरी नहीं सहेजता। अस्थायी मोड खाली शुरू होता है और कुछ नहीं सहेजता। सभी चैट इतिहास में दिखाई देती रहती हैं। किसी भी चैट का मोड बदला जा सकता है।",
+        "label": "डिफ़ॉल्ट मेमोरी मोड",
+        "persistent": "स्थायी"
+      },
       "plainDiff": {
         "description": "अंतर को सिंटैक्स हाइलाइटिंग के बिना सामान्य unified diff टेक्स्ट के रूप में दिखाएँ। बड़े diff में कम मेमोरी लगती है।",
         "label": "सादा diff"
@@ -14592,11 +14606,36 @@
     "secrets": {
       "title": "सीक्रेट वॉल्ट",
       "description": "API कुंजियाँ और क्रेडेंशियल सुरक्षित रूप से संग्रहीत करें। सीक्रेट एन्क्रिप्ट किए जाते हैं और एजेंट को कभी नहीं दिखाए जाते।",
+      "managed_title": "{{productName}} द्वारा अपने आप उपयोग किए जाते हैं",
+      "managed_description": "वे क्रेडेंशियल जिन्हें {{productName}} पहचानता और अपने आप उपयोग करता है। उनके मान यहाँ जोड़ें या बदलें।",
+      "jira_api_token_label": "Jira API टोकन",
+      "jira_api_token_description": "कॉन्फ़िगर किए गए इंस्टेंस के लिए Jira समस्या खोज को प्रमाणित करता है।",
+      "jira_global_unused_multi_host": "एक से अधिक होस्ट कॉन्फ़िगर होने पर Jira इसका उपयोग नहीं करता। ऊपर हर होस्ट का क्रेडेंशियल सेट करें या यह प्रविष्टि हटाएँ।",
+      "jira_global_unused_host_token": "होस्ट-विशिष्ट Jira क्रेडेंशियल को प्राथमिकता मिलने के कारण इसका उपयोग नहीं होता। फ़ॉलबैक की ज़रूरत न हो तो यह प्रविष्टि हटाएँ।",
+      "jira_host_token_label": "Jira होस्ट API टोकन",
+      "jira_host_token_description": "एक कॉन्फ़िगर किए गए होस्ट के लिए Jira समस्या खोज को प्रमाणित करता है।",
+      "wakatime_api_key_label": "WakaTime API कुंजी",
+      "wakatime_api_key_description": "WakaTime सक्षम होने पर कोडिंग गतिविधि सिंक को प्रमाणित करती है।",
+      "other_stored_title": "अन्य संग्रहीत सीक्रेट",
+      "other_stored_description": "MCP सर्वर कॉन्फ़िगरेशन या .env क्रेडेंशियल सेटिंग से सटीक नाम को secret://NAME के रूप में संदर्भित करें।",
+      "managed_config_error": "$KIROCREW_HOME/config.json (डिफ़ॉल्ट: ~/.kiro/crew/config.json) पढ़ा नहीं जा सका, इसलिए कुछ स्वचालित क्रेडेंशियल छिपे हैं।",
+      "managed_name_hint": "यहाँ सहेजने पर स्वचालित क्रेडेंशियल अनुभाग में {{name}} अपडेट होता है। — {{productName}}",
+      "stored_title": "संग्रहीत सीक्रेट",
+      "managed_unconfigured_hint": "WakaTime या Jira को अपने आप उपयोग करने के लिए $KIROCREW_HOME/config.json (डिफ़ॉल्ट: ~/.kiro/crew/config.json) में WakaTime सक्षम करें या Jira होस्ट जोड़ें।",
+      "managed_setup_guide": "सीक्रेट सेटअप गाइड खोलें",
+      "delete_managed_confirm": "“{{name}}” को स्थायी रूप से हटाएँ? मौजूदा मान वापस नहीं पाया जा सकता।",
+      "delete_managed_name": "{{name}} हटाएँ",
+      "save_managed_name": "{{name}} सहेजें",
+      "managed_value_placeholder": "सीक्रेट मान पेस्ट करें",
+      "wakatime_setup_link": "WakaTime API कुंजी सेटिंग खोलें",
+      "saved": "सहेजा गया",
+      "name_placeholder": "MY_API_KEY",
+      "value_placeholder": "sk-...",
       "no_secrets": "अभी तक कोई सीक्रेट संग्रहीत नहीं है।",
       "add_secret": "सीक्रेट जोड़ें",
       "name_label": "नाम",
       "value_label": "मान",
-      "delete_confirm": "इस सीक्रेट को हटाएँ?",
+      "delete_confirm": "“{{name}}” को स्थायी रूप से हटाएँ? मौजूदा मान वापस नहीं पाया जा सकता।",
       "delete": "हटाएँ",
       "cancel": "रद्द करें",
       "save": "सहेजें",
@@ -14607,7 +14646,8 @@
       "secret_value_aria": "सीक्रेट का मान",
       "save_error": "सीक्रेट सहेजा नहीं जा सका: {{error}}",
       "delete_error": "सीक्रेट हटाया नहीं जा सका: {{error}}",
-      "load_error": "सीक्रेट लोड नहीं हो सके: {{error}}"
+      "load_error": "सीक्रेट लोड नहीं हो सके: {{error}}",
+      "wakatime_unused_hint": "WakaTime अक्षम होने पर इसका उपयोग नहीं होता। WakaTime सक्षम करें या यह प्रविष्टि हटाएँ।"
     }
   },
   "store": {

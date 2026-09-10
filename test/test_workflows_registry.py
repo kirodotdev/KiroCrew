@@ -147,6 +147,30 @@ async def test_list_newest_first_and_running_not_evicted() -> None:
     assert runs[0]["run_id"] == "wf_l2"  # newest first
 
 
+async def test_list_is_compact_no_result_payload() -> None:
+    """The list view never ships result payloads.
+
+    A finished run's result can be hundreds of KB. The payload rides only on
+    the detail snapshot (``status``/``result``), and the ``on_done``
+    completion snapshot keeps it too.
+    """
+    reg = RunRegistry()
+    done_snapshots: list[dict] = []
+    reg.set_on_done(lambda _rid, snap: done_snapshots.append(snap))
+    runner = WorkflowRunner(agent_fn=_echo, audit=lambda *a, **k: None)
+    rid = await runner.run_background(GOOD, registry=reg, run_id="wf_c1", now=NOW, name="d")
+    await _wait_terminal(reg, rid)
+
+    (row,) = reg.list()
+    assert "result" not in row
+
+    # The detail snapshot (compact-or-full) still carries the payload …
+    assert reg.status(rid)["result"] == {"done": True}
+    assert reg.status(rid, include_events=True)["result"] == {"done": True}
+    # … and so does the completion-injection snapshot.
+    assert done_snapshots and done_snapshots[0]["result"] == {"done": True}
+
+
 async def test_cancel_unknown_run_is_false() -> None:
     reg = RunRegistry()
     assert await reg.cancel("nope") is False

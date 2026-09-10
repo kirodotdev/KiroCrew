@@ -6274,6 +6274,13 @@
       "timestamp": "Время",
       "trigger": "Триггер"
     },
+    "exportSessionItem": {
+      "export_to_file": "Экспортировать в файл",
+      "exported": "Экспортировано",
+      "failed": "Ошибка",
+      "not_saved_to_disk": "сеанс не сохранён на диск",
+      "unknown_error": "Не удалось выполнить экспорт"
+    },
     "feedbackPill": {
       "insider": "Сборка Insider",
       "nightly": "Сборка Nightly",
@@ -8077,9 +8084,11 @@
       "suggestion_summarize_chat": "Подвести итоги активности в чате за эту неделю",
       "suggestion_triage_tickets": "Разобрать мои дежурные тикеты",
       "suggestion_write_design_doc": "Помочь мне написать проектный документ",
-      "switch_back_to_default_mode": "Вернуться в обычный режим",
-      "switch_to_ephemeral_mode": "Переключиться в одноразовый режим",
+      "choose_memory_mode": "Выбрать режим памяти",
+      "incognito_active_switch_to_persistent": "Инкогнито — переключиться в постоянный режим",
+      "switch_to_persistent_mode": "Переключиться в постоянный режим",
       "temporary": "Временная",
+      "temporary_active_switch_to_persistent": "Временный — переключиться в постоянный режим",
       "temporary_desc": "Чистый лист — без чтения и записи памяти",
       "try_create_a_plan_to_analyze_kirocrew_code_packa": "Попробуйте: «Создай план анализа пакета кода {{productName}} и покажи количество файлов по основным компонентам»",
       "what_can_i_do_for_you": "Чем могу помочь?"
@@ -12162,7 +12171,7 @@
         "active_projects": "Проекты, над которыми вы работали",
         "coding_time": "Время программирования",
         "connect_body": "WakaTime — это бесплатный инструмент, который отслеживает время, проведённое за программированием в вашем редакторе.",
-        "connect_hint": "Добавьте секрет с именем WAKATIME_API_KEY в настройках и задайте wakatime.enabled равным true в своей конфигурации. Получить ключ можно на wakatime.com/settings/account.",
+        "connect_hint": "Сначала установите wakatime.enabled в true в $KIROCREW_HOME/config.json (по умолчанию ~/.kiro/crew/config.json), затем в разделе «Настройки → Секреты» задайте API-ключ WakaTime в разделе «Автоматически используются {{productName}}». Получить ключ можно на wakatime.com/settings/account.",
         "connect_title": "Подключить WakaTime",
         "daily_average": "В среднем за день",
         "export_csv": "Экспорт часов (CSV)",
@@ -14876,6 +14885,11 @@
   },
   "settings": {
     "chat": {
+      "defaultMemoryMode": {
+        "description": "Постоянный режим использует известное и сохраняет новую память. Инкогнито использует известное, но не сохраняет новую память. Временный режим начинает с чистого листа и ничего не сохраняет. Все чаты остаются в истории. Режим можно изменить для любого чата.",
+        "label": "Режим памяти по умолчанию",
+        "persistent": "Постоянный"
+      },
       "plainDiff": {
         "description": "Показывать различия как обычный текст unified diff без подсветки синтаксиса. Требует меньше памяти на больших diff.",
         "label": "Простые diff"
@@ -14970,11 +14984,36 @@
     "secrets": {
       "title": "Хранилище секретов",
       "description": "Безопасное хранение API-ключей и учётных данных. Секреты шифруются и никогда не раскрываются агенту.",
+      "managed_title": "Автоматически используются {{productName}}",
+      "managed_description": "Учётные данные, которые {{productName}} распознаёт и использует автоматически. Добавляйте или обновляйте значения здесь.",
+      "jira_api_token_label": "API-токен Jira",
+      "jira_api_token_description": "Проверяет подлинность запросов к задачам Jira для настроенного экземпляра.",
+      "jira_global_unused_multi_host": "Не используется Jira, когда настроено несколько хостов. Задайте учётные данные каждого хоста выше или удалите эту запись.",
+      "jira_global_unused_host_token": "Не используется, поскольку учётные данные Jira для конкретного хоста имеют приоритет. Удалите эту запись, если резервный вариант больше не нужен.",
+      "jira_host_token_label": "API-токен хоста Jira",
+      "jira_host_token_description": "Проверяет подлинность запросов к задачам Jira для одного настроенного хоста.",
+      "wakatime_api_key_label": "API-ключ WakaTime",
+      "wakatime_api_key_description": "Проверяет подлинность синхронизации активности программирования, когда WakaTime включён.",
+      "other_stored_title": "Другие сохранённые секреты",
+      "other_stored_description": "Ссылайтесь на сохраненные секреты по точному имени в виде secret://NAME из конфигурации MCP-сервера или учетной записи .env.",
+      "managed_config_error": "Некоторые автоматические учётные данные скрыты, поскольку не удалось прочитать $KIROCREW_HOME/config.json (по умолчанию ~/.kiro/crew/config.json).",
+      "managed_name_hint": "Сохранение здесь обновит {{name}} в разделе автоматических учётных данных. — {{productName}}",
+      "stored_title": "Сохраненные секреты",
+      "managed_unconfigured_hint": "Чтобы автоматически использовать WakaTime или Jira, включите WakaTime или добавьте хост Jira в $KIROCREW_HOME/config.json (по умолчанию ~/.kiro/crew/config.json).",
+      "managed_setup_guide": "Открыть руководство по настройке секретов",
+      "delete_managed_confirm": "Удалить «{{name}}» навсегда? Текущее значение нельзя восстановить.",
+      "delete_managed_name": "Удалить {{name}}",
+      "save_managed_name": "Сохранить {{name}}",
+      "managed_value_placeholder": "Вставьте значение секрета",
+      "wakatime_setup_link": "Открыть настройки API-ключа WakaTime",
+      "saved": "Сохранено",
+      "name_placeholder": "MY_API_KEY",
+      "value_placeholder": "sk-...",
       "no_secrets": "Секреты ещё не сохранены.",
       "add_secret": "Добавить секрет",
       "name_label": "Имя",
       "value_label": "Значение",
-      "delete_confirm": "Удалить этот секрет?",
+      "delete_confirm": "Удалить «{{name}}» навсегда? Текущее значение нельзя восстановить.",
       "delete": "Удалить",
       "cancel": "Отмена",
       "save": "Сохранить",
@@ -14985,7 +15024,8 @@
       "secret_value_aria": "Значение секрета",
       "save_error": "Не удалось сохранить секрет: {{error}}",
       "delete_error": "Не удалось удалить секрет: {{error}}",
-      "load_error": "Не удалось загрузить секреты: {{error}}"
+      "load_error": "Не удалось загрузить секреты: {{error}}",
+      "wakatime_unused_hint": "Не используется, пока WakaTime отключён. Включите WakaTime или удалите эту запись."
     }
   },
   "store": {

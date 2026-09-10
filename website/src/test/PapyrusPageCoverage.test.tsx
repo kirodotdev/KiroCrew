@@ -602,6 +602,7 @@ describe('Papyrus co-author session', () => {
 
     expect(await screen.findByTestId('co-author-panel')).toBeInTheDocument()
     await waitFor(() => expect(chat.createChatSlot).toHaveBeenCalled())
+    expect(chat.createChatSlot.mock.calls[0]?.[4]).toBe('persistent')
     // The paper's identity is handed to the agent silently, not typed by the user.
     await waitFor(() => expect(chat.chatSlotContext).toHaveBeenCalledWith(
       SLOT,
