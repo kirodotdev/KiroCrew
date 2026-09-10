@@ -1545,7 +1545,8 @@
         "highlight_7": "Os pods rodam em Linux (systemd --user) e macOS (launchd) — mas o pod do macOS não tem limite de memória/CPU aplicado; Make Live continua só no Linux; a visão da frota, o status de PR, a sincronização, o rebase e a limpeza funcionam em qualquer plataforma",
         "page_label": "Dev Fleet",
         "use_case_1": "Opere worktrees de recursos do Kiro Crew e pods isolados de pré-visualização sem alterar o gateway ativo.",
-        "configuration_1": "Aponte o app para um checkout do Kiro Crew; ações de PR precisam do gh autenticado, enquanto pods precisam de systemd --user no Linux ou launchd no macOS e devem ser provisionados primeiro."
+        "configuration_1": "Aponte o app para um checkout do Kiro Crew; ações de PR precisam do gh autenticado, enquanto pods precisam de systemd --user no Linux ou launchd no macOS e devem ser provisionados primeiro.",
+        "highlight_8": "Um worktree fixado na release estável mais recente, para você subir em pod uma build publicada ao lado do seu branch; o canal de atualização da sua própria instalação não muda"
       }
     },
     "designTweak": {
@@ -10749,7 +10750,33 @@
       "orphan_pods_label": "Homes de pods órfãos: {{value}}",
       "total_disk_used_by_running_pod_homes": "Disco total usado pelos homes de pods em execução",
       "pod_homes_left_on_disk_with_no_live_pod": "Homes de pods deixados no disco sem um pod ativo",
-      "disk_usage_unavailable": "Uso de disco indisponível"
+      "disk_usage_unavailable": "Uso de disco indisponível",
+      "create": "Criar",
+      "creating": "Criando…",
+      "advance": "Avançar",
+      "advance_to_channel_tip": "Avançar para a ponta do canal",
+      "at_the_channel_tip": "Na ponta do canal",
+      "behind_suffix_tip": "ponta",
+      "no_worktree_yet": "ainda sem worktree",
+      "not_applicable_short": "n/d",
+      "release_channel_has_no_pr": "Um worktree de release fica desanexado em uma tag, portanto não tem pull request",
+      "release_channel_create_failed": "Não foi possível criar o worktree do canal de release",
+      "release_channel_advance_failed": "Não foi possível avançar o worktree do canal de release",
+      "advance_release_channel_worktree": "Avançar {{lane}} para a ponta do canal?",
+      "moves_the_detached_worktree_to_the_channel_tip_refused_if_dirty": "Move este worktree desanexado para a release mais recente do canal. Recusado se o worktree tiver alterações não commitadas.",
+      "release_channel_created": "Worktree {{lane}} criado em {{ref}} — faça o provisionamento pelo menu da linha para executá-lo",
+      "release_channel_would_create_at": "Create faz checkout da release {{lane}} mais recente, {{version}}, em estado detached",
+      "release_channel_advanced": "{{lane}} avançado para {{ref}} — refaça o provisionamento pelo menu da linha para reconstruir",
+      "release_channel_already_at_tip": "{{lane}} já está na ponta do canal",
+      "release_channel_pinned_at": "Fixado no canal de release {{lane}} em {{ref}}",
+      "release_channel_unresolved": "Não foi possível resolver {{lane}}: {{error}}",
+      "release_channel_on_older_release": "Em {{version}}; a ponta do canal {{lane}} agora é {{tip}}",
+      "release_channel_on_no_release": "Não está em uma tag de release de {{lane}}; a ponta do canal é {{tip}}",
+      "release_channel_name_taken_by_branch": "{{name}} existe, mas está em um branch, então não é um worktree de canal de release",
+      "commits_behind_channel_tip_one": "{{count}} commit atrás da ponta do canal",
+      "commits_behind_channel_tip_other": "{{count}} commits atrás da ponta do canal",
+      "not_a_release_channel_worktree": "Nome reservado para canais de lançamento",
+      "commits_behind_channel_tip_many": "{{count}} commits atrás da ponta do canal"
     },
     "developer": {
       "agentBackendTab": {

@@ -1663,7 +1663,8 @@
         "highlight_5": "UI에서 포드 로그를 스트리밍하고 포드 액세스 토큰을 발급",
         "highlight_6": "Kiro Crew 자체를 개발하는 사람을 위해 만들었습니다 — 일상적인 사용에는 필요하지 않습니다",
         "highlight_7": "포드는 Linux(systemd --user)와 macOS(launchd)에서 실행됩니다 — 다만 macOS 포드에는 메모리/CPU 상한이 적용되지 않습니다. Make Live는 여전히 Linux 전용이며, 플릿 화면, PR 상태, 동기화, 리베이스, 정리는 모든 플랫폼에서 동작합니다",
-        "page_label": "Dev Fleet"
+        "page_label": "Dev Fleet",
+        "highlight_8": "최신 안정 릴리스에 고정된 워크트리로, 출시된 빌드를 작업 브랜치와 나란히 파드로 띄울 수 있습니다. 내 설치가 어느 채널에서 업데이트되는지는 바뀌지 않습니다"
       }
     },
     "fileExplorer": {
@@ -10439,7 +10440,31 @@
       "orphan_pods_label": "고아 파드 홈: {{value}}",
       "total_disk_used_by_running_pod_homes": "실행 중인 파드 홈이 사용하는 총 디스크",
       "pod_homes_left_on_disk_with_no_live_pod": "활성 파드 없이 디스크에 남은 파드 홈",
-      "disk_usage_unavailable": "디스크 사용량을 확인할 수 없습니다"
+      "disk_usage_unavailable": "디스크 사용량을 확인할 수 없습니다",
+      "create": "생성",
+      "creating": "생성 중…",
+      "advance": "이동",
+      "advance_to_channel_tip": "채널 최신 릴리스로 이동",
+      "at_the_channel_tip": "채널 최신 릴리스에 있음",
+      "behind_suffix_tip": "최신",
+      "no_worktree_yet": "아직 워크트리가 없습니다",
+      "not_applicable_short": "해당 없음",
+      "release_channel_has_no_pr": "릴리스 워크트리는 태그에서 분리된 상태이므로 풀 리퀘스트가 없습니다",
+      "release_channel_create_failed": "릴리스 채널 워크트리를 생성할 수 없습니다",
+      "release_channel_advance_failed": "릴리스 채널 워크트리를 이동할 수 없습니다",
+      "advance_release_channel_worktree": "{{lane}}을(를) 채널 최신 릴리스로 이동할까요?",
+      "moves_the_detached_worktree_to_the_channel_tip_refused_if_dirty": "이 분리된 워크트리를 채널의 최신 릴리스로 이동합니다. 커밋되지 않은 변경이 있으면 거부됩니다.",
+      "release_channel_created": "{{lane}} 워크트리를 {{ref}}에 생성했습니다 — 실행하려면 행 메뉴에서 프로비저닝하세요",
+      "release_channel_would_create_at": "Create는 최신 {{lane}} 릴리스 {{version}}을(를) 분리된 상태로 체크아웃합니다",
+      "release_channel_advanced": "{{lane}}을(를) {{ref}}(으)로 이동했습니다 — 다시 빌드하려면 행 메뉴에서 프로비저닝을 다시 실행하세요",
+      "release_channel_already_at_tip": "{{lane}}은(는) 이미 채널 최신 릴리스에 있습니다",
+      "release_channel_pinned_at": "릴리스 채널 {{lane}}의 {{ref}}에 고정되었습니다",
+      "release_channel_unresolved": "{{lane}}을(를) 확인할 수 없습니다: {{error}}",
+      "release_channel_on_older_release": "{{version}}에 있습니다. {{lane}} 채널 최신 릴리스는 이제 {{tip}}입니다",
+      "release_channel_on_no_release": "{{lane}} 릴리스 태그에 없습니다. 채널 최신 릴리스는 {{tip}}입니다",
+      "release_channel_name_taken_by_branch": "{{name}}은(는) 존재하지만 브랜치에 있으므로 릴리스 채널 워크트리가 아닙니다",
+      "commits_behind_channel_tip_other": "채널 최신 릴리스보다 {{count}}개 커밋 뒤처져 있습니다",
+      "not_a_release_channel_worktree": "릴리스 채널용으로 예약된 이름"
     },
     "developer": {
       "agentBackendTab": {

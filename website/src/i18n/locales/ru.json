@@ -1581,7 +1581,8 @@
         "highlight_5": "Поток логов pod и выпуск ключей доступа к pod прямо в интерфейсе",
         "highlight_6": "Сделано для тех, кто разрабатывает сам Kiro Crew — для повседневной работы не нужно",
         "highlight_7": "Pod работает на Linux (systemd --user) и macOS (launchd) — но у pod на macOS нет принудительного лимита памяти/CPU; Make Live по-прежнему только для Linux; обзор флота, статус PR, синхронизация, перебазирование и очистка работают на любой платформе",
-        "page_label": "Dev Fleet"
+        "page_label": "Dev Fleet",
+        "highlight_8": "Рабочее дерево, закреплённое на новейшем стабильном релизе: выпущенную сборку можно поднять в поде рядом со своей веткой, а канал обновлений вашей установки остаётся прежним"
       }
     },
     "designTweak": {
@@ -10904,7 +10905,34 @@
       "orphan_pods_label": "Осиротевшие домашние каталоги подов: {{value}}",
       "total_disk_used_by_running_pod_homes": "Всего диска, занятого домашними каталогами работающих подов",
       "pod_homes_left_on_disk_with_no_live_pod": "Домашние каталоги подов на диске без активного пода",
-      "disk_usage_unavailable": "Данные об использовании диска недоступны"
+      "disk_usage_unavailable": "Данные об использовании диска недоступны",
+      "create": "Создать",
+      "creating": "Создание…",
+      "advance": "Продвинуть",
+      "advance_to_channel_tip": "Продвинуть к вершине канала",
+      "at_the_channel_tip": "На вершине канала",
+      "behind_suffix_tip": "верш.",
+      "no_worktree_yet": "рабочего дерева пока нет",
+      "not_applicable_short": "н/д",
+      "release_channel_has_no_pr": "Рабочее дерево релиза отсоединено на теге, поэтому у него нет пул-реквеста",
+      "release_channel_create_failed": "Не удалось создать рабочее дерево канала релизов",
+      "release_channel_advance_failed": "Не удалось продвинуть рабочее дерево канала релизов",
+      "advance_release_channel_worktree": "Продвинуть {{lane}} к вершине канала?",
+      "moves_the_detached_worktree_to_the_channel_tip_refused_if_dirty": "Перемещает это отсоединённое рабочее дерево к новейшему релизу канала. Отклоняется, если в дереве есть незафиксированные изменения.",
+      "release_channel_created": "Рабочее дерево {{lane}} создано на {{ref}} — выполните подготовку из меню строки, чтобы запустить",
+      "release_channel_would_create_at": "Create извлекает последний релиз {{lane}} — {{version}} — в отсоединённом состоянии",
+      "release_channel_advanced": "{{lane}} продвинут до {{ref}} — выполните подготовку заново из меню строки, чтобы пересобрать",
+      "release_channel_already_at_tip": "{{lane}} уже на вершине канала",
+      "release_channel_pinned_at": "Закреплено за каналом релизов {{lane}} на {{ref}}",
+      "release_channel_unresolved": "Не удалось определить {{lane}}: {{error}}",
+      "release_channel_on_older_release": "На {{version}}; вершина канала {{lane}} теперь {{tip}}",
+      "release_channel_on_no_release": "Не на теге релиза {{lane}}; вершина канала — {{tip}}",
+      "release_channel_name_taken_by_branch": "{{name}} существует, но находится на ветке, поэтому это не рабочее дерево канала релизов",
+      "commits_behind_channel_tip_one": "на {{count}} коммит позади вершины канала",
+      "commits_behind_channel_tip_few": "на {{count}} коммита позади вершины канала",
+      "commits_behind_channel_tip_many": "на {{count}} коммитов позади вершины канала",
+      "commits_behind_channel_tip_other": "на {{count}} коммита позади вершины канала",
+      "not_a_release_channel_worktree": "Имя зарезервировано для каналов выпуска"
     },
     "developer": {
       "agentBackendTab": {

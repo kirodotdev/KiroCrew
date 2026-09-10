@@ -1663,7 +1663,8 @@
         "highlight_5": "UIからポッドログをストリーム配信してポッドアクセストークンを発行",
         "highlight_6": "Kiro Crew自体を開発している人向けに構築 — 日常の使用には不要",
         "highlight_7": "ポッドは Linux（systemd --user）と macOS（launchd）で実行されます。ただし、macOS のポッドにはメモリ/CPU 上限が強制されません。Make Live は引き続き Linux のみ対応です。フリート表示、PR 状態、同期、リベース、削除はどのプラットフォームでも利用できます",
-        "page_label": "Dev Fleet"
+        "page_label": "Dev Fleet",
+        "highlight_8": "最新の安定版リリースに固定されたワークツリー。出荷済みビルドを自分のブランチと並べてポッドで起動できます。自分のインストールがどのチャネルから更新されるかは変わりません"
       }
     },
     "fileExplorer": {
@@ -10439,7 +10440,31 @@
       "orphan_pods_label": "孤立した Pod ホーム: {{value}}",
       "total_disk_used_by_running_pod_homes": "実行中の Pod ホームが使用するディスク合計",
       "pod_homes_left_on_disk_with_no_live_pod": "稼働中の Pod がないままディスクに残る Pod ホーム",
-      "disk_usage_unavailable": "ディスク使用量を取得できません"
+      "disk_usage_unavailable": "ディスク使用量を取得できません",
+      "create": "作成",
+      "creating": "作成中…",
+      "advance": "進める",
+      "advance_to_channel_tip": "チャネル先端まで進める",
+      "at_the_channel_tip": "チャネル先端にあります",
+      "behind_suffix_tip": "先端",
+      "no_worktree_yet": "ワークツリーはまだありません",
+      "not_applicable_short": "該当なし",
+      "release_channel_has_no_pr": "リリースワークツリーはタグで detached になっているため、プルリクエストはありません",
+      "release_channel_create_failed": "リリースチャネルのワークツリーを作成できませんでした",
+      "release_channel_advance_failed": "リリースチャネルのワークツリーを進められませんでした",
+      "advance_release_channel_worktree": "{{lane}} をチャネル先端まで進めますか？",
+      "moves_the_detached_worktree_to_the_channel_tip_refused_if_dirty": "この detached なワークツリーをチャネルの最新リリースへ移動します。未コミットの変更がある場合は拒否されます。",
+      "release_channel_created": "{{lane}} のワークツリーを {{ref}} に作成しました — 実行するには行メニューからプロビジョニングしてください",
+      "release_channel_would_create_at": "Create は最新の {{lane}} リリース {{version}} を切り離し状態でチェックアウトします",
+      "release_channel_advanced": "{{lane}} を {{ref}} まで進めました — 再ビルドするには行メニューからプロビジョニングし直してください",
+      "release_channel_already_at_tip": "{{lane}} はすでにチャネル先端にあります",
+      "release_channel_pinned_at": "リリースチャネル {{lane}} の {{ref}} に固定されています",
+      "release_channel_unresolved": "{{lane}} を解決できませんでした: {{error}}",
+      "release_channel_on_older_release": "{{version}} にあります。{{lane}} チャネル先端は現在 {{tip}} です",
+      "release_channel_on_no_release": "{{lane}} のリリースタグ上にありません。チャネル先端は {{tip}} です",
+      "release_channel_name_taken_by_branch": "{{name}} は存在しますがブランチ上にあるため、リリースチャネルのワークツリーではありません",
+      "commits_behind_channel_tip_other": "チャネル先端より {{count}} コミット遅れています",
+      "not_a_release_channel_worktree": "リリースチャネル用に予約された名前"
     },
     "developer": {
       "agentBackendTab": {

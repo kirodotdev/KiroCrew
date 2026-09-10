@@ -11,6 +11,7 @@ from kiro_crew.apps.builtins.dev_fleet import (
     fleet_state,
     http_api,
     live,
+    release_channel_pin,
     repository,
     runtime,
     server,
@@ -21,6 +22,7 @@ _COMPONENTS = (
     runtime,
     repository,
     live,
+    release_channel_pin,
     fleet_state,
     worktree_ops,
     http_api,
@@ -124,6 +126,16 @@ def test_route_manifest_and_http_adapter_ownership_are_stable() -> None:
         ("POST", "/api/pod/provision", "api_dev_fleet_pod_provision"),
         ("POST", "/api/pod/provision/dismiss", "api_dev_fleet_pod_provision_dismiss"),
         ("POST", "/api/rebase", "api_dev_fleet_rebase"),
+        (
+            "POST",
+            "/api/release-channel/create",
+            "api_dev_fleet_release_channel_create",
+        ),
+        (
+            "POST",
+            "/api/release-channel/advance",
+            "api_dev_fleet_release_channel_advance",
+        ),
         ("POST", "/api/restart-gateway", "api_dev_fleet_restart_gateway"),
         ("POST", "/api/make-live", "api_dev_fleet_make_live"),
     ]
