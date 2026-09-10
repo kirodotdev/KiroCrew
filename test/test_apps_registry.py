@@ -23,6 +23,7 @@ This file lives in ``test/`` (not ``tests/``) so the ``setup.cfg``
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import json
 import os
 import shutil
@@ -3208,6 +3209,48 @@ async def test_python_build_uses_the_running_interpreter_not_path_pip(tmp_path, 
     argv = captured[0]
     assert argv[0] == sys.executable, f"build must use the running interpreter, got {argv[0]!r}"
     assert argv[1:3] == ["-m", "pip"], f"expected `-m pip`, got {argv[1:3]!r}"
+
+
+@pytest.mark.asyncio
+async def test_python_build_soft_skips_when_the_interpreter_has_no_pip(tmp_path, monkeypatch):
+    """A gateway interpreter without a ``pip`` module must skip the Python build,
+    not abort the whole registry install.
+
+    The docstring promises "no npm / no pip" is a soft skip, and the npm branch
+    honours it. Planning ``[sys.executable, "-m", "pip", "install", "."]`` without
+    checking availability breaks that contract: a venv created with
+    ``--without-pip`` (or any minimal runtime) has no ``pip`` module, so ``-m pip``
+    exits non-zero and the install fails with ``build failed (exit N)``.
+    ``importlib.util.find_spec("pip")`` checks the gateway interpreter and lets the
+    build soft-skip with a logged warning when pip is absent, mirroring npm.
+    """
+    log_lines: list[str] = []
+    captured: list[list[str]] = []
+
+    async def _fake_exec(*argv, **_kwargs):  # pragma: no cover - must NOT run
+        captured.append(list(argv))
+        raise AssertionError("no build command may be planned when pip is unavailable")
+
+    monkeypatch.setattr(registry, "create_subprocess_limited", _fake_exec)
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='x'\nversion='0'\n", encoding="utf-8")
+
+    # This interpreter has no importable `pip` — exactly a `--without-pip` venv.
+    real_find_spec = importlib.util.find_spec
+
+    def _no_pip(name, *args, **kwargs):
+        if name == "pip":
+            return None
+        return real_find_spec(name, *args, **kwargs)
+
+    monkeypatch.setattr(registry.importlib.util, "find_spec", _no_pip)
+
+    result = await registry._run_app_build(tmp_path, "x", log_lines)
+
+    assert result == {"ok": True}, f"a pip-less interpreter must soft-skip, got {result}"
+    assert captured == [], f"no build command may be planned, got {captured}"
+    assert any(
+        "pip not available" in line for line in log_lines
+    ), f"the skip must be logged, log was {log_lines}"
 
 
 @pytest.mark.asyncio

@@ -27,6 +27,7 @@ minimal environment that excludes process secrets.
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import json
 import logging
 import os
@@ -6130,13 +6131,25 @@ async def _run_app_build(
                     "signed application bundle and cannot install packages"
                 ),
             }
-        pip_cmd = [sys.executable, "-m", "pip"]
-        if (build_dir / "requirements.txt").is_file() and not (
-            (build_dir / "pyproject.toml").is_file() or (build_dir / "setup.py").is_file()
-        ):
-            build_cmds.append([*pip_cmd, "install", "-r", "requirements.txt"])
+        # A missing `pip` module is a soft skip, exactly like a missing npm
+        # (see the docstring). `sys.executable` is the gateway interpreter, and a
+        # venv created with `--without-pip` — or any minimal runtime — has no `pip`
+        # module: running `-m pip` against it exits non-zero and would abort the
+        # whole registry install. Probe with `find_spec` on THIS interpreter (no
+        # subprocess: it is the interpreter that would run the build) and skip when
+        # pip is absent, so an app that needs no Python build still installs cleanly.
+        if importlib.util.find_spec("pip") is None:
+            log_lines.append(
+                "pip not available in the gateway interpreter — skipping Python build step"
+            )
         else:
-            build_cmds.append([*pip_cmd, "install", "."])
+            pip_cmd = [sys.executable, "-m", "pip"]
+            if (build_dir / "requirements.txt").is_file() and not (
+                (build_dir / "pyproject.toml").is_file() or (build_dir / "setup.py").is_file()
+            ):
+                build_cmds.append([*pip_cmd, "install", "-r", "requirements.txt"])
+            else:
+                build_cmds.append([*pip_cmd, "install", "."])
 
     if not build_cmds:
         log_lines.append("No build step detected — using source as-is")
