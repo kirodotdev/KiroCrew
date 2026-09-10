@@ -12,6 +12,7 @@ import pytest
 
 from kiro_crew import platform_compat as pc
 from kiro_crew.cron_script import (
+    _MAX_COMMAND_OUTPUT,
     Done,
     Report,
     ScriptContext,
@@ -218,6 +219,132 @@ class TestRunCommandSandboxed:
         with patch("subprocess.Popen", return_value=mock_proc):
             result = run_command_sandboxed("boom")
         assert result["output"].endswith("stderr:\nshort failure")
+
+    def test_success_path_redacts_stdout(self):
+        """The value this function RETURNS carries no credential shape.
+
+        ``mode="cc"`` leaves ``~/.ssh`` readable so git/scp crons work, so
+        ``cat ~/.ssh/id_rsa`` exits 0 and its stdout becomes the return value.
+        Today's only consumer redacts again at each of its own sinks, so this
+        does not pin a leak -- it pins the source-layer guarantee that whatever
+        reads this value next gets clean text without having to know to redact.
+        """
+        # Assembled at runtime so no key-shaped literal lands in the repo.
+        label = "OPENSSH PRIVATE" + " KEY"
+        key_body = "b" * 64
+        pem = f"-----BEGIN {label}-----\n{key_body}\n-----END {label}-----"
+        mock_proc = MagicMock()
+        mock_proc.returncode = 0
+        mock_proc.communicate.return_value = (pem, "")
+        with patch("subprocess.Popen", return_value=mock_proc):
+            result = run_command_sandboxed("read-the-key")
+        assert result["status"] == "ok"
+        assert result["exit_code"] == 0
+        assert key_body not in result["output"]
+        assert label not in result["output"]
+        # Positive proof the payload flowed through redaction rather than the
+        # result simply coming back empty.
+        assert "credential]" in result["output"]
+
+    def test_success_path_leaves_ordinary_stdout_unchanged(self):
+        """Redaction must not rewrite output that carries no credential."""
+        mock_proc = MagicMock()
+        mock_proc.returncode = 0
+        mock_proc.communicate.return_value = ("disk usage: 41% of /home\n", "")
+        with patch("subprocess.Popen", return_value=mock_proc):
+            result = run_command_sandboxed("df -h")
+        assert result["status"] == "ok"
+        assert result["output"] == "disk usage: 41% of /home\n"
+
+    def test_redaction_precedes_the_64kb_slice(self):
+        """A delimiter-terminated credential must be masked before truncation.
+
+        The URL-userinfo branch of ``_CREDENTIAL_PATTERNS`` ends at the trailing
+        ``@`` (``://[^\\s:/@]*:[^\\s/]+@``), so the credential's right edge is a
+        DELIMITER rather than a prefix. Size the text so the 64KB cut falls
+        between the password and that ``@``: the truncated string is
+        ``https://u:SECRET`` with no ``@``, which the pattern cannot match, so a
+        reader that redacts AFTER truncating ships the password verbatim. The cut
+        lives inside ``run_command_sandboxed``, so redacting here is the only
+        place this is reachable from.
+        """
+        secret = "s3cr3t-p4ssw0rd"
+        prefix = "https://u:"
+        # The `@` is the FIRST character the slice discards.
+        padding = "p" * (_MAX_COMMAND_OUTPUT - len(prefix) - len(secret))
+        stdout_text = padding + prefix + secret + "@example.invalid/x"
+        mock_proc = MagicMock()
+        mock_proc.returncode = 0
+        mock_proc.communicate.return_value = (stdout_text, "")
+        with patch("subprocess.Popen", return_value=mock_proc):
+            result = run_command_sandboxed("dump-config")
+        assert result["status"] == "ok"
+        assert secret not in result["output"]
+        assert "credential]" in result["output"]
+
+    def test_redaction_input_is_bounded_to_a_window(self, monkeypatch):
+        """Redaction must not copy an unbounded stdout.
+
+        ``proc.communicate`` caps nothing and ``redact_credentials`` materialises
+        its base64 runs into a list, so redacting the WHOLE capture costs a
+        multiple of an unbounded string: a command streaming gigabytes would OOM
+        in redaction even though the capture itself survived. Redaction reads a
+        window of the cap plus ``_REDACT_STRADDLE_MARGIN``, which is what keeps
+        the footprint fixed.
+
+        Asserted on redact's INPUT rather than on the output, because the output
+        cannot tell the two apart -- a credential past the window is truncated
+        away whether or not it was ever scanned.
+        """
+        from kiro_crew import cron_script
+
+        seen: list[int] = []
+        real_redact = cron_script.redact
+
+        def _spy(text: str) -> str:
+            seen.append(len(text))
+            return real_redact(text)
+
+        monkeypatch.setattr(cron_script, "redact", _spy)
+        stdout_text = "x" * (_MAX_COMMAND_OUTPUT * 4)
+        mock_proc = MagicMock()
+        mock_proc.returncode = 0
+        mock_proc.communicate.return_value = (stdout_text, "")
+        with patch("subprocess.Popen", return_value=mock_proc):
+            result = run_command_sandboxed("dump-big")
+        assert result["status"] == "ok"
+        assert seen, "redact was never called on the captured stdout"
+        assert max(seen) <= _MAX_COMMAND_OUTPUT + cron_script._REDACT_STRADDLE_MARGIN
+        assert "[truncated" in result["output"]
+
+    def test_stderr_redaction_input_is_bounded_to_a_window(self, monkeypatch):
+        """The stderr tail must not scan an unbounded stderr either.
+
+        ``proc.communicate`` bounds stderr at nothing, so a command that streams
+        gigabytes to stderr and exits nonzero would hit the same OOM the stdout
+        window removes. The stderr cut keeps the TAIL, so its window reaches back
+        past the kept region instead of forward.
+        """
+        from kiro_crew import cron_script
+
+        seen: list[int] = []
+        real_redact = cron_script.redact
+
+        def _spy(text: str) -> str:
+            seen.append(len(text))
+            return real_redact(text)
+
+        monkeypatch.setattr(cron_script, "redact", _spy)
+        mock_proc = MagicMock()
+        mock_proc.returncode = 1
+        mock_proc.communicate.return_value = ("", "e" * (_MAX_COMMAND_OUTPUT * 4))
+        with patch("subprocess.Popen", return_value=mock_proc):
+            result = run_command_sandboxed("fails-loudly")
+        assert result["status"] == "error"
+        assert seen, "redact was never called"
+        bound = cron_script._MAX_STDERR_TAIL + cron_script._REDACT_STRADDLE_MARGIN
+        assert max(seen) <= max(bound, _MAX_COMMAND_OUTPUT + cron_script._REDACT_STRADDLE_MARGIN)
+        assert "stderr:" in result["output"]
 
 
 class TestCronSandboxUnavailableIsStructuredNotRaised:
