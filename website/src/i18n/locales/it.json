@@ -5711,7 +5711,6 @@
       "goal_description": "Descrizione dell'obiettivo",
       "goal_interrupted_cycle": "Loop obiettivo armato (ciclo {{cycle}}) — l'ultimo turno è stato interrotto; riprendi la chat o attendi il prossimo ciclo",
       "last_fire": "Ultima attivazione:",
-      "loop_paused": "In pausa",
       "max_cycles_0": "Numero massimo di cicli (0 = ∞)",
       "max_cycles_0_infinite": "Numero massimo di cicli (0 = infiniti)",
       "never": "mai",
@@ -5729,7 +5728,9 @@
       "watches_next": "prossima",
       "watches_note": "Svegliano l'agente solo con un segnale reale. Gestiscili nella pagina Pianificazione.",
       "watches_title": "Monitoraggi senza token",
-      "clear_record": "Cancella record"
+      "clear_stopped_goal": "Elimina obiettivo interrotto",
+      "loop_stopped": "Interrotto",
+      "stopped_help": "Avvia ciclo riprende questo obiettivo. Elimina obiettivo interrotto lo rimuove definitivamente."
     },
     "bottomTerminalPanel": {
       "close_terminal": "Chiudi il terminale",
@@ -8303,7 +8304,10 @@
       "use_legacy_costly": "Usa il vecchio ciclo obiettivo (costoso)",
       "wake_instructions": "Istruzioni per l’agente quando si attiva",
       "wake_instructions_too_long": "Inserisci non più di {{max}} caratteri.",
-      "wakes": "Attivazioni: {{count}}"
+      "wakes": "Attivazioni: {{count}}",
+      "clear_monitor": "Elimina monitor interrotto",
+      "confirm_clear": "Sì, elimina",
+      "terminal_exits": "Riavvia continua a seguire la stessa pull request. Elimina monitor interrotto lo rimuove definitivamente e libera questa sessione per altro."
     }
   },
   "hooks": {

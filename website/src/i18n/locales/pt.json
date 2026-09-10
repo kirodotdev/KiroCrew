@@ -5711,7 +5711,6 @@
       "goal_description": "Descrição do objetivo",
       "goal_interrupted_cycle": "Loop de objetivo armado (ciclo {{cycle}}) — o último turno foi interrompido; retome o chat ou aguarde o próximo ciclo",
       "last_fire": "Última execução:",
-      "loop_paused": "Pausado",
       "max_cycles_0": "Máx. de ciclos (0 = ∞)",
       "max_cycles_0_infinite": "Máx. de ciclos (0 = infinito)",
       "never": "nunca",
@@ -5729,7 +5728,9 @@
       "watches_next": "próxima",
       "watches_note": "Só acordam o agente diante de um sinal real. Gerencie-os na página Agendamento.",
       "watches_title": "Monitoramentos sem tokens",
-      "clear_record": "Limpar registro"
+      "clear_stopped_goal": "Excluir objetivo parado",
+      "loop_stopped": "Parado",
+      "stopped_help": "Iniciar ciclo retoma este objetivo. Excluir objetivo parado o remove definitivamente."
     },
     "bottomTerminalPanel": {
       "close_terminal": "Fechar terminal",
@@ -8303,7 +8304,10 @@
       "use_legacy_costly": "Usar o ciclo de objetivo antigo (caro)",
       "wake_instructions": "Instruções para o agente quando ele for ativado",
       "wake_instructions_too_long": "Insira no máximo {{max}} caracteres.",
-      "wakes": "Acionamentos: {{count}}"
+      "wakes": "Acionamentos: {{count}}",
+      "clear_monitor": "Excluir monitor parado",
+      "confirm_clear": "Sim, excluir",
+      "terminal_exits": "Reiniciar volta a vigiar a mesma pull request. Excluir monitor parado o remove definitivamente e libera esta sessão para vigiar outra coisa."
     }
   },
   "hooks": {

@@ -5711,7 +5711,6 @@
       "goal_description": "Descripción del objetivo",
       "goal_interrupted_cycle": "Bucle de objetivo armado (ciclo {{cycle}}) — el último turno se interrumpió; reanuda el chat o espera al siguiente ciclo",
       "last_fire": "Última ejecución:",
-      "loop_paused": "En pausa",
       "max_cycles_0": "Ciclos máximos (0 = ∞)",
       "max_cycles_0_infinite": "Ciclos máximos (0 = infinito)",
       "never": "nunca",
@@ -5729,7 +5728,9 @@
       "watches_next": "siguiente",
       "watches_note": "Solo despiertan al agente ante una señal real. Gestiónalas en la página Programación.",
       "watches_title": "Vigilancias sin consumo de tokens",
-      "clear_record": "Borrar registro"
+      "clear_stopped_goal": "Borrar objetivo detenido",
+      "loop_stopped": "Detenido",
+      "stopped_help": "Iniciar bucle reanuda este objetivo. Borrar objetivo detenido lo elimina definitivamente."
     },
     "bottomTerminalPanel": {
       "close_terminal": "Cerrar la terminal",
@@ -8303,7 +8304,10 @@
       "use_legacy_costly": "Usar el ciclo de objetivos anterior (costoso)",
       "wake_instructions": "Instrucciones para el agente cuando se active",
       "wake_instructions_too_long": "Introduce como máximo {{max}} caracteres.",
-      "wakes": "Activaciones: {{count}}"
+      "wakes": "Activaciones: {{count}}",
+      "clear_monitor": "Borrar monitor detenido",
+      "confirm_clear": "Sí, bórralo",
+      "terminal_exits": "Reiniciar vuelve a vigilar la misma pull request. Borrar monitor detenido lo elimina definitivamente y deja que esta sesión vigile otra cosa."
     }
   },
   "hooks": {

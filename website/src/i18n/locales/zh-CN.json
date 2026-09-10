@@ -5525,7 +5525,6 @@
       "goal_description": "目标描述",
       "goal_interrupted_cycle": "目标循环待命（第 {{cycle}} 轮）— 上一轮被中断；恢复聊天或等待下一轮",
       "last_fire": "上次触发：",
-      "loop_paused": "已暂停",
       "max_cycles_0": "最大轮次（0 = ∞）",
       "max_cycles_0_infinite": "最大轮次（0 = 无限）",
       "never": "从不",
@@ -5543,7 +5542,9 @@
       "watches_next": "下次",
       "watches_note": "只在出现真实信号时唤醒智能体。可在“计划”页面管理。",
       "watches_title": "零 token 监视",
-      "clear_record": "清除记录"
+      "clear_stopped_goal": "清除已停止的目标",
+      "loop_stopped": "已停止",
+      "stopped_help": "启动循环可继续这个目标；清除已停止的目标会永久删除它。"
     },
     "bottomTerminalPanel": {
       "close_terminal": "关闭终端",
@@ -8079,7 +8080,10 @@
       "use_legacy_costly": "使用旧版目标循环（成本高）",
       "wake_instructions": "代理唤醒时的指令",
       "wake_instructions_too_long": "请输入不超过 {{max}} 个字符。",
-      "wakes": "唤醒次数：{{count}}"
+      "wakes": "唤醒次数：{{count}}",
+      "clear_monitor": "清除已停止的监控",
+      "confirm_clear": "确认清除",
+      "terminal_exits": "重启会继续盯同一个 PR。清除已停止的监控会永久删除它，这个会话才能去盯别的东西。"
     }
   },
   "hooks": {

@@ -1583,8 +1583,9 @@
       "start_loop": "Start loop",
       "trigger_nudge": "Trigger nudge",
       "watches_load_failed": "Couldn't load this session's watches.",
-      "loop_paused": "Paused",
-      "clear_record": "Clear record"
+      "clear_stopped_goal": "Clear stopped goal",
+      "loop_stopped": "Stopped",
+      "stopped_help": "Start loop resumes this goal. Clear stopped goal removes it for good."
     },
     "bottomTerminalPanel": {
       "close_failed": "Couldn't stop this terminal's shell on the server. It will be cleaned up automatically.",
@@ -2951,7 +2952,10 @@
       "use_legacy_costly": "Use legacy goal loop (costly)",
       "wake_instructions": "Instructions for the agent when it wakes",
       "wake_instructions_too_long": "Enter no more than {{max}} characters.",
-      "wakes": "Wakes: {{count}}"
+      "wakes": "Wakes: {{count}}",
+      "clear_monitor": "Clear stopped monitor",
+      "confirm_clear": "Yes, clear it",
+      "terminal_exits": "Restart watches the same pull request again. Clear stopped monitor removes this monitor for good and lets this session watch something else."
     }
   },
   "hooks": {

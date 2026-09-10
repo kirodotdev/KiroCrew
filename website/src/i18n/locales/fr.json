@@ -5711,7 +5711,6 @@
       "goal_description": "Description de l’objectif",
       "goal_interrupted_cycle": "Boucle d’objectif armée (cycle {{cycle}}) — le dernier tour a été interrompu ; reprends le chat ou attends le prochain cycle",
       "last_fire": "Dernier déclenchement :",
-      "loop_paused": "En pause",
       "max_cycles_0": "Cycles max (0 = ∞)",
       "max_cycles_0_infinite": "Cycles max (0 = infini)",
       "never": "jamais",
@@ -5729,7 +5728,9 @@
       "watches_next": "prochaine",
       "watches_note": "Elles ne réveillent l'agent qu'en cas de signal réel. Gérez-les depuis la page Planification.",
       "watches_title": "Surveillances sans jetons",
-      "clear_record": "Effacer l'enregistrement"
+      "clear_stopped_goal": "Supprimer l’objectif arrêté",
+      "loop_stopped": "Arrêté",
+      "stopped_help": "Démarrer la boucle reprend cet objectif. Supprimer l’objectif arrêté l’efface définitivement."
     },
     "bottomTerminalPanel": {
       "close_terminal": "Fermer le terminal",
@@ -8303,7 +8304,10 @@
       "use_legacy_costly": "Utiliser l’ancienne boucle d’objectif (coûteuse)",
       "wake_instructions": "Instructions pour l’agent à son réveil",
       "wake_instructions_too_long": "Saisissez au maximum {{max}} caractères.",
-      "wakes": "Réveils : {{count}}"
+      "wakes": "Réveils : {{count}}",
+      "clear_monitor": "Supprimer le moniteur arrêté",
+      "confirm_clear": "Oui, supprimer",
+      "terminal_exits": "Redémarrer surveille de nouveau la même pull request. Supprimer le moniteur arrêté l’efface définitivement et libère cette session pour autre chose."
     }
   },
   "hooks": {

@@ -5525,7 +5525,6 @@
       "goal_description": "目標説明",
       "goal_interrupted_cycle": "ゴールループ待機中（サイクル {{cycle}}）— 前のターンが中断されました。チャットを再開するか、次のサイクルをお待ちください",
       "last_fire": "最後の実行:",
-      "loop_paused": "一時停止中",
       "max_cycles_0": "最大周期 (0 = ∞)",
       "max_cycles_0_infinite": "最大周期 (0 = 無制限)",
       "never": "なし",
@@ -5543,7 +5542,9 @@
       "watches_next": "次回",
       "watches_note": "実際のシグナルがあったときだけエージェントを起こします。管理は「スケジュール」ページから。",
       "watches_title": "トークンを消費しない監視",
-      "clear_record": "記録を削除"
+      "clear_stopped_goal": "停止した目標を削除",
+      "loop_stopped": "停止中",
+      "stopped_help": "ループを開始するとこの目標を再開します。停止した目標を削除すると完全に消えます。"
     },
     "bottomTerminalPanel": {
       "terminal_is_in_its_own_window": "ターミナルは別ウィンドウで開いています",
@@ -8079,7 +8080,10 @@
       "use_legacy_costly": "従来の目標ループを使用（高コスト）",
       "wake_instructions": "起動時のエージェントへの指示",
       "wake_instructions_too_long": "{{max}} 文字以内で入力してください。",
-      "wakes": "起動回数：{{count}}"
+      "wakes": "起動回数：{{count}}",
+      "clear_monitor": "停止した監視を削除",
+      "confirm_clear": "はい、削除する",
+      "terminal_exits": "再開すると同じプルリクエストを再び監視します。停止した監視を削除すると完全に消え、このセッションで別のものを監視できます。"
     }
   },
   "hooks": {

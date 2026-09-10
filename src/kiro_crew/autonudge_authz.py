@@ -281,13 +281,21 @@ async def authorize_and_clear_monitor(
     if monitor.wake_in_flight:
         # Mirrors the arm path's guard: a terminal record can still own an
         # accepted wake that has not completed, and the completion has nowhere
-        # to land once the row is gone.
-        error = "monitor cannot be cleared while a wake is in flight"
+        # to land once the row is gone. Worded for the popover, which renders
+        # this string verbatim in its error notice: "wake" is internal vocabulary
+        # a user has never seen.
+        error = "this goal is still finishing a run, so try again in a moment"
         await _audit("denied", error)
         return False, error, 409
     if not await _audit("invoked"):
         return False, "audit log unavailable — monitor not cleared", 503
-    await svc.remove(loop_id)
+    # The checks above were taken BEFORE the audit's ``to_thread`` yielded, so
+    # they are re-taken atomically inside the removal's own lock hold: a
+    # concurrent close-rollback restore in that window must not be deleted.
+    if not await svc.clear_terminal_monitor(loop_id):
+        error = "monitor changed before the clear committed"
+        await _audit("denied", error)
+        return False, error, 409
     return True, None, 200
 
 

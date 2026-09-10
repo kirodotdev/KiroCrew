@@ -1569,6 +1569,7 @@ def _register_mcp_routes(app: web.Application) -> None:
         api_autonudge_list,
         api_autonudge_start,
         api_autonudge_update,
+        api_monitor_clear,
         api_monitor_create,
         api_monitor_restart,
         api_monitor_slot_get,
@@ -1590,6 +1591,7 @@ def _register_mcp_routes(app: web.Application) -> None:
     app.router.add_get("/api/monitors/slot/{slot_key}", api_monitor_slot_get)
     app.router.add_patch("/api/monitors/{monitor_id}", api_monitor_update)
     app.router.add_post("/api/monitors/{monitor_id}/stop", api_monitor_stop)
+    app.router.add_post("/api/monitors/{monitor_id}/clear", api_monitor_clear)
     app.router.add_post("/api/monitors/{monitor_id}/restart", api_monitor_restart)
 
     # Agent questions. The MCP ask_question tool does not post here: it returns

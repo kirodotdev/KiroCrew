@@ -5525,7 +5525,6 @@
       "goal_description": "목표 설명",
       "goal_interrupted_cycle": "목표 루프 대기 중 (주기 {{cycle}}) — 이전 턴이 중단되었습니다. 채팅을 재개하거나 다음 주기를 기다리세요",
       "last_fire": "마지막 실행:",
-      "loop_paused": "일시중지됨",
       "max_cycles_0": "최대 주기 (0 = ∞)",
       "max_cycles_0_infinite": "최대 주기 (0 = 무제한)",
       "never": "없음",
@@ -5543,7 +5542,9 @@
       "watches_next": "다음",
       "watches_note": "실제 신호가 있을 때만 에이전트를 깨웁니다. 스케줄 페이지에서 관리하세요.",
       "watches_title": "토큰을 쓰지 않는 감시",
-      "clear_record": "기록 삭제"
+      "clear_stopped_goal": "중지된 목표 삭제",
+      "loop_stopped": "중지됨",
+      "stopped_help": "루프 시작으로 이 목표를 다시 실행합니다. 중지된 목표 삭제는 영구히 지웁니다."
     },
     "bottomTerminalPanel": {
       "close_terminal": "터미널 닫기",
@@ -8079,7 +8080,10 @@
       "use_legacy_costly": "기존 목표 루프 사용(비용 높음)",
       "wake_instructions": "에이전트가 깨어날 때의 지침",
       "wake_instructions_too_long": "{{max}}자 이하로 입력하세요.",
-      "wakes": "호출: {{count}}"
+      "wakes": "호출: {{count}}",
+      "clear_monitor": "중지된 모니터 삭제",
+      "confirm_clear": "예, 삭제합니다",
+      "terminal_exits": "다시 시작은 같은 풀 리퀘스트를 계속 지켜봅니다. 중지된 모니터 삭제는 영구히 지워서 이 세션이 다른 것을 지켜볼 수 있게 합니다."
     }
   },
   "hooks": {

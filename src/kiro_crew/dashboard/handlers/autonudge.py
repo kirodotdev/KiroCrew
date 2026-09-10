@@ -672,6 +672,41 @@ async def api_monitor_stop(request: web.Request) -> web.Response:
     return web.json_response({"ok": True, "monitor": _serialize_monitor(stopped)})
 
 
+async def api_monitor_clear(request: web.Request) -> web.Response:
+    """POST /api/monitors/{id}/clear — remove an already-stopped record.
+
+    The sibling of ``/stop``, and the only exit a stopped monitor has. ``/stop``
+    RETAINS its outcome for inspection, and a retained stop refuses a re-arm, so
+    without this the session's slot is spent for good: ``/restart`` only revives
+    the SAME subject, which cannot free the session to watch another one.
+
+    Terminal-only. A live monitor is refused, because stopping is what writes the
+    evidence and this must not become a way to delete a running watch with no
+    record it existed.
+    """
+    denied = await _require_monitor_owner(request, "monitor_clear")
+    if denied is not None:
+        return denied
+    svc = _autonudge_get()
+    if svc is None:
+        return _monitor_error("monitoring disabled", "monitoring_disabled", status=503)
+    loop = svc.get_by_id(request.match_info["monitor_id"])
+    if loop is None or not is_structured_monitor_loop(loop):
+        return _monitor_error("structured monitor not found", "monitor_not_found", status=404)
+    _cleared, error, status = await authorize_and_clear_monitor(
+        svc=svc,
+        loop_id=loop.id,
+        session_key=loop.slot_key,
+        source="dashboard",
+        caller=request.remote or "",
+    )
+    if error is not None:
+        return _monitor_error(error, "monitor_clear_denied", status=status)
+    # No record to return: the row is gone, and ``monitor: None`` is exactly how
+    # every read on this surface spells "nothing is armed on this session".
+    return web.json_response({"ok": True, "monitor": None})
+
+
 async def api_monitor_restart(request: web.Request) -> web.Response:
     """POST /api/monitors/{id}/restart — the sole browser revival route."""
     denied = await _require_monitor_owner(request, "monitor_restart")
@@ -884,7 +919,31 @@ async def api_autonudge_delete(request: web.Request) -> web.Response:
         # refusal names, and without it the retained row is permanent, because
         # ``stop_monitor`` returns an already-terminal loop unchanged and this
         # route answered ``ok`` having removed nothing.
-        clearing = monitor is not None and monitor.outcome is not None
+        terminal = monitor is not None and monitor.outcome is not None
+        # Which of the two operations this verb performs comes from the label the
+        # user pressed, never from the record's state at arrival time. State
+        # alone would let a press meant as "stop the loop" silently ERASE a
+        # record that reached a terminal state in between -- destroying
+        # deliberately retained evidence, with no rebuild path and an ``ok`` in
+        # the response.
+        intent = request.query.get("intent", "")
+        if intent not in ("", "stop", "clear"):
+            return _monitor_error(
+                "intent must be 'stop' or 'clear'", "monitor_intent_invalid", status=400
+            )
+        # An ABSENT intent is an older bundle, which had no clear control at all,
+        # so it can only have meant stop. Treating it as a clear on a terminal
+        # record is the same hazard by another route: a still-open pre-upgrade
+        # tab, plus the ordinary race, and the evidence is gone.
+        clearing = intent == "clear"
+        if intent and terminal is not clearing:
+            return _monitor_error(
+                # The popover renders this verbatim, and every string it shows
+                # calls the thing a goal.
+                "this goal's state changed, so close and reopen this dialog",
+                "monitor_intent_mismatch",
+                status=409,
+            )
         operation = "monitor_clear" if clearing else "monitor_stop"
         denied = await _require_monitor_owner(request, operation)
         if denied is not None:
@@ -899,7 +958,7 @@ async def api_autonudge_delete(request: web.Request) -> web.Response:
             )
             if error is not None:
                 return _monitor_error(error, "monitor_clear_denied", status=status)
-            return web.json_response({"ok": True, "cleared": True})
+            return web.json_response({"ok": True})
         _stopped, error, status = await authorize_and_stop_monitor(
             svc=svc,
             loop_id=loop_id,

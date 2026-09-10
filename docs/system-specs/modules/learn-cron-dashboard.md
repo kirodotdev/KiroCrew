@@ -2471,11 +2471,22 @@ stop reason fails closed to preserved. A future-version record is never
 replaceable (it belongs to the newer gateway that wrote it), and a terminal
 record whose accepted wake still awaits completion evidence keeps its own
 wake-in-flight refusal, so an unfinished correlation is never orphaned.
-A preserved record is not permanent: the owner ends it by CLEARING it, which is
-what `DELETE /api/autonudge/{loop_id}` does once the monitor is already terminal
+A preserved record is not permanent: the owner ends it by CLEARING it.
+`POST /api/monitors/{id}/clear` is that exit on the structured surface, beside
+`/stop` and `/restart`, and it is what the session-automation panel's terminal
+state presses; `DELETE /api/autonudge/{loop_id}` does the same for a legacy row
+and for a structured one addressed through the legacy route
 (`authorize_and_clear_monitor` — owner-gated, audited as `monitor_clear`, and
-refusing a live monitor, a future-version record, and a wake in flight). That is
-the only route that removes the row, so it is the one the re-arm refusal names;
+refusing a live monitor, a future-version record, and a wake in flight). The
+removal itself re-takes those checks inside the service's own lock hold
+(`clear_terminal_monitor`), because the audit yields the event loop and a
+close-rollback restore landing in that window must not be deleted. On the legacy
+route the operation comes from a required-to-clear `intent=stop|clear` and 409s on
+a mismatch, so the verb's meaning is the label the user pressed rather than
+whatever state the record happened to reach in flight; an ABSENT intent is a
+pre-upgrade bundle, which had no clear control, so it is treated as a stop and can
+never erase a record. Clearing is the only way the row is removed, so it is what
+the re-arm refusal names;
 `POST /api/monitors/{id}/restart` revives the SAME subject and therefore cannot
 free the session to watch a different one.
 Create-only directives cannot silently replace an active

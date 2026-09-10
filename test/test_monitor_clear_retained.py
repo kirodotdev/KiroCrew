@@ -197,7 +197,7 @@ async def test_clear_refuses_while_a_wake_is_in_flight(svc: AutoNudgeService) ->
     cleared, error, status = await _clear(svc, armed.id)
 
     assert cleared is False and status == 409
-    assert error == "monitor cannot be cleared while a wake is in flight"
+    assert error == "this goal is still finishing a run, so try again in a moment"
     assert svc.get_by_id(armed.id) is not None
 
 
@@ -209,16 +209,53 @@ async def test_clear_of_an_unknown_id_is_a_refusal_not_a_silent_ok(
     assert (cleared, error, status) == (False, "structured monitor not found", 404)
 
 
+@pytest.mark.asyncio
+async def test_clear_refuses_a_monitor_restored_during_the_audit(
+    svc: AutoNudgeService, sel_mock: MagicMock
+) -> None:
+    """The window the guards alone cannot cover.
+
+    The state checks run BEFORE the audit, and the audit hands off to a thread,
+    which yields the event loop. A failed app-owned session close rolls its own
+    terminal transition back in exactly that window, so an unconditional removal
+    afterwards would delete a watch that is live again.
+    """
+    armed = await _arm(svc, PR_ONE)
+    await svc.retire_monitor_for_session_close(armed.id)
+    restored: list[Any] = []
+
+    def _restore_mid_audit(*_args: Any, **_kwargs: Any) -> None:
+        # Runs inside the audit's ``to_thread``, i.e. while the clear is parked.
+        if restored:
+            return
+        loop = svc.get_by_id(armed.id)
+        assert loop is not None and loop.monitor is not None
+        loop.monitor.outcome = None
+        loop.monitor.stopped_reason = ""
+        loop.active = True
+        restored.append(loop)
+
+    sel_mock.log_tool_invocation.side_effect = _restore_mid_audit
+
+    cleared, error, status = await _clear(svc, armed.id)
+
+    assert restored, "the fixture never reached the audit window, so this proves nothing"
+    assert cleared is False and status == 409
+    assert error == "monitor changed before the clear committed"
+    assert svc.get_by_id(armed.id) is not None
+
+
 # --- the HTTP route ----------------------------------------------------------
 
 
-def _delete_request(loop_id: str) -> web.Request:
+def _delete_request(loop_id: str, *, intent: str = "") -> web.Request:
     """A DELETE from the configured dashboard owner."""
     app = web.Application()
     app["state"] = MagicMock(owner_id="U_OWNER")
+    path = f"/api/autonudge/{loop_id}"
     request = make_mocked_request(
         "DELETE",
-        f"/api/autonudge/{loop_id}",
+        f"{path}?intent={intent}" if intent else path,
         app=app,
         match_info={"loop_id": loop_id},
     )
@@ -234,6 +271,84 @@ def _body(response: web.StreamResponse) -> dict:
     return json.loads(raw.decode("utf-8"))
 
 
+def _monitor_request(monitor_id: str, *, user: str = "U_OWNER") -> web.Request:
+    """A POST on the structured monitor surface, owner by default."""
+    app = web.Application()
+    app["state"] = MagicMock(owner_id="U_OWNER")
+    request = make_mocked_request(
+        "POST",
+        f"/api/monitors/{monitor_id}/clear",
+        app=app,
+        match_info={"monitor_id": monitor_id},
+    )
+    request["user"] = user
+    request["app"] = ""
+    return request
+
+
+@pytest.mark.asyncio
+async def test_monitors_clear_route_frees_the_slot(
+    svc: AutoNudgeService, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The structured surface's own exit, beside ``/stop`` and ``/restart``.
+
+    This is the route the session-automation panel presses: its terminal branch
+    offered only Restart, which revives the SAME subject, so the panel had no way
+    to free the session at all.
+    """
+    monkeypatch.setattr(h, "_autonudge_get", lambda: svc)
+    armed = await _arm(svc, PR_ONE)
+    await svc.stop_monitor(armed.id)
+
+    response = await h.api_monitor_clear(_monitor_request(armed.id))
+
+    assert svc.get_by_slot(SLOT) is None
+    assert response.status == 200
+    assert _body(response) == {"ok": True, "monitor": None}
+
+
+@pytest.mark.asyncio
+async def test_monitors_clear_route_refuses_a_live_monitor(
+    svc: AutoNudgeService, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(h, "_autonudge_get", lambda: svc)
+    armed = await _arm(svc, PR_ONE)
+
+    response = await h.api_monitor_clear(_monitor_request(armed.id))
+
+    assert response.status == 409
+    assert _body(response)["code"] == "monitor_clear_denied"
+    live = svc.get_by_id(armed.id)
+    assert live is not None and live.monitor is not None and live.monitor.outcome is None
+
+
+@pytest.mark.asyncio
+async def test_monitors_clear_route_requires_the_dashboard_owner(
+    svc: AutoNudgeService, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(h, "_autonudge_get", lambda: svc)
+    armed = await _arm(svc, PR_ONE)
+    await svc.stop_monitor(armed.id)
+
+    response = await h.api_monitor_clear(_monitor_request(armed.id, user="U_OTHER"))
+
+    assert response.status == 403
+    assert _body(response)["code"] == "dashboard_owner_required"
+    assert svc.get_by_id(armed.id) is not None
+
+
+@pytest.mark.asyncio
+async def test_monitors_clear_route_404s_on_an_unknown_id(
+    svc: AutoNudgeService, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(h, "_autonudge_get", lambda: svc)
+
+    response = await h.api_monitor_clear(_monitor_request("mon-gone"))
+
+    assert response.status == 404
+    assert _body(response)["code"] == "monitor_not_found"
+
+
 @pytest.mark.asyncio
 async def test_delete_route_clears_a_stopped_monitor_instead_of_reporting_a_no_op(
     svc: AutoNudgeService, monkeypatch: pytest.MonkeyPatch
@@ -243,14 +358,89 @@ async def test_delete_route_clears_a_stopped_monitor_instead_of_reporting_a_no_o
     armed = await _arm(svc, PR_ONE)
     await svc.stop_monitor(armed.id)
 
-    response = await h.api_autonudge_delete(_delete_request(armed.id))
+    response = await h.api_autonudge_delete(_delete_request(armed.id, intent="clear"))
 
     # Row first, response shape second: the defect was a truthful-looking body
     # over an unchanged store, so the store is what this test is about.
     assert svc.get_by_slot(SLOT) is None
     assert svc.get_by_id(armed.id) is None
     assert response.status == 200
-    assert _body(response) == {"ok": True, "cleared": True}
+    assert _body(response) == {"ok": True}
+
+
+@pytest.mark.asyncio
+async def test_delete_route_refuses_a_stop_intent_against_a_stopped_record(
+    svc: AutoNudgeService, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A stale popover must not erase evidence it only meant to stop.
+
+    The user presses the label they were SHOWN. If the record reached a terminal
+    state between render and press, honouring the server's own reading of the
+    verb would delete a retained record on a press that meant "stop the loop".
+    """
+    monkeypatch.setattr(h, "_autonudge_get", lambda: svc)
+    armed = await _arm(svc, PR_ONE)
+    await svc.stop_monitor(armed.id)
+
+    response = await h.api_autonudge_delete(_delete_request(armed.id, intent="stop"))
+
+    assert response.status == 409
+    assert _body(response)["code"] == "monitor_intent_mismatch"
+    assert svc.get_by_id(armed.id) is not None
+
+
+@pytest.mark.asyncio
+async def test_delete_route_refuses_a_clear_intent_against_a_live_monitor(
+    svc: AutoNudgeService, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The mirror case: a clear-intent press must not silently stop a live watch."""
+    monkeypatch.setattr(h, "_autonudge_get", lambda: svc)
+    armed = await _arm(svc, PR_ONE)
+
+    response = await h.api_autonudge_delete(_delete_request(armed.id, intent="clear"))
+
+    assert response.status == 409
+    assert _body(response)["code"] == "monitor_intent_mismatch"
+    live = svc.get_by_id(armed.id)
+    assert live is not None and live.monitor is not None and live.monitor.outcome is None
+
+
+@pytest.mark.asyncio
+async def test_delete_route_rejects_an_unknown_intent(
+    svc: AutoNudgeService, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(h, "_autonudge_get", lambda: svc)
+    armed = await _arm(svc, PR_ONE)
+    await svc.stop_monitor(armed.id)
+
+    response = await h.api_autonudge_delete(_delete_request(armed.id, intent="delete"))
+
+    assert response.status == 400
+    assert _body(response)["code"] == "monitor_intent_invalid"
+    assert svc.get_by_id(armed.id) is not None
+
+
+@pytest.mark.asyncio
+async def test_delete_route_without_an_intent_never_clears(
+    svc: AutoNudgeService, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A pre-upgrade tab had no clear control, so it can only have meant stop.
+
+    Inferring "clear" from the record's state for an intent-less request is the
+    same hazard the intent closes, reached from the legacy path: a still-open old
+    tab, the ordinary render-then-terminal race, and the evidence is gone with an
+    ``ok`` in the response. It keeps the old harmless no-op instead.
+    """
+    monkeypatch.setattr(h, "_autonudge_get", lambda: svc)
+    armed = await _arm(svc, PR_ONE)
+    await svc.stop_monitor(armed.id)
+
+    response = await h.api_autonudge_delete(_delete_request(armed.id))
+
+    assert response.status == 200
+    retained = svc.get_by_id(armed.id)
+    assert retained is not None and retained.monitor is not None
+    assert retained.monitor.outcome is MonitorOutcome.USER_STOP
 
 
 @pytest.mark.asyncio
