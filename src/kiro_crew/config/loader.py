@@ -23,6 +23,7 @@ import shutil
 import stat as _stat
 import sys
 import threading
+import time
 import uuid
 from collections.abc import Callable, Iterable, Iterator, Mapping, MutableMapping
 from dataclasses import asdict, dataclass, field
@@ -950,6 +951,53 @@ def computer_use_state_path() -> Path:
     turned on and it is not one the agent can reach.
     """
     return config_dir() / "computer_use.json"
+
+
+def docker_registry_access_state_path() -> Path:
+    """Return the operator-only Docker registry credential grant path.
+
+    This authorization is deliberately separate from ``config.json``. An
+    auto-approved agent can write ordinary config through ``kirocrew config
+    set``; letting that file carry the grant would allow a prompt-injected
+    session to enable access to the operator's Docker registry credentials for
+    its next process. The keystone leaf is protected by ``security/paths.py`` and is
+    written only by the authenticated dashboard handler.
+    """
+
+    return config_dir() / "docker_registry_access.json"
+
+
+def docker_registry_access_state() -> dict[str, object]:
+    """Read a grant once, failing closed on malformed or expired state."""
+
+    disabled: dict[str, object] = {"enabled": False, "permanent": False, "expires_at": None}
+    try:
+        state = json.loads(docker_registry_access_state_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError, RecursionError):
+        # UnicodeDecodeError and JSONDecodeError are both ValueError subclasses.
+        return disabled
+    if not isinstance(state, dict) or state.get("enabled") is not True:
+        return disabled
+    if state.get("permanent") is True:
+        return {"enabled": True, "permanent": True, "expires_at": None}
+    expires_at = state.get("expires_at")
+    try:
+        finite_expiry = isinstance(expires_at, (int, float)) and math.isfinite(expires_at)
+    except OverflowError:
+        return disabled
+    if (
+        isinstance(expires_at, (int, float))
+        and not isinstance(expires_at, bool)
+        and finite_expiry
+        and expires_at > time.time()
+    ):
+        return {"enabled": True, "permanent": False, "expires_at": expires_at}
+    return disabled
+
+
+def docker_registry_access_enabled() -> bool:
+    """Return true only for an explicit, unexpired Docker credential grant."""
+    return docker_registry_access_state()["enabled"] is True
 
 
 def oauth_endpoints_path() -> Path:

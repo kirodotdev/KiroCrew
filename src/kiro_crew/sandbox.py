@@ -335,10 +335,11 @@ _CREW_READONLY_LEAVES: tuple[str, ...] = (
     "app_admission.json",
     # Opt-out and consent ceilings the config loader reads in-sandbox. A writable
     # ``denied_commands.json`` lets an auto-approved agent set ``disable_all`` and
-    # defeat the deny gate after a restart; a writable ``computer_use.json`` lets it
-    # turn computer use on for itself.
+    # defeat the deny gate after a restart; writable operator-grant keystones let it
+    # turn computer use or Docker registry credential access on for itself.
     "denied_commands.json",
     "computer_use.json",
+    "docker_registry_access.json",
     "oauth_endpoints.json",
     "aws_service_consent.json",
     # Recorded consent to deliver a scanner-flagged file. Same class as
@@ -720,6 +721,7 @@ def carveout_shadowed_by_foreign_mask(path: str, mode: str = "standard") -> bool
 _CREW_PRECREATE_READONLY_DIR_LEAVES: tuple[str, ...] = ("profiles",)
 _CREW_PRECREATE_READONLY_FILE_LEAVES: tuple[str, ...] = (
     "computer_use.json",
+    "docker_registry_access.json",
     "oauth_endpoints.json",
     "aws_service_consent.json",
     # ``file_delivery_consent._read_all`` returns ``{}`` for both absent and
@@ -3832,6 +3834,7 @@ def _build_launcher_script(
     sandbox_level: str = "strict",
     *,
     strip_python_env: bool = False,
+    expose_docker_config: bool = False,
     extra_hidden_dirs: tuple[str, ...] = (),
     extra_visible_dirs: tuple[str, ...] = (),
     extra_writable_dirs: tuple[str, ...] = (),
@@ -3866,7 +3869,8 @@ def _build_launcher_script(
     else:
         dirs = _sandbox_policy().strict_dirs()
     files = _CC_FILES if sandbox_level in ("cc", "strict") else []
-    expose_files = _CC_EXPOSE_FILES if sandbox_level == "cc" else []
+    expose_files = list(_CC_EXPOSE_FILES if sandbox_level == "cc" else [])
+    docker_config_path = os.path.join(home, ".docker/config.json") if expose_docker_config else None
     env_prefixes = list(_SENSITIVE_ENV_PREFIXES)
     if sandbox_level in ("cc", "strict"):
         # Block agent subprocesses from reading credentials via os.environ
@@ -3999,6 +4003,7 @@ def _build_launcher_script(
     # the launcher and kills the spawn (found in review).
     expose_pairs = list(dict.fromkeys(expose_pairs))
     expose_json = json.dumps(expose_pairs)
+    docker_config_path_python = repr(docker_config_path)
     env_prefixes_json = json.dumps(env_prefixes)
     ssh_dir = json.dumps(os.path.join(home, ".ssh"))
     ssh_known_hosts = json.dumps(os.path.join(home, ".ssh", "known_hosts"))
@@ -4181,6 +4186,7 @@ READONLY_DIRS = {readonly_json}
 WRITABLE_DIRS = {writable_json}
 SENSITIVE_FILES = {files_json}
 EXPOSE_FILES = {expose_json}
+DOCKER_CONFIG_PATH = {docker_config_path_python}
 ENV_PREFIXES = {env_prefixes_json}
 SSH_DIR = {ssh_dir}
 SSH_KNOWN_HOSTS = {ssh_known_hosts}
@@ -4329,6 +4335,40 @@ def main():
                         file=sys.stderr,
                     )
 
+        # Docker credentials are a separate, stricter exposure path. Opening
+        # with O_NOFOLLOW and validating the opened inode prevents a symlink or
+        # check/open race from redirecting this explicit grant at another file.
+        docker_config_data = None
+        if DOCKER_CONFIG_PATH is not None:
+            try:
+                docker_fd = os.open(
+                    DOCKER_CONFIG_PATH,
+                    os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK,
+                )
+            except FileNotFoundError:
+                pass
+            except OSError as exc:
+                print(
+                    "sandbox: WARNING — cannot safely read %s (%s); Docker "
+                    "registry login will be unavailable inside the sandbox."
+                    % (DOCKER_CONFIG_PATH, exc),
+                    file=sys.stderr,
+                )
+            else:
+                try:
+                    if stat.S_ISREG(os.fstat(docker_fd).st_mode):
+                        with os.fdopen(os.dup(docker_fd), "rb") as fh:
+                            docker_config_data = fh.read()
+                    else:
+                        print(
+                            "sandbox: WARNING — %s is not a regular file; Docker "
+                            "registry login will be unavailable inside the sandbox."
+                            % DOCKER_CONFIG_PATH,
+                            file=sys.stderr,
+                        )
+                finally:
+                    os.close(docker_fd)
+
         # Bind-mount empty dirs over credential paths (per-dir tmpdir to
         # prevent content leaking across mounts via shared backing dir).
         for d in SENSITIVE_DIRS:
@@ -4402,7 +4442,9 @@ def main():
                                | _locked_mount_flags(target),
                                "writable carve-out remount for %s" % d)
 
-        # Restore selectively exposed files into the now-empty mounts
+        # Restore the existing cc-mode exposure exactly as before. This path is
+        # intentionally separate from Docker's credential-bearing opt-in below:
+        # users may symlink ~/.aws/config through a dotfile manager.
         for src_path, filename in EXPOSE_FILES:
             if src_path in expose_data:
                 parent = os.path.dirname(src_path)
@@ -4417,6 +4459,47 @@ def main():
                 # (which is undefined in that process). The launcher never runs
                 # on Windows, so there is no portability loss.
                 os.chmod(dest, 0o444)
+
+        # Docker secret bytes live only in an anonymous memfd. The containing
+        # ~/.docker directory is already a namespace-local empty mount, and the
+        # bind is sealed read-only before the descriptor is closed.
+        if docker_config_data is not None:
+            try:
+                docker_snapshot_fd = os.memfd_create(
+                    "kirocrew_docker_config", flags=os.MFD_CLOEXEC
+                )
+            except (AttributeError, OSError) as exc:
+                print(
+                    "sandbox: WARNING — cannot create an anonymous Docker config "
+                    "snapshot (%s); registry login will be unavailable." % exc,
+                    file=sys.stderr,
+                )
+            else:
+                try:
+                    with os.fdopen(os.dup(docker_snapshot_fd), "wb") as fh:
+                        fh.write(docker_config_data)
+                    os.fchmod(docker_snapshot_fd, 0o444)
+                    with open(DOCKER_CONFIG_PATH, "wb"):
+                        pass
+                    os.chmod(DOCKER_CONFIG_PATH, 0o444)
+                    docker_target = DOCKER_CONFIG_PATH.encode()
+                    docker_snapshot = (
+                        "/proc/self/fd/%d" % docker_snapshot_fd
+                    ).encode()
+                    _mount_or_die(
+                        docker_snapshot,
+                        docker_target,
+                        _MS_BIND,
+                        "restoring Docker registry config %s" % DOCKER_CONFIG_PATH,
+                    )
+                    _mount_or_die(
+                        docker_target,
+                        docker_target,
+                        _MS_REMOUNT | _MS_BIND | _MS_RDONLY,
+                        "sealing Docker registry config %s" % DOCKER_CONFIG_PATH,
+                    )
+                finally:
+                    os.close(docker_snapshot_fd)
 
         # Bind-mount empty files over individual sensitive files. Source the
         # empty tempfile from a tmpfs (cross-fs) when available so the bind
@@ -4878,6 +4961,7 @@ def namespace_argv(
     sandbox_level: str = "strict",
     *,
     strip_python_env: bool = False,
+    expose_docker_config: bool = False,
     extra_hidden_dirs: tuple[str, ...] = (),
     extra_visible_dirs: tuple[str, ...] = (),
     extra_writable_dirs: tuple[str, ...] = (),
@@ -4918,6 +5002,7 @@ def namespace_argv(
     script = _build_launcher_script(
         sandbox_level,
         strip_python_env=strip_python_env,
+        expose_docker_config=expose_docker_config,
         extra_hidden_dirs=extra_hidden_dirs,
         extra_visible_dirs=extra_visible_dirs,
         extra_writable_dirs=extra_writable_dirs,
@@ -7644,6 +7729,7 @@ def wrap_argv(
     mode: str = "auto",
     *,
     strip_python_env: bool = False,
+    expose_docker_config: bool = False,
     extra_hidden_dirs: tuple[str, ...] = (),
     extra_visible_dirs: tuple[str, ...] = (),
     extra_writable_dirs: tuple[str, ...] = (),
@@ -7659,6 +7745,10 @@ def wrap_argv(
               ``"cc"`` (hide .aws but expose .aws/config for Bedrock auth),
               ``"strict"`` (hide everything), ``"off"`` (no sandbox).
         extra_hidden_dirs: Additional absolute directory trees to deny.
+        expose_docker_config: On Linux namespace backends, expose a read-only
+            namespace-local snapshot of ``~/.docker/config.json`` while keeping
+            the rest of ``~/.docker`` hidden. This grants the child access to
+            Docker registry credentials and must be an explicit operator opt-in.
         extra_visible_dirs: Trusted paths that must remain visible when an
             otherwise-hidden parent contains them.
         extra_expose_files: Absolute files to keep READABLE inside dirs that
@@ -7719,12 +7809,21 @@ def wrap_argv(
     # tier (off < standard < cc < strict).  Clamp the requested mode up to that
     # floor before resolving the level — so an enterprise "min_level: cc" makes
     # even a mode="off" call run confined.  Cheap no-op when ungoverned.
-    #
-    # ONE read per wrap_argv call, reused by the first-party carve-out below:
-    # the (potentially profile-walking) resolve runs once, and the clamp and
-    # the carve-out condition can never disagree about the same host.
     governance_floor = _governance_sandbox_floor()
     mode = _clamp_sandbox_mode_to_floor(mode, governance_floor)
+    if expose_docker_config:
+        # This flag identifies an agent spawn, never a cached authorization.
+        # Re-read on every start/respawn, including background ACP runtimes.
+        from kiro_crew.config.loader import docker_registry_access_enabled
+
+        expose_docker_config = docker_registry_access_enabled()
+    if expose_docker_config and sys.platform.startswith("linux"):
+        logger.warning(
+            "SECURITY: Docker credential access is granted for this agent spawn. "
+            "Namespace backends expose only a snapshot of ~/.docker/config.json; "
+            "credential-helper stores are not exposed, so helper-based login "
+            "may remain unavailable."
+        )
 
     if mode == "off":
         # Fix #2: verify kiro-cli delegation before honoring "off". The
@@ -7975,6 +8074,7 @@ def wrap_argv(
                 argv,
                 sandbox_level,
                 strip_python_env=strip_python_env,
+                expose_docker_config=expose_docker_config,
                 extra_hidden_dirs=extra_hidden_dirs,
                 extra_visible_dirs=extra_visible_dirs,
                 extra_writable_dirs=extra_writable_dirs,
@@ -7985,6 +8085,7 @@ def wrap_argv(
                 argv,
                 sandbox_level,
                 strip_python_env=strip_python_env,
+                expose_docker_config=expose_docker_config,
             )
         # Caller deletes the generated launcher script. Its position is
         # ``1 + len(flags)``, NOT a hardcoded 1: the interpreter flags sit between
@@ -8267,6 +8368,7 @@ async def wrap_argv_async(
     mode: str = "auto",
     *,
     strip_python_env: bool = False,
+    expose_docker_config: bool = False,
     extra_hidden_dirs: tuple[str, ...] = (),
     extra_visible_dirs: tuple[str, ...] = (),
     extra_writable_dirs: tuple[str, ...] = (),
@@ -8288,6 +8390,8 @@ async def wrap_argv_async(
     options: dict[str, Any] = {"mode": mode}
     if strip_python_env:
         options["strip_python_env"] = True
+    if expose_docker_config:
+        options["expose_docker_config"] = True
     if extra_hidden_dirs:
         options["extra_hidden_dirs"] = extra_hidden_dirs
     if extra_visible_dirs:

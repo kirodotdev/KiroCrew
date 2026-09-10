@@ -1132,6 +1132,7 @@ async def test_runtime_spawn_passes_installed_path_through_exact_wrappers(
     assert wrapped["mode"] == "auto"
     assert wrapped["kwargs"] == {
         "strip_python_env": True,
+        "expose_docker_config": True,
         "is_kiro_cli": True,
     }
     voice_guard.assert_called_once_with(runtime._work_dir)
@@ -6244,7 +6245,10 @@ async def test_runtime_spawn_scrubs_sensitive_env_on_default_auto(monkeypatch):
     monkeypatch.setattr(
         runtime_mod,
         "wrap_argv",
-        lambda argv, mode, strip_python_env=False, is_kiro_cli=None: (argv, None),
+        lambda argv, mode, strip_python_env=False, expose_docker_config=False, is_kiro_cli=None: (
+            argv,
+            None,
+        ),
     )
     monkeypatch.setattr(runtime_mod, "cgroup_scope_argv", lambda argv: argv)
     monkeypatch.setattr(runtime_mod, "augmented_path", lambda p: p)
@@ -6302,7 +6306,10 @@ async def test_runtime_spawn_names_its_own_browser_session(monkeypatch):
     monkeypatch.setattr(
         runtime_mod,
         "wrap_argv",
-        lambda argv, mode, strip_python_env=False, is_kiro_cli=None: (argv, None),
+        lambda argv, mode, strip_python_env=False, expose_docker_config=False, is_kiro_cli=None: (
+            argv,
+            None,
+        ),
     )
     monkeypatch.setattr(runtime_mod, "cgroup_scope_argv", lambda argv: argv)
     monkeypatch.setattr(runtime_mod, "augmented_path", lambda p: p)

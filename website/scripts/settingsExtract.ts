@@ -118,6 +118,10 @@ export const PANEL_TAB_MAP: Record<string, PanelTarget> = {
   'InstancesPanel.tsx': 'instances',
   'SecurityPanel.tsx': 'security',
   'SecretsPanel.tsx': 'secrets',
+  'DockerRegistryAccessCard.tsx': {
+    tab: 'security',
+    params: { section: 'docker' },
+  },
   'NotificationsPanel.tsx': 'notifications',
   'ShortcutsPanel.tsx': 'shortcuts',
   // Added upstream (auto-skill generation) without a mapping here, so its two

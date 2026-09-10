@@ -89,6 +89,7 @@ class TestKeystonesAreSealedInEveryMode:
         "profiles",
         "denied_commands.json",
         "computer_use.json",
+        "docker_registry_access.json",
         "oauth_endpoints.json",
         "aws_service_consent.json",
         # Recorded consent to deliver a scanner-flagged file (#7770). Sealing it
