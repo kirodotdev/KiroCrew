@@ -104,6 +104,7 @@ class TestAcpClientCapture:
             == second
             == {
                 "configured": [],
+                "unresolved_refs": [],
                 "ready": ["a"],
                 "failed": [],
                 "awaiting_auth": [],

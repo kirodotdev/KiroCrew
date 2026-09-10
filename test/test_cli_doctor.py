@@ -378,6 +378,143 @@ class TestTrustRoot:
         assert "⚠" not in out
 
 
+class TestUnresolvedMcpRefs:
+    """`kirocrew doctor` answers "why does my agent have no tools here?" statically.
+
+    The runtime guard in ``acp/mcp_ref_guard`` reports the same thing from inside a
+    session; this row reports it before one, per selectable harness. Advisory by
+    design -- a harness with no projection yet is a known state of the tree, not a
+    broken install, so it must never move doctor's exit code.
+    """
+
+    def _wire(self, *names: str) -> list:
+        return [{"name": n, "command": "/bin/x", "args": [], "env": [], "type": "stdio"} for n in names]
+
+    def _arrange(self, monkeypatch, *, spec, backends, projections, no_mirror=("codex",)):
+        """Point the check's three lookups at fixtures.
+
+        The check imports them inside the function (doctor keeps its import graph
+        lazy), so the patches land on the source modules.
+        """
+        from kiro_crew import acp_backends, providers
+        from kiro_crew.acp import session_mcp
+
+        # The PACKAGE module, not registry: ``providers/mirrors/__init__`` re-exports
+        # both names, so that is the binding the check's own import reads.
+        mirrors = providers.mirrors
+
+        monkeypatch.setattr(session_mcp, "agent_spec_snapshot", lambda _a: spec)
+        monkeypatch.setattr(acp_backends, "selectable_backend_values", lambda: backends)
+
+        class _Mirror:
+            def __init__(self, servers):
+                self._servers = servers
+
+            def session_params(self, _agent, **_kw):
+                return {"mcpServers": self._servers}
+
+        def _mirror_for(backend):
+            projected = projections.get(backend)
+            return None if projected is None else _Mirror(projected)
+
+        monkeypatch.setattr(mirrors, "mirror_for", _mirror_for)
+        monkeypatch.setattr(mirrors, "NO_MIRROR", {b: "declared" for b in no_mirror})
+
+    def test_a_backend_with_no_projection_names_the_unprojected_refs(self, monkeypatch, capsys):
+        self._arrange(
+            monkeypatch,
+            spec={"tools": ["@kirocrew-core"], "mcpServers": {"kirocrew-core": {"command": "/x"}}},
+            backends=["codex"],
+            projections={"codex": None},
+        )
+        cli_doctor._doctor_unresolved_mcp_refs()
+        out = capsys.readouterr().out
+        assert "codex has no mirror" in out
+        assert "@kirocrew-core" in out
+
+    def test_a_healthy_projection_prints_a_clean_row(self, monkeypatch, capsys):
+        self._arrange(
+            monkeypatch,
+            spec={"tools": ["@kirocrew-core"], "mcpServers": {"kirocrew-core": {"command": "/x"}}},
+            backends=["claude"],
+            projections={"claude": self._wire("kirocrew-core")},
+            no_mirror=(),
+        )
+        cli_doctor._doctor_unresolved_mcp_refs()
+        out = capsys.readouterr().out
+        assert "✅ claude" in out
+        assert "@kirocrew-core" not in out
+
+    def test_kiro_reads_its_refs_against_the_spec_not_the_empty_array(self, monkeypatch, capsys):
+        """Crew passes kiro-cli no array on purpose; it loads the spec via --agent.
+
+        Judging it against the wire would make the healthiest install in the tree
+        print every ref it declares -- the false positive that would get this row
+        deleted rather than fixed.
+        """
+        self._arrange(
+            monkeypatch,
+            spec={"tools": ["@kirocrew-core"], "mcpServers": {"kirocrew-core": {"command": "/x"}}},
+            backends=[""],
+            projections={"": None},
+            no_mirror=("",),
+        )
+        cli_doctor._doctor_unresolved_mcp_refs()
+        out = capsys.readouterr().out
+        assert "✅ kiro" in out
+
+    def test_a_mirrored_backend_that_still_drops_a_ref_is_the_louder_row(self, monkeypatch, capsys):
+        # A mirror exists and its projection lost the server anyway, which is a
+        # different problem from having no projection at all.
+        self._arrange(
+            monkeypatch,
+            spec={"tools": ["@marked"], "mcpServers": {"marked": {"type": "registry"}}},
+            backends=["claude"],
+            projections={"claude": []},
+            no_mirror=(),
+        )
+        cli_doctor._doctor_unresolved_mcp_refs()
+        out = capsys.readouterr().out
+        assert "⚠ claude" in out
+        assert "@marked" in out
+
+    def test_no_spec_on_disk_is_informational(self, monkeypatch, capsys):
+        self._arrange(monkeypatch, spec=None, backends=["codex"], projections={})
+        cli_doctor._doctor_unresolved_mcp_refs()
+        assert "no default agent spec" in capsys.readouterr().out
+
+    def test_the_row_never_moves_doctors_exit_code(self):
+        """It takes no ``issues`` list, so it structurally cannot append one.
+
+        Same rule as ``_doctor_strict_identity``: making every stock host red for a
+        backend nobody selected is how a useful note becomes one people disable.
+        """
+        import inspect
+
+        assert list(inspect.signature(cli_doctor._doctor_unresolved_mcp_refs).parameters) == []
+
+    def test_the_row_is_reached_from_the_report_itself(self):
+        """The check runs, rather than merely existing for its own tests to call.
+
+        Every other test here invokes it directly, so all of them stay green on a
+        build where nothing in ``_doctor`` calls it at all -- which is the same
+        shape of omission the guard exists to detect, one layer up.
+        """
+        import inspect
+
+        assert "_doctor_unresolved_mcp_refs()" in inspect.getsource(cli_doctor._doctor)
+
+    def test_an_unreadable_registry_does_not_break_triage(self, monkeypatch, capsys):
+        from kiro_crew.acp import session_mcp
+
+        def _boom(*_a, **_k):
+            raise RuntimeError("spec unreadable")
+
+        monkeypatch.setattr(session_mcp, "agent_spec_snapshot", _boom)
+        cli_doctor._doctor_unresolved_mcp_refs()  # must not raise
+        assert capsys.readouterr().out == ""
+
+
 class TestSwapTotalProbe:
     """``SwapTotal`` parsed from /proc/meminfo → KiB, or None when unreadable."""
 

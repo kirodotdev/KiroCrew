@@ -138,6 +138,13 @@ class McpSessionReport:
     #: Empty means Kiro Crew injected none — NOT that the session has none, since
     #: the backend also starts the agent spec's own servers.
     configured: tuple[str, ...] = ()
+    #: Agent-spec ``@server`` refs that named no server this session receives, as
+    #: :mod:`kiro_crew.acp.mcp_ref_guard` found them. A DIFFERENT claim from every
+    #: bucket below, and the difference is what makes it worth a slot: those say
+    #: what a configured server reported, this says the spec asked for a server
+    #: nothing configured -- so there is no row for it to be missing FROM, which
+    #: is exactly why the defect was invisible three times.
+    unresolved_refs: tuple[str, ...] = ()
     _ready: list[str] = field(default_factory=list)
     _failed: list[str] = field(default_factory=list)
     _awaiting_auth: list[str] = field(default_factory=list)
@@ -161,11 +168,35 @@ class McpSessionReport:
         not at any one of them.
         """
         self.configured = roster_names(servers)
+        self.unresolved_refs = ()
         self._started = True
         self._ready.clear()
         self._failed.clear()
         self._awaiting_auth.clear()
         self._failures.clear()
+
+    def record_unresolved_refs(self, refs: Any) -> None:
+        """Record the spec refs that named no server this session receives.
+
+        Sanitized and capped on the same terms as a server name: a ref is
+        config-derived, so an installed app chooses the text, and it reaches a log
+        line, a JSON payload and a DOM node. Set rather than accumulated -- the
+        guard evaluates the whole spec against the whole wire array in one pass,
+        so a second call is a re-evaluation of the same question and replaces the
+        answer instead of appending to it.
+
+        Only strings are taken. The guard emits nothing else, and stringifying a
+        non-string would put a row reading ``None`` or ``7`` in front of a user as
+        though the spec had asked for a server by that name.
+        """
+        seen: list[str] = []
+        for raw in refs if isinstance(refs, (list, tuple)) else ():
+            if not isinstance(raw, str):
+                continue
+            ref = _clean(raw, _NAME_CAP)
+            if ref and ref not in seen:
+                seen.append(ref)
+        self.unresolved_refs = tuple(seen[:_BUCKET_CAP])
 
     def record_frame(self, msg: JsonRpcMessage, *, owned: bool) -> bool:
         """Fold one notification in. Returns True when the report changed.
@@ -296,7 +327,13 @@ class McpSessionReport:
     @property
     def empty(self) -> bool:
         """True when nothing has been recorded and no roster was sent."""
-        return not (self.configured or self._ready or self._failed or self._awaiting_auth)
+        return not (
+            self.configured
+            or self.unresolved_refs
+            or self._ready
+            or self._failed
+            or self._awaiting_auth
+        )
 
     def payload(self) -> dict[str, Any] | None:
         """The serialized report, or ``None`` when no session has begun.
@@ -318,6 +355,7 @@ class McpSessionReport:
             return None
         return {
             "configured": list(self.configured),
+            "unresolved_refs": list(self.unresolved_refs),
             "ready": list(self._ready),
             "failed": list(self._failed),
             "awaiting_auth": list(self._awaiting_auth),

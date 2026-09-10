@@ -65,6 +65,7 @@ class TestBuckets:
         assert r.record_frame(_ready("github-mcp"), owned=True) is True
         assert r.payload() == {
             "configured": [],
+            "unresolved_refs": [],
             "ready": ["github-mcp"],
             "failed": [],
             "awaiting_auth": [],
@@ -95,6 +96,7 @@ class TestBuckets:
         assert r.record_frame(_ready("builder-mcp"), owned=True) is True
         assert r.payload() == {
             "configured": [],
+            "unresolved_refs": [],
             "ready": ["builder-mcp"],
             "failed": [],
             "awaiting_auth": [],

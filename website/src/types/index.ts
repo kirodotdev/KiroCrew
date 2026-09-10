@@ -796,6 +796,15 @@ export interface TodoList {
 export interface McpSessionReport {
   /** Server names Kiro Crew put on the wire for this session. */
   configured: string[]
+  /**
+   * Agent-spec `@server` tool refs that named no server this session receives.
+   *
+   * A different claim from every bucket below: those say what a *configured*
+   * server reported, this says the spec asked for one that was never
+   * configured — so it has no row here to be missing from. Optional because a
+   * gateway from before the guard shipped sends no such key.
+   */
+  unresolved_refs?: string[]
   /** Reported initialized. */
   ready: string[]
   /** Reported a startup failure. */

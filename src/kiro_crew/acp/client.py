@@ -74,9 +74,10 @@ from kiro_crew.acp.liveness import (
     _consume_future_exception,
     consult_offloaded,
 )
+from kiro_crew.acp.mcp_ref_guard import warn_unresolved_server_refs
 from kiro_crew.acp.mcp_session_report import McpSessionReport
 from kiro_crew.acp.prompt_blocks import build_prompt_blocks
-from kiro_crew.acp.session_mcp import session_mcp_deny_rules
+from kiro_crew.acp.session_mcp import agent_spec_snapshot, session_mcp_deny_rules
 from kiro_crew.acp.types import (
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
@@ -3363,6 +3364,14 @@ class AcpClient:
         # (harness-parity H13). None = not resolved yet; cleared on reset so the
         # next spawn re-reads the spec. See _session_mcp_servers.
         self._session_mcp_cache: list[dict[str, Any]] | None = None
+        # This session's agent spec, snapshotted once per spawn for the
+        # unresolved-ref guard alone (see _guard_unresolved_mcp_refs). Held for
+        # the same reason as the array above and read at the same kind of site:
+        # the guard runs where the wire array is composed, which is shared with
+        # kiro-cli, so the read cannot happen there. None = not snapshotted (or
+        # unreadable), which makes the guard a no-op rather than a disk read on
+        # the loop. Cleared on reset so the next spawn re-reads the spec.
+        self._mcp_ref_spec: dict[str, Any] | None = None
         self._session_key = session_key
         # When set, this client emits a per-tool-call SEL audit from the ACP
         # dispatch loop. Used by app/worker-pool clients (e.g. code-review-sage,
@@ -3731,6 +3740,66 @@ class AcpClient:
             )
             return servers
         return [e for e in servers if e.get("name") != entry["name"]] + [entry]
+
+    def _read_mcp_ref_spec(self) -> dict[str, Any] | None:
+        """Snapshot this session's agent spec for the unresolved-ref guard.
+
+        Blocking (reads the spec), so the spawn path runs it off the loop; the
+        guard itself then only reads what this left behind.
+
+        Best-effort by construction: every failure resolves to ``None``, which
+        makes the guard silent rather than making the spawn fail. That is not
+        politeness, it is the H13 constraint spelled out -- this runs on EVERY
+        backend's construction path including kiro-cli's, and a diagnostic that
+        can fail a session is a worse defect than the one it detects.
+        """
+        try:
+            return agent_spec_snapshot(self._agent, work_dir=self._work_dir)
+        except Exception:
+            logger.debug("unresolved-ref guard: agent spec unreadable", exc_info=True)
+            return None
+
+    def _guard_unresolved_mcp_refs(self, wire_servers: Any) -> None:
+        """Warn when the spec's ``@server`` refs name nothing this session gets.
+
+        The one place the answer can be known: *wire_servers* is the FINAL array
+        -- spec projection plus the broker stubs -- so this is the last point
+        before ``session/new`` at which "the spec asked for it" and "the session
+        receives it" can be compared at all.
+
+        Called for every backend, not just the ones with a mirror. The defect it
+        detects has landed on three harnesses already
+        (``providers/mirrors/README.md``), so a check that only ran on the harness
+        someone had already thought about would be the same omission a fourth
+        time. kiro-cli is judged against the spec's own ``mcpServers`` instead of
+        the wire -- it loads them via ``--agent`` -- which the guard resolves from
+        the backend id.
+
+        Synchronous, in-memory and non-raising, in that order of importance: the
+        composition site is shared with kiro-cli, so this adds no scheduling point
+        and no failure mode to that backend's path (harness-parity H13). It also
+        changes NOTHING -- not the array, not the session's fate. A ref naming
+        nothing is a configuration fact, and the complaint about this defect class
+        was that it was invisible, not that it was tolerated.
+        """
+        spec = self._mcp_ref_spec
+        if spec is None:
+            # No snapshot: either the spawn path did not warm one (a client driven
+            # straight into session/new by a test) or the spec was unreadable.
+            # Reading it here would be the disk touch this site must not have.
+            return
+        try:
+            unresolved = warn_unresolved_server_refs(
+                spec,
+                wire_servers,
+                backend=self.backend,
+                agent=self._agent,
+                gateway_enabled=self._mcp_gateway_overlay is not None,
+            )
+            if unresolved:
+                self._mcp_report.record_unresolved_refs(unresolved)
+        except Exception:
+            logger.debug("unresolved-ref guard: evaluation failed", exc_info=True)
 
     def _session_mcp_servers(self) -> list[dict[str, Any]]:
         """MCP server array passed to this session's ``session/new`` / ``session/load``.
@@ -5154,6 +5223,15 @@ class AcpClient:
         # slow storage; the loop must never wait on the kernel here.
         await asyncio.to_thread(self._work_dir.mkdir, parents=True, exist_ok=True)
 
+        # Snapshot the agent spec for the unresolved-ref guard, here rather than in
+        # any one backend's branch: the guard runs for EVERY harness, because the
+        # defect it detects has already shipped on three of them. It is not adapter
+        # work and so is not the addition H13 forbids -- kiro-cli is the backend the
+        # guard reads most accurately, since its refs resolve against the spec it is
+        # handed. _read_mcp_ref_spec swallows every failure, so this adds no failure
+        # mode to any construction path; a None snapshot only silences the guard.
+        self._mcp_ref_spec = await asyncio.to_thread(self._read_mcp_ref_spec)
+
         # Kiro's internal macOS sandbox replaces (rather than nests inside)
         # Kiro Crew's Seatbelt profile. Refuse a delegated agent workspace that
         # can reach the protected named decoder snapshots; otherwise a same-UID
@@ -5979,6 +6057,9 @@ class AcpClient:
         # lets installing or toggling a server take effect on the next session, so
         # a replacement process must not inherit this one's snapshot.
         self._session_mcp_cache = None
+        # Same per-spawn freshness rule as the array above: an edited spec must be
+        # what the next session's guard judges, not this one's.
+        self._mcp_ref_spec = None
         # Save PIDs before clearing state — needed for untracking
         saved_pid = self._pid
         saved_child_pids = self._child_pids
@@ -6122,6 +6203,9 @@ class AcpClient:
         # on disk: the backend starts the spec's own servers too, so the frames
         # that come back are a superset of this list.
         self._begin_session_report(new_params.get("mcpServers"))
+        # AFTER begin_session_report, which clears the report: the guard writes a
+        # row on it, and writing before the clear would erase the finding.
+        self._guard_unresolved_mcp_refs(new_params.get("mcpServers"))
 
         self._last_substitution_model = None
         session_id = await self._send_request(METHOD_SESSION_NEW, new_params)
@@ -6261,6 +6345,9 @@ class AcpClient:
                     else:
                         load_params["_meta"] = {"_kiro.dev/session_file": session_file}
                     self._begin_session_report(load_params.get("mcpServers"))
+                    # A resumed session re-declares its whole MCP surface, so it can
+                    # be short of a referenced server exactly as a fresh one can.
+                    self._guard_unresolved_mcp_refs(load_params.get("mcpServers"))
                     load_id = await self._send_request(METHOD_SESSION_LOAD, load_params)
                     load_resp = await self._wait_for_response(
                         load_id,
