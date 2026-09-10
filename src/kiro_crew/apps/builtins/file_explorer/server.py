@@ -444,11 +444,17 @@ def _kirocrew_safe_children(kirocrew_dir: Path) -> list[dict]:
     kirocrew_dir = _contain_in_allowed_roots(kirocrew_dir, operation="tree_list")
     out: list[dict] = []
     try:
-        children = sorted(kirocrew_dir.iterdir(), key=lambda x: (not x.is_dir(), x.name.lower()))
+        children = sorted(kirocrew_dir.iterdir(), key=_entry_sort_key)
     except (OSError, PermissionError):
         return out
     for child in children:
-        if _is_safe_crew_subdir(child.name) and child.is_dir():
+        # An unreadable child must not drop the readable safe subdirs, so guard
+        # the per-entry is_dir() the same way the sort key does.
+        try:
+            is_dir = child.is_dir()
+        except OSError:
+            continue
+        if _is_safe_crew_subdir(child.name) and is_dir:
             out.append(_entry_meta(child))
     return out
 
@@ -471,13 +477,19 @@ def _sel_audit(operation: str, resources: str, outcome: str = "granted") -> None
 
 def _file_kind(p: Path) -> str:
     # Follow symlinks: a symlink to a dir/file should behave like its target
-    # so the UI navigates into it instead of trying to read it as a file.
-    if p.is_dir():
-        return "dir"
-    if p.is_file():
-        return "file"
-    if p.is_symlink():
-        return "symlink"  # broken/dangling symlink
+    # so the UI navigates into it instead of reading it as a file. A probe can
+    # raise on an unreadable entry (e.g. TCC-protected); report it as "missing"
+    # -- the same access-failure sentinel _entry_meta uses -- so one child
+    # doesn't abort the whole listing.
+    try:
+        if p.is_dir():
+            return "dir"
+        if p.is_file():
+            return "file"
+        if p.is_symlink():
+            return "symlink"  # broken/dangling symlink
+    except OSError:
+        return "missing"
     return "other"
 
 
@@ -514,6 +526,17 @@ def _entry_meta(p: Path) -> dict:
     return info
 
 
+def _entry_sort_key(p: Path) -> tuple[bool, str]:
+    # Dirs first, then case-insensitive name. is_dir() can raise on an
+    # unreadable entry; treat that as a non-dir so one bad sibling never
+    # aborts the sort.
+    try:
+        is_dir = p.is_dir()
+    except OSError:
+        is_dir = False
+    return (not is_dir, p.name.lower())
+
+
 def _list_dir(p: Path, depth: int = 1, ignore: bool = True) -> tuple[list[dict], bool]:
     """List directory contents up to ``depth`` levels (1 = immediate children).
     Returns (entries, truncated)."""
@@ -527,8 +550,12 @@ def _list_dir(p: Path, depth: int = 1, ignore: bool = True) -> tuple[list[dict],
     def walk(d: Path, rem: int) -> list[dict]:
         if count[0] >= MAX_TREE_ENTRIES:
             return []
+        # A failure opening the directory is a real directory-level error; a
+        # failure statting one child (e.g. a TCC-protected ~/.docker) must not.
+        # Keep the sort key from raising so one bad sibling doesn't collapse the
+        # whole listing.
         try:
-            entries = sorted(d.iterdir(), key=lambda x: (not x.is_dir(), x.name.lower()))
+            entries = sorted(d.iterdir(), key=_entry_sort_key)
         except (OSError, PermissionError) as exc:
             return [{"name": d.name, "path": str(d), "type": "error", "error": str(exc)}]
         items: list[dict] = []
@@ -552,8 +579,15 @@ def _list_dir(p: Path, depth: int = 1, ignore: bool = True) -> tuple[list[dict],
             count[0] += 1
             meta = _entry_meta(child)
             if rem > 1 and meta["type"] == "dir":
-                resolved_child = child.resolve()
-                if any(_is_within(resolved_child, root) for root in ALLOWED_ROOTS):
+                # resolve() can raise on an unreadable child; skip recursion
+                # for it rather than aborting the listing.
+                try:
+                    resolved_child = child.resolve()
+                except OSError:
+                    resolved_child = None
+                if resolved_child is not None and any(
+                    _is_within(resolved_child, root) for root in ALLOWED_ROOTS
+                ):
                     meta["children"] = walk(child, rem - 1)
             items.append(meta)
         return items
@@ -1223,7 +1257,7 @@ class FileExplorerHandler(BaseHTTPRequestHandler):
 
         results: list[dict] = []
         try:
-            children = sorted(parent.iterdir(), key=lambda x: (not x.is_dir(), x.name.lower()))
+            children = sorted(parent.iterdir(), key=_entry_sort_key)
         except (OSError, PermissionError):
             return self._json(200, {"entries": []})
 
@@ -1242,7 +1276,12 @@ class FileExplorerHandler(BaseHTTPRequestHandler):
                 continue
             if plower and not name.lower().startswith(plower):
                 continue
-            is_dir = child.is_dir()
+            # Skip a child we cannot stat rather than dropping the whole
+            # completion list.
+            try:
+                is_dir = child.is_dir()
+            except OSError:
+                continue
             if kind == "dir" and not is_dir:
                 continue
             results.append(
