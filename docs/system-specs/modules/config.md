@@ -981,7 +981,8 @@ class AgentConfig:
 @dataclass
 class SessionConfig:
     timeout_secs: int = 3600       # 60 min idle timeout (DEFAULT_SESSION_TIMEOUT)
-    empty_response_auto_continue: bool = True  # after TWO consecutive empty model responses, auto-send ONE synthetic "continue" nudge on the same live session (transcript-visible notice; bounded to once per user message; the config gate fails OPEN to the default so a config-load hiccup cannot disable self-healing). See session.md "Empty-response recovery ladder".
+    empty_response_auto_continue: bool = True  # after TWO consecutive empty model responses, auto-send synthetic "continue" nudges on the same live session (transcript-visible notice; count bounded by empty_response_max_continues; the config gate fails OPEN to the default so a config-load hiccup cannot disable self-healing). See session.md "Empty-response recovery ladder".
+    empty_response_max_continues: int = 1  # how many continue nudges may run back to back before the give-up card (EMPTY_RESPONSE_MAX_CONTINUES_MIN/MAX; load-time clamped to [1, 10] so a hand-edited 0 cannot disable recovery and a large value cannot arm an unbounded ladder). Default 1 keeps the pre-knob behavior byte-identical; above 1 the notice numbers each recovery ("recovery 2 of 3").
     autocompact_pct: float = 70.0  # context usage % at which auto-compaction triggers (DEFAULT_AUTOCOMPACT_PCT). Load-time clamped to [5.0, 90.0] (one constant pair shared with the dashboard write gate)
     pool_size: int = 0             # pre-warmed kiro-cli processes kept ready for instant session start; 0 (the default) disables. Single source of truth: DEFAULT_POOL_SIZE, read by both the field default and load()'s file-parse fallback. Load-time clamped to [0, 10]
     watchdog_rss_max_mb: int = 0   # recycle a session when its process tree RSS exceeds this many MiB; 0 disables (default). Busy sessions (turn in flight) are never recycled.

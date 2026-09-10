@@ -3168,6 +3168,20 @@ class KiroCrewConfig:
                 empty_response_auto_continue=bool(
                     session_data.get("empty_response_auto_continue", True)
                 ),
+                # RANGE-clamped like the other session ints: a hand-edited 0
+                # or 999 must load as a sane budget, never disable recovery or
+                # arm an unbounded ladder. Type handling is owned by
+                # `_validate_config_data` upstream of section extraction. The
+                # bounds are referenced via the module handle rather than
+                # imported: this module's top-level names are a FROZEN
+                # compatibility facade (test_loader_reexports_historical
+                # _snapshot_by_identity), so a new re-export may not be added.
+                empty_response_max_continues=_safe_int(
+                    session_data.get("empty_response_max_continues", 1),
+                    1,
+                    _sections.EMPTY_RESPONSE_MAX_CONTINUES_MIN,
+                    _sections.EMPTY_RESPONSE_MAX_CONTINUES_MAX,
+                ),
                 autocompact_pct=_safe_float(
                     session_data.get("autocompact_pct", DEFAULT_AUTOCOMPACT_PCT),
                     DEFAULT_AUTOCOMPACT_PCT,

@@ -1045,6 +1045,7 @@
       "defaultValue": {
         "timeout_secs": 3600,
         "empty_response_auto_continue": true,
+        "empty_response_max_continues": 1,
         "autocompact_pct": 70.0,
         "pool_size": 0,
         "pool_agent": "",
@@ -1077,10 +1078,24 @@
       "sensitive": false,
       "tags": [],
       "label": "Auto-Continue on Empty Response",
-      "help": "After the model returns an empty response twice in a row, automatically send one 'continue' nudge on the same session (transcript-visible, bounded to once per user message).",
+      "help": "After the model returns an empty response twice in a row, automatically send a 'continue' nudge on the same session (transcript-visible, bounded by Max Auto-Continues on Empty Response).",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": true
+    },
+    {
+      "path": "session.empty_response_max_continues",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Max Auto-Continues on Empty Response",
+      "help": "How many 'continue' nudges may run back to back before the runner gives up and asks for a message (1-10). Above 1 the recovery notice shows progress ('recovery 2 of 3'). Useful during provider-instability windows where each continuation makes real progress before failing the same way. Only applies while Auto-Continue on Empty Response is enabled.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 1
     },
     {
       "path": "session.autocompact_pct",

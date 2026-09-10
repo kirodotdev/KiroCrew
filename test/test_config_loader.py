@@ -4723,6 +4723,28 @@ class TestEmptyResponseAutoContinueWiring:
         assert cfg.session.empty_response_auto_continue is True
 
 
+class TestEmptyResponseMaxContinuesWiring:
+    """session.empty_response_max_continues: wired, defaulted, and RANGE-clamped
+    — a hand-edited 0 must not disable recovery and a 999 must not arm an
+    unbounded ladder (the ladder's give-up arithmetic trusts this clamp)."""
+
+    def test_persisted_value_survives_load(self) -> None:
+        cfg = _load_from_dict({"session": {"empty_response_max_continues": 3}})
+        assert cfg.session.empty_response_max_continues == 3
+
+    def test_default_is_one(self) -> None:
+        cfg = _load_from_dict({})
+        assert cfg.session.empty_response_max_continues == 1
+
+    def test_below_range_clamps_to_min(self) -> None:
+        cfg = _load_from_dict({"session": {"empty_response_max_continues": 0}})
+        assert cfg.session.empty_response_max_continues == 1
+
+    def test_above_range_clamps_to_max(self) -> None:
+        cfg = _load_from_dict({"session": {"empty_response_max_continues": 999}})
+        assert cfg.session.empty_response_max_continues == 10
+
+
 class TestGitLabHostAllowlist:
     """dashboard.gitlab_hosts authorizes self-managed GitLab instances for the
     Changes panel, so it must fail closed and never sanitize a malformed entry

@@ -16832,6 +16832,58 @@ class TestEmptyResponseRetry:
         assert slot._empty_response_retries == 0
 
     @pytest.mark.asyncio
+    async def test_max_continues_config_extends_the_ladder(self, tmp_path: Path) -> None:
+        """With session.empty_response_max_continues=3, the second consecutive
+        continuation failure keeps continuing — numbered so the transcript
+        reads as advancing, not looping — instead of giving up after one.
+        Exercises the REAL config path like the flag-off test above, so a
+        loader that drops the field fails this test too."""
+        from kiro_crew.dashboard.chat_runner import _EMPTY_AUTO_CONTINUE_MSG
+
+        state, slot, client, _run_chat = self._make_state_and_slot(tmp_path)
+        slot._empty_response_retries = 2  # replay + first continue spent
+        self._make_empty_stream(client)
+
+        calls = []
+        orig = _ChatSlot.queue_insert
+
+        def spy(self_slot, *a, **kw):
+            calls.append(a)
+            return orig(self_slot, *a, **kw)
+
+        cfg_file = tmp_path / "max-continues-config.json"
+        cfg_file.write_text('{"session": {"empty_response_max_continues": 3}}')
+        with (
+            patch("kiro_crew.config.loader.config_path", return_value=cfg_file),
+            patch.object(_ChatSlot, "queue_insert", spy),
+        ):
+            await _run_chat(state, slot, "test message")
+            await self._cancel_background_tasks(state)
+
+        assert (0, _EMPTY_AUTO_CONTINUE_MSG) in calls
+        notice_msgs = [m for m in slot.messages if m.get("role") == "notice"]
+        assert any("(recovery 2 of 3)" in m.get("content", "") for m in notice_msgs)
+        assert slot._empty_response_retries == 3
+
+    @pytest.mark.asyncio
+    async def test_max_continues_budget_still_terminates(self, tmp_path: Path) -> None:
+        """The raised budget is still a budget: with max=3 and the replay plus
+        all three continues spent, the give-up card fires and the counter
+        resets for the next independent user turn."""
+        state, slot, client, _run_chat = self._make_state_and_slot(tmp_path)
+        slot._empty_response_retries = 4  # replay + 3 continues spent
+        self._make_empty_stream(client)
+
+        cfg_file = tmp_path / "max-continues-config.json"
+        cfg_file.write_text('{"session": {"empty_response_max_continues": 3}}')
+        with patch("kiro_crew.config.loader.config_path", return_value=cfg_file):
+            await _run_chat(state, slot, "test message")
+
+        notice_msgs = [m for m in slot.messages if m.get("role") == "notice"]
+        assert any("returned nothing this turn" in m.get("content", "") for m in notice_msgs)
+        assert slot._empty_response_retries == 0
+
+    @pytest.mark.asyncio
     async def test_successful_response_resets_counter(self, tmp_path: Path) -> None:
         """A successful (non-empty) response resets the retry counter."""
         from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent

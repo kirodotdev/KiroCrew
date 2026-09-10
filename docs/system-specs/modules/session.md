@@ -183,14 +183,17 @@ send time.
   1. **first empty** → the ORIGINAL message is silently re-queued at the
      front of the slot queue (no visible card). Reached ONLY by a turn with no
      activity — see the productive-turn exclusion below;
-  2. **second empty** (the same-message retry also produced nothing) → ONE
+  2. **later empties** (the same-message retry also produced nothing) → a
      synthetic continue nudge (`_EMPTY_AUTO_CONTINUE_MSG` — a DIFFERENT
      message, since re-sending the identical prompt tends to reproduce the
      identical empty generation) is queued on the SAME live session, with a
-     transcript-visible notice card ("auto-continuing once"). Gated by
+     transcript-visible notice card. The budget is
+     `session.empty_response_max_continues` (default 1 — one nudge, notice
+     "auto-continuing once"; above 1 consecutive failures keep continuing and
+     the notice shows "recovery N of M"). Gated by
      `session.empty_response_auto_continue` (default ON; the gate fails open),
      and suppressed while a Stop is active;
-  3. **third empty** (the nudge also produced nothing) → terminal notice card
+  3. **budget exhausted** (the nudges also produced nothing) → terminal notice card
      asking the user to send a message; the counter resets so the next
      genuine user turn gets a fresh budget. The card's wording is cause-aware,
      mirroring rung 2's split: a productive turn is told the turn ended

@@ -238,7 +238,8 @@ Set via `kirocrew config set agent.acp_backend kas`.
 | Key | Description | Default |
 |-----|-------------|---------|
 | `session.timeout_secs` | Idle session timeout in seconds (0 disables the idle sweep) | `3600` (60 min) |
-| `session.empty_response_auto_continue` | After two consecutive empty model responses, send one transcript-visible `continue` nudge per user message | `true` |
+| `session.empty_response_auto_continue` | After two consecutive empty model responses, send transcript-visible `continue` nudges on the same session | `true` |
+| `session.empty_response_max_continues` | How many `continue` nudges may run back to back before the give-up card (clamped 1-10; above 1 the notice shows "recovery N of M") | `1` |
 | `session.autocompact_pct` | Context usage percentage at which auto-compaction triggers (5-90). Lower compacts sooner and keeps per-turn cost down; higher retains more conversation before rewriting it. Applies to new installs: an existing `config.json` keeps its stored value | `70.0` |
 | `session.pool_size` | Number of pre-spawned kiro-cli processes kept ready for instant session start. 0 disables | `0` |
 | `session.pool_agent` | Agent for warm-pool processes. Empty uses `agent.default_agent` | `""` |

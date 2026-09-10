@@ -334,13 +334,30 @@ from kiro_crew.dashboard.chat_utils import (  # noqa: E402
 
 def _empty_auto_continue_enabled() -> bool:
     """Config gate for the empty-response auto-continue rung (default ON —
-    the recovery is bounded to one nudge per user message and always
-    transcript-visible). Fail-open to the default: a config-load hiccup must
-    not disable self-healing mid-incident."""
+    the recovery is bounded by :func:`_empty_max_auto_continues` nudges per
+    user message and always transcript-visible). Fail-open to the default: a
+    config-load hiccup must not disable self-healing mid-incident."""
     try:
         return bool(KiroCrewConfig.load().session.empty_response_auto_continue)
     except Exception:  # pragma: no cover — config load must not break recovery
         return True
+
+
+def _empty_max_auto_continues() -> int:
+    """How many synthetic continue nudges the ladder may queue for one user
+    message before the give-up rung (``session.empty_response_max_continues``).
+
+    Default 1 — exactly the pre-knob behavior. Raising it helps during a
+    provider-instability window where each continuation makes real forward
+    progress before dying the same way: one continuation abandons a
+    task that three finish. The loader clamps the persisted value to a sane
+    range; fail-open to the default here for the same reason as the gate
+    above — a config-load hiccup must not disable self-healing mid-incident.
+    """
+    try:
+        return int(KiroCrewConfig.load().session.empty_response_max_continues)
+    except Exception:  # pragma: no cover — config load must not break recovery
+        return 1
 
 
 # Consumption contract carried inside every pending-context frame, between the
@@ -11086,7 +11103,7 @@ async def _run_chat(
                 _retrying_empty = True
             elif (
                 _prompt_depth == 0
-                and slot._empty_response_retries < 2
+                and slot._empty_response_retries < 1 + _empty_max_auto_continues()
                 and not _should_suppress_requeue(slot)
                 and _empty_auto_continue_enabled()
             ):
@@ -11095,21 +11112,32 @@ async def _run_chat(
                 # to reproduce the identical empty generation, but a DIFFERENT
                 # message reliably recovers (observed repeatedly in the field —
                 # the user typing "continue" broke the pattern every time). So
-                # auto-send ONE synthetic continue nudge on the same live
+                # auto-send a synthetic continue nudge on the same live
                 # session, with a transcript-visible notice so the recovery is
-                # never invisible. Third empty falls through to the give-up
-                # notice below — bounded, no loop.
-                # A productive turn skipped the verbatim-replay rung entirely.
-                # Its ONE continuation consumes the remaining recovery budget:
-                # if that continuation is itself empty, the next turn must give
-                # up rather than enqueue a second continuation. Leaving the
-                # counter at 1 here would run `_EMPTY_AUTO_CONTINUE_MSG` next,
+                # never invisible. The budget is
+                # session.empty_response_max_continues (default 1 — one nudge,
+                # the original behavior); when it is spent, the give-up notice
+                # below fires — bounded, no loop.
+                # A productive turn skipped the verbatim-replay rung entirely,
+                # so its counter jumps past the replay slot (0 → 2) on its
+                # first continuation and counts normally from there. That
+                # keeps the give-up arithmetic uniform across both paths —
+                # replay-or-jump plus the continue budget — and at the default
+                # budget it is exactly the old jump-to-2: the single
+                # continuation consumes the remaining budget, so a counter
+                # left at 1 would run `_EMPTY_AUTO_CONTINUE_MSG` next,
                 # contradicting both the notice ("continuing once") and the
                 # side-effect boundary this branch protects.
+                _max_continues = _empty_max_auto_continues()
                 if _empty_activity.productive:
-                    slot._empty_response_retries = 2
+                    slot._empty_response_retries = max(slot._empty_response_retries + 1, 2)
                 else:
                     slot._empty_response_retries += 1
+                # Ordinal of THIS continuation (1-based): the counter minus the
+                # replay slot. Shown in the notice when the budget exceeds one,
+                # so a user watching repeated recoveries sees the ladder
+                # advancing, not looping.
+                _continue_no = max(slot._empty_response_retries - 1, 1)
                 _empty_rung = EMPTY_RUNG_CONTINUE
                 if _empty_activity.productive:
                     # Same rung, different words, because the words are read by
@@ -11120,15 +11148,26 @@ async def _run_chat(
                     # path exists to avoid.
                     slot.append(
                         "notice",
-                        "ℹ️ The turn ended without a closing reply — continuing "
-                        "once from what already ran.",
+                        (
+                            "ℹ️ The turn ended without a closing reply — continuing "
+                            "once from what already ran."
+                            if _max_continues == 1
+                            else "ℹ️ The turn ended without a closing reply — "
+                            "continuing from what already ran "
+                            f"(recovery {_continue_no} of {_max_continues})."
+                        ),
                         "msg msg-info",
                     )
                     _empty_continue_msg = _ACTIVITY_NO_REPLY_CONTINUE_MSG
                 else:
                     slot.append(
                         "notice",
-                        "ℹ️ The model returned nothing twice — auto-continuing once.",
+                        (
+                            "ℹ️ The model returned nothing twice — auto-continuing once."
+                            if _max_continues == 1
+                            else "ℹ️ The model returned nothing — auto-continuing "
+                            f"(recovery {_continue_no} of {_max_continues})."
+                        ),
                         "msg msg-info",
                     )
                     _empty_continue_msg = _EMPTY_AUTO_CONTINUE_MSG

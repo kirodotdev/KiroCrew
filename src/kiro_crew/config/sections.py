@@ -1434,8 +1434,21 @@ class SessionConfig:
         metadata=_meta(
             "Auto-Continue on Empty Response",
             "After the model returns an empty response twice in a row, "
-            "automatically send one 'continue' nudge on the same session "
-            "(transcript-visible, bounded to once per user message).",
+            "automatically send a 'continue' nudge on the same session "
+            "(transcript-visible, bounded by Max Auto-Continues on Empty "
+            "Response).",
+        ),
+    )
+    empty_response_max_continues: int = field(
+        default=1,
+        metadata=_meta(
+            "Max Auto-Continues on Empty Response",
+            "How many 'continue' nudges may run back to back before the "
+            "runner gives up and asks for a message (1-10). Above 1 the "
+            "recovery notice shows progress ('recovery 2 of 3'). Useful "
+            "during provider-instability windows where each continuation "
+            "makes real progress before failing the same way. Only applies "
+            "while Auto-Continue on Empty Response is enabled.",
         ),
     )
     autocompact_pct: float = field(
@@ -3820,6 +3833,12 @@ SOFT_STOP_BUDGET_MIN = 0.5
 SOFT_STOP_BUDGET_MAX = 60.0
 EXTRACTION_POOL_SIZE_MIN = 1
 EXTRACTION_POOL_SIZE_MAX = 10
+# Load-only bounds. Unlike the parity block above these are NOT consumed by
+# `_EDITABLE_CONFIG` — the field is config-file-only (no dashboard write path),
+# so the only clamp site is the loader. Kept out of the shared block so its
+# "every bound is shared with the write gate" claim stays true.
+EMPTY_RESPONSE_MAX_CONTINUES_MIN = 1
+EMPTY_RESPONSE_MAX_CONTINUES_MAX = 10
 # knowledge.* budgets. These share a floor of 0, but 0 is MEANINGFUL for several
 # of them (a zero budget disables that sweep), so the floor is deliberately not
 # enforced by clamping a negative up to 0 -- see `_safe_nonnegative_int`, which
