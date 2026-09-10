@@ -188,7 +188,7 @@ Each cycle:
    the gap with a search-style command either — list commands exit 0 on empty
    results, so they cannot carry the verdict.
 
-   **A `human_approval` item is verified by asking, and the ask is fragile.** The evaluator answers `pending` for it forever, so put the decision to the user with `ask_question` — then `monitor_update` `interval_secs=1800`, or the largest interval the goal tolerates, until the answer arrives, and restore the interval once it does.
+   **A `human_approval` item is verified by asking, and the ask is fragile.** The evaluator answers `pending` for it forever, so slow patrol FIRST — `monitor_update` `interval_secs=1800`, or the largest interval the goal tolerates — and only then put the decision to the user with `ask_question`, which ends your turn. Restore the interval on the cycle that reads the answer.
 
    If the user says the card is gone, re-issue it. A report that the card vanished is not an answer.
 3. For items still running, `session_read_message` with the `since` cursor you
@@ -361,7 +361,7 @@ watches, and that cost grows with the loop's own history.
   auto-approved for exactly this, so the load never prompts — then repeat the
   call. `chat_folder_create` is on the same server; `monitor_start` is served by
   `kirocrew-core`, so its id is `kirocrew-core::monitor_start`.
-- **A question card can be displaced by your own later turns.** `ask_question` posts a card into the dashboard transcript, and every patrol turn you take while it is outstanding can push it out of the user's view. Slow patrol while a card is open, and treat "the card is gone" as a re-issue rather than an answer.
+- **A question card can be displaced by your own later turns.** `ask_question` posts a card into the dashboard transcript, and every patrol turn you take while it is outstanding can push it out of the user's view.
 - **A cron job may dispatch into the sessions it created**, so a fleet can be
   stood up and driven from a schedule instead of only from a live chat session.
   Session control is on by default: the agent config is the grant, so you do not
