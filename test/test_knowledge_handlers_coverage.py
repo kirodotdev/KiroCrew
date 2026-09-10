@@ -647,7 +647,7 @@ class TestImportBundle:
 
     @pytest.mark.asyncio
     async def test_corrupt_json_column_is_a_clean_400(self, store, monkeypatch):
-        # The store's writer-side invariant (issue #5559) rejects this value
+        # The store's writer-side invariant rejects this value
         # AT THE STORE: a lone-surrogate escape passes json.loads (so it gets
         # through the handler's pre-redaction shape validator) but cannot be
         # UTF-8-encoded at SQLite bind time. The handler surfaces the store's
@@ -1830,7 +1830,7 @@ _NON_OBJECT_BODIES = ([1, 2], 7)
 
 class TestJsonObjectBodyGuard:
     """Every ``request.json()`` site answers 400, not 500, on a body that is
-    valid JSON but not an object -- and the two previously-unguarded sites
+    valid JSON but not an object -- and two further sites
     (files/retry, files/skip) now answer 400 on invalid JSON too."""
 
     @pytest.mark.asyncio
@@ -1873,8 +1873,8 @@ class TestJsonObjectBodyGuard:
     @pytest.mark.asyncio
     @pytest.mark.parametrize("endpoint", ["retry", "skip"])
     async def test_file_state_invalid_json_is_400_not_500(self, store, endpoint):
-        # These two sites previously had no try/except at all: a malformed
-        # body escaped as a raw JSONDecodeError and surfaced as a 500.
+        # Without a try/except these two sites would let a malformed
+        # body escape as a raw JSONDecodeError and surface as a 500.
         sid = store.add_source("s", "local_folder", "/tmp/x")
         async with _client(_guard_app(store)) as client:
             resp = await client.post(
@@ -1938,7 +1938,7 @@ class TestJsonObjectBodyGuard:
 
     @pytest.mark.asyncio
     async def test_invalid_json_yields_code_at_every_site(self, store, monkeypatch):
-        # At the previously-guarded sites the parse-failure path's entire
+        # At the already-guarded sites the parse-failure path's entire
         # change is the machine-readable ``code`` field -- pin it everywhere.
         monkeypatch.setattr(f"{MODULE}.KiroCrewConfig.load", staticmethod(_cfg))
         item_id = store.add_item("a", "body", "note")

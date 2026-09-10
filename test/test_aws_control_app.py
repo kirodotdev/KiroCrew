@@ -1092,7 +1092,7 @@ class TestShares:
         assert [e["key"] for e in shares.list_shares(ACCOUNT)] == ["first.txt"]
 
     def test_a_corrupt_share_store_refuses_the_mutation_and_is_left_intact(self, tmp_path):
-        # #7805: a corrupt ledger is refused, never rewritten. The old tolerance
+        # A corrupt ledger is refused, never rewritten. The old tolerance
         # read it as empty and let the whole-file rewrite destroy records a
         # truncated JSON still held verbatim -- and this ledger is the only local
         # record of live presigned URLs, which are unrevokable bearer grants.
@@ -1126,8 +1126,8 @@ class TestShares:
         with pytest.raises(_json.JSONDecodeError):
             shares.record_share(account=ACCOUNT, section="drive", key="x.txt", expires_secs=3600)
         assert (tmp_path / "shares.json").read_bytes() == b"\xff\xfe not utf8"
-        # And the DISPLAY read tolerates the same bytes (new with #7805:
-        # UnicodeDecodeError previously escaped it): the Access section renders
+        # And the DISPLAY read tolerates the same bytes (a
+        # UnicodeDecodeError escaped it): the Access section renders
         # empty rather than failing on a file only a person can repair.
         assert shares.list_shares(ACCOUNT) == []
 
@@ -1445,7 +1445,7 @@ class TestDriveIamTier:
                 "DriveObject"
             ):
                 for arn in statement["Resource"]:
-                    # Partition-neutral (round 21): the scoping that matters is
+                    # Partition-neutral: the scoping that matters is
                     # the bucket-name pattern, not the commercial partition.
                     assert arn.startswith("arn:*:s3:::kirocrew-drive-"), arn
         # Round-14 pin: the recommended tier can WRITE backups but never read
@@ -3056,7 +3056,7 @@ class TestBootstrapReauthorizes:
 
     def test_an_account_that_stops_resolving_mid_create_is_audited(self):
         # The other shape the in-lock re-probe returns: not a different triple
-        # but a refusal response, because the profile no longer resolves to the
+        # but a refusal response, because the profile does not resolve to the
         # requested account at all.
         handlers = _registered()
         # The code here is deliberately NOT `account_unavailable`: `_resolve_target`
@@ -3270,7 +3270,7 @@ class TestRound36Hardening:
 
     def test_a_timezone_less_last_run_reads_as_due_instead_of_crashing(self):
         # The nastier half of this class: a timezone-LESS ISO stamp parses fine,
-        # so it escapes the try/except entirely and used to raise TypeError on the
+        # so it escapes the try/except entirely and would raise TypeError on the
         # aware subtraction that sits OUTSIDE the guard -- in the nightly loop,
         # every wake, so a backup the owner enabled silently never ran.
         from kiro_crew.apps.builtins.aws_control.backend import backup

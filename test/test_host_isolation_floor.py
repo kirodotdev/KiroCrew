@@ -470,7 +470,7 @@ class TestTheAgentSpecHomeIsPinnedForEveryTestpath:
     existed, a suite run inside a throwaway clone rewrote the machine-wide
     ``kirocrew.json`` with that clone's venv and a per-test data home in ``env``, and
     every new session on the machine then failed ``internal_auth_mismatch`` once both
-    were deleted (#4912).
+    were deleted.
     """
 
     def test_the_spec_write_target_is_not_the_operators_real_home(self) -> None:
@@ -874,10 +874,10 @@ class TestTheSharedKiroPathRatchet:
         # consumers import them by value.
         ("kiro_crew/service/macos.py", "PLIST_DIR"): "covered by _isolate_launchd_paths",
         ("kiro_crew/service/macos.py", "LOG_DIR"): "covered by _isolate_launchd_paths",
-        # The kiro-cli/amazon-q sqlite tuples that used to sit here as direct
-        # ``Path.home()`` bindings are now PROJECTIONS over the canonical table in
+        # The kiro-cli/amazon-q sqlite tuples here are not direct
+        # ``Path.home()`` bindings; they are PROJECTIONS over the canonical table in
         # ``kiro_crew/identity_stores.py`` (``sqlite_dbs(...)`` resolves the home
-        # inside the call), so they no longer match this tripwire's import-time
+        # inside the call), so they do not match this tripwire's import-time
         # shape and need no exclusion. Their anchor rule ("must name the REAL
         # home"; stub the READER, never move the anchor) is carried forward by
         # ``test_identity_stores.py::TestUsageTuplesAnchorTheRealHome``.
@@ -972,7 +972,7 @@ class TestTheSharedKiroPathRatchet:
         )
 
     def test_the_exclusion_list_has_not_gone_stale(self) -> None:
-        """An exclusion for a binding that no longer exists hides the next one."""
+        """An exclusion for a binding that does not exist hides the next one."""
         bindings = self._home_bindings()
         stale = [key for key in self._EXCLUDED if key not in bindings]
 
@@ -986,7 +986,7 @@ class TestTheTempBaseIsRedirected:
     """``tempfile``'s base must be a per-run directory, not the shared temp root.
 
     The point is not tidiness. A bare ``mkdtemp()`` whose cleanup is missing or skipped
-    used to leave its directory in the platform temp root forever, and MEASURED on the
+    leaves its directory in the platform temp root forever, and MEASURED on the
     hosts this was written against, ``/tmp`` is a tmpfs with a hard 1,048,576-INODE cap
     that returns ENOSPC to unrelated processes while 90% of the BYTES are still free.
     """
@@ -1341,7 +1341,7 @@ class TestInheritedShellEnvironmentIsScrubbed:
     On a RHEL-family host ``which2.sh`` puts ``BASH_FUNC_which%%`` in every login
     shell's environment, and ``name_grant``'s AMBIGUOUS_ENV refusal -- checked before
     every narrower code -- then rewrote what 79 unrelated assertions observed
-    (issue #8395). The scrub under test is ``conftest._scrub_inherited_preload_env``,
+    The scrub under test is ``conftest._scrub_inherited_preload_env``,
     driven directly (see ``_autouse_floor_generator``); the domain-level regression
     lives in ``test_name_grant.py::TestInheritedHostEnvironment``, but only this
     direct drive survives ``autouse=True`` being dropped or the restore half being
@@ -1969,7 +1969,7 @@ class TestTheWorkerBudgetIsMemoryBounded:
     ) -> None:
         """A platform none of the three branches claims returns 0 = unknown.
 
-        The branch that used to stand in for macOS and Windows. Those now have
+        The branch that stands in for the unknown host. macOS and Windows now have
         readings of their own, so this covers only the genuinely unknown host --
         and it must stay 0 so such a host keeps its parallelism instead of
         silently dropping to one worker.

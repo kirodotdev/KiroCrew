@@ -20,7 +20,7 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from kiro_crew.dashboard.handlers.hooks import api_kiro_hooks
 
-# The handler imports `_shipped_defaults` at module scope (hoisted, #1050), so
+# The handler imports `_shipped_defaults` at module scope (hoisted), so
 # it is patched in the handler's namespace.  `KIRO_AGENTS_DIR` stays patched at
 # the SOURCE module on purpose: `kiro_agents_dir_path()` reads it from `agent`'s
 # globals at call time, so the source-module patch is unaffected by the hoist —

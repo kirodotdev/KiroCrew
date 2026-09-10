@@ -1657,7 +1657,7 @@ class TestGrantEndpointPendingFlow:
     async def test_compensation_never_resurrects_concurrent_revoke(self, cron_home):
         """Epoch commit fails AND a concurrent revoke cleared the grant in
         the gap: the compensating restore must yield to the revocation — the
-        active-field compare-and-swap sees the fields no longer hold the
+        active-field compare-and-swap sees the fields do not hold the
         just-promoted grant and skips, never writing grant A back over what
         the operator withdrew."""
         from aiohttp.test_utils import TestClient, TestServer

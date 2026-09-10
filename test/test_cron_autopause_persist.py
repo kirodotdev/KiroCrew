@@ -156,7 +156,7 @@ class TestAutoPausePersistence:
 
 
 class TestExecuteSuccessResetsCounter:
-    """CronService._execute must reset the auto-pause budget on success (#3428).
+    """CronService._execute must reset the auto-pause budget on success.
 
     Before the fix, record_failure() fired on the error/timeout paths but
     record_success() was only ever called from the gateway callback's own

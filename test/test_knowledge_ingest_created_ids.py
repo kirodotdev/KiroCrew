@@ -1,16 +1,15 @@
-"""Created-item ids come from the write, never a before/after source diff (#4431).
+"""Created-item ids come from the write, never a before/after source diff.
 
-Three ingestion sites used to learn "what this call wrote" by snapshotting the
-source's full item-id set before the work and diffing a second snapshot
-afterwards. Each snapshot was a ``SELECT id FROM items WHERE source_id = ?``
-materializing one row per item in the SOURCE (~20k rows on a large library,
-over a second of blocking SQLite), and the "before" read ran ON the asyncio
-event loop once per ingested file -- the same per-file loop stall PR #3397
-removed from the folder-scan caller.
+Learning "what this call wrote" by snapshotting the source's full item-id set
+before the work and diffing a second snapshot afterwards is both slow and wrong.
+Each snapshot is a ``SELECT id FROM items WHERE source_id = ?`` materializing one
+row per item in the SOURCE (~20k rows on a large library, over a second of
+blocking SQLite), and the "before" read lands ON the asyncio event loop once per
+ingested file -- a per-file loop stall.
 
-The diff was also WRONG, not just slow: ``import_bundle`` writes into the same
-aggregate source in its own transaction under no shared lock, so anything it
-committed while an ingest was awaiting got attributed to that ingest -- handing
+The diff is also WRONG: ``import_bundle`` writes into the same aggregate source in
+its own transaction under no shared lock, so anything it commits while an ingest
+is awaiting gets attributed to that ingest -- handing
 a document delete authority over knowledge it never created. Ids appended at
 ``add_item`` (or reported through the pipeline's ``on_committed`` callback,
 which fires inside the finalize hop that commits them) cannot misattribute
@@ -26,8 +25,8 @@ This file ratchets the conversion for the three sites:
 The ``_old_item_ids`` reads that share the query TEXT but mean "the
 pre-existing item group this call must delete" are deliberately out of scope
 (no callback can supply them); they live in ``_resolve_old_item_ids`` and run
-inside the off-loop duplicate-gate hop (#4441). The ratchet pins the literal
-to that helper alone so a re-introduced snapshot still fails the test.
+inside the off-loop duplicate-gate hop. The ratchet pins the literal to that
+helper alone so a re-introduced snapshot still fails the test.
 """
 
 from __future__ import annotations
@@ -52,10 +51,10 @@ from kiro_crew.knowledge.store import KnowledgeStore
 
 _KNOWLEDGE_SRC = pathlib.Path(__file__).resolve().parents[1] / "src" / "kiro_crew" / "knowledge"
 
-# The retired snapshot's query text. The one occurrence pinned below is the
+# The banned snapshot's query text. The one occurrence pinned below is the
 # _old_item_ids resolver: same text, different meaning (the PRIOR group this
-# call must delete -- not what it created), tracked separately from #4431 and
-# run off-loop inside the duplicate-gate hop since #4441.
+# call must delete -- not what it created), which is why it is tracked separately
+# and runs off-loop inside the duplicate-gate hop.
 _SNAPSHOT_QUERY = "SELECT id FROM items WHERE source_id"
 
 
@@ -354,7 +353,7 @@ def _find_def(tree: ast.Module, name: str) -> ast.AST:
 
 
 class TestSnapshotQueryRatchet:
-    """The retired full-source id snapshot must not creep back in (#4431).
+    """The banned full-source id snapshot must not creep back in.
 
     Counted per function, nested scopes included, so re-adding the read either
     on the loop (function body) or inside the off-loop ``_finalize`` closure
@@ -417,9 +416,9 @@ class TestSnapshotQueryRatchet:
 
 
 class TestOldGroupReadRunsOffLoop:
-    """The _old_item_ids full-source reads run on a worker thread (#4441).
+    """The _old_item_ids full-source reads run on a worker thread.
 
-    One test per original on-loop read site: ingest_file's replace-all and
+    One test per read site: ingest_file's replace-all and
     existing-local-file paths, ingest_text's changed-existing (URI hit, hash
     mismatch) and replace-all paths. Each spies on the resolver to record the
     thread it ran on, and pins the semantics (the resolved group still drives

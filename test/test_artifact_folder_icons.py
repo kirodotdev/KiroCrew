@@ -1,7 +1,7 @@
-"""Per-folder icon epoch on ARTIFACT folders (issue #7991).
+"""Per-folder icon epoch on ARTIFACT folders.
 
 The chat-folder subsystem closed three stale-write-back races with a per-folder
-icon epoch (``_CHAT_FOLDER_ICON_EPOCHS``, PR #7353). Artifact folders guarded
+icon epoch (``_CHAT_FOLDER_ICON_EPOCHS``). Artifact folders guarded
 their async icon write-back with a bare ``fstore.exists()`` check, which only
 catches deletion — these tests pin the ported guard:
 

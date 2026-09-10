@@ -481,7 +481,7 @@ def test_ask_question_routes_are_registered() -> None:
     assert ("POST", "/api/ask-question/dismiss") in routes
 
 
-# ── Authorization: app tokens are refused (GPT HIGH, round 3) ──
+# ── Authorization: app tokens are refused ──
 
 
 @pytest.mark.asyncio
@@ -575,7 +575,7 @@ async def test_dashboard_user_token_is_still_allowed() -> None:
     assert resp.status == 200
 
 
-# ── Body shape: valid JSON that is not an object (GPT MEDIUM, round 3) ──
+# ── Body shape: valid JSON that is not an object ──
 
 
 @pytest.mark.asyncio
@@ -616,7 +616,7 @@ async def test_non_object_body_is_400_not_500() -> None:
 def test_unblock_pending_waits_releases_both_waits() -> None:
     """The shared chokepoint must release approvals AND questions.
 
-    `cancel_questions_for_slot` previously had no production caller while
+    `cancel_questions_for_slot` needs a production caller, since
     agent-questions.md documented it as a guarantee — a documented safety
     property with no call site is worse than no property.
     """
@@ -674,7 +674,7 @@ def test_every_stop_path_uses_the_combined_chokepoint() -> None:
     )
 
 
-# ── Authorization: owner-only, not merely "not an app" (GPT HIGH, round 4) ──
+# ── Authorization: owner-only, not merely "not an app" ──
 
 
 @pytest.mark.asyncio
@@ -769,7 +769,7 @@ async def test_configured_owner_is_allowed() -> None:
     assert await task == {"Which approach?": "Option A"}
 
 
-# ── Reconnect rehydration (GPT MEDIUM, round 4) ──
+# ── Reconnect rehydration ──
 
 
 @pytest.mark.asyncio
@@ -820,7 +820,7 @@ async def test_pending_endpoint_is_owner_only() -> None:
     assert resp.status == 403
 
 
-# ── Session resets release the blocking wait (GPT MEDIUM, round 4) ──
+# ── Session resets release the blocking wait ──
 
 
 def test_every_session_reset_goes_through_the_chokepoint() -> None:
@@ -883,7 +883,7 @@ async def test_reset_chokepoint_cancels_pending_questions() -> None:
     assert await task is None
 
 
-# ── Owner-scoped broadcast (GPT HIGH, round 5) ──
+# ── Owner-scoped broadcast ──
 
 
 @pytest.mark.asyncio
@@ -931,7 +931,7 @@ def test_broadcast_ws_owners_targets_the_owner_client_set() -> None:
     assert json.loads(sent[0]) == {"type": "question_card", "data": {"ask_id": "x"}}
 
 
-# ── Round 7: watchdog-bounded window + post-redaction collision ──
+# ── Watchdog-bounded window + post-redaction collision ──
 
 
 def test_question_window_stays_under_the_tool_stall_watchdog() -> None:
@@ -1049,7 +1049,7 @@ async def test_pending_lists_a_stateless_card_so_a_reloaded_tab_can_re_render_it
     """A card is a one-shot broadcast with no transcript row.
 
     Without this, a reload leaves the slot reporting needs_input with nothing on
-    screen to answer and no way to dismiss it (the client no longer knows the
+    screen to answer and no way to dismiss it (the client does not know the
     card_id) — a stuck state only sending a message could clear.
     """
     from kiro_crew.dashboard.handlers.ask_question import api_ask_question_pending
@@ -1391,7 +1391,7 @@ class TestErrorCodes:
         """Self-check: a scan matching nothing would pass the assertion above vacuously.
 
         20, not the 21 this pinned before the owner-denial migration. The
-        non-owner ``403`` is no longer written out here: its ``{"error":
+        non-owner ``403`` is not written out here: its ``{"error":
         "forbidden", "code": "owner_only"}`` body is now produced by
         ``handlers._shared._owner_denial_response``, which the module calls with
         exactly that message and code. The WIRE contract is unchanged -- only the

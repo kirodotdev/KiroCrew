@@ -190,7 +190,7 @@ async def test_communicate_with_timeout_kills_whole_process_tree(monkeypatch):
     # Whole-tree kill was invoked with the child's pid + SIGKILL ...
     assert killed == [(proc.pid, registry.platform_compat.SIGKILL)]
     # ... the child was reaped by draining pipes via a SECOND communicate(),
-    # never a bare wait() that a full pipe could hang (#5989) ...
+    # never a bare wait() that a full pipe could hang ...
     assert proc.communicate_calls == 2
     assert proc.wait_calls == 0
     # ... and the helper's pid-scoped kill backs up the group signal.
@@ -222,8 +222,8 @@ def unsandboxed_spawn(monkeypatch):
     ``create_subprocess_exec``, so no child process ever actually runs. What they
     must not depend on is whether THIS host can build a namespace sandbox: a CI
     runner with ``kernel.apparmor_restrict_unprivileged_userns=1`` legitimately
-    cannot, and ``wrap_argv`` then fail-closes by design. These tests previously
-    passed only because the capability probe returned a false positive on such
+    cannot, and ``wrap_argv`` then fail-closes by design. Without this fixture the
+    tests pass only when the capability probe returns a false positive on such
     hosts. Autouse because the coupling is a property of the whole module, not of
     individual tests. Sandbox construction is covered by ``test_sandbox_*.py``.
     """
@@ -379,7 +379,7 @@ async def test_kill_process_group_reaps_and_escalates_to_sigkill(monkeypatch):
 async def test_kill_process_group_escalation_reaps_via_communicate_not_wait(monkeypatch):
     """The SIGKILL escalation reaps by draining pipes via communicate(); a
     bare wait() on a killed child blocked writing into a full pipe would
-    hang the app-build timeout path forever (#5989)."""
+    hang the app-build timeout path forever."""
     monkeypatch.setattr(registry, "_KILL_GRACE_PERIOD", 0.01)
     killed: list[tuple[int, int]] = []
 
@@ -2237,10 +2237,10 @@ class TestMinimalEnvHonorsWindowsCaseInsensitivity:
 
 class TestApplyTrustFields:
     """``_apply_trust_fields`` is the API trust boundary of
-    ``GET /api/apps/registry`` (issue #580): ``provenance``/``verified`` are
+    ``GET /api/apps/registry``: ``provenance``/``verified`` are
     computed server-side where the ``_registry`` tag is authoritative, and
     ``featured`` is stripped from external rows. Every branch below mirrors a
-    spoof that used to be blocked only by scattered client-side checks.
+    spoof that must be blocked server-side, not by scattered client-side checks.
     """
 
     def test_external_entry_is_never_verified_despite_spoofed_fields(self):
@@ -3257,8 +3257,8 @@ async def test_python_build_soft_skips_when_the_interpreter_has_no_pip(tmp_path,
 async def test_a_monorepo_subdirectory_is_built_not_the_clone_root(tmp_path, monkeypatch):
     """The build must run where the package IS, not at the clone root.
 
-    A monorepo registry entry declares ``subdirectory``, and that used to be joined
-    only AFTER the build — so the build looked for pyproject.toml at the clone root,
+    A monorepo registry entry declares ``subdirectory``; joining that only AFTER the
+    build would make the build look for pyproject.toml at the clone root,
     found none, logged "No build step detected — using source as-is" and returned
     ok=True having installed nothing.
     """
@@ -3517,7 +3517,7 @@ class TestCatalogFailureNeverBreaksTheStore:
         traceback this would hide our own bugs instead of a bad document.
 
         Patched at `fetch_inventory_entries` because that is the source the listing
-        now uses; the cache-fed loader is no longer on this path at all.
+        now uses; the cache-fed loader is not on this path at all.
         """
 
         def boom():

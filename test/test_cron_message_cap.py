@@ -1,4 +1,4 @@
-"""Tests for the cron-message character cap (issue #1682).
+"""Tests for the cron-message character cap.
 
 A cron job's message is a task prompt, so it gets its own generous cap
 (``MAX_CRON_MESSAGE``) instead of borrowing the shared ``MAX_MEDIUM_STRING``

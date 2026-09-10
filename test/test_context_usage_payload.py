@@ -5,7 +5,7 @@ when the provider reports a window. The bug this catches shipped green because
 nothing exercised the helper — it read last_prompt_stats off the AcpProvider
 (where it does not exist) instead of via the provider's public accessors.
 
-Second regression guard (#1645): when real token counts are unavailable the
+Second regression guard: when real token counts are unavailable the
 payload must carry ``reset: True`` rather than a bare ``{slot, pct}`` frame.
 A pct-only frame updates the frontend's percentage slice while stranding the
 token-count slice, which surfaced as the "225K used / 0%" disagreement right
@@ -67,7 +67,7 @@ def test_payload_resets_for_provider_without_token_accessors():
 
 
 def test_payload_resets_when_used_unmeasured():
-    # Post-compaction state (#1645): reset_after_compaction keeps the window but
+    # Post-compaction state: reset_after_compaction keeps the window but
     # zeroes the counts. used == 0 means "not measured yet", not "empty
     # context" — shipping {used: 0, window: W} would assert a false "0 / W
     # tokens", and a bare pct-only frame would strand the pre-compaction token

@@ -1,4 +1,4 @@
-"""Owner-consented delivery of scanner-flagged files (issue #7770).
+"""Owner-consented delivery of scanner-flagged files.
 
 Every piece of credential-shaped material here is SYNTHESIZED AT RUNTIME from a
 small grammar rather than checked in as a literal. That is deliberate and is not

@@ -1,6 +1,6 @@
 """Tests for ``GET /api/sessions/clearable/count`` and its shared selector.
 
-Ask 4 of #8872 needs the confirmation for a bulk delete to state how many
+A bulk delete's confirmation needs to state how many
 sessions it will remove. ``DELETE /api/sessions`` offered no way to learn that
 before committing, so this endpoint answers it and nothing else.
 

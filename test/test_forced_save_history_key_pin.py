@@ -1,9 +1,9 @@
-"""expected_history_key pin at the tags/folders forced-save call sites (#7519).
+"""expected_history_key pin at the tags/folders forced-save call sites.
 
 ``save_slot_off_loop`` / ``_save_slot_to_history`` resolve their target
 transcript from live routing at write time, so a ``linked_session_key`` rebind
 during the persist await can redirect a durable write to a transcript the
-caller never authorized against. PR #7346 added the ``expected_history_key``
+caller never authorized against. An earlier change added the ``expected_history_key``
 refuse-if-moved pin (save returns ``False``, writing nothing, when the live
 key has moved off the pinned one) and wired it at the autocompact endpoint;
 these tests pin the REMAINING forced-save sites the same way, mirroring

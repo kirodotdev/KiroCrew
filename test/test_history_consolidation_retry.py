@@ -687,7 +687,7 @@ class TestRotationDoesNotClearACappedBudget:
                     "rotation_generation": 4,
                 },
             )
-            # The caller's snapshot generation (2) no longer matches, so
+            # The caller's snapshot generation (2) does not match, so
             # mark_consolidated resets the offset to 0 instead of applying it.
             log.mark_consolidated(KEY, 3, 2)
 
@@ -795,7 +795,7 @@ class TestRotationReleasesTheBudgetForNewContent:
 
     @pytest.mark.asyncio
     async def test_the_same_span_stays_capped(self, tmp_path):
-        """Round 2's invariant: no free attempt while the span is unchanged."""
+        """No free attempt while the span is unchanged."""
         log = _seed_log(tmp_path)
         with history_mod.allow_on_loop_persist():
             log.update_metadata(
@@ -1338,14 +1338,14 @@ class TestTheCapDoesNotOutliveTheSpanItMeasured:
             "the mid-turn message was recorded as attempted, so growth can never "
             "release it"
         )
-        # It reads as growth, so the counter no longer describes this span. (The
+        # It reads as growth, so the counter does not describe this span. (The
         # armed deadline still applies — a fresh budget is not a free turn.)
         assert log.consolidation_retry_state(KEY, _total(log))[0] == 0
         assert _total(log) == 4
 
     @pytest.mark.asyncio
     async def test_a_capped_span_with_no_growth_stays_ineligible(self, tmp_path):
-        """Round 2's guarantee: an unchanged failing span cannot burn forever."""
+        """An unchanged failing span cannot burn forever."""
         log = _seed_log(tmp_path)
         self._plant_capped(log)
 
@@ -1787,7 +1787,7 @@ class TestConsolidateIsTheEligibilityChokePoint:
 
     @pytest.mark.asyncio
     async def test_consolidate_now_reports_a_refusal(self, tmp_path):
-        """consolidate_now's only caller is the CLI, which used to print
+        """consolidate_now's only caller is the CLI, which would otherwise print
         'done ✓' unconditionally; the returned False is what lets it report
         the backoff skip instead of a false success."""
         log = _seed_log(tmp_path)

@@ -1482,7 +1482,7 @@ class TestOnlyOneSurfaceWritesGrantDerivedTrust:
     ``ActivationResult`` -- is written outside the lock that revocation takes, and
     ``admission.parent_trusted`` reads it directly. So every such writer owes a
     post-write reconcile, and a new transport that writes inherited state from an arm
-    without one silently reopens #8849.
+    without one silently reopens the bypass.
 
     That obligation cannot be enforced by a type or a lock, so it is pinned here: the
     set of files pairing an arm with an ``"auto"`` write is DECLARED, and a newcomer
@@ -1645,7 +1645,7 @@ class TestNothingResolvesGovernanceOffTheInstallPath:
 class TestArmingIsStillOffloadedByItsAsyncCallers:
     """The offload survives this refactor, because the SEL audit is still I/O.
 
-    Arming no longer resolves governance, but it still writes a fail-closed security
+    Arming does not resolve governance, but it still writes a fail-closed security
     event before the grant exists -- a synchronous filesystem write -- so an async
     caller that ran it inline would put that on the gateway's loop.
     """

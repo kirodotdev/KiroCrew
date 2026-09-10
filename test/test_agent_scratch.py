@@ -1,4 +1,4 @@
-"""Tests for :mod:`kiro_crew.agent_scratch` (issue #5063).
+"""Tests for :mod:`kiro_crew.agent_scratch`.
 
 Everything runs against a monkeypatched data home under ``tmp_path``; the
 real ``<data home>/scratch`` is never touched.

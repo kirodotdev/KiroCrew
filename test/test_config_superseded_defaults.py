@@ -2,7 +2,7 @@
 
 ``config.json`` is a full materialization of the schema and the loader resolves
 each field as ``data.get(key, DEFAULT)``, so a stored value always beats a
-changed dataclass default. #4566 changed ``mcp_gateway.forward_declared_env``
+changed dataclass default. A change to ``mcp_gateway.forward_declared_env``
 False->True with no migration, so every pre-existing install stayed False and
 nothing said so.
 
@@ -266,7 +266,7 @@ def test_every_registered_key_ends_at_the_live_default():
     Both sides of an entry are history -- a later change appends a new entry
     rather than editing an old one, so the 90->70 row stays true even once the
     default moves again. What must not drift is the END of each key's chain: if
-    it names a value the loader no longer applies, the report tells operators to
+    it names a value the loader does not apply, the report tells operators to
     adopt a default that does not exist. Registry order is the append order, so
     the last entry for a key is its newest.
     """
@@ -290,7 +290,7 @@ def test_every_registered_key_ends_at_the_live_default():
 
 
 def test_an_install_still_storing_the_old_ceiling_is_reported():
-    """The case #4388 declared and did not migrate: a stored 90.0 keeps
+    """A stored 90.0 that was declared but never migrated keeps
     compacting at the window ceiling, and this is what finally says so."""
     drifted = superseded_default_drift({"session": {"autocompact_pct": 90.0}})
     assert AUTOCOMPACT_ENTRY in drifted
@@ -329,7 +329,7 @@ def test_loop_stall_summary_explains_automatic_default():
 
 
 # --------------------------------------------------------------------------
-# Acknowledgment: the report is falsifiable (#7559).
+# Acknowledgment: the report is falsifiable.
 # --------------------------------------------------------------------------
 
 

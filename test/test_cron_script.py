@@ -192,7 +192,7 @@ class TestRunCommandSandboxed:
         fake_key = "AKIA" + "B" * 16  # matches the AWS access-key-id pattern
         # Sized so the 1000-char tail window starts 2 chars into the credential:
         # a slice-then-redact order keeps "IA" + all 16 B's but drops the
-        # "AK" prefix, so the pattern no longer matches and the tail leaks.
+        # "AK" prefix, so the pattern does not match and the tail leaks.
         padding = "p" * 100
         trailing = "e" * 982
         stderr_text = padding + fake_key + trailing
@@ -514,7 +514,7 @@ class TestRunScriptSandboxed:
 
         If the suffix is sliced first, a credential that straddles the cut
         point loses its leading characters before ``redact`` runs — and the
-        surviving fragment no longer matches any credential pattern, so it
+        surviving fragment does not match any credential pattern, so it
         reaches logs and the persisted ``last_error`` unmasked.
 
         Byte layout (written verbatim, ``os._exit`` so no traceback shifts
@@ -1013,10 +1013,10 @@ class TestMcpToolClient:
         a SCRIPT CRON name itself another session and reach that session's jobs --
         ``cron_remove_all`` over its rows, ``cron_list`` over its contents.
 
-        ``KIROCREW_CLI`` is asserted here too, as history rather than as a live
-        consumer: it was an ambient admin flag that skipped ownership outright,
-        and #6624 deleted the consumer instead of re-grounding it, because nothing
-        in ``src/`` ever set the variable. The deny stays because the CLASS is
+        ``KIROCREW_CLI`` is asserted here too, as an inert subject rather than a
+        live consumer: it is an ambient admin flag that skips ownership outright,
+        and it has no producer in ``src/`` and its consumer is gone, so nothing
+        sets or reads it. The deny stays because the CLASS is
         live -- the next identity key somebody adds is the reason.
 
         Neither existing filter stops it: ``_CRON_ENV_DENY`` covers secrets and
@@ -1079,9 +1079,9 @@ class TestMcpToolClient:
         return the forged session, so a spec's ``env`` block cannot name another
         session even if some future refactor changes which filter drops the key.
 
-        The key under test used to be ``KIROCREW_CLI``, an ambient admin flag
-        whose consumer #6624 deleted outright -- it had no producer in ``src/``,
-        so there was no claim to re-ground. ``KIROCREW_SESSION_KEY`` is the right
+        ``KIROCREW_CLI`` is not the key under test: it is an ambient admin flag
+        with no producer in ``src/`` and no consumer, so there is no claim to
+        re-ground. ``KIROCREW_SESSION_KEY`` is the right
         successor subject precisely because it DOES have legitimate producers
         (the ACP spawn path, this bridge), so for it the filter is load-bearing
         rather than belt-and-braces over a dead name.
@@ -1767,7 +1767,7 @@ class TestRunScriptSandboxedErrorPaths:
         """A credential straddling the 200-char boundary must not leak its head.
 
         Redaction must run on the WHOLE stdout before the head slice: slicing
-        first can cut a secret mid-pattern, so redaction no longer matches and
+        first can cut a secret mid-pattern, so redaction does not match and
         the raw head reaches the diagnostic.
         """
         # Built at runtime so no credential-shaped literal lands in the repo.

@@ -1571,7 +1571,7 @@ class TestSidecarSummariesSurviveMtimePreservingRewrites:
 
     So a compaction that drops half a transcript leaves the recorded signature
     still matching, and the sidecar describing the PRE-rewrite conversation is
-    served as valid. Unlike the in-process caches #4293 guards with a generation
+    served as valid. Unlike the in-process caches guarded with a generation
     counter, these are files on disk: the staleness outlives the process and is
     permanent until a genuine ``append`` lands.
     """

@@ -947,8 +947,8 @@ class TestNormalizeBannerTruncate:
     def test_a_credential_straddling_the_cap_is_masked_not_sliced(self) -> None:
         # 20-char key starts 10 chars before the cap and runs past it: a
         # slice-before-redact (the old ``objective[:cap]``) would keep the raw
-        # 10-char prefix ``AKIAIOSFOD`` because the truncated token no longer
-        # matches the scanner.
+        # 10-char prefix ``AKIAIOSFOD`` because the truncated token does not
+        # match the scanner.
         straddling = "x" * (MAX_BANNER_CHARS - 10) + "AKIAIOSFODNN7EXAMPLE" + " tail"
         value, error = normalize_banner(straddling, absent_ok=True, truncate=True)
         assert error is None

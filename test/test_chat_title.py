@@ -34,7 +34,7 @@ from kiro_crew.dashboard.state import DashboardState, _ChatSlot
 def test_prompt_isolates_and_delimits_transcript():
     """The title prompt must instruct the model to name ONLY the delimited
     transcript and ignore residual session history — the shared _bg session
-    retains a sibling session's context between recycles, which previously
+    retains a sibling session's context between recycles, which
     bled into titles."""
     msgs = [
         {"role": "user", "content": "Update the doc refs to bullseye Set a goal"},
@@ -104,8 +104,8 @@ def test_prompt_strips_non_image_attachment_before_truncation():
 def test_prompt_substitutes_attachment_name_from_metadata():
     """The NAME survives; the directory path does not.
 
-    Previously the marker and path were replaced by a bare space, so an
-    attachment-only or attachment-dominated message lost its topic entirely and
+    A bare space in place of the marker and path leaves an
+    attachment-only or attachment-dominated message with no topic, so
     the titling model answered SKIP. The basename is the topic, so it is kept --
     the full path is still stripped.
     """

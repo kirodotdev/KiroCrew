@@ -1,4 +1,4 @@
-"""Tests for the Windows atomic-rename retry in ``atomic_write`` (issue #1105).
+"""Tests for the Windows atomic-rename retry in ``atomic_write``.
 
 ``os.replace`` on Windows raises ``PermissionError`` while any other handle is
 open on either path, so an indexer or AV scanner touching the freshly written
@@ -127,10 +127,9 @@ async def test_a_caller_on_the_event_loop_reraises_instead_of_sleeping(tmp_path,
 async def test_offloading_from_the_loop_restores_the_retry(tmp_path, monkeypatch):
     """A worker thread has no loop of its own, so offloaded writes still retry.
 
-    This is the other half of the gate, and the reason it does not defeat
-    #1105: ``AutoNudgeService`` reaches ``_write_state`` through
-    ``run_in_executor``, so the case the issue reports keeps the retry even
-    though the service is driven from the loop.
+    This is the other half of the gate: ``AutoNudgeService`` reaches
+    ``_write_state`` through ``run_in_executor``, so an offloaded write keeps the
+    retry even though the service is driven from the loop.
     """
     monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
     target = tmp_path / "state.json"
@@ -144,7 +143,7 @@ async def test_offloading_from_the_loop_restores_the_retry(tmp_path, monkeypatch
 
 
 def test_autonudge_state_write_survives_the_rename_window(tmp_path, monkeypatch):
-    """The concrete failure #1105 reports: AutoNudgeService losing a state save.
+    """AutoNudgeService must not lose a state save during the rename window.
 
     ``_write_state`` keeps its own mkstemp/fsync dance but routes the rename
     through the shared helper, so it inherits the retry.

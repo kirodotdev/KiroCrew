@@ -1,4 +1,4 @@
-"""Cron callers on the session-control surface (issue #8332).
+"""Cron callers on the session-control surface.
 
 A cron job's own slot is admitted as a SOURCE even though nobody is watching it,
 and is bounded by the same ``created_by`` fence a crew member is. These tests pin
@@ -290,7 +290,7 @@ class TestAppOwnedCron:
         ``owning_slot is not None`` guard failed open and returned ``None``, so the
         app's own cron could mint a persistent, non-app, sidebar-visible session --
         precisely the confinement the ``_app`` refusal exists to prevent, reached
-        through a closed session the gate can no longer inspect.
+        through a closed session the gate cannot inspect.
 
         "Cannot verify the owner is not an app" must fail closed, the same
         direction the missing-job and unreadable-registry cases already take.
@@ -301,7 +301,7 @@ class TestAppOwnedCron:
         """
         state = _make_state(tmp_path)
         caller = _cron_tab(state, created_by="")
-        # The job names a session that no longer has a live slot.
+        # The job names a session that has no live slot.
         state.crons.list_jobs.return_value = [
             SimpleNamespace(id=JOB_ID, created_by="", session_key="dashboard:chat-gone")
         ]

@@ -1,11 +1,11 @@
 """``GET /api/agents`` ships an explicit allowlist, never the whole record.
 
-The endpoint used to build each row with ``{**dataclasses.asdict(agent_cfg)}``,
-which made its response contract "every field ``KiroCrewAgentConfig`` has now,
-plus every field anyone adds later", automatically — a field added by someone
-who never looked at this endpoint shipped to the browser by omission. #8454
-converted both row sources to an explicit allowlist, mirroring the rule
-``handlers/members.py`` already documents for ``GET /api/members``.
+Building each row with ``{**dataclasses.asdict(agent_cfg)}`` would make its
+response contract "every field ``KiroCrewAgentConfig`` has, plus every field
+anyone adds later", automatically — a field added by someone who never looked
+at this endpoint would ship to the browser by omission. Both row sources use an
+explicit allowlist instead, mirroring the rule ``handlers/members.py`` already
+documents for ``GET /api/members``.
 
 These tests are the half that keeps it converted. The key set is pinned as a
 literal, and a separate ratchet compares that literal against the live record
@@ -153,7 +153,7 @@ class TestRosterRowKeySet:
     async def test_project_row_ships_the_same_key_set(self, monkeypatch) -> None:
         """A project-scope row carries the SAME keys as a global row.
 
-        The two sources were separate spreads before #8454, so they could drift
+        The two sources are separate spreads, so they could drift
         into different key sets; pinning both is what makes one allowlist the
         answer for the whole response.
         """
@@ -248,7 +248,7 @@ class TestRosterRowIsAnAllowlistNotASpread:
         # The withheld set must name real fields — a typo there would silently
         # stop classifying anything and let the next added field through.
         assert WITHHELD_RECORD_FIELDS <= record_fields
-        # And the allowlist must not claim a record field that no longer exists.
+        # And the allowlist must not claim a record field that does not exist.
         assert ROSTER_ROW_KEYS - {"name", "scope"} <= record_fields
 
     def test_an_attribute_the_allowlist_does_not_name_is_dropped(self) -> None:

@@ -74,7 +74,7 @@ def _catalog_absent(monkeypatch):
 
     This module is about SEED and EXTERNAL-registry resolution; the official
     catalog is upstream of both in ``_resolve_registry_row``, and its real
-    lookup performs a fresh uncached HTTPS fetch on every call (#4236).
+    lookup performs a fresh uncached HTTPS fetch on every call.
     Before the suite-wide network guard these tests silently depended on the
     runner's live network being up. A test that wants a different catalog
     answer overrides this by monkeypatching the same seam itself.
@@ -947,7 +947,7 @@ class TestExternalRegistryRepos:
 
 # ---------------------------------------------------------------------------
 # install_from_registry admission — the signed manifest is now passed to the
-# gate (fetched read-only BEFORE clone), so require_signature no longer denies
+# gate (fetched read-only BEFORE clone), so require_signature does not deny
 # every registry install of a correctly-signed app.
 # ---------------------------------------------------------------------------
 
@@ -1376,14 +1376,14 @@ class TestRefreshRegistries:
 
 
 # ---------------------------------------------------------------------------
-# Clone-URL resolution for the blob proxy is no longer a standalone resolver.
+# Clone-URL resolution for the blob proxy is not a standalone resolver.
 # ``handle_blob_proxy`` resolves the clone URL once (from the decided entry via
 # ``_entry_git_url`` for a bundled entry, or by an inline in-memory URL-form
 # check on the already-validated ``repo`` for the no-entry external/federated
 # branch) and threads it into ``_fetch_git_blob``; there is no
 # ``routes._registry_git_url`` helper to unit-test in isolation.  The URL-form /
-# no-bundled-entry resolution boundary this section used to cover is now
-# exercised through the handler in test_apps_routes_coverage.py.
+# no-bundled-entry resolution boundary is exercised through the handler in
+# test_apps_routes_coverage.py, not in this section.
 # ---------------------------------------------------------------------------
 
 
@@ -2023,7 +2023,7 @@ class TestSameRepoCredentialCarveOut:
 
 
 # ---------------------------------------------------------------------------
-# Operator-configured registry branch overrides per-app declarations (#3330)
+# Operator-configured registry branch overrides per-app declarations
 # ---------------------------------------------------------------------------
 
 
@@ -2339,7 +2339,7 @@ def _real_argv(captured_argv):
 
     ``create_subprocess_limited`` runs commands through the post-exec shim
     (``python -I -S -c <shim> --rlimits=… -- <real argv>``), so a captured
-    spawn no longer starts with the command itself. Return the argv after the
+    spawn does not start with the command itself. Return the argv after the
     ``--`` separator, with argv[0] reduced to its basename (git resolves to an
     absolute path, and to ``git.EXE`` on Windows).
     """
@@ -3181,9 +3181,9 @@ class TestOriginMismatchDeleteOrder:
 class TestUnreadableOriginAbort:
     """Regression: unreadable origin must NOT enter destructive move-aside path.
 
-    GPT 5.6 finding: a checkout with a corrupt .git/config or missing remote
-    previously entered the move-aside → re-clone → delete path, permanently
-    losing local edits even though the checkout might be the right repo.
+    A checkout with a corrupt .git/config or missing remote enters the
+    move-aside → re-clone → delete path, permanently losing local edits even
+    though the checkout might be the right repo.
     """
 
     @pytest.mark.asyncio
@@ -5042,10 +5042,9 @@ class TestAdmissionGatePreBuildRestoreFromRespectsRestorableStale:
 class TestSuccessPathRetainsStaleCheckout:
     """Regression: install success must NOT delete moved-aside checkouts.
 
-    GPT 5.6 round 6 finding: a successful source replacement permanently
-    deletes the .stale-* dir, losing user's local edits even when the
-    install SUCCEEDED.  After the fix, the stale dir is retained and its
-    path is surfaced in the install log.
+    A successful source replacement must not permanently delete the .stale-*
+    dir and lose the user's local edits when the install SUCCEEDED; the stale
+    dir is retained and its path is surfaced in the install log.
     """
 
     @pytest.mark.asyncio
@@ -5131,8 +5130,7 @@ class TestRetainedAtReportingSkipsRestorableStale:
     restores it after `_report_retained_stale_checkouts` runs, so naming its
     (now-deleted) `.stale-*` path in the log is misleading recovery guidance.
 
-    Opus 4.8 finding (round 3), converged on by Design Review and First
-    Principles: a branch-mismatch move-aside is the SAME repository as the
+    A branch-mismatch move-aside is the SAME repository as the
     active checkout (origin already verified identical), so it is marked
     restorable and the `finally` puts it back on a post-build failure. An
     origin-mismatch move-aside is a DIFFERENT repository and is never
@@ -6376,7 +6374,7 @@ class TestOriginMismatchLogsBeforeMoveAside:
 
 
 class TestInstallFailureReportsStaleCheckout:
-    """Regression (GPT 5.6 round 2): every non-ok exit AFTER a successful
+    """Every non-ok exit AFTER a successful
     clone+build that carries ``_pending_stale_cleanup`` must report the
     retained checkout path — never strand a .stale-* silently.
     """
@@ -6712,7 +6710,7 @@ class TestInstallFailureReportsStaleCheckout:
 
 
 class TestRefusalExitsReportRetainedStale:
-    """Regression (GPT 5.6 round 8): a refusal that leaves a non-restorable
+    """A refusal that leaves a non-restorable
     (origin-mismatch) checkout moved aside must REPORT the retained ``.stale-*``
     path, not strand it silently until the age-based sweep deletes it.
 
@@ -6940,7 +6938,7 @@ class TestRefusalExitsReportRetainedStale:
 
 
 class TestCloneBuildStampsPendingOnRefusal:
-    """Regression (GPT 5.6 round 8): ``_clone_build_app`` must stamp
+    """``_clone_build_app`` must stamp
     ``_pending_stale_cleanup`` onto a REFUSAL dict, not only the ok path — the
     single-exit invariant that keeps a new exit from silently dropping the
     move-aside state the caller's reporter needs.
@@ -7009,7 +7007,7 @@ class TestCloneBuildStampsPendingOnRefusal:
 
 
 class TestCloneBuildExceptionPathReportsRetainedStale:
-    """Regression (GPT 5.6 round 9, registry.py:~4005): when ``_clone_build_app``
+    """When ``_clone_build_app``
     raises AFTER an origin-mismatch move-aside, its ``except BaseException``
     handler must NAME each retained non-restorable ``.stale-*`` path (the same
     "Previous checkout retained at:" wording the finally-owned reporter uses)
@@ -7147,8 +7145,7 @@ class TestCloneBuildExceptionPathReportsRetainedStale:
 
 
 class TestProvenanceRaiseAfterDurableSuccessReportsRetainedStale:
-    """Regression (GPT 5.6 round 9, registry.py:~5418 / the consolidated
-    finally-owned reporter): a durable-success install whose provenance write
+    """A durable-success install whose provenance write
     then RAISES must still NAME the retained restorable stale in the outcome log
     and leave it on disk (never restored — the install durably succeeded).
 
@@ -7231,7 +7228,7 @@ class TestProvenanceRaiseAfterDurableSuccessReportsRetainedStale:
 
 
 class TestFinallyOwnedReporterIsTheSoleSite:
-    """Grep-pin (Design + First Principles round 9): retained-stale reporting is
+    """Grep-pin: retained-stale reporting is
     owned by exactly ONE site — the ``finally`` of ``install_from_registry``,
     with ``filter_restorable=not durable_success``. The 12 per-exit calls this
     consolidation deleted were the scattered-per-exit stranding class; a new exit
@@ -7257,10 +7254,10 @@ class TestFinallyOwnedReporterIsTheSoleSite:
 
 
 class TestRefusalOutcomeCarriesNoInternalTransactionKeys:
-    """Regression (GPT 5.6 round 10, registry.py:~4925): a build-refusal exit
+    """A build-refusal exit
     does ``outcome = {**build_result}``, so the internal move-aside bookkeeping
     keys ``_pending_stale_cleanup`` / ``_restorable_stale`` (each ``list[Path]``)
-    used to ride out of ``install_from_registry`` on the returned dict. ``Path``
+    would ride out of ``install_from_registry`` on the returned dict. ``Path``
     is not JSON-serializable, so the API/SSE layer raised ``TypeError`` when it
     serialized the refusal.
 
@@ -7932,7 +7929,7 @@ class TestBuildFailureRestoreRespectsRestorableStale:
         assert "previous checkout restored" in joined, (
             "a restored aside keeps the existing restore log line"
         )
-        # A restored aside is dropped from pending_cleanup (no longer retained).
+        # A restored aside is dropped from pending_cleanup (not retained).
         assert stale_dir not in (result.get("_pending_stale_cleanup") or [])
 
     @pytest.mark.asyncio
@@ -7992,7 +7989,7 @@ class TestMoveAsideUndoFailureReportsRetainedPath:
     rather than left for the age-based sweep to delete an unreported recovery
     copy.
 
-    Round 14 moved the mtime refresh BEFORE the rename (so the moved-aside dir
+    The mtime refresh happens BEFORE the rename (so the moved-aside dir
     never appears under its sweepable name with a stale clock), which means a
     ``utime`` failure now fails closed while ``dest`` is still at its original
     path — there is no rename to undo, nothing is stranded, and the honest
@@ -8072,7 +8069,7 @@ class TestMoveAsideUndoFailureReportsRetainedPath:
 
 
 # ---------------------------------------------------------------------------
-# Clone-failure diagnostics honesty (PR 4939 follow-up).
+# Clone-failure diagnostics honesty.
 #   Finding 1: the index-originated credential-posture hint must only fire when
 #   git's output is auth-shaped (or ambiguously so); a DNS blip or typo'd
 #   branch must NOT be told to restructure repositories, and no raw

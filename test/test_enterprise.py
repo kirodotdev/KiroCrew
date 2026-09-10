@@ -106,7 +106,7 @@ def test_self_identity_cached_from_auth_test_and_reset_on_failure(tmp_path):
     The accessor must answer "" after a failed re-validation: the trusted-bot
     admission fails CLOSED on an unverified self identity, so a stale cached
     id surviving a failed auth.test would report an identity the current
-    token no longer proves.
+    token does not prove.
     """
     resp = {
         "team_id": "T_GOOD",
@@ -179,9 +179,9 @@ def test_auth_test_failure_reader_exception_fails_closed_not_crash(tmp_path):
 def test_degraded_read_refuses_swapped_non_grid_workspace(tmp_path):
     """A degraded read must not admit whichever workspace authenticated.
 
-    The reachable shape GPT named. `candidate = enterprise_id or team_id`, so on
-    a NON-Grid workspace the candidate IS the bare team_id -- which used to be
-    the one id a degraded read admitted. A bot token pointing at a foreign
+    `candidate = enterprise_id or team_id`, so on
+    a NON-Grid workspace the candidate IS the bare team_id -- the one id a
+    degraded read must refuse to admit unaided. A bot token pointing at a foreign
     workspace therefore validated against itself and the operator's restriction
     silently stopped applying, while startup still reported success.
 
@@ -469,11 +469,11 @@ def test_auth_test_failure_with_allowlist_and_bad_config_load_fails_closed(tmp_p
 def test_auth_test_failure_unreadable_config_no_extra_ids_fails_closed(tmp_path):
     """auth.test fails AND config is unreadable, no extra_ids -> deny.
 
-    BEHAVIOUR CHANGE. This branch used to swallow the config-read error, leave
+    This branch must not swallow the config-read error, leave
     the allowlist empty, and read that as "no restriction configured" -- which
     ACCEPTS an unverifiable workspace. An unreadable config cannot be told apart
     from a configured restriction, so it must not be read as permission: this
-    path now fails closed like the startup path. A genuinely ABSENT config still
+    path fails closed like the startup path. A genuinely ABSENT config still
     defaults open (next test).
     """
     (tmp_path / "config.json").write_text("}{ broken", encoding="utf-8")
@@ -632,12 +632,12 @@ def test_governance_posture_empty_enterprise_id_ok_when_not_pinned(tmp_path):
 
 
 # --------------------------------------------------------------------------
-# Fail-closed: a corrupt config.json silently reopens the allowlist (#3945).
+# Fail-closed: a corrupt config.json must not silently reopen the allowlist.
 #
 # KiroCrewConfig.load() degrades a torn/corrupt config to a *defaults* object
-# instead of raising, so allowed_enterprise_ids comes back empty -- which the
-# old code could not tell apart from "operator configured no allowlist" and so
-# fell back to default-open. These tests exercise the REAL loader against a
+# instead of raising, so allowed_enterprise_ids comes back empty -- which must
+# not be read as "operator configured no allowlist", the default-open path.
+# These tests exercise the REAL loader against a
 # genuinely malformed file on disk.
 # --------------------------------------------------------------------------
 
@@ -645,7 +645,7 @@ def test_governance_posture_empty_enterprise_id_ok_when_not_pinned(tmp_path):
 def test_corrupt_config_json_fails_closed(tmp_path):
     """A malformed config.json must fail CLOSED, not reopen the allowlist.
 
-    Regression for #3945: writes a malformed config.json, then asserts
+    Writes a malformed config.json, then asserts
     check_message_origin() REFUSES a foreign team_id (and still admits the
     validated one). Without the fix _allowlist_configured flips False and the
     foreign origin is accepted default-open.

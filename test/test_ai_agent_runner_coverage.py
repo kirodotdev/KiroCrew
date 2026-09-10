@@ -1110,8 +1110,8 @@ def test_session_runner_unavailable_when_config_load_raises(monkeypatch):
 def test_session_runner_logs_the_reason_availability_failed(monkeypatch, caplog):
     """``create_provider_factory`` cannot return None, so False is reachable ONLY from the
     ``except`` — the raised exception is therefore the sole record of why the backend went
-    offline, and discarding it left the operator-facing offline reason unable to name a
-    cause (#6566). The boolean contract is unchanged; only the log is added."""
+    offline, and discarding it leaves the operator-facing offline reason unable to name
+    a cause."""
 
     def _boom():
         raise RuntimeError("acp -> client -> session -> config.loader circular import")

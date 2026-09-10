@@ -612,7 +612,7 @@ class TestStartDashboardWiring:
 
 
 class TestGatewayShutdownIsGuaranteed:
-    """GPT round-8 [BLOCKING] F4 (server.py:3357): a hung/raising reconciler
+    """A hung/raising reconciler
     stop must not skip on_gateway_shutdown() -- that sweep tears down app
     backends, so skipping it strands spawned processes past gateway exit."""
 

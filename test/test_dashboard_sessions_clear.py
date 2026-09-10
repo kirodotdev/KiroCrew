@@ -1,8 +1,7 @@
 """Tests for ``api_sessions_clear`` scope.
 
-Regression guard for ``DELETE /api/sessions`` used to
-unconditionally delete ALL history sessions, including pinned ones.
-The handler is now history-only — it skips:
+``DELETE /api/sessions`` must not delete ALL history sessions, pinned ones
+included. The handler is history-only — it skips:
 
 - any slot currently open in the sidebar (pinned or not, running or idle),
 - any session whose on-disk metadata has ``pinned=True``.
@@ -386,10 +385,10 @@ async def test_skips_the_transcript_an_unbound_channel_tab_is_reading() -> None:
 
     A channel tab the session map could not resolve carries no
     ``linked_session_key``, so it RUNS under ``dashboard:<stem>`` while its
-    conversation lives in the channel transcript, listed as the bare stem. The
-    protection set used to be built from the session key, which contributed two
-    names matching no file and left the real transcript unprotected — so Clear
-    All permanently deleted the conversation the open tab was displaying.
+    conversation lives in the channel transcript, listed as the bare stem. A
+    protection set built from the session key contributes two names matching no
+    file and leaves the real transcript unprotected, so Clear All permanently
+    deletes the conversation the open tab is displaying.
     """
     stem = "slack_1783733803.877979"
     other = _history_key_for("chat-9-1")

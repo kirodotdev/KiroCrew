@@ -3,7 +3,7 @@
 kiro-cli's ``deny_unknown_fields`` rejects an entire agent spec on any
 unrecognized key, so ``model_managed`` / ``cc_model`` must never reach a kiro
 JSON file. This is the single helper shared by the PUT handler,
-``migrate_agent_specs``, and ``_refresh_dynamic_fields`` (see #2570) — pin its
+``migrate_agent_specs``, and ``_refresh_dynamic_fields`` — pin its
 lift/strip/no-clobber/type-guard contract directly, independent of any caller.
 """
 

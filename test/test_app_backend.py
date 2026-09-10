@@ -305,7 +305,7 @@ class TestFixedAndAutoPortIsolation:
     def test_a_fixed_port_app_claims_it_before_binding(self, tmp_path, app_env, monkeypatch):
         """The SPAWN PATH must claim a fixed manifest port, not just record it later.
 
-        Boot spawns concurrently, and a fixed-port app used to record its port only
+        Boot spawns concurrently, and a fixed-port app that records its port only
         AFTER binding. An auto-port app selecting inside that window could be handed
         the same number, so one of the two children would die of EADDRINUSE and its
         backend would stay unavailable. Asserted at the real seam: the port must
@@ -469,7 +469,7 @@ class TestBootSpawnLatency:
     def test_survival_check_exits_early_for_a_healthy_child(self, monkeypatch):
         """A living child must not cost the full survival window.
 
-        The poll used to sleep its whole ~1.6s budget on the happy path and only
+        The poll would sleep its whole ~1.6s budget on the happy path and only
         break when the child DIED, so every app added ~1.6s of dead time to boot.
         It must return as soon as the child is confirmed alive.
         """
@@ -685,7 +685,7 @@ class TestBootSpawnLatency:
     def test_boot_starts_app_backends_concurrently(self, monkeypatch):
         """Boot must not serialize per-app spawn latency.
 
-        N apps used to cost N x the survival window because each spawn ran to
+        N apps would cost N x the survival window because each spawn ran to
         completion before the next began. With 4 apps that is ~6.4s of pure boot
         latency on the happy path.
         """
@@ -1888,7 +1888,7 @@ class TestTheMdNotebookBackendCanSeeItsOwnStateFiles:
 
 
 # =============================================================================
-# Post-startup liveness watch (#5726)
+# Post-startup liveness watch
 # =============================================================================
 
 
@@ -1903,7 +1903,7 @@ class _FakeProc:
 
 
 class TestBackendLivenessWatch:
-    """``healthy`` must be able to go back to False (#5726).
+    """``healthy`` must be able to go back to False.
 
     Before the watch, the startup poll wrote ``healthy = True`` once and nothing ever
     unwrote it, so a backend that died later kept the reverse proxy routing to its dead
@@ -2042,7 +2042,7 @@ class TestBackendLivenessWatch:
 
 
 class TestBackendRunningReflectsTheProcess:
-    """``/api/apps`` must not report an exited backend as running (#5726)."""
+    """``/api/apps`` must not report an exited backend as running."""
 
     def test_running_is_false_once_the_process_exits(self):
         ap = AppProcess(app_name="gone", port=9162, pid=7, proc=_FakeProc(returncode=0))
@@ -2128,7 +2128,7 @@ class TestHealthTransitionsRefuseAStaleRecord:
         bmod._demote(ap, reason="test")
 
         assert ap.healthy is True  # untouched
-        assert calls == []  # no scrub of a name this record no longer owns
+        assert calls == []  # no scrub of a name this record does not own
 
     def test_promote_refuses_an_untracked_record(self, gate_calls):
         bmod, calls = gate_calls
@@ -3200,7 +3200,7 @@ class TestRegistrationReportsAgentIoFailuresToo:
 
 
 class TestPromotionRequiresAConfirmedEnabledApp:
-    """A disabled app must not be resurrected by a health recovery (#5726 review).
+    """A disabled app must not be resurrected by a health recovery.
 
     `kirocrew app disable` runs in its OWN process: it deregisters the app's resources
     and never touches this process's tracking table. The record survives, so a later
@@ -3262,7 +3262,7 @@ class TestPromotionRequiresAConfirmedEnabledApp:
 
 
 class TestPromotionIsVerifiedAfterTheWrite:
-    """The enabled check cannot be atomic with the write (#5726 review).
+    """The enabled check cannot be atomic with the write.
 
     `kirocrew app disable` runs in another process, so there is no lock to share. Ordering
     closes the interleave where the flag is read after the resources come down; this
@@ -3331,7 +3331,7 @@ class TestPromotionIsVerifiedAfterTheWrite:
 
 
 class TestUndoIsRetriedUntilItCompletes:
-    """`deregister_app` reports softly, so a failed undo must not look clean (#5726 review).
+    """`deregister_app` reports softly, so a failed undo must not look clean.
 
     It returns problems in `RegistrationResult.errors` rather than raising, so recording
     the removal without reading that list leaves a disabled app's resources registered
@@ -3415,7 +3415,7 @@ class TestUndoIsRetriedUntilItCompletes:
 
 
 class TestDemotionRefreshIsGatedOnEnablement:
-    """The demotion's agent refresh must not restore a disabled app (#5726 review).
+    """The demotion's agent refresh must not restore a disabled app.
 
     A demotion does two things: it scrubs the MCP entry — always safe, and deliberately
     ungated — and it re-materializes the agent configs. The second is a WRITE, so for an
@@ -3475,7 +3475,7 @@ class TestDemotionRefreshIsGatedOnEnablement:
 
 
 class TestDisabledCleanupResultIsTheReconcileResult:
-    """A failed disabled-app cleanup is not a completed reconcile (#5726 review)."""
+    """A failed disabled-app cleanup is not a completed reconcile."""
 
     def test_a_failed_cleanup_reports_unlanded(self, monkeypatch):
         import kiro_crew.apps.backend as bmod
@@ -3503,9 +3503,9 @@ class TestDisabledCleanupResultIsTheReconcileResult:
 
 
 class TestTheUndoNeverTouchesASuccessor:
-    """Identity is checked BEFORE enablement (#5726 review).
+    """Identity is checked BEFORE enablement.
 
-    The undo deregisters by app NAME, so running it for a record that is no longer the
+    The undo deregisters by app NAME, so running it for a record that is not the
     tracked one deletes the SUCCESSOR's resources — and an unreadable enabled state is
     precisely what would send a retired watcher down that path.
     """
@@ -3535,7 +3535,7 @@ class TestTheUndoNeverTouchesASuccessor:
 
 
 class TestUnreadableManifestKeepsTheScrubUnlanded:
-    """Keeping the agents is right, but it leaves them stale (#5726 review).
+    """Keeping the agents is right, but it leaves them stale.
 
     `refresh_app_agents` gives up on the same unreadable manifest, so nothing else
     revisits those files. Recording the scrub as done would strand an agent config
@@ -3569,7 +3569,7 @@ class TestUnreadableManifestKeepsTheScrubUnlanded:
 
 
 class TestUnknownEnablementNeverDeletes:
-    """Fail-closed is right for ADDING and wrong for DELETING (#5726 review).
+    """Fail-closed is right for ADDING and wrong for DELETING.
 
     `installed.json` can fail to read transiently. Refusing to register when enablement
     is unknown is safe — the app stays as it is. Deregistering when it is unknown unlinks
@@ -3632,7 +3632,7 @@ class TestUnknownEnablementNeverDeletes:
 
 
 class TestATransitionAlwaysReconciles:
-    """`mcp_healthy` can be stale in the other direction (#5726 review).
+    """`mcp_healthy` can be stale in the other direction.
 
     An MCP write that landed followed by an agent write that did not leaves `mcp_healthy`
     unmoved while the entry IS on disk. If the verdict then flips, matching that stale
@@ -3680,7 +3680,7 @@ class TestATransitionAlwaysReconciles:
 
 
 class TestTheUndoPathsAlsoRefuseAnUnknownState:
-    """The tri-state rule applies to ALL THREE deletion sites (#5726 review).
+    """The tri-state rule applies to ALL THREE deletion sites.
 
     The demotion path was fixed first; the two undo calls inside `_set_backend_health`
     were not, and they reach the same `deregister_app` → `_deregister_agents` → unlink.
@@ -3745,7 +3745,7 @@ class TestTheUndoPathsAlsoRefuseAnUnknownState:
 
 
 class TestEnabledStateDistinguishesUnreadableFromDisabled:
-    """The tri-state has to be real, not nominal (#5726 review).
+    """The tri-state has to be real, not nominal.
 
     `is_app_enabled` returns False for BOTH a deliberate disable and an unreadable
     metadata file, because `_read_installed` answers None to both and never raises. Built

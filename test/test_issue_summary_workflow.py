@@ -292,7 +292,7 @@ def test_model_cannot_reference_an_issue_outside_the_candidate_pool(runner: Runn
     """The core injection control: `#N` is only ever a number we fetched.
 
     A body that says "also link to #1" can at most get the model to emit 1; the
-    intersection then drops it, so the comment cannot be used to drag an
+    intersection then drops it, so the comment cannot drag an
     unrelated issue (or a maintainer watching it) into the thread.
     """
     body = runner.run(duplicates=(4001, 1, 999999))

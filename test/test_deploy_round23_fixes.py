@@ -5,8 +5,8 @@ F1: the fullstack IAM policy conditions iam:CreateRole on the
     tampering; all app-template roles carry the boundary.
 F2: staging failures clean up the temp tree and every expected staging
     rejection converts to a structured 409 (not a raw 500).
-F3: _stage_tree_safe rejects symlinked DIRECTORIES (previously silently
-    dropped from the snapshot).
+F3: _stage_tree_safe rejects symlinked DIRECTORIES rather than dropping them
+    silently from the snapshot.
 F4: no Amazon-internal tooling instructions in the public dashboard.
 """
 import json

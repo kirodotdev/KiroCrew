@@ -1,4 +1,4 @@
-"""The ``mcp`` config section that carries ``extra_path_dirs`` (issue #5083).
+"""The ``mcp`` config section that carries ``extra_path_dirs``.
 
 Separate from ``mcp_gateway``, which configures the sharing broker: these
 settings govern how MCP servers are FOUND and launched, so they apply with the

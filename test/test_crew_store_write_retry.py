@@ -1,6 +1,6 @@
-"""The write half of the Windows sharing-violation window (issue #4331).
+"""The write half of the Windows sharing-violation window.
 
-#4331 fixed the READ half: ``CrewStore._load`` now reads through
+The READ half is fixed: ``CrewStore._load`` reads through
 ``read_bytes_with_retry``. Its PR called out the other half explicitly --
 *"this store's write side still calls ``tmp.replace()`` directly rather than
 ``replace_with_retry``, so it remains exposed to the other half of the same
@@ -18,7 +18,7 @@ Two kinds of test here, deliberately:
   reference to that function, the pre-fix ``tmp.replace()`` was not reachable by
   it at all -- so these assert the fault was OBSERVED (``state["n"]``), not just
   that the write succeeded. Without that assertion they would pass vacuously on
-  the unfixed tree, exactly the trap #4331's own read-side test documents.
+  the unfixed tree, exactly the trap the read-side test documents.
 * One test uses a REAL open handle on a REAL Windows host, no simulator, and is
   skipped elsewhere. That is the only evidence here that the OS behaves as
   described rather than as emulated.

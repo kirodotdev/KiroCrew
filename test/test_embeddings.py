@@ -1160,8 +1160,8 @@ class TestEmbedQueueTiming:
 class TestEmbedPriority:
     """A short interactive embed must not wait behind a queued bulk sweep.
 
-    This used to be impossible: the CALLER held ``_lock`` across submit+wait, so
-    every other caller blocked before it could enqueue and at most one job was
+    A CALLER that holds ``_lock`` across submit+wait makes this impossible:
+    every other caller blocks before it can enqueue and at most one job is
     ever queued. The lock moved to the worker precisely so ordering can exist.
     """
 

@@ -1036,7 +1036,7 @@ class TestSharedSessionContext:
 
 
 # ------------------------------------------------------------------
-# Tests: the /compact capability gate (#8156)
+# Tests: the /compact capability gate
 # ------------------------------------------------------------------
 
 
@@ -1044,7 +1044,7 @@ class TestCompactCapabilityGate:
     @pytest.mark.asyncio
     async def test_compact_declined_on_auto_managed_backend(self) -> None:
         # A backend that cannot serve /compact gets the informational reply and
-        # compact() is NEVER dispatched (#8156).
+        # compact() is NEVER dispatched.
         provider = FakeProvider([])
         provider.manual_compact_unsupported_backend = "kas"
         sessions = FakeSessions(provider)
@@ -1072,7 +1072,7 @@ class TestCompactCapabilityGate:
     @pytest.mark.asyncio
     async def test_thresholds_decline_silently_on_auto_managed_backend(self) -> None:
         # Hard: no forced compaction; soft: no /compact nudge — the backend
-        # compacts on its own as context fills (#8156).
+        # compacts on its own as context fills.
         provider = FakeProvider(
             [
                 AcpEvent(kind=EVENT_TEXT_CHUNK, text="answer"),

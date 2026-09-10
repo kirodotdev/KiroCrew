@@ -7,7 +7,7 @@ list or an int, so the read raises out of the handler and aiohttp answers
 **500** -- an internal-server error for a request the caller malformed, and one
 that reports nothing a client can act on.
 
-The handlers route through ``read_bounded_json`` (issue #5587), which owns
+The handlers route through ``read_bounded_json``, which owns
 both the parse guard and the object-shape guard:
 
 * ``api_cron_update`` and ``api_lessons_delete`` refuse an unparseable body

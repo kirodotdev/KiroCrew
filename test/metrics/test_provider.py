@@ -219,8 +219,8 @@ def test_no_egress_destination_by_default():
 
 
 def test_default_provider_yields_one_destination_for_the_config_endpoint():
-    """A non-empty telemetry.otlp_endpoint yields exactly the destination the
-    hardcoded exporter used to reach — the byte-identical-behaviour claim."""
+    """A non-empty telemetry.otlp_endpoint yields exactly the destination for
+    that endpoint."""
     from kiro_crew.config.loader import TelemetryConfig
     from kiro_crew.metrics.provider import _otlp_destinations
     from kiro_crew.platform.defaults import DefaultTelemetryProvider
@@ -1038,13 +1038,12 @@ class TestConsentRecheck:
 
 
 class TestResetForTestingWaitsOutInFlightWorker:
-    """Pins the fix for the force-clear this module's ``_worker_event`` helper
-    used to do: ``reset_for_testing`` must wait for a REAL in-flight
-    consent-check worker to finish, rather than a test helper force-clearing
-    ``_check_in_flight`` out from under a worker that is still actually
-    running. These tests drive the flag only through the product's own
-    scheduling path (``get_recorder()`` -> ``_schedule_consent_check_locked``
-    -> ``_consent_worker``) and never assign it directly.
+    """``reset_for_testing`` must wait for a REAL in-flight consent-check worker
+    to finish, rather than a test helper force-clearing ``_check_in_flight`` out
+    from under a worker that is still actually running. These tests drive the flag
+    only through the product's own scheduling path (``get_recorder()`` ->
+    ``_schedule_consent_check_locked`` -> ``_consent_worker``) and never assign it
+    directly.
     """
 
     def test_waits_for_a_real_worker_to_finish_before_returning(self, tmp_path, monkeypatch):

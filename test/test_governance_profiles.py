@@ -608,7 +608,7 @@ def test_parse_error_no_salvageable_bind_stays_bound_via_prior_bind(profiles_dir
 
 
 def test_runtime_hot_added_unrecoverable_marks_health_incident(profiles_dir, monkeypatch):
-    # HIGH (GPT round-4 pass 3): a GOVERNED running host that hot-loads a NEW
+    # A GOVERNED running host that hot-loads a NEW
     # unreadable profile (no prior entry) can't honour it and the boot floor never
     # re-runs. We don't lock the fleet down (one bad file must not DoS every
     # surface), but we MUST make it observable: an ERROR + a governance-health
@@ -662,7 +662,7 @@ def test_runtime_hot_added_unrecoverable_marks_health_incident(profiles_dir, mon
 
 
 def test_preserved_dir_error_then_delete_forces_rescan(profiles_dir, monkeypatch):
-    # MEDIUM (GPT round-4 pass 1): after preserving on a dir enumeration ERROR,
+    # After preserving on a dir enumeration ERROR,
     # DELETING the dir must force a rescan (distinct <unreadable> vs <absent>
     # fingerprints), not leave stale profiles active.
     from pathlib import Path
@@ -705,7 +705,7 @@ def test_preserved_dir_error_then_delete_forces_rescan(profiles_dir, monkeypatch
 
 
 def test_non_directory_profiles_path_governed_boot_aborts(tmp_path, monkeypatch):
-    # HIGH (GPT round-5 pass 3): a `profiles` path that is a regular FILE (misconfig)
+    # A `profiles` path that is a regular FILE (misconfig)
     # must NOT be treated as benign absence (which would drop all Level-2 narrowing
     # to policy-only). It routes through the unreadable/OSError branch → a governed
     # cold boot aborts.
@@ -739,7 +739,7 @@ def test_non_directory_profiles_path_standalone_is_lenient(tmp_path, monkeypatch
 
 
 def test_warm_store_non_blocking_under_contention_serves_prior_snapshot(profiles_dir):
-    # HIGH (GPT round-5 pass 1): on a WARM store _ensure_fresh must NEVER block
+    # On a WARM store _ensure_fresh must NEVER block
     # waiting on the reload lock (it is reachable on the event loop). If another
     # thread holds the lock, the caller returns promptly serving the current
     # snapshot. Unlike the original version of this test, this one PRIMES the store
@@ -923,8 +923,8 @@ def test_under_lock_restat_commits_fingerprint_of_published_snapshot(profiles_di
 
 
 def test_unreadable_profile_recovers_on_ctime_change(profiles_dir, monkeypatch):
-    # HIGH (GPT round-7 pass 1 #305): a chmod that FIXES perms on a previously-
-    # unreadable profile changes ctime but NOT mtime/size — so the fingerprint must
+    # A chmod that FIXES perms on an unreadable profile changes ctime but NOT
+    # mtime/size — so the fingerprint must
     # include ctime, else the unreadable fallback stays cached forever and the
     # profile's restrictions remain bypassed. Simulate: file readable → unreadable
     # (fallback) → readable again with ONLY ctime bumped → must re-read.
@@ -978,7 +978,7 @@ def test_unreadable_profile_recovers_on_ctime_change(profiles_dir, monkeypatch):
 
 
 def test_index_published_atomically_as_one_snapshot(profiles_dir):
-    # HIGH (GPT round-8): by_name + by_bind must be published as ONE immutable
+    # by_name + by_bind must be published as ONE immutable
     # snapshot, never two separate assignments — else a lock-free reader could see
     # new names with old bindings after a rename and for_bind would miss the new
     # binding (fail-open to policy-only). Assert the store exposes a single _snap
@@ -1007,7 +1007,7 @@ def test_index_published_atomically_as_one_snapshot(profiles_dir):
 
 
 def test_rename_does_not_expose_new_name_with_old_binding(profiles_dir):
-    # HIGH (GPT round-8): renaming a profile file (stem change) must swap the
+    # Renaming a profile file (stem change) must swap the
     # WHOLE snapshot — the new stem and its binding land together, and the old
     # stem+binding vanish together. No intermediate state where the cron surface
     # resolves to None because by_bind was updated but by_name wasn't (or vice
@@ -1051,7 +1051,7 @@ def test_rename_does_not_expose_new_name_with_old_binding(profiles_dir):
 
 
 def test_metadata_change_reload_walks_dir_once(profiles_dir, monkeypatch):
-    # BLOCKING (GPT round-15): on a genuine metadata change the reload must walk the
+    # On a genuine metadata change the reload must walk the
     # profiles dir exactly ONCE. _ensure_fresh is reachable on the event loop (the
     # synchronous PreToolUse gate), and it acquires the lock with blocking=False —
     # so it never waited and its pre-lock fingerprint is still current. Re-statting
@@ -1342,7 +1342,7 @@ def test_no_profiles_dir_is_safe(tmp_path, monkeypatch):
 
 
 def test_resolution_is_checked_before_bind_lookups(profiles_dir, monkeypatch):
-    # BLOCKING (GPT #593 round 2): resolution must be confirmed BEFORE any bind
+    # Resolution must be confirmed BEFORE any bind
     # lookup, not after. Checking afterwards is a check-AFTER-use: the lookup can
     # read the empty never-loaded snapshot, the first load can then complete, and
     # the late check reports "resolved" — so a miss that really meant "not loaded

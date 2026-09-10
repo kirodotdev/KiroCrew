@@ -240,7 +240,7 @@ class TestStartupProbe:
     ) -> None:
         imc = await _client(tmp_path)
         # The path comes from the resolver, not from a caller argument: there is
-        # no longer a settable cli_path for an agent-writable config to poison.
+        # no settable cli_path for an agent-writable config to poison.
         assert peers[0].argv == [FAKE_BRIDGE, "rpc"]
         await imc.close()
 
@@ -863,7 +863,7 @@ class TestLifecycle:
 
 
 class TestOwnEchoLedger:
-    """The self-chat guard of issue #5246.
+    """The self-chat guard.
 
     In a self-chat the allow-listed handle is the identity the agent sends as, so
     ``is_from_me`` is the only thing separating the user's words from the agent's

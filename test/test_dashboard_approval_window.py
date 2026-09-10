@@ -2,8 +2,8 @@
 
 Three properties, one per failure mode observed in production:
 
-1. The window is CONFIGURABLE and short by default. It used to be a literal
-   ``7200.0`` in ``chat_runner``, identical to the turn ceiling.
+1. The window is CONFIGURABLE and short by default, not a literal
+   ``7200.0`` in ``chat_runner`` equal to the turn ceiling.
 2. It is CLAMPED below the turn ceiling. A window at or above the ceiling can
    never fire — the turn is cut first — so it is not a longer wait, it is a
    wait that never reports.
@@ -86,7 +86,7 @@ def test_token_based_restore_stays_banned_in_this_module() -> None:
     """No test here may restore ``_TURN_DEADLINE`` through a ContextVar token.
 
     The isolation fixture above masks exactly the failure it fixes: with every
-    test baselined to ``None``, the ``get() is None`` assertions can no longer
+    test baselined to ``None``, the ``get() is None`` assertions cannot
     catch a reintroduced token-based restore — the pattern that leaves the var
     set (or kills the worker) when finalization resumes in a copied Context,
     per the rationale at turn_dispatch.py:350-356. Pin the ban at the source
@@ -612,7 +612,7 @@ class TestArmTimeBudget:
         value. No other test armed a non-None prior value, so the two
         ``get() is None`` neighbours above only ever exercised the None case —
         which is how a residue inherited from another test's context read as
-        this module's product bug (#6440).
+        this module's product bug.
         """
         prev = td._TURN_DEADLINE.get()
         armed = asyncio.get_running_loop().time() + 999.0

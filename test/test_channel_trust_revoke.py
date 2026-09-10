@@ -130,10 +130,9 @@ class TestModeEndpointSymmetry:
         """Two slots can address ONE session, and the policy is per session.
 
         A rehydrated owner slot and the alias its turns run under both resolve to
-        the same effective key. Revoking on one used to leave the other holding a
-        stale `_trust`, and the propagation pass then rewrote the shared session
-        back to "auto" from it, so the revoke was undone by the same request that
-        performed it.
+        the same effective key. If revoking one leaves the other holding a stale
+        `_trust`, the propagation pass rewrites the shared session back to "auto"
+        from it, and the revoke is undone by the request that performed it.
         """
         state = _make_state(tmp_path)
         addressed = _surfaced_slot(state, "whatsapp_15551234567")

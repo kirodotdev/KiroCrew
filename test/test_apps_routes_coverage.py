@@ -513,10 +513,10 @@ async def test_get_app_keeps_genuinely_local_app_repositoryless(
 async def test_list_apps_reports_a_tracked_but_exited_backend_as_not_running(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A record outliving its process must not be reported as running (#5726).
+    """A record outliving its process must not be reported as running.
 
-    The handler used to hardcode ``running: True`` for anything present in the process
-    table, so a backend that exited was reported as up until something popped its entry.
+    The handler must not hardcode ``running: True`` for anything present in the process
+    table: a backend that has exited would be reported as up until something popped it.
     """
     _setup_env(tmp_path, monkeypatch)
     _install(tmp_path)
@@ -1792,7 +1792,7 @@ class TestDisableBranches:
         # Patched on the SHARED teardown, not on `routes`: this PR routes the
         # disable path's hook/backend/onDisable work through
         # `apps/teardown.py::teardown_app_runtime`, the one implementation the
-        # trust-revocation path also calls, so `routes` no longer holds these
+        # trust-revocation path also calls, so `routes` does not hold these
         # symbols. The behaviour these tests pin is unchanged — the warnings still
         # surface on the disable response — only the module that owns the step moved.
         from kiro_crew.apps import teardown as teardown_mod
@@ -1832,7 +1832,7 @@ class TestDisableBranches:
         # Patched on the SHARED teardown, not on `routes`: this PR routes the
         # disable path's hook/backend/onDisable work through
         # `apps/teardown.py::teardown_app_runtime`, the one implementation the
-        # trust-revocation path also calls, so `routes` no longer holds these
+        # trust-revocation path also calls, so `routes` does not hold these
         # symbols. The behaviour these tests pin is unchanged — the warnings still
         # surface on the disable response — only the module that owns the step moved.
         from kiro_crew.apps import teardown as teardown_mod
@@ -1861,7 +1861,7 @@ class TestDisableBranches:
         # Patched on the SHARED teardown, not on `routes`: this PR routes the
         # disable path's hook/backend/onDisable work through
         # `apps/teardown.py::teardown_app_runtime`, the one implementation the
-        # trust-revocation path also calls, so `routes` no longer holds these
+        # trust-revocation path also calls, so `routes` does not hold these
         # symbols. The behaviour these tests pin is unchanged — the warnings still
         # surface on the disable response — only the module that owns the step moved.
         from kiro_crew.apps import teardown as teardown_mod
@@ -2576,7 +2576,7 @@ class TestNoEntryBlobCloneUrlResolution:
     async def test_no_entry_branch_does_not_re_read_the_registry(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # REGRESSION (PR 5027 round 4 — GPT 5.6 BLOCKING: registry cache re-read
+        # Invariant (registry cache re-read
         # blocks the event loop).  Before the subtraction the no-entry branch ran
         # ``clone_url = _registry_git_url(repo)``, which re-consulted
         # ``get_registry_app_by_repo`` — an unbounded SYNCHRONOUS registry
@@ -2659,7 +2659,7 @@ class TestBlobProxy:
     async def test_ref_with_traversal_is_rejected_400(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, ref: str
     ) -> None:
-        # REGRESSION (PR 5027 round 6 — GPT 5.6 BLOCKING: ``ref`` cache-path
+        # Invariant (``ref`` cache-path
         # traversal).  ``ref`` becomes a path segment in the blob cache tree
         # (``.../{repo_key}/{ref}/{file_path}``).  ``_SAFE_REF_RE`` permits ``.``
         # and ``/``, so ``../<other-repo-key>/main`` matches the regex; the
@@ -2731,7 +2731,7 @@ class TestBlobProxy:
     async def test_repo_key_reuse_across_registries_does_not_serve_stale_bytes(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # REGRESSION (PR 5027 round 6 — GPT 5.6 BLOCKING: private cache entries
+        # Invariant (private cache entries
         # outlive their provenance).  ``_blob_cache_key`` once keyed the cache dir
         # on the ``repo`` STRING alone.  Chain: registry A (private) caches a blob
         # under repo key X; A is removed and registry B is later configured reusing
@@ -2860,7 +2860,7 @@ class TestBlobProxy:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         # The resolved-path check must fire BEFORE any mkdir, so a symlinked
-        # cache subtree cannot be used to write outside the blob cache root.
+        # cache subtree cannot write outside the blob cache root.
         _setup_env(tmp_path, monkeypatch)
         monkeypatch.setattr(routes_mod, "known_registry_repos", lambda: {"acme"})
         # The cache key is provenance-bound, so the handler resolves a clone URL
@@ -2908,7 +2908,7 @@ class TestBlobProxy:
         assert not _is_safe_repo_identifier("org/app")
 
 # ---------------------------------------------------------------------------
-# Blob-fetch credential posture (same-repo carve-out, PR 918 extended to the
+# Blob-fetch credential posture (same-repo carve-out at the
 # third clone chokepoint).  These pin the env + sandbox-mode PAIR the blob
 # clone uses per origin, without asserting raw git argv (wrap_argv is patched
 # to capture only the mode it was handed).
@@ -3044,7 +3044,7 @@ class TestFetchGitBlobCredentialPosture:
         # ``_fetch_git_blob`` (part of the untouched SSRF gate), so it is patched on
         # the registry module.  The credential-posture helpers, by contrast, were
         # hoisted to ``routes`` module scope, so they are patched there — patching
-        # ``reg_mod`` would no longer intercept the module-level name.
+        # ``reg_mod`` would not intercept the module-level name.
         monkeypatch.setattr(reg_mod, "is_clone_host_trusted", lambda url: True)
         # Sentinel env dicts so the test asserts WHICH builder was used without
         # depending on the host's real environment contents.
@@ -3091,7 +3091,7 @@ class TestFetchGitBlobCredentialPosture:
 
         # Control: an owner-designated entry whose URL is ``url``.  The caller
         # threads ``git_url=url`` — the SAME URL the carve-out was decided for —
-        # so the carve-out is honored.  ``_fetch_git_blob`` no longer re-resolves
+        # so the carve-out is honored.  ``_fetch_git_blob`` does not re-resolve
         # from ``repo``; it uses the threaded value for both the decision and the
         # clone.
         ok = await routes_mod._fetch_git_blob(
@@ -3141,7 +3141,7 @@ class TestFetchGitBlobCredentialPosture:
     async def test_injected_cloneurl_never_becomes_the_credentialed_clone_target(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # REGRESSION (PR 5027 cross-registry finding), now enforced by CONSTRUCTION
+        # Enforced by CONSTRUCTION
         # rather than a downgrade recheck.  Two registries are configured — A
         # (repo=urlA) and B (repo=urlB, a separately-configured PRIVATE registry).
         # A's untrusted index injects an app entry that carries an explicit
@@ -3151,7 +3151,7 @@ class TestFetchGitBlobCredentialPosture:
         # injected ``cloneUrl`` while the credential decision used ``_entry_git_url``,
         # so the two resolvers named different URLs and the clone could reach urlB
         # with owner credentials.  The subtraction deletes the divergence: that
-        # resolver is gone and ``cloneUrl`` is no longer read anywhere, so the only
+        # resolver is gone and ``cloneUrl`` is not read anywhere, so the only
         # URL that can reach the clone is the one the caller threads — urlA, the
         # entry's own ``gitUrl``, byte-identical to the URL the carve-out was
         # decided for.  urlB is never the clone target, credentialed or otherwise,
@@ -3363,7 +3363,7 @@ class TestBlobProxyOwnerDesignatedWiring:
     async def test_query_ref_differing_from_configured_branch_is_not_owner_designated(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # REGRESSION (PR 5027 round 6 — GPT 5.6 BLOCKING: the credential grant
+        # Invariant (the credential grant
         # ignored the effective ref).  ``ref`` falls back to the entry's
         # configured branch ONLY when the query param is empty; a caller can
         # otherwise supply any ``_SAFE_REF_RE``-valid ``ref`` (e.g.
@@ -3467,7 +3467,7 @@ class TestBlobProxyOwnerDesignatedWiring:
     async def test_concurrent_refresh_cannot_redirect_credentialed_clone(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # REGRESSION (PR 5027 round 3 — TOCTOU between the credential decision and
+        # Invariant (TOCTOU between the credential decision and
         # the clone).  ``handle_blob_proxy`` decides ``owner_designated`` and
         # resolves the clone URL from ONE registry entry, then threads that URL
         # into ``_fetch_git_blob``.  The bug this pins: if the callee re-resolved
@@ -3558,7 +3558,7 @@ class TestBlobProxyOwnerDesignatedWiring:
     async def test_ambiguous_provenance_downgrades_to_anonymous_strict(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # REGRESSION (PR 5027 round 5 — GPT 5.6 BLOCKING: cross-registry confused
+        # Invariant (cross-registry confused
         # deputy).  ``get_registry_app_by_repo`` selects the entry by ``repo`` key
         # alone (bundled first, then each external registry), provenance-blind.  If
         # two configured registries — A (owner-designated for repo key X) and B (a
@@ -3643,7 +3643,7 @@ class TestBlobProxyOwnerDesignatedWiring:
     async def test_owner_designated_branch_resolves_sandbox_mode_off_the_event_loop(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # REGRESSION (PR 5027 round 5 — Opus 4.8 BLOCKING: synchronous config-load
+        # Invariant (synchronous config-load
         # on the event loop).  Inside ``_fetch_git_blob``'s ``owner_designated``
         # branch, ``_context_clone_sandbox_mode(git_url)`` flows
         # ``_configured_registry_hosts`` -> ``_effective_registries`` ->
@@ -4142,7 +4142,7 @@ def test_disable_route_normalizes_the_name_before_the_builtin_lookup():
 async def test_update_stops_the_backend_before_deregistering_resources(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Teardown order is load-bearing, not cosmetic (#5726 review).
+    """Teardown order is load-bearing, not cosmetic.
 
     `stop_app_backend` pops the tracking record, which is what stops the health watch
     from reconciling MCP for the app. Deregistering first leaves a window in which a
@@ -4178,7 +4178,7 @@ async def test_update_stops_the_backend_before_deregistering_resources(
 async def test_enable_does_not_re_register_after_the_backend_starts(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Enable must not re-register MCP after start_app_backend returns (#5726 review).
+    """Enable must not re-register MCP after start_app_backend returns.
 
     A call made here is queued behind the handler, so the adopted backend's watch can
     demote and scrub in between — and the queued write would then restore the dead url,

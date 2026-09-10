@@ -112,7 +112,7 @@ class TestConversationLog:
         # Rotation needs BOTH gates crossed: more than ``_SESSION_KEEP_LINES``
         # lines and more than ``_SESSION_MAX_BYTES`` bytes. Derive the row size
         # from the budget instead of hardcoding a byte total, so raising the cap
-        # cannot leave this test green while no longer reaching rotation at all.
+        # cannot leave this test green while not reaching rotation at all.
         rows = _SESSION_KEEP_LINES + 50
         content = "x" * (_SESSION_MAX_BYTES // rows + 1024)
         for i in range(rows):
@@ -210,8 +210,8 @@ class TestConversationLog:
     def test_update_metadata_upserts_when_file_absent(self, tmp_path):
         """update_metadata() on a not-yet-created session must create the file.
 
-        Regression: ``!ta <agent> --clean`` issued before the first message is
-        logged used to be silently dropped (the file did not exist yet), so the
+        A ``!ta <agent> --clean`` issued before the first message is logged
+        would be silently dropped (the file did not exist yet), so the
         agent/clean_mode selection lived only in memory and was lost on restart
         -- the session then resumed under the default agent with full tools.
         """
@@ -479,7 +479,7 @@ class TestListSessionsDedup:
         An older session that was recently updated should appear before a
         newer session that hasn't been touched.  Sorting by 'created' would
         put the newer-but-stale session first — that's the bug we're guarding
-        against (see commit 789209e, reverted by f04690d, re-fixed in 07a7099).
+        against.
         """
         import os
 
@@ -595,8 +595,8 @@ class TestSearchSessions:
     def test_ignores_json_structural_fields(self, tmp_path):
         """Query must match message ``content`` only, not JSON keys/values.
 
-        Regression: searching for common tokens like ``user`` or ``role``
-        used to hit every file because the raw JSONL contains
+        Searching for common tokens like ``user`` or ``role`` would otherwise
+        hit every file because the raw JSONL contains
         ``"role": "user"`` on every line.
         """
         log = ConversationLog(base_dir=tmp_path)
@@ -1264,8 +1264,8 @@ class TestNeedlesMatchText:
 class TestForgeReferenceSearch:
     """Pull-request / merge-request / issue numbers as first-class queries.
 
-    A transcript names the same pull request several ways — ``#4411`` in prose,
-    ``…/pull/4411`` when a link was pasted, ``pr 4411`` when it was typed. A
+    A transcript names the same pull request several ways — a ``#`` sigil in prose,
+    a pasted ``…/pull/`` link, or a typed ``pr`` reference. A
     literal-substring query finds only the spelling the searcher happened to
     guess, so these pin the alternation, its digit boundary, and the ranking
     hint a bare number gets.
@@ -1333,7 +1333,7 @@ class TestForgeReferenceSearch:
         assert keys == {"url_only", "hash_form", "prose_form"}, query
 
     def test_digit_boundary_excludes_a_longer_number(self, tmp_path):
-        """``#4411`` is not a prefix search — pull request 44110 is a different PR."""
+        """A ``#``-number query is not a prefix search — a longer number is a different PR."""
         log = self._corpus(tmp_path)
 
         assert [s["key"] for s in log.search_sessions("#4411", 10)] != []
@@ -1341,7 +1341,7 @@ class TestForgeReferenceSearch:
         assert {s["key"] for s in log.search_sessions("#44110", 10)} == {"longer_number"}
 
     def test_digit_boundary_excludes_digits_inside_a_run_id(self, tmp_path):
-        """A reference query means the item, not the digits: 1544110293 is not PR 4411."""
+        """A reference query means the item, not the digits: a run id is not a PR."""
         log = self._corpus(tmp_path)
 
         assert "digit_noise" not in {s["key"] for s in log.search_sessions("#4411", 10)}
@@ -1460,7 +1460,7 @@ class TestForgeReferenceSearch:
         assert "pull/4411" in results[0]["snippet"]
 
     def test_a_spelling_that_is_already_required_does_not_also_score(self):
-        """"4411 #4411" names one item twice — its hits must not count twice.
+        """A number and its ``#`` sigil names one item twice — its hits must not count twice.
 
         Order matters and this is the load-bearing one: with the bare number
         FIRST a ranking hint is created before the sigil makes it redundant, so
@@ -1579,8 +1579,8 @@ class TestForgeReferenceSearch:
     def test_naming_one_item_twice_never_narrows_it(self, tmp_path):
         """"#42 issue 42" must find everything either spelling finds alone.
 
-        The dedup path used to skip outright, which kept `issue` required and
-        threw away the bare-digit spelling the sigil-free occurrence contributes
+        Skipping outright in the dedup path keeps `issue` required and throws
+        away the bare-digit spelling the sigil-free occurrence contributes
         — narrowing a query that named the item MORE ways, which the loosen-only
         contract forbids.
         """
@@ -1710,8 +1710,8 @@ class TestForgeReferenceSearch:
     def test_a_repo_name_ending_in_a_digit_still_matches(self, tmp_path):
         """The left boundary guards the NUMBER, not the delimiter before it.
 
-        Applying it to a delimited spelling refuses ``#4411`` inside
-        ``owner/repo2#4411`` — the exact reference the query named.
+        A too-eager left boundary refuses a ``#``-number inside a repo name
+        ending in a digit — the exact reference the query named.
         """
         log = ConversationLog(base_dir=tmp_path)
         log.append("digit_repo", "assistant", "see kirocrew2#4411 for the fix")
@@ -1787,7 +1787,7 @@ class TestForgeReferenceSearch:
         assert {s["key"] for s in log.search_sessions("merge #12", 10)} == {"wanted"}
 
     def test_a_type_word_before_a_sigil_is_still_dropped(self, tmp_path):
-        """"pull request #4411" must still reach a transcript that only has the URL."""
+        """A leading-type-word query must still reach a transcript that only has the URL."""
         log = self._corpus(tmp_path)
 
         keys = {s["key"] for s in log.search_sessions("pull request #4411", 10)}
@@ -1867,7 +1867,7 @@ class TestForgeReferenceSearch:
         assert keys[0] == "gl_mr", keys
 
     def test_three_token_lead_chain_reaches_the_reference(self, tmp_path):
-        """"pull request #4411": both words are dropped, not just the nearest."""
+        """A two-word type lead: both words are dropped, not just the nearest."""
         log = self._corpus(tmp_path)
 
         keys = {s["key"] for s in log.search_sessions("pull request #4411", 10)}
@@ -2099,7 +2099,7 @@ class TestProviderSearchRefSeam:
 
         Only ``TypeError``/``ValueError`` were caught, so a two-item generator that
         raises while being unpacked escaped ``parse_search_query`` into a 500 on
-        every search -- the collector no longer shape-checks ahead of this.
+        every search -- the collector does not shape-check ahead of this.
         """
 
         def lazy_unpack_boom(token: str):
@@ -3711,8 +3711,8 @@ class TestAutoSkillSELAudit:
 class TestAutoSkillSELAuditCompleteness:
     """Every no-write decision must emit a SEL audit event.
 
-    Regression tests for review-bot round 2 findings — each distinct rejection
-    branch in _process_auto_skills must surface via sel().log_tool_invocation.
+    Each distinct rejection branch in _process_auto_skills must surface via
+    sel().log_tool_invocation.
     """
 
     @pytest.mark.asyncio
@@ -3906,7 +3906,7 @@ class TestAutoSkillSELAuditCompleteness:
 
 
 class TestConsolidationPromptJsonShape:
-    """Regression test for review-bot round 2 finding #6: the new_skill prompt
+    """The new_skill prompt
     JSON shape example must itself be a valid JSON fragment so the LLM
     doesn't see an unclosed string and emit malformed output.
 
@@ -3942,7 +3942,7 @@ class TestConsolidationPromptJsonShape:
     async def test_prompt_gates_on_recurrence_not_effort(self, tmp_path):
         """The built prompt must demand recurrence and must not bias toward yes.
 
-        The observed failure this pins: the prompt used to instruct the model to
+        The observed failure this pins: the prompt would instruct the model to
         "lean toward returning it" on any plausible procedure and judged only
         triviality, so elaborate ONE-OFF sessions (a single bug's fix, a
         one-time component audit, a probe answering a now-answered question)
@@ -4025,7 +4025,7 @@ class TestConsolidationPromptJsonShape:
 class TestSkillDetectionFullWindow:
     """Skill detection judges the full-session window, not the consolidated tail.
 
-    Regression for the tail-only recall gap: a reusable procedure that was
+    A reusable procedure that was
     already consolidated away (offset advanced past it) must still be seen by
     skill detection, because it reads the last-N of the FULL session rather
     than only the unconsolidated tail.
@@ -4385,7 +4385,7 @@ class TestLRUCache:
         c["a"] = 1
         c["b"] = 2
         c["c"] = 3
-        # Touch 'a' so it is no longer the LRU victim.
+        # Touch 'a' so it is not the LRU victim.
         assert c.get("a") == 1
         c["d"] = 4
         # 'b' (now the LRU) is evicted instead of the touched 'a'.
@@ -5179,8 +5179,8 @@ async def test_script_bearing_candidate_stages_even_when_all_scripts_invalid(tmp
 class TestMetadataReadSurvivesATransientSharingViolation:
     """A read that FAILED must not be reported as a session with no metadata.
 
-    ``_read_metadata`` returns ``{}`` both for "this session has no metadata line"
-    and (previously) for "I could not open the file". Callers cannot tell those
+    ``_read_metadata`` returning ``{}`` both for "this session has no metadata
+    line" and for "I could not open the file" leaves callers unable to tell those
     apart and at least one acts destructively on the answer -- the open-tab
     restore treats ``{}`` as "never persisted" and silently drops the tab. On
     Windows a just-written file is transiently unopenable while an indexer or AV

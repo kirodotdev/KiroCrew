@@ -1,6 +1,6 @@
 """Tests for faiss-cpu installation block in enable-embeddings handler.
 
-The enable flow no longer boots Ollama: when the GGUF is absent it kicks (or
+The enable flow does not boot Ollama: when the GGUF is absent it kicks (or
 adopts) a background ``ensure_model`` download task and returns 200
 "downloading" immediately; when the model file is present it pip-installs
 faiss-cpu (flow unchanged), wires ``make_sync_embed_fn()`` onto the vector
@@ -334,7 +334,7 @@ class TestFaissInstallTimeout:
         proc.kill.assert_called_once()
         # The critical pin: the reap drains pipes via a SECOND communicate();
         # a bare wait() on a killed pip blocked writing into a full stderr
-        # pipe would hang the handler forever (#5989).
+        # pipe would hang the handler forever.
         assert proc.communicate.call_count == 2
         proc.wait.assert_not_awaited()
         assert mem_mod._embedding_setup_status["step"] == "idle"
@@ -527,7 +527,7 @@ class TestSetMigratedFailClosed:
 
 
 class TestPipStderrRedaction:
-    """Regression for issue #7279: pip/ensurepip stderr reached the gateway log
+    """pip/ensurepip stderr must not reach the gateway log
     unredacted. A private index configured with userinfo credentials leaks the
     token into pip's stderr on an auth failure; both warning sites must route
     the decoded stderr through ``redact_and_truncate`` (redact the FULL text

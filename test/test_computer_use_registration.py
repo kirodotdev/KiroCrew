@@ -1080,7 +1080,7 @@ class TestSpecEmissionGate:
         assert CU_SERVER not in cfg["mcpServers"]
         assert "kirocrew-core" in cfg["mcpServers"]
         # Withholding the ENTRY is the whole control. The refs name a server this
-        # spec no longer defines, which resolves to nothing and mounts nothing, so
+        # spec does not define, which resolves to nothing and mounts nothing, so
         # they are left exactly as the user left them.
         assert CU_REF in cfg["tools"]
         assert cfg["allowedTools"] == [f"{CU_REF}/computer_get_state"]

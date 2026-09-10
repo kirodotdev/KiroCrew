@@ -257,7 +257,7 @@ class TestKiroIgnoreReadIsGuarded:
 
     def test_oversize_is_judged_on_the_bytes_actually_read(self, tmp_path):
         """The ceiling is enforced by the guarded read, not by a ``stat`` of a
-        path that may no longer be the file that gets opened."""
+        path that may not be the file that gets opened."""
         body = "cdk.out/\n" + ("# pad\n" * 20000)
         path = tmp_path / kiroignore.KIROIGNORE_FILENAME
         path.write_text(body)

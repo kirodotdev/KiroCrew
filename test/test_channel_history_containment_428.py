@@ -1,4 +1,4 @@
-"""Regression: channel-history path containment must be boundary-aware (#428).
+"""Channel-history path containment must be boundary-aware.
 
 A bare ``str.startswith`` has no trailing-separator boundary, so a sibling
 directory that merely shares the prefix (``.../hist-evil`` vs ``.../hist``)

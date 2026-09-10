@@ -3,7 +3,7 @@
 The load path can only REPORT drift: a stored old default and a deliberate opt-out
 are the same bytes, so it must not rewrite either. This command is the surface
 where the operator resolves that ambiguity themselves, which is what lets the
-report be one answerable line instead of a permanent per-key notice (#7559).
+report be one answerable line instead of a permanent per-key notice.
 """
 
 from __future__ import annotations
@@ -132,7 +132,7 @@ def test_keep_records_the_stored_values_and_silences_the_report(home, capsys):
 
 
 def test_adopting_an_acked_key_drops_its_ack(home):
-    """The ack recorded a value that is no longer stored, so keeping it would
+    """The ack recorded a value that is not the stored one, so keeping it would
     silence a genuinely deliberate choice made later."""
     _run(_args(keys=["session.autocompact_pct"], keep=True), home)
     _run(_args(keys=["session.autocompact_pct"], adopt=True), home)

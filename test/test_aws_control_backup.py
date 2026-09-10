@@ -50,7 +50,7 @@ class TestAuthorizeUpload:
     def test_upload_refused_when_profile_now_points_at_another_account(self):
         # The live STS check is FIRST and is what makes a profile repointed
         # mid-build refuse: the recorded account and the account the profile
-        # resolves to today no longer agree, so the bytes must not leave.
+        # resolves to today do not agree, so the bytes must not leave.
         with mock.patch(
             "kiro_crew.deploy.engine._checked",
             return_value=json.dumps({"Account": "999988887777"}),

@@ -274,7 +274,7 @@ async def test_narrowed_established_flat_cancel_tagged_narrowed():
 
 @pytest.mark.asyncio
 async def test_absent_shell_child_cancel_tagged_narrowed():
-    """#4840: a shell tool with no process to its name gets the ordinary silence
+    """A shell tool with no process to its name gets the ordinary silence
     window, not build-scale forbearance.
 
     Configured so ONLY the narrowing can act: the suspect window, the hard cap
@@ -301,7 +301,7 @@ async def test_absent_shell_child_cancel_tagged_narrowed():
 
 @pytest.mark.asyncio
 async def test_untagged_shell_evidence_keeps_the_full_window():
-    """The other side of #4840's fork: "no matching shell child" without the
+    """The untagged case: "no matching shell child" without the
     absence tag means the oracle could not attest that nothing is running (a
     quiet build whose cmdline the heuristic missed), so the full suspect window
     still holds and nothing is cancelled at the narrowed one."""

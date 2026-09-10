@@ -214,7 +214,7 @@ def unsupported_backend(monkeypatch):
     """Pin the process to a driverless platform and install its backend.
 
     LINUX is the driverless platform: Windows has a read-path driver, so pointing
-    this fixture there would assert a refusal the driver no longer gives. The
+    this fixture there would assert a refusal the driver does not give. The
     Windows read path and its per-verb input refusals are covered in
     ``test_computer_use_windows_driver.py`` instead.
     """
@@ -332,7 +332,7 @@ class TestRefusalsOnUnsupportedPlatform:
     async def test_an_empty_session_key_is_refused_for_the_PLATFORM_reason(
         self, unsupported_backend, enabled_keystone
     ):
-        """An unresolved identity is no longer a refusal of its own.
+        """An unresolved identity is not a refusal of its own.
 
         The unattended-surface rule is gone, so a call with no session key reaches
         the driver and is refused for the reason that actually applies here — the

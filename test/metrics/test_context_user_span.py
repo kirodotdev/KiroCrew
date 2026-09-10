@@ -147,7 +147,7 @@ class TestReportedSpanIsTheUserText:
 
 class TestRewritingHookSpan:
     """A transform hook replaces the whole turn, so the caller's bounds describe
-    text that no longer exists. The hook's output IS the user's turn, so it is
+    text that is gone. The hook's output IS the user's turn, so it is
     attributed in full rather than mis-carved at stale offsets."""
 
     @staticmethod

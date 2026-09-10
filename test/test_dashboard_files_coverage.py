@@ -607,9 +607,9 @@ class TestFileWatch:
 
     @pytest.mark.asyncio
     async def test_symlink_swapped_after_validation_aborts_stream(self, tmp_path, mock_sel):
-        """The watcher re-resolves the path on every change and bails if the
-        realpath moved, so a post-validation symlink swap cannot be used to
-        stream a different file's contents."""
+        """The watcher re-resolves the path on every change and bails when the
+        realpath moves, so a post-validation symlink swap cannot stream a
+        different file's contents."""
         f = tmp_path / "swapped.md"
         f.write_text("content\n", encoding="utf-8", newline="\n")
         target = str(f)

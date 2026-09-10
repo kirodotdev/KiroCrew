@@ -155,10 +155,10 @@ class TestGrantIsOnTheKeystoneFloor:
 
         On Windows the POSIX mode bits are a no-op, so the owner-only DACL from
         ``restrict_to_owner`` is the only protection; applying it after the
-        rename left the record readable under the inherited ACL for the write
-        window (issue #5285). Asserted by measuring the file's SIZE at lockdown
-        time — zero means no payload byte existed yet. A post-write stat passes
-        on the buggy ordering too, so it would not be a regression test.
+        rename would leave the record readable under the inherited ACL for the
+        write window. Asserted by measuring the file's SIZE at lockdown time —
+        zero means no payload byte existed yet. A post-write stat passes on the
+        wrong ordering too, so it cannot distinguish the two.
         """
         from kiro_crew import platform_compat
 
@@ -180,7 +180,7 @@ class TestGrantIsOnTheKeystoneFloor:
 
     def test_sidecar_preservation_lockdown_precedes_content(self, home, monkeypatch):
         """The corrupt-store sidecar carries whatever the old store held, so its
-        write gets the same lockdown-before-content ordering (issue #5285)."""
+        write gets the same lockdown-before-content ordering."""
         from kiro_crew import platform_compat
         from kiro_crew.config.loader import aws_consent_path
 
@@ -1213,7 +1213,7 @@ class TestIdentityProbeInputs:
     def test_cli_probe_resolves_under_minimal_path(self, home, monkeypatch, tmp_path):
         """A GUI-launched gateway's minimal PATH must not fail the consent gate
         closed: the probe routes through the deploy engine's well-known-dirs
-        resolver (#4770), agreeing with the resolved spawn below it."""
+        resolver, agreeing with the resolved spawn below it."""
         import os as _os
 
         if _os.name == "nt":

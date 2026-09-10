@@ -321,8 +321,8 @@ class TestKnowledgeStore:
         containing that substring literally. Deciding membership by raw text
         would skip the row: the column would stay at its 'pending' default and
         the watcher, which now reads the column, would walk a folder the user had
-        paused. `import_bundle` used to store a bundle's properties verbatim, so
-        such a row can exist.
+        paused. `import_bundle` can store a bundle's properties verbatim, so such
+        a row can exist.
         """
         escaped = str(uuid4())
         now = datetime.now().isoformat()
@@ -347,7 +347,7 @@ class TestKnowledgeStore:
         finally:
             reopened.close()
 
-    # ---- import_bundle JSON-column well-formedness (issue #5559) -----------
+    # ---- import_bundle JSON-column well-formedness ------------------------
     # The invariant "sources.properties / entities.aliases is JSON text every
     # reader json.loads()s back" is enforced at the writer, so every store
     # caller is covered — not only the dashboard handler.
@@ -2839,8 +2839,8 @@ class TestRebuildEmbeddingsJob:
     async def test_rebuild_heartbeats_updated_at_per_item_not_per_batch(self, store):
         """A slow item must not let the single-flight claimer judge the live job
         abandoned mid-batch: updated_at is committed AFTER EACH item, so it
-        advances within a batch rather than only at end-of-batch. Regression for
-        the concurrent-rebuild duplication the per-batch-only heartbeat allowed."""
+        advances within a batch rather than only at end-of-batch. A heartbeat that
+        only lands at end-of-batch lets a second claimer duplicate the rebuild."""
         from kiro_crew.knowledge.ingestion import rebuild_embeddings
 
         # Capture the job row's COMMITTED updated_at as each item is embedded (the
@@ -3345,7 +3345,7 @@ class TestEntityExtractorNonceDelimiters:
 
 
 # ---------------------------------------------------------------------------
-# SyncScheduler.sync_all -- errored sources must be quiesced (issue #3946)
+# SyncScheduler.sync_all -- errored sources must be quiesced
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
@@ -3353,11 +3353,10 @@ class TestSyncAllSkipsErroredSources:
     """sync_all must skip an errored source, whichever writer marked it.
 
     KnowledgeIngestion and SyncScheduler both mark failure in the sync_status
-    COLUMN, which is the only store sync_all reads. Rows errored before the
-    column existed carry the state in their properties JSON, which cannot be
-    ordered against the column and so is never promoted onto it; such a row is
-    polled until an attempt of its own fails, and that failure writes the column
-    (issue #3946).
+    COLUMN, which is the only store sync_all reads. A row that carries its
+    errored state only in its properties JSON cannot be ordered against the
+    column and so is never promoted onto it; such a row is polled until an
+    attempt of its own fails, and that failure writes the column.
     """
 
     def _scheduler(self, store):
@@ -3439,7 +3438,7 @@ class TestSyncAllSkipsErroredSources:
 
 
 class TestCjkKeywordRecall:
-    """CJK recall on the FTS keyword leg (issue #3691).
+    """CJK recall on the FTS keyword leg.
 
     Vocabulary is shared with ``TestCjkSearch`` in test_history.py so the two
     search surfaces are read against the same examples. The query is the
@@ -3843,7 +3842,7 @@ class TestCjkKeywordRecall:
         store = KnowledgeStore(path)
         try:
             assert store._fts_terms_segmented() is False
-            # The update that used to raise. Both halves of the FTS sync run here.
+            # An update against a legacy index. Both halves of the FTS sync run here.
             store.update_item(item_id, content="\u5b8c\u5168\u65e0\u5173\u7684\u8bdd\u9898")
             store.db.execute("INSERT INTO items_fts (items_fts) VALUES ('integrity-check')")
             # A delete on the same legacy index must also survive.
@@ -3869,7 +3868,7 @@ class TestCjkKeywordRecall:
 
         store = KnowledgeStore(path)
         try:
-            store.delete_item(item_id)  # used to raise DatabaseError
+            store.delete_item(item_id)  # must not raise DatabaseError
             store.db.execute("INSERT INTO items_fts (items_fts) VALUES ('integrity-check')")
             assert store.get_item(item_id) is None
         finally:

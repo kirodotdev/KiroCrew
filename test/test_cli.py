@@ -254,7 +254,7 @@ class TestDoctor:
         both arms byte-for-byte — including the note mark's trailing pad
         space, which keeps the report columns aligned — AND that the twin
         report lines can never disagree, so a one-arm edit to either site
-        fails here (issue #5096)."""
+        fails here."""
         import kiro_crew.cli_doctor as _doc
 
         agent_file = tmp_path / "kirocrew.json"
@@ -1979,10 +1979,10 @@ class TestIsKirocrewProcess:
             assert _is_kirocrew_process(1234) is True
 
     def test_returns_true_for_module_gateway_form(self):
-        """Regression: the real service launch form
-        ``python -m kiro_crew gateway`` must be recognized. Previously the
-        matcher only accepted the dotted ``kiro_crew.gateway`` form, so
-        ``kirocrew stop`` no-op'd on service installs.
+        """The real service launch form
+        ``python -m kiro_crew gateway`` must be recognized. The
+        matcher must accept the dotted ``kiro_crew.gateway`` form too, or
+        ``kirocrew stop`` no-op's on service installs.
 
         Patched through the cross-platform ``process_command_line`` seam (the
         Windows port routes _is_kirocrew_process through platform_compat rather
@@ -3894,7 +3894,7 @@ class TestDoctorMcpTools:
 
 
 class TestDoctorMcpSpecGate:
-    """Doctor's MCP checks consult the same ``spec_gate`` emission does (#6548).
+    """Doctor's MCP checks consult the same ``spec_gate`` emission does.
 
     Spec emission (``agent.build_agent_config`` / ``_refresh_dynamic_fields``)
     deliberately omits — and retracts — the ``mcpServers`` entry of a managed
@@ -3951,7 +3951,7 @@ class TestDoctorMcpSpecGate:
     def test_gate_closed_absent_entry_is_informational_not_an_issue(self, tmp_path, capsys):
         """Gate closed + entry absent = the healthy state on this host.
 
-        The exact #6548 report: no hard error, no ``issues`` entry (so doctor
+        The reported state: no hard error, no ``issues`` entry (so doctor
         exits 0), no auto-mount of the ref, and the line says WHY the server is
         absent rather than looking like a silent skip.
         """
@@ -4365,7 +4365,7 @@ class TestDoctorStt:
         assert "ffmpeg:      ❌ not found" in out
         # The wiring assertion: doctor must print the module constant the
         # resolvable-hint tests hold against the resolver's candidate list, so
-        # nobody can inline a literal back into the _os_fix_hint call (#8897).
+        # nobody can inline a literal back into the _os_fix_hint call.
         assert _doc._FFMPEG_LINUX_HINT in out
         assert "reinstall Kiro Crew" not in out
         assert "❌ Fix these issues: " in out
@@ -4793,10 +4793,10 @@ class TestSetupChannelGating:
 class TestSpawnCliAuth:
     """``kirocrew spawn`` attaches X-Internal-Secret on every gateway call.
 
-    Regression coverage for the CLI helpers in ``cli_commands.py``
-    used to open ``/api/spawn`` without the per-session IPC secret, which
-    caused 403 ``"gateway not running"`` errors when ``dashboard.url`` was
-    set to a non-loopback host (token_auth_middleware then required either
+    The CLI helpers in ``cli_commands.py`` attach the per-session IPC secret
+    on every ``/api/spawn`` call. Without it the call gets a 403, which
+    reads ``"gateway not running"`` when ``dashboard.url`` is
+    a non-loopback host (token_auth_middleware then requires either
     a session cookie or the secret header on every request).
     """
 
@@ -5009,7 +5009,7 @@ class TestMcpBuiltinDispatch:
         # Patch the registry the CLI reads when building subparsers and dispatching.
         monkeypatch.setattr(cli_mod, "_BUILTIN_NAMES", [builtin_name])
         # The verb is only registered (and dispatched) when the builtin's
-        # mcp_server module resolves (#5901) — make the synthetic one resolve.
+        # mcp_server module resolves — make the synthetic one resolve.
         monkeypatch.setattr(cli_mod, "_builtin_mcp_server_available", lambda _name: True)
         mock_module = MagicMock()
 
@@ -5464,8 +5464,8 @@ class TestWaitGatewayReady:
     def test_child_that_exits_during_the_last_probe_is_reported_as_died(self):
         """Exiting on the final probe must not be reported as "still running".
 
-        Otherwise the operator is sent looking for a live process that no longer
-        exists, with no exit status to explain it.
+        Otherwise the operator is sent looking for a process that is already gone,
+        with no exit status to explain it.
         """
         import types
 
@@ -5837,7 +5837,7 @@ class TestInstallPidfdChildWatcher:
         from kiro_crew.cli import _install_child_watcher
 
         monkeypatch.setattr("kiro_crew.cli.sys.platform", "linux")
-        # Regression for the 2026-07-10 gateway startup kill: a uv-managed /
+        # The gateway startup kill scenario: a uv-managed /
         # Clang-built CPython 3.12 whose build omits the os.pidfd_open wrapper
         # (present on the system python, absent in the venv interpreter). The
         # probe raises AttributeError, not OSError -- the old code caught it and
@@ -6074,7 +6074,7 @@ class TestTokenCommand:
     # `_token`'s stdout is regex-parsed by the remote-mint path
     # (kiro_crew.instances.token_mint.mint_remote_token) over SSH. Error prose on
     # stdout both breaks the Unix convention and hides the reason from a caller
-    # that captures stderr — which is how a failed remote mint used to surface as
+    # that captures stderr — which is how a failed remote mint surfaces as
     # a bare "<no stderr>".
 
     def _stub_token_env(self, tmp_path, monkeypatch, *, secret: bool = True) -> None:
@@ -6892,8 +6892,8 @@ class TestChatPermissionRequest:
 
     @pytest.mark.asyncio
     async def test_the_prompt_and_the_gate_share_one_set_of_path_spellings(self, monkeypatch):
-        """A ``filePath`` target used to be DISPLAYED as though it had been vetted
-        while the keystone never read that key. Both sides now resolve through
+        """A ``filePath`` target must not be DISPLAYED as though vetted while the
+        keystone never reads that key. Both sides resolve through
         ``hooks.target_paths``, so the parity is structural rather than asserted in
         a comment -- and a sensitive value under any spelling is refused by the
         gate before a human is ever asked.

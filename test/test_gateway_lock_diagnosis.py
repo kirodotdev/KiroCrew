@@ -156,8 +156,8 @@ def test_pids_holding_file_finds_the_real_holder(tmp_path):
 # --- refusal message rendering -------------------------------------------
 #
 # These drive the diagnosis directly (the lock is forced to appear taken) so the
-# wording is pinned without needing a real second holder. The message is the
-# whole point of the change: the old one named a pid that no longer existed.
+# wording is pinned without needing a real second holder. The message must name a
+# pid that actually holds the lock, never a stale one read from the pid file.
 
 
 @pytest.fixture

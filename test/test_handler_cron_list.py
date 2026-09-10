@@ -88,7 +88,7 @@ class TestHandleCronListNextRun:
         # `security.redact` is the one pass now (it runs the exfiltration and
         # credential scanners internally and returns a plain str), so the assertion
         # is that the message went THROUGH it and the secret is gone — not the order
-        # of two inner calls the module no longer makes.
+        # of two inner calls the module does not make.
         with patch("kiro_crew.messaging.commands.compute_next_run_ts", return_value=None), \
              patch("kiro_crew.messaging.commands.redact",
                    return_value="[REDACTED]") as mock_redact:

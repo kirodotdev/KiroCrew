@@ -237,7 +237,7 @@ class TestEagerSpawn:
         state.sessions.remove = AsyncMock()
 
         # Simulate deletion landing while get_or_create is in flight: after the
-        # handshake completes, get_slot no longer returns this slot object.
+        # handshake completes, get_slot does not return this slot object.
         async def _create_then_delete(*a, **kw):
             state.get_slot = MagicMock(return_value=None)
             return (MagicMock(), True, False)
@@ -1279,7 +1279,7 @@ class TestSpecResumeFallbackMapGuard:
     async def test_provider_switch_fallback_never_persists_empty_sid(
         self, cfg, tmp_path, monkeypatch
     ):
-        """GPT round-2 blocker: the switch branch mutates ``resume_sid`` to
+        """The switch branch mutates ``resume_sid`` to
         None, so a classification keyed on ``resume_sid`` misreads the
         provider-switch fallback as a normal fresh session and persists the
         EMPTY speculative sid — the next real open would resume that empty

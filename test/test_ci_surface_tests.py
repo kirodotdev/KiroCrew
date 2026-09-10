@@ -68,7 +68,7 @@ def test_script_exists_and_is_executable() -> None:
 
 # Known cross-surface parity guards. Each of these lives in one suite but
 # asserts against the OTHER surface's source, so each MUST stay in the must-run
-# set. Audited 2026-08-06; extend this list when a new guard is added.
+# set. Extend this list when a new guard is added.
 _BACKEND_GUARDS = (
     "test/test_redaction_mirror_parity.py",
     "test/test_theme_css_security.py",

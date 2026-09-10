@@ -152,7 +152,7 @@ def test_aws_bin_prefers_path_then_falls_back_to_bare_name(monkeypatch):
     assert engine._aws(["s3", "ls"], "")[0] == "aws"
 
 
-# --- #5392: the same minimal-PATH gap for session-manager-plugin -------------
+# --- the same minimal-PATH gap for session-manager-plugin -------------
 
 
 @pytest.mark.skipif(
@@ -164,7 +164,7 @@ def test_aws_bin_prefers_path_then_falls_back_to_bare_name(monkeypatch):
 def test_aws_tool_bin_resolves_session_manager_plugin_from_extra_dirs(monkeypatch, tmp_path):
     """The plugin installs into the SAME dirs as the CLI, so the same resolver
     must find it: AWS's macOS .pkg symlinks it into /usr/local/bin, which a
-    Finder-launched gateway's minimal PATH does not contain (#5392)."""
+    Finder-launched gateway's minimal PATH does not contain."""
     fake_plugin = tmp_path / "session-manager-plugin"
     fake_plugin.write_text("#!/bin/sh\n")
     fake_plugin.chmod(0o755)
@@ -219,7 +219,7 @@ def test_aws_spawn_env_appends_install_dirs_after_inherited_path(monkeypatch, tm
     """APPEND, never prepend: the inherited PATH keeps first claim on every name.
 
     This is the whole trust argument for widening a credential-bearing child's
-    PATH — it can only make a previously-unresolvable lookup succeed, never
+    PATH — it can only make an unresolvable lookup succeed, never
     re-point one the child already resolved.
 
     Dirs are tmp_path stand-ins for the real ``/opt/homebrew/bin`` and

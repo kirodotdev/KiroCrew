@@ -110,7 +110,7 @@ class TestRunChatDefaultModel:
         ``slot.model`` is persisted and re-sent as a ``set_model`` override on
         every resume, so writing the resolved default there would turn an
         inheriting slot into a permanent pin: a later change to ``agent.model``
-        would no longer reach it. An empty value must survive the turn.
+        would not reach it. An empty value must survive the turn.
         """
         _runner_config(_config(tmp_path))
         state, _client = _turn_state(tmp_path)

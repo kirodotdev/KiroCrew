@@ -1,5 +1,5 @@
 """Snapshot tests pinning the consolidated frontmatter parser to the
-grammars its call sites historically accepted.
+grammars its call sites accept.
 
 The expected values below were captured by running the pre-consolidation
 parsers (``SkillsLoader._parse_frontmatter``, ``onboarding_import._frontmatter``,
@@ -166,8 +166,7 @@ ONBOARDING_EXPECTED: dict[str, tuple[dict[str, str], str]] = {
     # exact "---" line, so a "---junk" closer means no frontmatter here —
     # while the skills loader parses {"name": "x"} from the same bytes. The
     # activation gate is immune (see TestOnboardingImportDialect::
-    # test_closer_divergence_cannot_bypass_the_activation_gate); issue #3231
-    # documents the history.
+    # test_closer_divergence_cannot_bypass_the_activation_gate).
     "closer_trailing_junk": ({}, "---\nname: x\n---junk\nbody\n"),
     "colon_in_value": ({"url": "http://example.com:8080"}, ""),
     "crlf": ({"name": "x"}, "body"),
@@ -293,8 +292,8 @@ class TestOnboardingImportDialect:
 
     def test_closer_divergence_cannot_bypass_the_activation_gate(self) -> None:
         # The map's exact-"---" closer misses a "---junk"-closed block that
-        # the loader parses (see the KNOWN DIVERGENCE pin above; issue #3231
-        # documents the history) — but the activation decision mirrors the
+        # the loader parses (see the KNOWN DIVERGENCE pin above) — but the
+        # activation decision mirrors the
         # loader's region rules, so the divergence cannot re-admit an
         # auto-activating skill.
         text = "---\nalways: true\n---junk\nbody"
@@ -348,12 +347,12 @@ class TestTheLiteralFoldTheSkillEditorSimulates:
     would otherwise leave both this file and the TypeScript tests green (those expectations
     are hardcoded) while the two readers drifted apart, reopening exactly the silent
     corruption the editor's refusal was written to prevent. If any assertion below fails,
-    ``backendFoldsLiteral`` has to change with it. See #1825 and #7097.
+    ``backendFoldsLiteral`` has to change with it.
 
-    What CHANGED in #7097: the fold used to end in ``.strip()``, which ate a leading
-    newline and every trailing one. No YAML chomping mode does either, so agreement with a
-    parser depended on a block's CONTENT rather than on its header. It no longer does --
-    the cases below are the ones that used to diverge, and they now agree, which is why
+    The fold does not end in ``.strip()``: stripping would eat a leading
+    newline and every trailing one, which no YAML chomping mode does, so
+    agreement with a parser depends on the header, not a block's CONTENT --
+    the cases below all agree, which is why
     :class:`TestBlockScalarsAgreeWithARealYamlParser` can assert agreement wholesale.
     """
 
@@ -411,8 +410,8 @@ class TestTheLiteralFoldTheSkillEditorSimulates:
 class TestTheBlockScalarHeaderGrammar:
     """The full YAML header grammar is resolved, on the read path as well as the write one.
 
-    Before #7097 the read path matched only the six BARE indicators while the write path
-    already matched the explicit-indentation forms. A ``description: |2-`` was therefore
+    Without the full grammar the read path matches only the six BARE indicators while
+    the write path matches the explicit-indentation forms. A ``description: |2-`` is
     stored as the literal text ``"|2-"`` -- the header mistaken for the value -- while a
     rewrite of an unrelated line above it correctly treated the indented tail as that
     field's content. One matcher now serves both.
@@ -437,7 +436,7 @@ class TestTheBlockScalarHeaderGrammar:
 
     def test_a_comment_may_share_the_header_line(self) -> None:
         # YAML allows a comment on the header line; it belongs to the header, not to the
-        # value. This reader used to store `"|- # note"` as the whole value.
+        # value. Storing `"|- # note"` as the whole value is the bug this pins.
         text = "---\nname: s\ndescription: |- # note\n  body text\n---\n"
         assert parse_frontmatter(text, SKILL_LOADER)["description"] == "body text"
 
@@ -768,9 +767,9 @@ class TestBlockScalarsAgreeWithARealYamlParser:
 
 
 class TestTheRepoSkillFileCorpus:
-    """Read every repo-tracked SKILL.md both ways. The corpus pin #7097 asked for.
+    """Read every repo-tracked SKILL.md both ways -- the full-corpus pin.
 
-    The module docstring's cross-language warning used to end "nothing in the build
+    The module docstring's cross-language warning ends "nothing in the build
     enforces it". This is the enforcement: a change to the reader that moves what a
     SHIPPED skill file means fails here, naming the file.
     """
@@ -782,7 +781,7 @@ class TestTheRepoSkillFileCorpus:
     #
     # This set is asserted EXACTLY, in both directions. A new entry means someone shipped
     # a skill that a real YAML parse cannot read -- fine today, but it is the evidence
-    # that decides whether the parser swap in #7097 is ever affordable, so it must be
+    # that decides whether the parser swap is ever affordable, so it must be
     # visible rather than absorbed. A removed entry means the file was quoted and the set
     # needs updating with it.
     NOT_VALID_YAML = frozenset(
@@ -857,7 +856,7 @@ class TestChompingCannotFlipAnActivationFlag:
     """Real chomping must not silently change whether a skill is always-on.
 
     ``always`` and ``pinned`` are decided by an EXACT string comparison against
-    ``"true"`` (``skills.py``, ``skill_budget.py``). Before #7097 the fold ended in
+    ``"true"`` (``skills.py``, ``skill_budget.py``). A fold ending in
     ``.strip()``, so ``always: |+`` followed by trailing blank lines read ``"true"`` and
     the skill was always-on. Honouring keep-chomping makes that same field read
     ``"true\\n\\n"``, which is not equal to ``"true"`` -- so without normalising at the
@@ -1023,7 +1022,7 @@ class TestTheActivationGateCoversEverythingTheLoaderResolves:
     activating and assumes the worst. That is fail-closed only while its detected set is
     a SUPERSET of what the loader can resolve.
 
-    It used to hold its own list of six bare indicators. Widening the loader to the full
+    If it held its own list of six bare indicators, widening the loader to the full
     header grammar without it inverted the gate: ``always: |2-`` over a ``true``
     continuation was NOT detected, was installed verbatim, and was then read by
     ``SkillsLoader`` as ``always == "true"`` -- external content self-activating into

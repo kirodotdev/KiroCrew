@@ -113,12 +113,12 @@ def test_an_already_open_component_cannot_be_repointed(tmp_path: Path) -> None:
 def test_the_unpinned_path_refuses_a_linked_ancestor_instead_of_following_it(
     tmp_path: Path, monkeypatch
 ) -> None:
-    """The fallback no longer trades ancestor protection for portability.
+    """The fallback does not trade ancestor protection for portability.
 
-    This test used to assert the OPPOSITE -- that the unpinned path follows a swapped
-    parent -- and said so as an honest statement of the platform gap. Round 18 closed
-    that gap the only way a platform without `dir_fd` can: where the write cannot be
-    pinned to an inode, a reparse point in the ancestor chain is refused outright.
+    A platform without `dir_fd` cannot pin the write to an inode, so where the
+    write cannot be pinned, a reparse point in the ancestor chain is refused
+    outright -- the unpinned path refuses a swapped parent rather than following
+    it.
 
     What is NOT claimed is parity. The pinned path holds a descriptor, so a component
     swapped after the check cannot be reached at all; here the scan and the write are

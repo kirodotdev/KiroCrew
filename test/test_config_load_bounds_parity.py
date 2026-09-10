@@ -2,7 +2,7 @@
 
 The dashboard API rejects an out-of-range value at WRITE time. A hand-edited
 `config.json` never reaches that API, so whatever bounds the load path fails to apply
-are simply not enforced -- the asymmetry #4688 and #4734 closed for the
+are simply not enforced -- the load/write asymmetry is closed for the
 security-relevant knobs, still open for eleven others.
 
 The primary test here is a RATCHET over `_EDITABLE_CONFIG` rather than eleven

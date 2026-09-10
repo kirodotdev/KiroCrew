@@ -84,7 +84,7 @@ class TestFixHint:
 
 
 class TestFfmpegLinuxHintResolvable:
-    """The Linux missing-ffmpeg hint names only locations the resolver searches (#8897).
+    """The Linux missing-ffmpeg hint names only locations the resolver searches.
 
     An earlier hint told the user to drop a static build into ``~/.local/bin``,
     which ``transcribe._find_ffmpeg`` deliberately never searches (its candidate
@@ -1309,7 +1309,7 @@ class TestCliInstallerResidue:
 
 
 class TestEffectiveModelSection:
-    """`kirocrew doctor`'s Model section (#2559).
+    """`kirocrew doctor`'s Model section.
 
     The four-tier model precedence is not visible from any single file, so a
     stale spec pin that outlived the setting which created it is otherwise only
@@ -1466,7 +1466,7 @@ class TestEffectiveModelSection:
         """The default alias may bind a kiro agent other than the built-in one,
         and the resolver consults THAT spec's pin above the global (tier 2).
         Reading kirocrew.json in both cases attributed the pin to the wrong file
-        and printed a reset command for the wrong agent (#4911 review)."""
+        and printed a reset command for the wrong agent."""
         self._install_spec(None)
         agents_dir = self._agents_dir()
         (agents_dir / "custom-agent.json").write_text(
@@ -1584,8 +1584,8 @@ class TestEffectiveModelSection:
         """The doctor read goes through agent_discovery's hardened reader, which
         refuses a symlink whose RESOLVED target is sensitive (the documented
         `evil.json -> ~/.aws/credentials` case) and caps the read size. Routing
-        through that one reader instead of hand-rolling the checks is the point
-        (#4911 review); a benign link is followed exactly as the resolver follows
+        through that one reader instead of hand-rolling the checks is the point.
+        A benign link is followed exactly as the resolver follows
         it, so the report cannot disagree with what will actually run."""
         from kiro_crew import agent_discovery
         from kiro_crew.agent import AGENT_FILENAME
@@ -1626,8 +1626,7 @@ class TestEffectiveModelSection:
     def test_an_absolute_kiro_agent_binding_cannot_escape_the_agent_dir(self, capsys) -> None:
         """`kiro_agent` is free text in config.json and reaches a path join, and
         pathlib DISCARDS the left side when the right is absolute -- so an
-        unvalidated binding would turn a spec lookup into an arbitrary read
-        (#4911 review)."""
+        unvalidated binding would turn a spec lookup into an arbitrary read."""
         self._install_spec(None)
         secret = self._tmp / "protected.json"
         secret.write_text(json.dumps({"model": "leaked-value"}), encoding="utf-8")
@@ -1656,7 +1655,7 @@ class TestEffectiveModelSection:
 
     def test_a_control_bearing_project_filename_is_escaped(self, monkeypatch, capsys) -> None:
         """A cloned repository can TRACK a filename containing control bytes, so
-        the path itself is untrusted input on this line (#4911 review).
+        the path itself is untrusted input on this line.
 
         The hostile path is INJECTED rather than created: control bytes are
         illegal in a Windows filename, so building it on disk would make this
@@ -1671,7 +1670,7 @@ class TestEffectiveModelSection:
         # Only the injected path is faked; the user-level spec still goes through
         # the real reader so the report's own self-check is not disturbed. The
         # stub forwards **kw because the reader takes keyword-only SEL
-        # attribution labels (#6722) that this test does not care about.
+        # attribution labels that this test does not care about.
         monkeypatch.setattr(
             cli_doctor,
             "_read_agent_spec",
@@ -1692,7 +1691,7 @@ class TestEffectiveModelSection:
         """The config loader deliberately KEEPS a type-mismatched value ("validated
         by its consumer"), so a hand-edited non-string reaches this section intact
         and a bare `re.match` would raise TypeError -- aborting the one command a
-        user runs BECAUSE their config is broken (#4911 review)."""
+        user runs BECAUSE their config is broken."""
         self._install_spec("claude-opus-4.8")
         cfg = self._bind_custom_agent(self._cfg("auto"), "placeholder")
         cfg.agents["default"].kiro_agent = 12345  # type: ignore[assignment]

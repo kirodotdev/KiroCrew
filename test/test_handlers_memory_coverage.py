@@ -530,7 +530,7 @@ class TestRedactAndStoreResolution:
 
 
 # ---------------------------------------------------------------------------
-# _get_vector_store_async (#5221) — the standalone fallback's ``init()`` must
+# _get_vector_store_async — the standalone fallback's ``init()`` must
 # never run on the event loop (VectorMemoryStore's caller contract: the
 # Windows path shells out to icacls and would freeze the loop for seconds).
 # ---------------------------------------------------------------------------
@@ -615,7 +615,7 @@ class TestGetVectorStoreAsync:
     @pytest.mark.asyncio
     async def test_concurrent_first_calls_init_once(self, monkeypatch) -> None:
         """Single-flight: the lock restores the serialization the sync call
-        sites used to get for free from the event loop."""
+        sites get for free from the event loop."""
         import kiro_crew.vector_memory as vm_mod
 
         init_calls: list[threading.Thread] = []
@@ -1094,7 +1094,7 @@ class TestContextPreviewAndObservability:
 
         The preview is what reaches the full-read branch, so counters resolved
         before it would under-report by exactly the scan the caller is probing
-        for (#8971). Own-suite coverage of the real numbers lives in
+        for. Own-suite coverage of the real numbers lives in
         ``test_memory_read_counters.py``; here only the order is pinned.
         """
         calls: list[str] = []
@@ -1121,7 +1121,7 @@ class TestPromote:
     async def test_malformed_body_is_400_not_silent_defaults(self) -> None:
         # A body that is PRESENT but unparseable is a client mistake, not an
         # absent body: answering 200-with-defaults ran a different promotion
-        # than the caller asked for and told them nothing (issue #5587).
+        # than the caller asked for and told them nothing.
         store = _store(promote_episodic_patterns=MagicMock(return_value=2))
         state = _make_state(vector_store=store)
         req = _make_request(state, method="POST", json_body=_BadJSON())
@@ -1273,7 +1273,7 @@ class TestEmbeddingModelEndpoint:
             resp = await mem_mod.api_memory_embedding_model(req)
             assert resp.status == 400
             # The shared guard distinguishes "unparseable" from "parsed, wrong
-            # shape"; this handler used to answer invalid_json for both.
+            # shape"; this handler must not answer invalid_json for both.
             assert _body(resp)["code"] == "body_not_object"
 
     @pytest.mark.asyncio
@@ -1351,7 +1351,7 @@ class TestEmbeddingModelEndpoint:
 
     @pytest.mark.asyncio
     async def test_apply_armed_during_store_await_is_409_and_arms_nothing(self) -> None:
-        """The awaited store acquisition can yield to the loop (#5221), so a
+        """The awaited store acquisition can yield to the loop, so a
         concurrent apply may arm between the single-flight gate and
         ``begin_apply()`` — the post-await re-check must refuse it."""
         state = _make_state()
@@ -1544,7 +1544,7 @@ class TestEnsurePipEdgeCases:
         proc.kill.assert_called_once()
         # The critical pin: the reap drains pipes via a SECOND communicate();
         # a bare wait() on a killed child blocked writing into a full stderr
-        # pipe would hang the handler forever (#5989).
+        # pipe would hang the handler forever.
         assert proc.communicate.call_count == 2
         proc.wait.assert_not_awaited()
 
@@ -1912,8 +1912,7 @@ class TestConfigWritesRunOffTheEventLoop:
     Reading ``config.json``, parsing it, and writing it back through
     ``write_config_atomically`` (a tmp-file write plus a rename, which can
     fsync) is all synchronous file I/O. Inline it stalls every other session for
-    its duration -- the class the repo has been closing site by site (#4118,
-    #3803, #4550).
+    its duration -- the class the repo has been closing site by site.
 
     The load-bearing property is not merely "off the loop" but **the whole
     transaction on ONE worker**. Offloading only the read would put a suspension
@@ -2189,7 +2188,7 @@ class TestNonObjectBodiesAcrossConvertedHandlers:
     ``[]`` / ``"s"`` / ``5`` / ``true`` / ``null`` are all VALID JSON, so
     ``request.json()`` returns them and the ``.get()`` each handler performs
     next raised ``AttributeError`` from OUTSIDE the parse ``try`` -- a 500 for
-    what is really malformed client input (issue #5587). Enumerated rather than
+    what is really malformed client input. Enumerated rather than
     written one test per handler so a handler that loses the guard fails by
     construction; the agents.py half of the same invariant lives in
     ``test_json_object_body_guard.py``.

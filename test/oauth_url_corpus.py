@@ -170,8 +170,7 @@ LEGIT_OAUTH_URLS: list[tuple[str, str]] = [
         "&state=" + ("Kp7mQ2xR" * 12),  # 96-char opaque state
     ),
     # Miro remote MCP server — authorization endpoint verified via RFC 8414
-    # metadata by the reporter of issue #7578; the fail-closed banner blocked
-    # every attempt to connect it before the endpoint was allowlisted.
+    # metadata.
     (
         "miro-mcp",
         "https://mcp.miro.com/authorize"

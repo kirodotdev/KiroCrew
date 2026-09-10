@@ -157,7 +157,7 @@ class TestInstallAgent:
         WHOLE agent when it does -- so one stray ``cwd`` on a managed server would
         take every Kiro Crew tool down with it. Preserving the user's
         timeout/env/disabled is what put unknown keys in reach on this path (the
-        build used to rebuild the entry from scratch), so the allow-list ships
+        build would otherwise rebuild the entry from scratch), so the allow-list ships
         with the preservation rather than after it.
         """
         cfg_dir = _bundled_defaults(tmp_path)
@@ -752,8 +752,8 @@ class TestInstallAgent:
     def test_existing_config_refreshes_security_fields(self, tmp_path: Path):
         """hooks are always overwritten from bundled.
 
-        ``deniedCommands`` are NO LONGER injected into the agent spec (command
-        denial moved to KiroCrew's own hooks.py PreToolUse gate). A stale
+        ``deniedCommands`` are NOT injected into the agent spec (command
+        denial lives in Kiro Crew's own hooks.py PreToolUse gate). A stale
         ``deniedCommands`` left by an older build is STRIPPED on refresh so
         kiro-cli stops enforcing it ahead of the hook gate — otherwise an
         upgraded install's Settings > Security opt-out would silently stay
@@ -1253,8 +1253,8 @@ class TestResolveKirocrewBin:
         A prefix-style runtime can put the package under
         ``<root>/lib/python3.12/site-packages/`` and the console script under
         the interpreter prefix ``<root>/python3.12/`` — sibling trees, so the
-        parent walk cannot reach the script. Resolution used to fall through to
-        PATH and pick up whatever ``kirocrew`` an unrelated earlier install had
+        parent walk cannot reach the script. Resolution must not fall through to
+        PATH and pick up whatever ``kirocrew`` an unrelated earlier install has
         left there, then cache it as the command for the built-in MCP servers.
 
         The launcher is created through ``_kirocrew_bin_subpath`` rather than at
@@ -1413,7 +1413,7 @@ class TestResolveKirocrewBin:
 
     def test_skips_stale_shutil_which_result(self, tmp_path: Path, no_interpreter_scripts):
         """Falls through to bare 'kirocrew' when shutil.which returns a
-        path that no longer exists (e.g. deleted after Toolbox migration).
+        path that does not exist (e.g. deleted after Toolbox migration).
         Regression test for scenario where
         ~/.local/bin/kirocrew was removed but still cached in PATH lookup.
         """
@@ -1615,7 +1615,7 @@ class TestResolveKirocrewBin:
     def test_accepts_wrapper_bin_from_walk(self, tmp_path: Path):
         """A shell-wrapper bin/kirocrew found by the walk is accepted as-is.
 
-        Public installs no longer reject wrapper scripts (the Brazil-workspace
+        Public installs do not reject wrapper scripts (the Brazil-workspace
         check is a no-op), so the walk-discovered bin wins over PATH.
         """
         import kiro_crew.agent as agent_mod
@@ -1742,7 +1742,7 @@ class TestResolveKirocrewBin:
 
 
 class TestKirocrewBinSubpath:
-    """Tests for the per-OS console-script subpath (#4439).
+    """Tests for the per-OS console-script subpath.
 
     On Windows the resolver must prefer the relocatable ``bin\\kirocrew.cmd``
     shim over the pip-generated ``Scripts\\kirocrew.exe``: inside the shipped
@@ -1811,7 +1811,7 @@ class TestKirocrewBinSubpath:
 
         Pins the issue's failure mode: the bundle ships BOTH launchers, and
         resolving the co-present ``Scripts\\kirocrew.exe`` instead of the
-        ``.cmd`` shim is exactly the #4439 defect.
+        ``.cmd`` shim is exactly the defect.
         """
         import kiro_crew.agent as agent_mod
         from kiro_crew import platform_compat
@@ -1878,7 +1878,7 @@ class TestKirocrewMcpInvocation:
         assert args == ["-m", "kiro_crew", "mcp-core"]
 
     def test_unwraps_cmd_shim_to_sibling_interpreter(self, tmp_path: Path):
-        """A resolved bin/kirocrew.cmd is never emitted verbatim (#4439).
+        """A resolved bin/kirocrew.cmd is never emitted verbatim.
 
         Mirrors website/electron/main.js: the shim is unwrapped to
         ``<root>/python.exe -s -m kiro_crew <sub>`` so kiro-cli spawns the
@@ -2312,7 +2312,7 @@ class TestKiroHooksFiltering:
         actually meant to be internal (kiro-cli would then reject the whole spec at
         runtime). This ratchet forces an explicit choice: adding a bundled hook key
         means updating either this set (a real event) or _INTERNAL_HOOK_KEYS
-        (Kiro-Crew-internal), never neither (#3362 fail-loud guard)."""
+        (Kiro-Crew-internal), never neither (a fail-loud guard)."""
         from kiro_crew.agent import _BUNDLED_CFG_DIR, _load_json
 
         bundled = _load_json(_BUNDLED_CFG_DIR / "defaults.json")
@@ -2590,7 +2590,7 @@ class TestToolBloatFixes:
         """Row 3 of the ownership table, through the real rebuild.
 
         The dashboard store owns this name, and the custom-update API removes a
-        hint by DELETING the key. Since the previously-rendered config is the
+        hint by DELETING the key. Since the last-rendered config is the
         merge base and ``dict.update()`` cannot remove anything, absence has to
         mean removed here or the last-rendered grant stays in the spec forever.
         """
@@ -2885,7 +2885,7 @@ class TestToolBloatFixes:
         The store keeps its own raw (slashed) key while normalization rewrites the
         config key to the alias. Looking the store up by the raw key alone misses
         the owner of the aliased entry, so it reads as unmanaged and the
-        previously-rendered wire hints are preserved verbatim -- an editor clear
+        last-rendered wire hints are preserved verbatim -- an editor clear
         answers 200 and never takes effect, and the now-divergent specs stop
         deduping, minting a fresh sibling on every rebuild.
         """
@@ -2906,7 +2906,7 @@ class TestToolBloatFixes:
         ] == ["acme:read"]
 
         # The user clears the hints in the editor: the store entry keeps its raw
-        # slashed key and simply no longer states any scopes.
+        # slashed key and simply states no scopes.
         store.write_text(json.dumps({"mcpServers": {"acme/notion": {"url": url}}}))
         path = _run_install(tmp_path, cfg_dir)
         servers = json.loads(path.read_text(encoding="utf-8"))["mcpServers"]
@@ -2923,7 +2923,7 @@ class TestToolBloatFixes:
         malformed value under the alias key itself. The malformed value states
         nothing, so it must not stand in for the real owner: gating the alias
         lookup on absence alone lets it shadow that owner, the entry reads as
-        unmanaged, and the previously-rendered hints survive a clear.
+        unmanaged, and the last-rendered hints survive a clear.
         """
         cfg_dir = _bundled_defaults(tmp_path)
         user_home = tmp_path / "kirocrew_home"
@@ -3110,7 +3110,7 @@ class TestToolBloatFixes:
         server, normalization preserves the managed one under a numeric suffix.
         That suffixed key matches neither the store key nor its alias, so an
         ownership lookup that stops there reads the entry as unmanaged and
-        preserves hints the store no longer states -- the clear stops applying to
+        preserves hints the store does not state -- the clear stops applying to
         exactly the server the store owns.
         """
         cfg_dir = _bundled_defaults(tmp_path)
@@ -3151,8 +3151,8 @@ class TestToolBloatFixes:
         Two store entries can alias to the same slug, so keying the index by alias
         alone keeps only one of them. The other server's collision-suffixed entry
         then finds a candidate whose transport does not match, reads as unmanaged,
-        and keeps a grant its owner cleared -- and because the stale copy no longer
-        dedups against the freshly rendered one, each rebuild mints another sibling.
+        and keeps a grant its owner cleared -- and because the stale copy does not
+        dedup against the freshly rendered one, each rebuild mints another sibling.
         """
         cfg_dir = _bundled_defaults(tmp_path)
         user_home = tmp_path / "kirocrew_home"
@@ -5114,7 +5114,7 @@ class TestRebuildReconcileRetainsEnabledAppServers:
     manifest-derived MCP server just because it is absent from on-disk — a clean
     rebuild (or a missing/empty config) starts with an empty on_disk, and the
     app's tools would vanish. It must drop a server only when its app is
-    confirmed no longer enabled (a concurrent deregister).
+    confirmed not enabled (a concurrent deregister).
 
     Pinned by source inspection: the reconcile is an inline block in
     ``install_agent`` gated on ``is_kirocrew_json`` (the written path equalling
@@ -5309,7 +5309,7 @@ class TestRefreshDynamicFieldsSyncsConfigModel:
 
 
 class TestResetAgentModel:
-    """The explicit way back to the shipped default (#2559).
+    """The explicit way back to the shipped default.
 
     Ownership of a spec's ``model`` cannot be inferred -- a value an older
     build's propagation wrote and one the user typed in are identical on disk --
@@ -5481,7 +5481,7 @@ def test_ensure_agent_materialized_swallows_errors(tmp_path, monkeypatch):
 
 
 class TestAgentSpecPathRejectsTraversal:
-    """``agent_spec_path`` validates the name BEFORE the path join (#4911 review).
+    """``agent_spec_path`` validates the name BEFORE the path join.
 
     The path it returns is one ``reset_agent_model`` then WRITES, and the CLI
     takes the name from a user-supplied ``--agent``, so a traversal would rewrite
@@ -5535,7 +5535,7 @@ class TestSpecPathRefusesSymlinks:
 
     Following one copies the target's contents into the agents directory, which
     launders a file the reader may not otherwise be allowed to open into a freely
-    readable location (#4911 review).
+    readable location.
     """
 
     @requires_symlinks
@@ -5584,7 +5584,7 @@ class TestSpecPathRefusesSymlinks:
 
 
 class TestSpecPathPrefersTheDeclaredName:
-    """A declared ``name`` wins over a matching filename (#4911 review).
+    """A declared ``name`` wins over a matching filename.
 
     The caller WRITES to the path this returns, so selecting ``<name>.json``
     when that file declares a different agent clears the wrong agent's pin and
@@ -5621,7 +5621,7 @@ class TestSpecPathPrefersTheDeclaredName:
     ):
         """`foo.json` declaring `bar`, with nothing declaring `foo`: the runtime
         matches it by STEM, so it is the live spec for `--agent foo` and refusing
-        it would leave a live pin unresettable (#4911 review)."""
+        it would leave a live pin unresettable."""
         import kiro_crew.agent as agent_mod
 
         agents = self._dir(tmp_path, monkeypatch)
@@ -5652,7 +5652,7 @@ class TestSpecPathPrefersTheDeclaredName:
 
 
 class TestResetRefusesAnAmbiguousName:
-    """Two specs claiming one name is refused, not guessed (#4911 review).
+    """Two specs claiming one name is refused, not guessed.
 
     The runtime resolver accepts EITHER a declared-name match or a filename
     match and iterates an unordered glob, so which of the two is live is
@@ -5701,7 +5701,7 @@ class TestResetRefusesAnAmbiguousName:
 
     def test_two_specs_declaring_the_same_name_is_refused(self, tmp_path: Path, monkeypatch):
         """Same undefined-liveness argument as the filename collision: the
-        runtime iterates unordered, so a writer cannot pick (#4911 review)."""
+        runtime iterates unordered, so a writer cannot pick."""
         import kiro_crew.agent as agent_mod
 
         agents = tmp_path / "agents"
@@ -5727,7 +5727,7 @@ class TestResetRefusesAnAmbiguousName:
 
 
 class TestSpecReadsAreSizeCapped:
-    """Spec reads go through the hardened, size-capped gate (#4911 review).
+    """Spec reads go through the hardened, size-capped gate.
 
     The agents directory is user-writable and shared with other tools, so an
     oversized file there must be refused rather than slurped into memory. Uses a
@@ -5771,7 +5771,7 @@ class TestSpecReadsAreSizeCapped:
 
 
 class TestResetOutputEscapesUntrustedPaths:
-    """A spec FILENAME is untrusted input too (#4911 review).
+    """A spec FILENAME is untrusted input too.
 
     The declared-name scan returns whichever file declares the requested name, so
     its path is attacker-shaped even though the requested name is
@@ -5853,7 +5853,7 @@ class TestResetOutputEscapesUntrustedPaths:
 
 
 class TestSelHookRejectedRedaction:
-    """#5582: ``_sel_hook_rejected`` must redact ``command`` before its 200-char cut.
+    """``_sel_hook_rejected`` must redact ``command`` before its 200-char cut.
 
     The old spelling sliced ``command[:200]`` inside the f-string and redacted
     the assembled message afterwards, so a credential cut at the boundary lost

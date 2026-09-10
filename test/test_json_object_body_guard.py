@@ -4,7 +4,7 @@
 ``await request.json()`` returns them happily -- and the ``.get()`` that every
 one of these handlers performs next then raises ``AttributeError`` from OUTSIDE
 the ``try`` that wrapped the parse. The result was a 500 for what is really
-malformed client input (issue #5587).
+malformed client input.
 
 This is enumerate-the-invariant coverage rather than one test per handler: the
 table below is the list of handlers converted to
@@ -362,7 +362,7 @@ _DASHBOARD_DIR = Path(shared.__file__).resolve().parent.parent
 #: ``max_bytes=None`` from landing; this is what stops the recorded debt from
 #: quietly becoming permanent, because otherwise the sweep could finish with
 #: every one of these endpoints still unbounded and nothing would fail. The
-#: 64 KB bound is the helper's original safety property (issue #490), so
+#: 64 KB bound is the helper's original safety property, so
 #: "recorded" is not the same as "handled".
 _CAP_PENDING_CEILING = 13
 

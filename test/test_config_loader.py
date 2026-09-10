@@ -1720,7 +1720,7 @@ class TestEdgeCases:
     )
     def test_history_max_days_sanitized_at_load(self, raw: int, expected: int) -> None:
         """A hand-edited negative history_max_days falls back to the default
-        at load instead of reaching prune_history raw (#8245)."""
+        at load instead of reaching prune_history raw."""
         cfg = _load_from_dict({"memory": {"history_max_days": raw}})
         assert cfg.memory.history_max_days == expected
 
@@ -2528,7 +2528,7 @@ class TestSttRetiredProviders:
         A retired name is deliberately absent from the schema's enum, so the plain
         validation path would report "enum violation" and drop the key, leaving the
         operator told that a value was rejected and not that the recogniser they
-        chose no longer exists. The absence of that generic line is the assertion:
+        chose does not exist. The absence of that generic line is the assertion:
         it is what shows the degrade ran first.
         """
         with caplog.at_level(logging.WARNING, logger="kiro_crew.config.loader"):
@@ -3676,7 +3676,7 @@ class TestSecurityBoundClamping:
     def test_session_start_timeout_floored_to_min(self) -> None:
         """A value below the floor is clamped UP: a session-start budget under
         the backend's 30s OAuth authorization wait recreates the race the
-        dedicated budget exists to prevent (issue #2946)."""
+        dedicated budget exists to prevent."""
         from kiro_crew.config.loader import SESSION_START_TIMEOUT_MIN
 
         with unittest.mock.patch("kiro_crew.config.loader._log_config_clamp_event"):
@@ -3720,9 +3720,9 @@ class TestSecurityBoundClamping:
         skips non-int values (see ``test_non_int_value_not_clamped``) --
         ``_safe_int``'s own docstring says clamping at the coercion site is
         what actually enforces the range for a numeric STRING that slips past
-        it. ``max_subagents``/``subagent_max_turns`` previously reached the
+        it. ``max_subagents``/``subagent_max_turns`` reach the
         dataclass with NO coercion at all, and ``subagent_auto_max``/
-        ``pool_size`` were ``_safe_int``-coerced but without bounds -- all
+        ``pool_size`` are ``_safe_int``-coerced but without bounds -- all
         four let a numeric-string value bypass the declared ceiling entirely."""
         from kiro_crew.config.loader import (
             POOL_SIZE_MAX,
@@ -3754,7 +3754,7 @@ class TestSecurityBoundClamping:
 
     def test_numeric_string_in_range_still_parses(self) -> None:
         """A well-formed numeric string within bounds must keep working --
-        the fix must not turn a previously-accepted legacy string value into
+        the fix must not turn an already-valid legacy string value into
         the default."""
         cfg = _load_from_dict(
             {
@@ -3861,7 +3861,7 @@ class TestSecurityBoundClamping:
 
 class TestAutocompactPctLoadClamp:
     """session.autocompact_pct clamps into the documented 5-90 range at load
-    time (issue #4734).
+    time.
 
     The dashboard config API rejected out-of-range writes but a hand-edited
     config.json loaded verbatim: at 500 the autocompactor trigger
@@ -4390,9 +4390,9 @@ class TestKnowledgePoolIdleTtl:
 
 
 class TestSaveRoundTripPreservesAllSections:
-    """to_dict() (which save() writes as the ENTIRE config.json) previously
-    omitted knowledge/heartbeat/snapshot_dir/watchdog, so any save silently
-    deleted those sections from disk. save() fires from many routine paths —
+    """to_dict() (which save() writes as the ENTIRE config.json) must not omit
+    knowledge/heartbeat/snapshot_dir/watchdog, or any save silently
+    deletes those sections from disk. save() fires from many routine paths —
     the theme PUT handler, the AIM auto-update toggle, and (worst) the one-shot
     write-back migration inside load() itself when a config lacks an "agents"
     map. So a user who hand-wrote e.g. {"knowledge": {"pool_idle_ttl_secs": 0}}
@@ -4838,7 +4838,7 @@ class TestGitLabHostAllowlist:
 def test_legacy_wechat_config_key_still_populates_wecom():
     """A config written before the wechat->wecom rename keeps its WeCom settings.
 
-    Regression for the rename (#542): load() falls back to the legacy
+    load() falls back to the legacy
     "wechat" key so existing installs don't silently lose their allow-list /
     thresholds / enabled flag on upgrade.
     """
@@ -5027,7 +5027,7 @@ class TestAppAgentDispatch(unittest.TestCase):
             d = self._agents_dir(Path(td), {"mochi--mochi.json": {"name": "mochi"}})
             with unittest.mock.patch.object(loader, "kiro_agents_dir", lambda: d):
                 loader.refresh_materialized_agents()
-            # The directory is gone AND kiro_agents_dir is no longer patched, so
+            # The directory is gone AND kiro_agents_dir is not patched, so
             # any filesystem access would change the answer. It must not.
             for _ in range(5):
                 assert (
@@ -6395,11 +6395,11 @@ class TestSameDispatchBindingDriftPin:
 
 
 class TestMigrationWriteBackOrdering:
-    """The write-back migration must not lose a concurrent config write (#7793).
+    """The write-back migration must not lose a concurrent config write.
 
-    ``load()``'s migration used to call ``cfg.save()``, which re-serializes the
+    A migration that calls ``cfg.save()`` re-serializes the
     whole snapshot this load parsed. A config write landing after that read and
-    before the save was silently replaced by the older snapshot. ``load()`` runs
+    before the save is silently replaced by the older snapshot. ``load()`` runs
     off the event loop in places (``chat_runner``'s stop-hook nudge-cap site
     awaits ``asyncio.to_thread(KiroCrewConfig.load)``), so the interleave is
     reachable rather than theoretical.

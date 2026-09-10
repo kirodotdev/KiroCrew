@@ -1682,7 +1682,7 @@ class TestRunEngine:
     ) -> None:
         """A crashed isolation probe is a sandbox failure, not a state conflict:
         a UI branching on `code` must not render the push-isolation guidance
-        for it (#8151). It subclasses RuntimeError, so without the dedicated
+        for it. It subclasses RuntimeError, so without the dedicated
         clause it would fall into `session_conflict`."""
         supervisor.start_raises = clone_setup.IsolationProbeError(
             "ModuleNotFoundError: No module named 'platform'"

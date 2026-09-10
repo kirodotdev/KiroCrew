@@ -2,7 +2,7 @@
 
 Covers the schema-introspection helpers, the ``validate_config_data`` entry
 point, and — most importantly — the new ``ConfigCache`` object, whose explicit
-``clear()`` replaces the previously-untestable bare ``_CONFIG_CACHE`` module
+``clear()`` replaces the untestable bare ``_CONFIG_CACHE`` module
 global.
 """
 
@@ -122,7 +122,7 @@ class TestSchemaIntrospectionHelpers:
         assert data == {"agent": {"keep": "ok"}}
 
     def test_apply_field_default_never_repairs_a_fail_closed_path(self) -> None:
-        """Repairing `publish` to defaults IS the #4057 widening: a popped
+        """Repairing `publish` to defaults IS the widening: a popped
         section reads as "operator configured nothing" and the allowlist
         silently reopens. The malformed value must survive validation so the
         loader records the degradation and the gate denies — on jsonschema

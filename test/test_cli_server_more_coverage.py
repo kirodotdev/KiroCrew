@@ -913,7 +913,7 @@ class TestRunTask:
     def test_vector_init_is_offloaded_off_the_event_loop(
         self, taskrunner_env, tmp_path, monkeypatch
     ) -> None:
-        """``VectorMemoryStore.init()`` must honour its caller contract (#5389):
+        """``VectorMemoryStore.init()`` must honour its caller contract:
         the Windows path shells out to icacls, so an async caller offloads it
         via ``asyncio.to_thread`` instead of freezing the loop. Ordering is
         asserted too: init must COMPLETE before ``_run_task`` wires the embed
@@ -1225,7 +1225,7 @@ class TestUpdateGitPath:
 
 
 class TestUpdateSubprocessHardening:
-    """The six ``subprocess.run`` calls in ``_update()`` (issue #5648).
+    """The six ``subprocess.run`` calls in ``_update()``.
 
     Two gap classes: (a) every captured-output call must also pass
     ``stdin=subprocess.DEVNULL`` so a child prompt can never block invisibly on
@@ -1319,7 +1319,7 @@ class TestUpdateSubprocessHardening:
         self, monkeypatch, git_checkout, capsys
     ) -> None:
         """The backend update's result is not inspected today, so its timeout
-        warns and the update continues — the #5637 handler shape."""
+        warns and the update continues."""
         stub = _GitStub()
         monkeypatch.setattr(subprocess, "run", self._timeout_on(["kiro-cli", "update"], stub))
         monkeypatch.setattr(cli_server.shutil, "which", lambda name: "/usr/bin/kiro-cli")

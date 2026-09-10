@@ -474,7 +474,7 @@ class TestLessonsGate:
     @pytest.mark.asyncio
     async def test_learn_add_allowed_for_channel_namespace_session(self, tmp_path, monkeypatch):
         """POST /api/lessons succeeds for a channel session key with NO slot and
-        NO persisted JSONL — the #1268 regression, live-reproduced from a
+        NO persisted JSONL — the regression it guards, live-reproduced from a
         Telegram forum topic.
 
         Post-#232 the transport publishes ``session_pid`` so the gateway
@@ -1238,7 +1238,7 @@ class TestSessionSlotRecovery:
     async def test_learn_add_audits_channel_namespace_allow_path(self, tmp_path, monkeypatch):
         """Key in a channel namespace (here ``slack:``) → audit event with
         resources='channel_namespace' (the tag now covers every channel, not
-        just Slack; see #1268)."""
+        just Slack)."""
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
         monkeypatch.setattr(
@@ -2071,7 +2071,7 @@ class TestSharedRecognitionGate:
         assert learn_remove("learn_remove", {"query": "x"}) == "Error: boom"
 
 
-# ── Memory-routes recognition gate (follow-up to #3226) ──
+# ── Memory-routes recognition gate ──
 
 
 class TestMemoryRoutesSessionGate:
@@ -2188,8 +2188,8 @@ class TestMemoryRoutesSessionGate:
     async def test_blocked_for_live_restricted_slot(
         self, tmp_path, monkeypatch, route, mode
     ):
-        """Restricted live slots are refused on every route — episodic delete
-        previously had NO check and let a restricted session tombstone."""
+        """Restricted live slots are refused on every route, including episodic
+        delete, which must not let a restricted session tombstone."""
         state, store = self._memory_state(tmp_path, monkeypatch)
         state.get_or_create_slot("r1", memory_mode=mode)
         async with TestClient(TestServer(self._make_memory_app(state))) as client:

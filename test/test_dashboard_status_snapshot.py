@@ -58,7 +58,7 @@ class TestStatusSnapshot:
         # Tokens were present at boot (client wired) but the socket connect
         # failed, e.g. invalid_auth or a network error. The badge must NOT show
         # green: slack_client alone only proves tokens existed, not that Socket
-        # Mode came up. This is the reported bug (#1770): a green "Connected"
+        # Mode came up. The bug guarded: a green "Connected"
         # over a Slack that never received an event.
         state.slack_client = MagicMock()
         state.slack_socket_connected = False
@@ -343,12 +343,12 @@ def status_fields_of(updates_module) -> dict:
 class TestBuildInfoResolution:
     """set_build_info() is the ONLY resolver — build info is never resolved at import.
 
-    Regression (dogfood 2026-07-06): an earlier revision resolved git_build_info()
-    at state.py *module import*. Under systemd the entrypoint imports this module
-    BEFORE main() detects KIROCREW_PROJECT_DIR, so it resolved with no project dir
-    and lru_cache then pinned ("", "") for the process lifetime — the dropdown was
-    always blank. The value is now recorded by the CLI gateway entrypoint (sync,
-    pre-loop, post-detection) via set_build_info() and only read here.
+    Resolving git_build_info() at state.py *module import* is wrong: under systemd
+    the entrypoint imports this module BEFORE main() detects KIROCREW_PROJECT_DIR,
+    so it resolves with no project dir and lru_cache then pins ("", "") for the
+    process lifetime, leaving the dropdown blank. The value is recorded by the CLI
+    gateway entrypoint (sync, pre-loop, post-detection) via set_build_info() and
+    only read here.
     """
 
     def test_setter_flows_into_new_state(self, monkeypatch, tmp_path) -> None:

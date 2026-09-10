@@ -1,4 +1,4 @@
-"""TurnDriver session-directive consumption (#4540).
+"""TurnDriver session-directive consumption.
 
 ``TurnDriver`` never consumed ``EVENT_TOOL_RESULT``, so on every standalone
 messaging transport (Telegram, Discord, standalone Slack, iMessage, Teams,
@@ -500,9 +500,9 @@ class TestChannelApplierBoundary:
     async def test_dashboard_only_directives_refused_on_channel_transport(
         self, kind, no_dashboard_tabs
     ):
-        """SECURITY INVARIANT (#4540): _DASHBOARD_ONLY_DIRECTIVES stay DENIED
-        for non-dashboard sessions — the channel consumer must not widen the
-        gate. set_project left this set (#3543): it is refused on the channel
+        """SECURITY INVARIANT: _DASHBOARD_ONLY_DIRECTIVES stay DENIED for
+        non-dashboard sessions — the channel consumer must not widen the gate.
+        ``set_project`` is NOT in this set: it is refused on the channel
         transport by the slot-less gate instead, pinned below."""
         state = _ChannelDirectiveState(sessions=_ChannelSessions("x"))
         result = await apply_session_directive(
@@ -631,10 +631,12 @@ class TestBuildDirectiveConsumer:
 
 
 class TestSilentDropIsDiagnosable:
-    """The identity gate refuses correctly but used to refuse SILENTLY, so an
-    ACP backend that emits no ``_meta.kiro`` was indistinguishable from nothing
-    happening. The refusal must stay a refusal AND leave a log line naming the
-    identity it saw. Diagnostic only: no test here may show an effect applying.
+    """The identity gate must refuse AUDIBLY, not silently.
+
+    A silent refusal makes an ACP backend that emits no ``_meta.kiro``
+    indistinguishable from nothing happening at all. The refusal stays a refusal
+    AND leaves a log line naming the identity it saw. Diagnostic only: no test
+    here may show an effect applying.
     """
 
     def test_missing_backend_identity_logs_what_it_saw(self, caplog):

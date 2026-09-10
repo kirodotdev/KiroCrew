@@ -430,7 +430,7 @@ def test_stage_dist_keeps_the_served_bundle_when_the_copy_fails(tmp_path, monkey
 
     monkeypatch.setattr(frontend.shutil, "copytree", boom)
     assert frontend._stage_dist(built, tmp_path, log=lambda _m: None) is False
-    # The previously served bundle is untouched.
+    # The already-served bundle is untouched.
     assert (served / "index.html").read_text() == "<html>previous</html>"
     # No staging leftovers.
     # The .dist.staging.lock file is the persistent flock target; what must

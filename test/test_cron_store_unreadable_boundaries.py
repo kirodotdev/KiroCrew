@@ -459,7 +459,7 @@ def test_a_transient_read_failure_does_not_brick_an_unchanged_store(tmp_path: Pa
 # this app own?" answers zero for a reason that has nothing to do with ownership.
 # App uninstall reads that zero as authoritative and deletes the app, while the
 # app's still-ENABLED jobs sit on disk and resume the moment the store parses
-# again -- now owned by an app that no longer exists.
+# again -- now owned by an app that does not exist.
 #
 # The vacuous-pass trap specific to these tests: asserting `_jobs == []` over an
 # unreadable store passes with AND without the fix, because the empty list is
@@ -846,8 +846,8 @@ def test_a_read_failure_refuses_an_ack_without_consuming_it(tmp_path: Path) -> N
 # drain returns at `if not to_remove` having already emptied the queue. The
 # requeue arm is never reached.
 #
-# The docstring line "an id no longer present was already removed elsewhere, so
-# dropping it is correct" is what makes this subtle: it is true only when the
+# The production rationale -- that an absent id was "already removed elsewhere, so
+# dropping it is correct" -- is what makes this subtle: it is true only when the
 # load SUCCEEDED. Under a failed load, absence means the list is unknown, not
 # empty, and dropping the intent lets the repaired store re-run a completed
 # one-shot and notify a second time.

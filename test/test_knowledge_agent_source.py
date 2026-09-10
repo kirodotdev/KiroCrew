@@ -762,7 +762,7 @@ async def test_a_deduped_row_does_not_block_a_later_retry(pipeline, kstore):
         "SELECT content_hash FROM agent_item_state WHERE source_id = ? AND slug = ?",
         (sid, document_slug("/repo/doc.md"))).fetchone()["content_hash"]
 
-    # Removing the holder no longer destroys the document: the refusal recorded this
+    # Removing the holder does not destroy the document: the refusal recorded this
     # source as a location, so ownership MOVES here and the row adopts what it
     # inherits. "Unchanged" is then the truthful answer -- the Library does hold it.
     kstore.delete_source_cascade(other)

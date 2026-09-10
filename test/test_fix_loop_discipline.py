@@ -448,7 +448,7 @@ class TestDeferralDiscipline:
         text = PREPARE_PR.read_text(encoding="utf-8")
         assert LABEL in text
         assert "Due: YYYY-MM-DD" in text
-        # The skill no longer forbids deferral locally; it must still tell the agent
+        # The skill does not forbid deferral locally; it must still tell the agent
         # how the server treats a deferred security-class finding.
         assert "do not accept a deferral as a ruling on a security" in text
 
@@ -460,7 +460,7 @@ class TestDeferralDiscipline:
 class TestDeferralCheckIssueReadFailure:
     """Execute the ACTUAL deferral-validation step with ``gh`` stubbed.
 
-    `2>/dev/null || true` used to collapse a transient API failure onto the
+    `2>/dev/null || true` would collapse a transient API failure onto the
     same empty string as "this number is not an issue here", so a network blip
     made every referenced follow-up look unresolvable and the checker posted a
     refusal blaming the author for an untracked deferral they had in fact

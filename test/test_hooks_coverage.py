@@ -427,7 +427,7 @@ class TestValidateFilePath:
 
     def test_linked_ancestor_is_refused_before_realpath(self, tmp_path, monkeypatch):
         """realpath resolves the whole ancestor chain, so it IS the outbound
-        SMB probe when an ancestor junction targets a UNC share (#5962).
+        SMB probe when an ancestor junction targets a UNC share.
         Wiring realpath to explode proves the walk returned first."""
         from kiro_crew import platform_compat
 
@@ -727,7 +727,7 @@ class TestValidateFilePath:
         assert validate_file_path("~/doc.txt") is None
 
     def test_unc_home_sessions_transcript_is_refused(self, monkeypatch):
-        """#6733: a kiro-cli session transcript under a Windows roaming-profile
+        """A kiro-cli session transcript under a Windows roaming-profile
         (UNC) home is refused by the UNC trusted-root gate, because the sessions
         dir is not one of unc_probe_allowed's admitted roots. This is the exact
         refusal the usage page counts as ``refused_transcripts`` instead of
@@ -735,8 +735,8 @@ class TestValidateFilePath:
         string through validate_file_path -- so it runs on a POSIX host; the
         Windows CI shard confirms the native backslash form.
 
-        The fix for #6733 does NOT relax this refusal: admitting the sessions
-        dir to the gate is a separate trust decision (open issue #8079). This
+        This refusal is NOT relaxed: admitting the sessions
+        dir to the gate is a separate trust decision. This
         test therefore pins that the transcript STAYS refused.
         """
         from kiro_crew import platform_compat
@@ -780,7 +780,7 @@ class TestSafeReadFile:
     def test_sensitive_refusal_message_escapes_the_path(self, monkeypatch):
         """The refused path is caller/attacker influenced and the message reaches
         log records via ``exc_info``; a raw newline in it would forge a second
-        record (refs #6371, the #6281/#6315 log-forgery class).
+        record (the log-forgery class).
         """
         forged = "/tmp/pods/wt-evil\nWARNING forged: reclaim authorized"
         # The message carries the RESOLVED path (drive-lettered and
@@ -1537,9 +1537,8 @@ class TestScriptHookStorePersistence:
         assert store.update(hook.id, {"timeout": 300}).timeout == 300
 
     def test_a_bool_timeout_is_rejected(self, tmp_path):
-        # The deliberate tightening the old test anticipated (issue #5444):
         # ``bool`` is an ``int`` subclass, but ``True`` as a timeout is
-        # meaningless, so the shared validator now rejects it at the update
+        # meaningless, so the shared validator rejects it at the update
         # boundary rather than silently landing a 1-second timeout.
         store = ScriptHookStore(tmp_path)
         hook = store.create({"name": "h1", "command": "true"})
@@ -2122,7 +2121,7 @@ class TestSafeWriteFileNolinkXattrs:
         caller-supplied content, so it shares ``atomic_write``'s allowlist:
         replaying ``security.capability`` there would attach the old file's
         privileges to the new bytes, and ``security.ima``/``security.evm`` are
-        signatures over bytes that no longer exist. The ACL beside them is still
+        signatures over bytes that are gone. The ACL beside them is still
         carried, so this is a filter and not a blanket stop.
         """
         self._require_xattrs()

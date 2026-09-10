@@ -72,7 +72,7 @@ class TestChatSlotReasoningEffort:
     async def test_reset_failure_keeps_committed_effort_and_reports_success(self):
         # A throwing fallback reset reports SUCCESS with a warning and the
         # new effort STAYS: the reset pops the session before shutdown can
-        # fail, so the old effort's session no longer exists and every
+        # fail, so the old effort's session is already gone and every
         # replacement runs the new value. A 500 would make the acting tab
         # keep the OLD store value for a switch that actually happened.
         slot = _ChatSlot("test")

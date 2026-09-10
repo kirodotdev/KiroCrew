@@ -561,7 +561,7 @@ class TestStopDevProc:
         assert server._stop_dev_proc("nonexistent") is False
 
     def test_clears_record(self, monkeypatch):
-        """After stop, the project no longer appears in _DEV_PROCS."""
+        """After stop, the project does not appear in _DEV_PROCS."""
         fake = FakePopen(pid=502)
         fake.wait = lambda timeout=None: 0
         server._DEV_PROCS["p4"] = {

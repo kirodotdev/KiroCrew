@@ -154,7 +154,7 @@ class TestHelpers:
     def test_audit_routes_the_sel_write_off_the_event_loop(self):
         # The SEL write's first touch pays log construction, so the async
         # _audit wrapper must hand the sync writer to a worker thread instead
-        # of running it inline on the loop — the regression issue #8139 locks
+        # of running it inline on the loop — the regression this test locks
         # out. Observed from inside the writer itself (which thread ran it)
         # rather than by patching the stdlib asyncio module object, which
         # would leak the mock to unrelated code on other threads.
@@ -972,7 +972,7 @@ class TestDriveUpload:
         # stays the same. A name resolved before the spool is exactly the
         # staleness the module's no-cache rule forbids, so the post-spool
         # re-authorization re-resolves the drive and refuses on a mismatch --
-        # otherwise put_file would land the object in the previously-discovered
+        # otherwise put_file would land the object in the already-discovered
         # bucket.
         handlers = _registered()
         p1, p2, p3 = _enabled_owner_env()
@@ -1843,7 +1843,7 @@ class TestDriveShare:
         assert resp.status == 502
 
     def test_share_withholds_the_url_when_the_ledger_refuses_as_corrupt(self):
-        # #7805: the ledger reader refuses a corrupt document rather than
+        # The ledger reader refuses a corrupt document rather than
         # replacing it. A mint that could not be RECORDED must not be handed
         # out — the URL would be a live unrevokable bearer grant with no local
         # record, the exact under-reporting the strict reader exists to prevent.
@@ -2098,7 +2098,7 @@ class TestSharesListForget:
 
     def test_an_unavailable_account_is_audited_as_a_denial(self):
         # A permission decision reaches SEL even though the route degrades: the
-        # profile no longer resolves to the requested account, and that is the
+        # profile does not resolve to the requested account, and that is the
         # one event an incident review asks about.
         handlers = _registered()
         entries = [{"id": "sh-1", "section": "drive", "key": "a.txt"}]
@@ -2151,9 +2151,9 @@ class TestSharesListForget:
         assert _payload(resp)["code"] == "unknown_share"
 
     def test_forget_reports_a_corrupt_ledger_instead_of_claiming_unknown(self):
-        # #7805: on the old lenient read a corrupt ledger made every share read
-        # as absent, so forget answered 404 "unknown share" while the record sat
-        # readable in the corrupt bytes — and the rewrite then destroyed it.
+        # A lenient read would make a corrupt ledger scan as every share absent,
+        # so forget would answer 404 "unknown share" while the record sat readable
+        # in the corrupt bytes — and the rewrite would then destroy it.
         handlers = _registered()
         with (
             mock.patch.object(routes_mod, "is_app_enabled", return_value=True),
@@ -2531,7 +2531,7 @@ class TestLibrary:
         body = _payload(resp)
         assert resp.status == 200
         assert body["reconciled"] is False and body["remoteError"]
-        # No AWS call and no prune on a grant that no longer holds.
+        # No AWS call and no prune on a grant that does not hold.
         lister.assert_not_called()
         rec.assert_not_called()
 
@@ -2608,7 +2608,7 @@ class TestLibrary:
         assert body["reconciled"] is False and body["remoteError"]
 
     def test_library_list_survives_a_corrupt_ledger(self):
-        # #7805: the strict update reader refuses a corrupt ledger with
+        # The strict update reader refuses a corrupt ledger with
         # JSONDecodeError. The list route is best-effort by contract and its
         # rows come from the LENIENT display read, so the render must survive
         # and the degradation must be reported — with a reason that says
@@ -2814,7 +2814,7 @@ class TestLibrary:
         assert _payload(resp)["code"] == "not_pushable"
 
     def test_push_reports_a_corrupt_ledger_not_a_client_error(self):
-        # #7805, the trap the issue names: JSONDecodeError subclasses ValueError,
+        # The trap here: JSONDecodeError subclasses ValueError,
         # so without its own arm the ledger's corruption refusal would be
         # reported as 400 not_pushable — blaming the artifact for a store the
         # operator has to repair, on a push whose upload may already be in the
@@ -2906,7 +2906,7 @@ class TestLibrary:
         assert _payload(resp)["code"] == "invalid_slug"
 
     def test_remove_reports_a_corrupt_ledger_not_an_invalid_slug(self):
-        # #7805: JSONDecodeError subclasses ValueError, so without its own arm
+        # JSONDecodeError subclasses ValueError, so without its own arm
         # the ledger's corruption refusal reads as 400 invalid_slug — blaming
         # the request for a store the operator has to repair.
         resp, _removed = self._remove(
@@ -3117,7 +3117,7 @@ class TestBackupEndpoints:
     def _run_backup(self, kind, *, start=None, sdk_present=True):
         """Drive ``POST /backup/{account}/run``.
 
-        The handler no longer performs the backup: it claims a durable Job SDK
+        The handler does not perform the backup itself: it claims a durable Job SDK
         run and returns its id. So this stubs the SDK rather than the backup
         functions. The runner's own behaviour -- resolving its account, refusing
         a key that names none, and the reconciliation of a run left behind by a

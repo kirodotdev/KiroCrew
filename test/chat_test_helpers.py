@@ -28,7 +28,7 @@ def move_transcript_past(log: ConversationLog, key: str, sig: float) -> None:
     (~15.6 ms on Windows), leaving the second write with an mtime identical
     to the first -- a staged "transcript moved on" then has not moved on at
     all, and any staleness assertion keyed on the mtime signature becomes a
-    coin flip (#2981, same class as #2449). Pinning the mtime makes the test
+    coin flip. Pinning the mtime makes the test
     exercise the signature COMPARISON rather than the platform's clock
     resolution (testing-conventions.md § Determinism).
     """
@@ -46,7 +46,7 @@ async def drain_background_tasks(state) -> None:
     the Slack mock straight afterwards races it: it usually wins on an idle machine and
     loses under load. That flake surfaces as a plain count mismatch (``assert 0 == 2``)
     or as ``'NoneType' object has no attribute 'args'``, on a DIFFERENT test in the
-    class each run, and names neither the task nor the race (#4130).
+    class each run, and names neither the task nor the race.
 
     Awaiting the not-yet-done members is an exact wait on the real completion
     condition rather than a sleep. An empty set means the task already finished; a

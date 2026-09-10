@@ -20,7 +20,7 @@ from kiro_crew.deploy import profiles as profiles_mod
 # triggers a reduced backend scope on a Windows runner where they fail. This
 # skipif is reserved for the one test whose behaviour is genuinely POSIX-only
 # (file-permission semantics); the handler tests are made platform-independent
-# by the _force_posix_shell fixture below instead. See issue #2041.
+# by the _force_posix_shell fixture below instead.
 _POSIX_ONLY = pytest.mark.skipif(
     sys.platform == "win32",
     reason="POSIX-only file-permission semantics; reduced Windows backend scope (#2041)",
@@ -43,7 +43,7 @@ def _force_posix_shell(monkeypatch):
     construction inside the handlers on a real Windows runner. The proxy
     changes only what ``handlers.py`` itself sees. On a POSIX host this
     changes nothing. The dedicated Windows-gate test overrides the same
-    module-local attribute in its own body (#2041).
+    module-local attribute in its own body.
     """
 
     class _PosixNameOs:
@@ -1643,7 +1643,7 @@ def test_deploy_local_dir_staged_copy_cleaned(tmp_path, monkeypatch):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# F2: /tmp no longer in _allowed_local_roots; staging root IS allowed
+# F2: /tmp is not in _allowed_local_roots; staging root IS allowed
 # ══════════════════════════════════════════════════════════════════════════════
 
 def test_allowed_local_roots_no_bare_tmp(monkeypatch, tmp_path):
@@ -1668,7 +1668,7 @@ def test_allowed_local_roots_no_bare_tmp(monkeypatch, tmp_path):
 
 def test_scan_tree_nul_prepended_file_detects_credential(tmp_path):
     """F1 R11: A file with NUL in first 8KiB containing AKIA key must still
-    produce a credential finding. Previously the binary-detection short-circuited
+    produce a credential finding. A binary-detection short-circuit must not skip
     the entire content scan, allowing NUL-prepended secrets to deploy."""
     src = tmp_path / "src"
     src.mkdir()

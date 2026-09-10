@@ -88,7 +88,7 @@ class TestTheKeyIsInstalledForTheRunningTurn:
     @pytest.mark.asyncio
     async def test_a_linked_slot_publishes_the_session_it_runs_on(self, tmp_path) -> None:
         """A channel-born tab is bound before its turn starts, so the captured
-        identity IS the channel session — which is what keeps the #2462 fix."""
+        identity IS the channel session."""
         state, slot, client = _state_and_slot(tmp_path)
         slot.linked_session_key = LINKED_KEY
         seen: list[str] = []

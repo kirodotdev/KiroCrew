@@ -1,6 +1,6 @@
 """Round-18 review finding: the re-validation was applied to one branch of two.
 
-Round 16 made the pinned branch re-check where the parent resolves to now. The
+The pinned branch re-checks where the parent resolves to now. The
 no-``dir_fd`` fallback kept acting on a verdict given earlier, so a retargeted ancestor
 could still move the write -- and on that branch the write is an ``os.replace``, which
 would put report JSON where a governance file was. Same rule, one of two sites: the

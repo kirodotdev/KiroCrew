@@ -462,7 +462,7 @@ class TestMultipartWire:
 
 
 class TestDocumentVerb:
-    """The name-preserving document send (issue #6058).
+    """The name-preserving document send.
 
     Separate from ``send_message_with_files`` on purpose: that path's sanitizer
     is aimed at LLM-authored reference paths and maps every non-raster mime to

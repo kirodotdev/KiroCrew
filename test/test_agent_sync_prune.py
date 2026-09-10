@@ -34,8 +34,8 @@ def _make_config(agents: dict[str, KiroCrewAgentConfig]) -> KiroCrewConfig:
 async def _run_sync(cfg: KiroCrewConfig, aim_agents_list: list[AgentInfo]) -> dict:
     """Invoke the production _do_agents_sync with mocked dependencies and return parsed body.
 
-    The sync persists via a delta mutate through ``update_config_locked``
-    (#4767); the patch below records each call on ``cfg.save`` (so the
+    The sync persists via a delta mutate through ``update_config_locked``;
+    the patch below records each call on ``cfg.save`` (so the
     existing called/not-called assertions keep their meaning) and stores the
     mutated document on ``cfg.written_doc``.
     """
@@ -197,7 +197,7 @@ class TestSyncRefusesCredentialShapedNames:
     A discovered spec's name is package-controlled, not typed by the owner, so
     "the owner is reading a string the owner wrote" does not hold for it: a package
     could land a credential-shaped name that then reaches the roster. Refused at
-    this source too (#8454).
+    this source too.
     """
 
     PROBE = "AKIAIOSFODNN7EXAMPLE"
@@ -233,9 +233,9 @@ class TestAgentSyncFsCheckIsOffloaded:
 
 
 class TestPruneOnlySnapshotMatchedEntries:
-    """#4767 round 8: the locked prune only deletes entries that still equal
-    this sync's own snapshot -- an agent (re)added by a NEWER sync between the
-    discovery snapshot and the lock hold must survive a stale prune."""
+    """The locked prune only deletes entries that still equal this sync's own
+    snapshot -- an agent (re)added by a NEWER sync between the discovery snapshot
+    and the lock hold must survive a stale prune."""
 
     @pytest.mark.asyncio
     async def test_agent_added_or_changed_after_snapshot_survives_stale_prune(self):

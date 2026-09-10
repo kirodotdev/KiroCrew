@@ -286,7 +286,7 @@ class TestEffectiveDenied:
         cfg = HooksConfig(denied_commands_disabled_ids=["local-destructive-rm-rf-root"])
         mgr = HookManager(cfg)
         result = mgr.on_tool_call("rm -rf /tmp/foo", command="rm -rf /tmp/foo", is_shell=True)
-        # No longer denied — the built-in rule was individually opted out.
+        # Not denied — the built-in rule was individually opted out.
         assert result.action != TOOL_DENY
 
     def test_disable_all_falls_through(self):
@@ -473,7 +473,7 @@ class TestResolveDeniedNotes:
         # collapses whitespace precisely because "newlines would forge extra lines
         # in the refusal", but the config-file path (from_dict ->
         # resolve_denied_notes) applies only .strip() -- so a note hand-written
-        # into the keystone denied_commands.json used to reach the refusal with its
+        # into the keystone denied_commands.json would reach the refusal with its
         # newlines intact, and RecoveryCard's per-line POLICY_RE read the forged
         # line as a second pattern. Reach is operator-only (the keystone is not
         # agent-writable), but pasting a refusal you just saw into a note is a
@@ -1052,8 +1052,8 @@ class TestSearchTargetSynthesizedTier:
 
     def test_no_deny_exception_can_exonerate_a_synthesized_target(self):
         # This tier deliberately omits the `_DENY_EXCEPTIONS` carve-out that `is_denied`
-        # carries. The omission used to be guarded by requiring the map stay EMPTY, which
-        # the #8802 search-verb carve-out ends. The property that omission actually needs
+        # carries. Requiring the map stay EMPTY once guarded the omission, but the
+        # search-verb carve-out ends that. The property that omission actually needs
         # is narrower: no exception may apply to a synthesized target, or the same text
         # would be exonerated in `is_denied` while this tier still denied it.
         #

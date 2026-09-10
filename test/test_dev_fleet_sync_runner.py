@@ -1,10 +1,10 @@
 """Execution tests for the Dev Fleet sync runner.
 
-The point of #6698 is that the runner used to be a string literal no linter
-parsed and no test executed -- so its node_modules transaction, whose whole job
-is not to lose a dependency tree, was only ever string-matched. These drive the
-REAL functions against real ``tmp_path`` trees: the reconciliation decision, the
-transaction's success/failure/restore-failure paths, the reserved-code demotion,
+A runner held as a string literal is parsed by no linter and executed by no
+test, which leaves its node_modules transaction -- whose whole job is not to
+lose a dependency tree -- only string-matched. These drive the REAL functions
+against real ``tmp_path`` trees: the reconciliation decision, the transaction's
+success/failure/restore-failure paths, the reserved-code demotion,
 and the stdlib-only import discipline that lets the module be snapshotted and run
 by path.
 """

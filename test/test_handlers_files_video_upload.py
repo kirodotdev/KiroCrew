@@ -244,7 +244,7 @@ async def test_cancellation_mid_stream_leaves_nothing_on_disk(
 
     The injection point is the SINK's write, not ``os.write``: writes go through
     a buffered writer that owns its own raw file, so patching a module's
-    ``os.write`` would no longer intercept them and this test would pass
+    ``os.write`` would not intercept them and this test would pass
     vacuously while proving nothing.
     """
 
@@ -358,15 +358,15 @@ def test_accept_list_covers_every_accepted_extension() -> None:
 def test_video_ceiling_stays_above_the_document_cap() -> None:
     """``_MAX_VIDEO_UPLOAD_BYTES`` exceeds ``_MAX_UPLOAD_BYTES``.
 
-    This is the invariant both composers' video exemption rests on. Since #5707
-    neither pre-checks a recording: they exempt video from the client-side
+    This is the invariant both composers' video exemption rests on. Neither
+    composer pre-checks a recording: they exempt video from the client-side
     document guard and let an over-cap recording's own 413 report the real
     ceiling. That is only right while the video ceiling is the higher of the
     two -- if it fell to or below the document cap, exempting video would waive
     a limit the server still enforces.
 
     Asserted here, where both numbers live, rather than against a mirrored
-    client copy: the client no longer reads either one.
+    client copy: the client does not read either one.
     """
     assert files_mod._MAX_VIDEO_UPLOAD_BYTES > files_mod._MAX_UPLOAD_BYTES
 

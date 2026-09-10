@@ -1,4 +1,4 @@
-"""Builtin-skill sync safety invariants (issue #3433).
+"""Builtin-skill sync safety invariants.
 
 ``_ensure_builtin_skills`` may only destroy a destination directory it can
 PROVE it installed and that has not changed since: a full-tree fingerprint
@@ -267,7 +267,7 @@ class TestStaleCleanupGuard:
     def test_user_edited_stale_copy_is_left_alone(
         self, builtin_root: Path, base: Path
     ) -> None:
-        # A marker whose fingerprint no longer matches means the user edited
+        # A marker whose fingerprint does not match means the user edited
         # the copy after install: it is user data and stays at its own name.
         _make_skill(base, "learn", "old builtin")
         _record_builtin_provenance(base / "learn")
@@ -1113,7 +1113,7 @@ class TestPermissionBitsInFingerprint:
         self, builtin_root: Path, base: Path
     ) -> None:
         # End to end: sync installs a builtin, the user chmods a subdirectory,
-        # then an update ships. The customized tree no longer matches the
+        # then an update ships. The customized tree does not match the
         # recorded fingerprint, so it must be quarantined, not deleted.
         _make_skill(builtin_root, "helper", "v1", {"scripts/tool.py": "# v1"})
         _ensure_builtin_skills(base)

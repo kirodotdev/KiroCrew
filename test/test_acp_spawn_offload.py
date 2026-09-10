@@ -570,7 +570,7 @@ class TestRuntimeShieldSurvivesAFailedAppend:
         """The sibling of the client-side window. ``finish_suspended_spawn``
         documents its own resume failure as FATAL and ``_get_start_time`` can
         raise, and every ``runtime.spawn()`` caller catches only
-        ``AcpRuntimeError`` / ``AcpRuntimeDead`` -- so an ``OSError`` here used to
+        ``AcpRuntimeError`` / ``AcpRuntimeDead`` -- so an ``OSError`` here would
         propagate with a live, unrecorded process behind it."""
         mock_proc = MagicMock()
         mock_proc.pid = 5151

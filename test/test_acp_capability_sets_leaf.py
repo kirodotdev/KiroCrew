@@ -1,6 +1,6 @@
 """The capability sets must be askable without importing ``kiro_crew.acp``.
 
-They used to be defined in ``kiro_crew.acp.types``. Importing anything under
+Importing anything under
 ``kiro_crew.acp`` executes that package's ``__init__`` (client + runtime), and
 ``kiro_crew.acp`` is a FORBIDDEN_ROOT for the agent-SDK boundary gate -- so every
 consumer outside the ACP layer that asked a capability question had to add a

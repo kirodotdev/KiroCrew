@@ -226,7 +226,7 @@ class TestCronTriggerMCP:
         from kiro_crew.cron import CronService
 
         # The ownership gate reads the stored row, so the job has to exist and be
-        # owned by this caller. It used to be reachable without either, because an
+        # owned by this caller. Without that gate it is reachable without either, because an
         # unidentified caller was waved through -- which also meant a nonexistent
         # id could be POSTed to the dashboard.
         svc = CronService(base_dir=cfg_dir)

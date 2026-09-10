@@ -1,9 +1,8 @@
 """The ``agent.acp_backend`` axis has one comparison, and it lives in agent_sdk.
 
-Four places used to spell ``backend == ACP_BACKEND_CLAUDE`` independently:
+Four places spell the ``backend == ACP_BACKEND_CLAUDE`` decision:
 ``AcpProvider.is_claude_backend``, ``providers.acp.provider_label``,
-``session._is_claude_backend``, and ``AcpClient._is_claude``. Nothing asserted
-they agreed. Three now delegate to
+``session._is_claude_backend``, and ``AcpClient._is_claude``. Three delegate to
 :func:`kiro_crew.agent_sdk.backend_identity.is_claude_backend_name`; the client
 keeps its own for a layering reason this module pins so the exception stays
 deliberate.

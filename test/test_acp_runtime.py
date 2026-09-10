@@ -325,10 +325,10 @@ async def test_null_session_notification_broadcasts_to_all():
 async def test_ownerless_request_answered_once_not_broadcast():
     """A server→client REQUEST with no sessionId gets exactly ONE -32601 reply.
 
-    Before the fix it took the broadcast branch: every registered session's
-    dispatch loop classified it as server_request_unknown and each replied
-    -32601 on the shared stdin — one request id, N responses (issue #4864).
-    The runtime now answers it once at connection level and never enqueues it.
+    The runtime answers it once at connection level and never enqueues it. The
+    broadcast branch is wrong here: every registered session's dispatch loop
+    would classify it as server_request_unknown and each reply -32601 on the
+    shared stdin — one request id, N responses.
     """
     rt, reader, proc = _make_runtime()
     q = _register(rt, "sA", "sB")
@@ -667,8 +667,8 @@ async def test_oversize_stdout_frame_is_dropped_not_fatal():
     """A single JSON-RPC line over the stdout buffer must cost ONE frame, not
     the whole runtime.
 
-    Regression: the reader used to _mark_dead on overrun, which poisons every
-    multiplexed session's queue and fails every pending future — users saw
+    Marking the runtime dead on overrun would poison every multiplexed
+    session's queue and fail every pending future, surfacing as
     "process exited / chat failure" mid-turn after one huge tool result.
 
     Driven through a REAL StreamReader so this asserts asyncio's actual
@@ -721,8 +721,8 @@ async def test_unterminated_oversize_stdout_recovers_at_next_frame():
 async def test_oversize_frame_split_mid_multibyte_does_not_kill_demux():
     """The drained remainder must never reach json.loads.
 
-    Regression for a defect in the second cut of this fix: the drain consumed only
-    the buffered prefix and let the recovered tail through as a line. That tail is
+    The drain must not consume only the buffered prefix and let the recovered
+    tail through as a line, because that tail is
     a byte-slice cut at an arbitrary offset, so an oversize frame carrying
     multibyte UTF-8 (CJK, emoji — ordinary in tool output) splits a character;
     `json.loads` then raises UnicodeDecodeError, which is NOT a
@@ -762,11 +762,11 @@ async def test_oversize_frame_split_mid_multibyte_does_not_kill_demux():
 async def test_many_terminated_oversize_frames_never_exhaust_the_budget():
     """A run of oversize-but-properly-terminated frames must stay survivable.
 
-    Regression for a defect in the first cut of this fix: the guard counted
-    oversize *frames* rather than bytes-without-a-boundary, so a replay of N
-    newline-terminated >limit frames walked straight into runtime death even
-    though every one of them recovered a frame boundary. The budget is now scoped
-    to a single drain call, each of which provably ends on a boundary.
+    The guard counts bytes-without-a-boundary, not oversize *frames*: counting
+    frames would let a replay of N newline-terminated >limit frames walk
+    straight into runtime death even though every one recovers a frame
+    boundary. The budget is scoped to a single drain call, each of which
+    provably ends on a boundary.
     """
     rt, _, proc = _make_runtime()
     reader = asyncio.StreamReader(limit=256)
@@ -850,10 +850,10 @@ async def test_runtime_missing_kiro_bin_reports_the_directories_it_searched(back
     ``%ProgramFiles%\\Kiro-Cli`` and the ``KIROCREW_KIRO_BIN`` override, none of
     which is PATH.
 
-    That gap is what produced #6497. A Windows reporter read "not found in PATH",
-    ran ``where kiro-cli``, got nothing, saw the gateway's OWN ``kirocrew.exe``
-    in the app bundle, and concluded the agent CLI had been renamed and this
-    lookup left stale. It had not been: ``kirocrew`` is Kiro Crew's own console
+    That gap misleads. A "not found in PATH" message invites running
+    ``where kiro-cli``, getting nothing, seeing the gateway's OWN ``kirocrew.exe``
+    in the app bundle, and concluding the agent CLI is renamed and this
+    lookup is stale. It is not: ``kirocrew`` is Kiro Crew's own console
     script and ``kiro-cli`` is a separate prerequisite the message never said it
     was looking for anywhere but PATH.
 
@@ -1271,7 +1271,7 @@ async def test_mark_dead_is_idempotent():
     assert q["sA"].empty()
 
 
-# ── Death-log severity: deliberate teardown vs genuine death (#4052) ──
+# ── Death-log severity: deliberate teardown vs genuine death ──
 #
 # A warm-pool TTL recycle tears runtimes down via kill() on a schedule; logging
 # that at the same severity and shape as a crash made `kirocrew logs` misreport
@@ -1792,7 +1792,7 @@ async def test_prompt_resets_turn_done_when_send_request_fails():
     with pytest.raises(AcpRuntimeDead):
         await gen.__anext__()  # send_request fires on first iteration
 
-    # Recovered: turn no longer active, so the handle is reusable.
+    # Turn is not active, so the handle is reusable.
     assert handle.is_turn_active is False
 
 
@@ -2918,7 +2918,7 @@ async def test_dispatch_usage_update():
 async def test_dispatch_cost_and_prompt_tokens_reach_event_complete():
     """claude seam billing: a session-cumulative usage_update cost and the
     PromptResponse token counts are delta'd/folded into last_prompt_stats and
-    surfaced on EVENT_COMPLETE.usage — the wiring issue #6750 adds. Two turns
+    surfaced on EVENT_COMPLETE.usage. Two turns
     prove the delta: turn 2 is billed only its own movement of the cumulative
     counter, and its own token counts."""
     from kiro_crew.acp.types import EVENT_COMPLETE
@@ -3382,8 +3382,7 @@ async def test_prompt_error_response_raises():
 async def test_prompt_transient_error_sets_transient_flag():
     """A transient backend 5xx error response (a mid-stream InternalServerError
     surfaced as JSON-RPC -32603) raises AcpError with transient=True, so the
-    chat_runner / llm_helpers retry ladder fires instead of a bare error card.
-    Regression for the kiro raise site that previously lacked the flag."""
+    chat_runner / llm_helpers retry ladder fires instead of a bare error card."""
     from kiro_crew.acp.client import AcpError
 
     rt, reader, _ = _make_runtime()
@@ -3986,7 +3985,7 @@ class TestAcpRuntimePidTracking:
         The counterpart to the test above, and the reason that one has to stub
         `pid_exists` rather than rely on the ambient process table: untracking a
         process that outlived SIGTERM/SIGKILL escalation would leak it until
-        reboot, because the sweep would no longer have a handle on it.
+        reboot, because the sweep would then have no handle on it.
         """
         rt, _, proc = _make_runtime()
         proc.wait = AsyncMock(return_value=0)
@@ -4044,7 +4043,7 @@ class TestAcpRuntimeLoadSession:
             "sessionId": "sid-123",
             "cwd": "/work",
             # [] because _make_runtime configures no MCP-gateway overlay — the
-            # non-pooled path is unchanged by the #3528 stub re-declaration.
+            # non-pooled path is unchanged by the stub re-declaration.
             "mcpServers": [],
             "_meta": {"_kiro.dev/session_file": "/home/u/.kiro/sessions/cli/sid-123.json"},
         }
@@ -4287,10 +4286,10 @@ class TestAcpRuntimeLoadSession:
 
     @pytest.mark.asyncio
     async def test_load_session_redeclares_pooled_stubs(self, tmp_path, monkeypatch):
-        """#3528 regression: a resumed session must re-declare the pooled broker
-        stubs. session/load re-initializes the session's MCP servers, so the []
-        this path used to send was APPLIED — the stubs stopped shadowing the
-        agent spec's same-named entries and kiro-cli spawned its own copy of
+        """A resumed session must re-declare the pooled broker
+        stubs. session/load re-initializes the session's MCP servers, so a []
+        sent here applies: the stubs stop shadowing the
+        agent spec's same-named entries and kiro-cli spawns its own copy of
         every pooled server, silently un-pooling the session for life.
 
         Asserts on the EMITTED mcpServers of both requests: load_session must
@@ -4375,8 +4374,8 @@ class TestAcpRuntimeLoadSession:
         assert all(t is not loop_thread for t in seen)
 
     def test_every_session_request_builder_consults_pooled_servers(self):
-        """#3528 guard: the stub injection now lives at multiple call sites in
-        two files, and this bug was exactly one of them silently sending [].
+        """The stub injection lives at multiple call sites in
+        two files, and a call site silently sending [] is the failure this guards.
         Enumerate every function that issues session/new or session/load and
         assert each one consults the pooled-stub resolution (either
         pooled_session_servers directly or the _pooled_mcp_servers hook), so a
@@ -4564,9 +4563,9 @@ async def test_failed_session_init_oauth_does_not_leak_to_reused_id():
 
 @pytest.mark.asyncio
 async def test_steer_notifications_yield_steer_events():
-    """#4: steering_* session/update frames classify as "steer" and yield the
-    EVENT_STEER_* events (previously dropped — classify_notification had no steer
-    branch, so the shared demux path never surfaced mid-turn steer)."""
+    """steering_* session/update frames classify as "steer" and yield the
+    EVENT_STEER_* events. Without a steer branch in classify_notification the
+    shared demux path never surfaces mid-turn steer."""
     from kiro_crew.acp.types import (
         EVENT_STEER_CLEARED,
         EVENT_STEER_CONSUMED,
@@ -4972,7 +4971,7 @@ async def test_create_session_records_the_wire_roster(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_drain_init_waits_past_idle_window_for_first_mcp_report(monkeypatch):
-    """#2627: the idle shortcut is not eligible before the first MCP
+    """The idle shortcut is not eligible before the first MCP
     registration frame. A server that stays silent past the idle window and
     THEN reports is still observed — non-MCP frames (metadata) that arrive
     immediately after set_mode must not arm the shortcut either."""
@@ -5002,7 +5001,7 @@ async def test_drain_init_waits_past_idle_window_for_first_mcp_report(monkeypatc
 
 @pytest.mark.asyncio
 async def test_drain_init_no_reports_returns_at_ceiling():
-    """#2627: a drain that never sees an MCP report returns at the no-report
+    """A drain that never sees an MCP report returns at the no-report
     ceiling instead of hanging (bounded even when servers are dead or absent)."""
     rt, _, _ = _make_runtime()
     q = _register(rt, "sA")
@@ -5019,7 +5018,7 @@ async def test_drain_init_no_reports_returns_at_ceiling():
 
 @pytest.mark.asyncio
 async def test_drain_init_idle_exit_stays_prompt_after_first_report():
-    """#2627: once a report has been seen, a subsequent idle gap still exits
+    """Once a report has been seen, a subsequent idle gap still exits
     promptly — the warm path must not degrade into full-ceiling waits. The
     ceilings are deliberately huge relative to the outer bound, so completing
     inside it proves the idle shortcut (not a ceiling) ended the drain."""
@@ -5036,8 +5035,8 @@ async def test_drain_init_idle_exit_stays_prompt_after_first_report():
 
 @pytest.mark.asyncio
 async def test_drain_init_zero_ceiling_keeps_idle_exit_active_from_start():
-    """#2627: no_report_ceiling=0.0 (MCP-free runtime opt-out) restores the
-    pre-fix behavior — idle exit is active before any report, so an empty
+    """no_report_ceiling=0.0 (MCP-free runtime opt-out) keeps idle exit
+    active before any report, so an empty
     queue exits after one idle window instead of holding for a first report."""
     rt, _, _ = _make_runtime()
     q = _register(rt, "sA")
@@ -5054,7 +5053,7 @@ async def test_drain_init_zero_ceiling_keeps_idle_exit_active_from_start():
 
 @pytest.mark.asyncio
 async def test_mcp_free_runtime_skips_no_report_ceiling(monkeypatch):
-    """#2627: a runtime constructed with expect_mcp_reports=False passes the
+    """A runtime constructed with expect_mcp_reports=False passes the
     zero ceiling to drain_init, so its sessions never hold for a report."""
     rt = AcpRuntime(work_dir="/tmp", expect_mcp_reports=False)
     rt._initialized = True
@@ -5084,7 +5083,7 @@ async def test_mcp_free_runtime_skips_no_report_ceiling(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_drain_init_ignores_pre_switch_reports_still_waits_for_new_agent(monkeypatch):
-    """#2627 (review): on a shared runtime, session/new initializes the
+    """On a shared runtime, session/new initializes the
     PARENT mode's servers; their staged registration frames must not arm the
     idle shortcut for a session that was then mode-SWITCHED — the switched-to
     agent's own slow server, reporting after set_mode, must still be observed."""
@@ -5115,7 +5114,7 @@ async def test_drain_init_ignores_pre_switch_reports_still_waits_for_new_agent(m
 
 @pytest.mark.asyncio
 async def test_reader_retains_mcp_registration_frames_during_init():
-    """#2627: server_initialized / init_failure emitted before the session/new
+    """server_initialized / init_failure emitted before the session/new
     response are staged (like OAuth) and handed to the new session's queue, so
     drain_init() sees warm servers' reports and arms its idle shortcut."""
     rt, reader, _ = _make_runtime()
@@ -6161,7 +6160,7 @@ def test_protected_runtime_pid_lands_in_sweep_active_set():
         unregister_protected_pid(companion_pid)
         unregister_protected_pid(bg_pid)
 
-    # Once unregistered (runtime died), they are no longer shielded.
+    # Once unregistered (runtime died), they are not shielded.
     active_after, _ = _collect_active_pids({})
     assert companion_pid not in active_after
     assert bg_pid not in active_after
@@ -6525,7 +6524,7 @@ def test_drop_counter_handles_missing_method():
 
 # The two key halves come straight from backend JSON, which is untrusted and
 # type-unchecked (JsonRpcMessage.from_dict copies `method` / `params` verbatim).
-# A wrong-typed value used to raise TypeError inside _reader_loop — the SINGLE
+# A wrong-typed value can raise TypeError inside _reader_loop — the SINGLE
 # owner of this process's stdout — killing every multiplexed session over one
 # malformed frame. These lock in that the frame is counted and the demux lives.
 
@@ -6694,7 +6693,7 @@ async def test_create_session_fails_closed_when_agent_not_advertised():
 
 @pytest.mark.asyncio
 async def test_create_session_fails_closed_when_available_modes_empty():
-    """Regression (GPT round 2): an explicitly-empty `availableModes: []` is
+    """An explicitly-empty `availableModes: []` is
     ADVERTISED (not absent), so it must fail closed — not be treated as
     "no modes → attempt" and then fault with "Mode not found"."""
     rt, _, _ = _make_runtime()
@@ -6917,7 +6916,7 @@ def test_parse_session_modes_shapes():
     assert advertised is True
 
 
-# ── Session-start timeout budget (#2946) ──
+# ── Session-start timeout budget ──
 #
 # kiro-cli blocks the session/new (and session/load) response while it
 # initializes the session's MCP servers; a remote server pending OAuth holds
@@ -6983,8 +6982,8 @@ async def test_create_set_mode_call_site_passes_budget_above_request_timeout(
     generic _REQUEST_TIMEOUT. Switching to an agent boots THAT agent's MCP
     servers (the same (re-)initialization session/new gets 90s for); a
     switched-to server pending OAuth holds the response for its full 30s wait,
-    so the generic 30s budget races it exactly as it would session start
-    (#9185). set_mode fires here because the session/new response advertises
+    so the generic 30s budget races it exactly as it would session start.
+    set_mode fires here because the session/new response advertises
     no `modes` list (older/fake backend -> attempt)."""
     rt, _, _ = _make_runtime()
     seen: dict[str, object] = {}
@@ -7011,7 +7010,7 @@ async def test_load_set_mode_call_site_passes_budget_above_request_timeout(
 ):
     """The resume path's set_mode is gated by the same switched-to-agent MCP
     (re-)initialization as create_session's, so it must carry session/load's
-    budget rather than the generic _REQUEST_TIMEOUT (#9185). The session/load
+    budget rather than the generic _REQUEST_TIMEOUT. The session/load
     response echoes `modes` (a genuine resume), which is also what makes
     _mode_available admit the switch."""
     rt, _, _ = _make_runtime()
@@ -7096,7 +7095,7 @@ def test_runtime_construction_never_touches_config(monkeypatch):
 
 def test_resolve_session_start_timeout_floors_and_falls_back(monkeypatch):
     """The resolver never returns below the built-in floor (a budget under the
-    backend's 30s OAuth wait recreates the #2946 race), and any config-load
+    backend's 30s OAuth wait recreates the race), and any config-load
     failure degrades to the default instead of breaking runtime construction."""
     from types import SimpleNamespace
 
@@ -7139,10 +7138,9 @@ async def test_send_and_await_timeout_error_names_the_budget():
 # A `session/request_permission` REQUEST for a sessionId this client never
 # registered comes from a backend-internal subagent (e.g. kiro-cli's own
 # `subagent` tool). Dropping it strands the backend's response oneshot and
-# wedges the child's whole tool batch until process teardown — the 2026-08-15
-# crew incident hung 13 such approvals for 2 hours. These tests pin the fix:
-# the runtime answers the request itself, with the request's own reject
-# option, and never counts it as a dropped frame.
+# wedges the child's whole tool batch until process teardown. These tests pin
+# the behaviour: the runtime answers the request itself, with the request's
+# own reject option, and never counts it as a dropped frame.
 
 
 def _last_written_frame(proc) -> dict:
@@ -9396,7 +9394,7 @@ async def test_cancel_during_drain_reject_does_not_wedge_handle():
     assert not q["sA"].empty()
 
 
-# ── store_session_config: resolved-model capture (issue #5869) ──
+# ── store_session_config: resolved-model capture ──
 
 
 def test_store_session_config_adopts_sole_advertised_model_when_no_current_id():
@@ -9632,7 +9630,7 @@ class TestParseAdvertisedModels:
 
 
 class TestStoreSessionConfigParseConsolidation:
-    """Drift-pin (#6382): ``store_session_config`` sources its model list from
+    """Drift-pin: ``store_session_config`` sources its model list from
     ``parse_advertised_models``, so the session-init snapshot can never drift
     from what a pooled-runtime probe would parse out of the same payload."""
 
@@ -9686,7 +9684,7 @@ class TestStoreSessionConfigParseConsolidation:
         ]
 
     def test_dict_branch_delegates_to_canonical_parser(self, monkeypatch):
-        """Anti-re-fork pin (#6382): the dict branch must SOURCE its list from
+        """Anti-re-fork pin: the dict branch must SOURCE its list from
         ``parse_advertised_models`` AND call it with the checked-binding
         envelope — a restored inline walk, a whole-response re-resolution, or
         a wrong envelope all fail this pin."""

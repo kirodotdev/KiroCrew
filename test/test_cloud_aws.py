@@ -34,7 +34,7 @@ class TestBuildArgv:
     def test_argv_head_resolved_absolutely_under_minimal_path(self, monkeypatch, tmp_path):
         """A GUI-launched gateway's minimal PATH must not yield a bare 'aws'
         head that fails execvp: the builder routes through the deploy engine's
-        well-known-dirs resolver (#4770)."""
+        well-known-dirs resolver."""
         import os as _os
 
         if _os.name == "nt":

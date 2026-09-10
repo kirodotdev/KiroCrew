@@ -735,7 +735,7 @@ class TestUploadedAvatarEndpoints:
         """Save A's token must not commit save B's bytes.
 
         Sequence: A stages PNG (token A); B stages JPG over the same slot;
-        A's PUT arrives with token A — the staged bytes no longer match, so
+        A's PUT arrives with token A — the staged bytes do not match, so
         nothing is promoted and A's commit fails avatar_file_missing rather
         than installing B's picture under A's intent.
         """
@@ -760,7 +760,7 @@ class TestUploadedAvatarEndpoints:
         With a picture already live, a stale-token promote could quietly
         keep the old file and return 200 — the save the user just made
         would claim success while their selected replacement was dropped.
-        It must fail, and the previously saved picture must stay intact.
+        It must fail, and the already-saved picture must stay intact.
         """
         from aiohttp.test_utils import TestClient, TestServer
 

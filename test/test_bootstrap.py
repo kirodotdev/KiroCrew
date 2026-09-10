@@ -118,7 +118,7 @@ def test_self_heal_refuses_outside_source_checkout(monkeypatch):
 
 
 def test_self_heal_runs_on_windows_through_the_dependency_only_path(monkeypatch, tmp_path):
-    """Windows heals now. It used to be the one platform that never did.
+    """Windows heals through the dependency-only path.
 
     The blanket skip was there because pip cannot replace the running
     ``kirocrew.exe`` — but a dependency install never touches that wrapper, and a

@@ -1,4 +1,4 @@
-"""Unreachable-gatewayd reclamation (issue #3315).
+"""Unreachable-gatewayd reclamation.
 
 Two layers under test:
 

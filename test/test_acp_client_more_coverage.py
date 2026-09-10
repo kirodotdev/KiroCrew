@@ -437,7 +437,7 @@ class TestClientAccessors:
 
         assert client._session_key == "new"
         assert client._channel_id == "C-new"
-        # Stale context must not be handed to the new chat (#2932).
+        # Stale context must not be handed to the new chat.
         assert client.last_prompt_stats.context_pct == 0.0
         assert client.last_prompt_stats.context_used_tokens == 0
         assert client.last_prompt_stats.context_window_tokens == 0
@@ -688,9 +688,9 @@ class TestEnsureReady:
         """A gate refusal is a configuration fact, so a respawn re-reads it.
 
         ``AcpToolGateUnroutable`` documents itself Non-retryable, but it subclasses
-        ``AcpError``, so the generic transport ladder used to retry it: attempt 0
-        tore the child down, respawned, hit the identical refusal, and only then
-        raised. That is one wasted spawn plus teardown, and it spends the reconnect
+        ``AcpError``, so the generic transport ladder would retry it: attempt 0
+        tears the child down, respawns, hits the identical refusal, and only then
+        raises. That is one wasted spawn plus teardown, and it spends the reconnect
         budget the distinct type exists to protect.
 
         Revert-verified: dropping the dedicated handler makes both counters 2.

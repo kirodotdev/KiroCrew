@@ -4,9 +4,9 @@
 corpus is an INDEX SPACE: `before`/`next_before` cursors and the fork index path
 both resolve a rendered row's position against it. So a segment that cannot be
 read does not merely hide its own rows -- it shifts every index above them, and
-the shift is invisible. A reader pages positions that no longer mean what they
-meant, and an index-addressed fork copies a different cutoff than the one on
-screen.
+the shift is invisible. A reader then pages positions that mean something other
+than what they name, and an index-addressed fork copies a different cutoff than
+the one on screen.
 
 Both consumers already turn a raised read failure into a retryable 503, which is
 strictly better than a truncated transcript nobody can see is truncated.
@@ -86,9 +86,9 @@ def test_an_unreadable_segment_raises_instead_of_shortening_the_corpus(
 def test_both_consumers_turn_the_failure_into_a_retryable_error() -> None:
     """The raise only helps if neither call site folds it back into "no archive".
 
-    Both handlers previously assigned an empty list on failure, which is their own
-    encoding of "this session has no archive" -- so the exception would have been
-    swallowed into the same silent truncation by a different route.
+    A handler that assigns an empty list on failure is spelling its own encoding
+    of "this session has no archive", which swallows the exception into the same
+    silent truncation by a different route.
     """
     root = Path(__file__).resolve().parents[1] / "src" / "kiro_crew" / "dashboard"
     handlers = (root / "chat_handlers.py").read_text(encoding="utf-8")

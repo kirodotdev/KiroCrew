@@ -437,7 +437,7 @@ class TestDrainPendingContext:
     def test_frame_carries_silent_consumption_contract(self):
         """Every drained block instructs the agent to consume it silently.
 
-        Regression for #4780: the feature-request seed (and any other
+        The feature-request seed (and any other
         pending-context producer) was framed with a bare source label and no
         consumption contract, so on a fresh session the agent recited the
         injected workflow verbatim as its visible reply. The contract line
@@ -1205,7 +1205,7 @@ class TestFlushSegment:
         assert "AKIAIOSFODNN7EXAMPLE" not in assistants[0]["content"]
 
     def test_a_redacted_connection_string_warns_the_user(self, tmp_path):
-        """issue #6189: the corruption must not be silent.
+        """The corruption must not be silent.
 
         Uses the reporter's exact command. The assistant row keeps the mangled
         text (redaction is not weakened), but a notice row now follows it saying
@@ -1261,7 +1261,7 @@ class TestFlushSegment:
 
         `redact_credentials` pass 2 substitutes `[REDACTED: encoded credential]`,
         which is not a substring of the plaintext tag. Counting only the plaintext
-        tag left this segment silently rewritten -- the same #6189 failure, just
+        tag left this segment silently rewritten -- the same failure, just
         reached by another pass.
         """
         import base64
@@ -1308,7 +1308,7 @@ class TestFlushSegment:
         assert len(set(CREDENTIAL_REDACTION_TAGS)) == len(CREDENTIAL_REDACTION_TAGS)
 
     def test_a_redacted_url_warns_the_user(self, tmp_path):
-        """issue #8132: a URL rewrite must not be silent either.
+        """A URL rewrite must not be silent either.
 
         `redact_exfiltration_urls` runs a few lines above the credential pass in
         the same flush and rewrites a URL to `[REDACTED: suspicious URL to
@@ -1342,7 +1342,7 @@ class TestFlushSegment:
         assert notice["cls"] == "msg msg-info"
 
     def test_a_credential_only_notice_does_not_mention_urls(self, tmp_path):
-        """Regression guard on #8109: the credential wording is unchanged."""
+        """The credential wording is unchanged."""
         state, slot = _state(tmp_path), _slot()
 
         chat_runner._flush_segment(
@@ -1392,7 +1392,7 @@ class TestFlushSegment:
 
 
 class TestAppendRedactionNotice:
-    """Unit coverage for the shared notice helper (issue #8311).
+    """Unit coverage for the shared notice helper.
 
     ``_flush_segment`` and the seven exception/teardown persists all route
     through ``_append_redaction_notice`` so the credential-redaction notice
@@ -1446,7 +1446,7 @@ class TestAppendRedactionNotice:
         """A base64-encoded credential is redacted by a DIFFERENT pass and tag.
 
         Counting only the plaintext tag would leave this silently rewritten --
-        the same #6189 failure, reached by another pass. The helper reads
+        the same failure, reached by another pass. The helper reads
         ``CREDENTIAL_REDACTION_TAGS`` so a newly added tag cannot escape.
         """
         import base64
@@ -1472,7 +1472,7 @@ class TestAppendRedactionNotice:
 
 
 class TestExceptionPathRedactionNotice:
-    """The notice must fire on the exception/teardown persists too (issue #8311).
+    """The notice must fire on the exception/teardown persists too.
 
     Seven branches finalize a pasteable assistant body directly via
     ``slot.append("assistant", <redacted>, "msg msg-a")`` and bypass
@@ -2532,7 +2532,7 @@ class TestStartNextQueuedTurn:
 
         The note's context half drains inside that turn's ``_run_chat``, so
         flushing after it started would put the visible line below the response
-        the note shaped. Only ``_finish_queue_cycle`` used to flush, and the main
+        the note shaped. Only ``_finish_queue_cycle`` flushes, and the main
         dispatch path calls it AFTER this function.
         """
         state, slot = _state(tmp_path), _slot()
@@ -3343,8 +3343,7 @@ class TestRunChatRecoveryLadders:
         """A PERMANENT compaction failure is terminal: the reason is in the
         "error:" family, so without its own branch it lands in pipe-death
         recovery — a re-queue plus a "Connection lost" card, both false. An
-        overflowing conversation fails again identically, so it earns no retry
-        (issue #3583)."""
+        overflowing conversation fails again identically, so it earns no retry."""
         state, client = _runner_state(tmp_path)
         slot = _slot()
         _set_stream(
@@ -4445,7 +4444,7 @@ class TestPromptSubmitTranscriptRead:
     ``_run_chat`` compares the in-memory message count against the on-disk one to
     decide whether a reset session needs its history re-injected. That disk count
     comes from ``read_messages``, which parses the whole transcript -- 100-300 ms
-    on a large store, on the hottest path there is (issue #7408).
+    on a large store, on the hottest path there is.
     """
 
     @pytest.mark.asyncio

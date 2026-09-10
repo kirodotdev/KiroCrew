@@ -489,7 +489,7 @@ def _log_with_titles(*titles: str) -> _ConversationLog:
 async def test_sessions_finds_a_session_by_conversation_content() -> None:
     """The original bug: searching a phrase from the CONVERSATION, not the title.
 
-    The picker used to call ``list_sessions`` and filter on titles only, so a
+    A picker calling ``list_sessions`` and filtering on titles only means a
     query the user remembered from the discussion could never match. Routing
     through the shared ``search_sessions`` -- the same one the dashboard uses --
     makes message content searchable.
@@ -518,7 +518,7 @@ async def test_sessions_finds_a_session_by_conversation_content() -> None:
 async def test_sessions_cjk_query_reaches_title_fallback() -> None:
     """A spaceless CJK query must trigger the zero-hit TITLE fallback.
 
-    The fallback used to gate on a whitespace word count, which a spaceless
+    The fallback must not gate on a whitespace word count, which a spaceless
     CJK query (one "word") never satisfied — so when the shared search found
     nothing, the fallback silently demanded the literal title substring. The
     gate now derives from the same parse_search_query needles as the shared
@@ -1217,7 +1217,7 @@ async def test_cold_resume_does_not_stamp_channel_or_retitle() -> None:
     """A cold resumed session must not get new-session bookkeeping.
 
     The picker lists *history*, so most picks are not live and `get_or_create`
-    returns is_new=True. Treating that as a new session used to (a) write
+    returns is_new=True. Treating that as a new session would (a) write
     `discord:<id>` into the dashboard session's legacy slack_channel_id — which
     survives `!unlink` and makes every later pick refuse with "already active on
     Slack" — and (b) overwrite the conversation's title with the Discord message.
@@ -1433,8 +1433,8 @@ async def test_option_press_routes_into_resumed_session() -> None:
     own reply (and carry its provenance tag), so the choice belongs to that
     session. Before the fix the press ran in the native DM session: the click
     answered a question nobody asked there, while the bound session kept waiting
-    for its answer (live incident 2026-08-30: a merge-approach choice for the
-    bound session green-lit the native session's parked debug plan instead).
+    for its answer (e.g. a merge-approach choice for the bound session would
+    green-light the native session's parked debug plan instead).
     """
     log = _log()
     dispatcher, client, sessions = _dispatcher({"u1"}, log)
@@ -1454,9 +1454,9 @@ async def test_untagged_press_is_refused_fail_closed() -> None:
 
     Discord replays old components indefinitely, so an untagged press can never
     prove which session it belongs to — and routing it by current binding is
-    exactly the cross-session injection this fix exists to stop (server review
-    round 1, span 405abadda748: the legacy pass-through never ages out, so it
-    was the same hole with a different door). Fail closed with a type-it-instead
+    exactly the cross-session injection this fix exists to stop (the legacy
+    pass-through never ages out, so it is the same hole with a different door).
+    Fail closed with a type-it-instead
     notice; no echo, no turn anywhere.
     """
     log = _log()
@@ -1501,7 +1501,7 @@ async def test_stale_tagged_press_after_rebind_is_refused() -> None:
     Discord replays old components indefinitely: A's reply keeps its live buttons
     after ``!unlink`` + ``!sessions`` rebinds the DM to B. Routing alone would send
     the press into B — injecting A's model-authored choice into an unrelated
-    transcript, the GPT round-1 blocker. The provenance tag makes the press valid
+    transcript. The provenance tag makes the press valid
     only while the conversation still targets the session that posted it.
     """
     log = _log_with_titles("Alpha plan", "Beta plan")
@@ -1537,7 +1537,7 @@ async def test_press_tagged_for_pre_new_conversation_is_refused() -> None:
     """``!new`` invalidates the previous conversation's buttons.
 
     The native key embeds the generation, so a press carrying the pre-``!new``
-    tag no longer matches — honest, since the conversation that asked the
+    tag does not match — honest, since the conversation that asked the
     question is over. Before the tag the press ran silently in the fresh
     generation, answering a question it never asked.
     """
@@ -1586,8 +1586,8 @@ async def test_valid_tagged_press_against_busy_target_is_refused_not_queued_or_s
     ``_handle_busy`` enqueues bare text (or steers it mid-turn), and the drain
     replays queued text WITHOUT the provenance tag — so a ``!new`` or idle
     rotation between enqueue and drain would execute the model-authored choice
-    in a conversation the tag never named (server review round 2, span
-    405abadda748). The busy path is therefore unreachable for any tagged press.
+    in a conversation the tag never named. The busy path is therefore
+    unreachable for any tagged press.
     """
     dispatcher, client, sessions = _dispatcher({"u1"}, _log())
     tag = session_provenance_tag(dispatcher.current_session_key("u1"))
@@ -1710,7 +1710,7 @@ async def test_choice_refuses_occupied_discord_conversation() -> None:
 
 @pytest.mark.asyncio
 async def test_choice_refusal_for_outbound_mirror_names_unlink() -> None:
-    # The outbound-only occupant used to get "Unlink the existing dashboard
+    # An outbound-only occupant would get "Unlink the existing dashboard
     # mirror first" — an instruction with no in-channel action. `!unlink` now
     # clears outbound mirrors by location, so the guidance is unified and must
     # name the command for BOTH occupant kinds.
@@ -1727,7 +1727,7 @@ async def test_choice_refusal_for_outbound_mirror_names_unlink() -> None:
     assert "dashboard:chat-1" not in sessions.mirror_links
     assert any("Run `!unlink` first" in text for _, text, _ in client.edits)
     # And the instruction is followable: the sweep frees the location, after
-    # which the conflict check no longer refuses.
+    # which the conflict check does not refuse.
     sessions.clear_mirror_links_at(ChannelLink(channel_type="discord", channel_id="c1"))
     conflict = dispatcher._session_resume._binder.binding_conflict(
         "dashboard:chat-1",
@@ -2035,10 +2035,10 @@ class TestBindingLostUnderTheConversation:
     async def test_releasing_an_unrecorded_binding_leaves_evidence_before_mutation(self) -> None:
         """A failed release records evidence first, then changes NOTHING -- live map too.
 
-        The in-memory clear happens before the flush, so a flush failure used to leave the
+        The in-memory clear happens before the flush, so a flush failure would leave the
         binding gone in this process while the command reported failure. Two things were
-        wrong with that pair: the very next message was refused with "Detached: no longer
-        linked" moments after being told the unlink did not happen, and the map on disk
+        wrong with that pair: the very next message was refused as detached moments
+        after being told the unlink did not happen, and the map on disk
         still held the binding, so a restart revived it and split one history in two -- the
         exact harm the sibling test names. The release now rolls the clear back, so the
         report, the live map and the persisted map all agree and the conversation carries

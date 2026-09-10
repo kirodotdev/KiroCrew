@@ -223,7 +223,7 @@ def test_clearing_an_auto_pause_re_enables_the_job() -> None:
     ``_job_enabled`` reconstructs it on load as ``not user_paused and not
     auto_paused``. A job left disabled-but-not-auto-paused is paused in memory
     and enabled on disk, so it stays stopped until a restart silently resumes
-    it — the surprise a manual run on an auto-paused job used to create.
+    it — the surprise a manual run on an auto-paused job can create.
     """
     job = CronJob(
         id="g1",

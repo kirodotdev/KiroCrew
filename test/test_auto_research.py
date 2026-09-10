@@ -106,7 +106,7 @@ class TestValidation:
         assert r["can_start"]
 
     def test_sources_optional(self):
-        # Sources are no longer collected/required — the agent decides what to fetch.
+        # Sources are not collected or required — the agent decides what to fetch.
         r = validate_campaign({"question": "A valid research question here ok", "sources": []})
         assert r["can_start"]
 
@@ -215,7 +215,7 @@ class TestValidation:
         )
         assert not r["can_start"]
         assert any("too long" in e for e in r["errors"])
-        # And the normalizer no longer slices: it returns the trimmed input.
+        # The normalizer does not slice: it returns the trimmed input.
         assert _campaign_model({"model": f"  {long_id}  "}) == long_id
 
 
@@ -2208,7 +2208,7 @@ class TestResearchAgentInstall:
     def _install_real(self, monkeypatch, tmp_path) -> dict:
         """Install with the REAL build_agent_config — the fix under test lives
         inside it, so stubbing it (as the identity test above does) would
-        bypass exactly the path #7401 is about."""
+        bypass exactly the path under test."""
         from kiro_crew import agent
 
         monkeypatch.setattr(agent, "KIRO_AGENTS_DIR", tmp_path)
@@ -2223,7 +2223,7 @@ class TestResearchAgentInstall:
         auto-approved, its calls never reach ``hooks.on_tool_call``, so the
         sensitive-path check, the write-protected-config check, the governance
         ceiling and the SEL deny record are all skipped — for the least
-        supervised agent in the product (#7401).
+        supervised agent in the product.
         """
         data = self._install_real(monkeypatch, tmp_path)
         leaked = self._floor_builtins().intersection(data.get("allowedTools", []))

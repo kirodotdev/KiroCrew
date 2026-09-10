@@ -292,7 +292,7 @@ class TestSubagentDoneCancelsBeforeRelease:
             patch("kiro_crew.slack.gateway.stream_and_collect", new_callable=AsyncMock, return_value="ok"),
             # gateway renders through the shared Slack pipeline now, so this is
             # the one seam to stub -- patching to_slack_mrkdwn/split_message
-            # individually no longer intercepts anything.
+            # individually does not intercept anything.
             patch("kiro_crew.slack.gateway.render_for_slack", return_value=["ok"]),
             p1, p2,
         ):

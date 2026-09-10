@@ -1,7 +1,7 @@
 """Tests for the table-driven string-field validation at the cron persistence
-chokepoint (issue #5782).
+chokepoint.
 
-``_build_job`` and ``_update_job_locked`` now iterate a single
+``_build_job`` and ``_update_job_locked`` iterate a single
 ``_CRON_STRING_FIELD_CAPS`` table to enforce type+length on every
 caller-supplied string field. These tests lock that guarantee:
 

@@ -80,11 +80,10 @@ async def test_patch_clear_model_resumes_tracking(tmp_path):
 async def test_patch_without_model_lifts_stale_bookkeeping_keys(tmp_path):
     """A PATCH that never touches ``model`` still runs the shared strip/lift rule.
 
-    Regression for a design-review follow-up on #2570: this PATCH handler used
-    to unconditionally ``data.pop(...)`` these two keys, discarding a legacy
-    value already on disk instead of lifting it into the sidecar the way the
-    other three writers (PUT, migrate_agent_specs, _refresh_dynamic_fields) do.
-    Routing through ``agent_state.lift_and_strip_bookkeeping`` closes that gap.
+    This PATCH handler must lift a legacy value already on disk into the sidecar
+    rather than ``data.pop(...)`` the two keys away, the way the other three
+    writers (PUT, migrate_agent_specs, _refresh_dynamic_fields) do. It routes
+    through ``agent_state.lift_and_strip_bookkeeping`` to guarantee that.
     """
     cfg = tmp_path / "kirocrew.json"
     cfg.write_text(

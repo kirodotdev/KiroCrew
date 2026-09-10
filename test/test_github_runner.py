@@ -3,7 +3,7 @@
 One module now owns trusted-binary resolution, the minimal child environment,
 and the SEL-audited spawn chokepoint for every ``gh``-spawning surface (the
 dashboard PR sidebar, Issue Radar, Code Review Sage). These tests lock in the
-properties that used to drift between the three copies:
+properties that would otherwise drift between the three callers:
 
 * resolver precedence (caller override → ``KIROCREW_GH_BIN`` → candidates),
   including the fail-loud rule for an override that is SET but empty or wrong
@@ -29,7 +29,7 @@ import pytest
 
 pytestmark = pytest.mark.skipif(
     sys.platform == "win32",
-    # NOT because the hardening is POSIX-only -- it no longer is. These
+    # NOT because the hardening is POSIX-only -- it is not. These
     # assertions pin the POSIX policy's own messages ("world-writable", "owned
     # by another user (uid ...)") and build `#!/bin/sh` gh stubs, none of which
     # the Windows branch produces or can execute. The Windows policy has its
@@ -556,7 +556,7 @@ class TestReExports:
             runner.parse_github_repo_url("https://evil.example/o/r")
 
     def test_source_providers_gh_auth_keys_derive_from_the_canonical_union(self):
-        """D3 lock-in: the sidebar's gh key set can no longer drift from the
+        """D3 lock-in: the sidebar's gh key set cannot drift from the
         app-side passthrough — it derives from the runner's canonical list,
         minus the enterprise tokens its github.com-pinned child can never use."""
         from kiro_crew.dashboard.handlers import source_providers

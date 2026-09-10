@@ -1,12 +1,12 @@
-"""Regression guards for issue #3504: cli.py's module-scope import weight.
+"""Regression guards for cli.py's module-scope import weight.
 
-``cli.py`` used to import ``cli_commands`` (~556 ms), ``cli_server`` (~549 ms,
+``cli.py`` imports ``cli_commands`` (~556 ms), ``cli_server`` (~549 ms,
 pulling ``slack.gateway``) and ``dashboard.state`` (pulling ``vector_memory``
-→ ``numpy``, ~56 MB) at module scope, so every CLI invocation and — worse —
+→ ``numpy``, ~56 MB) inside the one ``main()`` dispatch branch that uses each
+name, not at module scope. At module scope every CLI invocation and — worse —
 every long-lived MCP stdio server (``kirocrew mcp-core`` / ``mcp-cron`` /
-``mcp-computer``) paid ~1.3 s and ~112 MB for subcommands that never run.
-Those imports were moved into the one ``main()`` dispatch branch that uses
-each name, cutting a fresh ``import kiro_crew.cli`` to ~0.5 s / ~54 MB.
+``mcp-computer``) would pay ~1.3 s and ~112 MB for subcommands that never run;
+a fresh ``import kiro_crew.cli`` instead costs ~0.5 s / ~54 MB.
 
 The tests here keep it that way:
 

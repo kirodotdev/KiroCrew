@@ -302,7 +302,7 @@ class TestUncProbeGate:
         if os.name == "nt":
             assert hooks.unc_probe_allowed(r"\\fileserver\other\x.png") is False
 
-    # --- kiro agents dir as a trusted UNC root (#6721) ----------------------
+    # --- kiro agents dir as a trusted UNC root ----------------------
     #
     # Forward-slash UNC spellings are used for every assertion that must hold
     # on the Linux CI box: ``normcase``/``normpath`` leave a ``//host/share``
@@ -318,7 +318,7 @@ class TestUncProbeGate:
         monkeypatch.setattr("kiro_crew.config.paths.kiro_agents_dir", lambda: agents_dir)
 
     def test_unc_kiro_agents_dir_is_allowed(self, monkeypatch, tmp_path):
-        """Headline #6721: on a roaming-profile (UNC) home, a spec under the
+        """On a roaming-profile (UNC) home, a spec under the
         kiro agents dir passes the gate. The data home is patched LOCAL so the
         admission can only come from the new agents root."""
         self._patch_roots(monkeypatch, tmp_path, Path(self._UNC_KIRO_HOME + "/agents"))
@@ -370,7 +370,7 @@ class TestUncProbeGate:
         assert hooks.unc_probe_allowed("//evil/share/x.png") is False
 
     def test_agents_root_is_resolved_once_per_configuration(self, monkeypatch, tmp_path):
-        """Review finding (#6728 round 2): ``kiro_agents_dir()`` resolves
+        """``kiro_agents_dir()`` resolves
         ``KIRO_HOME`` (``Path.resolve()`` -- filesystem I/O, SMB on a UNC
         override), so the gate must NOT consult it per check. The root is
         memoized on the raw ``KIRO_HOME`` + accessor identity; repeated gate
@@ -457,7 +457,7 @@ class TestUncProbeGate:
         "the outbound SMB probe the gate exists to prevent",
     )
     def test_read_agent_spec_under_unc_agents_dir(self, monkeypatch, tmp_path):
-        """End-to-end #6721 symptom: a spec under a UNC-shaped kiro agents dir
+        """A spec under a UNC-shaped kiro agents dir
         parses instead of silently reading as absent (``None``).
 
         Windows-resolver simulation, stated per the task spec: hooks' view of
@@ -782,7 +782,7 @@ class TestImageEncodedBudget:
 
 
 class TestSummarizePromptStructure:
-    """Content-free outbound-request STRUCTURE diagnostics (issue #6022).
+    """Content-free outbound-request STRUCTURE diagnostics.
 
     The summary lets an operator tell a stale/invalid model id apart from a
     structurally malformed payload the next time a turn is rejected as
@@ -853,7 +853,7 @@ class TestSummarizePromptStructure:
         assert out["total_bytes"] > 0
 
     def test_summary_contains_no_message_content(self):
-        """The #6022 hard requirement: a content sentinel placed in a block's
+        """A content sentinel placed in a block's
         text must not appear anywhere in repr() of the summary."""
         sentinel = "SENTINEL_SECRET_TOKEN_ghp_deadbeef"
         blocks = [
@@ -940,7 +940,7 @@ class TestLinkedAncestorGate:
     """On Windows, a candidate beneath a linked ANCESTOR must be refused
     BEFORE the first filesystem probe -- ``is_file()`` resolves every
     ancestor, so the probe itself would traverse the link and open the SMB
-    connection the lexical UNC screen exists to prevent (#5962).
+    connection the lexical UNC screen exists to prevent.
 
     NOTE: under the module-local os patch, ``_PATH_RE`` keeps the grammar
     chosen at import time, so candidates here stay host-native; the Windows

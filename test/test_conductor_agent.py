@@ -272,7 +272,7 @@ class TestConductorInstaller:
             assert f"kirocrew-core/{denied}" not in match, denied
 
     def test_template_grants_never_leak_into_the_conductor_list(self, tmp_path, monkeypatch):
-        """No-op proof for #7401: the conductor replaces ``allowedTools``
+        """No-op proof: the conductor replaces ``allowedTools``
         wholesale with its own filtered ``granted`` list, so the ceiling filter
         moving into ``build_agent_config`` changes nothing here — and template
         grants (filtered or not) can never leak through.
@@ -509,7 +509,7 @@ class TestConductorInstaller:
         """``{"rules": []}`` when nothing qualifies — the key's PRESENCE loads the spec.
 
         Split from the test above once the dashboard grant meant a ceiling on one
-        ref alone no longer empties the rule list: without this, the empty-policy
+        ref alone does not empty the rule list: without this, the empty-policy
         branch would have silently lost its coverage.
         """
         data = self._install(tmp_path, monkeypatch, may_auto_approve=lambda ref: False)
@@ -591,7 +591,7 @@ class TestConductorInstaller:
         ]
 
     def test_skill_gates_the_plan_once_instead_of_interrogating(self):
-        """Round 0 must be ONE plan message, not a round of questions.
+        """The opening round must be ONE plan message, not a round of questions.
 
         The first live run opened with a clarification round: the previous
         wording ("restate the plan, wait for the user") left room for one ahead
@@ -628,11 +628,11 @@ class TestConductorInstaller:
         state — the exact durability this entry exists to provide. Pinned as a
         doc ratchet because the instruction, not the code, is what would drift.
 
-        The format is owned by ``scripts/ledger_entry.py`` (issue #5912), so
+        The format is owned by ``scripts/ledger_entry.py``, so
         the skill must route encoding through the codec rather than carrying a
         hand-written byte-format example for models to re-derive — the worked
-        example was the specification once, and produced real defects on
-        PR #5652.
+        example is easy for a model to copy wrong, which produces real
+        defects.
         """
         text = (SKILL_DIR / "SKILL.md").read_text(encoding="utf-8")
         assert "artifacts_not_string_map" in text
@@ -671,7 +671,7 @@ class TestConductorInstaller:
     def test_skill_files_the_session_at_creation_not_by_a_move(self):
         """Dispatch passes ``folder`` to ``session_create``; no move step exists.
 
-        ``session_create`` files the slot atomically at creation (#6118), which
+        ``session_create`` files the slot atomically at creation, which
         is what closed the create-then-move window a folder delete could land
         in. The instruction layer must not resurrect the workaround: a separate
         ``chat_folder_create`` precondition or ``chat_folder_move_session`` step
@@ -836,7 +836,7 @@ class TestAcceptEvaluator:
     def test_the_cmd_kind_is_refused_and_says_what_to_use(self):
         """A conductor carrying an older skill gets guidance, not 'unknown kind'.
 
-        `cmd` used to exist, so the removal is named explicitly: the refusal
+        `cmd` is a removed kind, so it is named explicitly: the refusal
         points at `pr_checks` and notes it already covers "the tests pass",
         since CI runs them.
         """

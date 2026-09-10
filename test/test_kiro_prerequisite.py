@@ -161,7 +161,7 @@ class TestKiroPrerequisiteHelpers:
         ``atomic_write(restrict_to_owner=True)``, which applies the lockdown
         to the TEMP file before the identity bytes reach it (the previous
         post-rename lockdown left them readable under the inherited DACL on
-        Windows for the write window, issue #5285). Asserted by measuring the
+        Windows for the write window). Asserted by measuring the
         file's SIZE at lockdown time — zero means no payload byte existed yet.
         """
         sizes: list[int] = []
@@ -848,7 +848,7 @@ class TestKiroPrerequisiteWorkflow:
     ) -> None:
         # A multiplexer launcher (toolbox) dispatches on argv[0] basename, so
         # whoami/login must run against the resolved-but-symlink-named candidate
-        # (``kiro-cli``), NOT its realpath (``toolbox-exec``). Regression for the
+        # (``kiro-cli``), NOT its realpath (``toolbox-exec``). Guards against the
         # toolbox "Command doesn't appear to be associated with any tool" error.
         real = tmp_path / "toolbox-exec"
         _make_executable(real)
@@ -1244,7 +1244,7 @@ class TestKiroPrerequisiteWorkflow:
         live.parent.mkdir(parents=True)
         # Not a database at all: projection cannot read it, so staging aborts.
         # (Size is deliberately NOT the trigger — the identity DB is projected,
-        # not byte-copied, so a large store must no longer abort sign-in.)
+        # not byte-copied, so a large store must not abort sign-in.)
         live.write_bytes(b"this is not a sqlite database")
         original = live.read_bytes()
         probe = AsyncMock(return_value=ProcessResult(ok=True))
@@ -1318,8 +1318,8 @@ class TestKiroPrerequisiteWorkflow:
     ) -> None:
         """A store far past the byte cap still stages: only identity tables copy.
 
-        Regression: the identity DB used to be byte-copied under
-        ``_MAX_AUTH_STORE_FILE_BYTES`` (64 MB). A real user's store had grown to
+        Byte-copying the identity DB under ``_MAX_AUTH_STORE_FILE_BYTES`` (64 MB)
+        aborts on a large store. A real user's store had grown to
         ~429 MB of chat history, so staging aborted and sign-in failed with a
         message naming neither size nor cause. Projection must make the source
         file's size irrelevant.
@@ -2292,7 +2292,7 @@ class TestKiroPrerequisiteWorkflow:
         tmp_path: Path,
     ) -> None:
         # The explicit override wins over a Program Files install (ACP resolves
-        # the override first), and being outside Program Files no longer blocks
+        # the override first), and being outside Program Files does not block
         # it — it is probed and usable because it runs.
         planted = tmp_path / "user-install" / "kiro-cli.exe"
         official = tmp_path / "Program Files" / "Kiro-Cli" / "kiro-cli.exe"
@@ -2826,8 +2826,8 @@ class TestKiroPrerequisiteWorkflow:
     ) -> None:
         """A REPEAT cancellation landing on the recovery await is a
         ``BaseException``, so it escaped the old ``suppress(Exception)``
-        before ``_unlink_off_loop`` ran, leaking the materialized launcher
-        (#5841). The recovery must absorb repeat cancellations in BOTH of
+        before ``_unlink_off_loop`` ran, leaking the materialized launcher.
+        The recovery must absorb repeat cancellations in BOTH of
         its phases — while the worker settles and while the unlink runs —
         still remove the launcher, and let the ORIGINAL cancellation (pinned
         by its message) propagate rather than a repeat."""
@@ -3605,7 +3605,7 @@ class TestKiroPrerequisiteHandlers:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Turn-starting routes no longer 503 on a latched not-ready value.
+        """Turn-starting routes do not 503 on a latched not-ready value.
 
         Readiness is probed at boot and on explicit action only, so a stale latch
         must not reject a request the CLI would have served — that was the stuck
@@ -3648,7 +3648,7 @@ class TestKiroPrerequisiteHandlers:
     ) -> None:
         """An ACP auth failure still reaches a linked Slack thread.
 
-        The pre-turn readiness gate used to own this delivery; the
+        The pre-turn readiness gate does not own this delivery; the
         ``AcpAuthRequired`` handler now does, so a user driving the session from
         Slack is not left without a response when the CLI is signed out.
         """
@@ -4080,8 +4080,8 @@ class TestKiroPrerequisiteHandlers:
     ) -> None:
         """A failed probe must not demote a returning user to first-run.
 
-        The last-resort backstop previously reported
-        ``initial_setup_complete=False``, which makes the SPA restore the
+        A last-resort backstop reporting ``initial_setup_complete=False`` makes
+        the SPA restore the
         full-screen first-run setup gate for someone who has used the app for
         months. Carry the construction-time bit through instead.
         """
@@ -4220,7 +4220,7 @@ class TestSandboxUnavailableIsNotAMissingBinary:
         """The mechanism the probe identified must survive to the gate screen.
 
         Without it the dashboard can only render ``errno 1 (EPERM)`` and a retry
-        button, which is the dead end reported in issue #1660: the probe already
+        button, which is the dead end this guards against: the probe already
         knows the fix is an AppArmor profile and the user has no way to learn it.
         """
         _make_executable(tmp_path / ".local" / "bin" / "kiro-cli")
@@ -4327,7 +4327,7 @@ class TestSandboxUnavailableIsNotAMissingBinary:
 class TestTimedOutProbeIsNotAMissingBinary:
     """A probe that never ANSWERED must not be reported as "not installed".
 
-    The third condition, and the one issue #4577 was filed on. The sandbox branch
+    The third condition. The sandbox branch
     keys on a typed ``sandbox_failure``; a timeout raises none, so the timed-out
     probe fell through to a bare ``PrerequisiteStatus`` whose every field is a
     default: ``installed=False``, ``sandbox_unavailable=False`` and all
@@ -5106,7 +5106,7 @@ class TestRejectedAgentSpecsNarrowReadiness:
     see this: kiro-cli drops a spec it rejects from its agent table, so
     ``--agent kirocrew`` resolves to the default agent with none of Kiro Crew's
     MCP servers and only a line on stderr. That is the shape of the customer
-    report behind issue #3116 — "my migrated agents stopped working" with a
+    report — "my migrated agents stopped working" with a
     perfectly present file on disk.
 
     The oracle is the binary, not a schema copied into this repo, so a future

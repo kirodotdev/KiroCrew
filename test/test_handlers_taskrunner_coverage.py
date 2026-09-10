@@ -1383,7 +1383,7 @@ class TestNonObjectBodiesAcrossConvertedHandlers:
     ``[]`` / ``"s"`` / ``5`` / ``true`` / ``null`` are all VALID JSON, so
     ``request.json()`` returned them and the ``.get()`` each handler performs
     next raised ``AttributeError`` from OUTSIDE the parse ``try`` -- a 500 for
-    what is really malformed client input (issue #5587). Enumerated rather than
+    what is really malformed client input. Enumerated rather than
     one test per handler so a handler that loses the guard fails by
     construction; the cap decision for each of these sites is recorded in
     ``_CAP_REGISTER`` in ``test_json_object_body_guard.py``.

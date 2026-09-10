@@ -84,7 +84,7 @@ def _durable_store_file(slot_key: str, name: str) -> list[dict[str, Any]]:
     The mechanism the named readers below share. `CrewStore.__init__` reads all
     three store files, so building one to answer a single-file question also
     opens the two files nothing awaited, and on Windows an open that lands in a
-    `Path.replace()` window fails with `PermissionError` — issue #4142. Missing
+    `Path.replace()` window fails with `PermissionError`. Missing
     is empty here for the same reason it is in `CrewStore._load`: a file that
     was never written means nothing has been recorded yet.
     """
@@ -104,7 +104,7 @@ def _durable_queue(slot_key: str = "s1") -> list[dict[str, Any]]:
     `topics.json` and `forwards.json`, which nothing awaits: `_reconcile` hands
     them to the executor via `st.save()` and returns. So a store built here can
     open a file that is mid-`replace()`, and on Windows that open fails with
-    `PermissionError` — issue #4142. Reading the one file the product promises
+    `PermissionError`. Reading the one file the product promises
     is durable keeps the assertion and drops the unpromised dependency.
     """
     return _durable_store_file(slot_key, "queue.json")
@@ -181,7 +181,7 @@ class TestCrewStore:
 
 
 class TestWindowsReplaceWindow:
-    """Issue #4142: a store read must not race a store write nothing awaited.
+    """A store read must not race a store write nothing awaited.
 
     `CrewStore` publishes each file by writing a temp file and calling
     `Path.replace`. That is atomic on both platforms, but only POSIX makes it
@@ -229,7 +229,7 @@ class TestWindowsReplaceWindow:
         def read_bytes(self, *a, **k):                # type: ignore[no-untyped-def]
             # Faulted alongside read_text so the emulator stays armed against
             # the call the store actually makes: ``CrewStore._load`` reads bytes
-            # through ``read_bytes_with_retry`` (#4331). Patching only read_text
+            # through ``read_bytes_with_retry``. Patching only read_text
             # would leave the positive control below passing vacuously — it
             # would observe no failure because it never intercepted the read,
             # not because the window closed.
@@ -260,8 +260,8 @@ class TestWindowsReplaceWindow:
             # The property: the queue row is on disk the moment the user can see
             # their message. Answerable from the queue file alone.
             shown.append([e["text"] for e in _durable_queue("winrace")])
-            # Positive control, in the same window: the three-file read this
-            # assertion used to do DOES fail here, so a pass above is the fix
+            # Positive control, in the same window: the broader three-file read
+            # DOES fail here, so a pass above is the fix
             # working and not an emulator that never armed.
             assert inflight, "no unawaited write is in flight — window missed"
             try:
@@ -298,7 +298,7 @@ class TestWindowsReplaceWindow:
         # its own forward: if the barrier ever narrows to name that write
         # (the `CrewStore.wait_for` shape, already the majority in
         # `crew_chat.py`), a reader widened back to `CrewStore(...)` is the
-        # #4142 race again, visible only as an intermittent red Windows shard.
+        # same race again, visible only as an intermittent red Windows shard.
         # So the window is opened here in the harness instead: `forwards.json`
         # durable and awaited — the same ordering the product path keeps — and
         # the two files nothing there promises parked mid-replace.
@@ -357,7 +357,7 @@ class TestIngest:
         """A rejected ingress must not be executed later.
 
         The append lands in memory before the write lands on disk, so a
-        transient queue-write failure used to leave a live `pending` entry
+        transient queue-write failure would leave a live `pending` entry
         behind an HTTP 500. The user retries; the NEXT successful queue save
         persists the abandoned entry too, and the decision loop routes both —
         the side effects run twice for one request.
@@ -458,7 +458,7 @@ class TestIngest:
         """`_post_durable` returning False means the TRANSCRIPT row is not
         durable — a mirror, not the record. The queue write already landed, and
         `_post` has already put the echo and the ack on the user's screen, so
-        deleting the entry (what round 19 did) loses a request the user was told
+        deleting the entry loses a request the user was told
         was accepted. Keep it and run it; a transcript gap is the lesser loss."""
         orch = _orch()
         slot = _slot()
@@ -1042,7 +1042,7 @@ class TestGptRoundEleven:
 
     @pytest.mark.asyncio
     async def test_the_user_message_is_durable_before_it_is_visible(self) -> None:
-        # The handler used to append the message and THEN await ingest; on a cold
+        # Appending the message and THEN awaiting ingest is the hazard: on a cold
         # slot that await builds the store, so a process exit in that window left
         # a visible message with no queue entry — unresumable. The property to
         # hold is exactly this: at the moment it becomes visible, the entry is
@@ -1340,9 +1340,9 @@ class TestDeliveryFailureKeepsTheResult:
 
     @pytest.mark.asyncio
     async def test_forward_survives_a_refused_post(self) -> None:
-        # `_post` refuses to deliver when redaction fails, and used to do so
-        # silently — the caller cleared the persisted forward anyway and the
-        # completed result was gone for good.
+        # `_post` refuses to deliver when redaction fails. A silent refusal
+        # would let the caller clear the persisted forward anyway and the
+        # completed result would be gone for good.
         orch = _orch()
         slot = _slot()
         with patch.object(orch, "_post", return_value=False):
@@ -1378,9 +1378,9 @@ class TestWriteBarrier:
 
     @pytest.mark.asyncio
     async def test_a_fast_write_failure_is_still_raised(self) -> None:
-        # The barrier used to discard futures via a done-callback, so a write
-        # that failed FAST vanished from the set before `wait_writes` snapshotted
-        # it and the barrier reported success for a write that never landed.
+        # Discarding futures via a done-callback is the hazard: a write that
+        # fails FAST vanishes from the set before `wait_writes` snapshots it,
+        # and the barrier reports success for a write that never landed.
         st = CrewStore("s1")
         st.add_msg("something to persist")
         with patch.object(Path, "write_text", side_effect=OSError("disk full")):
@@ -1479,9 +1479,9 @@ class TestGptRoundFive:
     async def test_a_live_forward_is_not_also_posted_by_the_drain(self) -> None:
         """Live delivery must be mutually exclusive with the recovery drain.
 
-        The drain snapshots the pending list; the live path used to append outside
-        that lock, so a forward added mid-drain was delivered by both and the
-        transcript showed the same result twice. Asserted as CONTENTION rather than
+        The drain snapshots the pending list; a live path appending outside
+        that lock would let a forward added mid-drain be delivered by both, and
+        the transcript would show the same result twice. Asserted as CONTENTION rather than
         by racing two coroutines: gather alone does not reliably interleave them
         (the live path awaits its store build first, so the drain can read an empty
         list and the duplicate never appears), and a test that passes because the
@@ -1890,9 +1890,9 @@ class TestGptRoundFive:
 
     @pytest.mark.asyncio
     async def test_a_store_file_of_the_wrong_shape_is_not_treated_as_empty(self) -> None:
-        """Round 20 made an UNREADABLE file fatal but left valid JSON of the
-        wrong shape returning [] — the same silent erase one branch over, since
-        the next save() writes that emptiness back over the real file."""
+        """An UNREADABLE file is fatal, but valid JSON of the wrong shape
+        returning [] is the same silent erase one branch over, since the next
+        save() writes that emptiness back over the real file."""
         st = CrewStore("s1")
         st.add_msg("do not lose me")
         # Await the scheduled write before clobbering the file: otherwise it can
@@ -2416,7 +2416,7 @@ class TestDurableRunEvidence:
         orch._state.get_slot = MagicMock(return_value=None)   # tab not reopened yet
         with patch.object(crew_mod, "read_state", return_value={"id": "live1234"}):
             orch._reconcile("s1", st)
-        # Started but no longer running: settled, NOT reopened (never re-execute)
+        # Started but not running: settled, NOT reopened (never re-execute)
         # and NOT left accepted forever (no completion is coming).
         assert st.entry(e["msg_id"])["state"] == "stopped"
 
@@ -2619,7 +2619,7 @@ class TestReviewFixes:
         with patch.object(orch, "_post", return_value=True) as post:
             orch._store("s1")     # _reconcile SCHEDULES the replay (it is sync)
             # Poll until the drain task completes (forwards cleared) instead of
-            # a fixed sleep that flakes on loaded CI runners (#4914).
+            # a fixed sleep that flakes on loaded CI runners.
             # Catch RuntimeError on Windows where the drain task may hold a
             # write lock on forwards.json while we try to read it.
             for _ in range(200):
@@ -2743,7 +2743,7 @@ class TestGatewayCrewInit:
         # entry must be on disk before the ack posts.
         #
         # Asserted as the PROPERTY rather than the order of two patched calls:
-        # the earlier form traced `wait_writes`, which ingest no longer calls
+        # the earlier form traced `wait_writes`, which ingest does not call
         # (it awaits its own write by name), and its `_post` stub returned None
         # — so it also silently depended on `_post_durable`'s verdict being
         # ignored, which is the defect the sibling test now pins.

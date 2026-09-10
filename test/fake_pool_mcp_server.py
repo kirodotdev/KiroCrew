@@ -23,7 +23,7 @@ launch-counting tests already assert against.
 An OPTIONAL third path argument records the per-CONNECTION ``nonce`` the same way,
 which is the separate question of whether each connection got its OWN namespace --
 the one that matters for a caller gatewayd cannot name, where there is no identity
-to tell co-tenants apart by (#5322). Either path alone turns advertising on.
+to tell co-tenants apart by. Either path alone turns advertising on.
 
 Stdlib only, and launched as ``sys.executable <this file> <log>`` -- never
 through a shell and never via ``-c`` -- so no quoting or backslash assumption

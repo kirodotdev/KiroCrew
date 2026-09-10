@@ -77,8 +77,8 @@ def test_pools_execute_work() -> None:
 
 
 def test_path_resolve_pool_is_isolated_bounded_named_and_reset() -> None:
-    # The sensitive-path gates' realpath used to run inline on the event loop and
-    # could block in the kernel on a stalled automount for as long as the mount
+    # The sensitive-path gates' realpath run inline on the event loop can
+    # block in the kernel on a stalled automount for as long as the mount
     # did.  The caller now bounds its wait, but a timed-out future does NOT free
     # its thread -- so a wedged lstat must only ever be able to starve OTHER
     # path resolution, never the sweeps, teardown, or the default executor.
@@ -100,7 +100,7 @@ def test_path_resolve_pool_is_isolated_bounded_named_and_reset() -> None:
 
 
 def test_governance_pool_is_isolated_bounded_and_reset() -> None:
-    # GPT round-7 pass 3: the governance pool (externally-paced inbound channels
+    # The governance pool (externally-paced inbound channels
     # gate + dashboard governance GETs) must be a DISTINCT, bounded, shutdown-
     # resettable pool so a remote message burst can't occupy the maintenance
     # workers the orphan sweeps need.
@@ -457,7 +457,7 @@ def test_the_gate_budget_is_capped_below_the_wake_budget() -> None:
     and the inversion is deliberate: for the execution pool, waiting past the
     budget and then running is correct, but a gate verdict arriving after the
     wake deadline is worthless -- the deadline kills the run either way, and the
-    caller can then no longer tell starvation from an overrun. That ambiguity is
+    caller then cannot tell starvation from an overrun. That ambiguity is
     precisely the state in which a one-shot is consumed by a run that never
     dispatched, so the cap is what keeps the retention marker reachable.
 

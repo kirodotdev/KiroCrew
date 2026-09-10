@@ -4,11 +4,10 @@ The Developer > Agent Backend switch writes this field over
 ``PATCH /api/config/kirocrew``, so it has to be in ``_EDITABLE_CONFIG`` at all —
 before this it was absent and every save came back "field not editable".
 
-The load-bearing tests here used to be PARITY ones: three unrelated places each
-kept a literal copy of the selectable-backend list, and these tests stood in for a
-code owner. They no longer can. The set is a REGISTRY an edition extends at boot
-(``register_selectable_backend``), which no import-time literal can see. So what is
-pinned now is that each surface RESOLVES the set at request time from the one
+The selectable-backend set is a REGISTRY an edition extends at boot
+(``register_selectable_backend``), which no import-time literal can see. A parity
+check against a literal copy of the list cannot see that registry, so these tests
+instead pin that each surface RESOLVES the set at request time from the one
 owner, ``agent_sdk.backends``, rather than carrying its own answer.
 """
 
@@ -142,9 +141,9 @@ def test_the_field_declares_no_static_enum():
 def test_baseline_ships_every_known_backend():
     """The public build's capability, stated once so a NARROWING is deliberate.
 
-    Claude Code used to be excluded here. That was wrong: ``acp/client.py`` owns the
-    whole Claude spawn path and the adapter is a public npm package, so the only thing
-    the exclusion removed was the switch. If a backend is ever taken back out, the
+    Claude Code is not excluded here: ``acp/client.py`` owns the
+    whole Claude spawn path and the adapter is a public npm package, so excluding it
+    would remove only the switch. If a backend is ever taken back out, the
     reason belongs next to that removal — a build that cannot run a harness is a
     different claim from a machine that has not installed it, and the install probe
     already answers the second one.

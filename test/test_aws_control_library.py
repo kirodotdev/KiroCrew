@@ -71,7 +71,7 @@ class TestReadLedger:
         assert library.read_ledger() == {}
 
     def test_a_non_utf8_ledger_reads_as_empty(self, tmp_path, monkeypatch):
-        # New with #7805: UnicodeDecodeError previously escaped the display
+        # A UnicodeDecodeError can escape the display
         # read (it is a ValueError, not a JSONDecodeError). The lenient read
         # must treat a corrupt byte stream as one condition regardless of
         # which decoder noticed it.
@@ -467,7 +467,7 @@ class TestUpdateLedger:
         assert library.read_ledger()[ACCOUNT] == {"new": {"version": 1}}
 
     def test_a_corrupt_ledger_refuses_the_write_and_is_left_intact(self, tmp_path, monkeypatch):
-        # #7805: a corrupt ledger is refused, never rewritten. The old tolerance
+        # A corrupt ledger is refused, never rewritten. The old tolerance
         # read it as empty and let the whole-file rewrite drop every other
         # account's push state -- records a truncated JSON still held verbatim.
         path = _ledger_at(monkeypatch, tmp_path)

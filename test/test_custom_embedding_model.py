@@ -510,7 +510,7 @@ class TestEmbeddingSpaceSignature:
         assert embedding_space_signature("a", 1024) != embedding_space_signature("b", 1024)
 
     def test_differs_by_dim(self) -> None:
-        """The same-dim case is the one that used to corrupt search silently."""
+        """The same-dim case is the one that would corrupt search silently."""
         assert embedding_space_signature("m", 1024) != embedding_space_signature("m", 768)
 
 
@@ -563,11 +563,11 @@ class TestDefaultSpaceSignature:
 class TestReconcileChokepoint:
     """Reconciliation must not be gateway-only.
 
-    It previously lived inline in the gateway boot sweep, so every other process
-    that opens a vector store — `kirocrew run` via cli_server, the onboarding
-    importer — loaded a FAISS index built under the old model and scored it
-    against new-model queries. One named chokepoint is what keeps a future entry
-    point from silently reintroducing that.
+    Inline in the gateway boot sweep, it would leave every other process that
+    opens a vector store — `kirocrew run` via cli_server, the onboarding
+    importer — loading a FAISS index built under a stale model and scoring it
+    against new-model queries. One named chokepoint keeps a future entry point
+    from silently reintroducing that.
     """
 
     class _FakeStore:

@@ -525,7 +525,7 @@ class TestCronFailurePersistence:
         # Failure dedup state cleared — next real error will trigger fresh alert
         assert job.last_failure_hash == ""
         assert job.last_failure_at == 0.0
-        # ...but the timeout still counts toward the auto-pause threshold (#424):
+        # ...but the timeout still counts toward the auto-pause threshold:
         # started at 3, one timeout -> 4.
         assert job.consecutive_failures == 4
 
@@ -559,7 +559,7 @@ class TestCronFailurePersistence:
         svc2._load()
         assert svc2._jobs[0].last_failure_hash == ""
         assert svc2._jobs[0].last_failure_at == 0.0
-        # Timeout counted toward auto-pause and was persisted (#424): 3 -> 4.
+        # Timeout counted toward auto-pause and was persisted: 3 -> 4.
         assert svc2._jobs[0].consecutive_failures == 4
 
     def test_save_load_round_trip(self, tmp_path) -> None:

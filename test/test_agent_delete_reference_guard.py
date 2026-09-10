@@ -2,7 +2,7 @@
 
 Deleting an agent template that config still points at leaves a dangling
 reference: the kiro-cli fallback, or a crew's ``kiro_agent`` binding, would name
-a template that no longer exists. The dashboard withholds the control, but that
+a template that does not exist. The dashboard withholds the control, but that
 check reads a cached snapshot and cannot be race-free — so the handler is the
 authority and refuses with 409.
 """

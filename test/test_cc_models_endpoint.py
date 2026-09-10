@@ -142,9 +142,9 @@ class TestCcModelsMerge:
     def test_advertised_set_filters_the_registry(self):
         """The advertised set is authoritative: unentitled registry rows go away.
 
-        This is the free-tier case. Previously the registry led unconditionally and
-        the adapter could only ADD, so an account served two models was still
-        offered the full flagship list and only found out at prompt time.
+        This is the free-tier case. If the registry led unconditionally and the
+        adapter could only ADD, an account served two models would still be
+        offered the full flagship list and only find out at prompt time.
         """
         prov = _FakeProvider(
             [{"modelId": "global.anthropic.claude-sonnet-4-6[1m]", "name": "Sonnet 4.6"}]
@@ -272,7 +272,7 @@ class TestCcModelsMerge:
 
 
 class TestNormalizeModelKey:
-    """`_normalize_model_key` routes through the canonical registry (#5339).
+    """`_normalize_model_key` routes through the canonical registry.
 
     Mirror of the frontend `normalizeModelKey` unit tests in
     `website/src/test/model.displayModel.test.ts` -- the two must agree, which is
@@ -295,7 +295,7 @@ class TestNormalizeModelKey:
         assert _normalize_model_key("opus-4.8-1m") == "opus-4.8-1m"
         assert _normalize_model_key("opus") == "opus-4.8-1m"
         assert _normalize_model_key("global.anthropic.claude-opus-4-8[1m]") == "opus-4.8-1m"
-        # The "fold a provider/partition prefix" half of #5339: a regional
+        # The "fold a provider/partition prefix" case: a regional
         # profile id that is not itself a registry entry folds after the peel.
         assert _normalize_model_key("us.anthropic.claude-opus-4-8[1m]") == "opus-4.8-1m"
 

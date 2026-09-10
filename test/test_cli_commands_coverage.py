@@ -100,9 +100,9 @@ def _cfg_with(
 def _seed_doc_file(tmp_path: Path, cfg: KiroCrewConfig) -> Path:
     """Materialize *cfg* as a real config.json for the locked-delta writers.
 
-    The CLI CRUD commands no longer mutate the loaded snapshot and ``save()``
+    The CLI CRUD commands do not mutate the loaded snapshot and ``save()``
     it -- they write a delta on the document read inside the sidecar flock
-    (#4767 round 7), so tests that check persistence must seed and read the
+    so tests that check persistence must seed and read the
     FILE, not the in-memory dataclass.
     """
     doc = {
@@ -423,7 +423,7 @@ class TestAppCli:
         assert "off" in capsys.readouterr().out
 
     def test_disable_flips_the_flag_before_deregistering(self) -> None:
-        """Order is a security control, not cosmetics (#5726 review).
+        """Order is a security control, not cosmetics.
 
         A running gateway is a DIFFERENT process: it watches this app's backend and
         re-registers its MCP servers and agents on a health recovery, gated on the
@@ -1070,7 +1070,7 @@ class TestSecurityCli:
         assert "No security events recorded." in capsys.readouterr().out
 
     def test_events_passes_the_time_window_through(self) -> None:
-        """``-n`` alone cannot express "the last two hours" (issue #4843)."""
+        """``-n`` alone cannot express "the last two hours"."""
         with patch("kiro_crew.cli_commands.sel") as sel:
             sel.return_value.recent.return_value = []
             cc._security(
@@ -1265,7 +1265,7 @@ class TestPolicyCli:
     def test_show_without_policy_includes_denied_command_summary(
         self, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        """Regression for #3454: an agent's only prior discovery mechanism for
+        """An agent's only other discovery mechanism for
         the built-in denied-command rules was to attempt one and be refused.
         `policy show` must surface them even on a standalone (non-enterprise)
         install, which is the common case the early-return branch serves.
@@ -1555,7 +1555,7 @@ class TestLearnCli:
     def test_add_does_not_write_jsonl_when_the_store_declines(
         self, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        """This replaces a test that PINNED the defect (issue #2325).
+        """This replaces a test that PINNED the defect.
 
         It asserted the JSONL fallback fires whenever the vector store returns a
         falsy value -- which is most often "the lesson is already stored exactly as
@@ -2814,7 +2814,7 @@ print("wrote=" + report_path.name + "," + json_path.name)
 
 
 class TestDevConfirmFlagNoAbbreviation:
-    """The dev subparser must reject flag abbreviations (#7169 review).
+    """The dev subparser must reject flag abbreviations.
 
     The builtin agent deny rule for `--confirm-out-of-install-root` matches
     the flag's LITERAL text, but argparse's default `allow_abbrev=True` would

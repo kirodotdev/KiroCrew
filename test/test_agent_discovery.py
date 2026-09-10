@@ -373,8 +373,9 @@ class TestListAgentsRobustness:
     def test_skips_non_dict_mcp_servers(self, tmp_path: Path) -> None:
         """list_agents must not crash when mcpServers is a list instead of a dict.
 
-        AttributeError: 'list' object has no attribute 'keys' previously escaped
-        the except clause, aborting the entire loop and dropping all sibling agents.
+        A non-dict ``mcpServers`` raises AttributeError: 'list' object has no
+        attribute 'keys'; the except clause must catch it so the loop keeps every
+        sibling agent.
         """
         agents_dir = tmp_path / "agents"
         agents_dir.mkdir()
@@ -702,9 +703,9 @@ class TestListAgentsDedup:
         Package managers publish a locally-built package as BOTH
         ``{package}-{name}.json`` and ``local-{package}-{name}.json``. Since the
         ``local-`` prefix is stripped from the package name, the twins collide on
-        the same (name, package) — an expected layout, not an anomaly. This
-        previously logged a self-contradictory "from packages 'X' and 'X'"
-        WARNING per agent per scan.
+        the same (name, package) — an expected layout, not an anomaly, so it
+        must not log a self-contradictory "from packages 'X' and 'X'" WARNING
+        per agent per scan.
         """
         agents_dir = tmp_path / "agents"
         agents_dir.mkdir()
@@ -869,8 +870,8 @@ class TestSystematicScanFailureWarning:
 
     Regression: `_read_agent_spec` degrades per file to ``None`` at debug level, so
     a systematic refusal (e.g. the trusted-root gate rejecting an entire home
-    layout, issue #6721) was indistinguishable at default log levels from an empty
-    agents directory — discovery listed nothing and nothing said why (#6727).
+    layout) is indistinguishable at default log levels from an empty
+    agents directory — discovery lists nothing and nothing says why.
     """
 
     def test_all_unreadable_user_specs_emit_one_warning(self, fake_home, caplog):
@@ -923,7 +924,7 @@ class TestSystematicScanFailureWarning:
 
     def test_project_agent_names_warns_on_systematic_failure(self, tmp_path, caplog):
         """The per-turn resolver's scan warns too — this is the exact path whose
-        silence let model resolution fall back to auto in #6721."""
+        silence lets model resolution fall back to auto."""
         proj = tmp_path / "repo"
         pd = _project_agents_dir(proj)
         (pd / "bad.json").write_text("{broken")

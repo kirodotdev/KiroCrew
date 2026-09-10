@@ -176,10 +176,10 @@ class TestCrewHttpFlow:
 
     @pytest.mark.asyncio
     async def test_create_endpoint_accepts_design_critique_mode(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
-        """Regression for #5099: the Design Critique app opens throwaway worker
-        slots with mode="design-critique" (kept out of the chat sidebar by the
-        frontend's surface filter). The create allowlist never included the
-        mode, so every open of the app failed with 400 code=invalid_mode."""
+        """The Design Critique app opens throwaway worker slots with
+        mode="design-critique" (kept out of the chat sidebar by the frontend's
+        surface filter). The mode must be in the create allowlist, or every open
+        of the app fails with 400 code=invalid_mode."""
         from kiro_crew.dashboard.chat_handlers import api_chat_slot_create
 
         state = _crew_state(tmp_path)

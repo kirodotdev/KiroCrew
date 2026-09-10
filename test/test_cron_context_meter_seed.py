@@ -60,9 +60,9 @@ def _inject(state, job, result_text, **kw):
     """The injection, with the transcript read its async callers now prefetch.
 
     ``history`` is a required parameter in production so that no async caller can
-    leave the whole-transcript parse on the event loop (issue #7408). These tests
+    leave the whole-transcript parse on the event loop. These tests
     drive the function synchronously, where a blocking read is the caller's own
-    cost, so the read that used to live inside the injection lives here instead.
+    cost, so the read the injection performs in production lives here instead.
     """
     kw.setdefault(
         "history",
@@ -185,8 +185,8 @@ def test_inject_without_reading_records_nothing():
 @pytest.mark.asyncio
 async def test_cron_slot_opens_with_stale_reading_not_zero(tmp_path):
     """Inject with a reading, then open the slot with no resident provider:
-    the detail response must carry the run's percentage flagged stale —
-    previously it carried nothing and the bar rendered 0%."""
+    the detail response must carry the run's percentage flagged stale, not
+    nothing, which would render the bar at 0%."""
     state = _make_state(tmp_path)
     state.sessions.get_provider = MagicMock(return_value=None)
 
@@ -244,7 +244,7 @@ def _log_recording(rows: list[dict], seen: list[int]) -> MagicMock:
 async def test_prefetch_reads_off_the_loop_when_the_slot_is_unlinked():
     """An unlinked slot means the injection WILL read, so the read is hoisted.
 
-    Issue #7408: the sync injection reads ``cron:{id}`` itself in that case, and
+    The sync injection reads ``cron:{id}`` itself in that case, and
     on an async caller that parse ran on the event loop. Thread identity is the
     assertion, not the presence of an ``await``.
     """

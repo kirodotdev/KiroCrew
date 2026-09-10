@@ -76,7 +76,7 @@ class TestCronCreateTimezonePersistenceOwner:
     close. The dashboard caller must instead pass ``timezone`` THROUGH the
     create call so it lands in the single first ``_save()``.
 
-    Post-rebase over PR #331: the create path is now the event-loop-safe
+    The create path is the event-loop-safe
     ``add_job_async`` (single locked build+persist, all fields folded in) — so
     the same intent is asserted against ``add_job_async`` and the absence of any
     handler-side ``_save()``.

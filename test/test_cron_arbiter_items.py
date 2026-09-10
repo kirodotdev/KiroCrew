@@ -1,4 +1,4 @@
-"""Regression tests for the three Arbiter BLOCK items on PR #331 (fix/cron-locking).
+"""Regression tests for the three Arbiter BLOCK items in cron locking.
 
 Item 1 — the app-facing ``CronSDK`` mutation API stays **sync-callable** with
          its published contract; a prior revision flipped

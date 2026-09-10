@@ -357,7 +357,7 @@ class TestMounting:
         """The caller appends the stub under the SAME name; two would collide.
 
         Either the raw entry shadows the stub and the session bypasses the broker,
-        or both register and every pooled backend runs twice (#927).
+        or both register and every pooled backend runs twice.
         """
         _write_spec(
             agents_dir,
@@ -803,7 +803,7 @@ class TestLocalSettingsSeed:
         """The disclosed cost of not touching a file Crew did not author.
 
         ``bypassPermissions`` takes every tool call out of the host gate, and Crew
-        no longer strips it -- stripping meant reading and rewriting a path a
+        does not strip it -- stripping meant reading and rewriting a path a
         checked-out repository controls, which is what produced the snapshot and
         restore machinery. The call still reaches Crew's gate unless the user's
         own file pre-approves it, the same boundary the inherited-``~/.claude``

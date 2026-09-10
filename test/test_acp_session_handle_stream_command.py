@@ -1,7 +1,5 @@
 """Tests for AcpSessionHandle.stream_command — native slash-command execution.
 
-The dashboard's shared-runtime sessions previously routed slash commands
-through session/prompt (a full LLM turn that *summarized* kiro-cli's output).
 stream_command sends ``_kiro.dev/commands/execute`` with the TuiCommand OBJECT
 form (``{command, args}`` — kiro-cli 2.14.0 returns no response on the string
 form) and drains session/update events with prompt()'s turn discipline, so the
@@ -328,7 +326,7 @@ async def _collect_with_timeout(handle: AcpSessionHandle, command: str, timeout:
     return [ev async for ev in handle.stream_command(command, timeout=timeout)]
 
 
-# ── Post-compaction-failure budget (issue #3583) ─────────────────────────────
+# ── Post-compaction-failure budget ─────────────────────────────
 
 
 def _failed_compaction(params: dict | None = None) -> JsonRpcMessage:
@@ -343,7 +341,7 @@ async def test_failed_compaction_then_no_response_ends_the_turn(monkeypatch):
     """kiro-cli reports compaction `failed` and then abandons the prompt: no
     response, no end_turn. The turn must end at the post-failure budget with
     STOP_REASON_COMPACTION_FAILED instead of draining to the turn ceiling and
-    holding the slot (issue #3583)."""
+    holding the slot."""
     from kiro_crew.acp import session_handle as sh
 
     monkeypatch.setattr(sh, "_COMPACTION_FAILED_TURN_BUDGET", 0.2)
@@ -423,7 +421,7 @@ async def test_co_tenant_fanout_frames_do_not_defer_the_budget(monkeypatch):
     every co-tenant queue (msg.fanout_no_owner). They are ANOTHER session's
     traffic: if they reset this session's post-failure silence clock, a busy
     co-tenant defers the budget to the multi-hour outer deadline and the
-    original #3583 hang survives on shared runtimes."""
+    the abandoned-turn hang survives on shared runtimes."""
     from kiro_crew.acp import session_handle as sh
 
     monkeypatch.setattr(sh, "_COMPACTION_FAILED_TURN_BUDGET", 0.2)
@@ -485,7 +483,7 @@ async def test_ownerless_failure_does_not_arm_a_co_tenant_budget(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_ownerless_completion_does_not_disarm_the_budget(monkeypatch):
-    """The mirror direction, and the one that silently restores the #3583 hang:
+    """The mirror direction, and the one that silently restores the abandoned-turn hang:
     a peer's SUCCESSFUL compaction is fanned out too, and clearing this
     session's armed budget from it would leave a genuinely abandoned turn
     draining to the multi-hour turn ceiling again."""
@@ -528,7 +526,7 @@ async def test_completed_compaction_does_not_arm_the_budget(monkeypatch):
     assert handle._compaction_failed_at is None
 
 
-# ── Tool-idle watchdog frame ownership (issue #4872) ─────────────────────────
+# ── Tool-idle watchdog frame ownership ─────────────────────────
 
 
 class _Clock:

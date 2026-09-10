@@ -1,7 +1,7 @@
 """Behavioural tests for .github/workflows/fork-pr-description.yml.
 
 The workflow replaces a PR comment that four maintainers' local crons each
-posted independently (PR #5038 collected eight copies of one message) with a
+posted independently (the bug collected eight copies of one message) with a
 single check-run keyed on the head SHA. Its decisions live in shell inside
 `run:` blocks, so these tests extract each step and execute it for real, with
 `gh` replaced by a stub. Five properties are verified rather than assumed,

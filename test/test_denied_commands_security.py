@@ -209,7 +209,7 @@ class TestCatalog:
 
 
 class TestSelfProtectionFlagInterposition:
-    """The whole self-protection surface stays deny-closed under interposed flags (#4799).
+    """The whole self-protection surface stays deny-closed under interposed flags.
 
     The CLI accepts top-level flags BEFORE the subcommand (``-v``/``--verbose`` is
     ``action="count"`` and ``--no-jail`` sits on the top-level parser), so
@@ -331,7 +331,6 @@ class TestSelfProtectionFlagInterposition:
             "kirocrew -vv cloud status",
             # A lifecycle word AFTER an unrelated subcommand is not a lifecycle
             # command: neither tier may scan past the first subcommand word
-            # (#5837, folded from the retired TestCatalog matrix).
             "kirocrew doctor restart",
             "kirocrew gateway status restart",
             "kirocrew cloud status destroy",
@@ -385,7 +384,7 @@ class TestSelfProtectionFlagInterposition:
             assert legacy not in security._RULE_ID_BY_PATTERN
             assert legacy not in golden_patterns
 
-    # Round 2 -> Option 2 (#4824): the four self-protection SUBCOMMAND floors
+    # The four self-protection SUBCOMMAND floors
     # (``_is_self_*`` evaluated on the de-escaped, de-quoted argv), because a
     # regex over RAW text cannot see through the shell's own de-escaping. They are
     # now the WHOLE of enforcement for these four: the regex rows that once sat
@@ -423,7 +422,7 @@ class TestSelfProtectionFlagInterposition:
             "continuation-before-verb": f"kirocrew \\\n{first}{tail}",
             "each-word-quoted": f"kirocrew {each_quoted}",
             "each-word-single-quoted": f"kirocrew {each_single_quoted}",
-            # Quoted FLAGS (#5837, folded from the retired TestCatalog matrix):
+            # Quoted FLAGS:
             # the quotes split the flag token in the raw text, but the shell
             # strips them, so the interposed flag still lands in argv. The full
             # flag-by-quote-style cross lives in
@@ -452,7 +451,7 @@ class TestSelfProtectionFlagInterposition:
     def _quoting_cross(cls, prefix: str, words: "list[str]") -> "list[str]":
         """Every quoting spelling of ``<prefix> [flag] <words...>``.
 
-        The full cross the retired TestCatalog matrix asserted (#5837): quoted
+        The full cross this class asserts: quoted
         verbs, quoted flags, and both together, in each quote style, for every
         single-token global option. The shell strips the quotes, so every cell
         lands as the same argv and must stay denied.
@@ -518,7 +517,7 @@ class TestSelfProtectionFlagInterposition:
 
     def test_self_protection_denied_under_interposed_redirection(self):
         """A redirection is removed from argv by the shell and can sit anywhere in
-        a simple command, so it must not shift the leading subcommand (#4824 r4).
+        a simple command, so it must not shift the leading subcommand.
         """
         from kiro_crew import security
 
@@ -542,7 +541,7 @@ class TestSelfProtectionFlagInterposition:
     def test_self_protection_denied_under_dollar_quoting(self):
         """ANSI-C (``$'...'``) and locale (``$"..."``) quoting decode to the value
         bash passes, so a flag or the verb hidden in them must not slip past the
-        floor -- shlex leaves the ``$`` and does not decode ANSI-C escapes (#4824 r6).
+        floor -- shlex leaves the ``$`` and does not decode ANSI-C escapes.
         """
         from kiro_crew import security
 
@@ -562,7 +561,7 @@ class TestSelfProtectionFlagInterposition:
         """``python -m kiro_crew <subcommand>`` dispatches the same self-action. The
         escaped module form (``python -m kiro_crew -\\v restart``) slips past the
         interpreter-position regex, so the floor resolves the module name and checks
-        the operands after it (#4824 r5).
+        the operands after it.
         """
         from kiro_crew import security
 
@@ -585,7 +584,7 @@ class TestSelfProtectionFlagInterposition:
 
     def test_self_protection_module_form_denied_under_version_launchers(self):
         """Every interpreter launcher spelling of ``-m kiro_crew`` dispatches the
-        same self-action (#5837, folded from the retired TestCatalog matrix).
+        same self-action.
 
         The spellings come from ``security._PYTHON_PROGRAM_RE``: version-suffixed
         binaries, the Windows ``py`` launcher (its version selector is an
@@ -647,7 +646,7 @@ class TestNoCatalogRowMatchesACredentialPath:
     """A credential-store PATH in command text is not a catalog refusal.
 
     The ``sensitive-file-read`` category was twenty-seven rows of ``<verb>.*<store>``
-    over the command text -- the same path regex the shell gate no longer runs, kept
+    over the command text -- the same path regex the shell gate does not run, kept
     under a different name. The OS sandbox bind-masks those stores away from the
     agent process tree and ``is_sensitive_path`` fences the file tools, so the rows
     added refusals of read-only work (a path that merely CONTAINS ``.aws``) and no
@@ -866,7 +865,7 @@ class TestIsDeniedDualMatching:
 
     def test_regex_tier_respects_denied_regexes_arg(self):
         # Empty regex list + non-matching glob → the destructive AWS command
-        # is no longer denied by the regex tier (git-publish floor untouched).
+        # is not denied by the regex tier (git-publish floor untouched).
         assert (
             is_denied(
                 "aws ec2 terminate-instances --instance-ids i-1",
@@ -1072,7 +1071,7 @@ class TestUserPatternExactSemantics:
         # authored it: one fragment means no gap the forward-only matcher could
         # fail to backtrack across, so its single ``re.search`` already has exact
         # ``re.search`` semantics and the cap buys nothing. Padding past the cap
-        # therefore no longer defeats a plain user or edition rule — that was a
+        # therefore does not defeat a plain user or edition rule — that would be a
         # bypass of a rule the panel advertises as enforcing, not a trade-off worth
         # keeping. What still needs the bounded engine, and so still truncates: a
         # pattern whose fragments can over-consume across a ``.*`` gap, where the
@@ -1084,8 +1083,8 @@ class TestUserPatternExactSemantics:
         long_prefix = "export X=" + ("a" * (_DENY_FALLBACK_SCAN_MAX_CHARS + 500)) + " ; rm -rf /"
         assert is_denied(long_prefix) is not None
 
-        # Single-fragment user rule: now FULL-INPUT. A pad past the cap no longer
-        # escapes the user's own rule.
+        # Single-fragment user rule: FULL-INPUT. A pad past the cap does not
+        # escape the user's own rule.
         pat = r"my-custom-danger"
         pad = "x" * (_DENY_FALLBACK_SCAN_MAX_CHARS + 100)
         assert _DenyMatcher(pat)._bounded is False
@@ -3492,7 +3491,7 @@ class TestCredentialMintSegmentScoping:
         # once shlex strips the quotes (`-c'<mint>'` -> one token).  The bare-flag
         # pattern rejects a token carrying the payload's own characters, so the
         # glued spelling was examined by NO consumer of the shared extractor --
-        # this floor included (#8197).
+        # this floor included.
         assert _denied_by(cmd) == _RULE_MINT
 
     @pytest.mark.parametrize(
@@ -3598,7 +3597,7 @@ class TestCredentialMintSegmentScoping:
     )
     def test_attached_redirect_on_substitution_program_still_blocked(self, cmd):
         # A wrapper and a redirect INTERLEAVE.  With the redirect glued on, the
-        # substitution's closing paren is no longer word-final, so peeling the
+        # substitution's closing paren is not word-final, so peeling the
         # wrapper first leaves that paren in place and the program comparison
         # fails; peeling the redirect first breaks the plain glued form instead.
         # The peel runs to a fixed point, so neither order can hide the program.
@@ -3665,7 +3664,7 @@ class TestCredentialMintSegmentScoping:
 
 
 class TestSelfFloorShortCircuit:
-    """Perf gate for the self-protection floor (issue #3603).
+    """Perf gate for the self-protection floor.
 
     The floor predicates tokenize the command and descend every nested shell
     payload, which dominates deny-scan cost on complex bash. The gate
@@ -3811,7 +3810,7 @@ class TestSelfFloorShortCircuit:
 
 
 class TestSelfKillArgvWindowIsQuoteAware:
-    """The bare-``kill`` argv window survives a QUOTED close-paren decoy (#8633).
+    """The bare-``kill`` argv window survives a QUOTED close-paren decoy.
 
     ``_substitution_depth_delta`` counts parens on tokens the tokenizer already
     stripped the quotes from, so ``kill $(printf ')' ; pgrep -f <name>)`` scored
@@ -3820,7 +3819,7 @@ class TestSelfKillArgvWindowIsQuoteAware:
     substitution scan is quote-aware, runs that ``pgrep`` (measured).  The fix
     re-derives the window's substitution bodies from the RAW text through the
     same quote-aware span scan the extractor uses, as a UNION with the token
-    walk, so no previously-detected spelling is dropped.
+    walk, so no already-detected spelling is dropped.
     """
 
     @pytest.mark.parametrize(
@@ -3841,7 +3840,6 @@ class TestSelfKillArgvWindowIsQuoteAware:
             "kill &>/dev/null $(printf ')' ; pgrep -f {n})",
             # ``>|`` (noclobber override) is the last separator-charactered
             # member of the redirect grammar -- same rule, measured
-            # (server-side GPT review round 4)
             "kill >|/dev/null $(printf ')' ; pgrep -f {n})",
             # an escaped backtick is DATA inside a backtick body, so it must
             # not be taken as the closer (pre-push review, measured)
@@ -3861,27 +3859,25 @@ class TestSelfKillArgvWindowIsQuoteAware:
             '"ki"ll $(printf \')\' ; pgrep -f {n})',
             # an EMPTY substitution expands to nothing, so ``kill$()`` is the
             # word ``kill`` -- the glue exclusion must not eat the anchor
-            # (server-side GPT review round 2, measured)
+            # (measured)
             "kill$() $(printf ')' ; pgrep -f {n})",
             "kill$( ) $(pgrep -f {n})",
             # a NON-empty body can still expand to nothing at runtime
             # (``$(:)``, ``$(true)``), which no static scan decides -- a FIRST
             # word whose pre-glue prefix is ``kill`` keeps its anchor
-            # (server-side GPT review round 3, measured)
+            # (measured)
             "kill$(:) $(pgrep -f {n})",
             "kill$(:) $(printf ')' ; pgrep -f {n})",
             "kill$(true) `pgrep -f {n}`",
             # a variable an EARLIER command assigned the verb to reaches the
             # raw walk spelled ``$k`` while the token walk sees it resolved --
-            # so the decoyed alias slipped both union halves (server-side GPT
-            # review round 5, measured)
+            # so the decoyed alias slipped both union halves (measured)
             "k=kill; $k $(printf ')' ; pgrep -f {n})",
             "k=kill; ${{k}} $(printf ')' ; pgrep -f {n})",
             "x=/usr/bin/kill; $x $(printf ')' ; pgrep -f {n})",
             # a command-position substitution whose OUTPUT is the verb: the
             # undecoyed spelling is already token-detected, so only the
-            # decoyed combination needed the raw anchor (server-side GPT
-            # review round 6, measured)
+            # decoyed combination needed the raw anchor (measured)
             "`printf kill` $(printf ')' ; pgrep -f {n})",
             "$(echo kill) $(printf ')' ; pgrep -f {n})",
         ],
@@ -3957,10 +3953,10 @@ class TestSelfKillArgvWindowIsQuoteAware:
 class TestStdinProgramTextScoping:
     """A stdin-reading interpreter is judged on its PROGRAM, not on its neighbours.
 
-    Regression for #2660.  ``normalize_shell_command`` does not split a frame on a
+    ``normalize_shell_command`` does not split a frame on a
     newline, so a multi-line script arrives as ONE token frame.  The stdin branch of
-    ``_has_self_importing_inline_program`` used to search that whole frame for the
-    import name, which made an unrelated neighbour's FILE PATH satisfy the check --
+    ``_has_self_importing_inline_program`` must not search that whole frame for the
+    import name, or an unrelated neighbour's FILE PATH would satisfy the check --
     a benign ``python - <<'PY' … PY`` in the same script as any command naming a
     ``kiro_crew`` path read as a credential mint, with no ``token`` word anywhere.
     """
@@ -3988,7 +3984,7 @@ class TestStdinProgramTextScoping:
 
     # Every way the shell can put a PROGRAM on a simple command's stdin, at every
     # position it is allowed to appear.  Enumerated from the shell grammar rather than
-    # grown one review round at a time: the first revision covered only the heredoc,
+    # grown one spelling at a time: a partial set covering only the heredoc,
     # here-string and post-program spellings, and every omission was a real bypass.
     REAL_STDIN_REACH = (
         # Heredoc body, in every spelling of the marker.
@@ -4161,7 +4157,7 @@ class TestStdinProgramTextScoping:
 
         ``credential-exfil-kirocrew-token``'s code comment claims this exemption
         ("a regex LITERAL quoting this very rule ... from reading as a mint"), and
-        #2660 reported the claim failing in practice.  Pin it so discussing,
+        This pins that the exemption holds in practice, so discussing,
         documenting or testing the rule by quoting it stays possible.
         """
         from kiro_crew import security
@@ -4180,7 +4176,7 @@ class TestDevModeConfirmFlagIsAgentInaccessible:
     """`--confirm-out-of-install-root` must be unreachable from an agent shell.
 
     The flag is the operator's explicit attestation for granting app dev mode
-    on a UI root OUTSIDE the app's install directory (#6907), and the grant
+    on a UI root OUTSIDE the app's install directory, and the grant
     relaxes the unauthenticated UI route's root containment. Without this rule
     an auto-approved Bash tool could pass the flag itself and convert shell
     access into a self-granted serving grant on an arbitrary host directory —
@@ -4675,7 +4671,7 @@ class TestPythonStdinDetectorStepsOverOutputRedirects:
 
     def test_the_descriptor_and_modifier_sets_are_the_enumerated_ones(self):
         """The two sets are enumerated from the shells' grammars, not grown one spelling
-        per review round. Asserted here so the boundary is a test rather than a comment:
+        at a time. Asserted here so the boundary is a test rather than a comment:
         descriptors are digits, ``&``, ``{name}`` and ``*``; modifiers are ``&``, ``|``
         and ``!``."""
         from kiro_crew import security
@@ -4847,7 +4843,7 @@ class TestPythonStdinDetectorStepsOverOutputRedirects:
 
 
 class TestOutputRedirectScanQuoting:
-    """A bare opener in a redirect target is not grammar (issue #8634).
+    """A bare opener in a redirect target is not grammar.
 
     ``_output_redirect_scan``'s span walk counted every ``(``/``{`` as a depth
     opener. The tokenizer that feeds it resolves quoting, so a QUOTED ``(`` --
@@ -4855,7 +4851,7 @@ class TestOutputRedirectScanQuoting:
     closed, and the target ran past the ``<<<``/``<<`` that should have ended
     it; a bare ``{`` needs no quoting at all. The stdin program then went
     unscanned -- the same consequence the scan's own docstring describes for a
-    glued heredoc marker. Third site of the #8150 class. The rule that closes
+    glued heredoc marker. The rule that closes
     it: at depth zero only a ``$``-prefixed opener starts a substitution span.
     Quote characters that reach the scan are DATA (the tokenizer already
     resolved quoting), so the walk must not read them as grammar either --
@@ -4965,7 +4961,7 @@ class TestNestedPayloadExtractionIsLinear:
 
     It runs inside the synchronous PreToolUse gate, on every command, through the
     self-protection floor (``_self_token_frames``) and the deny tiers.  Both of its
-    scans used to walk forward per program token looking for the first command flag,
+    scans must not walk forward per program token looking for the first command flag,
     so a command padded with interpreter tokens -- none of which is a flag -- made
     every one of them re-walk the whole tail: quadratic, and measured at 13.2 s for
     16 000 tokens, growing ~4x per doubling.  At that size the gateway's own loop
@@ -5046,7 +5042,7 @@ class TestNestedPayloadExtractionIsLinear:
         either (the ratio measured the runner, not the code).
 
         No absolute wall-clock cap: coverage tracing on the backend jobs prices
-        line events, not algorithmic cost (#8630 precedent), and the counts see
+        line events, not algorithmic cost, and the counts see
         every cost shape this function can otherwise regress to.
         """
         from kiro_crew import security
@@ -5153,7 +5149,7 @@ class TestNestedPayloadExtractionIsLinear:
         contract that keeps the comparison callable.
 
         No absolute wall-clock cap: coverage tracing on the backend jobs prices
-        line events, not algorithmic cost (#8630 precedent); the counts are the
+        line events, not algorithmic cost; the counts are the
         guard.
         """
         from kiro_crew import security
@@ -5437,7 +5433,7 @@ class TestDenyMatchingIsQuoteNormalized:
         model-authored, and ``_normalize_search_path`` resolves home variables and
         dot segments but not quoting, so a quote character survives into the
         synthesized target and a path-keyed operator rule can miss it the same way
-        the shell tiers used to.
+        the shell tiers can.
 
         That is a second surface with its own semantics (a synthesized grammar,
         not a command line) and its own review surface, so it is NOT fixed here --
@@ -5871,7 +5867,7 @@ class TestDenyMatchingIsQuoteNormalized:
         """``redact_and_truncate``, never a bare slice.
 
         A credential straddling the 200-char boundary would be cut in half, and the
-        fragment no longer matches the credential pattern -- so SEL's own write-path
+        fragment does not match the credential pattern -- so SEL's own write-path
         redaction cannot catch it and the partial secret persists in a
         dashboard-readable log.  BLOCKING from the GPT 5.6 lane on the new
         ``raw_segment`` field; the older ``segment`` field carried the same hazard.
@@ -6159,7 +6155,7 @@ class TestEmptyArgvElementDoesNotBreakTheDenyView:
     reports it and deletes the rest.  But the deny VIEW is a single-space join of
     argv, so a zero-width element rendered as a spurious extra separator
     (``rm -rf  /home/x``) and every rule authored as a command SHAPE with single
-    separators stopped matching its own target (issue #7500).
+    separators stopped matching its own target.
 
     The escape was pattern-DEPENDENT, which is what places the repair in the
     render rather than in individual rules: ``chmod "" 777 /etc/passwd`` stayed
@@ -6356,8 +6352,8 @@ class TestEmptyArgvElementDoesNotBreakTheDenyView:
     def test_the_deny_decision_follows_the_view_for_every_boundary(self):
         """The view property above, carried through to the decision the gate
         actually returns.  The non-git bases are decided by the deny TIERS;
-        the git base is enforced by the argv floor, swept here since issue
-        #8115 closed its empty-word gap (an interposed word now denies at
+        the git base is enforced by the argv floor, swept here now that its
+        empty-word gap is closed (an interposed word now denies at
         every boundary -- via the protected-branch rule where the parse holds,
         via the ungated anti-obfuscation branch where it does not)."""
         from kiro_crew import security
@@ -6370,9 +6366,9 @@ class TestEmptyArgvElementDoesNotBreakTheDenyView:
                 )
 
     def test_the_git_publish_detector_skips_an_empty_word(self):
-        """GAP CLOSED by issue #8115 -- this is the flipped form of the
-        ``test_the_git_publish_detector_is_a_separate_pre_existing_gap`` pin
-        that #8114 left, and it now pins the closure.
+        """The empty-word gap is closed -- this is the flipped form of the
+        ``test_the_git_publish_detector_is_a_separate_pre_existing_gap`` pin,
+        and this test pins the closure.
 
         Every git-publish rule is stripped from the regex tier and enforced
         solely by an argv floor (``_git_publish_floor_tags``).  Its entry
@@ -6398,8 +6394,8 @@ class TestEmptyArgvElementDoesNotBreakTheDenyView:
             "pin is measuring nothing"
         )
         # Every empty-word spelling the view property enumerates, interposed
-        # at the exact boundary the entry detector used to bail on, plus the
-        # whitespace-only shapes from issue #8115.
+        # at the exact boundary the entry detector would bail on, plus the
+        # whitespace-only shapes.
         base = "git push origin main".split(" ")
         for word in self.EMPTY_WORDS + ('" "', "$'\\t'"):
             cmd = " ".join([base[0], word] + base[1:])
@@ -6453,7 +6449,7 @@ class TestEmptyArgvElementDoesNotBreakTheDenyView:
         into two operands and match a rule against a command that was never run --
         the second assertion below is what keeps that on the record.
 
-        Tracked by issue #8124; when it lands, this test is the one that must
+        When that gap is closed, this test is the one that must
         flip.
         """
         from kiro_crew import security
@@ -6489,7 +6485,7 @@ class TestEmptyArgvElementDoesNotBreakTheDenyView:
 class TestPolynomialBacktrackingStaysBounded:
     """The unbounded full-input path must not accept polynomial-backtracking regexes.
 
-    An earlier round of #7705 gave single-fragment patterns full-input matching so
+    Single-fragment patterns get full-input matching so
     an edition rule could not be silently capped at 2000 chars (padding bypass).
     That reasoning was about correctness and missed cost: the length cap was also
     what made POLYNOMIAL backtracking harmless. `a+a+$` is not the exponential
@@ -6514,7 +6510,7 @@ class TestPolynomialBacktrackingStaysBounded:
             "[a-z]*[a-z]+;",
             "a{2,}b{2,}",
             # Grouped spellings: parentheses do not change the backtracking, so
-            # treating a group as opaque let these through (GPT 5.6, #7705).
+            # treating a group as opaque let these through.
             "(a+)(a+)$",
             "(a+)a+$",
             "a+(a+)$",
@@ -6563,7 +6559,7 @@ class TestPolynomialBacktrackingStaysBounded:
 
 
 class TestDataConsumerGuardIsChargedPerCommandNotPerPayload:
-    """#8595 -- the deny walk was quadratic in nested payload COUNT.
+    """The deny walk must not be quadratic in nested payload COUNT.
 
     ``_data_consumer_exempt`` is called once per extracted payload, and three of
     its guards read only ``tokens`` -- a value the caller binds once, outside the
@@ -6670,7 +6666,7 @@ class TestDataConsumerGuardIsChargedPerCommandNotPerPayload:
 
     @pytest.mark.parametrize("n", [30, 60, 120, 240])
     def test_argv_is_walked_per_command_not_per_payload(self, monkeypatch, n):
-        # The second half of #8595: recovering a payload's token positions with
+        # The second half of the guard: recovering a payload's token positions with
         # ``[i for i, tok in enumerate(tokens) if tok == payload]`` walks the
         # whole argv once per payload.  Hoisting the guard alone leaves the walk
         # quadratic -- measured 1.37s / 4.30s / 15.56s at 4k / 8k / 16k payloads,

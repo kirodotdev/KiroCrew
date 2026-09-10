@@ -180,8 +180,8 @@ class TestSkillsOnlyFire:
     async def test_skills_with_command_runs_command(self, tmp_path: Path):
         """fire() takes the command path (never skills-only) when a command is set.
 
-        Both write paths (create/update) now reject command+skills (issue
-        #5444) — the skills would be inert — so a mixed hook can only reach the
+        Both write paths (create/update) reject command+skills — the skills
+        would be inert — so a mixed hook can only reach the
         store via deserialization of a hand-edited / older ``hooks.json``. This
         pins the defense-in-depth ``fire()`` behavior for such a persisted
         config: the command runs, the skills are ignored, and it does NOT take

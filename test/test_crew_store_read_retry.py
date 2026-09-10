@@ -1,4 +1,4 @@
-"""The read half of the Windows sharing-violation window (issue #4331).
+"""The read half of the Windows sharing-violation window.
 
 ``CrewStore._load`` read with a bare ``read_text`` and mapped every ``OSError``
 to a fatal ``RuntimeError``. On Windows a read raises ``PermissionError``
@@ -7,7 +7,7 @@ store's own builder admits two concurrent first messages for one slot both
 build a store — so one can read ``queue.json`` while the other is replacing it.
 The user gets a failed send that succeeds on retry, which reads as random.
 
-POSIX permits that read, which is why #4142 could only reproduce it in a test.
+POSIX permits that read, which is why it could only be reproduced in a test.
 ``windows_sim.read_sharing_violation`` reproduces the fault deterministically on
 any OS, so these drive the exact path a Windows host takes. They do NOT prove
 the real OS behaviour end to end, only that the retry is wired, bounded, gated
@@ -94,7 +94,7 @@ class TestReadBytesWithRetry:
 
 class TestCrewStoreLoadSurvivesAContendedRead:
     def test_load_reads_through_the_retrying_helper(self, tmp_path, _windows, monkeypatch) -> None:
-        """The product path from #4331: a concurrent first message for the same
+        """The product path: a concurrent first message for the same
         slot is replacing ``queue.json`` while this build reads it.
 
         Asserted as WIRING, deliberately. The pre-fix read was

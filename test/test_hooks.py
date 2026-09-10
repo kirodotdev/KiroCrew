@@ -188,8 +188,8 @@ class TestToolHooks:
         assert mgr.on_tool_call("ls -la /workplace").action == TOOL_AUTO_APPROVE
 
     def test_exfil_command_denied_at_gate(self):
-        """security-review 5682f92b: data-egress / reverse-shell command shapes must be
-        DENIED at the tool-invocation gate (previously only passively audited).
+        """Data-egress / reverse-shell command shapes must be DENIED at the
+        tool-invocation gate, not only passively audited.
 
         These carry the exfiltration reason specifically (they do not also name a
         sensitive credential path, which is caught by an earlier gate)."""
@@ -228,8 +228,8 @@ class TestToolHooks:
         """A file-read tool whose title is the BARE path (Claude Code provider —
         no 'Reading ' prefix) must be DENIED via is_sensitive_path.
 
-        is_sensitive_path was previously gated on the 'Reading ' prefix, so a
-        bare '~/.aws/credentials' title slipped through (is_sensitive_bash_command
+        Gating is_sensitive_path on the 'Reading ' prefix lets a bare
+        '~/.aws/credentials' title slip through (is_sensitive_bash_command
         needs a command verb, so it can't catch a bare path).
         """
         mgr = HookManager()
@@ -630,8 +630,8 @@ class TestShellCommandProperty:
     def test_from_tool_input_json_permission_event(self):
         """permission_request events set tool_input (JSON), NOT raw_tool_params
         — this is the dashboard's primary gate path, so the fallback is
-        load-bearing. Regression for the review-bot finding that the first cut
-        only read raw_tool_params and was a no-op on permission events."""
+        load-bearing: reading only raw_tool_params is a no-op on permission
+        events."""
         from kiro_crew.acp.types import AcpEvent
 
         ev = AcpEvent(
@@ -774,7 +774,7 @@ class TestShellCommandUseAws:
         )
         assert ev.shell_command is None
 
-    # ── Casing normalization hardening (2026-08-05) ──
+    # ── Casing normalization hardening ──
 
     def test_pascal_case_operation_normalized_to_kebab(self):
         """PascalCase operation_name (the AWS API name, e.g. 'DeleteStack')
@@ -1218,7 +1218,7 @@ class TestMutatingKindBeatsTheTitle:
     ``tool_name`` is the display title, and ``select_tool_title``
     (``acp/_dispatch.py``) prefers the LLM-authored ``description`` — so it is
     agent-controlled, which ``on_tool_call``'s own docstring states outright. The
-    computer-use read-only auto-approve used to be tested BEFORE any kind guard, so
+    computer-use read-only auto-approve must not be tested BEFORE any kind guard: otherwise,
     once the operator enabled computer use, an ``edit``/``execute``/``write``/
     ``delete`` call titled ``mcp__kirocrew-computer__computer_get_state`` skipped
     interactive approval entirely.
@@ -2206,7 +2206,7 @@ class TestTargetPathNestedExtraction:
     read shape ``{"operations": [{"mode": "Line", "path": …}]}`` — yielded ``[]``
     and the sensitive-path keystone in ``on_tool_call`` never saw the target.
     Worse than a missed deny: a read-kind call with the nested spelling was
-    AUTO-APPROVED while the flat spelling of the same path is denied (#6543).
+    AUTO-APPROVED while the flat spelling of the same path is denied.
 
     The fix recurses into dict/list values (depth-bounded) and stays
     extract-only; ``cli_chat``'s consent prompt shares the helper, so the

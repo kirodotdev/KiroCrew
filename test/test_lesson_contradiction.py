@@ -129,8 +129,8 @@ class TestFindContradictionCandidates:
         assert len(result) == 5
 
     def test_mismatched_dimension_row_is_never_a_candidate(self, tmp_path):
-        """Regression for #3466: a row embedded at a different dimensionality
-        (e.g. a leftover from a previous embedding-model generation) must score
+        """A row embedded at a different dimensionality
+        (e.g. one left by another embedding-model generation) must score
         0.0 -- not a plausible-looking partial-overlap value computed by
         truncating against the shorter vector -- so it can never land inside
         the contradiction band."""
@@ -401,15 +401,14 @@ class TestApiLessonsCreateSchedulesSweep:
     async def test_refused_write_does_not_sweep(self):
         """A write that did not land must not supersede anything.
 
-        ``_resolve_and_supersede`` calls ``delete_semantic``. The route used to
-        DISCARD ``write_lesson``'s return value, so a refused write -- its preflight
-        rejecting the composed value, or its dedup declining -- still ran the sweep
-        and deleted an older contradicted lesson whose replacement was never stored.
+        ``_resolve_and_supersede`` calls ``delete_semantic``. Discarding
+        ``write_lesson``'s return value lets a refused write -- its preflight
+        rejecting the composed value, or its dedup declining -- still run the sweep
+        and delete an older contradicted lesson whose replacement was never stored.
         That destroys a lesson on a request that persisted nothing, under HTTP 200.
 
-        Reachable only because this PR forwards ``negative`` to this call site at all
-        (it passed a literal ``None`` before), which is what makes a preflight
-        rejection possible here.
+        Reachable because ``negative`` is forwarded to this call site, which is what
+        makes a preflight rejection possible here.
         """
         tasks = await self._run(
             [{"key": "lesson.old", "rule": "r", "similarity": 0.6}], wrote=False
@@ -820,9 +819,10 @@ class TestWriteLessonAttachesNegativeToStoredRule:
             store.close()
 
     def test_a_sharp_s_case_variant_inserts_rather_than_enriching(self, tmp_path):
-        """The deliberate cost of lower(): a ß case-variant no longer enriches. A missed
-        enrichment is the acceptable side of the trade; conflating distinct rules is not.
-        Discriminating embed_fn for the same reason as the test above."""
+        """The deliberate cost of lower(): a ß case-variant inserts instead of
+        enriching. A missed enrichment is the acceptable side of the trade;
+        conflating distinct rules is not. Discriminating embed_fn for the same
+        reason as the test above."""
         store = self._store(tmp_path)
         try:
             store.embed_fn = _discriminating_embed
@@ -1166,11 +1166,11 @@ class TestLessonStorageShape:
             store.close()
 
     def test_the_envelope_does_not_shrink_accepted_rule_capacity(self, tmp_path):
-        """A rule that fit as a bare string still fits as a mapping: the size
+        """A rule that fits as a bare string still fits as a mapping: the size
         gate measures the legacy-equivalent content, so the JSON envelope's key
-        overhead cannot turn a previously-accepted lesson into a silent refusal
-        (the CLI's JSONL fallback would print Saved while vector readers never
-        see it)."""
+        overhead cannot turn an acceptable lesson into a silent refusal (the
+        CLI's JSONL fallback would print Saved while vector readers never see
+        it)."""
         from kiro_crew.vector_memory import _MAX_VALUE_BYTES
 
         store = self._store(tmp_path)

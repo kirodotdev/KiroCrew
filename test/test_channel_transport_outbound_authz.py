@@ -117,7 +117,7 @@ class TestEveryTransportDecidesForItself:
         )
 
     def test_recorded_permits_still_name_real_channels(self) -> None:
-        """A stale row would silently excuse a channel that no longer exists."""
+        """A stale row would silently excuse a channel that does not exist."""
         found = _transport_classes()
         stale = [
             channel
@@ -311,7 +311,7 @@ class TestOtherTransportsThatCanAnswer:
         assert t.may_send_to("conv-2") is False
 
     def test_teams_refuses_a_conversation_whose_owner_was_revoked(self) -> None:
-        # Learned while Alice was allowed; she is no longer on the roster.
+        # Learned while Alice was allowed; she is not on the roster.
         t = self._teams(["bob@example.com"], owner="alice@example.com", conversation="conv-1")
         assert t.may_send_to("conv-1") is False
 

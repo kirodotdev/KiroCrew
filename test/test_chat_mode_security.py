@@ -1,4 +1,4 @@
-"""Security contract of ``api_chat_mode`` (issue #4454).
+"""Security contract of ``api_chat_mode``.
 
 ``api_chat_mode`` (``src/kiro_crew/dashboard/chat_handlers.py``) carried three
 defects, all in the ordering between slot validation and global mutation:
@@ -132,7 +132,7 @@ async def test_trust_reads_unknown_slot_is_400_and_revokes_nothing(state) -> Non
 
 @pytest.mark.asyncio
 async def test_trust_reads_non_string_slot_key_is_rejected(state) -> None:
-    """A truthy non-string key used to fall through to the all-slots branch."""
+    """A truthy non-string key is rejected, not routed to the all-slots branch."""
     state.get_or_create_slot("s1")
     async with _client(state) as client:
         resp = await client.post("/api/chat/mode", json={"mode": "trust_reads", "slot": 123})
@@ -186,8 +186,8 @@ async def test_falsy_non_string_slot_key_is_rejected_for_trust_reads(state) -> N
 async def test_rejected_normal_request_leaves_the_global_grant_active(state) -> None:
     """'{"mode": "normal", "slot": " "}' must not revoke the grant.
 
-    The exact shape from the issue: the unknown-slot 400 used to sit AFTER the
-    revocation, so a refused request silently ended YOLO mode.
+    The unknown-slot 400 must be raised BEFORE the revocation, so a refused
+    request cannot silently end YOLO mode.
     """
     state.get_or_create_slot("s1")
     override = _FakeOverride(active=True)
@@ -274,7 +274,7 @@ async def test_trust_without_a_slot_is_still_global(state) -> None:
     assert all(s._trust for s in state._slots.values())
 
 
-# ── interplay with #4416: a slot-scoped trust/trust_reads must not revoke
+# ── interplay: a slot-scoped trust/trust_reads must not revoke
 # ── the process-global YOLO grant (the grant is global, the mode is per-slot)
 
 
@@ -282,7 +282,7 @@ async def test_trust_without_a_slot_is_still_global(state) -> None:
 async def test_named_slot_trust_reads_leaves_an_active_grant_live(state) -> None:
     """A named-slot trust_reads applies to that slot and does NOT revoke YOLO.
 
-    The narrowing from #4416 and the slot isolation from #4454 must hold
+    The trust-grant narrowing and the slot isolation must hold
     together: only the named slot trusts reads, and the operator's live grant
     survives the request.
     """

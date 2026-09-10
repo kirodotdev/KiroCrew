@@ -166,7 +166,7 @@ class TestChatSlot:
         counter is a POSITION base with no disk contract: if evicted durable
         rows were uncounted, every later absolute position would shift down and
         a poller's ``since`` guard would pass while rows were silently skipped
-        — the silent failure the deleted blanket refusal used to make loud.
+        — the silent failure a blanket refusal would make loud.
         Counting them makes such a cursor refuse loudly (``since < base``).
 
         Mutation guard: restricting the durable count to the persisted slice
@@ -748,7 +748,7 @@ class TestBroadcastCompactionResultBackoff:
     def test_enriched_title_replaces_unknown_error(self, tmp_path, monkeypatch):
         """The notice reads the event title. kiro-cli sends no summary on
         failure, so the ACP layer now carries the notification's own reason
-        there (issue #3583) — the row must name it instead of collapsing to
+        there — the row must name it instead of collapsing to
         "unknown error"."""
         from kiro_crew.dashboard.chat_utils import _broadcast_compaction_result
 
@@ -1281,7 +1281,7 @@ class TestSlotDetailPagination:
 
     @pytest.mark.asyncio
     async def test_limit_below_one_is_rejected_not_clamped_up(self, tmp_path, monkeypatch):
-        """limit=0 used to return an empty page reporting has_more true — forever."""
+        """limit below 1 is rejected, not an empty page with has_more true forever."""
         state = await self._slot_with_history(tmp_path, monkeypatch, "zerolimit")
         async with TestClient(TestServer(_make_app(state))) as client:
             for bad in ("0", "-1", "-5"):
@@ -1785,7 +1785,7 @@ class TestSlotDetailPagination:
         """A disk window holding BOTH id-carrying and id-less rows must not duplicate.
 
         The dual-write injectors stamp both copies of an injection with one id, so
-        a NEW injection no longer produces this state — but transcripts written
+        a NEW injection does not produce this state — but transcripts written
         before the append path accepted an id hold exactly it, as does any caller
         that passes no id: earlier saved rows WITH ids plus a durable row WITHOUT
         one. The id-less ``append_if_absent`` call below is that legacy writer
@@ -2052,7 +2052,7 @@ class TestSlotDetailPagination:
         # append and the second window row in the same tick, and a ``ts`` carried
         # by exactly one unmatched window entry and one unmatched disk line is the
         # save's UNAMBIGUOUS in-place-edit case, so the second save DROPS the
-        # foreign line and the region is no longer mixed. Do not collapse these
+        # foreign line and the region is not mixed. Do not collapse these
         # back to clock defaults; the sibling interleave test pins them for the
         # same reason.
         slot.append("user", "q1", ts="2020-01-01T00:00:00.000000+00:00")
@@ -2220,7 +2220,7 @@ class TestSlotDetailPagination:
     ):
         """An un-flushed row BEFORE a persisted one must still reach the response.
 
-        The id walk used to record a prefix boundary: on a match it set
+        Recording a prefix boundary on the id walk would fail here: on a match it set
         ``start = i + 1``, and a miss simply did not advance. So an un-flushed row
         followed by a matching row had the boundary moved PAST it, and the bounded
         response omitted it entirely — a drop, not a duplicate.
@@ -2621,7 +2621,7 @@ class TestHistoryPersistence:
 
 
 class TestSaveDoesNotResurrectDeletedSession:
-    """#6677: a save must not recreate a session whose permanent delete committed.
+    """A save must not recreate a session whose permanent delete committed.
 
     ``delete_session`` unlinks under the same ``_locked`` region the save
     holds, leaves no tombstone, and reports success. A save routed through
@@ -2999,7 +2999,7 @@ class TestSaveDoesNotResurrectDeletedSession:
     async def test_fork_aborts_when_the_source_was_deleted(self, tmp_path, monkeypatch):
         """A fork must not republish a permanently deleted conversation.
 
-        The fork's pre-copy flush runs with ``best_effort=False`` and used to
+        The fork's pre-copy flush runs with ``best_effort=False`` and must not
         treat any non-raising return as a confirmed durable write. A delete-won
         skip raises nothing, and the fork's DESTINATION slot is brand new — it
         carries no delete evidence, so its save would proceed and the destroyed
@@ -3116,7 +3116,7 @@ class TestSaveDoesNotResurrectDeletedSession:
     ):
         """The probe is lock-free, so a delete can land in the middle of it.
 
-        ``get_metadata_status`` reports a file that no longer exists as
+        ``get_metadata_status`` reports a file that does not exist as
         ``({}, True)`` -- by its own contract a GENUINE empty answer, not an
         unreadable one. So a delete committing between the probe's ``stat`` and
         its metadata read leaves an empty ``created_at`` that must not be read
@@ -3668,8 +3668,8 @@ class TestKiroReadinessQueueHandoff:
     ):
         """A queued item is never lost to a readiness check.
 
-        Readiness used to be probed on turn entry AND again before dequeueing,
-        so a third false answer could drop an item already popped off the queue.
+        Probing readiness on turn entry AND again before dequeueing would let
+        a third false answer drop an item already popped off the queue.
         Both probes are gone — readiness is latched at boot and the ACP attempt
         reports auth failures — so the successor turn simply runs. This pins the
         no-loss invariant that outlives the probes.
@@ -4157,9 +4157,7 @@ class TestInMemoryAuthority:
         rapid appends with an IDENTICAL ``datetime.now().isoformat()``. The
         append-safe save must still match each on-disk window-region line to its
         own window entry one-for-one — never mis-classifying a real window line
-        as a phantom "foreign append" and duplicating it. Regression for the
-        Windows ``Backend Tests`` failure in
-        ``test_append_only_preserves_full_disk_history``.
+        as a phantom "foreign append" and duplicating it.
         """
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         # Freeze history.py's clock so every on-disk append shares ONE ts,
@@ -4207,7 +4205,7 @@ class TestInMemoryAuthority:
 
     def test_append_only_colliding_ts_edit_preserves_foreign(self, tmp_path, monkeypatch):
         """Colliding ts + in-place edit + foreign append must NOT drop the
-        foreign line (regression for GPT 5.6 HIGH on the count-bounded matcher).
+        foreign line.
 
         The on-disk window region holds, sharing ONE coarse-clock ts: unchanged
         ``A``, an acknowledged cross-process foreign append ``X``, and the
@@ -5482,7 +5480,7 @@ class TestRunChatSegmentFlush:
     async def test_idle_turn_boundary_refreshes_source_status(self, tmp_path, monkeypatch):
         """Reaching idle at a turn boundary must re-read the slot's PR/MR status.
 
-        Regression for the production wiring: `_run_chat`'s idle branch calls
+        This pins the production wiring: `_run_chat`'s idle branch calls
         `state.refresh_slot_source_status(slot.key)` so the sidebar chips and the
         detail panel re-read after a turn that may have opened/pushed/merged a
         PR. The state-level tests exercise `refresh_slot_source_status` directly
@@ -5836,7 +5834,7 @@ class TestRunChatCompactDeferredWait:
         # The appended row carries a minted ``meta.mid``: the live copy is
         # delivered through append's own identity-carrying door (_on_message),
         # so no hand-built duplicate ``chat_message`` frame may fire — a
-        # mid-less manual frame rendered the notice twice (#5981 family).
+        # mid-less manual frame rendered the notice twice.
         assert all(m.get("meta", {}).get("mid") for m in compaction_msgs)
         assistant_broadcasts = [
             c
@@ -6583,7 +6581,7 @@ class TestCostOnlyTurnPersistGate:
     A claude-seam turn ending via a synthetic EVENT_COMPLETE (timeout,
     tool-stall, cancel-unacked) can carry cost with zero tokens and zero
     credits; the footer already reads ``_u.cost_usd`` off the same event, so
-    only the gate stood between the cost and the usage store (#6758).
+    only the gate stood between the cost and the usage store.
     """
 
     @pytest.mark.asyncio
@@ -6757,7 +6755,7 @@ class TestPinnedModelWithheld:
     downgrade (chip read ``claude-opus-5``; every turn ran on auto). The runner
     reports the dead pin using the same predicate the withhold uses, and carries
     the verdict in the slots payload so the frontend reads it instead of
-    inferring it from picker-list membership (#1819).
+    inferring it from picker-list membership.
     """
 
     @staticmethod
@@ -6832,7 +6830,7 @@ class TestPinnedModelWithheld:
     def test_namespaced_pin_matches_bare_advertised(self):
         from kiro_crew.dashboard.chat_runner import _pinned_model_verdict
 
-        # Regression #8521: a persisted pin can carry a `<namespace>::<bare-id>`
+        # A persisted pin can carry a `<namespace>::<bare-id>`
         # qualifier from the catalog that advertised it when it was stored,
         # while the session being judged advertises the BARE id. The literal
         # comparison missed for every such pin and the banner claimed a fully
@@ -7118,7 +7116,7 @@ class TestPinnedModelWithheld:
         ), f"expected a persisted notice naming the withheld model, got {notices}"
         # And the verdict is CARRIED, not left for the frontend to re-derive: the
         # slots payload states it, so the chip does not have to read "absent from
-        # GET /api/models" as "not entitled" (#1819).
+        # GET /api/models" as "not entitled".
         assert slot.model_withheld is True
         assert slot.to_dict()["model_withheld"] is True
 
@@ -7644,7 +7642,7 @@ class TestRuntimeWiring:
 
         The handler logs and proceeds when resolve_agent_bindings raises, and
         slot.workspace keeps its previous value — so the response must name
-        THAT value. Since #5120 the acting tab writes the response's workspace
+        THAT value. The acting tab writes the response's workspace
         into its store optimistically; a fabricated 'default' would pin the
         chip to a workspace the slot does not hold, and with the websocket
         down (the optimistic write's whole premise) nothing corrects it.
@@ -7679,7 +7677,7 @@ class TestRuntimeWiring:
         """A throwing teardown reports SUCCESS with a warning; the agent stays.
 
         The reset pops the session before its shutdown can fail, so by the
-        failure point the old binding's session no longer exists — every
+        failure point the old binding's session does not exist — every
         future or replacement session cold-starts on the NEW agent. The
         switch therefore succeeded: answering 500 would make the acting
         tab's performSlotSwitch keep the OLD store value for a switch that
@@ -8160,7 +8158,7 @@ class TestRuntimeWiring:
         kiro-cli resolves --agent against $PWD/.kiro/agents, so clobbering the
         project here makes the just-selected agent unresolvable on the next
         turn: the slot advertises it while the default answers — the
-        silent-substitution bug #1684 exists to remove.
+        silent-substitution bug this exists to remove.
         """
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
@@ -10967,7 +10965,7 @@ class TestPythonStageLoop:
 
     @pytest.mark.asyncio
     async def test_deleted_slot_skips_handoff(self, tmp_path, monkeypatch):
-        """If the slot was deleted mid-plan (no longer registered), the finally
+        """If the slot was deleted mid-plan (not registered), the finally
         must NOT launch its held queue on the torn-down slot."""
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         monkeypatch.setattr("kiro_crew.dashboard.chat.config_dir", lambda: tmp_path)
@@ -11052,7 +11050,7 @@ class TestPythonStageLoop:
     async def test_queued_receipt_carries_the_entry_queue_id(self, tmp_path, monkeypatch):
         """The `queued: true` receipt names the entry it created: `queue_id`
         must equal the queue entry's id, because the sender binds its pre-send
-        composer state to that id for the cancel-queued restore (#560) — a
+        composer state to that id for the cancel-queued restore — a
         content-based key cannot do this (serialization is not injective and
         other tabs can queue colliding content)."""
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
@@ -12184,7 +12182,7 @@ class TestFolderCRUD:
             )
 
             async def _both_queued() -> None:
-                # _folders_lock is a LoopBoundLock (#4800); the waiter queue
+                # _folders_lock is a LoopBoundLock; the waiter queue
                 # lives on this loop's inner asyncio.Lock.
                 inner = state._folders_lock._bound()
                 while len(getattr(inner, "_waiters", None) or ()) < 2:
@@ -12269,7 +12267,7 @@ class TestFolderCRUD:
     ):
         """A PATCH mixing a VALID field (name) with an INVALID one (bad parent_id)
         must be all-or-nothing: the 400 rejection must NOT persist the name change
-        (validate-all-before-mutate). Regression for the partial-mutation bug."""
+        (validate-all-before-mutate)."""
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
         app = _make_folder_app(state)
@@ -12811,7 +12809,7 @@ class TestFolderCRUD:
 
 class TestFolderTags:
     """Folder `tags` — vocabulary-constrained list persisted on create/update,
-    and stripped from folders when a tag is deleted (issue #5419)."""
+    and stripped from folders when a tag is deleted."""
 
     @staticmethod
     def _seed_vocabulary(state, tag_ids):
@@ -13171,7 +13169,7 @@ class TestFolderAssignmentPersistence:
         # A genuinely resumed slot's file exists on disk (the restore read it).
         # Persist first so the fixture matches reality — a slot claiming
         # on-disk history whose file is missing is the delete-won state the
-        # save now refuses to recreate (#6677).
+        # save now refuses to recreate.
         from kiro_crew.dashboard.chat_persistence import _save_slot_to_history
 
         _save_slot_to_history(state, slot, force=True)
@@ -13211,7 +13209,7 @@ class TestFolderAssignmentPersistence:
         slot.drain()
         # Persist first: a resumed slot's file exists on disk (see the folder
         # regression above — the missing-file variant is the delete-won state
-        # the save refuses to recreate, #6677).
+        # the save refuses to recreate).
         from kiro_crew.dashboard.chat_persistence import _save_slot_to_history
 
         _save_slot_to_history(state, slot, force=True)
@@ -13245,7 +13243,7 @@ class TestFolderAssignmentPersistence:
         slot.drain()
         # Persist first: a genuinely resumed slot's file exists on disk. (The
         # missing-file variant is the delete-won state the save refuses to
-        # recreate, #6677.)
+        # recreate.)
         _save_slot_to_history(state, slot, force=True)
         path = tmp_path / "dashboard_forceslot.jsonl"
         assert path.exists()
@@ -13960,8 +13958,8 @@ class TestForkSlot:
 
     @pytest.mark.asyncio
     async def test_fork_preserves_meta(self, tmp_path):
-        # Regression: chat_fork.py previously dropped the `meta` dict when copying
-        # messages into the new slot, silently breaking every meta-based feature
+        # chat_fork.py must preserve the `meta` dict when copying messages into
+        # the new slot; dropping it silently breaks every meta-based feature
         # (knowledge chips, paste refs, future inline-comment rewrite badges).
         # Fork must preserve meta verbatim on copied messages.
         state = _make_state(tmp_path)
@@ -14013,7 +14011,7 @@ class TestForkSlot:
     async def test_fork_handles_messages_without_meta(self, tmp_path):
         # The mirror of test_fork_preserves_meta: fork must not INVENT meta keys
         # the parent row did not have. Since `_ChatSlot.append` now stamps
-        # `meta.mid` on every row, "no meta at all" is no longer the observable
+        # `meta.mid` on every row, "no meta at all" is not the observable
         # invariant; the equivalent one is that the forked row's meta matches the
         # parent's exactly -- nothing added, nothing dropped.
         state = _make_state(tmp_path)
@@ -14835,7 +14833,7 @@ class TestForkSlot:
     async def test_fork_at_index_spans_chained_session_files(self, tmp_path):
         """Index space must match the frontend (chained), not the current file alone.
 
-        Regression for the slot detail endpoint returns
+        The slot detail endpoint returns
         ``read_messages_chained`` (all sibling session files sharing the
         slot's ``tab_id``), and the frontend builds its fork-button index
         against that list. Pre-fix, fork called ``read_messages`` and
@@ -15014,7 +15012,7 @@ class TestInstalledPackConsentInjection:
         assert self.PERSONA in result
 
     def test_stale_sha_not_injected(self):
-        # Reinstall rewrote persona.md; the stored hash no longer matches the
+        # Reinstall rewrote persona.md; the stored hash does not match the
         # on-disk text -> the new, never-consented persona must NOT be injected.
         from kiro_crew.dashboard.chat import _maybe_inject_persona
 
@@ -15782,7 +15780,7 @@ class TestStopDuringSessionPrep:
     so ``SessionManager.stop_turn`` answers ``"idle"`` and the stop resolves
     without cancelling anything. The dispatch gate in ``_run_chat`` is what
     honors that stop: it compares ``slot._stop_generation`` against the
-    turn-entry snapshot and refuses to open the turn (#5464 — [Stopped] card
+    turn-entry snapshot and refuses to open the turn ([Stopped] card
     shown while the response streams to completion).
     """
 
@@ -16051,7 +16049,7 @@ class TestAcpProcessDiedRecovery:
                 # A continuation, not the user's request: the turn had emitted, so
                 # this text is the runner's and must not mirror as user speech.
                 "payload": RecoveryPayload.CONTINUATION,
-                # Admission stamp (#5911): recovery requeues record the containment
+                # Admission stamp: recovery requeues record the containment
                 # that held at requeue so the drain can re-validate the retry.
                 "meta": slot._queue[0]["meta"],
             }
@@ -16101,7 +16099,7 @@ class TestAcpProcessDiedRecovery:
                 # A continuation, not the user's request: the turn had emitted, so
                 # this text is the runner's and must not mirror as user speech.
                 "payload": RecoveryPayload.CONTINUATION,
-                # Admission stamp (#5911): recovery requeues record the containment
+                # Admission stamp: recovery requeues record the containment
                 # that held at requeue so the drain can re-validate the retry.
                 "meta": slot._queue[0]["meta"],
             }
@@ -16147,7 +16145,7 @@ class TestAcpProcessDiedRecovery:
                 "content": _CONN_RECOVER_MSG,
                 "kind": SYNTHETIC_RECOVERY_KIND,
                 "payload": RecoveryPayload.CONTINUATION,
-                # Admission stamp (#5911): recovery requeues record the containment
+                # Admission stamp: recovery requeues record the containment
                 # that held at requeue so the drain can re-validate the retry.
                 "meta": slot._queue[0]["meta"],
             }
@@ -16466,8 +16464,8 @@ class TestAcpProcessDiedRecovery:
         """A pipe-death AcpError ('process exited') at _prompt_depth>0 must STILL reset
         the dead session and increment the pipe-death counter (mirrors AcpProcessDied /
         PromptBusyExhaustedError), and surface a 'Connection lost — please retry' card —
-        but NOT re-queue (re-queue is depth-0 only). Previously the whole reset/counter
-        block was gated on `_prompt_depth == 0`, so a depth>0 pipe-death fell through to
+        but NOT re-queue (re-queue is depth-0 only). Gating the whole reset/counter
+        block on `_prompt_depth == 0` makes a depth>0 pipe-death fall through to
         the generic else: no session reset (the next turn hit the dead process) and the
         failure never counted toward the exhaustion threshold."""
         from kiro_crew.acp.client import AcpError
@@ -17775,8 +17773,8 @@ class TestRunChatTransientRetry:
 
     @pytest.mark.asyncio
     async def test_transient_post_toolcall_recovers(self, tmp_path, monkeypatch):
-        """A transient 5xx AFTER a TOOL CALL fired now RECOVERS (no longer
-        fail-fast). Because the retry re-queues a CONTINUE instruction onto the
+        """A transient 5xx AFTER a TOOL CALL fired RECOVERS instead of failing
+        fast. Because the retry re-queues a CONTINUE instruction onto the
         SAME live session — which still holds the completed tool results — the
         model resumes from where it stopped instead of blindly re-running the
         tool. Exactly one post-token recovery fires, the partial is preserved,
@@ -18877,7 +18875,7 @@ class TestRunChatModelFallback:
 
     @pytest.mark.asyncio
     async def test_candidate_budget_routes_through_shared_rewind_body(self, tmp_path, monkeypatch):
-        """DRIFT PIN (#5447 item 2): the post-swap counter rewind must come
+        """DRIFT PIN: the post-swap counter rewind must come
         from llm_helpers.fallback_rewound_transient_budget — not a re-encoded
         local constant. Patching the shared body to grant no extra pass drops
         the candidate to a single attempt."""
@@ -18954,7 +18952,7 @@ class TestRunChatModelFallback:
 
     @pytest.mark.asyncio
     async def test_restore_probe_skipped_when_session_moved_on(self, tmp_path, monkeypatch):
-        """If the session is no longer on our fallback (explicit user pick),
+        """If the session is not on our fallback (explicit user pick),
         the stale sticky state is dropped WITHOUT touching the model."""
         from kiro_crew.dashboard.chat import _run_chat
         from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
@@ -19109,7 +19107,7 @@ class TestRunChatModelFallback:
 
 
 class TestSlotProbeWrapsSharedRestoreBody:
-    """DRIFT PIN (#5447 item 3): the slot restore probe is a thin adapter over
+    """DRIFT PIN: the slot restore probe is a thin adapter over
     llm_helpers.probe_fallback_restore — only the slot pick-gen/heal/clear
     logic lives locally. These tests pin the delegation and the slot-specific
     hooks it hands over; the probe mechanics themselves are pinned in
@@ -19207,7 +19205,7 @@ class TestSlotProbeWrapsSharedRestoreBody:
         assert slot._fallback_slot_model == ""
 
     def test_sticky_clear_keeps_slot_record_when_marker_clear_fails(self):
-        """DRIFT PIN (review round 3): a failed provider-marker clear must NOT
+        """DRIFT PIN: a failed provider-marker clear must NOT
         blank the slot fields — the slot probe keys on _active_fallback_model,
         so keeping the record is what makes the clear retryable next turn.
         Blanking the fields around a surviving marker would orphan it."""
@@ -19996,7 +19994,7 @@ class TestSlotModelLiveSwitch:
     async def test_unavailable_model_is_4xx_and_keeps_the_session(self, tmp_path):
         """An entitlement refusal must NOT take the reset fallback.
 
-        Design Review on #1596: the generic ``except Exception`` here treats
+        The generic ``except Exception`` here treats
         every set_model failure as "the call didn't land" and recovers with a
         reset. For a model the account cannot use that recovery is wrong twice
         over — it destroys the live conversation AND cold-starts on a different
@@ -20108,8 +20106,8 @@ class TestSlotModelLiveSwitch:
 
     @pytest.mark.asyncio
     async def test_two_refused_picks_leave_the_slot_untouched(self, tmp_path):
-        """REGRESSION (verifier finding on 84fc7961): two UNAVAILABLE picks
-        overlapping used to fail out of order — the later rollback restored
+        """Two UNAVAILABLE picks overlapping must not fail out of order: without
+        serialisation the later rollback would restore
         the earlier pick's already-refused model, leaving the slot advertising
         a rejected model with a phantom pick generation. Serialised, each
         transaction unwinds itself and the slot ends exactly where it began."""
@@ -21344,7 +21342,7 @@ class TestUnflushedTailOrderingAndSnapshot:
         """An owed row must not make the id-less arm re-emit later persisted rows.
 
         The arm forward-scans the disk slice for each window row. When a row was NOT
-        found the loop used to ``break`` outright, which left ``start`` pointing AT that
+        found the loop would ``break`` outright, which left ``start`` pointing AT that
         row -- so ``window[start:]`` carried it AND every later window row, including
         rows the disk slice already holds. Those came back a second time, and out of
         order, which is the duplication this function exists to remove.

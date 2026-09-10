@@ -707,7 +707,7 @@ _FENCE_SHAPES = [
     "```py\n" + _ORACLE_CODE * 20 + "```\n\n```sh\nls\n" + _ORACLE_CODE * 20,  # two fences
     "````md\n" + _ORACLE_CODE * 20 + "```\n" + _ORACLE_CODE * 20 + "\n\n\n",  # ws tail
     # Blank code lines INSIDE a fence with more code after them -- the shape the
-    # remainder used to delete, swept at every limit so the cut lands on each
+    # remainder would delete, swept at every limit so the cut lands on each
     # newline of the run in turn.
     "```py\n" + _ORACLE_CODE * 20 + "\n\n" + _ORACLE_CODE * 20,
     "```py\n" + (_ORACLE_CODE + "\n\n\n") * 12,  # 4-newline runs throughout
@@ -788,7 +788,7 @@ class TestRotationSplitting:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         # Nothing appended and nothing to undo, including for the shapes the
-        # deleted tail-closer strip used to have to reason about.
+        # deleted tail-closer strip would have to reason about.
         for text in ["```py\nx = 1\n", "type ``` here", "plain prose"]:
             assert await self._rotate(monkeypatch, text, 1900) == ([], text)
 
@@ -1018,7 +1018,7 @@ class TestRotationSplitting:
     ) -> None:
         """Swept oracle: a rotation IS the splitter's output, verbatim.
 
-        The renderer used to carry its own splitter and then undo part of it, and
+        The renderer must not carry its own splitter and then undo part of it, since
         every defect in that cluster was the append and the strip disagreeing on
         one shape. There is nothing left to disagree about, and this pins that:
         each chunk but the last is sealed exactly once, in order, and the last is
@@ -1863,7 +1863,7 @@ class TestRenderer:
         final = cli.final_text()
         assert final.count("```") % 2 == 0  # balanced -> no stray backticks
         # The fence must CLOSE, which the balance check above already proves;
-        # the message no longer ENDS on the closer because the turn footer is
+        # the message does not END on the closer because the turn footer is
         # appended as a trailing subtext line after it.
         assert final.startswith("```")
         assert final.split("-# Finished in ")[0].rstrip().endswith("```")
@@ -2266,8 +2266,8 @@ class TestDispatcher:
         ACP session. ``on_turn_start`` does not send the indicator inline -- it
         spawns a refresh task -- so it must be called BEFORE the cold start, or
         the task is not even created until the cold start has finished and the
-        user sees several seconds of dead air. That regressed when attachment
-        ingestion was inserted ahead of ``on_turn_start`` (#1053). The shared
+        user sees several seconds of dead air. Inserting attachment ingestion
+        ahead of ``on_turn_start`` reintroduces exactly that. The shared
         skeleton in messaging/dispatch.py documents this order as "typing
         indicator before cold start"; telegram/transport_dispatch.py follows it.
 
@@ -3166,7 +3166,7 @@ class TestDispatcher:
     @pytest.mark.asyncio
     async def test_compact_declined_on_auto_managed_backend(self) -> None:
         # A backend that cannot serve /compact gets the informational reply and
-        # compact() is NEVER dispatched (#8156).
+        # compact() is NEVER dispatched.
         d, cli, sess = _dispatcher({"u1"})
         calls: list[int] = []
 
@@ -3442,7 +3442,7 @@ class TestDispatcher:
     async def test_unlink_clears_binding_stranded_by_generation_rotation(self) -> None:
         # THE stale-mirror regression: a binding written at one DM generation,
         # then the conversation rotates (!new / idle / daily reset). The row's
-        # key spelling no longer derives from the current session key, so the
+        # key spelling does not derive from the current session key, so the
         # key-addressed clears cannot reach it — yet it still occupies the
         # location and blocks `!session` resume. Unlink must free it by value.
         d, cli, sess = _dispatcher({"u1"})
@@ -3639,7 +3639,7 @@ class TestInteractions:
 
     @pytest.mark.asyncio
     async def test_channels_deny_still_resolves_reject_interaction(self, tmp_path, monkeypatch):
-        # MEDIUM (GPT round-13 #3): a REJECT press ("a:...:0") on a denied channel
+        # A REJECT press ("a:...:0") on a denied channel
         # must STILL resolve the pending approval as refused (False) — a reject is a
         # denial, exactly what a channels-deny wants, and silently dropping it would
         # strand the pending future until timeout (~300s). Only APPROVE is gated out.
@@ -3786,7 +3786,7 @@ class TestContextThresholdNotices:
     @pytest.mark.asyncio
     async def test_soft_nudge_suppressed_on_auto_managed_backend(self) -> None:
         # The nudge advises !compact, which this backend refuses — it compacts
-        # on its own, so there is nothing for the user to act on (#8156).
+        # on its own, so there is nothing for the user to act on.
         d, cli, sess = _dispatcher({"u1"})
         sess.check_context_usage = lambda key, provider: 85.0
         provider = SimpleNamespace(manual_compact_unsupported_backend="kas")

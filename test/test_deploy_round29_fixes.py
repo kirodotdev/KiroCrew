@@ -1,4 +1,4 @@
-"""Tests for deploy Round 29 fixes: pod real-deploy bugs.
+"""Deploy-path pod real-deploy bugs.
 
 F1: _allowed_local_roots includes config_dir workspace + registered workspaces
 F2: Boundary preflight + dead-stack detection in deploy-backend.sh / install-reaper.sh
