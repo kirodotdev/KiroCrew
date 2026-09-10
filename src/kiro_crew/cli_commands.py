@@ -199,9 +199,15 @@ def _format_schedule(schedule: object) -> str:
     if not isinstance(schedule, CronSchedule):
         return str(schedule)
     if schedule.kind == "at" and schedule.at_ts:
-
-        dt = datetime.fromtimestamp(schedule.at_ts)
-        return f"at {dt:%Y-%m-%d %H:%M}"
+        try:
+            dt = datetime.fromtimestamp(schedule.at_ts)
+            return f"at {dt:%Y-%m-%d %H:%M}"
+        except Exception:
+            # Same degrade-on-render posture as cron.format_schedule: an
+            # extreme stored at_ts (beyond year 9999, epoch milliseconds)
+            # must not crash `kirocrew cron list` -- fall through to the
+            # shared renderer, whose own fallback string covers it.
+            pass
     return format_schedule(schedule)
 
 

@@ -185,7 +185,12 @@ def _is_loadable_record(j: dict[str, Any]) -> bool:
     :func:`_read_job_records` keeps its non-raising contract.
     """
     try:
-        _job_from_record(j)
+        # warn_on_coercion=False: this probe runs at WS status-pusher cadence
+        # (count_enabled_from_disk on every push cycle, per connected
+        # dashboard) and never precedes a store rewrite, so the coercion
+        # recovery-window WARNING belongs to _load alone — emitting it here
+        # would repeat it indefinitely for one bad record.
+        _job_from_record(j, warn_on_coercion=False)
     except Exception:
         return False
     return True
@@ -985,16 +990,28 @@ def format_schedule(schedule: CronSchedule, tz_name: str = "") -> str:
             return f"every {secs // 3600}h"
         return f"every {secs}s"
     if schedule.kind == "at" and schedule.at_ts:
-        tz = ZoneInfo(tz_name) if tz_name else None
-        if tz:
-            now = datetime.now(tz)
-            dt = datetime.fromtimestamp(schedule.at_ts, tz)
-        else:
-            now = datetime.now().astimezone()
-            dt = datetime.fromtimestamp(schedule.at_ts).astimezone()
-        if dt.date() == now.date():
-            return f"at {dt:%I:%M %p %Z}"
-        return f"at {dt:%I:%M %p %Z}, {platform_compat.strftime(dt, '%b %-d')}"
+        # Tolerance lives HERE, at the render site, not in the deserializer: a
+        # stored at_ts that datetime.fromtimestamp cannot represent (NaN or
+        # Infinity from bare json.loads, epoch milliseconds, a beyond-year-9999
+        # stamp, a pre-epoch value on Windows) must degrade to a fallback
+        # string instead of raising inside the comprehension that serializes
+        # EVERY job on GET /api/crons -- and the record itself is preserved for
+        # the operator to repair. Same degrade-on-render posture as
+        # CronJob._render_run_stamp.
+        try:
+            tz = ZoneInfo(tz_name) if tz_name else None
+            if tz:
+                now = datetime.now(tz)
+                dt = datetime.fromtimestamp(schedule.at_ts, tz)
+            else:
+                now = datetime.now().astimezone()
+                dt = datetime.fromtimestamp(schedule.at_ts).astimezone()
+            if dt.date() == now.date():
+                return f"at {dt:%I:%M %p %Z}"
+            return f"at {dt:%I:%M %p %Z}, {platform_compat.strftime(dt, '%b %-d')}"
+        except Exception:
+            logger.debug("format_schedule: unrenderable at_ts %r", schedule.at_ts, exc_info=True)
+            return "at an invalid stored time"
     return schedule.kind
 
 
@@ -1268,7 +1285,27 @@ def _job_tz(job: CronJob) -> ZoneInfo:
 
 
 def compute_next_run_ts(job: CronJob, now: float | None = None) -> float | None:
-    """Return the next fire time as a UTC epoch, or ``None`` if unknown."""
+    """Return the next fire time as a UTC epoch, or ``None`` if unknown.
+
+    Never returns a non-finite float: the result feeds ``next_run_ts`` on the
+    ``GET /api/crons`` payload, and ``json.dumps`` (``allow_nan=True`` by
+    default) would emit the bare token ``Infinity`` -- invalid JSON that makes
+    the client reject the WHOLE listing. Finite extremes a hand-edited store
+    can carry still overflow here through arithmetic (``last + every_secs``
+    with ``every_secs=1e308`` sums to ``inf``), so the guard sits on the
+    RESULT, covering every arithmetic route at the serialize site.
+    """
+    result = _compute_next_run_ts_raw(job, now)
+    # Float-gated like every non-finite check in this module: a bignum int
+    # result serializes as digits (valid JSON) and math.isfinite(huge_int)
+    # raises OverflowError -- the exact escape this guard exists to prevent.
+    if isinstance(result, float) and not math.isfinite(result):
+        return None
+    return result
+
+
+def _compute_next_run_ts_raw(job: CronJob, now: float | None = None) -> float | None:
+    """Unchecked next-fire-time computation; see :func:`compute_next_run_ts`."""
     try:
         if not job.enabled:
             return None
@@ -1462,16 +1499,26 @@ def enabled_count_from_disk(path: Path) -> tuple[int, bool]:
     return (count, loadable)
 
 
-def _str_or_empty(value: Any) -> str:
-    """Return *value* when it is a string, else ``""``.
+def _is_representable_number(value: Any) -> bool:
+    """True when *value* is a real number every consumer can hold.
 
-    ``crons.json`` is hand-editable, so a record may carry a non-string where a
-    string is expected. A stored value that is not a string degrades to ``""``
-    (the field's "unset" value) rather than flowing into a consumer that calls
-    string methods on it -- the redacting serializer on ``GET /api/crons`` would
-    otherwise raise on ``.strip()``/regex and 500 the whole listing.
+    The numeric half of the load-time type-shape contract: ``bool`` is
+    rejected (a stored ``true`` is not a count), non-``(int, float)`` is
+    rejected, a non-finite float is rejected (``json.loads`` parses
+    ``NaN``/``Infinity`` by default; NaN breaks comparison ordering and the
+    pair emits invalid JSON tokens), and an int too large to convert to a
+    float is rejected via ``try/except OverflowError`` -- the same predicate
+    shape as ``monitoring.models.is_finite_non_negative_number``, minus its
+    sign bound (a value bound has no place at load; see ``_job_from_record``).
+    Raises nothing, so nothing can leak outside ``_load``'s
+    ``(KeyError, TypeError)`` per-entry isolation.
     """
-    return value if isinstance(value, str) else ""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        return False
 
 
 def resolve_cron_memory(job: CronJob, *, validate_memory_files: bool = True) -> tuple[str, str]:
@@ -1584,13 +1631,32 @@ def bind_cron_memory(job: CronJob) -> None:
             job.member_id = store_cfg.owner_member
 
 
-def _job_from_record(j: dict[str, Any]) -> CronJob:
+def _job_from_record(j: dict[str, Any], *, warn_on_coercion: bool = True) -> CronJob:
     """Build one :class:`CronJob` from its serialized record.
 
     Raises ``KeyError``/``TypeError`` when the record is malformed (missing
-    required keys, or not shaped like a job object at all). The caller
+    required keys, not shaped like a job object at all, or carrying a
+    non-string where the field decides WHAT the job executes). The caller
     (:meth:`CronService._load`) isolates that failure to THIS entry — one bad
     record must never discard the rest of the store.
+
+    Field-type handling splits by what a wrong type would cost:
+
+    - **Required identity/payload** (``id``, ``name``, ``message``,
+      ``schedule.kind``) and **execution selectors** (``script``, ``command``,
+      ``agent_id``, plus the ``agent_sequence`` / ``skip_dates`` lists) raise
+      ``TypeError`` on a non-string value, so the record is skipped whole.
+      Coercing a selector instead would fail OPEN: a script job whose
+      ``script`` degraded to ``""`` silently becomes an LLM agent job
+      (``_cron_callback`` picks the mode from which selector is non-empty),
+      executing the job's message through the default agent — worse than not
+      loading the record at all.
+    - **Everything else string-typed** coerces to the field's own unset value
+      (``""``, or ``None`` for ``Optional[str]`` fields), and every field
+      whose stored value was destroyed by that coercion is named in one
+      WARNING, because ``_save`` rewrites ``jobs[]`` wholesale and the coerced
+      value replaces the operator's stored one on the next write — the log
+      line is the recovery window, exactly like the skip warning in ``_load``.
 
     It does NOT raise ``AttributeError`` for any record ``json.loads`` can
     produce: every ``.get()`` below is dominated by a ``[...]`` subscript on the
@@ -1603,18 +1669,126 @@ def _job_from_record(j: dict[str, Any]) -> CronJob:
     turning a code defect into silent, unrecoverable data loss. Letting it
     propagate trades a loud failure at load for that silent loss.
     """
-    return CronJob(
-        id=j["id"],
-        name=j["name"],
-        message=j["message"],
+    coerced: list[str] = []
+
+    def _required_str(container: dict[str, Any], field: str) -> str:
+        value = container[field]  # KeyError for a missing required key
+        if not isinstance(value, str):
+            raise TypeError(
+                f"cron record field {field!r} must be a string, got {type(value).__name__}"
+            )
+        return value
+
+    def _selector_str(field: str) -> str:
+        # Absent key = legacy record, defaults to "". A PRESENT non-string
+        # (null included) is malformed: an execution selector has no safe
+        # fallback value — see the docstring.
+        if field not in j:
+            return ""
+        value = j[field]
+        if not isinstance(value, str):
+            raise TypeError(
+                f"cron record execution selector {field!r} must be a string, got {type(value).__name__}"
+            )
+        return value
+
+    def _str_list(field: str) -> list[str]:
+        # Absent field: a legacy record predating the field -- default empty.
+        # Explicit null is NOT the same thing: no writer produces it, and
+        # treating it as empty flips a multi-agent job onto the single-agent
+        # fallback -- an execution-path change, so the record skips whole.
+        if field not in j:
+            return []
+        value = j[field]
+        if not isinstance(value, list) or any(not isinstance(m, str) for m in value):
+            raise TypeError(f"cron record field {field!r} must be a list of strings")
+        return value
+
+    def _guard_str(field: str) -> str:
+        # Non-string (incl. null) degrades to "" -- the field's unset value --
+        # so it can never reach a consumer that calls string methods on it
+        # (the GET /api/crons redacting serializer would 500 the listing).
+        value = j.get(field)
+        if value is not None and not isinstance(value, str):
+            coerced.append(field)
+        return value if isinstance(value, str) else ""
+
+    def _guard_opt_str(field: str) -> str | None:
+        # Optional[str] sibling: None means "never set" and is semantically
+        # distinct from "" (e.g. last_status gates rendering on `is None`),
+        # so a non-string degrades to None, never to an invented "".
+        value = j.get(field)
+        if value is not None and not isinstance(value, str):
+            coerced.append(field)
+        return value if isinstance(value, str) else None
+
+    def _guard_num(field: str, default: Any) -> Any:
+        # The numeric half of split-by-cost: telemetry numerics COERCE to
+        # their declared unset value (never skip -- coercion drops no record,
+        # satisfying the data-loss rule unconditionally), joining the same
+        # coerced list and single WARNING as the string fields. This is what
+        # keeps a NaN/bignum in a telemetry field out of every consumer at
+        # once: the JSON envelope (bare NaN/Infinity tokens), timer and
+        # due-decision arithmetic (OverflowError / due-every-tick), delivery
+        # dedup arithmetic, subprocess budgets, and the secret-grant CAS
+        # (NaN != NaN is always true, permanently blocking approval).
+        # Absent field: a legacy record -- the declared default, silently.
+        # Explicit null is a present value: where the declared unset IS None
+        # (last_run_ts) it is the writer's own serialization of "never ran"
+        # and passes through; everywhere else it is malformed like any other
+        # non-number and joins the coerced list so the load names it.
+        if field not in j:
+            return default
+        value = j[field]
+        if value is None:
+            if default is None:
+                return default
+            coerced.append(field)
+            return default
+        if not _is_representable_number(value):
+            coerced.append(field)
+            return default
+        return value
+
+    # Schedule sub-fields decide WHEN the job fires and feed format_schedule
+    # on the listing path unguarded, so like the execution selectors they fail
+    # CLOSED: a mistyped value skips the record whole. The kind subscript runs
+    # first — only a dict survives a string subscript, so the .get() calls
+    # below can never raise AttributeError (see the docstring).
+    sched = j["schedule"]
+    sched_kind = _required_str(sched, "kind")
+    for _numeric_field in ("every_secs", "at_ts"):
+        _numeric_value = sched.get(_numeric_field)
+        if _numeric_value is not None and not _is_representable_number(_numeric_value):
+            # Representability is TYPE SHAPE for a schedule numeric: NaN and
+            # Infinity break comparison ordering (a NaN at_ts is due every
+            # tick) and emit invalid JSON tokens, and a bignum int crashes
+            # int-float arithmetic on the timer-arming path (`at_ts - now` ->
+            # OverflowError, aborting gateway startup). No write path can
+            # persist any of these -- _build_job and _update_job_locked refuse
+            # them at the persistence chokepoints, so this reader-side skip
+            # provably drops no writer-producible record. Deliberately no
+            # FINITE value bound: extreme representable values load intact
+            # and are tolerated at their consumers.
+            raise TypeError(
+                f"cron record schedule field {_numeric_field!r} must be a representable finite number"
+            )
+    _cron_expr = sched.get("cron_expr")
+    if _cron_expr is not None and not isinstance(_cron_expr, str):
+        raise TypeError("cron record schedule field 'cron_expr' must be a string")
+
+    job = CronJob(
+        id=_required_str(j, "id"),
+        name=_required_str(j, "name"),
+        message=_required_str(j, "message"),
         schedule=CronSchedule(
-            kind=j["schedule"]["kind"],
-            every_secs=j["schedule"].get("every_secs"),
-            at_ts=j["schedule"].get("at_ts"),
-            cron_expr=j["schedule"].get("cron_expr"),
+            kind=sched_kind,
+            every_secs=sched.get("every_secs"),
+            at_ts=sched.get("at_ts"),
+            cron_expr=_cron_expr,
         ),
-        channel=j.get("channel"),
-        thread_ts=j.get("thread_ts"),
+        channel=_guard_opt_str("channel"),
+        thread_ts=_guard_opt_str("thread_ts"),
         # Effective enabled is derived from the two "reasons a job is
         # off": an explicit user pause and an execution auto-pause
         # (repeated failures). Deriving it — rather than trusting the
@@ -1628,51 +1802,65 @@ def _job_from_record(j: dict[str, Any]) -> CronJob:
         enabled=_record_is_enabled(j),
         user_paused=_record_user_paused(j),
         auto_paused=j.get("auto_paused", False),
-        last_run_ts=j.get("last_run_ts"),
-        last_status=j.get("last_status"),
-        last_error=j.get("last_error"),
-        created_ts=j.get("created_ts", 0.0),
+        last_run_ts=_guard_num("last_run_ts", None),
+        last_status=_guard_opt_str("last_status"),
+        last_error=_guard_opt_str("last_error"),
+        created_ts=_guard_num("created_ts", 0.0),
         delete_after_run=j.get("delete_after_run", False),
-        last_result=j.get("last_result"),
-        last_result_ts=j.get("last_result_ts", 0.0),
-        last_result_stamp=j.get("last_result_stamp", ""),
+        last_result=_guard_opt_str("last_result"),
+        last_result_ts=_guard_num("last_result_ts", 0.0),
+        last_result_stamp=_guard_str("last_result_stamp"),
         context_enabled=j.get("context_enabled", False),
-        agent_id=j.get("agent_id", ""),
-        member_id=j.get("member_id", ""),
-        memory_store=j.get("memory_store", ""),
-        approval_mode=j.get("approval_mode", ""),
+        agent_id=_selector_str("agent_id"),
+        # member_id / memory_store are memory-identity selectors: they decide
+        # WHOSE memory and protected runtime identity the job runs with, and
+        # resolve_cron_memory raises on a malformed binding rather than
+        # falling back -- so a present non-string skips the record whole,
+        # exactly like the execution selectors. Coercing to "" would silently
+        # strip a member binding and run the job unbound.
+        member_id=_selector_str("member_id"),
+        memory_store=_selector_str("memory_store"),
+        approval_mode=_guard_str("approval_mode"),
         acked_items=j.get("acked_items", []),
-        created_by=j.get("created_by", ""),
-        source_preset=_str_or_empty(j.get("source_preset")),
-        source_template_prompt=_str_or_empty(j.get("source_template_prompt")),
+        created_by=_guard_str("created_by"),
+        source_preset=_guard_str("source_preset"),
+        source_template_prompt=_guard_str("source_template_prompt"),
         silent=j.get("silent", False),
-        session_key=j.get("session_key", ""),
-        last_posted_hash=j.get("last_posted_hash", ""),
-        consecutive_dupes=j.get("consecutive_dupes", 0),
-        last_posted_at=j.get("last_posted_at", 0.0),
-        last_failure_hash=j.get("last_failure_hash", ""),
-        last_failure_at=j.get("last_failure_at", 0.0),
-        consecutive_failures=j.get("consecutive_failures", 0),
-        skip_dates=j.get("skip_dates", []),
-        timezone=j.get("timezone", ""),
+        session_key=_guard_str("session_key"),
+        last_posted_hash=_guard_str("last_posted_hash"),
+        consecutive_dupes=_guard_num("consecutive_dupes", 0),
+        last_posted_at=_guard_num("last_posted_at", 0.0),
+        last_failure_hash=_guard_str("last_failure_hash"),
+        last_failure_at=_guard_num("last_failure_at", 0.0),
+        consecutive_failures=_guard_num("consecutive_failures", 0),
+        skip_dates=_str_list("skip_dates"),
+        timezone=_guard_str("timezone"),
         persistent_session=j.get("persistent_session", True),
         minimal_context=j.get("minimal_context", False),
         hide_in_chat=j.get("hide_in_chat", False),
-        folder_id=j.get("folder_id", ""),
-        model=j.get("model", ""),
-        agent_sequence=j.get("agent_sequence", []),
+        folder_id=_guard_str("folder_id"),
+        model=_guard_str("model"),
+        agent_sequence=_str_list("agent_sequence"),
         env=j.get("env", {}),
-        timeout_secs=j.get("timeout_secs", _JOB_TIMEOUT_SECS),
+        timeout_secs=_guard_num("timeout_secs", _JOB_TIMEOUT_SECS),
         strict_schedule=j.get("strict_schedule", False),
-        script=j.get("script", ""),
-        command=j.get("command", ""),
-        timeout=j.get("timeout", 0),
+        script=_selector_str("script"),
+        command=_selector_str("command"),
+        timeout=_guard_num("timeout", 0),
         secret_env=j.get("secret_env", {}),
-        secret_env_pin=j.get("secret_env_pin", ""),
+        secret_env_pin=_guard_str("secret_env_pin"),
         secret_env_pending=j.get("secret_env_pending", {}),
-        secret_env_pending_pin=j.get("secret_env_pending_pin", ""),
-        secret_env_pending_ts=j.get("secret_env_pending_ts", 0.0),
+        secret_env_pending_pin=_guard_str("secret_env_pending_pin"),
+        secret_env_pending_ts=_guard_num("secret_env_pending_ts", 0.0),
     )
+    if coerced and warn_on_coercion:
+        logger.warning(
+            "Coercing non-string value(s) in cron job entry (id=%r) field(s) %s to unset; "
+            "the stored values will be replaced on the next write",
+            job.id,
+            ", ".join(coerced),
+        )
+    return job
 
 
 class CronService:
@@ -2485,6 +2673,17 @@ class CronService:
         valid_approval_modes = ("", "auto")
         if approval_mode not in valid_approval_modes:
             raise ValueError(f"Invalid approval_mode: {approval_mode!r}")
+        # Writer mirror of _job_from_record's representable-number type-shape
+        # check: the reader may skip a record with a non-representable
+        # schedule numeric (NaN/Infinity/bignum) precisely BECAUSE no write
+        # path can persist one -- this chokepoint covers every create surface
+        # (CLI, MCP cron_add, dashboard POST, apps SDK, and both
+        # onboarding-import branches, which route here via add_job /
+        # add_job_if_absent), so reader and writer stay exactly aligned and
+        # the reader-side skip provably drops no writer-produced record.
+        for _numeric_label, _numeric_arg in (("every_secs", every_secs), ("at_ts", at_ts)):
+            if _numeric_arg is not None and not _is_representable_number(_numeric_arg):
+                raise ValueError(f"{_numeric_label} must be a representable finite number")
         # Table-driven type+length gate for every persisted string field.
         # Runs at the persistence owner so EVERY create path (MCP, apps SDK,
         # dashboard, CLI) shares one check. name and message are required
@@ -2775,9 +2974,17 @@ class CronService:
                         raise ValueError(f"Invalid cron expression: {kwargs['cron_expr']}")
                 if "every_secs" in kwargs and kwargs["every_secs"]:
                     try:
+                        # OverflowError: int(float("inf")) -- not a ValueError,
+                        # so it must be caught here or it escapes the update.
                         val = int(kwargs["every_secs"])
-                    except (ValueError, TypeError) as e:
+                    except (ValueError, TypeError, OverflowError) as e:
                         raise ValueError(f"Invalid interval: {kwargs['every_secs']}") from e
+                    if not _is_representable_number(val):
+                        # int() accepts a bignum that no consumer can hold
+                        # (int-float arithmetic raises OverflowError on the
+                        # timer-arming path) -- same writer mirror as
+                        # _build_job, one predicate.
+                        raise ValueError(f"Invalid interval: {kwargs['every_secs']}")
                     if val < _MIN_INTERVAL_SECS:
                         raise ValueError(f"Interval must be >= {_MIN_INTERVAL_SECS}s, got {val}")
                 # Calendar-validity of timezone / skip_dates, validated at the

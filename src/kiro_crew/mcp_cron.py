@@ -1476,7 +1476,15 @@ def _format_next_run(job: Any, now: float, local_tz: Any) -> str:
         rel = f"in {m}m" if m >= 1 else "in <1m"
     else:
         rel = "now"
-    local_str = datetime.fromtimestamp(nxt, tz=local_tz).strftime("%Y-%m-%d %I:%M %p %Z")
+    # A representable extreme (a beyond-year-9999 stamp, a pre-epoch value
+    # on Windows) must degrade to a fallback string instead of raising
+    # inside the loop that renders EVERY job in cron_list -- the same
+    # degrade-on-render posture as format_schedule and the CLI formatter.
+    try:
+        local_str = datetime.fromtimestamp(nxt, tz=local_tz).strftime("%Y-%m-%d %I:%M %p %Z")
+    except Exception:
+        logger.debug("_format_next_run: unrenderable next-run ts %r", nxt, exc_info=True)
+        return "\n  Next run: at an invalid stored time"
     return f"\n  Next run: {local_str} ({rel})"
 
 

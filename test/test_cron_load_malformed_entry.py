@@ -274,3 +274,444 @@ def test_genuine_bad_data_still_skips_and_still_drops_on_the_next_write(tmp_path
 
     reread = json.loads(mgr._path.read_text(encoding="utf-8"))
     assert [j["id"] for j in reread["jobs"]] == ["a"]
+
+
+# --- Corrupted-store resilience: non-string values in string-typed fields must not crash the listing ---
+
+# Metadata str fields _job_from_record reads with .get() -> coerced to "" + WARNING.
+_COERCED_STR_FIELDS = [
+    "approval_mode",
+    "created_by",
+    "session_key",
+    "last_posted_hash",
+    "last_failure_hash",
+    "folder_id",
+    "model",
+    "timezone",
+    "last_result_stamp",
+    "secret_env_pin",
+    "secret_env_pending_pin",
+    "source_preset",
+    "source_template_prompt",
+]
+
+# Optional[str] fields -> coerced to None + WARNING.
+_COERCED_OPT_STR_FIELDS = ["channel", "thread_ts", "last_status", "last_error", "last_result"]
+
+# Execution and memory-identity selectors: a present non-string is MALFORMED
+# (record skipped), never coerced — a script job whose selector degraded to ""
+# would silently become an LLM agent job (mode fallthrough in _cron_callback),
+# and a member binding coerced to "" would run the job with its memory
+# identity silently stripped (resolve_cron_memory raises on malformed
+# bindings rather than falling back).
+_SELECTOR_FIELDS = ["script", "command", "agent_id", "member_id", "memory_store"]
+
+
+def _corrupted_metadata(job_id: str) -> dict:
+    """A record storing a non-string in every COERCIBLE guarded field."""
+    rec = _good(job_id)
+    for i, name in enumerate(_COERCED_STR_FIELDS):
+        rec[name] = i if i % 2 == 0 else None  # numbers and nulls, both non-str
+    for i, name in enumerate(_COERCED_OPT_STR_FIELDS):
+        rec[name] = 12.5 if i % 2 == 0 else ["x"]
+    return rec
+
+
+def test_non_string_metadata_fields_coerce_and_warn(tmp_path, caplog) -> None:
+    """A record with a number/null in each coercible field loads —
+    str fields coerce to "", Optional[str] fields to None — and one WARNING
+    names the record and every field whose stored VALUE was destroyed, since
+    the next _save() replaces it on disk (the log line is the recovery
+    window, mirroring the malformed-entry skip warning)."""
+    import logging
+
+    mgr = CronService(base_dir=tmp_path)
+    good = {**_good("ok"), "approval_mode": "auto", "channel": "slack"}
+    _write_store(mgr._path, [_corrupted_metadata("bad"), good])
+
+    with caplog.at_level(logging.WARNING, logger="kiro_crew.cron"):
+        mgr._load()
+
+    by_id = {j.id: j for j in mgr._jobs}
+    assert set(by_id) == {"bad", "ok"}
+    for name in _COERCED_STR_FIELDS:
+        assert getattr(by_id["bad"], name) == "", name
+    for name in _COERCED_OPT_STR_FIELDS:
+        assert getattr(by_id["bad"], name) is None, name
+    assert by_id["ok"].approval_mode == "auto"
+    assert by_id["ok"].channel == "slack"
+    warn = next(r for r in caplog.records if "Coercing non-string value" in r.message)
+    rendered = warn.getMessage()
+    assert "'bad'" in rendered
+    # Value-destroying coercions are named; a stored null carries no value to
+    # lose, so only the non-null non-string fields must appear.
+    for i, name in enumerate(_COERCED_STR_FIELDS):
+        if i % 2 == 0:
+            assert name in rendered, name
+    for name in _COERCED_OPT_STR_FIELDS:
+        assert name in rendered, name
+
+
+@pytest.mark.parametrize("field", _SELECTOR_FIELDS)
+def test_non_string_execution_selector_skips_record(tmp_path, field) -> None:
+    """Fail closed: a non-string execution selector must SKIP the
+    record, never coerce — coercing `script: 7` to "" would silently flip a
+    script job into an LLM agent job executing its message."""
+    mgr = CronService(base_dir=tmp_path)
+    bad = {**_good("bad"), field: 7}
+    _write_store(mgr._path, [bad, _good("ok")])
+
+    mgr._load()
+
+    assert [j.id for j in mgr._jobs] == ["ok"]
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        {"name": 123},
+        {"message": None},
+        {"id": 5},
+        {"schedule": {"kind": 1, "every_secs": 60}},
+        {"schedule": {"kind": "every", "every_secs": "60"}},
+        {"schedule": {"kind": "every", "every_secs": float("nan")}},
+        {"schedule": {"kind": "at", "at_ts": float("inf")}},
+        {"schedule": {"kind": "at", "at_ts": 1e309}},
+        {"schedule": {"kind": "at", "at_ts": 10**400}},
+        {"schedule": {"kind": "cron", "cron_expr": 5}},
+        {"agent_sequence": [1]},
+        {"agent_sequence": "not-a-list"},
+        {"agent_sequence": None},
+        {"skip_dates": [20260101]},
+        {"skip_dates": None},
+    ],
+    ids=[
+        "name",
+        "message",
+        "id",
+        "schedule.kind",
+        "schedule.every_secs",
+        "schedule.every_secs_nan",
+        "schedule.at_ts_inf",
+        "schedule.at_ts_1e309",
+        "schedule.at_ts_bignum",
+        "schedule.cron_expr",
+        "agent_seq_member",
+        "agent_seq_type",
+        "agent_seq_explicit_null",
+        "skip_dates_member",
+        "skip_dates_explicit_null",
+    ],
+)
+def test_non_string_required_or_list_fields_skip_record(tmp_path, mutate) -> None:
+    """Mistyped required identity/payload fields and list fields the
+    listing iterates are malformed — the record is skipped whole and the
+    sibling survives."""
+    mgr = CronService(base_dir=tmp_path)
+    _write_store(mgr._path, [{**_good("bad"), **mutate}, _good("ok")])
+
+    mgr._load()
+
+    assert [j.id for j in mgr._jobs] == ["ok"]
+
+
+@pytest.mark.asyncio
+async def test_listing_renders_despite_corrupted_records(tmp_path) -> None:
+    """GET /api/crons pipes string fields through redact_* helpers that
+    raise on non-string input — corrupted records (coerced or skipped) must
+    not 500 the listing for every job."""
+    import json as _json
+    from unittest.mock import MagicMock
+
+    from kiro_crew.dashboard.handlers import api_crons
+
+    mgr = CronService(base_dir=tmp_path)
+    _write_store(
+        mgr._path,
+        [
+            _corrupted_metadata("coerced"),
+            {**_good("skipped"), "script": 7},
+            {**_good("skipped2"), "name": 123},
+            _good("ok"),
+        ],
+    )
+    mgr._load()
+
+    state = MagicMock()
+    state.crons = mgr
+    state.has_slot = MagicMock(return_value=False)
+    request = MagicMock()
+    request.app = {"state": state}
+
+    resp = await api_crons(request)
+
+    assert resp.status == 200
+    jobs = _json.loads(resp.body)["jobs"]
+    assert {j["id"] for j in jobs} == {"coerced", "ok"}
+
+
+def test_probe_readers_do_not_repeat_the_coercion_warning(tmp_path, caplog) -> None:
+    """The coercion WARNING is _load's recovery window, emitted once
+    per load. count_enabled_from_disk runs _job_from_record as a loadability
+    PROBE at WS status-pusher cadence (every push cycle, per connected
+    dashboard) and never precedes a store rewrite — it must not re-emit the
+    warning indefinitely for one bad record sitting in the store."""
+    import logging
+
+    mgr = CronService(base_dir=tmp_path)
+    _write_store(mgr._path, [_corrupted_metadata("bad"), _good("ok")])
+
+    with caplog.at_level(logging.WARNING, logger="kiro_crew.cron"):
+        assert mgr.count_enabled_from_disk() == 2
+        assert mgr.count_enabled_from_disk() == 2
+
+    assert not any("Coercing non-string value" in r.message for r in caplog.records)
+
+
+def test_every_string_typed_field_is_guarded_completeness_pin(tmp_path) -> None:
+    """Completeness pin: the type invariant — after _load,
+    every str-typed CronJob field holds its declared type — is asserted for
+    EVERY field discovered from the dataclass itself, so a future field added
+    with a bare j.get() read fails here instead of shipping a third
+    per-incident guard round for each newly corrupted field. A corrupted field
+    satisfies the invariant either way it is handled: coerced (value becomes
+    ""/None) or skipped (the record never loads)."""
+    import dataclasses
+
+    from kiro_crew.cron import CronJob
+
+    str_field_names = [
+        f.name
+        for f in dataclasses.fields(CronJob)
+        if f.type in ("str", "str | None", "Optional[str]")
+    ]
+    assert len(str_field_names) >= 24  # confidence check: introspection actually found the fields
+
+    for name in str_field_names:
+        mgr = CronService(base_dir=tmp_path / name)
+        _write_store(mgr._path, [{**_good("bad"), name: 123}, _good("ok")])
+
+        mgr._load()  # must never raise out of the per-entry isolation
+
+        assert any(j.id == "ok" for j in mgr._jobs), name
+        for j in mgr._jobs:
+            value = getattr(j, name)
+            assert value is None or isinstance(
+                value, str
+            ), f"non-string survived deserialization in field {name!r}: {value!r}"
+
+
+@pytest.mark.parametrize(
+    "at_ts",
+    [1e18, -1, 1.75e12],
+    ids=["1e18", "negative", "epoch_millis"],
+)
+@pytest.mark.asyncio
+async def test_extreme_schedule_values_load_and_render_without_dropping(tmp_path, at_ts) -> None:
+    """FINITE extreme values are tolerated at the render
+    site, never bounded in the deserializer. An extreme stored at_ts (epoch
+    milliseconds, beyond-year-9999, negative, bignum) must (a) load
+    -- a reader-side value bound not mirrored by the writer silently drops
+    jobs and the next _save erases them, the data-loss class GPT fenced --
+    and (b) render through GET /api/crons via format_schedule's fallback
+    string instead of raising inside the every-job comprehension. Non-finite
+    values are the OPPOSITE case: type-shape malformed (no writer can produce
+    one, NaN breaks comparison ordering on the fire path), so they live in
+    the skip-record group above."""
+    import json as _json
+    from unittest.mock import MagicMock
+
+    from kiro_crew.dashboard.handlers import api_crons
+
+    mgr = CronService(base_dir=tmp_path)
+    poisoned = {**_good("poisoned"), "schedule": {"kind": "at", "at_ts": at_ts}}
+    _write_store(mgr._path, [poisoned, _good("ok")])
+
+    mgr._load()  # (a) never raises, record NOT skipped
+
+    assert {j.id for j in mgr._jobs} == {"poisoned", "ok"}
+
+    state = MagicMock()
+    state.crons = mgr
+    state.has_slot = MagicMock(return_value=False)
+    request = MagicMock()
+    request.app = {"state": state}
+
+    resp = await api_crons(request)  # (b) listing renders both jobs
+
+    assert resp.status == 200
+    jobs = _json.loads(resp.body)["jobs"]
+    assert {j["id"] for j in jobs} == {"poisoned", "ok"}
+
+
+def test_build_job_refuses_non_representable_schedule_numerics(tmp_path) -> None:
+    """The writer mirror: the deserializer may skip a record with a
+    non-representable schedule numeric precisely because no write path can
+    persist one -- _build_job is the persistence chokepoint (covering CLI,
+    MCP, dashboard, apps SDK, and both onboarding-import branches) that keeps
+    reader and writer exactly aligned, so the skip drops no writer-producible
+    record. Bignum ints are refused too: int-float arithmetic on the
+    timer-arming path (`at_ts - now`) raises OverflowError at gateway
+    startup."""
+    mgr = CronService(base_dir=tmp_path)
+    with pytest.raises(ValueError, match="representable"):
+        mgr._build_job("j", "m", at_ts=float("nan"))
+    with pytest.raises(ValueError, match="representable"):
+        mgr._build_job("j", "m", every_secs=float("inf"))
+    with pytest.raises(ValueError, match="representable"):
+        mgr._build_job("j", "m", at_ts=10**400)
+    with pytest.raises(ValueError, match="representable"):
+        mgr._build_job("j", "m", every_secs=10**400)
+
+
+def test_update_job_refuses_non_representable_interval(tmp_path) -> None:
+    """The second writer chokepoint: int() accepts a bignum that
+    clears the >= 60 bound, and int(float("inf")) raises OverflowError
+    outside the old (ValueError, TypeError) tuple -- both must refuse."""
+    mgr = CronService(base_dir=tmp_path)
+    job = mgr.add_job("j", "m", every_secs=3600)
+    with pytest.raises(ValueError, match="Invalid interval"):
+        mgr._update_job_locked(job.id, every_secs=10**400)
+    with pytest.raises(ValueError, match="Invalid interval"):
+        mgr._update_job_locked(job.id, every_secs=float("inf"))
+
+
+def test_compute_next_run_ts_never_returns_non_finite(tmp_path) -> None:
+    """Serialize-site tolerance: a finite stored every_secs=1e308 sums
+    to inf at `last + every_secs`; the raw result must degrade to None before
+    it reaches the GET /api/crons payload, where json.dumps(allow_nan=True)
+    would emit the invalid-JSON token Infinity and break the whole listing
+    client-side."""
+    from kiro_crew.cron import CronJob, CronSchedule, compute_next_run_ts
+
+    job = CronJob(
+        id="j",
+        name="n",
+        message="m",
+        schedule=CronSchedule(kind="every", every_secs=1.7e308),
+        created_ts=1.7e308,
+        last_run_ts=1.7e308,  # last + every_secs overflows float to inf
+    )
+    assert compute_next_run_ts(job, now=2000.0) is None
+
+
+# Matrix pin: every numeric CronJob field must hold a representable
+# finite number (or its declared unset value) the moment _load returns.
+# Field axis is enumerated from the dataclass so a new numeric field fails
+# until it is classified HERE; the two schedule fields (skip-record) live in
+# CronSchedule and are pinned by the skip-group parametrize above.
+_NUMERIC_FIELD_DEFAULTS = {
+    "last_run_ts": None,
+    "created_ts": 0.0,
+    "last_result_ts": 0.0,
+    "last_posted_at": 0.0,
+    "last_failure_at": 0.0,
+    "secret_env_pending_ts": 0.0,
+    "consecutive_dupes": 0,
+    "consecutive_failures": 0,
+    "timeout_secs": 1800,  # _JOB_TIMEOUT_SECS
+    "timeout": 0,
+}
+
+_NUMERIC_POISONS = [float("nan"), float("inf"), 10**400, "60", True, None]
+
+
+@pytest.mark.asyncio
+async def test_numeric_field_consumer_matrix_pin(tmp_path) -> None:
+    """The invariant that closes the (field x consumer) hazard matrix.
+    Field axis: every numeric CronJob field, enumerated from the dataclass,
+    poisoned with each shape json.loads can produce -- must load without
+    raising and hold its declared default afterwards. Consumer axis: with
+    the poison planted, the timer, due-decision, next-run, render, and JSON
+    envelope consumers are all driven; the api_crons payload must contain no
+    NaN/Infinity token (checked via json.loads parse_constant, the
+    machine-readable spelling of 'valid JSON')."""
+    import dataclasses
+    import json as _json
+    from unittest.mock import MagicMock
+
+    from kiro_crew.cron import CronJob, compute_next_run_ts, format_schedule
+    from kiro_crew.dashboard.handlers import api_crons
+
+    numeric_fields = {
+        f.name
+        for f in dataclasses.fields(CronJob)
+        if f.type in ("int", "float", "int | None", "float | None")
+        and f.name not in ("fire_time_denied", "run_never_started")
+    }
+    assert numeric_fields == set(_NUMERIC_FIELD_DEFAULTS), (
+        "a numeric CronJob field is not classified in _NUMERIC_FIELD_DEFAULTS -- "
+        "decide skip/coerce for it before shipping"
+    )
+
+    def _reject_constant(const: str) -> None:
+        raise AssertionError(f"invalid JSON token {const} reached the api_crons payload")
+
+    for field, default in _NUMERIC_FIELD_DEFAULTS.items():
+        for poison in _NUMERIC_POISONS:
+            mgr = CronService(base_dir=tmp_path / f"{field}-{id(poison)}-{len(repr(poison))}")
+            _write_store(mgr._path, [{**_good("bad"), field: poison}, _good("ok")])
+
+            mgr._load()  # never raises out of per-entry isolation
+
+            by_id = {jb.id: jb for jb in mgr._jobs}
+            assert set(by_id) == {"bad", "ok"}, (field, poison)
+            assert getattr(by_id["bad"], field) == default or (
+                default is None and getattr(by_id["bad"], field) is None
+            ), (field, poison)
+
+            # Consumer axis: none of these may raise with the poison planted.
+            mgr._next_wake_secs()
+            for jb in mgr._jobs:
+                cron_mod.CronService._is_due(jb, 2_000_000_000.0)
+                compute_next_run_ts(jb)
+                format_schedule(jb.schedule, tz_name="UTC")
+
+            state = MagicMock()
+            state.crons = mgr
+            state.has_slot = MagicMock(return_value=False)
+            request = MagicMock()
+            request.app = {"state": state}
+            resp = await api_crons(request)
+            assert resp.status == 200, (field, poison)
+            _json.loads(resp.body, parse_constant=_reject_constant)
+
+
+def test_explicit_null_numeric_warns_unless_none_is_the_declared_unset(tmp_path, caplog) -> None:
+    """An explicit null in a numeric field is a present malformed value and
+    joins the coercion warning -- except where the declared unset IS None
+    (last_run_ts), which a writer legitimately serializes for a job that
+    never ran and must load silently."""
+    mgr = CronService(base_dir=tmp_path)
+    _write_store(
+        mgr._path,
+        [{**_good("a"), "created_ts": None, "last_run_ts": None}],
+    )
+
+    with caplog.at_level(logging.WARNING, logger="kiro_crew.cron"):
+        mgr._load()
+
+    warnings = [r.getMessage() for r in caplog.records if "Coercing" in r.getMessage()]
+    assert len(warnings) == 1 and "created_ts" in warnings[0]
+    assert "last_run_ts" not in warnings[0]
+    job = mgr._jobs[0]
+    assert job.created_ts == 0.0 and job.last_run_ts is None
+
+
+def test_mcp_next_run_render_degrades_on_extreme_at_ts(tmp_path) -> None:
+    """cron_list's next-run formatter degrades an unrenderable (representable
+    but beyond-strftime-range) timestamp instead of raising inside the loop
+    that renders every job -- same posture as format_schedule and the CLI."""
+    from kiro_crew.mcp_cron import _format_next_run
+
+    mgr = CronService(base_dir=tmp_path)
+    _write_store(
+        mgr._path,
+        [{**_good("far"), "schedule": {"kind": "at", "at_ts": 4.0e11}}],
+    )
+    mgr._load()
+    (job,) = mgr._jobs
+
+    out = _format_next_run(job, now=0.0, local_tz=None)
+
+    assert "invalid stored time" in out
