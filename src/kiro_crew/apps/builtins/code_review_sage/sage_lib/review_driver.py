@@ -31,7 +31,7 @@ session using the code-review-sage ruleset — Python enforces the structure and
 the phase switch, not the verdict itself.
 
 Usage:
-    python3 sage_lib/review_driver.py run --changes "<pr-url>[,<pr-url>...]" [--concurrency 3]
+    python3 sage_lib/review_driver.py run --changes "<pr-url>[,<pr-url>...]"
 """
 
 from __future__ import annotations
@@ -1228,9 +1228,12 @@ def run_review(
         progress(_cid(_link), "queued", {})
 
     concurrency = _resolve_concurrency(concurrency)
-    # Standalone callers still use the legacy shared result directory, where a
-    # worker has no per-dispatch capability to bind its record. Keep that mode
-    # serial; dashboard runs always supply a run id and can use the bounded pool.
+    # Standalone callers still use the legacy shared result directory, where any
+    # worker can write any change's record — the hazard the response-bound
+    # handoff removes only for run-scoped dispatches. Keep that mode serial;
+    # dashboard runs always supply a run id and can use the bounded pool. The
+    # CLI has no run id, so it has no concurrency knob either: one would reach
+    # this line and be discarded.
     if not run_id:
         concurrency = 1
     per_change: list[dict] = []
@@ -1623,12 +1626,6 @@ def _main(argv: list[str] | None = None) -> int:
     sub = ap.add_subparsers(dest="cmd", required=True)
     rp = sub.add_parser("run", help="Review each change on the reusable worker pool")
     rp.add_argument("--changes", required=True, help="newline/comma-separated links or CR ids")
-    rp.add_argument(
-        "--concurrency",
-        type=int,
-        default=0,
-        help="parallel reviews; 0 = auto (worker pool concurrency cap)",
-    )
     rp.add_argument("--timeout", type=int, default=DEFAULT_TASK_TIMEOUT)
     rp.add_argument("--no-report", dest="report", action="store_false")
     args = ap.parse_args(argv)
@@ -1646,7 +1643,6 @@ def _main(argv: list[str] | None = None) -> int:
             out = run_review(
                 changes,
                 dispatch=dispatch,
-                concurrency=args.concurrency,
                 timeout=args.timeout,
                 generate_report=args.report,
             )

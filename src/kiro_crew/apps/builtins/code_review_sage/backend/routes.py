@@ -414,10 +414,10 @@ async def _run_review_bg(run: dict, changes: list[str]) -> None:
     relay) and warm workers are reused across CRs with a clean-slate reset
     between them.
 
-    The claim lock only decides which changes this run owns. Each worker receives
-    an unguessable result capability; adoption checks that capability before a
-    shared-path record enters the run, so unrelated reviews can proceed in the
-    bounded pool without cross-run attribution."""
+    The claim lock only decides which changes this run owns. Each worker returns
+    its record inside its own dispatch response, which no sibling can write, so
+    unrelated reviews can proceed in the bounded pool without cross-run
+    attribution."""
     run_id = str(run.get("run_id") or "")
     try:
         async with _RUN_LOCK:
@@ -472,11 +472,11 @@ async def _run_review_bg(run: dict, changes: list[str]) -> None:
                 preflight=lambda: runtime_error,
                 # Parallel again, bounded by the pool. What forced one-at-a-time
                 # was the shared result path: any worker could write any change's
-                # record. Each dispatch now carries an unguessable result
-                # capability the driver checks before adopting a record, so a
-                # sibling worker's findings cannot be attributed to another
-                # change. 0 leaves the width to the pool rather than pinning a
-                # second number that has to be kept in step with it.
+                # record. Each worker now hands its record back inside its own
+                # dispatch response, which no sibling can write, so a sibling
+                # worker's findings cannot be attributed to another change. 0
+                # leaves the width to the pool rather than pinning a second
+                # number that has to be kept in step with it.
                 concurrency=0,
             )
         finally:
@@ -1208,12 +1208,11 @@ async def _handle_run_post(request: web.Request) -> web.Response:
                          "pull request, this review recorded no findings, or its "
                          "records were cleared when the report was archived",
             }, status=409)
-        # Posting round-trips the record through the SHARED staging dir
-        # (publish_to_shared -> poster turn -> adopt_from_shared). The run is
-        # terminal, so its review-time claims are long released — a forced
-        # re-review of the same change could be staging there right now, and the
-        # two would trade records. Hold the same claim posting needs, refusing
-        # rather than interleaving; released in `_post_comments_bg`'s finally.
+        # The run is terminal, so its review-time claims are long released — a
+        # forced re-review of the same change could be running right now, and
+        # both would write this change's record. Hold the same claim posting
+        # needs, refusing rather than interleaving; released in
+        # `_post_comments_bg`'s finally.
         posting_cids = [
             cid for cid in (run.get("change_ids") or [])
             if cid in groups

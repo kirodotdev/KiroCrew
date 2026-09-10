@@ -105,8 +105,6 @@ def validate_result(record: dict) -> list[str]:
     errs: list[str] = []
     if not isinstance(record, dict):
         return ["record must be an object"]
-    if "result_capability" in record:
-        errs.append("result_capability is not accepted")
     for k in REQUIRED_TOP:
         if k not in record:
             errs.append(f"missing top-level key: {k}")

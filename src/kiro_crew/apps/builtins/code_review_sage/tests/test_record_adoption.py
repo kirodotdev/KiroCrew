@@ -67,24 +67,6 @@ class TestResponseHandoff(unittest.TestCase):
         self.assertEqual(out["result_records"], 1)
         self.assertNotIn("PLANTED-BY-SIBLING", json.dumps(adopted))
 
-    def test_malformed_unicode_capability_fails_one_change_not_the_batch(self):
-        malformed = _record("CR-1")
-        malformed["result_capability"] = "malformed-\ud800"
-
-        def dispatch(task, timeout=0):
-            record = malformed if "CR-1" in task else _record("CR-2")
-            return {"ok": True, "output": _handoff(record), "error": ""}
-
-        out = driver.run_review(
-            ["CR-1", "CR-2"],
-            dispatch=dispatch,
-            root=self.root,
-            run_id="run-a",
-            generate_report=False,
-        )
-        self.assertFalse(out["per_change"][0]["result_recorded"])
-        self.assertTrue(out["per_change"][1]["result_recorded"])
-
     def test_outermost_handoff_delimiters_allow_quoted_sentinels_in_json(self):
         record = _record("CR-1")
         record["title"] = (
@@ -93,8 +75,7 @@ class TestResponseHandoff(unittest.TestCase):
 
         self.assertEqual(results.result_from_handoff(_handoff(record), "CR-1"), record)
 
-    def test_prompt_exposes_no_result_file_or_capability(self):
+    def test_prompt_exposes_no_result_file(self):
         task = driver.build_review_task("CR-1")
         self.assertIn("<code-review-sage-result>", task)
-        self.assertNotIn("result_capability", task)
         self.assertNotIn("data/results", task)
