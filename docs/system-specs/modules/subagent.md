@@ -1,5 +1,16 @@
 # Subagent Module
 
+## Opt-in fixed synthetic memory consumer
+
+The external `addons/ucam-synthetic-consumer` app uses the existing Spawn SDK
+and governance path. Only its reserved app/agent pair activates
+`ucam_consumer.consumer_for`: dedicated fresh ACP sessions, scoped legacy-read
+suppression, and a task-local callback during the provider stream. Retained or
+resumed sessions and automatic retries cannot replay its memory-bearing prompt.
+Every other app retains the existing context, sharing, and retry behavior.
+See the addon's README for the exact deployed-version patch, trust prerequisites,
+and rollback; the checkout and deployed context-builder signatures differ.
+
 ## Overview
 
 The subagent module (`kiro_crew/subagent.py`) spawns isolated background agents for parallel task execution. Each subagent gets its own LLM session via `SessionManager`, runs a focused task, and announces the result via callback.

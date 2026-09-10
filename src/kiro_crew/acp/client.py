@@ -2905,18 +2905,26 @@ class AcpClient:
     # ── JSON-RPC Transport ──
 
     async def _send_request(self, method: str, params: dict) -> int:
+        from kiro_crew.ucam_consumer import before_prompt
+
         if not self._process or not self._process.stdin:
             raise AcpError("ACP process not running")
 
+        params, ucam_receipt = await before_prompt(self, method, params)
         req_id = self._next_req_id()
         req = JsonRpcRequest(method=method, params=params, id=req_id)
         data = json.dumps(req.to_dict()) + "\n"
         try:
-            self._process.stdin.write(data.encode())
+            encoded = data.encode()
+            if ucam_receipt is not None:
+                ucam_receipt.check_lease()
+            self._process.stdin.write(encoded)
             await self._process.stdin.drain()
         except (BrokenPipeError, ConnectionResetError) as exc:
             raise AcpProcessDied(f"ACP process pipe broken: {exc}") from exc
         self._last_activity = time.monotonic()
+        if ucam_receipt is not None:
+            await ucam_receipt.after_send()
         return req_id
 
     async def _send_response(self, request_id: str | int, result: dict) -> None:

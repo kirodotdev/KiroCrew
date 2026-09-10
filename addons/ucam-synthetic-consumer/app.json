@@ -1,0 +1,12 @@
+{
+  "name": "ucam-synthetic-consumer",
+  "version": "0.1.0",
+  "displayName": "UCAM Synthetic Consumer",
+  "description": "Fixed-identity, read-only approved memory proof for Kiro Crew.",
+  "agents": ["agents/reader.json"],
+  "backend": {"hooks": {"routes": "backend.routes:register_routes"}},
+  "permissions": {
+    "api": [], "events": [], "mcpTools": [], "storage": false,
+    "cron": false, "memory": "", "network": true, "spawn": true
+  }
+}
