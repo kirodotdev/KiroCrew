@@ -53,7 +53,7 @@ import { Badge, Btn, IconButton, Input, Toggle } from '../../../components/ui'
 import SimpleSelect from '../../../components/SimpleSelect'
 import ErrorNotice from '../../../components/ErrorNotice'
 import { useAgents } from '../../../hooks/useAgents'
-import { useAvailableModels } from '../../../hooks/useAvailableModels'
+import { useAvailableModels, useModelOrderLoadFailed } from '../../../hooks/useAvailableModels'
 import CrewGhost, { djb2, ghostVariantCount } from './CrewGhost'
 import { issueRadarApi, type Crew, type CrewPatch, type CrewSpec } from '../api'
 import { repoScopeKey } from '../lib/links'
@@ -349,6 +349,7 @@ export default function CrewEditor({ open, onClose, crew }: CrewEditorProps) {
    *  (Radix owns the exit animation), and an ungated observer would spawn
    *  kiro-cli's `--list-models` merely because the Crews view is on screen. */
   const availableModels = useAvailableModels({ enabled: open })
+  const modelOrderLoadFailed = useModelOrderLoadFailed()
 
   /**
    * Roster names, with the CURRENT agent kept present even when the roster no
@@ -779,6 +780,12 @@ export default function CrewEditor({ open, onClose, crew }: CrewEditorProps) {
               <span className="mb-1.5 block text-[13px] font-semibold text-text">
                 {t('apps.issueRadar.views.crews.editor.model_label')}
               </span>
+              {/* Saved model order failed to load: the select shows backend order
+                  as a fallback. No hand-off: this editor holds an unsaved crew
+                  draft, and the state self-clears when the config read retries. */}
+              {modelOrderLoadFailed && (
+                <ErrorNotice variant="inline" message={t('components.modelDropdownList.order_load_failed')} />
+              )}
               <SimpleSelect
                 aria-label={t('apps.issueRadar.views.crews.editor.model_label')}
                 options={modelOptions}

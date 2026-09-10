@@ -6950,7 +6950,8 @@
       "auto_default": "Padrão",
       "credit_multiplier": "{{value}} o custo em créditos do Auto",
       "credit_multiplier_baseline": "{{value}}, o custo em créditos de referência",
-      "no_matches": "Nenhuma correspondência"
+      "no_matches": "Nenhuma correspondência",
+      "order_load_failed": "Não foi possível carregar sua ordem de modelos salva — exibindo a ordem padrão até carregar."
     },
     "modelEffortDropdown": {
       "default_for_agent": "Modelo padrão de <agent/>",
@@ -14896,6 +14897,17 @@
         "description": "Persistente usa o que já sabe e salva nova memória. Anônimo usa o que sabe, mas não salva nova memória. Temporário começa em branco e não salva nada. Todos os chats continuam aparecendo no histórico. Você pode mudar o modo de qualquer chat.",
         "label": "Modo de memória padrão",
         "persistent": "Persistente"
+      },
+      "modelOrder": {
+        "autoLabel": "Auto",
+        "autoPinned": "Sempre em primeiro",
+        "degraded": "A lista de modelos está indisponível. Sua ordem salva é exibida e você poderá reordenar quando os modelos carregarem.",
+        "description": "Arraste para definir a ordem em que os modelos aparecem em cada seletor. Auto fica sempre em primeiro.",
+        "label": "Ordem dos modelos",
+        "loadFailed": "Não foi possível carregar a ordem de modelos salva. A reordenação será retomada quando carregar.",
+        "reorder": "Reordenar {{model}}",
+        "reset": "Redefinir para a ordem padrão",
+        "saveFailed": "Não foi possível salvar a ordem dos modelos. Tente novamente."
       },
       "plainDiff": {
         "description": "Exibe os diffs como texto unified diff sem realce de sintaxe. Usa menos memória em diffs grandes.",

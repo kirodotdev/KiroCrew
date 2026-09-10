@@ -6950,7 +6950,8 @@
       "auto_default": "Predefinito",
       "credit_multiplier": "{{value}} il costo in crediti di Auto",
       "credit_multiplier_baseline": "{{value}}, il costo in crediti di riferimento",
-      "no_matches": "Nessuna corrispondenza"
+      "no_matches": "Nessuna corrispondenza",
+      "order_load_failed": "Impossibile caricare l'ordine dei modelli salvato: viene mostrato l'ordine predefinito finché non si carica."
     },
     "modelEffortDropdown": {
       "default_for_agent": "Modello predefinito per <agent/>",
@@ -14896,6 +14897,17 @@
         "description": "Persistente usa ciò che già sa e salva nuova memoria. Incognito usa ciò che sa, ma non salva nuova memoria. Temporaneo parte senza memoria e non salva nulla. Tutte le chat restano visibili nella cronologia. Puoi cambiare la modalità di ogni chat.",
         "label": "Modalità memoria predefinita",
         "persistent": "Persistente"
+      },
+      "modelOrder": {
+        "autoLabel": "Auto",
+        "autoPinned": "Sempre per primo",
+        "degraded": "L'elenco dei modelli non è disponibile. Viene mostrato l'ordine salvato e potrai riordinare una volta caricati i modelli.",
+        "description": "Trascina per impostare l'ordine in cui i modelli compaiono in ogni selettore. Auto resta sempre al primo posto.",
+        "label": "Ordine dei modelli",
+        "loadFailed": "Impossibile caricare l'ordine dei modelli salvato. Il riordino riprenderà una volta caricato.",
+        "reorder": "Riordina {{model}}",
+        "reset": "Ripristina l'ordine predefinito",
+        "saveFailed": "Impossibile salvare l'ordine dei modelli. Riprova."
       },
       "plainDiff": {
         "description": "Mostra i diff come testo unified diff senza evidenziazione della sintassi. Usa meno memoria sui diff di grandi dimensioni.",

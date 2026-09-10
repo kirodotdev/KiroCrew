@@ -16,7 +16,7 @@ import { api, type FeatureVideoStatus } from '../../api/client'
 import { useAppSelector } from '../../store'
 import { serializeDefaultMemoryModeUpdate } from '../../api/queryClient'
 import { useOptimisticConfigPaths, setConfigPathValue } from './useOptimisticConfigPaths'
-import { useAvailableModels } from '../../hooks/useAvailableModels'
+import { useAvailableModels, useModelOrderLoadFailed } from '../../hooks/useAvailableModels'
 import { usePlainDiff } from '../../hooks/usePlainDiff'
 import { EFFORT_LEVELS, effortLabel, modelSupportsEffort } from '../../lib/effort'
 import { isMac } from '../../utils/platform'
@@ -761,6 +761,7 @@ export function ChatPanel() {
   // picker still overrides them per-slot; nothing here touches live sessions.
   // Same query key as every other model picker so the list is fetched once.
   const availableModels = useAvailableModels()
+  const modelOrderLoadFailed = useModelOrderLoadFailed()
   // '' in config means "unset" and resolves the same way 'auto' does, so both
   // render as the 'auto' option rather than as a missing selection.
   const defaultModel = mcCfg?.agent?.model || 'auto'
@@ -912,6 +913,13 @@ export function ChatPanel() {
             when left on Auto. */}
         <SettingsCard>
           <div className="text-[13px] font-semibold text-text-strong">{i18nT('pages.settings.chatPanel.role_chat')}</div>
+          {/* Saved model order failed to load: the selects below show backend
+              order as a fallback. askAgent on, matching this panel's other
+              notices: values persist per control (no draft at risk) and the
+              state self-clears when the shared config read retries. */}
+          {modelOrderLoadFailed && (
+            <ErrorNotice variant="inline" message={i18nT('components.modelDropdownList.order_load_failed')} askAgent />
+          )}
           <SettingsSelect
             label={i18nT('pages.settings.chatPanel.default_model')}
             description={i18nT('pages.settings.chatPanel.which_model_new_sessions_start_with_pick_a_model')}

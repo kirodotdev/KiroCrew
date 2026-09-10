@@ -6950,7 +6950,8 @@
       "auto_default": "Par défaut",
       "credit_multiplier": "{{value}} le coût en crédits d'Auto",
       "credit_multiplier_baseline": "{{value}}, le coût en crédits de référence",
-      "no_matches": "Aucun résultat"
+      "no_matches": "Aucun résultat",
+      "order_load_failed": "Impossible de charger votre ordre de modèles enregistré — l'ordre par défaut s'affiche en attendant."
     },
     "modelEffortDropdown": {
       "default_for_agent": "Modèle par défaut pour <agent/>",
@@ -14897,6 +14898,17 @@
         "description": "Persistant utilise ce qu’il sait déjà et enregistre de nouveaux souvenirs. Incognito utilise ce qu’il sait, mais n’enregistre rien de nouveau. Temporaire démarre sans mémoire et n’enregistre rien. Tous les chats restent visibles dans l’historique. Vous pouvez changer le mode de chaque chat.",
         "label": "Mode mémoire par défaut",
         "persistent": "Persistant"
+      },
+      "modelOrder": {
+        "autoLabel": "Auto",
+        "autoPinned": "Toujours en premier",
+        "degraded": "La liste des modèles est indisponible. Ton ordre enregistré est affiché, et le réordonnancement reprendra une fois les modèles chargés.",
+        "description": "Fais glisser pour définir l'ordre d'affichage des modèles dans chaque sélecteur. Auto reste toujours en premier.",
+        "label": "Ordre des modèles",
+        "loadFailed": "Impossible de charger l'ordre des modèles enregistré. La réorganisation reprendra une fois chargé.",
+        "reorder": "Réordonner {{model}}",
+        "reset": "Réinitialiser l'ordre par défaut",
+        "saveFailed": "Impossible d'enregistrer l'ordre des modèles. Réessaie."
       },
       "plainDiff": {
         "description": "Affiche les diffs sous forme de texte unified diff sans coloration syntaxique. Consomme moins de mémoire sur les diffs volumineux.",

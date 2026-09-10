@@ -8,13 +8,24 @@
  * no badge rather than fall back to 1x.
  */
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { render as rtlRender, screen } from '@testing-library/react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+
+/** ModelDropdownList reads the shared ['kirocrewConfig'] query (the
+ *  order-load-failure notice), so every render needs a QueryClient. A fresh
+ *  client per render keeps the query idle (never fires: no seeded cache, and
+ *  the fetcher is never awaited within these synchronous assertions), which
+ *  is exactly the not-failed state the badge tests assume. */
+function render(ui: React.ReactElement) {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  return rtlRender(<QueryClientProvider client={qc}>{ui}</QueryClientProvider>)
+}
 
 // `/all` for the bn/de catalogs: `../i18n` registers English only, and an
 // unregistered language resolves to `en`, which renders Latin digits.
 import { i18next } from '../i18n/all'
 import ModelDropdownList, { formatMultiplier, costTier } from '../components/ModelDropdownList'
-import { withAutoFirst } from '../providers/modelList'
+import { withAutoFirst, applyModelOrder, mergeReorderedNames } from '../providers/modelList'
 
 /** The badge for `name`, or null when that row rendered none. */
 function badgeFor(name: string): HTMLElement | null {
@@ -260,5 +271,112 @@ describe('withAutoFirst — Auto keeps the multiplier it was served', () => {
   it('drops nameless rows rather than rendering an empty option', () => {
     const out = withAutoFirst([{ name: '', description: 'junk' }, { name: 'glm-5', description: '' }])
     expect(out.map(m => m.name)).toEqual(['auto', 'glm-5'])
+  })
+})
+
+describe('applyModelOrder — user-authored order over the backend list', () => {
+  const m = (name: string): { name: string; description: string } => ({ name, description: '' })
+  // The typical input: what withAutoFirst already produced (auto first, rest in
+  // backend order). applyModelOrder is layered on top of that.
+  const base = [m('auto'), m('alpha'), m('bravo'), m('charlie')]
+
+  it('is identity for an empty order, returning the SAME reference', () => {
+    // The default install has no saved order and must pay nothing — a new array
+    // would churn the useMemo in useAvailableModels every render.
+    const out = applyModelOrder(base, [])
+    expect(out).toBe(base)
+  })
+
+  it('puts the named models first, in the saved order', () => {
+    expect(applyModelOrder(base, ['charlie', 'alpha']).map(x => x.name))
+      .toEqual(['auto', 'charlie', 'alpha', 'bravo'])
+  })
+
+  it('appends models the order did not name, in backend order', () => {
+    // bravo + charlie were unlisted; they follow the one named pick in the order
+    // they arrived in, not alphabetically or reversed.
+    expect(applyModelOrder(base, ['alpha']).map(x => x.name))
+      .toEqual(['auto', 'alpha', 'bravo', 'charlie'])
+  })
+
+  it('silently skips a stale name no live model matches', () => {
+    // A saved order routinely outlives an id kiro renamed or retired; the render
+    // side drops it rather than showing a phantom row.
+    expect(applyModelOrder(base, ['charlie', 'ghost', 'alpha']).map(x => x.name))
+      .toEqual(['auto', 'charlie', 'alpha', 'bravo'])
+  })
+
+  it('pins auto first regardless of where the order puts it', () => {
+    // auto is the 1.0x baseline; a saved order must never demote it.
+    expect(applyModelOrder(base, ['bravo', 'auto', 'alpha']).map(x => x.name))
+      .toEqual(['auto', 'bravo', 'alpha', 'charlie'])
+  })
+
+  it('ignores an auto entry in the order without consuming a slot', () => {
+    // Naming auto is a no-op — it neither reorders auto nor drops the row.
+    expect(applyModelOrder(base, ['auto']).map(x => x.name))
+      .toEqual(['auto', 'alpha', 'bravo', 'charlie'])
+  })
+
+  it('honours the first occurrence when the order lists a name twice', () => {
+    expect(applyModelOrder(base, ['bravo', 'bravo', 'alpha']).map(x => x.name))
+      .toEqual(['auto', 'bravo', 'alpha', 'charlie'])
+  })
+
+  it('works on a list with no auto row', () => {
+    const noAuto = [m('alpha'), m('bravo'), m('charlie')]
+    expect(applyModelOrder(noAuto, ['charlie']).map(x => x.name))
+      .toEqual(['charlie', 'alpha', 'bravo'])
+  })
+
+  it('composes with withAutoFirst: auto pinned, then the saved order, then the rest', () => {
+    // The real pipeline: raw backend list → withAutoFirst → applyModelOrder.
+    const raw = [m('gpt-5.6-luna'), m('auto'), m('claude-opus-5'), m('glm-5')]
+    const out = applyModelOrder(withAutoFirst(raw), ['glm-5', 'claude-opus-5'])
+    expect(out.map(x => x.name)).toEqual(['auto', 'glm-5', 'claude-opus-5', 'gpt-5.6-luna'])
+  })
+
+  it('carries the full model row through, not just the name', () => {
+    // Reordering must not strip the fields the badge/context-window rendering
+    // depends on.
+    const rich = [
+      { name: 'auto', description: '', rateMultiplier: 1 },
+      { name: 'alpha', description: 'Alpha', rateMultiplier: 2.2, contextWindow: 200_000 },
+    ]
+    const [, alpha] = applyModelOrder(rich, ['alpha'])
+    expect(alpha).toEqual({ name: 'alpha', description: 'Alpha', rateMultiplier: 2.2, contextWindow: 200_000 })
+  })
+})
+
+describe('mergeReorderedNames — a drag never deletes stale saved ids', () => {
+  it('keeps a stale id in its saved slot while live ids reorder around it', () => {
+    // Saved: [a, GONE, b]; live render: [a, b, c]; user drags b before a.
+    // Live slots (a's and b's) are re-filled with the new live sequence in
+    // order; GONE keeps its exact slot; the tail model c appends.
+    expect(mergeReorderedNames(['a', 'GONE', 'b'], ['b', 'a', 'c']))
+      .toEqual(['b', 'GONE', 'a', 'c'])
+  })
+
+  it('is identity-shaped when nothing is stale', () => {
+    expect(mergeReorderedNames(['a', 'b'], ['b', 'a', 'c'])).toEqual(['b', 'a', 'c'])
+    expect(mergeReorderedNames([], ['a', 'b'])).toEqual(['a', 'b'])
+  })
+
+  it('keeps multiple stale ids, each in its slot', () => {
+    expect(mergeReorderedNames(['X', 'a', 'Y', 'b'], ['b', 'a']))
+      .toEqual(['X', 'b', 'Y', 'a'])
+  })
+
+  it('never emits duplicates even from an unnormalized saved order', () => {
+    expect(mergeReorderedNames(['a', 'a', 'GONE'], ['a'])).toEqual(['a', 'GONE'])
+  })
+
+  it('round-trips with applyModelOrder: the stale id re-surfaces in place when its model returns', () => {
+    const written = mergeReorderedNames(['a', 'GONE', 'b'], ['b', 'a'])
+    expect(written).toEqual(['b', 'GONE', 'a'])
+    // The model behind GONE comes back into the live list:
+    const live = [{ name: 'auto' }, { name: 'a' }, { name: 'b' }, { name: 'GONE' }]
+    expect(applyModelOrder(live, written).map(m => m.name))
+      .toEqual(['auto', 'b', 'GONE', 'a'])
   })
 })

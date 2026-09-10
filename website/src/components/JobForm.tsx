@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
 import { Zap } from 'lucide-react'
 import { api } from '../api/client'
+import { useAvailableModels, useModelOrderLoadFailed } from '../hooks/useAvailableModels'
 import { Input, SendBtn } from './ui'
 import { SettingsToggle } from './settings'
 import AgentSelector, { type KiroCrewAgent } from './AgentSelector'
@@ -166,12 +166,6 @@ function buildBody(
   return body
 }
 
-/** One row of `GET /api/models`. The payload is kiro-cli's own `--list-models`
- *  output after the backend's filtering, so nothing here is guaranteed: the
- *  current spelling is `model_name`, `name` is the legacy one, and a row that
- *  carries neither is unusable. */
-type ModelRow = { model_name?: string; name?: string; display_name?: string }
-
 interface Props {
   job?: CronJob // if provided, edit mode
   /** Seed values for a NEW job (create mode). Ignored when `job` is set. */
@@ -232,21 +226,14 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
   const [msg, setMsg] = useState(init.message)
   const [agent, setAgent] = useState(defaults.agent)
   const [model, setModel] = useState(defaults.model)
-  const { data: modelList = [] } = useQuery<{ name: string; description?: string }[]>({
-    queryKey: ['models'],
-    queryFn: async () => {
-      const m = await api.models()
-      // A row carrying neither spelling is dropped, not mapped to '': '' is
-      // this form's own value for "inherit" (the `clearLabel` row, see
-      // `modelOptions` below), so aliasing an unusable row onto it would render
-      // a second, duplicate inherit option that silently clears the override.
-      if (!Array.isArray(m)) return []
-      return m.flatMap((x: ModelRow) => {
-        const name = x.model_name || x.name
-        return name ? [{ name, description: x.display_name || '' }] : []
-      })
-    },
-  })
+  // The model override picker reads THE shared model list (auto-first, ordered
+  // by the user's saved `agent.model_order`), not a second private fetcher. This
+  // used to be a local `useQuery(['models'])` that re-implemented the /api/models
+  // mapping and diverged from every other picker — the exact duplicate-fetcher
+  // class useAvailableModels' header documents. `modelOptions` below already
+  // consumes `{ name, description }`, so it needs no change.
+  const modelList = useAvailableModels()
+  const modelOrderLoadFailed = useModelOrderLoadFailed()
   const [channel, setChannel] = useState(defaults.channel)
   const [approvalMode, setApprovalMode] = useState(defaults.approvalMode)
   const [silent, setSilent] = useState(init.silent)
@@ -403,6 +390,13 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
           {locked
             ? <LockedAgentValue name={locked} />
             : <AgentSelector agents={agents} defaultAgent={defaultAgent} value={agent} onChange={(name) => setAgent(name)} rosterFailure={rosterFailure} modal />}
+          {/* Saved model order failed to load: the select below shows backend
+              order as a fallback. No hand-off: this form holds an unsaved job
+              draft (name/message/schedule) that leaving for the agent would
+              abandon, and the state self-clears when the config read retries. */}
+          {modelOrderLoadFailed && (
+            <ErrorNotice variant="inline" message={i18nT('components.modelDropdownList.order_load_failed')} />
+          )}
           <SimpleSelect
             options={modelOptions.values}
             optionLabels={modelOptions.labels}
@@ -482,6 +476,12 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
               aria-label instead. Matches every sibling field in this form. */}
           <span className="text-[12px] text-muted font-medium">{i18nT('components.jobForm.model')}</span>
           <span className="text-[11px] text-muted/70">{i18nT('components.jobForm.override_the_model_for_this_job_leave_on_inherit')}</span>
+          {/* Same decision as the horizontal branch above: No hand-off — the
+              unsaved job draft (name, message, schedule) in this form would be
+              abandoned, and the state self-clears when the config read retries. */}
+          {modelOrderLoadFailed && (
+            <ErrorNotice variant="inline" message={i18nT('components.modelDropdownList.order_load_failed')} />
+          )}
           <SimpleSelect
             options={modelOptions.values}
             optionLabels={modelOptions.labels}

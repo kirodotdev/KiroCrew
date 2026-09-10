@@ -6746,7 +6746,8 @@
       "auto_default": "기본값",
       "credit_multiplier": "Auto 크레딧 비용의 {{value}}",
       "credit_multiplier_baseline": "{{value}}, 기준 크레딧 비용",
-      "no_matches": "일치 항목 없음"
+      "no_matches": "일치 항목 없음",
+      "order_load_failed": "저장된 모델 순서를 불러오지 못했습니다. 불러올 때까지 기본 순서로 표시됩니다."
     },
     "modelEffortDropdown": {
       "default_for_agent": "<agent/>의 기본 모델",
@@ -14514,6 +14515,17 @@
         "description": "영구 모드는 이미 아는 내용을 사용하고 새 메모리를 저장합니다. 시크릿 모드는 아는 내용을 사용하지만 새 메모리를 저장하지 않습니다. 임시 모드는 빈 상태로 시작하고 아무것도 저장하지 않습니다. 모든 채팅은 기록에 계속 표시됩니다. 각 채팅의 모드를 바꿀 수 있습니다.",
         "label": "기본 메모리 모드",
         "persistent": "영구"
+      },
+      "modelOrder": {
+        "autoLabel": "Auto",
+        "autoPinned": "항상 맨 앞",
+        "degraded": "모델 목록을 사용할 수 없습니다. 저장된 순서가 표시되며, 모델이 로드되면 다시 정렬할 수 있습니다.",
+        "description": "각 선택기에서 모델이 표시되는 순서를 드래그하여 설정합니다. Auto는 항상 맨 앞에 표시됩니다.",
+        "label": "모델 순서",
+        "loadFailed": "저장된 모델 순서를 불러오지 못했습니다. 불러오면 재정렬이 다시 가능해집니다.",
+        "reorder": "{{model}} 순서 변경",
+        "reset": "기본 순서로 재설정",
+        "saveFailed": "모델 순서를 저장하지 못했습니다. 다시 시도해 주세요."
       },
       "plainDiff": {
         "description": "차이를 구문 강조 없이 일반 unified diff 텍스트로 표시합니다. 큰 diff에서 메모리를 덜 사용합니다.",

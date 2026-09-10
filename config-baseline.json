@@ -17,6 +17,7 @@
         "approval_mode": "auto",
         "streaming": true,
         "model": "auto",
+        "model_order": [],
         "role_models": {},
         "role_efforts": {},
         "fallback_model": "auto",
@@ -125,6 +126,34 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": "auto"
+    },
+    {
+      "path": "agent.model_order",
+      "kind": "core",
+      "type": "array",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Model order",
+      "help": "Display order for the model-selection dropdown, as a list of model ids in the order they should appear. Models named here are shown first, in this order; any live model not named appends after them in the backend's own order, and a saved id the live list no longer advertises is skipped at render (never rejected on save — kiro renames and re-prices models, so a saved order must outlive a briefly-degraded list). 'auto' stays pinned first regardless of this order. Empty (the default) means the backend's own order.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": []
+    },
+    {
+      "path": "agent.model_order.*",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "*",
+      "help": "",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": null
     },
     {
       "path": "agent.role_models",

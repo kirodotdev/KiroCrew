@@ -8,7 +8,7 @@ import { Btn } from '../../components/ui'
 import SimpleSelect from '../../components/SimpleSelect'
 import MarkdownRenderer from '../../components/MarkdownRenderer'
 import ErrorNotice from '../../components/ErrorNotice'
-import { useAvailableModels } from '../../hooks/useAvailableModels'
+import { useAvailableModels, useModelOrderLoadFailed } from '../../hooks/useAvailableModels'
 import GrillTree from './GrillTree'
 import { grillReducer, promotedResearch, answeredClarifiers, suggestedMaxCycles, GrillNode } from './grillTreeModel'
 
@@ -175,6 +175,7 @@ function SetupWizard({ onDone, onCancel }: { onDone: () => void; onCancel: () =>
   // shared advertised-models list (GET /api/models), same as every picker.
   const [model, setModel] = useState('')
   const availableModels = useAvailableModels()
+  const modelOrderLoadFailed = useModelOrderLoadFailed()
   const [validation, setValidation] = useState<Validation | null>(null)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -311,6 +312,12 @@ function SetupWizard({ onDone, onCancel }: { onDone: () => void; onCancel: () =>
             sit next to the clearLabel row as a second "default" with different
             mechanics ('' inherits the research agent's pin; 'auto' overrides it
             with an explicit pin subject to the availability withhold). */}
+        {/* Saved model order failed to load: the picker shows backend order as a
+            fallback. No hand-off: an in-progress research-run setup would be
+            abandoned, and the state self-clears when the config read retries. */}
+        {executionMode === 'agent' && modelOrderLoadFailed && (
+          <ErrorNotice variant="inline" message={i18nT('components.modelDropdownList.order_load_failed')} />
+        )}
         {executionMode === 'agent' && <div className="flex items-center gap-2"><span className="text-sm">{i18nT('apps.autoResearch.researchLabPage.model')}</span><SimpleSelect aria-label={i18nT('apps.autoResearch.researchLabPage.model')} options={availableModels.map(m => m.name).filter(n => n !== 'auto')} clearLabel={i18nT('apps.autoResearch.researchLabPage.model_default_inherit')} value={model} onChange={setModel} /></div>}
       </div>}
 

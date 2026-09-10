@@ -1863,6 +1863,22 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     # by kiro itself rather than silently accepted here. "auto"/"" = defer to
     # the agent config / kiro's own default.
     "agent.model": {"type": "str", "max_len": 64, "pattern": r"^[A-Za-z0-9._\-\[\]]*$"},
+    # Display order for the model-selection dropdown, as an ordered list of
+    # model ids. Same grammar and the same deliberate tolerance as agent.model
+    # above (grammar-only; an unknown-but-well-formed id is ACCEPTED and simply
+    # ignored at render, never rejected here), lifted to a list: at most 100
+    # entries, each <= 64 chars, DEDUPED first-occurrence-wins by the str_list
+    # branch (a repeat is meaningless in an order). Empty list = the backend's
+    # own order (what "Reset to default order" writes). No values_fn/validate_fn
+    # on purpose: entitlement checking would make a saved order un-writable the
+    # moment the live model list was briefly degraded — the exact failure the
+    # grammar-only rule on agent.model exists to avoid.
+    "agent.model_order": {
+        "type": "str_list",
+        "max_len": 64,
+        "max_entries": 100,
+        "pattern": r"^[A-Za-z0-9._\-\[\]]*$",
+    },
     # Per-task-class model overrides. Same grammar as agent.model (the real
     # vocabulary is whatever the backend advertises). "" / "auto" defers to the
     # chat default. `validate_fn` additionally rejects a well-formed id the
@@ -2235,6 +2251,45 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
             reason = validate_fn(value, request)
             if reason:
                 return _deny(reason, f"{path_key}={value}")
+    elif spec["type"] == "str_list":
+        # An ordered list of strings — today only the model-picker display
+        # order (agent.model_order). Each entry is grammar-checked with the
+        # spec's ``pattern`` (the model-id charset), exactly like the ``str``
+        # branch above, but the list carries the SAME deliberate tolerance as
+        # agent.model: no ``values_fn``/``validate_fn``, so an
+        # unknown-but-well-formed id is ACCEPTED and left to be ignored at
+        # render rather than rejected here (kiro renames and re-prices models;
+        # a saved order must outlive a briefly-degraded live list). Empty list
+        # is valid and means "defer to the backend order". Duplicates are
+        # DEDUPED preserving first occurrence rather than rejected: a repeat is
+        # well-formed and has one meaning in an order — its first position — so
+        # normalizing it is the same forgiveness the grammar-only rule extends,
+        # and it keeps the stored value canonical so consumers never see a
+        # duplicate. The entry cap is measured on the SUBMITTED list, before
+        # dedup, so it also bounds this validation loop.
+        if not isinstance(value, list):
+            return _deny("must be a list", f"{path_key}={value}")
+        max_entries = spec.get("max_entries", 100)
+        if len(value) > max_entries:
+            return _deny(f"must have at most {max_entries} entries", f"{path_key}={value}")
+        max_len = spec.get("max_len", 64)
+        pattern = spec.get("pattern")
+        deduped: list[str] = []
+        seen: set[str] = set()
+        for item in value:
+            if not isinstance(item, str):
+                return _deny("each entry must be a string", f"{path_key}={value}")
+            if len(item) > max_len:
+                return _deny(
+                    f"each entry must be at most {max_len} characters", f"{path_key}={value}"
+                )
+            if pattern and not re.fullmatch(pattern, item):
+                return _deny(f"invalid value for {path_key}", f"{path_key}={value}")
+            if item in seen:
+                continue
+            seen.add(item)
+            deduped.append(item)
+        value = deduped
     elif spec["type"] == "dict":
         # One-level record written ATOMICALLY as a single value, for settings
         # where multiple scalar fields form one verdict and a partial write is
