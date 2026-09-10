@@ -890,6 +890,10 @@ class _Session:
     agent: str = ""  # kiro agent name used for this session
     # Slack message queue: FIFO of (msg_ts, text, kwargs) waiting for the semaphore
     queue: deque[tuple[str, str, dict]] = field(default_factory=deque)
+    # True only when this session adopted a queue rescued by reset(). An
+    # unclaimed speculative session re-rescues that queue; an ordinary queue
+    # is cleaned up with the session as before.
+    rescued_queue_adopted: bool = False
     # Set when this session's last turn was cancelled via soft-stop.
     # kiro-cli discards cancelled turns from its conversation log, so callers
     # must re-inject the cancelled turn (user prompt + partial assistant) as a
@@ -1295,6 +1299,14 @@ class SessionManager:
     @_on_recycled.setter
     def _on_recycled(self, value: _RecycleCallback | None) -> None:
         self._lifecycle_state_boundary().on_recycled = value
+
+    @property
+    def _orphaned_queues(self) -> dict[str, "deque[tuple[str, str, dict]]"]:
+        return self._lifecycle_state_boundary().orphaned_queues
+
+    @_orphaned_queues.setter
+    def _orphaned_queues(self, value: dict[str, "deque[tuple[str, str, dict]]"]) -> None:
+        self._lifecycle_state_boundary().orphaned_queues = value
 
     @property
     def _sessions(self) -> dict[str, "_Session"]:
@@ -2288,6 +2300,10 @@ class SessionManager:
     def clear_queue(self, key: str) -> None:
         """Clear queued messages and their temporary paths."""
         self._allocation_boundary().clear_queue(key)
+
+    def _drop_orphaned_queue(self, key: str) -> None:
+        """Discard a queue reset() rescued for a folded key, unlinking temp files."""
+        self._allocation_boundary()._drop_orphaned_queue(key)
 
     async def is_provider_alive(self, key: str) -> bool | None:
         """Probe a folded session provider outside the registry lock."""
