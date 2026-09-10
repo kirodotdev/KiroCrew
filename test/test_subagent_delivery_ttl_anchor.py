@@ -218,6 +218,7 @@ class TestDeferQueuedDelivery:
         """Fail in the safe direction: if nothing can hold the debt, leave the
         run loop to tombstone now (a short window) rather than never."""
         slot = MagicMock()
+        slot._merge_reserved = False
         slot.note_pending_subagent_delivery.side_effect = RuntimeError("no ledger")
         info = _member()
         info._digest_settle_ids = ["h1"]

@@ -498,6 +498,11 @@ class TestAnAutoNudgeTurnResolvesTheSameIdentityAsADirectTurn:
         slot.running = False
         slot._in_stage_execution = False
         slot._closing = False
+        # The runner's merge-back turn gate reads these three; a bare MagicMock
+        # attribute is truthy and would make the crew slot look mid-merge.
+        slot._merged = False
+        slot._merging = False
+        slot._merge_reserved = False
         slot.mode = ""
         slot.memory_mode = "persistent"
         # A bare crew slot is not channel-born, so it has no linked_session_key;

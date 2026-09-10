@@ -1223,7 +1223,7 @@ async def api_chat_slot_import(request: web.Request) -> web.Response:
                 content, _ = redact_exfiltration_urls(content)
                 content, _ = redact_credentials(content)
             cls = "msg msg-u" if role == "user" else "msg msg-a"
-            new_slot.append(role, content, cls, ts=m["ts"], broadcast=False)
+            new_slot.append(role, content, cls, ts=m["ts"], broadcast=False, replay=True)
             # Yield periodically. Redaction is regex-heavy (those regexes hold
             # the GIL) and a bundle carries up to _MAX_TOTAL_CHARS of PEER-
             # supplied content, so redacting it in one un-yielded pass starves

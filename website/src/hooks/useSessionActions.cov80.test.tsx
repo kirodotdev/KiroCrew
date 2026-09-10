@@ -16,11 +16,27 @@ import type { ReactNode } from 'react'
 
 const apiMock = vi.hoisted(() => ({
   forkChatSlot: vi.fn(),
+  mergeBackChatSlot: vi.fn(),
   setSlotPin: vi.fn(),
   setSlotMode: vi.fn(),
   chatSlots: vi.fn(),
 }))
-vi.mock('../api/client', () => ({ api: apiMock }))
+// The merge-back onError chain does `err instanceof ApiError` and reads
+// `err.body`, so the mock must export a real ApiError class (an undefined
+// export makes the instanceof throw inside the handler).
+const { ApiError } = vi.hoisted(() => {
+  class ApiError extends Error {
+    status: number
+    body: string
+    constructor(status: number, body: string) {
+      super(body)
+      this.status = status
+      this.body = body
+    }
+  }
+  return { ApiError }
+})
+vi.mock('../api/client', () => ({ api: apiMock, ApiError }))
 
 const copySessionLink = vi.hoisted(() => vi.fn())
 vi.mock('../utils/shareUrl', () => ({ copySessionLink }))
@@ -72,6 +88,7 @@ const slot = () => store.getState().dashboard.slots.find((s) => s.key === KEY)
 beforeEach(() => {
   localStorage.clear()
   apiMock.forkChatSlot.mockReset().mockResolvedValue({ ok: true, key: 'zzq-forked' })
+  apiMock.mergeBackChatSlot.mockReset().mockResolvedValue({ ok: true, parent_key: 'zzq-parent' })
   apiMock.setSlotPin.mockReset().mockResolvedValue({ ok: true })
   apiMock.setSlotMode.mockReset().mockResolvedValue({ ok: true })
   apiMock.chatSlots.mockReset().mockImplementation(async () => store.getState().dashboard.slots)
@@ -103,6 +120,62 @@ describe('duplicate', () => {
     const { result } = harness()
     act(() => result.current.duplicate(KEY))
     await waitFor(() => expect(apiMock.forkChatSlot).toHaveBeenCalled())
+    expect(switchSlot).not.toHaveBeenCalled()
+  })
+})
+
+/* mergeBack (#3816): on a successful merge the fork is archived and drops out of
+ * the slot list. The hook switches the single-chat surface to the parent via
+ * switchSlot, but split-view panes ignore Redux activeSlot — so the caller
+ * passes an onMerged(parentKey) callback that refills the acting pane's leaf
+ * with the parent. These pin that onMerged fires with the parent key on
+ * success, and NOT on a refusal. */
+describe('mergeBack', () => {
+  it('fires onMerged with the parent key and switches to the parent on success', async () => {
+    slots({ forked_from: 'dashboard:zzq-parent' })
+    const onMerged = vi.fn()
+    const { result } = harness()
+    act(() => result.current.mergeBack(KEY, onMerged))
+    await waitFor(() => expect(apiMock.mergeBackChatSlot).toHaveBeenCalledWith(KEY))
+    await waitFor(() => expect(onMerged).toHaveBeenCalledWith('zzq-parent'))
+    expect(switchSlot).toHaveBeenCalledWith('zzq-parent')
+  })
+
+  it('does not fire onMerged (or switch) when the merge is refused', async () => {
+    apiMock.mergeBackChatSlot.mockResolvedValue({ ok: false })
+    slots({ forked_from: 'dashboard:zzq-parent' })
+    const onMerged = vi.fn()
+    const { result } = harness()
+    act(() => result.current.mergeBack(KEY, onMerged))
+    await waitFor(() => expect(apiMock.mergeBackChatSlot).toHaveBeenCalled())
+    expect(onMerged).not.toHaveBeenCalled()
+    expect(switchSlot).not.toHaveBeenCalled()
+  })
+
+  // The onError chain maps backend codes to distinct localized messages. These
+  // two codes previously fell to the speculative "parent may be gone" fallback,
+  // which falsely implied data loss (UX review BLOCK). Since GPT round 18 the
+  // message lands in chatSlice.mergeBackError (rendered by ChatPage through
+  // ErrorNotice) rather than a browser alert.
+  it('stores the fork-flush copy for a fork_flush_failed error', async () => {
+    apiMock.mergeBackChatSlot.mockRejectedValue(new ApiError(503, JSON.stringify({ code: 'fork_flush_failed' })))
+    slots({ forked_from: 'dashboard:zzq-parent' })
+    const { result } = harness()
+    act(() => result.current.mergeBack(KEY))
+    await waitFor(() => expect(store.getState().chat.mergeBackError).toBe(
+      "Couldn't save the fork's latest turns before summarizing. Nothing was lost — try again.",
+    ))
+    expect(switchSlot).not.toHaveBeenCalled()
+  })
+
+  it('stores the non-persistent copy for a non_persistent_session error', async () => {
+    apiMock.mergeBackChatSlot.mockRejectedValue(new ApiError(400, JSON.stringify({ code: 'non_persistent_session' })))
+    slots({ forked_from: 'dashboard:zzq-parent' })
+    const { result } = harness()
+    act(() => result.current.mergeBack(KEY))
+    await waitFor(() => expect(store.getState().chat.mergeBackError).toBe(
+      "This is a private (incognito) session, which can't be merged back into a parent.",
+    ))
     expect(switchSlot).not.toHaveBeenCalled()
   })
 })

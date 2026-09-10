@@ -585,6 +585,14 @@ class CrewOrchestrator:
         self._ingest_locks: dict[str, asyncio.Lock] = {}
         self._rerun: dict[str, bool] = {}
         self._owned: dict[str, str] = {}  # run_id -> slot_key
+        # Slot keys with a completion DELIVERY in flight (merge-back):
+        # ``on_subagent_done`` pops ``_owned`` at its first line, so between
+        # that pop and the durable forward landing there is an await window
+        # where neither ``_owned`` nor ``slot.running`` shows the work — a
+        # merge starting there would archive the fork before the result lands
+        # and the write gate would strand it. ``has_pending_work_for`` reads
+        # both books.
+        self._delivering: dict[str, int] = {}  # COUNTER, not set (Opus r34): concurrent same-slot deliveries each hold one count
         # Slots whose session was PERMANENTLY deleted. A cancel cannot reach work
         # that has not been dispatched yet, so an in-flight decision pass has to
         # refuse on its own; this is what it checks. Bounded by the number of
@@ -1793,6 +1801,27 @@ class CrewOrchestrator:
         slot_key = self._owned.pop(info.id, "")
         if not slot_key:
             return
+        # Mark the delivery window (merge-back): from the pop above
+        # until the forward lands, this is the only signal that crew work for
+        # the slot is still in flight — the merge-busy probe reads it.
+        self._delivering[slot_key] = self._delivering.get(slot_key, 0) + 1
+        try:
+            await self._on_subagent_done_delivery(slot_key, info)
+        finally:
+            _n = self._delivering.get(slot_key, 1) - 1
+            if _n <= 0:
+                self._delivering.pop(slot_key, None)
+            else:
+                self._delivering[slot_key] = _n
+
+    def has_pending_work_for(self, slot_key: str) -> bool:
+        """True while a crew-owned run or in-flight completion delivery
+        targets *slot_key* — the merge-back busy probe."""
+        if slot_key in self._delivering:
+            return True
+        return any(key == slot_key for key in self._owned.values())
+
+    async def _on_subagent_done_delivery(self, slot_key: str, info: Any) -> None:
         st = await self._store_async(slot_key)
         t = st.topic_by_run(info.id)
         if t is None:

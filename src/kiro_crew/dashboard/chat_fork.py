@@ -872,7 +872,13 @@ async def api_chat_slot_fork(request: web.Request) -> web.Response:
                 content, _ = redact_credentials(content)
             cls = "msg msg-u" if role == "user" else "msg msg-a"
             new_slot.append(
-                role, content, cls, ts=m.get("ts", ""), meta=m.get("meta"), broadcast=False
+                role,
+                content,
+                cls,
+                ts=m.get("ts", ""),
+                meta=m.get("meta"),
+                broadcast=False,
+                replay=True,
             )
             # A fork copies the parent's messages into a new session. Origin is
             # a property of the message, not of the file, so a copied inbound

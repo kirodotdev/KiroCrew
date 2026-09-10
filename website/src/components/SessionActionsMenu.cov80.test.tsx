@@ -48,6 +48,8 @@ const actions = vi.hoisted(() => ({
   move: vi.fn(),
   reload: vi.fn(),
   close: vi.fn(),
+  mergeBack: vi.fn(),
+  mergeBackPending: false,
 }))
 const popouts = vi.hoisted(() => ({
   isPoppedOut: vi.fn(() => false),
@@ -87,7 +89,8 @@ const btn = (label: string | RegExp) => screen.getByRole('button', { name: label
 
 describe('SessionActionsMenu', () => {
   beforeEach(() => {
-    Object.values(actions).forEach(fn => fn.mockReset())
+    Object.values(actions).forEach(fn => { if (typeof fn === 'function') fn.mockReset() })
+    actions.mergeBackPending = false
     Object.values(popouts).forEach(fn => fn.mockReset())
     popouts.isPoppedOut.mockReturnValue(false)
     popouts.isSelfPopout.mockReturnValue(false)
@@ -227,5 +230,58 @@ describe('SessionActionsMenu', () => {
     )
     fireEvent.click(btn('Close session'))
     expect(actions.close).toHaveBeenCalledWith('zzq-slot')
+  })
+})
+
+describe('MergeBackMenuItem', () => {
+  // The item renders only for a fork (forked_from set) that is not merged.
+  const forkSlot = { forked_from: 'dashboard:zzq-parent' }
+
+  beforeEach(() => {
+    actions.mergeBack.mockReset()
+    actions.mergeBackPending = false
+  })
+
+  it('renders for a fork and merges back after confirm, naming the parent title', () => {
+    const store = createTestStore()
+    store.dispatch(sseSlots([
+      { key: 'zzq-slot', messages: 0, running: false, ...forkSlot } as ChatSlot,
+      { key: 'zzq-parent', messages: 0, running: false, title: 'Parent Chat' } as ChatSlot,
+    ]))
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    renderWithProviders(
+      <SessionActionsMenu variant="dropdown" slotKey="zzq-slot" />,
+      { store },
+    )
+    fireEvent.click(btn(/Merge back/))
+    expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining('Parent Chat'))
+    expect(actions.mergeBack).toHaveBeenCalledWith('zzq-slot')
+    confirmSpy.mockRestore()
+  })
+
+  it('does not merge when the confirm is declined (parent key fallback in the prompt)', () => {
+    // No parent slot in the store — the prompt falls back to the parent KEY.
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    setup({}, forkSlot)
+    fireEvent.click(btn(/Merge back/))
+    expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining('zzq-parent'))
+    expect(actions.mergeBack).not.toHaveBeenCalled()
+    confirmSpy.mockRestore()
+  })
+
+  it('is disabled while a merge is pending', () => {
+    actions.mergeBackPending = true
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    setup({}, forkSlot)
+    const item = btn(/Merging|Merge back/)
+    expect(item).toBeDisabled()
+    fireEvent.click(item)
+    expect(actions.mergeBack).not.toHaveBeenCalled()
+    confirmSpy.mockRestore()
+  })
+
+  it('does not render for a merged fork or a plain slot', () => {
+    setup({}, { ...forkSlot, merged: true })
+    expect(screen.queryByRole('button', { name: /Merge back/ })).toBeNull()
   })
 })

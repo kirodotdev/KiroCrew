@@ -978,7 +978,7 @@ def _backfill_canonical_model(client: Any, provider: str) -> str:
     ``global.anthropic.claude-opus-4-8[1m]``) — not the alias the user picked —
     so backfilling it pins the slot to one profile + region. A session that once
     resolved to the 1M Opus profile then stays nailed to it across resumes even
-    when that profile is capacity-throttled, and the picker can no longer
+    when that profile is capacity-throttled, and the picker cannot
     dislodge the poisoned value (observed: every "model unavailable" throttle hit
     the profile-form id, never the dotted alias, which kiro routes with capacity
     awareness). So for non-``claude_code`` providers we DROP a profile-form id
@@ -5309,6 +5309,15 @@ def _drop_stale_admissions(state: DashboardState, slot: _ChatSlot) -> None:
 async def _start_next_queued_turn(state: DashboardState, slot: _ChatSlot) -> bool:
     """Dequeue and start one ready Kiro turn, preserving queue semantics."""
 
+    # MERGE-RESERVED holds the whole drain (merge-back): the
+    # queue is where reserved-parent deliveries park (rounds 35-37), and a
+    # drain triggered by an unrelated seam (a turn's chat_done, a note flush)
+    # during the reservation would pop an entry straight into the turn gate's
+    # silent return — the entry consumed, the turn never run. The reservation
+    # release's own kick re-enters here after the flag clears.
+    if getattr(slot, "_merge_reserved", False):
+        return False
+
     # FIRST, before anything reads the queue: re-assert each entry's
     # admission-time containment and drop every entry that has stopped
     # qualifying.
@@ -5947,6 +5956,57 @@ async def _run_chat(
             state.broadcast_ws("chat_done", {"slot": slot.key})
         except Exception:  # pragma: no cover - unblock is best-effort
             logger.debug("chat_done broadcast failed for refused remote slot", exc_info=True)
+        return
+
+    # TURN GATE (merge-back invariant, restructure round): every turn — send,
+    # continue, regenerate, edit/resend, queue dispatch, synthetic
+    # continuation, auto-nudge — funnels through here, so this one check makes
+    # "a merged fork runs no turns" true without each endpoint having to
+    # remember its own guard. Returning (not raising) keeps the fail mode of a
+    # background task graceful; the endpoints that reach this deliberately
+    # answer 409 from their own pre-checks first. getattr, not attribute
+    # access: test harnesses drive _run_chat with minimal slot stubs.
+    if (
+        getattr(slot, "_merged", False)
+        or getattr(slot, "_merging", False)
+        or getattr(slot, "_merge_reserved", False)
+    ):
+        logger.warning(
+            "run_chat: refusing turn on %s slot %s",
+            (
+                "merged"
+                if getattr(slot, "_merged", False)
+                else "merging" if getattr(slot, "_merging", False) else "merge-reserved"
+            ),
+            slot.key,
+        )
+        # a prompt that reaches the runner was ACCEPTED — its
+        # user row is already appended by the caller (a linked-Slack or
+        # OpenAI-compat prompt landing on a reserved parent mid-merge), so a
+        # silent return strands the surface: no reply, no completion, an
+        # indefinitely open response. Refuse VISIBLY, mirroring the
+        # refused-remote shape above. Not queued: the queue drain re-appends
+        # its message on dispatch (a requeue here would double the row), and
+        # the reservation window is seconds — a retryable refusal is honest.
+        # The reserved parent is writable, so the error row lands; on a
+        # merged/merging fork the write gate drops live rows, and the
+        # chat_done broadcast alone is what unblocks any waiting composer.
+        if getattr(slot, "_merge_reserved", False) and not (
+            getattr(slot, "_merged", False) or getattr(slot, "_merging", False)
+        ):
+            try:
+                slot.append(
+                    "error",
+                    "A fork is being merged into this session right now; this "
+                    "message was not processed — send it again in a moment.",
+                    "msg msg-err",
+                )
+            except Exception:  # pragma: no cover - refusal row is best-effort
+                logger.debug("refusal row append failed for reserved slot", exc_info=True)
+        try:
+            state.broadcast_ws("chat_done", {"slot": slot.key})
+        except Exception:  # pragma: no cover - unblock is best-effort
+            logger.debug("chat_done broadcast failed for merge-gated slot", exc_info=True)
         return
 
     # Capture before any await: a Stop can complete while pre-turn setup is

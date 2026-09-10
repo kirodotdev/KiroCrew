@@ -682,6 +682,12 @@ def slot_transcript_key(slot_key: str) -> str:
     return _history_key_for(slot_key)
 
 
+# Re-exported from state: ``_ChatSlot.enqueue_or_run_prompt`` now
+# consults the predicate, and chat_utils imports state at module level, so the
+# definition moved next to the flags it reads. Importers keep this name.
+from kiro_crew.dashboard.state import merge_transition_active  # noqa: F401,E402
+
+
 def slot_history_key(slot: _ChatSlot) -> str:
     """The TRANSCRIPT key for *slot* — the file its conversation is stored in.
 

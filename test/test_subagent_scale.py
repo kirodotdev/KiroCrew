@@ -821,6 +821,7 @@ class TestWaveDigest:
         slot.mode = "chat"
         slot.running = False
         slot.task = None
+        slot._merge_reserved = False
         slot._orch_tracker = None
         slot._subagent_deliveries_inflight = 0
         orch.dashboard_state.get_slot = MagicMock(return_value=slot)
@@ -882,6 +883,7 @@ class TestWaveDigest:
         slot.mode = "chat"
         slot.running = False
         slot.task = None
+        slot._merge_reserved = False
         slot._orch_tracker = None
         slot._subagent_deliveries_inflight = 0
         orch.dashboard_state.get_slot = MagicMock(return_value=slot)
@@ -931,6 +933,7 @@ class TestWaveDigest:
         slot.mode = "chat"
         slot.running = False
         slot.task = None
+        slot._merge_reserved = False
         slot._orch_tracker = None
         slot._subagent_deliveries_inflight = 0
         orch.dashboard_state.get_slot = MagicMock(return_value=slot)
@@ -969,6 +972,7 @@ class TestWaveDigest:
         slot.mode = "chat"
         slot.running = False
         slot.task = None
+        slot._merge_reserved = False
         slot._orch_tracker = None
         slot._subagent_deliveries_inflight = 0
         orch.dashboard_state.get_slot = MagicMock(return_value=slot)
@@ -1013,6 +1017,7 @@ class TestWaveDigest:
         slot.mode = "chat"
         slot.running = False
         slot.task = None
+        slot._merge_reserved = False
         slot._orch_tracker = None
         slot._subagent_deliveries_inflight = 0
         orch.dashboard_state.get_slot = MagicMock(return_value=slot)
@@ -1068,6 +1073,7 @@ class TestWaveDigest:
         slot.mode = "chat"
         slot.running = False
         slot.task = None
+        slot._merge_reserved = False
         slot._orch_tracker = None
         slot._subagent_deliveries_inflight = 0
         orch.dashboard_state.get_slot = MagicMock(return_value=slot)
@@ -1113,6 +1119,7 @@ class TestWaveDigest:
         slot.mode = "chat"
         slot.running = False
         slot.task = None
+        slot._merge_reserved = False
         slot._orch_tracker = None
         slot._subagent_deliveries_inflight = 0
         orch.dashboard_state.get_slot = MagicMock(return_value=slot)
@@ -1241,6 +1248,7 @@ class TestWaveDigest:
         slot.mode = "chat"
         slot.running = False
         slot.task = None
+        slot._merge_reserved = False
         slot._orch_tracker = None
         slot._subagent_deliveries_inflight = 0
         orch.dashboard_state.get_slot = MagicMock(return_value=slot)
@@ -1346,6 +1354,7 @@ class TestWaveDigest:
         # than dispatched. `task = None` keeps the shield-await a no-op.
         slot.running = True
         slot.task = None
+        slot._merge_reserved = False
         slot._orch_tracker = None
         slot._subagent_deliveries_inflight = 0
         slot._subagents_inline_collected = set()
@@ -1423,6 +1432,7 @@ class TestWaveDigest:
         slot.mode = "chat"
         slot.running = False
         slot.task = None
+        slot._merge_reserved = False
         slot._orch_tracker = None
         slot._subagent_deliveries_inflight = 0
         # Real attribute, not a MagicMock truthy stub: the stub below flips it
@@ -1489,6 +1499,7 @@ class TestWaveDigest:
         slot.mode = "chat"
         slot.running = False
         slot.task = None
+        slot._merge_reserved = False
         slot._orch_tracker = None
         slot._subagent_deliveries_inflight = 0
         orch.dashboard_state.get_slot = MagicMock(return_value=slot)
@@ -1544,6 +1555,7 @@ class TestWaveDigest:
         slot._orch_tracker = tracker
         slot.running = False
         slot.task = None
+        slot._merge_reserved = False
         slot._subagent_deliveries_inflight = 0
         orch.dashboard_state.get_slot = MagicMock(return_value=slot)
         mgr, on_done = self._capture_on_done(orch)
@@ -1590,6 +1602,7 @@ class TestWaveDigest:
         slot.mode = "chat"
         slot.running = False
         slot.task = None
+        slot._merge_reserved = False
         slot._orch_tracker = None
         slot._subagent_deliveries_inflight = 0
         orch.dashboard_state.get_slot = MagicMock(return_value=slot)
@@ -1630,6 +1643,7 @@ class TestWaveDigest:
         slot.mode = "chat"
         slot.running = False
         slot.task = None
+        slot._merge_reserved = False
         slot._orch_tracker = None
         slot._subagent_deliveries_inflight = 0
         orch.dashboard_state.get_slot = MagicMock(return_value=slot)
@@ -1824,6 +1838,7 @@ class TestDigestHoldDeadline:
         slot.mode = "chat"
         slot.running = False
         slot.task = None
+        slot._merge_reserved = False
         slot._orch_tracker = None
         slot._subagent_deliveries_inflight = 0
         slot._subagents_inline_collected = set()
@@ -1895,6 +1910,7 @@ class TestDigestHoldDeadline:
         slot.mode = "chat"
         slot.running = False
         slot.task = None
+        slot._merge_reserved = False
         slot._orch_tracker = None
         slot._subagent_deliveries_inflight = 0
         slot._subagents_inline_collected = set()

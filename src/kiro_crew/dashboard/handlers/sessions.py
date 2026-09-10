@@ -1275,23 +1275,76 @@ async def api_session_detail(request: web.Request) -> web.Response:
     return web.json_response(messages)
 
 
+def _claim_deletion_keys(state: DashboardState, keys: "set[str]") -> None:
+    """Increment the deletion claim count for each key (GPT rounds 45+47).
+
+    Reference-counted: two overlapping deletes of one key each claim and each
+    release, and the claim survives until the LAST holder releases — a plain
+    set let the first release clear the second's still-live claim, reopening
+    the round-45 window. Writes always go to an instance-owned dict, never
+    the class-level baseline.
+    """
+    claims = state.__dict__.get("deletion_claimed_keys")
+    if not isinstance(claims, dict):
+        claims = {}
+        state.deletion_claimed_keys = claims
+    for k in keys:
+        claims[k] = claims.get(k, 0) + 1
+
+
+def _release_deletion_keys(state: DashboardState, keys: "set[str]") -> None:
+    """Decrement claim counts, dropping keys that reach zero."""
+    claims = state.__dict__.get("deletion_claimed_keys")
+    if not isinstance(claims, dict):
+        return
+    for k in keys:
+        n = claims.get(k, 0) - 1
+        if n <= 0:
+            claims.pop(k, None)
+        else:
+            claims[k] = n
+
+
 async def api_session_delete(request: web.Request) -> web.Response:
     """DELETE /api/sessions/{key} — permanently delete a history session."""
     state: DashboardState = request.app["state"]
     key = request.match_info["key"]
     if not state.conversation_log:
         return web.json_response({"error": "no conversation log"}, status=400)
-    # delete_session enters _locked (flock acquire + os.close); offload off the
-    # loop so a wedged cross-process peer can't freeze chat/WS/heartbeat.
-    ok = await asyncio.to_thread(state.conversation_log.delete_session, key)
-    if ok:
-        try:
-            await _remove_slot_for_history_key(state, key)
-        except Exception:
-            logger.warning("cleanup failed for session %s", key, exc_info=True)
-        state.push_slots_update()
-        state.push_refresh("history")
-    return web.json_response({"ok": ok})
+    # A transcript reserved by an in-flight merge-back transition cannot be
+    # deleted mid-flight: the transition's durable save would
+    # recreate the file this delete just unlinked, resurrecting removed
+    # conversation data. The reservation lasts seconds; retry after it clears.
+    if key in getattr(state, "merge_reserved_keys", frozenset()):
+        return web.json_response(
+            {"error": "a merge back is in progress for this session", "code": "merge_in_progress"},
+            status=409,
+        )
+    # CLAIM synchronously before offloading: the check above
+    # runs on the loop but the unlink below runs in a thread — a merge could
+    # reserve-and-save in that window, and this delete would then unlink the
+    # transcript the merge just wrote. The claim set is checked by the merge
+    # coordinator before it reserves; loop-synchronous add = atomic with the
+    # check above. Both spellings are claimed for the same reason the merge
+    # reserves both.
+    from kiro_crew.history import transcript_stems
+
+    _claimed = {key} | set(transcript_stems(key))
+    _claim_deletion_keys(state, _claimed)
+    try:
+        # delete_session enters _locked (flock acquire + os.close); offload off the
+        # loop so a wedged cross-process peer can't freeze chat/WS/heartbeat.
+        ok = await asyncio.to_thread(state.conversation_log.delete_session, key)
+        if ok:
+            try:
+                await _remove_slot_for_history_key(state, key)
+            except Exception:
+                logger.warning("cleanup failed for session %s", key, exc_info=True)
+            state.push_slots_update()
+            state.push_refresh("history")
+        return web.json_response({"ok": ok})
+    finally:
+        _release_deletion_keys(state, _claimed)
 
 
 async def _remove_slot_for_history_key(state: DashboardState, key: str) -> None:
@@ -1471,6 +1524,25 @@ async def api_sessions_clear(request: web.Request) -> web.Response:
             skipped += 1
             continue
 
+        # A transcript reserved by an in-flight merge-back transition must not
+        # be bulk-cleared either: the single-delete endpoint
+        # already refuses reserved keys, and this path deleting one mid-merge
+        # would let the transition's durable save resurrect it — or, worse,
+        # permanently drop the merged parent's history between the summary
+        # commit and the archival save. Reservations last seconds; the row is
+        # simply skipped this pass.
+        if key in getattr(state, "merge_reserved_keys", frozenset()):
+            skipped += 1
+            continue
+
+        # CLAIM per key before the offloaded delete, same
+        # protocol as the single-delete endpoint: the reserved-check above is
+        # loop-synchronous but the unlink runs in a thread, and a merge
+        # reserving in that window would have its durable save unlinked.
+        from kiro_crew.history import transcript_stems
+
+        _claimed = {key} | set(transcript_stems(key))
+        _claim_deletion_keys(state, _claimed)
         try:
             # Offload off the event loop — delete_session enters _locked (flock).
             # skip_pinned=True makes the pin-check-and-delete atomic so a
@@ -1487,6 +1559,8 @@ async def api_sessions_clear(request: web.Request) -> web.Response:
         except Exception:
             failed += 1
             logger.warning("api_sessions_clear: delete raised for %s", key, exc_info=True)
+        finally:
+            _release_deletion_keys(state, _claimed)
     if cleanup_tasks:
         await asyncio.gather(*cleanup_tasks, return_exceptions=True)
     if count:

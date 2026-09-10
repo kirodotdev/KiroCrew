@@ -539,6 +539,7 @@ def _rebuild_window(slot: "_ChatSlot", messages: list[dict[str, Any]]) -> None:
             cls,
             ts=msg.get("ts", ""),
             broadcast=False,
+            replay=True,
             meta=(msg["meta"] if isinstance(msg.get("meta"), dict) else None),
             mint_mid=False,
         )

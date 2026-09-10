@@ -8,6 +8,7 @@ import logging
 
 from aiohttp import web
 
+from kiro_crew.dashboard.chat_handlers import merged_slot_response
 from kiro_crew.dashboard.chat_persistence import _save_slot_to_history, save_slot_off_loop
 from kiro_crew.dashboard.chat_runner import _run_chat, _start_next_queued_turn
 from kiro_crew.dashboard.chat_utils import effective_session_key, slot_history_key
@@ -64,6 +65,11 @@ async def api_chat_slot_regenerate(request: web.Request) -> web.Response:
             return web.json_response(
                 {"error": "slot is running", "code": "slot_running"}, status=409
             )
+        # Merged/merging forks are read-only (restructure round): this endpoint
+        # both rewrites persisted history and dispatches a turn.
+        merged_409 = merged_slot_response(slot)
+        if merged_409 is not None:
+            return merged_409
 
         msgs = slot.messages
         ai_idx = -1
@@ -179,6 +185,11 @@ async def api_chat_slot_switch_variant(request: web.Request) -> web.Response:
             return web.json_response(
                 {"error": "slot is running", "code": "slot_running"}, status=409
             )
+        # Merged/merging forks are read-only (restructure round): this endpoint
+        # both rewrites persisted history and dispatches a turn.
+        merged_409 = merged_slot_response(slot)
+        if merged_409 is not None:
+            return merged_409
 
         target = None
         for m in reversed(slot.messages):
@@ -332,6 +343,11 @@ async def api_chat_slot_edit_resend(request: web.Request) -> web.Response:
             return web.json_response(
                 {"error": "slot is running", "code": "slot_running"}, status=409
             )
+        # Merged/merging forks are read-only (restructure round): this endpoint
+        # both rewrites persisted history and dispatches a turn.
+        merged_409 = merged_slot_response(slot)
+        if merged_409 is not None:
+            return merged_409
 
         # The session whose native resume identity the discard below clears.
         # Resolved here because the two guards that follow are about THAT

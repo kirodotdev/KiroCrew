@@ -115,6 +115,7 @@ from kiro_crew.dashboard.chat_utils import (
     CRON_NOTIFICATION_KIND,
     SUBAGENT_COMPLETION_KIND,
     dashboard_slot_key,
+    merge_transition_active,
     mint_options_token,
     remember_slack_options,
     subagent_event_slot,
@@ -433,7 +434,18 @@ def _injection_slot_busy(slot: Any) -> bool:
     assigns ``slot.task`` over the earlier chunk's still-pending task instead
     of awaiting it. Consulting the claim directly keeps chunk delivery FIFO
     regardless of how ``running`` is implemented or when the hop resolves.
+
+    MERGE-RESERVED counts as busy too (merge-back): a subagent
+    completing while its parent holds a merge reservation may take the
+    idle branch and dispatch ``_run_chat`` directly, whose turn gate silently
+    returns on ``_merge_reserved`` — the completion neither ran nor queued.
+    Reading the reservation here routes the delivery down the busy path
+    (wait, then the queue below), and the reservation release's queue kick
+     drains it. Deliberately NOT ``_merged``/``_merging``: a fork's
+    own completions on a merged slot are the write gate's business.
     """
+    if getattr(slot, "_merge_reserved", False):
+        return True
     task = slot.task
     return bool(slot.running) or (task is not None and not task.done())
 
@@ -3641,10 +3653,31 @@ class GatewayOrchestrator:
                             self.dashboard_state, slot_key
                         )
                     label = redact(job.name)
+                    # FORK MID-MERGE / MERGED (merge-back): a
+                    # merging fork's transcript is frozen by the round-28 write
+                    # gate — a direct append raises SlotMergedError and the
+                    # script cron's result dies in a logged exception. A merged
+                    # fork can never take delivery again. Skip session-targeted
+                    # delivery for BOTH and fall through to the normal channel
+                    # notification below, which is this method's own fallback
+                    # for a missing session.
+                    if slot is not None and (
+                        getattr(slot, "_merging", False) or getattr(slot, "_merged", False)
+                    ):
+                        slot = None
                     if slot:
                         wrapped = f'[Cron notification: "{label}"]\n{message}\n[/Cron notification]'
                         inject_cls = json.dumps({"cronLabel": label})
-                        if slot.running:
+                        # MERGE-RESERVED queues too (merge-back,
+                        # same class as the messaging.py cron-delivery site): an
+                        # idle reserved parent must not take the direct-dispatch
+                        # branch — the turn gate would silently drop the turn.
+                        # The reservation release kicks the queue drain.
+                        if (
+                            slot.running
+                            or getattr(slot, "_in_stage_execution", False)
+                            or getattr(slot, "_merge_reserved", False)
+                        ):
                             qid = slot.queue_append(wrapped, kind=CRON_NOTIFICATION_KIND)
                             _cls = json.loads(inject_cls)
                             _cls["queue_id"] = qid
@@ -6427,7 +6460,7 @@ class GatewayOrchestrator:
             _run_chat,  # circular import: gateway -> dashboard.chat -> gateway (chat dispatch references GatewayOrchestrator)
         )
 
-        if slot.running or slot._in_stage_execution:
+        if slot.running or slot._in_stage_execution or merge_transition_active(slot):
             # Turn still active, OR a multi-stage plan is mid-flight (slot.task is
             # None between stages, so slot.running alone misses that window and the
             # nudge would start a concurrent turn that clobbers the plan) — drop this
@@ -6435,6 +6468,13 @@ class GatewayOrchestrator:
             # Queueing would stack identical 3KB+ nudges and blow up the context
             # window. Returning False keeps cycle_count accurate (only delivered
             # nudges count toward max_cycles).
+            #
+            # A merge-back transition counts as busy too: a
+            # reserved parent (or mid-merge fork) passes the running check, so
+            # the nudge appended its row and reported DISPATCHED while
+            # `_run_chat`'s reservation gate refused the actual turn —
+            # consuming a bounded-loop cycle with no agent turn. The
+            # reservation lasts seconds; the next tick delivers normally.
             logger.info(
                 "AutoNudge skip: slot %s is running (loop %s cycle %d)",
                 slot.key,
@@ -7190,6 +7230,30 @@ class GatewayOrchestrator:
                         source="gateway",
                         resources=f"requested={slot_name},resolved={slot.key}",
                     )
+                    # Merge-transition defer: a result landing
+                    # while the fork is mid-merge-back would hit the write
+                    # gate (``SlotMergedError``) and be LOST from both the
+                    # archived fork and the user's view. The transition is
+                    # seconds long and both participants are held quiescent by
+                    # design, so the delivery waits it out rather than
+                    # violating the frozen-snapshot invariant with a mid-merge
+                    # append. If the fork ends the transition archived (or is
+                    # still transitioning after the wait), the result survives
+                    # as the bell notification this branch already raises.
+                    for _ in range(60):
+                        if not getattr(slot, "_merging", False):
+                            break
+                        await asyncio.sleep(0.5)
+                    if getattr(slot, "_merged", False) or getattr(slot, "_merging", False):
+                        logger.info(
+                            "Heartbeat deliver target %s was merged back; "
+                            "delivering as notification only",
+                            slot.key,
+                        )
+                        self.dashboard_state.notify(
+                            "heartbeat", title, body, meta={"slot": slot.key}
+                        )
+                        return
                     slot.append("assistant", f"{title}\n\n{result_text}", "msg msg-a")
                     self.dashboard_state.push_slots_update()
                     self.dashboard_state.notify("heartbeat", title, body, meta={"slot": slot.key})

@@ -29,7 +29,7 @@ import { useQueuedMessageActions, queuedSendStash } from '../hooks/useQueuedMess
 import { useChatPopouts } from '../hooks/useChatPopouts'
 import {
   switchSlot, createSlot, deleteSlot, loadOlderMessages, abortActiveOlderFetch, isSupersededPagingRejection,
-  appendMessage, appendSlotMessage, endLocalTurn, clearUnresumableResume, forkSlot,
+  appendMessage, appendSlotMessage, endLocalTurn, resumeFromHistory, clearUnresumableResume, clearMergeBackError, forkSlot,
   setSlotRunning, startLocalTurn, syncSlotRunningFromServer, setPendingInput, setAgentSwitchNotice, resolveByApprovalId, clearPendingPermissions,
   selectComposerBusy,
   selectContinuable,
@@ -239,6 +239,7 @@ import type { KiroCrewAgent } from '../components/AgentSelector'
 import type { ModelInfo } from '../providers/types'
 import AgentDropdownList, { DefaultAgentRow, ManageAgentsFooter } from '../components/AgentDropdownList'
 import { agentSwitchFailureMessage } from '../utils/agentSwitchFeedback'
+import { openMergedParent as openMergedParentAction, parentSlotKeyFromForkedFrom } from '../utils/openMergedParent'
 import ProjectPicker from '../components/ProjectPicker'
 import InboundLinkChip from '../components/InboundLinkChip'
 import ModelEffortDropdown from '../components/ModelEffortDropdown'
@@ -247,6 +248,7 @@ import ChatInput from '../components/ChatInput'
 import SessionControlHost from '../components/SessionControlHost'
 import { useSessionControls, useSessionControlStatuses } from '../hooks/useSessionControls'
 import type { ChatFolder } from '../types'
+import MergedReadonlyBar from '../components/MergedReadonlyBar'
 import ErrorNotice from '../components/ErrorNotice'
 import VoicePlaybackNotice from '../components/VoicePlaybackNotice'
 import ChatDropOverlay from '../components/ChatDropOverlay'
@@ -518,6 +520,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // The one post-resolve answer for every resume entry point (#5925); rendered
   // above the composer, which is the only place all of them can see.
   const unresumableResume = useAppSelector(s => s.chat.unresumableResume)
+  const mergeBackError = useAppSelector(s => s.chat.mergeBackError)
   const activeSlot = useAppSelector(s => s.chat.activeSlot)
   // Reveal eligible completed replies while recovery is offered, including an
   // older reply the user chose to read aloud. Slot identity prevents bleed-over.
@@ -658,7 +661,20 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // Shared composer-busy rule (chatSlice.selectComposerBusy). Drives the
   // composer's busy/queue affordance so a message sent during a sub-agent run
   // reads as "will queue".
-  const composerBusy = useAppSelector(s => selectComposerBusy(s, s.chat.activeSlot))
+  const composerBusy = useAppSelector(s =>
+    // The active slot mid-merge-back counts as busy (UX round 26): the merge
+    // can start from a menu that closes on select, so without this the
+    // composer stays live and silent for the 10-30s summarize while every
+    // send answers 409.
+    selectComposerBusy(s, s.chat.activeSlot)
+    || (s.chat.mergingSlotKey !== null && s.chat.mergingSlotKey === s.chat.activeSlot),
+  )
+  // Named separately from composerBusy (UX round 28 watch): busy alone reads
+  // as "agent is running", so the stock single-chat surface shows an explicit
+  // Merging… status line for the 10-30s summarize.
+  const isActiveMerging = useAppSelector(
+    s => s.chat.mergingSlotKey !== null && s.chat.mergingSlotKey === s.chat.activeSlot,
+  )
   const slotStopping = useAppSelector(s => s.chat.slotStopping)
   const slotLoading = useAppSelector(s => s.chat.slotLoading)
   // While a session-switch history fetch is still in flight for the active
@@ -3495,6 +3511,41 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       currentSlot?.folder_id || '',
       activeFolderName,
     )
+  // A merged fork is read-only (#3816): every turn/mutation endpoint answers
+  // 409 {code:"session_merged"}, so the composer is replaced by the merged bar.
+  // The parent key (fork's forked_from, minus the dashboard: prefix) drives its
+  // "Open parent" action. archive_pending keeps the composer + Merge back
+  // retry reachable (GPT round 11): the summary persisted but archival failed,
+  // and the read-only bar would otherwise hide the only promised retry action.
+  const slotMerged = currentSlot?.merged === true && currentSlot?.archive_pending !== true
+  const mergedParentKey = currentSlot?.forked_from ? parentSlotKeyFromForkedFrom(currentSlot.forked_from) : null
+  // "Open parent" from a merged fork's read-only bar. The parent may be a live
+  // slot (switch straight to it) OR only a closed History session (resumed from
+  // History, its parent never re-opened) — in which case switchSlot's detail
+  // fetch 404s and unwinds silently, a button that visibly does nothing (UX
+  // review). So resume the closed parent first via the same path the History
+  // surface uses (resumeFromHistory → POST /slots/{key}/resume), keyed by the
+  // fork's `forked_from` (the colon spelling the resume body carries, e.g.
+  // "dashboard:<slot>"), then switch. A failed resume surfaces through the same
+  // agent-switch notice ChatPage already uses for failed switches, never
+  // silently.
+  const openMergedParent = useCallback(async () => {
+    if (!mergedParentKey) return
+    await openMergedParentAction({
+      parentKey: mergedParentKey,
+      resumeKey: currentSlot?.forked_from || mergedParentKey,
+      liveSlotKeys: slots.map(s => s.key),
+      resume: (key) => dispatch(resumeFromHistory({ key, title: key })).unwrap(),
+      switchTo: (key) => { dispatch(switchSlot(key)) },
+      // Deliberately NO page-local notice here (First Principles round 23):
+      // every failure this fires for is a resume failure, and the
+      // resumeFromHistory thunk already records those in
+      // `chat.unresumableResume` (rejected AND fulfilled-not-ok), which this
+      // page renders through the shared ErrorNotice above the composer. A
+      // second surface stacked two notices for one failure.
+      onError: () => {},
+    })
+  }, [mergedParentKey, slots, currentSlot, dispatch])
   // One source for both same-meaning markers in the agent pop-up: the row's check and
   // the default-agent row's label. Reading the slot twice let them disagree.
   // A peer-bound session falls back to the PEER's default, never this machine's:
@@ -6881,6 +6932,22 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
             />
           </div>
         )}
+        {mergeBackError && (
+          <div className="mx-4 mt-2 mb-0" data-testid="merge-back-error">
+            {/* A rejected merge-back (GPT round 18): the mutation lives in the
+                surface-agnostic useSessionActions hook, so the message is lifted
+                through the store and rendered here — the one surface every menu
+                trigger shares. askAgent opted IN: the fork's transcript is
+                persisted before any merge attempt, so the hand-off's unmount
+                loses nothing. */}
+            <ErrorNotice
+              message={mergeBackError}
+              onDismiss={() => dispatch(clearMergeBackError())}
+              variant="block"
+              askAgent
+            />
+          </div>
+        )}
         {/* Floating sessions opener — mobile only, and only on a chat with
             nothing in it yet (a conversation gets the in-header control
             instead). Suppressed while the inline side panel is showing: it is
@@ -6942,11 +7009,33 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
             openSideChat={connected ? openSideChatForPane : undefined}
             onClose={() => setSplitMode(false)}
             onCollapse={(slot, anchorTs, anchorMid) => {
-              dispatch(switchSlot(slot))
+              // A pane's "Open parent" (MergedReadonlyBar) routes through this
+              // collapse too — passing the fork's RAW `forked_from` (colon
+              // spelling) — and a merged fork's parent may exist only as a
+              // closed History session: the same silent-404 hole the
+              // single-view bar had (UX review). The helper switches straight
+              // to a live target and resumes a closed one first. Lookup and
+              // switch use the server's folded slot-key spelling (GPT round 8:
+              // stripping only `dashboard:` left CHANNEL parents colon-spelled
+              // and unfindable); the resume key keeps the raw transcript
+              // spelling. Ordinary pane collapses pass an already-live folded
+              // key, for which the fold is identity and the plain switch
+              // branch runs unchanged.
+              const liveKey = parentSlotKeyFromForkedFrom(slot)
+              void openMergedParentAction({
+                parentKey: liveKey,
+                resumeKey: slot.includes(':') ? slot : `dashboard:${slot}`,
+                liveSlotKeys: slots.map(s => s.key),
+                resume: (key) => dispatch(resumeFromHistory({ key, title: key })).unwrap(),
+                switchTo: (key) => { dispatch(switchSlot(key)) },
+                // Same deliberate no-op as openMergedParent above (FP round
+                // 23): the resume thunk records failures in unresumableResume.
+                onError: () => {},
+              })
               setSplitMode(false)
               // switchSlot.pending sets activeSlot synchronously, so the pending-jump
               // effect pages back to the anchor instead of landing on the newest turn.
-              if (anchorTs) setPendingPinnedJump({ slotKey: slot, messageTs: anchorTs, mid: anchorMid, origin: 'earlier' })
+              if (anchorTs) setPendingPinnedJump({ slotKey: liveKey, messageTs: anchorTs, mid: anchorMid, origin: 'earlier' })
             }}
           />
         ) : !activeSlot ? (
@@ -7554,6 +7643,22 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                   />
                 </div>
               )}
+              {isActiveMerging && (
+                <div
+                  className="mx-auto w-full px-4 pb-1 text-[12px] text-muted flex items-center gap-1.5"
+                  style={{ maxWidth: 'var(--mc-content-width, 900px)' }}
+                  role="status"
+                  data-testid="merging-status-line"
+                >
+                  <span className="inline-block h-3 w-3 shrink-0 rounded-full border-2 border-accent border-t-transparent animate-spin" aria-hidden="true" />
+                  {i18nT('components.chatPane.merge_back_merging')}
+                </div>
+              )}
+              {slotMerged ? (
+                <MergedReadonlyBar
+                  onOpenParent={mergedParentKey ? () => { void openMergedParent() } : undefined}
+                />
+              ) : (
               <ChatInput
               aboveComposer={
                 <>
@@ -7894,6 +7999,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               knowledgeChip={knowledgeFetch.pendingKnowledge ? <div className="flex items-start gap-1"><KnowledgeBubbleChip knowledge={{ items: knowledgeFetch.pendingKnowledge.items.length, tokens: knowledgeFetch.pendingKnowledge.totalTokens, titles: knowledgeFetch.pendingKnowledge.items.map(i => i.title), content: knowledgeFetch.pendingKnowledge.items.map(i => ({ title: i.title, text: i.content.slice(0, 2000) })) }} /><button type="button" onClick={() => knowledgeFetch.clearPending()} className="shrink-0 mt-0.5 p-0.5 text-muted hover:text-danger bg-transparent border-none cursor-pointer rounded hover:bg-danger/10 transition-colors" aria-label={i18nT('pages.chatPage.remove_knowledge_context')} title={i18nT('pages.chatPage.remove_knowledge_context')}>&times;</button></div> : undefined}
               connected={connected}
             />
+            )}
             </div>
             <VoiceDisabledModal
               open={voiceSetupOpen}

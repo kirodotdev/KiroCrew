@@ -1227,7 +1227,7 @@ async def test_import_creates_a_new_slot_with_no_project(monkeypatch):
             self.messages: list[dict] = []
             self._resumed_count = 0
 
-        def append(self, role, content, _cls, ts="", broadcast=True):
+        def append(self, role, content, _cls, ts="", broadcast=True, replay=False):
             self.messages.append({"role": role, "content": content, "ts": ts})
 
         def drain(self):
@@ -2398,7 +2398,7 @@ def _stub_state(st, monkeypatch, save=None):
             self.messages: list[dict] = []
             self._resumed_count = 0
 
-        def append(self, role, content, _cls, ts="", broadcast=True):
+        def append(self, role, content, _cls, ts="", broadcast=True, replay=False):
             self.messages.append({"role": role, "content": content, "ts": ts})
 
         def drain(self):

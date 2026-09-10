@@ -432,6 +432,10 @@ def _bg_slot(key: str) -> MagicMock:
     # Real _ChatSlot defaults this False; a bare MagicMock returns a truthy Mock
     # and would trip the nudge busy guard (running or _in_stage_execution).
     slot._in_stage_execution = False
+    # The busy guard also reads the merge-transition flags (merge-back PR
+    # model the real defaults for the same reason.
+    slot._merge_reserved = False
+    slot._merging = False
     return slot
 
 

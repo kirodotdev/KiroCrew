@@ -54,6 +54,9 @@ def _live_running_slot():
     slot = MagicMock()
     slot.running = True
     slot._in_stage_execution = False
+    slot._merging = False
+    slot._merged = False
+    slot._merge_reserved = False
     slot._queue = []
     slot.queue_append.return_value = "q1"
     return slot
@@ -66,6 +69,9 @@ def _mid_plan_slot():
     slot = MagicMock()
     slot.running = False
     slot._in_stage_execution = True
+    slot._merging = False
+    slot._merged = False
+    slot._merge_reserved = False
     slot._queue = []
     slot.queue_append.return_value = "q1"
     return slot

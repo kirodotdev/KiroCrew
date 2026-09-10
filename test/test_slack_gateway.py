@@ -699,6 +699,11 @@ class TestDeliverResult:
         slot = MagicMock()
         slot.append = MagicMock()
         slot.key = "my-slot"
+        # The delivery path defers on the merge-transition flags
+        # on the merge-back PR); bare MagicMock attributes read truthy and
+        # would route delivery to notification-only. Model the real defaults.
+        slot._merging = False
+        slot._merged = False
         ds.resolve_slot = MagicMock(return_value=slot)
         orch.dashboard_state = ds
         with patch("kiro_crew.slack.gateway.sel") as mock_sel:

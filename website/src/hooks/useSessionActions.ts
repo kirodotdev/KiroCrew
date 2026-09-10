@@ -2,7 +2,7 @@ import { useCallback } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { api, ApiError } from '../api/client'
 import { store, useAppDispatch } from '../store'
-import { deleteSlot, switchSlot } from '../store/chatSlice'
+import { deleteSlot, switchSlot, setMergeBackError, setMergingSlotKey } from '../store/chatSlice'
 import { updateSlotPin, updateSlot, markSlotRead, markSlotUnread } from '../store/dashboardSlice'
 import { copySessionLink } from '../utils/shareUrl'
 import { useMoveSlotToFolder } from './useMoveSlotToFolder'
@@ -67,6 +67,16 @@ function setSlotPinInOrder(key: string, pinned: boolean) {
 export interface SessionActions {
   /** Fork/duplicate a session. */
   duplicate: (slotKey: string) => void
+  /** Merge a fork's summary back into its parent, then archive the fork (#3816).
+   *  `onMerged(parentKey)` fires after a successful merge — split-view panes
+   *  use it to refill the acting pane's leaf with the parent (the archived fork
+   *  drops out of the slot list, so the pane would otherwise go dead; grid pane
+   *  focus never routes through Redux activeSlot, which the hook's own
+   *  switchSlot dispatch targets). */
+  mergeBack: (slotKey: string, onMerged?: (parentKey: string) => void) => void
+  /** True while a merge-back is in flight — the summarization pass can take
+   * 10–30s, so callers disable the affordance and show progress (UX review). */
+  mergeBackPending: boolean
   /** Toggle read/unread. */
   toggleRead: (slotKey: string) => void
   /** Toggle pinned. */
@@ -206,6 +216,85 @@ export function useSessionActions(mode?: string): SessionActions {
     },
   })
 
+  // Merge a fork's summary back into its parent, then archive the fork (#3816).
+  // On success we switch to the PARENT (where the merged block now lives), not
+  // the fork, which is closed. Failure must not be silent — the machine-readable
+  // code distinguishes the cases the user can act on (wait for a running turn,
+  // already merged) from a generic failure, mirroring reload's error copy.
+  const mergeBackMutation = useMutation({
+    mutationFn: ({ slot }: { slot: string; onMerged?: (parentKey: string) => void }) => api.mergeBackChatSlot(slot),
+    onMutate: (vars) => {
+      dispatch(setMergeBackError(null))
+      // Store-lifted pending (UX round 26): per-instance isPending never
+      // reaches ChatPage when the merge starts from a menu that closes on
+      // select, leaving the composer live and silent for the 10-30s
+      // summarize. ChatPage gates its composer on this key.
+      dispatch(setMergingSlotKey(vars.slot))
+    },
+    onSettled: () => { dispatch(setMergingSlotKey(null)) },
+    onSuccess: (data, vars) => {
+      if (data?.ok && data.parent_key) {
+        queryClient.invalidateQueries({ queryKey: ['slots'] })
+        // Split-view panes ignore Redux activeSlot, so switchSlot alone leaves
+        // the acting pane bound to the now-archived fork (a dead pane). The
+        // caller's onMerged refills that pane's leaf with the parent; the
+        // switchSlot below still drives the single-chat surface.
+        vars.onMerged?.(data.parent_key)
+        dispatch(switchSlot(data.parent_key))
+      }
+    },
+    onError: (err) => {
+      const body = err instanceof ApiError ? err.body : ''
+      // archive_failed means the merge COMMITTED (the block is durably in the
+      // parent) and only the fork's archive save failed — the generic "parent
+      // may be gone" copy would misstate a merge that succeeded (UX review).
+      // not_found is also in-hand (a second tab merging a fork the first
+      // already merged and popped), so it gets the already-merged copy rather
+      // than the hedged fallback (UX review).
+      const keyName = body.includes('summary_turn_running')
+        ? 'hooks.useSessionActions.merge_back_failed_running'
+        : body.includes('merge_in_progress')
+          ? 'hooks.useSessionActions.merge_back_failed_running'
+          : body.includes('slot_subagents_running')
+            ? 'hooks.useSessionActions.merge_back_failed_subagents'
+            : body.includes('parent_merged')
+            ? 'hooks.useSessionActions.merge_back_failed_parent_merged'
+            : body.includes('parent_busy')
+            ? 'hooks.useSessionActions.merge_back_failed_parent_busy'
+            : body.includes('already_merged') || body.includes('not_found')
+              ? 'hooks.useSessionActions.merge_back_failed_already_merged'
+              : body.includes('summary_unavailable')
+                ? 'hooks.useSessionActions.merge_back_failed_no_summary'
+                : body.includes('nothing_to_merge')
+                  ? 'hooks.useSessionActions.merge_back_failed_nothing'
+                  : body.includes('archive_failed')
+                    ? 'hooks.useSessionActions.merge_back_failed_archive'
+                    : body.includes('parent_save_failed')
+                      ? 'hooks.useSessionActions.merge_back_failed_parent_save'
+                      : body.includes('parent_missing')
+                        ? 'hooks.useSessionActions.merge_back_failed_parent_missing'
+                        : body.includes('fork_flush_failed')
+                          ? 'hooks.useSessionActions.merge_back_failed_fork_flush'
+                          : body.includes('non_persistent_session')
+                            ? 'hooks.useSessionActions.merge_back_failed_non_persistent'
+                            : body.includes('not_a_fork')
+                              ? 'hooks.useSessionActions.merge_back_failed_not_a_fork'
+                              : err instanceof ApiError
+                                ? 'hooks.useSessionActions.merge_back_failed_refused'
+                                : 'hooks.useSessionActions.merge_back_failed_transport'
+      // The fallback split reflects connection state actually in hand (UX
+      // round 26): an ApiError means the gateway demonstrably RESPONDED, so
+      // "may be unreachable" would misdirect recovery; a non-ApiError throw
+      // is a transport failure where unreachable is known, not a maybe.
+      // Rendered by ChatPage through the shared ErrorNotice (GPT round 18,
+      // errors-use-error-notice): with the SessionActionsMenu entry this
+      // failure path is now reachable on every default install, so the
+      // hook lifts the message to the store instead of a browser alert —
+      // the notice carries the agent hand-off the alert could not.
+      dispatch(setMergeBackError(i18nT(keyName)))
+    },
+  })
+
   const pinMutation = useMutation({
     mutationFn: ({ key, pinned }: { key: string; pinned: boolean }) => setSlotPinInOrder(key, pinned),
     onMutate: ({ key, pinned }) => {
@@ -282,11 +371,14 @@ export function useSessionActions(mode?: string): SessionActions {
   // Destructure the stable `mutate` fns so the action callbacks below aren't
   // recreated on every render (the mutation result objects are new each render).
   const { mutate: forkMutate } = forkMutation
+  const { mutate: mergeBackMutate, isPending: mergeBackPending } = mergeBackMutation
   const { mutate: pinMutate } = pinMutation
   const { mutate: modeMutate } = modeMutation
   const { mutate: reloadMutate } = reloadMutation
 
   const duplicate = useCallback((slotKey: string) => { forkMutate(slotKey) }, [forkMutate])
+
+  const mergeBack = useCallback((slotKey: string, onMerged?: (parentKey: string) => void) => { mergeBackMutate({ slot: slotKey, onMerged }) }, [mergeBackMutate])
 
   const toggleRead = useCallback((slotKey: string) => {
     const isUnread = store.getState().dashboard.unreadSlots.includes(slotKey)
@@ -323,5 +415,5 @@ export function useSessionActions(mode?: string): SessionActions {
     if (!loadChatConfig().confirmCloseSession || confirm(i18nT('hooks.useSessionActions.close_this_session'))) dispatch(deleteSlot(slotKey))
   }, [dispatch])
 
-  return { duplicate, toggleRead, togglePin, toggleMode, copyLink, move, reload, close }
+  return { duplicate, mergeBack, mergeBackPending, toggleRead, togglePin, toggleMode, copyLink, move, reload, close }
 }

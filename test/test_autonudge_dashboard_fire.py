@@ -41,13 +41,24 @@ def _loop(slot_key: str = "chat-1-1785") -> NudgeLoop:
     )
 
 
-def _slot(key: str = "chat-1-1785", *, running: bool = False, in_stage: bool = False) -> MagicMock:
+def _slot(
+    key: str = "chat-1-1785",
+    *,
+    running: bool = False,
+    in_stage: bool = False,
+    merge_reserved: bool = False,
+    merging: bool = False,
+) -> MagicMock:
     slot = MagicMock()
     slot.key = key
     slot.running = running
     # Real _ChatSlot defaults this False; a bare MagicMock would return a truthy
     # Mock and trip the busy guard, so model the default explicitly.
     slot._in_stage_execution = in_stage
+    # Same MagicMock hazard for the merge-transition flags (made
+    # them part of the busy guard): model the real defaults explicitly.
+    slot._merge_reserved = merge_reserved
+    slot._merging = merging
     slot._closing = False
     slot.mode = ""
     slot.memory_mode = "persistent"
@@ -543,6 +554,33 @@ class TestDashboardNudgeSlotResolution:
         orch.autonudge_svc.remove.assert_not_awaited()
         assert spawn.calls == []
         assert loop.cycle_count == before
+
+    @pytest.mark.asyncio
+    async def test_merge_reserved_slot_skips_without_consuming_the_cycle(self) -> None:
+        """A merge-back transition defers the cycle.
+
+        A parent reserved by an in-flight merge (``_merge_reserved``) — or the
+        fork itself mid-transition (``_merging``) — is not ``running``, so it
+        passed the busy guard: the nudge appended its row and reported
+        DISPATCHED while ``_run_chat``'s reservation gate refused the actual
+        turn, consuming a bounded loop's cycle with no agent turn. Both flags
+        must defer exactly like a running turn; the reservation lasts seconds
+        and the next tick delivers normally.
+        """
+        for flag in ("merge_reserved", "merging"):
+            orch = _orchestrator()
+            loop = _loop()
+            before = loop.cycle_count
+            orch.dashboard_state.get_slot = MagicMock(return_value=_slot(**{flag: True}))
+            spawn = _fake_spawn()
+            with (
+                patch.object(gw, "spawn_guarded_turn", spawn),
+                patch("kiro_crew.dashboard.chat._run_chat", new=AsyncMock()),
+            ):
+                assert await orch._fire_dashboard_nudge(loop) is False, flag
+            orch.autonudge_svc.remove.assert_not_awaited()
+            assert spawn.calls == []
+            assert loop.cycle_count == before
 
     @pytest.mark.asyncio
     async def test_dashboard_not_ready_skips_without_retiring_the_loop(self) -> None:

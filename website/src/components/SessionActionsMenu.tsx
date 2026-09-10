@@ -1,6 +1,7 @@
 import * as React from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Pencil, Circle, Pin, Zap, Locate, Link2, Tag as TagIcon, X, ExternalLink, Monitor, Undo2, RotateCw, PanelTop } from 'lucide-react'
+import { Pencil, Circle, Pin, Zap, Locate, Link2, Tag as TagIcon, X, ExternalLink, Monitor, Undo2, RotateCw, PanelTop, GitMerge } from 'lucide-react'
+import { parentSlotKeyFromForkedFrom } from '../utils/openMergedParent'
 import type { ChatFolder } from '../types'
 import FolderMoveSubmenu from './FolderMoveSubmenu'
 import SendToInstanceSubmenu from './SendToInstanceSubmenu'
@@ -56,6 +57,48 @@ export interface SessionActionsMenuProps {
  * divider behind. Exported (and generic) so the visibility logic can be
  * unit-tested with plain values, dodging jsdom's Radix-submenu flakiness.
  */
+/**
+ * The session menu's Merge back entry, as a component so it can read the
+ * PARENT slot's title from the store (UX round 26): the confirm dialog is
+ * decision-critical, and naming a raw slot key ("merge back into
+ * 'chat-1-17256…'") tells the user nothing — ChatPane's identical dialog uses
+ * the parent's title, and the two surfaces must read the same. Key stays the
+ * fallback for a parent with no title (or one not currently live).
+ */
+function MergeBackMenuItem({
+  Item,
+  parentKey,
+  slotKey,
+  mergeBack,
+  mergeBackPending,
+}: {
+  Item: typeof DropdownMenuItem | typeof ContextMenuItem
+  parentKey: string
+  slotKey: string
+  mergeBack: (slot: string) => void
+  mergeBackPending: boolean
+}) {
+  const parentTitle = useAppSelector(
+    s => s.dashboard.slots.find(x => x.key === parentKey)?.title,
+  )
+  return (
+    <Item
+      disabled={mergeBackPending}
+      onSelect={() => {
+        if (mergeBackPending) return
+        if (confirm(i18nT('components.chatPane.merge_back_confirm', { name: parentTitle || parentKey })))
+          mergeBack(slotKey)
+      }}
+    >
+      <GitMerge size={13} className="shrink-0 text-muted" />{' '}
+      {mergeBackPending
+        ? i18nT('components.chatPane.merge_back_merging')
+        : i18nT('components.chatPane.merge_back')}
+    </Item>
+  )
+}
+
+
 export function collapseGroups<T>(groups: (T | false | null | undefined)[][]): T[][] {
   return groups
     .map(g => g.filter((n): n is T => Boolean(n)))
@@ -92,7 +135,7 @@ export default function SessionActionsMenu({
   const Separator = variant === 'context' ? ContextMenuSeparator : DropdownMenuSeparator
 
   // Generic, surface-agnostic actions — one definition, wired straight to the store.
-  const { toggleRead, togglePin, toggleMode, copyLink, move, reload, close } = useSessionActions(mode)
+  const { toggleRead, togglePin, toggleMode, copyLink, move, reload, close, mergeBack, mergeBackPending } = useSessionActions(mode)
   // Popped-out window coordination (shared singleton — one channel for all menus).
   const { isPoppedOut, isSelfPopout, open: openPopout, focus: focusPopout, bringBack, returnSelfToMain } = useChatPopouts()
   // This menu also renders INSIDE a popout window (via the header). There the
@@ -148,6 +191,29 @@ export default function SessionActionsMenu({
       <Item key="mode" onSelect={() => toggleMode(slotKey)}>
         <Zap size={13} className="shrink-0 text-muted" /> {slot?.mode === 'orchestrator' ? i18nT('components.sessionActionsMenu.switch_to_chat') : i18nT('components.sessionActionsMenu.switch_to_autopilot')}
       </Item>,
+      // Merge back, on the SINGLE-SESSION surface (UX round 17 BLOCK): the
+      // split-view fork breadcrumb was the only trigger, and Split View is
+      // opt-in default-off — on a stock install the feature did not exist.
+      // Same hook, same confirm, same copy as ChatPane's breadcrumb item, so
+      // the two surfaces cannot drift. Guarded exactly like the breadcrumb:
+      // fork provenance present and not already merged — where "merged"
+      // excludes the archive_pending window (GPT round 18 F3): after a 503
+      // archive_failed the summary persisted but archival did not, and
+      // re-invoking Merge back IS the promised retry, so the item stays
+      // visible exactly as ChatPane's breadcrumb does.
+      !!slot?.forked_from && !(slot?.merged === true && slot?.archive_pending !== true) && (() => {
+        const parentKey = parentSlotKeyFromForkedFrom(slot.forked_from)
+        return (
+          <MergeBackMenuItem
+            key="merge-back"
+            Item={Item}
+            parentKey={parentKey}
+            slotKey={slotKey}
+            mergeBack={mergeBack}
+            mergeBackPending={mergeBackPending}
+          />
+        )
+      })(),
       folders.length > 0 && (
         <FolderMoveSubmenu
           key="move"

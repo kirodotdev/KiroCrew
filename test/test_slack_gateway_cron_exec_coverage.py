@@ -82,6 +82,13 @@ def _mock_dashboard_state() -> MagicMock:
 def _mock_slot(*, running: bool = False) -> MagicMock:
     slot = MagicMock()
     slot.running = running
+    # MagicMock auto-mints TRUTHY attributes: the cron-delivery guard now also
+    # reads these two flags, so an idle double would read as busy/reserved and
+    # take the queue branch. Model them explicitly.
+    slot._in_stage_execution = False
+    slot._merge_reserved = False
+    slot._merging = False
+    slot._merged = False
     slot.queue_append = MagicMock(return_value="q-1")
     slot.append = MagicMock()
     slot.task = None

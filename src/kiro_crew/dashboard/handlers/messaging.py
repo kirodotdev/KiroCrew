@@ -2247,6 +2247,17 @@ async def api_send_message(request: web.Request) -> web.Response:
                     was_loaded,
                     (slot is not None and not was_loaded),
                 )
+                # FORK MID-MERGE / MERGED (merge-back, same class
+                # as the gateway cron site): a merging fork's transcript is
+                # frozen by the write gate — a direct append raises
+                # SlotMergedError and the result dies in a logged exception; a
+                # merged fork never takes delivery again. Null the slot so the
+                # existing "session closed — delivered as notification"
+                # fallback below carries the result instead of losing it.
+                if slot is not None and (
+                    getattr(slot, "_merging", False) or getattr(slot, "_merged", False)
+                ):
+                    slot = None
                 if slot:
                     label = job_name or "cron"
                     label, _ = redact_exfiltration_urls(label)
@@ -2262,7 +2273,19 @@ async def api_send_message(request: web.Request) -> web.Response:
                     # window and would let this injection start a concurrent turn that
                     # clobbers the plan. _in_stage_execution closes it — same predicate
                     # the user-typed path uses (chat_handlers._api_chat).
-                    if slot.running or slot._in_stage_execution:
+                    #
+                    # MERGE-RESERVED queues too (merge-back): an idle
+                    # reserved parent may take the else branch — appending the
+                    # inject row and dispatching _run_chat directly — and the turn
+                    # gate then returned silently, so the delivery reported success
+                    # while the accepted turn never ran. The queue is the right
+                    # parking spot: the reservation release kicks the drain
+                    # , which re-runs every admission gate at delivery.
+                    if (
+                        slot.running
+                        or slot._in_stage_execution
+                        or getattr(slot, "_merge_reserved", False)
+                    ):
                         if len(slot._queue) >= 50:
                             evicted = slot.queue_pop(0)
                             logger.warning(

@@ -142,6 +142,7 @@ export default function SessionGridView({
           onSplitDown={() => grid.splitLeaf(leaf.id, 'down')}
           onOpenFull={onCollapse}
           openSideChat={openSideChat}
+          onMerged={(parentKey) => grid.fillLeaf(leaf.id, { kind: 'session', slot: parentKey })}
         />
       )
     }

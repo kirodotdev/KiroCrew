@@ -2533,6 +2533,31 @@ _NON_DURABLE_SOURCE_LINK_ROLES = frozenset({"chunk", "done", "streaming", "queue
 _MAX_PENDING_CONTEXT = 50
 
 
+def merge_transition_active(slot: object) -> bool:
+    """True while *slot* participates in an in-flight merge-back transition.
+
+    THE one predicate every concurrent driver consults before treating a slot
+    as free (merge-back PR rounds 15/20/21/23 arbitration): ``_merging`` marks
+    the fork mid-transition; ``_merge_reserved`` marks the parent held
+    quiescent for the merged row's durable save. Both are set and cleared in
+    exactly one place (``chat_merge_back._merge_back``'s lock-guarded
+    reservation and its ``finally``), so a driver that consults this predicate
+    cannot drift from the transition's definition of busy. ``getattr`` with a
+    False default keeps it safe on partially-constructed slots and doubles.
+
+    Deliberately NOT ``_merged``: that is the fork's persistent post-merge
+    state, owned by the write gate (``_ChatSlot.append``) and the read-only
+    surfaces — a driver that must also refuse merged-final slots checks it
+    explicitly alongside this predicate.
+
+    Lives HERE rather than chat_utils because ``_ChatSlot`` itself
+    now consults it (``enqueue_or_run_prompt``) and chat_utils imports this
+    module at module level; chat_utils re-exports it so existing importers
+    are unaffected.
+    """
+    return bool(getattr(slot, "_merging", False) or getattr(slot, "_merge_reserved", False))
+
+
 def context_entry_expired(entry: dict, now: float) -> bool:
     """True if a pending-context entry's TTL has elapsed.
 
@@ -3215,6 +3240,18 @@ def request_slot_origin(app: str) -> str:
     return SlotOrigin.APP if app else SlotOrigin.USER
 
 
+class SlotMergedError(RuntimeError):
+    """A live write reached a merged (or merging-out) fork.
+
+    Raised by :meth:`_ChatSlot.append`'s write gate — the single mutation
+    boundary that makes "a merged fork is read-only" true for every caller,
+    including endpoints and work sources that carry no gate of their own.
+    HTTP handlers that can reach it deliberately (send, continue, regenerate)
+    answer 409 from their own pre-checks first; this exception is the
+    fail-closed backstop for the paths nobody enumerated.
+    """
+
+
 class _ChatSlot:
     """Independent chat session that runs server-side."""
 
@@ -3352,6 +3389,10 @@ class _ChatSlot:
         "_pending_variants",
         "_lock",
         "forked_from",
+        "_merged",
+        "_merging",
+        "_merge_reserved",
+        "_archive_pending",
         "_fork_lock",
         "_model_pick_lock",
         "_remote_pick_lock",
@@ -3877,6 +3918,28 @@ class _ChatSlot:
         self._pending_variants: list[dict] = []
         self._lock = asyncio.Lock()
         self.forked_from: str | None = None  # parent slot key if this is a fork
+        # Set once this fork has been merged back into its parent (chat_merge_back).
+        # ``_merged`` makes the session read-only (a merged fork's turn path is
+        # rejected) and, via the ``merged``→``closed`` fold at save time,
+        # non-continuable. The parent is named by ``forked_from``.
+        self._merged: bool = False
+        # Transient (never persisted): a merge-back transition is in flight
+        # under ``_fork_lock`` — chat_send rejects new turns so nothing lands
+        # mid-merge, gets omitted from the summary, and is archived unread.
+        self._merging: bool = False
+        # Parent-side merge reservation: a parent slot quiesced
+        # by a child fork's merge-back transition. Distinct from ``_merging``
+        # (a fork merging OUT) because the two need different write gates: a
+        # reserved parent refuses TURNS (nothing may stream around the summary
+        # row) but must keep accepting one-shot background delivery appends —
+        # a cron or subagent result landing mid-reservation is atomic on the
+        # event loop and orders cleanly against the summary write, while
+        # refusing it makes the delivery's failure handler count a successful
+        # run as failed and drop its transcript row.
+        self._merge_reserved: bool = False
+        # Transient (never persisted): a merge-back persisted the parent block
+        # but the fork's archive save failed; the retry re-runs ONLY the archive.
+        self._archive_pending: bool = False
         self._fork_lock: asyncio.Lock = asyncio.Lock()  # serialises concurrent forks on this slot
         # Serialises explicit model-pick transactions (check → mutate → live
         # switch → rollback) on this slot: picks interleaving at the set_model
@@ -4262,7 +4325,37 @@ class _ChatSlot:
         broadcast_user: bool = False,
         meta: dict | None = None,
         mint_mid: bool = True,
+        replay: bool = False,
     ) -> dict[str, Any]:
+        # WRITE GATE (the merge-back invariant, restructure round): a merged or
+        # merging-out fork rejects every LIVE append at the mutation boundary,
+        # so an endpoint that forgot its own ``_merged`` check — or a work
+        # source no gate enumerated (crew ingress, a future injector) — fails
+        # closed here instead of writing into an archived transcript.
+        #
+        # ``replay=True`` is the ONE bypass, and it is explicit:
+        # the gate keyed on ``broadcast``, but ``broadcast=False``
+        # only means "don't emit a chat_message frame" — live one-shot writers
+        # (a Crew completion that delivers its own frame, a flush segment)
+        # legitimately use that spelling and were sailing through the gate,
+        # writing into a fork mid-merge where the row missed the already-frozen
+        # summary snapshot and was then archived unread. Replay callers
+        # (hydration, fork copies, session transfers, transcript-rotation
+        # rebuild, resume) re-append rows that are ALREADY part of history and
+        # now say so with ``replay=True``; everything else is a live append and
+        # is gated regardless of its broadcast setting.
+        #
+        # Deliberately does NOT check ``_merge_reserved``: the
+        # parent's reservation blocks TURN DISPATCH (chat_runner's turn gate +
+        # merged_slot_response), not one-shot background delivery appends — a
+        # cron/subagent result arriving mid-reservation is atomic on the event
+        # loop, orders cleanly against the summary row, and refusing it would
+        # make the delivery's failure handler count a successful run as failed.
+        if not replay and (self._merged or self._merging):
+            raise SlotMergedError(
+                f"slot {self.key} is {'merged' if self._merged else 'merging'}; "
+                "live appends are refused"
+            )
         # A LIVE turn-consuming row retires every unanswered STATELESS question:
         # the card's own submit path sends one, and anything else that starts the
         # slot's next turn consumes the answer channel the card was waiting on.
@@ -4777,7 +4870,22 @@ class _ChatSlot:
         so two concurrent callers targeting the same slot cannot both observe
         ``running == False`` within a single loop iteration.
         """
-        if self.running:
+        if self.running or getattr(self, "_merge_reserved", False):
+            # MERGE-RESERVED counts as busy: a workflow/crew
+            # completion's auto-turn targeting a reserved PARENT may take
+            # the run branch — appending its synthesis prompt and then having
+            # ``_run_chat``'s turn gate refuse the dispatch — so a user-role
+            # prompt persisted with no answer ever coming. Queueing parks
+            # BOTH the append and the dispatch; the merge's reservation
+            # release kicks the queue drain, which re-runs every admission
+            # gate at delivery.
+            #
+            # Deliberately NOT ``_merging``/``_merged``: those
+            # mark the FORK, whose archive discards its queue — a prompt
+            # queued there would be silently lost, which is worse than the
+            # loud refusal. Merged/merging slots fall through to the run
+            # branch, whose append raises ``SlotMergedError`` via the write
+            # gate; the caller's failure handling owns that outcome.
             # circular import: session_control imports this module at module level.
             from kiro_crew.dashboard.session_control import containment_meta
 
@@ -4920,6 +5028,32 @@ class DashboardState:
     # assign a fresh set(), so mutation only ever touches an instance attribute.
     unrestored_slot_keys: "frozenset[str] | set[str]" = frozenset()
     crew: Any = None  # Crew Mode control plane (set by gateway; None = unavailable)
+    # History keys reserved by an in-flight merge-back transition (the fork
+    # being summarized + the parent about to receive the row). Deletion paths
+    # check membership so a permanent delete cannot race the transition's
+    # durable save and be silently undone by it. REFERENCE-
+    # COUNTED: two
+    # transitions can share a key through the legacy transcript-stem fallback,
+    # and a plain set let the first completion's release clear the second's
+    # still-live reservation. Values are live reservation counts; a key is
+    # present iff its count is positive. Class-level empty mapping as the
+    # immutable baseline; writers swap in an instance-owned dict.
+    merge_reserved_keys: "dict[str, int]" = {}
+    # History keys CLAIMED by an in-flight deletion (single delete or bulk
+    # clear), the symmetric counterpart to ``merge_reserved_keys``
+    # 45): the deletion's reservation CHECK runs on the event loop but its
+    # unlink is offloaded to a thread, so a merge could reserve-and-save in
+    # that window — the deletion then unlinks the parent the merge just wrote
+    # and the fork archives with its summary lost. Deletions claim keys
+    # synchronously BEFORE offloading; the merge coordinator refuses to
+    # reserve any key in this mapping. REFERENCE-COUNTED: two
+    # overlapping deletes of the same key each claim and each release — a
+    # plain set let the first release clear the second's still-live claim
+    # (the same set-vs-refcount class as's ``_delivering``). Values
+    # are live claim counts; a key is present iff its count is positive.
+    # Class-level empty mapping as the immutable baseline; writers swap in a
+    # fresh dict (same pattern as ``merge_reserved_keys``).
+    deletion_claimed_keys: "dict[str, int]" = {}
 
     def __init__(
         self,
@@ -6467,6 +6601,30 @@ class DashboardState:
             return existing
         assert creation is not None
         name = creation.key
+        # A key reserved by an in-flight merge-back transition must not mint a
+        # REPLACEMENT slot: the reservation spans the fork's
+        # archival close, and `save_slot_off_loop` commits through the default
+        # executor, so a same-key create landing in that window is born bare
+        # (`_merged=False`) — its next full save would drop the archived fork's
+        # `merged`/`closed` markers and revive it as continuable. Deletion paths
+        # already consult this set; creation is the other half of the same
+        # race. The reservation lasts seconds, so refusing retryably is
+        # proportionate — both HTTP creation surfaces map ValueError to 409.
+        if self.merge_reserved_keys:
+            # Function-local on purpose (circular import: chat_utils imports
+            # slot types this module defines, so a top-level import would
+            # cycle at module load).
+            from kiro_crew.dashboard.chat_utils import _history_key_for
+            from kiro_crew.history import transcript_stem
+
+            _hist = _history_key_for(name)
+            if (
+                _hist in self.merge_reserved_keys
+                or transcript_stem(_hist) in self.merge_reserved_keys
+            ):
+                raise ValueError(
+                    "this session key is reserved by an in-flight merge; retry in a moment"
+                )
         requested_name = creation.requested_name
         minted_new = creation.minted_new
         slot = _ChatSlot(

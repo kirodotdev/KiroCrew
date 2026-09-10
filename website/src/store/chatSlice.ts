@@ -795,6 +795,17 @@ interface ChatState {
    *  per-component notice #3640 shipped -- cleared on dismiss or on the next
    *  resume attempt. */
   unresumableResume: { key: string; title: string; surface: string; reason: 'surface' | 'failed' } | null
+  /** Localized message for a rejected merge-back (GPT round 18,
+   *  errors-use-error-notice): the mutation lives in a surface-agnostic hook
+   *  consumed by menus on four surfaces, so the error is lifted here and the
+   *  chat page renders it through the shared ErrorNotice — same lifecycle as
+   *  `unresumableResume` (cleared on dismiss or the next merge attempt). */
+  mergeBackError: string | null
+  /** Slot key of an in-flight merge-back (UX round 26): the mutation lives in
+   *  a surface-agnostic hook, so per-instance isPending never reaches
+   *  ChatPage — the composer stayed live for the 10-30s summarize and every
+   *  send 409d. Set on mutate, cleared on settle. */
+  mergingSlotKey: string | null
   /** requestId of the most recent `resumeFromHistory.pending`. Latest-click-
    *  wins for the notice above: rapid clicks each start a resume, and an
    *  EARLIER one resolving after a LATER one must not narrate a row the user
@@ -1028,6 +1039,8 @@ const initialState: ChatState = {
   historyHasMore: false,
   historyOffset: 0,
   unresumableResume: null,
+  mergeBackError: null,
+  mergingSlotKey: null,
   lastResumeRequestId: null,
   pendingInput: null,
   agentSwitchNotice: null,
@@ -3594,6 +3607,11 @@ const chatSlice = createSlice({
      *  in flight, and forgetting it would let an older resume's late answer
      *  re-open a notice the user just closed. */
     clearUnresumableResume(state) { state.unresumableResume = null },
+    /** A rejected merge-back's localized message (GPT round 18). Set by the
+     *  useSessionActions mutation, rendered by ChatPage through ErrorNotice. */
+    setMergeBackError(state, action: PayloadAction<string | null>) { state.mergeBackError = action.payload },
+    clearMergeBackError(state) { state.mergeBackError = null },
+    setMergingSlotKey(state, action: PayloadAction<string | null>) { state.mergingSlotKey = action.payload },
     setQuestionCard(state, action: PayloadAction<{ slot: string; ask_id?: string; card_id?: string; questions: ChatState['pendingQuestions'][string]['questions']; fresh?: boolean }>) {
       // Defensive init: existing test fixtures build partial preloaded state
       // without this key.
@@ -6289,7 +6307,7 @@ const chatSlice = createSlice({
 })
 
 export const {
-  setActiveSlot, clearSlotState, setPendingInput, setAgentSwitchNotice, clearUnresumableResume, setQuestionCard, retireStatelessQuestion, clearQuestionCard, setQuestionDraft, resolveQuestionCard, setFollowupCard, clearFollowupCard, dismissFollowupItem, setFolderSuggestion, clearFolderSuggestion, ageFolderSuggestion, appendMessage, appendSlotMessage, updateStreamingMessage, finalizeAssistant,
+  setActiveSlot, clearSlotState, setPendingInput, setAgentSwitchNotice, clearUnresumableResume, setMergeBackError, clearMergeBackError, setMergingSlotKey, setQuestionCard, retireStatelessQuestion, clearQuestionCard, setQuestionDraft, resolveQuestionCard, setFollowupCard, clearFollowupCard, dismissFollowupItem, setFolderSuggestion, clearFolderSuggestion, ageFolderSuggestion, appendMessage, appendSlotMessage, updateStreamingMessage, finalizeAssistant,
   removeThinking, confirmOptimisticSend, resolveOptimisticSteer, removeByApprovalId, resolveByApprovalId, clearPendingPermissions, setSlotRunning, setSlotStopping, settleStopNotRunning, startLocalTurn, endLocalTurn, syncSlotRunningFromServer, setSlotState, setSlotStatusDetail, setStopPressedAt, clearMessages, clearSlotCache, truncateAfterIndex, replaceMessages, hydrateSlotMessages, sseChatMessage, sseChatMessageUpdate, sseChatMessagePatchByTs, sseThinkingChunk, removeQueuedMessage, appendQueuedMessage, cancelQueuedMessage, editQueuedMessage, reorderQueuedMessages,
   sseContextUsage, setVoicePlaying, setVoiceAudio,
   toggleActivity, openActivityToTab, openActivityPanel, openActivityToTool, clearFocusToolCallId, requestSlotReveal, clearSlotReveal, clearSubagentsForSnapshot, sseSubagentPending, markSubagentApproving, sseSubagentSpawn, sseSubagentTool, sseSubagentStalled, sseSubagentRetrying, sseSubagentDone, sseSubagentQueued,

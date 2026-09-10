@@ -334,6 +334,7 @@ class TestDashboardInjectionRoutesRunChat:
         """Idle slot triggers _run_chat with the announce message."""
         gateway = _make_gateway()
         slot = MagicMock()
+        slot._merge_reserved = False
         slot.running = False
         slot.key = "chat-1-123"
         slot.task = None
@@ -374,6 +375,7 @@ class TestDashboardInjectionRoutesRunChat:
 
         gateway = _make_gateway()
         slot = MagicMock()
+        slot._merge_reserved = False
         _done_future: asyncio.Future[None] = asyncio.get_running_loop().create_future()
         _done_future.set_result(None)
         # First access: True (enters busy branch), second access: False (re-check passes)
@@ -403,6 +405,7 @@ class TestDashboardInjectionRoutesRunChat:
         """If busy slot doesn't finish within timeout, result is queued."""
         gateway = _make_gateway()
         slot = MagicMock()
+        slot._merge_reserved = False
         slot.running = True  # stays busy even after timeout
         # Task that never completes
         _stuck = asyncio.get_running_loop().create_future()
@@ -428,6 +431,7 @@ class TestDashboardInjectionRoutesRunChat:
         """_on_inject_done calls notify_injection_failed with redacted reason."""
         gateway = _make_gateway()
         slot = MagicMock()
+        slot._merge_reserved = False
         slot.running = False
         slot.key = "chat-1-err"
         slot.task = None

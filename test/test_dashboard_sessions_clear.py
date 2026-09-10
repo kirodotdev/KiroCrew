@@ -172,6 +172,28 @@ async def test_skips_pinned_slot_in_memory() -> None:
 
 
 @pytest.mark.asyncio
+async def test_skips_merge_reserved_key() -> None:
+    """A transcript reserved by an in-flight merge-back is not bulk-cleared.
+
+    the single-delete endpoint refuses reserved
+    keys, but this bulk path deleted them — mid-merge, the transition's
+    durable save would resurrect the unlinked file, or the merged parent's
+    history could be dropped between the summary commit and the archival
+    save. Reserved rows are skipped like pinned ones.
+    """
+    k1, k2 = _history_key_for("chat-1"), _history_key_for("chat-2")
+    sessions = [{"key": k1}, {"key": k2}]
+    request, state, deleted = _make_request(sessions)
+    state.merge_reserved_keys = {k1}
+
+    status, body = await _call_and_parse(request)
+
+    assert status == 200
+    assert body == {"ok": True, "cleared": 1, "skipped": 1, "failed": 0}
+    assert deleted == [k2]
+
+
+@pytest.mark.asyncio
 async def test_skips_running_slot_in_memory() -> None:
     k1, k2 = _history_key_for("chat-1"), _history_key_for("chat-2")
     sessions = [{"key": k1}, {"key": k2}]

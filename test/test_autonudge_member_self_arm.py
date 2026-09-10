@@ -2,7 +2,7 @@
 
 The defect these pin: ``autonudge_authz`` refused every arm on a crew- or
 member-mode slot with "<mode>-mode sessions do not accept direct automation
-turns". The intent (PR #5184) was to keep a cron, another session or an app
+turns". The intent is to keep a cron, another session or an app
 from injecting automation turns into a member's own thread. The side effect
 was that a member's OWN ``monitor_start`` was refused too, and the MCP tool
 had already answered "requested" over its own pipe, so nothing told anyone:
@@ -621,6 +621,11 @@ class TestFireTimeModeRecheck:
         slot.running = False
         slot._in_stage_execution = False
         slot._closing = False
+        # The busy probes read the merge-transition flags; a bare MagicMock
+        # attribute is truthy and would make the slot look mid-merge.
+        slot._merged = False
+        slot._merging = False
+        slot._merge_reserved = False
         slot.mode = mode
         slot.memory_mode = "persistent"
         return slot
@@ -778,7 +783,7 @@ async def test_refused_monitor_start_carries_the_status_code() -> None:
     assert result.endswith("[status 409]")
 
 
-# ── round 2: hardening the persisted bit + provenance ratchet ───────────────
+# ── hardening the persisted bit + provenance ratchet ───────────────────────
 
 
 def test_load_normalises_a_non_boolean_self_armed_to_false(tmp_path: Path) -> None:
@@ -877,7 +882,7 @@ def test_only_the_session_directive_consumer_passes_initiator_slot_key() -> None
     )
 
 
-# ── round 2: injected turns carry no provenance; trust record is required ────
+# ── injected turns carry no provenance; trust record is required ────────────
 
 
 @pytest.mark.asyncio
@@ -1382,7 +1387,7 @@ class TestSelfArmTrustRecord:
     def test_record_is_an_upsert_that_preserves_sibling_entries(self) -> None:
         """Two members arming back to back (crew boot) must both stay recorded.
 
-        The write used to prune against a caller-supplied live-id snapshot taken
+        The write must not prune against a caller-supplied live-id snapshot taken
         outside the lock; an arm whose snapshot predated a sibling's ``svc.add``
         but committed last pruned the sibling's entry, refusing that loop at
         every fire. Only revocation removes entries now.
@@ -1441,7 +1446,7 @@ class TestFireTimeGuardRequiresTheTrustRecord(TestFireTimeModeRecheck):
         assert await self._authorize(mode=mode, self_armed=True) is False
 
 
-# ── round 3: prompt loops gated too; revocation on removal ──────────────────
+# ── prompt loops gated too; revocation on removal ──────────────────────────
 
 
 class TestPromptLoopsAreGatedAtFireTime:

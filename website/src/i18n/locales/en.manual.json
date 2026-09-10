@@ -1664,7 +1664,15 @@
       "history_load_failed": "Couldn't load this session's messages.",
       "retry": "Retry",
       "stop_failed": "Couldn't stop this turn ({{error}}). Press Stop again.",
-      "stop_failed_network": "Couldn't reach the server to stop this turn. Press Stop again."
+      "stop_failed_network": "Couldn't reach the server to stop this turn. Press Stop again.",
+      "forked_from_options": "Fork of {{name}} — options",
+      "merge_back": "Merge back",
+      "merge_back_confirm": "Merge this fork’s summary back into “{{name}}” and archive the fork? This is one-way: the fork becomes read-only and cannot be continued or merged again.",
+      "merge_back_merging": "Merging…",
+      "merge_back_title": "Merge this fork’s summary back into {{name}} and archive the fork",
+      "merged_open_parent": "Open parent",
+      "merged_readonly_bar": "This session was merged into its parent",
+      "pane_actions": "Pane actions"
     },
     "cliPanel": {
       "copied": "Copied",
@@ -3031,7 +3039,22 @@
       "reload_failed": "Session reload failed. The agent may be mid-turn or the gateway unreachable; try again when the session is idle.",
       "reload_failed_subagents": "Sub-agents are still working on this session. Try again when they finish.",
       "switch_to_autopilot_mode_future_messages_will_us": "Switch to Autopilot mode? Future messages will use autopilot behavior (plan → approve → execute).",
-      "switch_to_normal_chat_mode_future_messages_will": "Switch to normal Chat mode? Future messages will use standard chat behavior."
+      "switch_to_normal_chat_mode_future_messages_will": "Switch to normal Chat mode? Future messages will use standard chat behavior.",
+      "merge_back_failed_already_merged": "This fork has already been merged back into its parent.",
+      "merge_back_failed_archive": "The summary was merged into the parent, but the fork could not be archived. Click Merge back again to finish.",
+      "merge_back_failed_no_summary": "Could not summarize this fork — it may have too few turns to merge back.",
+      "merge_back_failed_parent_missing": "The parent session is closed or no longer exists. Reopen it from History first.",
+      "merge_back_failed_fork_flush": "Couldn't save the fork's latest turns before summarizing. Nothing was lost — try again.",
+      "merge_back_failed_non_persistent": "This is a private (incognito) session, which can't be merged back into a parent.",
+      "merge_back_failed_not_a_fork": "This session isn't a fork, so there is no parent to merge into.",
+      "merge_back_failed_refused": "The gateway refused the merge with an unexpected error; try again.",
+      "merge_back_failed_transport": "Couldn't reach the gateway; check the connection and try again.",
+      "merge_back_failed_parent_save": "Could not save the merged summary into the parent; nothing was merged. Try again.",
+      "merge_back_failed_running": "This fork has a turn in progress. Try again when it is idle.",
+      "merge_back_failed_parent_busy": "The parent session has a turn in progress. Try again when it finishes.",
+      "merge_back_failed_parent_merged": "The parent session was itself merged and archived, so it can't receive another merge.",
+      "merge_back_failed_nothing": "This fork has no work of its own to merge back yet. Send it a message first, then merge.",
+      "merge_back_failed_subagents": "Sub-agents are still working on this session. Try again when they finish."
     },
     "useStreamingStt": {
       "audio_worklet_unavailable": "audio worklet unavailable",
@@ -3747,6 +3770,14 @@
       },
       "pins": {
         "copy_failed": "Copy failed"
+      },
+      "mergedSummaryCard": {
+        "gap_note_one": "Parent advanced {{count}} message since this fork; merged at the current tail.",
+        "gap_note_other": "Parent advanced {{count}} messages since this fork; merged at the current tail.",
+        "merged_from_a_fork": "Merged from a fork",
+        "merged_from_fork": "Merged from {{name}}",
+        "summary_covers_full_fork": "Summary of the full fork session",
+        "summary_of_forks_work": "Summary of the fork’s work"
       }
     },
     "chatPage": {

@@ -29,8 +29,11 @@ logger = logging.getLogger(__name__)
 
 # Roles worth reading. Tool rows carry display titles and raw payloads that the
 # assistant has already distilled, and error rows duplicate content that shows
-# up in the following assistant turn.
-_READ_ROLES = frozenset({"user", "assistant"})
+# up in the following assistant turn. ``merged_summary`` is included: it is the
+# distilled result of a merged child fork, and a summary that skips it silently
+# drops that child's work from every downstream aggregation (GPT review on the
+# merge-back PR — a nested merge's result must survive into the next level up).
+_READ_ROLES = frozenset({"user", "assistant", "merged_summary"})
 
 # A record can carry role "user" without a human having typed it: automation
 # injects cron notifications, subagent completions, auto-nudge cycles, tool

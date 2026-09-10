@@ -63,6 +63,11 @@ def _slot(key: str = "chat-1-1785") -> MagicMock:
     slot.key = key
     slot.running = False
     slot._in_stage_execution = False
+    # The busy guard also reads the merge-transition flags (on
+    # the merge-back PR); a bare MagicMock attribute is truthy and would trip
+    # it, so model the real _ChatSlot defaults explicitly.
+    slot._merge_reserved = False
+    slot._merging = False
     return slot
 
 

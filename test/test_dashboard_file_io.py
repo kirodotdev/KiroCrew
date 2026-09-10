@@ -593,6 +593,43 @@ class TestSendMessage:
             assert sent_blocks[0]["text"]["text"] == "safe text"
 
     @pytest.mark.asyncio
+    async def test_send_message_session_origin_merging_fork_falls_back_to_notification(self):
+        """Merge-back a merging fork's transcript is frozen (a
+        direct append raises SlotMergedError), so origin delivery must take
+        the session-closed notification fallback instead of losing the result."""
+        state = _mock_state()
+        mock_slot = MagicMock()
+        mock_slot.running = False
+        mock_slot._in_stage_execution = False
+        mock_slot._merge_reserved = False
+        mock_slot._merging = True  # fork mid-merge
+        mock_slot._merged = False
+        mock_slot.task = None
+        mock_slot.key = "chat-1-1712793600"
+        state.get_slot = MagicMock(return_value=mock_slot)
+        state._background_tasks = set()
+        state.push_slots_update = MagicMock()
+        mock_job = MagicMock()
+        mock_job.id = "abc12345"
+        mock_job.name = "check pipeline"
+        mock_job.session_key = "dashboard:chat-1-1712793600"
+        state.crons.list_jobs = MagicMock(return_value=[mock_job])
+        app = _make_send_app(state)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(
+                "/api/send-message",
+                json={
+                    "text": "build failed",
+                    "session": "origin",
+                    "caller_session": "cron:abc12345",
+                },
+            )
+            assert resp.status == 200
+        # Nothing appended to the frozen fork; the notification carried it.
+        mock_slot.append.assert_not_called()
+        state.notify.assert_called_once()
+
+    @pytest.mark.asyncio
     async def test_send_message_session_origin(self):
         """session='origin' injects into the cron's originating session and triggers a turn."""
         state = _mock_state()
@@ -603,6 +640,9 @@ class TestSendMessage:
         # Mock and would trip the busy guard (running or _in_stage_execution),
         # diverting origin-inject to the queue branch.
         mock_slot._in_stage_execution = False
+        mock_slot._merge_reserved = False
+        mock_slot._merging = False
+        mock_slot._merged = False
         mock_slot.task = None
         mock_slot.key = "chat-1-1712793600"
         state.get_slot = MagicMock(return_value=mock_slot)
@@ -651,6 +691,8 @@ class TestSendMessage:
         state = _mock_state()
         mock_slot = MagicMock()
         mock_slot.running = True
+        mock_slot._merging = False
+        mock_slot._merged = False
         mock_slot._queue = []
         mock_slot.queue_append = lambda content, kind="": (
             mock_slot._queue.append({"id": "test", "content": content}) or "test"
@@ -712,6 +754,9 @@ class TestSendMessage:
         # Mock and would trip the busy guard (running or _in_stage_execution),
         # diverting origin-inject to the queue branch.
         mock_slot._in_stage_execution = False
+        mock_slot._merge_reserved = False
+        mock_slot._merging = False
+        mock_slot._merged = False
         mock_slot.task = None
         mock_slot.key = "chat-1-1712793600"
         state._background_tasks = set()
@@ -853,6 +898,9 @@ class TestSendMessage:
         # Mock and would trip the busy guard (running or _in_stage_execution),
         # diverting origin-inject to the queue branch.
         mock_slot._in_stage_execution = False
+        mock_slot._merge_reserved = False
+        mock_slot._merging = False
+        mock_slot._merged = False
         mock_slot.task = None
         mock_slot.key = "chat-1-1712793600"
         state.get_slot = MagicMock(return_value=mock_slot)

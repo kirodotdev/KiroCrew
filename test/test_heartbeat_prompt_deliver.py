@@ -17,6 +17,11 @@ def dashboard_state():
     slot.key = "chat-1"
     slot._queue = []
     slot.task = None
+    # The delivery path defers on the merge-transition flags (on
+    # the merge-back PR); a bare MagicMock attribute reads truthy and would
+    # route delivery to notification-only, so model the real defaults.
+    slot._merging = False
+    slot._merged = False
     # Default: prompt runs immediately (slot idle). Individual tests can
     # override to False to simulate the busy/queued path.
     slot.enqueue_or_run_prompt = MagicMock(return_value=True)

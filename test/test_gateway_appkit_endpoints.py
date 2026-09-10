@@ -1342,6 +1342,70 @@ class TestNoteEndpoint:
         assert entry["source"] == "board-sync"
 
     @pytest.mark.asyncio
+    async def test_note_recheck_catches_merge_started_during_body_read(self, tmp_path: Path):
+        """The check runs before the request-body
+        await, and a slow body is long enough for a merge to start — the stale
+        check then let the context enqueue through while the visible append
+        tripped the gate. The re-check sits loop-synchronous with the
+        mutations, so a merge that starts during the body read is refused
+        with neither half written."""
+        from kiro_crew.dashboard import chat_handlers as ch
+
+        state = _make_state(tmp_path)
+        slot = _ChatSlot("s1")
+        state._slots["s1"] = slot
+
+        real_read = ch.read_bounded_json
+
+        async def slow_body_then_merge(request, **kw):
+            body, err = await real_read(request, **kw)
+            # The merge transition begins while the body was being read.
+            slot._merging = True
+            return body, err
+
+        async with self._make_client(state) as client:
+            with patch.object(ch, "read_bounded_json", slow_body_then_merge):
+                resp = await client.post(
+                    "/api/chat/slots/s1/note", json={"content": "poison", "source": "board-sync"}
+                )
+                assert resp.status == 409
+                assert (await resp.json())["code"] == "merge_in_progress"
+        assert slot.messages == []
+        assert list(slot._pending_context) == []
+
+    @pytest.mark.asyncio
+    async def test_note_refused_on_merged_or_merging_slot_writes_nothing(self, tmp_path: Path):
+        """/note writes TWO halves and the context enqueue does
+        not pass the append write gate — the old order enqueued the context,
+        then tripped the gate on the visible row, leaving a rejected note's
+        context queued to drain into the fork's next turn if the merge later
+        rolled back. The handler must refuse BEFORE either mutation, with the
+        same shared 409 codes every transcript mutation answers."""
+        state = _make_state(tmp_path)
+        slot = _ChatSlot("s1")
+        state._slots["s1"] = slot
+
+        async with self._make_client(state) as client:
+            slot._merged = True
+            resp = await client.post(
+                "/api/chat/slots/s1/note", json={"content": "poison", "source": "board-sync"}
+            )
+            assert resp.status == 409
+            assert (await resp.json())["code"] == "session_merged"
+
+            slot._merged = False
+            slot._merging = True
+            resp2 = await client.post(
+                "/api/chat/slots/s1/note", json={"content": "poison", "source": "board-sync"}
+            )
+            assert resp2.status == 409
+            assert (await resp2.json())["code"] == "merge_in_progress"
+
+        # The decisive assertions: NEITHER half was written on either refusal.
+        assert slot.messages == []
+        assert list(slot._pending_context) == []
+
+    @pytest.mark.asyncio
     async def test_note_defaults_24h_max_age(self, tmp_path: Path):
         """Context half gets a 24h maxAge by default so a stale note self-expires."""
         state = _make_state(tmp_path)
