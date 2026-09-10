@@ -76,6 +76,7 @@
         },
         "title": "crew-probe: crew probe echo",
         "tool_call_id": "call_h6atgqyn",
+        "tool_identity_trusted": true,
         "tool_input": "{\n  \"\": \"{}\"\n}",
         "tool_kind": "unknown",
         "tool_name": "crew_probe_echo",

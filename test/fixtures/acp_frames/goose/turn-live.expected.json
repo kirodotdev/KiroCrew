@@ -117,6 +117,7 @@
         },
         "title": "echo goose-wire-probe",
         "tool_call_id": "call_ub405veq",
+        "tool_identity_trusted": true,
         "tool_input": "{\n  \"command\": \"echo goose-wire-probe\",\n  \"timeout_secs\": 10\n}",
         "tool_kind": "unknown",
         "tool_name": "shell",
