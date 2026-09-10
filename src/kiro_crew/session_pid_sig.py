@@ -339,9 +339,9 @@ def _pid_recycled(pid: int | str, recorded_token: str) -> bool:
     MISMATCH proves the pid now names a DIFFERENT process, so answering
     with the mapped key would attribute the new process to the previous
     owner's session — refuse, on the strict AND the lenient path. An
-    UNREADABLE live token (Windows, exited process, permission) is merely
-    UNKNOWN, never a mismatch — callers keep today's behaviour there, as
-    they do for an ABSENT recorded token (legacy file).
+    UNREADABLE live token (an exited process, a permission denial) is merely
+    UNKNOWN, never a mismatch — callers resolve it the way they resolve an
+    ABSENT recorded token (legacy file).
     """
     try:
         live = platform_compat.get_process_start_id(int(pid))
@@ -374,7 +374,7 @@ def publish_session_pid(pid: int, session_key: str) -> None:
     ``<gw>:<pid>:<start_token>`` sweep entries), it is appended to the
     ``.txt`` as a second line and covered by the MAC, so readers can tell
     "still the process this mapping was published for" from "the OS
-    recycled this pid number". An unreadable token (Windows, probe failure)
+    recycled this pid number". An unreadable token (a probe failure)
     degrades to the legacy single-line form — readers then treat identity
     as unknown, exactly as for a legacy file.
     """

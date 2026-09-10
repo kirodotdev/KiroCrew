@@ -1102,17 +1102,17 @@ producer and it CHAINS two platform helpers, because neither covers every host a
 using either alone costs a platform:
 
 - `platform_compat.get_process_start_id()` is preferred — the same producer session
-  PIDs use, in-process (no subprocess), and microsecond resolution on macOS, where
-  `process_start_time`'s `ps -o lstart=` spelling is only 1-second granular, so a
-  PID recycled inside the same second would reproduce an identical value.
-- `platform_compat.process_start_time()` is the fallback, and it is what keeps
-  **Windows** working: it reads the process creation `FILETIME` (100-ns units)
-  through a query-only handle, while `get_process_start_id()` implements Linux and
-  macOS only and answers `None` everywhere else. Without this leg the token is
-  empty on every Windows host, so a pod there could never prove ownership — an
-  unsatisfiable requirement rather than a strict one. `metrics.md` records the same
-  trap reached from the other direction: `get_process_start_id` used alone as a
-  liveness test "judged every owner dead on that entire platform".
+  PIDs use, in-process (no subprocess), and covering every host: `/proc` on Linux,
+  microsecond `libproc` resolution on macOS (where `process_start_time`'s
+  `ps -o lstart=` spelling is only 1-second granular, so a PID recycled inside the
+  same second would reproduce an identical value), and the process creation
+  `FILETIME` through the same query-only handle seams on Windows.
+- `platform_compat.process_start_time()` is the fallback for a host where the
+  preferred read fails: on Windows it reads the same creation `FILETIME` (100-ns
+  units) through the same query-only handle, so both helpers answer the identical
+  token there, and on other POSIX it degrades to `ps -o lstart=`. `metrics.md`
+  records the trap of `get_process_start_id` used alone as a liveness test that
+  "judged every owner dead on whatever platform the read fails across".
 
 The fallback's value is whitespace-collapsed, because the macOS `ps` spelling is
 space-padded and the reader requires a single token; Windows returns a bare

@@ -1817,7 +1817,7 @@ class TestPidStartTokenIdentityGuard:
     def test_track_session_pid_falls_back_when_token_unavailable(
         self, session_pid_file: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """No token (Windows / ps failure) → legacy 2-field entry."""
+        """No token (ps failure / unreadable process) → legacy 2-field entry."""
         from kiro_crew.session_pid import _track_session_pid
 
         monkeypatch.setattr("kiro_crew.session_pid._pid_start_token", lambda p: None)

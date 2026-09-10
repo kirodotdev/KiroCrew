@@ -582,9 +582,64 @@ class TestGetProcessStartId:
         _fake_libproc(monkeypatch, payload=None, ret=-1)
         assert pc.get_process_start_id(5) is None
 
-    def test_windows_is_unknown_rather_than_a_mismatch(self, monkeypatch):
+    def test_windows_reports_the_creation_filetime_through_the_query_seams(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        # Same QUERY-ONLY seams process_start_time's Windows arm reads through,
+        # so both identities are the same creation-FILETIME string by
+        # construction — and the handle still requests no terminate rights.
+        _fake_windows(monkeypatch)
         monkeypatch.setattr(pc.sys, "platform", "win32")
-        assert pc.get_process_start_id(5) is None
+        opened: list[int] = []
+        closed: list[int] = []
+
+        def _open(pid: int) -> int | None:
+            opened.append(pid)
+            return 4242
+
+        monkeypatch.setattr(pc, "_open_process_query_handle", _open)
+
+        identity_kwargs: dict[str, object] = {}
+
+        def _identity(handle: int, **kwargs: object):
+            identity_kwargs.update(kwargs)
+            return (4242, 133_700_000_000_000_000, None)
+
+        monkeypatch.setattr(pc, "_windows_process_handle_identity", _identity)
+        monkeypatch.setattr(pc, "_close_process_handle", lambda handle: closed.append(handle))
+
+        assert pc.get_process_start_id(4242) == "133700000000000000"
+        assert opened == [4242] and closed == [4242]
+        # The arm reads creation-only: the event loop must never sit under the
+        # exit-time publication poll.
+        assert identity_kwargs == {"want_exit_time": False}
+
+    def test_windows_treats_a_failed_open_as_unknown(self, monkeypatch: pytest.MonkeyPatch):
+        _fake_windows(monkeypatch)
+        monkeypatch.setattr(pc.sys, "platform", "win32")
+        monkeypatch.setattr(pc, "_open_process_query_handle", lambda _pid: None)
+        assert pc.get_process_start_id(4242) is None
+
+    def test_windows_treats_an_unreadable_identity_as_unknown(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        _fake_windows(monkeypatch)
+        monkeypatch.setattr(pc.sys, "platform", "win32")
+        closed: list[int] = []
+        identity_kwargs: dict[str, object] = {}
+
+        def _identity(handle: int, **kwargs: object):
+            identity_kwargs.update(kwargs)
+            return None
+
+        monkeypatch.setattr(pc, "_open_process_query_handle", lambda _pid: 7)
+        monkeypatch.setattr(pc, "_windows_process_handle_identity", _identity)
+        monkeypatch.setattr(pc, "_close_process_handle", lambda handle: closed.append(handle))
+
+        assert pc.get_process_start_id(4242) is None
+        # The handle is released even when the identity never arrives.
+        assert closed == [7]
+        assert identity_kwargs == {"want_exit_time": False}
 
     def test_identity_never_contains_a_colon(self, monkeypatch):
         # Callers embed the value in colon-delimited records.

@@ -1496,7 +1496,16 @@ def get_process_start_id(pid: int) -> str | None:
     - macOS: ``libproc.proc_pidinfo`` ``pbi_start_tvsec``/``pbi_start_tvusec``
       (microsecond resolution, so processes spawned in the same second do not
       alias — unlike ``ps -o lstart=``, which is 1-second granularity).
-    - Windows / any failure (including a process we may not introspect): ``None``,
+    - Windows: the process creation ``FILETIME`` (100-ns units) as a decimal
+      string, read through the same QUERY-ONLY handle seams
+      :func:`process_start_time` uses, in their creation-only mode: a token
+      that decides whether a kill may happen must not demand the right to kill
+      in order to read it, and a read that runs on the asyncio event loop must
+      never wait on the exit-time publication poll the exit bound needs.
+      Deliberately NOT epoch seconds, so consumers must treat the token as
+      opaque (``session_pid._pid_age_seconds`` keeps its Windows gate for
+      exactly this reason).
+    - Any failure (including a process we may not introspect): ``None``,
       meaning "identity unknown" — callers must not treat that as a mismatch.
     """
     if sys.platform == "linux":
@@ -1534,6 +1543,18 @@ def get_process_start_id(pid: int) -> str | None:
             return f"{sec}.{usec:06d}"
         except Exception:
             return None
+    if IS_WINDOWS:
+        handle = _open_process_query_handle(pid)
+        if handle is None:
+            return None
+        try:
+            # Creation-only: this read runs on the asyncio event loop, and the
+            # exit-time publication poll the exit bound needs must never sit
+            # under it. The creation FILETIME is available immediately.
+            identity = _windows_process_handle_identity(handle, want_exit_time=False)
+        finally:
+            _close_process_handle(handle)
+        return str(identity[1]) if identity is not None else None
     return None
 
 
@@ -2090,8 +2111,18 @@ _WINDOWS_EXIT_FILETIME_TIMEOUT_SECS = 0.25
 _WINDOWS_EXIT_FILETIME_POLL_SECS = 0.002
 
 
-def _windows_process_handle_identity(handle: int) -> tuple[int, int, int | None] | None:
-    """Return ``(pid, creation_time, exit_time)`` for an exact process handle."""
+def _windows_process_handle_identity(
+    handle: int, *, want_exit_time: bool = True
+) -> tuple[int, int, int | None] | None:
+    """Return ``(pid, creation_time, exit_time)`` for an exact process handle.
+
+    ``want_exit_time=False`` serves identity-only callers: it skips the exit
+    status read and the exit-FILETIME publication poll below, so the whole read
+    is three non-blocking syscalls even on a just-exited process. That matters
+    because :func:`get_process_start_id` runs on the asyncio event loop, where
+    waiting up to :data:`_WINDOWS_EXIT_FILETIME_TIMEOUT_SECS` for an exit time
+    it would throw away would stall everything behind it.
+    """
 
     if not IS_WINDOWS or type(handle) is not int or handle <= 0:
         return None
@@ -2131,13 +2162,24 @@ def _windows_process_handle_identity(handle: int) -> tuple[int, int, int | None]
                 )
             )
 
-        if (
-            pid <= 1
-            or not _read_times()
-            or not kernel32.GetExitCodeProcess(
-                process_handle,
-                ctypes.byref(exit_code),
-            )
+        def _filetime_value(value: "wintypes.FILETIME") -> int:
+            return (int(value.dwHighDateTime) << 32) | int(value.dwLowDateTime)
+
+        if pid <= 1 or not _read_times():
+            return None
+        creation_value = _filetime_value(creation)
+        if creation_value <= 0:
+            # Implausible — treat as unknown rather than a value. A "0" token
+            # would compare equal to every other degenerate read and pass for
+            # the same process, breaking the identity contract.
+            return None
+        if not want_exit_time:
+            # The creation FILETIME is published the moment the process object
+            # exists, so an identity-only read never has to wait on anything.
+            return (pid, creation_value, None)
+        if not kernel32.GetExitCodeProcess(
+            process_handle,
+            ctypes.byref(exit_code),
         ):
             return None
         still_active = 259
@@ -2148,10 +2190,6 @@ def _windows_process_handle_identity(handle: int) -> tuple[int, int, int | None]
         if not active and not _read_times():
             return None
 
-        def _filetime_value(value: "wintypes.FILETIME") -> int:
-            return (int(value.dwHighDateTime) << 32) | int(value.dwLowDateTime)
-
-        creation_value = _filetime_value(creation)
         exit_value = _filetime_value(exit_)
         # GetExitCodeProcess reports the exit BEFORE the kernel publishes the
         # exit FILETIME, so a just-terminated process reads back as
@@ -2167,7 +2205,7 @@ def _windows_process_handle_identity(handle: int) -> tuple[int, int, int | None]
                 if not _read_times():
                     return None
                 exit_value = _filetime_value(exit_)
-        if creation_value <= 0 or (not active and exit_value <= 0):
+        if not active and exit_value <= 0:
             return None
         return pid, creation_value, None if active else exit_value
     except Exception:
