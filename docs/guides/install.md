@@ -455,6 +455,20 @@ and it runs from a randomized temporary mount, so it carries the manual
 sandbox-profile step and the move-breaks-it caveat documented in the
 [sandbox section](#linux-the-agent-sandbox-and-unprivileged-user-namespaces).
 
+On first launch, the AppImage installs its freedesktop launcher and hicolor
+icons under your XDG data directory. Later launches repair Kiro Crew-managed
+files after an update or AppImage move. Repair requires a filesystem that
+supports Linux write leases. If your XDG data directory is on NFS, FUSE, or
+another filesystem that rejects leases, Kiro Crew leaves managed files
+untouched and defers repair. Keep the AppImage at its prior path or use a desktop
+package on that host.
+
+A launcher or icon that existed before this feature, or whose contents or
+metadata you changed, remains user-owned and is not replaced. Deleting a managed
+launcher causes the next AppImage launch to restore it. To keep launching the
+AppImage without desktop integration, set
+`KIROCREW_DISABLE_DESKTOP_INTEGRATION=1` in its launch environment.
+
 All three Linux formats are built from the same glibc floor as the build runner.
 Verified requirement at the time of writing is **glibc 2.34**, which covers
 Ubuntu 22.04+, Debian 12+, Fedora, CentOS Stream 9 and Amazon Linux 2023, and
