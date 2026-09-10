@@ -54,6 +54,12 @@ def source(tmp_path, driver, monkeypatch):
     retained_upstream_behavior = "not replaced"
 """
     )
+    (root / "acp/runtime.py").write_text(
+        (root / "acp/client.py")
+        .read_text()
+        .replace("_send_request", "send_request")
+        .replace("self._next_req_id()", "self._next_id")
+    )
     monkeypatch.setattr(
         driver,
         "EXPECTED",

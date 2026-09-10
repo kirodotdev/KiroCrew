@@ -8,6 +8,9 @@ and governance path. Only its reserved app/agent pair activates
 suppression, and a task-local callback during the provider stream. Retained or
 resumed sessions and automatic retries cannot replay its memory-bearing prompt.
 Every other app retains the existing context, sharing, and retry behavior.
+The consumer persists the result and turn-result receipt before yielding a
+successful `complete` event, because the subagent collector stops at that event.
+Only `end_turn` completes successfully; timeout/cancellation events remain failed.
 See the addon's README for the exact deployed-version patch, trust prerequisites,
 and rollback; the checkout and deployed context-builder signatures differ.
 

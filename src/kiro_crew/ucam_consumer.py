@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 APP_NAME = "ucam-synthetic-consumer"
 AGENT_NAME = "ucam-synthetic-reader"
-ADAPTER_VERSION = "kirocrew-ucam/5"
+ADAPTER_VERSION = "kirocrew-ucam/6"
 CONFIG_PATH = Path("/opt/ucam-consumer/config.json")
 MAX_JSON_BYTES = 1048576
 MAX_PAYLOAD_BYTES = 262144
@@ -428,6 +428,7 @@ class ConsumerRun:
         self.clock = clock
         self.projection: dict | None = None
         self.transport = None
+        self.native_session_id = ""
         self.sent = False
         self.ack_failed = False
         self.used = False
@@ -487,7 +488,7 @@ class ConsumerRun:
 
     async def prepare(self, transport, params):
         _require(transport is self.transport and not self.used, "ucam_dispatch_binding")
-        _require(params.get("sessionId") == transport._session_id, "ucam_session_binding")
+        _require(params.get("sessionId") == self.native_session_id, "ucam_session_binding")
         self.used = True
         projection = await self.api.call("/projection")
         material = verify_projection(projection, self.binding, self.clock())
@@ -543,11 +544,48 @@ class ConsumerRun:
         await asyncio.wait_for(asyncio.to_thread(self._reserve), IO_TIMEOUT)
         self.transport = getattr(client, "_client", None)
         _require(self.transport is not None, "ucam_dedicated_acp_required")
+        self.native_session_id = getattr(self.transport, "_session_id", "")
+        _require(
+            isinstance(self.native_session_id, str) and bool(self.native_session_id),
+            "ucam_session_binding",
+        )
+        runtime = getattr(self.transport, "_runtime", None)
+        if runtime is not None:
+            _require(
+                getattr(self.transport, "_owns_runtime", False) is True,
+                "ucam_dedicated_acp_required",
+            )
+            self.transport = runtime
         result = "failure"
         text = ""
         outcome = "ucam_native_failed"
+        finalized = False
         deadline = time.monotonic() + TURN_TIMEOUT
         iterator = client.stream(message)
+
+        async def finish():
+            nonlocal outcome, finalized
+            if finalized:
+                return
+            if self.sent:
+                try:
+                    await self.ack("turn_result", result)
+                except Exception:
+                    self.ack_failed = True
+                    logger.warning("UCAM ack_failed phase=turn_result run_hash=%s", self.run_hash)
+            if result == "success" and self.ack_failed:
+                outcome = "degraded"
+            if self.store:
+                await self.store.call(
+                    "finish",
+                    self.run_id,
+                    "completed" if result in ("success", "degraded") else "failed",
+                    text.encode("utf-8")[:MAX_RESULT_BYTES].decode("utf-8", errors="ignore"),
+                    outcome,
+                    self.evidence(),
+                )
+            finalized = True
+
         try:
             if self.store:
                 await self.store.call("finish", self.run_id, "running", "", "", {})
@@ -564,8 +602,20 @@ class ConsumerRun:
                 if getattr(event, "kind", "") == "text_chunk":
                     text += getattr(event, "text", "") or ""
                     _require(len(text.encode("utf-8")) <= MAX_RESULT_BYTES, "ucam_result_limit")
+                if getattr(event, "kind", "") == "complete":
+                    _require(self.sent, "ucam_native_receipt_missing")
+                    _require(
+                        getattr(event, "stop_reason", "") == "end_turn",
+                        "ucam_native_terminal_failure",
+                    )
+                    result = "degraded" if self.ack_failed else "success"
+                    outcome = result
+                    await finish()
+                    yield event
+                    return
                 yield event
             _require(self.sent, "ucam_native_receipt_missing")
+            _require(runtime is None, "ucam_native_terminal_missing")
             result = "degraded" if self.ack_failed else "success"
             outcome = result
         except ConsumerError as error:
@@ -575,24 +625,10 @@ class ConsumerRun:
             outcome = "ucam_native_timeout"
             raise
         finally:
-            await iterator.aclose()
-            if self.sent:
-                try:
-                    await self.ack("turn_result", result)
-                except Exception:
-                    self.ack_failed = True
-                    logger.warning("UCAM ack_failed phase=turn_result run_hash=%s", self.run_hash)
-            if self.store:
-                if result == "success" and self.ack_failed:
-                    outcome = "degraded"
-                await self.store.call(
-                    "finish",
-                    self.run_id,
-                    "completed" if result in ("success", "degraded") else "failed",
-                    text.encode("utf-8")[:MAX_RESULT_BYTES].decode("utf-8", errors="ignore"),
-                    outcome,
-                    self.evidence(),
-                )
+            try:
+                await iterator.aclose()
+            finally:
+                await finish()
 
 
 async def before_prompt(transport, method: str, params):

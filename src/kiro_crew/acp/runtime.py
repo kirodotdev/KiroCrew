@@ -1070,6 +1070,9 @@ class AcpRuntime:
         if self._dead:
             raise AcpRuntimeDead("runtime is dead")
 
+        from kiro_crew.ucam_consumer import before_prompt
+
+        params, ucam_receipt = await before_prompt(self, method, params)
         req_id = self._next_id
         self._next_id += 1
 
@@ -1082,7 +1085,10 @@ class AcpRuntime:
         data = json.dumps(req.to_dict()) + "\n"
 
         try:
-            self._process.stdin.write(data.encode())
+            encoded = data.encode()
+            if ucam_receipt is not None:
+                ucam_receipt.check_lease()
+            self._process.stdin.write(encoded)
             await self._process.stdin.drain()
         except (BrokenPipeError, ConnectionResetError) as exc:
             self._routed_requests.pop(req_id, None)
@@ -1090,6 +1096,8 @@ class AcpRuntime:
             raise AcpRuntimeDead(f"pipe broken: {exc}") from exc
 
         self._last_activity = time.monotonic()
+        if ucam_receipt is not None:
+            await ucam_receipt.after_send()
         return req_id
 
     async def send_notification(self, method: str, params: dict[str, Any]) -> None:

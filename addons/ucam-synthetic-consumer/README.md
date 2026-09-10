@@ -43,7 +43,8 @@ dispatchable agent name. A duplicate existing name is a deployment refusal.
    custom-agent/`blocks_reads` seam. **Deploy the exact-version generated diff,
    not a wholesale checkout module.**
 3. `ConsumerRun.stream` activates a task-local callback only while advancing the
-   dedicated provider stream. `AcpClient._send_request` invokes it only for
+   dedicated provider stream. `AcpClient._send_request` and
+   `AcpRuntime.send_request` invoke it only for
    `session/prompt`, after readiness checks and native prompt-block construction.
 4. The callback GETs `/iam/v1/{scope}/projection`, verifies the exact UTF-8
    `canonical_payload` SHA-256 and typed deep-equivalence of the separately used
@@ -118,7 +119,7 @@ host. The apply/rollback commands below describe its mechanics and tests, not
 authorization to mutate or restart the original gateway.
 
 `deploy.py` changes only `subagent.py` and `acp/client.py`, and adds
-`ucam_consumer.py`. It checks eleven deployed source hashes, including unchanged
+`ucam_consumer.py`. It checks twelve deployed source hashes, including unchanged
 auth, token exchange, provider, context, and App Kit seams. It derives narrow
 edits from those exact preimages, checks unique anchors and Python syntax, pins
 all outputs in a hashed plan, refuses existing addon modules, keeps backups,

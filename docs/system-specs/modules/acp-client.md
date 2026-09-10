@@ -2,7 +2,8 @@
 
 ## Opt-in app-scoped dispatch receipt
 
-`AcpClient._send_request` consults `ucam_consumer.before_prompt` before encoding
+`AcpClient._send_request` and `AcpRuntime.send_request` consult
+`ucam_consumer.before_prompt` before encoding
 the request. It is a no-op unless the fixed synthetic App Kit run has installed
 a task-local callback, and then applies only to that dedicated client's
 `session/prompt`. The callback fetches an approved projection after readiness
@@ -10,6 +11,9 @@ and prompt-block construction; the lease is checked again just before stdin
 write. Successful drain triggers an injected receipt, which establishes local
 transport handoff, not model comprehension. No provider registration changes.
 Other sessions retain the existing message bytes and transport semantics.
+The Kiro provider uses the runtime even when subagent session sharing is off.
+The consumer therefore pins the owned dedicated runtime and exact session ID;
+a shared-runtime provider is rejected before a prompt is sent.
 
 ## Overview
 

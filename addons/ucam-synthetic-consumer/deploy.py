@@ -16,6 +16,7 @@ from pathlib import Path
 EXPECTED = {
     "subagent.py": "8d6b4ede6bfb02a1c1cb38e1b204fb48f7d4e266b31e09ce54ba4e56ac760a2e",
     "acp/client.py": "5b7198350a1746adb2e2d54c55f42c9393e5509796bd9885128028a04d125254",
+    "acp/runtime.py": "7bb3b9938e5fc4cd3dc8ca7df93ef18a0589f7bbee6e3366ee51ce0846ab83d6",
     "context.py": "6658f8a00281c215657e15908ffb91d1ccc19312518d4b89b155e414a31aa878",
     "providers/acp.py": "2133d6ec383588aa992f0ce22588e85bbb882d879def8758a06ebc45c5c6ab0a",
     "dashboard/token_auth.py": "19f7eca8b6966fc6ed2c12e1162c84f6d52d21cd7b8a0a4acfaa1fd802d1b577",
@@ -26,7 +27,7 @@ EXPECTED = {
     "apps/execution.py": "4f92f520a1fa7e55b39a2273c4f587750783a2a6391cac1842cf89b6b20d6062",
     "dashboard/handlers/security.py": "efeaafcf7ba0f5a717a1fd33c7845210f4dbb9e1676fc063ca8b585e65f65002",
 }
-TARGETS = ("acp/client.py", "subagent.py")
+TARGETS = ("acp/client.py", "acp/runtime.py", "subagent.py")
 MODULE_NAME = "ucam_consumer.py"
 APP_FILES = ("app.json", "agents/reader.json", "backend/routes.py", "requirements.txt")
 
@@ -75,12 +76,13 @@ def patched(name: str, source: str) -> str:
             "                    stream = ucam_run.stream(client, msg) if ucam_run else client.stream(msg)\n"
             "                    async for _ev in stream:",
         )
-    elif name == "acp/client.py":
+    elif name in ("acp/client.py", "acp/runtime.py"):
+        method_name = "send_request" if name == "acp/runtime.py" else "_send_request"
         tree = ast.parse(source)
         methods = [
             node
             for node in ast.walk(tree)
-            if isinstance(node, ast.AsyncFunctionDef) and node.name == "_send_request"
+            if isinstance(node, ast.AsyncFunctionDef) and node.name == method_name
         ]
         if len(methods) != 1:
             raise RuntimeError("send_method_drift")
@@ -95,9 +97,17 @@ def patched(name: str, source: str) -> str:
         )
         after = replace_once(
             after,
-            "        req_id = self._next_req_id()",
+            (
+                "        req_id = self._next_id"
+                if name == "acp/runtime.py"
+                else "        req_id = self._next_req_id()"
+            ),
             "        params, ucam_receipt = await before_prompt(self, method, params)\n"
-            "        req_id = self._next_req_id()",
+            + (
+                "        req_id = self._next_id"
+                if name == "acp/runtime.py"
+                else "        req_id = self._next_req_id()"
+            ),
         )
         after = replace_once(
             after,
