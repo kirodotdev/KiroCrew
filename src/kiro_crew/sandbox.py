@@ -2020,14 +2020,13 @@ def _path_identity(path: str) -> tuple[int, int] | None:
     traverse, a race that unlinks mid-walk) degrades to the spelling answer
     instead of raising into the caller's spawn path.
 
-    ``os.lstat``, never ``stat``: these paths arrive from CONFIG TEXT, and the
-    final component is where a planted symlink could point at a remote or
-    stalling target -- following it would turn a local containment question into
-    off-host I/O. Nothing is lost by refusing to follow,
-    because symlink resolution already happened upstream: the caller compares
-    the ``realpath`` spelling as well, and a link INTO the sealed parent is
-    caught there with every component resolved.
+    ``os.lstat`` keeps the identity walk on the component named by the
+    spelling being checked. The canonical spelling was already resolved with
+    ``realpath(strict=True)``, so following each component again would add no
+    information and would make the lexical alias walk perform a second path
+    resolution.
     """
+
     try:
         info = os.lstat(path)
     except OSError:
@@ -2078,6 +2077,25 @@ def _identity_within_sealed_parent(path: str, parent: str) -> bool:
         current = next_up
 
 
+#: Temp keys a child's ``tempfile``/``mktemp`` consults, in
+#: POSIX-then-Windows order. Spec keys are matched case-insensitively.
+CANONICAL_TEMP_KEYS = ("TMPDIR", "TMP", "TEMP")
+
+
+#: Operator-facing reason per refusal cause. ``check-failed`` belongs to the
+#: shared env wrapper below; the path classifier itself returns only the first
+#: two causes.
+DECLARED_TEMP_REFUSAL_REASONS = {
+    "sealed": ("it is inside the sandbox-sealed runtime parent, where the server " "cannot write"),
+    "unclassifiable": (
+        "it is relative and the daemon and child use different working directories, or its "
+        "canonical form cannot be established (a symlink cycle or a component that cannot "
+        "be traversed), so containment cannot be verified"
+    ),
+    "check-failed": "the seal check itself failed, so containment cannot be verified",
+}
+
+
 #: Why a spec-declared temp path is refused. ``sealed`` is a path inside
 #: ``<data home>/run``; ``unclassifiable`` is a path whose canonical form cannot
 #: be established (a symlink cycle, a component that cannot be traversed), so
@@ -2103,7 +2121,13 @@ def classify_declared_temp_path(path: str) -> "DeclaredTempRefusal | None":
     ``run``. A caller that gets a refusal cause must therefore stop honoring the
     path, not try to open it.
 
-    Windows: nothing to refuse, so ``None`` for every path. Kiro Crew has no
+    Relative declarations are ``"unclassifiable"`` because the daemon and the
+    spawned child do not share a required working directory. The classifier
+    would resolve one against the daemon's cwd while ``spawn_backend`` runs the
+    child under ``work_dir``. Refusing the spelling is the only way to keep one
+    decision valid at every spawn boundary.
+
+    Windows: nothing else to refuse, so ``None`` for every absolute path. Kiro Crew has no
     native Windows sandbox backend (see the delegation note in
     :func:`wrap_argv`): a probe child there is either not spawned at all or runs
     unsandboxed with a writable ``run``, so a declared temp under it is
@@ -2123,6 +2147,8 @@ def classify_declared_temp_path(path: str) -> "DeclaredTempRefusal | None":
     """
     if not path:
         return None
+    if not os.path.isabs(path):
+        return "unclassifiable"
     if sys.platform == "win32":
         return None
     # realpath resolves the ORIGINAL spelling, BEFORE any lexical pass. Order is
@@ -2155,6 +2181,118 @@ def classify_declared_temp_path(path: str) -> "DeclaredTempRefusal | None":
             if _path_within(spelling, parent) or _identity_within_sealed_parent(spelling, parent):
                 return "sealed"
     return None
+
+
+def classify_declared_temp_env(
+    env: "Mapping[str, object]",
+    declared_temp_keys: "Sequence[str] | None" = None,
+    *,
+    classifier: "Callable[[str], DeclaredTempRefusal | None] | None" = None,
+) -> tuple[tuple[str, ...], dict[str, tuple[str, str]], str]:
+    """Classify the temp declaration in *env* once for every MCP spawn path.
+
+    The first item is the accepted canonical key set in lookup order. The
+    second maps each refused key to ``(declared path, cause)``. The third names
+    a classifier failure for the WARNING. One refused key drops the whole temp
+    declaration because ``tempfile`` may consult a sibling first.
+
+    When *declared_temp_keys* is ``None``, every temp key in *env* is declared.
+    A caller whose environment mixes operator and ambient values passes the
+    operator-owned key names explicitly. Path inspection blocks, so async
+    callers run this function through :func:`asyncio.to_thread`.
+    """
+    if declared_temp_keys is None:
+        declared_upper = {
+            key.upper()
+            for key in env
+            if isinstance(key, str) and key.upper() in CANONICAL_TEMP_KEYS
+        }
+    else:
+        declared_upper = {
+            key.upper()
+            for key in declared_temp_keys
+            if isinstance(key, str) and key.upper() in CANONICAL_TEMP_KEYS
+        }
+    accepted = tuple(key for key in CANONICAL_TEMP_KEYS if key in declared_upper)
+    declared_values = {
+        key.upper(): value
+        for key, value in env.items()
+        if isinstance(key, str) and key.upper() in declared_upper and isinstance(value, str)
+    }
+    if not declared_values:
+        return accepted, {}, ""
+
+    check = classifier or classify_declared_temp_path
+    try:
+        refused: dict[str, tuple[str, str]] = {
+            key: (path, cause)
+            for key, path in declared_values.items()
+            if (cause := check(path)) is not None
+        }
+    except Exception as exc:
+        failure = f"{type(exc).__name__}: {exc}"
+        return (
+            (),
+            {key: (path, "check-failed") for key, path in declared_values.items()},
+            failure,
+        )
+    if refused:
+        return (), refused, ""
+    return accepted, {}, ""
+
+
+def _repr_declared_temp_log_value(
+    value: str,
+    redactor: "Callable[[str], str] | None",
+) -> str:
+    """Return one redacted, control-character-safe log field."""
+    display = value
+    if redactor is not None:
+        try:
+            display = redactor(value)
+        except Exception:
+            display = "<redaction failed>"
+    return repr(display)
+
+
+def declared_temp_refusal_reasons(
+    refused: "Mapping[str, tuple[str, str]]",
+    failure: str = "",
+    *,
+    redactor: "Callable[[str], str] | None" = None,
+) -> list[str]:
+    """Render one operator-facing reason per distinct refusal cause."""
+    reasons: list[str] = []
+    for _key, (_path, cause) in sorted(refused.items()):
+        reason = DECLARED_TEMP_REFUSAL_REASONS[cause]
+        if cause == "check-failed" and failure:
+            reason = f"{reason} ({_repr_declared_temp_log_value(failure, redactor)})"
+        if reason not in reasons:
+            reasons.append(reason)
+    return reasons
+
+
+def format_declared_temp_refusals(
+    refused: "Mapping[str, tuple[str, str]]",
+    *,
+    hidden_keys: "Sequence[str]" = (),
+    redactor: "Callable[[str], str] | None" = None,
+) -> str:
+    """Render refused key/path fields as one credential-safe log line.
+
+    ``repr`` keeps control characters inside the field instead of letting a
+    declared path forge another log record. Keys in *hidden_keys* came from a
+    resolved ``secret://`` value, so their path is never rendered at all.
+    """
+    hidden_upper = {key.upper() for key in hidden_keys}
+    fields: list[str] = []
+    for key, (path, _cause) in sorted(refused.items()):
+        if key.upper() in hidden_upper:
+            display = repr("<resolved secret>")
+        else:
+            display = _repr_declared_temp_log_value(path, redactor)
+        fields.append(f"{key}={display}")
+    return ", ".join(fields)
 
 
 _VOICE_GUARD_REMEDY = "Pick a project subdirectory that does not contain the Kiro Crew data home."

@@ -46,9 +46,13 @@ from kiro_crew.mcp_grant import grant_observed
 from kiro_crew.mcp_provenance import ABSENT, resolve_write
 from kiro_crew.mcp_utils import kiro_entry_client_id, kiro_entry_scopes, mcp_server_alias
 from kiro_crew.sandbox import (
+    CANONICAL_TEMP_KEYS,
     SandboxUnavailableError,
+    classify_declared_temp_env,
     classify_declared_temp_path,
     create_subprocess_limited,
+    declared_temp_refusal_reasons,
+    format_declared_temp_refusals,
     sandboxed_spawn_argv,
     sandboxed_spawn_argv_async,
 )
@@ -1858,64 +1862,6 @@ async def _read_stdio_jsonrpc_response(
             return parsed
 
 
-#: Temp keys a child's ``tempfile``/``mktemp`` consults, in POSIX-then-Windows
-#: order. Matched case-INSENSITIVELY wherever a spec supplies one: Windows env
-#: keys are case-insensitive and the sanitized spec preserves the author's
-#: spelling.
-_CANONICAL_TEMP_KEYS = ("TMPDIR", "TMP", "TEMP")
-
-
-#: Operator-facing reason per refusal cause, for the probe WARNING: the two
-#: :data:`kiro_crew.sandbox.DeclaredTempRefusal` causes plus the probe-side
-#: ``check-failed``, raised when the check itself could not run. Only the first
-#: is about the seal, so a single sealed-parent sentence would misdirect an
-#: operator for every other cause.
-_DECLARED_TEMP_REFUSAL_REASONS = {
-    "sealed": (
-        "it is inside the sandbox-sealed runtime parent, where the probed server " "cannot write"
-    ),
-    "unclassifiable": (
-        "its canonical form cannot be established (a symlink cycle or a component "
-        "that cannot be traversed), so containment cannot be verified"
-    ),
-    "check-failed": "the seal check itself failed, so containment cannot be verified",
-}
-
-
-def _refused_declared_temp_keys(env: dict[str, str]) -> dict[str, tuple[str, str]]:
-    """Spec-declared temp keys the probe must not honor, each with its cause.
-
-    Returns the offending keys (upper-cased) mapped to ``(declared path, cause)``,
-    the cause being a :data:`kiro_crew.sandbox.DeclaredTempRefusal`, so a caller
-    can name the key, the path AND the actual reason in its diagnostic. Blocking
-    path resolution, so an async caller must reach it off the event loop.
-    """
-    refused: dict[str, tuple[str, str]] = {}
-    for key, value in env.items():
-        if key.upper() not in _CANONICAL_TEMP_KEYS or not isinstance(value, str):
-            continue
-        cause = classify_declared_temp_path(value)
-        if cause is not None:
-            refused[key.upper()] = (value, cause)
-    return refused
-
-
-def _declared_temp_refusal_reasons(refused: dict[str, tuple[str, str]], failure: str) -> list[str]:
-    """One operator-facing reason per distinct cause in *refused*, in key order.
-
-    *failure* is the exception text of a ``check-failed`` cause and is appended
-    to that reason, so the WARNING says what actually broke.
-    """
-    reasons: list[str] = []
-    for _key, (_path, cause) in sorted(refused.items()):
-        reason = _DECLARED_TEMP_REFUSAL_REASONS[cause]
-        if cause == "check-failed" and failure:
-            reason = f"{reason} ({failure})"
-        if reason not in reasons:
-            reasons.append(reason)
-    return reasons
-
-
 async def probe_server(
     server: McpServerInfo, *, client_info: dict[str, str] | None = None
 ) -> McpServerInfo:
@@ -2066,14 +2012,14 @@ async def probe_server(
         # case-insensitively (Windows env keys are case-insensitive and the
         # sanitized spec preserves the author's spelling).
         _declared_temp_upper = {
-            key.upper() for key in (server.env or {}) if key.upper() in _CANONICAL_TEMP_KEYS
+            key.upper() for key in (server.env or {}) if key.upper() in CANONICAL_TEMP_KEYS
         }
         # The spec's OWN spellings, kept beside the upper-cased set: the rewrite
         # below has to tell the declaration apart from the ambient key of the
         # same name, and only the exact spelling does that -- comparing
         # upper-cased names alone lets BOTH survive.
         _declared_temp_spelled = {
-            key for key in (server.env or {}) if key.upper() in _CANONICAL_TEMP_KEYS
+            key for key in (server.env or {}) if key.upper() in CANONICAL_TEMP_KEYS
         }
         # ...but a declaration that lands inside the sealed runtime parent is
         # REFUSED rather than honored. Both backends seal
@@ -2089,37 +2035,31 @@ async def probe_server(
         # consults TMPDIR before TMP, so honoring a surviving sibling key would
         # leave writability depending on which key the spec happened to spell.
         _sealed_temp: dict[str, tuple[str, str]] = {}
+        failure = ""
         if _declared_temp_upper:
-            failure = ""
-            try:
-                _sealed_temp = await asyncio.to_thread(
-                    _refused_declared_temp_keys, server.env or {}
-                )
-            except Exception as exc:
-                # Fail CLOSED. A check that could not run has cleared nothing,
-                # and honoring the declaration anyway is exactly the
-                # failure this block exists to prevent -- the child handed a
-                # temp that may be sealed, with the probe still reporting a
-                # green handshake. The managed temp is always the safe answer,
-                # so every declared key is refused and the WARNING below names
-                # the failure instead of a debug line nobody reads.
-                failure = f"{type(exc).__name__}: {exc}"
-                _sealed_temp = {
-                    key.upper(): (str(value), "check-failed")
-                    for key, value in (server.env or {}).items()
-                    if key.upper() in _CANONICAL_TEMP_KEYS
-                }
+            accepted, _sealed_temp, failure = await asyncio.to_thread(
+                classify_declared_temp_env,
+                server.env or {},
+                classifier=classify_declared_temp_path,
+            )
+            _declared_temp_upper = set(accepted)
             if _sealed_temp:
                 logger.warning(
                     "MCP probe [%s]: ignoring spec-declared %s — %s; probing with the "
                     "managed temp instead",
                     server.name,
-                    ", ".join(
-                        f"{key}={path}" for key, (path, _cause) in sorted(_sealed_temp.items())
+                    format_declared_temp_refusals(
+                        _sealed_temp,
+                        redactor=lambda path: _sanitize_probe_error(ValueError(path)),
                     ),
-                    "; ".join(_declared_temp_refusal_reasons(_sealed_temp, failure)),
+                    "; ".join(
+                        declared_temp_refusal_reasons(
+                            _sealed_temp,
+                            failure,
+                            redactor=lambda text: _sanitize_probe_error(ValueError(text)),
+                        )
+                    ),
                 )
-                _declared_temp_upper = set()
         probe_scratch: "Path | None" = None
         if not _declared_temp_upper:
             try:
@@ -2176,7 +2116,7 @@ async def probe_server(
                 env = {
                     key: value
                     for key, value in env.items()
-                    if key.upper() not in _CANONICAL_TEMP_KEYS
+                    if key.upper() not in CANONICAL_TEMP_KEYS
                 }
                 env = {**env, **tmp_env(probe_scratch)}
             elif _declared_temp_upper:
@@ -2204,7 +2144,7 @@ async def probe_server(
                 env = {
                     key: value
                     for key, value in env.items()
-                    if key.upper() not in _CANONICAL_TEMP_KEYS
+                    if key.upper() not in CANONICAL_TEMP_KEYS
                 }
                 env.update(declared_values)
             elif _sealed_temp:
@@ -2218,7 +2158,7 @@ async def probe_server(
                 env = {
                     key: value
                     for key, value in env.items()
-                    if key.upper() not in _CANONICAL_TEMP_KEYS
+                    if key.upper() not in CANONICAL_TEMP_KEYS
                 }
         except Exception:
             logger.debug("probe temp containment unavailable", exc_info=True)

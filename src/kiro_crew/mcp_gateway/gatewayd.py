@@ -94,7 +94,7 @@ from kiro_crew.mcp_gateway.rewriter import (
     records_dir,
     resolve_overlay_dir,
 )
-from kiro_crew.mcp_gateway.secret_uri import resolve_secret_uris
+from kiro_crew.mcp_gateway.secret_uri import SECRET_URI_PREFIX, resolve_secret_uris
 from kiro_crew.mcp_gateway.shutdown_budget import DRAIN_SECS, POOL_SHUTDOWN_SECS
 from kiro_crew.mcp_gateway.spill import cleanup_old_spill_files
 from kiro_crew.mcp_gateway.stub import fallback_counts as stub_fallback_counts
@@ -110,7 +110,15 @@ from kiro_crew.platform_compat import get_process_start_id as _get_process_start
 from kiro_crew.platform_compat import pid_exists as _pid_exists
 from kiro_crew.platform_compat import proc_rss_bytes as _proc_rss_bytes
 from kiro_crew.platform_compat import process_start_time as _process_start_time
-from kiro_crew.sandbox import _PYTHON_ENV_PREFIXES, warm_backend
+from kiro_crew.sandbox import (
+    _PYTHON_ENV_PREFIXES,
+    CANONICAL_TEMP_KEYS,
+    classify_declared_temp_env,
+    declared_temp_refusal_reasons,
+    format_declared_temp_refusals,
+    warm_backend,
+)
+from kiro_crew.security import redact
 from kiro_crew.sel import SecurityEventLog
 
 logger = logging.getLogger(__name__)
@@ -3408,11 +3416,76 @@ async def _acquire_backend(
         # the flag check reads config and the sidecar read touches the
         # filesystem, either of which would stall gateway traffic and heartbeat
         # processing if done inline after a config invalidation.
-        declared = await asyncio.to_thread(
-            _declared_env_for_private_backend if exclusive_stub_uuid else _declared_env_to_forward,
-            pool_key,
+        declared = dict(
+            await asyncio.to_thread(
+                (
+                    _declared_env_for_private_backend
+                    if exclusive_stub_uuid
+                    else _declared_env_to_forward
+                ),
+                pool_key,
+            )
         )
+        accepted_temp_keys: tuple[str, ...] = ()
         if declared:
+            # A ``secret://`` temp has no path until resolution. Classifying
+            # the raw reference can both misjudge URI text as a local path and
+            # echo a hostile secret name into this warning. Keep its canonical
+            # key provisionally declared; ``spawn_backend`` classifies the
+            # resolved value and masks it through ``secret_env_keys``.
+            secret_temp_keys = {
+                key.upper()
+                for key, value in declared.items()
+                if key.upper() in CANONICAL_TEMP_KEYS and value.startswith(SECRET_URI_PREFIX)
+            }
+            checkable_declared = {
+                key: value
+                for key, value in declared.items()
+                if not (key.upper() in CANONICAL_TEMP_KEYS and value.startswith(SECRET_URI_PREFIX))
+            }
+            accepted_checked, refused, failure = await asyncio.to_thread(
+                classify_declared_temp_env,
+                checkable_declared,
+            )
+            accepted_set = set(accepted_checked) | secret_temp_keys
+            accepted_temp_keys = tuple(key for key in CANONICAL_TEMP_KEYS if key in accepted_set)
+            if refused:
+                accepted_temp_keys = ()
+                logger.warning(
+                    "MCP gateway backend [%s]: ignoring spec-declared %s — %s; "
+                    "spawning with the managed temp instead",
+                    pool_key.server_name,
+                    format_declared_temp_refusals(refused, redactor=redact),
+                    "; ".join(
+                        declared_temp_refusal_reasons(
+                            refused,
+                            failure,
+                            redactor=redact,
+                        )
+                    ),
+                )
+                declared = {
+                    key: value
+                    for key, value in declared.items()
+                    if key.upper() not in CANONICAL_TEMP_KEYS
+                }
+                spawn_env = {
+                    key: value
+                    for key, value in spawn_env.items()
+                    if key.upper() not in CANONICAL_TEMP_KEYS
+                }
+            elif accepted_temp_keys:
+                declared_temp_values = {
+                    key.upper(): value
+                    for key, value in declared.items()
+                    if key.upper() in accepted_temp_keys
+                }
+                declared = {
+                    key: value
+                    for key, value in declared.items()
+                    if key.upper() not in CANONICAL_TEMP_KEYS
+                }
+                declared.update(declared_temp_values)
             # Declared env wins over the daemon's inherited value: the
             # operator wrote it in the agent spec for this server. Safe to
             # let it win because every key here is in the PoolKey, so no
@@ -3440,17 +3513,11 @@ async def _acquire_backend(
             args=list(args),
             env=spawn_env,
             work_dir=work_dir,
-            # Containment yields ONLY to a spec-declared temp. ``spawn_env``
-            # also carries the daemon's ambient TMPDIR/TMP/TEMP (macOS and
-            # Windows always export one), so spawn_backend cannot infer
-            # declaration from env membership -- this closure is the one
-            # place that still knows the declared set. Key NAMES are passed
-            # (matched case-insensitively inside; Windows env keys are
-            # case-insensitive) so spawn_backend can also prune the ambient
-            # keys the operator did NOT declare.
-            declared_temp_keys=tuple(
-                key for key in declared if key.upper() in ("TMPDIR", "TMP", "TEMP")
-            ),
+            # Containment yields only to temp keys cleared by the shared rule.
+            # ``spawn_backend`` checks them again after secret resolution, so a
+            # path hidden behind ``secret://`` cannot bypass the runtime check.
+            declared_temp_keys=accepted_temp_keys,
+            secret_env_keys=tuple(_secret_keys),
         )
         # Security note: resolved secrets exist ONLY in the local spawn_env
         # dict passed to the child via Popen(env=...).  They are NEVER written

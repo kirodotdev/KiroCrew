@@ -65,6 +65,12 @@ from kiro_crew.mcp_gateway.image_budget import (
 from kiro_crew.mcp_gateway.pool import READ_BUFFER_LIMIT_BYTES, RESPONSE_SPILL_THRESHOLD_BYTES
 from kiro_crew.mcp_gateway.spill import maybe_spill_response
 from kiro_crew.mcp_gateway.tool_surface import ToolSurface, project_tool_surface
+from kiro_crew.sandbox import (
+    CANONICAL_TEMP_KEYS,
+    classify_declared_temp_env,
+    declared_temp_refusal_reasons,
+    format_declared_temp_refusals,
+)
 from kiro_crew.security import redact
 from kiro_crew.sel import SecurityEventLog
 
@@ -3987,6 +3993,7 @@ async def spawn_backend(
     env: Mapping[str, str],
     work_dir: str,
     declared_temp_keys: tuple[str, ...] = (),
+    secret_env_keys: tuple[str, ...] = (),
 ) -> Backend:
     """Spawn a real MCP subprocess and wrap it in a :class:`Backend`.
 
@@ -3994,13 +4001,16 @@ async def spawn_backend(
     any casing) the operator's agent spec DECLARES for this server -- the
     caller knows the declared-env set and this function does not (``env``
     also carries the daemon's ambient values, which must not suppress
-    containment; see the containment block below).
+    containment; see the containment block below). ``secret_env_keys`` marks
+    values resolved from ``secret://`` URIs so a refusal can name its key and
+    cause without persisting the resolved value in the daemon log.
 
-    ``env`` is passed verbatim — callers MUST NOT rely on parent process
-    env inheritance. The rewriter layer computes the effective env for
-    each :class:`PoolKey` and includes it in the hash; spawning with a
-    different env than the key claims is a correctness bug that would
-    allow cross-tenant leakage.
+    ``env`` is the complete effective environment; callers MUST NOT rely on
+    parent-process inheritance. The temp rule may replace its declared temp
+    keys, and this function adds the positive spawn marker. The PoolKey still
+    hashes the caller's original effective map, so a refused declaration may
+    conservatively split two equivalent managed-temp backends but can never
+    collapse specs that declared different environments into one pool.
 
     Security boundary (accepted risk, documented in
     ``docs/system-specs/modules/security.md`` under MCP Gateway): backends
@@ -4026,7 +4036,9 @@ async def spawn_backend(
     """
     logger.info(
         "spawning backend pool=%s command=%s args=%s",
-        pool_key.human_readable(), command, redact(" ".join(args)),
+        pool_key.human_readable(),
+        command,
+        redact(" ".join(args)),
     )
     # Positive-identity marker for the orphan sweep. Safe re: the pooled-backend
     # PoolKey invariant — the marker is a compile-time constant, so it is
@@ -4038,48 +4050,76 @@ async def spawn_backend(
     # PoolKey invariant for the same reason as the marker above -- the value
     # is derived from the key's own digest plus a token generated AFTER
     # pool-identity resolution and is never folded into the hash, so it can
-    # neither split nor collapse pool identity. Allocated off-loop (mkdir is
-    # filesystem work), and fail-open: containment is hygiene, not a spawn
-    # prerequisite -- a host where the dir cannot be created still gets a
-    # working backend with today's inherited-temp behavior.
+    # neither split nor collapse pool identity. Allocation and declaration
+    # classification run off-loop because both touch the filesystem.
     #
-    # An OPERATOR-DECLARED temp wins: a spec that sets any of TMPDIR/TMP/TEMP
-    # deliberately points a heavy server at chosen storage (e.g. a capacity
-    # volume), and overriding it would trade litter for ENOSPC. No allocation
-    # happens at all in that case -- no empty dir, nothing to sweep.
+    # An operator-declared temp wins only when the shared sandbox rule clears
+    # every declared key. One refusal drops the whole declaration: ``tempfile``
+    # may consult a sibling key first, so keeping a surviving key would make
+    # the result depend on spelling order. The managed temp takes over. If its
+    # allocation fails after a refusal, no temp key survives to point the child
+    # back at the refused path.
     #
-    # Declaration is signalled by the CALLER (``declared_temp_keys``), not
-    # read off ``spawn_env``: the resolver folds the daemon's own inherited
-    # environment into ``env``, and macOS always exports TMPDIR (Windows
-    # always exports TMP/TEMP), so an env-membership test would read the
-    # ambient value as a declaration and silently disable containment on
-    # those platforms. Ambient keys are OVERRIDDEN by the managed triple on
-    # success, left untouched on allocation failure (the documented fail-open
-    # "inherited temp" fallback), and PRUNED down to the declared set when
-    # the operator declared a temp (see the else branch).
+    # Declaration is signalled by the caller, not inferred from ``spawn_env``.
+    # The resolver folds the daemon's ambient temp into ``env`` on macOS and
+    # Windows, and an env-membership test would mistake that for operator input.
     backend_tmp: Optional[Path] = None
-    _declared_upper = {key.upper() for key in declared_temp_keys}
+    _declared_upper: set[str] = set()
+    refused: dict[str, tuple[str, str]] = {}
+    failure = ""
+    if declared_temp_keys:
+        accepted, refused, failure = await asyncio.to_thread(
+            classify_declared_temp_env,
+            spawn_env,
+            declared_temp_keys,
+        )
+        _declared_upper = set(accepted)
+        if refused:
+            logger.warning(
+                "MCP backend [%s]: ignoring spec-declared %s — %s; spawning with the "
+                "managed temp instead",
+                pool_key.server_name,
+                format_declared_temp_refusals(
+                    refused,
+                    hidden_keys=secret_env_keys,
+                    redactor=redact,
+                ),
+                "; ".join(
+                    declared_temp_refusal_reasons(
+                        refused,
+                        failure,
+                        redactor=redact,
+                    )
+                ),
+            )
+            spawn_env = {
+                key: value
+                for key, value in spawn_env.items()
+                if key.upper() not in CANONICAL_TEMP_KEYS
+            }
     if not _declared_upper:
         try:
-            backend_tmp = await asyncio.to_thread(
-                allocate_backend_tmp, pool_key.stable_hash()
-            )
+            backend_tmp = await asyncio.to_thread(allocate_backend_tmp, pool_key.stable_hash())
             spawn_env.update(tmp_env(backend_tmp))
         except OSError:
+            has_inherited_temp = any(key.upper() in CANONICAL_TEMP_KEYS for key in spawn_env)
+            fallback = "inherited temp" if has_inherited_temp else "platform default"
             logger.warning(
-                "backend-tmp: could not allocate a contained temp dir; spawning "
-                "with inherited temp",
+                "backend-tmp: could not allocate a contained temp dir; spawning with %s",
+                fallback,
                 exc_info=True,
             )
     else:
-        # Yielding is not enough on its own: the daemon's AMBIENT temp keys
-        # are still in ``spawn_env``, and ``tempfile`` consults TMPDIR before
-        # TMP -- a spec declaring only ``TMP`` on macOS would silently write
-        # through the inherited ambient TMPDIR. Strip the canonical keys the
-        # operator did NOT declare so the declared one actually governs.
-        for key in ("TMPDIR", "TMP", "TEMP"):
-            if key not in _declared_upper:
-                spawn_env.pop(key, None)
+        # Keep only the declared values and re-emit their canonical spellings.
+        # Ambient siblings cannot outrank the declaration, and lowercase spec
+        # keys govern on POSIX as well as on case-insensitive Windows env maps.
+        declared_values = {
+            key.upper(): value for key, value in spawn_env.items() if key.upper() in _declared_upper
+        }
+        spawn_env = {
+            key: value for key, value in spawn_env.items() if key.upper() not in CANONICAL_TEMP_KEYS
+        }
+        spawn_env.update(declared_values)
     try:
         process = await asyncio.create_subprocess_exec(
             command,

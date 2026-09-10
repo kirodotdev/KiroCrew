@@ -2793,10 +2793,55 @@ class TestProbeTempContainment:
         texts = [
             r.getMessage() for r in caplog.records if "ignoring spec-declared" in r.getMessage()
         ]
-        assert len(texts) == 1 and "TMPDIR=//declared/tmp" in texts[0]
+        assert len(texts) == 1 and "TMPDIR='//declared/tmp'" in texts[0]
         assert phrase in texts[0]
         if cause != "sealed":
             assert "sandbox-sealed" not in texts[0]
+
+    @pytest.mark.asyncio
+    async def test_refusal_warning_escapes_newlines_in_the_declared_path(
+        self, tmp_path, monkeypatch, caplog
+    ) -> None:
+        import sys
+
+        from kiro_crew import sandbox
+        from kiro_crew.mcp_gateway import backend_tmp as bt
+
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setattr(bt, "config_dir", lambda: home)
+        monkeypatch.setattr(sandbox, "config_dir", lambda: home)
+        monkeypatch.setattr(
+            "kiro_crew.mcp_discovery.classify_declared_temp_path",
+            MagicMock(return_value="sealed"),
+        )
+
+        def _wrap(argv, *a, env=None, **k):
+            return list(argv), dict(env if env is not None else os.environ), None
+
+        monkeypatch.setattr("kiro_crew.mcp_discovery.sandboxed_spawn_argv", _wrap)
+        declared = "/declared/tmp\nFORGED"
+        server = McpServerInfo(
+            name="newline-refusal",
+            command=sys.executable,
+            args=["-c", "pass"],
+            env={"TMPDIR": declared},
+        )
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.mcp_discovery"):
+            with patch(
+                "kiro_crew.mcp_discovery.create_subprocess_limited",
+                new_callable=AsyncMock,
+                side_effect=OSError("stop after env capture"),
+            ):
+                await probe_server(server)
+
+        warning = next(
+            record.getMessage()
+            for record in caplog.records
+            if "ignoring spec-declared" in record.getMessage()
+        )
+        assert "\\nFORGED" in warning
+        assert "\nFORGED" not in warning
 
     @pytest.mark.asyncio
     async def test_windows_probe_cleanup_defers_to_daemon_sweep(

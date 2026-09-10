@@ -1076,10 +1076,10 @@ class TestSealedRuntimeParentPredicate:
     both backends, and the write carve-out above is validated for self-derived
     scratch only — so the caller's only safe move is to stop honoring the path,
     which it can only do if ``classify_declared_temp_path`` answers honestly.
-    Every test asserts the CLASSIFICATION (``None`` = honor; ``sealed``,
-    ``remote-or-device`` or ``unclassifiable`` = refuse, and why), because the
-    probe names that cause in its WARNING and a wrong cause misdirects the
-    operator even when the refusal itself is right.
+    Every test asserts the CLASSIFICATION (``None`` = honor; ``sealed`` or
+    ``unclassifiable`` = refuse, and why), because the probe names that cause
+    in its WARNING and a wrong cause misdirects the operator even when the
+    refusal itself is right.
     """
 
     def _home(self, monkeypatch, tmp_path):
@@ -1104,6 +1104,10 @@ class TestSealedRuntimeParentPredicate:
         assert sandbox_mod.classify_declared_temp_path(str(chosen)) is None
         # An empty declaration is not a path and must not read as refused.
         assert sandbox_mod.classify_declared_temp_path("") is None
+
+    def test_relative_declaration_is_unclassifiable(self, monkeypatch, tmp_path):
+        self._home(monkeypatch, tmp_path)
+        assert sandbox_mod.classify_declared_temp_path("run/x") == "unclassifiable"
 
     @_POSIX_ONLY
     def test_both_spellings_of_a_symlinked_data_home_are_sealed(self, monkeypatch, tmp_path):

@@ -16,8 +16,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any, Optional, cast
@@ -1066,6 +1068,111 @@ class TestAcquireBackend:
         )
 
         assert _await_kwargs(spawn)["env"]["A"] == "declared"
+        await _drain_task(backend._stdout_task)
+        await pool.shutdown_all(timeout=0.1)
+
+    @pytest.mark.asyncio
+    async def test_secret_temp_skips_raw_precheck_and_reaches_spawn_backend(
+        self, monkeypatch, caplog
+    ) -> None:
+        from kiro_crew import sandbox as sandbox_mod
+
+        pool = BackendPool(max_backends=2)
+        key = _pool_key(server="secret-temp-mcp")
+        backend = _fake_backend(key)
+        captured: dict[str, Any] = {}
+
+        async def _spawn_backend(**kwargs: Any) -> Backend:
+            captured.update(kwargs)
+            captured["env"] = dict(kwargs["env"])
+            return backend
+
+        monkeypatch.setattr(gw, "spawn_backend", AsyncMock(side_effect=_spawn_backend))
+        raw_reference = "secret://../../../../run/x\nFORGED"
+        monkeypatch.setattr(
+            gw,
+            "_declared_env_to_forward",
+            lambda _key: {"TMPDIR": raw_reference},
+        )
+        classified: list[str] = []
+
+        def _sealed(path: str) -> str:
+            classified.append(path)
+            return "sealed"
+
+        monkeypatch.setattr(sandbox_mod, "classify_declared_temp_path", _sealed)
+
+        def _resolve(env: dict[str, str], _config: Path):
+            if "TMPDIR" not in env:
+                return dict(env), set()
+            return {**env, "TMPDIR": "/resolved/secret"}, {"TMPDIR"}
+
+        monkeypatch.setattr(gw, "resolve_secret_uris", _resolve)
+
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.mcp_gateway.gatewayd"):
+            await gw._acquire_backend(
+                pool,
+                key,
+                lambda _key: ("demo-bin", [], {}, "/tmp/cov"),
+            )
+
+        assert classified == []
+        assert raw_reference not in caplog.text
+        assert captured["env"]["TMPDIR"] == "/resolved/secret"
+        assert captured["declared_temp_keys"] == ("TMPDIR",)
+        assert captured["secret_env_keys"] == ("TMPDIR",)
+        await _drain_task(backend._stdout_task)
+        await pool.shutdown_all(timeout=0.1)
+
+    @pytest.mark.asyncio
+    async def test_sealed_declared_temp_is_removed_before_spawn(self, monkeypatch, caplog) -> None:
+        from kiro_crew import sandbox as sandbox_mod
+
+        pool = BackendPool(max_backends=2)
+        key = _pool_key(server="sealed-temp-mcp")
+        backend = _fake_backend(key)
+        spawn = AsyncMock(return_value=backend)
+        monkeypatch.setattr(gw, "spawn_backend", spawn)
+        declared = "/sealed/runtime/tmp\nFORGED"
+        monkeypatch.setattr(
+            gw,
+            "_declared_env_to_forward",
+            lambda _key: {"TMPDIR": declared, "A": "declared"},
+        )
+        loop_thread = threading.get_ident()
+        classifier_threads: list[int] = []
+
+        def _sealed(_path: str) -> str:
+            classifier_threads.append(threading.get_ident())
+            return "sealed"
+
+        monkeypatch.setattr(sandbox_mod, "classify_declared_temp_path", _sealed)
+
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.mcp_gateway.gatewayd"):
+            await gw._acquire_backend(
+                pool,
+                key,
+                lambda _key: (
+                    "demo-bin",
+                    [],
+                    {"TMPDIR": "/ambient/tmp", "A": "inherited"},
+                    "/tmp/cov",
+                ),
+            )
+
+        kwargs = _await_kwargs(spawn)
+        assert declared not in kwargs["env"].values()
+        assert not [key for key in kwargs["env"] if key.upper() in ("TMPDIR", "TMP", "TEMP")]
+        assert kwargs["declared_temp_keys"] == ()
+        assert classifier_threads and all(thread != loop_thread for thread in classifier_threads)
+        warning = next(
+            record.getMessage()
+            for record in caplog.records
+            if "ignoring spec-declared" in record.getMessage()
+        )
+        assert f"TMPDIR={declared!r}" in warning
+        assert "\nFORGED" not in warning
+        assert "inside the sandbox-sealed runtime parent" in warning
         await _drain_task(backend._stdout_task)
         await pool.shutdown_all(timeout=0.1)
 
