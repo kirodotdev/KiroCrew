@@ -497,8 +497,8 @@ def test_root_anchors_resolve_in_one_pool_hop(monkeypatch, tmp_path) -> None:
 
 
 def test_a_stalled_rebuild_refuses_even_with_a_warm_cache(monkeypatch, tmp_path) -> None:
-    # The rebuild (home + every keystone leaf under KIROCREW_HOME) used to
-    # realpath() inline on the event loop every time the 0.1s cache expired.
+    # The rebuild (home + every keystone leaf under KIROCREW_HOME) would
+    # realpath() inline on the event loop every time the 0.1s cache expires.
     # An expired slot is NOT served through a stall: a symlink repointed during
     # the stall would move a credential out from under the stale anchor.
     _clear_override_roots(monkeypatch)

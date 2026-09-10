@@ -448,7 +448,7 @@ class TestPodRecordFreshness:
     def test_a_two_line_record_from_an_intermediate_build_is_unproven(
         self, cfg: PodConfig, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """A pid file carrying its own token is no longer where the reader looks.
+        """A pid file carrying its own token is not where the reader looks.
 
         Such a file exists only in a home written by an intermediate build. It
         must fail CLOSED -- and read as "record present, no start identity" so the

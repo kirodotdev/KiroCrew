@@ -1,6 +1,6 @@
 """Conductor work ledger store — Phase 1 exit criteria, one test per criterion.
 
-Pins what the conductor-work-ledger RFC (pull request #8842) §Migration plan
+Pins what the conductor-work-ledger RFC §Migration plan
 Phase 1 lists: every enum and cap fails a test if its value changes; two concurrent
 writers against one item leave a parseable record and an uninterleaved event log; a
 torn, truncated or oversized file reads as absent; a refused cap leaves the prior
@@ -308,7 +308,7 @@ def test_a_worker_may_be_rebound_once_its_prior_item_is_terminal():
 
 
 def test_a_worker_may_be_rebound_when_its_prior_binding_is_stale():
-    """A binding pointing at an item that no longer reads is stale, not open."""
+    """A binding pointing at an item that does not read is stale, not open."""
     first = _new_item(title="first")
     second = _new_item(title="second")
     wl.apply_conductor_action(CONDUCTOR, "bind", item_id=first, worker_session_key=WORKER)
@@ -332,7 +332,7 @@ def test_a_worker_bound_by_another_conductor_is_refused_too():
 
 
 def test_a_failed_item_write_during_bind_restores_the_prior_binding(monkeypatch):
-    """GPT round 3: a bind that fails between its two writes must leave neither a
+    """A bind that fails between its two writes must leave neither a
     half-bound item (which would refuse every retry) nor a dangling new binding."""
     first = _new_item(title="first")
     second = _new_item(title="second")
@@ -765,7 +765,7 @@ def test_a_line_with_an_unknown_kind_or_a_non_object_is_skipped():
 
 
 def test_a_failed_item_write_rolls_the_event_log_back(monkeypatch):
-    """GPT round 4 F1: state and its event must never disagree. Event goes first;
+    """State and its event must never disagree. Event goes first;
     if the item write fails the log is restored byte-for-byte, and a retry works."""
     item_id = _new_item()
     item_before, log_before = _bytes_on_disk(item_id)
@@ -806,7 +806,7 @@ def test_a_failed_event_write_leaves_the_item_untouched(monkeypatch):
 
 
 def test_create_default_round_is_read_under_the_lock(monkeypatch):
-    """GPT round 4 F2: a round bump that lands while create waits for the lock must
+    """A round bump that lands while create waits for the lock must
     be the round the new item is assigned to."""
     wl.ensure_conductor(CONDUCTOR, goal="g")
     real_lock = wl.conductor_lock
@@ -828,7 +828,7 @@ def test_create_default_round_is_read_under_the_lock(monkeypatch):
 
 
 def test_an_acceptance_that_indents_past_the_read_ceiling_is_refused(monkeypatch):
-    """GPT round 4 F3: the compact-form check is not enough; the stored form is
+    """The compact-form check is not enough; the stored form is
     indented and must fit the ceiling too, or a successful create reads as absent."""
     wl.ensure_conductor(CONDUCTOR, goal="g")
     monkeypatch.setattr(wl, "MAX_RECORD_BYTES", 2000)
@@ -1005,7 +1005,7 @@ def test_a_wrong_typed_stored_field_resets_to_its_default_without_raising():
 
 
 def test_an_item_file_storing_a_different_id_reads_as_absent(caplog):
-    """GPT round 5 F1: honouring a mismatched stored id would let a write taken
+    """Honouring a mismatched stored id would let a write taken
     under this item's lock land on another item's path."""
     a = _new_item(title="a")
     b = _new_item(title="b")
@@ -1052,7 +1052,7 @@ def _fault_record_read(monkeypatch, *, name: str | None = None, parent: Path | N
 
 
 def test_the_bind_guard_fails_closed_on_a_transient_read_error(monkeypatch):
-    """GPT round 5 F2: a prior item that is present but momentarily unreadable must
+    """A prior item that is present but momentarily unreadable must
     NOT read as stale, or the worker is rebound and its open item stranded."""
     first = _new_item(title="first")
     second = _new_item(title="second")
@@ -1067,7 +1067,7 @@ def test_the_bind_guard_fails_closed_on_a_transient_read_error(monkeypatch):
 
 
 def test_the_bind_guard_fails_closed_when_the_binding_itself_is_unreadable(monkeypatch):
-    """GPT round 6: the same strictness applies to the BINDING read, or a transient
+    """The same strictness applies to the BINDING read, or a transient
     error there reads as unbound and the open item is stranded."""
     first = _new_item(title="first")
     second = _new_item(title="second")
@@ -1085,7 +1085,7 @@ def test_the_bind_guard_fails_closed_when_the_binding_itself_is_unreadable(monke
 
 
 def test_a_transient_read_error_does_not_reset_the_conductor_header(monkeypatch):
-    """GPT round 7 F1: ensure_conductor must not mint a fresh header over one it
+    """ensure_conductor must not mint a fresh header over one it
     merely failed to read."""
     wl.ensure_conductor(CONDUCTOR, goal="keep me", depth=1)
     wl.apply_conductor_action(CONDUCTOR, "goal", round_number=4)
@@ -1106,7 +1106,7 @@ def test_a_transient_read_error_does_not_reset_the_conductor_header(monkeypatch)
 
 
 def test_a_transient_read_error_does_not_truncate_the_event_log(monkeypatch):
-    """GPT round 7 F1: the log writer rewrites from what it read, so an unreadable
+    """The log writer rewrites from what it read, so an unreadable
     log must fail the write, not be replaced by a one-line log."""
     item_id = _new_item()
     wl.apply_conductor_action(CONDUCTOR, "decide", item_id=item_id, decision="one")
@@ -1128,7 +1128,7 @@ def test_a_transient_read_error_does_not_truncate_the_event_log(monkeypatch):
 
 
 def test_an_interrupted_bind_can_be_retried(caplog):
-    """GPT round 7 F2: a binding whose item does not name the worker back is the
+    """A binding whose item does not name the worker back is the
     half-state a kill between bind's two writes leaves; the retry must succeed."""
     item_id = _new_item()
     # Simulate the crash: binding written, item never updated.
@@ -1355,11 +1355,11 @@ def test_two_conductors_binding_one_worker_at_once_yield_exactly_one_binding():
         )
     # One record per thread, keyed by the conductor that thread bound with, so a
     # thread that dies silently or never finishes still leaves a named entry. The
-    # old helper caught only ``wl.WorkLedgerError`` and appended nothing on anything
-    # else, so a Windows sharing violation (a bare ``OSError`` per #9250's own
-    # docstring) killed the thread without a trace and shortened the count — the
-    # test then reported ``assert 2 == 3`` and threw away the one fact that names
-    # the cause. Each thread starts as ``"never-started"`` and is overwritten only
+    # Catching only ``wl.WorkLedgerError`` and appending nothing on anything
+    # else lets a Windows sharing violation (a bare ``OSError``) kill a thread
+    # without a trace and shorten the count, so the test reports a bare count
+    # mismatch and throws away the one fact that names the cause. Each thread
+    # starts as ``"never-started"`` and is overwritten only
     # when its body actually runs, so a thread that never scheduled is
     # distinguishable from one that ran and died.
     records: dict[str, str] = {key: "never-started" for key, _ in items}
@@ -1637,7 +1637,7 @@ def test_only_the_phase_2_seams_import_the_module():
     Asserted on IMPORT statements rather than any mention of the name, and the
     candidate set is asserted non-empty so a moved source tree fails this test
     instead of hollowing it out. Both directions are checked: an unlisted importer
-    fails, and a listed module that no longer imports the store fails too, so the
+    fails, and a listed module that does not import the store fails too, so the
     allowlist is data rather than lore.
     """
     package = Path(__file__).resolve().parents[1] / "src" / "kiro_crew"

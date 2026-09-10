@@ -1,5 +1,4 @@
-"""Regression tests for issue #6484 — a subagent parked on an unanswered
-spawn approval must say so.
+"""A subagent parked on an unanswered spawn approval must say so.
 
 A default install has no YOLO override, no ``auto_approve_subagent_spawn``
 and no session trust, so every ``spawn_run`` is gated behind the interactive
@@ -16,12 +15,11 @@ That combination is the whole content of the bug report: the reporter's only
 lead was that no log line and no field mentioned the run. These tests pin the
 observable state so the parked run is distinguishable from a running one.
 
-Two adjacent halves of the report have since landed separately on main and are
-NOT re-tested here: the reap of such a run no longer blames an execution
-deadline it never reached (#7325, which is what put ``_awaiting_approval`` on
-the spawn gate in the first place), and a chat tab no longer renders an owned
-parked run as executing (#7477, which derives its cue from the WS ``approval``
-event, not from this payload). What is left, and what this file covers, is
+Two adjacent halves of the report are covered elsewhere, NOT here: the reap of
+such a run does not blame an execution deadline it never reached (which is what
+put ``_awaiting_approval`` on the spawn gate), and a chat tab does not render an
+owned parked run as executing (that cue derives from the WS ``approval`` event,
+not from this payload). What is left, and what this file covers, is
 every reader that goes through ``/api/spawn`` — the two HTTP shapes, the CLI's
 ``spawn list`` and blocking poll, and MCP ``spawn_list`` — including the
 unowned CLI spawn that reaches no chat tab at all.
@@ -148,13 +146,13 @@ class TestSpawnParkedOnApprovalIsObservable:
     async def test_parked_run_is_marked_awaiting_approval(self) -> None:
         """``_awaiting_approval`` is set while the spawn prompt is unanswered.
 
-        This is a PRECONDITION pin, not new behaviour: the spawn gate began
-        setting the flag in #7325, for the reaper's terminal message. The wire
-        predicate added by this change reads that same flag, and every payload
-        test below feeds the predicate a hand-built ``SubagentInfo`` — so if the
-        gate stopped setting it, those tests would still pass while the field
-        went dark in production. Nothing else covers the seam, because #7325's
-        own tests assert on the reap message rather than on the flag.
+        This is a PRECONDITION pin, not new behaviour: the spawn gate sets the
+        flag for the reaper's terminal message. The wire predicate reads that
+        same flag, and every payload test below feeds the predicate a hand-built
+        ``SubagentInfo`` — so if the gate stopped setting it, those tests would
+        still pass while the field went dark in production. Nothing else covers
+        the seam, because the reaper's own tests assert on the reap message
+        rather than on the flag.
 
         The other assertions record the reported state itself: a run that is
         counted like an executing one while owning no process and no turn.
@@ -176,12 +174,12 @@ class TestSpawnParkedOnApprovalIsObservable:
         """An operator grepping the logs for a stuck run id finds the reason.
 
         The report's dead-end was "``kirocrew logs`` contained no error or
-        warning keyed by the affected run ID". #7325 later marked this wait in
-        machine state, for the reaper — but a mark is not a message, and still
-        nothing was WRITTEN when a spawn parked, so the single most useful
-        diagnostic (which run is waiting, and for what) did not exist. This is
-        the only assertion in this file that covers a change to
-        ``admission.py``; everything else covers a reader of the state.
+        warning keyed by the affected run ID". A machine-state mark for the
+        reaper is not a message, so without this log line nothing is WRITTEN when
+        a spawn parks and the single most useful diagnostic (which run is
+        waiting, and for what) does not exist. This is the only assertion in this
+        file that covers a change to ``admission.py``; everything else covers a
+        reader of the state.
         """
         approval = _ParkedApproval()
         mgr = _manager(approval)
@@ -223,7 +221,7 @@ class TestParkedRunIsVisibleOnBothReadPaths:
 
     A blocking ``kirocrew spawn run`` polls the SINGLE-run status endpoint
     (``/api/spawn/<id>``) every 2s, not the list. Reporting the wait only on the
-    list left the CLI reproduction of #6484 exactly as silent as before: the
+    list left the CLI reproduction of the bug exactly as silent as before: the
     caller sat on "waiting for result..." while the reason was discoverable only
     from a separate ``spawn list`` or a log grep.
     """
@@ -343,18 +341,17 @@ class TestParkedRunIsVisibleOnBothReadPaths:
         assert "awaiting-approval" not in out
 
 
-# NOTE on the two halves of #6484 that are NOT covered here, because main
-# already carries them.
+# NOTE on the two halves of this bug that are NOT covered here, because they
+# live elsewhere in the tree.
 #
 # The terminal message ("Reaped after Ns (exceeded Ns deadline)" on a run that
-# never executed) was fixed by #7325, which reads
-# `_awaiting_approval and _exec_started is None` in `subagent_manager/
-# terminal.py` — the same pair as the wire predicate above, arrived at
-# independently. That is also where the spawn gate's own
-# `info._awaiting_approval = True` comes from, so this change no longer needs to
+# never executed) is handled in `subagent_manager/terminal.py`, which reads
+# `_awaiting_approval and _exec_started is None` — the same pair as the wire
+# predicate above. That is also where the spawn gate's own
+# `info._awaiting_approval = True` comes from, so this file's change does not
 # set the flag; it names the wait (the log line) and reports it (the field).
 #
-# The chat-tab rendering was fixed by #7477, which is frontend-only: it derives
+# The chat-tab rendering is frontend-only: it derives
 # its cue from the WS `approval` event routed into `sseSubagentPending`, i.e.
 # `status === 'pending' && approval_id`, NOT from this payload. It is therefore
 # scoped to a slot, and an unowned spawn (`slot=""`) still reaches no chat tab —

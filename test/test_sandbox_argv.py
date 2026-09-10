@@ -42,7 +42,7 @@ pytestmark = pytest.mark.xdist_group(name="subprocess_spawn")
 # ``_build_launcher_script`` calls POSIX-only ``os.getuid``/``os.getgid`` (the
 # namespace launcher is Linux-only), so any test that builds the launcher script
 # raises AttributeError on Windows. Skip those on win32 -- the reduced-scope
-# Windows CI lane runs them, but they pass in the full POSIX suite. See #2041.
+# Windows CI lane runs them, but they pass in the full POSIX suite.
 _POSIX_ONLY = pytest.mark.skipif(
     sys.platform == "win32",
     reason="_build_launcher_script uses POSIX-only os.getuid (#2041)",
@@ -345,7 +345,7 @@ class TestBuildSeatbeltProfile:
         sandbox_mod.assert_voice_runtime_outside_agent_workspace(sibling)
 
     def test_voice_runtime_workspace_conflict_preflight(self, monkeypatch, tmp_path):
-        """#7392: the non-raising pre-flight mirrors the lexical guard and
+        """The non-raising pre-flight mirrors the lexical guard and
         names both paths, the data home, and the remedy."""
         monkeypatch.setattr(sandbox_mod.sys, "platform", "darwin")
         runtime = tmp_path / "data" / "run" / "voice-runtime"
@@ -363,7 +363,7 @@ class TestBuildSeatbeltProfile:
         assert "protected voice runtime" in contains
         assert str(tmp_path) in contains
         assert str(runtime) in contains
-        # Same remedy sentence as the spawn-time refusal (#7407's shared formatter).
+        # Same remedy sentence as the spawn-time refusal (the shared formatter).
         assert "Pick a project subdirectory" in contains
 
         inside = sandbox_mod.voice_runtime_workspace_conflict(runtime / "nested")
@@ -375,7 +375,7 @@ class TestBuildSeatbeltProfile:
         """The pre-flight matches the guards it mirrors: every spawn-time
         guard early-returns off macOS, so an overlapping workspace spawns
         fine on Linux/Windows today — the pre-flight must not 400 a working
-        configuration there (Design/FP review round 1)."""
+        configuration there."""
         monkeypatch.setattr(sandbox_mod.sys, "platform", "linux")
         runtime = tmp_path / "data" / "run" / "voice-runtime"
         runtime.mkdir(parents=True)
@@ -387,7 +387,7 @@ class TestBuildSeatbeltProfile:
         assert sandbox_mod.voice_runtime_workspace_conflict(tmp_path) is None
 
     def test_preflight_and_spawn_guard_refuse_with_the_same_message(self, monkeypatch, tmp_path):
-        """Drift pin (Design/FP review round 2): the pre-flight and the
+        """Drift pin: the pre-flight and the
         spawn-time guard share ONE containment scan and ONE formatter, so the
         same overlapping workspace must produce byte-identical refusal text on
         both surfaces. If either ever grows its own copy again, this fails."""
@@ -926,7 +926,7 @@ class TestBuildSeatbeltProfile:
 
 
 class TestWritableCarveouts:
-    """#8653: a probe's private TMPDIR must be writable inside the sandbox.
+    """A probe's private TMPDIR must be writable inside the sandbox.
 
     The MCP probe's TMPDIR lives at ``<data home>/run/mcp-tmp/<probe>``, inside
     the runtime parent both backends seal read-only, so the wrap must carve
@@ -1036,7 +1036,7 @@ class TestWritableCarveouts:
         Load-bearing ordering: a non-recursive MS_BIND does not replicate
         submounts, so a parent self-bind established AFTER the carve-out would
         mask the carve-out mount entirely -- the writable window vanishes
-        silently and #8653 is back with no error.
+        silently and the writable-TMPDIR failure returns with no error.
         """
         home, probe = self._relocated_home(monkeypatch, tmp_path)
         script = _build_launcher_script(
@@ -1164,9 +1164,9 @@ class TestBuildLauncherScript:
 
         # Execute the arch-dispatch block itself, so this proves the refusal
         # FIRES rather than that its message is present as text. The block
-        # starts at the machine read: ``import platform`` no longer sits here —
+        # starts at the machine read: ``import platform`` does not sit here —
         # it is hoisted to the preamble so no first-time stdlib import runs
-        # after namespace/mount isolation (#8151).
+        # after namespace/mount isolation.
         lines = script.splitlines()
         start = -1
         end = -1
@@ -2039,7 +2039,7 @@ class TestCleanupStaleSandboxProfiles:
     def test_reclaims_retired_acp_snapshot_tree(self, tmp_path):
         """Orphaned pre-in-place-launch kiro-cli copies are reclaimed.
 
-        KiroCrew used to copy the whole ~100 MB kiro-cli binary per ACP spawn
+        An earlier build copied the whole ~100 MB kiro-cli binary per ACP spawn
         generation into run/kiro-cli-snapshots and exec the copy. Nothing writes
         that tree now, and nothing else can reclaim it (the file sweep only
         matches kirocrew_sandbox_* files; the tree is on the agent's
@@ -2454,7 +2454,7 @@ class TestCgroupScopeArgv:
 
         ``system_memory`` is stubbed out alongside ``os.sysconf`` because it is
         the second probe: on Windows ``GlobalMemoryStatusEx`` answers, so patching
-        only ``sysconf`` would no longer make RAM unknown and this would assert
+        only ``sysconf`` would not make RAM unknown and this would assert
         against a derived value instead of the fallback.
         """
         import kiro_crew.sandbox as sb
@@ -3911,7 +3911,7 @@ class TestAgentSliceMemoryHigh:
         """Regression: on the standard systemd layout the agents slice nests
         under kirocrew.slice (dash-hierarchy), NOT directly under
         user@<uid>.service. The reader must find memory.events through the
-        real resolver on that layout — a hardcoded flat path used to miss it,
+        real resolver on that layout — a hardcoded flat path would miss it,
         silently disabling the throttle warning."""
         import kiro_crew.sandbox as sb
 
@@ -3926,7 +3926,7 @@ class TestAgentSliceMemoryHigh:
 
 
 class TestSandboxExecArgvPinsInnerConfiner:
-    """SECURITY (PR #2602 macOS hop): the outer ``env`` (argv[0]) is pinned to an
+    """SECURITY (macOS hop): the outer ``env`` (argv[0]) is pinned to an
     absolute path at the spawn site, but ``env`` then resolves the NEXT bare name
     -- ``sandbox-exec``, the inner confiner -- through the PATH it is handed, which
     may carry a per-server config PATH overlay. ``sandbox_exec_argv`` must emit

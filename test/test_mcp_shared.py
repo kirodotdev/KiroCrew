@@ -601,8 +601,8 @@ class TestCallToolWithLoggingKind:
 
 # --- run_mcp_stdio_loop busy-queue behavior ----------------------------------
 #
-# A tools/call arriving while a worker is busy used to be silently dropped:
-# no response was ever written, so the client waited forever. These tests
+# A tools/call arriving while a worker is busy must not be silently dropped:
+# with no response ever written, the client waits forever. These tests
 # drive the real loop over a pipe-backed stdin (select() needs a real fd)
 # and assert queued calls are answered FIFO once the worker frees. The
 # worker-thread + select() interleave is POSIX-only (the Windows loop
@@ -791,7 +791,7 @@ class TestStdioLoopBusyQueue:
             harness.close()
 
 
-# --- Caller-identity extension through the stdio loop (PR #422 round 18) -----
+# --- Caller-identity extension through the stdio loop -----------------------
 
 
 def _initialize(req_id) -> dict:
@@ -822,9 +822,9 @@ class TestStdioLoopCallerIdentity:
         mcp_shared._use_content_length = False
 
     def test_initialize_advertises_capability_when_opted_in(self, monkeypatch):
-        # GPT 5.6 round 18 HIGH: without the advertisement gatewayd treats
-        # the backend as single-session and never injects the caller block,
-        # so the whole per-call identity path would be dead code.
+        # Without the advertisement gatewayd treats the backend as
+        # single-session and never injects the caller block, which would make
+        # the whole per-call identity path dead code.
         harness = _LoopHarness(
             monkeypatch, lambda n, a: "ok", {"advertise_caller_identity": True}
         )
@@ -871,7 +871,7 @@ class TestStdioLoopCallerIdentity:
             harness.close()
 
     def test_tool_sees_the_tenant_nonce_WITHOUT_an_identity(self, monkeypatch):
-        """#5322: the separator arrives even when the identity does not.
+        """The separator arrives even when the identity does not.
 
         This is the frame an unnamed co-tenant of a pooled backend receives. The
         nonce must reach the tool (it is what per-tenant state is keyed on when
@@ -921,9 +921,9 @@ class TestStdioLoopCallerIdentity:
             harness.close()
 
     def test_excluded_tool_audit_attributes_caller_session(self, monkeypatch):
-        # GPT 5.6 round 18 MEDIUM: in a shared backend the env var attributes
-        # rejection audits to "mcp" or the wrong session — the parsed caller
-        # identity must win when present.
+        # In a shared backend the env var attributes rejection audits to "mcp"
+        # or the wrong session, so the parsed caller identity must win when
+        # present.
         harness = _LoopHarness(monkeypatch, lambda n, a: "ok")
         monkeypatch.setattr(
             mcp_shared, "_resolve_excluded_tools", lambda *a: {"blocked"}
@@ -958,8 +958,7 @@ class TestStdioLoopCallerIdentity:
 
 
 class TestPerSessionToolPolicy:
-    """Pooled backends must not bleed one session's policy into another
-    (GPT 5.6 PR #422 round 20)."""
+    """Pooled backends must not bleed one session's policy into another."""
 
     def _reset(self):
         # Full module-state reset: the negative-cache timestamps are shared

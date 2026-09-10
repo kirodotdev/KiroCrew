@@ -1748,7 +1748,7 @@ class TestLocalStreamingSession:
         """The teardown decode is the LAST thing a session does, so its failure must
         make it out ahead of the close.
 
-        A dropped empty final and a failed decode used to look identical from here:
+        A dropped empty final and a failed decode can look identical from here:
         the socket closed with no frame at all, and the client cleared the partial it
         was showing. The frame carries the code because the browser renders localised
         text; the audit records ``error`` because a session that died must not be

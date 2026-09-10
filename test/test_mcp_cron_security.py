@@ -8,7 +8,7 @@ files / secret env vars and exfiltrated them, because the command ran via
 Fixes under test:
   1. storage-time deny-list on ``command``      (_vet_shell_command)
   2. exec-time sandbox raised to ``cc``         (run_command_sandboxed)
-  3. cron_add no longer in default allowedTools  (config/defaults.json)
+  3. cron_add absent from default allowedTools   (config/defaults.json)
   4. secret env vars scrubbed from cron env      (_clean_cron_env)
   5. storage-time scan of script contents        (_vet_script_file)
   6. validation regex documented as input-shape  (covered by 1+2)
@@ -448,27 +448,26 @@ def test_vet_script_contents_allows_benign(body):
 
 
 # A cron script body is PYTHON SOURCE, not a shell command line. Each body below
-# READS NOTHING: it describes, redacts or documents a fenced store. Every one was
-# refused at some point while the body was routed through the shell gate (#7912,
-# #8643) -- a backslash run read as a collapsible separator, a docstring read as a
-# `find` command line -- and each is the shape a redaction helper or a well-documented
-# script actually has. They must all vet clean.
+# READS NOTHING: it describes, redacts or documents a fenced store. Routing any of
+# them through the shell gate refuses it -- a backslash run read as a collapsible
+# separator, a docstring read as a `find` command line -- yet each is the shape a
+# redaction helper or a well-documented script actually has. They must all vet clean.
 BENIGN_SOURCE_BODIES_NAMING_A_FENCED_STORE = [
     'import re\nSCRUB = re.compile(r"%LOCALAPPDATA%\\\\kiro-cli")\n',
     'import re\nSCRUB = re.compile(r"/home/\\\\S*/\\\\.kiro/crew/security_policy.json")\n',
     'import re\nSCRUB = re.compile(pattern=r"%LOCALAPPDATA%\\\\\\\\kiro-cli")\n',
     'import re\n\n\ndef scrub(s):\n    redacted = re.sub(r"%LOCALAPPDATA%\\\\\\\\kiro-cli", "<X>", s)\n    return str(redacted)\n',
-    # A prose docstring naming the store (previously an "accepted over-block").
+    # A prose docstring naming the store.
     'def run(ctx):\n    """Never touch %LOCALAPPDATA%\\\\kiro-cli -- it is the keystone."""\n',
-    # A docstring opening with a verb the shell traversal grammar models (#8643).
+    # A docstring opening with a verb the shell traversal grammar models.
     'def run(ctx):\n    """Find commits on main that belong to no pull request and report them.\n\n'
     + "".join(f"    Step {i}: check `item_{i}` against `rule_{i}` and `note_{i}`.\n" for i in range(40))
     + '    """\n    return None\n',
-    # Long enough that every line counted as a pipeline stage exhausted the shell
-    # gate's stage budget (#8563).
+    # Long enough that counting every line as a pipeline stage exhausts the shell
+    # gate's stage budget.
     "".join(f"value_{i} = {i}\n" for i in range(700)),
     # `os.environ` code plus a `|` in a regex literal plus a filter word in a comment,
-    # far apart -- the env-pipeline shape the ordered-existence rules assembled (#8563).
+    # far apart -- the env-pipeline shape the ordered-existence rules assemble.
     "import os\nregion = os.environ.get('AWS_REGION')\n"
     + "x = 1\n" * 200
     + "PAT = r'foo|bar'\n"
@@ -484,11 +483,10 @@ def test_vet_script_contents_allows_source_that_only_names_a_fenced_store(body):
 
 def test_script_body_is_never_a_shell_gate_subject(monkeypatch):
     """RATCHET: the cron script gate must not route a source body through any shell
-    matcher. Four PRs (#4243, #7298, #7441, #8550 and its follow-ups) each added a
-    shell-grammar pass to ``is_sensitive_bash_command`` and each one produced a new
-    class of false denial on ordinary Python scripts -- separator collapse, stage
-    budget, ordered-existence env rules, `find`-grammar docstrings -- because a shell
-    matcher handed a document reads the document as one command line. The fix was to
+    matcher. Every shell-grammar pass added to ``is_sensitive_bash_command`` produces
+    another class of false denial on ordinary Python scripts -- separator collapse,
+    stage budget, ordered-existence env rules, `find`-grammar docstrings -- because a
+    shell matcher handed a document reads the document as one command line. So the
     stop handing it one, not to add another AST layer. If this test fails, the coupling
     is back: put the detector in ``_vet_script_contents`` as a whole-body, source-aware
     match, or leave the concern to the sandbox that runs the script.
@@ -672,7 +670,7 @@ def test_run_command_uses_cc_sandbox(monkeypatch):
     assert captured.get("mode") == "cc"
 
 
-# ── Fix 3: defaults.json no longer auto-approves cron_add ──────────────────
+# ── Fix 3: defaults.json does not auto-approve cron_add ────────────────────
 
 def test_defaults_allowedtools_excludes_cron_add():
     import kiro_crew

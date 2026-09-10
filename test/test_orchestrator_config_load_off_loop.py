@@ -59,7 +59,7 @@ def _slot(key: str = "cfg-load-slot") -> _ChatSlot:
     slot._auto_run = False
     # `_plan_stage_count` is derived from the titles, not settable. ONE stage is
     # the cheapest plan that still reaches tracker initialisation — the branch
-    # under test. An empty plan no longer does: the loop refuses a plan whose
+    # under test. An empty plan does not: the loop refuses a plan whose
     # stages are not in memory (a restart erased them) before it builds anything,
     # so an empty-plan fixture would leave every assertion here vacuous. The
     # single stage's model turn is stubbed out in `_init_tracker`.

@@ -1813,8 +1813,8 @@ def test_the_url_vet_still_treats_a_non_literal_as_a_hostname() -> None:
 def test_the_replaced_category_flag_list_would_have_approved_these(address: str) -> None:
     """Proves the finding's premise rather than assuming it.
 
-    Reconstructs the exact six-flag check `teams/client.py::_vet_resolved_address`
-    used to run and shows it says "fine" for both ranges. Without this, a future
+    Reconstructs the exact six-flag check from `teams/client.py::_vet_resolved_address`
+    and shows it says "fine" for both ranges. Without this, a future
     reader cannot tell whether the delegation fixed a real hole or was cosmetic.
     """
     ip = ipaddress.ip_address(address)

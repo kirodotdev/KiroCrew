@@ -83,8 +83,8 @@ async def _off_loop(fn, /, *args):
     """Await one of ``worktree.py``'s blocking git helpers on a worker thread.
 
     ``sandbox.wrap_argv`` refuses to run on a running event loop — it performs
-    blocking sandbox preparation, so it must be reached from a thread (guard
-    added in f2575b1bb / #6746). The endpoint honours that: every sync helper
+    blocking sandbox preparation, so it must be reached from a thread. The
+    endpoint honours that: every sync helper
     reached by ``api_worktree_create`` goes through ``asyncio.to_thread``.
 
     An ``async def`` test body is ON the loop, so calling the same helper
@@ -114,7 +114,7 @@ def _make_app(*projects: str, app_claim: str | None = "", user: str = "owner") -
     app = web.Application(middlewares=[claims])
     state = MagicMock()
     # The gate requires the OWNER's own identity, not merely a dashboard claim
-    # (GPT review round 12), so the mock must carry a matching owner_id — a bare
+    # so the mock must carry a matching owner_id — a bare
     # MagicMock attribute here would 403 every request for the wrong reason.
     state.owner_id = "owner"
     state._slots = {f"chat-{i}": MagicMock(project=str(p)) for i, p in enumerate(projects) if p}
@@ -207,7 +207,7 @@ def _passthrough_spawn(argv, mode="standard", **kw):
     examined. Skipping would lose the coverage, and one such test was passing on
     Windows for the wrong reason — that RuntimeError is surfaced as
     ``SandboxUnavailable`` too, so the assertion held without the code under test
-    running (GPT review round 12 / round-11 CI).
+    running.
     """
     return list(argv), {}, None
 
@@ -403,8 +403,7 @@ class TestWorktreeCreate:
 class TestNoRepositoryCodeExecution:
     """`git worktree add` must not run the repository's own post-checkout hook.
 
-    This is the regression guard for the GPT HIGH on PR #461: the hook is
-    repo-controlled code, and it executing is what would otherwise demand
+    The hook is repo-controlled code, and its executing is what would otherwise demand
     OS-sandbox isolation on this spawn. The control case asserts the hook WOULD
     have fired without the overrides, so the test cannot silently pass because
     the harness failed to install a working hook.
@@ -450,7 +449,7 @@ class TestNoRepositoryCodeExecution:
     async def test_hooks_path_is_not_a_repo_writable_location(self, repo, tmp_path):
         """A hook planted at the OLD in-repo sentinel path must not execute.
 
-        Round 5 of the PR #461 review: `core.hooksPath` resolves relative to the
+        `core.hooksPath` resolves relative to the
         repository, so pointing it at `.git/kirocrew-no-hooks` left the
         suppression target inside a directory the checkout's own preparer can
         write. Planting `post-checkout` there turned the guard into the execution
@@ -470,7 +469,7 @@ class TestNoRepositoryCodeExecution:
         assert not marker.exists(), "hook planted at the in-repo sentinel path executed"
 
     def test_hooks_sink_is_a_non_directory_device(self):
-        """Round 8 HIGH: a same-uid gateway-owned directory was still plantable.
+        """A same-uid gateway-owned directory is plantable, so the sink is a non-directory device.
 
         `os.devnull` cannot be replaced or filled, so there is no window between
         one git call and the next in which a hook could appear.
@@ -489,7 +488,7 @@ class TestIdempotentReentry:
 
     The card creates the worktree, then opens a session. If the session step
     fails the worktree is already on disk, so a naive retry dead-ends on both
-    "directory already exists" and "branch already exists" (GPT review, PR #461).
+    "directory already exists" and "branch already exists".
     """
 
     @pytest.mark.asyncio
@@ -570,8 +569,8 @@ class TestIdempotentReentry:
 
 
 class TestConcurrencySafety:
-    """GPT review round 3, HIGH: check-then-create let two same-branch requests
-    both proceed, and the loser's cleanup then destroyed the winner's worktree.
+    """Check-then-create lets two same-branch requests both proceed, and the
+    loser's cleanup then destroys the winner's worktree.
     """
 
     def test_claim_is_atomic(self, repo):
@@ -612,9 +611,9 @@ class TestConcurrencySafety:
         assert not _branch_exists(str(repo), "feat/ours")
 
     def test_cleanup_never_touches_a_directory_it_did_not_create(self, repo):
-        """GPT round 4 HIGH: `created=False` must mean hands off the path.
+        """`created=False` must mean hands off the path.
 
-        Previously "git lists nothing here" authorized an `rmtree`, which is also
+        Otherwise "git lists nothing here" authorizes an `rmtree`, which is also
         what a transient listing failure looks like.
         """
         squatter = repo.parent / "proj-wt-untouched"
@@ -635,7 +634,7 @@ class TestConcurrencySafety:
         assert not ours.exists()
 
     def test_cleanup_deletes_the_branch_after_an_rmtree_fallback(self, repo):
-        """Round 7 MEDIUM: prune must precede `branch -D`.
+        """Prune must precede `branch -D`.
 
         When `worktree remove` fails and the directory is dropped with `rmtree`,
         git still lists the worktree as checked out on that branch and refuses
@@ -664,7 +663,7 @@ class TestConcurrencySafety:
         assert not _branch_exists(str(repo), "feat/stale"), "claimed branch survived cleanup"
 
     def test_cleanup_spares_a_branch_another_worktree_adopted(self, repo):
-        """Round 13 BLOCKING: `update-ref -d` has no "used by worktree" guard.
+        """`update-ref -d` has no "used by worktree" guard.
 
         A concurrent `git worktree add` can check out the branch this request
         claimed while the request is failing. Compare-and-delete still matched
@@ -699,8 +698,8 @@ class TestConcurrencySafety:
         assert _branch_exists(str(repo), "feat/unknown")
 
     def test_cleanup_spares_a_branch_that_advanced_after_the_claim(self, repo, tmp_path):
-        """Round 10 HIGH: `branch -D` force-deletes, so a concurrent commit landing
-        on the claimed ref between the claim and the cleanup was discarded with it.
+        """`branch -D` force-deletes, so a concurrent commit landing
+        on the claimed ref between the claim and the cleanup is discarded with it.
 
         Compare-and-delete (`update-ref -d <ref> <old>`) refuses once the ref has
         moved, so those commits stay reachable.
@@ -756,7 +755,7 @@ class TestConcurrencySafety:
 
 
 class TestSlugCollision:
-    """GPT review round 3, MEDIUM: `_dir_slug` keeps only a branch's last
+    """`_dir_slug` keeps only a branch's last
     segment, so `feat/foo` and `fix/foo` derive the same destination. Reuse keyed
     on the path alone handed back the wrong branch's worktree.
     """
@@ -782,7 +781,7 @@ class TestSlugCollision:
 
 
 class TestCheckoutFilters:
-    """GPT review round 3, HIGH: `.gitattributes` can name a content filter whose
+    """`.gitattributes` can name a content filter whose
     driver is defined in repo-local config, and checkout runs it. `-c` cannot
     disable an arbitrary filter name, so such a repo is refused.
     """
@@ -814,7 +813,7 @@ class TestCheckoutFilters:
     @pytest.mark.asyncio
     @pytest.mark.parametrize("key", ["filter.evil.process", "filter.evil.smudge"])
     async def test_worktree_scoped_filter_config_is_refused(self, repo, key):
-        """Round 6 HIGH: `--local` does not report worktree-scoped keys.
+        """`--local` does not report worktree-scoped keys.
 
         With `extensions.worktreeConfig=true` git also reads
         `$GIT_COMMON_DIR/config.worktree`. A filter driver declared only there was
@@ -838,7 +837,7 @@ class TestCheckoutFilters:
 
     @pytest.mark.asyncio
     async def test_linked_worktree_scoped_filter_config_is_refused(self, repo, tmp_path):
-        """Round 7 HIGH: for a LINKED worktree, `config.worktree` lives under
+        """For a LINKED worktree, `config.worktree` lives under
         `$GIT_DIR` (`<common>/worktrees/<id>`), not under the common dir.
 
         Probing the common dir therefore missed a filter declared in a linked
@@ -888,7 +887,7 @@ class TestCheckoutFilters:
 
     @pytest.mark.asyncio
     async def test_included_filter_config_is_refused(self, repo, tmp_path):
-        """Round 8 HIGH: `include.path` hid the driver from the probe.
+        """`include.path` hides the driver from the probe.
 
         For a SPECIFIC scope query (`--local`/`--worktree`) git defaults
         include-following OFF, so a `filter.*.smudge` reached through
@@ -915,7 +914,7 @@ class TestCheckoutFilters:
 
 
 class TestRound9Hardening:
-    """Regressions for the round-9 review findings."""
+    """Invalid branch and ref names are rejected before a worktree is created."""
 
     @pytest.mark.parametrize(
         "bad",
@@ -969,7 +968,7 @@ class TestRound9Hardening:
         assert not await _off_loop(_branch_exists, str(repo), "feat/nosbx")
 
     def test_git_runs_in_strict_sandbox_mode(self):
-        """Round 11 BLOCKING: `--includes` means `include.path` is repo-controlled,
+        """`--includes` means `include.path` is repo-controlled,
         so a hostile checkout could point it at `~/.aws/credentials` and have git
         read that file as config. "standard" leaves those paths visible; strict
         bind-mounts them away. Pinned so the mode cannot silently widen.
@@ -999,7 +998,7 @@ class TestRound9Hardening:
         `unshare(NEWNS)` is denied at exec time (errno 1). git never runs, and the
         non-zero exit was being reported downstream as "Not a git repository" —
         a misdiagnosis that sent the user looking at their repo instead of the
-        host. Round 9's CI run is where this surfaced.
+        host.
         """
         from kiro_crew.dashboard.handlers import worktree as wt
 
@@ -1047,7 +1046,7 @@ class TestRound9Hardening:
 
 
 class TestCallerIsolation:
-    """Round 8 HIGH: the allow-list spans EVERY slot's project, so an app caller
+    """The allow-list spans EVERY slot's project, so an app caller
     reaching this endpoint could create a worktree in another app's repository."""
 
     @pytest.mark.asyncio
@@ -1063,8 +1062,8 @@ class TestCallerIsolation:
 
     @pytest.mark.asyncio
     async def test_non_owner_dashboard_subject_is_refused(self, repo):
-        """Round 12 BLOCKING: a dashboard token minted for another subject carries
-        `app == ""` and passed the round-8 gate, so it could create a worktree —
+        """A dashboard token minted for another subject carries
+        `app == ""` and passes the app-allow-list gate, so it could create a worktree —
         and a branch — in the OWNER's repository."""
         app = _make_app(str(repo), app_claim="", user="somebody-else")
         async with TestClient(TestServer(app)) as client:

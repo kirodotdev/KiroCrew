@@ -1,4 +1,4 @@
-"""The valid-agent roster must reach the CALLER, not only the gateway log (#4842).
+"""The valid-agent roster must reach the CALLER, not only the gateway log.
 
 Three seams, one failure: a caller that named a non-existent agent got a bare
 ``agent 'x' not found``, could not self-correct, and burned a whole wave retrying
@@ -121,7 +121,7 @@ class TestPredicateReadsTheWireCode:
     def test_a_gateway_without_the_code_fails_soft(self) -> None:
         """A client newer than the gateway sees no ``code`` and loses only the
         short-circuit: every member is dispatched and refused individually, which is
-        the pre-#4842 behavior -- never a refusal of a name the gateway would take."""
+        the soft-fail behavior -- never a refusal of a name the gateway would take."""
         assert not spawn_tools._is_unknown_agent_refusal(
             {"error": "agent 'explore' not found; available: scout", "counted": True}, "explore"
         )
@@ -244,7 +244,7 @@ class TestSpawnListUsesTheSameFilter:
         cannot see a re-duplication (both spellings behave alike), so this is a
         source ratchet: the pair is spelled once, where the constant lives.
 
-        The spawn tools no longer name the set at all -- they inherit it as
+        The spawn tools do not name the set at all -- they inherit it as
         ``visible_agent_names``' default -- so the ratchet also pins that default,
         which is what makes the omission safe rather than accidental.
         """

@@ -2059,7 +2059,7 @@ class TestCountOpenFds:
     Both the ``kirocrew.process.open_fds`` gauge and gatewayd's
     zombie-diagnostic ``fd_count`` delegate here, so these tests pin the probe
     once: the POSIX steady-state correction, the None contract, and the
-    Windows handle-count route the gauge previously lacked.
+    Windows handle-count route.
     """
 
     def test_posix_count_is_positive_and_excludes_the_probe_fd(self):

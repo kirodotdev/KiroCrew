@@ -593,7 +593,7 @@ class TestPanelGateDrift:
             "it), or _PANEL_OWNED (the panel decides it client-side) — and mirror it in "
             "_generate_state if it belongs in the first bucket."
         )
-        # And the buckets must not name a gate that no longer exists, which would
+        # And the buckets must not name a gate that does not exist, which would
         # let a real omission hide behind a stale entry.
         assert not classified - reasons - {"stop_reason"}, (
             f"classified reason(s) {sorted(classified - reasons - {'stop_reason'})} are no "

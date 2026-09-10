@@ -298,7 +298,7 @@ def test_tr_u_15e_handler_rate_limiter_empty_ip_fails_closed():
 def test_tr_u_15f_rate_buckets_evict_stale_ips():
     """Regression: the per-IP rate-bucket map must not grow without bound.
 
-    Every distinct source IP that ever hits /api/auth/refresh used to leave a
+    Every distinct source IP that hits /api/auth/refresh would otherwise leave a
     permanent entry (an empty deque once its timestamps aged past the window),
     so a wide spread of one-shot client IPs (or a spoofed-XFF pump) slowly
     leaked memory. The periodic sweep must evict stale/empty buckets.
@@ -339,7 +339,7 @@ def test_tr_u_15f_rate_buckets_evict_stale_ips():
 
 def test_tr_u_15g_rate_buckets_hard_capped():
     """Backstop bound: once the map is at _REFRESH_RATE_MAX_BUCKETS, a
-    previously-unseen source IP is rate-limited (fail-closed) rather than
+    new source IP is rate-limited (fail-closed) rather than
     admitted by evicting a live bucket. The map never grows past the cap and
     no live bucket is dropped to make room for a newcomer."""
     from kiro_crew.dashboard.handlers import auth_refresh as ar
@@ -406,7 +406,7 @@ def test_tr_u_15i_saturated_client_cannot_reset_bucket_via_cap_flood():
     """Regression (Arbiter BLOCK / GPT 5.6 MEDIUM): a rate-limited client must
     NOT be able to reset its own bucket by flooding the map to capacity.
 
-    Previously, once the map hit the cap a NEW IP evicted the
+    Without the cap guard, at capacity a NEW IP would evict the
     least-recently-active bucket. A saturated attacker never appends a
     timestamp on denied calls, so their bucket froze at exhaustion time and
     became the eviction victim under an XFF / botnet pump — letting them drop
@@ -453,9 +453,9 @@ def test_tr_u_15j_new_ip_admitted_at_cap_when_stale_buckets_reclaimable():
     ADMITTED — not denied — when the map is at capacity but full of reclaimable
     stale buckets.
 
-    Previously the sweep was throttled to once per window even at capacity, so
-    under a sustained flood / trusted-XFF pump (or organic IP churn) that kept
-    the map pinned at _REFRESH_RATE_MAX_BUCKETS, a previously-unseen legitimate
+    If the sweep is throttled to once per window even at capacity, then
+    under a sustained flood / trusted-XFF pump (or organic IP churn) that keeps
+    the map pinned at _REFRESH_RATE_MAX_BUCKETS, a new legitimate
     IP was denied /api/auth/refresh for up to a window even though most buckets
     were stale and reclaimable — an availability defect inside an auth control
     surfacing as unexplained forced logouts. The fix invokes the sweep
@@ -486,7 +486,7 @@ def test_tr_u_15j_new_ip_admitted_at_cap_when_stale_buckets_reclaimable():
     # reclaimed, and the newcomer is ADMITTED (not rate-limited).
     assert ar._rate_limited("192.0.2.200", now=base) is False
     assert "192.0.2.200" in ar._refresh_rate_buckets
-    # The stale buckets were reclaimed, so the map is no longer pinned at cap.
+    # The stale buckets were reclaimed, so the map is not pinned at cap.
     assert len(ar._refresh_rate_buckets) < ar._REFRESH_RATE_MAX_BUCKETS
 
     with ar._refresh_rate_lock:
@@ -687,7 +687,7 @@ def test_tr_u_22a_grace_accepts_only_chain_head(
     # own live replacement pair.
     assert isolated_state.grace_replacement("c1", "jti3", "1.2.3.4") == r3
 
-    # (b) Older rotated jtis are NO LONGER accepted -> None -> caller revokes
+    # (b) Older rotated jtis are NOT accepted -> None -> caller revokes
     # the chain (undiluted reuse signal).
     assert isolated_state.grace_replacement("c1", "jti1", "1.2.3.4") is None
     assert isolated_state.grace_replacement("c1", "jti2", "1.2.3.4") is None
@@ -703,15 +703,15 @@ def test_tr_u_22a_grace_accepts_only_chain_head(
 def test_tr_u_22a2_older_rotated_jti_triggers_reuse_not_replay(
     isolated_state: RefreshStateManager,
 ):
-    """Reuse-signal regression for chain-head-only grace.
+    """A stale rotated jti triggers reuse, not replay, under chain-head-only grace.
 
     Model the real handler contract: consuming jtiN records a replacement
     carrying the NEXT minted jti (the token the client presents next). After
     jti1->jti2->jti3->jti4 (jti4 == current live head, not yet consumed), ONLY
     the head jti (jti3, the last consumed) may replay, and it is served the
     live jti4 pair. Every OLDER consumed jti (jti1, jti2) returns None so the
-    handler revokes the chain — an attacker replaying a stale captured jti can
-    no longer resolve to a live session inside the window, and the served pair
+    handler revokes the chain — an attacker replaying a stale captured jti
+    cannot resolve to a live session inside the window, and the served pair
     is always the live head (never an already-consumed token).
     """
     now = time.time()
@@ -780,7 +780,7 @@ def test_refresh_cookie_name_per_port():
     assert refresh_cookie_name("5555") == "mc_refresh_5555"
 
 
-# -- Foreign-port cookie pruning (cookie-jar overflow, issue #610) ------------
+# -- Foreign-port cookie pruning (cookie-jar overflow) ------------
 
 
 def test_foreign_port_cookies_selects_other_ports_with_matching_paths():
@@ -1025,7 +1025,7 @@ def test_tr_u_25b_secure_flag_via_forwarded_proto_over_tunnel():
 def test_tr_u_26_refresh_cookie_path_covers_logout():
     """The refresh cookie's Path attribute MUST cover /api/auth/logout.
 
-    Live test on 2026-06-18 caught this: cookie was scoped Path=/api/auth/refresh,
+    Otherwise the cookie is scoped Path=/api/auth/refresh,
     so browsers/curl don't send it to /api/auth/logout (path prefix doesn't match).
     Logout silently no-opped: server saw 'no_cookie', returned 200 logged_out:true,
     but never called revoke_chain. A subsequent refresh on the same cookie still
@@ -1147,7 +1147,7 @@ def test_tr_u_27_logout_revokes_access_cookie(tmp_path, monkeypatch):
     assert reason == "session revoked"
 
 
-# -- Refresh endpoint trims the shared cookie jar (issue #610) ----------------
+# -- Refresh endpoint trims the shared cookie jar ----------------
 
 
 def test_refresh_expires_foreign_port_cookies_keeps_current(
@@ -1353,7 +1353,7 @@ def test_tr_u_31_refresh_endpoint_rejects_pre_logout_cookie(
     """POST /api/auth/refresh with a pre-logout refresh cookie must 401.
 
     End-to-end at the handler level: after revoke_all_sessions() the browser's
-    saved `mc_refresh_<port>` cookie can no longer mint a fresh access cookie.
+    saved `mc_refresh_<port>` cookie cannot mint a fresh access cookie.
     """
     import asyncio
     from unittest.mock import MagicMock

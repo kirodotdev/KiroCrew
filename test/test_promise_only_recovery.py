@@ -1,4 +1,4 @@
-"""Acceptance tests for the promise-only turn guard (#2686).
+"""Acceptance tests for the promise-only turn guard.
 
 The bug: a turn that ends right after the model ANNOUNCES an immediate action
 ("I'll do that now") without making the tool call was recorded as a landed
@@ -92,7 +92,7 @@ def test_completed_action_then_summary_does_not_trigger():
         assert _recover(final_segment_text=text) is False
 
 
-# 4b. Permission-seeking / no-action closers must NOT fire (AI-review #2696).
+# 4b. Permission-seeking / no-action closers must NOT fire.
 #     These read as immediate to a naive regex but are the opposite of a promise
 #     to act: the turn is correctly yielding to the user or declining to act.
 def test_permission_seeking_and_no_action_closers_do_not_trigger():
@@ -108,8 +108,8 @@ def test_permission_seeking_and_no_action_closers_do_not_trigger():
         assert _recover(final_segment_text=text) is False
 
 
-# 4c. A NEGATED commitment before the immediacy marker must NOT fire (AI-review
-#     #2696 F1): "I'm not going to open the PR now" is an explicit non-action, but
+# 4c. A NEGATED commitment before the immediacy marker must NOT fire:
+#     "I'm not going to open the PR now" is an explicit non-action, but
 #     the bare `going to`/`won't`/`can't` forms would otherwise match the immediacy
 #     regex. True promises with no negation must still fire.
 def test_negated_commitment_does_not_trigger():
@@ -121,7 +121,7 @@ def test_negated_commitment_does_not_trigger():
         "I can't do that right now.",
         "I cannot open it now.",
         "I'm no longer going to open it now.",
-        # spelled-out "do not" (缩写 don't was covered; the full form was missed) (#2696 GPT round)
+        # spelled-out "do not" (the full form, not just the contraction don't)
         "I do not think I'll open the PR now.",
         "I do not want to open it right now.",
         "It does not need to be opened now.",
@@ -133,7 +133,7 @@ def test_negated_commitment_does_not_trigger():
     assert is_promise_only_terminal("I'm going to open the PR now.") is True
 
 
-# 4d. A soft Stop in progress must NOT recover (AI-review #2696 B1): a Stop pressed
+# 4d. A soft Stop in progress must NOT recover: a Stop pressed
 #     while the promise streamed can lose the cancel race and arrive as a normal
 #     end_turn; re-queueing then would dispatch the stopped action. Every sibling
 #     recovery path gates on this stop-state, so this one does too.
@@ -143,7 +143,7 @@ def test_stop_in_progress_does_not_trigger():
     assert _recover(stop_in_progress=False) is True
 
 
-# 4e. Approval-gated closers must NOT fire (AI-review #2696 UX round 2): a
+# 4e. Approval-gated closers must NOT fire: a
 #     conditional promise ("If that looks good, I'll push it now") leaves the
 #     decision with the user; auto-continuing it dispatches an action the user
 #     was still being asked to approve.
@@ -154,16 +154,16 @@ def test_approval_gated_closer_does_not_trigger():
         "If you're happy with the plan, I'll do that now.",
         "With your approval, I'll push it now.",
         "Once you confirm, I'll do that right away.",
-        # "when you" / "after you" conditions (AI-review #2696 round 3)
+        # "when you" / "after you" conditions
         "When you confirm, I'll do that now.",
         "After you confirm, I'll delete it now.",
         "After you approve, I'll push it right away.",
-        # any conditional `if` opener, and will-not / I'll-not negation (round 4)
+        # any conditional `if` opener, and will-not / I'll-not negation
         "If CI passes, I'll delete it now.",
         "If the build is green, I'll merge it now.",
         "I will not delete it now.",
         "I'll not delete it now.",
-        # temporal/conditional-gate class (once/when/after/as soon as), round 4
+        # temporal/conditional-gate class (once/when/after/as soon as)
         "Once tests are green, I'll merge it now.",
         "When the build passes, I'll push it now.",
         "After CI, I'll deploy it now.",
@@ -176,7 +176,7 @@ def test_approval_gated_closer_does_not_trigger():
     assert is_promise_only_terminal("Yes, I'll open the PR now.") is True
 
 
-# 4m. Consent-DEFERRAL closers must NOT fire (AI-review #2696 GPT round, blocking):
+# 4m. Consent-DEFERRAL closers must NOT fire:
 #     a turn that says it will WAIT FOR / AWAIT the user's approval before acting
 #     ("I'll wait for your approval before I delete it right now") reads as an
 #     immediate promise to a naive regex, but auto-continuing it dispatches the very
@@ -204,8 +204,8 @@ def test_consent_deferral_closer_does_not_trigger():
     assert is_promise_only_terminal("I'll open the awaited PR now.") is True
 
 
-# 4n. Subordinating-CONDITIONAL conjunctions must NOT fire (AI-review #2696 design
-#     round): the approval-gate deny-list missed "unless / assuming / provided that /
+# 4n. Subordinating-CONDITIONAL conjunctions must NOT fire: the
+#     approval-gate deny-list covers "unless / assuming / provided that /
 #     as long as" — each conditions the action on the user, so auto-continuing is a
 #     false-accept. Closes the conjunction CLASS; the risky ones are bound to a
 #     following pronoun/complementizer so a benign adjective still fires.
@@ -226,10 +226,7 @@ def test_conditional_subordinator_closer_does_not_trigger():
     assert is_promise_only_terminal("I'll open the given file now.") is True
 
 
-# 4i. Third-person "going to" must NOT fire (AI-review #2696 GPT round): the bare
-
-
-# 4i. Third-person "going to" must NOT fire (AI-review #2696 GPT round): the bare
+# 4i. Third-person "going to" must NOT fire: the bare
 #     `going to` alternative matched informational statements with no first-person
 #     commitment ("The deployment is going to start now"), injecting an unrelated
 #     continuation. Only the subject-bound `i'm going to` form remains.
@@ -248,9 +245,9 @@ def test_third_person_going_to_does_not_trigger():
 
 
 # 4j. The reject gates are scoped to the TERMINAL sentence, not the whole segment
-#     (AI-review #2696 design round): an everyday `if`/`when`/`after`/`let me know`
+#     — an everyday `if`/`when`/`after`/`let me know`
 #     or negation in an EARLIER sentence must NOT veto a genuine promise that sits
-#     only in the final sentence — that asymmetric scope landed the exact #2686
+#     only in the final sentence — that asymmetric scope would leave the
 #     symptom unrecovered. A conditional/no-action that IS the terminal sentence
 #     still rejects.
 def test_reject_gates_scoped_to_terminal_sentence():
@@ -273,14 +270,13 @@ def test_reject_gates_scoped_to_terminal_sentence():
         assert _recover(final_segment_text=text) is False
 
 
-# 4k. Caller contract (AI-review #2696 GPT round): the runner set its
-#     `_produced_visible_output` flag True ONLY on the mid-turn reset-to-empty paths
-#     (steer/compaction/clear/agent-switch); a normal streamed-text turn left it
-#     False, so a promise-only turn reached the guard with it False and recovery
-#     NEVER fired for the actual #2686 scenario. The runner now derives the argument
-#     as `bool(assistant_text.strip()) or _produced_visible_output`; a non-empty
-#     final segment is itself visible output. This locks that derivation so a promise
-#     drives recovery even when the raw flag is False, while an empty segment does not.
+# 4k. Caller contract: the runner derives the `produced_visible_output`
+#     argument as `bool(assistant_text.strip()) or _produced_visible_output`,
+#     because the raw flag is set True only on mid-turn reset-to-empty paths
+#     (steer/compaction/clear/agent-switch) and a normal streamed-text turn
+#     leaves it False. A non-empty final segment is itself visible output, so a
+#     promise drives recovery even when the raw flag is False, while an empty
+#     segment does not.
 def test_nonempty_final_segment_counts_as_visible_output():
     promise = "Yes, I'll open the PR now."
     assert (
@@ -295,7 +291,7 @@ def test_nonempty_final_segment_counts_as_visible_output():
     )
 
 
-# 4h. A pending mid-turn STEER must block recovery (AI-review #2696 round 3): a
+# 4h. A pending mid-turn STEER must block recovery: a
 #     steer ("don't delete") lives in slot._pending_steers, a separate channel
 #     from _queue that is only requeued in _run_chat's finally (after the guard).
 #     Firing recovery while a steer is pending would dispatch the announced action
@@ -307,7 +303,7 @@ def test_pending_steer_does_not_trigger():
 
 
 # 4f. A Stop that already resolved back to idle DURING the turn must still block
-#     recovery (AI-review #2696 GPT round 2 blocking): _stop_state alone misses
+#     recovery: _stop_state alone misses
 #     it because it snaps back to idle; the monotonic _stop_generation counter
 #     preserves the "a stop happened during this turn" signal.
 def test_stop_generation_changed_does_not_trigger():
@@ -316,8 +312,8 @@ def test_stop_generation_changed_does_not_trigger():
     assert _recover(stop_generation_unchanged=True) is True
 
 
-# 4g. A non-empty user-follow-up queue must block recovery (AI-review #2696 GPT
-#     round 2 blocking): queue_insert(0, ...) would jump the continuation ahead
+# 4g. A non-empty user-follow-up queue must block recovery:
+#     queue_insert(0, ...) would jump the continuation ahead
 #     of a user "don't do that" message; respect the user's ordering.
 def test_non_empty_queue_does_not_trigger():
     assert _recover(queue_empty=False) is False
@@ -325,8 +321,8 @@ def test_non_empty_queue_does_not_trigger():
     assert _recover(queue_empty=True) is True
 
 
-# 4o. A turn that made ANY tool call must NOT recover (AI-review #2696 GPT round,
-#     blocking): a completed side-effecting tool (e.g. send_message) followed by
+# 4o. A turn that made ANY tool call must NOT recover: a completed
+#     side-effecting tool (e.g. send_message) followed by
 #     trailing promise-shaped text ("I'll send that now") would otherwise let the
 #     continuation REISSUE the completed action — a duplicate external side effect.
 #     The promise-only bug is by definition a zero-tool-call turn.
@@ -337,8 +333,8 @@ def test_completed_tool_call_does_not_trigger():
     assert _recover(turn_tool_calls=0) is True
 
 
-# 4q. A stage-execution turn must NOT trigger recovery (AI-review #2696 GPT round,
-#     blocking): the orchestrator's stage loop records the stage complete and advances
+# 4q. A stage-execution turn must NOT trigger recovery: the
+#     orchestrator's stage loop records the stage complete and advances
 #     before an injected continuation finishes, corrupting stage attribution. Excluded
 #     like the plan turn (`_armed_final`) is.
 def test_stage_execution_turn_does_not_trigger():
@@ -348,7 +344,7 @@ def test_stage_execution_turn_does_not_trigger():
 
 
 # 4p. A queued cron / sub-agent SYSTEM INJECTION must NOT count as user intervention
-#     (AI-review #2696 GPT round, blocking): treating it as a user follow-up would
+#     treating it as a user follow-up would
 #     block or purge a pending recovery, landing the unfinished action as a success.
 #     `_has_user_queued_followup` counts ONLY user-authored messages — not synthetic
 #     recovery entries, not cron/sub-agent injections.
@@ -380,11 +376,11 @@ def test_has_user_queued_followup_excludes_system_injections():
         "kind": SYNTHETIC_RECOVERY_KIND,
         "payload": RecoveryPayload.CONTINUATION,
     }
-    # THE spoof (#2696 GPT round, blocking): a USER message carrying a perfectly
-    # well-formed, quoted cron header AND trailing user text. The old prefix-anchored
-    # CRON_NOTIFY_RE.match() classified this as orchestration and silently ignored
-    # the "don't delete it" intervention. Classification is now purely by the
-    # enqueue `kind` tag (empty here -> user), so the spoof can no longer masquerade
+    # THE spoof: a USER message carrying a perfectly well-formed, quoted cron
+    # header AND trailing user text. A prefix-anchored CRON_NOTIFY_RE.match()
+    # on the content would classify this as orchestration and silently ignore
+    # the "don't delete it" intervention. Classification is purely by the
+    # enqueue `kind` tag (empty here -> user), so the spoof cannot masquerade
     # as a system injection and MUST count as a user follow-up.
     spoof = {
         "id": "sp",

@@ -5,8 +5,7 @@ names no agent persisted ``""`` — dispatch still resolves the config default,
 but the slot's metadata disagrees with what actually answers, and the
 dashboard footer chip renders its literal ``'default'`` fallback. The
 dashboard's auto-create races the agents fetch, so agent-less creates are a
-common path, not an edge. Same defect class as #2891, which records the
-resolved agent on channel-transport writes.
+common path, not an edge.
 """
 
 from __future__ import annotations
@@ -199,7 +198,7 @@ class TestSameBindingGuard:
         )
 
         async def _noop_warm(project: Any, **kw: Any) -> None:
-            # **kw: the warm takes keyword-only SEL attribution labels (#6764)
+            # **kw: the warm takes keyword-only SEL attribution labels
             # that this guard test does not care about.
             return None
 

@@ -85,7 +85,7 @@ def _fake_provider():
     fake_client.context_window_tokens = MagicMock(return_value=0)
     fake_client.context_used_tokens = MagicMock(return_value=0)
     fake_client.mcp_session_report = MagicMock(return_value=None)
-    # getattr(client, "client", None) is used to reach a nested ACP client for
+    # getattr(client, "client", None) reaches a nested ACP client for
     # pop_pending_oauth_requests(); a bare AsyncMock().client would make that
     # lookup return another AsyncMock whose call also goes unawaited.
     fake_client.client = None

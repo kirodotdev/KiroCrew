@@ -1,4 +1,4 @@
-"""Drain-time re-validation of queued prompts (issue #5911).
+"""Drain-time re-validation of queued prompts.
 
 Authorization is decided at ADMISSION — ``authorize_target`` for
 ``session_send``, the authenticated composer for a human typing into a busy
@@ -8,7 +8,7 @@ while unlinked can gain a channel or mirror link before its queue drains.
 
 These tests pin the three-part fix end to end: producers stamp the
 admission-time containment on the queue entry (``containment_meta``), the drain
-re-asserts the same constraints and drops what no longer qualifies, and a drop
+re-asserts the same constraints and drops what stops qualifying, and a drop
 is loud (queue card retracted, visible transcript notice, SEL record) — never a
 silent vanish. They also pin the two designed non-drops: a constraint already
 held at admission is not a change (channel-born sessions keep draining), and
@@ -143,7 +143,7 @@ def test_requeued_steer_is_stamped(tmp_path):
     assert _snapshot_of(slot._queue[0]) is not None
 
 
-# ── The drain drops what no longer qualifies, loudly ─────────────────────────
+# ── The drain drops what stops qualifying, loudly ─────────────────────────
 
 
 def test_linked_after_enqueue_drops_with_visible_notice(tmp_path, _inline_audit):
@@ -601,7 +601,7 @@ async def test_drain_strips_snapshot_from_the_persisted_row(tmp_path, monkeypatc
     assert sc.QUEUED_CONTAINMENT_META_KEY not in row_meta
 
 
-# ── Constraint-set parity with authorize_target (#5994) ──────────────────────
+# ── Constraint-set parity with authorize_target ──────────────────────
 #
 # The constraint set now has two hand-maintained spellings: `authorize_target`
 # refuses admission inline, and `containment_snapshot` re-derives the same

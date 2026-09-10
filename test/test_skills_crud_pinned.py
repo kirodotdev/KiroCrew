@@ -321,7 +321,7 @@ def test_the_rollback_does_not_delete_a_rivals_replacement_leaf(loader, monkeypa
     monkeypatch.undo()
 
     # The rival's file survived the rollback. The directory removal is refused for
-    # the same reason -- it is no longer empty -- so the skill is left for a human
+    # the same reason -- it is not empty -- so the skill is left for a human
     # rather than either file being destroyed.
     assert (skill_dir / "SKILL.md").read_text(encoding="utf-8") == "RIVAL"
 

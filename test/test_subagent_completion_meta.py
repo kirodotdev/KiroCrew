@@ -1,9 +1,9 @@
 """Structured completion facts ride on the message meta, not the prose.
 
 A finished sub-agent's completion is injected as the parent's next turn and
-rendered by the dashboard as a card. The card used to recover its header facts
+rendered by the dashboard as a card. Recovering the card's header facts
 (outcome, tallies, which agent) by re-parsing the English prose the gateway
-composed; a reword silently broke rendering with no failing test (#1792).
+composes is fragile: a reword can silently break rendering with no failing test.
 
 The gateway now stamps those facts as a structured dict on the injected row's
 ``meta[SUBAGENT_COMPLETION_META_KEY]``. These tests pin the helper shapes and
@@ -72,7 +72,7 @@ class TestMetaHelperShapes:
         }
 
     def test_single_carries_requested_and_resolved_model(self) -> None:
-        # The served model is auditable against the requested pin (#3582): the
+        # The served model is auditable against the requested pin: the
         # card shows the resolved id and can flag a downgrade when the two differ.
         m = single_completion_meta(
             agent_id="a1",

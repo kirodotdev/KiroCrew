@@ -211,7 +211,7 @@ def test_a_rewritten_lesson_does_not_receive_the_old_rule_s_vector(store, monkey
     The write path clears a lesson's vector when its rule text changes, so a
     rewrite landing during the pause leaves a row that matches `embedding IS
     NULL` — and stamping the OLD rule's vector onto it would rank the new rule by
-    text it no longer holds.
+    text it does not hold.
     """
     store.embed_fn = lambda text: [0.5, 0.5, 0.5, 0.5]
     store.write_lesson("original rule text")

@@ -115,6 +115,6 @@ class TestApiSessionsRestartMcpSync:
 # for @builder-mcp) and AIM skill-path injection via the agent.py helpers
 # _inject_skill_paths / _ensure_flag_values / _inject_builder_mcp_flags. That
 # machinery is Amazon-internal and was removed from the public fork: the default
-# agent config no longer injects @builder-mcp or AIM skill paths, so the helpers
-# and their tests no longer apply.
+# agent config does not inject @builder-mcp or AIM skill paths, so the helpers
+# and their tests do not apply.
 # ---------------------------------------------------------------------------

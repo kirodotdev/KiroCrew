@@ -889,7 +889,7 @@ class TestTelegramSessionPicker:
         """A failed pick must not turn a live record into a detach marker.
 
         ``record`` overwrites the channel's expectation, so retiring the
-        replacement on failure leaves DETACHED where ACTIVE used to be — and that
+        replacement on failure leaves DETACHED where ACTIVE belongs — and that
         active record is the evidence a lost link still owes the user a notice.
         Retiring it makes the next message route natively, so the notice is never
         delivered.

@@ -3189,7 +3189,7 @@ class TestEdgeCases:
         with patch.object(runner, "self_review", return_value=True):
             result = await runner.run(spec)
 
-        # Step 1 denied → run pauses (denial no longer skips)
+        # Step 1 denied → run pauses (denial does not skip)
         assert result.tasks[0].status == StepStatus.PENDING
         assert result.status == "paused"
 

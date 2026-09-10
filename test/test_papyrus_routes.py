@@ -544,8 +544,8 @@ class TestPdf:
         (project / "main.pdf").write_bytes(b"%PDF-1.4 body")
         request = make_mocked_request("GET", "/api/apps/papyrus/pdf?name=my-paper")
         response = await routes._handle_pdf(request)
-        # A `FileResponse`, which STREAMS from disk. It used to be a buffered
-        # `web.Response` built from `pdf.read_bytes()`, which put the whole file in
+        # A `FileResponse`, which STREAMS from disk. A buffered `web.Response`
+        # built from `pdf.read_bytes()` would put the whole file in
         # gateway memory — and a PDF's size is decided by the document being compiled
         # (or by a cloned repo shipping a large `main.pdf`), so one open of the viewer
         # could exhaust the process. Asserting on the PATH rather than `.body`,

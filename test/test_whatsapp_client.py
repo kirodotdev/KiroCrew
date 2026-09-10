@@ -499,7 +499,7 @@ def _install_fake_jid(monkeypatch):
         # Mirrors the real proto's contract: RawAgent/Device/Integrator are
         # REQUIRED fields, so SerializeToString() on the real class raises
         # EncodeError when they are unset. The fake records what was passed so
-        # tests can pin that _parse_jid supplies all five (issue #6756), and
+        # tests can pin that _parse_jid supplies all five, and
         # rejects unknown names because the real proto does too — a permissive
         # fake would let a field typo pass while production regresses.
         def __init__(self, User="", Server="", **required):
@@ -673,7 +673,7 @@ def test_list_groups_swallows_errors():
     ],
 )
 def test_parse_jid_sets_required_proto_fields(monkeypatch, jid_str, expected_user, expected_server):
-    """Regression for issue #6756: the neonize JID proto marks RawAgent,
+    """The neonize JID proto marks RawAgent,
     Device and Integrator as REQUIRED, so a JID built without them raises
     ``EncodeError`` from ``SerializeToString()`` at the FFI boundary and every
     outbound WhatsApp operation fails. neonize is an optional dependency not

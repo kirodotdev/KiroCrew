@@ -327,8 +327,8 @@ async def test_publish_notice_appears_on_both_payload_keys(store, fake_client):
 
 @pytest.mark.asyncio
 async def test_a_later_successful_push_does_not_clear_the_serving_notice(store, fake_client):
-    """This previously asserted the opposite, on the premise that "a later successful push
-    settles the rollout question". It does not.
+    """A later successful push does not clear the serving notice: pushing does not
+    settle the rollout question.
 
     A push writes bytes to the OBJECT STORE. The notice describes the DELIVERY NETWORK --
     whether the distribution has finished rolling out, or is disabled. Those are
@@ -638,7 +638,7 @@ async def test_push_version_skips_already_synced_version(store, fake_client):
 
 @pytest.mark.asyncio
 async def test_push_version_re_pushes_widget_on_wrapper_revision_bump(store, fake_client, monkeypatch):
-    """A widget with stale wrapper_revision is re-pushed even if content version matches (#3373)."""
+    """A widget with stale wrapper_revision is re-pushed even if content version matches."""
     store.create(name="Widget", content="<p>hi</p>", kind="widget", slug="w")
     await publish_sync.publish("w")
     art = store.get("w")
@@ -659,7 +659,7 @@ async def test_push_version_re_pushes_widget_on_wrapper_revision_bump(store, fak
 
 @pytest.mark.asyncio
 async def test_push_version_skips_non_widget_on_wrapper_revision_bump(store, fake_client, monkeypatch):
-    """Non-widget artifacts ignore wrapper_revision — only widgets wrap with CSP (#3373)."""
+    """Non-widget artifacts ignore wrapper_revision — only widgets wrap with CSP."""
     store.create(name="Doc", content="hello", kind="text", slug="t")
     await publish_sync.publish("t")
     monkeypatch.setattr(publish_sync, "WRAPPER_REVISION", publish_sync.WRAPPER_REVISION + 1)
@@ -914,9 +914,9 @@ async def test_an_unreachable_unpublish_does_not_offer_delete_as_the_way_out(
 ):
     """The refusal message must not name an action that also refuses.
 
-    It used to say "if it is gone, delete the artifact to drop the record along with it"
-    -- true before the delete path began refusing on an unwithdrawn copy, and false
-    after. A message naming a guaranteed-failing remedy is worse than naming none.
+    Naming "if it is gone, delete the artifact to drop the record along with it" is
+    wrong, because the delete path itself refuses on an unwithdrawn copy. A message
+    naming a guaranteed-failing remedy is worse than naming none.
     """
     store.create(name="Doc", content="x", kind="text", slug="d")
     await publish_sync.publish("d")
@@ -973,7 +973,7 @@ async def test_delete_for_artifact_reports_unreachable_on_an_unknown_provider(st
     """A publication naming a destination this edition does not register cannot be
     reached, so no retry from here is meaningful: the outcome is UNREACHABLE (the
     escape-hatch case), NOT FAILED, and nothing raises -- provider resolution is the
-    case the guard used to miss (it raised before the try block was entered)."""
+    case the guard must not miss (a raise there precedes the try block)."""
     store.create(name="Doc", content="x", kind="text", slug="gone")
     art = store.get("gone")
     art.publication = ArtifactPublication(
@@ -1175,7 +1175,7 @@ def test_wrap_widget_html_inlines_the_staged_runtime(tmp_path, monkeypatch):
 def test_wrap_widget_html_without_staged_runtime_does_not_fall_back_to_cdn(tmp_path, monkeypatch):
     # An unbuilt source checkout has no staged bundle. The document must degrade
     # to unstyled utility classes rather than reintroduce the Play CDN, which
-    # would require the 'unsafe-eval' the CSP no longer grants.
+    # would require the 'unsafe-eval' the CSP does not grant.
     monkeypatch.setattr(publish_sync, "_TAILWIND_RUNTIME_FILE", tmp_path / "absent.js")
 
     html = publish_sync.wrap_widget_html("<p>x</p>")
@@ -1254,8 +1254,8 @@ def test_tailwind_runtime_js_returns_empty_on_unreadable_asset(tmp_path, monkeyp
 
 
 def test_redact_untrusted_scans_every_source():
-    # Regression (PR #14 alice): the `manual` source is no longer a redaction
-    # bypass. `source` is set once at create and NOT re-derived when an agent
+    # The `manual` source is not a redaction bypass: `source` is set once at
+    # create and NOT re-derived when an agent
     # later updates the content, so a `manual`-labelled artifact can carry
     # LLM/agent bytes by publish time — it MUST still be scanned. An AKIA-shaped
     # credential is redacted regardless of source.
@@ -1283,7 +1283,7 @@ async def test_refresh_flags_rollback(store, fake_client):
     await publish_sync.publish(art.slug, visibility="PRIVATE")
     # The remote bytes changed out-of-band AT THE SAME version (an external
     # edit or rollback): the version still matches what KiroCrew published, but
-    # the sha no longer does. This is genuine drift to surface (a cloud-ahead
+    # the sha does not. This is genuine drift to surface (a cloud-ahead
     # version is now a pullable edit, not drift — covered separately).
     fake_client.get_response = {
         "artifact": {
@@ -1735,7 +1735,7 @@ async def test_upstream_status_reports_ahead(store, fake_client, tmp_path):
 
 @pytest.mark.asyncio
 async def test_upstream_status_reports_local_ahead_on_wrapper_revision_bump(store, fake_client, tmp_path, monkeypatch):
-    """Widget with stale wrapper_revision shows local_ahead even if content hasn't changed (#3373)."""
+    """Widget with stale wrapper_revision shows local_ahead even if content hasn't changed."""
     art = store.create(name="W", content="<p>x</p>", kind="widget")
     _track_publication(store, art.slug)
     # Simulate wrapper bump.
@@ -1969,9 +1969,9 @@ async def test_unpublish_asks_whether_this_publications_account_is_reachable(
     assert fake_client.available() is True
     with pytest.raises(publish_sync.PublishUnavailableError) as exc:
         await publish_sync.unpublish("u-bound")
-    # The copy is kept and the message must not promise a retry will fix it. It used to
-    # name deleting the artifact as the exit for the gone-account case; that exit no
-    # longer exists, because the delete path refuses on this same destination, so the
+    # The copy is kept and the message must not promise a retry will fix it. It must
+    # not name deleting the artifact as the exit for the gone-account case: no such
+    # exit exists, because the delete path refuses on this same destination, so the
     # message must not send the user at it. See the dedicated test above.
     assert "Restore access" in str(exc.value)
     assert "delete the artifact to drop the record" not in str(exc.value)

@@ -435,9 +435,9 @@ class TestAnswerOnlyBlock:
         assert "full detail they asked for" in result
 
     def test_asking_why_does_not_lift_the_length_rules(self):
-        """The carve-out used to fire on "asks why" and switch the whole mode
-        off, so a bare "why did you override that?" -- a one-line question --
-        licensed a full report. The user's own workaround was to append "simple
+        """The carve-out must not fire on "asks why" and switch the whole mode
+        off, or a bare "why did you override that?" -- a one-line question --
+        would license a full report. The user's own workaround was to append "simple
         sentences to explain" to every why-question, which is the missing bound
         written by hand. A why-question opts into the REASON, not into length:
         the per-item sentence bound and the plain-words rule stay in force.
@@ -498,9 +498,9 @@ class TestAnswerOnlyBlock:
             assert "explain-for" not in other
 
     def test_unrequested_explanation_is_the_rare_exception(self):
-        """The block previously carried a broad judgement-based licence to
-        explain unasked, and the model reached for it constantly -- the reported
-        symptom was that answer_only still read verbose. The default is now the
+        """The block must not carry a broad judgement-based licence to
+        explain unasked, which the model reaches for constantly -- the
+        symptom being that answer_only reads verbose. The default is the
         terse answer plus a one-line offer, and an UNCERTAIN case resolves
         toward omitting, since an unread explanation costs the reader nothing
         to ask for and everything to skip.
@@ -624,8 +624,8 @@ class TestAnswerOnlyBlock:
     def test_answer_only_keeps_safety_carveout(self):
         """What survives compression unconditionally is narrower than before:
         an ordered procedure (a dropped step causes the mistake) and required
-        formats. A risk warning is no longer in this list because it is now
-        governed by the one-line high-stakes rule instead -- present always,
+        formats. A risk warning is not in this list because the one-line
+        high-stakes rule governs it instead -- present always,
         long never.
         """
         result = _resolve("{{VERBOSITY_BLOCK}}", "dashboard:x", verbosity="answer_only")

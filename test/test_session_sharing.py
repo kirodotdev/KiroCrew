@@ -738,8 +738,8 @@ class TestSessionSharingParentReset:
     async def test_get_subagent_runtime_retries_once_on_spawn_failure(self, monkeypatch):
         """get_subagent_runtime retries spawn once on AcpRuntimeDead (parity with
         get_bg_session): the first spawn dies, the second succeeds -> live runtime.
-        Regression guard: the retry loop was previously dead code (spawn raised
-        straight through without being caught, so max_retries had no effect)."""
+        The retry loop must catch the failure: a spawn that raised straight
+        through without being caught would leave max_retries with no effect."""
         from kiro_crew.acp.runtime import AcpRuntimeDead
         from kiro_crew.config.loader import KiroCrewConfig
         from kiro_crew.session import SessionManager

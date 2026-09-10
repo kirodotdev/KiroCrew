@@ -738,11 +738,11 @@ class TestGitMachineryIsNotDocumentContent:
 class TestASymlinkedProjectEntryIsRefused:
     """`projects/<name>` must be a real directory under `projects_dir`, never a link.
 
-    The containment check used to accept `resolved == projects_dir` (the `resolved
-    != base_resolved` disjunct), and `projects/pwn -> .` satisfied exactly that.
-    The blast radius was total: every OTHER paper became a "child" of the fake
-    project, so `safe_child` resolved `other-paper/main.tex` as an in-project path
-    (cross-project read AND write), and `DELETE /project?name=pwn` ran `rmtree` on
+    A containment check that accepts `resolved == projects_dir` (the `resolved
+    != base_resolved` disjunct) is satisfied by `projects/pwn -> .`, and the blast
+    radius is total: every OTHER paper becomes a "child" of the fake project, so
+    `safe_child` resolves `other-paper/main.tex` as an in-project path
+    (cross-project read AND write), and `DELETE /project?name=pwn` runs `rmtree` on
     the projects ROOT — destroying every paper the user had.
     """
 

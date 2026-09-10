@@ -127,7 +127,7 @@ def test_summary_header_format_is_pinned_for_frontend() -> None:
     (arrow is the U+2192 rightwards arrow). This cross-layer contract has no
     shared constant, so pin the format here — if the header wording drifts, this
     test fails instead of the launch/completion card silently degrading in the
-    UI. See PR #245 design review, finding 2."""
+    UI."""
     snap = {"name": "pizza", "run_id": "wf_1", "status": "finished", "result": {"n": 1}}
     body = _summarize(snap)
     lines = body.splitlines()
@@ -136,8 +136,8 @@ def test_summary_header_format_is_pinned_for_frontend() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Routing: result lands in the ORIGINATING chat slot (regression — it used to
-# go to a separate workflow-<id> slot the user never saw).
+# Routing: result lands in the ORIGINATING chat slot, not a separate
+# workflow-<id> slot the user never sees.
 # --------------------------------------------------------------------------- #
 
 
@@ -161,14 +161,14 @@ def test_inject_routes_to_originating_slot_and_broadcasts_live() -> None:
     assert "pizza" in origin.messages[0]["content"]
     # Live delivery goes through append's OWN mid-carrying door exactly once
     # (no reader active). A second hand-built broadcast_ws frame would be
-    # mid-less and render as a duplicate bubble (#5981 family).
+    # mid-less and render as a duplicate bubble.
     assert len(origin.delivered) == 1
     assert origin.delivered[0]["meta"]["mid"] == origin.messages[0]["meta"]["mid"]
     assert [p for k, p in state.broadcasts if k == "chat_message"] == []
 
 
 def test_inject_falls_back_when_origin_slot_gone() -> None:
-    state = _FakeState({})  # originating slot no longer exists
+    state = _FakeState({})  # originating slot is gone
     snap = {
         "name": "pizza", "run_id": "wf_9", "status": "finished",
         "session_key": "dashboard:chat-gone", "result": {"ok": True},

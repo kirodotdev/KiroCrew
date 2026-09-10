@@ -170,7 +170,7 @@ class TestProactiveSend:
         assert await transport.send_message("Wei", "ok") == ""
 
         narrowed = WeComTransport(client, allowed_users=["SomeoneElse"])
-        narrowed.note_warm_chat("Wei")  # still warm, no longer allowed
+        narrowed.note_warm_chat("Wei")  # still warm, but not allowed
         with pytest.raises(WeComSendError, match="not currently authorized"):
             await narrowed.send_message("Wei", "leak?")
 

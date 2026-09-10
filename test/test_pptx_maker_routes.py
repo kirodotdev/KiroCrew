@@ -54,13 +54,10 @@ def _raster_body(size: int) -> bytes:
     """`size` bytes of high-entropy but DETERMINISTIC raster payload.
 
     These tests assert a genuine raster is *exempted* from redaction, which needs its
-    base64 body to carry no credential pattern. `os.urandom` cannot promise that, and
-    it used to be actively likely: `_ENCODED_CREDENTIAL_RE` matched the BARE prefixes
-    `xox[abposr]` and `sk-ant`, which random base64 produced ~1.07% of the time per
-    20 KB (measured 32/3000), making two of these the 3rd and 4th most frequent CI
-    failures. Every alternative now requires its separator (`-`/`_`), which base64
-    cannot contain, so a chance match is no longer possible — but a fixed seed is
-    still the right fixture: it keeps the payload high-entropy, which is the property
+    base64 body to carry no credential pattern. `os.urandom` cannot promise that on its
+    own, but `_ENCODED_CREDENTIAL_RE` requires each alternative's separator (`-`/`_`),
+    which base64 cannot contain, so a chance match cannot happen — and a fixed seed is
+    the right fixture: it keeps the payload high-entropy, which is the property
     under test since it is what makes the bare-secret heuristic fire, while fixing the
     outcome on every host.
     """
@@ -494,12 +491,11 @@ class TestPreviewRedaction(_RoutesFixture):
         """A bare `xox…` prefix occurring by chance inside a real raster must not
         blank the image.
 
-        The credential scan used to match `xox[abposr]` as a bare 4-character
-        literal against the base64 body — a long run drawn from 64 symbols — so
-        chance collisions scaled with image size (measured 0.88% per 20 KB raster,
-        4.7% per 100 KB). Every hit silently replaced a legitimate picture with
-        `[REDACTED: credential]`, which is the looks-secure-renders-blank failure the
-        bitmap carve-out exists to prevent. Requiring the token's `-` separator makes
+        A bare `xox[abposr]` 4-character literal matched against the base64 body — a
+        long run drawn from 64 symbols — collides by chance, scaling with image size
+        (0.88% per 20 KB raster, 4.7% per 100 KB). Each such hit silently replaces a
+        legitimate picture with `[REDACTED: credential]`, the looks-secure-renders-blank
+        failure the bitmap carve-out exists to prevent. Requiring the token's `-` separator makes
         it impossible instead of merely unlikely: `-` is not a base64 character.
 
         `xoxb` is placed on a base64 group boundary so it appears verbatim in the
@@ -813,8 +809,8 @@ class TestConfigRoutes(_RoutesFixture):
             )
         self.assertEqual(resp.status, 200)
         saved = json.loads(target.read_text(encoding="utf-8"))
-        # Stored RESOLVED, not as typed. The value is now validated before it is
-        # persisted (an unresolvable path used to be accepted and then 500 every
+        # Stored RESOLVED, not as typed. The value is validated before it is
+        # persisted (an unresolvable path would otherwise be accepted and then 500 every
         # later read), and validating a differently-derived path than the one
         # `deck_root()` resolves would leave that gap open — so the resolved path is
         # what gets written. `~` still works; it is expanded rather than refused.

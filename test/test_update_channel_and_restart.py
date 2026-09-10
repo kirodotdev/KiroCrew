@@ -383,7 +383,7 @@ class TestChannelEndpoint:
         The in-flight guard cannot cancel a running check, so a check that started
         on the previous channel would otherwise finish afterwards, write that
         lane's verdict into the cache and stamp the 12-hourly clock -- pinning a
-        stale answer for half a day to a channel this install no longer follows.
+        stale answer for half a day to a channel this install does not follow.
         """
         update_layout.set_release_channel("stable")
 

@@ -3,8 +3,7 @@
 Two behaviours are locked in here:
 
 * every outbound path renders a trailing ``[OPTIONS: …]`` tag as a control,
-  never as literal text — including the link-time backfill, which used to post
-  message bodies verbatim;
+  never as literal text — including the link-time backfill;
 * a control stops being answerable once the conversation moves past the question
   it asked, whichever surface the next turn arrives on.
 """
@@ -400,7 +399,7 @@ class TestLifecycleOnTheSlot:
     ):
         """The reverse index is what resolves a click back to this conversation.
 
-        The link handler used to assign the slot's fields directly and skip the
+        A link handler that assigns the slot's fields directly and skips the
         state helper that writes it, so a click on the replayed control could
         not find the slot and answered into a separate Slack session.
         """
@@ -451,13 +450,12 @@ class TestLifecycleOnTheSlot:
     async def test_a_slotless_session_is_still_tracked_and_expired(
         self, tmp_path, monkeypatch
     ):
-        """No dashboard slot must NOT mean no lifecycle (#1694).
+        """No dashboard slot must NOT mean no lifecycle.
 
-        This test previously asserted the opposite -- that a slotless session was a
-        no-op -- which was the defect: a plain Slack thread usually has no slot, so
-        the control was never recorded, no later turn could expire it, and the stale
-        click this whole lifecycle exists to prevent stayed possible. The store is
-        keyed by session key now, so the slotless case is ordinary.
+        A slotless session is NOT a no-op: a plain Slack thread usually has no slot,
+        so if the control were not recorded, no later turn could expire it, and the
+        stale click this whole lifecycle exists to prevent would stay possible. The
+        store is keyed by session key, so the slotless case is ordinary.
 
         Only a missing STATE is a genuine no-op: with nowhere to record, there is
         nothing to expire.
@@ -607,8 +605,6 @@ class TestTurnEntryWiring:
 
         ``ping`` answers and returns without running the agent, so the pending
         question is still the one being waited on and its control must survive.
-        This test previously used ``ping`` merely because it short-circuited
-        just after the old expiry -- which encoded the defect as the expectation.
         """
         from kiro_crew.slack import transport_dispatch
 
@@ -759,7 +755,7 @@ class TestLinkTimeBackfill:
         the response is read depends only on how the loop was scheduled. Asserting on
         the replay without awaiting it is a load-dependent coin flip, and it failed
         as ``'NoneType' object has no attribute 'args'`` on a DIFFERENT test each CI
-        run (#4130) — which reads as a flaky suite rather than a missing await.
+        run — which reads as a flaky suite rather than a missing await.
 
         If this ever fails because the handler became synchronous, delete the drains
         rather than weakening this.
@@ -982,7 +978,7 @@ class TestUnlinkSpendsTheControl:
     Two failure modes, both closed by expiring rather than forgetting:
 
     1. Forget-only leaves the buttons live in Slack. After the link is gone a
-       click answers a question from a conversation this thread is no longer
+       click answers a question from a conversation this thread is not
        attached to, landing that stale answer in a brand-new session.
     2. Doing nothing leaves the record unreachable once the thread -> slot
        reverse index is popped, so the next dashboard turn's expiry strikes every
@@ -1266,7 +1262,7 @@ class TestEveryOutstandingControlIsExpired:
         """A message that can never be edited must not be retried every turn.
 
         The mirror of the test above: keeping EVERY failure would mean a deleted
-        message or a channel we are no longer in burns an API call on every
+        message or a channel we are not in burns an API call on every
         subsequent turn, forever. A 4xx that is not a rate limit will fail
         identically next time, so the record is settled.
         """
@@ -1303,7 +1299,7 @@ class TestEveryOutstandingControlIsExpired:
         ownership helpers only consulted the dashboard SLOT index (plus the
         syntactic ``slack:<ts>``), which cannot see a cron link -- so the
         selection's forget missed the record entirely and the next expiry edited
-        over the user's answer. It also defeated round 33's under-lock skip, which
+        over the user's answer. It also defeats the under-lock skip, which
         relies on the forget having removed the record.
         """
         from kiro_crew.dashboard.chat_utils import (
@@ -1561,7 +1557,7 @@ class TestControlPostedAfterTheWindowIsSpent:
         """`ping`/`status`/denial must not expire a still-pending question.
 
         Purely an ordering guarantee, so asserted on source order. The entry
-        expiry used to run before the shortcuts: a pending
+        expiry must not run before the shortcuts: a pending
         ``[OPTIONS: Deploy | Abort]`` plus a `ping` in the thread struck the
         control through, posted `pong`, and returned without running the agent --
         so the conversation had NOT moved, yet the buttons were spent and the
@@ -1908,8 +1904,8 @@ class TestControlPostedAfterTheWindowIsSpent:
     def test_an_ansi_split_credential_in_a_choice_does_not_reach_slack(self):
         """A credential broken up by escapes must not survive into a choice.
 
-        This guarantee moved owners. It used to live in this PR's own render
-        helper; `slack.format.build_options_blocks` now redacts every choice
+        The guarantee lives in `slack.format.build_options_blocks`, which redacts
+        every choice
         through `redact_for_display`, which canonicalises the form Slack actually
         DISPLAYS (ANSI, emphasis, backticks, link markup) before scanning. That
         is strictly stronger, so the test asserts against the real owner rather
@@ -2134,7 +2130,7 @@ class TestControlPostedAfterTheWindowIsSpent:
     def test_a_local_dashboard_command_does_not_spend_the_control(self):
         """`/goal` and `/prompts` return without an agent turn.
 
-        Round 31 moved each SLACK entry point's expiry below its short-circuits;
+        Each SLACK entry point's expiry runs below its short-circuits;
         the dashboard path kept its expiry at the very top of ``_run_chat``, so a
         local command that never starts a turn still struck a pending question
         through -- leaving valid choices unanswerable with nothing on the way to
@@ -2259,7 +2255,7 @@ class TestControlPostedAfterTheWindowIsSpent:
         )
 
     def test_the_legacy_click_escapes_its_slack_fallback_text_too(self):
-        """Round 35 escaped the submit path's fallback; the legacy path was missed.
+        """The legacy click escapes its Slack fallback text too.
 
         Slack parses entities in a message's top-level ``text``, which is what
         notifications render, so a legacy choice containing ``<!channel>`` would
@@ -2325,7 +2321,7 @@ class TestControlPostedAfterTheWindowIsSpent:
 
         The unlink removes the routing before the drain finishes posting, so a
         click on the replayed control would start a FRESH Slack session and answer
-        a question that session never asked. Round 32's unlink abort covers the
+        a question that session never asked. The unlink abort covers the
         other order -- a control already tracked when the unlink arrives -- and had
         nothing to abort on here, because the record did not exist yet.
         """
@@ -2448,7 +2444,7 @@ class TestControlPostedAfterTheWindowIsSpent:
     def test_the_store_is_not_held_on_the_slot(self):
         """Structural: one store, keyed by session key, on DashboardState.
 
-        A slot-held record was the #1694 defect: a plain Slack thread has no slot,
+        A slot-held record is the defect: a plain Slack thread has no slot,
         so the control was dropped and no later turn could expire it. It also must
         not be a slot field PLUS a keyed fallback -- a slot can come into existence
         at any moment (the channel-surface reconciler creates one), so a fallback
@@ -2471,7 +2467,7 @@ class TestControlPostedAfterTheWindowIsSpent:
 
     @pytest.mark.asyncio
     async def test_a_slotless_thread_gets_the_whole_lifecycle(self, tmp_path):
-        """End to end for the case #1694 was filed about.
+        """End to end for the slotless-thread case.
 
         Record, expire and forget must all work for a session that has no dashboard
         slot at any point -- which is the normal state of a plain Slack thread.
@@ -2557,7 +2553,7 @@ class TestControlPostedAfterTheWindowIsSpent:
     def test_the_slack_fallback_text_is_escaped_but_the_answer_is_not(self):
         """A mention must not survive into the message's top-level `text`.
 
-        Round 28 escaped the mrkdwn BLOCKS. Slack parses entities in a message's
+        The mrkdwn BLOCKS are escaped, but Slack parses entities in a message's
         `text` argument too -- and `text` is what notifications and block-less
         clients show -- so the submit handler handing the raw selection to
         `update_message` / `post_blocks` left the notification path open even

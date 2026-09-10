@@ -405,7 +405,7 @@ class TestProcessCwd:
 
     def test_darwin_refuses_a_short_write(self, monkeypatch):
         # A byte count other than the exact struct size means the layout the
-        # offsets assume no longer matches the kernel's, so the path cannot be
+        # offsets assume does not match the kernel's, so the path cannot be
         # sliced out safely — the caller falls back instead of getting garbage.
         monkeypatch.setattr(
             pc,
@@ -650,11 +650,10 @@ class TestUtf8Console:
         assert "KiroCrew" in out
 
     def test_rewraps_cp1252_stream_so_emoji_log_record_survives(self, monkeypatch):
-        # Regression for the gateway-worker UnicodeEncodeError: when the worker's
-        # stderr is a cp1252 TextIOWrapper that reconfigure() can't flip (observed
-        # through the 3-layer Windows spawn), a logging StreamHandler bound to it
-        # crashed on the first non-ASCII log record. ensure_utf8_console() must
-        # re-wrap the underlying buffer so the record emits cleanly.
+        # When the worker's stderr is a cp1252 TextIOWrapper that reconfigure()
+        # can't flip (the 3-layer Windows spawn), a logging StreamHandler bound to
+        # it crashes on the first non-ASCII log record, so ensure_utf8_console()
+        # must re-wrap the underlying buffer so the record emits cleanly.
         #
         # This stream repair is WINDOWS-only behavior: on POSIX the function
         # publishes the environment for children but leaves current streams
@@ -1121,8 +1120,8 @@ class TestFileLockContention:
 
     @pytest.mark.skipif(not pc.IS_WINDOWS, reason="Windows LK_LOCK ceiling regression")
     def test_windows_blocking_acquire_waits_past_lk_lock_ceiling(self, tmp_path):
-        # Regression for issue #470: msvcrt's LK_LOCK "blocking" code gives up
-        # after ~10s with EDEADLOCK and the old shim treated that as "acquired".
+        # msvcrt's LK_LOCK "blocking" code gives up after ~10s with EDEADLOCK,
+        # which must not be treated as "acquired".
         # A holder that keeps the lock LONGER than that ceiling must make a
         # blocking contender WAIT (until release or its own timeout) — never
         # fall through and enter the critical section unserialized at ~10s.
@@ -1156,7 +1155,7 @@ class TestFileLockContention:
             entered_at["t"] = time.monotonic()
             assert got is True, "contender never acquired the lock after release"
             # It entered only AFTER the holder released — proving it waited past
-            # the 10s ceiling that used to let it slip through early.
+            # the 10s ceiling instead of slipping through early.
             assert entered_at["t"] >= released_at["t"], (
                 "contender entered the critical section before the holder "
                 "released — the blocking acquire fell through the LK_LOCK ceiling"
@@ -2019,7 +2018,7 @@ class TestKillSubprocessPosix:
         try:
             assert pc.pid_exists(child.pid) is True
             assert pc.kill_pid(child.pid, pc.SIGKILL) is True
-            # Reap the killed child so it is no longer a zombie occupying the
+            # Reap the killed child so it is not left a zombie occupying the
             # PID; otherwise os.kill(pid, 0) would still report it as existing.
             child.wait(timeout=5)
             deadline = time.monotonic() + 2.0
@@ -2143,8 +2142,8 @@ class TestRestrictToOwnerArgvOnLinux:
     on AL2). A regression that drops the S-1-3-4 grant or the invoking-user grant
     silently reopens the parent-inherited-DACL gap.
 
-    The observable used to be the ``icacls`` argv. The lockdown now goes through
-    ``windows_acl.apply_owner_only`` in-process, so the observable is that call's
+    The lockdown goes through ``windows_acl.apply_owner_only`` in-process, so the
+    observable is that call's
     arguments instead -- the same seam, one layer down, and still the only thing
     visible off Windows (NTFS reports 0o666 for any file regardless of its DACL,
     so no mode assertion can substitute).
@@ -2227,10 +2226,9 @@ class TestRestrictToOwnerArgvOnLinux:
         assert calls == [], f"no DACL write may happen when the SID is unknown: {calls}"
 
     def test_directory_grants_are_inheritable(self, tmp_path, monkeypatch):
-        # The bug this pins: make_owner_only_dir used to delegate to the
-        # FILE-shaped restrict_to_owner, whose grants are not inheritable. Those
+        # FILE-shaped restrict_to_owner grants are not inheritable: those
         # ACEs apply to the directory alone, so a file created inside an
-        # "owner-only" directory got no explicit ACE and fell back to the
+        # "owner-only" directory gets no explicit ACE and falls back to the
         # creating token's default DACL.
         calls = self._capture(monkeypatch)
         d = tmp_path / "secrets-dir"
@@ -2495,7 +2493,7 @@ class TestRestrictToOwner:
         # The fail-loud contract on Windows: a DACL that cannot be applied MUST
         # raise OSError so the caller's warn-and-continue handler fires
         # (dead-code otherwise, per review-bot). Simulate at the writer seam --
-        # there is no longer a subprocess to make un-launchable, and the failure
+        # there is no subprocess to make un-launchable, and the failure
         # this models (SetNamedSecurityInfoW returning ERROR_ACCESS_DENIED on a
         # file whose owner we cannot change) is not reproducible on demand.
         if not pc.IS_WINDOWS:
@@ -2513,8 +2511,8 @@ class TestRestrictToOwner:
 
 class TestResourceShimFailures:
     def test_proc_rss_bytes_returns_zero_when_every_source_fails(self, monkeypatch):
-        # getrusage is no longer the primary source for proc_rss_bytes -- it is
-        # the labelled last-resort peak -- so reaching 0 now needs BOTH the
+        # getrusage is not the primary source for proc_rss_bytes -- it is
+        # the labelled last-resort peak -- so reaching 0 needs BOTH the
         # current-RSS reader and the fallback to fail. Asserting only the
         # getrusage failure would pass on a platform whose primary reader was
         # silently removed.
@@ -3336,10 +3334,9 @@ class TestCurrentUserSidNeverSpawns:
     admission check, the client-side server check, and the pipe DACL builder --
     which runs once per pipe instance and so sits on the accept path.
 
-    It used to delegate to a helper whose fallback was a ``whoami`` subprocess
-    with a 5 s timeout, so a token-lookup failure stalled accepts for seconds at
-    a time, repeatedly. That helper is gone: the owner-only lockdown was its last
-    caller and now reads the token directly too, so no path here can spawn.
+    None of these can spawn: a ``whoami`` subprocess fallback with a 5 s timeout
+    would stall accepts for seconds at a time on a token-lookup failure, so the
+    builder reads the token directly and no path here spawns a subprocess.
     """
 
     @staticmethod
@@ -4217,7 +4214,7 @@ class TestTrustedGitBin:
 
 
 class TestKillAndReap:
-    """The shared kill-the-tree + bounded-pipe-draining-reap helper (#5989)."""
+    """The shared kill-the-tree + bounded-pipe-draining-reap helper."""
 
     @staticmethod
     def _proc(pid: int = 4242):
@@ -4379,7 +4376,7 @@ class TestKillAndReap:
         await started.wait()
         task.cancel()
         await asyncio.sleep(0)
-        task.cancel()  # the repeat cancellation that used to abort the reap
+        task.cancel()  # a repeat cancellation must not abort the reap
         await asyncio.sleep(0)
         release.set()
         with pytest.raises(asyncio.CancelledError):
@@ -4388,7 +4385,7 @@ class TestKillAndReap:
 
 
 class TestPublishDirNoreplace:
-    """#4767 round 9: workspace installs must never replace a raced empty
+    """Workspace installs must never replace a raced empty
     destination -- POSIX os.rename silently replaces an empty directory, so
     the publish goes through the no-replace rename primitive."""
 
@@ -4427,7 +4424,7 @@ class TestPublishDirNoreplace:
     def test_fallback_without_renameat2_publishes_and_still_refuses_occupied(
         self, tmp_path, monkeypatch
     ):
-        """#4767 round 10: a host without renameat2 (glibc < 2.28, NFS/FUSE)
+        """A host without renameat2 (glibc < 2.28, NFS/FUSE)
         must not crash with NotImplementedError -- the mkdir-claim fallback
         publishes into an absent destination and still refuses an existing
         one, preserving the no-replace guarantee for creation races."""
@@ -4460,7 +4457,7 @@ class TestPublishDirNoreplace:
         assert src2.exists(), "the staged tree was consumed by a refused publish"
 
     def test_fallback_rename_failure_drops_the_claim(self, tmp_path, monkeypatch):
-        """#4767 round 11: when the fallback's rename fails, the empty mkdir
+        """When the fallback's rename fails, the empty mkdir
         claim is removed so a retry is not permanently blocked, and the
         staged tree is not consumed."""
         if pc.IS_WINDOWS:

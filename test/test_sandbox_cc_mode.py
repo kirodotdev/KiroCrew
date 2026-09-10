@@ -519,7 +519,7 @@ _EXPOSE_BLOCK_START = "expose_data = {}"
 _EXPOSE_BLOCK_END = "# Bind-mount empty dirs over credential paths"
 #: Structural landmarks the slice must contain, so an edit that moves either
 #: marker and shrinks the block fails HERE rather than leaving the assertions
-#: below vacuously green against a fragment that no longer holds the read.
+#: below vacuously green against a fragment that does not hold the read.
 _EXPOSE_SLICE_LANDMARKS = (
     "for src_path, filename in EXPOSE_FILES:",  # the loop
     "os.path.isfile(src_path)",  # the absent-file guard
@@ -794,7 +794,7 @@ class TestKnownHostsPreReadFailsClosed:
     def test_an_unreadable_known_hosts_aborts_setup(self, tmp_path: Path) -> None:
         """Unreadable host-trust data must FAIL CLOSED, not degrade.
 
-        This test previously pinned the opposite, and that was a defect. The
+        This must fail closed because the
         launcher injects ``StrictHostKeyChecking=accept-new`` into
         ``GIT_SSH_COMMAND`` (built at sandbox.py:1513-1515, applied at
         sandbox.py:1786-1793) gated only on that variable being unset -- NOT on

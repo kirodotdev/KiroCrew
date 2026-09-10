@@ -430,8 +430,8 @@ async def test_persistent_cutover_storm_rejects_never_pools_stale() -> None:
     the retries are exhausted WITHOUT ever pooling a possibly-stale backend: the
     epoch guard stays armed on every attempt (incl. the last), so get_or_create
     raises the fallback-eligible BackendUnavailable and the pool stays empty.
-    Regression for the old `spawn_epoch=None if last_attempt` hole that admitted
-    a stale-credential backend into the active pool after a completed drain."""
+    A `spawn_epoch=None if last_attempt` hole would admit a stale-credential
+    backend into the active pool after a completed drain."""
     pool = BackendPool(max_backends=10)
     key = _make_pool_key()
 
@@ -545,11 +545,10 @@ class _ProbeBarrier:
     """Counts ``watch_credential`` probe cycles so a test can await "N polls
     have completed" instead of sleeping a wall-clock guess.
 
-    Sleeping was the root of the Windows flake in issue #1105. A test slept
-    50ms hoping the baseline probe had run, then wrote the rotation. On a runner
-    with ~15.6ms timer granularity and slower file IO the write could land
-    BEFORE the baseline probe, so the baseline captured the rotated bytes and no
-    change was ever detected.
+    Sleeping is what flakes on Windows. Sleeping 50ms hoping the baseline probe
+    has run, then writing the rotation, races: on a runner with ~15.6ms timer
+    granularity and slower file IO the write can land BEFORE the baseline probe,
+    so the baseline captures the rotated bytes and no change is ever detected.
 
     Pass an instance as ``on_probe_complete``. The watcher invokes it once per
     cycle, on every branch.

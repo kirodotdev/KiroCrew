@@ -327,9 +327,9 @@ def test_allows_blocking_in_nested_sync_def() -> None:
 
 
 def test_subprocess_run_in_to_thread_helper_is_skipped() -> None:
-    # Regression for the nested-scope root bug: subprocess.run inside a sync
-    # `def _run()` offloaded via asyncio.to_thread must NOT be flagged even
-    # when the helper is a direct statement of the async body.
+    # Nested scopes: subprocess.run inside a sync `def _run()` offloaded via
+    # asyncio.to_thread must NOT be flagged, even when the helper is a direct
+    # statement of the async body.
     src = (
         "import subprocess, asyncio\n"
         "async def f():\n"

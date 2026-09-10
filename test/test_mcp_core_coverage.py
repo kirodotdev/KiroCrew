@@ -1,6 +1,6 @@
 """Coverage tests for ``kiro_crew.mcp_core`` helpers and thin tool bodies.
 
-Focus areas (the largest previously-uncovered blocks):
+Focus areas (the largest coverage gaps):
 
 * the browser-snapshot compressors (``_compress_snapshot_to_outline`` /
   ``_search_snapshot``) and the ``browse_outline`` / ``browse_search`` tools
@@ -1023,8 +1023,7 @@ class TestRegisterHook:
         lock exists to provide never happens. POSIX ``flock`` tolerates the
         truncate, which is why the defect is invisible on Linux.
 
-        Issue #9248; same fix as ``work_ledger._open_lock`` (PR #9237) and
-        ``session_pid.py`` (PR #9250). ``hooks.json.lock`` is the SAME file
+        The lock file's bytes must survive acquisition. ``hooks.json.lock`` is the SAME file
         ``webhooks.locked`` guards from another module, so cross-process
         contention on it is the store's normal state — which is why truncation
         (the platform-independent observable those PRs pinned) is asserted
@@ -1176,7 +1175,7 @@ class TestFileSend:
         out = _call_tool("file_send", {"path": str(src)})
         assert out.startswith("Error: file content contains sensitive data; send aborted")
         # The refusal now names the remedy. A wall that does not say a consented
-        # path exists is the reported complaint behind issue #7770, so this
+        # path exists is the reported complaint, so this
         # asserts MORE than the previous exact-equality pin, not less -- and it
         # asserts the never-grantable legs are named as such.
         assert "/api/file-delivery/consent" in out
@@ -1258,7 +1257,7 @@ class TestFileSend:
         # The invariant this test owns: a channel SKIP does not disturb the
         # Slack leg, which still runs as the fallback.
         assert any(c[0][0] == "/api/slack/upload-file" for c in m.call_args_list)
-        # The skip is also REPORTED. It used to read a bare "File sent:
+        # The skip is also REPORTED. It must not read a bare "File sent:
         # report.txt", which is indistinguishable from a delivery for a file
         # that only reached the dashboard (see test_file_send_skip_reason.py).
         assert out.startswith("File sent: report.txt")

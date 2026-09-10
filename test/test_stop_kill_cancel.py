@@ -307,7 +307,7 @@ class TestKillPathIsPlatformCorrect:
 
     @pytest.mark.asyncio
     async def test_shutdown_falls_back_to_process_kill_when_tree_kill_fails(self):
-        """The fallback that the uncaught AttributeError used to skip.
+        """The fallback that an uncaught AttributeError would skip.
 
         A Windows ``kill_process_tree`` failure must still reach
         ``process.kill()`` -- otherwise a backend that ignores stdin close is

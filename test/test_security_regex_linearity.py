@@ -14,7 +14,7 @@ Covered:
   a single ``_CREDENTIAL_PATTERNS.sub(...)``. The redacted text AND the
   ``warnings`` list (content *and* order) must be unchanged.
 * The sensitive-path regex anchor rewrite. That regex is gone (the
-  shell gate no longer matches paths in command text; the OS sandbox and
+  shell gate does not match paths in command text; the OS sandbox and
   ``is_sensitive_path`` hold the fence), so what remains of the differential is
   the ``is_sensitive_path`` half, which pins that the path gate's verdicts did
   not move.

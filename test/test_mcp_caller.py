@@ -2,7 +2,7 @@
 
 The fork carries only the host-pid env-shortcut tests here (the wider
 caller-identity wire-contract suite lives upstream); each test resets the
-fork-only process-lifetime ``_FROM_ENV_CACHE`` so a previously-resolved
+fork-only process-lifetime ``_FROM_ENV_CACHE`` so an already-resolved
 identity cannot leak between tests.
 """
 
@@ -68,7 +68,7 @@ def test_from_env_host_pid_missing_file_falls_back_to_walk(tmp_path, monkeypatch
     assert ctx.session_key == "walk-session-111"
 
 
-# --- Per-connection tenant nonce (#5322) ------------------------------------
+# --- Per-connection tenant nonce --------------------------------------------
 #
 # The nonce exists for the case the caller block cannot serve: a connection the
 # gateway cannot NAME. It is a namespace separator, so what these pin is that it

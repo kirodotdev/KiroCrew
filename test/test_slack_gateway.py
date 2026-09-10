@@ -616,10 +616,9 @@ class TestInteractiveApproval:
     async def test_all_slots_trusted_does_not_auto_approve(self):
         """All slots trusted, no resolver → still PROMPTS (no implicit trust).
 
-        This previously asserted auto-approval. That rule is gone: session
-        trust speaks for a chat session, not for an unattended job, and with
-        one trusted chat open the `all()` test was trivially satisfied.
-        Asserting the return value alone would now pass vacuously, because the
+        Session trust speaks for a chat session, not for an unattended job, and
+        with one trusted chat open the `all()` test is trivially satisfied.
+        Asserting the return value alone would pass vacuously, because the
         mocked `request_approval` also returns True -- so assert the prompt was
         actually raised.
         """
@@ -1296,7 +1295,7 @@ class TestBrazilInstallAndDeps:
 
         spawn.assert_not_awaited()
         # The skip must name the machine-readable reason, not just that it
-        # skipped -- an undiagnosable failure is the class #8409 is about.
+        # skipped -- an undiagnosable failure is the class this guards.
         logged = log_error.call_args.args
         assert "no_backend" in logged
         assert any("EPERM" in str(part) for part in logged)
@@ -2373,9 +2372,9 @@ class TestNotifyNudgeExpired:
     """A monitoring loop that stops at its cycle cap must tell the user.
 
     Reaching ``max_cycles`` is a runaway backstop, not a finish line — the loop
-    stopped with its goal possibly unmet. Previously the only trace was a log
+    stopped with its goal possibly unmet. Without this the only trace is a log
     line plus an ``active=False`` state change indistinguishable from a manual
-    Stop, so a capped-out loop looked the same as the agent stopping itself.
+    Stop, so a capped-out loop looks the same as the agent stopping itself.
     """
 
     @staticmethod
@@ -3893,10 +3892,10 @@ class TestAutoApplyUpdateVenvPath:
     async def test_kiro_cli_update_timeout_kills_child_and_stays_nonfatal(self):
         """A hung `kiro-cli update` is tree-killed AND the update stays non-fatal.
 
-        Both halves matter (issue #4210). Before the fix, the 120s timeout was
-        swallowed by the bare ``except Exception`` → DEBUG, so the run fell
-        through to the frontend build and dep reinstall while the ABANDONED
-        `kiro-cli update` kept mutating the installation concurrently — the
+        Both halves matter. If the 120s timeout is swallowed by a bare
+        ``except Exception`` → DEBUG, the run falls through to the frontend
+        build and dep reinstall while the ABANDONED `kiro-cli update` keeps
+        mutating the installation concurrently — the
         same half-replaced-install race the wheel path's CancelledError branch
         exists to prevent. A kill-only assertion would pass on a fix that
         turned the timeout fatal; the non-fatal half pins that the surrounding
@@ -4684,9 +4683,9 @@ class TestAutoApplyUpdateResetPath:
         Public OSS flow (no Brazil ws sync / toolbox / AIM): branch → fetch →
         diff → status → reset → [kiro-cli optional] → build frontend → pip.
 
-        This test used to pass ` M file.py` here and assert that the reset ran
-        anyway -- it encoded the warn-and-destroy behaviour that
-        `test_uncommitted_tracked_changes_refuse_the_reset` now forbids. The
+        A dirty tree is not exercised here: passing ` M file.py` and expecting
+        the reset to run would encode a warn-and-destroy behaviour that
+        `test_uncommitted_tracked_changes_refuse_the_reset` forbids. The
         happy path is a clean tree; the dirty tree is a refusal, not a variant
         of this flow.
         """
@@ -4717,11 +4716,11 @@ class TestAutoApplyUpdateResetPath:
     async def test_uncommitted_tracked_changes_refuse_the_reset(self):
         """An unattended update must not delete a developer's uncommitted work.
 
-        This check used to log a warning and reset anyway, which made the
-        boot-time path the one place that could silently destroy uncommitted
-        edits. It now refuses, like the committed-work and exec-config checks
-        immediately above it, and defers to `kirocrew update` -- where a human
-        chose the destructive semantics.
+        This check refuses rather than logging a warning and resetting anyway:
+        a warn-and-reset would make the boot-time path the one place that could
+        silently destroy uncommitted edits. It refuses like the committed-work
+        and exec-config checks immediately above it, and defers to `kirocrew
+        update` -- where a human chose the destructive semantics.
         """
         orch = _make_orchestrator()
         ds = _mock_dashboard_state()
@@ -5854,11 +5853,11 @@ class TestAutonudgeFire:
         """Fire with missing slot → removes loop.
 
         The rehydrate fallback is stubbed to a miss because that is what "slot
-        missing" means here. It used to be produced incidentally: the mock
-        dashboard state's MagicMock metadata read as ``closed``, and the
-        rehydrate helper's closed-guard bailed. The fire path now passes
+        missing" means here. It is stubbed explicitly rather than relying on the
+        mock dashboard state's MagicMock metadata reading as ``closed`` and the
+        rehydrate helper's closed-guard bailing: the fire path passes
         ``adopt_closed=True`` (idle archival must not destroy a loop), so that
-        accident no longer stops the walk.
+        accident does not stop the walk.
         """
         orch = _make_orchestrator()
         ds = _mock_dashboard_state()
@@ -6423,11 +6422,10 @@ class TestBgSessionDashboardBranch:
     async def test_failing_url_announcement_does_not_abort_boot(self):
         """Announcing the URL is best effort — it must not take the gateway down.
 
-        This block used to live inside a fire-and-forget task, where a raise
-        could not reach the boot path. Hoisting it ahead of the MCP probe put it
-        on the synchronous path, so the fault isolation has to be explicit or a
-        formatting/token failure becomes a failed boot of an already-listening
-        dashboard.
+        This block runs on the synchronous boot path, ahead of the MCP probe,
+        so a raise here reaches the boot path. The fault isolation has to be
+        explicit or a formatting/token failure becomes a failed boot of an
+        already-listening dashboard.
         """
         orch = _make_orchestrator(no_dashboard=False, no_open=True)
 
@@ -6615,12 +6613,12 @@ class TestCheckMissingDepsPip:
 class TestInitServicesLoopResponsiveness:
     """The event loop must keep servicing callbacks during slow startup work.
 
-    Invariant (issue #3051): the loop runs callbacks one at a time, so a
+    Invariant: the loop runs callbacks one at a time, so a
     synchronous subprocess/scan inside ``_init_services`` starves every other
     coroutine — including the loop-stall watchdog heartbeat once armed — for
     its whole duration.
 
-    These tests assert the PROPERTY, not a duration (#4235): a fast ticker
+    These tests assert the PROPERTY, not a duration: a fast ticker
     runs concurrently with the init work, and the stand-in for each slow
     call blocks — in whatever execution context production invoked it —
     until it OBSERVES the ticker advance. Fixed code runs the work off the
@@ -6725,7 +6723,7 @@ class TestInitServicesLoopResponsiveness:
         # this synchronously ON the loop, where the probe's ticks can never
         # arrive — it flags starvation at the deadline. Patched on the
         # subprocess MODULE (not the gateway namespace) because the fixed
-        # gateway no longer imports subprocess at all.
+        # gateway does not import subprocess at all.
         _blocking_run = self._make_probe(
             state,
             "pip-blocking-run",
@@ -8550,7 +8548,7 @@ class TestMandatoryUpdateOnWheelInstall:
         apply_called.assert_awaited_once()
 
 
-# ─── Channel skip-reason warning on the PRODUCTION start path (#304, #5418) ──
+# ─── Channel skip-reason warning on the PRODUCTION start path ──
 
 
 _UNCREDENTIALED_PROBE_EXEMPTIONS = {
@@ -8770,8 +8768,8 @@ class TestChannelSkipReasonAtTransportStart:
     ``_start_channel_transports`` at the decision point, which runs AFTER
     ``KIROCREW_READY`` (outside the boot-path window), via the seven-channel
     table feeding ``warn_if_channel_uncredentialed``. These pin that wiring
-    for every collapsed-flag channel (issue #5418, generalizing the
-    WeCom-only class issue #304 introduced); the helper's message contract is
+    for every collapsed-flag channel, generalizing the WeCom-only
+    class; the helper's message contract is
     pinned in ``test_wecom_gateway.py``.
 
     Rows that make a ``_<channel>_enabled`` flag True (fully-credentialed

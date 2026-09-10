@@ -263,7 +263,7 @@ def test_charter_budgets_match_the_ci_workflows():
     )
 
     # The GPT lane's budget lives with the contract that applies it -- the
-    # shared review-core prompt (#5852) -- not in the workflow that splices it.
+    # shared review-core prompt -- not in the workflow that splices it.
     gpt_contract = (
         REPO_ROOT / ".github" / "review-prompts" / "gpt-review-core.md"
     ).read_text(encoding="utf-8")
@@ -727,7 +727,7 @@ def test_symlinked_config_is_refused(tmp_path):
 # TreeReader interface parity
 # --------------------------------------------------------------------------
 def test_tree_reader_worktree_and_pinned_parity(tmp_path):
-    """#6236: WorktreeReader and PinnedTreeReader share the TreeReader contract."""
+    """WorktreeReader and PinnedTreeReader share the TreeReader contract."""
     subprocess.run(["git", "init", "-q", "-b", "main"], cwd=tmp_path, check=True)
     subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=tmp_path, check=True)
     subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp_path, check=True)

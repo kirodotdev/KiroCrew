@@ -1,12 +1,12 @@
 """A cancel racing the first Go must win, and repeat cancels must be idempotent.
 
-``api_chat_plan_action``'s Cancel branch used to revoke a plan only through the
-tracker (``tracker.stop()`` when ``slot._orch_tracker`` exists). But the tracker
-is created lazily INSIDE ``_stage_loop``, so a Cancel processed in the sub-tick
-window between a Go POST being accepted and its ``_stage_loop`` coroutine
-running found no tracker, no-opped, appended '🛑 Plan cancelled.' — and the Go
-then built a fresh (unstopped) tracker and advanced stage 1. Transcript said
-cancelled; plan proceeded (#6046).
+Revoking a plan only through the tracker (``tracker.stop()`` when
+``slot._orch_tracker`` exists) is not enough: the tracker is created lazily
+INSIDE ``_stage_loop``, so a Cancel processed in the sub-tick window between a Go
+POST being accepted and its ``_stage_loop`` coroutine running finds no tracker,
+no-ops, and appends '🛑 Plan cancelled.' — while the Go builds a fresh
+(unstopped) tracker and advances stage 1. The transcript says cancelled but the
+plan proceeds.
 
 The fix is a slot-level latch, ``slot._plan_cancelled``: set unconditionally by
 the Cancel handler, checked by ``_stage_loop`` before it creates a tracker, and
@@ -72,7 +72,7 @@ def _cancelled_rows(slot) -> int:
 async def test_cancel_before_stage_loop_starts_does_not_advance(tmp_path, monkeypatch):
     """Cancel processed before the stage loop creates a tracker: NO stage runs.
 
-    This is the #6046 window itself: the Go's ``_stage_loop`` task is created
+    This is the race window itself: the Go's ``_stage_loop`` task is created
     but has not executed its first line, so ``slot._orch_tracker`` is still
     None when the Cancel lands. The tracker guard alone no-ops here; only the
     latch can stop the pending loop.
@@ -90,7 +90,7 @@ async def test_cancel_before_stage_loop_starts_does_not_advance(tmp_path, monkey
     monkeypatch.setattr("kiro_crew.dashboard.chat_orchestrator._run_chat", _mock_run_chat)
 
     async with TestClient(TestServer(_make_app(state))) as client:
-        # The #6046 interleaving is "Cancel fully processed before _stage_loop's
+        # The interleaving under test is "Cancel fully processed before _stage_loop's
         # first line runs". Awaiting the HTTP round-trip yields to the event
         # loop, which would start an already-created loop task and make the
         # ordering a coin flip — so process the cancel first, then schedule the
@@ -204,8 +204,8 @@ async def test_cancelled_early_exit_hands_off_queued_message(tmp_path, monkeypat
         ), "handler must tag queued approvals structurally, not as bare content"
         slot.task = None
         # An untagged typed "go" is a PLAIN user message at drain time — it
-        # must be preserved and handed off, not deleted (GPT round-6 finding:
-        # content matching deletes linked Slack users' real messages).
+        # must be preserved and handed off, not deleted (content matching
+        # deletes linked Slack users' real messages).
         slot.queue_append("go")
         # The message the user typed while the Go POST was in flight.
         slot.queue_append("follow-up while plan pending")
@@ -264,7 +264,7 @@ async def test_mid_loop_cancel_drops_queued_approval_at_finally_drain(tmp_path, 
             await asyncio.wait_for(entered.wait(), timeout=5)
             # Queued while the plan runs: a tagged button approval (dropped)
             # and an untagged typed "go all" — a PLAIN user message at drain
-            # time, preserved (GPT round-6: content matching is data loss).
+            # time, preserved (content matching is data loss).
             slot.queue_append("Go", kind="plan_approval")
             slot.queue_append("go all")
             slot.queue_append("real message during plan")
@@ -303,11 +303,10 @@ def test_is_plan_approval_entry_matches_tag_only():
 async def test_stop_word_cancel_also_sets_latch(tmp_path):
     """The typed stop-word surface revokes with the same finality as Cancel.
 
-    ``api_chat``'s stop-word branch used to call only ``tracker.stop()`` — the
-    Slack gateway can lazily re-create a fresh unstopped tracker on the slot,
-    after which a later Go would pass a tracker-only check and resurrect the
-    stopped plan. Both cancel surfaces must set the latch (Design review
-    finding).
+    ``api_chat``'s stop-word branch that calls only ``tracker.stop()`` is not
+    enough: the Slack gateway can lazily re-create a fresh unstopped tracker on
+    the slot, after which a later Go passes a tracker-only check and resurrects
+    the stopped plan. Both cancel surfaces must set the latch.
     """
     from kiro_crew.context_management import MAX_STAGE_ROUNDS, OrchestrationTracker
 

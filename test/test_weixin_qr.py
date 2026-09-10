@@ -286,7 +286,7 @@ def test_render_qr_round_trips_the_scan_url():
 
 # -- _delete_env_key: it rewrites the user's credential file, so what it PRESERVES
 #    matters as much as what it removes. Untested before; the QR-encoder body that
-#    used to cover this file moved to kiro_crew.qr, which made the gap visible.
+#    covered this file, then moved to kiro_crew.qr, which made the gap visible.
 
 
 def test_delete_env_key_removes_only_the_named_key(tmp_path, monkeypatch):

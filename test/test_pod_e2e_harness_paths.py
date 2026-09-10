@@ -362,7 +362,7 @@ def test_resolver_reports_nothing_for_an_unknown_name(tmp_path):
 # ---------------------------------------------------------------------------
 # Health phase: identity, not reachability.
 #
-# The phase used to bare-curl base_url/api/health and accept any 200/401/403. A
+# Bare-curling base_url/api/health and accepting any 200/401/403 is unsafe. A
 # pod's port is derived from its name across 199 slots and can be pinned by hand,
 # so it is routinely held by another pod or by the live gateway, and every
 # gateway answers that path identically -- so the poll could hand every later

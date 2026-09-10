@@ -237,7 +237,7 @@ def test_monitor_inspect_reports_internal_read_failure_as_error():
 
 
 def test_monitor_inspect_surfaces_armed_autonudge_loop():
-    """#9194: monitor_inspect must let a caller see an armed auto-nudge loop.
+    """monitor_inspect must let a caller see an armed auto-nudge loop.
 
     The gateway reports ``monitor: None`` (no structured monitor) together with
     a truthful ``autonudge_loop`` reading; the compact projection must pass that

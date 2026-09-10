@@ -720,8 +720,8 @@ class TestEveryHostDenyCallSiteIsWired:
         anchor = 'if getattr(slot, "_batch_rejected", False):'
         assert anchor in src, "the cascade site moved -- guard is stale"
         # Window sized for the full cascade block: the audit-first SEL write
-        # (issue #8621) now sits between the anchor and the reject answer, so
-        # the original 3500-char window no longer reached the reject.
+        # now sits between the anchor and the reject answer, so
+        # the original 3500-char window would fall short of the reject.
         block = src.split(anchor, 1)[1][:5200]
         steer_at = block.find("_steer_policy_notice")
         reject_at = block.find("reject_tool(")
@@ -816,8 +816,7 @@ class TestEveryHostDenyCallSiteIsWired:
     # the helper scan, and a host-side auto-decline added at such a site hands
     # the model kiro-cli's "User denied tool execution" -- the wrong-attribution
     # class fixed for policy/hook/invalid-name via the steer helpers and still
-    # being paid down branch by branch (the expired-prompt steer is pending as
-    # PR #8508, and #8578 tracks the remaining approval auto-decline paths).
+    # being paid down branch by branch (other approval auto-decline paths are not yet covered).
     # This scan closes the enumeration for chat_runner.py -- the module that
     # answers the dashboard's ``session/request_permission`` -- other modules
     # answer their own surfaces and are out of this guard's scope. Every

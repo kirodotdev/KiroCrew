@@ -1,9 +1,9 @@
 """The per-call ``reasoning_effort`` parameter across every spawn_run layer.
 
-Effort for a subagent used to resolve ONLY server-side
+A subagent's effort otherwise resolves ONLY server-side
 (``agent.role_efforts['subagent']`` -> chat default), so a parent could not
 state the thinking depth its subagents run at without mutating the global
-setting. ``spawn_run`` now takes a batch-wide ``reasoning_effort`` that is
+setting. ``spawn_run`` takes a batch-wide ``reasoning_effort`` that is
 plumbed along the exact path ``model`` takes: schema -> tool body ->
 ``POST /api/spawn`` -> ``SubagentManager.spawn`` -> the ``_run_inner``
 resolution site. Each hop is a place the value can be silently dropped
@@ -228,7 +228,7 @@ class TestUnsupportedModelReport:
 
 class TestVerdictCollapse:
     """Identical per-subagent verdicts collapse into ONE line on wide
-    fan-outs (#6185). ``reasoning_effort`` and ``model`` are batch-wide, so
+    fan-outs. ``reasoning_effort`` and ``model`` are batch-wide, so
     every member of a wide batch usually gets the identical verdict — one
     line per subagent injects N copies of the same text into the calling
     agent's context. Differing verdicts keep their own attributed lines so
@@ -598,7 +598,7 @@ class TestEffortDropReason:
 
 
 class TestNoSpawnSiteDropWarning:
-    """The spawn path no longer emits its own drop warning (#6186): the
+    """The spawn path does not emit its own drop warning: the
     provider factory's effort gate (config/loader.py) is the single warning
     authority, covering spawn, dashboard slot, and cron alike. The tool-result
     verdict (effort_dropped/effort_applied) remains the caller-facing signal;

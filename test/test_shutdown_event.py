@@ -1,6 +1,6 @@
 """Regression tests for the process-wide ``shutdown_event``.
 
-Bug (2026-05-02): ``shutdown_event`` was a plain ``asyncio.Event()`` created at
+The ``shutdown_event`` must not be a plain ``asyncio.Event()`` created at
 module import time.  On Python 3.9 ``asyncio.Event`` captures the current loop
 at construction; awaiting it later from a different loop (e.g. the one
 ``asyncio.run()`` creates for the gateway) raised::
@@ -84,7 +84,7 @@ def test_shutdown_event_wait_for_timeout() -> None:
 
 
 def test_shutdown_event_does_not_bind_to_default_loop_via_get_event_loop() -> None:
-    """Regression for review-bot feedback.
+    """The proxy must not bind to a loop until awaited.
 
     Proves the proxy does NOT bind to the default loop on first access.
     """

@@ -1,7 +1,7 @@
-"""Tests for the shared ``read_capped_response`` helper (issue #4829).
+"""Tests for the shared ``read_capped_response`` helper.
 
 Three dashboard HTTP readers (the release-feed fetch, the Aperture feedback
-reply, and the Jira issue fetch) previously read the body with a single
+reply, and the Jira issue fetch) must not read the body with a single
 ``StreamReader.read(cap + 1)``. ``read(n)`` returns UP TO *n* bytes, resolving
 as soon as any data is buffered, so on a chunked response with no
 Content-Length it hands back only the first buffered chunk and the caller

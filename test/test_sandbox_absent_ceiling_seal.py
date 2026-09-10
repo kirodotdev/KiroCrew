@@ -58,7 +58,7 @@ def _seal_loop_source() -> str:
     """The launcher's ``READONLY_DIRS`` loop body, ready to run.
 
     Pulled out of the generated script rather than restated, so this test cannot pass
-    against a loop the launcher no longer contains.
+    against a loop the launcher does not contain.
     """
     script = sandbox._build_launcher_script("strict")
     loop = (

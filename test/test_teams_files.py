@@ -327,7 +327,7 @@ class TestResolvedAddressVetting:
     ) -> None:
         """The shared vet fails closed on a literal it cannot read.
 
-        The local `ipaddress.ip_address` guard that used to do this was dropped
+        The local `ipaddress.ip_address` guard that the delegation subsumes is dropped
         because the delegation subsumes it -- so the property needs its own test,
         or removing that guard would look like a regression.
         """
@@ -576,7 +576,7 @@ class TestOutboundSeal:
         assert client.images[0]["name"] == "image.png"
 
     def test_a_secret_the_length_cap_would_slice_is_still_caught(self) -> None:
-        """The cap can cut a token down to a prefix the scanner no longer matches.
+        """The cap can cut a token down to a prefix the scanner does not match.
 
         Scanning only the finished name would ship most of the secret; the source is
         scanned first, while the token is still intact.
@@ -818,7 +818,7 @@ class TestMidTurnFiles:
         """The regression: a queued upload must be fetched for the turn that runs.
 
         Ingesting at arrival and unlinking in that frame left the drained turn a
-        prompt naming a file that no longer existed -- the encoder skips it, so the
+        prompt naming a file that is already gone -- the encoder skips it, so the
         model answered about nothing with nothing logged.
         """
         from test_teams_midturn import _Provider, _Sessions

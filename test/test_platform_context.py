@@ -113,7 +113,7 @@ class TestPolicyAuthorityAddOnly:
             assert_security_floor(_WeakeningAuthority())
 
     def test_baseline_deny_still_blocks_known_patterns(self) -> None:
-        """``BASELINE_DENY`` is now ``()`` — the built-ins are no longer the
+        """``BASELINE_DENY`` is ``()`` — the built-ins are not the
         compiled floor.  A default ``PolicyAuthority`` (no overlay) therefore
         contributes an EMPTY floor via ``effective_patterns``, but its
         ``is_denied`` still fails closed to the full built-in rule set when the

@@ -182,7 +182,7 @@ class TestAFailedDatabaseCopyIsNotSilentlyDowngraded:
         third raiser: anything it cannot positively classify as not-a-database must raise
         rather than fall through to the plain-file path.
 
-        Rewritten when #5451 collapsed the two duplicated `backup()` blocks into one
+        The two duplicated `backup()` blocks are collapsed into one
         shared helper. The invariant is unchanged and now holds by construction: instead
         of counting two call sites and checking each is wrapped, there is ONE call site to
         wrap, and what needs asserting is that BOTH paths still route through it. The old
@@ -222,7 +222,7 @@ class TestAFailedDatabaseCopyIsNotSilentlyDowngraded:
         assert probe_src.index("if not not_a_database:") < probe_src.index(
             "return DB_NOT_A_DATABASE"
         ), "the raise must precede the not-a-database outcome"
-        # The source is opened read-only. This is the #5451 fix and it is asserted
+        # The source is opened read-only, and this is asserted
         # structurally as well as behaviourally, because a read-write open still passes
         # every functional test on a database with no unreplayed log.
         assert "?mode=ro" in probe_src, (
@@ -451,7 +451,7 @@ class TestAFailedTreeReplacementPutsTheTreeBack:
     ):
         """An INCOMPLETE rollback set is worse than none.
 
-        The tree saves used to happen inside the mutation phase, so a save that failed
+        Tree saves must not happen inside the mutation phase, so a save that failed
         partway raised into the recovery handler -- which then cleared the intact live
         tree and put the PARTIAL copy back, destroying data nothing had touched. Saves
         now complete before anything mutates, so a save failure aborts with the data

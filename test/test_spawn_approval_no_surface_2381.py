@@ -1,5 +1,5 @@
-"""Regression tests for issue #2381 — a spawn approval nobody can answer must
-be refused now, not held until the reaper.
+"""A spawn approval nobody can answer is refused up front, not held until the
+reaper.
 
 The reported shape: a turn that originated on a channel (Telegram) calls
 ``spawn_run`` on a headless install. None of the four auto-approve rungs in
@@ -18,7 +18,7 @@ Deliberately NOT covered, because the change does not make them: delivering the
 prompt to the originating channel's own inline keyboard (the ideal fix, and much
 larger — every channel renderer plus its approval decider), the per-agent
 ``auto_approve_spawn`` rung proposed on the issue, and any new tombstone field.
-Both of the latter are open maintainer decisions on #2381.
+Both of the latter are open maintainer decisions.
 """
 
 from __future__ import annotations
@@ -263,7 +263,7 @@ class TestUnansweredablePromptIsRefusedNow:
     async def test_the_agent_facing_refusal_carries_no_bypass_recipe(self) -> None:
         """The refusal must not teach the agent how to remove its own gate.
 
-        Design Review r3 on PR #8914. ``info.error`` reaches the calling agent as
+        ``info.error`` reaches the calling agent as
         a completion event -- automation input -- and two of the four rungs are
         ``config.json`` edits. ``security.py`` records that ``config.json`` is
         "writable by any auto-approved agent shell", so naming those keys here
@@ -363,11 +363,11 @@ def _hub_count(sockets: list[dict]) -> int:
 class TestDashboardUserSocketCount:
     """Only a dashboard USER's socket is somebody who could answer.
 
-    GPT round 2 on PR #8914. An app token registers on ``/api/ws`` as well, with
+    An app token registers on ``/api/ws`` as well, with
     ``_is_dashboard_user`` False, and the broadcast chokepoint
     (``_ws_client_allowed``) sends it an owner-surface frame only if its manifest
     declared that event — so counting it reports a surface that received nothing,
-    which is round 1's Slack defect in a second location.
+    which is the same Slack defect in a second location.
     """
 
     def test_an_app_token_socket_does_not_count(self) -> None:
@@ -489,9 +489,9 @@ class TestOnlyTheSpawnGateRaises:
     async def test_a_failed_slack_post_still_fails_fast(self, monkeypatch) -> None:  # type: ignore[no-untyped-def]
         """A configured owner DM that cannot be posted to is not a surface.
 
-        GPT round 1 on PR #8914. The Slack branch is wrapped in its own
+        The Slack branch is wrapped in its own
         ``except`` and falls through to the dashboard-only fallback, so a Slack
-        outage on a channel install used to land right back in the park this
+        outage on a channel install would land right back in the park this
         change exists to remove.
         """
         slack = MagicMock()

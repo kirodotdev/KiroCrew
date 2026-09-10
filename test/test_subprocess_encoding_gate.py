@@ -1,6 +1,6 @@
 """The subprocess-encoding gate must be real, wired into CI, and ratchet-only.
 
-Follow-up to #3219/#3669 (#5249): text-mode subprocess calls without an
+Text-mode subprocess calls without an
 explicit ``encoding=`` decode with the Windows ANSI code page. The lint gate in
 ``scripts/check_subprocess_encoding.py`` keeps that class from growing back.
 These tests pin the halves that must stay true together: CI actually runs the
@@ -247,7 +247,7 @@ class TestBaselineRatchet:
     def test_cli_server_stays_clean(self) -> None:
         """cli_server.py once held an unpinned text-mode call the baseline
         under-counted, so any PR touching the file failed the gate even when
-        the PR added nothing (#5580). Both calls are pinned now and the
+        the PR added nothing. Both calls are pinned now and the
         baseline entry is pruned; this pins the file at zero so it can never
         silently re-enter the list."""
         rel = "src/kiro_crew/cli_server.py"

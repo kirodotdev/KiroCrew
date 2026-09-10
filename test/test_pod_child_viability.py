@@ -364,7 +364,7 @@ class TestTheProbeIsConfined:
         gateway, so its ambient ``KIROCREW_HOME`` is the HOST's while the real spawn
         -- inside the pod gateway process -- reads the POD's. Config resolves through
         that variable at call time, so an operator with ``sandbox_allow_unsandboxed_exec``
-        set in HOST config and not in POD config previously got a probe that PASSED
+        set in HOST config and not in POD config would get a probe that PASSED
         and an agent that could never spawn: healthy status, dead pod.
         """
         from kiro_crew import sandbox

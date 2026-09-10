@@ -207,7 +207,7 @@ class TestThisProcessOwnRecordIsNotADropNotice:
     """A reader in the writing process IMAGE must leave the live record alone.
 
     This is what frees the read from having to run before the startup grant is
-    applied -- the constraint that previously forced it onto the pre-bind boot
+    applied -- the constraint that would otherwise force it onto the pre-bind boot
     path. Identity is an import-time nonce rather than the pid, because both
     restart paths end in ``os.execv``, which PRESERVES the pid (and the process
     start time), so a pid check would swallow the notice on exactly the restarts
@@ -289,7 +289,7 @@ class TestAQueuedPublishActsOnThePathItWasQueuedFor:
     """A publish runs LATER, on the worker thread. It must act on the file its own
     transition was about -- not on whatever ``_breadcrumb_path`` names by then.
 
-    Regression for #8586. Sibling test files in the same xdist worker call real
+    Sibling test files in the same xdist worker call real
     transitions, so they enqueue real publishes onto this module's long-lived
     queue; this file's autouse fixture repoints ``_breadcrumb_path`` at its own
     tmp_path. A job that resolved the path when it RAN therefore deleted or
@@ -340,7 +340,7 @@ class TestAQueuedPublishActsOnThePathItWasQueuedFor:
     ) -> None:
         # The same defect's other arm, and the one the issue's remaining candidate
         # named: a foreign write stamps THIS image's token, so the own-image guard
-        # then correctly refuses a record that is no longer this test's.
+        # then correctly refuses a record that is not this test's.
         sibling = tmp_path / "sibling" / "last_grant.json"
         victim = tmp_path / "victim" / "last_grant.json"
         for parent in (sibling.parent, victim.parent):

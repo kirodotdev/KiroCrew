@@ -559,8 +559,8 @@ class TestCommandProviderNoShellAndTimeout:
             patch.object(sys, "platform", "linux"),
         ):
             result = await p.check()
-        # Any spawn failure becomes an error verdict; the message no longer
-        # names the shell because OSError covers more than "missing binary".
+        # Any spawn failure becomes an error verdict; the message does not
+        # name the shell because OSError covers more than "missing binary".
         assert result.error and result.available is False
 
     @pytest.mark.asyncio
@@ -1432,7 +1432,7 @@ class TestWhitespaceCommandsAreNotPresence:
 
 class TestRedactionHappensBeforeTruncation:
     """Slicing stderr to 500 chars BEFORE redacting can cut a credential in half,
-    and half a token no longer matches the redactors' patterns, so the surviving
+    and half a token does not match the redactors' patterns, so the surviving
     fragment reaches gateway.log and /api/logs verbatim. Order, not presence, is
     what makes the redaction effective."""
 

@@ -47,7 +47,7 @@ class TestAutomatic:
 class TestAdmitsEveryRegisteredCrew:
     """The regression this policy exists to prevent.
 
-    Auto used to resolve from the LIVE CONNECTED count, which made the cap race
+    Auto must not resolve from the LIVE CONNECTED count, which makes the cap race
     tunnel startup. With four crews configured and the fourth still connecting
     when the dashboard polled, the cap came back 3, the viewport evicted a pane
     to honour it, and one crew looked broken -- a different one each restart,

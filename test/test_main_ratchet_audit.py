@@ -234,7 +234,7 @@ class TestABrokenShellIsNotAQuietReporter:
 
 @_needs_posix_shell
 class TestSupersededReporter:
-    """A reporter whose commit is no longer main's head leaves the issue alone."""
+    """A reporter whose commit is not main's head leaves the issue alone."""
 
     def test_a_green_run_at_main_head_closes_the_tracking_issue(self, tmp_path: Path) -> None:
         # The baseline the guard must not break: the self-heal still fires when
@@ -402,8 +402,8 @@ class TestGateParityWithCi:
     def test_every_ci_gate_is_mirrored_or_recorded(self) -> None:
         # The silent direction: a renamed script errors its step loudly, but a
         # gate ADDED to CI and not mirrored here just never runs on main --
-        # and its drift then surfaces on an unrelated PR, which is #7511's
-        # failure mode reproduced for every future gate. Both blocking workflows
+        # and its drift then surfaces on an unrelated PR -- the failure mode
+        # reproduced for every future gate. Both blocking workflows
         # count: fast-gate.yml is where the cheap gates live, and ci.yml blocks
         # on it through `await-fast-gate`, so a gate added to either is a gate CI
         # enforces.

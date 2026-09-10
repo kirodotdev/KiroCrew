@@ -44,8 +44,8 @@ _OS_HOME_PARTS = ("os-home",)
 def _write_identity_db(path: Path, token: str) -> None:
     """A REAL SQLite identity store holding *token*.
 
-    The fixtures used to write plain text here. That was fine while staging was a
-    byte copy and is not now: a live database is snapshotted through SQLite's backup
+    The fixtures write a real database here, not plain text. Staging is not a byte
+    copy: a live database is snapshotted through SQLite's backup
     API, which refuses a file that is not a database -- so a text fixture would
     exercise the refusal path on every test instead of the staging path. Writing a
     genuine database is also what lets these tests assert the property that matters
@@ -271,7 +271,7 @@ class TestALiveDatabaseIsSnapshottedNotFileCopied:
     def test_a_checkpoint_between_file_copies_cannot_tear_the_snapshot(
         self, tmp_path: Path
     ) -> None:
-        """RED-FIRST: the generation tear, forced at the point it used to happen.
+        """RED-FIRST: the generation tear, forced at the point it happens.
 
         The old loop staged names in sorted order, so ``data.sqlite3`` was read
         before ``data.sqlite3-wal``. This drives a WAL-mode database to exactly that
@@ -473,13 +473,7 @@ class TestTheStagedStoresResidualIsPinned:
     def test_no_path_spelling_is_covered_by_the_command_matcher_any_more(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Stated, not silent: after #9183 the text layer fences NO path at all.
-
-        This test previously asserted a PARITY -- the staged store uncovered "like
-        ``KIROCREW_HOME``" while the real ``$HOME`` stayed covered by a surviving
-        literal regex. #9183 ("split security.py into a package and drop path
-        regex") deleted the fence-literal and relative-traversal matchers outright,
-        so that framing is obsolete and the third assertion it made is now false.
+        """Stated, not silent: the text layer fences NO path at all.
 
         What is left is simpler and worth pinning as such: the command matcher
         allows every path spelling, the real home's own credential files included,
@@ -506,7 +500,7 @@ class TestTheStagedStoresResidualIsPinned:
             assert security.is_sensitive_path(path) is True, path
 
     def test_the_surviving_command_tiers_still_fire(self) -> None:
-        """#9183 kept three tiers; a read of a fenced path is not one of them.
+        """Three tiers survive; a read of a fenced path is not one of them.
 
         Asserted so "the matcher allows every path" is read as a scoped fact rather
         than as the gate being off: the IMDS tier still refuses, which is what

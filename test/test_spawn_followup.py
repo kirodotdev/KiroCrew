@@ -305,7 +305,7 @@ class TestFollowUpDelivery:
     ) -> None:
         """SHUTDOWN-MID-RETRY RACE (GPT review): the watcher must not DRAIN the
         queue before the outcome settles — shutdown landing during a
-        conversation_busy retry sleep used to find an empty queue, cancel the
+        conversation_busy retry sleep must not find an empty queue, cancel the
         watcher, and lose the message with no event. Messages now stay queued
         until dispatched-or-announced, so cancel_all()'s sweep announces them."""
         mgr = _manager()

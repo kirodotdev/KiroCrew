@@ -615,13 +615,11 @@ def test_scheduled_target_is_refused(tmp_path):
 
 
 def test_scheduled_caller_cannot_control_a_session_it_did_not_create(tmp_path):
-    """A cron caller is admitted but fenced to its own children (issue #8332).
+    """A cron caller is admitted but fenced to its own children.
 
-    The refusal it used to get was ``unattended_caller``, keyed on the slot-key
-    prefix. That was replaced by the ``created_by`` fence, which refuses the case
-    the prefix check existed for -- a scheduled job reaching the user's own
-    conversation -- while letting it drive the sessions it dispatched. The
-    positive half, and a cron's other gates, are in
+    The ``created_by`` fence refuses the case that matters -- a scheduled job
+    reaching the user's own conversation -- while letting it drive the sessions
+    it dispatched. The positive half, and a cron's other gates, are in
     ``test_cron_session_control.py``.
     """
     state = _make_state(tmp_path)
@@ -1097,14 +1095,14 @@ def test_a_credential_at_the_truncation_boundary_is_still_redacted(tmp_path):
     """Redaction runs over the whole message, then the slice happens.
 
     Mutation guard: truncating first cuts the secret into a prefix the scanner
-    no longer matches, and that fragment ships to the caller.
+    does not match, and that fragment ships to the caller.
     """
     state = _make_state(tmp_path)
     caller = _slot(state, "chat-1")
     target = _peer_target(state, "chat-2", caller)
     secret = "ghp_" + "B" * 36
     # Straddle the boundary: only the first 10 chars of the secret survive a
-    # naive slice, and a 10-char fragment no longer matches the credential
+    # naive slice, and a 10-char fragment does not match the credential
     # scanner — so it is exactly what leaks when the order is wrong.
     filler = "x" * (sc.MAX_READ_CONTENT_CHARS - 10)
     surviving_fragment = secret[:10]
@@ -1244,7 +1242,7 @@ def test_the_read_cursor_is_absolute_across_a_trimmed_window(tmp_path):
     """Window length freezes at the retention cap; `total` and the indexes must not.
 
     Mutation guard: deriving `total` from `len(slot.messages)` makes it freeze at
-    the cap, so a caller can no longer tell how much history exists. Basing it on
+    the cap, so a caller cannot tell how much history exists. Basing it on
     `_disk_older_count` instead of the durable counter shifts every position by
     the transient rows that were trimmed (here: 20), which this pins.
     """
@@ -1621,7 +1619,7 @@ def test_stop_is_refused_for_a_session_out_of_bounds(tmp_path):
         asyncio.run(sc.stop_target(state, caller_session_key=_key(caller), target="chat-hidden"))
 
 
-# ── session_stop is safe to re-send (#5074) ──────────────────────────────────
+# ── session_stop is safe to re-send ──────────────────────────────────
 
 
 def _stoppable(state, slot):
@@ -1727,7 +1725,7 @@ def test_a_stop_after_the_window_still_escalates(tmp_path, monkeypatch):
 
 
 def test_a_withheld_escalation_is_recorded(tmp_path, monkeypatch):
-    """#5074 read from the other side: the absorbed retry must be visible too.
+    """Read from the other side: the absorbed retry must be visible too.
 
     The issue's complaint is that queued messages went "with no record that a
     retry rather than a decision caused it". Suppressing the kill silently would
@@ -2011,7 +2009,7 @@ def test_send_to_a_remote_bound_target_is_refused_not_run_locally(tmp_path, monk
 
     ``send_to_target`` hands ``_run_chat`` to ``enqueue_or_run_prompt``, which has
     no remote/executor branch — so a bound target would run the crew's work here
-    and diverge the local and peer transcripts (GPT #7693). It is refused with a
+    and diverge the local and peer transcripts. It is refused with a
     409 before any dispatch, and nothing is queued.
     """
     state = _make_state(tmp_path)
@@ -2336,7 +2334,7 @@ def test_trust_revoked_mid_create_is_not_inherited(tmp_path, monkeypatch):
     `create_session` suspends several times before the slot exists (project dir,
     config load, folder confirmation), and the operator can pick `normal` in any
     of those windows. Reading the entry-time slot would hand the child a grant
-    that no longer exists. Simulated by revoking inside the project-dir
+    that has been revoked. Simulated by revoking inside the project-dir
     resolution, the same interleaving the folder-delete test uses.
     """
     state = _make_state(tmp_path)
@@ -2382,7 +2380,7 @@ def test_the_create_audit_records_what_the_child_was_born_with(tmp_path):
     assert detail["inherited_trust_reads"] == "false"
 
 
-# ── session_create: filing at birth (#6118) ─────────────────────────────────
+# ── session_create: filing at birth ─────────────────────────────────
 
 
 def test_create_schema_bounds_the_folder_reference():
@@ -3010,7 +3008,7 @@ def test_a_caller_that_moves_workspace_during_the_await_is_refused(tmp_path, mon
     """The workspace fed the agent-binding decision, so a move invalidates it.
 
     Mutation guard: carrying the pre-await workspace forward puts the child on a
-    boundary its creator no longer sits behind.
+    boundary its creator does not sit behind.
     """
     state = _make_state(tmp_path)
     caller = _slot(state, "chat-1")
@@ -3255,7 +3253,7 @@ def test_nothing_suspends_while_the_created_slot_is_half_configured():
     )
     # And the filing itself happens inside the synchronous configuration window,
     # so no caller ever observes the published slot unfiled -- the atomicity
-    # #6118 exists for.
+    # this test requires.
     filed = src.index("slot.folder_id = folder_id")
     assert publish < filed < configured, (
         "the folder must be assigned between publishing the slot and the end of "
@@ -3730,11 +3728,10 @@ def test_the_denial_audit_does_not_persist_caller_supplied_credentials(tmp_path,
 def test_slot_cap_has_one_owning_constant() -> None:
     """Every slot-creating path reads the SAME owning ceiling constant.
 
-    The live-slot ceiling used to be declared independently as ``= 500`` in
-    three modules (session create, chat fork, session import); raising it then
-    took three edits and the effective limit depended on which door the caller
-    came through. It now has one home -- ``state.MAX_LIVE_SLOTS`` in the module
-    that owns ``live_slot_count()`` -- and each door imports that one name. This
+    The live-slot ceiling has one home -- ``state.MAX_LIVE_SLOTS`` in the module
+    that owns ``live_slot_count()`` -- and each slot-creating door (session
+    create, chat fork, session import) imports that one name, so the effective
+    limit cannot diverge by which door the caller came through. This
     pins that no door has re-introduced its own literal: all three modules must
     expose the identical owning object.
     """

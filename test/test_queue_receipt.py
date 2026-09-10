@@ -2,8 +2,8 @@
 
 Telegram and Discord grew this subsystem independently and kept ~560 duplicated
 lines of it. The channel-neutral half now lives in
-``messaging/queue_receipt.py``; these tests pin the behaviour that used to be
-asserted twice (once per channel, in two files that could drift) and add the
+``messaging/queue_receipt.py``; these tests pin that channel-neutral behaviour
+once, and add the
 mechanism that stops a third channel from starting a third copy.
 """
 

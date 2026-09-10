@@ -443,7 +443,7 @@ class TestTheArchivedBytesAreTheValidatedBytes:
     def test_retargeting_the_link_after_validation_cannot_change_what_is_archived(
         self, tmp_path
     ):
-        """The regression for the race itself.
+        """The race itself: a link accepted at validation is then retargeted out.
 
         The link resolves INSIDE the crew directory when the candidate is
         validated, so containment accepts it — correctly. It is then retargeted
@@ -454,7 +454,7 @@ class TestTheArchivedBytesAreTheValidatedBytes:
         The link IS the crew root here rather than a directory under it, and the
         placement is the point rather than a convenience. The walk refuses a linked
         component BELOW the root — it is classified from the directory listing and
-        never descended, opened or resolved — so a link there is no longer a
+        never descended, opened or resolved — so a link there is not a
         reachable swap site at all. The root
         itself and everything above it are deliberately outside the screen — that
         is configuration, not a workspace an agent tool can write into — which
@@ -597,7 +597,7 @@ class TestTheArchivedBytesAreTheValidatedBytes:
         `ZipFile.write` stat'd the source and enabled ZIP64 on its own; hand-building
         the entry gave that up, and a source over `ZIP64_LIMIT` then raises
         `RuntimeError` part-way through — the export endpoint answers 500 for a file
-        that used to archive fine.
+        that would otherwise archive fine.
 
         The limit is lowered rather than the fixture inflated: the branch under test
         is selected by `size > ZIP64_LIMIT`, and a multi-gigabyte artifact in the
@@ -694,7 +694,7 @@ class TestTheAncestorSwapIsRefusedNotDetected:
         rather than a thread that has to be lucky.
 
         Two things are asserted, and both matter. The rename must FAIL, because that
-        is the property: the export no longer depends on nobody having swapped the
+        is the property: the export does not depend on nobody having swapped the
         directory, it depends on nobody being able to. And the descriptor must still
         come back on the genuine bytes, because a guard that closed the race by
         refusing everything would pass the first assertion and be useless.
@@ -1839,10 +1839,10 @@ def test_a_malformed_job_cannot_reach_the_cron_loader(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Issue #8217: a refused cron merge must not be reported as a successful one.
-# `apply_import_zip` used to append "crons (merged)" unconditionally, so an
-# import whose merge was refused (imported ZERO jobs) was returned to the
-# dashboard as a success listing "crons (merged)", and the SEL audit agreed.
+# A refused cron merge must not be reported as a successful one.
+# `apply_import_zip` must not append "crons (merged)" unconditionally: an
+# import whose merge is refused (imports ZERO jobs) must not be returned to the
+# dashboard as a success listing "crons (merged)", and the SEL audit must agree.
 # The only trace of the refusal was a print no dashboard import can see.
 # ---------------------------------------------------------------------------
 
@@ -1980,8 +1980,8 @@ def test_merge_crons_returns_the_outcome_on_every_path(tmp_path):
 async def test_import_handler_outcome_reflects_a_refused_merge(
     tmp_path, summary, expected_outcome, expect_refused_tag
 ):
-    # The dashboard handler used to log outcome="ok" unconditionally, so the
-    # audit trail confirmed the false success. A summary carrying a refused
+    # The dashboard handler must not log outcome="ok" unconditionally, or the
+    # audit trail would confirm a false success. A summary carrying a refused
     # merge must land as "partial" with the refused component named.
     from aiohttp.test_utils import make_mocked_request
 

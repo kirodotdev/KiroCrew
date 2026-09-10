@@ -10,7 +10,7 @@ main agent's turn-resilience ladder:
    preserved, ``user_stop`` tombstone, ``subagent_done`` carries ``stopped: true``.
 3. Unexpected-cancel one-shot auto-continue (``_schedule_cancel_recovery``):
    a non-user, non-shutdown task cancellation respawns the run exactly once.
-   Mirrors the main path's cancel recovery (PR #173).
+   Mirrors the main path's cancel recovery.
 4. Orphan-notification wiring: ``_try_inject_orphan_notification`` /
    ``_send_orphan_slack_dm`` delegate to the gateway-wired callbacks instead of
    being stubs.
@@ -321,7 +321,7 @@ async def test_throttle_fallback_chain_exhausted_propagates():
 
     assert info.done is True
     assert "500" in info.error
-    # #5447 item 1: the terminal error text names the WHOLE walk, not just the
+    # The terminal error text names the WHOLE walk, not just the
     # last candidate's failure — the chain story is appended to info.error.
     assert "primary-model throttled" in info.error
     assert "fb-1" in info.error and "also unavailable" in info.error
@@ -331,7 +331,7 @@ async def test_throttle_fallback_chain_exhausted_propagates():
 
 @pytest.mark.asyncio
 async def test_throttle_fallback_ladder_routes_through_shared_budget_body():
-    """DRIFT PIN (#5447 item 2): the ladder must consult
+    """DRIFT PIN: the ladder must consult
     FallbackState.should_retry_active for the per-candidate budget. Forcing
     the shared body to refuse retries changes the attempt count — proof the
     budget is not re-encoded locally (mirror of the stream_and_collect pin in
@@ -650,7 +650,7 @@ async def test_orphan_injection_delegates_to_callback():
     with patch("kiro_crew.subagent.sel"):
         ok = await mgr._try_inject_orphan_notification("dashboard:main", "msg")
     assert ok is True
-    # The structured completion facts (#1792) are forwarded as a third arg;
+    # The structured completion facts are forwarded as a third arg;
     # a direct call with no meta passes None through unchanged.
     notify.assert_awaited_once_with("dashboard:main", "msg", None)
 

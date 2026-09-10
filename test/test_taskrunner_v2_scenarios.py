@@ -134,7 +134,7 @@ class TestBug1CycleDetectionThreshold:
 
 
 class TestBug2RevertOnFailedStep:
-    """Fixed: revert_step is no longer called when a step fails without committing."""
+    """Fixed: revert_step is not called when a step fails without committing."""
 
     @pytest.mark.asyncio
     async def test_no_revert_when_step_never_committed(self, tmp_path: Path) -> None:

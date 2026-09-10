@@ -147,7 +147,7 @@ class TestActiveAppearance:
         assert load_settings(tmp_path)["activeAppearance"] == PACK_GHOST
 
     def test_migrates_a_legacy_empty_appearance(self, tmp_path: Path) -> None:
-        """`activeAppearance: ""` used to mean "whatever avatar says"."""
+        """An empty `activeAppearance` resolves to whatever the avatar names."""
         settings_path(tmp_path).write_text('{"avatar": "ghost", "activeAppearance": ""}')
         assert load_settings(tmp_path)["activeAppearance"] == PACK_GHOST
 

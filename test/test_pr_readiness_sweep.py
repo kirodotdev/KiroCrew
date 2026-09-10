@@ -254,7 +254,7 @@ def test_fresh_pending_is_left_alone(runner: Runner) -> None:
 
 
 def test_failure_with_later_check_evidence_is_refired(runner: Runner) -> None:
-    """The PR #2064 incident, reduced.
+    """A failure with later check evidence and no fresh event is still re-fired.
 
     `gh run rerun --failed` creates a new run ATTEMPT whose completion emits no
     fresh `workflow_run: completed`, so the aggregator never re-evaluates. Here
@@ -417,7 +417,7 @@ def test_green_verdict_with_no_check_evidence_is_left_alone(runner: Runner) -> N
 
 
 def test_a_missing_readiness_status_is_refired(runner: Runner) -> None:
-    """The PR #2783 incident, reduced.
+    """A missing readiness status is re-fired.
 
     `pr-readiness.yml` does not retry its status POST and instructs a human to
     re-run the workflow. When that POST failed on `gh: HTTP 503`, the SHA carried
@@ -516,7 +516,7 @@ def test_a_different_status_context_never_drives_the_decision(runner: Runner) ->
 def test_only_a_foreign_status_reads_as_an_unpublished_verdict(runner: Runner) -> None:
     """A SHA with other statuses but no readiness one is still unpublished.
 
-    This is the #2783 shape generalised: what makes the verdict absent is that no
+    This is the same shape generalised: what makes the verdict absent is that no
     `PR Readiness` context exists, not that the SHA is bare. Treating it as
     "already has a status" would leave the required aggregate permanently missing.
     """
@@ -698,11 +698,11 @@ def test_a_failed_statuses_read_is_not_treated_as_unpublished(runner: Runner) ->
     assert "statuses lookup failed" in runner.last_stdout
 
 
-# ── The disposition-comment freeze (#6658 made the verdict depend on comments) ─
+# ── The disposition-comment freeze (the verdict depends on comment bytes) ─
 
 
 def test_failure_with_a_later_disposition_edit_is_refired(runner: Runner) -> None:
-    """Since #6658 a disposition-rule violation fails readiness, so the verdict
+    """A disposition-rule violation fails readiness, so the verdict
     depends on comment bytes -- and the aggregator has no `issue_comment`
     trigger. Correcting the comment produces no event and no check-run, so
     without this mode the red freezes on an unchanged commit."""
@@ -795,7 +795,7 @@ def test_later_check_evidence_still_wins_without_reading_comments(runner: Runner
 def test_failure_with_no_checks_and_a_later_disposition_is_still_refired(
     runner: Runner,
 ) -> None:
-    """A PR whose head carries no completed check-run at all used to be skipped
+    """A PR whose head carries no completed check-run at all is not skipped
     outright by the failure arm. The comment path must still be reachable for
     it, since a disposition violation can be the ONLY reason readiness is red."""
     dispatched = runner.sweep(

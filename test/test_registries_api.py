@@ -140,7 +140,7 @@ class TestPutRegistries:
 
     @pytest.mark.asyncio
     async def test_new_url_host_emits_trust_grant_event(self, tmp_path, monkeypatch):
-        # Admitting a URL registry whose host was not previously configured is a
+        # Admitting a URL registry whose host was not already configured is a
         # genuine trust grant (the host joins the SSH-clone/loosened-sandbox set
         # and its apps become installable with gateway privileges). It MUST emit
         # a distinct, per-host audit event — not just the generic

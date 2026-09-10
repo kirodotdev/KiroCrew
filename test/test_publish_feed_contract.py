@@ -46,7 +46,7 @@ WORKFLOWS = ROOT / ".github" / "workflows"
 MAC_WORKFLOW = WORKFLOWS / "sign-and-notarize.yml"
 LINUX_WORKFLOW = WORKFLOWS / "publish-linux.yml"
 
-# Dummy values used to render the feed heredocs into parseable YAML. The
+# Dummy values that render the feed heredocs into parseable YAML. The
 # sha512 stand-ins are the names of the shell variables the step MUST
 # populate from `openssl dgst -sha512 -binary | base64`; if the heredoc
 # references anything else the substitution misses and the residual `$`
@@ -413,7 +413,7 @@ def test_feed_chain_steps_share_one_skip_gate() -> None:
     The BYTE steps and the "Write update feed" step share one base gate. The
     downstream POINTER steps (latest aliases, the mac legacy feed) carry the
     same base gate AND the feed step's monotonicity verdict
-    (``steps.feed.outputs.advance``): when a hotfix on an old release line
+    (``steps.feed.outputs.advance``): when a fix on an old release line
     HOLDS the feed pointer, the aliases must hold with it -- an alias is a
     channel pointer too, and moving it alone would leave the downgrade
     reachable through the alias URL. An alias that skips while the bytes

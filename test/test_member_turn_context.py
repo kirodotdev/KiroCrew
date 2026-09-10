@@ -1,8 +1,8 @@
 """The member-turn chokepoint: one decision point for the rules-currency invariant.
 
 ``kiro_crew.members.member_turn_context`` owns the "every member turn runs
-under current rules" invariant, replacing the hand-coordinated branch table it
-was previously stitched across. Two families of tests pin it:
+under current rules" invariant as one decision point, not a branch table
+spread across delivery paths. Two families of tests pin it:
 
 1. **Behavior** — the lifecycle mapping and the per-lifecycle verdict, so the
    invariant's shape cannot drift silently.
@@ -358,7 +358,7 @@ class TestChokepointWiring:
         """``slim_resume`` reads the chokepoint's lifecycle instead of
         re-encoding ``resumed and not minimal_context``: two independent
         spellings of one predicate can drift, and the divergence that matters
-        (branch true, lifecycle no longer SLIM_RESUME) would leave a resumed
+        (branch true, lifecycle not SLIM_RESUME) would leave a resumed
         member session on a stale [PERMANENT RULES] snapshot silently."""
         import kiro_crew.context as context_mod
 

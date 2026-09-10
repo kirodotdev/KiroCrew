@@ -80,7 +80,7 @@ class TestStripMarkdown:
 
     def test_removes_control_tag_comments(self) -> None:
         # Trailing control-tag LINES are stripped — the tail-anchored grammar
-        # shared with the frontend recognizer (#7948). Stacked tags all go.
+        # shared with the frontend recognizer. Stacked tags all go.
         assert strip_markdown("report body\n<!-- keep-visible -->") == "report body"
         assert strip_markdown("done\n<!-- deliver:dashboard -->") == "done"
         assert (
@@ -127,7 +127,7 @@ class TestStripMarkdown:
         # A control tag interposed inside a key id splits it, so a redaction
         # scan on the RAW text misses it; the strip rejoins the halves. The
         # post-strip redaction pass must catch the reconstructed secret
-        # before it reaches TTS (#7960 GPT round-4 blocking).
+        # before it reaches TTS.
         out = strip_markdown("key AKIAIOSF<!-- keep-visible -->ODNN7EXAMPLE end")
         assert "AKIAIOSFODNN7EXAMPLE" not in out
 
@@ -147,12 +147,12 @@ class TestStripMarkdown:
 
     def test_control_tag_regex_linear_on_adversarial_input(self) -> None:
         # CodeQL py/polynomial-redos, two vectors: (a) "<!--deliver:" + many
-        # tabs (adjacent-quantifier ambiguity — fixed round 4); (b) the
-        # repeated prefix "<!--deliver:" * n, where an UNBOUNDED body meant
-        # each of n start positions rescanned an O(n) tail = quadratic
-        # (fixed round 6 by bounding every quantifier, so a failed attempt
-        # is constant work). Times the shared helper this PR ships —
-        # strip_markdown's pre-existing passes are not under test here.
+        # tabs (adjacent-quantifier ambiguity); (b) the
+        # repeated prefix "<!--deliver:" * n, where an UNBOUNDED body lets
+        # each of n start positions rescan an O(n) tail = quadratic.
+        # Bounding every quantifier keeps a failed attempt constant work.
+        # This times the shared helper; strip_markdown's other passes are
+        # not under test.
         # Polynomial time at this size hangs for minutes; linear completes
         # in milliseconds. Generous bound for slow CI.
         import time
@@ -382,7 +382,7 @@ def _patch_aws_on_path(monkeypatch) -> None:
         lambda name, *a, **k: _FAKE_AWS_CLI if name == "aws" else None,
     )
     # The which stub above is name-sensitive ("aws" only), but the shared
-    # deploy-engine resolver (#4770) would feed it a PATH-hit absolute path.
+    # deploy-engine resolver would feed it a PATH-hit absolute path.
     # Pin the resolver to the bare name so this fixture keeps meaning exactly
     # "the aws CLI is present" regardless of the host.
     monkeypatch.setattr("kiro_crew.voice_reply.resolve_aws_bin", lambda: "aws")
@@ -593,7 +593,7 @@ class TestSystemRateMapping:
 
     def test_a_non_string_rate_does_not_crash(self) -> None:
         # config.json is JSON, so a hand-edited `"rate": 100` arrives as an int
-        # and used to reach `_RATE_RE.match` as a non-string. The built-in engine
+        # and can reach `_RATE_RE.match` as a non-string. The built-in engine
         # is the default, so that typo would drop the audio of every reply.
         assert _system_wpm(100) == 175  # type: ignore[arg-type]
         assert _sapi_rate(100) == 0  # type: ignore[arg-type]
@@ -773,8 +773,8 @@ class TestParseSystemVoices:
 class TestListSystemVoices:
     """A failed probe must be distinguishable from a host with no engine.
 
-    Both used to answer with an empty list, so the endpoint reported
-    ``available: true`` and the panel rendered a picker holding only the OS
+    If both answer with an empty list, the endpoint reports
+    ``available: true`` and the panel renders a picker holding only the OS
     default — which reads as "this host has one voice", not as a failure the
     user can retry.
     """
@@ -838,7 +838,7 @@ class TestListSystemVoices:
                 await list_system_voices()
 
 
-# ── resolve_polly_cli() (#4770) ─────────────────────────────────────────
+# ── resolve_polly_cli() ─────────────────────────────────────────
 
 
 class TestResolvePollyCli:
@@ -849,7 +849,7 @@ class TestResolvePollyCli:
     def test_resolved_absolutely_under_minimal_path(self, monkeypatch, tmp_path) -> None:
         """A GUI-launched gateway's minimal PATH must still resolve the CLI
         absolutely via the deploy engine's well-known-dirs resolver instead of
-        silently skipping TTS (#4770)."""
+        silently skipping TTS."""
         from kiro_crew import github_runner, voice_reply
         from kiro_crew.deploy import engine
 
@@ -1046,7 +1046,7 @@ def _passthrough_wrap():
     """Patch the sandbox wrap to return its argv unchanged.
 
     The built-in engine is confined on macOS and Linux, so on those hosts the
-    real wrap prepends the launcher and ``cmd[0]`` is no longer the engine.
+    real wrap prepends the launcher and ``cmd[0]`` is not the engine.
     These tests assert how the ENGINE's own argv is built, which is what sits
     inside the wrap either way, so they pin that rather than the host's backend.
     """
@@ -2506,7 +2506,7 @@ class TestStitchMp3s:
         # the child must be killed and reaped via communicate() (which drains
         # the pipes) BEFORE the unlink, or Windows refuses to remove the
         # still-open output file. Using wait() instead of communicate() can
-        # hang when the child is blocked writing to a full stderr PIPE (#5834).
+        # hang when the child is blocked writing to a full stderr PIPE.
         proc.kill.assert_called_once()
         proc.communicate.assert_awaited()
         assert len(allocated) == 1
@@ -2602,7 +2602,7 @@ class TestStitchMp3s:
         """After a timeout kills the ffmpeg child, the cleanup must call
         ``communicate()`` -- not ``wait()`` -- so that PIPE buffers are
         drained. A child blocked writing to a full stderr PIPE would hang
-        the event loop if only ``wait()`` were used (#5834)."""
+        the event loop if only ``wait()`` were used."""
         allocated = _capture_mkstemp(monkeypatch)
         proc = _mock_subprocess(returncode=0)
         proc.communicate = AsyncMock(side_effect=asyncio.TimeoutError)
@@ -2625,7 +2625,7 @@ class TestStitchMp3s:
 
 
 # ---------------------------------------------------------------------------
-# _synthesize_piper / _synthesize_polly temp ownership under cancellation (#5821)
+# _synthesize_piper / _synthesize_polly temp ownership under cancellation
 # ---------------------------------------------------------------------------
 
 
@@ -2690,7 +2690,7 @@ class TestSynthesizePiperCancelOwnership:
     AND reap the piper child before the unlink — Windows keeps the output file
     locked until the child fully exits — then remove the ``.wav`` and
     re-raise. Reference pattern:
-    ``test_apple_speech.py::TestTranscodeTempOwnership`` (#5777).
+    ``test_apple_speech.py::TestTranscodeTempOwnership``.
     """
 
     @staticmethod
@@ -2815,7 +2815,7 @@ class TestSynthesizePollyCancelOwnership:
 
     Same cancellation contract as the piper path above: kill AND reap the AWS
     CLI child before the unlink, remove the ``.mp3``, re-raise the original
-    cancellation (#5821).
+    cancellation.
     """
 
     @pytest.fixture(autouse=True)

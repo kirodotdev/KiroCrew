@@ -346,7 +346,7 @@ def test_the_ceiling_does_not_refuse_a_source_at_exactly_the_limit(tmp_path: Pat
 def test_restore_moves_a_symlinked_core_file_aside_instead_of_writing_through_it(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """#3797's third finding, plus the silent partial restore hiding behind it.
+    """The silent partial restore, and the failure hiding behind it.
 
     Before this change the name-based screen declined to MOVE a symlinked core file to
     the backup and then ``shutil.copy2`` wrote through the very link it had just
@@ -584,7 +584,7 @@ def test_core_files_alone_still_consult_the_platform_gate(
 
 
 def test_the_manifest_records_what_was_omitted(tmp_path: Path) -> None:
-    """A skipped file used to be a console warning and nothing else.
+    """A skipped file must be recorded, not left as only a console warning.
 
     That is the same "silent partial" shape this PR fixes on the restore side: exit 0,
     a success message, and an archive quietly missing a file. Raised in review. The
@@ -760,7 +760,7 @@ def test_the_import_path_passes_its_staging_decision_to_both_branches() -> None:
 def test_mode_and_mtime_are_applied_through_the_written_descriptor(tmp_path: Path) -> None:
     """`chmod(name, dir_fd=...)` re-resolves the name; `fchmod(fd)` cannot be redirected.
 
-    The metadata calls used to address the destination by name under the pinned
+    The metadata calls must not address the destination by name under the pinned
     directory, which leaves a window where the final component is swapped between the
     write and the chmod and the mode lands on the replacement. Asserted here as the
     ordinary-case behaviour the descriptor form has to preserve.
@@ -817,7 +817,7 @@ def test_the_destination_root_is_created_through_a_pinned_parent(tmp_path: Path)
     which one this buys, because my first version of this test claimed the stronger one
     and passed for the wrong reason:
 
-    1. A missing ancestor is no longer silently materialised through whatever the path
+    1. A missing ancestor is not silently materialised through whatever the path
        resolves to. The parent must already exist, so a caller cannot accidentally
        write a tree into a linked directory it never validated. Asserted below.
     2. An ancestor swapped for a link AFTER the parent was resolved is refused, by
@@ -854,7 +854,7 @@ def test_the_destination_root_is_created_through_a_pinned_parent(tmp_path: Path)
     )
 
 
-# ── Round 3: the alias hazard reached the databases too ──────────────────────
+# ── The alias hazard reaches the databases too ──────────────────────
 
 
 def test_merge_consults_the_gate_before_writing_any_core_file(
@@ -968,13 +968,13 @@ def test_a_restored_security_file_is_locked_down_regardless_of_the_archive_mode(
         ) == 0o600, "the archive's permissive mode was inherited onto a restored secret"
 
 
-# ── Round 5: skips that precede a delete, and a validation that gets discarded ──
+# ── Skips that precede a delete, and a validation that gets discarded ──
 
 
 def test_replace_refuses_rather_than_deleting_a_tree_its_backup_could_not_copy(
     tmp_path: Path,
 ) -> None:
-    """The data-loss finding that closed the earlier attempt (#2446), carried forward here.
+    """The data-loss finding this test pins.
 
     Replace mode's next step after the backup is `rmtree` on the LIVE tree. The staging
     walk legitimately skips a hardlink alias -- right when producing an archive, and
@@ -1324,7 +1324,7 @@ def test_staged_directories_do_not_inherit_the_sources_mode_or_mtime(tmp_path: P
 
     Applying it required knowing that WE created the directory. That flag came from the
     `mkdir` while the descriptor came from a separate `open`, so a directory replaced between
-    the two left the flag true for an object we no longer held, and the archive's mode and
+    the two left the flag true for an object we do not hold, and the archive's mode and
     mtime were then written onto a directory belonging to somebody else. There is no sound
     repair: a stat taken after the mkdir observes the replacement just as happily as our own
     directory, POSIX has no atomic create-and-open for a directory, and under a same-user
@@ -1810,9 +1810,9 @@ def test_a_destination_collision_surfaces_as_a_refusal_not_a_traceback(
     (src / "f.txt").write_text("payload\n", encoding="utf-8")
     dst = tmp_path / "dest"
     dst.mkdir()
-    # The name is taken BEFORE the walk reaches it. This was previously reproduced by
-    # creating the name mid-copy, in the window between the copy and the publish -- that
-    # window no longer exists now that the destination itself is opened O_EXCL up front, so
+    # The name is taken BEFORE the walk reaches it. Creating the name mid-copy, in
+    # the window between the copy and the publish, cannot reproduce the bug: that
+    # window is gone now that the destination itself is opened O_EXCL up front, so
     # occupying the name first is the only way the test still proves anything.
     (dst / "f.txt").write_text("SOMEONE ELSE\n", encoding="utf-8")
 
@@ -1903,7 +1903,7 @@ def test_a_replace_refuses_a_destination_root_that_came_back(tmp_path: Path) -> 
     """A replace that finds its root already there must refuse, not merge into it.
 
     The replace path removes the live tree and then stages the archive into its place. The
-    walk used to accept a root that existed again, so if the gateway recreated it in that
+    walk must not accept a root that exists again, or if the gateway recreates it in that
     window, files the archive does not contain survived a REPLACE that reported success --
     the silent-partial shape this change exists to remove, in the one mode that promises the
     destination will be exactly the archive. Review found it. The per-child names already

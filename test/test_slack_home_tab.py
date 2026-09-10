@@ -585,7 +585,7 @@ class TestPublishHomeTabSessions:
     async def test_collector_failure_emits_error_sel_audit(
         self, _mw, _fmt, _yolo, monkeypatch
     ):
-        """Regression for review-bot security-controls finding on rev-after-rebase.
+        """SEL audit records the data-access attempt on the Home Tab path.
 
         SEL audit must record the data-access attempt even when the collector
         raises, so a failure mode can't silently bypass the audit trail. The
@@ -670,7 +670,7 @@ class TestPublishHomeTabSessions:
     async def test_unauthorized_user_blocked_with_denied_audit(
         self, _mw, _fmt, _yolo, tmp_path, monkeypatch
     ):
-        """Regression for review-bot security-controls / authorization rule on Home Tab.
+        """Defense-in-depth authorization gate on the Home Tab path.
 
         Defense-in-depth: even though the dispatcher already gates app_home_opened
         events via is_allowed_user, the Sessions section must also enforce

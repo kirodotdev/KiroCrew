@@ -152,9 +152,8 @@ class TestGlobalWritesAreOwnershipGated:
     ``discover_servers_to_sync``, which merges every scope -- so a name the user
     configured only in their own global file arrives exactly like a managed one.
 
-    Parametrized on purpose: the gate was previously reasoned about one write site
-    at a time, so a per-site test lets the next site ship ungated. This asserts
-    the property across all of them at once.
+    Parametrized on purpose: a per-site test would let the next write site ship
+    ungated, so this asserts the property across all of them at once.
     """
 
     @staticmethod
@@ -283,12 +282,12 @@ class TestGlobalWritesAreOwnershipGated:
 class TestExactNameCollisionIsDecidedByTheMarker:
     """The marker separates "ours, moved" from "the user's, colliding".
 
-    Both of these used to arrive at the write as the SAME input -- a global entry
+    Both of these arrive at the write as the SAME input -- a global entry
     at url A, that name in the store, and a discovered url B:
 
     * LEGITIMATE: a managed server whose store url moved A -> B. The global entry
       at A is our own earlier emit and MUST be rewritten, or the re-sync never
-      propagates and kiro-cli keeps running a url the dashboard no longer shows.
+      propagates and kiro-cli keeps running a url the dashboard does not show.
     * HARMFUL: the user hand-authored a global server at A whose name collides
       with a managed one. Rewriting destroys config we did not author.
 

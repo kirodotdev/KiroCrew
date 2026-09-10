@@ -131,7 +131,7 @@ class TestTransportAgentResolution:
         assert sessions.agents == ["kirocrew-research"]
 
     def test_channels_deny_drops_transport_message_before_session(self, monkeypatch, tmp_path):
-        # HIGH (GPT round-8): a channels policy that denies slack must stop
+        # A channels policy that denies slack must stop
         # handle_message_transport BEFORE it acquires a session — removing the gate
         # would let a denied transport message start a turn. Regression-locks the
         # transport call site (distinct from the native handle_message gate).
@@ -1198,7 +1198,7 @@ class TestTransportAutoTitle:
 
 
 class TestTransportTrustedBotErrorSuppression:
-    """Echo-loop guard parity with native handle_message (issue #6638).
+    """Echo-loop guard parity with native handle_message.
 
     A failed turn on a trusted-bot message must NOT post the transport error
     reply: in a mutual-mesh setup the reply is itself a bot-authored event the
@@ -1259,12 +1259,12 @@ class TestTransportTrustedBotErrorSuppression:
 class TestTransportPartialProgressRescue:
     """A turn killed mid-flight must persist what the model already produced.
 
-    Before this, the user row was durable but partial assistant output lived
-    only in the renderer, so every retry re-read a transcript that ended at the
-    question and started over. Observed 2026-09-02: a ~28-minute transient
-    backend outage burned five consecutive attempts on one Slack thread, each
-    re-deriving the same ticket ids before dying again, with the session file
-    still 625 bytes at the end of it.
+    Without this, the user row is durable but partial assistant output lives
+    only in the renderer, so every retry re-reads a transcript that ends at the
+    question and starts over. A transient backend outage can then burn several
+    consecutive attempts on one Slack thread, each re-deriving the same ticket
+    ids before dying again, with the session file never growing past the user
+    row.
     """
 
     def _run_dying_turn(

@@ -14,11 +14,11 @@ Each test is written to FAIL if its corresponding fix is reverted:
 - ``TestRecentFromSourceTailRead`` — ``recent_from_source`` reads a bounded
   tail rather than the whole transcript.
 - ``TestEpisodicSqliteCosineNumpy`` — the sqlite episodic tier scores rows with
-  one numpy mat-vec when numpy is available (issue #8548), giving identical
+  one numpy mat-vec when numpy is available, giving identical
   results to the stdlib loop; ``test_numpy_branch_is_actually_taken`` fails if
   the vectorized branch is reverted.
 - ``TestEpisodicScoringCacheReuse`` — that same tier holds its scoring columns
-  resident (issue #8894), so a second search with no write in between repeats
+  resident, so a second search with no write in between repeats
   neither the full-population fetch nor the per-row candidate build, and every
   writer that changes the scored population invalidates the set.
 """
@@ -237,7 +237,7 @@ class TestLessonsSingleQuery:
         )
 
     def test_lessons_probe_query_is_gone(self, tmp_path: Path) -> None:
-        """get_lessons() is no longer used as an emptiness probe."""
+        """get_lessons() is not called as an emptiness probe."""
         from kiro_crew.context import ContextBuilder
 
         vector_store = MagicMock()
@@ -424,10 +424,9 @@ class TestRecentFromSourceTailRead:
 class TestEpisodicSqliteCosineNumpy:
     """The sqlite episodic cosine scan gives identical results on both branches.
 
-    Issue #8548: `_sqlite_vector_search` is the tier a default install runs
-    (faiss-cpu is not a declared dependency), and it scored rows with a pure
-    Python loop despite numpy being available. The numpy branch must be a
-    drop-in: same ids, same order, same cosine values as the stdlib loop.
+    `_sqlite_vector_search` is the tier a default install runs (faiss-cpu is not
+    a declared dependency). The numpy branch must be a drop-in: same ids, same
+    order, same cosine values as the stdlib loop.
     """
 
     DIM = 8
@@ -581,7 +580,7 @@ class TestEpisodicSqliteCosineNumpy:
 
 
 class TestEpisodicScoringCacheReuse:
-    """Issue #8894: the sqlite episodic tier keeps its scoring columns resident.
+    """The sqlite episodic tier keeps its scoring columns resident.
 
     The scored population changes only when something writes it, so two
     identical searches with nothing in between must repeat neither the
@@ -914,11 +913,10 @@ class TestEpisodicCachedRankingParity:
 class TestOverBudgetRefusalIsMemoized:
     """An over-budget store must not pay the build scan on every search.
 
-    Design finding on #8956: `_build_episodic_scoring_set` returning None
-    (population over `_EPISODIC_SCORING_MAX_BYTES`) was not memoized, so every
-    search first full-scanned the population trying to build, then full-scanned
-    again to answer per-call — strictly worse than the pre-cache baseline. The
-    refusal is now memoized under the same (dim, generation, data_version)
+    If `_build_episodic_scoring_set` returning None (population over
+    `_EPISODIC_SCORING_MAX_BYTES`) is not memoized, every search full-scans the
+    population trying to build, then full-scans again to answer per-call. The
+    refusal is memoized under the same (dim, generation, data_version)
     tokens as a successful build: settled between writes, re-probed after one.
     """
 

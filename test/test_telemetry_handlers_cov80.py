@@ -338,7 +338,7 @@ def test_parse_startup_metrics_caches_on_the_shard_fingerprint(
     assert first["startup"]["overall"]["count"] == 2
     # A cache HIT hands back the very same object.
     assert h._parse_startup_metrics() is first
-    # Appending changes (mtime, size), so the fingerprint no longer matches.
+    # Appending changes (mtime, size), so the fingerprint stops matching.
     with shard.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps({"resource_metrics": []}) + "\n")
     second = h._parse_startup_metrics()

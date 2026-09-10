@@ -141,11 +141,11 @@ class TestProbeDistinguishesCauses:
         assert p.name == ""
 
     def test_stopped_backend_state_is_its_own_not_usable_state(self) -> None:
-        """``BackendState "Stopped"`` must not read as healthy (issue #7244).
+        """``BackendState "Stopped"`` must not read as healthy.
 
         A stopped daemon answers status reads and is not in the needing-login
-        set, so before this field it passed every probe check and the flow
-        reported a ready tailnet whose URL nothing could reach. The remedy
+        set, so without this field it passes every probe check and the flow
+        reports a ready tailnet whose URL nothing can reach. The remedy
         (start Tailscale) differs from signing in, so it is a distinct signal,
         not a ``logged_in`` overload.
         """
@@ -377,7 +377,7 @@ class TestStepPrecedence:
         assert _step(probe=_probe(name="", stopped=True)) == "start_daemon"
 
     def test_stopped_daemon_is_never_ready(self) -> None:
-        """The issue-#7244 shape: serve status still returns the stale config
+        """Serve status still returns the stale config
         with exit 0 while the daemon is stopped, so ``published=True`` arrives
         alongside a stopped probe — and must not derive ``ready`` (the card
         would show Active for a URL nothing can reach)."""
@@ -1261,8 +1261,8 @@ class TestQrCallerBounds:
     the credential. Behind ``tailscale serve`` every request reaches the
     gateway from 127.0.0.1, so the token cannot be device-pinned — its own
     bounds are the only limit that holds, which is what made this surface the
-    laundering path: one POST from a deliberately bounded owner session used to
-    mint a boot-bound, refresh-chained credential that outlived it.
+    laundering path: one POST from a deliberately bounded owner session could
+    mint a boot-bound, refresh-chained credential that outlives it.
     """
 
     @staticmethod

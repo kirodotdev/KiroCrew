@@ -1,9 +1,9 @@
 """Tests for the markdown memory read surface.
 
-Covers ``kirocrew memory show`` (the documented-but-previously-missing
-command) and ``kirocrew memory export --include-markdown``, plus the
-``MemoryStore`` readers behind them. The most important guard is that
-``export`` WITHOUT the flag stays byte-identical to its previous shape.
+Covers ``kirocrew memory show`` and ``kirocrew memory export --include-markdown``,
+plus the ``MemoryStore`` readers behind them. The most important guard is that
+the ``--include-markdown`` flag is purely additive: ``export`` WITHOUT it emits
+identical bytes.
 """
 
 from __future__ import annotations
@@ -1230,7 +1230,7 @@ class TestLinkedWorkspaceAncestorGate:
     """On Windows, a linked ANCESTOR of the workspace must be refused before
     the leaf reparse-point checks -- those are lstats that resolve every
     ancestor, so the probe itself would traverse the link and open the SMB
-    connection the lexical UNC gate exists to prevent (#5962)."""
+    connection the lexical UNC gate exists to prevent."""
 
     def _windows(self, monkeypatch: pytest.MonkeyPatch) -> None:
         import types

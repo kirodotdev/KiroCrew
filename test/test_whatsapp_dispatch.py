@@ -336,7 +336,7 @@ def test_compact_command_compacts_in_place_without_a_turn():
 
 def test_compact_command_declined_on_auto_managed_backend():
     # A backend that cannot serve /compact gets the informational reply and
-    # compact() is NEVER dispatched (#8156).
+    # compact() is NEVER dispatched.
     provider = FakeProvider()
     provider.manual_compact_unsupported_backend = "kas"
     d, _client, sessions, transport = _make(provider=provider)
@@ -358,7 +358,7 @@ def test_compact_none_capability_preserves_dispatch():
 
 def test_the_hard_threshold_declines_silently_on_auto_managed_backend():
     # No /compact to dispatch and no notice: the backend compacts on its own
-    # as context fills (#8156).
+    # as context fills.
     provider = FakeProvider("answered")
     provider.manual_compact_unsupported_backend = "kas"
     d, _client, _sessions, transport = _make(provider=provider, context_pct=96.0)
@@ -369,7 +369,7 @@ def test_the_hard_threshold_declines_silently_on_auto_managed_backend():
 
 def test_the_soft_nudge_is_suppressed_on_auto_managed_backend():
     # The nudge advises /compact, which this backend refuses — it compacts on
-    # its own, so there is nothing for the user to act on (#8156).
+    # its own, so there is nothing for the user to act on.
     provider = FakeProvider("answered")
     provider.manual_compact_unsupported_backend = "kas"
     d, _client, _sessions, transport = _make(provider=provider, context_pct=85.0)

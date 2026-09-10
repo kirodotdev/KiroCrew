@@ -1,7 +1,7 @@
 """Unit tests for the shared per-turn identity publisher (messaging.identity).
 
 These lock the publish semantics that every turn-running surface now delegates
-to via ``publish_turn_identity`` (#232): publish with the session's host pid
+to via ``publish_turn_identity``: publish with the session's host pid
 and key, no-op when the pid is not yet known, and never let a failure break the
 turn.
 """
@@ -161,7 +161,7 @@ def test_inbound_governed_deny_is_sel_audited(monkeypatch, tmp_path) -> None:
 
 
 def test_inbound_governed_allow_denies_on_audit_failure(monkeypatch, tmp_path) -> None:
-    # HIGH (GPT round-5 pass 1 #2): a GOVERNED ALLOW is audit-or-deny. If the SEL
+    # A GOVERNED ALLOW is audit-or-deny. If the SEL
     # write can't be persisted, the inbound must be DENIED (fail-closed), never
     # drive a turn unaudited — matching the host transport-start gate.
     import json
@@ -197,7 +197,7 @@ def test_inbound_governed_allow_denies_on_audit_failure(monkeypatch, tmp_path) -
 
 
 def test_inbound_ungoverned_permit_is_not_audited(monkeypatch, tmp_path) -> None:
-    # Design review (#593): the UNGOVERNED default-permit must NOT be audited. This
+    # The UNGOVERNED default-permit must NOT be audited. This
     # gate is on the per-message hot path of five transports (including observe-mode
     # traffic the bot merely sees), so recording the default-permit would append one
     # HMAC-chained SEL row per message on every install with no governance

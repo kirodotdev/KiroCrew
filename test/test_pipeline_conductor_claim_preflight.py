@@ -1376,7 +1376,7 @@ class TestNoClosurePatternShipsUnguarded:
         assert unguarded == []
 
     def test_the_declared_set_does_not_drift_from_the_list(self, mod):
-        """A pattern declared item-scoped but no longer present would leave the
+        """A pattern declared item-scoped but missing from the list would leave the
         ratchet passing over a phrase nobody ships."""
         assert mod.ITEM_SCOPED_CLOSURE_RES <= set(mod.CLOSURE_RES)
 
@@ -1601,7 +1601,7 @@ class TestUntrustedForkAnnotation:
 
     def test_the_marker_names_no_user_authored_text(self, mod):
         """Same rule as everywhere else here: an association is a forge enum and
-        is used to DECIDE, but only metadata is printed."""
+        DECIDES the outcome, but only metadata is printed."""
         checks = clean_checks(
             open_prs=[
                 {
@@ -1655,7 +1655,7 @@ class TestClosingReference:
         assert not mod.closing_reference_re(REPO, ITEM).search(text)
 
     def test_a_prefix_number_does_not_match(self, mod):
-        """`#802` must not satisfy a pattern aimed at `#8029`, and `#80291`
+        """`#802` must not satisfy a pattern aimed at `8029`, and `80291`
         must not either."""
         assert not mod.closing_reference_re(REPO, 802).search("Fixes #8029")
         assert not mod.closing_reference_re(REPO, ITEM).search("Fixes #80291")
@@ -1913,7 +1913,7 @@ def run_main(mod, monkeypatch, forge: Forge, extra: list[str] | None = None) -> 
 
 
 class TestClosureProseNeverCloses:
-    """Rule 3 reads HAND-WRITTEN ENGLISH, and it used to answer with the
+    """Rule 3 reads HAND-WRITTEN ENGLISH, and a naive reading answers with the
     strongest thing this script can say about somebody else's live work.
 
     Nine false-CLOSE paths reached review in one change and each was fixed on the
@@ -2537,7 +2537,7 @@ class TestAgainstRealGit:
     def _clone_template(self, tmp_path_factory):
         """Build the landed/sidetrack clone once per module; ``clone`` copies it.
 
-        Six git subprocesses (~2.3-4.7s) were previously paid on every one of the
+        Six git subprocesses (~2.3-4.7s) would otherwise be paid on every one of the
         8 tests below. Module scope is safe because the template is never handed
         to a test, only copied from via ``shutil.copytree`` -- no test here moves
         a branch or adds a commit to it, they only read commits already present.

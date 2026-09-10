@@ -208,7 +208,7 @@ class TestCommandCatalogue:
 
     def test_the_help_card_does_not_promise_queueing(self) -> None:
         # WeCom cannot hold a message: a reply is addressed by the inbound req_id.
-        # The card used to advertise "answered after the current turn", which the
+        # The card must not advertise "answered after the current turn", which the
         # busy dispatcher then refuses.
         card = build_help_text()
         assert "/queue" in card, "the prefix is still worth documenting"

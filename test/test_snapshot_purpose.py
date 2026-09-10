@@ -188,7 +188,7 @@ class TestSelectiveStaging:
         """An empty selection is a valid outcome; a crash is not.
 
         `crons` names only files, so a home without crons.json stages nothing --
-        which used to leave the staging dir uncreated and fail the manifest write.
+        the staging dir must still be created so the manifest write does not fail.
         """
         (src / "crons.json").unlink(missing_ok=True)
         snap = _extract(_snapshot(tmp_path / "out", ["--components", "crons"]), tmp_path / "x5")

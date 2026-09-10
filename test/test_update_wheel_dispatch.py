@@ -1,4 +1,4 @@
-"""Tests for the CLI ``kirocrew update`` wheel-install dispatch (issue #1871).
+"""Tests for the CLI ``kirocrew update`` wheel-install dispatch.
 
 Covers:
 - Install layout detection (git, wheel, externally managed)
@@ -143,7 +143,7 @@ class TestReleaseChannel:
     from the async update check, and ``config_dir`` is resolve-AND-maintain (it
     refreshes the recovery breadcrumb and re-runs a leftover-archive sweep that can
     ``shutil.rmtree``), so calling it there put a destructive sweep on the event
-    loop -- issue #1057. ``test_no_config_dir_in_async.py`` guards the production
+    loop. ``test_no_config_dir_in_async.py`` guards the production
     side; patch whichever name that module actually uses.
     """
 

@@ -1,10 +1,10 @@
 """A pod is self-contained: its own venv leads PATH, and pod-scoped commands run
 against the pod rather than the machine-wide install.
 
-The bug these guard: ``cfg.gateway_path`` begins with ``~/.local/bin``, so a bare
-``kirocrew`` inside a pod used to resolve the GLOBAL launcher shim — meaning a pod
-exercised the global install instead of the checkout under test, and its boot path
-depended on a symlink it does not own.
+The behaviour these guard: ``cfg.gateway_path`` begins with ``~/.local/bin``, so a bare
+``kirocrew`` inside a pod must NOT resolve the GLOBAL launcher shim — a pod must
+exercise the checkout under test, not the machine-wide install, and its boot path
+must not depend on a symlink it does not own.
 """
 
 from __future__ import annotations
@@ -58,7 +58,7 @@ def test_pod_env_puts_the_checkout_venv_ahead_of_the_global_shim_dir(tmp_path):
     entries = env["PATH"].split(os.pathsep)
     venv_bin = str(prov.venv_bin_dir(checkout))
     assert entries[0] == venv_bin, "the pod's own venv must lead PATH"
-    # The global shim dir is still reachable, just no longer first.
+    # The global shim dir is still reachable, just not first.
     shim_dir = str(tmp_path / ".local" / "bin")
     assert shim_dir in entries
     assert entries.index(venv_bin) < entries.index(shim_dir)
@@ -446,7 +446,7 @@ def test_chat_and_tui_verbs_stay_refused_in_a_pod():
     the LIVE gateway — and `chat` was excluded with it because `chat --tui`
     branched into the same function. `_tui` has since been deleted as dead code
     (the `tui` subcommand and its Ink bundle were already gone), so that source
-    premise can no longer be asserted. The exclusion is kept in force rather
+    premise cannot be asserted. The exclusion is kept in force rather
     than relaxed: admitting either verb is a pod-safety decision on its own
     evidence, not a side effect of removing an unreachable function.
     """

@@ -1,10 +1,10 @@
 """The ONE ``/proc`` subtree walker, and the two callers that read off it.
 
-``mcp_gateway.pool`` and ``subagent`` each used to carry a line-for-line copy of
+``mcp_gateway.pool`` and ``subagent`` must not each carry a line-for-line copy of
 the same breadth-first walk over ``/proc/<pid>/task/<tid>/children``, each with
-its own ``256`` process ceiling (#6096). Two copies of a walk are two copies of
-its ceiling and two copies of its sentinels, which is the drift the earlier
-consolidation *inside* ``subagent`` (#3970) was itself about.
+its own ``256`` process ceiling. Two copies of a walk are two copies of
+its ceiling and two copies of its sentinels, which is the drift a single
+consolidation *inside* ``subagent`` guards against.
 
 So this module asserts three things:
 
@@ -262,7 +262,7 @@ class TestSkippedReadingsCostNothing:
 
 
 class TestOneHome:
-    #: Names the two callers defined privately before #6096. A copy coming back
+    #: Names the two callers once defined privately. A copy coming back
     #: would restore one of them, so their absence is the ratchet.
     RETIRED = (
         "_RSS_SUBTREE_MAX_PROCS",

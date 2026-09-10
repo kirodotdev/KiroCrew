@@ -1,4 +1,4 @@
-"""Coverage tests for previously-untested ``kiro_crew.mcp_core`` surfaces.
+"""Coverage tests for ``kiro_crew.mcp_core`` surfaces.
 
 Focus areas, all confirmed uncovered before this file existed:
 
@@ -782,10 +782,9 @@ class TestLearnAddTool:
         # model it could restrict a correction when the save changed nothing.
         #
         # A stale client still holding that schema is REFUSED, not silently
-        # converted. This test previously pinned the opposite ("ignored rather than
-        # honoured"), which was wrong in the dangerous direction: forcing the
-        # payload to global takes a correction meant for one workspace and applies
-        # it in every session, which is worse than the inert tier it replaced.
+        # converted: forcing the payload to global takes a correction meant for
+        # one workspace and applies it in every session, which is worse than the
+        # inert tier it replaced.
         with patch.object(mcp_core, "_resolve_session_key", return_value="dashboard:c"):
             with self._allowed():
                 with patch.object(mcp_core, "_post", return_value={"ok": True}) as p:

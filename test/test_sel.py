@@ -124,7 +124,7 @@ def _fill_until_over_cap(log: SecurityEventLog, *, deadline: float, start: int) 
     can itself enter the rotation window and rotate, resetting the live log to
     nearly empty. Both are harness properties, not defects, so the over-the-cap
     precondition is established by topping up in small batches rather than
-    asserted after one fixed fill (#5017). Bounded by *deadline* and by
+    asserted after one fixed fill. Bounded by *deadline* and by
     ``_POLL_ITERATION_CAP``; the diagnostic reports the pending-queue depth so
     a wedged writer is distinguishable from a rotation problem.
 
@@ -1157,8 +1157,8 @@ class TestInferSource:
         ("taskrunner:spec1", "taskrunner"),
         ("_bg", "background"),
         ("cli_chat", "cli"),
-        # Namespaced messaging channels are attributed to their transport (#815),
-        # matching context._runtime_display_name's set (#979) — via ``{ns}:`` …
+        # Namespaced messaging channels are attributed to their transport,
+        # matching context._runtime_display_name's set — via ``{ns}:`` …
         ("discord:123:kirocrew", "discord"),
         ("telegram:456", "telegram"),
         ("wecom:c1", "wecom"),
@@ -1286,9 +1286,9 @@ class TestHmacKeyManagementExtras:
         locked down yet.
 
         atomic_write(restrict_to_owner=True) applies the lockdown to the TEMP
-        file before the key bytes reach it (the previous post-rename lockdown
-        left a brand-new key readable under the inherited DACL on Windows for
-        the write window, issue #5285). Asserted by measuring the file's SIZE
+        file before the key bytes reach it (a post-rename lockdown would leave a
+        brand-new key readable under the inherited DACL on Windows for the write
+        window). Asserted by measuring the file's SIZE
         at lockdown time — zero means no key byte existed yet.
         """
         from kiro_crew import platform_compat
@@ -1781,7 +1781,7 @@ class TestCriticalWrite:
 # Audit-chain hardening regression tests (Track B):
 #   1. HMAC key length validation (reject empty/short keys — hard fail)
 #   2. HMAC key permission re-enforcement on load
-#   3. _read_last_hash no longer resets the chain to genesis on a corrupt
+#   3. _read_last_hash does not reset the chain to genesis on a corrupt
 #      trailing line when prior complete records exist
 # ─────────────────────────────────────────────────────────────────────────
 
@@ -1936,7 +1936,7 @@ class TestCorruptTailNewlineBoundary:
     """A record appended after recovering past an UNTERMINATED corrupt tail
     must start on a fresh line — never glued onto the truncated fragment.
 
-    Regression for the silent-void bug: _read_last_hash() recovers the right
+    The silent-void hazard: _read_last_hash() recovers the right
     prev_hash, but if the writer O_APPENDs directly onto a tail line with no
     trailing newline, the new record fuses into that fragment as one
     unparseable line — so the event, though correctly chained, is orphaned
@@ -2321,7 +2321,7 @@ class TestHmacKeyTrustDirMigration:
     ) -> None:
         """The recovery path for the dependent protocol: SEL caches the
         validated bytes at init, so they stay available when the file behind the
-        frozen resolved path no longer loads."""
+        frozen resolved path fails to load."""
         from kiro_crew.sel import _sel_hmac_key_bytes
 
         log = SecurityEventLog(base_dir=tmp_path, sync=True)
@@ -2381,7 +2381,7 @@ class TestHmacKeyTrustDirMigration:
 
         Reachable because SEL is now constructed from worker threads (the
         middleware deny audits offload via ``asyncio.to_thread``), where the
-        event loop no longer serializes callers for free.
+        event loop does not serialize callers for free.
         """
         self._reset()
         calls: list[int] = []
@@ -2418,7 +2418,7 @@ class TestHmacKeyTrustDirMigration:
 
 
 class TestTrustRootPathReResolution:
-    """``sel_hmac_key_path()`` re-resolves per call (#2588).
+    """``sel_hmac_key_path()`` re-resolves per call.
 
     ``_hmac_key_file`` is decided once at init, and a failed legacy migration
     leaves it on the legacy location; a sibling process that later completes the
@@ -2437,8 +2437,8 @@ class TestTrustRootPathReResolution:
         assert sel_mod.sel_hmac_key_path() == tmp_path / "trust" / "sel_hmac.key"
 
     def test_relocation_to_the_trust_dir_is_followed(self, tmp_path: Path) -> None:
-        """The #2539 shape: this process kept the legacy path after a failed
-        migration, then a sibling process completed it."""
+        """One process keeps the legacy path after a failed migration, then a
+        sibling process completes it."""
         log = SecurityEventLog(base_dir=tmp_path, sync=True)
         canonical = tmp_path / "trust" / "sel_hmac.key"
         # Pin the instance to the legacy location the way a failed migration does.
@@ -2477,9 +2477,8 @@ class TestTrustRootPathReResolution:
         assert sel_mod.sel_hmac_key_path() == tmp_path / "sel_hmac.key"
 
     def test_re_resolution_never_moves_what_the_chain_signs_with(self, tmp_path: Path) -> None:
-        """The reason item 1 of #2588 was deferred does not apply: the accessor
-        returns a PATH the signing and verification code never reads, so a
-        relocation cannot orphan records already chained."""
+        """The accessor returns a PATH the signing and verification code never
+        reads, so a relocation cannot orphan records already chained."""
         log = SecurityEventLog(base_dir=tmp_path, sync=True)
         log.log_tool_invocation(
             session_key="s1", tool_name="t1", tool_kind="tool", outcome="ok"
@@ -2518,7 +2517,7 @@ class TestTrustRootPathReResolution:
 
 
 class TestSizeRotation:
-    """The log is closed at a size cap and retained as N segments (issue #4843).
+    """The log is closed at a size cap and retained as N segments.
 
     Before this, ``security_events.jsonl`` was a single file with no cap: a
     long-running install measured 4.09 GB, which made the only sanctioned reader
@@ -2963,18 +2962,18 @@ class TestRotationIsSerializedAcrossProcesses:
 
 
 class TestSegmentDirIsPinnedOnRead:
-    """The segment DIRECTORY is pinned for the duration of a read (#4999).
+    """The segment DIRECTORY is pinned for the duration of a read.
 
-    #4998 validated the descriptor of each file the readers open, which closes
-    the FINAL path component; the directory itself was still walked BY NAME.
-    A ``security_events.d`` replaced with a link (planted before this release,
-    or swapped while a read is in flight) therefore redirected enumeration —
+    Validating the descriptor of each file the readers open closes the FINAL
+    path component, but the directory itself could still be walked BY NAME.
+    A ``security_events.d`` replaced with a link (planted ahead of time,
+    or swapped while a read is in flight) would redirect enumeration —
     and every per-file open — into another tree, whose segment-shaped REGULAR
     files pass every per-file check, because they are regular files. The read
-    paths now pin the directory itself first and refuse a linked one, so a
+    paths pin the directory itself first and refuse a linked one, so a
     swapped dir fails closed instead of feeding another tree's files to
     ``recent()`` / ``verify_integrity()``. The rotation-time repair
-    (``_ensure_segment_dir``) remains the write-side guard, and the live log
+    (``_ensure_segment_dir``) is the write-side guard, and the live log
     is unchanged: its writer follows an operator's symlink, so its readers
     must too.
     """
@@ -2984,7 +2983,7 @@ class TestSegmentDirIsPinnedOnRead:
 
         The observable is ``verify_integrity()``'s totals: without the pin, the
         decoy's unsigned lines inflate ``total`` while ``valid`` stays flat —
-        the false tamper alarm of #4999 — so ``total == valid`` here is exactly
+        the false tamper alarm — so ``total == valid`` here is exactly
         the property that must hold. Built with ``symlink_or_junction`` so the
         same attack runs on Windows junctions, which need no elevation.
         """
@@ -3013,7 +3012,7 @@ class TestSegmentDirIsPinnedOnRead:
         )
         assert total == len(live_lines), "records beyond the live log were counted"
         # The swap is itself tampering, so the detailed result must not call
-        # this run verifiable over the live log alone (#5051 review).
+        # this run verifiable over the live log alone.
         result = log.verify_integrity(detailed=True)
         assert result.history_verifiable is False
         assert "refused" in result.reason
@@ -3079,7 +3078,7 @@ class TestSegmentDirIsPinnedOnRead:
 
         Fresh-install silence belongs to the directory that was NEVER there;
         one that was seen by lstat and then disappears before the open
-        cannot be used to let the rotated history read as unverifiable-but-
+        cannot make the rotated history read as unverifiable-but-
         absent.
         """
         log = SecurityEventLog(base_dir=sel_dir, sync=True)
@@ -3124,7 +3123,7 @@ class TestSegmentDirIsPinnedOnRead:
         self, sel_dir, small_segments, monkeypatch
     ):
         """A directory replaced mid-run leaves totals from the pinned tree,
-        but the tree on disk no longer is it — the detail must say so."""
+        but the tree on disk is not that tree — the detail must say so."""
         log = SecurityEventLog(base_dir=sel_dir, sync=True)
         _fill(log, 200)
         assert log._segments_oldest_first(), "precondition: rotation happened"
@@ -3621,7 +3620,7 @@ class TestCriticalWritesDoNotRotateInline:
         which tests ran earlier on this worker: at ``_SEGMENT_KEEP`` segments a
         successful rotation adds one and the sweep deletes the oldest in the same
         breath, leaving the COUNT flat -- a real rotation that a count comparison
-        calls "never rotated" (#5017). The sequence only ever rises
+        calls "never rotated". The sequence only ever rises
         (``_next_segment_path`` continues from the highest segment still on
         disk, precisely so retention cannot make it go backwards), so it
         observes the rotation no matter what the sweep did.
@@ -3869,7 +3868,7 @@ class TestOnlyTheWriterThreadRotates:
         log = SecurityEventLog(sync=False)
         # Get the log over the cap first, through a path that is allowed to
         # rotate. Topped up rather than asserted after one fixed fill: the same
-        # two harness properties that broke the rotation test (#5017) -- a
+        # two harness properties that broke the rotation test -- a
         # bounded flush() and a mid-fill batch-boundary rotation -- can leave
         # the live log below the cap here too.
         _fill(log, 200)
@@ -4489,7 +4488,7 @@ class TestTimeWindowRead:
 
     A count alone could not express "the last two hours": on a busy log 6000
     entries reached 15 minutes back, so a two-hour question meant pulling ~90k
-    entries and filtering client-side (issue #4843).
+    entries and filtering client-side.
     """
 
     def test_since_and_until_bound_the_window(self, sel_dir):

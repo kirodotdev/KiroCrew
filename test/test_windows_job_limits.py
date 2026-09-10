@@ -317,7 +317,7 @@ class TestFinishSuspendedSpawn:
         ceilinged: list[int] = []
         monkeypatch.setattr(acp_client.platform_compat, "IS_WINDOWS", True)
         # Someone else's child, and it is alive and unresumable — the exact shape
-        # that previously produced a kill.
+        # that must not produce a kill.
         monkeypatch.setattr(acp_client.platform_compat, "get_ppid", lambda pid: os.getpid() + 1)
         monkeypatch.setattr(
             acp_client, "apply_windows_resource_ceiling", lambda pid: bool(ceilinged.append(pid))

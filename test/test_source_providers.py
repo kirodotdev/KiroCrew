@@ -215,7 +215,7 @@ def test_github_checks_do_not_collapse_a_commit_status_into_a_check_run() -> Non
 
 def test_github_checks_classify_untyped_rows_by_shape_not_by_name() -> None:
     """A row without `__typename` must still be classified correctly. A status
-    row carrying both `context` and `name` used to be read as a check-run and
+    row carrying both `context` and `name` must not be read as a check-run and
     collide with a nameless check-run (both normalize to the `"Check"`
     placeholder), letting the status success hide the check-run failure."""
     rollup = [
@@ -443,7 +443,7 @@ _tmp_owner_ok = (
 @pytest.mark.skipif(not _tmp_owner_ok, reason="temp dir not owned by root or current user")
 def test_provider_executable_accepts_user_owned_install(monkeypatch, tmp_path) -> None:
     """The default policy accepts the user's own gh — the Homebrew case that
-    previously forced a `sudo cp` into a root-owned directory."""
+    would otherwise force a `sudo cp` into a root-owned directory."""
     executable = tmp_path / "gh"
     executable.write_text("#!/bin/sh\nexit 0\n")
     executable.chmod(0o755)
@@ -1484,7 +1484,7 @@ async def test_run_json_kills_process_tree_when_stdout_exceeds_limit(monkeypatch
 
 @pytest.mark.asyncio
 async def test_run_json_on_windows_defers_to_the_sandbox_gate(monkeypatch) -> None:
-    """Windows is no longer refused by a platform check of its own.
+    """Windows is not refused by a platform check of its own.
 
     It has no OS sandbox backend, but neither does a backend-less Linux host, and
     both must reach the same gate: ``sandboxed_spawn_argv`` fail-closes unless the
@@ -2131,7 +2131,7 @@ async def test_fetch_github_marks_failed_secondary_endpoints_partial(
 
 @pytest.mark.asyncio
 async def test_fetch_github_reads_rollup_outside_the_core_field_set(monkeypatch) -> None:
-    """The core `pr view` field set must not bundle `statusCheckRollup` (#5115).
+    """The core `pr view` field set must not bundle `statusCheckRollup`.
 
     `gh` resolves a `--json` field set atomically, so a bundled rollup made a
     fine-grained token without Checks read access fail the WHOLE panel read.
@@ -2175,7 +2175,7 @@ async def test_fetch_github_reads_rollup_outside_the_core_field_set(monkeypatch)
 
 @pytest.mark.asyncio
 async def test_fetch_github_core_payload_survives_rollup_failure(monkeypatch) -> None:
-    """A Checks-blind token costs the checks SECTION, never the panel (#5115)."""
+    """A Checks-blind token costs the checks SECTION, never the panel."""
 
     async def fake_run(*argv: str, **_kwargs: int):
         command = " ".join(argv)
@@ -2553,7 +2553,7 @@ async def test_github_check_status_omits_unsettled_merge_state(
 async def test_github_check_status_keeps_authorized_fields_when_rollup_fails(
     monkeypatch,
 ) -> None:
-    """The chip renders state/merge under a Checks-blind token (#5115).
+    """The chip renders state/merge under a Checks-blind token.
 
     Bundling `statusCheckRollup` into the chip read made the WHOLE read fail
     when the token lacked Checks access; the split keeps the fields the token
@@ -2710,7 +2710,7 @@ def test_status_from_full_payload_projects_the_merge_pair() -> None:
     If it dropped the pair, every full fetch would rewrite the chip entry without
     it, the next chip refresh would judge that a change and drop the full payload,
     and the write-through would strip it again — the repeating chip↔full
-    transition PR #443's flap damper exists to contain, spun by a projection gap.
+    transition the flap damper exists to contain, spun by a projection gap.
     """
     projected = source.status_from_full_payload(
         {
@@ -3341,7 +3341,7 @@ def test_gitlab_check_bucket_is_faithful() -> None:
 
 @pytest.mark.asyncio
 async def test_fetch_gitlab_full_jobs_page_keeps_aggregate_authoritative(monkeypatch) -> None:
-    """A truncated (full-page) job list must not poison the CI glyph (#1097).
+    """A truncated (full-page) job list must not poison the CI glyph.
 
     When the jobs list comes back as a full page it may be truncated — a failed
     job on a later page would be invisible. The glyph is projected from the
@@ -3388,7 +3388,7 @@ async def test_fetch_gitlab_full_jobs_page_keeps_aggregate_authoritative(monkeyp
 
 
 def test_record_full_payload_clears_flap_tracker_on_change() -> None:
-    """An authoritative full-payload write resets the chip flap counter (#2079).
+    """An authoritative full-payload write resets the chip flap counter.
 
     The flap damper counts *consecutive identical* chip transitions. A
     full-payload write that changes the status between chip refreshes is a real,
@@ -3416,7 +3416,7 @@ def test_record_full_payload_clears_flap_tracker_on_change() -> None:
 
 @pytest.mark.asyncio
 async def test_forced_refresh_inflight_not_floored_and_requeues(monkeypatch) -> None:
-    """An already-in-flight URL is not floor-stamped and gets one follow-up (#2333).
+    """An already-in-flight URL is not floor-stamped and gets one follow-up.
 
     A TTL-paced chip fetch may be in flight when the turn boundary fires. Its
     result can predate the turn's final push, so the forced call must NOT record
@@ -3448,7 +3448,7 @@ async def test_forced_refresh_inflight_not_floored_and_requeues(monkeypatch) -> 
 
 @pytest.mark.asyncio
 async def test_refresh_check_status_issues_pending_follow_up_force(monkeypatch) -> None:
-    """When a fetch completes for a URL with a queued force, one follow-up fires (#2333)."""
+    """When a fetch completes for a URL with a queued force, one follow-up fires."""
     url = "https://github.com/acme/repo/pull/92"
     source._check_cache.clear()
     source._check_inflight.clear()
@@ -3522,7 +3522,7 @@ async def test_chip_refresh_damps_projection_flap(monkeypatch) -> None:
         assert invalidate.await_count == source._CHECK_FLAP_DAMP_THRESHOLD - 1
         assert sink.call_count == source._CHECK_FLAP_DAMP_THRESHOLD - 1
         # The chip cache still tracks the latest projection (glyph stays live,
-        # just no longer drives the loop).
+        # just does not drive the loop).
         assert source.get_cached_check_status(url) == {"state": "draft"}
         # A genuinely different transition clears the damp.
         source._check_cache[url] = (source.time.monotonic(), {"state": "draft"})
@@ -3786,7 +3786,7 @@ async def test_full_fetch_coalesces_concurrent_forced_refreshes(monkeypatch) -> 
 async def test_full_fetch_projects_chip_status_under_cache_lock(monkeypatch) -> None:
     """The write-through projection must run inside ``_CACHE_LOCK``.
 
-    Regression for the TOCTOU where a provider mutation landing between the
+    Guards the TOCTOU where a provider mutation landing between the
     passing generation check and the chip projection could republish
     pre-mutation status into the chip cache — a stale ``source_status`` delta the
     full-cache invalidation cannot undo. Keeping the projection in the same
@@ -6319,11 +6319,11 @@ async def test_resolve_handler_rejects_bad_thread_id(monkeypatch) -> None:
 def test_forced_refresh_over_cap_stays_eligible(monkeypatch) -> None:
     """A turn-boundary force deferred by the pending cap must not be locked out.
 
-    Regression for the review finding: recording ``_check_forced_at`` (and
-    renewing the cache timestamp) *before* admission meant a URL the pending cap
-    rejected was both marked "just forced" (10s floor) and had its TTL renewed —
-    so the next turn boundary AND the periodic sweep both skipped it, making the
-    chip staler in exactly the contention case force exists for.
+    Recording ``_check_forced_at`` (and renewing the cache timestamp) *before*
+    admission would mark a URL the pending cap rejected as "just forced" (10s
+    floor) and renew its TTL — so the next turn boundary AND the periodic sweep
+    both skip it, making the chip staler in exactly the contention case force
+    exists for.
     """
     url = "https://github.com/acme/repo/pull/77"
     source._check_cache.clear()
@@ -6512,8 +6512,8 @@ def test_record_full_payload_clears_ci_when_checks_genuinely_empty() -> None:
     """The guard must be scoped to PARTIAL checks, not merely-empty ones.
 
     A PR with no CI configured returns ``checks: []`` and NO ``partialSections``
-    entry for checks. That is authoritative "there is no CI", so a previously
-    known glyph should clear rather than linger forever.
+    entry for checks. That is authoritative "there is no CI", so an already-known
+    glyph should clear rather than linger forever.
     """
     url = "https://github.com/acme/repo/pull/35"
     source._check_cache.clear()
@@ -6650,7 +6650,7 @@ def test_self_hosted_jira_rejected_when_allowlist_empty(monkeypatch) -> None:
 class TestSourceRefLabel:
     """``source_ref_label`` -- what a sidebar chip is CALLED.
 
-    These assertions were previously spread across the sidebar's own render
+    These assertions gather what was spread across the sidebar's own render
     fixtures, where each provider's punctuation was rebuilt by a template
     string. They live here now because this is the side that knows the
     convention, and the renderer prints whatever it is handed.
@@ -8569,10 +8569,11 @@ class TestAdfToMarkdown:
 
     def test_folding_a_long_whitespace_run_is_linear(self):
         """A provider-controlled newline-FREE whitespace run, bounded only by the
-        8MiB fetch cap, used to be folded by a pattern whose whitespace runs and
-        newline anchor competed for the same characters: 200k spaces took ~45s of
-        backtracking, per heading and per table cell. The budget is ~100x the
-        linear cost, so this fails only on a return to quadratic scanning."""
+        8MiB fetch cap, must fold in linear time. A pattern whose whitespace runs
+        and newline anchor compete for the same characters backtracks
+        quadratically — 200k spaces cost seconds per heading and per table cell.
+        The budget is ~100x the linear cost, so this fails only on a return to
+        quadratic scanning."""
         payload = " " * 200_000 + "x"
         start = time.monotonic()
         assert source._md_one_line(payload) == "x"
@@ -9499,11 +9500,10 @@ class TestAdfToMarkdown:
     def test_a_credential_split_across_a_media_alt_is_redacted(self):
         """This supersedes an earlier, narrower claim of mine.
 
-        In round 16 I rebutted this by showing the emitted `[alt](url)` brackets
-        the alt, so the halves cannot form one token. That was true of the code at
-        the time. Round 17 then added a path where a URL failing the destination
-        scan drops the link and emits the LABEL ALONE -- no brackets -- and the
-        rebuttal quietly stopped holding. Measured on that path, the output was
+        The emitted `[alt](url)` form brackets the alt, so its halves cannot form
+        one token. But on the path where a URL failing the destination scan drops
+        the link and emits the LABEL ALONE -- no brackets -- that bracketing is
+        gone. Measured on that path, the output is
         `ghp\\_Ab3Df6Hj9Kl2Np5Qr8TvWx4Yz7Bc0Ef3`: one recoverable credential, with
         the backslash from escaping `ghp_` defeating the payload-level pass.
 
@@ -10340,7 +10340,7 @@ def test_parse_jira_self_hosted_url(monkeypatch) -> None:
     assert ref.number == 99
 
 
-# --- Jira linked issues (issue #2584) ---
+# --- Jira linked issues ---
 
 
 class TestJiraLinkedChanges:
@@ -10489,7 +10489,7 @@ class TestJiraLinkedChanges:
         assert result[1]["state"] == "closed"
 
 
-# --- Jira fix versions as the milestone equivalent (issue #2585) ---
+# --- Jira fix versions as the milestone equivalent ---
 
 
 class TestJiraFixVersionMilestone:
@@ -10516,7 +10516,7 @@ class TestJiraFixVersionMilestone:
         assert source._jira_fix_version_milestone(version)["state"] == "closed"
 
     def test_archived_version_maps_to_closed(self) -> None:
-        """An archived version no longer takes work, so it is not open."""
+        """An archived version takes no work, so it is not open."""
         version = {"name": "1.0.0", "released": False, "archived": True}
         assert source._jira_fix_version_milestone(version)["state"] == "closed"
 
@@ -10578,7 +10578,7 @@ class TestJiraFixVersionMilestone:
 
 
 class TestJiraPickFixVersion:
-    """Tests for _jira_pick_fix_version (issue #7595)."""
+    """Tests for _jira_pick_fix_version."""
 
     def test_mixed_versions_prefer_the_unreleased_one(self) -> None:
         """A pending release wins over an already-shipped one ahead of it."""
@@ -10716,7 +10716,7 @@ class TestJiraFixVersionInPayload:
 
     @pytest.mark.asyncio
     async def test_pending_version_wins_over_a_shipped_one(self, monkeypatch) -> None:
-        """A released version ahead of a pending one does not steal the chip (#7595)."""
+        """A released version ahead of a pending one does not steal the chip."""
         issue, _seen = await _jira_fetch(
             monkeypatch,
             {
@@ -10745,9 +10745,9 @@ class TestJiraFixVersionInPayload:
 class _ReapProbe:
     """A PIPE-stdio child double that records how it is reaped.
 
-    A killed child blocked writing into a full pipe -- or a surviving
+    A killed child blocking on a write into a full pipe -- or a surviving
     descendant still holding the pipes open -- makes a bare ``await
-    proc.wait()`` hang the caller forever (#6005). The bounded reap must
+    proc.wait()`` hang the caller forever. The bounded reap must
     therefore drain the pipes via ``communicate()`` and must never touch
     ``wait()``.
     """
@@ -10776,7 +10776,7 @@ class _ReapProbe:
 async def test_terminate_process_reaps_via_communicate_not_wait(monkeypatch):
     """``_terminate_process`` must route through the bounded, pipe-draining
     ``kill_and_reap`` -- a bare ``await proc.wait()`` here can hang the gateway
-    task forever when the child is killed with a full pipe (#6005)."""
+    task forever when the child is killed with a full pipe."""
     from kiro_crew import platform_compat
 
     proc = _ReapProbe()

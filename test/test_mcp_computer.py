@@ -429,9 +429,8 @@ def test_an_unresolved_session_key_PROCEEDS_with_an_empty_identity(
 ):
     """**An unresolved identity is NOT a refusal** — it proceeds, empty.
 
-    This inverts an earlier revision, deliberately. The shim used to refuse, on the
-    reasoning that an unproven key is indistinguishable from an unattended surface.
-    Two things killed that:
+    This inverts an earlier revision, deliberately. The shim does not refuse an unproven key, though it is indistinguishable from an
+    unattended surface. Two reasons:
 
     * the unattended-surface rule was removed by product decision, so there is no
       longer a surface class to protect;
@@ -1818,7 +1817,7 @@ class TestDragTool:
     ):
         """The one retained refusal applies to the new verb like every other one.
 
-        Retargeted from a terminal (no longer refused) onto KiroCrew's own window,
+        Retargeted from a terminal (not refused) onto Kiro Crew's own window,
         which stays refused because driving our own Settings UI would route around
         the keystone that holds the primary enable.
         """
@@ -1956,7 +1955,7 @@ class TestTheSkillContractMatchesTheRuntime:
         """The stale claim lived in TWO documents, and the second was easy to miss.
 
         `docs/.../computer-use.md` listed "indexless keyboard input — typing into
-        whatever the app has focused works again" under **What no longer refuses** —
+        whatever the app has focused works again" under the removed-refusals heading —
         written during the scope change and never implemented. A reader auditing the
         security posture from that document would have concluded a control was gone
         that is in fact still enforced, which is the more dangerous direction for a
@@ -2018,7 +2017,7 @@ class TestTheSkillContractMatchesTheRuntime:
         """Every non-failure message the model can see belongs in the skill's table.
 
         A suppressed capture on a truncated walk is ROUTINE (a browser or Electron app
-        exceeds the default node budget), and it used to be emitted with no text at
+        exceeds the default node budget), and without the note it is emitted with no text at
         all — the model asked for a screenshot, got none, and had no reason to stop
         retrying. The note is now in ``types``; asserting the skill quotes it keeps the
         two from drifting, since ``SKILL.md`` ships to every pip/DMG install and is
@@ -2052,7 +2051,7 @@ class TestUnresolvedSessionsAreNamespaced:
     namespaces precisely as far as the sessions are genuinely separate, and nothing is
     refused. The security posture is unchanged; only the cache key is.
 
-    #5322 is the POOLED half of the same aliasing. "One shim process per session" is
+    The POOLED half of the same aliasing: "One shim process per session" is
     the 1:1 topology's premise, and a pooled backend breaks it: one process serves N
     connections, so the pid separates nothing and every unnamed co-tenant collapsed
     back onto a single ``unresolved:<pid>`` key. The pid is now joined by the
@@ -2105,7 +2104,7 @@ class TestUnresolvedSessionsAreNamespaced:
         assert key == f"{mcp_computer.UNRESOLVED_SESSION_PREFIX}{os.getpid()}"
 
     def test_two_unnamed_co_tenants_of_ONE_process_do_not_share_a_slot(self, monkeypatch):
-        """#5322, at the layer it lives in — one pid, two connections.
+        """The pooled aliasing at the layer it lives in — one pid, two connections.
 
         Both co-tenants run in the SAME shim process, so ``os.getpid()`` is pinned to
         one value here deliberately: that is the whole premise the pooled topology
@@ -2379,7 +2378,7 @@ class TestTheInvokeCallIsNeverProxied:
             for key in self.PROXY_ENV_KEYS:
                 monkeypatch.delenv(key, raising=False)
             monkeypatch.setenv("HTTP_PROXY", f"http://127.0.0.1:{proxy_port}")
-            # Paired resolution (#4106): an attempt threads (base, socket_path).
+            # Paired resolution: an attempt threads (base, socket_path).
             # The empty socket keeps this case on TCP, which is what the proxy
             # question is about.
             monkeypatch.setattr(
@@ -2418,7 +2417,7 @@ class TestTheInvokeCallIsNeverProxied:
                 monkeypatch.delenv(key, raising=False)
             monkeypatch.setenv("http_proxy", f"http://127.0.0.1:{proxy_port}")
             monkeypatch.setenv("no_proxy", "localhost")
-            # Paired resolution (#4106): an attempt threads (base, socket_path).
+            # Paired resolution: an attempt threads (base, socket_path).
             # The empty socket keeps this case on TCP, which is what the proxy
             # question is about.
             monkeypatch.setattr(

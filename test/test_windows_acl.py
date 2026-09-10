@@ -1037,8 +1037,8 @@ class TestApplyOwnerOnlyOffWindows:
     def test_the_volume_is_never_consulted_by_this_mechanism(self, monkeypatch) -> None:
         """The writer applies the DACL on ANY volume; the gate is not its job.
 
-        local=False would have refused while the gate lived here. It no longer
-        does: an on-loop caller has to ask before it starts (see
+        This mechanism does not consult the volume; an on-loop caller has to ask
+        before it starts (see
         :func:`windows_acl.volume_is_local`), because a refusal at this depth
         arrives after the caller already paid the cost it was avoiding.
         """

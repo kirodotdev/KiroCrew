@@ -80,7 +80,7 @@ def test_an_unusable_echo_settles_everything():
     cancel; settling them marks the steers CONSUMED, suppresses the requeue, and
     loses the questions silently. Matches
     `test_an_echo_without_recognisable_blocks_keeps_entries_pending` — the two
-    used to assert opposite directions."""
+    assert the same direction."""
     assert settle_consumed_steers(["a", "b"], "") == ["a", "b"]
     assert settle_consumed_steers(["a", "b"], "   ") == ["a", "b"]
 

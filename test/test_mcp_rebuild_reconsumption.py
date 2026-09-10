@@ -1,4 +1,4 @@
-"""#4955: a rebuild must not consume its own previous output.
+"""A rebuild must not consume its own previous output.
 
 The agent spec is this rebuild's output AND one of its inputs. The resolved
 absolute ``command`` in it is computed, not authored, so reading it back as the
@@ -129,7 +129,7 @@ class TestAnAgentOnlyCommandIsReDerived:
         )
         assert first["s"]["command"] == str(target)
 
-        # "srv" no longer resolves; the emitted absolute path still exists.
+        # "srv" does not resolve; the emitted absolute path still exists.
         second = _emitted(tmp_path, cfg_dir, {}, which_side_effect=lambda c, **kw: None)
         assert "s" in second, "the server was dropped, and this file was its only copy"
         assert second["s"]["command"] == str(target)
@@ -262,7 +262,7 @@ class TestUserEditsAreNotOverwritten:
     """Provenance must protect a hand edit, not undo it."""
 
     def test_a_hand_edited_command_is_left_alone(self, tmp_path: Path, monkeypatch) -> None:
-        """If the stored value is no longer ours, the user owns it.
+        """If the stored value is not ours, the user owns it.
 
         Same rule the entry-level marker applies: an entry we cannot prove we wrote
         is never rewritten. At field level the proof is that the stored value is

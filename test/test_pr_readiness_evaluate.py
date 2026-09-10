@@ -1,9 +1,9 @@
 """Behavioural tests for pr-readiness.yml's evaluate-step transport resilience.
 
-Issue #2753: every read-only ``gh`` call in the readiness evaluation was
-single-shot inside a fail-fast shell step, so one transient network/TLS error
-aborted the job before the publish step could run -- the same commit was
-observed evaluating green then red 39 seconds apart with nothing pushed.
+Every read-only ``gh`` call in the readiness evaluation must survive a transient
+network/TLS error: a single-shot call inside a fail-fast shell step aborts the
+job before the publish step can run, so one flake can make the same commit
+evaluate green then red with nothing pushed.
 
 These tests extract the real "Evaluate current revision" script (plus the
 retry-helper install step it sources) and execute them with ``gh`` replaced by
@@ -190,7 +190,7 @@ def _runs_json(name: str, runs: list[dict]) -> str:
 
 def _lane_log(proc: subprocess.CompletedProcess[str]) -> str:
     """The step's own diagnostic lane-state line (the only place the arrays are
-    readable from a `gh run view --log`, per #3550)."""
+    readable from a `gh run view --log`)."""
     return next(
         line for line in proc.stdout.splitlines() if line.startswith("pr-readiness: lane state")
     )
@@ -319,7 +319,7 @@ def runner(tmp_path: Path) -> Runner:
 
 class TestTransientFailureIsRetried:
     def test_one_flake_still_reaches_the_real_verdict(self, runner: Runner):
-        # The observed #2753 failure site: the per-workflow runs read. One
+        # The failure site this guards: the per-workflow runs read. One
         # transient failure, then success -- the retry must absorb it and the
         # evaluation must land on the REAL verdict, not the fallback.
         proc, outputs = runner.evaluate(
@@ -568,10 +568,10 @@ class TestGenuineFailureStaysRed:
 
 
 class TestLaneStateIsLoggedNotOnlySummarized:
-    """#3550: a run that publishes a wrong verdict (e.g. a lane invisible
-    under GITHUB_TOKEN but visible under a user token) could previously only
-    be diagnosed by opening the $GITHUB_STEP_SUMMARY UI by hand --
-    `gh run view --log` cannot query it. The evaluate step must also echo the
+    """A run that publishes a wrong verdict (e.g. a lane invisible under
+    GITHUB_TOKEN but visible under a user token) is diagnosable only from the
+    $GITHUB_STEP_SUMMARY UI unless the arrays are echoed too --
+    `gh run view --log` cannot query the summary. The evaluate step must echo the
     lane arrays to the job's own stdout log."""
 
     def test_all_green_run_logs_every_lane_as_passed(self, runner: Runner):
@@ -589,7 +589,7 @@ class TestLaneStateIsLoggedNotOnlySummarized:
         assert "Opus 4.8 Review" in log_line
 
     def test_a_stuck_lane_is_named_in_the_log_line(self, runner: Runner):
-        # The exact #3550 shape: one lane never completes (still queued),
+        # The shape this guards: one lane never completes (still queued),
         # everything else green. The diagnostic line must name it so a
         # stuck-pending PR is diagnosable from `gh run view --log` alone,
         # without opening the step-summary UI.
@@ -1280,9 +1280,9 @@ class TestAwaitingApprovalIsAttributedToTheMaintainer:
 
 
 class TestDispositionViolationsBlockTheVerdict:
-    """Issue #6658: the disposition rule was mechanical only for a writer
-    running the prepare-pr loop. Readiness publishes the repository's sole
-    required status, so folding the violation list in here is what binds every
+    """The disposition rule binds only a writer running the prepare-pr loop
+    unless readiness enforces it too. Readiness publishes the repository's sole
+    required status, so folding the violation list in here binds every
     writer -- including one who never runs that loop."""
 
     def test_a_violation_turns_an_otherwise_green_revision_red(self, runner: Runner):
@@ -1318,8 +1318,7 @@ class TestDispositionViolationsBlockTheVerdict:
 
     def test_an_unreadable_record_set_waits_instead_of_going_red(self, runner: Runner):
         """A transient comments/permission API failure must never red the
-        required status -- that is issue #2753's class of bug. UNKNOWN is
-        pending, which a later event recomputes."""
+        required status. UNKNOWN is pending, which a later event recomputes."""
         proc, outputs = runner.evaluate(disposition_ok="false")
         assert proc.returncode == 0, proc.stderr
         assert outputs["status_state"] == "pending"

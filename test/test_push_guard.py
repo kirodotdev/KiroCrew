@@ -9,8 +9,8 @@ prepare-pr/scripts/push_guard.py) correctly refuses to push when:
 And allows push when the branch is a normal single-commit PR (1 commit ahead
 of a fresh origin/<base> with shared history).
 
-Regression test for the 2026-07-31 clobber incident: a force-push from a
-worktree branched off kiki-trunk carried 114 duplicate commits.
+A force-push from a
+worktree branched off kiki-trunk can carry 114 duplicate commits, which the guard rejects.
 """
 
 from __future__ import annotations
@@ -105,7 +105,7 @@ def _git(cwd: str, *args: str) -> str:
 def _repo_pair_template(tmp_path_factory) -> tuple[str, str]:
     """Build the bare origin + initial clone once per session; ``repo_pair`` copies it.
 
-    Six git subprocesses (~1-1.6s) were previously paid on every one of the ~40
+    Six git subprocesses (~1-1.6s) would otherwise be paid on every one of the ~40
     tests below. Session scope is safe because the template directories are
     never handed to a test, only copied from via ``shutil.copytree`` -- so a
     test that pushes, branches, or clones ``work2`` off its own copy of
@@ -298,9 +298,9 @@ class TestPushGuardEdgeCases:
 class TestPushGuardStaleBaseAncestry:
     """Stale-base ancestry detection: origin/<base> must be an ancestor of HEAD.
 
-    Regression test for the vacuous is-ancestor check that previously tested
-    merge-base against origin/<base> (true by construction). The corrected
-    check verifies that origin/<base> itself is an ancestor of HEAD — i.e. the
+    The is-ancestor check must not test merge-base against origin/<base>
+    (true by construction, hence vacuous). It verifies instead that
+    origin/<base> itself is an ancestor of HEAD — i.e. the
     branch sits on the freshly fetched base tip after a correct rebase.
     """
 
@@ -655,7 +655,7 @@ class TestPushGuardNarrowRefspec:
 
         Same narrow-refspec scenario but in post-squash mode. The guard must
         update origin/main via the explicit refspec and then refuse because
-        HEAD~1 no longer equals the (now-advanced) origin/main.
+        HEAD~1 does not equal the (now-advanced) origin/main.
         """
         clone_dir, origin_dir = repo_pair
 
@@ -1065,8 +1065,8 @@ class TestPushGuardCredentialRedaction:
     def test_fetch_error_redacts_credential_at_truncation_boundary(self, tmp_path):
         """Token straddling the old 300-byte slice boundary must still be redacted.
 
-        Regression for the redact-before-truncate ordering fix: previously the
-        code did ``redact_credentials(fetch_err[:300])`` — if the credential
+        Redaction must run before truncation. Doing ``redact_credentials(fetch_err[:300])``
+        means that if the credential
         URL started before byte 300 but the '@host' portion landed after it,
         the slice would break the URL into an unmatchable prefix and the token
         would print raw.  After the fix (``redact_credentials(fetch_err)[:300]``)

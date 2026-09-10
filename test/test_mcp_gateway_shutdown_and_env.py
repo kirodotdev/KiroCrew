@@ -1,4 +1,4 @@
-"""Tests for the two MCP gateway pooling gaps fixed together (issue #1078).
+"""Tests for two MCP gateway pooling behaviours.
 
 Part 1 — shutdown: the supervisor's SIGTERM→SIGKILL grace must cover gatewayd's
 own drain budget, and the drain must wait on IN-FLIGHT REQUESTS rather than on
@@ -759,7 +759,7 @@ class TestForwardDeclaredEnvFlag:
         resolves to forwarding rather than to not-forwarding -- a deliberate
         consequence of the flip, and a safe one: the forwarded set is a strict
         subset of the hashed set and the spawn-time hash check refuses anything
-        the co-tenants did not agree on. What a typo can no longer do is silently
+        the co-tenants did not agree on. A typo cannot silently
         cost a server its pooling.
         """
         cfg = _load_config_from_dict({"mcp_gateway": {"forward_declared_env": "false"}})

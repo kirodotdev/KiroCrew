@@ -42,7 +42,7 @@ from kiro_crew.sandbox import _build_launcher_script
 # all of them raise AttributeError on Windows. Guarded rather than listed in
 # ``test/windows-expected-failures.txt``: that list is a burn-down backlog of gaps to
 # close, and a POSIX-only launcher is a permanent platform boundary. The sibling
-# launcher suites take the same route -- see ``test_sandbox_argv.py`` (#2041).
+# launcher suites take the same route -- see ``test_sandbox_argv.py``.
 pytestmark = pytest.mark.skipif(
     sys.platform == "win32",
     reason="_build_launcher_script uses POSIX-only os.getuid (#2041)",
@@ -63,7 +63,7 @@ _HIDE_END = "        # Scrub sensitive env vars"
 
 #: What the extracted region must contain. Without this a marker rename would
 #: shrink a slice and leave every assertion below vacuously green against a
-#: fragment that no longer holds the guard. Deliberately STRUCTURAL, not the
+#: fragment that fails to hold the guard. Deliberately STRUCTURAL, not the
 #: guard EXPRESSION: pinning a call's exact text here would make the break-arm
 #: that reverts that call fail on the landmark instead of on its assertion, and
 #: the call form is already pinned once, on purpose, by
@@ -72,7 +72,7 @@ _LANDMARKS = (
     "# Private mount propagation",  # the propagation site
     "for d in SENSITIVE_DIRS:",  # the credential-dir loop
     "for d in READONLY_DIRS:",  # the read-only exposure loop
-    "for d in WRITABLE_DIRS:",  # the write carve-out loop (#8653, fail-open)
+    "for d in WRITABLE_DIRS:",  # the write carve-out loop (fail-open)
     "for f in SENSITIVE_FILES:",  # the sensitive-file loop
     "if HIDE_SSH and os.path.isdir(SSH_DIR):",  # the .ssh block
     "sandbox: BLOCKED",  # the refusal
@@ -184,7 +184,7 @@ def _run(
         "SENSITIVE_DIRS": [str(aws)],
         "READONLY_DIRS": [str(cache)],
         # Empty by default so the six-site call numbering above stays stable;
-        # the carve-out tests inject their own entry (#8653).
+        # the carve-out tests inject their own entry.
         "WRITABLE_DIRS": list(writable_dirs or []),
         "SENSITIVE_FILES": [str(lone)],
         "SSH_DIR": str(ssh),
@@ -308,7 +308,7 @@ def test_every_tier_routes_all_six_mounts_through_the_guard() -> None:
 
 
 # --------------------------------------------------------------------------
-# Write carve-out (#8653): the ONE access-WIDENING pair, and it fails OPEN
+# Write carve-out: the ONE access-WIDENING pair, and it fails OPEN
 # --------------------------------------------------------------------------
 
 
@@ -339,7 +339,7 @@ def test_a_failed_carveout_mount_degrades_open(
 ) -> None:
     """The carve-out pair WIDENS access, so its failure must not refuse.
 
-    A refused carve-out means the path stays sealed -- the pre-#8653 behavior,
+    A refused carve-out means the path stays sealed -- the default behavior,
     whose one consequence is an unwritable probe temp dir. The spawn must
     proceed (the remaining hiding mounts still run and still refuse on their
     own failures), and the operator gets the classifier's ADVISORY severity,
@@ -432,7 +432,7 @@ def test_break_arms_falsify_each_assertion(tmp_path: Path, arm: str) -> None:
     script = _mutate(arm)
 
     if arm == "drop_errno":
-        # `errno %d` gone: the errno assertion can no longer hold. The message
+        # `errno %d` gone: the errno assertion cannot hold. The message
         # is now malformed (%-args outnumber the placeholders), so a TypeError
         # here is the same evidence as a missing number.
         try:

@@ -77,7 +77,7 @@ def _seed_file(directory: Path, cfg: KiroCrewConfig) -> Path:
     """Write *cfg*'s document shape as the on-disk config.
 
     The handlers persist via a delta read-modify-write on the RAW document
-    inside ``update_config_locked`` (#4767), so the authoritative post-call
+    inside ``update_config_locked``, so the authoritative post-call
     state is the FILE at ``config_dir()/config.json`` -- not the ``cfg``
     object handed to the handler, which is only its pre-await snapshot.
     """
@@ -319,7 +319,7 @@ class TestDeleteHandler:
         mock_sel().log_api_access.assert_called_once()
 
 
-# ── In-lock precondition re-check (#4767 review rounds 1-3) ──
+# ── In-lock precondition re-check ──
 
 
 class TestInLockRecheck:
@@ -467,7 +467,7 @@ class TestInLockRecheck:
     ) -> None:
         """Staging happens strictly AFTER path validation: a copy_from create
         whose dir fails the sensitive/traversal checks must return 4xx with
-        zero staged residue (review round 3: staging-before-validation)."""
+        zero staged residue."""
         (tmp_path / "workspace").mkdir()
         (tmp_path / "workspace" / "notes.md").write_text("x", encoding="utf-8")
         cfg = _cfg()
@@ -494,7 +494,7 @@ class TestDeltaMutatorHardening:
     async def test_degraded_workspaces_section_is_coerced_not_crashed(self, tmp_path: Path) -> None:
         """A malformed `"workspaces": []` on disk must not 500 the raw delta
         mutate: the section is replaced with a dict, matching what the
-        validated load already presents (review round 4)."""
+        validated load already presents."""
         (tmp_path / "config.json").write_text(
             json.dumps({"workspaces": [], "default_workspace": "default"}), encoding="utf-8"
         )
@@ -514,7 +514,7 @@ class TestDeltaMutatorHardening:
     @pytest.mark.asyncio
     async def test_failed_config_write_rolls_back_the_installed_tree(self, tmp_path: Path) -> None:
         """ENOSPC-class failure AFTER the staged tree is installed must not
-        leave an unregistered workspace directory behind (review round 4)."""
+        leave an unregistered workspace directory behind."""
         (tmp_path / "workspace").mkdir()
         (tmp_path / "workspace" / "notes.md").write_text("x", encoding="utf-8")
         cfg = _cfg()
@@ -542,7 +542,7 @@ class TestDeltaMutatorHardening:
     async def test_occupied_destination_is_refused_not_merged(self, tmp_path: Path) -> None:
         """A copy_from create whose destination already exists non-empty is
         refused: merging into it cannot be rolled back if the config write
-        then fails, so the un-rollbackable branch is eliminated (round 4)."""
+        then fails, so the un-rollbackable branch is eliminated."""
         (tmp_path / "workspace").mkdir()
         (tmp_path / "workspace" / "notes.md").write_text("x", encoding="utf-8")
         occupied = tmp_path / "workspace-copied"
@@ -568,7 +568,7 @@ class TestDeltaMutatorHardening:
     async def test_preexisting_empty_destination_is_refused_and_survives(
         self, tmp_path: Path
     ) -> None:
-        """Round 5: even an EMPTY pre-existing destination is refused -- its
+        """Even an EMPTY pre-existing destination is refused -- its
         inode and metadata are not ours to replace, and a later rollback
         could otherwise delete a directory this request did not create."""
         (tmp_path / "workspace").mkdir()
@@ -595,7 +595,7 @@ class TestDeltaMutatorHardening:
     async def test_cancellation_after_persist_success_does_not_roll_back(
         self, tmp_path: Path, monkeypatch
     ) -> None:
-        """Round 5 (Opus): run_config_write drains the worker to completion
+        """run_config_write drains the worker to completion
         before re-raising a cancellation, so a CancelledError out of the
         persist means the install AND the config registration LANDED --
         rolling back would leave config.json pointing at a deleted tree."""
@@ -636,7 +636,7 @@ class TestDeltaMutatorHardening:
     async def test_cancellation_during_staging_copy_leaves_no_residue(
         self, tmp_path: Path, monkeypatch
     ) -> None:
-        """Round 6 (GPT): a cancellation during the staging copytree must not
+        """A cancellation during the staging copytree must not
         race the cleanup rmtree -- the copy worker is drained to completion
         first, then the staged tree is removed, so no partial ``.staging-*``
         residue survives a gateway shutdown mid-copy."""

@@ -3,7 +3,7 @@
 ``sys.executable`` is often a symlink into a managed install tree, and rebuilding
 that tree deletes and re-creates its entries, including the interpreter
 ``wrap_argv`` prepends to every sandboxed argv. A spawn landing in that ~1s
-window used to die with a bare ENOENT that the caller could not distinguish from
+window can die with a bare ENOENT that the caller could not distinguish from
 a broken install.
 
 These tests pin BOTH directions: the transient shape is retried, and every
@@ -1011,7 +1011,7 @@ class TestTheStrictShellProbeNoLongerLatchesOnABlip:
 
         Emptying the delay budget makes the loop body never run, so the
         unguarded final attempt raises immediately -- which is exactly the
-        pre-fix shape. The wrong answer is cached, as it used to be.
+        pre-fix shape. The wrong answer is cached, which the retry budget prevents.
         """
         cron = importlib.import_module("kiro_crew.cron_script")
         shell = "/bin/dash"

@@ -2166,11 +2166,10 @@ class TestAutoTitleSlack:
     async def test_auto_title_unexpected_error_surfaces_at_warning(self, caplog):
         """An unexpected failure is logged at WARNING with the exception type.
 
-        Regression for #4800: this blanket handler runs on a fire-and-forget
-        task, so its log line is the only place a real defect surfaces. At
-        DEBUG it masked a deterministic cross-loop ``RuntimeError`` into three
-        order-dependent CI flake classes (#4177, #4789). The claim must also be
-        released so the next exchange retries.
+        This blanket handler runs on a fire-and-forget task, so its log line is
+        the only place a real defect surfaces. At DEBUG it masks a deterministic
+        cross-loop ``RuntimeError`` into an order-dependent CI flake. The claim
+        must also be released so the next exchange retries.
         """
         import logging
 
@@ -2850,7 +2849,7 @@ class TestCompactCommand:
     async def test_compact_declined_on_auto_managed_backend(self):
         # A backend that cannot serve /compact (the provider names it via
         # manual_compact_unsupported_backend) gets the informational reply and
-        # compact() is NEVER dispatched (#8156).
+        # compact() is NEVER dispatched.
         provider = self._make_provider_with_compact()
         calls = []
 
@@ -3545,9 +3544,9 @@ class TestTaskCardNeverAbandonsTheStream:
 
     Rotating on a task-card failure stops the stream the reader is watching and
     continues the same answer in a NEW message, so the thread reads as a reply
-    that failed followed minutes later by an unexplained second reply
-    (issue 8511). A task card is decoration, so skipping it withholds no answer
-    text; ``_append_stream`` still rotates when real text is refused.
+    that failed followed minutes later by an unexplained second reply. A task
+    card is decoration, so skipping it withholds no answer text;
+    ``_append_stream`` still rotates when real text is refused.
     """
 
     @pytest.mark.asyncio

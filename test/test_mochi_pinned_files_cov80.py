@@ -138,8 +138,8 @@ class TestLoad:
 
 
 class TestReadPinsForUpdate:
-    """#8088: the update reader refuses a store it could not read, so the
-    whole-file rewrite that follows every caller cannot destroy it."""
+    """The update reader refuses a store it could not read, so the whole-file
+    rewrite that follows every caller cannot destroy it."""
 
     def test_a_missing_file_reads_as_nothing_to_carry_forward(self, tmp_path):
         # The one case where an empty base is true: a first pin on a fresh
@@ -194,9 +194,9 @@ class TestReadPinsForUpdate:
 
 
 class TestCorruptStoreIsNotOverwrittenOnMutation:
-    """#8088: a corrupt pin store must survive a mutation, not be rewritten from
-    the in-memory list -- that rewrite discarded rows another process wrote which
-    this one never loaded, and the corrupt file is their only copy.
+    """A corrupt pin store must survive a mutation, not be rewritten from the
+    in-memory list -- that rewrite discards rows another process wrote which this
+    one never loaded, and the corrupt file is their only copy.
 
     The mutation cases deliberately do NOT assert on the exception type: what
     regressed is the FILE, so the assertion that has to fail on the buggy code is

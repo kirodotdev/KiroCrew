@@ -960,8 +960,8 @@ class TestTruncateHtmlSafe:
         assert out == "<b><i><u><s></s></u></i></b>"
 
     def test_entity_backoff_cannot_strand_the_cut_inside_a_tag(self) -> None:
-        # Regression: backing out of a raw `&` in an attribute value used to drag
-        # the cut into the middle of a COMPLETE tag, emitting `<a href="u?x=1`.
+        # Backing out of a raw `&` in an attribute value must not drag the cut
+        # into the middle of a COMPLETE tag (emitting `<a href="u?x=1`).
         text = '<a href="u?x=1&y=2">Z'
         out = truncate_html_safe(text, 20)
         assert len(out) <= 20
@@ -1030,7 +1030,7 @@ class TestApiDurationMetric:
         assert all(a["method"] != "getUpdates" for _, _, a in seen)
 
     def test_timeout_gets_its_own_outcome(self, monkeypatch: Any) -> None:
-        # Transport failures used to record NOTHING, hiding the longest stalls.
+        # A transport failure must record an outcome; recording NOTHING hides the longest stalls.
         seen = self._record_calls(monkeypatch)
         _record_api_duration("editMessageText", 30000.0, ok=False, err_code=None, timed_out=True)
         assert seen and seen[-1][2]["outcome"] == "timeout"
@@ -1088,9 +1088,9 @@ class TestRenderedBudget:
         assert _may_exceed_rendered(links, len(links) + 10) is True
 
     def test_gate_refuses_to_guess_for_tag_producing_markup(self) -> None:
-        # Regression: the gate used to model only html.escape + links, so these
-        # shapes returned False ("provably fits") while rendering far past the
-        # cap -- oversize HTML then reached the client and lost its tail.
+        # The gate must not model only html.escape + links: those shapes return
+        # False ("provably fits") while rendering far past the cap, so oversize
+        # HTML reaches the client and loses its tail.
         # Measured source -> rendered at cap 4000: blockquote 1000->5600,
         # heading 2000->4500, italic 3600->8100, bold 3720->5580,
         # inline code 2800->10500.
@@ -1889,8 +1889,7 @@ class TestRenderer:
         # Marker at the very END of the stream (kiri-cli folded the steer but
         # emitted no post-steer text): NO tail message at all. The answer already
         # covered the steer and the user's message carries the reaction receipt —
-        # any trailing ack bubble (quote OR summary) is pure noise. Regression
-        # for the trailing bubbles seen live on 2026-07-19.
+        # any trailing ack bubble (quote OR summary) is pure noise.
         cli = FakeClient()
         r = TelegramRenderer(cli, 55, TELEGRAM_CAPABILITIES, session_key="telegram:1:0")  # type: ignore[arg-type]
         r.note_steer("顺便看看今天悉尼什么天气")
@@ -2207,7 +2206,7 @@ class TestRenderer:
 
     def test_close_with_failure_reason_replaces_generic_placeholder(self) -> None:
         # A permanent failure's sanitized reason must reach the user instead of
-        # the misleading "please try again" text (issue #1831).
+        # the misleading "please try again" text.
         cli = FakeClient()
         r = TelegramRenderer(cli, 55, TELEGRAM_CAPABILITIES)  # type: ignore[arg-type]
         reason = "⚠️ Your account does not have access to model 'x'. Pick one in the picker."
@@ -2260,10 +2259,10 @@ class TestTableAwareSplitting:
         return head + "".join(f"| {i:05d} | {fill * width} |\n" for i in range(rows))
 
     def test_a_table_that_fits_one_rich_message_is_never_split(self) -> None:
-        # THE fix for the half-rich/half-pipes defect: a table that overflows
-        # the HTML budget used to be cut row-wise, stranding header-less body
-        # rows on the literal-pipe path. Sized against the rich budget it is
-        # one segment, one sendRichMessage, one rendered table.
+        # A table that overflows the HTML budget must not be cut row-wise, which
+        # strands header-less body rows on the literal-pipe path. Sized against
+        # the rich budget it is one segment, one sendRichMessage, one rendered
+        # table.
         cli = FakeClient()
         r = self._renderer(cli)
         table = self._table(120)
@@ -2592,9 +2591,9 @@ def _deny_channel_profile(monkeypatch, tmp_path, allow=("slack",)):
 
 class TestDispatcher:
     def test_channels_deny_drops_inbound_message(self, tmp_path, monkeypatch) -> None:
-        # HIGH (GPT round-4 #2): a channels DENY must stop handle_message from
-        # driving a turn. Regression-locks the Telegram inbound chokepoint —
-        # removing the gate makes this test fail (a turn would run).
+        # A channels DENY must stop handle_message from driving a turn. This
+        # locks the Telegram inbound chokepoint — removing the gate makes this
+        # test fail (a turn would run).
         from kiro_crew.platform import governance_profiles as gp
 
         _deny_channel_profile(monkeypatch, tmp_path)
@@ -2613,8 +2612,8 @@ class TestDispatcher:
             gp.reset_store()
 
     def test_channels_deny_drops_callback_approval(self, tmp_path, monkeypatch) -> None:
-        # HIGH (GPT round-4 #2): a callback press must not resolve a pending tool
-        # approval on a denied channel. Regression-locks the on_callback gate.
+        # A callback press must not resolve a pending tool approval on a denied
+        # channel. This locks the on_callback gate.
         from kiro_crew.platform import governance_profiles as gp
 
         _deny_channel_profile(monkeypatch, tmp_path)
@@ -2649,10 +2648,10 @@ class TestDispatcher:
             gp.reset_store()
 
     def test_channels_deny_still_resolves_callback_reject(self, tmp_path, monkeypatch) -> None:
-        # MEDIUM (GPT round-13 #3): a REJECT callback ("a:...:0") on a denied channel
-        # must STILL resolve the pending approval as refused (False) — a reject is a
-        # denial, and dropping it would strand the pending future until timeout.
-        # Only APPROVE is gated out.
+        # A REJECT callback ("a:...:0") on a denied channel must STILL resolve the
+        # pending approval as refused (False) — a reject is a denial, and dropping
+        # it would strand the pending future until timeout. Only APPROVE is gated
+        # out.
         from kiro_crew.platform import governance_profiles as gp
 
         _deny_channel_profile(monkeypatch, tmp_path)
@@ -2826,8 +2825,8 @@ class TestDispatcher:
         assert sess.failures == []  # not acquired -> not recorded as a failed turn
 
     def test_permanent_acp_error_reason_reaches_user(self) -> None:
-        # Issue #1831: a permanent AcpError (model entitlement) must surface
-        # its actionable message, not the generic retry advice.
+        # A permanent AcpError (model entitlement) must surface its actionable
+        # message, not the generic retry advice.
         msg = "Your account does not have access to model 'x'. Available: a, b."
 
         class _FailingProvider(FakeProvider):
@@ -2966,7 +2965,7 @@ class TestDispatcher:
 
     def test_compact_declined_on_auto_managed_backend(self) -> None:
         # A backend that cannot serve /compact gets the informational reply and
-        # compact() is NEVER dispatched (#8156).
+        # compact() is NEVER dispatched.
         d, cli, sess = _dispatcher({7})
         calls: list[int] = []
 
@@ -3857,7 +3856,7 @@ class TestLinkCommand:
         assert any("Linked" in t for t, _ in cli.sent)
 
     def test_forum_link_carries_topic_thread(self) -> None:
-        # Fix 2 (issue #211): /link inside a forum Topic must store the Topic id
+        # /link inside a forum Topic must store the Topic id
         # on the mirror link so dashboard-mirrored replies thread back into the
         # Topic (not the supergroup General).
         d, cli, sess = _dispatcher({7}, allow_forum=True, allowed_forum_chat_ids=[-1001234567890])
@@ -3902,10 +3901,10 @@ class TestLinkCommand:
         assert any("wasn't linked" in t for t, _ in cli.sent)
 
     def test_unlink_clears_binding_stranded_under_foreign_spelling(self) -> None:
-        # The stale-mirror regression: a binding whose key spelling no longer
-        # derives from the current session key (rotated DM generation, or a
-        # dashboard session mirroring into this chat) still occupies the
-        # location. Unlink must clear it by location value.
+        # A binding whose key spelling does not derive from the current session
+        # key (rotated DM generation, or a dashboard session mirroring into this
+        # chat) still occupies the location. Unlink must clear it by location
+        # value.
         d, cli, sess = _dispatcher({7})
         sess.mirror_links["dashboard:chat-9"] = ChannelLink("telegram", channel_id="7")
         asyncio.run(d._handle_unlink(("direct", "7"), 7))
@@ -3942,10 +3941,11 @@ class TestLinkCommand:
 class TestAutomaticOriginMirror:
     """A Telegram conversation mirrors itself, so dashboard turns reach the chat.
 
-    Issue #2959: a session started in Telegram had no ``telegram`` mirror unless
-    the user typed ``/link``, so ``_deliver_cross_surface_reply`` found no target
-    and a turn taken from the dashboard was never delivered back — the chat read
-    as dead while the conversation continued elsewhere.
+    Without the automatic mirror, a session started in Telegram has no
+    ``telegram`` mirror unless the user types ``/link``, so
+    ``_deliver_cross_surface_reply`` finds no target and a turn taken from the
+    dashboard is never delivered back — the chat reads as dead while the
+    conversation continues elsewhere.
     """
 
     @staticmethod
@@ -4163,12 +4163,12 @@ def test_receipt_text_caps_displayed_items() -> None:
     assert texts[-1] not in out  # a beyond-cap item is not rendered verbatim
 
 
-# ── Forum topics (issue #211): per-topic sessions, single-user ──────────────
+# ── Forum topics: per-topic sessions, single-user ──────────────────────────
 
 
 class TestForumGateOutcome:
     """Direct unit test of the shared fail-closed forum authZ predicate used by
-    BOTH transport.receive and dispatcher.on_callback (PR #219 Design #2). One
+    BOTH transport.receive and dispatcher.on_callback. One
     predicate → the two call sites can never drift. Only a real forum Topic
     (supergroup + message_thread_id) of an allow-listed chat is authorized;
     ordinary groups and the supergroup General chat (no thread) are DENIED."""
@@ -5261,7 +5261,7 @@ class TestContextThresholdNotices:
 
     def test_soft_nudge_suppressed_on_auto_managed_backend(self) -> None:
         # The nudge advises /compact, which this backend refuses — it compacts
-        # on its own, so there is nothing for the user to act on (#8156).
+        # on its own, so there is nothing for the user to act on.
         d, cli, sess = _dispatcher({7})
         sess.check_context_usage = lambda key, provider: 85.0
         provider = SimpleNamespace(manual_compact_unsupported_backend="kas")
@@ -5283,8 +5283,7 @@ class TestClientClose:
     def test_close_closes_session_even_when_task_died_with_a_bug(self) -> None:
         """A polling task already dead from an uncaught, non-CancelledError
         exception makes ``task.cancel()`` a no-op, and re-``await``ing it
-        re-raises that exception -- which must not skip the session close
-        (issue #4627)."""
+        re-raises that exception -- which must not skip the session close."""
 
         class _FakeSession:
             def __init__(self) -> None:

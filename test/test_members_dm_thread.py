@@ -286,9 +286,9 @@ class TestMemberRoutes:
         state.conversation_log.append(old_key, "user", "older message")
         state.conversation_log.append(new_key, "user", "newer message")
         # Touch the OLDER thread's file so its mtime is the newest of the two.
-        # Deliberately the REAL clock (2026-09-xx+), far ahead of the fake
-        # message timestamps (fixed 2026-07-25): the mtime-vs-ts contrast is
-        # the point of this test — do not "align" the two clocks.
+        # Deliberately the REAL clock, far ahead of the fixed fake message
+        # timestamps: the mtime-vs-ts contrast is the point of this test — do
+        # not "align" the two clocks.
         old_path = state.conversation_log._path(old_key)
         now = time.time() + 60
         os.utime(old_path, (now, now))
@@ -555,7 +555,7 @@ class TestPinEnforcement:
 
         state = _make_state(tmp_path)
         slot = _member_slot(state)
-        # Registry no longer contains CREW — only an unrelated crew.
+        # Registry holds only an unrelated crew, not CREW.
         with _patched_config([OTHER]):
             async with TestClient(TestServer(_make_app(state))) as client:
                 resp = await client.post("/api/chat", json={"slot": slot.key, "message": ""})
@@ -1224,9 +1224,9 @@ class TestPersistenceRestoreGate:
     def test_open_slot_restore_round_trips_a_bound_member_thread(self, tmp_path):
         """End to end: a bound member thread survives a restart pinned.
 
-        This is the invariant round 3's constructor reservation accidentally
-        broke (a bare member key was refused before the binding was consulted);
-        the binding-first resolution is what re-admits the legitimate restore.
+        A constructor reservation that refuses a bare member key before the
+        binding is consulted breaks this; binding-first resolution is what
+        admits the legitimate restore.
         """
         from kiro_crew.dashboard.chat_persistence import _rehydrate_slot_from_history
 
@@ -1507,9 +1507,9 @@ class TestMemberActivityRoute:
 
 
 class TestDenialAuditOffload:
-    """Deny-path SEL audits are direct enqueues since the startup warm (#8608).
+    """Deny-path SEL audits are direct enqueues, because startup warms SEL.
 
-    The per-site ``asyncio.to_thread`` wrappers existed because a fresh
+    A per-site ``asyncio.to_thread`` wrapper would only be needed if a fresh
     gateway's first ``_sel()`` touch performed synchronous filesystem
     initialization (HMAC key load/create, chain-head read). That first touch
     now happens once at gateway startup (``sel.warm_sel_singleton``, awaited
@@ -1573,8 +1573,8 @@ class TestDenialAuditOffload:
         assert not state._slots
 
     def test_no_members_sel_audit_is_offloaded(self):
-        """AST guard (inverted from #8523 by #8608): no ``log_api_access``
-        call in members.py hides inside an ``asyncio.to_thread`` lambda.
+        """AST guard: no ``log_api_access`` call in members.py hides inside an
+        ``asyncio.to_thread`` lambda.
 
         The startup warm makes a post-init ``log_api_access`` a non-blocking
         enqueue, so a per-site thread hop is pure overhead — an extra

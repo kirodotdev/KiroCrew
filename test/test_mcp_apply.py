@@ -205,7 +205,7 @@ class TestApplyEndpoint:
         assert "slack-mcp" in mc["mcpServers"]
         assert mc["mcpServers"]["slack-mcp"].get("disabled") is not True
 
-        # Kiro global should no longer have slack-mcp
+        # Kiro global does not have slack-mcp
         k = json.loads(kiro_path.read_text(encoding="utf-8"))
         assert "slack-mcp" not in k["mcpServers"]
 
@@ -1021,7 +1021,7 @@ class TestUninstallCrashWindowCleanup:
 
         remaining = json.loads(kiro_path.read_text(encoding="utf-8"))["mcpServers"]
         # Both were REQUESTED uninstalls the loop never reached → the sweep purges
-        # both by request (it no longer depends on the companion result being
+        # both by request (it does not depend on the companion result being
         # recorded, which cancellation could race). 'done's package was removed;
         # 'pending's may or may not have been — either way, removing config is the
         # user's intent and errs benign.

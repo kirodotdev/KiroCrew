@@ -42,9 +42,9 @@ def _note(**over):
 
 class TestTtlSweeper:
     def test_huge_ttl_does_not_abort_sweep(self):
-        # GPT 5.6 round 11 (MEDIUM): epoch + huge-int ttl raised
-        # OverflowError, and the sweep-wide guard aborted the WHOLE sweep --
-        # one poison row kept every expired notification alive.
+        # An epoch + huge-int ttl can raise OverflowError; the sweep-wide guard
+        # must not abort the WHOLE sweep for it, or one poison row keeps every
+        # expired notification alive.
         expired = _note(priority="passive", ttl=60, ts=str(time.time() - 120))
         huge = _note(priority="passive", ttl=10**300, ts=str(time.time() - 120))
         log = [expired, huge]
@@ -53,9 +53,9 @@ class TestTtlSweeper:
         assert log == [huge]  # huge ttl is simply not expired -- kept
 
     def test_trim_sweeps_expired_before_cap(self, tmp_path):
-        # GPT 5.6 round 12 (HIGH): append-time trim had the same
-        # displacement hazard as the load path -- raw tail-trim retained
-        # newer expired-passive rows while deleting older LIVE rows.
+        # Append-time trim has the same displacement hazard as the load path: a
+        # raw tail-trim retains newer expired-passive rows while deleting older
+        # LIVE rows, so the trim sweeps expired rows before applying the cap.
         import json as _json
 
         from kiro_crew.dashboard.state import (
@@ -80,10 +80,10 @@ class TestTtlSweeper:
         assert all(n.get("priority") != "passive" for n in kept)
 
     def test_load_sweeps_before_truncation(self, monkeypatch, tmp_path):
-        # GPT 5.6 round 11 (HIGH): truncating to the cap BEFORE sweeping let
-        # newer expired-passive rows displace older LIVE rows; the sweep then
-        # removed the expired rows and the next rewrite deleted the live
-        # rows permanently. Sweep must run on the full parsed list first.
+        # Truncating to the cap BEFORE sweeping lets newer expired-passive rows
+        # displace older LIVE rows; the sweep then removes the expired rows and
+        # the next rewrite deletes the live rows permanently. The sweep must run
+        # on the full parsed list first.
         from kiro_crew.dashboard.state import (
             _MAX_PERSISTED_NOTIFICATIONS,
             _load_notifications,
@@ -150,13 +150,13 @@ class TestTtlSweeper:
         ],
     )
     def test_platform_unrepresentable_ts_kept_and_never_raises(self, poison_ts):
-        # Arbiter finding on PR #422: OverflowError/OSError escaping the
-        # sweep at load time hits _load_notifications' blanket handler and
-        # EMPTIES the entire history (persisted on the next mutation). The
-        # poison row must be kept and the healthy rows must survive.
-        # GPT 5.6 round 23: non-finite float STRINGS ("-1e999") don't raise --
-        # float() returns -inf and the sweep would DELETE the row. Non-finite
-        # epochs must be treated as unparseable (kept), same as ISO poison.
+        # OverflowError/OSError escaping the sweep at load time hits
+        # _load_notifications' blanket handler and EMPTIES the entire history
+        # (persisted on the next mutation). The poison row must be kept and the
+        # healthy rows must survive.
+        # Non-finite float STRINGS ("-1e999") don't raise -- float() returns
+        # -inf and the sweep would DELETE the row. Non-finite epochs must be
+        # treated as unparseable (kept), same as ISO poison.
         log = [
             _note(priority="passive", ttl=1, ts=poison_ts),
             _note(priority="passive", ttl=60, ts=str(time.time() - 120), title="expired"),
@@ -185,9 +185,9 @@ class TestTtlSweeper:
 
 
 class TestSendNotificationToolIdentity:
-    """GPT 5.6 HIGH round 7: the MCP tool must resolve identity STRICTLY --
-    the lenient resolver accepts forgeable pid files, and the key selects the
-    publish authorization and audit attribution."""
+    """The MCP tool must resolve identity STRICTLY -- the lenient resolver
+    accepts forgeable pid files, and the key selects the publish authorization
+    and audit attribution."""
 
     def test_fails_closed_without_verified_identity(self, monkeypatch):
         from kiro_crew import mcp_core
@@ -223,9 +223,9 @@ class TestSendNotificationToolIdentity:
         assert "session_key" not in posted[0][1]
 
     def test_gateway_failure_returns_error_prefix(self, monkeypatch):
-        # GPT 5.6 round 12 (MEDIUM): call_tool_with_logging classifies only
-        # "Error:"-prefixed strings as failures -- a "Failed:" return was
-        # SEL-recorded as completed, contradicting the actual outcome.
+        # call_tool_with_logging classifies only "Error:"-prefixed strings as
+        # failures -- a "Failed:" return would be SEL-recorded as completed,
+        # contradicting the actual outcome.
         from kiro_crew import mcp_core
 
         monkeypatch.setattr(
@@ -241,8 +241,8 @@ class TestSendNotificationToolIdentity:
         assert result.startswith("Error:")
 
     def test_governance_allowed_sel_record_on_permit(self, monkeypatch):
-        # GPT 5.6 round 13 (HIGH): the shared helper must audit ALLOWED
-        # decisions too, not only denials (backend-security-controls).
+        # The shared helper must audit ALLOWED decisions too, not only denials
+        # (backend-security-controls).
         from kiro_crew import mcp_core
 
         class Allow:
@@ -270,10 +270,10 @@ class TestSendNotificationToolIdentity:
         assert audits[0]["scope"] == "capabilities.messaging"
 
     def test_governance_denial_sel_attributes_to_send_notification(self, monkeypatch):
-        # Arbiter round 9 (GPT 5.6 MEDIUM): the shared messaging-governance
-        # helper hardcoded tool_name="send_message" in its SEL denial record,
-        # misattributing every governance-denied send_notification call in the
-        # persisted audit trail.
+        # The shared messaging-governance helper must not hardcode
+        # tool_name="send_message" in its SEL denial record, or it misattributes
+        # every governance-denied send_notification call in the persisted audit
+        # trail.
         from kiro_crew import mcp_core
 
         monkeypatch.setattr(
@@ -322,9 +322,9 @@ class TestSendNotificationToolIdentity:
         assert audits and audits[0]["tool_name"] == "send_message"
 
     def test_governance_error_fails_closed_for_send_notification(self, monkeypatch):
-        # GPT 5.6 HIGH round 10: governance_permits defaults to fail-open on
-        # evaluation error, so a malformed profile or governance read failure
-        # let send_notification bypass a configured messaging denial. The
+        # governance_permits defaults to fail-open on evaluation error, so a
+        # malformed profile or governance read failure would let
+        # send_notification bypass a configured messaging denial. The
         # notification path must deny on error (deny-by-default backend rule).
         from kiro_crew import mcp_core
 
@@ -361,8 +361,8 @@ class TestSendNotificationToolIdentity:
 
 
 class TestAgentEndpointAuthWiring:
-    """Opus HIGH on PR #422: the route must be on the internal-secret
-    allowlist or every MCP call falls through to cookie auth and 403s."""
+    """The route must be on the internal-secret allowlist, or every MCP call
+    falls through to cookie auth and 403s."""
 
     def test_agent_path_in_strict_internal_allowlist(self):
         from kiro_crew.dashboard.server import _STRICT_INTERNAL_API_PATHS
@@ -411,10 +411,10 @@ class TestAgentPushEndpoint:
 
     @pytest.mark.asyncio
     async def test_cookie_callers_denied(self, monkeypatch, tmp_path):
-        # GPT 5.6 HIGH round 19: the strict-internal middleware also admits
-        # loopback dashboard-cookie callers — a browser-credentialed caller
-        # publishing source="system" would bypass MCP governance. The
-        # handler requires the validated internal-secret marker.
+        # The strict-internal middleware also admits loopback dashboard-cookie
+        # callers — a browser-credentialed caller publishing source="system"
+        # would bypass MCP governance. The handler requires the validated
+        # internal-secret marker.
         state = _make_state(monkeypatch, tmp_path)
         sel_mock = MagicMock()
         monkeypatch.setattr(
@@ -441,9 +441,9 @@ class TestAgentPushEndpoint:
     async def test_oversized_body_rejected_before_decoding(
         self, monkeypatch, tmp_path
     ):
-        # GPT 5.6 round 11 (MEDIUM): without an endpoint cap the route
-        # inherits the server-wide client_max_size and decodes megabytes on
-        # the event-loop thread. Mirror the app push endpoint's 64 KB bound.
+        # Without an endpoint cap the route inherits the server-wide
+        # client_max_size and decodes megabytes on the event-loop thread. It
+        # mirrors the app push endpoint's 64 KB bound.
         state = _make_state(monkeypatch, tmp_path)
         async with TestClient(TestServer(self._app(state))) as client:
             resp = await client.post(
@@ -506,9 +506,8 @@ class TestAgentPushEndpoint:
     async def test_non_string_and_non_list_fields_return_400_not_500(
         self, monkeypatch, tmp_path
     ):
-        # GPT 5.6 MEDIUM round 3: wrong-typed fields raised AttributeError/
-        # TypeError past the validation catch -- a 500 where the contract
-        # says 400.
+        # Wrong-typed fields must not raise AttributeError/TypeError past the
+        # validation catch -- that is a 500 where the contract says 400.
         state = _make_state(monkeypatch, tmp_path)
         async with TestClient(TestServer(self._app(state))) as client:
             for bad in (
@@ -523,12 +522,11 @@ class TestAgentPushEndpoint:
 
     @pytest.mark.asyncio
     async def test_app_token_callers_denied(self, monkeypatch, tmp_path):
-        # GPT 5.6 HIGH round 16: app-token API permissions use prefix-boundary
-        # matching, so an app allowed "/api/notifications" is admitted to
-        # this child route by the middleware. The handler must refuse app
-        # identities -- this publish path emits source="system" and can
-        # bypass its rate limits, so an app reaching it would
-        # impersonate system notifications past its rate limits.
+        # App-token API permissions use prefix-boundary matching, so an app
+        # allowed "/api/notifications" is admitted to this child route by the
+        # middleware. The handler must refuse app identities -- this publish
+        # path emits source="system", so an app reaching it would impersonate
+        # system notifications past its rate limits.
         state = _make_state(monkeypatch, tmp_path)
         sel_mock = MagicMock()
         monkeypatch.setattr(
@@ -551,8 +549,8 @@ class TestAgentPushEndpoint:
         assert not any(
             n.get("title") == "spoofed system note" for n in state._notification_log
         )
-        # GPT 5.6 round 18 HIGH: the denial is a permission decision on a
-        # security boundary — it must land in the SEL audit trail.
+        # The denial is a permission decision on a security boundary — it must
+        # land in the SEL audit trail.
         denied = [
             kw
             for _, kw in sel_mock.log_api_access.call_args_list
@@ -562,9 +560,9 @@ class TestAgentPushEndpoint:
 
     @pytest.mark.asyncio
     async def test_persist_failure_returns_500(self, monkeypatch, tmp_path):
-        # GPT 5.6 HIGH round 16: the endpoint's durability guarantee -- a 200
-        # is only returned once the persist job succeeded. A failed persist
-        # must surface as a 500, never a silent acknowledgment.
+        # The endpoint's durability guarantee -- a 200 is only returned once the
+        # persist job succeeded. A failed persist must surface as a 500, never a
+        # silent acknowledgment.
         state = _make_state(monkeypatch, tmp_path)
         monkeypatch.setattr(
             "kiro_crew.dashboard.state._persist_notification", lambda note: False
@@ -578,7 +576,7 @@ class TestAgentPushEndpoint:
 
 
 class TestSendNotificationSchemaRegistry:
-    """The MCP-facing validation registry entry (GPT 5.6 HIGH round 16).
+    """The MCP-facing validation registry entry.
 
     Tool-level tests elsewhere call ``_call_tool_inner`` directly, bypassing
     ``_validate_args``; this pins the registry wiring so malformed MCP input
@@ -599,8 +597,8 @@ class TestSendNotificationSchemaRegistry:
 
 
 class TestRound17Fixes:
-    """GPT 5.6 round 17: warm-pool identity via caller context, channel-agent
-    dispatch containment, and the in-memory notification-log bound."""
+    """Warm-pool identity via caller context, channel-agent dispatch
+    containment, and the in-memory notification-log bound."""
 
     def test_strict_resolver_accepts_gateway_caller_context(self, monkeypatch):
         # Warm-pool on macOS/Windows: the backend process has neither
@@ -651,10 +649,9 @@ class TestRound17Fixes:
 
     @pytest.mark.parametrize("tool", ["send_message", "send_notification"])
     def test_channel_agent_denied_at_mcp_dispatch(self, monkeypatch, tool):
-        # GPT 5.6 round 17 HIGH: auto-approved kirocrew-core calls emit no
-        # permission event, so channel.py's guard never fires — the
-        # containment boundary must hold at MCP dispatch on the verified
-        # caller identity.
+        # Auto-approved kirocrew-core calls emit no permission event, so
+        # channel.py's guard never fires — the containment boundary must hold at
+        # MCP dispatch on the verified caller identity.
         from kiro_crew import mcp_core
 
         monkeypatch.setattr(
@@ -681,9 +678,9 @@ class TestRound17Fixes:
         assert any(a.get("outcome") == "rejected_blocked_tool" for a in audits)
 
     def test_in_memory_log_bounded_on_live_delivery(self, monkeypatch, tmp_path):
-        # GPT 5.6 round 17 MEDIUM: only the disk-load path capped the
-        # in-memory list; sustained live deliveries grew it without bound
-        # (and the per-delivery sweep scans it -> O(N^2) delivery).
+        # The disk-load path is not the only cap on the in-memory list;
+        # sustained live deliveries would otherwise grow it without bound (and
+        # the per-delivery sweep scans it -> O(N^2) delivery).
         from kiro_crew.dashboard import state as state_mod
 
         state = _make_state(monkeypatch, tmp_path)
@@ -696,10 +693,9 @@ class TestRound17Fixes:
         assert state._notification_log[0]["title"] == "n25"
 
     def test_huge_integer_ts_does_not_abort_sweep(self):
-        # GPT 5.6 round 18 MEDIUM: float() of a JSON integer beyond float
-        # range raises OverflowError (unlike a float literal, which becomes
-        # inf) — one poison row must not abort the sweep and retain every
-        # expired note.
+        # float() of a JSON integer beyond float range raises OverflowError
+        # (unlike a float literal, which becomes inf) — one poison row must not
+        # abort the sweep and retain every expired note.
         now = time.time()
         rows = [
             {"ts": 10**400, "priority": "passive", "ttl": 60},  # poison
@@ -715,9 +711,9 @@ class TestRound17Fixes:
         assert rows[0]["ts"] == 10**400  # poison row kept (never destroyed)
 
     def test_actions_forwarded_to_endpoint(self, monkeypatch):
-        # GPT 5.6 round 20 (MEDIUM): the endpoint documents inline actions
-        # but the tool schema omitted them -- a schema-valid MCP call could
-        # never carry the Phase 4 action contract.
+        # The endpoint documents inline actions, so the tool schema must carry
+        # them too -- otherwise a schema-valid MCP call can never carry the
+        # Phase 4 action contract.
         from kiro_crew import mcp_core
 
         monkeypatch.setattr(
@@ -751,10 +747,9 @@ class TestRound17Fixes:
         mock_post.assert_not_called()
 
     def test_action_unknown_keys_rejected(self):
-        # GPT 5.6 HIGH round 21: _redact_note_value scrubs VALUES, not dict
-        # KEYS -- a credential smuggled as an extra property NAME would reach
-        # JSONL and dashboard responses unredacted. The contract is a closed
-        # {id, label, url?} set.
+        # _redact_note_value scrubs VALUES, not dict KEYS -- a credential
+        # smuggled as an extra property NAME would reach JSONL and dashboard
+        # responses unredacted. The contract is a closed {id, label, url?} set.
         from kiro_crew.notifications.bus import (
             NotificationPayload,
             NotificationValidationError,

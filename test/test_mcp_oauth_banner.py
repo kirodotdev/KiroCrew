@@ -202,7 +202,7 @@ class TestEmitMcpOAuthRequest:
         operator keystone extension — is agent-fenced with no dashboard
         writer and is documented only in an internal spec. If the banner does
         not name it, the failure is indistinguishable from unfixable: two
-        users independently root-caused this from source (#3310) rather than
+        users independently root-caused this from source rather than
         finding the one-line config fix.
         """
         slot = _ChatSlot("s1")
@@ -224,7 +224,7 @@ class TestEmitMcpOAuthRequest:
 
     def test_rejection_banner_names_the_rejected_endpoint(self):
         """A rejected URL must name the SANITIZED host+path that tripped the
-        scanner (#7578): without it the user cannot know which endpoint to
+        scanner: without it the user cannot know which endpoint to
         write into ``oauth_endpoints.json``, so the failure reads as
         unfixable. Query values carry state/PKCE material (and here, the
         smuggled credential) and must NEVER be echoed — not in the content,
@@ -295,8 +295,8 @@ class TestEmitMcpOAuthRequest:
         """Regression: a legitimate GitHub OAuth + PKCE consent URL must be
         rendered, not rejected.  These URLs carry high-entropy params
         (``state``, ``code_challenge``) and routinely exceed 200 chars, which
-        previously tripped the generic long-query *exfiltration* heuristic and
-        broke every real sign-in flow ("github authentication failed: URL
+        would trip the generic long-query *exfiltration* heuristic and
+        break every real sign-in flow ("github authentication failed: URL
         contained credential or exfiltration pattern")."""
         slot = _ChatSlot("s1")
         state = MagicMock()
@@ -408,7 +408,7 @@ class TestMarkMcpOAuthCompleted:
         slot = _ChatSlot("s1")
         state = self._emit(slot)
         _mark_mcp_oauth_completed(state, slot, "linear", success=False, error="boom")
-        # Banner is now in the failed terminal state, so it's no longer "open".
+        # Banner is now in the failed terminal state, so it's not "open".
         # A subsequent retry would emit a new banner; mark_completed on the
         # closed banner is a no-op (regression guard for #6 in review).
         prior_call_count = state.broadcast_ws.call_count
@@ -490,7 +490,7 @@ class TestMarkMcpOAuthCompleted:
         assert not any(m["meta"].get("completed") for m in slot.messages)
 
 
-# ── _supersede_open_mcp_oauth_banners (issue #7580) ──
+# ── _supersede_open_mcp_oauth_banners ──
 
 
 class TestSupersededOAuthBanners:
@@ -498,10 +498,10 @@ class TestSupersededOAuthBanners:
 
     kiro-cli mints the callback port and the PKCE verifier inside the flow it
     announces, so a second announcement for the same server leaves the first
-    banner pointing at a port that can no longer redeem anything. Left rendered
+    banner pointing at a port that cannot redeem anything. Left rendered
     as a live "Authorize" button, it walks the user through a full provider
     login and dead-ends on `http://127.0.0.1:<dead-port>/?code=…` — a page that
-    looks like success and consumes nothing (issue #7580).
+    looks like success and consumes nothing.
     """
 
     def test_second_request_retires_the_first_banner(self):
@@ -565,7 +565,7 @@ class TestSupersededOAuthBanners:
     def test_a_repeat_request_from_one_credential_named_server_also_retires_nothing(self):
         """The known limitation, pinned so it cannot regress into a guess.
 
-        Same server twice is the case #7580 is about, but when its NAME redacts we
+        Same server twice is the case this guards, but when its NAME redacts we
         cannot prove from the stored row that it IS the same server, so the stale
         banner stays. Documented in the PR body and on the issue: narrow, confined
         to credential-shaped names, and no worse than main.
@@ -776,7 +776,7 @@ class TestSupersededOAuthBanners:
         assert not stale["meta"].get("oauth_url")
 
 
-# ── read-time minting-child liveness gate (issues #7654, #8149) ──
+# ── read-time minting-child liveness gate ──
 
 
 class TestExpiredByDeadChild:
@@ -998,7 +998,7 @@ class TestLiveChildInstance:
         assert _live_child_instance(state, _ChatSlot("s1")) == ""
 
     def test_end_to_end_a_swept_sessions_banner_is_withdrawn_on_read(self):
-        """The whole #8149 defect in one path: mint under child A, sweep the
+        """The whole defect in one path: mint under child A, sweep the
         session (pool answers None), and the next read withdraws the link."""
         slot = _ChatSlot("s1")
         _emit_mcp_oauth_request(
@@ -1328,7 +1328,7 @@ class TestOAuthParamCredentialScan:
         ) in _OAUTH_AUTHORIZATION_ENDPOINTS
 
 
-# ── Banner gate consolidation: one security predicate, no local copy (#2403) ──
+# ── Banner gate consolidation: one security predicate, no local copy ──
 
 
 class TestBannerGateIsCanonicalSecurityPredicate:
@@ -1343,7 +1343,7 @@ class TestBannerGateIsCanonicalSecurityPredicate:
 
     def test_no_local_copy_of_the_gate_exists(self):
         # Fails on any reintroduction of a dashboard-local `_oauth_url_...`
-        # helper — the drift vector issue #2403 closed.
+        # helper — the drift vector this test closes.
         assert not hasattr(chat_runner, "_oauth_url_contains_credential")
 
     def test_chat_runner_binding_is_the_canonical_function(self):

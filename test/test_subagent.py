@@ -1951,7 +1951,7 @@ class TestCompletionKeepLoader:
 
 
 class TestSubagentUsageRow:
-    """Issue #647: a completed subagent turn appends one usage row tagged
+    """A completed subagent turn appends one usage row tagged
     surface='subagent', carrying the resolved agent and context occupancy."""
 
     @pytest.mark.asyncio
@@ -2045,7 +2045,7 @@ class TestSubagentUsageRow:
 
 class TestIdentityTrustedChildParentPolicyAuto:
     """A low-fidelity child MCP permission event whose canonical identity IS
-    verified (remote server streamed no rawInput — issue #6163) honors an
+    verified (remote server streamed no rawInput) honors an
     unconditional ``parent_policy=auto`` grant instead of stalling on the
     interactive downgrade; without the verified identity the same event stays
     fail-closed.

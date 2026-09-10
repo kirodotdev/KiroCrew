@@ -390,14 +390,13 @@ class TestLiveEventOwnershipIsWired:
 
 
 class TestBothTransportsAreReached:
-    """The reach must work for BOTH providers, which is what silently failed.
+    """The reach must work for BOTH providers.
 
-    The publish used to take the provider's inner ``.client``. ``AcpProvider``
-    (dedicated) exposes one; ``AcpSessionProvider`` (shared runtime) does not, so
-    the reach evaluated to None there and the report never reached the slot —
-    the panel fell back to host-configured green dots on that whole transport,
-    which is the exact defect this feature exists to remove. Every test at the
-    time built its double the same wrong way, so all of them stayed green.
+    The publish must not take the provider's inner ``.client``: ``AcpProvider``
+    (dedicated) exposes one, but ``AcpSessionProvider`` (shared runtime) does not, so
+    that reach evaluates to None there and the report never reaches the slot —
+    the panel then falls back to host-configured green dots on that whole transport,
+    which is the exact defect this feature exists to remove.
     """
 
     @staticmethod

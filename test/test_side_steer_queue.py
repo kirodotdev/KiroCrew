@@ -952,8 +952,8 @@ async def test_an_unproven_steer_is_not_committed_so_it_cannot_duplicate(tmp_pat
 
 @pytest.mark.asyncio
 async def test_the_head_insert_is_bounded_like_every_other_queue_write(tmp_path):
-    """`queue_insert_front` used to be unbounded, so repeated unconsumed steers
-    could grow the queue past MAX_SIDE_QUEUE without limit."""
+    """`queue_insert_front` is bounded like every other queue write, so repeated
+    unconsumed steers cannot grow the queue past MAX_SIDE_QUEUE."""
     from kiro_crew.dashboard.side_state import MAX_SIDE_QUEUE
 
     side = SideState(open=True)

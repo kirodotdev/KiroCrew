@@ -3,7 +3,7 @@
 Covers what this channel gained: the commands a user can now reach from chat, the
 outbound image upload, the reasoning post, the stall marks on the live bubble, the
 reaction allow-list, the durable getUpdates cursor — and, first, the credential
-that Telegram's own markdown→HTML conversion used to REASSEMBLE after the
+that Telegram's own markdown→HTML conversion can REASSEMBLE after the
 byte-level redactor had already looked at it.
 
 The doubles come from ``test_telegram`` so there is one FakeClient, not two that
@@ -308,7 +308,7 @@ class TestOutboundImages:
 
     @pytest.mark.asyncio
     async def test_recovery_of_many_failed_uploads_drops_no_reference(self) -> None:
-        # One truncated bubble used to keep only what fit under the cap: with
+        # A truncated bubble must not keep only what fits under the cap: with
         # enough failed images, every reference past it vanished silently.
         renderer, client = _renderer()
         renderer.authorize_upload_root(_UPLOAD_ROOT)
@@ -2569,7 +2569,7 @@ class TestForumActivation:
 
 
 class TestSplitterConvergence:
-    """Telegram's splitter no longer fabricates fence delimiters.
+    """Telegram's splitter does not fabricate fence delimiters.
 
     The channel-local predecessor rebalanced by counting backticks
     (``ch.count("```") % 2``), which is not the fence grammar. On a
@@ -3059,7 +3059,7 @@ class TestARestrictedSessionUploadsNothing:
     async def test_a_channel_without_privacy_modes_is_unaffected(self) -> None:
         """Discord has no `/temporary`, so nothing can mark its keys.
 
-        Pinned because this rung used to answer False unconditionally: the change
+        This rung must not answer False unconditionally: the change
         must be invisible to a channel that offers no modes, or it would read as a
         behaviour change to every other channel's uploads.
         """
@@ -3842,7 +3842,7 @@ class TestAlbumMergePreservesIdentity:
 
     An album is the head message with more photos and a joined caption, so those two
     are the only things the merge decides. Everything else is identity and has to
-    survive verbatim. The merge used to enumerate fields, which meant any field added
+    survive verbatim. The merge must not enumerate fields, or any field added
     to ``TelegramInbound`` was silently dropped: ``reply_to_user_id`` went missing
     that way, and a reply-to-the-bot album in a mention-mode forum Topic was then
     discarded by the activation gate with no trace.

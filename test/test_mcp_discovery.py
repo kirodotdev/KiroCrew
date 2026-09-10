@@ -274,7 +274,7 @@ class TestListServers:
 
         Consent-disabled installs/custom adds land with ``disabled: true``
         in the KiroCrew scope; the table's enable action is the consent
-        step, so the row must exist (previously these were invisible)."""
+        step, so the row must exist."""
         monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(tmp_path))
         monkeypatch.setattr("kiro_crew.mcp_discovery.Path.home", lambda: tmp_path)
         mcp_json = tmp_path / "mcp.json"
@@ -2219,12 +2219,12 @@ class TestProbeRemote:
     async def test_directory_qualified_command_reports_no_search_path(self) -> None:
         """A directory-qualified command is looked up directly, not PATH-searched.
 
-        Regression for #5053: ``shutil.which`` returns before it reads ``path=``
-        when the command carries a directory component, so it checks exactly the
-        one location named. Reporting the declared search path for it told the
-        reader it "searched N directories" that were never consulted -- the exact
-        not-installed vs installed-elsewhere confusion #4954 exists to prevent,
-        stated backwards. The error for such a command must be the bare
+        ``shutil.which`` returns before it reads ``path=`` when the command
+        carries a directory component, so it checks exactly the one location
+        named. Reporting a declared search path for it would tell the reader it
+        "searched N directories" that were never consulted -- the exact
+        not-installed vs installed-elsewhere confusion this avoids, stated
+        backwards. The error for such a command must be the bare
         ``command not found: <cmd>`` with no directory list.
         """
         abs_missing = os.path.join(os.sep, "opt", "vendor", "bin", "ghost-mcp")
@@ -2368,7 +2368,7 @@ class TestProbeServerConsentGate:
 
 
 class TestProbeTempContainment:
-    """#5064 probe wiring: spec-declared temp yields; Windows defers cleanup.
+    """Probe wiring: spec-declared temp yields; Windows defers cleanup.
 
     Both tests assert ONLY on the containment calls and tolerate any probe
     outcome -- the probe command is a real interpreter that exits instantly,
@@ -2537,7 +2537,7 @@ class TestProbeTempContainment:
     async def test_probe_tmp_allocated_before_wrap_and_carved_out(
         self, tmp_path, monkeypatch
     ) -> None:
-        """#8653: the probe TMPDIR is allocated BEFORE the sandbox wrap, which
+        """The probe TMPDIR is allocated BEFORE the sandbox wrap, which
         receives it as a write carve-out, and the spawn env points at it.
 
         The managed probe root lives at ``<data home>/run/mcp-tmp``, inside the
@@ -3071,8 +3071,8 @@ class TestFixStaleManagedCommand:
 
     def test_applies_python_dash_m_fallback_with_args(self):
         """When no standalone binary resolves, the python -m kiro_crew fallback
-        (command + its args) is applied — regression for Windows where rewriting
-        the command alone left a bare 'kirocrew' that isn't on PATH."""
+        (command + its args) is applied. On Windows, rewriting the command alone
+        would leave a bare 'kirocrew' that isn't on PATH."""
         from kiro_crew.mcp_discovery import _fix_stale_managed_command
 
         spec = {"command": "kirocrew", "args": []}
@@ -3459,7 +3459,7 @@ class TestProbeServerStderrCapture:
 class TestProbeStdioMalformedResponse:
     """Stdio probe must not crash on non-spec JSON-RPC response shapes.
 
-    Regression for: MCP probe failed [...]: 'str' object has no attribute 'get'
+    The crashing shape: MCP probe failed [...]: 'str' object has no attribute 'get'
     — some servers return an `error` value (or whole response) that is a bare
     string rather than the spec's {"message": ...} object / dict.
     """
@@ -3688,7 +3688,7 @@ class TestReadStdioJsonrpcResponse:
 
 
 class TestProbeServerBannerTolerance:
-    """probe_server no longer errors when a banner precedes the handshake."""
+    """probe_server tolerates a banner that precedes the handshake."""
 
     @pytest.mark.asyncio
     async def test_leading_banner_does_not_fail_probe(self) -> None:
@@ -4161,8 +4161,8 @@ class TestProbeSandboxUnavailable:
 class TestFirstPartyManagedArgv:
     """The probe passes ``first_party_fixed_argv`` ONLY for a self-derived argv.
 
-    The flag buys an unconfined spawn on a backend-less host (issue #1563
-    carve-out), so it must key on the INVOCATION this package derives for its
+    The flag buys an unconfined spawn on a backend-less host, so it must key on
+    the INVOCATION this package derives for its
     own managed servers — never on the server name alone, which an mcp.json
     scope could pair with user-config command text.
     """
@@ -4351,9 +4351,9 @@ class TestProbeHeaderReferenceExpansion:
 
     A static header whose value carries a runtime reference is a documented
     form (docs/reference/kiro-cli/mcp/configuration.md) that kiro-cli expands
-    at session runtime. The probe used to send the reference as literal text,
-    so a working configuration rendered as Error / HTTP 401 with advice to
-    delete the header (issue #9206). The probe now resolves references through
+    at session runtime. If the probe sent the reference as literal text, a
+    working configuration would render as Error / HTTP 401 with advice to
+    delete the header. The probe resolves references through
     the gateway rewriter's declared-env expander — same regex, same
     credential-filtered source view, same "unresolved stays literal" rule.
     """

@@ -1,7 +1,7 @@
 """``kirocrew-computer`` and ``kirocrew-dashboard`` resolve the calling session
 from the injected caller block.
 
-The exact state #4622 described and fixed for ``kirocrew-cron``: both servers
+The same failure mode ``kirocrew-cron`` guards against applies here: both servers
 already routed identity through :func:`mcp_core._resolve_session_key_strict`,
 whose FIRST source is the gateway-injected per-call caller block — but neither
 advertised ``kirocrew.caller-identity``, and ``mcp_gateway/backend.py`` strips

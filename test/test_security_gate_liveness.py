@@ -2,10 +2,10 @@
 
 ``is_sensitive_bash_command`` runs synchronously on the gateway's event loop,
 under a loop-stall watchdog that hard-exits the process after 25 s of silence
-(``dashboard.loop_stall_exit_after_secs``). A field crash (a cron whose agent
-emitted a ~9 KB command full of ``https://`` URLs) traced to the gate, whose
-path-matching passes were quadratic in the command. Those passes are gone -- the
-gate no longer matches paths in command text at all -- and what it still runs
+(``dashboard.loop_stall_exit_after_secs``). Path-matching passes over the command
+are quadratic, so a ~9 KB command full of ``https://`` URLs can stall the loop
+past that budget. The gate does not match paths in command text at all -- and
+what it still runs
 (the size ceiling, the IMDS detector and the environment-credential detector) is
 pinned here at the crash size, under the ceiling, where it is what the loop
 actually pays. The ceiling itself is pinned as a refusal, not a skip: a command
@@ -34,7 +34,7 @@ _SEG = "a" * 60
 
 
 def _double_separator_command(n: int) -> str:
-    """n path operands, each with a doubled ``//`` -- the shape that used to send
+    """n path operands, each with a doubled ``//`` -- the shape that would send
     the command through a separator-collapsed re-scan."""
     return "ls " + " ".join(f"/opt//{_SEG}" for _ in range(n))
 
@@ -163,7 +163,7 @@ def test_the_shell_gate_has_no_source_body_entry_point() -> None:
     else -- no subject flag, no re-pointed traversal subjects, no per-caller ceiling.
     Every one of those knobs existed once to make a Python source body survive a
     shell-grammar pass, and each pass still produced a false-denial class on ordinary
-    scripts (#7912, #8563, #8643). A source body is not this gate's subject; see
+    scripts. A source body is not this gate's subject; see
     ``mcp_cron._vet_script_contents``."""
     params = inspect.signature(security.is_sensitive_bash_command).parameters
     assert set(params) == {"command", "enabled_ids"}, sorted(params)

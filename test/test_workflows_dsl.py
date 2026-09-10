@@ -74,7 +74,7 @@ async def test_parallel_accepts_sync_thunks() -> None:
 async def test_parallel_accepts_already_created_coroutines() -> None:
     """Regression (wf_000003): authors naturally pass ctx.agent(...) calls — i.e.
     already-created coroutines — directly to parallel, instead of thunks. These
-    must run, not silently become None (which previously emptied the result list
+    must run, not silently become None (which would empty the result list
     and tripped scripts' 'no usable results' guards)."""
     async def work(n):
         await asyncio.sleep(0)

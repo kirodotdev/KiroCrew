@@ -155,7 +155,7 @@ async def test_subagent_turn_records_local_wall_clock():
     rec = records[0]
     assert rec["surface"] == "subagent"
     # The fallback fired: a real, positive local measurement, not the literal 0
-    # the provider-only read used to write into every row. Bound it as
+    # a provider-only read would write into every row. Bound it as
     # 0 < duration_ms <= observed rather than with a fixed floor. The lower
     # bound (> 0) proves the clock advanced; the upper bound ties it to a real
     # measurement (a bug writing an arbitrary constant would exceed the window

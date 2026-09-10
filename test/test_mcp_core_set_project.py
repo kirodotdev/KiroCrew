@@ -5,8 +5,8 @@ Two layers are under test:
 1. ``_resolve_session_key_strict`` — refuses PID-walked identities so a
    subagent cannot silently mutate its parent slot's project. This resolver
    still exists (other call sites use it) and its guarantees are unchanged.
-2. The stateless ``set_project`` path (#755). ``_call_tool_inner`` no longer
-   resolves session identity or POSTs to the gateway: it VALIDATES its input
+2. The stateless ``set_project`` path. ``_call_tool_inner`` does not resolve
+   session identity or POST to the gateway: it VALIDATES its input
    and returns a session directive (see ``kiro_crew.session_directive``). The
    session-aware consumer applies it via
    ``kiro_crew.dashboard.session_directive_apply.apply_session_directive``,
@@ -191,9 +191,9 @@ class TestResolveSessionKeyStrict:
 class TestSetProjectTool:
     """The stateless ``set_project`` dispatch branch in ``_call_tool_inner``.
 
-    The tool validates its input and returns a session DIRECTIVE — it no longer
-    resolves session identity, no longer refuses non-dashboard sessions, and no
-    longer POSTs to the gateway. Validation still runs at the boundary, so
+    The tool validates its input and returns a session DIRECTIVE — it does not
+    resolve session identity, refuse non-dashboard sessions, or POST to the
+    gateway. Validation still runs at the boundary, so
     malformed input is rejected before a directive is ever produced."""
 
     def test_returns_directive_with_validated_payload(self):
@@ -301,10 +301,10 @@ class TestSetProjectApplier:
 
     @pytest.mark.asyncio
     async def test_data_home_overlap_refused_without_mutating_slot(self, tmp_path, monkeypatch):
-        """#7392 pre-flight on the directive path: set_project routes here
+        """Pre-flight on the directive path: set_project routes here
         in-process (never through the HTTP endpoint), so the overlap check
         must also live here or the refusal regresses to spawn time on every
-        channel surface (FP review round 1). Patched on the source module —
+        channel surface. The patch targets the source module because
         _set_project imports it lazily from kiro_crew.sandbox."""
         slot = _FakeSlot(project="/existing/project")
         state = _FakeState()
@@ -341,7 +341,7 @@ class TestSetProjectApplier:
         assert "cleared" in result.lower()
 
 
-# ────────────────── applier SEL audit + fail-soft (#755) ─────────────────────
+# ────────────────── applier SEL audit + fail-soft ──────────────────
 
 
 class _SelSpy:

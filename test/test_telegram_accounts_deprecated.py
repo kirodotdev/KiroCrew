@@ -76,7 +76,7 @@ class TestAccountsSurvivesSave:
 
 
 class TestWithdrawalIsAnnounced:
-    """The operator hears about a configured account that no longer serves."""
+    """The operator hears about a configured account that has stopped serving."""
 
     def _build(self, cfg):
         with patch.object(cfg, "load_credentials", return_value={}):

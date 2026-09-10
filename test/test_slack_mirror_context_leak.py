@@ -33,7 +33,7 @@ class TestPrepareMirrorMsg:
         reaches _prepare_mirror_msg.
 
         The context block comes from the REAL ``drain_pending_context`` (not a
-        hand-built literal), so a frame change — e.g. the #4780 silent-
+        hand-built literal), so a frame change — e.g. the silent-
         consumption contract line — flows through this assertion instead of
         leaving it green against a stale copy. (The snapshot ORDER itself is
         replicated here, not exercised; that would need a _run_chat-level

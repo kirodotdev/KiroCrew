@@ -773,7 +773,7 @@ class TestMemberRulesRoutes:
 
     @pytest.mark.asyncio
     async def test_put_member_slug_mismatch_is_400_and_writes_nothing(self):
-        """A colliding/foreign slug cannot be used to plant rules for a crew
+        """A colliding/foreign slug cannot plant rules for a crew
         that was never named — and the refusal must not leave a file behind."""
         async with TestClient(TestServer(_make_rules_app())) as client:
             with _patched_handler_config(), _as_owner():

@@ -202,8 +202,8 @@ class TestFailureReporting:
             ("must be run as root", "no_permission"),
             ("tailscaled is not running", "daemon_unavailable"),
             ("cannot connect to local tailscaled", "daemon_unavailable"),
-            # The exact wording a stopped daemon fails with (issue #7244);
-            # previously fell through to generic "failed" and no hint fired.
+            # The exact wording a stopped daemon fails with; without this entry
+            # it falls through to generic "failed" and no hint fires.
             ("Tailscale is stopped.", "daemon_unavailable"),
             ("something nobody predicted", "failed"),
         ],
@@ -579,9 +579,8 @@ class TestPublishDoesNotOverwrite:
 class TestLaunchFailureIsNotReportedAsMissing:
     """A binary that exists but cannot be launched is NOT "tailscale not found".
 
-    Both used to collapse to the same synthetic return code, so an `OSError` from
-    the spawn was reported as "not installed" about a binary sitting right there.
-    A Windows CI run produced exactly that, which is what surfaced it.
+    The two must not collapse to the same synthetic return code, or an `OSError` from
+    the spawn is reported as "not installed" about a binary sitting right there.
     """
 
     def test_publish_says_it_could_not_launch(self) -> None:
@@ -670,7 +669,7 @@ class TestWithdrawalSafety:
             return tailnet_serve.unpublish(_PORT)
 
     def test_failed_withdrawal_against_stopped_daemon_names_failure_and_remedy(self) -> None:
-        """The issue-#7244 silent failure: the daemon's whole answer is
+        """The silent-failure case: the daemon's whole answer is
         "Tailscale is stopped.", which reads like a status line, so without an
         appended hint the operator cannot tell that nothing was withdrawn. The
         verbatim daemon words must survive alongside the hint, never be
@@ -840,11 +839,11 @@ class TestPublishedDetection:
 
         Any key the evidence read parses to OUR port must also be found by the
         port detector — otherwise one key could simultaneously be the hidden
-        443 and the port-shaped evidence used to declare 443 free. The
+        443 and the port-shaped evidence could declare 443 free. The
         adversarial shapes here (leading zeros, a trailing newline that ``$``
         would match before, Unicode decimal digits that ``\\d`` and ``int()``
-        both accept) are exactly the classes where the two predicates used to
-        be able to disagree.
+        both accept) are exactly the classes where the two predicates can
+        disagree.
         """
         adversarial = [
             "443",

@@ -363,8 +363,8 @@ def _deny_webex_profile(monkeypatch, tmp_path):
 class TestTurn:
     @pytest.mark.asyncio
     async def test_channels_deny_drops_inbound_message(self, tmp_path, monkeypatch) -> None:
-        # HIGH (GPT round-4 #2): a channels DENY must stop handle_message from
-        # driving a turn. Regression-locks the Webex inbound chokepoint.
+        # A channels DENY must stop handle_message from driving a turn. This
+        # locks the Webex inbound chokepoint.
         from kiro_crew.platform import governance_profiles as gp
 
         _deny_webex_profile(monkeypatch, tmp_path)
@@ -457,7 +457,7 @@ class TestTurn:
     @pytest.mark.asyncio
     async def test_hard_threshold_declines_silently_on_auto_managed_backend(self) -> None:
         # No /compact to dispatch and no notice: the backend compacts on its
-        # own as context fills (#8156).
+        # own as context fills.
         provider = FakeProvider(
             [AcpEvent(kind=EVENT_TEXT_CHUNK, text="answer"), AcpEvent(kind=EVENT_COMPLETE)]
         )
@@ -474,7 +474,7 @@ class TestTurn:
     @pytest.mark.asyncio
     async def test_soft_nudge_suppressed_on_auto_managed_backend(self) -> None:
         # The nudge advises /compact, which this backend refuses — it compacts
-        # on its own, so there is nothing for the user to act on (#8156).
+        # on its own, so there is nothing for the user to act on.
         provider = FakeProvider(
             [AcpEvent(kind=EVENT_TEXT_CHUNK, text="answer"), AcpEvent(kind=EVENT_COMPLETE)]
         )
@@ -536,7 +536,7 @@ class TestCommands:
     @pytest.mark.asyncio
     async def test_compact_declined_on_auto_managed_backend(self) -> None:
         # A backend that cannot serve /compact gets the informational reply and
-        # compact() is NEVER dispatched (#8156).
+        # compact() is NEVER dispatched.
         provider = FakeProvider([])
         provider.manual_compact_unsupported_backend = "kas"
         sessions = FakeSessions(provider)
@@ -1131,7 +1131,7 @@ class TestApprovals:
 
     @pytest.mark.asyncio
     async def test_a_reply_that_lost_the_race_is_told_the_prompt_expired(self) -> None:
-        """Reporting "Approved" for a prompt that is no longer pending would tell
+        """Reporting "Approved" for a prompt that is not pending would tell
         the user a tool ran when it did not.
 
         And the report is deliberately NEUTRAL rather than "denied": an unmatched
@@ -1301,7 +1301,7 @@ class TestQueueAndDrain:
 
     @pytest.mark.asyncio
     async def test_the_drain_defers_past_the_collapse_cap_in_order(self) -> None:
-        # Once one message no longer fits, it AND everything behind it are
+        # Once one message does not fit, it AND everything behind it are
         # deferred, so queue order stays exact rather than being reordered.
         provider = FakeProvider([AcpEvent(kind=EVENT_COMPLETE)])
         sessions = FakeSessions(provider)
@@ -1600,7 +1600,7 @@ class TestDashboardLink:
 
         assert gen.call_args.kwargs["ttl_seconds"] == 7200
         # The WHOLE token, not a prefix: a redacted link would still contain
-        # "token=" and the failure is that it no longer authenticates.
+        # "token=" and the failure is that it does not authenticate.
         assert f"token={self.TOKEN}" in d.client.sent[-1][1]
         op = sel_mock.return_value.log_api_access.call_args.kwargs
         assert op["operation"] == "webex.dashboard_token"
@@ -1785,7 +1785,7 @@ class TestOptionsCardPress:
 
         It is published by a renderer that is gone by the time the press arrives —
         the card is the LAST thing a turn sends — so the store has to outlive the
-        turn or every press answers "no longer current".
+        turn or every press gets the stale-card reply.
         """
         provider = FakeProvider([AcpEvent(kind=EVENT_COMPLETE)])
         sessions = FakeSessions(provider)

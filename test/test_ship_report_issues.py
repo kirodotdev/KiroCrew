@@ -222,7 +222,7 @@ def test_an_inbound_spike_does_not_fail_the_run(runner: Runner) -> None:
 
 
 def test_a_defect_that_is_also_a_request_counts_as_a_defect(runner: Runner) -> None:
-    """#4004 carries BOTH `bug` and `enhancement`; it must appear once, as a bug.
+    """An issue carrying BOTH `bug` and `enhancement` appears once, as a bug.
 
     Without precedence the two sections overlap and every count in the post is
     inflated. This happened to 6 of 40 real issues on the day this was written.
@@ -243,7 +243,7 @@ def test_the_split_accounts_for_every_issue_exactly_once(runner: Runner) -> None
 
 def test_security_is_counted_separately_from_the_bug_total(runner: Runner) -> None:
     part = runner.fetch()
-    assert part["security"] == "1"  # #4003
+    assert part["security"] == "1"  # one security issue
     assert part["bugs"] == "3"  # security is a bug too, not a fourth bucket
 
 
@@ -313,7 +313,7 @@ def test_control_characters_in_the_reason_cannot_forge_list_items(runner: Runner
     """A newline in `why` must not become a second must-fix entry.
 
     The payload does survive as inline text on the real entry's line -- that is
-    accepted: this is Slack, where `#9999` is not a link, and stripping `#`
+    accepted: this is Slack, where a `#NUMBER` is not a link, and stripping `#`
     outright would break the `#NUMBER` convention the shipping half depends on.
     What must not happen is a forged LINE, because a reader scanning the
     must-fix list counts lines.
@@ -416,7 +416,7 @@ def test_a_non_array_must_fix_falls_back_instead_of_clearing_the_release(
 ) -> None:
     """Unusable model output must never become an affirmative all-clear.
 
-    `// []` only catches null, so `"none"[]` used to be a jq ERROR (exit 5) that
+    `// []` only catches null, so `"none"[]` is a jq ERROR (exit 5) that
     failed the step -- and because a failed run does not advance the window, the
     digest would be withheld AND repeat. But coercing it to an empty array is
     WORSE: the report would then print "Nothing in this batch blocks the stable

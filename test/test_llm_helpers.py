@@ -1377,7 +1377,7 @@ class TestRecordInteractionEvent:
 
 
 class TestFallbackRetryBudgetSingleBody:
-    """#5447 item 2: the per-candidate retry budget lives in ONE place."""
+    """The per-candidate retry budget lives in ONE place."""
 
     def test_no_active_candidate_never_retries(self) -> None:
         st = FallbackState(("m1",))
@@ -1426,7 +1426,7 @@ class TestFallbackExhaustionStory:
 
 
 class TestFallbackStoryConsumer:
-    """#5447 item 1: append_fallback_story is THE reader of the story attr."""
+    """append_fallback_story is THE reader of the story attr."""
 
     def _exc_with_story(self, story: str = "primary-m throttled; fallbacks fb-1 also unavailable"):
         from kiro_crew.llm_helpers import FALLBACK_STORY_ATTR
@@ -1473,7 +1473,7 @@ class TestFallbackStoryConsumer:
 
 
 class TestAnnotateModelFallbackSharedBody:
-    """#5447 item 4: one spelling of the fallback-served warning."""
+    """There is one spelling of the fallback-served warning."""
 
     def test_prefixes_warning_from_marker(self) -> None:
         from types import SimpleNamespace
@@ -1512,7 +1512,7 @@ class TestAnnotateModelFallbackSharedBody:
 
 
 class TestProbeFallbackRestoreSlotSeams:
-    """#5447 item 3: the parameter seams the dashboard's slot probe wraps.
+    """The parameter seams the dashboard's slot probe wraps.
 
     The slot probe (chat_runner._probe_fallback_restore_for_slot_locked) is a
     thin adapter over this single body; these tests pin the seams it depends
@@ -1622,7 +1622,7 @@ class TestProbeFallbackRestoreSlotSeams:
 
 
 class TestCase275RoutesThroughSharedBudgetBody:
-    """DRIFT PIN (#5447 item 2): Case 2.75 must consult should_retry_active.
+    """Case 2.75 must consult should_retry_active.
 
     Mutation check in reverse: forcing the shared body to refuse retries
     changes this surface's attempt count — proof the budget is not re-encoded

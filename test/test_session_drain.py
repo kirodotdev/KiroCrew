@@ -1,9 +1,9 @@
 """Tests for the shutdown/restart drain of in-flight prompts.
 
 Covers SessionManager.drain_active_turns() and its wiring into close_all() —
-the fix for the empty-response-after-Make-Live incident (#200), where a slot
-killed mid-prompt left its kiro-cli native-session lock held so the next
-gateway's session/load hit "active in another process".
+a slot killed mid-prompt must not leave its kiro-cli native-session lock held,
+which would make the next gateway's session/load hit "active in another
+process".
 """
 
 from __future__ import annotations

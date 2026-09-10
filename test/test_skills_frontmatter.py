@@ -72,9 +72,9 @@ class TestFoldedBlockScalar:
         assert meta["description"] == "first line second line"
 
     def test_folded_with_chomping_keep(self, tmp_path):
-        # Keep preserves the trailing break that strip drops -- the two spellings above
-        # and below used to return the SAME string, which is what made the chomping
-        # modifier decorative. See #7097.
+        # Keep preserves the trailing break that strip drops. If the two spellings
+        # above and below returned the SAME string, the chomping modifier would be
+        # decorative.
         meta = SkillsLoader._parse_frontmatter(
             _write(tmp_path, "description: >+\n  first line\n  second line")
         )
@@ -152,8 +152,8 @@ class TestLiteralBlockScalar:
         assert meta["description"] == "line one\nline two"
 
     def test_literal_with_chomping_keep(self, tmp_path):
-        # As with the folded pair, keep preserves the trailing break strip drops. The two
-        # used to return the same string, which is what made the modifier decorative.
+        # As with the folded pair, keep preserves the trailing break strip drops. If the
+        # two returned the same string, the modifier would be decorative.
         meta = SkillsLoader._parse_frontmatter(
             _write(tmp_path, "description: |+\n  line one\n  line two")
         )
@@ -169,9 +169,8 @@ class TestLiteralBlockScalar:
         # Indent is derived from the first NON-BLANK line, so a blank line
         # right after the indicator must not flatten nested indentation.
         #
-        # The leading break itself is now PRESERVED (#7097): no YAML chomping mode
-        # removes a leading break, and the fold's old trailing `.strip()` was what
-        # dropped it. The indentation claim this test exists for is unaffected.
+        # The leading break itself is PRESERVED: no YAML chomping mode removes a
+        # leading break. The indentation claim this test exists for is unaffected.
         meta = SkillsLoader._parse_frontmatter(
             _write(tmp_path, "description: |\n\n  outer\n    nested detail")
         )

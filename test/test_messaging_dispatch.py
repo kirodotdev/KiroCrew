@@ -267,7 +267,7 @@ def test_a_shutdown_between_the_claim_and_the_dispatch_never_opens_the_turn(
     ``get_or_create`` guards the CLAIM, but the turn only opens at
     ``driver.run``, and everything between them awaits: ``set_channel``, the
     origin/mirror bind's thread hop, ``publish_turn_identity``, and the whole
-    context build. A restart landing in that span used to leave this pipeline
+    context build. A restart landing in that span can leave this pipeline
     opening a turn that ``close_all`` had already taken its drain snapshot
     without -- killed mid-flight holding its native lock, which reaches the user
     as an empty response. The dashboard runner and the Slack handler each carry

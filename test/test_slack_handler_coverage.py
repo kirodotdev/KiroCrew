@@ -1541,7 +1541,7 @@ class TestRouteLinkedThread:
         state.get_linked_slot.return_value = slot
         monkeypatch.setattr(h, "_dashboard_state", state)
         assert await h.maybe_route_linked_thread("do it", "t1", "U1", "C1", slack, "t1") is True
-        # meta carries the admission-time containment snapshot (#5911).
+        # meta carries the admission-time containment snapshot.
         slot.queue_append.assert_called_once_with("do it", meta=ANY, directive_user_origin=True)
         slot.append.assert_called_once()
         state.push_slots_update.assert_called_once()

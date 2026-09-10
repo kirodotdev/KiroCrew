@@ -960,9 +960,9 @@ class TestASubagentCannotOutrankItsParent:
     """A subagent key matches no slot, but absence must not read as "no app".
 
     An app that may not touch a foreign session would otherwise gain that reach
-    simply by spawning a helper: the helper's key resolves to nothing, and
-    "nothing" used to mean unscoped. A subagent inherits authority; it never
-    mints it.
+    simply by spawning a helper: the helper's key resolves to nothing, and reading
+    "nothing" as unscoped is what grants it. A subagent inherits authority; it
+    never mints it.
     """
 
     @staticmethod
@@ -1166,7 +1166,7 @@ class TestTheFolderPolicyIsTheEndpointsNotThisServers:
         )
 
     def test_an_apps_create_reaches_the_endpoint(self) -> None:
-        """Previously refused here outright; the endpoint now stamps the owner."""
+        """An app's create reaches the endpoint, which stamps the owner."""
         made = {"id": "new000000001", "name": "Radar output", "parent_id": ""}
         with (
             patch("kiro_crew.mcp_dashboard._get", side_effect=self._mixed),
@@ -1555,7 +1555,7 @@ class TestTheVerifiedCallerKeyReachesTheRequest:
         assert get.call_args.args[1] == self.VERIFIED
 
     def test_a_re_sent_stop_is_not_reported_as_nothing_to_stop(self):
-        """A de-duplicated retry (#5074) lands on the no-op reply routinely.
+        """A de-duplicated retry lands on the no-op reply routinely.
 
         Its earlier cooperative stop IS still in flight, so rendering it the way a
         never-running target is rendered would tell the caller the opposite of what
@@ -1649,7 +1649,7 @@ class TestTheVerifiedCallerKeyReachesTheRequest:
 
 
 class TestSessionCreateFolder:
-    """`session_create.folder` — filing atomic with creation (#6118).
+    """`session_create.folder` — filing atomic with creation.
 
     The reference resolves with `chat_folder_create`'s `parent` semantics
     (missing segments created), which is tree shaping — so the SAME gate

@@ -286,7 +286,7 @@ class TestLiveness:
     @pytest.mark.asyncio
     async def test_loop_keeps_ticking_during_a_large_document_scan(self) -> None:
         # Newline-free, no shell metacharacters: a plain prose body, which is
-        # exactly the payload that used to be scanned as one giant command.
+        # exactly the payload that could be scanned as one giant command.
         body = ("the quick brown fox jumps over the lazy dog " * 500)[:20_000]
         assert "\n" not in body and len(body) >= 20_000
 

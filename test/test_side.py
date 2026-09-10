@@ -639,7 +639,7 @@ async def test_side_turn_refuses_to_substitute_the_default_for_an_app_agent(
     to the default agent with ``requested_resolved=False``, and dispatching that
     silently runs the generic assistant with none of the app's MCP tools.
 
-    The main chat closed this in #4995 / #4983; the side path was the counted
+    The main chat handles this; the side path is the counted
     unfixed sibling, carrying none of the three rungs. A side answer is the worse
     place for it: there is no turn card to scrutinise, so it simply reads as this
     app's assistant answering.

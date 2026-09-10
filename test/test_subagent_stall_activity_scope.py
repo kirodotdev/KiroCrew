@@ -1,4 +1,4 @@
-"""Which stream events count as a subagent's OWN activity (``#4841``).
+"""Which stream events count as a subagent's OWN activity.
 
 ``SubagentInfo.last_activity`` is what idle-stall detection measures
 (``_maybe_flag_stall``: ``idle = now - info.last_activity``), and ``_run_inner``

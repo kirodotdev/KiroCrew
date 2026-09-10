@@ -511,7 +511,7 @@ class TestTTLExpiration:
 
     @pytest.mark.asyncio
     async def test_claim_ttl_discard_logs_info_dead_keeps_warning(self, caplog):
-        """#4052: the claim path follows the same severity rule as the health
+        """The claim path follows the same severity rule as the health
         sweep — a TTL recycle of a healthy provider is INFO, one that also died
         before aging out keeps WARNING. Both are still discarded."""
         import logging
@@ -715,7 +715,7 @@ class TestModelMatchesPoolDefault:
     async def test_unusable_model_is_withheld_not_raised_on_claim(self):
         """A stale slot model must behave the SAME warm as cold.
 
-        Design Review on #1596: the post-claim re-apply carries an INHERITED
+        The post-claim re-apply carries an INHERITED
         value, so letting AcpModelUnavailable escape here would kill the claimed
         provider — while an identical cold start quietly withholds. That makes
         the outcome depend on whether a pooled process happened to exist.
@@ -745,7 +745,7 @@ class TestModelMatchesPoolDefault:
 
     @pytest.mark.asyncio
     async def test_namespaced_pin_resolves_on_claim_like_a_cold_start(self):
-        """#8521: a warm claim must run exactly what a cold start of the pin runs.
+        """A warm claim must run exactly what a cold start of the pin runs.
 
         The pin carries a stale `<namespace>::` qualifier while the pooled
         session advertises the bare id. The cold-start spawn resolves it via
@@ -1481,7 +1481,7 @@ class TestDiscardReaping:
 
     @pytest.mark.asyncio
     async def test_sweep_ttl_discard_logs_info_dead_provider_stays_warning(self, caplog):
-        """#4052: a scheduled TTL recycle of a healthy provider is the pool
+        """A scheduled TTL recycle of a healthy provider is the pool
         working as designed, so its discard line is INFO. Both anomalies keep
         WARNING: a provider that died before aging out (TTL line, dead process)
         and the dead-provider branch below. All three are still reaped."""

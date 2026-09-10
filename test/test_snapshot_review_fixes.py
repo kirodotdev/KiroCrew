@@ -477,7 +477,7 @@ class TestReplaceDoesNotKeepAnIndexTheArchiveOmits:
 class TestAnInterruptDuringReplaceStillRollsBack:
     """A Ctrl-C mid-replace must not leave live state half swapped.
 
-    The handler used to catch `(OSError, DatabaseCopyFailed, PinnedPathRefusal)`.
+    The handler catches `(OSError, DatabaseCopyFailed, PinnedPathRefusal)`.
     `KeyboardInterrupt` is a `BaseException` and matches none of them, so it propagated past
     the rollback entirely -- and its own comment already gave the reason `PinnedPathRefusal`
     had to be in that tuple: it fires MID-mutation, so omitting it left live state half

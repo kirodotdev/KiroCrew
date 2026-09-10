@@ -316,8 +316,8 @@ def test_enrichment_fires_once_per_episode_at_threshold() -> None:
 
 
 def test_recoverable_stall_leaves_dump_file_untouched() -> None:
-    # THE sentinel-integrity regression (PR #4678 review finding): a 15-25s
-    # stall that recovers must leave loopstall-*.txt byte-identical, or the
+    # Sentinel integrity: a 15-25s stall that recovers must leave loopstall-*.txt
+    # byte-identical, or the
     # next boot misclassifies the session as crashed (_is_header_only counts
     # lines) — false "work lost" notification, cautious boot, unreapable file.
     wd, clock, dump_file, calls, handler = _make_enrich()

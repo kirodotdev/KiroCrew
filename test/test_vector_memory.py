@@ -686,7 +686,7 @@ class TestSchemaInit:
         # The main DB, plus whatever else legitimately routes through this helper.
         # Asserted as a set of ALLOWED paths rather than an exact list, because the
         # membership is not fixed: the WAL sidecars may or may not exist yet on a
-        # fresh create. The parent DIRECTORY is listed but no longer expected on
+        # fresh create. The parent DIRECTORY is listed but not expected on
         # either platform -- `make_owner_only_dir` routes it through
         # `restrict_dir_to_owner`, the directory twin, so it does not reach this
         # helper at all. Kept in the set as a harmless superset entry so the
@@ -1346,7 +1346,7 @@ class TestEmbedFnLazyRebind:
     def test_factory_returning_empty_list_probe_does_not_bind(self, tmp_path: Path) -> None:
         """If probe returns an empty list (zero-dim or misconfigured model), do not bind.
 
-        Regression for review feedback on the original `if probe:` check
+        The original `if probe:` check
         was falsy for `[]` AND for `0` AND for `None`, conflating "probe failed" with
         "probe returned a degenerate response." The tightened check rejects empty/None
         explicitly so a misconfigured model can't slip through as a working embed_fn.
@@ -1366,7 +1366,7 @@ class TestEmbedFnLazyRebind:
     def test_rebind_lock_serializes_concurrent_factory_calls(self, tmp_path: Path) -> None:
         """Two threads racing into the rebind block share at most one factory call per cooldown.
 
-        Regression for review feedback on without the lock, both threads
+        Without the lock, both threads
         could observe `embed_fn is None` and `cooldown elapsed` simultaneously, then both
         call the factory + probe. With the lock, the loser sees the cooldown bumped and skips.
         """
@@ -1408,7 +1408,7 @@ class TestEmbedFnLazyRebind:
         t2.join(timeout=5.0)
 
         # Exactly one factory call despite two concurrent _try_embed invocations.
-        # The lock serializes; the loser sees embed_fn is no longer None on re-check
+        # The lock serializes; the loser sees embed_fn is not None on re-check
         # and skips the factory entirely.
         assert call_count[0] == 1, f"Lock failed: factory called {call_count[0]} times"
         assert store.embed_fn is not None  # one of the threads bound it
@@ -1764,7 +1764,7 @@ class TestVectorStoreConcurrency:
     def test_concurrent_semantic_write_and_context_no_errors(self, tmp_path) -> None:
         """get_semantic_context runs on executor threads (subagent context builds
         via run_in_embed_pool) concurrent with set_semantic writers on worker
-        threads. Its SELECTs used to hit the shared connection WITHOUT _db_lock,
+        threads. Its SELECTs must not hit the shared connection WITHOUT _db_lock,
         racing writers' implicit transactions and the per-connection statement
         cache — observed in production as sqlite3.InterfaceError ("bad parameter
         or other API misuse") from get_semantic_context, which propagates
@@ -1886,7 +1886,7 @@ class TestVectorStoreConcurrency:
         assert not reader_errors, f"get_lessons_context raised: {reader_errors!r}"
 
     def test_stem_words_thread_safe(self) -> None:
-        """_stem_words used to share ONE module-level snowballstemmer instance.
+        """_stem_words must not share ONE module-level snowballstemmer instance.
         The pure-Python stemmer keeps the word under stem as mutable instance
         state (set_current -> _stem -> get_current), so concurrent
         get_semantic_context calls (parallel subagent context builds)
@@ -2135,10 +2135,10 @@ class TestEmbeddingDimPlumbing:
 class TestDedupThresholdPlumbing:
     """`memory.episodic_dedup_threshold` must reach the store it configures.
 
-    The loader parses the key into ``MemorySection``; before #8903 no production
+    The loader parses the key into ``MemorySection``; no production
     ``VectorMemoryStore(...)`` site passed it on, so the store always used
     ``_DEFAULT_DEDUP_THRESHOLD`` and the documented knob was inert regardless of
-    faiss (the separate faiss gating of the cosine check is #4738's concern, not
+    faiss (the separate faiss gating of the cosine check is a separate concern, not
     this one). These tests pin the plumbing only — no embedding or index needed.
     """
 
@@ -2274,9 +2274,9 @@ class TestWriteEpisodicWithoutEmbedding:
 
     Repro: memories were written with embeddings (index populated), then
     embeddings are disabled (embedding_provider="none" -> embed_fn unbound) or
-    a single embed call fails. The FAISS dedup block used to dereference the
+    a single embed call fails. The FAISS dedup block must not dereference the
     unbound `vec` local and raise UnboundLocalError, losing the memory.
-    Regression guard for the gateway consolidation crash (2026-07-15).
+    Regression guard for the gateway consolidation crash.
     """
 
     dim = 16
@@ -2963,7 +2963,7 @@ class TestSharedConnectionLockDiscipline:
         assert entry["value_json"] == '"emacs"'
 
     def test_retire_search_skips_mmr_rerank(self, tmp_path: Path) -> None:
-        """``_retire_stale_episodic``'s internal lookup passes ``mmr=False`` (#8902).
+        """``_retire_stale_episodic``'s internal lookup passes ``mmr=False``.
 
         The caller applies its own ``cosine_sim > 0.7`` threshold, so diversity
         reranking buys nothing there, and the default MMR rerank cost ~71ms per
@@ -3017,7 +3017,7 @@ class TestSharedConnectionLockDiscipline:
         assert row["is_deleted"] == 1
 
     def test_retire_recall_survives_without_the_mmr_pool(self, tmp_path: Path) -> None:
-        """Retirement recall must not collapse to ten rows when MMR is off (#8902).
+        """Retirement recall must not collapse to ten rows when MMR is off.
 
         ``mmr`` does not only pick a reranker — it sizes the candidate pool
         (``_MMR_MAX_POOL`` vs ``limit``), so the retirement lookup keeps a wide
@@ -3056,7 +3056,7 @@ class TestSharedConnectionLockDiscipline:
 
 
 class TestLockedFetchHelpers:
-    """The locked fetch helpers (#1947) — the single route for plain SELECTs."""
+    """The locked fetch helpers — the single route for plain SELECTs."""
 
     def test_fetch_all_locked_returns_materialized_rows(self, tmp_path: Path) -> None:
         store = VectorMemoryStore(db_path=tmp_path / "mem.db")
@@ -3099,12 +3099,10 @@ class TestLockedFetchHelpers:
 
 
 class TestDbLockGuard:
-    """AST guard for the #1947 invariant: EVERY statement on the shared
+    """AST guard: EVERY statement on the shared
     ``check_same_thread=False`` connection must be serialized on ``_db_lock``.
 
-    The contract used to be enforced by convention only and failed twice
-    (the _sqlite_vector_search locked-fetch fix, then #1859's
-    get_semantic_context/get_lessons production InterfaceError). This test
+    Enforcing the contract by convention alone is error-prone. This test
     makes a raw unlocked ``self.db.execute(...)`` in vector_memory.py a CI
     failure instead of a code-review catch: new fetches must route through
     ``_fetch_all_locked``/``_fetch_one_locked`` (which lock internally) or sit
@@ -3234,14 +3232,13 @@ class TestDbLockGuard:
 
 
 class TestAsyncInitOffloadGuard:
-    """AST guard for the #5206 caller contract: an ``async def`` must never
+    """AST guard for the caller contract: an ``async def`` must never
     call ``VectorMemoryStore.init()`` inline — the Windows path shells out to
     icacls, so an inline call freezes the event loop for seconds. Async
     callers offload via ``asyncio.to_thread`` / ``run_in_executor`` (which
     take the callable UNCALLED, so they never trip this guard).
 
-    The contract was prose-only and drifted three times before #5389 closed
-    the last inline caller; this test makes the next drift a CI failure
+    A prose-only contract drifts, so this test makes the next drift a CI failure
     instead of a code-review catch. Same shape as ``TestDbLockGuard``,
     including the seeded-violation self-test that keeps the guard armed.
     """
@@ -3390,12 +3387,12 @@ class TestAsyncInitOffloadGuard:
 
 @pytest.mark.xdist_group("vector_memory_concurrency")
 class TestReaderConcurrency1947:
-    """Stress the readers that ran UNLOCKED on the shared connection before
-    #1947 (get_semantic, get_all_semantic, search_semantic, get_events,
+    """Stress the readers that take ``_db_lock`` on the shared connection
+    (get_semantic, get_all_semantic, search_semantic, get_events,
     get_episodic_list, memory_stats, _get_episodic, get_rejection_stats)
     against concurrent writers.
 
-    Same defect class as #1859: an unserialized statement racing a writer's
+    Same defect class: an unserialized statement racing a writer's
     implicit transaction corrupts the per-connection statement cache
     (sqlite3.InterfaceError "bad parameter or other API misuse") or silently
     corrupts row iteration. With every fetch routed through the locked helper,
@@ -3468,15 +3465,15 @@ class TestHandlerOffload1947:
     """Async code must not call lock-serialized store methods inline on the
     event loop.
 
-    #1947 made every plain fetch serialize on ``_db_lock``. A worker thread can
+    Every plain fetch serializes on ``_db_lock``. A worker thread can
     hold that lock for seconds (backfill's locked FAISS rebuild, reconcile's
     bulk UPDATEs), so an async function that calls a locked method inline would
     freeze the whole gateway event loop — chat, heartbeats, every request — for
-    the duration (GPT fork-review P1 on PR #1971). Async callers must offload
+    the duration. Async callers must offload
     via ``asyncio.to_thread`` / ``run_in_executor`` / ``run_in_embed_pool``.
 
     Both the method set and the caller set are DERIVED, not hand-listed
-    (design review on PR #1971 — a hand-maintained list re-introduces
+    (a hand-maintained list re-introduces
     enforcement-by-convention one level up): the methods come from
     ``vector_memory.py``'s AST (public methods that reach
     ``with self._db_lock:`` directly or transitively through other ``self``
@@ -4219,7 +4216,7 @@ class TestEpisodicKeywordFallbackCjk:
         assert [h["text"] for h in hits] == [sentence]
 
     def test_a_two_word_cjk_query_is_not_emptied(self, tmp_path: Path) -> None:
-        """Both tokens are two characters, so the whole query used to filter to []."""
+        """Both tokens are two characters; the whole query must not filter to []."""
         store = self._store(tmp_path)
         sentence = "我们讨论了模型训练的流程"
         assert store.write_episodic(sentence)
@@ -4255,7 +4252,7 @@ class TestEpisodicKeywordFallbackCjk:
 class TestDedupThresholdLoaderValidation:
     """The loader must normalize `memory.episodic_dedup_threshold` like its siblings.
 
-    Review finding on #8948: a bare `memory_data.get(..., 0.88)` let a string
+    A bare `memory_data.get(..., 0.88)` lets a string
     typo in config.json survive to the store, where
     `cosine_sim > self._dedup_threshold` raises TypeError and aborts the
     episodic write. Sibling numeric fields (`embedding_bulk_duty`) already

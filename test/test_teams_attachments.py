@@ -242,7 +242,7 @@ class TestQuoteReply:
 
     Teams prepends the QUOTED message to ``activity.text`` and puts the user's own
     words in the ``text/html`` body attachment after a Reply blockquote. Reading
-    ``activity.text`` alone means a quote-replied ``/stop`` no longer starts with
+    ``activity.text`` alone means a quote-replied ``/stop`` does not start with
     "/" -- so it reaches the model as prose and the turn keeps running -- and a
     quote-replied question arrives with the previous message on the front.
     """

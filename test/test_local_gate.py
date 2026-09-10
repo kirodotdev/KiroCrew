@@ -64,7 +64,7 @@ def test_script_exists(gate) -> None:
         ("docs/README.md", (False, False, True)),  # catch-all: unrecognised = backend
         ("newtoplevel.cfg", (False, False, True)),
         ("websites/evil.py", (False, False, True)),  # prefix, not substring
-        # Evidence media matches NO bucket (#8027) -- mirrors ci.yml's
+        # Evidence media matches NO bucket -- mirrors ci.yml's
         # '!temp-screenshots/**' backend negation.
         ("temp-screenshots/feature/shot.png", (False, False, False)),
         ("temp-screenshotsx/evil.py", (False, False, True)),  # prefix, not substring
@@ -75,7 +75,7 @@ def test_classify_buckets(gate, path: str, expected) -> None:
 
 
 def test_classify_evidence_does_not_flip_frontend_only(gate) -> None:
-    """A screenshots+frontend diff stays frontend-only -- the #8027 fix."""
+    """A screenshots+frontend diff stays frontend-only."""
     frontend, meta, backend = gate.classify(
         ["website/src/App.tsx", "temp-screenshots/feature/shot.png"]
     )

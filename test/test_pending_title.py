@@ -344,8 +344,8 @@ class TestSkipFallbackBranch:
 class TestAutoTitleRunsForEveryMemoryMode:
     """Titling is not gated on ``memory_mode``.
 
-    It used to bail on ``slot.blocks_reads`` (true only for ``temporary``),
-    which left temporary tabs showing "New Session…" for their whole life.
+    It must not bail on ``slot.blocks_reads`` (true only for ``temporary``),
+    which would otherwise leave temporary tabs showing "New Session…" for their whole life.
     Titling reads only the slot's own messages, so no memory-privacy rule
     applies; the manual generate-title endpoint never had the guard either.
     """

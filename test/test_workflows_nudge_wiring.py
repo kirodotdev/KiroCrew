@@ -1,8 +1,8 @@
-"""ctx.nudge → AutoNudge wiring (regression for
-``RuntimeError('ctx.nudge is not available for this run (no nudge port wired)')``).
+"""ctx.nudge → AutoNudge wiring, guarding against
+``RuntimeError('ctx.nudge is not available for this run (no nudge port wired)')``.
 
 The authoring prompt and validator both advertise ``ctx.nudge`` as a legal
-primitive, but ``WorkflowService`` historically built its ``WorkflowRunner``
+primitive, but ``WorkflowService`` built its ``WorkflowRunner``
 without wiring the ``nudge`` port, so any authored script that called it crashed
 at runtime. These tests pin the fix AND its security follow-up:
 

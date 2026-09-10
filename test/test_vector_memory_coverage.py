@@ -633,7 +633,7 @@ class TestKeywordFallback:
 
 
 class TestCosineSimDimensionGuard:
-    """Regression for #3466: `_cosine_sim` used to silently truncate a
+    """`_cosine_sim` must not silently truncate a
     dimension-mismatched pair via `zip` instead of rejecting it, so a row
     embedded at a different dimensionality (e.g. a leftover from a previous
     embedding-model generation) returned a plausible-looking partial-overlap
@@ -654,7 +654,7 @@ class TestCosineSimDimensionGuard:
 
 
 class TestStoredSimilarityScorer:
-    """Regression for #3466: the scorer built by `_stored_similarity_scorer`
+    """The scorer built by `_stored_similarity_scorer`
     backs the two threshold callers (semantic dedup, contradiction detection)
     as well as the two ranking callers, so it must (1) reject a mismatched
     dimension the same way `_cosine_sim` now does, (2) return the raw
@@ -1482,7 +1482,7 @@ class TestLessonDedupPaths:
 
         The onboarding import stores a mapping rather than the string
         ``learn_add`` writes, and both shapes land in the same prompt block. The
-        formatter used to interpolate the decoded value directly, so an imported
+        formatter must not interpolate the decoded value directly, or an imported
         row reached the model as ``{'rule': ..., 'category': ...}`` — the
         instruction buried inside punctuation and field names.
         """
