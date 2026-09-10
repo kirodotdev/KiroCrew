@@ -1,6 +1,6 @@
 {
   "_comment": "Comments and docstrings that narrate change history, per file, as a match COUNT. The rule they break is in docs/system-specs/common/code-style.md (\"Comments explain the WHY\"); it predates any enforcement, so the tree is recorded here rather than rewritten in one pass. The gate requires every OTHER file to be clean and none of these counts to grow, so this list can only shrink. Do NOT add or raise an entry to make a red gate green: a new offender means the comment should state CURRENT behavior in present tense. Lower and prune with `python3 scripts/check_comment_history.py --write-baseline`, which never adds or raises one.",
-  "_total": 6636,
+  "_total": 6634,
   "files": {
     "src/kiro_crew/__main__.py": 1,
     "src/kiro_crew/acp/_dispatch.py": 2,
@@ -1451,7 +1451,7 @@
     "test/test_slack_gateway.py": 15,
     "test/test_slack_gateway_coverage.py": 1,
     "test/test_slack_gateway_cron_exec_coverage.py": 3,
-    "test/test_slack_handler.py": 7,
+    "test/test_slack_handler.py": 6,
     "test/test_slack_handler_coverage.py": 1,
     "test/test_slack_handler_more_coverage.py": 6,
     "test/test_slack_home_tab.py": 2,

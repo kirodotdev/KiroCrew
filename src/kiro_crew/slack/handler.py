@@ -3134,7 +3134,23 @@ async def handle_message(
             return False
         if channel_activation == ACTIVATION_REVIEW:
             return True  # Suppress task cards in review mode
-        return await slack.append_task(channel, stream_ts, task_id, title, status, details=details)
+        # Best-effort, and it MUST NOT raise. ``SlackClient.append_task`` swallows
+        # its own API errors and returns False, but a client that does not (or a
+        # transport that raises before that guard) would send the exception up
+        # into the streaming loop, where nothing catches a non-ACP error: the
+        # typed ``except`` arms below the loop are all ``kiro_crew.acp.client``
+        # errors, so it reaches the generic ``except Exception`` catch-all, which
+        # renders the terminal "🔧 Something went wrong" message and records a
+        # session failure — on a turn that is still live and will finish. The
+        # card is decorative (no answer text is withheld), so swallow the failure
+        # here, logging the traceback at WARNING for diagnosis.
+        try:
+            return await slack.append_task(
+                channel, stream_ts, task_id, title, status, details=details
+            )
+        except Exception:
+            logger.warning("Slack append_task failed — skipping progress card", exc_info=True)
+            return False
 
     async def _tool_elapsed_updater() -> None:
         """Periodically update the active task card with elapsed time (every 30s)."""
@@ -3209,8 +3225,27 @@ async def handle_message(
         )
         use_slack_stream = stream_ts is not None
         if not use_slack_stream:
-            stream_ts = await slack.post_message(channel, _THINKING, reply_ts)
-        assert stream_ts is not None
+            # ``SlackClient.start_stream`` swallows its own errors and returns
+            # None, but the ``chat.update`` fallback below goes through the base
+            # ``post_message``, which raises (``resp["ts"]``) on a Slack refusal.
+            # A raise here escapes the streaming loop while the ACP turn is still
+            # live and reaches the generic ``except Exception`` catch-all below
+            # the loop (the typed arms are all ``kiro_crew.acp.client`` errors),
+            # rendering the terminal "🔧 Something went wrong" message on a run
+            # that is still succeeding. Keep it best-effort. On failure leave
+            # ``stream_ts`` as ``None``: there is no placeholder to update, and
+            # every downstream reader treats falsy as "no placeholder"
+            # (``_append_stream`` returns early; the end-of-turn delivery takes
+            # its ``else`` branch and posts the final answer with a fresh
+            # ``post_message`` rather than editing a ts that does not exist). Do
+            # NOT substitute a truthy sentinel here — that routes end of turn into
+            # the placeholder-edit branch against a non-existent message and loses
+            # a single-part reply silently.
+            try:
+                stream_ts = await slack.post_message(channel, _THINKING, reply_ts)
+            except Exception:
+                logger.warning("Failed to post chat.update placeholder", exc_info=True)
+                stream_ts = None
 
     task = Task(id=msg_ts)
     _acquired = False
@@ -3496,8 +3531,11 @@ async def handle_message(
                             await _append_stream(stream_buffer)
                             stream_buffer = ""
                     else:
-                        assert stream_ts is not None
-                        if channel_activation != ACTIVATION_REVIEW:
+                        # ``stream_ts`` may be None: the chat.update fallback in
+                        # ``_ensure_stream_started`` failed, so there is no
+                        # placeholder to edit. Skip the cursor edit — the final
+                        # answer is posted at end of turn from ``accumulated``.
+                        if stream_ts and channel_activation != ACTIVATION_REVIEW:
                             await _safe_update(
                                 slack, channel, stream_ts, redact(accumulated) + _CURSOR
                             )
@@ -3616,8 +3654,12 @@ async def handle_message(
                     _start_tool_timer()
                 else:
                     accumulated += tool_status
-                    assert stream_ts is not None
-                    if channel_activation != ACTIVATION_REVIEW:
+                    # ``stream_ts`` may be None here: ``_ensure_stream_started``
+                    # demoted (``use_slack_stream`` False) AND its chat.update
+                    # fallback post failed, so there is no placeholder to edit.
+                    # Skip the cursor edit — the final answer is posted by the
+                    # end-of-turn ``else`` branch with a fresh ``post_message``.
+                    if stream_ts and channel_activation != ACTIVATION_REVIEW:
                         await _safe_update(slack, channel, stream_ts, redact(accumulated) + _CURSOR)
                 last_edit = time.monotonic()
 
