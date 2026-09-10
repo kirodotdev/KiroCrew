@@ -69,7 +69,7 @@ on:
       - "src/kiro_crew/hooks.py"
       - "src/kiro_crew/builtin_skills/security-conductor/rules-of-engagement.json"
       - "scripts/deny_diff.py"
-      - "scripts/deny_diff_fixture.json"
+      - "src/kiro_crew/builtin_skills/security-conductor/golden-paths.json"
       - ".github/workflows/denial-differential.yml"
 
 permissions:
@@ -119,13 +119,13 @@ jobs:
             fi
           done
 
-          # ONE corpus path, named here. Adopting the security-conductor's seed is an
-          # explicit change to this line, not an automatic preference: a gate that
-          # switched contracts the moment another file appeared would hand coverage
-          # over with nobody's PR showing the handover, and rows this corpus carries
-          # could drop out silently. The adopting PR edits this line, deletes the
-          # fixture, and shows in its own diff that the seed covers these rows.
-          corpus_path="scripts/deny_diff_fixture.json"
+          # ONE corpus path, named here. This is the security-conductor's committed
+          # seed -- the same file `verify_fix.py` reads -- so the fixer's own
+          # acceptance gate and this one judge a change against one corpus instead
+          # of two that can disagree. It stays a named line rather than a lookup: a
+          # gate that switched contracts the moment another file appeared would hand
+          # coverage over with nobody's PR showing the handover.
+          corpus_path="src/kiro_crew/builtin_skills/security-conductor/golden-paths.json"
 
           # Read out of the BASE tree: the corpus is the contract being judged and
           # must not be editable by the change under judgement.
