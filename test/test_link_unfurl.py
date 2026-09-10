@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import ipaddress
+import socket
 from types import SimpleNamespace
 from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 
@@ -27,6 +28,20 @@ def _run(coro):
 def _public(_host: str, _port: int) -> List[str]:
     """Resolver stub: everything resolves to one public address."""
     return ["93.184.216.34"]
+
+
+def _multi_homed(_host: str, _port: int) -> List[str]:
+    """Resolver stub for a CDN: several public nodes, plus a v6 one.
+
+    Shaped like what `getaddrinfo` returns for a real CDN host, including the
+    duplicate a host answering on several socket protocols produces.
+    """
+    return [
+        "93.184.216.34",
+        "93.184.216.34",
+        "93.184.216.35",
+        "2606:4700::1111",
+    ]
 
 
 # --- vet: scheme / host / port ---------------------------------------------
@@ -159,9 +174,7 @@ def test_vet_rejects_multicast_despite_is_global(host: str) -> None:
     assert exc.value.code == "blocked_url"
 
 
-@pytest.mark.parametrize(
-    "embedded", ["10.0.0.1", "127.0.0.1", "192.168.1.1", "169.254.169.254"]
-)
+@pytest.mark.parametrize("embedded", ["10.0.0.1", "127.0.0.1", "192.168.1.1", "169.254.169.254"])
 def test_6to4_is_refused_by_unwrapping_not_by_cpythons_table(
     embedded: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -183,13 +196,9 @@ def test_6to4_is_refused_by_unwrapping_not_by_cpythons_table(
     assert sixtofour.sixtofour == v4
 
     without_6to4 = tuple(
-        net
-        for net in ipaddress._IPv6Constants._private_networks
-        if str(net) != "2002::/16"
+        net for net in ipaddress._IPv6Constants._private_networks if str(net) != "2002::/16"
     )
-    monkeypatch.setattr(
-        ipaddress._IPv6Constants, "_private_networks", without_6to4, raising=True
-    )
+    monkeypatch.setattr(ipaddress._IPv6Constants, "_private_networks", without_6to4, raising=True)
     # The premise: with that entry gone the interpreter now calls it public, so a
     # check that consulted only the flags would let it through.
     assert ipaddress.ip_address(str(sixtofour)).is_global
@@ -1243,7 +1252,8 @@ def test_head_end_markers_inside_a_script_do_not_pass_the_cut_guard(monkeypatch)
                 200,
                 _HTML_HEADERS,
                 b"<html><head><script>var s = '</head><body>';"
-                + b"//" + b"z" * (lu.MAX_BODY_BYTES + 4096)
+                + b"//"
+                + b"z" * (lu.MAX_BODY_BYTES + 4096)
                 + b"</script><title>Never read</title></head>",
             )
         },
@@ -1384,9 +1394,7 @@ _TRUNCATED_BUT_TITLED = {
 
 
 @pytest.mark.parametrize("shape", sorted(_TRUNCATED_BUT_TITLED))
-def test_truncated_page_keeps_its_preview_when_the_title_arrived(
-    monkeypatch, shape: str
-) -> None:
+def test_truncated_page_keeps_its_preview_when_the_title_arrived(monkeypatch, shape: str) -> None:
     prefix, filler, expected = _TRUNCATED_BUT_TITLED[shape]
     page = prefix + filler * (lu.MAX_BODY_BYTES + 4096)
     _install(
@@ -1412,8 +1420,7 @@ def test_oversized_body_with_lying_content_length(monkeypatch) -> None:
             "https://example.com/big": (
                 200,
                 {"Content-Type": "text/html", "Content-Length": "42"},
-                b"<html><head><title>x</title></head><body>"
-                + b"A" * (lu.MAX_BODY_BYTES + 4096),
+                b"<html><head><title>x</title></head><body>" + b"A" * (lu.MAX_BODY_BYTES + 4096),
             ),
             "https://example.com/favicon.ico": (404, {}, b""),
         },
@@ -1719,6 +1726,201 @@ def test_concurrency_is_capped_at_four(monkeypatch) -> None:
     assert peak <= lm._MAX_CONCURRENT_FETCHES
 
 
+def test_the_vet_records_every_approved_address_and_ip_is_the_first() -> None:
+    """`ip` stays the first address for callers that dial one; `addresses` is the
+    whole approved answer, which is what a pin must serve. Both are needed: every
+    entry already passed `_reject_if_internal_ip`, so the set is as safe as `ip`."""
+    vetted = lu.vet_unfurl_url("https://cdn.example/o", resolve=_multi_homed)
+    assert vetted.ip == "93.184.216.34"
+    assert vetted.addresses == ("93.184.216.34", "93.184.216.35", "2606:4700::1111")
+
+
+def test_an_ip_literal_records_its_canonical_form_as_the_only_address() -> None:
+    # No resolution happens, so the recorded set is the literal the vet canonicalized.
+    vetted = lu.vet_unfurl_url("https://93.184.216.34/a", resolve=_public)
+    assert vetted.addresses == ("93.184.216.34",)
+    assert vetted.ip == "93.184.216.34"
+
+
+# --- PinnedResolver: the other half of the vet -------------------------------
+#
+# The vet resolves the host and approves an address; this is what makes the socket
+# go to THAT address. Without it the connector performs a second lookup, which an
+# attacker-controlled DNS server answers differently (rebinding) and the vet has
+# proved nothing. Both the link-preview handler and WeCom media install it.
+
+
+class TestPinnedResolver:
+    def test_it_answers_with_the_pinned_ipv4_address(self) -> None:
+        resolver = lu.PinnedResolver("example.com", ("93.184.216.34",), 443)
+        (answer,) = _run(resolver.resolve("example.com", 443))
+        assert answer["host"] == "93.184.216.34"
+        assert answer["port"] == 443
+        assert answer["family"] is socket.AF_INET
+        # The NAME travels on, so TLS SNI and the `Host` header stay correct --
+        # connecting by IP instead would break certificate validation.
+        assert answer["hostname"] == "example.com"
+
+    def test_an_ipv6_pin_reports_the_v6_family(self) -> None:
+        # aiohttp opens the socket with the family the resolver reports, so a v6
+        # literal announced as AF_INET is an immediate connection failure.
+        resolver = lu.PinnedResolver("example.com", ("2606:4700::1111",), 443)
+        (answer,) = _run(resolver.resolve("example.com", 443))
+        assert answer["host"] == "2606:4700::1111"
+        assert answer["family"] is socket.AF_INET6
+
+    def test_a_zero_port_falls_back_to_the_pinned_port(self) -> None:
+        resolver = lu.PinnedResolver("example.com", ("93.184.216.34",), 8080)
+        (answer,) = _run(resolver.resolve("example.com", 0))
+        assert answer["port"] == 8080
+
+    def test_a_foreign_host_is_refused_rather_than_resolved(self) -> None:
+        """Fails CLOSED: a session reused for a second host must not silently get
+        the first host's address, and OSError is what aiohttp reports as a
+        connection error rather than a crash."""
+        resolver = lu.PinnedResolver("example.com", ("93.184.216.34",), 443)
+        with pytest.raises(OSError, match="refusing evil.example"):
+            _run(resolver.resolve("evil.example", 443))
+
+    def test_it_returns_the_six_keys_every_aiohttp_version_reads(self) -> None:
+        """A plain dict, not `ResolveResult`: that name landed in aiohttp 3.10 and
+        setup.cfg allows `aiohttp>=3.9`, so a runtime import would break the
+        gateway's import on an allowed install."""
+        resolver = lu.PinnedResolver("example.com", ("93.184.216.34",), 443)
+        (answer,) = _run(resolver.resolve("example.com", 443))
+        assert set(answer) == {"hostname", "host", "port", "family", "proto", "flags"}
+
+    def test_close_is_a_no_op(self) -> None:
+        # The connector closes its resolver; there is nothing to release.
+        assert _run(lu.PinnedResolver("example.com", ("93.184.216.34",), 443).close()) is None
+
+    def test_the_handler_installs_it_on_its_connector(self) -> None:
+        """Pins the lift: the pin moved to `link_unfurl`, the handler still gets
+        its connector from there, so the dashboard fetch is still pinned."""
+        assert lm.pinned_connector is lu.pinned_connector
+
+    def test_it_serves_EVERY_vetted_address_so_fallbacks_survive(self) -> None:
+        """The regression this class exists to prevent.
+
+        aiohttp dials the addresses a resolver returns IN ORDER and falls back to
+        the next when a connection fails. A pin that answers with only the first
+        address turns one dead CDN node -- or an AAAA record on a host with no
+        working IPv6 route -- into a failed fetch that succeeded before the pin
+        existed. Every address here passed the same internal-address check, so
+        serving the whole set costs the vet nothing.
+        """
+        vetted = lu.vet_unfurl_url("https://cdn.example/o", resolve=_multi_homed)
+        resolver = lu.PinnedResolver(vetted.wire_host, vetted.addresses, vetted.port)
+        answers = _run(resolver.resolve(vetted.wire_host, vetted.port))
+        assert [a["host"] for a in answers] == [
+            "93.184.216.34",
+            "93.184.216.35",
+            "2606:4700::1111",
+        ], "every vetted address, resolver order, the duplicate dropped"
+
+    def test_each_address_reports_its_own_family(self) -> None:
+        # One family for the whole set would announce the v6 node as AF_INET, and
+        # aiohttp would fail that connection instead of falling back.
+        resolver = lu.PinnedResolver("cdn.example", ("93.184.216.34", "2606:4700::1111"), 443)
+        answers = _run(resolver.resolve("cdn.example", 443))
+        assert [a["family"] for a in answers] == [socket.AF_INET, socket.AF_INET6]
+
+    def test_no_addresses_is_refused_at_construction(self) -> None:
+        """Fails CLOSED, and early: a resolver with nothing to serve answers every
+        lookup with an empty list, which aiohttp reports as a connection error far
+        from the cause."""
+        with pytest.raises(ValueError, match="no addresses"):
+            lu.PinnedResolver("example.com", (), 443)
+
+    def test_an_idn_pin_matches_what_aiohttp_will_ask_for(self) -> None:
+        """`wire_host`, not `host`: aiohttp asks its resolver with the IDNA form, so
+        a pin on the unicode name would refuse every internationalized link."""
+        vetted = lu.vet_unfurl_url("https://例え.jp/a", resolve=_public)
+        resolver = lu.PinnedResolver(vetted.wire_host, (vetted.ip,), vetted.port)
+        (answer,) = _run(resolver.resolve(vetted.wire_host, vetted.port))
+        assert answer["host"] == "93.184.216.34"
+        with pytest.raises(OSError):
+            _run(resolver.resolve("例え.jp", 443))
+
+
+class TestPinnedConnector:
+    """One factory, so no caller can copy the pin and drop what makes it hold.
+
+    `limit=1` and `family=AF_UNSPEC` are not decoration. A caller that installs the
+    resolver but lets aiohttp narrow the family either loses every IPv6 target or
+    gets a second lookup — which is the rebinding window the pin exists to close.
+    Asserting them here is what keeps a future caller from re-opening it.
+    """
+
+    def _vetted(self, url: str = "https://example.com/a"):
+        return lu.vet_unfurl_url(url, resolve=_public)
+
+    def test_it_pins_the_connector_to_the_vetted_address(self) -> None:
+        vetted = self._vetted()
+
+        async def _check() -> None:
+            connector = lu.pinned_connector(vetted)
+            try:
+                (answer,) = await connector._resolver.resolve(vetted.wire_host, vetted.port)
+                assert answer["host"] == "93.184.216.34"
+                assert answer["hostname"] == "example.com", "SNI and Host keep the name"
+            finally:
+                await connector.close()
+
+        _run(_check())
+
+    def test_it_serves_the_whole_vetted_set(self) -> None:
+        """The factory is where the fallbacks are kept or lost, so assert it here
+        too: a caller that reads `vetted.ip` builds a one-address pin."""
+        vetted = lu.vet_unfurl_url("https://cdn.example/o", resolve=_multi_homed)
+
+        async def _check() -> None:
+            connector = lu.pinned_connector(vetted)
+            try:
+                answers = await connector._resolver.resolve(vetted.wire_host, vetted.port)
+                assert [a["host"] for a in answers] == [
+                    "93.184.216.34",
+                    "93.184.216.35",
+                    "2606:4700::1111",
+                ]
+            finally:
+                await connector.close()
+
+        _run(_check())
+
+    def test_it_carries_the_settings_the_pin_needs(self) -> None:
+        async def _check() -> None:
+            connector = lu.pinned_connector(self._vetted())
+            try:
+                assert connector.limit == 1, "nothing else may ride this pinned pool"
+                assert (
+                    connector.family is socket.AF_UNSPEC
+                ), "the resolver reports the family; aiohttp must not re-derive it"
+                assert isinstance(connector._resolver, lu.PinnedResolver)
+            finally:
+                await connector.close()
+
+        _run(_check())
+
+    def test_an_idn_target_is_pinned_on_the_wire_form(self) -> None:
+        """The factory reads `wire_host`, so an internationalized host is pinned on
+        the IDNA name aiohttp will actually ask for -- a pin on the unicode form
+        refuses every such fetch."""
+        vetted = self._vetted("https://例え.jp/a")
+
+        async def _check() -> None:
+            connector = lu.pinned_connector(vetted)
+            try:
+                (answer,) = await connector._resolver.resolve(vetted.wire_host, vetted.port)
+                assert answer["host"] == "93.184.216.34"
+                with pytest.raises(OSError):
+                    await connector._resolver.resolve("例え.jp", 443)
+            finally:
+                await connector.close()
+
+        _run(_check())
+
+
 # --- route registration ----------------------------------------------------
 
 
@@ -1833,8 +2035,10 @@ def test_the_replaced_category_flag_list_would_have_approved_these(address: str)
 @pytest.mark.parametrize("title_source", ["title", "og:title"])
 def test_endpoint_decodes_html_entities_once(monkeypatch, title_source):
     escaped = "How to spell &amp;lt; and &amp;#65;"
-    title = f"<title>{escaped}</title>" if title_source == "title" else (
-        f'<meta property="og:title" content="{escaped}">'
+    title = (
+        f"<title>{escaped}</title>"
+        if title_source == "title"
+        else (f'<meta property="og:title" content="{escaped}">')
     )
     html = (
         f"<head>{title}"
@@ -1844,10 +2048,13 @@ def test_endpoint_decodes_html_entities_once(monkeypatch, title_source):
         "</head>"
     ).encode()
     expected_icon = "https://example.com/icon.png?name=one&amp;two"
-    transport = _install(monkeypatch, {
-        "https://example.com/": (200, _HTML_HEADERS, html),
-        expected_icon: (200, {"Content-Type": "image/png"}, b"\x89PNG"),
-    })
+    transport = _install(
+        monkeypatch,
+        {
+            "https://example.com/": (200, _HTML_HEADERS, html),
+            expected_icon: (200, {"Content-Type": "image/png"}, b"\x89PNG"),
+        },
+    )
     status, body = _run(_call("https://example.com/"))
     assert status == 200
     for field in ("title", "description", "site_name"):

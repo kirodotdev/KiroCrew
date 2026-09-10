@@ -25,18 +25,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import socket
 import time
 from collections import OrderedDict
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, Any, AsyncIterator, Dict, List, Mapping, Optional, Tuple
+from typing import Any, AsyncIterator, Dict, Mapping, Optional, Tuple
 from urllib.parse import urljoin, urlsplit
 
 import aiohttp
 from aiohttp import web
-
-if TYPE_CHECKING:  # `ResolveResult` only exists from aiohttp 3.10; see resolve() below.
-    from aiohttp.abc import ResolveResult
 
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.link_unfurl import (
@@ -53,6 +49,7 @@ from kiro_crew.link_unfurl import (
     extract_meta,
     is_login_page_title,
     normalize_cache_key,
+    pinned_connector,
     vet_unfurl_url,
 )
 
@@ -138,53 +135,6 @@ class _RawResponse:
     chunks: AsyncIterator[bytes]
 
 
-class _PinnedResolver(aiohttp.abc.AbstractResolver):
-    """Resolver that answers with the address the vet already approved.
-
-    This is the mechanism that makes the vet meaningful. aiohttp would otherwise
-    resolve the hostname itself when opening the connection — a second lookup,
-    which an attacker-controlled DNS server is free to answer differently from
-    the first (DNS rebinding). Pinning means the TCP connection goes to the exact
-    address that was checked, while the hostname still drives SNI and the
-    ``Host`` header so virtual hosting and certificate validation keep working.
-    """
-
-    def __init__(self, host: str, ip: str, port: int) -> None:
-        self._host = host
-        self._ip = ip
-        self._port = port
-
-    async def resolve(
-        self, host: str, port: int = 0, family: socket.AddressFamily = socket.AF_INET
-    ) -> "List[ResolveResult]":
-        if host != self._host:
-            # Cannot happen on the current call path (one session per vetted
-            # URL), but a future caller reusing the session for a second host
-            # would silently get the first host's address. Refuse instead.
-            raise OSError(f"resolver pinned to {self._host}, refusing {host}")
-        return [
-            # Built as a plain dict, and `ResolveResult` imported only under
-            # TYPE_CHECKING: that name landed in aiohttp 3.10, while setup.cfg
-            # allows `aiohttp>=3.9`, so importing it at runtime would make this
-            # handler — and therefore the whole gateway — fail to import on an
-            # allowed install. 3.9 annotates `AbstractResolver.resolve` as
-            # `List[Dict[str, Any]]` and every version since reads the same six
-            # keys, so one dict satisfies both while the quoted annotation still
-            # gives the type checker the real TypedDict.
-            {
-                "hostname": self._host,
-                "host": self._ip,
-                "port": port or self._port,
-                "family": socket.AF_INET6 if ":" in self._ip else socket.AF_INET,
-                "proto": 0,
-                "flags": 0,
-            }
-        ]
-
-    async def close(self) -> None:
-        return None
-
-
 class _AiohttpTransport:
     """Real transport: one session per request, pinned to the vetted address."""
 
@@ -196,17 +146,8 @@ class _AiohttpTransport:
         Redirects are NOT followed here — the caller re-vets each hop, which it
         cannot do if aiohttp has already connected to the next one.
         """
-        connector = aiohttp.TCPConnector(
-            resolver=_PinnedResolver(vetted.wire_host, vetted.ip, vetted.port),
-            limit=1,
-            # The pinned resolver already returns a literal with its family, so
-            # aiohttp must not narrow or re-derive it: constraining the family
-            # here would either drop a valid IPv6 target or re-open the door to
-            # a second lookup.
-            family=socket.AF_UNSPEC,
-        )
         session = aiohttp.ClientSession(
-            connector=connector,
+            connector=pinned_connector(vetted),
             timeout=aiohttp.ClientTimeout(total=FETCH_TIMEOUT_SECONDS),
             headers={"User-Agent": _USER_AGENT, "Accept-Encoding": "identity"},
             auto_decompress=False,
@@ -394,9 +335,7 @@ async def _build_payload(url: str) -> Dict[str, Any]:
     # unfurls, not sockets.
     dark_icon = ""
     if meta.dark_icon_candidates:
-        dark_icon = await _fetch_icon(
-            meta.dark_icon_candidates, budget=_MAX_DARK_ICON_ATTEMPTS
-        )
+        dark_icon = await _fetch_icon(meta.dark_icon_candidates, budget=_MAX_DARK_ICON_ATTEMPTS)
         if dark_icon == icon:
             # Same bytes carry no information and would double the payload for a
             # picture the client already has.
