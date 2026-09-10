@@ -787,7 +787,14 @@ def _consolidate_cmd(args) -> None:
                 if await consolidator.consolidate_now(key):
                     print(f"  {key}: done ✓")
                 else:
-                    print(f"  {key}: skipped (consolidation retry backoff)")
+                    # Two gates can refuse before a pass runs — the durable retry
+                    # backoff and another process already holding this session's
+                    # consolidation lease. The call reports only that nothing ran;
+                    # which gate it was is on the log line the gate itself wrote.
+                    print(
+                        f"  {key}: skipped (in retry backoff, or being consolidated "
+                        "by another process)"
+                    )
             except Exception:
                 logger.debug("consolidate (or SEL) failed for %s", key, exc_info=True)
 

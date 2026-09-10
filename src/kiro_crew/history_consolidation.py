@@ -11,12 +11,16 @@ import asyncio
 import contextlib
 import json
 import logging
+import math as _math
+import os
 import re
 import time as _time
+import uuid
 from collections.abc import Awaitable, Callable
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, NamedTuple
 
+from kiro_crew import platform_compat
 from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.frontmatter import SKILL_UPDATE, frontmatter_value
 from kiro_crew.llm_helpers import (
@@ -54,6 +58,43 @@ _CONSOLIDATION_BACKOFF_BASE_SECS = 900.0
 _CONSOLIDATION_BACKOFF_MAX_SECS = 86400.0
 _SKILL_DETECTION_WINDOW = 200
 
+# A consolidation lease is honoured only while its holder still looks alive, and
+# never longer than this SINCE ITS LAST HEARTBEAT. The liveness test is exact
+# where the platform can answer it, so the common failure — a process that
+# crashed or was killed mid-pass — frees the session on the very next attempt
+# rather than waiting this out. The ceiling covers what liveness cannot: a
+# Windows holder (no start-time identity, so a recycled PID reads as the
+# original) and a holder that is alive but wedged forever. It is not a timeout
+# for the pass — nothing cancels the holder when it expires, the lease simply
+# stops excluding a peer.
+#
+# Measured from the last heartbeat rather than from acquisition, because a
+# ceiling on the whole pass expires under a holder that is alive and working:
+# a long transcript on a slow provider is exactly the case that most needs the
+# exclusion, and it was the case that lost it. A wedged holder stops renewing,
+# so the ceiling still bounds it — that is the thing this number was written
+# to bound, and the only thing it now measures.
+_CONSOLIDATION_LEASE_CEILING_SECS = 3600.0
+
+# How often the holder proves it is still working. Well under the ceiling, so a
+# renewal can be missed several times over — a starved event loop, a slow
+# metadata write — before a peer is allowed to conclude the holder is wedged.
+_CONSOLIDATION_LEASE_RENEW_SECS = 300.0
+
+# Lease fields on the session's metadata line. The token identifies one
+# ACQUISITION (so a second attempt from the same process is still excluded, and
+# a release cannot clear a lease that has since been taken by someone else); the
+# pid and start-time identity together identify the HOLDER, which is what the
+# liveness test needs. Deliberately NOT part of _CONSOLIDATION_META_KEYS: those
+# are dropped when a span is marked consolidated, and the lease is still held at
+# that point — the memory, lesson and history writes come after it.
+_LEASE_TOKEN = "consolidation_lease_token"
+_LEASE_PID = "consolidation_lease_pid"
+_LEASE_START = "consolidation_lease_start"
+# Last heartbeat, not acquisition time: refreshed for as long as the holder is
+# working, so the ceiling above measures silence rather than duration.
+_LEASE_AT = "consolidation_lease_at"
+
 _CONSOLIDATION_META_KEYS: frozenset[str] = frozenset(
     {
         "consolidation_attempts",
@@ -67,12 +108,72 @@ _CONSOLIDATION_META_KEYS: frozenset[str] = frozenset(
 
 
 class _ConsolidationRefusedSentinel:
-    """A retry gate refused a span without running a consolidation pass."""
+    """A gate refused a span without running a consolidation pass.
+
+    Two instances exist because the reasons differ where a caller reports them:
+    :data:`_CONSOLIDATION_REFUSED` is the durable retry backoff, and
+    :data:`_CONSOLIDATION_BUSY` is another process already holding the session's
+    consolidation lease. What every caller shares is the part the class carries:
+    no prompt was sent, nothing was billed, and no window was covered — so
+    bookkeeping that means "this span has been through a pass" must not advance.
+    Test for that with :func:`_no_pass_ran` rather than against one instance, or
+    a new refusal reason silently reads as a completed pass.
+    """
 
     __slots__ = ()
 
 
 _CONSOLIDATION_REFUSED = _ConsolidationRefusedSentinel()
+_CONSOLIDATION_BUSY = _ConsolidationRefusedSentinel()
+
+
+def _no_pass_ran(outcome: object) -> bool:
+    """True when *outcome* says a consolidation was refused before it ran."""
+    return isinstance(outcome, _ConsolidationRefusedSentinel)
+
+
+def _lease_holder_is_live(meta: dict, *, now: float) -> bool:
+    """True when the consolidation lease recorded in *meta* still excludes us.
+
+    A lease with no pid is not a lease — an unreadable or half-written record
+    must not wedge a session forever, so it reads as free.
+
+    The holder is identified by PID plus
+    :func:`~kiro_crew.platform_compat.get_process_start_id`, which is stable for
+    a process's lifetime and differs across a PID reuse, so a dead holder whose
+    number has been handed to something else does not keep excluding peers. That
+    lookup is in-process on every platform it answers on (a ``/proc`` read on
+    Linux, ``libproc`` on macOS), so this is safe to call from the gateway loop.
+    ``None`` means "cannot tell" and is NEVER read as a mismatch: on Windows both
+    the stored and the live value are ``None``, so the test degrades to
+    pid-exists plus the ceiling rather than to a false steal.
+
+    The ceiling is checked last and applies on every platform. It is what bounds
+    a holder that is alive but wedged, and what stands in for liveness where the
+    identity is unknown.
+    """
+    try:
+        pid = int(meta.get(_LEASE_PID, 0) or 0)
+    except (TypeError, ValueError, OverflowError):
+        return False
+    if pid <= 0:
+        return False
+    try:
+        taken_at = float(meta.get(_LEASE_AT, 0.0) or 0.0)
+    except (TypeError, ValueError, OverflowError):
+        taken_at = 0.0
+    # A clock that moved backwards makes ``now - taken_at`` negative, which is
+    # inside the ceiling — the conservative direction, since the alternative is
+    # stealing a lease from a holder that is demonstrably alive.
+    if not _math.isfinite(taken_at) or now - taken_at >= _CONSOLIDATION_LEASE_CEILING_SECS:
+        return False
+    if not platform_compat.pid_exists(pid):
+        return False
+    stored_start = meta.get(_LEASE_START)
+    live_start = platform_compat.get_process_start_id(pid)
+    if stored_start and live_start and str(stored_start) != str(live_start):
+        return False
+    return True
 
 
 class AttemptedSpan(NamedTuple):
@@ -433,6 +534,132 @@ class HistoryConsolidator:
             return False
         return (_time.time() if now is None else now) >= retry_at
 
+    def _acquire_consolidation_lease(self, key: str) -> str | None:
+        """Claim the session's consolidation lease, or ``None`` if a peer holds it.
+
+        ``self._running`` excludes two consolidations of the same session inside
+        ONE process. It is an in-memory set, so it says nothing about another
+        process — and ``kirocrew consolidate`` is another process, running
+        against the same transcript while the gateway's idle sweep is live. Both
+        would snapshot the same span, both would spend a provider turn on it, and
+        both would write the history entry, the preferences and the lessons it
+        produced. The marker write is idempotent, so nothing detects it
+        afterwards: the duplicate is the spend and the doubled memory, not a
+        corrupted offset.
+
+        Compare-and-set through ``update_metadata_if``, whose guard runs under the
+        same cross-process ``flock`` the write does, so two processes reaching
+        here together cannot both pass it. The lease lives on the metadata line
+        beside the retry accounting rather than in a lock file of its own: it is
+        state about a span, it has to survive a restart to be worth taking, and
+        the line is already read under that lock on every pass.
+
+        The flock is held only for the compare-and-set, never across the LLM
+        turn. Holding it for the pass would block appends — the same lock every
+        write to this session takes — and freeze the conversation behind a
+        provider call. That is why the lease is a durable record rather than a
+        held lock, and why it needs the liveness test in
+        :func:`_lease_holder_is_live` to survive a holder that dies mid-pass.
+
+        Blocking file IO — call it off the event loop.
+        """
+        token = uuid.uuid4().hex
+        pid = os.getpid()
+        fields = {
+            _LEASE_TOKEN: token,
+            _LEASE_PID: pid,
+            _LEASE_AT: _time.time(),
+        }
+        start = platform_compat.get_process_start_id(pid)
+        # Absent rather than null when the platform cannot answer, so the record
+        # never asserts an identity it does not have.
+        if start:
+            fields[_LEASE_START] = start
+
+        def _free(meta: dict) -> bool:
+            return not _lease_holder_is_live(meta, now=_time.time())
+
+        try:
+            if self._log.update_metadata_if(key, fields, _free):
+                return token
+        except Exception:
+            # A lease that cannot be written must not stop the pass: the failure
+            # mode it prevents is a duplicate, and refusing on an unwritable
+            # metadata line would convert every such error into a session that
+            # never consolidates at all.
+            self._logger.warning(
+                "Could not take the consolidation lease for %s; proceeding unguarded",
+                key,
+                exc_info=True,
+            )
+            return token
+        return None
+
+    def _renew_consolidation_lease(self, key: str, token: str) -> bool:
+        """Refresh the lease's heartbeat, but only while *token* is still ours.
+
+        Guarded on the token for the same reason the release is: a pass whose
+        lease was already taken by a peer must not stamp its own liveness onto
+        the peer's claim.
+
+        Returns False when the lease is no longer ours, which is not an error
+        the caller can act on — the pass is already unguarded at that point and
+        stopping it would waste a turn that is nearly always about to finish.
+
+        Blocking file IO — call it off the event loop.
+        """
+        try:
+            return bool(
+                self._log.update_metadata_if(
+                    key,
+                    {_LEASE_AT: _time.time()},
+                    lambda meta: meta.get(_LEASE_TOKEN) == token,
+                )
+            )
+        except Exception:
+            # A missed heartbeat costs nothing on its own: the ceiling is many
+            # intervals wide, so the next one covers it.
+            self._logger.debug(
+                "Consolidation lease renewal did not complete for %s", key, exc_info=True
+            )
+            return False
+
+    async def _heartbeat_consolidation_lease(self, key: str, token: str) -> None:
+        """Renew *token*'s lease until cancelled.
+
+        Runs beside the pass rather than inside it: the renewal has to land
+        while the provider turn is in flight, and that turn is one await with
+        nothing to hook. Cancelled by the pass's own finally, so the heartbeat
+        cannot outlive the lease it describes.
+        """
+        while True:
+            await asyncio.sleep(_CONSOLIDATION_LEASE_RENEW_SECS)
+            if not await asyncio.to_thread(self._renew_consolidation_lease, key, token):
+                # Someone else holds it now. Nothing to renew and nothing to
+                # stop — leave the pass to finish rather than spin.
+                return
+
+    def _release_consolidation_lease(self, key: str, token: str) -> None:
+        """Drop the lease, but only while *token* is still the one on disk.
+
+        Guarded on the token so a pass that overran the ceiling and had its lease
+        taken by a peer cannot clear the peer's claim on its way out.
+
+        Blocking file IO — call it off the event loop.
+        """
+        try:
+            self._log.update_metadata_if(
+                key,
+                {_LEASE_TOKEN: None, _LEASE_PID: 0, _LEASE_START: None, _LEASE_AT: 0.0},
+                lambda meta: meta.get(_LEASE_TOKEN) == token,
+            )
+        except Exception:
+            # The ceiling and the liveness test both release it eventually, so a
+            # failed release costs a delay, not a wedged session.
+            self._logger.warning(
+                "Could not release the consolidation lease for %s", key, exc_info=True
+            )
+
     async def _note_failed_attempt(self, key: str, span: AttemptedSpan, reason: str) -> None:
         """Charge one attempt for a billed turn that never reached the marker.
 
@@ -563,7 +790,7 @@ class HistoryConsolidator:
                 # backoff expires the threshold test skips it until a whole new
                 # threshold of messages accumulates — silently dropping its
                 # preference/project extraction.
-                and fut.result() is not _CONSOLIDATION_REFUSED
+                and not _no_pass_ran(fut.result())
             ):
                 self._prefs_offset[k] = off
 
@@ -605,7 +832,7 @@ class HistoryConsolidator:
                     and fut.exception() is None
                     # A refusal is not a completed pass; setting the throttle
                     # for it would delay the retry past the backoff deadline.
-                    and fut.result() is not _CONSOLIDATION_REFUSED
+                    and not _no_pass_ran(fut.result())
                 ):
                     self._history_consolidated[k] = ts
 
@@ -658,7 +885,7 @@ class HistoryConsolidator:
             exc = fut.exception()
             if exc is None:
                 # A refusal is not a completed pass; leave the throttle unset.
-                if fut.result() is not _CONSOLIDATION_REFUSED:
+                if not _no_pass_ran(fut.result()):
                     self._history_consolidated[k] = _time.time()
             else:
                 self._logger.warning("consolidate_session failed for %s: %s", k, exc)
@@ -687,7 +914,7 @@ class HistoryConsolidator:
             self._logger.info("consolidate_now skipped for %s: sensitive session", key)
             return True
         outcome = await self._consolidate(key, include_history=True)
-        return outcome is not _CONSOLIDATION_REFUSED
+        return not _no_pass_ran(outcome)
 
     async def _consolidate(
         self, key: str, include_history: bool = True
@@ -695,7 +922,10 @@ class HistoryConsolidator:
         """Run LLM consolidation for a session.
 
         Returns :data:`_CONSOLIDATION_REFUSED` when the retry-eligibility gate
-        refuses the span; every other completion returns ``None``.
+        refuses the span and :data:`_CONSOLIDATION_BUSY` when another process
+        holds the session's consolidation lease; every other completion returns
+        ``None``. Callers distinguish either from a completed pass with
+        :func:`_no_pass_ran`, never against one instance.
         """
         # Capture the gateway loop so the thread-offloaded _process_auto_skills
         # can schedule the async dedupe judge back onto it.
@@ -706,6 +936,10 @@ class HistoryConsolidator:
         billed = False
         total = 0
         generation_at_snapshot = 0
+        # Held from the gate below to the finally block. Declared out here so the
+        # release is reachable from paths that return before it is taken.
+        lease: str | None = None
+        lease_heartbeat: asyncio.Future | None = None
         # The span identity any failure charge is stamped with. Rebuilt from the
         # snapshot below; the zero value only ever reaches a charge if the snapshot
         # itself raised, and that path is not billed.
@@ -748,6 +982,25 @@ class HistoryConsolidator:
             if not self.retry_eligible(key, message_count=total):
                 self._logger.info("_consolidate refused for %s: consolidation retry backoff", key)
                 return _CONSOLIDATION_REFUSED
+            # Cross-process choke point, and the last gate before anything can be
+            # billed. self._running above it excludes a second pass inside THIS
+            # process; the lease is what excludes one in another process — the
+            # CLI's `kirocrew consolidate` running against a session the
+            # gateway's sweep has already picked up. Taken after the retry gate
+            # so a span inside its backoff does not churn the lease it is not
+            # going to use, and before the span identity is frozen so the winner
+            # is the only one that reaches a prompt.
+            lease = await asyncio.to_thread(self._acquire_consolidation_lease, key)
+            if lease is None:
+                self._logger.info(
+                    "_consolidate skipped for %s: consolidation already in flight", key
+                )
+                return _CONSOLIDATION_BUSY
+            # Keep proving the holder is working for as long as the pass runs.
+            # The ceiling measures silence, and everything after this line —
+            # the prompt, the provider turn, the memory writes — is one stretch
+            # of it with no natural place to stamp liveness.
+            lease_heartbeat = asyncio.ensure_future(self._heartbeat_consolidation_lease(key, lease))
             # Freeze the whole span identity from that one snapshot. The offset is
             # derived rather than returned because the snapshot slices at it
             # (``messages[offset:]``), so the subtraction is exact and comes from
@@ -1059,6 +1312,30 @@ class HistoryConsolidator:
             raise
         finally:
             self._running.discard(key)
+            if lease_heartbeat is not None:
+                # Stopped BEFORE the release: a renewal landing after the lease
+                # is cleared would write a heartbeat for a token no longer on
+                # disk (harmless, the CAS refuses it) or, worse, race a peer's
+                # fresh acquisition into looking older than it is.
+                lease_heartbeat.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await lease_heartbeat
+            if lease is not None:
+                # Best effort, and deliberately still attempted while the task is
+                # unwinding under cancellation: an unreleased lease excludes this
+                # session's peers until the ceiling expires, which is the one
+                # outcome worse than a slow release. asyncio.shield keeps the
+                # to_thread call from being cancelled out from under us; if the
+                # loop is already gone the lease is left to the liveness test,
+                # which frees it as soon as this process is.
+                try:
+                    await asyncio.shield(
+                        asyncio.to_thread(self._release_consolidation_lease, key, lease)
+                    )
+                except Exception:
+                    self._logger.debug(
+                        "Consolidation lease release did not complete for %s", key, exc_info=True
+                    )
         return None
 
     async def _run_skill_detection(self, key: str) -> None:
