@@ -1970,6 +1970,17 @@ kiro-cli-authenticated harness; on any other selected backend the guard stands
 aside and the empty-200 case stays open there, which is the smaller defect next
 to a permanent 503 on a working install.
 
+**Decision: no harness-side readiness probe for the foreign harnesses.** On
+claude-agent-acp and codex-acp the destructive reruns run with no pre-flight
+check, and the turn's own ACP attempt is the authority — the same rule an
+ordinary send already follows. A Claude-side or Codex-side probe would have to
+spawn that harness's CLI on a timer to ask whether it is signed in, which is
+the browser-storm shape the kiro-cli gate exists to contain, and neither
+adapter offers a cheaper sign-in query. The cost accepted is that a
+signed-out foreign harness rewrites history on regenerate/rewind before its
+error card lands; revisit only if an adapter grows a side-effect-free
+sign-in check (a credentials-file read, not a spawn).
+
 **An unresolved check is never rendered as "setup required."** The cold probe
 spawns two sandboxed `kiro-cli` subprocesses (`--version`, then `whoami`), which
 takes long enough to read; rendering first-run setup chrome across that window
