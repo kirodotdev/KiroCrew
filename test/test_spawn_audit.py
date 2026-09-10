@@ -1191,6 +1191,21 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         "mcp_gateway/gatewayd.py::main",
         "mcp_gateway/manager.py::_spawn_once",
         "mcp_gateway/stub.py::main",
+        # The Windows arm of the stub's degrade path. Same spawn as
+        # ``stub.py::main`` and the same argv: the target command and args the
+        # rewriter resolved out of the operator's own ``~/.kiro/agents/*.json``,
+        # plus the env from the 0600 sidecar it wrote beside them -- an MCP
+        # backend on the trusted side of the sandbox boundary, like every other
+        # ``mcp_gateway`` entry above. Nothing on this path is agent-supplied;
+        # the stub receives it all as its own argv from the overlay.
+        #
+        # It is a spawn only because Windows has no in-place exec: the POSIX
+        # sibling of this call is ``os.execvpe``, which is not a spawn at all and
+        # so needed no entry. Sandboxing it would be strictly wrong rather than
+        # merely pointless -- the child must inherit THIS process's stdio fds to
+        # keep serving kiro-cli's existing pipe, which is the whole fix, and a
+        # scrubbed env would drop the credentials the sidecar exists to restore.
+        "mcp_gateway/stub.py::_fallback_spawn_child",
         # The update seam's one read-only git chokepoint: `git config` (the
         # `updates.source` pin's remote, the repo-driver probe, and which remote a
         # branch tracks) and `git ls-remote --get-url`. Fixed list-argv (no
