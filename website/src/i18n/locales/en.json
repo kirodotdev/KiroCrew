@@ -6797,7 +6797,6 @@
       "runtime_binding": "What this agent uses",
       "runtime_binding_member": "What this member uses",
       "save_changes": "Save changes",
-      "session_color_hint_member": "Sessions this member starts use this color unless the session has a color of its own. Leave empty for no member color.",
       "shared_lower": "shared",
       "template_hint_member": "The starting setup this member uses — its tools, connections and instructions.",
       "the_agent_definition_it_boots_from_tools_mcp_ser": "The starting setup this agent uses — its tools, connections and instructions.",
