@@ -63,6 +63,7 @@ Slack's transport path is gated behind the `messaging.use_transport` config flag
 | `messaging/auto_title.py` | Conversation auto-titling — the claim-early LRU, the tool-free bounded background turn, the prompt, and the title-cleaning rules. Renaming the platform conversation is a caller-supplied callback. See [Auto-titling](#auto-titling-auto_titlepy) |
 | `messaging/upload_gate.py` | `session_is_restricted(dashboard_state, session_key, persisted_probe=, unknown_denies=True)` — the shared incognito/temporary decision, `session_blocks_reads(...)` — its READ counterpart (only `temporary` blocks reads; `incognito` still reads), plus `uploads_restricted(...)` which adds the per-channel upload audit, plus `live_dashboard_slot`. Three-state ladder (non-`dashboard:` key answers off `privacy_mode`, a LIVE slot answers off `is_restricted`/`blocks_reads`, otherwise the PERSISTED transcript mode answers). `unknown_denies` decides an unreadable mode: uploads DENY it outright (bytes cannot be recalled), while the durable-history gate denies only when a transcript EXISTS but its mode cannot be resolved (an ambiguous stem, a header no normal session wrote) — that is where an incognito session can hide. A legacy header with no `memory_mode` reads `persistent` rather than unknown, so the only unknown history allows is a truly ABSENT record, where nothing on disk claims the session is restricted. Discord and Telegram both route uploads here; both resumed-turn paths also use it to gate live projection and durable history, and Telegram uses it for `/title` |
 | `messaging/session_trust.py` | The per-session tool-Trust grant store: `is_session_trusted`, `add_trusted_session(key, sessions=)`, `clear_trusted_sessions`. In memory only, so an ad-hoc auto-approve grant dies with the process. The grant has TWO halves and both are load-bearing: the in-memory mapping the driver reads, and the session's approval policy set to `auto`, because a spawned subagent reads its parent's policy and never this mapping. So it is a `key -> SessionManager` MAPPING rather than a set, which is what lets `clear_trusted_sessions` undo the policy half too (back to `""`, the same value the dashboard's untrust toggle writes) without its caller having to hand a manager back. **Every mutation goes through the API**: reaching the container directly is how a revoke came to drop one half and leave subagents trusted, and a mapping has no `.add`, so a half-grant is not expressible either. Named `session_trust`, not `trust`, so it cannot be confused with a connection-admission roster: this grant is about what ONE session's tools may skip, not about which principals may attach. Consumed only through `TurnDriver`'s `auto_approve_session` predicate, which runs BEHIND the keystone, governance and deny-list gates, so a hard DENY still refuses |
+| `messaging/spawn_approval_delivery.py` | The channel-neutral spawn-approval delivery seam: a process-global registry (`register_channel_delivery` / `unregister_channel_delivery` / `resolve_channel_delivery` / `deliver_spawn_approval` / `clear_channel_delivery_hooks`) keyed by channel namespace. The single host-wide `on_spawn_approval` callback (`slack/gateway.py`) consults `deliver_spawn_approval` FIRST so a spawn parented on a live channel conversation is answered where the human already is, on that channel's own Approve/Deny/Trust keyboard. A hook returns `True`/`False` (the user's decision, used verbatim) or `None` (no hook for this channel, or it could not surface the prompt) to fall through to the Slack-DM/dashboard gate. Same inversion `session_trust` uses — `messaging` may not import a channel package, so the hook is a plain async callable the channel supplies. In memory only (a hook is a live object on a running dispatcher; the registry dies with the process and a channel re-registers on startup). See [Channel-neutral spawn-approval delivery](#channel-neutral-spawn-approval-delivery-spawn_approval_deliverypy) |
 | `messaging/link.py` | **Layer 3** — session-key namespacing (`session_key`/`canonical_key`/`legacy_key`/`is_legacy_slack_key`) + `ChannelLink` + DM-scope key derivation / `should_rotate_generation`, plus the in-channel `/link` ⇄ `/unlink` pair (`rebind_conversation_location` / `release_conversation_location`) |
 | `messaging/conversation.py` | `ConversationState` — per-conversation rotating *generation* bookkeeping (advanced by `/new` and idle/daily reset), seeded from the persisted session map |
 | `messaging/inbound_spool.py` | The durable spool for an inbound message the SHUTDOWN GATE refused, and its boot-time replay. See [Durable inbound spool](#durable-inbound-spool-inbound_spoolpy) |
@@ -313,6 +314,62 @@ is the point — a channel-local store would have had to reimplement every one o
 `decider: ApprovalDecider` (`Callable[[Any], Awaitable[bool]]`) supplies the interactive click; when omitted, interactive mode denies by default (so buttons are only rendered when a decider exists — otherwise the user would get dead controls). Every permission decision emits an `sel().log_api_access` event (`caller="turn_driver"`, `operation="tool_permission"`, `source="messaging"`, `outcome` one of `auto_approved` / `approved` / `denied`).
 
 **Deny-on-silence can be SPOKEN.** `open_approval(..., on_timeout=…)` takes an optional coroutine that `PendingApproval.wait` awaits when the window closes, before it returns `DENY`, so the channel can resolve the prompt still sitting on the user's screen: `approval.TIMEOUT_NOTICE` is the text. Without it the refusal is invisible: the turn moves on and a live-looking prompt remains, which a later `1` can no longer answer (it finds no open entry and gets `RECEIPT_EXPIRED`). It is a callback rather than a transport because this module never learns what a channel is, and only the renderer that posted the prompt knows which message to edit. It must not raise: the verdict is already `DENY`, and `_announce_timeout` logs and swallows anything but cancellation, because a notice that could not be posted must never become an approval. WhatsApp is the first channel wired onto it.
+
+### Channel-neutral spawn-approval delivery (`spawn_approval_delivery.py`)
+
+The ladder above governs a MID-RUN tool prompt, which every channel's `TurnDriver`
+already renders through its own `decider`. The HOST **spawn** gate is different: the
+single host-wide `SubagentManager` owns ONE `on_spawn_approval` callback, built in
+`slack/gateway.py`, and that callback historically raced only a Slack owner DM and
+an attached dashboard client. A spawn parented on a Telegram (or any other channel)
+conversation therefore reached no surface at all, and post-#8914 the gate refuses it
+fast (`no_approval_surface`) rather than parking to the reaper's deadline. The
+driver's per-turn `decider` cannot help here — it is wired to the main-agent tool
+ladder, not to this host callback.
+
+`spawn_approval_delivery.py` is the seam that lets the host gate reach the
+originating channel's own inline keyboard, mirroring how `session_trust` lets a
+channel write an auto-approve grant the driver reads without `messaging` importing
+any channel package. It is a process-global registry of async delivery hooks keyed
+by channel namespace:
+
+- `register_channel_delivery(channel, hook)` / `unregister_channel_delivery(channel)`
+  — a channel dispatcher opts in on startup and drops out on shutdown. `channel` is
+  the channel namespace (`"telegram"`), the same token `messaging.link.channel_namespace_of`
+  returns for that channel's session keys. Idempotent: a restart replaces the
+  channel's own prior hook, so a stale registration can never shadow the live
+  dispatcher.
+- `deliver_spawn_approval(request_id, description, parent_session_key)` — what the
+  host callback calls FIRST. It resolves the hook whose channel owns
+  `parent_session_key` (via `channel_namespace_of`) and returns the hook's
+  `True`/`False` decision verbatim, or `None` to fall through. `None` means the key
+  is unowned (the CLI spawns with no parent), sits in a non-channel namespace
+  (`dashboard:`, `cron:`, `subagent:`), the channel registered no hook, or the hook
+  itself could not surface the prompt for this session. A hook that RAISES is
+  contained and read as `None`: a channel-delivery bug must degrade to the existing
+  Slack/dashboard fallback, never turn a spawn the operator could still answer into
+  a hard failure.
+
+The hook signature `async def(request_id, description, parent_session_key) -> bool | None`
+is the SAME three arguments the host `SpawnApprovalCallback` receives, so a channel
+posts its prompt and awaits the press without the seam reshaping anything. Keyed by
+channel namespace rather than by full session key on purpose: a channel runs one
+dispatcher per process, the session's channel is already recoverable from its key
+prefix, and keying by the full key would force the gate to know every live session —
+exactly the coupling the seam avoids. In memory only, like `session_trust`: a hook
+is a live object on a running dispatcher, so a registration surviving a restart would
+name a dispatcher that no longer exists; the registry dies with the process and a
+channel re-registers on its next startup.
+
+**Telegram is the reference opt-in.** `TelegramDispatcher.deliver_spawn_approval`
+posts the existing Approve/Deny/Trust inline keyboard and awaits the press through
+the same `on_callback` `a:` path a mid-run tool approval uses, so **Trust** grants
+parent-session trust via the shared `add_trusted_session` and a later spawn from that
+session is auto-approved by the parent-trusted rung. The hook is registered in
+`telegram/gateway.py` on startup and unregistered on client close. The full delivery
+order (channel hook → Slack-DM/dashboard fallback → the #8914 fast-fail backstop) and
+the operator-log-vs-agent-error security split are documented in
+[`subagent.md`](subagent.md).
 
 ## Layer 2b — `Renderer` + `OutputEvent` (`renderer.py`)
 

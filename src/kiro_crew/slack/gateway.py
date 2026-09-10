@@ -228,6 +228,7 @@ from kiro_crew.messaging.link import (
     parse_session_key,
 )
 from kiro_crew.messaging.renderer import SilentRenderer, chunk_for_transport
+from kiro_crew.messaging.spawn_approval_delivery import deliver_spawn_approval
 from kiro_crew.messaging.transport import InboundMessage, delivery_confirmed
 from kiro_crew.monitoring.completion import (
     MonitorCompletionHook,
@@ -8710,6 +8711,19 @@ class GatewayOrchestrator:
         async def _spawn_approve(
             request_id: str, description: str, parent_session_key: str = ""
         ) -> bool:
+            # Channel-side delivery FIRST (issue #2381 item 1). A spawn parented on
+            # a live channel conversation (Telegram, …) is best answered where the
+            # human already is, with that channel's own Approve/Deny/Trust
+            # keyboard. The seam returns True/False when the channel surfaced the
+            # prompt and got a press; None means no channel hook owns this session,
+            # or the hook could not surface it here — either way, fall through to
+            # the unchanged Slack-DM/dashboard gate below (which still raises
+            # SpawnApprovalUnreachable when no surface is attached).
+            channel_decision = await deliver_spawn_approval(
+                request_id, description, parent_session_key
+            )
+            if channel_decision is not None:
+                return channel_decision
             event = LLMEvent(kind="permission_request", request_id=request_id, title=description)
             return await _approve_spawn_gate(event, parent_session_key)
 

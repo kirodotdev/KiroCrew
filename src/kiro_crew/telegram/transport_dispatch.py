@@ -31,6 +31,7 @@ import re
 import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 
 from kiro_crew.acp.client import AcpError
@@ -69,6 +70,7 @@ from kiro_crew.messaging.link import (
     ChannelLink,
     bind_origin_mirror,
     build_dm_session_key,
+    parse_session_key,
     rebind_conversation_location,
     release_conversation_location,
     seed_generation,
@@ -76,6 +78,7 @@ from kiro_crew.messaging.link import (
 from kiro_crew.messaging.renderer import (
     SilentRenderer,
     display_safe,
+    new_approval_nonce,
     session_provenance_tag,
 )
 from kiro_crew.messaging.session_resume import (
@@ -2731,6 +2734,126 @@ class TelegramDispatcher:
                 interpret_commands=False,
                 origin_tag=origin_tag,
             )
+
+    # ── Spawn-approval channel delivery (issue #2381 item 1) ────────────────
+
+    async def deliver_spawn_approval(
+        self, request_id: str, description: str, parent_session_key: str
+    ) -> bool | None:
+        """Post a spawn-approval prompt to the ORIGINATING Telegram conversation.
+
+        Registered into the channel-neutral
+        :mod:`~kiro_crew.messaging.spawn_approval_delivery` seam so the single
+        host spawn gate can reach the same Approve/Deny/Trust keyboard the
+        main-agent tool ladder already uses here. Returns the user's decision
+        (``True``/``False``), or ``None`` to tell the gate "not surfaced here,
+        fall through to Slack/dashboard" — for a key this dispatcher cannot turn
+        back into a chat (``unified`` dm_scope drops the peer, a non-``telegram``
+        key, an unparseable one) or when the client is not up.
+
+        The wait is the SAME deny-by-default one a tool prompt uses
+        (:class:`TelegramApprovalDecider`, ``APPROVAL_TIMEOUT_S``): the press
+        resolves through the ``on_callback`` ``a:`` branch exactly as a tool
+        approval does, so Trust still runs ``add_trusted_session`` and a spawn id
+        (``spawn:<agent_id>``) cannot collide with an opaque tool id in the
+        registry keyed by ``session_key:request_id``.
+
+        The prompt is armed under ``parent_session_key`` VERBATIM (its ``:genN``
+        suffix included), but a press recomputes the key from the LIVE
+        conversation (``_callback_session_key``). A generation rotation between the
+        spawn and the press — ``/new``, an idle reset, a daily rotation — bumps the
+        generation, so the recomputed key no longer matches the armed one, the
+        press resolves nothing, and the prompt deny-by-defaults at the timeout
+        (the user sees "already expired"). This mirrors how a mid-run tool prompt
+        behaves across a rotation; it is not surfaced here as a decision, so the
+        gate simply falls through to Slack/dashboard when the wait elapses.
+        """
+        client = self.client
+        if client is None:
+            return None
+        target = self._spawn_chat_target(parent_session_key)
+        if target is None:
+            # A key this channel does not own or cannot address (unified DM
+            # bucket, non-telegram key, malformed). Let the gate fall through.
+            return None
+        chat_id, thread_id, session_key = target
+
+        rid = str(request_id)
+        nonce = new_approval_nonce()
+        key = TelegramApprovalDecider.key(session_key, rid)
+        TelegramApprovalDecider.arm(key, nonce)
+        keyboard = {
+            "inline_keyboard": [
+                [
+                    {"text": "✅ Approve", "callback_data": f"a:{rid}:{nonce}:1"},
+                    {"text": "🚫 Deny", "callback_data": f"a:{rid}:{nonce}:0"},
+                ],
+                [
+                    {
+                        "text": "🤝 Trust this conversation",
+                        "callback_data": f"a:{rid}:{nonce}:t",
+                    }
+                ],
+            ]
+        }
+        # ``description`` is the gate's own ``spawn_run(<task-preview>)`` string,
+        # already credential/exfil-redacted in admission.py before it reaches
+        # here; escape it for the HTML body it lands in.
+        detail = " ".join((description or "spawn_run").split())
+        body = f"🔐 Approve sub-agent spawn?\n<pre>{html.escape(detail)}</pre>"
+        try:
+            await client.send_message(
+                chat_id,
+                body,
+                parse_mode="HTML",
+                reply_markup=keyboard,
+                message_thread_id=thread_id,
+            )
+        except Exception:
+            # Could not surface it: retire the armed nonce and fall through so the
+            # spawn can still be answered on Slack/dashboard rather than deny by a
+            # timeout nobody could see.
+            TelegramApprovalDecider.retire(key)
+            logger.warning(
+                "Telegram: failed to post spawn-approval prompt for %s", rid, exc_info=True
+            )
+            return None
+
+        decider = TelegramApprovalDecider(session_key=session_key)
+        event = SimpleNamespace(request_id=rid)
+        return bool(await decider(event))
+
+    def _spawn_chat_target(self, parent_session_key: str) -> tuple[int, int | None, str] | None:
+        """``(chat_id, thread_id, session_key)`` for a Telegram spawn parent, else None.
+
+        Reconstructs the conversation from the parent session key's grammar
+        (``telegram:{agent}:{chat_type}:{scope…}``): a direct DM's scope is the
+        peer's user id, and a Telegram private chat's id EQUALS that user id; a
+        forum route's scope is ``{chat_id}:{thread}``. A ``unified`` DM bucket
+        (``unified:{agent}``) parses as a non-telegram surface and returns None —
+        it names no single conversation to post into, which is the same reason the
+        origin mirror declines it. ``session_key`` is returned so the caller arms
+        the decider under the exact key ``on_callback`` recomputes for a press in
+        that chat.
+        """
+        parsed = parse_session_key(parent_session_key)
+        if parsed is None or parsed.surface != "telegram":
+            return None
+        try:
+            if parsed.chat_type == CHAT_TYPE_FORUM and len(parsed.scope) >= 2:
+                chat_id = int(parsed.scope[0])
+                thread_id: int | None = int(parsed.scope[1])
+            elif parsed.chat_type == CHAT_TYPE_DIRECT and len(parsed.scope) == 1:
+                chat_id = int(parsed.scope[0])
+                thread_id = None
+            else:
+                return None
+        except (TypeError, ValueError):
+            return None
+        # The key was minted with a generation suffix; the press recomputes the
+        # same key from the live conversation, so key the decider by the exact
+        # value the gate handed us.
+        return chat_id, thread_id, parent_session_key
 
     # ── Helpers ────────────────────────────────────────────────────────────
 

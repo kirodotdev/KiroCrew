@@ -74,6 +74,58 @@ Spawn flow:
    approval with a 2-minute timeout. Timeout or rejection frees the
    concurrency slot.
 
+**Channel-side approval delivery (issue #2381 item 1).** The single host-wide
+`on_spawn_approval` callback (built in `slack/gateway.py`) consults a
+channel-neutral delivery seam (`messaging/spawn_approval_delivery.py`) FIRST,
+given the spawn's `parent_session_key`. A channel dispatcher registers a delivery
+hook keyed by its channel namespace (`register_channel_delivery("telegram", …)`);
+the seam resolves the hook whose channel owns the parent session
+(`messaging.link.channel_namespace_of`). A hook that returns `True`/`False` is the
+user's in-channel decision; `None` (no hook registered for that channel, or the
+hook could not surface the prompt) falls through to the pre-existing
+Slack-DM/dashboard gate, which still raises `SpawnApprovalUnreachable` when no
+surface is attached. Telegram implements the hook over its existing
+Approve/Deny/Trust inline keyboard (`TelegramDispatcher.deliver_spawn_approval`):
+the press resolves through the same `on_callback` `a:` path as a tool approval, so
+**Trust** grants parent-session trust via `add_trusted_session` and a later spawn
+from that session is auto-approved by the parent-trusted rung. The seam is
+in-memory only (dies with the process); the hook is registered on Telegram startup
+and unregistered on client shutdown. The per-agent `auto_approve_spawn` rung
+(issue #2381 item 2) is deferred to #4751/#4693 and is NOT added here.
+
+**Delivery order.** A spawn-approval prompt that reaches `_spawn_with_approval`
+is offered to surfaces in this fixed order, and the search stops at the first one
+that answers:
+
+1. **Originating channel hook** — the channel-neutral seam above. A `True`/`False`
+   return is the user's in-channel decision and is used verbatim; `None` (no hook
+   for that channel, or it could not surface the prompt) falls through.
+2. **Slack owner DM / dashboard fallback** — the pre-existing gate in
+   `slack/gateway.py` (`_interactive_approval`), which races a Slack owner DM
+   against an attached dashboard client. A configured-but-unpostable Slack DM and
+   an unattached dashboard both count as "no surface".
+3. **`#8914` fast-fail backstop** — reached only when neither a channel hook nor a
+   Slack/dashboard surface could show the prompt. Rather than park the run at
+   turn 0 until the reaper's ~30-minute deadline, the gate (`raise_when_unreachable=True`)
+   raises `SpawnApprovalUnreachable`, and `subagent_manager/admission.py`
+   turns it into an immediate refusal audited with `reason="no_approval_surface"`.
+
+The backstop keeps two audiences apart on purpose (Design Review r3, PR #8914).
+The **operator** WARNING log names every auto-approve rung that would have let the
+spawn through (`approval_mode="auto"`, parent-session **Trust**,
+`hooks.auto_approve_subagent_spawn`, `hooks.auto_approve_sources`). The
+**agent-facing** `info.error` names none of them: two of those rungs are
+`config.json` edits, and `config.json` is writable by any auto-approved agent
+shell, so a bypass recipe in the completion event would hand an unattended or
+prompt-injected agent the steps to remove its own gate. The agent error stays
+terse ("ask the operator to open the dashboard and spawn again, or to enable spawn
+auto-approval"). Because the channel hook and the Slack/dashboard gate own the
+"which surface was missing" half while the backstop owns the rung list, the
+refusal wording stays truthful as channels learn to deliver the prompt: the gate
+never names a surface it does not know about, and the fast-fail sentence ("no
+surface could show the approval prompt") is only ever emitted once every surface
+above has genuinely declined to carry it.
+
 ### Tool Approval Cascade
 
 When a subagent's tool call triggers `EVENT_PERMISSION_REQUEST`, approval
