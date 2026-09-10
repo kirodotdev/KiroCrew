@@ -501,7 +501,7 @@ re-runs them on the new head.
 
 2. **Create/update the PR — MUST use the repo's template directly.** `cat "$(git rev-parse --show-toplevel)/.github/PULL_REQUEST_TEMPLATE.md"` and use it as the **literal scaffold**, filling each section with real content. Do NOT compose from memory: the maintainer's auto-approval bot greps for the template's exact heading strings, and a mismatch blocks workflow approval indefinitely. Delete the `## Contribution License Agreement` placeholder. If the template is absent (a repo other than Kiro Crew's), use the PR description contract below.
 
-   New → `gh pr create --base <base> --head <branch> --title "<CC title>" --body-file <body>`. Existing → **regenerate the whole body from the current diff** (not `gh pr view --json body` + edits on top of it — that is how per-round deltas pile up), then `gh pr edit`; if it fails on the sunset projects-classic GraphQL field, fall back to REST: `python3 -c 'import json; print(json.dumps({"body": open("<file>").read()}))' > /tmp/pr-patch.json && gh api repos/<owner>/<repo>/pulls/<n> -X PATCH --input /tmp/pr-patch.json` (use `--input`, never `-F body=@<file>`). Verify the body landed.
+   New → `gh pr create --base <base> --head <branch> --title "<CC title>" --body-file <body>`, plus one `--attach <path>` per evidence file the body references (see *Screenshots*). Existing → **regenerate the whole body from the current diff** (not `gh pr view --json body` + edits on top of it — that is how per-round deltas pile up), then `gh pr edit` (again with `--attach` for any new evidence file) — **and do this BEFORE step 1's push**: the review lanes run on `opened`/`synchronize`, never on `edited`, so a body edited after the push is read by no run until the next push, and the UX lane that push starts judges the previous body's evidence; if it fails on the sunset projects-classic GraphQL field, fall back to REST: `python3 -c 'import json; print(json.dumps({"body": open("<file>").read()}))' > /tmp/pr-patch.json && gh api repos/<owner>/<repo>/pulls/<n> -X PATCH --input /tmp/pr-patch.json` (use `--input`, never `-F body=@<file>`). The REST path uploads nothing: it carries the `user-attachments` URLs already in the body, and a new file goes through `gh pr edit --attach` or the web UI. Verify the body landed.
 
    **Then report the PR's full `https://.../pull/<n>` URL in your chat message** —
    the dashboard's Changes panel is built from full links in your own message text,
@@ -637,7 +637,7 @@ absent. Phase 1.5 checks them against the diff.
 3. **What changed (motivation → approach → change)** — symptom → root cause → the specific change, so the reader sees *why this is the right fix*. Three short paragraphs at most — one per arrow. It describes the **whole diff on this head**, never one round's fix. Write it in the register below.
 4. **Tests** — what was added/updated and what each locks in.
 5. **Manual verification** — steps done/needed, or "N/A — unit coverage sufficient" with a one-line why.
-6. **Screenshots / video — MANDATORY for any user-visible UI change.** See below.
+6. **Screenshots / video — MANDATORY for any user-visible UI change**, uploaded as GitHub attachments with `gh ... --attach`, never committed. See below.
 7. **Issue link** — a real closing keyword. See below.
 
 Omit a section only when truly not applicable, and say so.
@@ -725,11 +725,10 @@ boxes and arrows. The constraints below are the ones that make every PR read the
 same way at a glance; everything else is your call.
 
 - **Text, in the body.** A Mermaid fence or a markdown table renders in the PR body
-  directly. Nothing to commit, no SHA to re-pin, nothing for
-  `cleanup-temp-screenshots.yml` to prune, and a reviewer can fix a label in the
-  text. A real rendered screen or a pixel before/after is not a picture of the
-  delta — that is a screenshot; see *Screenshots* below, which owns the path and
-  pinning rules.
+  directly. Nothing to capture, nothing to upload, and a reviewer can fix a label
+  in the text. A real rendered screen or a pixel before/after is not a picture of
+  the delta — that is a screenshot; see *Screenshots* below, which owns the capture
+  and upload rules.
 - **Before → After, and only the delta.** Two states side by side (two subgraphs,
   or two columns), or one graph where the changed edge is the only thing that
   stands out. Six to ten nodes, or eight rows, is the ceiling.
@@ -794,9 +793,29 @@ Capture each affected surface in its meaningful variants (desktop vs browser, em
 vs populated), **by looking at the change yourself** via the `web-verify` skill — the
 PR's evidence is then the same evidence you used to verify.
 
-- Commit the images under **`temp-screenshots/<feature>/`** and amend them into the single commit. **Never** under `docs/` or `src/kiro_crew/**` — those ship in the wheel and the desktop DMG.
-- Embed with **commit-SHA-pinned** same-origin URLs: `![alt](https://github.com/<owner>/<repo>/raw/<sha>/temp-screenshots/<feature>/<name>.png)`. Branch-pinned URLs break when the branch is deleted; external hosts are camo-blocked for private repos. Re-pin after any amend that changes the images.
+Evidence is **uploaded as a GitHub attachment, never committed.** `temp-screenshots/`
+and `.github/screenshots/` are gitignored, and `docs/` and `src/kiro_crew/**` ship in
+the wheel and the desktop DMG — no path in the repository is a place for review media.
+
+- **Capture into a local scratch dir** — `$KIROCREW_SCRATCH/evidence/`, or the gitignored `temp-screenshots/<feature>/` the capture scripts already write to. Neither reaches the commit.
+- **Write ordinary local paths in the body file**, relative to the directory you run `gh` from: `![Settings page, empty state](./evidence/after.png)`. A video MUST stand alone in its own paragraph — `![](./evidence/demo.mp4)` with a blank line above and below — to render as an inline player; inside a sentence it renders as a link.
+- **Pass the same files to `gh`, one `--attach` per file** (gh >= 2.99 — check `gh --version` and upgrade first when it is older, e.g. `brew upgrade gh`):
+
+  ```bash
+  gh pr create --base <base> --head <branch> --title "<CC title>" --body-file <body> \
+    --attach ./evidence/after.png --attach ./evidence/demo.mp4
+  gh pr edit <n> --body-file <body> --attach ./evidence/after-v2.png   # a later round with a new capture
+  ```
+
+  Every path the body references is rewritten in place to a permanent `https://github.com/user-attachments/assets/<uuid>` URL, alt text kept. An attached file the body does not reference is appended at the end; its alt text goes after `#` in the flag (`--attach './evidence/after.png#Settings page, empty state'` — images only, not video). The same file cannot be attached twice.
+- **Attach before the push that needs judging.** `ux-review.yml` and its fork twin trigger on `opened`/`synchronize` only; an `edited` event re-runs nothing. On a new PR `gh pr create --attach` is fine — the `opened` event carries the finished body. On an existing PR run `gh pr edit --attach` (or the REST body PATCH) first and force-push second, so the run the push starts reads the body with the new URLs in it.
+- **Verify the body carries the URLs:** `gh api repos/<owner>/<repo>/pulls/<n> --jq .body | grep -c user-attachments` MUST print the number of files you attached. `0` means the body was posted without `--attach` — post it again with the flags.
+- **Nothing is ever re-pinned.** The URL is tied to no commit and no branch, so an amend, a squash, a force-push, branch deletion and the merge all leave it valid. When a later round regenerates the body, carry the published `user-attachments` URLs over verbatim; attach a fresh capture only when the pixels themselves changed.
+- **Limits and formats:** PNG, JPEG, GIF, WebP, SVG, MP4, MOV, WebM; 10 MB per image or GIF, 100 MB per video; no PDF or docx; not available on GitHub Enterprise Server.
+- **Non-media evidence is not attached with `--attach`, and not committed either.** Text -- a provenance JSON, a perf baseline, an assertion dump -- goes in a fenced code block in a PR comment (GitHub caps a comment at 65,536 characters; split a larger dump across comments, each named in the first). A document -- a PDF, a docx, a zip -- is dragged into a PR comment in the web UI, which accepts those up to 25 MB and yields a permanent `https://github.com/user-attachments/files/<id>/<name>` URL that `gh --attach` cannot produce. Either way, link the comment's permalink (`https://github.com/<owner>/<repo>/pull/<n>#issuecomment-<id>`) from a spec that cites the evidence as provenance.
+- **Push access is required.** `--attach` uploads with your normal gh token and needs push access to the target repository. A fork contributor without it drags the file into the description box in the web UI, which yields the same `user-attachments` URL; the review lanes read both alike.
 - Two or three most telling shots inline; fold full-page context into `<details>`.
+- The UX Review lane's blind read downloads the attachment URLs from the PR body (a committed image is still read), and the screenshot-evidence gate accepts them as evidence — the body, not the diff, is where the evidence lives.
 
 **No-visual-delta waiver** — when the diff touches watched frontend paths but
 changes no pixel, both lines are required together:

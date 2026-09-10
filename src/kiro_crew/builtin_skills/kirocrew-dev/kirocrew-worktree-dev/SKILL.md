@@ -395,10 +395,15 @@ gh pr create --base main --title "feat: <description>" --body "<details>"
   some agent security policies fail closed on pushes embedded in compound
   commands (`&&`, `;`, pipes). Treating commit, push, and PR edits as three
   separate steps is safe everywhere.
-- **UI screenshots:** embed commit-SHA-pinned same-origin URLs —
-  `https://github.com/<owner>/<repo>/raw/<sha>/<path>` — never
-  `raw.githubusercontent.com` (blocked by GitHub Camo on private repos).
-  Re-pin the SHA after every squash or force-push.
+- **UI screenshots:** upload them as GitHub attachments, never commit them.
+  Write local paths in the body file and pass the same files to
+  `gh pr create|edit --body-file <body> --attach <path>` (gh >= 2.99); each path
+  is rewritten to a permanent `https://github.com/user-attachments/assets/<uuid>`
+  URL that no squash or force-push invalidates, so nothing is ever re-pinned.
+  A video renders as a player only when `![](<path>)` stands alone in its
+  paragraph. Never `raw.githubusercontent.com` or another external host
+  (blocked by GitHub Camo on private repos). Details: the **prepare-pr** skill,
+  *Screenshots*.
 - CI runs the same gates (pytest, isort, flake8, mypy, tsc, vitest) — but run
   them locally first. CI is for confirmation, not discovery.
 
@@ -441,9 +446,10 @@ Two habits keep the tree clean:
   gh pr create --body-file "$SCRATCH/pr-body.md" ...
   python -m pytest -q > "$SCRATCH/fullsuite.log" 2>&1
   ```
-  The lone exception is a **committed** deliverable — e.g. approved QA media
-  under `temp-screenshots/<feature>/`, which is staged into the PR's commit and
-  is therefore clean, not litter (see the pod-e2e skill).
+  Approved QA media is no exception: it is uploaded from the artifact dir as a
+  PR attachment with `gh pr edit --attach` and never enters the tree (see the
+  pod-e2e skill). The capture scripts' local output dir, `temp-screenshots/`,
+  is gitignored, so frames left there are invisible to `git status`.
 - **Restore regenerated tracked files; delete stray untracked ones — but only
   what YOU produced.** Before you end the session, run `git status --porcelain`
   and INSPECT each line before touching it. Only discard content this session

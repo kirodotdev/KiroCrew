@@ -1,7 +1,7 @@
 /**
  * CrewPageView — one crew's page: who it is, what it is holding, and what it did.
  *
- * Five regions, top to bottom (the layout is `temp-screenshots/crews-mock/02-crew-page-*.png`):
+ * Five regions, top to bottom:
  *
  *   1. header       identity + derived state + the three actions
  *   2. extra prompt the crew's standing instruction, verbatim

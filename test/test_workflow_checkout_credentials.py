@@ -137,13 +137,12 @@ def test_no_checkout_both_opts_out_and_claims_retention() -> None:
     [
         "add-contributor.yml",
         "ci.yml",
-        "cleanup-temp-screenshots.yml",
         "memory-benchmark.yml",
         "test-durations.yml",
     ],
 )
 def test_the_known_residual_carriers_still_state_their_reason(name: str) -> None:
-    """The five files that legitimately retain the credential somewhere. Pinned
+    """The four files that legitimately retain the credential somewhere. Pinned
     by name so that stripping every rationale comment from one of them fails
     here loudly, instead of quietly passing the invariant above by making the
     step look like a plain opt-out."""

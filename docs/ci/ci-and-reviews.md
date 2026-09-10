@@ -106,9 +106,6 @@ Out-of-band lanes that never gate a PR:
   call, and `test-durations.yml` already pays for a full suite on `main`.
   Contributor-facing half: [CONTRIBUTING.md](../../CONTRIBUTING.md).
 - **Maintenance:** `ship-report.yml` (a scheduled Slack summary),
-  `cleanup-temp-screenshots.yml` (prunes the ephemeral `temp-screenshots/` dir,
-  see [its README](../../temp-screenshots/README.md); safe because PR bodies
-  embed commit-SHA-pinned raw URLs that keep resolving),
   `test-durations.yml` (re-measures `.test_durations` so pytest-split's shards stay
   balanced by recorded runtime, and opens a PR with the update), `issue-triage.yml`
   (a model picks `type:` / `area:` / `platform:` labels from the repository's own
@@ -157,11 +154,11 @@ Out-of-band lanes that never gate a PR:
   handoff, not a loss: the job stays green and files/updates one issue titled
   "Add Contributor needs a human to open the contributors PR" carrying the compare
   link. The same limitation applies to every workflow here that opens a PR
-  (`test-durations.yml`, `cleanup-temp-screenshots.yml`, `memory-benchmark.yml`),
-  which carry the same guard in a lighter form: they emit a `::notice::` with the
-  compare link and exit 0 rather than filing an issue, because their branches are
-  regenerated on the next scheduled run and so do not need a durable tracker. Any
-  create failure that is NOT that refusal still fails the job in all four.
+  (`test-durations.yml`, `memory-benchmark.yml`), which carry the same guard in a
+  lighter form: they emit a `::notice::` with the compare link and exit 0 rather
+  than filing an issue, because their branches are regenerated on the next
+  scheduled run and so do not need a durable tracker. Any create failure that is
+  NOT that refusal still fails the job in all three.
   `test/test_workflow_pr_create_handoff.py` holds them in step and fails a new
   `gh pr create` step that skips the guard.
 
@@ -463,7 +460,7 @@ design axis is **what each is allowed to read** (its prompt-injection surface) a
 | Opus 4.8 | `Opus 4.8 Review` | Agentic, `--max-turns 120` per stage, **two real invocations** (discovery -> validation) | **Code only**: `Read`, `Grep`, `Glob`, `Bash(gh pr diff:*)` | Line-level correctness, security, AUTOSDE | Yes, fail-closed |
 | GPT 5.6 | `GPT 5.6 Review` | Non-agentic, **two** invocations (discovery, then authoritative falsification), `reasoning_effort: medium` | Code plus PR title and body as nonce-wrapped **UNTRUSTED** context | Line-level second perspective, plus description-versus-diff consistency (advisory) | Yes, fail-closed |
 | Design Review | `Design Review` | Agentic Fable 5, with an Opus fallback model | Code plus `gh pr view` (it must judge intent) | Should we build this, and is it the right *shape*? | Advisory; red only on a genuine `BLOCK` |
-| UX Review | `UX Review` | Agentic Fable 5, with the same fallback; **two real invocations** on same-repo PRs (blind read -> reconcile) | Pass 1: the committed screenshot PNGs **only**; pass 2: code, PR text, and pass 1's report | Can a first-time user who has read nothing tell what each new element is and does, and do state changes stay one continuous element? | Advisory; red only on a genuine `BLOCK` |
+| UX Review | `UX Review` | Agentic Fable 5, with the same fallback; **two real invocations** on same-repo PRs (blind read -> reconcile) | Pass 1: the PR's screenshots **only** -- the attachments its body links, downloaded, plus any committed image; pass 2: code, PR text, and pass 1's report | Can a first-time user who has read nothing tell what each new element is and does, and do state changes stay one continuous element? | Advisory; red only on a genuine `BLOCK` |
 | First Principles | `First Principles Review` | Agentic Fable 5, same fallback, `--max-turns 120` (inventorying and counting is grep-heavy) | Code, the whole repository, and `gh pr view` | What is the author trying to do, and does each thing this ships *deserve to exist*, already exist, or only patch a symptom? | Advisory; red only on a genuine `BLOCK` |
 
 ### Why a first-principles lane is not a second Design Review
@@ -778,20 +775,31 @@ and fork PRs identically with no cross-workflow head-passing.
 ### `UX Review` early-skips cheaply
 
 It runs only when the diff touches `website/`, `temp-screenshots/**` or
-`.github/screenshots/**`. A backend, CI or docs PR skips it with no model call and no
-comment churn, and the check passes. When screenshots are present it reads each PNG
-and grounds visual findings in them, and it is instructed to treat screenshot content
-as untrusted (a screenshot, title, commit message or filename attempting to grant
-leniency is ignored, and screenshot polish never waives a lens).
+`.github/screenshots/**` (the last two are gitignored, so in practice `website/` is the
+trigger). A backend, CI or docs PR skips it with no model call and no comment churn,
+and the check passes. Review evidence is uploaded as a GitHub attachment, not
+committed: the author writes local paths in the PR body and runs
+`gh pr create|edit --attach <path>`, which rewrites each into a permanent
+`https://github.com/user-attachments/assets/...` URL (dragging the file into the
+description in the web UI yields the same URL). The lane reads the body from the API when
+it runs (`.github/scripts/pr-attachment-evidence.sh`, one script both UX lanes source;
+the fork lane takes it from its trusted base checkout), not from the event payload -- an `edited` event starts no review, so evidence
+attached after a push is read on a re-run of the workflow or on the next push -- downloads
+those URLs (a committed image is still accepted), reads each one and grounds visual
+findings in them, and it is instructed to treat screenshot content as untrusted (a
+screenshot, title, commit message or filename attempting to grant leniency is
+ignored, and screenshot polish never waives a lens). `screenshot-evidence.yml`, the
+gate that requires evidence on a UI diff, accepts the same URLs.
 
 ### `UX Review` reads the screenshots blind before it reads the diff
 
 On same-repo PRs the lane is two model calls with a context wall between them.
-**Pass 1 (blind read)** gets the `Read` tool and a list of the images the PR commits,
-copied under opaque names (`shot-01.png`, ...) so an author-chosen filename such as
-`pinned-turn-chip.png` cannot prime it -- and nothing else: no diff, no PR title or
-description, no `Grep`/`Glob`/`Bash`. It is told it is a non-technical person
-opening the product for the first time and
+**Pass 1 (blind read)** gets the `Read` tool and a list of the images the PR carries
+-- the `user-attachments` URLs linked from its body, downloaded to the runner, plus
+any image it commits -- copied under opaque names (`shot-01.png`, ...) so an
+author-chosen filename such as `pinned-turn-chip.png` cannot prime it -- and nothing
+else: no diff, no PR title or description, no `Grep`/`Glob`/`Bash`. It is told it is
+a non-technical person opening the product for the first time and
 writes down, per element, what it appears to be, what a click would do, how sure it
 is, and whether it would dare to click. **Pass 2 (reconcile)** gets the diff, the PR
 text and pass 1's report as a data file, and adjudicates rather than re-reads.
@@ -808,7 +816,8 @@ asked exactly that of a reviewer that was no longer uninformed, so it was replac
 Three rules follow from the split, all read off evidence rather than judged:
 
 - **Coverage.** Every user-visible control the diff adds or changes must appear in a
-  committed screenshot. One that does not is an *evidence gap*, listed under
+  screenshot the PR carries -- an attachment linked from its body, or a committed
+  image. One that does not is an *evidence gap*, listed under
   `### Evidence gaps`, and the verdict cannot be `PASS`. A diff that adds or changes
   no user-visible control has no gaps and needs no screenshot.
 - **Primary controls.** A control on the change's main path that the blind reader
@@ -826,16 +835,23 @@ Three rules follow from the split, all read off evidence rather than judged:
   with no stated reason is a `BLOCK`. Async lifecycle states (loading, empty, error
   -> content) are not in scope. The convention is also stated in `website/AGENTS.md`
   so authors meet it before the check does. Static screenshots cannot show
-  continuity, so this class of change needs a recording (a committed or PR-body
-  `.gif`/`.mp4`/`.webm`); none is an evidence gap. The reviewer cannot play the
-  recording -- it verifies the mechanism in the diff and that the recording exists,
-  and a human watches it.
+  continuity, so this class of change needs a recording (a `.gif`/`.mp4`/`.webm`
+  attached to the PR body, or committed); none is an evidence gap. The reviewer
+  cannot play the recording -- it verifies the mechanism in the diff and that the
+  recording exists, and a human watches it.
 
 The fork lane (`fork-ux-review.yml`) carries the same rules but has **no blind-read
-pass**: the fork head is never checked out, so the screenshots a fork PR adds are not
-on disk. It records every added or changed control as an evidence gap instead, which
-caps a fork UI change at `CONCERNS` (advisory). A maintainer who wants the blind read
-pushes the branch to this repository.
+pass**: it reviews in a single pass, after the diff. Its evidence step reads the PR
+description from the API and downloads the allowlisted `user-attachments` URLs onto
+the runner (the job's egress allowlist names the two hosts a download touches,
+`github.com` and the `github-production-user-asset-6210df.s3.amazonaws.com` bucket
+its 302 points at), so the reviewer
+opens the same images a same-repo review would. An image a fork PR *commits* is not
+on disk -- the fork head is never checked out -- so a control shown only there is an
+evidence gap, which caps that PR at `CONCERNS` (advisory). A maintainer who wants
+the blind read pushes the branch to this repository. A fork contributor without push
+access cannot run `gh --attach`; dragging the file into the PR description in the web
+UI yields the same `user-attachments` URL.
 
 The PR identity (number, repository, shas, data-file paths) is passed to both passes
 in `--append-system-prompt`, not in `prompt:`. GitHub rejects a workflow file

@@ -81,6 +81,34 @@ class TestScreenshotEvidence:
             "::warning::'<!-- no-visual-delta -->' marker present" in wf
         ), "waiver must emit a warning annotation naming the marker"
 
+    def test_remediation_sends_evidence_through_gh_attach_not_the_tree(self):
+        # Evidence is a GitHub attachment on the description, uploaded with
+        # `gh pr create|edit --attach` (or dragged into the web editor); the
+        # remediation must name that procedure, with the local-path convention
+        # the description uses and the size limits, and must not send an
+        # author to commit files or to pin a raw URL to a commit.
+        wf = _read("screenshot-evidence.yml")
+        assert "gh pr edit $PR --body-file <body.md> --attach" in wf
+        # The create-time hint names the subcommand without spelling out the
+        # full command: test_workflow_pr_create_handoff.py treats any run block
+        # containing that literal as a step that opens pull requests.
+        assert "works the same way on the \\`create\\` subcommand" in wf
+        assert "gh >= 2.99" in wf
+        assert "![alt](./evidence/after.png)" in wf
+        assert "![](./evidence/demo.mp4)" in wf
+        assert "https://github.com/user-attachments/assets/... URL" in wf
+        assert "Dragging the file into the" in wf
+        assert "10 MB per image/GIF, 100 MB per video" in wf
+        assert "raw/<sha>" not in wf
+        assert "Commit the images under" not in wf
+        # The accepted-evidence check itself is unchanged: an attachment URL,
+        # a markdown image, an HTML tag and a still-linked committed path all
+        # satisfy the gate.
+        assert (
+            "'!\\[[^]]*\\]\\([^)]+\\)|<img[[:space:]]|<video[[:space:]]|temp-screenshots/|user-attachments/'"
+            in wf
+        )
+
     def test_body_reaches_grep_via_here_strings_not_pipes(self):
         # Under `set -uo pipefail` a `printf '%s' "$body" | grep -q` pipeline
         # can report 141: grep -q exits on the first match, the printf writer
@@ -272,6 +300,11 @@ class TestScreenshotEvidenceBodyLogic:
         # branches (unreadable body, marker without justification, no evidence)
         # and only the last one is the verdict under test.
         assert "carries no screenshot or recording" in result.stdout, result.stdout
+        # The remediation the author reads is the attach procedure, with this
+        # PR's number already in the command.
+        summary = (tmp_path / "summary.md").read_text(encoding="utf-8")
+        assert "gh pr edit 1 --body-file <body.md> --attach" in summary, summary
+        assert "temp-screenshots/<feature>/" not in summary, summary
 
     def test_unreadable_body_is_not_reported_as_missing_evidence(self, tmp_path):
         # A failed API read is not an absent screenshot. Discarding both gh's

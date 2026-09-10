@@ -2454,9 +2454,8 @@ computer use.
   `0o700` temp dir the agent can reach with `fs_read` — the same posture browse
   already ships. Computer use widens WHAT can be in frame (any window, not one
   browser tab). Mitigations: per-window capture only (never full-screen),
-  whole-window suppression when any node is secure, ring-trim to 200, and the
-  existing `cleanup-temp-screenshots.yml`. This design does not widen the posture
-  and does not claim to close it.
+  whole-window suppression when any node is secure, and ring-trim to 200. This
+  design does not widen the posture and does not claim to close it.
 - **"No screenshots" is not "no disclosure."** The accessibility tree itself
   leaked real paths, window titles and bundle ids in live probes, and a document
   path inside an `AXTitle` is not a credential so redaction will not catch it.

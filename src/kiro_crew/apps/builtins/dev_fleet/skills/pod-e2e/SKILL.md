@@ -293,33 +293,39 @@ QA screenshots and demo videos follow a **review-then-attach** contract:
    the usual frame inspection for overlays -- first-run modals, toasts, theme
    pickers). Never attach media the user has not seen.
 2. **Wait for explicit approval of the media.** A silent user is NOT approval.
-3. **On approval, attach to the PR automatically -- do NOT ask again.**
-   - Copy the approved files into `<worktree>/temp-screenshots/<feature>/`
-     (top-level ephemeral dir, see [its README](../../../../../../../temp-screenshots/README.md)
-     for the full convention; NEVER under `docs/` or `src/kiro_crew/**` --
-     those trees ship in the wheel/sdist and desktop DMG).
-   - Stage `temp-screenshots/<feature>/`, **amend into the PR's single
-     commit**, and force-push with lease (standalone push command naming the
-     feature branch).
-   - Update the PR body with **commit-SHA-pinned** raw URLs:
-     - Images inline: `![alt](https://github.com/<owner>/<repo>/raw/<sha>/temp-screenshots/<feature>/<name>.png)`
-       -- put the 2-3 most telling shots inline, fold the rest into `<details>`.
-     - Videos: GitHub does not inline-play raw blob mp4s -- add a labelled link
-       line instead: `[Demo video (Ns, XMB)](https://github.com/<owner>/<repo>/raw/<sha>/temp-screenshots/<feature>/<name>.mp4)`.
-   - After ANY later amend, re-pin every media URL to the new SHA.
-   - Verify the body update landed (`gh api repos/<o>/<r>/pulls/<n> --jq .body | grep temp-screenshots`).
-4. **Batch to minimize approval resets.** A force-push resets PR approvals --
-   attach media BEFORE asking the user to approve the PR itself, and fold the
-   media amend into any pending code amend rather than pushing twice.
+3. **On approval, attach to the PR automatically -- do NOT ask again.** The media
+   is a GitHub attachment, never a commit: nothing is copied into the worktree,
+   nothing is amended, nothing is pushed.
+   - Write the PR body to a scratch file outside the worktree and reference the
+     approved files by their local paths: `![Settings page, empty state](<ARTIFACT_DIR>/fe-settings.png)`.
+     Put the 2-3 most telling shots inline and fold the rest into `<details>`.
+     A video MUST stand alone in its own paragraph -- `![](<ARTIFACT_DIR>/demo.mp4)`
+     with a blank line above and below -- to render as an inline player; inside a
+     sentence it renders as a link.
+   - Run `gh pr edit <n> --body-file <body> --attach <ARTIFACT_DIR>/fe-settings.png --attach <ARTIFACT_DIR>/demo.mp4`
+     (one `--attach` per file; gh >= 2.99, check `gh --version`). Each referenced
+     path is rewritten in place to a permanent
+     `https://github.com/user-attachments/assets/<uuid>` URL; an attached file the
+     body does not reference is appended at the end. Limits: 10 MB per image/GIF,
+     100 MB per video. `--attach` needs push access to the repository -- a fork
+     contributor without it drags the file into the description in the web UI,
+     which yields the same URL.
+   - Verify the body update landed: `gh api repos/<o>/<r>/pulls/<n> --jq .body | grep -c user-attachments`
+     prints the number of files you attached.
+   - The URL is tied to no commit or branch, so a later amend, force-push, branch
+     deletion or the merge leaves it valid; nothing is ever re-pinned.
+4. **Attach before asking for PR approval.** The evidence goes in as a body edit
+   -- no push, no approval reset -- and it must be in the body before the user is
+   asked to approve the PR, so the approval covers what a reviewer sees.
 
 ### Keep the rest of the tree clean
 
 The e2e suite already writes its logs and screenshots to
 `~/.kirocrew-pods/.e2e-artifacts/<wt>/` -- **outside** the worktree -- by design;
 don't copy those raw logs back into the worktree "to keep them with the branch."
-The only QA output that belongs in the tree is the **committed** media under
-`temp-screenshots/<feature>/` (above). Everything else -- raw `*.log` dumps,
-extra frames, scratch notes, the `.pr-body.md` you fed to `gh pr create` -- stays
+No QA output belongs in the tree: approved media is uploaded from `ARTIFACT_DIR`
+as a PR attachment (above), and everything else -- raw `*.log` dumps, extra
+frames, scratch notes, the `.pr-body.md` you fed to `gh pr create` -- stays
 outside (write it under a `mktemp -d`). Before ending the session,
 `git status --porcelain` must be empty: a dirty tree fail-closes Dev Fleet's
 "Prune merged" (`merged_dirty`) so the merged worktree can't be reaped. See the

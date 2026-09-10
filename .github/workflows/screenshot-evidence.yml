@@ -142,8 +142,9 @@ jobs:
           fi
 
           # Accept any form that actually renders as an image/video for a
-          # reviewer: markdown image, HTML img/video, a committed
-          # temp-screenshots path, or a GitHub user-attachment URL. Real
+          # reviewer: markdown image, HTML img/video, a GitHub user-attachment
+          # URL (what `gh pr edit --attach` and the web editor produce), or a
+          # temp-screenshots path from a PR that links a committed image. Real
           # evidence satisfies the gate outright, so it is checked before any
           # waiver: a body carrying both a screenshot and the marker passes on
           # the screenshot. Every body check reads from a here-string, never a
@@ -201,11 +202,23 @@ jobs:
             echo "- A multi-step flow (wizard, modal, drag) -> a recording of the whole sequence"
             echo
             echo "**How to attach it** (see the \`web-verify\` and \`frontend-design-workflow\` skills)"
-            echo "1. Capture the surface yourself from a running dev server or pod."
-            echo "2. Commit the images under \`temp-screenshots/<feature>/\` -- never under"
-            echo "   \`docs/\` or \`src/kiro_crew/**\`, which ship in the wheel and the DMG."
-            echo "3. Embed with a commit-SHA-pinned URL so it survives branch deletion:"
-            echo "   \`![alt](https://github.com/$REPO/raw/<sha>/temp-screenshots/<feature>/<name>.png)\`"
+            echo "1. Capture the surface yourself from a running dev server or pod. Keep the"
+            echo "   files out of the repository: evidence is uploaded as a GitHub attachment,"
+            echo "   not committed."
+            echo "2. Write ordinary local paths into the description where each image belongs,"
+            echo "   \`![alt](./evidence/after.png)\`; a video alone in its paragraph,"
+            echo "   \`![](./evidence/demo.mp4)\`, renders as a player."
+            echo "3. Upload the same files with the description (gh >= 2.99):"
+            echo "   \`gh pr edit $PR --body-file <body.md> --attach ./evidence/after.png --attach ./evidence/demo.mp4\`"
+            echo "   (\`--attach\` works the same way on the \`create\` subcommand when opening the PR)."
+            echo "   Attach BEFORE the push you want reviewed: the UX review reads the description"
+            echo "   when a push lands (editing it starts no review). Attached after the push?"
+            echo "   Re-run the UX Review workflow, or push again."
+            echo "   Each path is rewritten in place to a permanent"
+            echo "   https://github.com/user-attachments/assets/... URL that survives"
+            echo "   force-pushes, branch deletion and merge. Dragging the file into the"
+            echo "   description in the web UI produces the same URL."
+            echo "   Limits: 10 MB per image/GIF, 100 MB per video."
             echo
             echo "**If the change genuinely has no visual delta** (pure rename, comment-only,"
             echo "or a non-rendering attribute), add the \`no-screenshots\` label and re-run."

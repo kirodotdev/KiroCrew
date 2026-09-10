@@ -51,8 +51,12 @@ def _pr_creating_steps():
 
 def test_the_scan_actually_finds_the_pr_creating_steps():
     """A scan that matched nothing would let every assertion below pass empty."""
-    found = _pr_creating_steps()
-    assert len(found) >= 4, f"expected the known `gh pr create` steps, found {len(found)}"
+    # The steps known to open a PR under GITHUB_TOKEN. Removing a workflow from
+    # the repository removes its entry here too; a scan that misses one of these
+    # names is broken, not "one fewer".
+    known = {"add-contributor.yml", "memory-benchmark.yml", "test-durations.yml"}
+    found = {workflow for workflow, _step, _script in _pr_creating_steps()}
+    assert known <= found, f"the scan missed known `gh pr create` steps: {sorted(known - found)}"
 
 
 @pytest.mark.parametrize(

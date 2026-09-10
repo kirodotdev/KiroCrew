@@ -104,8 +104,8 @@ jobs:
               - '!.github/**'
               - '!scripts/**'
               # temp-screenshots/** is never-packaged, never-imported evidence
-              # media (cleanup-temp-screenshots.yml already treats it as
-              # ephemeral), so it must not drag a frontend-only PR into the
+              # media (gitignored; PR evidence travels as a GitHub attachment),
+              # so it must not drag a frontend-only PR into the
               # full backend matrix (#8027). Excluding it keeps the catch-all
               # safety property: any unrecognised REAL file still lands in
               # backend, a screenshots+frontend diff stays only_frontend=true,

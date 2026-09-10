@@ -523,6 +523,6 @@ b02 的 `E2E (stub ACP backend, offline)` 已通过，当前浏览器截图与�
 
 Qwen 进程启用 NumPy，未安装 FAISS。中日韩固定结构样例、超长输出与已遗忘记录排除检查通过，`structural_failures=[]`。另一个 [FAISS 产物 10135478508](https://github.com/kirodotdev/KiroCrew/actions/runs/34433763685/artifacts/10135478508) 记录 faiss-cpu 1.12.0 下六个指定用例通过，无失败、错误或跳过；ZIP SHA256 为 `33c11793fe64cac9b36ef2632ffb8dfe5d6a22ea37dcfb8efff716857a218b29`。同一 namespace 作业的两项真实 Linux 隔离检查通过。这些通过记录属于各自作业，不等于整轮 CI 全绿。
 
-44546 的[浏览器产物 10135852001](https://github.com/kirodotdev/KiroCrew/actions/runs/34433763685/artifacts/10135852001)包含九个记忆场景，全部首次通过。29 张截图已逐张检查，九段录像共检查了 84 个按时间排列的解码画面，未发现具体视觉缺陷；这不是连续播放检查。该次运行的原始媒体未随仓库保留；后续来源 `a46796234356c217d5fd531f21e1ca7a1c026b86` 的十个场景捕获保存在[已提交的证据目录](../../../../../temp-screenshots/memory-v2/ci-a467/README.md)。该执行使用真实临时网关、合成数据和模拟 ACP，未验证线上模型回答或重启后的恢复激活，也不覆盖后续界面改动。
+44546 的[浏览器产物 10135852001](https://github.com/kirodotdev/KiroCrew/actions/runs/34433763685/artifacts/10135852001)包含九个记忆场景，全部首次通过。29 张截图已逐张检查，九段录像共检查了 84 个按时间排列的解码画面，未发现具体视觉缺陷；这不是连续播放检查。该次运行的原始媒体未随仓库保留；后续来源 `a46796234356c217d5fd531f21e1ca7a1c026b86` 的十个场景捕获保存在[已提交的证据目录](https://github.com/kirodotdev/KiroCrew/blob/d78172afa410ab226336eef1e633a354742692cc/temp-screenshots/memory-v2/ci-a467/README.md)。该执行使用真实临时网关、合成数据和模拟 ACP，未验证线上模型回答或重启后的恢复激活，也不覆盖后续界面改动。
 
 本次仍复用 50 个英文主题、100 条经历片段和每模式 5,000 对问题与片段。0.62 与 0.57 是同一语料上的暂定阈值，没有独立留出集。主题命中不是回答正确率；这些测量没有比较同条件 V1/V2、核心指南遵守、Crew 协作效果、长期学习、延迟、CPU、内存或成本。完整向量的优势只适用于本语料中的片段召回。后续提交的完整 CI、安全门禁和新界面证据需要分别验证。

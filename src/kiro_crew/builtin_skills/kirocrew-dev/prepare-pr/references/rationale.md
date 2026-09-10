@@ -150,17 +150,29 @@ The maintainer's auto-approval bot greps for the template's exact heading string
 because the repo's file is the single source of truth and the skill always runs
 inside a checkout.
 
-## Why screenshots live in `temp-screenshots/`
+## Why screenshots are attachments, not commits
 
 `docs/` and `src/kiro_crew/**` ship in the wheel, the sdist, and the desktop DMG, so
-review images placed there ride into a shipped artifact. `temp-screenshots/` is
-outside every packaged path and is pruned periodically — long enough for the PR to be
-reviewed.
+review images placed there ride into a shipped artifact; a dedicated directory keeps
+them out of the package but still puts megabytes of pixels into every clone, forever.
+An attachment puts nothing in the repository at all: `gh pr create|edit --attach`
+uploads the file with the caller's own token and rewrites the body's local path to
+`https://github.com/user-attachments/assets/<uuid>`.
 
-SHA-pinned URLs are required because branch-pinned URLs break when the branch is
-deleted on merge, and external image hosts leak content and are camo-blocked for
-private repos. The pinned blob stays reachable through the historical commit even
-after cleanup removes the file from `main`'s tip.
+That URL is tied to no commit and no branch. A raw-blob URL has to be pinned to a SHA
+to survive branch deletion on merge, and then every squash, amend or force-push moves
+the SHA out from under it, so the body needs a re-pin pass after each round and the
+first missed pass leaves a broken image. The attachment URL survives all of those
+without anyone touching the body, so the loop never re-pins. External image hosts
+are the other alternative and are worse on both counts: they leak content, and GitHub
+Camo blocks them on private repos.
+
+The review lanes read the same URL the author wrote: the UX lane's blind read
+downloads the `user-attachments` links from the PR body (a committed image still
+counts), and the screenshot-evidence gate accepts them as visual evidence. Dragging
+a file into the description in the web UI produces an identical URL, so a fork
+contributor without push access — the one case `--attach` refuses — reaches the same
+place by hand, and a human reviewer and the lanes see one convention, not two.
 
 ## Why the closing-keyword check reads the API back
 
