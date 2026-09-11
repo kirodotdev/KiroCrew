@@ -4971,6 +4971,8 @@
         "backup_restore_foreign_confirm": "Este archivo lo subió otra instalación ({{install}}). Restaurarlo descarga los datos de esa instalación, no los de esta instalación. ¿Descargarlo de todos modos?",
         "backup_restore_unverified_confirm": "Este archivo está guardado en la carpeta propia de esta instalación, pero esta instalación no tiene registro de haberlo subido. Cualquiera que pueda escribir en la unidad puede crear esa carpeta, así que puede que no sea de esta instalación. ¿Descargarlo de todos modos?",
         "backup_restore_unknown_confirm": "Este archivo se subió antes de que las instalaciones tuvieran nombre, así que se desconoce qué instalación lo escribió. ¿Descargarlo de todos modos?",
+        "backup_restore_overwritten_confirm": "Esta instalación subió este archivo, pero la unidad ya no contiene lo que subió: otra cosa lo ha sobrescrito desde entonces. ¿Descargarlo de todos modos?",
+        "backup_restore_overwritten_refused": "Esta instalación subió este archivo, pero la unidad ya no contiene lo que subió. Para descargarlo de todos modos, abre Copias almacenadas y elige Descargarlo.",
         "backup_restore_foreign_refused": "Ese archivo pertenece a otra instalación. Confirma la restauración para descargarlo de todos modos.",
         "backup_restore_confirm_yes": "Descargarlo",
         "backup_restore_confirm_no": "Cancelar",

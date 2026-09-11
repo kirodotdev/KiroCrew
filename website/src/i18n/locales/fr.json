@@ -4971,6 +4971,8 @@
         "backup_restore_foreign_confirm": "Cette archive a été envoyée par une autre installation ({{install}}). La restaurer télécharge les données de cette autre installation, pas celles de cette installation-ci. La télécharger quand même ?",
         "backup_restore_unverified_confirm": "Cette archive est stockée dans le dossier propre à cette installation, mais cette installation n’a aucune trace de l’avoir envoyée. Tout ce qui peut écrire sur le lecteur peut créer ce dossier, elle ne provient donc peut-être pas de cette installation. La télécharger quand même ?",
         "backup_restore_unknown_confirm": "Cette archive a été envoyée avant que les installations soient nommées, on ignore donc quelle installation l'a écrite. La télécharger quand même ?",
+        "backup_restore_overwritten_confirm": "Cette installation a envoyé cette archive, mais le lecteur ne contient plus ce qu'elle a envoyé : autre chose l'a écrasée depuis. La télécharger quand même ?",
+        "backup_restore_overwritten_refused": "Cette installation a envoyé cette archive, mais le lecteur ne contient plus ce qu'elle a envoyé. Pour la télécharger quand même, ouvre Sauvegardes stockées et choisis Télécharger.",
         "backup_restore_foreign_refused": "Cette archive appartient à une autre installation. Confirme la restauration pour la télécharger quand même.",
         "backup_restore_confirm_yes": "Télécharger",
         "backup_restore_confirm_no": "Annuler",

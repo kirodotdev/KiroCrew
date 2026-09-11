@@ -4971,6 +4971,8 @@
         "backup_restore_foreign_confirm": "Este arquivo foi enviado por outra instalação ({{install}}). Restaurá-lo baixa os dados daquela instalação, não os desta instalação. Baixar mesmo assim?",
         "backup_restore_unverified_confirm": "Este arquivo está guardado na pasta própria desta instalação, mas esta instalação não tem registro de tê-lo enviado. Qualquer um que possa escrever no drive pode criar essa pasta, então talvez ele não seja desta instalação. Baixar mesmo assim?",
         "backup_restore_unknown_confirm": "Este arquivo foi enviado antes de as instalações terem nome, então não se sabe qual instalação o escreveu. Baixar mesmo assim?",
+        "backup_restore_overwritten_confirm": "Esta instalação enviou este arquivo, mas o drive já não contém o que ela enviou — outra coisa o sobrescreveu desde então. Baixar mesmo assim?",
+        "backup_restore_overwritten_refused": "Esta instalação enviou este arquivo, mas o drive já não contém o que ela enviou. Para baixá-lo mesmo assim, abra Backups armazenados e escolha Baixar.",
         "backup_restore_foreign_refused": "Esse arquivo pertence a outra instalação. Confirme a restauração para baixá-lo mesmo assim.",
         "backup_restore_confirm_yes": "Baixar",
         "backup_restore_confirm_no": "Cancelar",

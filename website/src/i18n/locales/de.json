@@ -4892,6 +4892,8 @@
         "backup_restore_foreign_confirm": "Dieses Archiv wurde von einer anderen Installation ({{install}}) hochgeladen. Es wiederherzustellen lädt die Daten jener Installation herunter, nicht die dieser Installation. Trotzdem herunterladen?",
         "backup_restore_unverified_confirm": "Dieses Archiv liegt im eigenen Ordner dieser Installation, aber diese Installation hat keinen Nachweis, es hochgeladen zu haben. Alles, was auf das Laufwerk schreiben kann, kann diesen Ordner anlegen, daher stammt es womöglich nicht von dieser Installation. Trotzdem herunterladen?",
         "backup_restore_unknown_confirm": "Dieses Archiv wurde hochgeladen, bevor Installationen benannt wurden, daher ist unbekannt, welche Installation es geschrieben hat. Trotzdem herunterladen?",
+        "backup_restore_overwritten_confirm": "Diese Installation hat dieses Archiv hochgeladen, aber auf dem Laufwerk liegt nicht mehr, was sie hochgeladen hat – etwas anderes hat es inzwischen überschrieben. Trotzdem herunterladen?",
+        "backup_restore_overwritten_refused": "Diese Installation hat dieses Archiv hochgeladen, aber auf dem Laufwerk liegt nicht mehr, was sie hochgeladen hat. Um es trotzdem herunterzuladen, öffne Gespeicherte Sicherungen und wähle Herunterladen.",
         "backup_restore_foreign_refused": "Dieses Archiv gehört einer anderen Installation. Bestätige die Wiederherstellung, um es trotzdem herunterzuladen.",
         "backup_restore_confirm_yes": "Herunterladen",
         "backup_restore_confirm_no": "Abbrechen",
