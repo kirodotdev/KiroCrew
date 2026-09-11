@@ -47,4 +47,22 @@ describe('computeReorderedFolders', () => {
     const result = computeReorderedFolders(unsorted, 'f-3', 'f-1')
     expect(result).toContainEqual({ id: 'f-3', order: 0 })
   })
+
+  it('takes its baseline from the order the sidebar draws, tie-break included', () => {
+    // The baseline decides which index each folder moves FROM. An order-only sort
+    // leaves a duplicate-order pair in cache position while the sidebar draws it by
+    // name, so the two disagree and the drag computes a move the person did not
+    // make. Here Zulu and Alpha share order 0 and arrive Zulu-first.
+    const tied = [
+      { id: 'zulu', name: 'Zulu', order: 0, collapsed: false, parent_id: '' },
+      { id: 'alpha', name: 'Alpha', order: 0, collapsed: false, parent_id: '' },
+      { id: 'last', name: 'Mike', order: 1, collapsed: false, parent_id: '' },
+    ]
+    // Rendered order is Alpha, Zulu, Mike. Dragging Mike onto Alpha's slot must
+    // land it first, which is only true if the baseline agreed with the render.
+    const result = computeReorderedFolders(tied, 'last', 'alpha')
+    expect(result).toContainEqual({ id: 'last', order: 0 })
+    expect(result).toContainEqual({ id: 'alpha', order: 1 })
+    expect(result).toContainEqual({ id: 'zulu', order: 2 })
+  })
 })

@@ -1,4 +1,5 @@
 import type { ChatFolder } from '../types'
+import { bySidebarOrder } from './folderTree'
 
 /** Stable key for the Unfiled bucket (no folder_id, or a deleted folder). */
 export const UNFILED_GROUP_KEY = '__unfiled__'
@@ -30,10 +31,10 @@ export function groupHistoryByFolder<T extends { folder_id?: string }>(
   const walk = (fs: ChatFolder[]) => {
     for (const f of fs) {
       orderIndex.set(f.id, oi++)
-      walk(folders.filter(c => c.parent_id === f.id).sort((a, b) => a.order - b.order))
+      walk(folders.filter(c => c.parent_id === f.id).sort(bySidebarOrder))
     }
   }
-  walk(folders.filter(f => !f.parent_id).sort((a, b) => a.order - b.order))
+  walk(folders.filter(f => !f.parent_id).sort(bySidebarOrder))
 
   const buckets = new Map<string, T[]>()
   for (const row of rows) {
