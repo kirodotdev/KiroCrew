@@ -4809,19 +4809,20 @@ class CronService:
         self._guard_off_event_loop()
         self._dir.mkdir(parents=True, exist_ok=True)
         lock = self._dir / ".crons.lock"
-        fd = lock.open("w")
         deadline = time.monotonic() + timeout
-        try:
-            while not platform_compat.try_acquire_lock(fd.fileno(), exclusive=True):
+        # Non-truncating create-or-open (GH-9248): the old ``lock.open("w")``
+        # truncated before the acquire attempt, so on Windows a contending
+        # opener crashed with PermissionError at open() -- before the spin ever
+        # started. See platform_compat.open_lock_file / work_ledger._open_lock.
+        with platform_compat.open_lock_file(lock) as lock_fd:
+            while not platform_compat.try_acquire_lock(lock_fd, exclusive=True):
                 if time.monotonic() >= deadline:
                     raise CronStoreBusy(f"Could not acquire cron store lock within {timeout:g}s")
                 time.sleep(poll)
             try:
                 yield
             finally:
-                platform_compat.release_lock(fd.fileno())
-        finally:
-            fd.close()
+                platform_compat.release_lock(lock_fd)
 
     def _record_fingerprint(self) -> None:
         """Snapshot the store file's fingerprint as the last-loaded state.
