@@ -1308,3 +1308,104 @@ class TestLinkedWorkspaceAncestorGate:
         monkeypatch.setattr(memory_mod, "first_linked_ancestor", _boom)
         ms = _populated_store(tmp_path)
         assert "- prefers pytest" in ms.markdown_snapshot()["preferences"]["content"]
+
+
+class TestReaderUtf8Degradation:
+    """#8247: the direct readers (read_preferences/read_projects) and the repair
+    path must not raise UnicodeDecodeError on a single bad byte. Unlike the
+    read-only snapshot path (_guarded_entry), which leaks nothing and so empties
+    on undecodable input, these readers feed the read-before-write repair path,
+    so they must PRESERVE surviving content (errors="replace") rather than blank
+    the file — a blank read makes the next write discard everything. They must
+    also be symlink-safe: the raw read this replaced followed a planted link.
+    """
+
+    def test_read_preferences_invalid_utf8_preserves_content(self, tmp_path: Path) -> None:
+        ms = _store(tmp_path)
+        ms.init()
+        (tmp_path / "ws" / "memory" / "preferences.md").write_bytes(
+            b"- prefers pytest\n\xff\n- keeps tabs\n"
+        )
+        out = ms.read_preferences()  # does not raise
+        assert "prefers pytest" in out and "keeps tabs" in out  # survives, not blanked
+
+    def test_read_projects_invalid_utf8_preserves_content(self, tmp_path: Path) -> None:
+        ms = _store(tmp_path)
+        ms.init()
+        (tmp_path / "ws" / "memory" / "projects.md").write_bytes(
+            b"# Active Projects\n\xff\n- shipping the read API\n"
+        )
+        out = ms.read_projects()  # does not raise
+        assert "shipping the read API" in out  # survives, not blanked
+
+    def test_add_preference_preserves_surviving_content_on_undecodable_file(
+        self, tmp_path: Path
+    ) -> None:
+        """The data-loss regression: the repair path reads-then-writes, so a bad
+        byte must not cause the write to discard the preferences that survived
+        around it. Before the fix the reader returned "" and this wiped the file.
+        """
+        ms = _store(tmp_path)
+        ms.init()
+        prefs_path = tmp_path / "ws" / "memory" / "preferences.md"
+        prefs_path.write_bytes(b"- prefers pytest\n\xff\n- keeps tabs\n")
+        ms.add_preference("recovered pref")
+        out = ms.read_preferences()
+        assert "recovered pref" in out  # the repair path is not deadlocked
+        assert "prefers pytest" in out and "keeps tabs" in out  # survivors kept
+        prefs_path.read_text(encoding="utf-8")  # file is valid UTF-8 again
+
+    def test_reader_does_not_follow_a_symlinked_file(self, tmp_path: Path) -> None:
+        """Security: the memory dir is agent-writable, so preferences.md could be
+        a planted symlink to a credential file. The hardened reader must refuse
+        it (read as empty) rather than following it and returning the target's
+        contents.
+        """
+        if os.name == "nt":
+            pytest.skip("POSIX symlink semantics; Windows junctions differ")
+        ms = _store(tmp_path)
+        ms.init()
+        secret = tmp_path / "secret.txt"
+        secret.write_text("AKIA-super-secret-credential\n", encoding="utf-8")
+        prefs_path = tmp_path / "ws" / "memory" / "preferences.md"
+        prefs_path.unlink()
+        os.symlink(secret, prefs_path)
+        assert "secret" not in ms.read_preferences()  # target contents never leaked
+        assert ms.read_preferences() == ""  # refused, reads as empty
+
+
+class TestHistoryReadRobustness:
+    """The history readers must also tolerate a non-UTF-8 byte. append_history
+    is read-then-write (preserve content, errors="replace"); the recent-history
+    path is read-only and feeds get_context every turn (guarded, empties the
+    bad file). Both raised UnicodeDecodeError on one bad byte before the fix.
+    """
+
+    def test_append_history_preserves_content_on_undecodable_today_file(
+        self, tmp_path: Path
+    ) -> None:
+        from datetime import datetime
+
+        ms = _store(tmp_path)
+        ms.init()
+        today = datetime.now().strftime("%Y-%m-%d")
+        today_file = tmp_path / "ws" / "memory" / "history" / f"{today}.md"
+        today_file.write_bytes(f"# {today}\n\n#### 08:00\nkept ".encode() + b"\xff" + b" entry\n")
+        ms.append_history("new entry")  # raised UnicodeDecodeError before the fix
+        out = today_file.read_text(encoding="utf-8")  # valid UTF-8 again
+        assert "new entry" in out  # the append landed
+        assert "kept" in out  # the surviving prior entry was not discarded
+
+    def test_recent_history_skips_undecodable_file_without_raising(self, tmp_path: Path) -> None:
+        from datetime import datetime, timedelta
+
+        ms = _store(tmp_path)
+        ms.init()
+        hist = tmp_path / "ws" / "memory" / "history"
+        now = datetime.now()
+        yday = (now - timedelta(days=1)).strftime("%Y-%m-%d")
+        tday = now.strftime("%Y-%m-%d")
+        (hist / f"{yday}.md").write_text(f"# {yday}\n\n#### 09:00\nvalid day\n", encoding="utf-8")
+        (hist / f"{tday}.md").write_bytes(b"\xff\xfe broken \x80")
+        out = ms.read_recent_history()  # raised on every turn before the fix
+        assert "valid day" in out  # the good day still surfaces; the bad one is skipped

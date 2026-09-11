@@ -287,10 +287,72 @@ class MemoryStore:
 
     # ── Preferences ──
 
+    def _read_markdown_utf8(self, path: Path) -> str:
+        """Read a memory markdown file for the read-before-write repair path.
+
+        This reader sits UNDER ``add_preference``/``write_preferences`` (which
+        read the current file before writing it back), so it must satisfy two
+        constraints the read-only snapshot path resolves differently:
+
+        * Path safety — the memory dir is agent-writable, so a planted symlink,
+          hardlink, or special file at ``preferences.md``/``projects.md`` could
+          otherwise expose a credential file's contents or wedge the reader.
+          Route through the SAME hardening :meth:`_guarded_entry` uses: the
+          :meth:`_read_root_guard` admission gate, a leaf reparse-point reject,
+          a non-regular-file reject, and
+          :func:`~kiro_crew.hooks.safe_read_file_bytes_nolink` (``O_NOFOLLOW``,
+          hardlink/sensitive-target reject, size cap) confined to the memory
+          root. A refused or missing file reads as ``""``. Previously this was
+          a bare ``read_text`` that followed links.
+
+        * Content preservation — a single non-UTF-8 byte must NOT blank the
+          file. Because the caller reads-then-writes, returning ``""`` on an
+          undecodable byte would make the next write discard every preference
+          that survived around it: silent, unrecoverable data loss where the
+          corruption used to be loud and recoverable from disk. Decode with
+          ``errors="replace"`` (the same choice the history reader at the top
+          of this module already makes) so ~all content survives and the next
+          write re-canonicalizes the file. This is the deliberate difference
+          from :meth:`_guarded_entry`, whose snapshot contract leaks nothing
+          and so empties on undecodable input.
+        """
+        if not self._read_root_guard():
+            return ""
+        if is_link_or_junction(path):
+            logger.warning("memory read refused (file is a link): %s", path)
+            self._audit_read_refusal("leaf_link", path, "memory file is a link/junction")
+            return ""
+        try:
+            if not _stat.S_ISREG(path.stat().st_mode):
+                logger.warning("memory read refused (not a regular file): %s", path)
+                self._audit_read_refusal(
+                    "not_regular_file", path, "memory path is not a regular file"
+                )
+                return ""
+        except OSError:
+            return ""  # missing (or vanished) is a normal state
+        try:
+            data = safe_read_file_bytes_nolink(str(path), within_root=str(self._memory_dir))
+        except FileTooLargeError:
+            logger.warning("memory read refused (size cap) for %s", path)
+            self._audit_read_refusal("size_cap", path, "memory file exceeds read size cap")
+            return ""
+        if data is None:
+            logger.warning("memory read refused or failed for %s", path)
+            self._audit_read_refusal(
+                "read_refused", path, "hardened read refused the file (link/hardlink/target)"
+            )
+            return ""
+        try:
+            return data.decode("utf-8")
+        except UnicodeDecodeError:
+            logger.warning("memory file is not valid UTF-8, decoding with replacement: %s", path)
+            return data.decode("utf-8", errors="replace")
+
     def read_preferences(self) -> str:
         """Read user preferences markdown file."""
         if self._preferences_file.exists():
-            return self._preferences_file.read_text(encoding="utf-8")
+            return self._read_markdown_utf8(self._preferences_file)
         return ""
 
     def write_preferences(self, content: str, *, expected_baseline: str | None = None) -> bool:
@@ -346,7 +408,7 @@ class MemoryStore:
     def read_projects(self) -> str:
         """Read active projects markdown file."""
         if self._projects_file.exists():
-            return self._projects_file.read_text(encoding="utf-8")
+            return self._read_markdown_utf8(self._projects_file)
         return ""
 
     def write_projects(self, content: str, *, expected_baseline: str | None = None) -> bool:
@@ -469,7 +531,12 @@ class MemoryStore:
                     )
                 content = ""
                 if path.exists():
-                    content = path.read_text(encoding="utf-8")
+                    # Leaf link/hardlink/special already rejected above and we
+                    # hold the exclusive lock, so the only residual hazard is a
+                    # non-UTF-8 byte. This is a read-then-write path, so decode
+                    # with errors="replace" to preserve surviving entries rather
+                    # than raise UnicodeDecodeError (which wedged every append).
+                    content = path.read_text(encoding="utf-8", errors="replace")
                 if not content:
                     date = datetime.now().strftime("%Y-%m-%d")
                     content = f"# {date}\n"
@@ -535,7 +602,13 @@ class MemoryStore:
             path = self._history_dir / f"{day.strftime('%Y-%m-%d')}.md"
             if not path.exists():
                 continue
-            content = path.read_text(encoding="utf-8").strip()
+            # Guarded read (symlink/hardlink/special-file safe, size-capped,
+            # empties on undecodable): a bare read_text here followed planted
+            # links and raised UnicodeDecodeError on one bad byte in any of 181
+            # files -- on the every-turn get_context path. Empty-on-undecodable
+            # is acceptable here because this surface is read-only (no write
+            # back to lose), unlike the preferences/projects repair readers.
+            content = self._guarded_entry(path)["content"].strip()
             if not content:
                 continue
 
@@ -988,9 +1061,16 @@ class MemoryStore:
     def rebuild_index(self) -> int:
         """Rebuild the full FTS index from all memory files. Returns file count."""
         files: list[tuple[str, str]] = []
-        for path in (self._preferences_file, self._projects_file):
-            if path.exists():
-                files.append((str(path), path.read_text(encoding="utf-8")))
+        # The two managed files go through the hardened readers (symlink-safe,
+        # and errors="replace" rather than crashing on a non-UTF-8 byte) -- a
+        # bare read_text here was a second spelling of read_preferences/
+        # read_projects that still raised on the very byte those readers now
+        # tolerate. History (a separate, larger surface) is intentionally left
+        # on the direct read; guarding it is tracked separately.
+        if self._preferences_file.exists():
+            files.append((str(self._preferences_file), self.read_preferences()))
+        if self._projects_file.exists():
+            files.append((str(self._projects_file), self.read_projects()))
         if self._history_dir.exists():
             for path in self._history_dir.glob("*.md"):
                 files.append((str(path), path.read_text(encoding="utf-8")))
