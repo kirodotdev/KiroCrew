@@ -359,8 +359,8 @@ export const defaultMessageRenderers: readonly MessageRenderer[] = [
     // own copy that knew pastes only: an attached image — present on the row
     // as `![image](dest)` markdown, or, on older pane rows, only on
     // `meta.files` — rendered as nothing, though the same row drew fine on
-    // ChatPage. A host that opens files supplies `ctx.onFileOpen`; without it
-    // the cards and chips still render, inert.
+    // ChatPage. A host that opens files supplies `ctx.onFileOpen` (#9487);
+    // without it the cards and chips still render, without an opener.
     render: (m, ctx) => ctx.wrapper(
       <UserMessage
         content={m.content}

@@ -9760,7 +9760,7 @@
       "no_tools": "도구 없음",
       "open_activity_panel": "활동 패널 열기",
       "open_file": "파일 {{path}} 열기",
-      "attached_file_inert": "첨부 파일 (여기에서는 열 수 없음): {{path}}",
+
       "open_folder": "폴더 {{path}} 열기",
       "plan_from_here_failed_error": "여기서부터 계획하기에 실패했습니다: {{error}}",
       "pop_out_session_to_its_own_window": "세션을 별도 창으로 분리",

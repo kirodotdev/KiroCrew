@@ -413,9 +413,10 @@ export function KnowledgeBubbleChip({ knowledge }: { knowledge: { items: number;
  *  Shared by every dashboard surface that draws a user row: ChatPage hands
  *  it directly, and the app-sdk registry's default `user` entry (ChatPane,
  *  member DMs, embeds) calls it too, so the two can no longer drift on how an
- *  attachment renders. `onFileOpen` is therefore optional: a host without a
- *  file viewer (the pane) still shows every attachment — an image inline, a
- *  file as a card with its path in the tooltip — it just cannot open one. */
+ *  attachment renders. `onFileOpen` is optional: a host without a file viewer
+ *  still shows every attachment — an image inline, a file as a card — it just
+ *  has no opener to call. Every host with a viewer (main chat, split panes,
+ *  member DMs) supplies it (#9487). */
 export type UserContentRenderOpts = {
   content: string
   meta?: Record<string, unknown>
@@ -654,23 +655,18 @@ function renderInlineSegment(content: string, meta: Record<string, unknown> | un
 }
 
 /** Inline chip for a file reference in a sent message: `@label`, the full path
- *  in the tooltip. With a handler it opens the file (ChatPage's side-panel
- *  viewer); without one — a host that has no file viewer, such as a split
- *  pane or a member DM — it is an inert span, the same degrade DirChip makes,
- *  so a chip never LOOKS clickable on a surface where clicking does nothing. */
+ *  in the tooltip, opening the file in the host's viewer. Every host that can
+ *  show a user row supplies the handler (#9487); a host without one still
+ *  renders the chip, without an opener. */
 function FileMentionChip({ label, fullPath, onOpen }: { label: string; fullPath: string; onOpen?: (path: string) => void }) {
   const base = 'inline-flex items-center px-1.5 py-0.5 mx-0.5 rounded bg-accent/15 text-accent text-[12px] font-mono'
-  if (!onOpen) {
-    return <span className={base} title={fullPath}>@{label}</span>
-  }
   return (
-    <Clickable className={`${base} cursor-pointer hover:bg-accent/25 transition-colors`} title={fullPath} onClick={() => onOpen(fullPath)} aria-label={i18nT('pages.chatPage.open_file', { path: fullPath })}>@{label}</Clickable>
+    <Clickable className={`${base} cursor-pointer hover:bg-accent/25 transition-colors`} title={fullPath} onClick={() => onOpen?.(fullPath)} aria-label={i18nT('pages.chatPage.open_file', { path: fullPath })}>@{label}</Clickable>
   )
 }
 
 /** Block card for a single user-attached (non-image) file. Clickable to open
- *  the file via the shared onFileOpen callback; without a handler it is an
- *  inert card (see FileMentionChip for why). Styled after the agent-side
+ *  the file in the host's viewer. Styled after the agent-side
  *  download card (see components/FileCard.tsx) but carries no size/mime — a
  *  user attachment only has a path here. */
 function FileAttachmentCard({ fullPath, label, onFileOpen }: { fullPath: string; label: string; onFileOpen?: (path: string) => void }) {
@@ -681,16 +677,11 @@ function FileAttachmentCard({ fullPath, label, onFileOpen }: { fullPath: string;
       <span className="font-medium truncate">{label}</span>
     </>
   )
-  if (!onFileOpen) {
-    // The tooltip says WHERE the file opens, because the card looks exactly
-    // like the main chat's clickable one and a click here answers nothing.
-    return <span className={base} title={i18nT('pages.chatPage.attached_file_inert', { path: fullPath })}>{body}</span>
-  }
   return (
     <Clickable
       className={`${base} hover:border-accent transition-colors cursor-pointer`}
       title={fullPath}
-      onClick={() => onFileOpen(fullPath)}
+      onClick={() => onFileOpen?.(fullPath)}
       aria-label={i18nT('pages.chatPage.open_file', { path: fullPath })}
     >
       {body}

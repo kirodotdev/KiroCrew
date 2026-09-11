@@ -52,6 +52,12 @@ export interface ChatEmbedProps {
    */
   onSend?: (message: string) => Promise<unknown> | void
   /**
+   * Open a file in the host's file viewer. Embed hosts with no viewer leave
+   * it unset (capability by omission, like `onSend`): attachment cards still
+   * render, without an opener.
+   */
+  onFileOpen?: (path: string, opts?: { line?: number; endLine?: number }) => void
+  /**
    * Content rendered in normal flow directly ABOVE the composer, inside the
    * embed's own column, so it always sits on top of the input regardless of the
    * composer's height. A host uses this for a docked quote / reference bar
@@ -73,7 +79,7 @@ interface ChatSlotData {
   title?: string
 }
 
-function ChatEmbed({ slotKey, agent, placeholder, frameless, startAtBottom, onSend, aboveComposer }: ChatEmbedProps) {
+function ChatEmbed({ slotKey, agent, placeholder, frameless, startAtBottom, onSend, onFileOpen, aboveComposer }: ChatEmbedProps) {
   const api = useAppApi()
   const endRef = useRef<HTMLDivElement>(null)
   const lastHashRef = useRef('')
@@ -259,7 +265,7 @@ function ChatEmbed({ slotKey, agent, placeholder, frameless, startAtBottom, onSe
         {/* canTrust: this embed's approve routes through the slot approve
             endpoint (above), which records standing trust — the one mount
             allowed to offer the tier (#5434). */}
-        <ChatMessageList messages={messages} running={running} onApprove={approve} onApproveBatch={approveBatch} canTrust />
+        <ChatMessageList messages={messages} running={running} onApprove={approve} onApproveBatch={approveBatch} canTrust onFileOpen={onFileOpen} />
         <div ref={endRef} />
         </div>
       </div>

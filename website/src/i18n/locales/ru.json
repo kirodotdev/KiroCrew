@@ -10189,7 +10189,7 @@
       "no_tools": "Нет инструментов",
       "open_activity_panel": "Открыть панель активности",
       "open_file": "Открыть файл {{path}}",
-      "attached_file_inert": "Вложенный файл (здесь открыть нельзя): {{path}}",
+
       "open_folder": "Открыть папку {{path}}",
       "plan_from_here_failed_error": "Не удалось построить план отсюда: {{error}}",
       "pop_out_session_to_its_own_window": "Открыть сессию в отдельном окне",

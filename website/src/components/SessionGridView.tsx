@@ -40,6 +40,7 @@ export default function SessionGridView({
   onCollapse,
   seedSlot,
   openSideChat,
+  onFileOpen,
 }: {
   /** Leave split mode entirely (everything closed, or a lone empty placeholder). */
   onClose: () => void
@@ -51,6 +52,8 @@ export default function SessionGridView({
    *  selection toolbar's Ask needs. The grid owns no Side Chat of its own
    *  (the host's activity panel does), so without it panes offer Quote only. */
   openSideChat?: (slot: string) => boolean | void | Promise<boolean | void>
+  /** Open a file in the host's file viewer for every pane (#9487). */
+  onFileOpen?: (path: string, opts?: { line?: number; endLine?: number }) => void
 }) {
   const grid = useSessionGrid(seedSlot)
 
@@ -142,6 +145,7 @@ export default function SessionGridView({
           onSplitDown={() => grid.splitLeaf(leaf.id, 'down')}
           onOpenFull={onCollapse}
           openSideChat={openSideChat}
+          onFileOpen={onFileOpen}
         />
       )
     }
