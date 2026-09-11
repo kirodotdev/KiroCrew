@@ -192,3 +192,49 @@ describe('buildMcpAppSrcdoc', () => {
     expect(out).toContain('https://esm.sh')
   })
 })
+
+describe('srcdoc is unchanged by the host-theme-variables feature (Property 16)', () => {
+  // This feature delivers theming as host-context DATA the app applies itself.
+  // It deliberately does NOT inject CSS
+  // into the srcdoc, so mcpAppSrcdoc.ts is untouched. These assertions are the
+  // regression guard for that: the host injects neither a --color-* variable nor
+  // a <style> element, and the CSP / allow builders produce their pre-change
+  // output for the same input.
+
+  it('injects no --color-* substring and no <style> element (representative payload)', () => {
+    const out = buildMcpAppSrcdoc(payload())
+    expect(out).not.toContain('--color-')
+    expect(out).not.toContain('<style')
+  })
+
+  it('injects no --color-* and no <style> even when the app html carries neither', () => {
+    // The point is the HOST injects neither: an app document free of both must
+    // stay free of both after assembly.
+    const out = buildMcpAppSrcdoc(
+      payload({ html: '<!doctype html><html><head><title>t</title></head><body><p>plain</p></body></html>' }),
+    )
+    expect(out).not.toContain('--color-')
+    expect(out).not.toContain('<style')
+  })
+
+  it('leaves buildMcpAppCsp output unchanged for the same input (strict default policy)', () => {
+    const csp = buildMcpAppCsp(null)
+    expect(csp).toContain("default-src 'none'")
+    expect(csp).toContain("script-src 'self' 'unsafe-inline'")
+    expect(csp).toContain("style-src 'self' 'unsafe-inline'")
+    expect(csp).toContain("connect-src 'none'")
+    expect(csp).toContain("frame-src 'none'")
+    expect(csp).toContain("base-uri 'self'")
+    expect(csp.endsWith(';')).toBe(true)
+    // No --color-* leaked into the policy string either.
+    expect(csp).not.toContain('--color-')
+  })
+
+  it('leaves buildAllowAttribute output unchanged for the same input', () => {
+    expect(buildAllowAttribute(null)).toBe('')
+    expect(buildAllowAttribute({ clipboardWrite: {} })).toBe('clipboard-write')
+    expect(
+      buildAllowAttribute({ camera: {}, microphone: {}, geolocation: {}, clipboardWrite: {} }),
+    ).toBe('geolocation; clipboard-write')
+  })
+})

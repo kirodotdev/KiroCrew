@@ -63,6 +63,21 @@ export default [
       // the module may contain ONLY paint data, so the filename IS the
       // boundary and its consumer (FolderGlyph.tsx) stays fully covered.
       'src/components/folderColorPaint.ts',
+      // The MCP App (SEP-1865) host theme token map: every string is a CSS custom
+      // property name (`--bg`), a protocol variable key (`--color-text-primary`), a
+      // CSS value (`400`, `9999px`) or the `color-mix()` wash template that derives
+      // the info fill from `--info`. None is read as words — the module's whole
+      // output is a Record of stylesheet declarations handed to an app iframe, and
+      // translating any of it would break the paint it exists to perform. Same
+      // named-boundary idiom as `folderColorPaint.ts` above, and the same
+      // color-mix-over-theme-variables category.
+      //
+      // Stated as a false-negative class, per this file's convention: user-visible
+      // copy added here will not be reported. Verified copy-free rather than
+      // assumed — it imports neither `i18nT` nor `useTranslation`, has no render
+      // path (no JSX, no DOM writes), and its consumer `McpAppFrame.tsx` — which
+      // does carry copy — stays fully covered.
+      'src/lib/mcpAppTheme.ts',
       // Pierre's shared render configuration: injected stylesheet text
       // (`unsafeCSS` templates of selectors, lengths and `var(--…)` references),
       // theme ids the library matches on, and an extension→grammar map. None of
