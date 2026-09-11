@@ -13042,6 +13042,8 @@
         "composer": "Redactor",
         "concise_trim_filler": "Conciso: sin relleno ni narración",
         "confirm_before_closing_session": "Confirmar antes de cerrar la sesión",
+        "compact_empty_folders": "Carpetas vacías compactas",
+        "a_folder_with_no_chats_takes_one_row_instead_of": "Una carpeta sin chats ocupa una fila en lugar de dos, y su botón de chat nuevo pasa a la fila de la carpeta",
         "content_width": "Ancho del contenido",
         "context": "Contexto",
         "context_usage_at_which_auto_compaction_triggers": "% de uso del contexto con el que se activa la compactación automática. Más bajo = compactación más frecuente y sesiones más largas",

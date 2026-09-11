@@ -42,6 +42,12 @@ export interface ChatConfig {
   defaultAutopilot: boolean
   /** Pin the most recent prompt above the fold as a sticky banner. */
   pinLastPrompt: boolean
+  /** Opt in to giving a folder that holds nothing no body at all, so it costs one
+   *  row instead of two. Default false: this changes how every empty folder in
+   *  the sidebar reads, and the row it removes is the only labelled "New chat in
+   *  <name>" affordance those folders have, so it is the user's call rather than
+   *  something a client with no stored config inherits. */
+  hideEmptyFolderBody: boolean
 }
 
 export type FileChipStyle = 'expanded' | 'minimal'
@@ -60,7 +66,7 @@ const LS_KEY = 'mc-chat-config'
  *  it. The sidebar's view toggle persists this flag BEFORE creating its first
  *  column, so a deliberate board user always has an explicit `true` stored and
  *  is unaffected by the default. */
-const DEFAULTS: ChatConfig = { historyExpanded: true, showTimestamps: true, showTurnStats: true, sendOnEnter: 'enter', collapseAllSteps: true, confirmCloseSession: false, simplifiedToolNames: true, contentWidth: 'compact', tagColumnsEnabled: false, fileChipStyle: 'expanded', followUpLayout: 'scroll', streamMode: 'smooth', showContextPct: false, showContextTokens: false, defaultAutopilot: false, pinLastPrompt: true }
+const DEFAULTS: ChatConfig = { historyExpanded: true, showTimestamps: true, showTurnStats: true, sendOnEnter: 'enter', collapseAllSteps: true, confirmCloseSession: false, simplifiedToolNames: true, contentWidth: 'compact', tagColumnsEnabled: false, fileChipStyle: 'expanded', followUpLayout: 'scroll', streamMode: 'smooth', showContextPct: false, showContextTokens: false, defaultAutopilot: false, pinLastPrompt: true, hideEmptyFolderBody: false }
 
 const VALID_FILE_CHIP_STYLES: ReadonlySet<FileChipStyle> = new Set(['expanded', 'minimal'])
 const VALID_FOLLOW_UP_LAYOUTS: ReadonlySet<FollowUpLayout> = new Set(['multiline', 'scroll'])
@@ -94,6 +100,9 @@ export function loadChatConfig(): ChatConfig {
     if (typeof cfg.showContextTokens !== 'boolean') cfg.showContextTokens = false
     if (typeof cfg.showTurnStats !== 'boolean') cfg.showTurnStats = true
     if (typeof cfg.pinLastPrompt !== 'boolean') cfg.pinLastPrompt = true
+    // Coerced, not trusted: a stored non-boolean would otherwise make the empty
+    // folder shape depend on a truthy string.
+    if (typeof cfg.hideEmptyFolderBody !== 'boolean') cfg.hideEmptyFolderBody = false
     return cfg
   }
   catch { return { ...DEFAULTS } }

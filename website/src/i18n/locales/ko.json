@@ -12687,6 +12687,8 @@
         "composer": "입력창",
         "concise_trim_filler": "간결 — 군더더기와 중계 설명 제거",
         "confirm_before_closing_session": "세션 종료 전 확인",
+        "compact_empty_folders": "빈 폴더 간결하게 표시",
+        "a_folder_with_no_chats_takes_one_row_instead_of": "채팅이 없는 폴더는 두 줄 대신 한 줄을 사용하며, 새 채팅 버튼은 폴더 줄로 옮겨집니다",
         "content_width": "콘텐츠 너비",
         "context": "컨텍스트",
         "context_usage_at_which_auto_compaction_triggers": "자동 압축이 시작되는 컨텍스트 사용률 %. 낮을수록 압축이 잦아지고 세션이 길어집니다",

@@ -76,4 +76,25 @@ describe('loadChatConfig', () => {
     localStorage.setItem('mc-chat-config', JSON.stringify({ pinLastPrompt: 'yes' }))
     expect(loadChatConfig().pinLastPrompt).toBe(true)
   })
+
+  it('leaves an empty folder its body until the user opts in', () => {
+    // OFF is the whole contract of this setting: it changes how every empty folder
+    // in the sidebar reads and removes their only labelled create row, so a client
+    // with no stored config must never inherit it.
+    expect(loadChatConfig().hideEmptyFolderBody).toBe(false)
+    localStorage.setItem('mc-chat-config', JSON.stringify({ showTimestamps: false }))
+    expect(loadChatConfig().hideEmptyFolderBody).toBe(false)
+  })
+
+  it('respects stored hideEmptyFolderBody=true', () => {
+    localStorage.setItem('mc-chat-config', JSON.stringify({ hideEmptyFolderBody: true }))
+    expect(loadChatConfig().hideEmptyFolderBody).toBe(true)
+  })
+
+  it('repairs a non-boolean hideEmptyFolderBody value to the disabled default', () => {
+    // A truthy string must not switch the feature on: the sidebar reads this flag
+    // directly, so an unrepaired value would opt a user in by accident.
+    localStorage.setItem('mc-chat-config', JSON.stringify({ hideEmptyFolderBody: 'yes' }))
+    expect(loadChatConfig().hideEmptyFolderBody).toBe(false)
+  })
 })

@@ -12864,6 +12864,8 @@
         "composer": "Eingabefeld",
         "concise_trim_filler": "Knapp – ohne Füllwörter und Kommentare",
         "confirm_before_closing_session": "Vor dem Schließen der Sitzung bestätigen",
+        "compact_empty_folders": "Kompakte leere Ordner",
+        "a_folder_with_no_chats_takes_one_row_instead_of": "Ein Ordner ohne Chats belegt eine Zeile statt zwei, und seine Schaltfläche für einen neuen Chat wandert in die Ordnerzeile",
         "content_width": "Inhaltsbreite",
         "context": "Kontext",
         "context_usage_at_which_auto_compaction_triggers": "Kontextnutzung in %, bei der die automatische Verdichtung ausgelöst wird. Niedriger = häufigere Verdichtung, längere Sitzungen",

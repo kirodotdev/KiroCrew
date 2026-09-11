@@ -12865,6 +12865,8 @@
         "composer": "कंपोज़र",
         "concise_trim_filler": "संक्षिप्त — भराव और विवरण हटाएँ",
         "confirm_before_closing_session": "सेशन बंद करने से पहले पुष्टि करें",
+        "compact_empty_folders": "खाली फ़ोल्डर संक्षिप्त दिखाएँ",
+        "a_folder_with_no_chats_takes_one_row_instead_of": "बिना चैट वाला फ़ोल्डर दो पंक्तियों के बजाय एक पंक्ति लेता है, और उसका नई चैट बटन फ़ोल्डर की पंक्ति पर आ जाता है",
         "content_width": "कॉन्टेंट की चौड़ाई",
         "context": "कॉन्टेक्स्ट",
         "context_usage_at_which_auto_compaction_triggers": "कॉन्टेक्स्ट उपयोग का वह % जिस पर ऑटो-कॉम्पैक्शन शुरू होता है। कम = अधिक बार कॉम्पैक्शन, लंबे सेशन",

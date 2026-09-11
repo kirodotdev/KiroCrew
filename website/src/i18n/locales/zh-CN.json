@@ -12687,6 +12687,8 @@
         "composer": "输入框",
         "concise_trim_filler": "简洁 — 去掉铺垫和过程叙述",
         "confirm_before_closing_session": "关闭会话前确认",
+        "compact_empty_folders": "紧凑显示空文件夹",
+        "a_folder_with_no_chats_takes_one_row_instead_of": "没有会话的文件夹只占一行而不是两行，新建会话按钮移到文件夹所在的那一行",
         "content_width": "内容宽度",
         "context": "上下文",
         "context_usage_at_which_auto_compaction_triggers": "触发自动压缩的上下文使用率 %。越低 = 压缩越频繁，会话越长",

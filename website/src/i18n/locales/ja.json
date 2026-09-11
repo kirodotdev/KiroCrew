@@ -12687,6 +12687,8 @@
         "composer": "コンポーザー",
         "concise_trim_filler": "簡潔 — 前置きと実況を省く",
         "confirm_before_closing_session": "セッション終了前に確認",
+        "compact_empty_folders": "空のフォルダーをコンパクトにする",
+        "a_folder_with_no_chats_takes_one_row_instead_of": "チャットのないフォルダーは 2 行ではなく 1 行になり、新しいチャットのボタンはフォルダーの行に移ります",
         "content_width": "コンテンツ幅",
         "context": "コンテキスト",
         "context_usage_at_which_auto_compaction_triggers": "自動圧縮がトリガーされるコンテキスト使用率 %。低いほど圧縮頻度が高く、セッションが長くなります",

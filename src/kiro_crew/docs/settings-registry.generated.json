@@ -454,6 +454,13 @@
       "route": "/settings/chat?highlight=chat.background-model"
     },
     {
+      "id": "chat.compact-empty-folders",
+      "label": "Compact Empty Folders",
+      "tab": "chat",
+      "route": "/settings/chat?highlight=chat.compact-empty-folders",
+      "description": "A folder with no chats takes one row instead of two, and its New chat button moves onto the folder's own row"
+    },
+    {
       "id": "chat.completion-event-characters",
       "label": "Completion Event Characters",
       "tab": "chat",

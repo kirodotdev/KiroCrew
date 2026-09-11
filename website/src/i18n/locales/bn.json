@@ -12865,6 +12865,8 @@
         "composer": "কম্পোজার",
         "concise_trim_filler": "সংক্ষিপ্ত — বাহুল্য ও বর্ণনা বাদ",
         "confirm_before_closing_session": "সেশন বন্ধ করার আগে নিশ্চিত করুন",
+        "compact_empty_folders": "খালি ফোল্ডার সংক্ষিপ্ত দেখান",
+        "a_folder_with_no_chats_takes_one_row_instead_of": "চ্যাট নেই এমন ফোল্ডার দুই সারির বদলে এক সারি নেয়, এবং তার নতুন চ্যাট বোতামটি ফোল্ডারের সারিতে চলে আসে",
         "content_width": "কনটেন্টের প্রস্থ",
         "context": "কনটেক্সট",
         "context_usage_at_which_auto_compaction_triggers": "কনটেক্সট ব্যবহারের যে %-এ অটো-কম্প্যাকশন শুরু হয়। কম মান = আরও ঘন ঘন কম্প্যাকশন, দীর্ঘ সেশন",

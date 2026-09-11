@@ -3660,8 +3660,17 @@ function ChatSidebar({
     refetch: refetchColumns,
   } = useQuery<TagColumn[]>({ queryKey: ['tag-columns'], queryFn: () => api.tagColumns() })
   const [tagColumnsEnabled, setTagColumnsEnabled] = useState(() => loadChatConfig().tagColumnsEnabled)
+  // Opt-in: off, an empty folder keeps its labelled "New chat in <name>" row
+  // exactly as before. On, it has no body at all and its row stops presenting as
+  // a control. Read through the same `mc-config-changed` listener as the flag
+  // above so toggling it in Settings reshapes the open sidebar immediately.
+  const [hideEmptyFolderBody, setHideEmptyFolderBody] = useState(() => loadChatConfig().hideEmptyFolderBody)
   useEffect(() => {
-    const onChange = () => setTagColumnsEnabled(loadChatConfig().tagColumnsEnabled)
+    const onChange = () => {
+      const cfg = loadChatConfig()
+      setTagColumnsEnabled(cfg.tagColumnsEnabled)
+      setHideEmptyFolderBody(cfg.hideEmptyFolderBody)
+    }
     window.addEventListener('mc-config-changed', onChange)
     return () => window.removeEventListener('mc-config-changed', onChange)
   }, [])
@@ -5324,6 +5333,11 @@ function ChatSidebar({
     const childFolders = folders.filter(f => f.parent_id === folder.id)
     const { rows: childSlots, navScope: folderLaneScope, container: folderHoldContainer } = heldLane(filteredSlots.filter(s => colSlotKeys.has(s.key) && slotFolders[s.key] === folder.id), columnId, `board:${columnId}:folder:${folder.id}`)
     const deepChildren = childFolders
+    // Same opt-in as the tree (see the note in renderFolderBlock): only when the
+    // setting is on does a column copy holding nothing lose its body, and with it
+    // the collapse state it no longer has anything to remember.
+    const emptyBody = hideEmptyFolderBody && deepChildren.length === 0 && childSlots.length === 0
+    const collapsed = boardFolderCollapsed(columnId, folder)
     // Valid "Move folder to" destinations: everything outside this folder's
     // own subtree (cycle guard). One O(1) lookup, computed once per row.
     const subtreeIds = folderSubtrees.get(folder.id) ?? collectFolderSubtreeIds(folders, folder.id)
@@ -5369,23 +5383,51 @@ function ChatSidebar({
           if (k) moveByDrag(k, folder.id)
         }}
       >
+        {/* Same rule as the tree row: a column copy with no body has nothing to
+         *  toggle, so it is not a control - no button role, no tab stop, no
+         *  pointer cursor, no expanded state and no handler. It stays draggable,
+         *  because reordering a folder is an action an empty folder can honour. */}
         <div
-          className={`group relative flex items-center gap-2 pr-2 py-1 rounded-md ${draggable ? 'cursor-grab active:cursor-grabbing' : 'cursor-pointer'} text-[12px] text-muted hover:text-text hover:bg-bg-hover transition-all`}
+          className={`group relative flex items-center gap-2 pr-2 py-1 rounded-md ${draggable ? 'cursor-grab active:cursor-grabbing' : emptyBody ? 'cursor-default' : 'cursor-pointer'} text-[12px] text-muted transition-all${emptyBody ? '' : ' hover:text-text hover:bg-bg-hover'}`}
           style={{ paddingLeft: '6px' }}
-          role="button"
-          tabIndex={0}
-          aria-expanded={!boardFolderCollapsed(columnId, folder)}
-          aria-label={boardFolderCollapsed(columnId, folder) ? i18nT('pages.chatSidebar.expand_folder_name', { name: folder.name }) : i18nT('pages.chatSidebar.collapse_folder_name', { name: folder.name })}
           {...(draggable ? dragHandleProps : {})}
-          onClick={() => toggleColumnCollapse(columnId, folder)}
-          // `e.target === e.currentTarget` restricts the Space/Enter toggle to
-          // the row itself. Without it the row swallows every Space typed in a
-          // focused DESCENDANT — the inline rename input below — because
-          // preventDefault() drops the character and the folder collapses
-          // instead. Same guard as Clickable and UpdateModal.
-          onKeyDown={e => { if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); toggleColumnCollapse(columnId, folder) } }}
+          // The collapse props go AFTER the drag spread, and the order is
+          // load-bearing: `dragHandleProps` are dnd-kit's sortable listeners and
+          // they carry the keyboard sensor's own `onKeyDown`, so a later drag
+          // spread would replace the collapse handler and Enter would start a
+          // drag instead of toggling the body.
+          {...(emptyBody
+            // No body to disclose, but the row is still a DRAG HANDLE while it is
+            // draggable: `useSortable` here hands down only `listeners`, never its
+            // `attributes`, so this hand-written `tabIndex` is the only thing that
+            // lets the keyboard sensor reach the row - drop it and an empty folder
+            // can be reordered with a mouse but not with a keyboard. So it keeps a
+            // tab stop and says what it is, and drops only the collapse-specific
+            // props (`aria-expanded`, the expand/collapse label, both handlers).
+            ? (draggable ? {
+              role: 'button',
+              tabIndex: 0,
+              'aria-label': i18nT('pages.chatSidebar.folder_2', { name: folder.name }),
+              'aria-roledescription': i18nT('pages.chatSidebar.drag_to_reorder'),
+            } : {})
+            : {
+              role: 'button',
+              tabIndex: 0,
+              'aria-expanded': !collapsed,
+              'aria-label': collapsed ? i18nT('pages.chatSidebar.expand_folder_name', { name: folder.name }) : i18nT('pages.chatSidebar.collapse_folder_name', { name: folder.name }),
+              onClick: () => toggleColumnCollapse(columnId, folder),
+              // `e.target === e.currentTarget` restricts the Space/Enter toggle to
+              // the row itself. Without it the row swallows every Space typed in a
+              // focused DESCENDANT - the inline rename input below - because
+              // preventDefault() drops the character and the folder collapses
+              // instead. Same guard as Clickable and UpdateModal.
+              onKeyDown: (e: React.KeyboardEvent) => { if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); toggleColumnCollapse(columnId, folder) } },
+            })}
         >
-          <FolderGlyph color={folder.color} size={11} open={!boardFolderCollapsed(columnId, folder)} />
+          {/* Dimmer and hover-inert on an empty row - same rule as the tree. */}
+          {/* Always open on an inert row - same reason as the tree. */}
+          <FolderGlyph color={folder.color} size={11} open={!collapsed || emptyBody}
+            className={emptyBody ? 'shrink-0 text-muted/40 transition-colors' : undefined} />
           {editingId === folder.id && editScope === columnId ? (
             /* Inline rename input — board-view parity with renderFolderHeader.
              *  Without this branch the ⋯-menu "Rename" set editingId but no
@@ -5404,8 +5446,10 @@ function ChatSidebar({
             <span className="flex-1 truncate" title={i18nT('pages.chatSidebar.double_click_to_rename')} onDoubleClick={e => { e.stopPropagation(); setEditingId(folder.id); setEditScope(columnId); setEditName(folder.name) }}>{folder.name}</span>
           )}
           <span className="text-[10px] text-muted shrink-0">{count}</span>
+          {/* List-view parity: an empty folder's row keeps its action cluster
+            *  visible (see the note in renderFolderHeader). */}
           {!(editingId === folder.id && editScope === columnId) && (
-          <span className="opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-within:opacity-100 has-[[data-state=open]]:opacity-100 transition-opacity flex items-center gap-0.5">
+          <span className={`${emptyBody ? '' : 'opacity-0 '}group-hover:opacity-100 group-focus-within:opacity-100 focus-within:opacity-100 has-[[data-state=open]]:opacity-100 transition-opacity flex items-center gap-0.5`}>
             {/* ⋯ menu + a primary "new chat in folder" action, mirroring the
              *  list-view folder header (renderFolderHeader) so board view has
              *  the same one-click way to start a session inside a folder. */}
@@ -5462,12 +5506,15 @@ function ChatSidebar({
           )}
         </div>
         {renderFolderCreateError(folder.id, columnId)}
-        <FolderBody padding={FOLDER_BODY_OPEN_PADDING} open={!boardFolderCollapsed(columnId, folder) && !forceCollapsed}>
+        {!emptyBody && (
+        <FolderBody padding={FOLDER_BODY_OPEN_PADDING} open={!collapsed && !forceCollapsed}>
           {/* ml-4 + no pl: flush-connector treatment matching the list-view
            *  folder body (renderFolderBlock) so nested rows sit identically
            *  against the connector line in both views. */}
           <div className="border-l border-border ml-4">
-            {/* Empty-folder affordance — list-view parity (see renderFolderBlock). */}
+            {/* Default: the empty-folder affordance stays exactly as it was, in
+             *  list-view parity (see renderFolderBlock). Reached only when the
+             *  setting is OFF - with it on there is no body to put this in. */}
             {deepChildren.length === 0 && childSlots.length === 0 && (
               <button key={`col-${columnId}-newchat-${folder.id}`} type="button"
                 onClick={() => createChatInFolder(folder.id, { columnId })}
@@ -5495,6 +5542,7 @@ function ChatSidebar({
             })}
           </div>
         </FolderBody>
+        )}
       </div>
         )}
       </DndDroppable>
@@ -5660,10 +5708,24 @@ function ChatSidebar({
     )
   }
 
-  const renderFolderHeader = (folder: ChatFolder, dragHandleProps?: React.HTMLAttributes<HTMLElement>) => {
-    const childFolders = folders.filter(f => f.parent_id === folder.id)
+  const renderFolderHeader = (folder: ChatFolder, dragHandleProps?: React.HTMLAttributes<HTMLElement>, emptyBody = false) => {
+    // Same predicate `renderFolderBlock` renders by, so the number describes what
+    // the row can actually show. Counting a hidden-when-empty child made the count
+    // and the body disagree: the body skipped it, so no body rendered, while the
+    // count still said 1 - and the row then presented as a toggle with nothing to
+    // toggle. A folder the user hid is a folder they asked not to see, so it is
+    // not part of what this row holds.
+    const childFolders = folders.filter(f => f.parent_id === folder.id && !isFolderHidden(f) && !isFolderFilteredOut(f))
     const childSlots = filteredSlots.filter(s => slotFolders[s.key] === folder.id)
     const count = childSlots.length + childFolders.length
+    const collapsed = !!folder.collapsed
+    // One derivation, not two: `renderFolderBlock` decides the body from the nodes
+    // it renders, and this row follows that decision. With the count now built
+    // from the same predicate, `count === 0` agrees with it by construction rather
+    // than by a guard that had to pick which way to fail.
+    const emptyRow = emptyBody
+    // `button` when the row toggles something, a plain `span` when it does not.
+    const HeaderShell = (emptyRow ? 'span' : 'button') as 'button'
     const hasUnread = folderTreeHasUnread(folder.id)
     const draggable = !!dragHandleProps && editingId !== folder.id
     // Valid "Move folder to" destinations: everything outside this folder's
@@ -5724,10 +5786,15 @@ function ChatSidebar({
         // 2px short), and a `px-2` attempt during this fix. Re-measure with
         // `website/scripts/capture-folder-glyph.mjs` under MEASURE=1 — never
         // re-derive on paper.
-        className={`group relative flex items-center gap-2 px-3.5 py-1.5 rounded-md text-sm text-muted hover:text-text hover:bg-bg-hover transition-all ${draggable ? 'cursor-grab active:cursor-grabbing' : ''}`}>
+        // A row with no body does not light up on hover. The highlight is this
+        // sidebar's "this row is pressable" signal, and a row that toggles nothing
+        // wearing the same one is the whole reason the previous round's dead click
+        // read as broken. Its cluster is already visible at rest, so hover has
+        // nothing left to reveal here either.
+        className={`group relative flex items-center gap-2 px-3.5 py-1.5 rounded-md text-sm text-muted transition-all${emptyRow ? '' : ' hover:text-text hover:bg-bg-hover'} ${draggable ? 'cursor-grab active:cursor-grabbing' : ''}`}>
         {editingId === folder.id && editScope === 'list' ? (
           <>
-            <FolderGlyph color={folder.color} size={14} open={!folder.collapsed} />
+            <FolderGlyph color={folder.color} size={14} open={!collapsed} />
             <Input ref={folderEditInputRef} className="flex-1 py-0.5 text-[13px] min-w-0" value={editName} onChange={e => setEditName(e.target.value)} onClick={e => e.stopPropagation()} onMouseDown={e => e.stopPropagation()} {...ime.bindEnter<HTMLInputElement>({ onEnter: () => renameCommit(folder.id, editName), onEscape: () => setEditingId(null), onBlur: () => renameCommit(folder.id, editName) })} />
             <span className="text-[11px] text-muted tabular-nums shrink-0">{count}</span>
           </>
@@ -5736,12 +5803,52 @@ function ChatSidebar({
             {/* The collapse toggle is the real interactive control — a native
              *  <button> (keyboard-operable for free), filling the row so clicking
              *  the folder glyph/name still toggles.  Double-click the name renames. */}
-            <button type="button"
-              className="flex items-center gap-[5px] flex-1 min-w-0 bg-transparent border-none cursor-pointer text-left text-inherit p-0"
-              aria-expanded={!folder.collapsed}
-              aria-label={folder.collapsed ? i18nT('pages.chatSidebar.expand_folder_name', { name: folder.name }) : i18nT('pages.chatSidebar.collapse_folder_name', { name: folder.name })}
-              onClick={() => toggleCollapse(folder.id)}>
-              <FolderGlyph color={folder.color} size={14} open={!folder.collapsed} testId={`folder-collapse-${folder.id}`} />
+            {/* A folder with no body has nothing to toggle, so on an empty row this
+             *  is not a control at all: no button role, no tab stop, no pointer
+             *  cursor, no expanded state to announce and no handler. Keeping the
+             *  <button> and neutering its handler is the worst of the options - a
+             *  focusable control that looks clickable and does nothing. The name
+             *  still double-click renames and the row's own cluster still creates
+             *  and opens the menu, so the row keeps every action it can honour. */}
+            <HeaderShell
+              className={`flex items-center gap-[5px] flex-1 min-w-0 bg-transparent border-none text-left text-inherit p-0${emptyRow ? '' : ' cursor-pointer'}`}
+              {...(emptyRow
+                // Nothing to disclose, but the row is still a DRAG HANDLE while it
+                // is draggable, and this shell is the only focusable thing inside
+                // it: the sortable `listeners` sit on the row div, which has no tab
+                // stop of its own, so keyboard activation reaches them by bubbling
+                // from here. Swapping the <button> for a <span> without this took
+                // keyboard reordering away from empty folders in the list view -
+                // the same hole the board row had, through a different door.
+                ? (draggable ? {
+                  role: 'button',
+                  tabIndex: 0,
+                  'aria-label': i18nT('pages.chatSidebar.folder_2', { name: folder.name }),
+                  'aria-roledescription': i18nT('pages.chatSidebar.drag_to_reorder'),
+                } : {})
+                : {
+                type: 'button' as const,
+                'aria-expanded': !collapsed,
+                'aria-label': collapsed ? i18nT('pages.chatSidebar.expand_folder_name', { name: folder.name }) : i18nT('pages.chatSidebar.collapse_folder_name', { name: folder.name }),
+                onClick: () => toggleCollapse(folder.id),
+              })}>
+              {/* An inert row's glyph says "inactive" by WEIGHT, not by shape. The
+               *  closed shape is this product's "collapsed, click to expand"
+               *  affordance, so drawing it on a row that toggles nothing invites
+               *  exactly the dead click it was meant to prevent; the open shape
+               *  invites no click, and "contents shown below" is not a lie when
+               *  there are none. So the shape stays open and the glyph instead goes
+               *  dimmer and stops brightening on hover, which every pressable
+               *  sibling does. Same icon, same box: the alignment guides that key
+               *  off this glyph's geometry are untouched. */}
+              {/* `|| emptyRow` is the point, not a tidy-up: a folder that was
+               *  collapsed BEFORE it emptied still carries `collapsed: true`, and
+               *  binding the glyph to that alone would draw the closed shape on an
+               *  inert row - this product's "click to expand" affordance on a row
+               *  that cannot expand. An inert row is always drawn open. */}
+              <FolderGlyph color={folder.color} size={14} open={!collapsed || emptyRow}
+                className={emptyRow ? 'shrink-0 text-muted/40 transition-colors' : undefined}
+                testId={`folder-collapse-${folder.id}`} />
               {/* Double-click rename is a mouse-only power shortcut; the accessible
                *  path is the ⋯-menu Rename item, so scope-disable the interaction rule. */}
               {/* eslint-disable-next-line jsx-a11y/no-static-element-interactions */}
@@ -5763,7 +5870,7 @@ function ChatSidebar({
                *  session row's), so the dot goes back where it does not compete with
                *  it. Only when collapsed: an expanded folder's child rows carry
                *  their own markers. */}
-              {hasUnread && folder.collapsed && (
+              {hasUnread && collapsed && (
                 // Carries the same accessible name as a session row's unread
                 // marker, and the SAME i18n key: a colour-only dot is invisible to
                 // a screen reader and indistinguishable from decoration, and this
@@ -5776,12 +5883,19 @@ function ChatSidebar({
                   title={i18nT('pages.chatSidebar.agent_finished_your_turn')} />
               )}
               <span className="text-[11px] text-muted tabular-nums shrink-0">{count}</span>
-            </button>
+            </HeaderShell>
             {folder.default_agent && <span className="text-[10px] text-accent bg-accent/10 px-1.5 py-0.5 rounded-full shrink-0 truncate max-w-[60px]" title={i18nT('pages.chatSidebar.default_agent', { name: folder.default_agent })}>{folder.default_agent}</span>}
           </>
         )}
+        {/* An empty folder's row is otherwise a dead end: hiding the body took
+          *  away the only control it had, and the closed glyph alone does not say
+          *  the row can be opened or created in. So the row's own action cluster
+          *  stops hiding on an empty folder — it already holds exactly the two
+          *  controls that row needs (create, and the ⋯ menu whose rename/delete
+          *  is what an empty folder usually wants), so nothing is ADDED to the
+          *  row and the two-buttons-per-row cap is untouched. */}
         {!(editingId === folder.id && editScope === 'list') && (
-        <div className="absolute top-1/2 -translate-y-1/2 right-1.5 transition-all flex items-center gap-0.5 rounded-md p-1 bg-card border border-border shadow-sm opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-within:opacity-100 has-[[data-state=open]]:opacity-100">
+        <div className={`transition-all flex items-center gap-0.5 rounded-md group-focus-within:opacity-100 focus-within:opacity-100 has-[[data-state=open]]:opacity-100${emptyRow ? ' shrink-0 -my-1' : ' absolute top-1/2 -translate-y-1/2 right-1.5 p-1 bg-card border border-border shadow-sm opacity-0 group-hover:opacity-100'}`}>
           {/* ⋯ menu first, then the primary "new chat" action.  Sibling
            *  <button>s of the collapse toggle (valid ARIA — no nesting). */}
           <DropdownMenu>
@@ -5842,7 +5956,7 @@ function ChatSidebar({
               <DropdownMenuItem className="text-danger focus:text-danger" data-testid={`folder-delete-${folder.id}`} onClick={() => { if (confirm(i18nT('pages.chatSidebar.delete_folder_confirm', { name: folder.name }))) deleteFolderMutation.mutate(folder.id) }}><X size={13} /> {i18nT('pages.chatSidebar.delete_folder')}</DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
-          <button type="button" className="cursor-pointer p-[4px] rounded text-muted hover:text-accent hover:bg-bg-hover transition-all bg-transparent border-none" title={i18nT('pages.chatSidebar.new_chat_in_name', { name: folder.name })} aria-label={i18nT('pages.chatSidebar.new_chat_in_name', { name: folder.name })} onClick={e => { e.stopPropagation(); createChatInFolder(folder.id) }}><MessageSquarePlus size={12} /></button>
+          <button type="button" data-testid={`folder-new-chat-${folder.id}`} className="cursor-pointer p-[4px] rounded text-muted hover:text-accent hover:bg-bg-hover transition-all bg-transparent border-none" title={i18nT('pages.chatSidebar.new_chat_in_name', { name: folder.name })} aria-label={i18nT('pages.chatSidebar.new_chat_in_name', { name: folder.name })} onClick={e => { e.stopPropagation(); createChatInFolder(folder.id) }}><MessageSquarePlus size={12} /></button>
         </div>
         )}
       </div>
@@ -5947,14 +6061,22 @@ function ChatSidebar({
     // Wrap children in a bordered container so the folder's extent is visually
     // clear when multiple folders are open. Only wrap when there's content,
     // otherwise the FolderBody would render an empty 1px-tall strip with a line.
+    // Opt-in (Settings > Chat > "Hide the body of an empty folder"): a folder with
+    // nothing in it renders NO body - not a collapsed one, not an empty one - so
+    // it costs one row instead of two and a tree of area folders stops spending
+    // most of the sidebar's height on rows holding nothing. Dropping the body
+    // rather than collapsing it is why there is no per-folder expansion state:
+    // nothing is hidden, so nothing needs re-reaching.
+    const emptyBody = hideEmptyFolderBody && childNodes.length === 0
     const wrapped = childNodes.length > 0 ? (
       <div key={`folder-children-${folder.id}`} className="border-l border-border mb-1 ml-3 pl-1 rounded-bl-md">
         {childNodes}
       </div>
-    ) : !listNarrowed ? (
-      // Empty-folder affordance: a newly created (or emptied) expanded folder
-      // would otherwise render nothing, leaving the hover ⊕ on the header as
-      // the only (invisible-at-rest) way to start a session in it.
+    ) : emptyBody || listNarrowed ? null : (
+      // Default: the empty-folder affordance stays exactly as it was. A newly
+      // created (or emptied) expanded folder would otherwise render nothing,
+      // leaving the hover-only create control on the header as the only
+      // (invisible-at-rest) way to start a session in it.
       <div key={`folder-children-${folder.id}`} className="border-l border-border mb-1 ml-3 pl-1 rounded-bl-md">
         <button key={`folder-newchat-${folder.id}`} type="button"
           onClick={() => createChatInFolder(folder.id)}
@@ -5963,7 +6085,7 @@ function ChatSidebar({
           <span>{i18nT('pages.chatSidebar.new_chat_in_name', { name: folder.name })}</span><MessageSquarePlus size={13} className="shrink-0 ml-auto" />
         </button>
       </div>
-    ) : null
+    )
     // Outer container wraps header + body so the entire folder block is a
     // single drag-drop target. Dropping anywhere inside (header, children,
     // empty space) assigns the dragged session to this folder.
@@ -5974,9 +6096,9 @@ function ChatSidebar({
       <DndDroppable key={`folder-drop-${folder.id}`} id={`folder-drop:${folder.id}`} data={{ type: 'folder-drop', folderId: folder.id }}>
         {({ setNodeRef, isOver }) => (
           <div ref={setNodeRef} data-folder-drop={folder.id} className={`rounded-md transition-all mb-0.5${isOver ? ' ring-1 ring-accent' : ''}`}>
-            {renderFolderHeader(folder, dragHandleProps)}
+            {renderFolderHeader(folder, dragHandleProps, emptyBody)}
             {renderFolderCreateError(folder.id)}
-            <FolderBody key={`folder-body-${folder.id}`} padding={FOLDER_BODY_OPEN_PADDING} open={!folder.collapsed && !forceCollapsed}>{wrapped}</FolderBody>
+            {wrapped && <FolderBody key={`folder-body-${folder.id}`} padding={FOLDER_BODY_OPEN_PADDING} open={!folder.collapsed && !forceCollapsed}>{wrapped}</FolderBody>}
           </div>
         )}
       </DndDroppable>,

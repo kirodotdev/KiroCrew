@@ -8044,6 +8044,8 @@
         "composer": "Composer",
         "concise_trim_filler": "Concise — trim filler and narration",
         "confirm_before_closing_session": "Confirm Before Closing Session",
+        "compact_empty_folders": "Compact Empty Folders",
+        "a_folder_with_no_chats_takes_one_row_instead_of": "A folder with no chats takes one row instead of two, and its New chat button moves onto the folder's own row",
         "content_width": "Content Width",
         "context": "Context",
         "context_usage_at_which_auto_compaction_triggers": "Context usage % at which auto-compaction triggers. Lower = more frequent compaction, longer sessions",

@@ -13042,6 +13042,8 @@
         "composer": "Zone de rédaction",
         "concise_trim_filler": "Concis — sans remplissage ni narration",
         "confirm_before_closing_session": "Confirmer avant de fermer une session",
+        "compact_empty_folders": "Dossiers vides compacts",
+        "a_folder_with_no_chats_takes_one_row_instead_of": "Un dossier sans conversation occupe une ligne au lieu de deux, et son bouton de nouvelle conversation passe sur la ligne du dossier",
         "content_width": "Largeur du contenu",
         "context": "Contexte",
         "context_usage_at_which_auto_compaction_triggers": "% d'utilisation du contexte à partir duquel le compactage automatique se déclenche. Plus bas = compactage plus fréquent, sessions plus longues",
