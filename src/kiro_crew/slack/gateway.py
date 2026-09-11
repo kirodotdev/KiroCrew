@@ -1825,6 +1825,30 @@ class GatewayOrchestrator:
                 count += 1
         return count
 
+    def _live_internal_secret(self) -> str:
+        """This gateway's LIVE internal-API secret, for script-cron ``notify()``.
+
+        The dashboard mints the secret at startup and the auth middleware
+        compares against that same in-memory value (``app["local_secret"]``).
+        A script cron's child authenticates ``/api/send-message`` with the
+        secret it is handed at spawn, so the in-process scheduler hands it THIS
+        value rather than one re-derived from the environment or a per-port
+        file — a stale ``KIROCREW_INTERNAL_SECRET`` or ``.secret`` file
+        otherwise wins the derivation and 403s every ``notify()``.
+
+        Returns ``""`` when no dashboard has started (``--no-dashboard`` /
+        API-only), so ``run_script_sandboxed`` falls back to env/file
+        derivation. Read-only and in-process only: the value is never logged or
+        returned over HTTP.
+        """
+        runner = self._dashboard_runner
+        if runner is None:
+            return ""
+        try:
+            return runner.app.get("local_secret", "") or ""
+        except Exception:
+            return ""
+
     # ------------------------------------------------------------------
     # Tool approval callback (shared by cron, heartbeat, subagent, task)
     # ------------------------------------------------------------------
@@ -4302,6 +4326,7 @@ class GatewayOrchestrator:
                             job.channel or "",
                             job.thread_ts or "",
                         ),
+                        self._live_internal_secret,
                         timeout=_claim_backstop(job, script_timeout),
                     )
                     status = result.get("status", "error")

@@ -529,7 +529,6 @@ test/test_cron_reaper.py
 test/test_cron_reaper_ephemeral.py
 test/test_cron_refusal_status.py
 test/test_cron_script.py
-test/test_cron_script_more_coverage.py
 test/test_cron_sdk.py
 test/test_cron_skip_dates.py
 test/test_cron_slack_delivery.py

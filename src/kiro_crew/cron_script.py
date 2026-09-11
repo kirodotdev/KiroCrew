@@ -39,7 +39,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Callable
 
 from kiro_crew import platform_compat
 from kiro_crew.agent_discovery import _read_agent_spec
@@ -1484,6 +1484,28 @@ def _resolve_internal_secret(port: int) -> str:
     return read_local_secret(port)
 
 
+def _child_internal_secret(
+    provider: Callable[[], str] | None,
+    port: int,
+) -> str:
+    """The secret the script child sends as ``X-Internal-Secret``.
+
+    A ``provider`` returns the gateway's LIVE in-memory secret and takes
+    precedence: the in-process scheduler runs inside the gateway that minted
+    that value, so handing back its own secret is authoritative. Only when it
+    yields nothing (or no provider was given — a runner constructed outside a
+    gateway process, or a gateway with no dashboard) does resolution fall back
+    to the env/file derivation. The provided value is used only to write the
+    0600 temp file the child reads; it is never logged, put in the env, or
+    placed in an error string.
+    """
+    if provider is not None:
+        live = provider()
+        if live:
+            return live
+    return _resolve_internal_secret(port)
+
+
 def _resolve_dial_port() -> int:
     """The ONE port this cron dials, used for both the credential and the child.
 
@@ -1510,10 +1532,23 @@ def run_script_sandboxed(
     secret_env: dict[str, str] | None = None,
     secret_env_pin: str = "",
     delivery: str = "",
+    internal_secret_provider: Callable[[], str] | None = None,
 ) -> dict:
     """Run a cron script in a sandboxed subprocess via wrap_argv().
 
     Returns: {"status": "ok"|"skip"|"done"|"error", "message": "...", "error": "..."}
+
+    ``internal_secret_provider`` returns the gateway's LIVE in-memory internal
+    secret — the one the auth middleware actually compares against. The
+    in-process cron scheduler passes it so the child's ``notify()`` credential
+    is the running gateway's own value rather than one re-derived from the
+    environment or a per-port file. Env/file derivation
+    (``_resolve_internal_secret``) is the fallback for a runner constructed
+    OUTSIDE a gateway process (tests, ``kirocrew cron preview``) or a gateway
+    started with no dashboard (``--no-dashboard`` / API-only), where there is
+    no live secret to hand over. A stale ``KIROCREW_INTERNAL_SECRET`` in an
+    operator shell or a stale per-port ``.secret`` file otherwise wins the
+    derivation and every ``notify()`` 403s.
 
     ``secret_env``/``secret_env_pin`` carry an operator grant of vault secrets
     (see the grant block near ``_CRON_ENV_DENY``). When a grant is present the
@@ -1666,6 +1701,13 @@ def run_script_sandboxed(
     # --port auto bind between two resolutions would pair a credential with the
     # wrong port and 403 the callback.
     dial_port = _resolve_dial_port()
+    # Prefer the gateway's LIVE in-memory secret (the value the auth middleware
+    # compares against) when the in-process scheduler supplied a provider;
+    # otherwise derive it from env/file. Deriving is correct only OUTSIDE a
+    # gateway process (tests, cron preview) or when no dashboard started —
+    # inside a live gateway a stale KIROCREW_INTERNAL_SECRET or a stale per-port
+    # .secret file would win the derivation and 403 every notify().
+    internal_secret = _child_internal_secret(internal_secret_provider, dial_port)
     # Write secret to temp file for ScriptContext (scrubbed from env)
     secret_fd, secret_path = tempfile.mkstemp(prefix="kirocrew_secret_")
     try:
@@ -1683,7 +1725,7 @@ def run_script_sandboxed(
             # unlinks the secret + launcher (otherwise the fd leaks and temp
             # files persist).
             platform_compat.restrict_to_owner(secret_path)
-            os.write(secret_fd, _resolve_internal_secret(dial_port).encode())
+            os.write(secret_fd, internal_secret.encode())
         finally:
             os.close(secret_fd)
         try:
