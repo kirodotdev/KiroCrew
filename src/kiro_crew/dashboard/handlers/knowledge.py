@@ -992,6 +992,72 @@ def _set_sync_status(store, source_id: str, status: str) -> None:
     store.db.commit()
 
 
+def _finalize_sync_status_write(
+    store, source_id: str, status: str, from_statuses: tuple[str, ...] = ("syncing",)  # type: ignore[no-untyped-def]
+) -> bool:
+    """CAS a terminal state over a row still mid-sync, in one off-loop take.
+
+    Compare-and-set for the reason ``_finalize_job`` documents: the terminal
+    paths race. A shutdown cancel can be delivered to the coroutine after the
+    success write's worker already committed 'synced', and a blind second
+    write would stamp 'error' over the state the work actually reached. Only
+    a row still in one of *from_statuses* is moved, so the loser's write
+    lands on nothing. The upload path passes ('syncing', 'pending') because a
+    cancel can land before its best-effort 'syncing' stamp, while the freshly
+    inserted row still reads the INSERT default 'pending'.
+    """
+    marks = ", ".join("?" for _ in from_statuses)
+    cur = store.db.execute(
+        f"UPDATE sources SET sync_status = ? WHERE id = ? AND sync_status IN ({marks})",
+        (status, source_id, *from_statuses))
+    store.db.commit()
+    return cur.rowcount > 0
+
+
+async def _finalize_sync_status(
+    store, source_id: str, status: str, from_statuses: tuple[str, ...] = ("syncing",)  # type: ignore[no-untyped-def]
+) -> None:
+    """Write a terminal ``sync_status`` from a finalizer, and never raise.
+
+    Runs inside an ``except BaseException`` arm, so an exception escaping here
+    would mask the original one -- a failed DB write is logged and dropped
+    instead. A re-cancel can interrupt the ``await`` before the worker returns;
+    a worker already RUNNING completes, so a write in flight still lands (only
+    a re-cancel that arrives before the executor picks the item up can drop
+    it). Suppressing the re-cancel keeps the caller's original exception
+    current for its bare ``raise`` (the same shape as
+    ``_rebuild_embeddings_job``'s finalize).
+    """
+    try:
+        with contextlib.suppress(asyncio.CancelledError):
+            await asyncio.to_thread(
+                _finalize_sync_status_write, store, source_id, status, from_statuses)
+    except Exception:
+        logger.exception(
+            "Could not finalize sync_status=%r for source %s", status, source_id)
+
+
+async def _write_status_cancel_safe(store, source_id: str, status: str) -> None:  # type: ignore[no-untyped-def]
+    """Write *status* so that a cancel cannot strand the row at 'syncing'.
+
+    An exception raised INSIDE an ``except`` arm is not caught by its sibling
+    arms, so a cancel delivered during a status write made from one (the
+    budget-deferral 'pending' writes) would otherwise propagate with the row
+    still 'syncing'. The worker also outlives the cancel, so it is drained
+    first; whatever it landed, the CAS finalize then moves only a row still
+    'syncing' -- a landed write leaves it nothing to do -- and the cancel is
+    re-raised.
+    """
+    write = asyncio.ensure_future(asyncio.to_thread(_set_sync_status, store, source_id, status))
+    try:
+        await asyncio.shield(write)
+    except asyncio.CancelledError:
+        with contextlib.suppress(BaseException):
+            await write
+        await _finalize_sync_status(store, source_id, "error")
+        raise
+
+
 def _claim_sync(store, source_id: str) -> bool:
     """Move a source into 'syncing' and report whether THIS call won it.
 
@@ -1364,9 +1430,21 @@ async def _ingest_local_file_task(  # type: ignore[no-untyped-def]
     (``sync_source``) waits on it, so the orphan sweep cannot take an itemless
     row in a terminal status between that caller's read and the claim here.
     """
+    claim = asyncio.ensure_future(asyncio.to_thread(_claim_sync, store, source_id))
     try:
         try:
-            claimed = await asyncio.to_thread(_claim_sync, store, source_id)
+            claimed = await asyncio.shield(claim)
+        except asyncio.CancelledError:
+            # A cancel here does not stop the worker: the thread runs to
+            # completion and can still commit 'syncing' after this task is
+            # gone -- the same strand the work sites below close. Wait for the
+            # thread's answer and finalize only a claim THIS task won; a lost
+            # claim is a sibling sync's row. Everything is suppressed because
+            # a finalizer must never replace the cancellation.
+            with contextlib.suppress(BaseException):
+                if await claim:
+                    await _finalize_sync_status(store, source_id, "error")
+            raise
         except Exception:
             # Failing to TAKE the work is not the work failing. 'error' is terminal --
             # sync_all skips an errored row on every sweep -- so stamping it for a
@@ -1398,10 +1476,24 @@ async def _ingest_local_file_task(  # type: ignore[no-untyped-def]
         # keeps 'pending' off an upload, whose only copy is the unlinked temp file.
         # SyncScheduler.sync_source treats this exception the same way.
         logger.warning("Ingestion deferred by import budget for %s: %s", path, exc)
-        await asyncio.to_thread(_set_sync_status, store, source_id, "pending")
-    except Exception:
-        logger.exception("Background ingestion failed for %s", path)
-        await asyncio.to_thread(_set_sync_status, store, source_id, "error")
+        await _write_status_cancel_safe(store, source_id, "pending")
+    except BaseException as exc:
+        # CancelledError is a BaseException in 3.8+, so an ``except Exception``
+        # arm lets a shutdown cancel skip finalization and strand the row at
+        # 'syncing' -- every later sync then answers 409 with no recovery. A
+        # cancelled sync lands in 'error' like any other incomplete sync (no
+        # new status value: the settings UI and the watcher read this column),
+        # and the cancellation is re-raised so task semantics are preserved --
+        # shutdown drains ``_bg_tasks`` by cancelling them. The shape follows
+        # ``_rebuild_embeddings_job``, this file's precedent.
+        is_cancel = isinstance(exc, asyncio.CancelledError)
+        if is_cancel:
+            logger.debug("Background ingestion cancelled for %s", path)
+        else:
+            logger.exception("Background ingestion failed for %s", path)
+        await _finalize_sync_status(store, source_id, "error")
+        if is_cancel:
+            raise
 
 
 async def _hand_off_under_gate(  # type: ignore[no-untyped-def]
@@ -1521,9 +1613,21 @@ async def _background_agent_sync(  # type: ignore[no-untyped-def]
     the claim is atomic and the task owns both ends of the row's lifecycle.
     *claim_settled* is set once the claim is decided (see that task).
     """
+    claim = asyncio.ensure_future(asyncio.to_thread(_claim_sync, store, source_id))
     try:
         try:
-            claimed = await asyncio.to_thread(_claim_sync, store, source_id)
+            claimed = await asyncio.shield(claim)
+        except asyncio.CancelledError:
+            # A cancel here does not stop the worker: the thread runs to
+            # completion and can still commit 'syncing' after this task is
+            # gone -- the same strand the work sites below close. Wait for the
+            # thread's answer and finalize only a claim THIS task won; a lost
+            # claim is a sibling sync's row. Everything is suppressed because
+            # a finalizer must never replace the cancellation.
+            with contextlib.suppress(BaseException):
+                if await claim:
+                    await _finalize_sync_status(store, source_id, "error")
+            raise
         except Exception:
             # Failing to TAKE the work is not the work failing. 'error' is terminal --
             # sync_all skips an errored row on every sweep -- so stamping it for a
@@ -1559,10 +1663,18 @@ async def _background_agent_sync(  # type: ignore[no-untyped-def]
         logger.warning(
             "Agent sync deferred by import budget: source=%s url=%s: %s", source_id, url, exc
         )
-        await asyncio.to_thread(_set_sync_status, store, source_id, "pending")
-    except Exception:
-        logger.exception("Agent sync failed: source=%s url=%s", source_id, url)
-        await asyncio.to_thread(_set_sync_status, store, source_id, "error")
+        await _write_status_cancel_safe(store, source_id, "pending")
+    except BaseException as exc:
+        # ``except BaseException`` for the reason _ingest_local_file_task
+        # documents: a cancel must not strand the row at 'syncing'.
+        is_cancel = isinstance(exc, asyncio.CancelledError)
+        if is_cancel:
+            logger.debug("Agent sync cancelled: source=%s url=%s", source_id, url)
+        else:
+            logger.exception("Agent sync failed: source=%s url=%s", source_id, url)
+        await _finalize_sync_status(store, source_id, "error")
+        if is_cancel:
+            raise
 
 
 async def delete_source(request: web.Request) -> web.Response:
@@ -1842,7 +1954,11 @@ async def ingest_text(request: web.Request) -> web.Response:
             tmp.close()
             job_id = await pipeline.ingest_file(tmp.name, original_name=name,
                                                 namespace=namespace, source_id=source_id)
-            # Update source status
+            # Update source status. INVARIANT: the 'synced' write and the
+            # source.ingest_text audit ride in ONE worker take (_audited_write),
+            # with no await between them -- that is what makes the audit
+            # un-skippable by a cancellation. Do not split them or move one
+            # off-loop on its own.
             await _audited_write(
                 partial(_set_sync_status, store, source_id, "synced"),
                 event="source.ingest_text", fields={"source_id": source_id, "name": name})
@@ -1854,7 +1970,19 @@ async def ingest_text(request: web.Request) -> web.Response:
             return web.json_response(
                 {"error": str(exc), "code": "import_budget_exceeded"},
                 status=429)
-        except Exception:
+        except BaseException as exc:
+            # ``except BaseException`` so a cancel is seen and re-raised (task
+            # semantics), but this handler writes NO terminal status: it holds
+            # no claim, so a row reading 'syncing' here belongs to the sync
+            # task that requested this text, and that task's own finalizer
+            # clears it (a shutdown cancels every ``_bg_tasks`` member, this
+            # handler's caller included). Stamping 'error' from here would
+            # steal a live sibling claim and admit a concurrent replacement
+            # ingest. Non-cancel failures keep the existing 500 body.
+            is_cancel = isinstance(exc, asyncio.CancelledError)
+            if is_cancel:
+                logger.debug("Agent ingest_text cancelled for source %s", source_id)
+                raise
             logger.exception("Agent ingest_text failed for source %s", source_id)
             return web.json_response({"error": "internal server error"}, status=500)
         finally:
@@ -2085,8 +2213,20 @@ async def ingest_file(request: web.Request) -> web.Response:
                     # was already told 'processing'. ingest_file stamps the terminal
                     # status itself on both its paths (ingestion.py:1128 / 1144), so a
                     # skipped stamp costs a UI hint and heals on its own.
+                    stamp = asyncio.ensure_future(
+                        asyncio.to_thread(_set_sync_status, store, src_id, "syncing"))
                     try:
-                        await asyncio.to_thread(_set_sync_status, store, src_id, "syncing")
+                        await asyncio.shield(stamp)
+                    except asyncio.CancelledError:
+                        # The stamp's worker outlives a cancel and can commit
+                        # 'syncing' AFTER the outer arm's CAS finalize ran,
+                        # which would re-strand the row. Drain it, then
+                        # re-raise so the outer arm finalizes a stamp that has
+                        # actually landed -- the same shield-and-drain the
+                        # claim takes use.
+                        with contextlib.suppress(BaseException):
+                            await stamp
+                        raise
                     except Exception:
                         # The row id, not the filename: an upload's name is
                         # client-supplied and can carry a secret, and the row is what
@@ -2103,7 +2243,7 @@ async def ingest_file(request: web.Request) -> web.Response:
                         count_toward_import_budget=False,
                         import_budget_token=budget_token,
                     )
-            except Exception:
+            except BaseException as exc:
                 # No dedicated ImportChunkBudgetError branch here, and none is
                 # reachable from the front door: admission was reserved above, so
                 # an exhausted window answered 429 before this task existed and
@@ -2113,16 +2253,34 @@ async def ingest_file(request: web.Request) -> web.Response:
                 # unlinks, and an upload:// source has no re-fetchable URI, so
                 # unlike the local_file / agent-url paths there is nothing to
                 # retry from and 'pending' would promise one.
-                logger.exception("Background ingestion failed for %s", filename)
+                # ``except BaseException`` for the reason _ingest_local_file_task
+                # documents: a cancel must not strand the row at 'syncing'.
+                is_cancel = isinstance(exc, asyncio.CancelledError)
+                if is_cancel:
+                    logger.debug("Background ingestion cancelled for %s", src_id)
+                else:
+                    logger.exception("Background ingestion failed for %s", filename)
+                # ('syncing', 'pending'): a cancel can land before this path's
+                # best-effort 'syncing' stamp -- during the source re-read --
+                # while a freshly inserted row still reads the INSERT default
+                # 'pending'. A committed 'synced' is still never overwritten.
                 # The re-read above sits between reserving the admission and
                 # handing it to ingest_file, so a failure there leaves the
                 # reservation open and its placeholder stranded in the window
                 # for the process lifetime. Release is a no-op once ingest_file
                 # has taken the token (its own finally settles or releases it),
-                # so this is safe on every path through the try. First, before
-                # the status stamp: that write can itself raise on a contended
-                # lock and must not skip the reclaim.
+                # so this is safe on every path through the try -- the cancel
+                # path included. First, before the status write: that write
+                # must not skip the reclaim.
                 pipeline.release_import_budget(budget_token)
+                if is_cancel:
+                    await _finalize_sync_status(
+                        store, src_id, "error", from_statuses=("syncing", "pending"))
+                    raise
+                # Unconditional, NOT the CAS: this path's 'syncing' stamp is
+                # best-effort, so a failed stamp co-occurring with a failed
+                # ingest would leave the CAS nothing to move and the row
+                # holding a stale prior status over a deleted upload.
                 await asyncio.to_thread(_set_sync_status, store, src_id, "error")
             finally:
                 Path(tmp_path).unlink(missing_ok=True)
