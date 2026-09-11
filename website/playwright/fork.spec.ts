@@ -17,7 +17,11 @@ test.describe('Fork Session E2E', { tag: '@needs-agent' }, () => {
     // Auth is handled by the 'setup' project (playwright.config.ts), which
     // exchanges PLAYWRIGHT_TOKEN for a cookie and persists it via storageState.
     // Tests just navigate straight to /chat with the cookie already attached.
-    await page.goto('/chat', { waitUntil: 'networkidle' })
+    // 'domcontentloaded', like every other spec: /chat holds a live connection
+    // to the gateway, so 'networkidle' (500 ms with no traffic) is never
+    // guaranteed to arrive inside goto's 10 s budget. Readiness is the
+    // composer becoming visible, asserted below.
+    await page.goto('/chat', { waitUntil: 'domcontentloaded' })
     // Dismiss first-run theme picker modal if present.
     const letsGo = page.getByRole('button', { name: /let's go/i })
     if (await letsGo.isVisible({ timeout: 2000 }).catch(() => false)) {
