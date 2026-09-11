@@ -22,6 +22,7 @@ from kiro_crew.acp_backends import (  # noqa: F401 - re-exported for existing im
     ACP_BACKENDS_ACP_RUNTIME,
     ACP_BACKENDS_ADVERTISED_MODEL_SELECTION,
     ACP_BACKENDS_COMPACT,
+    ACP_BACKENDS_DEVCONTAINER,
     ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION,
     ACP_BACKENDS_HARNESS_OWNED_SESSIONS,
     ACP_BACKENDS_HOST_AUTH_CALLBACK,
@@ -148,29 +149,6 @@ ACP_CLIENT_CAPABILITIES: dict = {
     "elicitation": {"form": {}, "url": {}},
 }
 
-# ── ACP Backend Identifiers ──
-# DEFINED in :mod:`kiro_crew.acp_backends` and re-exported from the import block
-# at the top of this module, so ``from kiro_crew.acp.types import ACP_BACKEND_*``
-# resolves here for its ~19 call sites.
-#
-# The definitions live outside this package: importing anything under
-# ``kiro_crew.acp`` executes its ``__init__`` (client + runtime), so the loader's
-# field metadata and the dashboard's PATCH allowlist cannot read them from here
-# without dragging that in, and would each need a literal copy of the selectable
-# list. ``acp_backends`` imports nothing from this package, so it can be the
-# single code owner.
-#
-# The selectable set is not a constant either: it is a REGISTRY an edition
-# extends (``register_selectable_backend``). A frozen ``ACP_BACKENDS_SELECTABLE``
-# snapshot here would be read before boot registration and silently miss it.
-
-# ── Capability membership ──
-# The ``ACP_BACKENDS_*`` capability sets are DEFINED in the leaf module
-# ``kiro_crew.acp_backends`` and re-exported by the import above, so
-# ``from kiro_crew.acp.types import ACP_BACKENDS_STEER`` resolves. They live there
-# for the same reason the backend identifiers do: a consumer outside this package
-# must be able to ask a capability question without importing ``kiro_crew.acp``,
-# whose ``__init__`` pulls in the client and runtime.
 
 # ── Provider labels ──
 # The backend identity key persisted in the session map. It indexes three

@@ -4517,10 +4517,36 @@ class TestAcpRuntimeLoadSession:
             "_initialize_session",
         } <= builders.keys(), f"expected builders missing from scan: {sorted(builders)}"
         for name, body in builders.items():
-            assert "pooled_session_servers" in body or "_pooled_mcp_servers" in body, (
+            assert (
+                "pooled_session_servers" in body
+                or "_pooled_mcp_servers" in body
+                or "_injected_mcp_servers" in body
+                or "_session_mcp_servers" in body
+            ), (
                 f"{name} issues session/new or session/load but never consults "
                 "the pooled broker stubs — it would un-pool its sessions (#3528)"
             )
+        # The helpers above are the container-aware seam: they swap in the host
+        # stdio bridge when a runtime is containerized, and must still fall
+        # through to the pooling stubs on the host path.
+        injected = inspect.getsource(rt_mod.AcpRuntime._injected_mcp_servers)
+        assert "pooled_session_servers" in injected
+        # On the client, main routes the host-path pooling through the cached
+        # _resolve_session_mcp_servers (which _session_mcp_servers delegates to when
+        # no bridge is active), and that resolver appends _pooled_broker_stubs().
+        # So the pooled consultation lives in the resolver, not the accessor; assert
+        # the whole chain rather than the accessor alone.
+        session = inspect.getsource(client_mod.AcpClient._session_mcp_servers)
+        resolver = inspect.getsource(client_mod.AcpClient._resolve_session_mcp_servers)
+        assert (
+            "_pooled_mcp_servers" in session  # bridge-vs-host branch names it
+            or "_resolve_session_mcp_servers" in session  # delegates to the resolver
+        ), "client _session_mcp_servers no longer reaches the pooled path"
+        assert (
+            "pooled_session_servers" in resolver
+            or "_pooled_broker_stubs" in resolver
+            or "_pooled_mcp_servers" in resolver
+        ), "the client session-MCP resolver no longer consults the pooled broker stubs"
 
 
 @pytest.mark.asyncio

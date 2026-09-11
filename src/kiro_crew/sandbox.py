@@ -334,6 +334,20 @@ _CREW_HIDDEN_LEAVES: tuple[str, ...] = (
     # mask cannot drift from the tool gate that fences the same store.
     AUTH_SQLITE_DB,
     *(f"{AUTH_SQLITE_DB}{suffix}" for suffix in AUTH_SQLITE_SIDECAR_SUFFIXES),
+    # Dev Container trust store (``devcontainers/trust.json`` and any sidecar).
+    # Fenced from agent FILE TOOLS by ``security._CREW_SECRET_LEAVES``; masked here
+    # so a spawned command cannot reach it either. A grant recorded in this store
+    # authorizes ``devcontainer up`` to build and run a config with arbitrary
+    # ``runArgs`` / ``privileged`` / ``mounts``, so an agent shell able to write it
+    # (``tee ~/.kiro/crew/devcontainers/trust.json``) could forge a matching digest
+    # for a config it just authored and self-approve container execution, bypassing
+    # the human trust prompt the feature rests on. HIDDEN rather than READONLY:
+    # nothing in the sandbox reads it -- the gateway's own ``devcontainer._read_trust``
+    # opens the path directly, host-side -- and hiding it also blocks the read that
+    # would let an agent learn which configs are already trusted. Whole DIRECTORY so
+    # a future sidecar beside ``trust.json`` is covered, and because a grant write is
+    # an atomic replace via a sibling temp name.
+    "devcontainers",
 )
 
 #: Crew-home CEILINGS: read by in-sandbox code, never writable by it. Exposed

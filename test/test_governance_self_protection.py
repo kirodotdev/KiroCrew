@@ -15,6 +15,7 @@ import os
 import pytest
 
 from kiro_crew import security
+from kiro_crew.config.loader import config_dir
 from kiro_crew.hooks import TOOL_DENY, HookManager, validate_file_path
 from kiro_crew.platform.context import PlatformCompositionError
 from kiro_crew.platform.governance import assert_governance_paths_protected
@@ -99,6 +100,95 @@ def test_agent_fs_write_to_run_marker_denied_at_gate():
     home = os.path.expanduser("~")
     result = hooks.on_tool_call(f"{home}/.kirocrew/run/gateway-7781.bin")
     assert result.action == TOOL_DENY
+
+
+# ── Dev Container trust store (grants authorize container builds) ─────────────
+# ``devcontainer.is_trusted()`` compares a project's current ``.devcontainer/``
+# digest against a grant recorded in ``<data home>/devcontainers/trust.json``,
+# and a grant authorizes ``devcontainer up`` to build and run that config —
+# lifecycle commands, ``runArgs``, ``privileged``, ``mounts`` and all. An agent
+# that could WRITE the store would record a matching digest for a config it just
+# authored and self-approve arbitrary container execution, bypassing the human
+# trust prompt the whole feature rests on. Pinned as the whole directory.
+#
+# Fenced at BOTH layers, so neither the file tools nor a spawned shell can reach
+# it: the file-tool gate below (``security._CREW_SECRET_LEAVES``), and the OS
+# sandbox mask (``sandbox._CREW_HIDDEN_LEAVES``) that
+# ``test_the_devcontainer_trust_store_is_masked_from_the_shell`` pins. The shell
+# layer matters because ``is_sensitive_bash_command`` no longer matches paths in
+# command text by design, so ``tee ~/.kiro/crew/devcontainers/trust.json`` from
+# an agent shell is stopped only by the mask. HIDDEN rather than READONLY: nothing
+# in the sandbox reads the store (the gateway's own ``_read_trust`` opens it
+# directly, host-side), and hiding it also blocks the read that would let an agent
+# learn which configs are already trusted.
+
+
+def test_devcontainer_trust_store_is_sensitive_under_the_live_data_home():
+    """REVERT-VERIFIED against the ``"devcontainers"`` entry in
+    ``security._CREW_SECRET_LEAVES``: drop the leaf and both assertions below
+    flip to False, leaving the trust store agent-writable.
+
+    Anchored on ``config_dir()`` rather than a ``~/`` literal so it follows the
+    ``KIROCREW_HOME`` re-anchoring in ``_home_dir_targets`` — this is the path
+    the gateway actually writes, whatever the home resolves to."""
+    home = config_dir()
+    assert security.is_sensitive_path(str(home / "devcontainers" / "trust.json"))
+    # The directory itself, so a future sidecar beside trust.json is covered.
+    assert security.is_sensitive_path(str(home / "devcontainers"))
+    assert security.is_sensitive_path(str(home / "devcontainers" / "future-sidecar.json"))
+
+
+def test_a_neighbouring_data_home_path_is_still_readable():
+    """Proves the leaf was ADDED rather than the data home being blanket-blocked:
+    a sibling directory under the same home stays accessible."""
+    home = config_dir()
+    assert not security.is_sensitive_path(str(home / "devcontainer-notes.json"))
+    assert not security.is_sensitive_path(str(home / "sessions.db"))
+    assert not security.is_sensitive_path(str(home / "workspace" / "notes.md"))
+
+
+_DEVCONTAINER_TRUST_PATHS = (
+    "~/.kiro/crew/devcontainers",
+    "~/.kiro/crew/devcontainers/trust.json",
+    # Legacy pre-move home is gated too — the leaf expands under every prefix.
+    "~/.kirocrew/devcontainers",
+    "~/.kirocrew/devcontainers/trust.json",
+)
+
+
+@pytest.mark.parametrize("path", _DEVCONTAINER_TRUST_PATHS)
+def test_devcontainer_trust_paths_are_sensitive_under_both_home_prefixes(path):
+    assert security.is_sensitive_path(path)
+
+
+@pytest.mark.parametrize("path", _DEVCONTAINER_TRUST_PATHS)
+def test_validate_file_path_rejects_the_devcontainer_trust_store(path):
+    assert validate_file_path(path) is None
+
+
+def test_agent_fs_write_to_devcontainer_trust_denied_at_gate():
+    hooks = HookManager()
+    home = os.path.expanduser("~")
+    result = hooks.on_tool_call(f"{home}/.kiro/crew/devcontainers/trust.json")
+    assert result.action == TOOL_DENY
+
+
+def test_the_devcontainer_trust_store_is_masked_from_the_shell():
+    """The file-tool gate is not enough on its own: ``is_sensitive_bash_command``
+    matches no paths, so a shell ``tee ~/.kiro/crew/devcontainers/trust.json`` is
+    stopped only by the OS sandbox mask. Pin that the ``devcontainers`` leaf sits
+    in ``sandbox._CREW_HIDDEN_LEAVES`` — drop it there and this fails, re-opening
+    the self-approval path the file-tool test cannot see.
+
+    HIDDEN, not READONLY: the store has no in-sandbox reader (the gateway opens it
+    host-side), so it is masked entirely rather than exposed read-only.
+    """
+    from kiro_crew import sandbox
+
+    assert "devcontainers" in sandbox._CREW_HIDDEN_LEAVES
+    # And it must NOT be merely read-only, which would still let a read leak which
+    # configs are trusted.
+    assert "devcontainers" not in sandbox._CREW_READONLY_LEAVES
 
 
 def test_the_named_ceiling_and_secret_leaves_are_fenced_at_the_OS_LAYER():

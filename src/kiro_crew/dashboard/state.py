@@ -3391,6 +3391,7 @@ class _ChatSlot:
         "_active_turn_session_key",
         "_side",
         "_acp_client",
+        "_execution_locus",
         "_last_turn_awaiting_permission",
         "_last_turn_children_announced",
         "_steer_segment_cut",
@@ -4028,6 +4029,11 @@ class _ChatSlot:
         # dashboard steer handler) reach the running session's client to inject
         # a mid-turn steer. None when idle.
         self._acp_client = None
+        # Where THIS slot's last spawn actually ran. Keyed on the slot, not
+        # the work dir: several sessions can share a project, and a work-dir
+        # verdict would let a later containerized session make an earlier
+        # host-fallback one report "in container".
+        self._execution_locus = None
         # Hang-attribution snapshot stashed by _run_chat's finally just before
         # _acp_client is dropped; read by finish_turn_task when the dashboard
         # ceiling cut the turn (kirocrew.turn.timeout.cause).
@@ -4882,7 +4888,7 @@ class _ChatSlot:
         )
 
         source_links = self._pr_source_links() if session_card_source_links_enabled() else []
-        return self._projection.to_dict(
+        payload = self._projection.to_dict(
             self,
             include_check_status=include_check_status,
             source_links=source_links,
@@ -4908,6 +4914,30 @@ class _ChatSlot:
                 )
             ),
         )
+        # Devcontainer execution locus, appended to the projection's dict rather
+        # than built inside slot_projection.py: the locus is slot-private state
+        # and that module deliberately owns none. Absent-vs-None is load-bearing
+        # downstream — None means no spawn recorded a locus, so the execution
+        # chip stays hidden instead of claiming a host fallback.
+        payload["execution"] = self._execution_payload()
+        return payload
+
+    def _execution_payload(self) -> dict[str, str | None] | None:
+        """Where this slot's agent last ran, if a spawn recorded it.
+
+        Reads the slot's own snapshot, never the work-dir table. Several
+        sessions can share a project; a later containerized resolve must not
+        make an earlier host-fallback session report "in container".
+        """
+        locus = getattr(self, "_execution_locus", None)
+        if locus is None:
+            return None
+        as_payload = getattr(locus, "as_payload", None)
+        if callable(as_payload):
+            payload = as_payload()
+            if isinstance(payload, dict):
+                return payload
+        return None
 
 
 class DashboardState:

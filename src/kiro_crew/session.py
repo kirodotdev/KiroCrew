@@ -474,6 +474,7 @@ POOL_DECISIONS: frozenset[str] = frozenset(
         "bypass_cwd",
         "bypass_effort",
         "bypass_env",
+        "bypass_devcontainer",
         "disabled",
         "other",
     }
@@ -1979,6 +1980,26 @@ class SessionManager:
             )
         except Exception:
             logger.debug("pool decision metric emit failed", exc_info=True)
+
+    async def _cwd_has_trusted_devcontainer(self, cwd: str | None) -> bool:
+        """True when *cwd* has a trusted Dev Container that would containerize.
+
+        Warm-pool runtimes are spawned against ``default_project_dir()`` before
+        trust is known, so their locus is host. Handing one to a work dir that
+        should run inside a container would leave the operator believing the
+        session is containerized when it is not.
+        """
+        if not cwd:
+            return False
+
+        def _check() -> bool:
+            from kiro_crew.devcontainer import devcontainers_enabled, is_trusted
+
+            if not devcontainers_enabled():
+                return False
+            return is_trusted(cwd)
+
+        return await asyncio.to_thread(_check)
 
     def _claim_from_pool(self, agent: str | None) -> tuple[LLMProvider, float] | None:
         """Delegate exact-agent warm-pool claiming."""

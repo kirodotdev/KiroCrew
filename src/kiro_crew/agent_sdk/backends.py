@@ -571,6 +571,26 @@ ACP_BACKENDS_INLINE_COMPACTION = frozenset({ACP_BACKEND_CLAUDE})
 # would remove the control. It carries no OS sandbox of its own to replace it.
 ACP_BACKENDS_INTERNAL_SANDBOX = frozenset({ACP_BACKEND_KIRO})
 
+# Backends that may be CONTAINERIZED (run inside the project's Dev Container via
+# ``docker exec``) when the work dir carries a trusted config. Membership, never a
+# negative test, for the same H7/H8 reason as the sets above: containerizing
+# rebuilds the argv as ``docker exec`` running kiro-cli from the image, so a
+# harness admitted here that is NOT kiro-cli would have its selected binary
+# silently discarded and kiro-cli run in its place while the session still
+# reports the chosen backend.
+#   * kiro     -- IN. The preview installs kiro-cli in the image (or a lifecycle
+#                 hook does) and the preflight refuses without it.
+#   * claude   -- OUT. No devcontainer image carries claude-agent-acp, and the
+#                 container has no claude-agent-acp to exec.
+#   * codex    -- OUT. Same reason as claude -- the standalone adapter is a host
+#                 install, not part of a devcontainer image.
+#   * kas      -- OUT. No ``docker exec`` form reaches it.
+#
+# A harness added later is OUT until someone states how the container obtains its
+# binary; defaulting to IN is what would collapse every harness onto the kiro
+# spawn form.
+ACP_BACKENDS_DEVCONTAINER = frozenset({ACP_BACKEND_KIRO})
+
 # Backends whose pod-spawned child has its ambient ``HOME`` relocated onto the
 # pod's own tree, so the MCP OAuth grant artifacts the harness derives from
 # ``$HOME`` stay pod-scoped (``acp.client._apply_pod_home_remap``).

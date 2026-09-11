@@ -1011,6 +1011,26 @@ class AgentConfig:
             "operator answers yes.",
         ),
     )
+    devcontainer: str = field(
+        default="off",
+        metadata=_meta(
+            "Dev Containers",
+            "DEVELOPER PREVIEW — this setting does nothing on its own. The "
+            "gateway must ALSO run with KIROCREW_DEVCONTAINERS=1 in its "
+            "environment, so an unfinished feature is never reached by config "
+            "alone. Run a session's agent inside the project's Dev Container "
+            "(VS Code parity). 'auto': when the session's project directory "
+            "carries a .devcontainer/devcontainer.json (or .devcontainer.json) "
+            "that a dashboard user has trusted, the agent process is executed "
+            "inside a container built by the @devcontainers/cli, with the "
+            "project's own toolchain. 'off' (default): agent runs on the host as "
+            "before. Requires Docker and the devcontainer CLI (Linux, or "
+            "Docker Desktop on macOS / Windows); trust is granted per config "
+            "file content and re-prompted on any edit. Managed MCP stays on "
+            "the host and is bridged into the container.",
+            enum=["auto", "off"],
+        ),
+    )
     apps_allow_third_party: bool = field(
         default=False,
         metadata=_meta(
