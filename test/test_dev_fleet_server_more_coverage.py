@@ -1044,7 +1044,47 @@ async def test_make_live_handler_passes_dry_run_through(monkeypatch):
     resp = await http_api.api_dev_fleet_make_live(_body_request(raw))
 
     assert resp.status == 200
-    make_live.assert_awaited_once_with("/wt/feat", True, expected_staged=None)
+    make_live.assert_awaited_once_with(
+        "/wt/feat", True, expected_staged=None, undo=False
+    )
+
+
+@pytest.mark.asyncio
+async def test_make_live_handler_validates_and_passes_undo(monkeypatch):
+    monkeypatch.setattr(runtime, "_sel", lambda: _NullSel())
+    make_live = AsyncMock(return_value={"ok": True})
+    monkeypatch.setattr(live, "_make_live", make_live)
+
+    bad = await http_api.api_dev_fleet_make_live(
+        _body_request(json.dumps({"path": "/wt/main", "undo": "yes"}).encode())
+    )
+    assert bad.status == 400
+    assert json.loads(bad.text) == {
+        "code": "invalid_undo",
+        "error": "undo must be a boolean",
+    }
+
+    ambiguous = await http_api.api_dev_fleet_make_live(
+        _body_request(
+            json.dumps(
+                {
+                    "path": "/wt/main",
+                    "undo": True,
+                    "expected_staged": "/wt/feature",
+                }
+            ).encode()
+        )
+    )
+    assert ambiguous.status == 400
+    assert json.loads(ambiguous.text)["code"] == "undo_conflicts_with_expected_staged"
+
+    ok = await http_api.api_dev_fleet_make_live(
+        _body_request(json.dumps({"path": "/wt/main", "undo": True}).encode())
+    )
+    assert ok.status == 200
+    make_live.assert_awaited_once_with(
+        "/wt/main", False, expected_staged=None, undo=True
+    )
 
 
 @pytest.mark.asyncio
@@ -1400,3 +1440,50 @@ async def test_sync_refuses_when_worker_cleanup_times_out(monkeypatch):
     # Cleanup
     never_done.set_result(None)
     await slow_task
+
+
+def test_completed_cutover_undo_target_exposes_discovered_previous_checkout():
+    raw = [
+        {"path": "/repo/main"},
+        {"path": "/repo/wt-feature"},
+    ]
+    rows = [
+        {"name": "main", "path": "/display/main"},
+        {"name": "wt-feature", "path": "/display/wt-feature"},
+    ]
+
+    out = fleet_state._completed_cutover_undo_target(
+        raw,
+        rows,
+        live_path="/repo/wt-feature",
+        staged_path=None,
+        previous_path=Path("/repo/main"),
+    )
+
+    assert out == {"name": "main", "path": "/display/main"}
+
+
+@pytest.mark.parametrize(
+    ("live_path", "staged_path", "previous_path"),
+    [
+        ("/repo/wt-feature", "/repo/main", Path("/repo/main")),
+        ("/repo/main", None, Path("/repo/main")),
+        ("/repo/wt-feature", None, Path("/repo/removed")),
+        (None, None, Path("/repo/main")),
+    ],
+)
+def test_completed_cutover_undo_target_hides_non_actionable_history(
+    live_path, staged_path, previous_path
+):
+    out = fleet_state._completed_cutover_undo_target(
+        [{"path": "/repo/main"}, {"path": "/repo/wt-feature"}],
+        [
+            {"name": "main", "path": "/display/main"},
+            {"name": "wt-feature", "path": "/display/wt-feature"},
+        ],
+        live_path=live_path,
+        staged_path=staged_path,
+        previous_path=previous_path,
+    )
+
+    assert out is None
