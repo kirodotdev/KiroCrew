@@ -563,15 +563,21 @@ custom-rules:
         setup wizard) — AND the omission carries a `{/* No hand-off: … */}`
         comment naming the draft it protects, the established form in
         `src/pages/settings/RemoteCrewPanel.tsx`.
+      - Inside Radix menu content, `askAgent` MUST stay off on the passive
+        notice and the hand-off MUST render as a sibling `ErrorNoticeMenuItem`.
+        Give the `ErrorNotice` an `id` and pass that same value as the menu
+        item's `describedBy`; this is the third sanctioned state, because a
+        nested button is skipped by the menu's roving focus.
       - `onHandoff` lets a dialog close itself before the navigation (the
         `App.tsx` update-modal form). It does NOT make the navigation safe:
         the tree beneath the dialog still unmounts, so over an unsaved draft
         the no-hand-off form applies, `onHandoff` or not.
 
-      On the `askAgent` choice, the REVIEWER blocks on the missing decision,
-      never on the direction of it: an added or touched `ErrorNotice` carrying
-      neither `askAgent` nor a `No hand-off` comment, or a comment that names
-      no concrete draft. (The hand-written-surface ban above is its own
+      On the hand-off choice, the REVIEWER blocks on a missing decision, never
+      on the direction of it: an added or touched `ErrorNotice` must carry
+      `askAgent`, a `No hand-off` comment naming a concrete draft, or a sibling
+      `ErrorNoticeMenuItem` in the same conditional branch whose `describedBy`
+      matches the notice's `id`. (The hand-written-surface ban above is its own
       blocking trigger.) Whether a subtree holds unsaved state is not visible
       in a hunk, so a reviewer never demands `askAgent` be turned on — a wrong
       demand causes exactly the data loss the default prevents. Doubt a

@@ -16,6 +16,7 @@
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { MemoryRouter, useLocation } from 'react-router-dom'
@@ -70,16 +71,24 @@ vi.mock('../api/client', () => ({
   }),
 }))
 
+const mobileViewport = { value: false }
+
 Object.defineProperty(window, 'matchMedia', {
   writable: true,
   value: vi.fn().mockImplementation((q: string) => ({
-    matches: false, media: q, onchange: null,
+    get matches() { return mobileViewport.value }, media: q, onchange: null,
     addListener: vi.fn(), removeListener: vi.fn(),
     addEventListener: vi.fn(), removeEventListener: vi.fn(), dispatchEvent: vi.fn(),
   })),
 })
 
 import ChatSidebar from '../pages/ChatSidebar'
+import {
+  consumeChatHandoff,
+  installSoftNavigate,
+  __resetErrorJournalForTests,
+  __resetNavSeamForTests,
+} from '../utils/errorReport'
 // Not mocked: the gate reads real localStorage, so the fixture that turns crew
 // on is the same write the Settings > Developer > Feature Previews toggle performs.
 import { PREVIEW_CREW, PREVIEW_REMOTE_CREW_CHAT } from '../utils/previewFlags'
@@ -132,6 +141,11 @@ function openCreateMenu() {
 
 beforeEach(() => {
   localStorage.clear()
+  sessionStorage.clear()
+  mobileViewport.value = false
+  __resetErrorJournalForTests()
+  __resetNavSeamForTests()
+  installSoftNavigate(() => {})
   cfg.value = { tagColumnsEnabled: false, confirmCloseSession: false, defaultAutopilot: false }
   mocks.createChatSlot.mockResolvedValue({ key: 'chat-new-1' })
   mocks.listInstances.mockResolvedValue({
@@ -139,7 +153,11 @@ beforeEach(() => {
     instances: [{ id: 'i-nobita', name: 'nobita' }, { id: 'i-gian', name: 'gian' }],
   })
 })
-afterEach(() => vi.clearAllMocks())
+afterEach(() => {
+  mobileViewport.value = false
+  __resetNavSeamForTests()
+  vi.clearAllMocks()
+})
 
 describe('create-button caret menu', () => {
   it('lists "New chat" next to "New autopilot chat"', async () => {
@@ -312,6 +330,47 @@ describe('create-button caret menu', () => {
         undefined, 'i-nobita',
       ),
     )
+  })
+
+  it.each([
+    ['desktop', 'Enter', false, '{Enter}'],
+    ['desktop', 'Space', false, ' '],
+    ['mobile', 'Enter', true, '{Enter}'],
+    ['mobile', 'Space', true, ' '],
+  ])('keeps the crew row action in %s and stages its failure with %s', async (_surface, _label, mobile, key) => {
+    const user = userEvent.setup()
+    mobileViewport.value = mobile
+    localStorage.setItem(PREVIEW_REMOTE_CREW_CHAT, '1')
+    mocks.createChatSlot.mockRejectedValue(new Error('peer version mismatch'))
+    renderSidebar({ warm: { 'i-nobita': { local_port: 7879, token: 't' } } })
+    openCreateMenu()
+
+    if (!mobile) {
+      const trigger = await screen.findByTestId('new-chat-on-crew')
+      fireEvent.keyDown(trigger, { key: 'ArrowRight' })
+    }
+    let row = await screen.findByTestId('new-chat-on-crew-i-nobita')
+    row.focus()
+    await user.keyboard('{Enter}')
+    const alert = await screen.findByTestId('new-chat-on-crew-error')
+    expect(mocks.createChatSlot).toHaveBeenCalledTimes(1)
+
+    row = await screen.findByTestId('new-chat-on-crew-i-nobita')
+    row.focus()
+    await user.keyboard('{Enter}')
+    await waitFor(() => expect(mocks.createChatSlot).toHaveBeenCalledTimes(2))
+    await screen.findByTestId('new-chat-on-crew-error')
+
+    row = await screen.findByTestId('new-chat-on-crew-i-nobita')
+    row.focus()
+    await user.keyboard('{ArrowDown}')
+    const handoff = screen.getByRole('menuitem', { name: /^Ask the agent$/i })
+    expect(handoff).toHaveFocus()
+    expect(handoff).toHaveAttribute('aria-describedby', alert.id)
+    await user.keyboard(key)
+
+    expect(consumeChatHandoff()).toContain('peer version mismatch')
+    expect(mocks.createChatSlot).toHaveBeenCalledTimes(2)
   })
 
   it('sends no agent with a crew create even when this machine has a default', async () => {

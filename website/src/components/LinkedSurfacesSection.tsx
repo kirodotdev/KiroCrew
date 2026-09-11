@@ -1,4 +1,4 @@
-import { Fragment, useState } from 'react'
+import { Fragment, useId, useState } from 'react'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { Loader2 } from 'lucide-react'
 import { ApiError, api } from '../api/client'
@@ -10,7 +10,7 @@ import type { ConfiguredChannelTarget, SessionLink } from '../types'
 import { channelBrandLabel } from '../utils/channelOrigin'
 import { parseErrorCode } from '../utils/errorReport'
 import { ChannelBrandIcon } from './ChannelBrandIcon'
-import ErrorNotice from './ErrorNotice'
+import ErrorNotice, { ErrorNoticeMenuItem } from './ErrorNotice'
 import { ContextMenuItem } from './ui/context-menu'
 import { DropdownMenuItem } from './ui/dropdown-menu'
 
@@ -54,6 +54,8 @@ export default function LinkedSurfacesSection({ slotKey, variant }: {
   variant: 'dropdown' | 'context'
 }) {
   const Item = variant === 'context' ? ContextMenuItem : DropdownMenuItem
+  const targetsErrorId = useId()
+  const rowErrorIdPrefix = useId()
   const dispatch = useAppDispatch()
   const slot = useAppSelector(s => s.dashboard.slots.find(x => x.key === slotKey))
   // No synthesized Slack row. The wire emits a Slack row on exactly the condition
@@ -69,6 +71,12 @@ export default function LinkedSurfacesSection({ slotKey, variant }: {
     )),
     refetchInterval: 30_000,
   })
+  const targetsErrorMessage = targetsError
+    ? i18nT('components.linkedSurfacesSection.targets_load_failed')
+    : null
+  const rowErrorId = (channel: string) => (
+    `${rowErrorIdPrefix}-${encodeURIComponent(channel)}`
+  )
 
   const notify = (kind: 'success' | 'error', title: string) => {
     dispatch(addNotification({ ts: String(Date.now()), title, body: '', kind }))
@@ -287,19 +295,26 @@ export default function LinkedSurfacesSection({ slotKey, variant }: {
 
   return (
     <>
-      {/* A failed target load used to show no connect offers at all, with no
-          explanation — a session with nothing to connect to and a broken read
-          looked identical. askAgent on: a menu holds no draft. */}
-      {targetsError && (
-        <div className="px-2 py-1.5 max-w-[280px]">
-          <ErrorNotice
-            variant="inline"
-            className="whitespace-normal"
-            message={i18nT('components.linkedSurfacesSection.targets_load_failed')}
-            askAgent
-            testId="linked-surfaces-targets-error"
+      {/* A failed target load must not look like an empty target list: the
+          alert says the read failed. It stays passive inside the menu; its
+          sibling item is the keyboard-reachable hand-off. */}
+      {targetsErrorMessage && (
+        <>
+          <div className="px-2 py-1.5 max-w-[280px]">
+            <ErrorNotice
+              id={targetsErrorId}
+              variant="inline"
+              className="whitespace-normal"
+              message={targetsErrorMessage}
+              testId="linked-surfaces-targets-error"
+            />
+          </div>
+          <ErrorNoticeMenuItem
+            Item={Item}
+            message={targetsErrorMessage}
+            describedBy={targetsErrorId}
           />
-        </div>
+        </>
       )}
       {rows.map(row => (
         <Fragment key={row.key}>
@@ -348,20 +363,26 @@ export default function LinkedSurfacesSection({ slotKey, variant }: {
             ) : null}
           </span>
         </Item>
-        {/* In place, under the row that failed. askAgent on: the menu holds no
-            draft, and a channel that refuses a connect (config, an occupied
-            conversation) is a gateway-side condition the agent can explain. */}
+        {/* In place, under the row that failed. The alert stays passive inside
+            Radix; the sibling item carries the keyboard-reachable hand-off. */}
         {rowErrors[row.channel] && (
-          <div className="px-2 pb-1.5 max-w-[280px]">
-            <ErrorNotice
-              variant="inline"
-              className="whitespace-normal text-[11px]"
+          <>
+            <div className="px-2 pb-1.5 max-w-[280px]">
+              <ErrorNotice
+                id={rowErrorId(row.channel)}
+                variant="inline"
+                className="whitespace-normal text-[11px]"
+                message={rowErrors[row.channel]}
+                onDismiss={() => clearRow(row.channel)}
+                testId={`linked-surfaces-error-${row.channel}`}
+              />
+            </div>
+            <ErrorNoticeMenuItem
+              Item={Item}
               message={rowErrors[row.channel]}
-              askAgent
-              onDismiss={() => clearRow(row.channel)}
-              testId={`linked-surfaces-error-${row.channel}`}
+              describedBy={rowErrorId(row.channel)}
             />
-          </div>
+          </>
         )}
         </Fragment>
       ))}

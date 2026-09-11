@@ -1,12 +1,23 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { screen, fireEvent, waitFor } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { renderWithProviders } from './helpers'
 import FilePathMenu from '../components/FilePathMenu'
+import {
+  consumeChatHandoff,
+  installSoftNavigate,
+  __resetErrorJournalForTests,
+  __resetNavSeamForTests,
+} from '../utils/errorReport'
 
 // ── Mocks ────────────────────────────────────────────────────────────────────
 
 const brandingEnv = vi.hoisted(() => ({ directLocal: true }))
 const platformEnv = vi.hoisted(() => ({ value: 'other' as 'other' | 'darwin' | 'windows' }))
+const editorEnv = vi.hoisted(() => ({
+  enabled: false,
+  open: vi.fn(),
+}))
 
 vi.mock('../hooks/useBranding', () => ({
   useBranding: () => ({ botName: 'Test', avatar: '', directLocal: brandingEnv.directLocal }),
@@ -19,11 +30,21 @@ vi.mock('../hooks/useGatewayPlatform', () => ({
   useGatewayPlatform: () => platformEnv.value,
 }))
 
-vi.mock('../api/client', () => ({
-  api: {
-    revealPath: vi.fn().mockResolvedValue({ ok: true }),
-  },
+vi.mock('../lib/electron', () => ({
+  canOpenFileInEditor: () => editorEnv.enabled,
+  openFileInEditor: editorEnv.open,
 }))
+
+vi.mock('../api/client', async importOriginal => {
+  const mod = await importOriginal<typeof import('../api/client')>()
+  return {
+    ...mod,
+    api: {
+      ...mod.api,
+      revealPath: vi.fn().mockResolvedValue({ ok: true }),
+    },
+  }
+})
 
 vi.mock('../utils/clipboard', () => ({
   // Resolves TRUE by default: the real signature is `Promise<boolean>`, and a
@@ -41,11 +62,21 @@ beforeEach(() => {
   vi.clearAllMocks()
   brandingEnv.directLocal = true
   platformEnv.value = 'other'
+  editorEnv.enabled = false
+  editorEnv.open.mockResolvedValue({ ok: true })
+  vi.mocked(api.revealPath).mockResolvedValue({ ok: true })
+  vi.mocked(copyToClipboard).mockResolvedValue(true)
+  __resetErrorJournalForTests()
+  __resetNavSeamForTests()
+  sessionStorage.clear()
+  installSoftNavigate(() => {})
 })
 
 afterEach(() => {
   brandingEnv.directLocal = true
   platformEnv.value = 'other'
+  editorEnv.enabled = false
+  __resetNavSeamForTests()
 })
 
 function rightClick(el: Element) {
@@ -236,6 +267,72 @@ describe('FilePathMenu', () => {
         expect(screen.getByText('Couldn’t copy the path')).toBeInTheDocument()
       })
       expect(screen.queryByText('Path copied')).not.toBeInTheDocument()
+    })
+  })
+
+  describe('menu error hand-offs', () => {
+    it.each([
+      ['Enter', '{Enter}'],
+      ['Space', ' '],
+    ])('keeps reveal activation on its row and stages the failure with %s', async (_label, key) => {
+      const user = userEvent.setup()
+      vi.mocked(api.revealPath).mockRejectedValue(new Error('reveal refused'))
+      renderWithProviders(
+        <FilePathMenu filePath={TEST_PATH}>
+          <span data-testid="trigger">report.md</span>
+        </FilePathMenu>,
+      )
+
+      rightClick(screen.getByTestId('trigger'))
+      const reveal = await screen.findByRole('menuitem', { name: 'Show in file manager' })
+      reveal.focus()
+      await user.keyboard('{Enter}')
+      const alert = await screen.findByTestId('file-path-menu-error')
+      expect(api.revealPath).toHaveBeenCalledTimes(1)
+
+      reveal.focus()
+      await user.keyboard('{Enter}')
+      await waitFor(() => expect(api.revealPath).toHaveBeenCalledTimes(2))
+      await screen.findByTestId('file-path-menu-error')
+
+      reveal.focus()
+      await user.keyboard('{ArrowDown}')
+      const handoff = screen.getByRole('menuitem', { name: /^ask the agent$/i })
+      expect(handoff).toHaveFocus()
+      expect(handoff).toHaveAttribute('aria-describedby', alert.id)
+      expect(handoff.getAttribute('title')).toBeTruthy()
+      expect(handoff.querySelector('svg')).toHaveClass('text-muted')
+      await user.keyboard(key)
+
+      expect(consumeChatHandoff()).toContain('Couldn’t open this path on the machine running Kiro Crew.')
+      expect(api.revealPath).toHaveBeenCalledTimes(2)
+    })
+
+    it('gives an editor-launch failure its own described hand-off item', async () => {
+      const user = userEvent.setup()
+      editorEnv.enabled = true
+      editorEnv.open.mockResolvedValue({ ok: false, error: 'editor refused' })
+      renderWithProviders(
+        <FilePathMenu filePath={TEST_PATH}>
+          <span data-testid="trigger">report.md</span>
+        </FilePathMenu>,
+      )
+
+      rightClick(screen.getByTestId('trigger'))
+      const openInEditor = await screen.findByRole('menuitem', { name: 'Open in editor' })
+      openInEditor.focus()
+      await user.keyboard('{Enter}')
+      const alert = await screen.findByTestId('file-path-menu-editor-error')
+
+      openInEditor.focus()
+      await user.keyboard('{ArrowDown}')
+      const handoff = screen.getByRole('menuitem', { name: /^ask the agent$/i })
+      expect(handoff).toHaveFocus()
+      expect(handoff).toHaveAttribute('aria-describedby', alert.id)
+      await user.keyboard('{Enter}')
+
+      expect(consumeChatHandoff()).toContain('editor refused')
+      expect(editorEnv.open).toHaveBeenCalledTimes(1)
     })
   })
 

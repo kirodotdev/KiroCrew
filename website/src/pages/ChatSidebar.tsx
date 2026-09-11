@@ -5,7 +5,7 @@ import { Plus, X, Pin, Monitor, Eye, EyeOff, VenetianMask, Ghost, Droplet, Folde
 import GithubLogo from '../components/icons/GithubLogo'
 import GitlabLogo from '../components/icons/GitlabLogo'
 import { FolderBody } from '../components/FolderBody'
-import ErrorNotice from '../components/ErrorNotice'
+import ErrorNotice, { ErrorNoticeMenuItem } from '../components/ErrorNotice'
 import JiraLogo from '../components/icons/JiraLogo'
 import { sourceProviderMeta } from '../utils/sourceProviderMeta'
 import FolderGlyph from '../components/FolderGlyph'
@@ -2623,6 +2623,7 @@ function ChatSidebar({
   const [newChatError, setNewChatError] = useState('')
   // Inline failure reason for "New chat on crew" — a crew create can 502 and
   // leave nothing behind, so its reason is shown in the submenu rather than lost.
+  const remoteCrewErrorId = useId()
   const [remoteCrewError, setRemoteCrewError] = useState('')
   // Controlled open for the New-chat menu, so a successful crew create can close
   // it (the crew rows preventDefault to stay open on failure) and closing clears
@@ -6315,14 +6316,26 @@ function ChatSidebar({
                   // hand-written text-danger div for a rejected mutation). Kept in
                   // the menu because the create leaves nothing behind on failure —
                   // closing would erase the only signal; `onSelect preventDefault`
-                  // on the rows keeps a failed create from auto-closing over it, and
-                  // `askAgent` is on because there is nothing to lose. ErrorNotice
-                  // renders nothing for a falsy message, so this needs no guard.
+                  // on the rows keeps a failed create from auto-closing over it.
+                  // The sibling menu item is the keyboard-reachable hand-off in
+                  // both the mobile inline list and the desktop submenu.
                   const errRow = remoteCrewError
                     ? (
-                      <div className="px-2 py-1.5">
-                        <ErrorNotice message={remoteCrewError} variant="inline" askAgent testId="new-chat-on-crew-error" />
-                      </div>
+                      <>
+                        <div className="px-2 py-1.5">
+                          <ErrorNotice
+                            id={remoteCrewErrorId}
+                            message={remoteCrewError}
+                            variant="inline"
+                            testId="new-chat-on-crew-error"
+                          />
+                        </div>
+                        <ErrorNoticeMenuItem
+                          Item={DropdownMenuItem}
+                          message={remoteCrewError}
+                          describedBy={remoteCrewErrorId}
+                        />
+                      </>
                     )
                     : null
                   if (isMobile) {

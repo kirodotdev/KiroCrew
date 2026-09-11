@@ -1,8 +1,51 @@
-import { AlertTriangle, X } from 'lucide-react'
-import AskAgentButton from './AskAgentButton'
+import type { ComponentType, ReactNode } from 'react'
+import { AlertTriangle, Sparkles, X } from 'lucide-react'
+import AskAgentButton, { handoffErrorToAgent } from './AskAgentButton'
 import type { ErrorReport } from '../utils/errorReport'
 
 import { i18nT } from '../i18n/t'
+
+export type ErrorNoticeMenuItemComponent = ComponentType<{
+  title?: string
+  disabled?: boolean
+  'aria-describedby'?: string
+  onSelect?: (event: Event) => void
+  children?: ReactNode
+}>
+
+/**
+ * The agent hand-off as a real Radix menu item.
+ *
+ * A menu's roving focus reaches items, not a button nested inside another item.
+ * Hosts opt in by rendering this as a sibling after the item that owns the
+ * notice. `describedBy` points back to that passive alert. Successful selection
+ * follows Radix's normal close path. A staging failure prevents that close so
+ * the diagnostic and recovery action stay visible.
+ */
+export function ErrorNoticeMenuItem({
+  Item,
+  message,
+  describedBy,
+}: {
+  Item: ErrorNoticeMenuItemComponent
+  message?: string | null
+  describedBy: string
+}) {
+  if (!message) return null
+
+  return (
+    <Item
+      title={i18nT('components.askAgent.open_a_chat_with_this_error_s_context_attached')}
+      aria-describedby={describedBy}
+      onSelect={(event) => {
+        if (!handoffErrorToAgent({ message })) event.preventDefault()
+      }}
+    >
+      <Sparkles size={13} className="shrink-0 text-muted" aria-hidden="true" />
+      {i18nT('components.askAgent.ask_the_agent')}
+    </Item>
+  )
+}
 
 /**
  * The shared error surface — one place that renders an error *and* offers to
@@ -25,6 +68,7 @@ import { i18nT } from '../i18n/t'
  * variant is a layout choice only; both carry the same agent hand-off.
  */
 export default function ErrorNotice({
+  id,
   message,
   report,
   title,
@@ -36,6 +80,8 @@ export default function ErrorNotice({
   messageClassName = '',
   testId,
 }: {
+  /** DOM id for controls, including menu hand-offs, that describe themselves with this alert. */
+  id?: string
   /** Human error text. Falsy renders nothing, so `<ErrorNotice message={err} />` needs no `&&` guard. */
   message?: string | null
   /** Structured report, when known. Otherwise looked up by `message`. */
@@ -95,7 +141,12 @@ export default function ErrorNotice({
 
   if (variant === 'inline') {
     return (
-      <span role="alert" className={`inline-flex items-center gap-1.5 text-[12px] text-danger ${className}`} data-testid={testId}>
+      <span
+        role="alert"
+        className={`inline-flex items-center gap-1.5 text-[12px] text-danger ${className}`}
+        id={id}
+        data-testid={testId}
+      >
         <AlertTriangle size={14} className="shrink-0" aria-hidden="true" />
         {title && <strong className="font-semibold">{title}</strong>}
         <span className={`min-w-0 ${messageClassName}`} style={{ overflowWrap: 'anywhere' }}>{message}</span>
@@ -124,6 +175,7 @@ export default function ErrorNotice({
     <div
       role="alert"
       className={`rounded-lg border border-danger/40 bg-danger/10 px-3 py-2 flex items-start gap-2 text-[13px] text-danger ${className}`}
+      id={id}
       data-testid={testId}
     >
       <AlertTriangle size={14} className="mt-[2px] shrink-0" aria-hidden="true" />

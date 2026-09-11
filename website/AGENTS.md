@@ -60,11 +60,12 @@ the `internal-content-scan` check.
   never a hand-rolled SVG, never `size={N}`. Enforced by `AUTOSDE.yaml`
   (`use-lucide-icons`, `no-emoji-as-icons`).
 - **Errors shown to the user render through `ErrorNotice`**, never a hand-written
-  `<div className="text-danger">{err}</div>`, with `askAgent` on wherever the hand-off
-  cannot lose anything. It navigates away and destroys unsaved local state, so next to
-  an unsaved draft leave `askAgent` off and say why in a `{/* No hand-off: … */}`
-  comment — a silent omission reads as "forgot". Enforced by `AUTOSDE.yaml`
-  (`errors-use-error-notice`).
+  `<div className="text-danger">{err}</div>`. Turn on `askAgent` wherever the
+  hand-off cannot lose anything. Next to an unsaved draft, leave it off and name
+  that draft in a `{/* No hand-off: … */}` comment. Inside a Radix menu, leave it
+  off and render a sibling `ErrorNoticeMenuItem`; its `describedBy` must point to
+  the passive notice's `id`, so the hand-off is a real menu focus stop rather than
+  a nested button. Enforced by `AUTOSDE.yaml` (`errors-use-error-notice`).
 - **Security: every `dangerouslySetInnerHTML` goes through DOMPurify** via
   `md()` / `sanitize()` / `esc()` in `src/api/helpers.ts`. A bypass is an XSS bug,
   so there is no acceptable pointer for this one.
