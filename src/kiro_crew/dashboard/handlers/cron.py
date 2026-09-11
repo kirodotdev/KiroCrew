@@ -37,6 +37,13 @@ from kiro_crew.cron_script import (
     resolve_script_path,
     validate_secret_env_grant,
 )
+from kiro_crew.cron_session_target import (
+    check_dashboard_target,
+    dashboard_slot_of,
+    is_dashboard_target,
+    namespace_target,
+    unsupported_namespace_problem,
+)
 from kiro_crew.dashboard.cron_inject import (
     hydrate_slot_from_history,
     inject_cron_result_to_dashboard,
@@ -51,6 +58,7 @@ from kiro_crew.lesson_validation import contains_volatile_lesson_fact
 from kiro_crew.llm_helpers import run_bg_oneliner
 from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.messaging.link import is_channel_session_key
+from kiro_crew.platform.context import redact_log_via_context
 from kiro_crew.project_scope import scope_selector_is_inadmissible
 from kiro_crew.secrets import SecretVault
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
@@ -559,6 +567,170 @@ async def api_cron_tools(request: web.Request) -> web.Response:
     return web.json_response({"result": result})
 
 
+async def _resolve_target_session_key(
+    request: web.Request, state: DashboardState, body: dict[str, Any]
+) -> tuple[str, web.Response | None]:
+    """Resolve the optional ``session_key`` a created job should deliver into.
+
+    Returns ``(key, None)`` for an accepted target, ``("", None)`` when the body
+    names none — the session-less default, where the job gets its own
+    ``cron-<id>`` tab — or ``("", response)`` carrying a refusal the caller
+    returns verbatim.
+
+    Ownership, not parity. ``cron_add`` does not take a session key from its
+    caller at all: it derives one through ``_authz_session_key()``, which accepts
+    only sources the gateway authors, and refuses a caller it cannot name. A
+    browser cannot satisfy that — it is not a gateway-launched process — so the
+    guarantee has to be rebuilt from what a dashboard request does carry:
+
+    * the OWNER gate, because naming a delivery target is deciding where an
+      agent turn's output lands. It applies only when ``session_key`` is
+      present, so an existing session-less create is unaffected;
+    * the slot must EXIST. ``adopt_job``'s CLI warns that a mistyped key leaves
+      a job whose results reach nobody; over HTTP there is no operator reading a
+      warning, so a key naming no live slot is refused instead of stored.
+
+    What a target string MEANS — the namespacing, and the diagnosis for a target
+    that cannot receive delivery — comes from
+    :mod:`kiro_crew.cron_session_target`, shared with ``cron adopt``. Only the
+    POLICY is local: this route refuses everything that module reports, while
+    adopt accepts other namespaces and declines to promise delivery instead.
+    Splitting it that way is what keeps the two surfaces from drifting into
+    different answers for the same key.
+    """
+    raw = body.get("session_key")
+    if raw is None or raw == "":
+        return "", None
+    try:
+        target = validate_string_field(body, "session_key", max_len=MAX_SHORT_STRING)
+    except ValidationError as exc:
+        return (
+            "",
+            web.json_response({"error": str(exc), "code": "invalid_session_key"}, status=400),
+        )
+    if not target:
+        return "", None
+    denied = await require_owner_dashboard_request(request, "cron.create_for_session")
+    if denied is not None:
+        return "", denied
+    # Audit the gate's OWN decision, here, rather than at the end where the target
+    # finally resolves. `require_owner_dashboard_request` records only refusals, so
+    # without this an approved owner leaves no trace — and the later placement left
+    # a hole: every validation below returns 400, so an owner who cleared the gate
+    # and then named an unsupported namespace produced an authorization decision
+    # with no audit event at all. The auditable fact is the DECISION (this caller
+    # was permitted to name a delivery target), not whether the request went on to
+    # satisfy the rest of the contract, which is what this module's own
+    # `_session_recognition_gate` means by "the allow decision itself is still an
+    # authorization outcome and must be audited".
+    #
+    # Resource is therefore the REQUESTED target, redacted — caller-authored text
+    # that reaches both the audit row and the refusal bodies below.
+    #
+    # AUDIT-OR-DENY, like every other privileged decision in this module: the
+    # record is written with ``critical=True`` BEFORE the target is accepted, and
+    # an unwritable audit store refuses the create with nothing recorded. Naming a
+    # delivery target decides where another conversation's output lands, so an
+    # approval nobody can later account for is exactly the event the audit log
+    # exists to hold. The operator keeps unaudited remedies for an outage (create
+    # the job untargeted, or point it with `cron adopt` from the CLI).
+    #
+    # `_sel()` is resolved INSIDE the worker: a cold gateway's first call
+    # initializes the SEL store (trust key + log files), which must never run on
+    # the event loop.
+    audit_target = redact_log_via_context(target)
+    try:
+        await asyncio.to_thread(
+            lambda: _sel().log_api_access(
+                caller="dashboard",
+                operation="cron.create_for_session",
+                outcome="allowed",
+                source="dashboard",
+                resources=audit_target,
+                critical=True,
+            )
+        )
+    except Exception:
+        logger.warning("SEL audit failed for cron.create_for_session", exc_info=True)
+        return "", _audit_unavailable_response("targeted create")
+    key = namespace_target(target)
+    if not is_dashboard_target(key):
+        unsupported = unsupported_namespace_problem()
+        return (
+            "",
+            web.json_response({"error": unsupported.message, "code": unsupported.code}, status=400),
+        )
+    # `hide_in_chat` suppresses the job's chat slot, and the executor implements
+    # that by gating ALL THREE `inject_cron_result_to_dashboard` call sites on
+    # `not job.hide_in_chat` — so the mirror never runs either and the named
+    # session would receive nothing, silently. Refused for the same reason an
+    # unknown slot and a linked tab are: this route does not record a target the
+    # delivery path will not honor.
+    #
+    # TYPE-checked rather than coerced, and that distinction is the whole point.
+    # `bool(...)` reads JSON `"false"` as True and `is True` reads it as False, so
+    # either spelling silently disagrees with somebody: coercion refuses a caller
+    # who asked for a visible job, and identity admits one who is then STORED
+    # hidden by this handler's own `bool(hide_in_chat)`. A string is not a boolean
+    # in either direction, so the honest answer is to refuse the value instead of
+    # guessing which of the two it meant. Scoped to a targeted create, so a
+    # session-less create keeps the surface it has always had.
+    #
+    # Suppressing only the `cron-<id>` tab while still delivering to an explicitly
+    # named session is a coherent thing to want — arguably what someone setting
+    # both means — but it redefines a documented flag and moves the gate in the
+    # executor, so it belongs in its own change rather than here.
+    hidden = body.get("hide_in_chat", False)
+    # `null` is the wire's "not set", and this handler already persists it as
+    # visible (`bool(None)` is False), so refusing it would change an unrelated
+    # existing case rather than closing the ambiguity this check is about.
+    if hidden is None:
+        hidden = False
+    if not isinstance(hidden, bool):
+        return (
+            "",
+            web.json_response(
+                {
+                    "error": "hide_in_chat must be a boolean",
+                    "code": "invalid_hide_in_chat",
+                },
+                status=400,
+            ),
+        )
+    if hidden:
+        return (
+            "",
+            web.json_response(
+                {
+                    "error": (
+                        "hide_in_chat suppresses result delivery to chat, so a target "
+                        "session would never receive this job's results"
+                    ),
+                    "code": "hidden_job_cannot_target_session",
+                },
+                status=400,
+            ),
+        )
+    slot_name = dashboard_slot_of(key)
+    # Redacted once, then reused: the value is caller-authored and reaches both a
+    # response body and the SEL audit row above.
+    safe_slot, _ = redact_credentials(redact_exfiltration_urls(slot_name)[0])
+    slot = state.get_slot(slot_name)
+    problem = check_dashboard_target(
+        key,
+        max_len=MAX_SHORT_STRING,
+        slot_exists=state.has_slot(slot_name),
+        linked_session_key=(getattr(slot, "linked_session_key", "") or ""),
+        display=safe_slot,
+    )
+    if problem is not None:
+        return (
+            "",
+            web.json_response({"error": problem.message, "code": problem.code}, status=400),
+        )
+    return key, None
+
+
 async def api_crons_create(request: web.Request) -> web.Response:
     """POST /api/crons — create a cron job."""
     state: DashboardState = request.app["state"]
@@ -656,6 +828,9 @@ async def api_crons_create(request: web.Request) -> web.Response:
     # mutating the returned job and calling a bare, unlocked `_save()`) closes
     # the data-loss race: two concurrent creates could interleave at the
     # `await`, and the unlocked save could overwrite the other request's job.
+    session_key, session_err = await _resolve_target_session_key(request, state, body)
+    if session_err is not None:
+        return session_err
     add_kwargs: dict[str, Any] = {
         "channel": channel,
         "agent_id": (agent_id or ""),
@@ -667,6 +842,7 @@ async def api_crons_create(request: web.Request) -> web.Response:
         "hide_in_chat": bool(hide_in_chat),
         "minimal_context": bool(minimal_context),
         "folder_id": folder_id,
+        "session_key": session_key,
         # Dashboard-only template provenance (see CronJob.source_preset). The
         # prompt SNAPSHOT is what makes the Schedule-page "template updated"
         # hint attributable: comparing it against the template's current prompt
@@ -1694,7 +1870,12 @@ async def api_cron_to_chat(request: web.Request) -> web.Response:
         )
         # Re-surfacing a stored result, not delivering a fresh run: the prompt
         # that produced it is not recoverable from live config -- see
-        # inject_cron_result_to_dashboard's ``include_prompt``.
+        # inject_cron_result_to_dashboard's ``include_prompt``. For the same
+        # reason there is no ``ensure_target_session_slot`` await here: this
+        # re-opens the CRON's tab on request, and reaching past that to reopen a
+        # target conversation the person archived would be a side effect they did
+        # not ask for. The mirror still copies into a target tab that is open, and
+        # the delivering run had its own chance to reach a closed one.
         inject_cron_result_to_dashboard(
             state, job, job.last_result or "", history=history, include_prompt=False
         )
