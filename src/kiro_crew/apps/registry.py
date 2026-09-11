@@ -3155,7 +3155,7 @@ async def _load_external_registries() -> list[dict[str, Any]]:
     all_entries: list[dict[str, Any]] = []
 
     async def _load_one(reg) -> list[dict[str, Any]]:
-        cache_name = reg.name or reg.repo
+        cache_name = _external_registry_cache_identity(reg)
         public_name = _public_registry_name(reg)
 
         # Try cache first
