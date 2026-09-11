@@ -1,0 +1,203 @@
+[
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "user_message_chunk"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "ok"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "ok",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "## Objective\n- User is trying to get a reply from the Assistant.\n\n## Important Details\n- None\n\n## Work State\n### Completed\n- None\n\n### Active\n- None\n\n### Blocked\n- None\n\n## Next Move\n1. \"(none)\"\n2. \"(none)\"\n\n## Relevant Files\n- \"<conversation>\""
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "## Objective\n- User is trying to get a reply from the Assistant.\n\n## Important Details\n- None\n\n## Work State\n### Completed\n- None\n\n### Active\n- None\n\n### Blocked\n- None\n\n## Next Move\n1. \"(none)\"\n2. \"(none)\"\n\n## Relevant Files\n- \"<conversation>\"",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "user_message_chunk"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "```json\n{\"name\": \"webfetch\", \"parameters\": {\"format\": \"markdown\", \"url\": \"https://opencode.ai/docs\"}} \n```"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "```json\n{\"name\": \"webfetch\", \"parameters\": {\"format\": \"markdown\", \"url\": \"https://opencode.ai/docs\"}} \n```",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "## Objective\n- The user wants to continue the conversation with the Assistant.\n\n## Important Details\n- The previous <prior-summary> is discarded.\n- A new web fetch request has been sent to `https://opencode.ai/docs`.\n\n## Work State\n### Completed\n- None\n\n### Active\n- Continue the next steps of the web fetch request from `{\"name\": \"webfetch\", \"parameters\": {\"format\": \"markdown\", \"url\": \"https://opencode.ai/docs\"}}`\n\n### Blocked\n- None\n\n## Next Move\n1. Retrieve metadata from the web page.\n2. `(none)`\n\n## Relevant Files\n- \"<conversation>\""
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "## Objective\n- The user wants to continue the conversation with the Assistant.\n\n## Important Details\n- The previous <prior-summary> is discarded.\n- A new web fetch request has been sent to `https://opencode.ai/docs`.\n\n## Work State\n### Completed\n- None\n\n### Active\n- Continue the next steps of the web fetch request from `{\"name\": \"webfetch\", \"parameters\": {\"format\": \"markdown\", \"url\": \"https://opencode.ai/docs\"}}`\n\n### Blocked\n- None\n\n## Next Move\n1. Retrieve metadata from the web page.\n2. `(none)`\n\n## Relevant Files\n- \"<conversation>\"",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "user_message_chunk"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "```\n{\"name\": \"webfetch\", \"parameters\": {\"url\": \"https://opencode.ai/docs\"}} \n```"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "```\n{\"name\": \"webfetch\", \"parameters\": {\"url\": \"https://opencode.ai/docs\"}} \n```",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "## Objective\n- The user wants to continue the conversation with no further details specified.\n\n## Important Details\n- The previous <prior-summary> is discarded.\n- A new web fetch request has been sent to `https://opencode.ai/docs`.\n\n## Work State\n### Completed\n- None\n\n### Active\n- Investigate metadata from the web page for the webfetch request from `{\"name\": \"webfetch\", \"parameters\": {\"url\": \"https://opencode.ai/docs\"}}`\n\n### Blocked\n- None\n\n## Next Move\n1. `(none)`\n\n## Relevant Files\n- \"<conversation>\""
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "## Objective\n- The user wants to continue the conversation with no further details specified.\n\n## Important Details\n- The previous <prior-summary> is discarded.\n- A new web fetch request has been sent to `https://opencode.ai/docs`.\n\n## Work State\n### Completed\n- None\n\n### Active\n- Investigate metadata from the web page for the webfetch request from `{\"name\": \"webfetch\", \"parameters\": {\"url\": \"https://opencode.ai/docs\"}}`\n\n### Blocked\n- None\n\n## Next Move\n1. `(none)`\n\n## Relevant Files\n- \"<conversation>\"",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "user_message_chunk"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "```\n{\"name\": \"webfetch\", \"parameters\":\n  {\"url\": \"https://opencode.ai/docs\",\n   \"format\": \"markdown\"}} \n```"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "```\n{\"name\": \"webfetch\", \"parameters\":\n  {\"url\": \"https://opencode.ai/docs\",\n   \"format\": \"markdown\"}} \n```",
+      "thinking": false
+    }
+  },
+  {
+    "config_options": [
+      {
+        "category": "model",
+        "currentValue": "ollama/llama32-8k:latest",
+        "id": "model",
+        "name": "Model",
+        "options": [
+          {
+            "name": "OpenCode Zen/Big Pickle",
+            "value": "opencode/big-pickle"
+          },
+          {
+            "name": "OpenCode Zen/Ling 3.0 Flash Fin Free",
+            "value": "opencode/ling-3.0-flash-fin-free"
+          },
+          {
+            "name": "OpenCode Zen/MiMo V2.5 Free",
+            "value": "opencode/mimo-v2.5-free"
+          },
+          {
+            "name": "OpenCode Zen/Muse Spark 1.2 Free",
+            "value": "opencode/muse-spark-1.2-contributor-free"
+          },
+          {
+            "name": "OpenCode Zen/Muse Spark 1.3 Free",
+            "value": "opencode/muse-spark-1.3-contributor-free"
+          },
+          {
+            "name": "OpenCode Zen/Nemotron 3 Ultra Free",
+            "value": "opencode/nemotron-3-ultra-free"
+          },
+          {
+            "name": "OpenCode Zen/Nemotron 3.5 Lightning Free",
+            "value": "opencode/nemotron-3.5-lightning-free"
+          },
+          {
+            "name": "Ollama (local)/llama3.2 3b 8k",
+            "value": "ollama/llama32-8k:latest"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "category": "mode",
+        "currentValue": "build",
+        "id": "mode",
+        "name": "Session Mode",
+        "options": [
+          {
+            "description": "The default agent. Executes tools based on configured permissions.",
+            "name": "build",
+            "value": "build"
+          },
+          {
+            "description": "Plan mode. Disallows all edit tools.",
+            "name": "plan",
+            "value": "plan"
+          }
+        ],
+        "type": "select"
+      }
+    ],
+    "frame": "response",
+    "id": 2
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "available_commands_update"
+  }
+]

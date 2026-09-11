@@ -58,6 +58,7 @@ can see rather than one that answers a flag and then no-ops.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import PurePosixPath
 from typing import Dict, FrozenSet, Protocol, Tuple, runtime_checkable
 
 from kiro_crew.agent_sdk.backends import (
@@ -65,6 +66,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_CODEX,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
+    ACP_BACKEND_OPENCODE,
     ACP_BACKENDS_KNOWN,
 )
 
@@ -192,6 +194,23 @@ class AgentAuthDeclaration:
     #: Which of :data:`ENTITLEMENT_SOURCES` this harness's entitlement comes from.
     entitlement_source: str
 
+    #: For each credential leaf, the spelling it takes UNDER an override root.
+    #:
+    #: Empty means the root stands in for the leaf's PARENT, so the leaf keeps only
+    #: its final segment there -- ``CODEX_HOME`` moves ``.codex/auth.json`` to
+    #: ``$CODEX_HOME/auth.json``. That is not the only shape an override has:
+    #: ``XDG_DATA_HOME`` replaces the ``.local/share`` PREFIX of
+    #: ``.local/share/opencode/auth.json``, so the relocated file keeps two
+    #: segments and a floor anchored on the final one alone fences a path the
+    #: harness never writes -- leaving the real relocated token readable.
+    #:
+    #: Which prefix an override replaces is knowledge the HARNESS has and the floor
+    #: cannot infer, so it is declared here beside the variable that does the
+    #: relocating. Same length as :attr:`credential_leaves` when given, and each
+    #: entry must be a trailing slice of its leaf's own segments: a declaration may
+    #: re-spell where its file lands, never name a different file.
+    override_relative_leaves: Tuple[str, ...] = ()
+
     # There is deliberately NO field for re-exposing a file the mask hides.
     #
     # A re-exposure is an EDIT to the mask, and the rule this class exists to
@@ -231,6 +250,32 @@ class AgentAuthDeclaration:
                 "does not declare it as a credential leaf: a driver may only ask the mask "
                 "to spare a leaf its own declaration put on the floor"
             )
+        if self.override_relative_leaves:
+            if len(self.override_relative_leaves) != len(self.credential_leaves):
+                raise ValueError(
+                    f"{self.backend!r} declares {len(self.override_relative_leaves)} "
+                    f"override spelling(s) for {len(self.credential_leaves)} credential "
+                    "leaf/leaves: the two are positional, so a partial list would "
+                    "anchor the wrong file"
+                )
+            for leaf, relative in zip(self.credential_leaves, self.override_relative_leaves):
+                # Parsed as POSIX rather than split on a literal separator: these
+                # specs are authored with ``/`` on every host, and the floor's own
+                # reader treats them the same way, so the comparison here has to be
+                # the one that runs on Windows too.
+                segments = PurePosixPath(relative).parts
+                if not segments:
+                    raise ValueError(
+                        f"{self.backend!r} declares an empty override spelling for {leaf!r}"
+                    )
+                leaf_segments = PurePosixPath(leaf).parts
+                if leaf_segments[-len(segments) :] != segments:
+                    raise ValueError(
+                        f"{self.backend!r} would anchor {leaf!r} as {relative!r} under its "
+                        "override root, which is not a trailing slice of the leaf: a "
+                        "declaration may re-spell where its own file lands, not name "
+                        "another file"
+                    )
         if self.host_logout_retires_children and (
             self.entitlement_source != ENTITLEMENT_HOST_IDENTITY_STORE
         ):
@@ -393,6 +438,45 @@ AGENT_AUTH_DECLARATIONS: Tuple[AgentAuthDeclaration, ...] = (
         host_logout_retires_children=False,
         entitlement_source=ENTITLEMENT_OWN_CREDENTIAL_FILE,
     ),
+    AgentAuthDeclaration(
+        backend=ACP_BACKEND_OPENCODE,
+        # Verified on disk rather than read off documentation: run with
+        # ``XDG_DATA_HOME`` pointed at a scratch tree, the harness prints its own
+        # credential path and creates the tree there.
+        credential_leaves=(".local/share/opencode/auth.json",),
+        # Only the DATA home. The harness also honours ``XDG_CONFIG_HOME``, and that
+        # one is deliberately absent: config is not the credential store, and
+        # anchoring a token on it would fence a file that holds no token while
+        # leaving the real one behind.
+        home_override_env_vars=("XDG_DATA_HOME",),
+        # ``XDG_DATA_HOME`` replaces ``.local/share``, not the token's parent, so the
+        # relocated file keeps both remaining segments.
+        override_relative_leaves=("opencode/auth.json",),
+        # The one leaf the mask must spare: this harness is enforced, so the mask
+        # denies it the whole credential floor, and its adapter authenticates ITSELF
+        # from this file. The read gate still refuses the same leaf to the AGENT's
+        # file tools, so the two controls cover different readers.
+        adapter_own_leaves=(".local/share/opencode/auth.json",),
+        # States the ACTION only, and asserts no state, because for this harness
+        # there may be no state to assert: a model served locally on the operator's
+        # own machine needs no sign-in at all.
+        sign_in_remedy=(
+            "OpenCode signs in on its own — run opencode auth login in a terminal "
+            "to reach a hosted model. A model served locally on this machine needs "
+            "no sign-in: name it in the project's opencode.json instead. Neither is "
+            "checked here: the harness reads them."
+        ),
+        signed_out_message=(
+            "OpenCode is not signed in. Run `opencode auth login` in your terminal "
+            "and complete its sign-in, or name a locally served model in the "
+            "project's opencode.json, then start a new chat."
+        ),
+        # Excluded deliberately: it signs in through its own credential file, so a
+        # ``kiro-cli logout`` says nothing about whether a running opencode session
+        # is still authenticated.
+        host_logout_retires_children=False,
+        entitlement_source=ENTITLEMENT_OWN_CREDENTIAL_FILE,
+    ),
 )
 
 
@@ -445,19 +529,32 @@ def home_override_env_vars() -> Tuple[str, ...]:
     return tuple(seen)
 
 
-def override_anchored_leaves() -> Tuple[Tuple[str, Tuple[str, ...]], ...]:
-    """Each declared leaf paired with the override variables that relocate it.
+def override_anchored_leaves() -> Tuple[Tuple[str, Tuple[str, ...], str], ...]:
+    """Each declared leaf, the variables that relocate it, and its spelling there.
 
     The leaf's own ``$HOME``-rooted form is anchored by the ordinary path in the
     floor's builder; this pairing covers only the overrides. A harness with no
     override variable is absent rather than present with an empty tuple, so a
     caller iterating this does no work for one.
+
+    The third element is what the floor joins onto the override root. It is the
+    leaf's final segment unless the harness declared
+    :attr:`AgentAuthDeclaration.override_relative_leaves`, because an override that
+    replaces a multi-segment prefix leaves a multi-segment path behind it.
     """
     return tuple(
-        (leaf, declaration.home_override_env_vars)
+        (
+            leaf,
+            declaration.home_override_env_vars,
+            (
+                declaration.override_relative_leaves[index]
+                if declaration.override_relative_leaves
+                else PurePosixPath(leaf).name
+            ),
+        )
         for declaration in AGENT_AUTH_DECLARATIONS
         if declaration.home_override_env_vars
-        for leaf in declaration.credential_leaves
+        for index, leaf in enumerate(declaration.credential_leaves)
     )
 
 

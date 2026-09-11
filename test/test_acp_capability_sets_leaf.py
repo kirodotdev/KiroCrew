@@ -35,6 +35,7 @@ from kiro_crew.acp_backends import (
     ACP_BACKEND_CODEX,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
+    ACP_BACKEND_OPENCODE,
     ACP_BACKENDS_ACP_RUNTIME,
     ACP_BACKENDS_ADVERTISED_MODEL_SELECTION,
     ACP_BACKENDS_COMPACT,
@@ -163,11 +164,12 @@ def test_membership_is_unchanged_by_the_move() -> None:
     assert backends_retired_by_host_logout() == frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
     # The provider-advertised-model seams. claude for the spelling fold; codex
     # because its configOptions ``model`` select is the ONLY source of ids the
-    # adapter accepts back, so the capture is what the picker reads. The settings
-    # seed stays claude-only — the two opt-ins are independent, and a deliberate
-    # edit this pin forces to be seen.
+    # adapter accepts back, so the capture is what the picker reads; opencode for
+    # the same capture reason, its ids being ``provider/model`` pairs drawn from the
+    # operator's own provider list. The settings seed stays claude-only — the two
+    # opt-ins are independent, and a deliberate edit this pin forces to be seen.
     assert ACP_BACKENDS_ADVERTISED_MODEL_SELECTION == frozenset(
-        {ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX}
+        {ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX, ACP_BACKEND_OPENCODE}
     )
     assert ACP_BACKENDS_SEED_LOCAL_SETTINGS == frozenset({ACP_BACKEND_CLAUDE})
 

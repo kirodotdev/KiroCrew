@@ -22,10 +22,12 @@ capability mechanism inside the boundary. That top-level path survives as a pure
 re-export shim, so ``acp/client.py`` still calls through it by attribute and the
 tests that patch it still reach what the client calls.
 
-**Enforcement scope.** Only :data:`~kiro_crew.agent_sdk.backends.Routing.SESSION_CONFIG`
-is ENFORCED here today, because it is the only mechanism this core implements end
-to end. ``AGENT_SPEC`` needs no enforcement (it holds by construction), and
-``SEEDED_SETTINGS`` is declared-but-unenforced, and the reason is a read-back
+**Enforcement scope.** Two mechanisms are ENFORCED here --
+:data:`~kiro_crew.agent_sdk.backends.Routing.SESSION_CONFIG` and
+:data:`~kiro_crew.agent_sdk.backends.Routing.VERIFIED_SEEDED_SETTINGS` -- because
+they are the two this core implements end to end. ``AGENT_SPEC`` needs no
+enforcement (it holds by construction), and ``SEEDED_SETTINGS`` is
+declared-but-unenforced, and the reason is a read-back
 gap rather than a missing writer. ``AcpClient._write_claude_local_settings`` does
 seed ``permissions.defaultMode`` into ``<work_dir>/.claude/settings.local.json``,
 but it writes only the file it OWNS -- created this session and still carrying the
@@ -36,6 +38,16 @@ stripped, so the precondition this mechanism would need is not established.
 ``routing_verdict`` reports that honestly as INDETERMINATE -- what is scoped is
 whether a non-ROUTED verdict REFUSES, not whether it is told truthfully. Widening the scope
 means implementing a mechanism, not editing an allowlist.
+
+``VERIFIED_SEEDED_SETTINGS`` is what closes that read-back gap for one harness
+rather than in general: the client supplies the required setting as the session
+starts, READS THE HARNESS'S OWN RESOLVED CONFIGURATION BACK, and hands the observed
+value to :func:`seeded_setting_issue` before the first prompt. So the two members
+are not the same mechanism at different confidence levels -- one has an observation
+and the other does not, which is exactly why enforcement follows the member and not
+the harness id. Reading the harness's resolution rather than the bytes Crew supplied
+is also what makes a PRECEDENCE change visible: the answer is what the session will
+use, not what the seed hoped it would.
 """
 
 from __future__ import annotations
@@ -48,8 +60,10 @@ from pathlib import PurePosixPath
 from kiro_crew.agent_sdk import host_auth
 from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_CODEX,
+    ACP_BACKEND_OPENCODE,
     Routing,
     permission_config_for,
+    permission_setting_for,
     routing_for,
 )
 
@@ -61,7 +75,7 @@ logger = logging.getLogger(__name__)
 #: harness declaring an implemented mechanism is enforced automatically, and
 #: adding a mechanism here without implementing it would assert a guarantee
 #: nothing performs.
-ENFORCED_ROUTINGS: frozenset = frozenset({Routing.SESSION_CONFIG})
+ENFORCED_ROUTINGS: frozenset = frozenset({Routing.SESSION_CONFIG, Routing.VERIFIED_SEEDED_SETTINGS})
 
 #: What is NOT consulted when a harness's tool calls bypass the gate. Named in
 #: full in the refusal, because "bypasses the security gate" does not tell an
@@ -75,6 +89,7 @@ UNENFORCED_CONTROLS = (
 #: login``-style advice aimed at a different harness.
 _LABELS: dict = {
     ACP_BACKEND_CODEX: "OpenAI Codex",
+    ACP_BACKEND_OPENCODE: "OpenCode",
 }
 
 #: The credential store each enforced harness must still be able to read.
@@ -397,6 +412,28 @@ def routing_verdict(backend: str) -> tuple:
             f"the client enforces {option_id}={value} before the first prompt",
         )
 
+    if routing is Routing.VERIFIED_SEEDED_SETTINGS:
+        setting_key, value = permission_setting_for(backend)
+        if not setting_key or not value:
+            # Same registration bug as the branch above, and it must not read as
+            # routed: there would be nothing to write and nothing to read back.
+            return (
+                Verdict.INDETERMINATE,
+                "the harness declares verified seeded-settings routing but names no setting",
+            )
+        # ROUTED on a PROMISE, like the branch above, because the session it would be
+        # read out of does not exist yet. What makes this member different from
+        # SEEDED_SETTINGS is that the promise is CHECKED: the other half is
+        # ``seeded_setting_issue`` fed the value the harness ITSELF resolved, which
+        # MUST run after the seed and before the first prompt. Port this verdict
+        # without that caller and the harness reports routed while running its own
+        # permissive default.
+        return (
+            Verdict.ROUTED,
+            f"the client supplies {setting_key}={value} to the session and reads the "
+            "harness's own resolved configuration back before the first prompt",
+        )
+
     if routing is Routing.SEEDED_SETTINGS:
         # Declared, not enforced here -- and the gap is the READ-BACK, not a missing
         # writer. ``_write_claude_local_settings`` does seed the mode, but only into
@@ -426,6 +463,21 @@ def is_enforced(backend: str) -> bool:
 def remediation_for(backend: str) -> str:
     """The concrete change an operator can make, or ``""`` when there is none."""
     routing = routing_for(backend)
+    if routing is Routing.VERIFIED_SEEDED_SETTINGS:
+        setting_key, value = permission_setting_for(backend)
+        if setting_key and value:
+            # Names a config source that OUTRANKS Crew's own seed, because that is the
+            # only kind an operator can act on: the seed already carries the required
+            # value, so a refusal means something above it resolved to something else.
+            # Telling them to edit the project file would be advice that cannot clear
+            # the refusal, since the seed already outranks that file.
+            return (
+                f"{label_for(backend)} resolved {setting_key} to something other than "
+                f"{value!r} even with Kiro Crew's own setting supplied, so a "
+                f"higher-precedence config source is overriding it. Remove that "
+                f"override to select this harness."
+            )
+        return ""
     if routing is Routing.SESSION_CONFIG:
         option_id, value = permission_config_for(backend)
         if option_id and value:
@@ -467,6 +519,42 @@ def session_config_issue(backend: str, config_options: object) -> str:
             return ""
         return f"config option {option_id!r} does not advertise required value {required!r}"
     return f"session/new did not advertise config option {option_id!r}"
+
+
+def seeded_setting_issue(backend: str, observed: object) -> str:
+    """Why *backend*'s seeded permission setting is not in force, from what was read back.
+
+    ``""`` means the value read off disk after the seed is the required one.
+
+    *observed* is what the harness's OWN RESOLVED configuration carried when it was
+    read back -- ``None`` when the setting was absent from it. Taking it as an argument rather than reading the file
+    here is what keeps this module a leaf: the driver owns the disk, and this owns
+    the decision, so the refusal text and the doctor row cannot disagree about what
+    counts as routed.
+
+    A value the operator chose themselves is an ISSUE, not an override to honour.
+    A harness on this mechanism asks per tool call only while the setting holds the
+    required value, so a permissive one means the PreToolUse gate never runs. Note
+    what is NOT done about it: no config of theirs is rewritten. Crew's setting is
+    supplied alongside, and the harness's own precedence decides -- so a refusal here
+    means something outranked that setting, not that Crew declined to edit a file.
+    """
+    if routing_for(backend) is not Routing.VERIFIED_SEEDED_SETTINGS:
+        return ""
+    setting_key, required = permission_setting_for(backend)
+    if not setting_key or not required:
+        return "the harness declares verified seeded-settings routing but names no setting"
+    if observed is None:
+        return (
+            f"the harness's own resolved configuration does not carry {setting_key!r} "
+            "after the seed"
+        )
+    if observed != required:
+        return (
+            f"{setting_key!r} reads {observed!r} rather than the required {required!r}, "
+            "so privileged tools would not ask"
+        )
+    return ""
 
 
 def enforce_runtime_routing(
@@ -528,5 +616,6 @@ __all__ = [
     "label_for",
     "remediation_for",
     "routing_verdict",
+    "seeded_setting_issue",
     "session_config_issue",
 ]

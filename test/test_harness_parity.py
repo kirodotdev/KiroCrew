@@ -31,6 +31,7 @@ from kiro_crew.acp.types import (
     ACP_BACKEND_CODEX,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
+    ACP_BACKEND_OPENCODE,
     ACP_BACKENDS_ACP_RUNTIME,
     ACP_BACKENDS_COMPACT,
     ACP_BACKENDS_HOST_AUTH_CALLBACK,
@@ -45,6 +46,7 @@ from kiro_crew.acp.types import (
     PROVIDER_LABEL_CODEX,
     PROVIDER_LABEL_DEFAULT,
     PROVIDER_LABEL_KAS,
+    PROVIDER_LABEL_OPENCODE,
 )
 from kiro_crew.acp_backends import (
     ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION,
@@ -418,6 +420,7 @@ def test_every_known_backend_has_a_label() -> None:
         ACP_BACKEND_CLAUDE: PROVIDER_LABEL_CLAUDE,
         ACP_BACKEND_KAS: PROVIDER_LABEL_KAS,
         ACP_BACKEND_CODEX: PROVIDER_LABEL_CODEX,
+        ACP_BACKEND_OPENCODE: PROVIDER_LABEL_OPENCODE,
     }
     assert set(labels) == set(ACP_BACKENDS_KNOWN), (
         "a known backend has no PROVIDER_LABEL_* of its own, so it would persist "
@@ -425,6 +428,32 @@ def test_every_known_backend_has_a_label() -> None:
         "providers.acp.provider_label"
     )
     assert len(set(labels.values())) == len(labels), "two backends share a label"
+
+
+def test_opencode_is_selectable_and_answerable() -> None:
+    """H1/H8: offered only because the build can answer for it, on two counts.
+
+    Asserted TOGETHER, like the codex pairing below, because either half alone is
+    the state the pairing exists to prevent. Without the install probe a failed
+    session arrives with nothing to act on; without ENFORCED routing the switch
+    offers a harness whose tool calls would not reach the host gate -- and this
+    harness's own permission default is permissive, so that second half is not
+    hypothetical.
+    """
+    from kiro_crew.agent_sdk import tool_gate
+    from kiro_crew.agent_sdk.backend_install import _PROBES
+
+    assert ACP_BACKEND_OPENCODE in ACP_BACKENDS_KNOWN
+    assert ACP_BACKEND_OPENCODE in BASELINE_SELECTABLE_BACKENDS
+    assert ACP_BACKEND_OPENCODE in selectable_backends()
+    assert ACP_BACKEND_OPENCODE in _PROBES, (
+        "opencode is offered in the switch, so backend_install must be able to say "
+        "what is missing when a session fails to start"
+    )
+    assert tool_gate.is_enforced(ACP_BACKEND_OPENCODE), (
+        "opencode is offered in the switch, so its routing must be one this core "
+        "enforces -- its own permission default asks for nothing"
+    )
 
 
 def test_codex_is_selectable_and_answerable() -> None:
@@ -568,7 +597,15 @@ def test_codex_spawn_keeps_its_own_branch() -> None:
     assert "_is_codex" in spawn_source
     assert "_resolve_codex_acp_bin" in spawn_source
     assert acp_client.PROTOCOL_VERSION_CODEX is not None
-    assert "PROTOCOL_VERSION_CODEX" in inspect.getsource(acp_client.AcpClient._initialize_session)
+    # Its OWN literal, read from the per-harness table the handshake looks up. The
+    # table is what keeps the shared handshake free of adapter conditionals (H13);
+    # the entry being codex's own name rather than claude's is what keeps a future
+    # divergence a one-row edit rather than a silent downgrade (H10).
+    table = acp_client._PROTOCOL_VERSION_BY_BACKEND
+    assert table[ACP_BACKEND_CODEX] is acp_client.PROTOCOL_VERSION_CODEX
+    assert "_PROTOCOL_VERSION_BY_BACKEND" in inspect.getsource(
+        acp_client.AcpClient._initialize_session
+    )
 
 
 def test_each_mcp_seam_is_spliced_only_for_its_own_harness() -> None:

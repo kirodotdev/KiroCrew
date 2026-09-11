@@ -307,7 +307,13 @@ def test_known_membership_is_unchanged_by_the_move() -> None:
     Membership is the gate on the ``acp_backend`` kwarg, so a widened set means
     provider construction accepts a value it must reject.
     """
-    assert sorted(sdk_backends.ACP_BACKENDS_KNOWN) == ["", "claude", "codex", "kas"]
+    assert sorted(sdk_backends.ACP_BACKENDS_KNOWN) == [
+        "",
+        "claude",
+        "codex",
+        "kas",
+        "opencode",
+    ]
 
 
 #: Every capability field for every known id, plus an unknown one.

@@ -78,11 +78,6 @@ def _leaf_segments(spec: str) -> list[str]:
     return spec.split(_LEAF_SEPARATOR)
 
 
-def _leaf_basename(spec: str) -> str:
-    """Final segment of a ``/``-authored leaf spec."""
-    return _leaf_segments(spec)[-1]
-
-
 _SENSITIVE_HOME_DIRS: list[str] = [
     # Gateway-owned Kiro auth staging. Owner-only filesystem mode does not
     # isolate another process running as the same UID, so every agent sandbox
@@ -1668,15 +1663,14 @@ def _home_dir_targets_uncached(
     # membership in *home_dirs* for the same reason as the agents dir above: a
     # write-tier build must not gain a read-tier target.
     _adapter_roots = dict(resolved.adapter_roots)
-    for _leaf, _root_envs in _OVERRIDE_ANCHORED_LEAVES:
+    for _leaf, _root_envs, _under_root in _OVERRIDE_ANCHORED_LEAVES:
         if _leaf not in home_dirs:
             continue
-        _basename = _leaf_basename(_leaf)
         for _env in _root_envs:
             _root = _adapter_roots.get(_env)
             if not _root:
                 continue
-            _full = os.path.join(_root, _basename)
+            _full = os.path.join(_root, *_leaf_segments(_under_root))
             sensitive_targets.add(_full.casefold())
             _full_real = _realpath_or_none(_full)
             if _full_real is not None:
@@ -1772,15 +1766,16 @@ class _ResolvedRoots(NamedTuple):
     # under this root. No host SSO cache contents are copied in; that staging was
     # removed. It is therefore anchored by re-anchoring EVERY ``home_dirs`` entry
     # in ``_home_dir_targets_uncached``, rather than through
-    # ``_OVERRIDE_ANCHORED_LEAVES``, which maps one leaf to the roots its parent
-    # can move to. Without it the relocated tree sits at a path no matcher
+    # ``_OVERRIDE_ANCHORED_LEAVES``, which maps one leaf to the roots that move
+    # it. Without it the relocated tree sits at a path no matcher
     # covers, so an agent inside a pod could read the operator's identity token
     # at the pod-path spelling while the identical bytes at ``~/.aws`` are
     # refused.
     os_home: str | None
 
 
-#: Sensitive leaf -> the ``$HOME``-override VARIABLES its parent can be moved by.
+#: Sensitive leaf -> the ``$HOME``-override VARIABLES that move it, and the
+#: spelling it takes under each of them.
 #:
 #: PROJECTED from the harness declarations, not enumerated: the pairing has to
 #: name the same leaf the list above fences and the same variable the resolver
@@ -1790,7 +1785,7 @@ class _ResolvedRoots(NamedTuple):
 #:
 #: Read once at import, like the leaf list itself: the declarations are static
 #: data, and re-projecting per gate call would put a table walk on the hot path.
-_OVERRIDE_ANCHORED_LEAVES: tuple[tuple[str, tuple[str, ...]], ...] = (
+_OVERRIDE_ANCHORED_LEAVES: tuple[tuple[str, tuple[str, ...], str], ...] = (
     host_auth.override_anchored_leaves()
 )
 
@@ -2310,14 +2305,13 @@ def sandbox_credential_targets(exclude_leaves: tuple[str, ...] = ()) -> tuple[st
                     break
     # An adapter's credential store follows that adapter's own home override.
     adapter_roots = dict(resolved.adapter_roots)
-    for leaf, root_envs in _OVERRIDE_ANCHORED_LEAVES:
+    for leaf, root_envs, under_root in _OVERRIDE_ANCHORED_LEAVES:
         if leaf in excluded or leaf not in _SENSITIVE_HOME_DIRS:
             continue
-        basename = _leaf_basename(leaf)
         for env in root_envs:
             root = adapter_roots.get(env)
             if root:
-                targets.add(os.path.join(root, basename))
+                targets.add(os.path.join(root, *_leaf_segments(under_root)))
     return tuple(sorted(targets))
 
 

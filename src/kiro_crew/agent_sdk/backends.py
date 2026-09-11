@@ -118,6 +118,11 @@ with no row here.
      - pre-session registry query (whether a side-chat turn may execute
        read-only tools under the derived ``<agent>--readonly`` spec; asked
        about the configured backend id before the side session is created)
+   * - ``ACP_BACKENDS_HARNESS_OWNED_SESSIONS``
+     - driver-internal (whether ``session/load`` is gated on a Crew-side transcript)
+   * - ``ACP_BACKENDS_LOAD_WITHOUT_MODES``
+     - driver-internal (whether a successful ``session/load`` result carries no
+       ``modes`` block)
 
 The two non-set tables ``SessionCapabilities`` also translates are
 :func:`model_registry_namespace` (the model-id namespace) and
@@ -143,6 +148,11 @@ ACP_BACKEND_KAS = "kas"
 # translates ACP onto its operations. Selectable on a plain build, with an install
 # probe in ``agent_sdk/backend_install.py`` behind the switch.
 ACP_BACKEND_CODEX = "codex"
+# OpenCode: a single binary that serves ACP itself (``opencode acp``). No npm
+# adapter and no Node floor, because the harness's own published package ships the
+# executable -- which is why its install probe names one component and its
+# ``install_command`` is the harness's own installer rather than an ``npm i -g``.
+ACP_BACKEND_OPENCODE = "opencode"
 # The kiro-cli backend is spelled as the empty string throughout, so name it
 # rather than leaving every call site to infer it from "not claude".
 ACP_BACKEND_KIRO = ""
@@ -156,6 +166,7 @@ ACP_BACKENDS_KNOWN: FrozenSet[str] = frozenset(
         ACP_BACKEND_CLAUDE,
         ACP_BACKEND_KAS,
         ACP_BACKEND_CODEX,
+        ACP_BACKEND_OPENCODE,
     }
 )
 
@@ -182,6 +193,14 @@ ACP_BACKENDS_KNOWN: FrozenSet[str] = frozenset(
 #: transport, not of Anthropic: any ACP adapter that does not read Crew's agent
 #: spec belongs here, and the next such harness should join the set rather than
 #: add a second branch at the call site (harness-parity H6).
+#
+# OpenCode is NOT a member, and the reason is its own advertisement rather than a
+# guess: its ``initialize`` result carries ``mcpCapabilities: {"http": true, "sse":
+# true}`` and no stdio capability, so the stdio servers Crew would put in the array
+# are servers it cannot mount. It reads its MCP servers from its own config file
+# instead, which is a channel this array does not reach. An opencode session is
+# therefore a plain chat with none of Crew's tools; ``providers/mirrors`` records
+# why no projection exists for it.
 ACP_BACKENDS_SESSION_MCP_ARRAY: FrozenSet[str] = frozenset({ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX})
 
 # Private member tools must execute inside the owned sandbox. A backend joins
@@ -226,8 +245,28 @@ ACP_BACKENDS_PRIVATE_MEMORY_MCP: FrozenSet[str] = frozenset(
 #: OS boundary by ``acp_tool_gate.adapter_hidden_credential_dirs`` -- derived from
 #: the read-gate floor itself, so the compensating control covers exactly what the
 #: control it compensates for covers, minus the harness's own token store.
+#: ``ACP_BACKEND_OPENCODE`` is included on the same two conditions Codex had to
+#: meet, and it meets them by a different mechanism:
+#:
+#: * ``backend_install`` probes for the ``opencode`` binary, so the install row
+#:   names the component and the command that installs it rather than reading
+#:   ``unknown``.
+#: * its tool calls are ROUTED, and the routing is VERIFIED rather than declared.
+#:   OpenCode asks per tool call only while its own ``permission`` setting is
+#:   ``ask``; its default is permissive. So the client supplies ``permission: "ask"``
+#:   as inline config in the child's environment -- which this harness resolves
+#:   above its own project config file, so nothing is written into a checked-out
+#:   repository -- then READS THE HARNESS'S OWN RESOLVED CONFIGURATION BACK and
+#:   refuses the session when the required value is not in force. See
+#:   :data:`Routing.VERIFIED_SEEDED_SETTINGS`.
 BASELINE_SELECTABLE_BACKENDS: FrozenSet[str] = frozenset(
-    {ACP_BACKEND_KIRO, ACP_BACKEND_CLAUDE, ACP_BACKEND_KAS, ACP_BACKEND_CODEX}
+    {
+        ACP_BACKEND_KIRO,
+        ACP_BACKEND_CLAUDE,
+        ACP_BACKEND_KAS,
+        ACP_BACKEND_CODEX,
+        ACP_BACKEND_OPENCODE,
+    }
 )
 
 # ── Policy-facing spelling ──
@@ -248,6 +287,7 @@ POLICY_ID_BY_BACKEND: dict = {
     # to deny — any id this build can spell, and the mapping is what makes the id
     # nameable in a rule at all.
     ACP_BACKEND_CODEX: ACP_BACKEND_CODEX,
+    ACP_BACKEND_OPENCODE: ACP_BACKEND_OPENCODE,
 }
 
 #: The backend a deployment policy may never deny.
@@ -427,6 +467,8 @@ def resolve_selected_backend(value: object) -> str:
 # dedicated sessions. claude-agent-acp runs through AcpClient (one process per
 # session) and is not a member. codex-acp is not either, for the same reason: one
 # adapter process serves one session, so there is nothing to share.
+# opencode is not a member for the same reason: one binary serves one session over
+# its own stdio pipe, so there is no second session to share.
 ACP_BACKENDS_SESSION_SHARING = frozenset({ACP_BACKEND_KIRO})
 
 # Backends that can mount a DIFFERENT MCP tool set on one session than the
@@ -451,11 +493,17 @@ ACP_BACKENDS_SESSION_SHARING = frozenset({ACP_BACKEND_KIRO})
 # it belongs to whoever decides member threads should run on codex at all. Until
 # then a codex member session stays plain chat — the dispatch tools are simply not
 # mounted, never mounted-and-refused.
+#
+# opencode is excluded on the evidence in ``ACP_BACKENDS_SESSION_MCP_ARRAY``: it
+# advertises http and sse MCP transports only, so there is no per-session mount for
+# a member dispatch to ride on.
 ACP_BACKENDS_MEMBER_DISPATCH = frozenset({ACP_BACKEND_CLAUDE, ACP_BACKEND_KAS})
 
 # Backends implementing the ``_session/steer`` extension (mid-turn steer). Neither
 # claude-agent-acp nor codex-acp implements it, so a steer sent to either would be
 # answered with method-not-found rather than reaching the turn.
+# opencode is not a member either: its ``initialize`` result advertises
+# ``sessionCapabilities`` of close, fork, list and resume, and nothing else.
 ACP_BACKENDS_STEER = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
 
 # Backends that can serve a MANUAL ``/compact`` (the user-typed slash command).
@@ -471,6 +519,8 @@ ACP_BACKENDS_STEER = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
 # manual entry points refuse it up front instead. This set gates ONLY
 # the manual command: KAS auto-summarization keeps mapping to compaction
 # status unchanged.
+# opencode advertises no compaction capability of any kind, so a ``/compact``
+# prompt would reach it as ordinary text and the status waiter would strand.
 ACP_BACKENDS_COMPACT = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_CLAUDE})
 
 # Backends that finish a manual ``/compact`` INSIDE the ``session/prompt`` turn,
@@ -492,6 +542,8 @@ ACP_BACKENDS_COMPACT = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_CLAUDE})
 # withholds it from every harness that is not, with neither being a decision anyone
 # recorded (harness-parity H6). Membership is exactly the set of harnesses that
 # demonstrate the capability.
+# opencode is in neither this set nor ``ACP_BACKENDS_COMPACT``, which is the same
+# position KAS holds: no manual compaction is offered for it at all.
 ACP_BACKENDS_INLINE_COMPACTION = frozenset({ACP_BACKEND_CLAUDE})
 
 # Backends carrying their OWN internal OS sandbox, which on macOS cannot nest
@@ -512,6 +564,11 @@ ACP_BACKENDS_INLINE_COMPACTION = frozenset({ACP_BACKEND_CLAUDE})
 # is the only OS confinement a codex session gets. The Codex sandbox modes the
 # adapter can apply are in-process policy, not an OS sandbox that Crew's would
 # nest inside.
+#
+# opencode is excluded, and here the exclusion is load-bearing rather than
+# conservative: Crew's own sandbox layer carries the credential mask that is the
+# compensating control for this harness's passive reads, so skipping that layer
+# would remove the control. It carries no OS sandbox of its own to replace it.
 ACP_BACKENDS_INTERNAL_SANDBOX = frozenset({ACP_BACKEND_KIRO})
 
 # Backends whose pod-spawned child has its ambient ``HOME`` relocated onto the
@@ -532,6 +589,11 @@ ACP_BACKENDS_INTERNAL_SANDBOX = frozenset({ACP_BACKEND_KIRO})
 # only reachable lever. A harness that stores credentials elsewhere gains
 # nothing from the remap and would only lose its real-home state, so it must not
 # be added without checking where it actually reads credentials from.
+#
+# opencode is excluded because the lever it needs already exists: its credential
+# home follows ``XDG_DATA_HOME``, which its auth declaration names, so the
+# credential floor re-anchors the declared leaf under the override and no ``$HOME``
+# relocation is required to reach it.
 ACP_BACKENDS_POD_HOME_REMAP = frozenset({ACP_BACKEND_KIRO})
 
 # Backends served by AcpRuntime + AcpSessionHandle — the kiro-agent family
@@ -548,6 +610,8 @@ ACP_BACKENDS_POD_HOME_REMAP = frozenset({ACP_BACKEND_KIRO})
 # yet is excluded from sharing until keep-aware teardown lands). codex-acp is not a
 # member: it is spawned per session and reads none of the kiro-family cli.json
 # overlay, so it takes the AcpClient path.
+# opencode is not a member: it is spawned per session and reads none of the
+# kiro-family cli.json overlay, so it takes the AcpClient path.
 ACP_BACKENDS_ACP_RUNTIME = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
 
 # ``ACP_BACKENDS_KIRO_IDENTITY_STORE`` is gone, and it has no replacement HERE.
@@ -570,7 +634,13 @@ ACP_BACKENDS_ACP_RUNTIME = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
 # reason as every set above: a switch sent down a channel the adapter does not
 # implement is answered with method-not-found, and the session keeps serving turns
 # on the model the operator thought they had just left.
-ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION = frozenset({ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX})
+#
+# ``ACP_BACKEND_OPENCODE`` is a member on captured evidence: its ``session/new``
+# result advertises a ``model`` select whose ``currentValue`` is the configured
+# ``provider/model`` id, and that select is the channel a switch travels down.
+ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION = frozenset(
+    {ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX, ACP_BACKEND_OPENCODE}
+)
 
 # Backends that take a reasoning-effort change through
 # ``session/set_config_option("effort", ...)``. A SEPARATE set from the model
@@ -579,6 +649,10 @@ ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION = frozenset({ACP_BACKEND_CLAUDE, ACP_BACKEN
 # precisely because adapter builds ship one without the other. Collapsing them
 # would make an adapter that gained model-switching inherit an effort channel it
 # never advertised.
+#
+# opencode is NOT a member, which is exactly the split this separate set exists
+# for: the same ``session/new`` result that advertises its ``model`` select
+# advertises a ``mode`` select beside it and no ``effort`` option at all.
 ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION = frozenset({ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX})
 
 # Backends that resolve the WIRE model id from the provider's OWN advertised list
@@ -601,7 +675,15 @@ ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION = frozenset({ACP_BACKEND_CLAUDE, ACP_BACKE
 # select, the picker showed kiro's catalog, and a pick from it killed the session
 # at startup. Its spelling fold is a no-op (codex serves its ids verbatim), which
 # is fine: the cache it feeds is what the picker reads back.
-ACP_BACKENDS_ADVERTISED_MODEL_SELECTION = frozenset({ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX})
+#
+# ``ACP_BACKEND_OPENCODE`` is a member for the capture half as well. Its ids are
+# ``provider/model`` pairs it resolves from its own config -- ``ollama/qwen3:8b``
+# for a local model, ``opencode/…`` for its hosted ones -- so the advertised select
+# is the only vocabulary its ``session/set_config_option`` accepts, and the static
+# registry names none of them.
+ACP_BACKENDS_ADVERTISED_MODEL_SELECTION = frozenset(
+    {ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX, ACP_BACKEND_OPENCODE}
+)
 
 # Backends that seed a per-session settings file — claude-agent-acp's
 # ``settings.local.json`` — to lock the model + permission surface. The file is
@@ -611,6 +693,13 @@ ACP_BACKENDS_ADVERTISED_MODEL_SELECTION = frozenset({ACP_BACKEND_CLAUDE, ACP_BAC
 # a switched model collapse to its base window on a claimed pool runtime. Opt-in
 # for the same reason as every set here — a harness with no such file is not a
 # member and takes no re-seed.
+#
+# opencode is NOT a member, and the reason is not that nothing is supplied to it:
+# this set drives the RE-SEED on ``set_model``, because claude's
+# ``settings.local.json`` pins the model. What opencode is handed is inline config in
+# its own environment carrying ``permission`` alone, and its model travels as a
+# config option, so a claim that switches model leaves nothing stale to re-seed --
+# and there is no file of Crew's in the work dir at all.
 ACP_BACKENDS_SEED_LOCAL_SETTINGS = frozenset({ACP_BACKEND_CLAUDE})
 
 # Which model-registry NAMESPACE a backend's ids live in. This is a registry index
@@ -639,6 +728,11 @@ _MODEL_REGISTRY_NAMESPACE_BY_BACKEND: dict = {
     ACP_BACKEND_KIRO: "acp",
     ACP_BACKEND_KAS: "acp",
     ACP_BACKEND_CODEX: "codex",
+    # opencode gets its own key for the same reason codex does: its ids are
+    # ``provider/model`` pairs drawn from the operator's own provider list, so
+    # sharing the ``acp`` bucket would let one harness overwrite what the picker
+    # offers for another.
+    ACP_BACKEND_OPENCODE: "opencode",
 }
 
 
@@ -656,6 +750,8 @@ def model_registry_namespace(backend: str) -> str:
 # kiro-family harnesses take effort and Tool Search from that file at spawn, and
 # writing it for a harness that never reads it leaves a stale file in the user's
 # workspace that no later clear can reach.
+# opencode is not a member: it has no ``_kiro.dev`` verb, and it publishes its own
+# command list as an ``available_commands_update`` on ``session/update`` instead.
 ACP_BACKENDS_KIRO_SLASH_COMMANDS = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
 
 # Backends that reconcile an edited agent config into their RUNNING sessions: a
@@ -673,6 +769,8 @@ ACP_BACKENDS_KIRO_SLASH_COMMANDS = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS}
 # describes its running set for a watcher to reconcile against. claude-agent-acp
 # reads no agent file at all (``ACP_BACKENDS_SESSION_MCP_ARRAY``), and codex-acp
 # has not demonstrated the capability — neither inherits it.
+# opencode is not a member: nothing in Crew's agent tree describes its running MCP
+# set, so there is no file a watcher could reconcile a running session against.
 ACP_BACKENDS_MCP_CONFIG_HOT_RELOAD = frozenset({ACP_BACKEND_KIRO})
 
 # Backends on which a Side Chat turn may EXECUTE read-only tools under
@@ -687,6 +785,12 @@ ACP_BACKENDS_MCP_CONFIG_HOT_RELOAD = frozenset({ACP_BACKEND_KIRO})
 # ``REJECT_ALL``, the pre-allowance posture, and its footer says tools are
 # unavailable there. A harness joins by demonstrating that every tool call it
 # serves reaches ``session/request_permission`` under the derived spec.
+#
+# opencode is NOT a member. Its tool calls do reach ``session/request_permission``
+# (captured live), but that is by way of its own ``permission`` setting, not the
+# derived ``<agent>--readonly`` spec this allowance is built on -- the harness reads
+# no kiro agent spec at all. A side turn on it therefore runs ``REJECT_ALL`` until a
+# read-only posture is expressed in the harness's own permission vocabulary.
 ACP_BACKENDS_SIDE_READONLY = frozenset({ACP_BACKEND_KIRO})
 
 # Backends whose model-side REFUSAL arrives with a structured reason, not just a
@@ -707,6 +811,8 @@ ACP_BACKENDS_SIDE_READONLY = frozenset({ACP_BACKEND_KIRO})
 # no category line. The set exists so a future harness that carries its own
 # reason payload is added HERE with a parser, rather than by widening the
 # metadata reader to guess at every notification's shape.
+# opencode is not a member: it carries no reason payload of its own, so its
+# refusal card has no category line.
 ACP_BACKENDS_STRUCTURED_REFUSAL = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
 
 # Backends whose child may ask THIS host for an access token over the
@@ -724,7 +830,35 @@ ACP_BACKENDS_STRUCTURED_REFUSAL = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
 # "may be handed Crew's credential" and "is invalidated by a kiro-cli logout" are
 # different properties, and a member here that is spawned in cli-owned mode (no
 # Crew identity stored) never receives the callback in the first place.
+# opencode is not a member: it authenticates from its own credential file, and its
+# ``initialize`` result advertises its own ``opencode-login`` auth method, so it
+# never asks this host for a token.
 ACP_BACKENDS_HOST_AUTH_CALLBACK = frozenset({ACP_BACKEND_KAS})
+
+# Backends that keep their OWN session records and resolve a resume from the
+# ``sessionId`` alone. For a member there is no Crew-side transcript to check
+# before ``session/load`` and no ``_kiro.dev/session_file`` to send with it; a
+# non-member is the kiro family, whose transcript Crew holds under
+# ``<kiro home>/sessions/cli`` and pre-checks so a missing file falls back to a
+# fresh session rather than a failed load. A SET rather than a chain of identity
+# tests on the resume path: that path is shared with kiro-cli, and harness-parity
+# H13 keeps it free of conditionals added in service of an adapter -- a harness
+# added later is one member here, not one more ``elif`` there.
+ACP_BACKENDS_HARNESS_OWNED_SESSIONS = frozenset(
+    {ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX, ACP_BACKEND_OPENCODE}
+)
+
+# Backends whose SUCCESSFUL ``session/load`` result carries no ``modes`` block.
+# The kiro family and claude return one, and its absence on those harnesses is how
+# a load that did not really take is told apart from one that did. OpenCode's
+# successful ``session/load`` result carries ``configOptions`` and no ``modes`` --
+# OBSERVED, in ``test/fixtures/acp_frames/opencode/session-load-live.jsonl``, where a
+# second process loaded a session the first had created and the harness replayed the
+# conversation before answering. For a member a response that is not an error IS the
+# successful load. Without membership a reopened session would load, fail the
+# ``modes`` check, fall through to ``session/new`` and discard the conversation the
+# harness had just restored.
+ACP_BACKENDS_LOAD_WITHOUT_MODES = frozenset({ACP_BACKEND_OPENCODE})
 
 
 # ── How a harness is made to ask ──
@@ -760,6 +894,22 @@ class Routing(str, Enum):
     over with a ``ROUTED`` this core cannot earn -- see
     ``docs/system-specs/modules/harness-onboarding.md``.
 
+    ``VERIFIED_SEEDED_SETTINGS`` -- the harness is made to ask by a setting Kiro
+    Crew supplies as the session starts, AND the precondition is confirmed by
+    reading the harness's OWN RESOLVED configuration back before the first prompt.
+    The read-back is the whole difference from ``SEEDED_SETTINGS``, and it is what
+    this mechanism can assert that the other cannot: a value the harness's own
+    config already carried, or a seed that did not take effect, is OBSERVED rather
+    than assumed. Where the read-back cannot confirm the required value the verdict
+    is INDETERMINATE and the session is refused, so a harness whose own default is
+    permissive cannot present a gate that gates nothing.
+
+    Where the setting TRAVELS is the driver's business, not this vocabulary's, and
+    it is not necessarily a file: the one member today passes it as inline config in
+    the child's environment, which that harness resolves above its own project
+    config file -- so a session establishes the guarantee without writing anything
+    into a checked-out repository.
+
     ``UNVERIFIED`` -- Kiro Crew has NOT established how, or whether, this harness
     can be made to ask. This member exists so "we do not know" is a state a
     caller must handle rather than an absent case that falls through to a
@@ -769,6 +919,7 @@ class Routing(str, Enum):
     AGENT_SPEC = "agent_spec"
     SESSION_CONFIG = "session_config"
     SEEDED_SETTINGS = "seeded_settings"
+    VERIFIED_SEEDED_SETTINGS = "verified_seeded_settings"
     UNVERIFIED = "unverified"
 
 
@@ -781,6 +932,7 @@ ACP_BACKEND_ROUTING: dict = {
     ACP_BACKEND_KAS: Routing.AGENT_SPEC,
     ACP_BACKEND_CLAUDE: Routing.SEEDED_SETTINGS,
     ACP_BACKEND_CODEX: Routing.SESSION_CONFIG,
+    ACP_BACKEND_OPENCODE: Routing.VERIFIED_SEEDED_SETTINGS,
 }
 
 
@@ -801,6 +953,20 @@ ACP_BACKEND_PERMISSION_CONFIG: dict = {
 }
 
 
+#: Harness id -> the ``(setting_key, required_value)`` its
+#: ``VERIFIED_SEEDED_SETTINGS`` routing needs in the configuration Crew supplies at
+#: session start and then reads back out of the harness.
+#:
+#: OpenCode asks per tool call only while its ``permission`` setting is ``ask``. Its
+#: own default is permissive, so a session that supplied nothing would never ask and
+#: the PreToolUse gate would run for nothing -- which is why the required value is
+#: data here rather than a literal at the seeding site: the same pair names what is
+#: supplied, what is read back, and what the refusal reports.
+ACP_BACKEND_PERMISSION_SETTING: dict = {
+    ACP_BACKEND_OPENCODE: ("permission", "ask"),
+}
+
+
 def routing_for(backend: str) -> "Routing":
     """The routing mechanism for *backend*, failing closed on an unknown id."""
     return ACP_BACKEND_ROUTING.get(backend, Routing.UNVERIFIED)
@@ -809,3 +975,8 @@ def routing_for(backend: str) -> "Routing":
 def permission_config_for(backend: str) -> tuple:
     """The ``(option_id, value)`` *backend* needs, or ``("", "")`` when it needs none."""
     return ACP_BACKEND_PERMISSION_CONFIG.get(backend, ("", ""))
+
+
+def permission_setting_for(backend: str) -> tuple:
+    """The ``(setting_key, value)`` *backend* seeds, or ``("", "")`` when it seeds none."""
+    return ACP_BACKEND_PERMISSION_SETTING.get(backend, ("", ""))

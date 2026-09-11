@@ -269,3 +269,39 @@ The lesson worth carrying: the seam is dormant for exactly one reason, that
 reason is written down where the narrowing check reads it, and closing it is a
 single stage rather than a re-litigation. That is the shape to aim for — not
 "complete or nothing", but "incomplete at a named stage".
+
+## Worked example: the OpenCode harness
+
+The first onboarding run with every gate in this document already in place, and
+the one to read for what the stages cost when nothing can be skipped:
+
+| Stage | State |
+|---|---|
+| 1 vocabulary | Done — `ACP_BACKEND_OPENCODE`, in `ACP_BACKENDS_KNOWN`, `PROVIDER_LABEL_OPENCODE`, policy name mapped, its own model-registry namespace. |
+| 2 capability sets | Decided for every set, and each decision cites what the harness advertised rather than what it resembles: in the model channel and the advertised-model capture, out of the effort channel (its `session/new` advertises a `mode` select beside `model` and no `effort`), out of steer and both compaction sets (its `sessionCapabilities` are close/fork/list/resume), out of the session MCP array (it advertises `http` and `sse` MCP transports and no stdio). |
+| 3 spawn path | Done — one binary, `opencode acp`, resolved override → mise → PATH. No adapter package and no Node floor, so the ladder is the plain-binary one rather than the entry-script one. |
+| 4 handshake | Done — `PROTOCOL_VERSION_OPENCODE`, its own literal, integer `1`, captured off its own wire. |
+| 5 auth declaration | Done — `own_credential_file`, `~/.local/share/opencode/auth.json` on the floor with `XDG_DATA_HOME` re-anchored, that leaf spared for its own child, not retired by a host logout, and a remedy that names an action without asserting a state (a locally served model needs no sign-in at all). |
+| 6 install probe | Done — `_probe_opencode` names `opencode` and the command that installs it. One component, and here that is not a simplification: the thing that would be missing is the thing that serves ACP. `restart_required` is read from the spawn path's own cache (`opencode_cached_negative()`): the binary resolves now, but this process already cached its absence, so a session started right now still fails until the gateway restarts. |
+| 7 selectability | Selectable. `NOT_SHIPPED_SELECTABLE` stays empty. |
+| routing | Done, by a NEW mechanism — `VERIFIED_SEEDED_SETTINGS`. The setting travels as inline config in the child's environment, which resolves above the project's own config file, and the harness's own resolved configuration is read back before the first prompt; the session is refused when the required value is not in force. |
+| residual | The read-back establishes the PRECONDITION, not that the harness honours it per tool call — no client-side read can prove that. And ACP v1 still cannot require a prompt for a passive READ, so the OS-boundary credential mask is the compensating control, as it is for Codex. |
+| 8 live spill | Reached — a live turn, and a frame corpus that is live for all seven required classes, `session/request_permission` included: with `permission: ask` in force the harness asked before running `bash`, which is the observation the whole enforcement claim needed. |
+
+Two things this run produced that the checklist did not ask for, and both belong
+in the reading of it. The routing mechanism is one: Stage 2's instruction is to
+decide every set, and the honest decision here was that neither existing routing
+member described this harness — `SEEDED_SETTINGS` is declared-but-unenforced for
+want of a read-back, and this harness has one. Adding a member to the vocabulary is
+a heavier edit than joining a set, and it is the right one when the alternative is
+a guarantee nobody performs.
+
+The other is what onboarding a harness with a *different shape* of credential home
+surfaced. Every earlier harness's override variable stood in for its token's parent
+directory, so the credential floor re-anchored a relocated token by its final
+segment alone. `XDG_DATA_HOME` stands in for `.local/share`, two segments up, so
+that anchoring fenced a path this harness never writes while the real relocated
+token stayed readable. A harness declares the spelling its file takes under an
+override root now. Expect this: the buckets are answered from the harnesses that
+existed when they were written, and a new one whose answer has a different shape
+finds the seam rather than the gap.

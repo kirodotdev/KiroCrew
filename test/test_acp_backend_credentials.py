@@ -28,13 +28,24 @@ import pytest
 from kiro_crew import security
 from kiro_crew.security import _SENSITIVE_HOME_DIRS, is_sensitive_path
 
-#: leaf, the env var that moves its parent, and the basename under that override.
+#: leaf, the env vars that move it, and the spelling it takes under each of them.
+#:
+#: The third element is not always the basename. ``CODEX_HOME`` and the two claude
+#: variables stand in for the token's PARENT, so one segment is left. OpenCode's
+#: ``XDG_DATA_HOME`` stands in for ``.local/share``, so two are -- and a floor that
+#: anchored on the basename alone would fence ``$XDG_DATA_HOME/auth.json``, a path
+#: that harness never writes, while the relocated token stayed readable.
 ADAPTER_TOKEN_LEAVES: tuple[tuple[str, tuple[str, ...], str], ...] = (
     (".codex/auth.json", ("CODEX_HOME",), "auth.json"),
     (
         ".claude/.credentials.json",
         ("CLAUDE_CONFIG_DIR", "CLAUDE_HOME"),
         ".credentials.json",
+    ),
+    (
+        ".local/share/opencode/auth.json",
+        ("XDG_DATA_HOME",),
+        "opencode/auth.json",
     ),
 )
 
@@ -62,15 +73,15 @@ def _isolated_home(monkeypatch, tmp_path):
     """
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("USERPROFILE", str(tmp_path))
-    for var in ("CODEX_HOME", "CLAUDE_CONFIG_DIR", "CLAUDE_HOME"):
+    for var in ("CODEX_HOME", "CLAUDE_CONFIG_DIR", "CLAUDE_HOME", "XDG_DATA_HOME"):
         monkeypatch.delenv(var, raising=False)
     _clear_cache()
     yield tmp_path
     _clear_cache()
 
 
-@pytest.mark.parametrize("leaf,_env_vars,_basename", ADAPTER_TOKEN_LEAVES)
-def test_token_leaf_is_on_the_floor(leaf, _env_vars, _basename) -> None:
+@pytest.mark.parametrize("leaf,_env_vars,_under_root", ADAPTER_TOKEN_LEAVES)
+def test_token_leaf_is_on_the_floor(leaf, _env_vars, _under_root) -> None:
     """The leaf is listed, so the registry and the gate cannot drift apart."""
     assert leaf in _SENSITIVE_HOME_DIRS, (
         f"{leaf} must be in _SENSITIVE_HOME_DIRS; without it an agent fs_read "
@@ -78,8 +89,8 @@ def test_token_leaf_is_on_the_floor(leaf, _env_vars, _basename) -> None:
     )
 
 
-@pytest.mark.parametrize("leaf,_env_vars,_basename", ADAPTER_TOKEN_LEAVES)
-def test_default_location_is_blocked(_isolated_home, leaf, _env_vars, _basename) -> None:
+@pytest.mark.parametrize("leaf,_env_vars,_under_root", ADAPTER_TOKEN_LEAVES)
+def test_default_location_is_blocked(_isolated_home, leaf, _env_vars, _under_root) -> None:
     """The documented ``$HOME``-rooted location is refused."""
     target = os.path.join(str(_isolated_home), *leaf.split("/"))
     assert is_sensitive_path(target) is True
@@ -99,8 +110,8 @@ def test_sibling_config_stays_readable(_isolated_home, sibling) -> None:
     )
 
 
-@pytest.mark.parametrize("leaf,env_vars,basename", ADAPTER_TOKEN_LEAVES)
-def test_home_override_is_anchored(monkeypatch, tmp_path, leaf, env_vars, basename) -> None:
+@pytest.mark.parametrize("leaf,env_vars,under_root", ADAPTER_TOKEN_LEAVES)
+def test_home_override_is_anchored(monkeypatch, tmp_path, leaf, env_vars, under_root) -> None:
     """An override moves the token, and the gate follows it.
 
     One variable at a time: an adapter honouring two roots must cover EACH of
@@ -112,7 +123,7 @@ def test_home_override_is_anchored(monkeypatch, tmp_path, leaf, env_vars, basena
         monkeypatch.setenv(var, str(override))
         _clear_cache()
         try:
-            moved = override / basename
+            moved = override.joinpath(*under_root.split("/"))
             assert is_sensitive_path(str(moved)) is True, (
                 f"{leaf} moved by {var} is no longer gated; a literal "
                 "$HOME-rooted entry only covers the default location"
@@ -122,9 +133,9 @@ def test_home_override_is_anchored(monkeypatch, tmp_path, leaf, env_vars, basena
             _clear_cache()
 
 
-@pytest.mark.parametrize("leaf,env_vars,basename", ADAPTER_TOKEN_LEAVES)
+@pytest.mark.parametrize("leaf,env_vars,under_root", ADAPTER_TOKEN_LEAVES)
 def test_default_location_survives_an_override(
-    monkeypatch, tmp_path, _isolated_home, leaf, env_vars, basename
+    monkeypatch, tmp_path, _isolated_home, leaf, env_vars, under_root
 ) -> None:
     """Setting an override ADDS a target; it never drops the default one.
 
@@ -153,7 +164,7 @@ def test_override_roots_are_part_of_the_cache_key() -> None:
     VARIABLE rather than a per-adapter NamedTuple field.
     """
     resolved = dict(security._resolve_root_anchors(str(security.Path.home())).adapter_roots)
-    for _leaf, root_envs in security._OVERRIDE_ANCHORED_LEAVES:
+    for _leaf, root_envs, _under_root in security._OVERRIDE_ANCHORED_LEAVES:
         for env_var in root_envs:
             assert env_var in resolved, (
                 f"_OVERRIDE_ANCHORED_LEAVES anchors on {env_var!r}, which the resolved "
@@ -168,7 +179,7 @@ def test_every_anchored_leaf_is_actually_on_the_floor() -> None:
     ``_SENSITIVE_HOME_DIRS`` while its override anchor stays leaves the table
     describing protection that is not there.
     """
-    for leaf, _root_fields in security._OVERRIDE_ANCHORED_LEAVES:
+    for leaf, _root_fields, _under_root in security._OVERRIDE_ANCHORED_LEAVES:
         assert (
             leaf in _SENSITIVE_HOME_DIRS
         ), f"{leaf} is override-anchored but absent from _SENSITIVE_HOME_DIRS"

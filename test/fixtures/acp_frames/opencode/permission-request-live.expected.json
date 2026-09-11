@@ -1,0 +1,146 @@
+[
+  {
+    "action": "update",
+    "events": [
+      {
+        "is_shell": true,
+        "kind": "tool_call",
+        "raw_tool_params": {
+          "cwd": "~/.kiro/crew/scratch/runtime-20893884/oc-proj"
+        },
+        "title": "bash",
+        "tool_call_id": "call_hixtdbkj",
+        "tool_input": "{\n  \"cwd\": \"~/.kiro/crew/scratch/runtime-20893884/oc-proj\"\n}",
+        "tool_kind": "execute",
+        "wire_title": "bash"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "is_shell": true,
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "command": "echo kirocrew-op encode-live",
+          "cwd": "~/.kiro/crew/scratch/runtime-20893884/oc-proj"
+        },
+        "title": "echo kirocrew-op encode-live",
+        "tool_call_id": "call_hixtdbkj",
+        "tool_input": "{\n  \"command\": \"echo kirocrew-op encode-live\",\n  \"cwd\": \"~/.kiro/crew/scratch/runtime-20893884/oc-proj\"\n}",
+        "tool_kind": "execute",
+        "wire_title": "echo kirocrew-op encode-live"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "permission",
+    "events": [
+      {
+        "is_shell": true,
+        "kind": "permission_request",
+        "mcp_identity_trusted": true,
+        "options": [
+          {
+            "id": "once",
+            "label": "Allow once"
+          },
+          {
+            "id": "always",
+            "label": "Always allow"
+          },
+          {
+            "id": "reject",
+            "label": "Reject"
+          }
+        ],
+        "raw_params_trusted": true,
+        "raw_tool_params": {
+          "command": "echo kirocrew-op encode-live",
+          "cwd": "~/.kiro/crew/scratch/runtime-20893884/oc-proj"
+        },
+        "shell_classified": true,
+        "title": "echo kirocrew-op encode-live",
+        "tool_call_id": "call_hixtdbkj",
+        "tool_input": "{\n  \"command\": \"echo kirocrew-op encode-live\",\n  \"cwd\": \"~/.kiro/crew/scratch/runtime-20893884/oc-proj\"\n}",
+        "tool_kind": "execute"
+      }
+    ],
+    "frame": "session/request_permission",
+    "recorded_options": {
+      "always": "always",
+      "once": "once",
+      "reject": "reject"
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "is_shell": true,
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "command": "echo kirocrew-op encode-live",
+          "cwd": "~/.kiro/crew/scratch/runtime-20893884/oc-proj"
+        },
+        "title": "echo kirocrew-op encode-live",
+        "tool_call_id": "call_hixtdbkj",
+        "tool_input": "{\n  \"command\": \"echo kirocrew-op encode-live\",\n  \"cwd\": \"~/.kiro/crew/scratch/runtime-20893884/oc-proj\"\n}",
+        "tool_kind": "execute",
+        "wire_title": "echo kirocrew-op encode-live"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "call_hixtdbkj",
+        "tool_output": "kirocrew-op encode-live\n"
+      },
+      {
+        "is_shell": true,
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "command": "echo kirocrew-op encode-live",
+          "cwd": "~/.kiro/crew/scratch/runtime-20893884/oc-proj"
+        },
+        "title": "echo kirocrew-op encode-live",
+        "tool_call_id": "call_hixtdbkj",
+        "tool_input": "{\n  \"command\": \"echo kirocrew-op encode-live\",\n  \"cwd\": \"~/.kiro/crew/scratch/runtime-20893884/oc-proj\"\n}",
+        "tool_kind": "execute",
+        "wire_title": "echo kirocrew-op encode-live"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "call_hixtdbkj",
+        "tool_final": true,
+        "tool_output": "kirocrew-op encode-live\n"
+      },
+      {
+        "is_shell": true,
+        "kind": "tool_call_update",
+        "title": "echo kirocrew-op encode-live",
+        "tool_call_id": "call_hixtdbkj",
+        "wire_title": "echo kirocrew-op encode-live"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  }
+]

@@ -48,6 +48,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_CODEX,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
+    ACP_BACKEND_OPENCODE,
     ACP_BACKENDS_KNOWN,
     POLICY_ID_BY_BACKEND,
 )
@@ -79,6 +80,10 @@ COMPONENT_CLAUDE_CODE_CLI = "claude"
 #: The codex-acp adapter. ONE component, not two: the adapter ships its own
 #: compatible Codex binary, so there is no second executable Crew resolves.
 COMPONENT_CODEX_ACP_ADAPTER = "codex-acp"
+
+#: The OpenCode binary. ONE component, and here that is not a simplification: the
+#: harness serves ACP itself, so there is no adapter beside it to be half-installed.
+COMPONENT_OPENCODE = "opencode"
 
 #: How long a verdict is reused. The Claude driver shells out to mise and globs
 #: the filesystem, and the dashboard polls this endpoint, so an uncached probe
@@ -210,6 +215,35 @@ def _probe_claude() -> BackendInstallState:
 #: Backend id → its probe. A registry rather than an ``if`` chain so an id with
 #: no probe is a lookup miss that degrades to ``UNKNOWN``, instead of falling
 #: through to whichever branch happened to be last.
+def _probe_opencode() -> BackendInstallState:
+    """The OpenCode backend needs one component, and names the installer for it.
+
+    Unlike the two Node adapters there is no second thing to resolve: the binary
+    that would be missing is the same binary that serves ACP. So an absent verdict
+    names one component and one command, and there is no half-installed state to
+    distinguish.
+
+    ``restart_required`` is read from the spawn path's own cache, like the
+    adapters': the binary resolves NOW, but this process already cached its absence,
+    so a session started right now still fails until the gateway restarts.
+    """
+    policy_id = _policy_id(ACP_BACKEND_OPENCODE)
+    if acp_driver.opencode_resolves():
+        return BackendInstallState(
+            ACP_BACKEND_OPENCODE,
+            policy_id,
+            INSTALLED,
+            restart_required=acp_driver.opencode_cached_negative(),
+        )
+    return BackendInstallState(
+        ACP_BACKEND_OPENCODE,
+        policy_id,
+        MISSING,
+        (COMPONENT_OPENCODE,),
+        acp_driver.opencode_install_command(),
+    )
+
+
 def _probe_codex() -> BackendInstallState:
     """The Codex backend needs one component, and names it when it is absent.
 
@@ -245,6 +279,7 @@ _PROBES: Dict[str, Callable[[], BackendInstallState]] = {
     ACP_BACKEND_KAS: _probe_kas,
     ACP_BACKEND_CLAUDE: _probe_claude,
     ACP_BACKEND_CODEX: _probe_codex,
+    ACP_BACKEND_OPENCODE: _probe_opencode,
 }
 
 

@@ -1,0 +1,68 @@
+[
+  {
+    "action": "update",
+    "events": [
+      {
+        "is_shell": true,
+        "kind": "tool_call",
+        "raw_tool_params": {
+          "cwd": "~/.kiro/crew/scratch/runtime-f4308721/oc-proj"
+        },
+        "title": "bash",
+        "tool_call_id": "call_xsro2n3p",
+        "tool_input": "{\n  \"cwd\": \"~/.kiro/crew/scratch/runtime-f4308721/oc-proj\"\n}",
+        "tool_kind": "execute",
+        "wire_title": "bash"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "is_shell": true,
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "command": "echo kirocrew-opencode-live",
+          "cwd": "~/.kiro/crew/scratch/runtime-f4308721/oc-proj",
+          "timeout": "0"
+        },
+        "title": "echo kirocrew-opencode-live",
+        "tool_call_id": "call_xsro2n3p",
+        "tool_input": "{\n  \"command\": \"echo kirocrew-opencode-live\",\n  \"timeout\": \"0\",\n  \"cwd\": \"~/.kiro/crew/scratch/runtime-f4308721/oc-proj\"\n}",
+        "tool_kind": "execute",
+        "wire_title": "echo kirocrew-opencode-live"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "call_xsro2n3p",
+        "tool_output": "The bash tool was called with invalid arguments: SchemaError(Expected number | undefined, got \"0\"\n  at [\"timeout\"]).\nPlease rewrite the input so it satisfies the expected schema."
+      },
+      {
+        "is_shell": true,
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "command": "echo kirocrew-opencode-live",
+          "cwd": "~/.kiro/crew/scratch/runtime-f4308721/oc-proj",
+          "timeout": "0"
+        },
+        "title": "echo kirocrew-opencode-live",
+        "tool_call_id": "call_xsro2n3p",
+        "tool_input": "{\n  \"command\": \"echo kirocrew-opencode-live\",\n  \"timeout\": \"0\",\n  \"cwd\": \"~/.kiro/crew/scratch/runtime-f4308721/oc-proj\"\n}",
+        "tool_kind": "execute",
+        "wire_title": "echo kirocrew-opencode-live"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  }
+]

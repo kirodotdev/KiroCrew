@@ -5,8 +5,9 @@ Two axes that must not be conflated, and each test names which one it is on:
 * **Truth** -- what :func:`routing_verdict` SAYS about a harness. Every harness
   gets an honest verdict, including the ones this core does not enforce.
 * **Enforcement** -- whether a non-ROUTED verdict REFUSES. Scoped to the
-  mechanisms this core implements end to end, which today is ``SESSION_CONFIG``
-  only.
+  mechanisms this core implements end to end: ``SESSION_CONFIG``, which checks the
+  advertised option, and ``VERIFIED_SEEDED_SETTINGS``, which reads back the setting
+  it wrote.
 
 Collapsing them is the failure this file exists to prevent: upgrading an
 unenforced harness to ``ROUTED`` so it stops refusing would make the picker and
@@ -28,6 +29,7 @@ from kiro_crew.acp_backends import (
     ACP_BACKEND_CODEX,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
+    ACP_BACKEND_OPENCODE,
     Routing,
     permission_config_for,
     routing_for,
@@ -80,14 +82,20 @@ def test_unknown_backend_fails_closed() -> None:
 # ── Enforcement scope ────────────────────────────────────────────────────────
 
 
-def test_only_session_config_is_enforced() -> None:
+def test_only_implemented_mechanisms_are_enforced() -> None:
     """The enforced set is a mechanism list, not a harness allowlist.
 
     Scoping by mechanism is what makes widening it require IMPLEMENTING one; an
-    id-based allowlist could be widened by editing a literal.
+    id-based allowlist could be widened by editing a literal. Both members carry an
+    observation: SESSION_CONFIG checks the advertised option before the first
+    prompt, and VERIFIED_SEEDED_SETTINGS reads back the setting it wrote. Plain
+    SEEDED_SETTINGS is absent for exactly that reason -- it writes without reading.
     """
-    assert gate.ENFORCED_ROUTINGS == frozenset({Routing.SESSION_CONFIG})
+    assert gate.ENFORCED_ROUTINGS == frozenset(
+        {Routing.SESSION_CONFIG, Routing.VERIFIED_SEEDED_SETTINGS}
+    )
     assert gate.is_enforced(ACP_BACKEND_CODEX) is True
+    assert gate.is_enforced(ACP_BACKEND_OPENCODE) is True
     assert gate.is_enforced(ACP_BACKEND_CLAUDE) is False
     for backend in AGENT_SPEC_BACKENDS:
         assert gate.is_enforced(backend) is False
@@ -439,10 +447,23 @@ def test_mask_still_exposes_the_adapters_own_token() -> None:
     """
     masked = gate.adapter_hidden_credential_dirs(ACP_BACKEND_CODEX)
     own = gate.ADAPTER_OWN_CREDENTIAL_LEAVES[ACP_BACKEND_CODEX][0]
-    basename = own.split("/")[-1]
+    own_tail = os.path.join(*own.split("/"))
     assert not any(
-        entry.endswith(basename) for entry in masked
+        entry.endswith(own_tail) for entry in masked
     ), "the adapter's own OAuth token was masked, which would break its auth"
+    # Matched on the whole leaf, not its final segment: two harnesses name their
+    # token ``auth.json``, so a basename check would report codex's own token
+    # unmasked while it was really seeing a SIBLING harness's token -- and would
+    # equally pass if the exclusion had let codex read that sibling's file.
+    for other, leaves in gate.ADAPTER_OWN_CREDENTIAL_LEAVES.items():
+        if other == ACP_BACKEND_CODEX:
+            continue
+        for leaf in leaves:
+            tail = os.path.join(*leaf.split("/"))
+            assert any(entry.endswith(tail) for entry in masked), (
+                f"{other!r}'s credential store is not denied to the codex child; the "
+                "exclusion must spare only the harness's OWN token"
+            )
 
 
 def test_sandbox_off_refuses_an_enforced_adapter(monkeypatch: pytest.MonkeyPatch) -> None:

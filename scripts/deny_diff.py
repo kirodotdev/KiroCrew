@@ -149,6 +149,9 @@ _INHERITED_HOME_OVERRIDE_ENV_VARS = (
     "CODEX_HOME",
     "CLAUDE_CONFIG_DIR",
     "CLAUDE_HOME",
+    # OpenCode's credential home follows the XDG data directory; a relocated token
+    # must not reach the classification child any more than a default one does.
+    "XDG_DATA_HOME",
 )
 
 

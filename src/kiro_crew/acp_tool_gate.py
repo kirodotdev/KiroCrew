@@ -23,8 +23,10 @@ from __future__ import annotations
 
 from kiro_crew.agent_sdk.backends import (  # noqa: F401 - re-exported for existing importers
     ACP_BACKEND_CODEX,
+    ACP_BACKEND_OPENCODE,
     Routing,
     permission_config_for,
+    permission_setting_for,
     routing_for,
 )
 from kiro_crew.agent_sdk.tool_gate import (  # noqa: F401 - re-exported for existing importers
@@ -42,11 +44,13 @@ from kiro_crew.agent_sdk.tool_gate import (  # noqa: F401 - re-exported for exis
     label_for,
     remediation_for,
     routing_verdict,
+    seeded_setting_issue,
     session_config_issue,
 )
 
 __all__ = [
     "ACP_BACKEND_CODEX",
+    "ACP_BACKEND_OPENCODE",
     "ADAPTER_EXPOSED_CREDENTIAL_LEAVES",
     "ADAPTER_OWN_CREDENTIAL_LEAVES",
     "ENFORCED_ROUTINGS",
@@ -61,8 +65,10 @@ __all__ = [
     "is_enforced",
     "label_for",
     "permission_config_for",
+    "permission_setting_for",
     "remediation_for",
     "routing_for",
     "routing_verdict",
+    "seeded_setting_issue",
     "session_config_issue",
 ]

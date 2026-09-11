@@ -259,6 +259,30 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         "acp/client.py::_direct_children",
         "acp/client.py::_get_start_time",
         "acp/client.py::_read_basename",
+        # The opencode routing read-back. ONE fixed argv -- the resolved harness
+        # binary plus the two literal words in ``_OPENCODE_CONFIG_READBACK_ARGS``
+        # (``debug config``) -- with no shell, a 30s timeout, and a cwd that is the
+        # session work dir rather than anything the agent names in a turn. The only
+        # variable input is the child's ``OPENCODE_CONFIG_CONTENT``, which this core
+        # composes from its own permission-setting table (see
+        # ``AcpClient._opencode_routing_config``); the agent supplies nothing to it.
+        # Stdout is read and nothing else: the JSON document is parsed for one key,
+        # the harness's resolved ``permission``, which decides whether the session
+        # may start at all.
+        #
+        # It is SANDBOX-WRAPPED before it is spawned: the caller runs the floor
+        # check first, then hands this function an argv already through
+        # ``wrap_argv_async`` with the same ``extra_hidden_dirs`` credential mask the
+        # session spawn gets. That matters because the child is the harness's own
+        # binary resolving config out of the work dir, which can load a project's
+        # plugins -- unwrapped, it would read the credential homes the mask exists to
+        # deny it. It is listed here rather than routed through
+        # ``sandboxed_spawn_argv`` because that wrapper is for agent-INFLUENCED argv,
+        # and nothing about this one comes from a turn.
+        # Called from a worker thread, never the event loop --
+        # ``test_the_routing_read_back_runs_off_the_event_loop`` in
+        # ``test/test_acp_opencode_backend.py`` pins that.
+        "acp/client.py::_verify_opencode_routing",
         # The shadow-venv update engine's four spawns. None is agent-influenced
         # and none can route through sandboxed_spawn_argv, because the engine's
         # whole job is to build the NEXT gateway install outside the agent

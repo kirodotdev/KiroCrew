@@ -336,7 +336,7 @@ def test_every_anchored_variable_is_a_declared_override() -> None:
     that appears in the pairing but not in that list anchors on a root nobody ever
     resolved -- an entry describing protection that does not exist."""
     resolved = set(host_auth.home_override_env_vars())
-    for leaf, env_vars in security_paths._OVERRIDE_ANCHORED_LEAVES:
+    for leaf, env_vars, _under_root in security_paths._OVERRIDE_ANCHORED_LEAVES:
         for env_var in env_vars:
             assert env_var in resolved, (
                 f"{leaf!r} is anchored on {env_var!r}, which no declaration names, so "
@@ -345,6 +345,66 @@ def test_every_anchored_variable_is_a_declared_override() -> None:
 
 
 # ── 4. The declaration refuses what the host cannot honour ───────────────────
+
+
+def test_the_override_spelling_defaults_to_the_leafs_last_segment() -> None:
+    """A harness whose override replaces the token's PARENT declares nothing extra.
+
+    The default keeps every existing declaration correct without an edit: a root
+    that stands in for the parent leaves exactly one segment behind it.
+    """
+    pairing = {leaf: under_root for leaf, _envs, under_root in host_auth.override_anchored_leaves()}
+    assert pairing[".codex/auth.json"] == "auth.json"
+    assert pairing[".claude/.credentials.json"] == ".credentials.json"
+
+
+def test_a_multi_segment_override_keeps_the_segments_below_the_root() -> None:
+    """An override standing in for a PREFIX leaves more than the final segment.
+
+    ``XDG_DATA_HOME`` replaces ``.local/share``, so the relocated token is
+    ``$XDG_DATA_HOME/opencode/auth.json``. Anchoring the final segment alone would
+    fence a path the harness never writes and leave the real one readable, which is
+    why the spelling is declared rather than derived.
+    """
+    pairing = {leaf: under_root for leaf, _envs, under_root in host_auth.override_anchored_leaves()}
+    assert pairing[".local/share/opencode/auth.json"] == "opencode/auth.json"
+
+
+def test_an_override_spelling_that_is_not_part_of_the_leaf_is_refused() -> None:
+    """A declaration may re-spell where its own file lands, never name another file.
+
+    Without the trailing-slice rule a driver could anchor an unrelated path under
+    an override root it controls, which is the mask-editing power this class exists
+    to withhold.
+    """
+    with pytest.raises(ValueError, match="not a trailing slice"):
+        host_auth.AgentAuthDeclaration(
+            backend="probe",
+            credential_leaves=(".local/share/probe/auth.json",),
+            home_override_env_vars=("XDG_DATA_HOME",),
+            adapter_own_leaves=(),
+            sign_in_remedy="Run the probe sign-in.",
+            signed_out_message="The probe is not signed in.",
+            host_logout_retires_children=False,
+            entitlement_source=host_auth.ENTITLEMENT_OWN_CREDENTIAL_FILE,
+            override_relative_leaves=("elsewhere/id_rsa",),
+        )
+
+
+def test_a_partial_list_of_override_spellings_is_refused() -> None:
+    """The two tuples are positional, so a short list would anchor the wrong file."""
+    with pytest.raises(ValueError, match="override spelling"):
+        host_auth.AgentAuthDeclaration(
+            backend="probe",
+            credential_leaves=(".probe/a.json", ".probe/b.json"),
+            home_override_env_vars=("PROBE_HOME",),
+            adapter_own_leaves=(),
+            sign_in_remedy="Run the probe sign-in.",
+            signed_out_message="The probe is not signed in.",
+            host_logout_retires_children=False,
+            entitlement_source=host_auth.ENTITLEMENT_OWN_CREDENTIAL_FILE,
+            override_relative_leaves=("a.json",),
+        )
 
 
 def test_an_unknown_entitlement_source_is_refused() -> None:
