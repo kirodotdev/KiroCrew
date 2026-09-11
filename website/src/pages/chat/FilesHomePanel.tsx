@@ -4,7 +4,7 @@ import { FileText, RotateCw, ExternalLink } from 'lucide-react'
 import { useBranding } from '../../hooks/useBranding'
 import { revealOrOpen, useRevealFailure, useRevealLabel } from '../../components/FilePathMenu'
 import ErrorNotice from '../../components/ErrorNotice'
-import FileBrowserRail, { useTreeState } from './FileBrowserRail'
+import FileBrowserRail, { useTreeState, useTreeAvailable } from './FileBrowserRail'
 
 /** Last path segment, trailing slashes ignored. */
 function basename(p: string): string {
@@ -43,7 +43,7 @@ export default function FilesHomePanel({ projectDir, onFileOpen, onAddToContext 
   // header; askAgent on — the Files panel holds no draft.
   const reveal = useRevealFailure(projectDir ?? undefined)
   const treeState = useTreeState(projectDir)
-  const treeAvailable = treeState === 'ready'
+  const railMounts = useTreeAvailable(projectDir)
   const refresh = () => {
     qc.invalidateQueries({ queryKey: ['project-tree', projectDir] })
     qc.invalidateQueries({ queryKey: ['git-status', projectDir] })
@@ -62,7 +62,7 @@ export default function FilesHomePanel({ projectDir, onFileOpen, onAddToContext 
                 own, so mounting this unconditionally would put two
                 identically-named controls in one view. It covers only the state
                 that has neither: a directory whose tree has not resolved yet. */}
-            {!treeAvailable && treeState !== 'error' && (
+            {!railMounts && treeState !== 'error' && (
               <button onClick={refresh} className={iconBtn} title={t('pages.chat.filesHome.refresh')} aria-label={t('pages.chat.filesHome.refresh')}>
                 <RotateCw size={14} />
               </button>
@@ -98,11 +98,15 @@ export default function FilesHomePanel({ projectDir, onFileOpen, onAddToContext 
             </>
           ) : (
             <span className="text-[12.5px]">
-              {treeAvailable ? t('pages.chat.filesHome.select_file_hint') : t('pages.chat.filesHome.no_project_dir')}
+              {/* Silent on a recoverable failure: the rail beside this is already naming it,
+                  and promising a tree to pick from would contradict that notice. */}
+              {treeState === 'ready' ? t('pages.chat.filesHome.select_file_hint')
+                : treeState === 'no-dir' ? t('pages.chat.filesHome.no_project_dir')
+                  : null}
             </span>
           )}
         </div>
-        {treeAvailable && (
+        {railMounts && (
           <FileBrowserRail projectDir={projectDir} onFileOpen={onFileOpen} onAddToContext={onAddToContext} />
         )}
       </div>
