@@ -539,7 +539,13 @@ what its own edit invalidated, and never reopens anything on the user's behalf.
 - **Untrusted ssh stderr.** A proxy banner is ANSI-stripped, credential- and
   exfiltration-redacted, and truncated before it is surfaced in status, and it is
   a secondary detail only: failure *classification* keys on real ssh signals, so
-  banner prose can never be read as an auth verdict.
+  banner prose can never be read as an auth verdict. When a classification phrase
+  matched, the fixed-width truncation window is centered on the matched phrase
+  rather than the head of the buffer -- on the phrase itself, not its line, since
+  the proxy controls the buffer and can make a single line arbitrarily long -- so
+  benign stderr written earlier (e.g. arbitrary `LocalCommand` output) cannot
+  consume the budget and truncate the classified reason out of the surfaced
+  detail.
 - **Trust root.** `<data-home>/run/` (the run-marker dir) is on the
   `is_sensitive_path` floor, so agent file tools can neither read nor write it.
   See §12 and [security.md](security.md).

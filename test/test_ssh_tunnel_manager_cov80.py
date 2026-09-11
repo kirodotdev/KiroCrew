@@ -31,6 +31,7 @@ import pytest
 from kiro_crew import platform_compat
 from kiro_crew.instances.ssh_tunnel_manager import (
     TunnelState,
+    _sanitize_banner,
     _SshTunnel,
     _TransportParams,
 )
@@ -434,3 +435,72 @@ class TestTransportParams:
             "aws_profile": "zibble",
             "aws_region": "us-west-2",
         }
+
+
+class TestExitErrorDetailWindow:
+    """The 200-char detail budget must not be spent on benign stderr written
+    BEFORE the classified failure line: under launchd/systemd with no ``TERM``,
+    arbitrary ``LocalCommand`` output (repeated ``tput`` warnings) precedes the
+    real diagnostic, so a head slice surfaces the cosmetic warning while the
+    classifier state is correct. The window must anchor on the matched
+    phrase."""
+
+    # 5 x 45 chars = 225 chars of benign noise, > the 183-char budget remainder.
+    _NOISE = "tput: No value for $TERM and no -T specified\n" * 5
+
+    def test_classified_reason_survives_leading_localcommand_noise(self) -> None:
+        tunnel = _tunnel()
+        tunnel._stderr_buf = self._NOISE + "client_loop: send disconnect: Connection reset by peer"
+        error = tunnel._exit_error(255)
+        assert error.startswith("ssh tunnel transport drop:")
+        assert "Connection reset by peer" in error
+
+    def test_unclassified_stderr_keeps_the_head_slice(self) -> None:
+        tunnel = _tunnel()
+        tunnel._stderr_buf = self._NOISE + "some entirely unclassified failure text"
+        error = tunnel._exit_error(255)
+        assert error.startswith("ssh exited 255: tput: No value for $TERM")
+        assert "unclassified failure" not in error
+
+    def test_ssm_detail_window_is_also_anchored(self) -> None:
+        tunnel = _tunnel(transport="ssm", ssm_target="i-0123456789abcdef0")
+        tunnel._stderr_buf = (
+            "z" * 250 + "\nAn error occurred (TargetNotConnected) when calling StartSession"
+        )
+        error = tunnel._ssm_exit_error(1)
+        assert "not a connected managed node" in error
+        assert "TargetNotConnected" in error
+
+
+class TestSanitizeBannerAnchor:
+    def test_short_text_is_returned_whole(self) -> None:
+        assert _sanitize_banner("short", anchor="connection reset") == "short"
+
+    def test_no_anchor_takes_the_head(self) -> None:
+        assert _sanitize_banner("a" * 300) == "a" * 200
+
+    def test_anchor_centers_the_window_on_the_matched_line(self) -> None:
+        text = "n" * 250 + "\nError: Connection reset by peer"
+        out = _sanitize_banner(text, anchor="connection reset")
+        assert "Connection reset by peer" in out
+        assert len(out) == 200
+
+    def test_a_long_single_line_still_keeps_the_phrase_in_the_window(self) -> None:
+        """The proxy controls the buffer, so LocalCommand output with no
+        trailing newline can merge onto ssh's diagnostic into one arbitrarily
+        long line; centering on the phrase (not its line) must still surface
+        the reason."""
+        text = "x" * 400 + "client_loop: send disconnect: Connection reset by peer"
+        out = _sanitize_banner(text, anchor="connection reset")
+        assert "Connection reset by peer" in out
+        assert len(out) == 200
+
+    def test_redaction_happens_before_the_window_is_taken(self) -> None:
+        token = "ghp_" + "a1B2" * 9
+        text = "m" * 250 + f"\ntoken {token} then Connection reset by peer"
+        out = _sanitize_banner(text, anchor="connection reset")
+        assert token not in out
+        assert "Connection reset by peer" in out
+
+    def test_a_missing_anchor_falls_back_to_the_head(self) -> None:
+        assert _sanitize_banner("b" * 300, anchor="connection refused") == "b" * 200
