@@ -84,10 +84,15 @@ interface AnnotateMirror {
   page: { url: string; title: string }
   /** The note editor: which pick, and the text being typed. */
   editing: { id: number; text: string } | null
+  /** Abandoned pick ids whose overlay-side removal is still owed. The poll
+   *  reducer records them (it holds the pre-update mirror); a drain effect
+   *  sends each 'remove' after commit -- a state updater runs at render time
+   *  and may run more than once, so it must never call the bridge itself. */
+  pendingDrops: number[]
 }
 const EMPTY_TARGETS: BrowserAnnotationTarget[] = []
 const EMPTY_ANNOTATE: AnnotateMirror = {
-  slot: '', live: false, picking: false, targets: EMPTY_TARGETS, notes: {}, retained: [], page: { url: '', title: '' }, editing: null,
+  slot: '', live: false, picking: false, targets: EMPTY_TARGETS, notes: {}, retained: [], page: { url: '', title: '' }, editing: null, pendingDrops: [],
 }
 /** One mirror per chat slot. Kept as a map (not "the current slot's mirror")
  *  so switching sessions and coming back finds the notes where they were. */
@@ -115,6 +120,9 @@ function loadAnnotateMirrors(): AnnotateMirrors {
         retained: Array.isArray(m.retained) ? m.retained : [],
         page: m.page && typeof m.page === 'object' ? { url: String(m.page.url ?? ''), title: String(m.page.title ?? '') } : { url: '', title: '' },
         editing: m.editing && typeof m.editing === 'object' && typeof m.editing.id === 'number' ? { id: m.editing.id, text: String(m.editing.text ?? '') } : null,
+        // Like `picking`: a live-session transient. A reloaded renderer polls
+        // the overlay fresh, so an unsent drop simply re-lists its pick.
+        pendingDrops: [],
       }
     }
     return out
@@ -154,6 +162,8 @@ function detachAll(prev: AnnotateMirror): AnnotateMirror {
     ],
     targets: EMPTY_TARGETS,
     notes: {},
+    // The page took the overlay with it: there is nothing left to remove from.
+    pendingDrops: [],
   }
 }
 function saveAnnotateMirrors(mirrors: AnnotateMirrors): void {
@@ -732,7 +742,6 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
       if (stopped) return
       if (isAnnotatePoll(res)) {
         pollFailures.current = 0
-        const dropped: { id: number | null } = { id: null }
         patchSlot(slot, prev => {
           // A live pick can never share an id with a retained note (the overlay
           // is started past the highest retained id); one that does is a
@@ -755,6 +764,7 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
             notes = Object.fromEntries(Object.entries(prev.notes).filter(([id]) => keep.has(Number(id))))
           }
           let editing = prev.editing
+          let pendingDrops = prev.pendingDrops
           const moveTo = res.picked !== undefined ? res.picked : res.edit
           if (moveTo !== undefined && (!editing || editing.id !== moveTo)) {
             // The editor moves to another pick. Whatever was typed for the one
@@ -768,7 +778,11 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
               retained = retained.map(a => (a.id === editing!.id ? { ...a, note: text } : a))
             }
             if (editing && !editing.text.trim() && !(notes[editing.id] ?? '').trim() && targets.some(t => t.id === editing!.id) && editing.id !== moveTo) {
-              dropped.id = editing.id
+              // Record the drop; never call the bridge from in here. This
+              // updater runs at render time and can run more than once for one
+              // logical update, so the send happens in the drain effect below,
+              // and the `includes` guard keeps a re-run from queueing it twice.
+              if (!pendingDrops.includes(editing.id)) pendingDrops = [...pendingDrops, editing.id]
               targets = targets.filter(t => t.id !== editing!.id)
             }
             editing = { id: moveTo, text: notes[moveTo] ?? '' }
@@ -777,9 +791,8 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
           const page = { url: res.url, title: res.title }
           if (sameTargets && notes === prev.notes && retained === prev.retained && editing === prev.editing && prev.picking === res.picking
             && prev.page.url === page.url && prev.page.title === page.title) return prev
-          return { ...prev, picking: res.picking, targets, notes, retained, editing, page }
+          return { ...prev, picking: res.picking, targets, notes, retained, editing, page, pendingDrops }
         })
-        if (dropped.id !== null) void callAnnotate('remove', { id: dropped.id })
         return
       }
       // The overlay is gone (navigation) or the view itself is (closed,
@@ -801,6 +814,40 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
       clearInterval(t)
     }
   }, [annotateOn, canAnnotate, callAnnotate, sessionKey, patchSlot])
+
+  // Send the overlay-side removal for each abandoned pick AFTER the commit.
+  // The poll reducer only records the id (it is the one place that holds the
+  // pre-update mirror), because a state updater runs at render time -- reading
+  // a closure it mutated right after the setState call sees the untouched
+  // value, which is exactly the bug this drains away. Exactly one 'remove'
+  // goes out per id: the in-flight set covers effect re-runs while a send is
+  // still pending, and the id leaves the queue as soon as its send settles.
+  // A refused removal is surfaced like every other failed overlay update; the
+  // overlay then still reports the pick, so the next poll re-lists it rather
+  // than leaving a marker on the page the panel has forgotten. `no_overlay` /
+  // `no_view` stay silent: the page took the overlay with it, and the poll's
+  // detachAll already owns that path.
+  const pendingDrops = mirror.pendingDrops
+  // Keyed by slot AND id: pick ids are small per-session integers, so two
+  // sessions can hold the same id at once, and a bare-id key would make one
+  // session's in-flight send swallow the other's.
+  const dropsInFlight = useRef<Set<string>>(new Set())
+  useEffect(() => {
+    if (!pendingDrops.length) return
+    const slot = sessionKey || ''
+    for (const id of pendingDrops) {
+      const flightKey = `${slot}:${id}`
+      if (dropsInFlight.current.has(flightKey)) continue
+      dropsInFlight.current.add(flightKey)
+      void callAnnotate('remove', { id }).then(res => {
+        dropsInFlight.current.delete(flightKey)
+        patchSlot(slot, prev => (prev.pendingDrops.includes(id) ? { ...prev, pendingDrops: prev.pendingDrops.filter(d => d !== id) } : prev))
+        if (res && res.ok) return
+        if (res && !res.ok && (res.code === 'no_overlay' || res.code === 'no_view')) return
+        setAnnotateError(annotateFailureText(res) || i18nT('components.webPreviewPanel.annotate_update_failed'))
+      })
+    }
+  }, [pendingDrops, callAnnotate, patchSlot, sessionKey])
 
   // The pick happened in the page; the note is typed here. Focus the editor
   // as soon as it opens (the main process has already handed keyboard focus

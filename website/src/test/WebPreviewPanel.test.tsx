@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { screen, fireEvent, act, waitFor } from '@testing-library/react'
 
+import { StrictMode } from 'react'
 import { renderWithProviders } from './helpers'
 import WebPreviewPanel, { normalizeUrl, setSessionPreviewUrl, setSessionPreviewPending, isolatePreviewHost, isDashboardOrigin, withCacheBuster } from '../components/WebPreviewPanel'
 
@@ -1010,6 +1011,80 @@ describe('WebPreviewPanel — native browser transport', () => {
     await waitFor(() => expect(annotate).toHaveBeenCalledWith('sess-1', 'remove', { id: 1 }))
     await waitFor(() => expect(screen.getByTestId('browser-annotations').querySelectorAll('li')).toHaveLength(1))
     expect(screen.getByTestId('browser-annotations')).toHaveTextContent('1 note')
+  })
+
+  it('the abandoned pick is removed even when another panel update is already queued (no reliance on an eager dispatch)', async () => {
+    // The removal decision is made inside a state updater, which React runs at
+    // render time. When the fiber already has an update queued, the dispatch
+    // takes no synchronous shortcut -- a closure mutated inside the updater is
+    // untouched when the next statement reads it. Feeding a pending preview URL
+    // from inside the poll reply queues exactly such an update in the same
+    // task, so this locks the removal to committed state, not to timing.
+    const { annotate, state } = installAnnotateBridge()
+    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" active />)
+    fireEvent.click(await screen.findByTestId('browser-annotate'))
+    await screen.findByTestId('browser-annotations')
+    state.items = [TARGET]
+    state.picked = 1
+    await screen.findByTestId('browser-annotation-note-input')
+    const t2 = { ...TARGET, id: 2, n: 2, ref: 'e4', tag: 'input', role: 'combobox', name: 'Search', text: '' }
+    const impl = annotate.getMockImplementation()!
+    annotate.mockImplementation(async (p: string, op: string, args?: Record<string, unknown>) => {
+      if (op === 'poll') setSessionPreviewPending('sess-1', 'http://localhost:5173/')
+      return impl(p, op, args)
+    })
+    state.items = [TARGET, t2]
+    state.picked = 2
+    await waitFor(() => expect(annotate).toHaveBeenCalledWith('sess-1', 'remove', { id: 1 }))
+    await waitFor(() => expect(screen.getByTestId('browser-annotations').querySelectorAll('li')).toHaveLength(1))
+    // Exactly one removal per abandoned pick, across every later poll tick.
+    await new Promise(r => setTimeout(r, 400))
+    expect(annotate.mock.calls.filter(c => c[1] === 'remove').length).toBe(1)
+  })
+
+  it('an in-flight removal in one session never swallows the same pick id abandoned in another session', async () => {
+    // Pick ids are small per-session integers, so two sessions can hold the
+    // same id at once. Session 1's removal is held in flight forever; session
+    // 2 abandoning its own pick 1 must still get its removal sent.
+    const { annotate, state } = installAnnotateBridge()
+    const impl = annotate.getMockImplementation()!
+    annotate.mockImplementation(async (p: string, op: string, args?: Record<string, unknown>) => {
+      if (op === 'remove' && p === 'sess-1') return new Promise(() => { /* held in flight */ })
+      return impl(p, op, args)
+    })
+    const { rerender } = renderWithProviders(<WebPreviewPanel sessionKey="sess-1" active />)
+    fireEvent.click(await screen.findByTestId('browser-annotate'))
+    await screen.findByTestId('browser-annotations')
+    state.items = [TARGET]
+    state.picked = 1
+    await screen.findByTestId('browser-annotation-note-input')
+    const t2 = { ...TARGET, id: 2, n: 2, ref: 'e4', tag: 'input', role: 'combobox', name: 'Search', text: '' }
+    state.items = [TARGET, t2]
+    state.picked = 2
+    await waitFor(() => expect(annotate).toHaveBeenCalledWith('sess-1', 'remove', { id: 1 }))
+    // Session 2, while session 1's removal is still pending: same abandon flow.
+    rerender(<WebPreviewPanel sessionKey="sess-2" active />)
+    fireEvent.click(await screen.findByTestId('browser-annotate'))
+    state.picked = 1
+    await screen.findByTestId('browser-annotation-note-input')
+    state.picked = 2
+    await waitFor(() => expect(annotate).toHaveBeenCalledWith('sess-2', 'remove', { id: 1 }))
+  })
+
+  it('exactly one remove is sent per abandoned pick when the state updater runs twice (StrictMode)', async () => {
+    const { annotate, state } = installAnnotateBridge()
+    renderWithProviders(<StrictMode><WebPreviewPanel sessionKey="sess-1" active /></StrictMode>)
+    fireEvent.click(await screen.findByTestId('browser-annotate'))
+    await screen.findByTestId('browser-annotations')
+    state.items = [TARGET]
+    state.picked = 1
+    await screen.findByTestId('browser-annotation-note-input')
+    const t2 = { ...TARGET, id: 2, n: 2, ref: 'e4', tag: 'input', role: 'combobox', name: 'Search', text: '' }
+    state.items = [TARGET, t2]
+    state.picked = 2
+    await waitFor(() => expect(annotate).toHaveBeenCalledWith('sess-1', 'remove', { id: 1 }))
+    await new Promise(r => setTimeout(r, 400))
+    expect(annotate.mock.calls.filter(c => c[1] === 'remove').length).toBe(1)
   })
 
   it('a noted pick the page stops reporting is kept as detached rather than losing its note', async () => {
