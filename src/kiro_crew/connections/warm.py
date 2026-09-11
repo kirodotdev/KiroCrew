@@ -1870,7 +1870,10 @@ async def _kill_quietly(runtime: Any) -> bool:
     raising would mask the original failure. The callers RETAIN instead of propagating.
     """
     try:
-        await asyncio.wait_for(runtime.kill(), timeout=_WARM_KILL_TIMEOUT_SECONDS)
+        await asyncio.wait_for(
+            runtime.kill(expected=True, reason="warm mint teardown"),
+            timeout=_WARM_KILL_TIMEOUT_SECONDS,
+        )
     except Exception:  # noqa: BLE001 — best-effort teardown of our own child
         logger.warning("warm mint runtime kill failed; the process stays tracked for a retry")
         logger.debug("warm mint runtime kill failed", exc_info=True)

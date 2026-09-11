@@ -848,6 +848,7 @@ class AcpRuntime:
         self._entitlement_probe_at = 0.0
         self._entitlement_probe_result: list[dict[str, str]] = []
         self._dead = False
+        self._death_summary: str | None = None
         self._last_activity: float = 0.0
         self._stderr_lines: list[str] = []
         # Latched auth-failure observation. ``_stderr_lines`` is a 20-line ring,
@@ -971,6 +972,16 @@ class AcpRuntime:
     def is_alive(self) -> bool:
         """True if the underlying process exists and has not exited."""
         return self._process is not None and self._process.returncode is None and not self._dead
+
+    def death_summary(self) -> str | None:
+        """One-line death attribution, or None while alive.
+
+        Composed once by ``_mark_dead`` (reason + returncode + stderr tail).
+        Lets a consumer that only observes the death through a poisoned
+        session queue — e.g. a turn's frame wait — report WHO/WHY instead
+        of a bare "process died".
+        """
+        return self._death_summary
 
     def _stale_by_age(self) -> bool:
         """True if uptime exceeds max_age_secs. Cheap, no I/O — safe to call
@@ -1538,7 +1549,7 @@ class AcpRuntime:
                 exc_info=True,
             )
             try:
-                await self.kill()
+                await self.kill(reason="reap after failed spawn")
             except Exception:
                 logger.warning(
                     "AcpRuntime: cleanup reap after a failed spawn did not complete for PID %s",
@@ -1649,7 +1660,7 @@ class AcpRuntime:
             try:
                 # This death IS abnormal (failed spawn/handshake): kill()'s
                 # expected=False default keeps its log at WARNING.
-                await self.kill()
+                await self.kill(reason="failed init handshake cleanup")
             except Exception:
                 logger.debug(
                     "AcpRuntime: cleanup kill after failed spawn/handshake failed", exc_info=True
@@ -1661,15 +1672,23 @@ class AcpRuntime:
     _KILL_TERM_TIMEOUT = 5.0
     _KILL_REAP_TIMEOUT = 2.0
 
-    async def kill(self, *, expected: bool = False) -> None:
-        """Kill the subprocess and release spawn resources even when cancelled."""
+    async def kill(self, *, expected: bool = False, reason: str = "") -> None:
+        """Kill the subprocess and release spawn resources even when cancelled.
+
+        ``reason`` names the caller's intent ("warm mint teardown", "failed
+        session setup cleanup", ...) and flows into the death log line and
+        ``death_summary()``. Unattributed kills proved undiagnosable in the
+        field: a runtime killed under a live turn surfaces to the turn only
+        as a bare "process died during prompt", and a log line that says
+        "killed" without saying WHO killed leaves nothing to correlate.
+        """
         try:
-            await self._kill_inner(expected=expected)
+            await self._kill_inner(expected=expected, reason=reason)
         finally:
             self._discard_sandbox_cleanup()
             await self._discard_bound_workspace()
 
-    async def _kill_inner(self, *, expected: bool = False) -> None:
+    async def _kill_inner(self, *, expected: bool = False, reason: str = "") -> None:
         """Kill the subprocess and clean up all state.
 
         ``expected`` changes log severity only: a deliberate teardown of a
@@ -1685,7 +1704,7 @@ class AcpRuntime:
         # self._dead internally; doing it up front (before teardown) ensures any
         # waiters learn the runtime died. Calling it after setting _dead=True
         # would hit its early-return guard and skip all cleanup.
-        self._mark_dead("killed", expected=expected)
+        self._mark_dead(f"killed ({reason})" if reason else "killed", expected=expected)
 
         if self._reader_task and not self._reader_task.done():
             self._reader_task.cancel()
@@ -2627,6 +2646,18 @@ class AcpRuntime:
         # operators can tell an OOM/crash from a clean exit without DEBUG logs.
         rc = self._process.returncode if self._process else None
         tail = " | ".join(self._stderr_lines[-5:]) if self._stderr_lines else "<none>"
+        # Redact BEFORE composing: the summary outlives this method — it is
+        # retained for death_summary(), appended to AcpProcessDied, and a
+        # cron turn's failure stringifies that exception into job.last_error,
+        # which persists to sandbox-visible crons.json. Child stderr is
+        # external-subprocess output that can carry credential material
+        # (same treatment as the send-path's 'ACP process exited' detail).
+        tail, _ = redact_exfiltration_urls(tail)
+        tail, _ = redact_credentials(tail)
+        # Retain the summary for death_summary(): consumers that learn of the
+        # death only through a poisoned queue (a live turn's frame wait) can
+        # then attach WHO/WHY to their own error instead of raising bare.
+        self._death_summary = f"{reason} [returncode={rc}] stderr_tail: {tail}"
         log = logger.info if expected else logger.warning
         log(
             "AcpRuntime dead (PID %s): %s [returncode=%s] stderr_tail: %s",

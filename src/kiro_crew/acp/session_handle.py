@@ -507,6 +507,9 @@ class AcpRuntimeProtocol(Protocol):
     def is_alive(self) -> bool:
         ...
 
+    def death_summary(self) -> str | None:
+        ...
+
 
 class AcpSessionHandle:
     """Handle for a single ACP session on a shared runtime.
@@ -699,6 +702,19 @@ class AcpSessionHandle:
     @property
     def session_id(self) -> str:
         return self._session_id
+
+    def _died(self, base: str) -> AcpProcessDied:
+        """Build an AcpProcessDied carrying the runtime's death attribution.
+
+        The poison sentinel tells a waiting turn only THAT the runtime died;
+        the runtime's ``death_summary()`` (reason + returncode + stderr tail,
+        composed at ``_mark_dead`` time) says who/why. Field experience: three
+        unattributed mid-turn deaths in five days were undiagnosable from the
+        bare message alone. ``getattr``-guarded so a minimal runtime double
+        without ``death_summary`` degrades to the bare message.
+        """
+        summary = getattr(self._runtime, "death_summary", lambda: None)()
+        return AcpProcessDied(f"{base} — {summary}" if summary else base)
 
     @property
     def is_turn_active(self) -> bool:
@@ -1592,7 +1608,7 @@ class AcpSessionHandle:
                     # Re-poison (in the finally, AFTER the buffered frames are
                     # restored) so the live turn / next consumer also sees death.
                     poisoned = True
-                    raise AcpProcessDied("Runtime died while waiting for compaction")
+                    raise self._died("Runtime died while waiting for compaction")
                 # Check for compaction status
                 if msg.method == "_kiro.dev/compaction/status":
                     params = msg.params or {}
@@ -2065,7 +2081,7 @@ class AcpSessionHandle:
                 if msg is None:
                     # Runtime died: re-poison for the live turn / next consumer.
                     self._queue.put_nowait(None)
-                    raise AcpProcessDied("Runtime process died while waiting for response")
+                    raise self._died("Runtime process died while waiting for response")
                 if msg.is_response_for(req_id):
                     if msg.error:
                         # Delegate to the shared raise helper so this path gets
@@ -2471,7 +2487,7 @@ class AcpSessionHandle:
 
                 if msg is None:
                     # Runtime process died — sentinel
-                    raise AcpProcessDied("Runtime process died during prompt")
+                    raise self._died("Runtime process died during prompt")
 
                 last_data_ts = time.monotonic()
                 parked_at_data = self._parked_total

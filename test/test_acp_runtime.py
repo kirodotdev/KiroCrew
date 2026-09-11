@@ -1218,7 +1218,7 @@ async def test_kill_cancellation_still_releases_bound_workspace(monkeypatch, tmp
     entered = asyncio.Event()
     closed: list[int] = []
 
-    async def stalled_teardown(*, expected=False):
+    async def stalled_teardown(*, expected=False, reason=""):
         entered.set()
         await asyncio.Event().wait()
 
@@ -1338,6 +1338,69 @@ async def test_kill_default_is_unexpected_and_warns(caplog, monkeypatch):
         await rt.kill()
 
     assert [r.levelname for r in _death_records(caplog)] == ["WARNING"]
+
+
+@pytest.mark.asyncio
+async def test_kill_reason_lands_in_death_log_and_summary(caplog, monkeypatch):
+    """kill(reason=...) attributes the death: the reason must appear in the
+    'AcpRuntime dead' log line AND be retained by death_summary() alongside
+    returncode and stderr tail. Field motivation: three unattributed
+    'killed [returncode=None]' deaths in five days — one under a live cron
+    turn — were undiagnosable because no caller identified itself."""
+    import logging
+
+    rt, _, proc = _make_runtime()
+    _neuter_kill_side_effects(monkeypatch, proc)
+
+    with caplog.at_level(logging.INFO, logger="kiro_crew.acp.runtime"):
+        await rt.kill(expected=True, reason="warm mint teardown")
+
+    records = _death_records(caplog)
+    assert len(records) == 1
+    assert "killed (warm mint teardown)" in records[0].getMessage()
+    summary = rt.death_summary()
+    assert summary is not None
+    assert "killed (warm mint teardown)" in summary
+    assert "returncode=" in summary
+    assert "stderr_tail:" in summary
+
+
+@pytest.mark.asyncio
+async def test_death_summary_is_none_while_alive(monkeypatch):
+    """death_summary() answers None until _mark_dead composes it — a live
+    runtime must not advertise a stale or empty attribution."""
+    rt, _, proc = _make_runtime()
+    _neuter_kill_side_effects(monkeypatch, proc)
+    assert rt.death_summary() is None
+    await rt.kill()
+    assert rt.death_summary() is not None
+
+
+@pytest.mark.asyncio
+async def test_death_summary_redacts_credentials_from_stderr_tail(caplog, monkeypatch):
+    """The stderr tail is uninspected child output and the summary OUTLIVES
+    the log: it rides AcpProcessDied into a turn's error, and a cron failure
+    stringifies that into job.last_error, persisted to sandbox-visible
+    crons.json. Credential material in the child's stderr must therefore be
+    redacted before the summary is composed (same treatment as the send
+    path's 'ACP process exited' detail)."""
+    import logging
+
+    rt, _, proc = _make_runtime()
+    _neuter_kill_side_effects(monkeypatch, proc)
+    secret = "ghp_0123456789abcdefghijklmnopqrstuvwxyzAB"
+    rt._stderr_lines = [f"auth error: token {secret} rejected"]
+
+    with caplog.at_level(logging.INFO, logger="kiro_crew.acp.runtime"):
+        await rt.kill(expected=True, reason="warm mint teardown")
+
+    summary = rt.death_summary()
+    assert summary is not None
+    assert secret not in summary
+    assert "stderr_tail:" in summary
+    # The death log line gets the same redacted tail.
+    for record in _death_records(caplog):
+        assert secret not in record.getMessage()
 
 
 @pytest.mark.asyncio

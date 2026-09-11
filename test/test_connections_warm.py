@@ -531,7 +531,7 @@ async def test_generation_directory_is_removed_only_after_a_confirmed_kill(
             self.failures = failures
             self.kill_attempts = 0
 
-        async def kill(self) -> None:
+        async def kill(self, *, expected: bool = False, reason: str = "") -> None:
             self.kill_attempts += 1
             if self.failures:
                 self.failures -= 1
@@ -2532,7 +2532,7 @@ class _UnkillableRuntime:
     def is_alive(self) -> bool:
         return True
 
-    async def kill(self) -> None:
+    async def kill(self, *, expected: bool = False, reason: str = "") -> None:
         self.kill_attempts += 1
         if self.kill_attempts <= self._failures:
             raise TimeoutError("kill timed out")
