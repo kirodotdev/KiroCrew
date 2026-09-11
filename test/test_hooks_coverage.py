@@ -884,7 +884,9 @@ class TestSafeReadFile:
         # backslashed on Windows), so compute the expectation the same way
         # production does.
         resolved = os.path.realpath(os.path.expanduser(forged))
-        monkeypatch.setattr(hooks_mod, "is_sensitive_path", lambda p: True)
+        monkeypatch.setattr(
+            hooks_mod, "sensitive_path_refusal", lambda p: f"Blocked: access to sensitive path: {p}"
+        )
         with pytest.raises(PermissionError, match="sensitive path") as excinfo:
             safe_read_file(forged)
         message = str(excinfo.value)

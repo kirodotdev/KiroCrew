@@ -55,6 +55,7 @@ from kiro_crew.identity_stores import (
 )
 from kiro_crew.memory_stores import MEMORY_STORES_DIR_NAME
 
+from . import pathres_client
 from .diagnostics import annotate_refusal, refusal_diagnostic
 
 if TYPE_CHECKING:
@@ -1125,22 +1126,33 @@ _path_resolve_clock: Callable[[], float] = time.monotonic  # tests advance this
 
 
 def _resolved_spellings(expanded: str) -> set[str]:
-    """Symlink-resolved spellings of *expanded*; runs on the ``mc-pathres`` pool."""
+    """Symlink-resolved spellings of *expanded*; runs on the ``mc-pathres`` pool.
+
+    The resolution itself happens in the helper PROCESS (``pathres_client``):
+    ``os.path.realpath`` and ``Path.resolve`` each re-acquire the GIL once per
+    path component, and in a gateway with 100+ threads those re-acquisitions --
+    not the disk -- were what spent the resolve budget (see the helper module's
+    docstring for the measurement). This worker pays one pipe round-trip instead.
+    A transport fault (the helper died, or answered garbage) is a
+    RESOLUTION THAT DID NOT COMPLETE, and it raises :class:`PathResolutionStalled`
+    for this path exactly as a timeout does -- it must not return the empty set,
+    because an empty set reads to the caller as "resolved, no other spelling" and
+    leaves only the lexical forms, which for a workspace symlink into a credential
+    store is a pass. Nothing is charged to the prefix: the disk did not stall.
+    """
     out: set[str] = set()
-    try:
-        out.add(os.path.realpath(expanded))
-    except (OSError, ValueError):
-        pass
-    try:
-        # Guarded false-positive: this resolve() is INSIDE is_sensitive_path — the
-        # sanitizer itself — building candidate forms to CHECK a path against the
-        # sensitive denylist. It performs no read/write. CodeQL surfaces
-        # py/path-injection here only because a new caller (artifact relocate)
-        # reaches it with user input; the function's whole purpose is to vet that
-        # input, so suppress the alert on the resolution step.
-        out.add(str(Path(expanded).resolve()))  # lgtm[py/path-injection]
-    except (OSError, ValueError, RuntimeError):
-        pass
+    # Guarded false-positive: this resolution is INSIDE is_sensitive_path — the
+    # sanitizer itself — building candidate forms to CHECK a path against the
+    # sensitive denylist. It performs no read/write. CodeQL surfaces
+    # py/path-injection here only because a new caller (artifact relocate)
+    # reaches it with user input; the function's whole purpose is to vet that
+    # input, so suppress the alert on the resolution step.
+    answer = pathres_client.helper().resolve(expanded)  # lgtm[py/path-injection]
+    if answer is None:
+        raise PathResolutionStalled(expanded, _stall_prefix(expanded))
+    for spelling in answer:
+        if spelling is not None:
+            out.add(spelling)
     return out
 
 
@@ -1234,8 +1246,28 @@ def _worker_blocked_in_filesystem(tid: int | None) -> bool:
     caller still charges the prefix rather than silently withholding an escalation the gate
     would otherwise make.
     """
+    # A worker that has not reached the helper's pipe yet -- still queued behind
+    # another request, or still spawning the child -- is not in a filesystem wait
+    # whatever the host can sample, so this is decided before the no-``/proc``
+    # default below: on Windows and macOS the thread sample is unavailable and
+    # would otherwise charge a cold spawn or a queue wait to the path's prefix.
+    phase = pathres_client.helper().worker_phase(tid)
+    if phase in ("queued", "spawning"):
+        logger.debug("resolver worker tid=%s phase=%s blocked_in_filesystem=False", tid, phase)
+        return False
     if tid is None or not _FS_BLOCKING_SYSCALLS:
         return True
+    # The helper PROCESS is the truthful sample when one is answering: it is
+    # single-threaded and holds no GIL, so the syscall it reports is what it is
+    # doing -- ``lstat``/``readlink`` when the mount is not answering, a pipe
+    # ``read`` or ``running`` when it already answered and the pool worker is
+    # merely waiting for the GIL to notice. The thread sample below keeps
+    # working for an in-process fallback and for the test stubs that block a
+    # worker directly.
+    helper_blocked = pathres_client.helper().blocked_in_filesystem(_FS_BLOCKING_SYSCALLS, tid)
+    if helper_blocked is not None:
+        logger.debug("resolver helper blocked_in_filesystem=%s", helper_blocked)
+        return helper_blocked
     try:
         with open(f"/proc/self/task/{tid}/syscall", "rb") as fh:
             head = fh.read().split()
@@ -1312,9 +1344,10 @@ def _mark_stalled(prefix: str, budget: float) -> None:
         )
         _path_resolve_degraded[prefix] = (now + cooldown, stalls)
     logger.warning(
-        "sensitive-path symlink resolution did not complete in %.1fs (stalled "
-        "mount?); refusing paths under the stalled prefix for the next %.0fs "
-        "(stall #%d, %d resolver worker(s) pinned)",
+        "sensitive-path symlink resolution did not complete in %.1fs and the resolver "
+        "was blocked in a filesystem syscall (a mount under the path is not answering); "
+        "refusing paths under that prefix for the next %.0fs (stall #%d, %d resolver "
+        "worker(s) pinned)",
         budget,
         cooldown,
         stalls,
@@ -1462,22 +1495,39 @@ def _run_resolution_bounded(
             _path_resolve_wedged.append(future)
         tid = worker_tid[0] if worker_tid else None
         if not _worker_blocked_in_filesystem(tid) and not _load_arm_budget_spent(prefix):
-            logger.debug(
-                "sensitive-path resolution timed out under load; prefix not charged (tid=%s)",
-                tid,
-            )
             # The worker RAN but never got the CPU: the same conclusion as the queued
             # arm above, reached one step later.  The future stays tracked as wedged
             # (it does hold a worker until it finishes), but the prefix is NOT charged,
             # so ordinary contention refuses THIS resolution instead of opening a
-            # cooldown across every path under the prefix.
+            # cooldown across every path under the prefix.  WARNING, not debug: this
+            # refuses a tool call, and the operator reading the log needs to see that
+            # it was interpreter contention, not the disk.
+            logger.warning(
+                "sensitive-path symlink resolution did not complete in %.1fs because the "
+                "interpreter was busy (the resolver was starved of the CPU/GIL, the "
+                "filesystem answered); refusing this one path, prefix not charged",
+                budget,
+            )
             raise PathResolutionStalled(expanded, prefix) from None
         logger.debug(
             "sensitive-path resolution timed out blocked in the filesystem (tid=%s)",
             tid,
         )
         _mark_stalled(prefix, budget)
+        # The helper is sitting in a filesystem syscall the mount is not answering.
+        # Killing it is what reclaims the pool worker: its ``readline`` returns EOF
+        # and the future above completes, where a thread doing the ``realpath``
+        # itself would stay pinned for the life of the process.  The next request
+        # respawns a helper; the cooldown recorded above keeps it off the wedged
+        # prefix until then.
+        pathres_client.helper().abort()
         raise PathResolutionStalled(expanded, prefix) from None
+    except PathResolutionStalled:
+        # Raised INSIDE the worker: the helper transport faulted (see
+        # ``_resolved_spellings``). That is a resolution that did not complete,
+        # not a pool fault, so it is refused like a timeout rather than degraded
+        # to the lexical forms below. No cooldown: the prefix did not stall.
+        raise
     except Exception:
         # The worker's own exceptions are already swallowed inside the worker;
         # anything else here is a pool fault, and the gate's contract is to keep
@@ -1510,11 +1560,45 @@ def _resolved_forms_bounded(expanded: str) -> set[str]:
 
 
 def _realpath_or_none(path: str) -> str | None:
-    """``os.path.realpath`` for a target anchor; runs on the ``mc-pathres`` pool."""
-    try:
-        return os.path.realpath(path)
-    except (OSError, ValueError):
-        return None
+    """``os.path.realpath`` for a target anchor; runs on the ``mc-pathres`` pool.
+
+    Resolved in the helper PROCESS for the reason ``_resolved_spellings`` gives:
+    the anchor rebuild resolves ~60 paths, and doing that in-thread cost ~400 GIL
+    re-acquisitions per rebuild -- 2 ms idle, 2-4 s under one busy sibling
+    thread.
+
+    ``None`` means exactly what it meant in-process: ``realpath`` RAISED for this
+    path (``OSError``/``ValueError``), and the caller keeps the lexical anchor. A
+    helper transport fault is not that: the disk gave no answer at all, so this
+    raises :class:`PathResolutionStalled` for the anchor, the same fail-closed
+    posture the candidate primitive takes. It matters most on the spawn path:
+    ``sandbox_credential_targets`` builds the OS deny mask from these anchors and,
+    unlike the read gate, does no per-candidate canonicalisation -- an anchor
+    degraded to its lexical spelling would leave a symlinked credential home
+    (``/home/u`` -> ``/local/home/u``) reachable through the unmasked canonical
+    path for the sandbox's whole lifetime. That caller turns the stall into a
+    refusal to start the adapter without its mask.
+    """
+    answer = pathres_client.helper().resolve(path)
+    if answer is None:
+        raise PathResolutionStalled(path, _stall_prefix(path))
+    return answer[0]
+
+
+def _realpaths_or_none(paths: list[str]) -> list[str | None]:
+    """:func:`_realpath_or_none` for several anchors in ONE helper round-trip.
+
+    Same contract per element (``None`` where ``realpath`` raised; the caller
+    keeps the lexical anchor); a transport fault raises
+    :class:`PathResolutionStalled` for the first path, whose prefix (the logical
+    home, for the root anchors) is the one the caller charges.
+    """
+    if not paths:
+        return []
+    answers = pathres_client.helper().resolve_many(paths)
+    if answers is None:
+        raise PathResolutionStalled(paths[0], _stall_prefix(paths[0]))
+    return [real for real, _resolved in answers]
 
 
 def _candidate_forms(path_str: str, base_dir: str | None = None) -> set[str]:
@@ -1560,7 +1644,7 @@ def _home_dir_targets_uncached(
     """Anchor the ``$HOME``-relative *home_dirs* entries into absolute, casefolded
     on-disk targets.
 
-    Every per-anchor resolved form comes from :func:`_realpath_or_none`, looked
+    Every per-anchor resolved form comes from :func:`_realpaths_or_none`, looked
     up at call time so a test can stand in a recording or wedged resolver at
     module level.  It touches the filesystem, so in production this function
     runs on the ``mc-pathres`` pool via :func:`_home_dir_targets` (see there
@@ -1623,27 +1707,67 @@ def _home_dir_targets_uncached(
         }
 
     sensitive_targets: set[str] = {_anchor(home, d) for d in home_dirs}
+
+    # Every anchor whose RESOLVED spelling is also fenced. Collected first and
+    # resolved in ONE helper request (:func:`_realpaths_or_none`) rather than one
+    # per anchor: this rebuild runs every ``_HOME_TARGETS_TTL_SECS`` (0.1 s) under
+    # load, and measured on Windows CI ~60 single round-trips cost a scheduler tick
+    # each -- a second per rebuild, ten rebuilds a second wanted -- so tests that
+    # take 0.7 s in-process took 30-60 s. ``home`` goes first: a transport fault
+    # raises for the first path, and the home prefix is the one this rebuild
+    # charges (see ``_rebuild_targets_bounded``).
+    crew_leaves: list[tuple[str, str]] = []  # (entry, full path under the crew home)
+    if crew_home:
+        for d in home_dirs:
+            for _prefix in _CREW_HOME_PREFIXES:
+                # Compare with POSIX separators (home_dirs entries are authored
+                # that way) so this matches regardless of the running os.sep.
+                if d == _prefix or d.startswith(_prefix + "/"):
+                    leaf = d[len(_prefix) :].lstrip("/")
+                    full = os.path.join(crew_home, *_leaf_segments(leaf)) if leaf else crew_home
+                    crew_leaves.append((d, full))
+                    break
+    agents_full = (
+        os.path.join(kiro_home_override, "agents")
+        if kiro_home_override and _KIRO_AGENTS_DIR in home_dirs
+        else None
+    )
+    _adapter_roots = dict(resolved.adapter_roots)
+    adapter_leaves: list[str] = []
+    for _leaf, _root_envs, _under_root in _OVERRIDE_ANCHORED_LEAVES:
+        if _leaf not in home_dirs:
+            continue
+        for _env in _root_envs:
+            _root = _adapter_roots.get(_env)
+            if not _root:
+                continue
+            adapter_leaves.append(os.path.join(_root, *_leaf_segments(_under_root)))
+    wanted: list[str] = [home]
+    if os_home:
+        wanted.append(os_home)
+    wanted.extend(full for _d, full in crew_leaves)
+    if agents_full:
+        wanted.append(agents_full)
+    wanted.extend(adapter_leaves)
+    real = dict(zip(wanted, _realpaths_or_none(wanted)))
+
     # ``KIROCREW_OS_HOME`` is an ALTERNATE ``$HOME`` (see _resolved_root_key):
     # a pod-spawned kiro-cli child runs with it as its literal HOME, so its
     # credential store and the pod-minted OAuth grants live under this root. Every
     # entry re-anchors here -- the variable relocates the whole home, not just
     # ``.aws`` -- so a secret cannot be moved out from under its own gate.
-    #
-    # Resolved through ``_realpath_or_none`` for the same reason ``home`` is: it
-    # touches the filesystem (and opens the directory on Windows), which is why the
-    # whole rebuild runs off the loop, and ``None`` degrades to the lexical anchors
-    # already added above rather than raising.
+    # ``None`` degrades to the lexical anchors rather than raising.
     if os_home:
         for d in home_dirs:
             sensitive_targets |= _anchor_both_separators(os_home, d)
-        os_home_real = _realpath_or_none(os_home) or os_home
+        os_home_real = real[os_home] or os_home
         if os_home_real.casefold() != os_home.casefold():
             for d in home_dirs:
                 sensitive_targets |= _anchor_both_separators(os_home_real, d)
     # ``home`` arrives RESOLVED from the cache key, so this is normally a no-op;
     # it still opens the directory on Windows, which is why the whole rebuild
     # runs off the loop.  None degrades to the lexical anchors already in the set.
-    home_real = _realpath_or_none(home) or home
+    home_real = real[home] or home
     if home_real.casefold() != home.casefold():
         sensitive_targets |= {_anchor(home_real, d) for d in home_dirs}
     # ``home`` arrives RESOLVED (the cache is keyed on the resolved roots), so
@@ -1664,23 +1788,13 @@ def _home_dir_targets_uncached(
     # or governance ceiling via the custom KIROCREW_HOME. Strip whichever crew
     # prefix an entry carries and re-anchor the leaf under the env-override
     # root ADDITIONALLY (the ~/-rooted default forms stay, so every location is
-    # always covered).
-    if crew_home:
-        kiro_home = crew_home
-        for d in home_dirs:
-            for _prefix in _CREW_HOME_PREFIXES:
-                # Compare with POSIX separators (home_dirs entries are authored
-                # that way) so this matches regardless of the running os.sep.
-                if d == _prefix or d.startswith(_prefix + "/"):
-                    leaf = d[len(_prefix) :].lstrip("/")
-                    full = os.path.join(kiro_home, *_leaf_segments(leaf)) if leaf else kiro_home
-                    sensitive_targets.add(full.casefold())
-                    # Also add the resolved form in case the env value itself has
-                    # symlinks (matches the home/home_real duality above).
-                    full_real = _realpath_or_none(full)
-                    if full_real is not None:
-                        sensitive_targets.add(full_real.casefold())
-                    break
+    # always covered). The resolved form is added too, in case the env value
+    # itself has symlinks (matches the home/home_real duality above).
+    for _d, full in crew_leaves:
+        sensitive_targets.add(full.casefold())
+        full_real = real[full]
+        if full_real is not None:
+            sensitive_targets.add(full_real.casefold())
     # The agents dir (``~/.kiro/agents``) follows ``KIRO_HOME`` — kiro-cli's own
     # home override, honoured by ``kiro_agents_dir()``. When it is set, the specs
     # the gateway execs live at ``<KIRO_HOME>/agents``, NOT under the real home,
@@ -1694,10 +1808,9 @@ def _home_dir_targets_uncached(
     # the override: an unsafe ``KIRO_HOME`` falls back to ``~/.kiro`` in
     # ``kiro_home()`` (already covered by the default form), so an extra target
     # under a bogus value is harmless and fail-safe.
-    if kiro_home_override and _KIRO_AGENTS_DIR in home_dirs:
-        agents_full = os.path.join(kiro_home_override, "agents")
+    if agents_full:
         sensitive_targets.add(agents_full.casefold())
-        agents_real = _realpath_or_none(agents_full)
+        agents_real = real[agents_full]
         if agents_real is not None:
             sensitive_targets.add(agents_real.casefold())
     # An ACP adapter's OAuth token follows that adapter's own home override, so
@@ -1706,19 +1819,11 @@ def _home_dir_targets_uncached(
     # (the default form stays, so every location is always covered). Guarded on
     # membership in *home_dirs* for the same reason as the agents dir above: a
     # write-tier build must not gain a read-tier target.
-    _adapter_roots = dict(resolved.adapter_roots)
-    for _leaf, _root_envs, _under_root in _OVERRIDE_ANCHORED_LEAVES:
-        if _leaf not in home_dirs:
-            continue
-        for _env in _root_envs:
-            _root = _adapter_roots.get(_env)
-            if not _root:
-                continue
-            _full = os.path.join(_root, *_leaf_segments(_under_root))
-            sensitive_targets.add(_full.casefold())
-            _full_real = _realpath_or_none(_full)
-            if _full_real is not None:
-                sensitive_targets.add(_full_real.casefold())
+    for _full in adapter_leaves:
+        sensitive_targets.add(_full.casefold())
+        _full_real = real[_full]
+        if _full_real is not None:
+            sensitive_targets.add(_full_real.casefold())
     return sensitive_targets
 
 
@@ -1855,8 +1960,8 @@ def _resolved_env_root(name: str) -> str | None:
     expanded = _expanded_env_root(name)
     if expanded is None:
         return None
-    # Runs on the ``mc-pathres`` pool via _resolve_root_anchors -- never call it
-    # from the event loop directly; go through _resolved_root_key.  A failure
+    # Resolves through the helper -- never call it from the event loop directly;
+    # the gate goes through _resolved_root_key, which batches the roots.  A failure
     # keeps the lexical form, exactly as the OSError arm did.  ``Path.resolve()``
     # is ``os.path.realpath`` underneath, so the resolved spelling is unchanged.
     return _realpath_or_none(expanded) or _lexical_root(expanded)
@@ -1906,14 +2011,31 @@ def _resolve_root_anchors(logical_home: str) -> _ResolvedRoots:
     stall bookkeeping is charged to the logical home's prefix: that is the
     mount every root ordinarily lives under, and it is the one the crash dumps
     named.
+
+    The roots go to the helper in ONE request (:func:`_realpaths_or_none`), not
+    seven. This runs on every gate call, and each helper round-trip is a pipe
+    write, a blocking read and two GIL re-acquisitions -- on Windows CI a
+    scheduler tick each: measured at ~80,000 round-trips for one test file,
+    where the round-trips and not the resolutions were the time (30-60 s per
+    test that took 0.7 s in-process). The anchor rebuild
+    (:func:`_home_dir_targets_uncached`) batches its ~60 anchors the same way.
     """
-    home = _realpath_or_none(logical_home) or logical_home
-    overrides = {field: _resolved_env_root(env) for field, env in _OVERRIDE_ROOT_ENVS}
-    # Resolved in the SAME worker call as the host's own roots, for the reason
-    # above: one thread hop for every anchor, rather than one more per harness.
-    adapter_roots = tuple(
-        (env, _resolved_env_root(env)) for env in host_auth.home_override_env_vars()
-    )
+    names = [env for _field, env in _OVERRIDE_ROOT_ENVS]
+    names.extend(host_auth.home_override_env_vars())
+    expanded = {env: _expanded_env_root(env) for env in names}
+    wanted = [logical_home] + [e for e in expanded.values() if e is not None]
+    resolved = dict(zip(wanted, _realpaths_or_none(wanted)))
+
+    def root(env: str) -> str | None:
+        e = expanded[env]
+        if e is None:
+            return None
+        # A failure keeps the lexical form, exactly as the OSError arm did.
+        return resolved[e] or _lexical_root(e)
+
+    home = resolved[logical_home] or logical_home
+    overrides = {field: root(env) for field, env in _OVERRIDE_ROOT_ENVS}
+    adapter_roots = tuple((env, root(env)) for env in host_auth.home_override_env_vars())
     return _ResolvedRoots(
         home=home, logical_home=logical_home, adapter_roots=adapter_roots, **overrides
     )
@@ -1990,7 +2112,7 @@ def _resolved_root_key() -> _ResolvedRoots:
     return roots
 
 
-def _home_dir_targets(home_dirs: list[str]) -> set[str]:
+def _home_dir_targets(home_dirs: list[str], roots: "_ResolvedRoots | None" = None) -> set[str]:
     """TTL-cached :func:`_home_dir_targets_uncached`.
 
     Keyed on the *home_dirs* list plus the RESOLVED home and crew-home roots
@@ -2005,7 +2127,8 @@ def _home_dir_targets(home_dirs: list[str]) -> set[str]:
     # reads file one root's targets under the other root's key — a fail-OPEN
     # TOCTOU, pinned by the regression test
     # test_roots_are_resolved_once_for_key_and_build.
-    roots = _resolved_root_key()
+    if roots is None:
+        roots = _resolved_root_key()
     key = (tuple(home_dirs),) + roots
     now = time.monotonic()
     cached = _home_targets_cache.get(key)
@@ -2062,7 +2185,15 @@ def _rebuild_targets_bounded(home_dirs: list[str], roots: _ResolvedRoots) -> set
     return targets
 
 
-def _path_in_home_dirs(path_str: str, home_dirs: list[str], base_dir: str | None = None) -> bool:
+def _path_in_home_dirs(
+    path_str: str,
+    home_dirs: list[str],
+    base_dir: str | None = None,
+    *,
+    strict: bool = False,
+    candidates: set[str] | None = None,
+    roots: "_ResolvedRoots | None" = None,
+) -> bool:
     """Return True if *path_str* resolves under any of *home_dirs* (``$HOME``-relative).
 
     Shared matching core for :func:`is_sensitive_path` (read+write gate,
@@ -2096,14 +2227,19 @@ def _path_in_home_dirs(path_str: str, home_dirs: list[str], base_dir: str | None
         return False
 
     try:
-        candidates = _candidate_forms(path_str, base_dir)
+        if candidates is None:
+            candidates = _candidate_forms(path_str, base_dir)
         # The anchors are bounded the same way (see _rebuild_targets_bounded):
         # a stall with no prior canonical resolution to serve refuses too.
-        sensitive_targets = _home_dir_targets(home_dirs)
+        sensitive_targets = _home_dir_targets(home_dirs, roots=roots)
     except PathResolutionStalled:
         # Canonical form unavailable (wedged mount under the path): refuse.  A
         # lexical-only match here would pass a workspace symlink into a
-        # credential store for the length of the stall.
+        # credential store for the length of the stall.  A *strict* caller
+        # (``sensitive_path_refusal``) wants to REPORT that as what it is rather
+        # than as a match, so it gets the exception; the refusal is the same.
+        if strict:
+            raise
         return True
 
     # Case-fold both sides for the membership test.  On a case-insensitive
@@ -2122,7 +2258,14 @@ def _path_in_home_dirs(path_str: str, home_dirs: list[str], base_dir: str | None
     return False
 
 
-def _is_keystone_publish_artifact(path_str: str, base_dir: str | None = None) -> bool:
+def _is_keystone_publish_artifact(
+    path_str: str,
+    base_dir: str | None = None,
+    *,
+    strict: bool = False,
+    candidates: set[str] | None = None,
+    roots: "_ResolvedRoots | None" = None,
+) -> bool:
     """Return True if *path_str* is the atomic-write temp or lock beside a keystone leaf.
 
     Closes the gap between a keystone leaf's FINAL name, which
@@ -2146,9 +2289,12 @@ def _is_keystone_publish_artifact(path_str: str, base_dir: str | None = None) ->
     if not path_str:
         return False
     try:
-        artifact_parents = _home_dir_targets(_KEYSTONE_ARTIFACT_PARENTS)
-        candidates = _candidate_forms(path_str, base_dir)
+        artifact_parents = _home_dir_targets(_KEYSTONE_ARTIFACT_PARENTS, roots=roots)
+        if candidates is None:
+            candidates = _candidate_forms(path_str, base_dir)
     except PathResolutionStalled:
+        if strict:
+            raise
         return True  # fail closed: see _path_in_home_dirs
     for cand in candidates:
         cand_cf = cand.casefold()
@@ -2188,10 +2334,70 @@ def is_sensitive_path(path_str: str, base_dir: str | None = None) -> bool:
     the leaf holds the leaf's full payload, so READ is blocked alongside write -- a
     write-only fence there would still disclose ``.env`` or ``token_signing.key`` to a
     reader that wins the race.
+
+    The decision is :func:`sensitive_path_refusal`'s -- this is its boolean
+    spelling, so the two cannot diverge. A stall is refused there (a string) and is
+    therefore ``True`` here: the callers that only hold this boolean keep refusing
+    fail-closed; what they lose is the distinct WORDING, which is the gate
+    consumers' business.
     """
-    return _path_in_home_dirs(
-        path_str, _SENSITIVE_HOME_DIRS, base_dir
-    ) or _is_keystone_publish_artifact(path_str, base_dir)
+    return sensitive_path_refusal(path_str, base_dir) is not None
+
+
+#: The phrase ``deny_guidance`` classifies an unverifiable-path refusal by. ONE
+#: spelling, imported by the classifier, so the producer and the classifier cannot
+#: drift: the whole point of the distinct wording is that the agent is NOT handed
+#: credential remediation.
+UNVERIFIABLE_PATH_ANCHOR = "could not be verified against the sensitive-path list"
+
+
+def sensitive_path_refusal(path_str: str, base_dir: str | None = None) -> str | None:
+    """The path tier of the tool gate: the refusal for *path_str*, or ``None``.
+
+    Reason-or-``None`` like the other three tiers (``is_sensitive_bash_command``,
+    ``audit_bash_exfiltration``, ``is_denied``), so ``hooks.on_tool_call`` applies
+    it and ``scripts/deny_diff.py`` measures it as the SAME check.
+
+    The ONE decision: :func:`is_sensitive_path` is ``refusal is not None``. A path
+    whose canonical form (or whose anchors) could not be established within the
+    resolve budget is refused exactly as a match is, fail-closed, and this function
+    is never a way to let one through -- but the two refusals get different WORDS. A match is
+    ``Blocked: access to sensitive path: <path>``. A stall says the path could not
+    be verified and is NOT a match: a stall reported as a match leads the agent
+    reading it to conclude, reasonably and wrongly, that an ordinary project file
+    holds a credential, that the session has been locked down, or that a
+    different spelling might pass, and each of those costs a wasted round where
+    "could not verify within budget, retry shortly" costs one wait.
+    """
+    try:
+        # Both matchers need the same two resolutions -- the candidate's spellings
+        # and the anchor roots -- so they are made ONCE here and shared. Each is a
+        # helper round-trip, and a benign path (the common case) reaches both
+        # matchers: resolving inside each would double the round-trips per gate
+        # call, which on a CPU-saturated host (measured: Windows CI under xdist)
+        # is the cost that dominates, not the resolution itself.
+        candidates = _candidate_forms(path_str, base_dir)
+        roots = _resolved_root_key()
+        matched = _path_in_home_dirs(
+            path_str,
+            _SENSITIVE_HOME_DIRS,
+            base_dir,
+            strict=True,
+            candidates=candidates,
+            roots=roots,
+        ) or _is_keystone_publish_artifact(
+            path_str, base_dir, strict=True, candidates=candidates, roots=roots
+        )
+    except PathResolutionStalled:
+        return (
+            f"Blocked: {path_str!r} {UNVERIFIABLE_PATH_ANCHOR} within the resolver budget "
+            "(symlink resolution did not complete in time), so it is refused fail-closed. "
+            "This is NOT a match: the path is not known to be sensitive. Retry the same "
+            "call after a short wait; do not re-spell it."
+        )
+    if matched:
+        return f"Blocked: access to sensitive path: {path_str}"
+    return None
 
 
 def path_contains_sensitive(dir_str: str, base_dir: str | None = None) -> bool:
@@ -2252,9 +2458,18 @@ def is_sensitive_write_path(path_str: str, base_dir: str | None = None) -> bool:
     read+write gate refused it, the same one-path-only hole the pairing notes above warn
     about.
     """
+    try:
+        candidates = _candidate_forms(path_str, base_dir)
+        roots = _resolved_root_key()
+    except PathResolutionStalled:
+        return True  # fail closed: see _path_in_home_dirs
     return _path_in_home_dirs(
-        path_str, _SENSITIVE_HOME_DIRS + _WRITE_PROTECTED_HOME_PATHS, base_dir
-    ) or _is_keystone_publish_artifact(path_str, base_dir)
+        path_str,
+        _SENSITIVE_HOME_DIRS + _WRITE_PROTECTED_HOME_PATHS,
+        base_dir,
+        candidates=candidates,
+        roots=roots,
+    ) or _is_keystone_publish_artifact(path_str, base_dir, candidates=candidates, roots=roots)
 
 
 def sensitive_home_dirs() -> tuple[str, ...]:

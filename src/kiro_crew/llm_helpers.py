@@ -40,12 +40,13 @@ from kiro_crew.providers.base import (
 )
 from kiro_crew.security import (
     MAX_SCANNABLE_COMMAND_CHARS,
+    UNVERIFIABLE_PATH_ANCHOR,
     is_denied,
     is_sensitive_bash_command,
-    is_sensitive_path,
     is_sensitive_write_path,
     redact_credentials,
     redact_exfiltration_urls,
+    sensitive_path_refusal,
 )
 from kiro_crew.sel import sel as _sel
 
@@ -987,6 +988,8 @@ _MAX_SCANNABLE_TOOL_INPUT_CHARS = MAX_SCANNABLE_COMMAND_CHARS
 def _title_denial(
     title: str,
     denied_regexes: list[str] | None,
+    *,
+    is_shell: bool = False,
 ) -> tuple[str, str] | None:
     """Return the always-enforced denial for the tool *title*, or ``None``.
 
@@ -999,7 +1002,18 @@ def _title_denial(
     place. The tuple is ``(kind, reason)`` with *kind* ``"path"`` / ``"bash"`` /
     ``"regex"``; the reasons are the exact strings the on-loop checks produced.
     """
-    if is_sensitive_path(title):
+    # The path tier reads a PATH; a shell tool's title is command text, which the
+    # gate deliberately does not match paths in (``hooks.on_tool_call`` makes the
+    # same exemption). Resolving ``cd /x && grep ...`` as a filename never matched,
+    # but it spent a resolver round-trip per call and, under a stall, refused the
+    # command as unverifiable. ``is_shell`` is the client's classification of the
+    # preceding tool_call frame, the same provenance the gate itself trusts.
+    path_refusal = None if is_shell else sensitive_path_refusal(title)
+    if path_refusal:
+        # A stall is worded as unverifiable (it carries the anchor phrase the deny
+        # guidance classifies by); a match keeps this producer's wording.
+        if UNVERIFIABLE_PATH_ANCHOR in path_refusal:
+            return ("path", path_refusal)
         return ("path", f"Blocked: sensitive path: {title}")
     bash_reason = is_sensitive_bash_command(title)
     if bash_reason:
@@ -1114,7 +1128,10 @@ def _first_tool_input_denial(
                 ),
                 s[:64],
             )
-        if is_sensitive_path(s):
+        path_refusal = sensitive_path_refusal(s)
+        if path_refusal:
+            if UNVERIFIABLE_PATH_ANCHOR in path_refusal:
+                return ("path", path_refusal, s)
             return ("path", f"Blocked: sensitive path in tool_input: {s}", s)
         _input_bash = is_sensitive_bash_command(s)
         if _input_bash:
@@ -2428,7 +2445,9 @@ async def _resolve_permission(
         # ``is_sensitive_path`` (which does release the GIL) and yields between
         # the strings. Title first, so a request denied on its title
         # reports the title-tier reason and mechanism exactly as before.
-        title_hit = _title_denial(normalized, _denied_regexes)
+        title_hit = _title_denial(
+            normalized, _denied_regexes, is_shell=bool(getattr(event, "is_shell", False))
+        )
         if title_hit is not None:
             return (title_hit[0], title_hit[1], normalized, "always_deny")
         if _edit_target_gated:
