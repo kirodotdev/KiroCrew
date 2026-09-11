@@ -23,7 +23,7 @@ import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuIte
 import { ContextMenu, ContextMenuTrigger, ContextMenuContent } from '../components/ui/context-menu'
 import { offlineProps } from '../utils/offline'
 import { switchSlot, createSlot, deleteSlot, fetchHistory, resumeFromHistory, deleteHistorySession, clearSlotReveal, selectSidebarSubagentCounts, selectSidebarApprovalCounts, selectSidebarWorkflowActive, selectSidebarWorkflowActiveKeys, selectSidebarAutomationRunningKeys, selectAutomationForSlot } from '../store/chatSlice'
-import { sseSlotTitle, setSidebarOrder } from '../store/dashboardSlice'
+import { sseSlotTitle, setSidebarOrder, fetchSlots } from '../store/dashboardSlice'
 import { useDigitModifierHeld, jumpLabelFor, IS_MAC } from '../hooks/useKeyboardShortcuts'
 import { api, SEARCH_MIN_CHARS } from '../api/client'
 import { ApiError } from '../api/apiError'
@@ -2716,6 +2716,9 @@ function ChatSidebar({
   // Framer layoutId `scope` note below.
   const [renameScope, setRenameScope] = useState<string | null>(null)
   const [renameValue, setRenameValue] = useState('')
+  // Set when the server refuses a rename; rendered through the sidebar-root
+  // ErrorNotice cluster so the revert (below) never happens silently.
+  const [renameError, setRenameError] = useState('')
   const cancelRenameRef = useRef(false)
   const renameInputRef = useRef<HTMLTextAreaElement | null>(null)
   // The rename field is a wrapping, auto-growing <textarea> (not a single-line
@@ -2753,11 +2756,22 @@ function ChatSidebar({
   const onRenameCommit = useCallback((key: string, value: string) => {
     if (!cancelRenameRef.current && value.trim()) {
       dispatch(sseSlotTitle({ key, title: value.trim() }))
-      api.renameSlot(key, value.trim()).catch(() => { queryClient.invalidateQueries({ queryKey: ['chat-slots'] }) })
+      // Recovery on a refused rename must go through Redux: slot titles live in
+      // the dashboard slice (written by `sseSlots` / `fetchSlots.fulfilled`),
+      // and no React Query is registered on a plain ['chat-slots'] key, so an
+      // invalidateQueries there is a no-op that leaves the optimistic
+      // `sseSlotTitle` value on screen. `fetchSlots()` re-reads the server
+      // truth and its `fulfilled` reconciler snaps the title back. The failure
+      // also renders (ErrorNotice below): a silent revert reads as the rename
+      // never having happened.
+      api.renameSlot(key, value.trim()).catch(e => {
+        setRenameError(errMessage(e) || i18nT('pages.chatPage.unknown_error'))
+        dispatch(fetchSlots())
+      })
     }
     cancelRenameRef.current = false
     setRenamingSlot(null)
-  }, [dispatch, queryClient])
+  }, [dispatch])
   // Input modality tracker for menu-close focus handling: true while the most
   // recent interaction was a keyboard press. Capture-phase listeners so Radix's
   // own handlers can't reorder around us.
@@ -7018,6 +7032,18 @@ function ChatSidebar({
         onDismiss={() => setNewChatError('')}
         className="mx-2 mt-2 shrink-0"
         testId="new-chat-error"
+      />
+      {/* A refused rename: the editor is already closed and the title has been
+       *  reverted to the server value by the recovery refetch, so there is no
+       *  unsaved draft left to lose and the hand-off is safe. Dismissable: the
+       *  failure is a moment, not a state. */}
+      <ErrorNotice
+        title={i18nT('pages.chatPage.could_not_rename_session')}
+        message={renameError}
+        askAgent
+        onDismiss={() => setRenameError('')}
+        className="mx-2 mt-2 shrink-0"
+        testId="rename-error"
       />
       <LayoutGroup id="chat-slots">
         {flatLaneActive ? (
