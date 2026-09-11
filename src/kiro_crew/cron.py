@@ -89,6 +89,10 @@ _CRON_STRING_FIELD_CAPS: tuple[tuple[str, int], ...] = (
     ("source_template_prompt", MAX_CRON_MESSAGE),
     ("folder_id", MAX_SHORT_STRING),
     ("session_key", MAX_SHORT_STRING),
+    # Bounded like every other persisted string even though it is server-minted
+    # (a 12-hex tab identity): the cap is what keeps a hand-edited or corrupt
+    # store from carrying an unbounded value into the validated save path.
+    ("session_tab_id", MAX_SHORT_STRING),
     ("model", MAX_SHORT_STRING),
     ("command", 5000),
     ("script", 200),
@@ -660,6 +664,13 @@ class CronJob:
     source_template_prompt: str = ""
     silent: bool = False  # suppress auto-delivery; agent sends via send_message
     session_key: str = ""  # session that created this job (for scoped removal)
+    #: Permanent identity of the tab :attr:`session_key` named when the job was
+    #: created, or "" for a job pointed at a session by ``cron adopt`` (which
+    #: addresses one by key alone) and for every job created before a target was
+    #: recordable. Delivery uses it to distinguish the conversation that was
+    #: NAMED from a later one reusing the same slot name, which matters only once
+    #: the tab is closed: while it is open, the live slot IS the conversation.
+    session_tab_id: str = ""
     last_posted_hash: str = ""  # hash of last result posted to Slack (dedup)
     consecutive_dupes: int = 0  # count of suppressed duplicate results
     last_posted_at: float = 0.0  # epoch when last Slack post was delivered (dedup reminder)
@@ -2305,6 +2316,7 @@ class CronService:
         env: dict[str, str] | None = None,
         persistent_session: bool = True,
         session_key: str = "",
+        session_tab_id: str = "",
         minimal_context: bool = False,
         timeout: int = 0,
         timeout_secs: int = 0,
@@ -2365,6 +2377,7 @@ class CronService:
             env=env,
             persistent_session=persistent_session,
             session_key=session_key,
+            session_tab_id=session_tab_id,
             minimal_context=minimal_context,
             timeout=timeout,
             timeout_secs=timeout_secs,
@@ -2460,6 +2473,7 @@ class CronService:
         env: dict[str, str] | None = None,
         persistent_session: bool = True,
         session_key: str = "",
+        session_tab_id: str = "",
         minimal_context: bool = False,
         timeout: int = 0,
         timeout_secs: int = 0,
@@ -2571,6 +2585,7 @@ class CronService:
             env=dict(env) if env else {},
             persistent_session=persistent_session,
             session_key=session_key,
+            session_tab_id=session_tab_id,
             minimal_context=minimal_context,
             timeout=timeout,
             timeout_secs=int(timeout_secs) if timeout_secs else _JOB_TIMEOUT_SECS,
@@ -2618,6 +2633,7 @@ class CronService:
         env: dict[str, str] | None = None,
         persistent_session: bool = True,
         session_key: str = "",
+        session_tab_id: str = "",
         minimal_context: bool = False,
         timeout: int = 0,
         timeout_secs: int = 0,
@@ -2668,6 +2684,7 @@ class CronService:
             env=env,
             persistent_session=persistent_session,
             session_key=session_key,
+            session_tab_id=session_tab_id,
             minimal_context=minimal_context,
             timeout=timeout,
             timeout_secs=timeout_secs,

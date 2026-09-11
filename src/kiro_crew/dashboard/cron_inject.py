@@ -7,12 +7,22 @@ gateway.py and dashboard.handlers.
 from __future__ import annotations
 
 import asyncio
+import logging
 import math
 from typing import TYPE_CHECKING, Any
 
-from kiro_crew.dashboard.state import DashboardState, SlotOrigin, row_mid
-from kiro_crew.history import append_rows_if_absent_off_loop
+from kiro_crew.dashboard.state import (
+    VALID_MEMORY_MODES,
+    DashboardState,
+    SlotOrigin,
+    append_and_surface,
+    row_mid,
+)
+from kiro_crew.history import INCOGNITO_MEMORY_MODES, append_rows_if_absent_off_loop
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+
+logger = logging.getLogger(__name__)
+
 
 if TYPE_CHECKING:
     from kiro_crew.cron import CronJob
@@ -414,6 +424,256 @@ def _bind_cron_slot(
     return slot
 
 
+def _resolved_memory_mode(raw: object) -> str | None:
+    """A transcript header's memory mode, or None when it cannot be established.
+
+    ALLOWLIST, not normalize-and-hope, and that is the whole point: the shared
+    membership predicate deliberately does not strip whitespace and reads an
+    unrecognised value as not-private, so a header carrying ``"incognito "`` would
+    pass a direct membership test as unrestricted. Any decision that must fail
+    closed has to resolve the mode through the valid set first and treat anything
+    outside it as unknown. The API validates this field on the way in, but a
+    hand-edited or partially written transcript is not bound by that.
+
+    An absent field is a legacy persistent session -- the header predates the
+    field rather than hiding a mode -- so it resolves rather than refusing.
+    """
+    if raw is None:
+        return "persistent"
+    if not isinstance(raw, str):
+        return None
+    normalized = raw.strip().lower()
+    if normalized not in VALID_MEMORY_MODES:
+        return None
+    return normalized
+
+
+def _deliver_to_archived_target(
+    state: DashboardState, job: "CronJob", session_key: str, content: str
+) -> None:
+    """Persist the result into a target whose TAB is closed but whose conversation is not.
+
+    Closing a tab archives it: the slot is popped while the transcript stays on
+    disk, and reopening the conversation reads that file back. So the live-slot
+    mirror is unreachable for exactly the case a target is most often named for --
+    schedule something for later, close the tab, come back to it -- and without
+    this leg the job keeps reporting a destination it never delivers to. The
+    result is not merely late; it never lands anywhere the person can find it.
+
+    Two conditions, both hard refusals rather than best-effort guesses, because
+    this write lands in a conversation the job does not own:
+
+    * the transcript must ALREADY exist. This path never creates one, so a
+      conversation the user deleted stays deleted -- creating the file here would
+      resurrect it as a chat containing nothing but one orphaned result. That is
+      enforced by the append itself (``require_existing``), inside the same lock,
+      because a pre-check cannot: the delete can land in the window between them.
+    * it must be the SAME conversation. A slot name is reusable, so a session
+      deleted and recreated under the old name would otherwise inherit a
+      stranger's scheduled result. ``session_tab_id`` is the tab identity recorded
+      when the target was named and the transcript carries the same value in its
+      metadata, so an incarnation that disagrees is refused.
+    * it must not be a conversation with memory writes DISABLED. An
+      incognito/temporary target keeps nothing on disk by design, and the live leg
+      honours that by never persisting from the slot, so a durable row written
+      here would be the one thing that outlives the session.
+
+    A job carrying no identity is delivered on existence alone: ``cron adopt``
+    addresses a session by key and nothing else, so requiring a stamp there would
+    silently drop delivery for every adopted job. That is adopt's own contract
+    rather than a weakening of this one.
+
+    Off the event loop in ONE hop. The existence probe, the metadata read and the
+    append are all blocking file I/O taken behind the session lock, and this runs
+    from an injection path that normally has a running loop. Probing inline and
+    offloading only the write would put two disk reads straight onto the loop,
+    which is the same defect as any other synchronous history call from a handler.
+
+    Best-effort, like every other delivery leg: the job's own tab already carries
+    the row, so a lock timeout or an I/O error costs a copy of the result rather
+    than the run.
+    """
+    log = state.conversation_log
+    if log is None:
+        return
+    expected_tab_id = getattr(job, "session_tab_id", "") or ""
+
+    def _write() -> None:
+        if not log.has_log(session_key):
+            return
+        # The transcript header is the ONLY authority on the target's memory mode
+        # here. Both in-memory signals a restricted session carries are dropped
+        # when its tab is archived -- the close pops the slot AND discards its key
+        # from `state._restricted_keys`, deliberately, so the marker cannot outlive
+        # the tab and block a later holder of the name -- while the header persists.
+        #
+        # Resolved through the shared probe rather than by testing the raw field,
+        # because that probe is ALLOWLIST-first and this decision has to fail
+        # closed. `is_incognito_transcript` deliberately does not strip whitespace
+        # and reads anything unrecognised as not-private, so a header carrying
+        # `"incognito "` misses the membership test and reads as unrestricted --
+        # which on this path would put a scheduled result on disk under a session
+        # that keeps none. The probe also bounds the bytes it reads, so an
+        # enormous first line cannot pin memory, and reports an unreadable or
+        # non-metadata header as unknown rather than as persistent.
+        meta, readable = log.get_metadata_status(session_key)
+        # Fail CLOSED on anything that is not a header this can read. `append`
+        # writes the metadata line when it creates the file, before any message,
+        # so a transcript whose first line is missing, damaged or not a metadata
+        # object was not produced by a normal session and is no evidence that
+        # writes are allowed. Read through the transcript store's own API rather
+        # than opening the file here: it owns the key-to-path resolution, and the
+        # key reaching this function comes from the job record, so resolving a
+        # path from it out here would put a new raw file read on caller-influenced
+        # input outside the seam that owns transcript access.
+        if not readable or not meta:
+            return
+        mode = _resolved_memory_mode(meta.get("memory_mode"))
+        if mode is None or mode in INCOGNITO_MEMORY_MODES:
+            return
+        if expected_tab_id:
+            recorded = str(meta.get("tab_id") or "")
+            # A transcript older than tab identities carries none. Unknown is
+            # treated as "cannot disprove" rather than as a mismatch: refusing on
+            # absence would drop delivery for every conversation predating the
+            # field, which is the very failure this path exists to fix.
+            if recorded and recorded != expected_tab_id:
+                return
+        # `append_if_absent` performs its duplicate check and the write inside one
+        # critical section, so a re-fire of an identical result -- or a racing slot
+        # save for a tab reopened in the meantime -- cannot stack two copies.
+        # `require_existing` carries the never-create promise INTO the lock. The
+        # `has_log` test above is a cheap early-out, not the guarantee: it is a
+        # separate critical section, so a session deleted between it and this write
+        # would be RECREATED here, bringing a conversation the user deleted back
+        # holding one orphaned cron result. Checked under the append's own lock,
+        # that window does not exist.
+        log.append_if_absent(
+            session_key,
+            "assistant",
+            content,
+            agent=job.agent_id or None,
+            cls="msg msg-a",
+            require_existing=True,
+        )
+
+    def _report(fut: "asyncio.Future[None]") -> None:
+        exc = fut.exception()
+        if exc is not None:
+            logger.warning(
+                "cron target delivery to archived session failed job=%s: %r", job.id, exc
+            )
+
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+    if loop is None:
+        try:
+            _write()
+        except Exception:  # noqa: BLE001 - best-effort delivery copy
+            logger.warning(
+                "cron target delivery to archived session failed job=%s", job.id, exc_info=True
+            )
+        return
+    loop.run_in_executor(None, _write).add_done_callback(_report)
+
+
+def _mirror_result_to_target_session(
+    state: DashboardState,
+    job: "CronJob",
+    content: str,
+) -> None:
+    """Also deliver the result row into the dashboard session the job TARGETS.
+
+    The dashboard leg of cron delivery routes by job id alone: every result lands
+    in ``cron-{job.id}``, whoever the job was created for. The channel leg already
+    routes by ORIGIN — ``_deliver_cron_to_channel`` resolves the creating session
+    off ``job.session_key`` and posts there — so a job created from a chat that
+    happens to be a dashboard one is the only origin whose output never reaches it.
+    This is that missing rung, and ``inject_workflow_result`` is the same shape: a
+    terminal result belongs in the chat it was launched from.
+
+    A MIRROR, deliberately, not a move. The job keeps its own tab and keeps
+    running under ``cron:{job.id}``: rebinding the target slot would set its
+    ``linked_session_key`` to the cron and hydrate the cron's prior runs into a
+    person's live conversation, so their next turn would run AS the job. That is
+    exactly the pairing ``_bind_cron_slot`` holds together, and it is why nothing
+    here touches identity or hydration — only the assistant row is copied, never
+    the prompt row, which in someone else's transcript would read as a turn they
+    typed. Same choice the channel leg makes: it posts the output, it does not
+    relocate the session.
+
+    Scoped to the ``dashboard:`` namespace on purpose. A channel-origin job
+    already has a delivery rung of its own, and a channel-born tab's session key
+    is the channel's, so mirroring on a resolved-tab match would double-deliver
+    what the channel leg posted.
+
+    Best-effort, like every other delivery leg: the job's own tab already carries
+    the result, so a deleted target or a tab since relinked costs a copy, not a run.
+    Persistence is deliberately NOT this function's business — see the append.
+    """
+    # Type BEFORE `.strip()`, or the isinstance check below it is dead code and a
+    # truthy non-string raises `AttributeError` on the way to it. The field round
+    # trips through `crons.json` without coercion, so a hand-edited or corrupt
+    # store can hand back an int — and here that would crash the injection of a
+    # run that had already succeeded. Same degrade-rather-than-raise contract
+    # `_cron_origin_key` states for the very same field.
+    raw_key = getattr(job, "session_key", "")
+    if not isinstance(raw_key, str):
+        return
+    session_key = raw_key.strip()
+    if not session_key.startswith("dashboard:"):
+        return
+    slot_name = session_key.removeprefix("dashboard:")
+    # Never the job's own tab: the caller already wrote the row there, and a
+    # second append under a different door would render it twice.
+    if not slot_name or slot_name == f"cron-{job.id}":
+        return
+    slot = state.get_slot(slot_name)
+    if slot is None:
+        # Closed, not gone: the conversation is still on disk and still reopenable,
+        # so this is a delivery to make durably rather than a target to give up on.
+        _deliver_to_archived_target(state, job, session_key, content)
+        return
+    # A tab whose conversation belongs to a DIFFERENT session is not this key's
+    # chat — a channel-born tab keeps the channel's key, a cron tab carries
+    # `cron:<id>` — so delivering there would put the result in front of someone
+    # the job was not created for. The create path refuses to record such a
+    # target; `cron adopt` does not, so the delivery side checks too.
+    linked = getattr(slot, "linked_session_key", "") or ""
+    if linked and linked != session_key:
+        return
+    # Dedup on content, matching `_reflect`: a re-fire of an identical result must
+    # not stack copies in someone's conversation.
+    if any(msg.get("content") == content for msg in getattr(slot, "messages", [])):
+        return
+    # One identity-carrying door (`append_and_surface`), so the live copy arrives
+    # with a `meta.mid` and an explicit frame beside append's own broadcast cannot
+    # render the result twice.
+    #
+    # And that is the WHOLE write. The mirror deliberately makes no durable write
+    # of its own: `slot.append` marks the slot dirty, so the periodic slot save
+    # persists this row with the rest of the conversation's window, exactly as it
+    # does every other message in that chat. Writing the transcript directly from
+    # here — a deferred, off-loop write aimed at a session this job does not own —
+    # is what created two opposed failures with no local fix: creating the file
+    # resurrected a conversation the user had deleted in the meantime, and refusing
+    # to create it dropped the row for a session with nothing on disk yet. Neither
+    # is reachable once persistence belongs to the slot that owns the conversation.
+    # The residual is the ordinary one every dashboard message carries — a crash
+    # before the next flush loses the tail — and that is the platform's durability
+    # contract rather than something this path may weaken on its own.
+    append_and_surface(
+        state,
+        slot,
+        "assistant",
+        content,
+        "msg msg-a",
+        extra={"kind": "cron_result"},
+    )
+
+
 def inject_cron_result_to_dashboard(
     state: DashboardState,
     job: "CronJob",
@@ -572,13 +832,25 @@ def inject_cron_result_to_dashboard(
             )
         safe_result, _ = redact_exfiltration_urls(result_text)
         safe_result, _ = redact_credentials(safe_result)
-        _reflect(
-            "assistant",
-            f"# Cron Job Result: {safe_name}{stamp}{marker}\n\n{safe_result}",
-            "msg msg-a",
-        )
+        result_row = f"# Cron Job Result: {safe_name}{stamp}{marker}\n\n{safe_result}"
+        _reflect("assistant", result_row, "msg msg-a")
         # After BOTH rows are queued, so the pair lands as one write.
         _flush_durable_rows()
+        # Then the same result into the session the job targets, if it named one.
+        #
+        # FRESH delivery only. `include_prompt` is False exactly when a caller is
+        # RE-SURFACING an older result rather than delivering a new one (`/to-chat`),
+        # and a replay must not re-deliver into someone's conversation: the
+        # in-memory dedup below only sees the target slot's bounded buffer, so a
+        # result older than that window — or a restart that rebuilt the buffer —
+        # reads as absent and appends the same run a second time.
+        #
+        # Scheduled after the flush above, not guaranteed to land after it: both
+        # writes are offloaded, so this orders the dispatch and nothing more. They
+        # address different keys (`cron:{id}` and the target's), so no interleaving
+        # of the two can corrupt either transcript.
+        if include_prompt:
+            _mirror_result_to_target_session(state, job, result_row)
     if context_reading:
         # Same frame shape as chat_runner._context_usage_payload. `reset` when
         # the counts are unknown is load-bearing: the frontend stores pct and

@@ -277,6 +277,10 @@ class TestCapAlignment:
         # Dashboard-only prompt snapshot (message-sized cap), same reasoning:
         # written by the create handler, no CRON_ADD_SCHEMA entry.
         "source_template_prompt",
+        # Server-minted tab identity for a create-time delivery target: read off
+        # the live slot by the create handler, never accepted from a caller, so
+        # it has no CRON_ADD_SCHEMA entry. General ID cap applies.
+        "session_tab_id",
         # Secret-grant pins and the requesting session key are written only by
         # the grant endpoint / cron_secret_request tool, never via
         # CRON_ADD_SCHEMA (grants cannot be created through cron_add).

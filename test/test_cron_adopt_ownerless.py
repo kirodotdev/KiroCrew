@@ -234,11 +234,21 @@ class TestAdoptTargetVisibility:
         self._run_adopt_with_known(True)
         assert "no recorded session" not in capsys.readouterr().err
 
-    def test_existence_is_checked_on_the_slot_not_the_prefixed_key(self):
-        """The lookup must use the same slot the delivery path derives, or the
-        warning would fire on every adopt and be trained away as noise."""
+    def test_existence_is_checked_on_the_key_the_transcript_is_filed_under(self):
+        """The probe must address the file that actually holds the conversation.
+
+        A dashboard chat persists under its NAMESPACED key: `slot_history_key`
+        returns `dashboard:<slot>` and the transcript lands in
+        `dashboard_<slot>.jsonl`, so `has_log("<slot>")` is False for every real
+        session while `has_log("dashboard:<slot>")` is True. Probing by bare slot
+        name therefore produced the exact outcome this check exists to avoid --
+        "no recorded session" on every adopt, trained away as noise -- rather than
+        preventing it. The key is derived through the same
+        `kiro_crew.cron_session_target` helper the dashboard create route uses, so
+        the two surfaces cannot disagree about which file a target names.
+        """
         mock_log_cls = self._run_adopt_with_known(True)
-        mock_log_cls.return_value.has_log.assert_called_once_with("chat-9-1712799999")
+        mock_log_cls.return_value.has_log.assert_called_once_with("dashboard:chat-9-1712799999")
 
     def test_a_failing_lookup_stays_quiet(self, capsys):
         """Cannot-tell is not evidence of a typo -- never cry wolf."""

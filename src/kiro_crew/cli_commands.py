@@ -66,6 +66,7 @@ from kiro_crew.cron import (
     format_schedule,
     lookup_cron_folder_id,
 )
+from kiro_crew.cron_session_target import dashboard_slot_of, is_dashboard_target, namespace_target
 from kiro_crew.cron_trigger import trigger_cron_job
 from kiro_crew.dashboard import tailnet, tailnet_serve
 from kiro_crew.dashboard.origin import parse_dashboard_url
@@ -1328,20 +1329,16 @@ def _cron_dispatch(args: argparse.Namespace) -> None:
         if getattr(args, "release", False):
             session_key = ""
         else:
-            # One flag, two accepted spellings of the same target. A bare slot
-            # name gets the `dashboard:` namespace the delivery consumers strip
-            # back off (messaging.py / the Slack gateway both
-            # removeprefix("dashboard:")), so adding it here is their exact
-            # inverse and needs no lookup. An already-namespaced key passes
-            # through untouched -- there is no second flag for that case,
-            # because a key with no namespace at all could never equal any
-            # caller's session key and so could only ever produce a row nobody
-            # can own.
+            # One flag, two accepted spellings of the same target, and the rule
+            # that reconciles them is shared with the dashboard create route
+            # (`kiro_crew.cron_session_target`) rather than restated here: two
+            # copies of it is how the two surfaces come to disagree about what
+            # the same string names.
             target = (getattr(args, "session_of", None) or "").strip()
             if not target:
                 print("Error: --session-of requires a session", file=sys.stderr)
                 sys.exit(1)
-            session_key = target if ":" in target else f"dashboard:{target}"
+            session_key = namespace_target(target)
         if not svc.adopt_job(job_id, session_key):
             print(f"Error: job not found: {job_id}", file=sys.stderr)
             sys.exit(1)
@@ -1359,7 +1356,7 @@ def _cron_dispatch(args: argparse.Namespace) -> None:
             # delivery path can inject into (both consumers reach a slot with
             # removeprefix("dashboard:")). Saying "results are delivered there"
             # for a `slack:` key would be a promise the code does not keep.
-            if session_key.startswith("dashboard:"):
+            if is_dashboard_target(session_key):
                 print(
                     f"Job {job_id} now belongs to {session_key}: that session can manage it "
                     f"and its results are delivered there."
@@ -1371,9 +1368,14 @@ def _cron_dispatch(args: argparse.Namespace) -> None:
                 # first and only falls back to rehydrating from history, so a
                 # brand-new tab that has not logged anything yet is a legitimate
                 # target and absence of a log does not prove the key is wrong.
-                slot = session_key.removeprefix("dashboard:")
+                # Probed with the NAMESPACED key, which is what the transcript is
+                # filed under. Asking with the bare slot name addresses a file that
+                # normally does not exist, so the check reported "no recorded
+                # session" for sessions sitting right next to it -- warning loudest
+                # in exactly the case it was meant to reassure.
+                slot = dashboard_slot_of(session_key)
                 try:
-                    known = ConversationLog().has_log(slot)
+                    known = ConversationLog().has_log(session_key)
                 except Exception:
                     known = True  # cannot tell -> stay quiet rather than cry wolf
                 if not known:

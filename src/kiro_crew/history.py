@@ -2047,6 +2047,7 @@ class ConversationLog:
         tab_id: str | None = None,
         cls: str = "",
         mid: str | None = None,
+        require_existing: bool = False,
     ) -> bool:
         """Append a message only if an identical one is not already persisted.
 
@@ -2078,10 +2079,23 @@ class ConversationLog:
         earlier injection, or a pre-id legacy row — and skipping on it would
         drop THIS occurrence's only durable copy: the in-memory window is lost
         on restart, so nothing would replay the newer message.
+
+        ``require_existing`` skips the write when no transcript exists yet, and
+        exists because a caller that must NEVER create one cannot enforce that
+        itself: an ``has_log()`` test before the call is a separate critical
+        section, so a session deleted in the window between the two is
+        RECREATED by the append -- the deleted conversation comes back holding
+        whatever that caller was writing. Checked here, the precondition shares
+        the lock with the write, which is what makes "append only, never create"
+        a guarantee rather than a race. Ordinary appends leave it False: the
+        creating write is exactly how a new session's file comes into being.
         """
         supplied_mid = mid if isinstance(mid, str) and mid else None
         with self._locked(key):
-            if self._path(key).exists():
+            exists = self._path(key).exists()
+            if require_existing and not exists:
+                return False
+            if exists:
                 # Compare against the form ``append`` actually stores: the
                 # write boundary redacts non-user content, so matching on the
                 # raw text would never recognise an already-persisted message
