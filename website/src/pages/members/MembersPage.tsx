@@ -6,12 +6,12 @@
  * picture stale — re-shoot with `scripts/capture-feature-previews.mjs`.
  *
  * The page realizes the B+C merged design: a member list on the left, the
- * selected member's pinned DM thread in the center (the real chat stack,
- * hosted the way split-view panes host it), and on the right the SAME tabbed
+ * selected member's pinned DM thread or a worker in the center (the real chat
+ * stack, hosted the way split-view panes host it), and on the right the SAME tabbed
  * side panel the chat page docks — permanent, no close control — whose first
  * tab is the member's Crew summary (read-only observation) and whose + menu
  * offers the chat panel's own views (Files, Artifacts, Terminal, Browser…)
- * against the member's DM slot, because a member thread IS a chat slot.
+ * against the selected conversation's slot.
  * Configuration WRITES are deliberately absent — both Edit affordances
  * navigate to the existing crew manager (/capabilities?tab=crews), so this
  * page never becomes a second editor.
@@ -27,8 +27,9 @@
  * thread, so the UI does not announce it — there is no unpinned state to
  * contrast against.
  *
- * Which member is open rides the URL (`?member=<name>`), and the last one
- * opened is remembered per browser: a visit that names no member lands on
+ * Which member is open rides the URL (`?member=<name>`, with `&sid=<key>` for
+ * a worker session), and the last member opened is remembered per browser:
+ * a visit that names no member lands on
  * the remembered one (else the first row), never on the empty column.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
@@ -88,8 +89,8 @@ import { cn } from '../../lib/utils'
 import { LIST_SHELL_CLS, LIST_HEADER_CLS, LIST_TITLE_CLS, LIST_BODY_CLS, ROW_BOX_CLS, ROW_IDLE_CLS, ROW_ACTIVE_CLS, ROW_TITLE_CLS, ROW_STATUS_CLS } from '../../components/listShell'
 import { useColumnResize } from '../../hooks/useColumnResize'
 import { loadColumnWidth } from '../../lib/columnWidth'
-import { tabStatus, type TabStatus } from '../../lib/sessionTabs'
-import { lastActivityEpoch } from '../chat/sessionOrder'
+import { tabStatus } from '../../lib/sessionTabs'
+import MemberSessions, { MemberSessionRow, useMemberSessions } from './MemberSessions'
 import { activityDayLabel, floorCountText, groupActivityDays, projectLabel } from './activityDays'
 import { safeGetItem, safeSetItem } from '../../utils/safeStorage'
 
@@ -123,6 +124,7 @@ const crewEditPath = (name: string) =>
  *  comment), and a link that resolved `Oncall` to `oncall`'s thread would be
  *  the silent misroute this page exists to prevent. */
 const MEMBER_PARAM = 'member'
+const SESSION_PARAM = 'sid'
 /** The last member opened, so returning to the page (or reloading) lands on
  *  the conversation the user left rather than the empty column. Stored by
  *  exact name for the same reason as the URL param. One key per origin is
@@ -212,8 +214,7 @@ export function panelSitsBeside({ winW, rosterW, isMobile }: { winW: number; ros
   if (isMobile) return false
   return winW - rosterW - PANEL_GAPS_W >= SIDE_PANEL_RESERVED_W + SIDE_PANEL_MIN_W
 }
-/** Punctuation, not prose: joins an activity label to its project name, and a
- *  driving row's title to its status word in the hover title. */
+/** Punctuation joining an activity label to its project name. */
 const PROJECT_SEPARATOR = ' \u00b7 '
 /** Driving-sessions rows shown before the list folds behind "Show all". */
 const DRIVING_VISIBLE = 5
@@ -270,17 +271,6 @@ const STATUS_ICON: Record<MemberStatusFilter, (active: boolean) => React.ReactNo
 const SORT_LABEL_KEY: Record<MemberSort, string> = {
   recent: 'pages.membersPage.sort_recent',
   name: 'pages.chatSidebar.sort_name_asc',
-}
-/** How each shared tab status renders on a driving row. The ORDER lives in
- *  `tabStatus` (lib/sessionTabs.ts) — this only maps its verdict to a dot
- *  class, an i18n label, and whether the label is spoken aloud in the row.
- *  `unread` cannot occur here (no unread set is passed) and reads as idle. */
-const DRIVING_STATUS: Record<TabStatus, { cls: string; text: string; label: string; spoken: boolean }> = {
-  permission: { cls: 'fill-warn text-warn', text: 'text-warn', label: 'pages.chatSidebar.needs_approval', spoken: true },
-  question: { cls: 'fill-info text-info', text: 'text-info', label: 'pages.chatSidebar.needs_your_answer', spoken: true },
-  running: { cls: 'fill-ok text-ok', text: 'text-ok', label: 'pages.membersPage.drawer_working', spoken: false },
-  unread: { cls: 'fill-muted text-muted', text: 'text-muted', label: 'pages.membersPage.driving_idle', spoken: false },
-  idle: { cls: 'fill-muted text-muted', text: 'text-muted', label: 'pages.membersPage.driving_idle', spoken: false },
 }
 // Module-level so the resize hook's memoised resolver isn't invalidated every render.
 const loadRosterWidth = () => loadColumnWidth(ROSTER_WIDTH_KEY, ROSTER_MIN, ROSTER_MAX, ROSTER_DEFAULT)
@@ -353,6 +343,7 @@ export default function MembersPage() {
   // path as a click.
   const [searchParams, setSearchParams] = useSearchParams()
   const urlMember = searchParams.get(MEMBER_PARAM) ?? ''
+  const urlSession = searchParams.get(SESSION_PARAM) ?? ''
   // Set when a URL NAMED a member that is gone: the user asked for someone
   // specific, so the outcome is said out loud — above the fallback thread on
   // md+ (`shown` = who opened instead), above the roster below md (`shown` is
@@ -431,6 +422,7 @@ export default function MembersPage() {
   // Live presence rides the already-subscribed WS `slots` frames — the roster
   // endpoint only fills the cold-start gap (its `running` is a snapshot).
   const liveSlots = useAppSelector((s) => s.dashboard.slots)
+  const sessionsByMemberKey = useMemberSessions(liveSlots)
   // Whether a real slots snapshot has arrived. Before it, an empty `slots` is
   // ambiguous (the store itself refuses to treat a pre-first-frame empty frame
   // as authoritative), so the driving-sessions block must not assert "not
@@ -624,7 +616,13 @@ export default function MembersPage() {
     () => ({ search: filter, starredOnly, source: sourceFilter, status: statusFilter, sort }),
     [filter, starredOnly, sourceFilter, statusFilter, sort],
   )
-  const activeSlot = active ? threadOutcome?.slot_key ?? '' : ''
+  const memberSlot = active ? threadOutcome?.slot_key ?? '' : ''
+  // A URL is a selection hint, never a grant to mount an arbitrary session.
+  // Workers must belong to the exact member thread confirmed by the endpoint.
+  const selectedSession = urlMember === activeName && memberSlot && urlSession
+    ? sessionsByMemberKey.get(memberSlot)?.find((session) => session.key === urlSession)
+    : undefined
+  const activeSlot = urlSession ? selectedSession?.key ?? '' : memberSlot
   // Two distinct verdicts with two different sentences: a collision is a
   // fact about the roster (the slug's thread belongs to another crew), a
   // failed POST is a transport error. Both render through ErrorNotice so
@@ -733,8 +731,10 @@ export default function MembersPage() {
   // Files…) aimed at a foreign session. The panel falls back to the slot-free
   // Crew summary; the thread column keeps rendering the cached key under its
   // own failure notice (its pre-existing contract, see activeThreadFailed).
-  const confirmedSlot =
-    active && (pendingThreadFor === active.name || activeThreadFailed) ? '' : activeSlot
+  const memberConfirmed = !!memberSlot && !!active && pendingThreadFor !== active.name && !activeThreadFailed
+  const confirmedSlot = memberConfirmed && (!urlSession || slotsLoaded) ? activeSlot : ''
+  const sessionUnavailable = !!urlSession && memberConfirmed && slotsLoaded && !selectedSession
+  const chatSlot = urlSession ? confirmedSlot : activeSlot
 
   // Sessions this member is driving: every live slot whose `created_by` is the
   // member's DM slot key. A member dispatches its real work into worker
@@ -747,46 +747,20 @@ export default function MembersPage() {
   // the sidebar dot reads. Newest activity first; a closed worker leaves the
   // live slots and therefore this list, which is the honest reading of
   // "driving right now".
-  const activeMemberKey = activeSlot || active?.slot_key || ''
-  // The ORDER is committed per DRIVEN SET, not per frame. `liveSlots` refreshes
-  // on every WS slots frame and `lastActivityEpoch` advances whenever a worker
-  // does anything, so sorting per render moves rows under the cursor mid-click —
-  // and each row is a jump into a session, so a shifted row navigates into the
-  // WRONG one. It also decides which rows sit behind the DRIVING_VISIBLE fold,
-  // so a live re-sort can pull a row out from under the pointer entirely.
-  // Row CONTENT still updates from every frame (status dot, title, timestamp);
-  // only the positions hold, until the driven set changes (a worker opens or
-  // closes) or the member does, either of which re-sorts from scratch by
-  // recency. Same rule as the roster order above, and the same reason.
-  const committedDrivingRef = useRef<{ member: string; keys: string[] }>({ member: '', keys: [] })
-  // The side panel's tab strip, bucketed by the member's slot key exactly as
-  // the chat page buckets by chat slot: switching members swaps the whole strip
-  // and switching back restores it. Keyed on the POST-CONFIRMED `activeSlot`
-  // ONLY — never the roster's derived key. That key is a stale binding until
-  // the thread endpoint confirms it (see the `slots` comment above): an
-  // ordinary slot can occupy the canonical key after a restart, the POST then
-  // answers 409 and `activeSlot` stays empty, and a panel bound to the derived
-  // key would aim Side chat / Terminal / Summary at that unrelated session.
-  // While no confirmed slot exists the strip lives in the shared no-slot bucket
-  // and every slot-bound view is withheld (`hiddenViews` below); the Crew
-  // summary needs no slot and stays.
+  const activeMemberKey = memberSlot || active?.slot_key || ''
+  // Bucket tabs by the displayed conversation, so a worker and its member
+  // retain separate documents and Side chats. A roster binding alone never
+  // grants a panel slot; hiddenViews also withdraws actions during repair.
   const panelTabDescriptors = usePanelTabDescriptors()
   const tabsCtl = usePanelTabs(activeSlot || null, panelTabDescriptors, { leadingId: CREW_SUMMARY_TAB_ID })
-  // The member slot's project directory (the WS slots frame carries it) roots
-  // the Files tab and is the cwd a Terminal tab spawns in. Only a record from
-  // the CURRENT snapshot counts: a reconnect drops `slotsLoaded` but keeps the
-  // pre-disconnect `slots` until the fresh frame lands, and the thread POST
-  // can confirm inside that window — binding to the stale record would root
-  // Files / Terminal in whatever project the key had BEFORE the restart, and a
-  // save or command dispatched then would land in the wrong workspace. The
-  // record must also be the member's own (`mode === 'member'`): a 200 confirm
-  // names the member slot, never an ordinary session that happens to hold
-  // the canonical key (that case answers 409 and never confirms).
+  // Files and Terminal use the selected conversation's project. A current
+  // snapshot must identify either the member DM or its attributed worker;
+  // stale records retained during reconnect cannot select a workspace.
   const activeLiveSlot = useMemo(
     () => (confirmedSlot && slotsLoaded
-      ? liveSlots.find((s) => s.key === confirmedSlot && s.mode === 'member')
+      ? liveSlots.find((s) => s.key === confirmedSlot && (urlSession ? s.created_by === memberSlot : s.mode === 'member'))
       : undefined),
-    [liveSlots, slotsLoaded, confirmedSlot],
+    [liveSlots, slotsLoaded, confirmedSlot, urlSession, memberSlot],
   )
   const projectDir = activeLiveSlot?.project || undefined
   // Terminal needs the slot RECORD, not just the confirmed key: the thread
@@ -881,21 +855,7 @@ export default function MembersPage() {
     showActionError,
     onOpened: revealPanelAfterOpen,
   })
-  const drivingSessions = useMemo(() => {
-    if (!activeMemberKey) return []
-    const mine = liveSlots.filter((s) => !!s.created_by && s.created_by === activeMemberKey)
-    const byKey = new Map(mine.map((s) => [s.key, s]))
-    const prev = committedDrivingRef.current
-    const sameSet =
-      prev.member === activeMemberKey &&
-      prev.keys.length === byKey.size &&
-      prev.keys.every((k) => byKey.has(k))
-    const keys = sameSet
-      ? prev.keys
-      : [...mine].sort((a, b) => lastActivityEpoch(b) - lastActivityEpoch(a)).map((s) => s.key)
-    committedDrivingRef.current = { member: activeMemberKey, keys }
-    return keys.map((k) => byKey.get(k)).filter((s): s is (typeof mine)[number] => !!s)
-  }, [liveSlots, activeMemberKey])
+  const drivingSessions = sessionsByMemberKey.get(activeMemberKey) ?? []
   // Collapsed past DRIVING_VISIBLE rows. Keyed to the member: the fold is a
   // reading position in ONE member's list, so switching members starts the
   // next list folded rather than inheriting the previous member's expansion.
@@ -1021,11 +981,11 @@ export default function MembersPage() {
   // until the slot itself is deleted.
   const dispatch = useAppDispatch()
   const activeSlotUnread = useAppSelector(
-    (s) => !!activeSlot && s.dashboard.unreadSlots.includes(activeSlot),
+    (s) => !!chatSlot && s.dashboard.unreadSlots.includes(chatSlot),
   )
   useEffect(() => {
-    if (activeSlot && activeSlotUnread) dispatch(markSlotRead(activeSlot))
-  }, [activeSlot, activeSlotUnread, dispatch])
+    if (chatSlot && activeSlotUnread) dispatch(markSlotRead(chatSlot))
+  }, [chatSlot, activeSlotUnread, dispatch])
 
   // Per-row unread marker: the rail badge says "1", this says WHICH member.
   // Keyed the same way isRunning resolves a member's slot (thread-endpoint
@@ -1205,6 +1165,9 @@ export default function MembersPage() {
       // standing over it (the user was routed here from a dead link) has
       // been acknowledged: retire it.
       if (m.name === activeName) {
+        if (urlSession) {
+          setSearchParams({ [MEMBER_PARAM]: m.name }, { replace: true, state: location.state })
+        }
         activate(m)
         setGone(null)
         return
@@ -1222,8 +1185,16 @@ export default function MembersPage() {
       // below-md back button pop instead of replace.
       setSearchParams({ [MEMBER_PARAM]: m.name }, { state: { fromRoster: true } })
     },
-    [activeName, urlMember, activate, setSearchParams],
+    [activeName, urlMember, urlSession, activate, setSearchParams, location.state],
   )
+
+  const openSession = useCallback((m: MemberRosterRow, key: string) => {
+    setSearchParams(
+      { [MEMBER_PARAM]: m.name, [SESSION_PARAM]: key },
+      { replace: !!urlMember, state: urlMember ? location.state : { fromRoster: true } },
+    )
+    setOverlayOpen(false)
+  }, [setSearchParams, urlMember, location.state])
 
   // URL -> open member. Once the roster is in: a URL that names a member
   // opens it; a URL that names none (a fresh visit, the sidebar entry, a
@@ -1562,7 +1533,8 @@ export default function MembersPage() {
             </li>
           )}
           {sortedMembers.map((m) => (
-            <li key={m.name} className="group/row relative">
+            <li key={m.name}>
+              <div className="group/row relative">
               {/* ChatSidebar's own row recipe (components/listShell), so the
                   two conversation lists read as one family; pr-8 widens the
                   right padding over ROW_BOX_CLS's pr-3 to hold the star. The
@@ -1581,9 +1553,9 @@ export default function MembersPage() {
                 className={cn(
                   'w-full flex items-center gap-2.5 text-sm text-left transition-all select-none',
                   ROW_BOX_CLS, 'pr-8',
-                  m.name === activeName ? ROW_ACTIVE_CLS : ROW_IDLE_CLS,
+                  m.name === activeName && !urlSession ? ROW_ACTIVE_CLS : ROW_IDLE_CLS,
                 )}
-                aria-current={m.name === activeName ? 'true' : undefined}
+                aria-current={m.name === activeName && !urlSession ? 'true' : undefined}
               >
                 <span className="relative shrink-0">
                   {/* The face reacts: it animates while the member works and
@@ -1712,6 +1684,15 @@ export default function MembersPage() {
                   {...(m.starred ? { fill: 'var(--accent)', stroke: 'none' } : {})}
                 />
               </button>
+              </div>
+              {!!sessionsByMemberKey.get(slotKeyOf(m))?.length && (
+                <MemberSessions
+                  sessions={sessionsByMemberKey.get(slotKeyOf(m))!}
+                  selectedKey={m.name === activeName ? urlSession : ''}
+                  unreadSlots={unreadSlots}
+                  onOpen={(key) => openSession(m, key)}
+                />
+              )}
             </li>
           ))}
         </ul>
@@ -1734,7 +1715,7 @@ export default function MembersPage() {
         </div>
       </aside>
 
-      {/* DM thread */}
+      {/* Selected member conversation */}
       <section
         className={`${activeName ? 'flex' : 'hidden md:flex'} flex-1 min-w-0 flex-col min-h-0`}
       >
@@ -1774,7 +1755,7 @@ export default function MembersPage() {
               <CrewStateAvatar
                 seed={active.name}
                 avatar={active.avatar}
-                slotKey={activeSlot || active.slot_key}
+                slotKey={memberSlot || active.slot_key}
                 running={!!isRunning(active)}
                 size={30}
                 working="full"
@@ -1791,17 +1772,34 @@ export default function MembersPage() {
                   writer (issue #9103). `group/title` is scoped to this row so
                   the drawer toggle to the right does not reveal it. */}
               <div className="group/title min-w-0 flex-1 flex items-center gap-1.5" data-testid="member-title-row">
-                <div className="text-[13.5px] font-semibold truncate">{active.name}</div>
-                <button
-                  type="button"
-                  onClick={() => navigate(crewEditPath(active.name))}
-                  className="inline-flex shrink-0 items-center justify-center w-6 h-6 rounded-md text-muted hover:text-text hover:bg-bg-hover cursor-pointer focus-ring opacity-0 transition-opacity duration-150 motion-reduce:transition-none group-hover/title:opacity-100 focus-visible:opacity-100 [@media(hover:none)]:opacity-60"
-                  aria-label={t('pages.membersPage.edit_member')}
-                  title={t('pages.membersPage.edit_member')}
-                  data-testid="member-edit-name-button"
-                >
-                  <Pencil size={13} className="lucide-inline" />
-                </button>
+                <div className="min-w-0">
+                  {urlSession && (
+                    <Btn
+                      type="button"
+                      onClick={() => openMember(active)}
+                      className="max-w-full border-0 px-0 py-1 text-[12px] text-muted"
+                      data-testid="member-session-back"
+                    >
+                      <ArrowLeft className="lucide-inline shrink-0" aria-hidden />
+                      <span className="truncate">{active.name}</span>
+                    </Btn>
+                  )}
+                  <div className="text-[13.5px] font-semibold truncate">
+                    {urlSession ? selectedSession?.title || urlSession : active.name}
+                  </div>
+                </div>
+                {!urlSession && (
+                  <Btn
+                    type="button"
+                    onClick={() => navigate(crewEditPath(active.name))}
+                    className="inline-flex shrink-0 items-center justify-center w-6 h-6 border-0 p-0 rounded-md text-muted hover:text-text hover:bg-bg-hover cursor-pointer focus-ring opacity-0 transition-opacity duration-150 motion-reduce:transition-none group-hover/title:opacity-100 focus-visible:opacity-100 [@media(hover:none)]:opacity-60"
+                    aria-label={t('pages.membersPage.edit_member')}
+                    title={t('pages.membersPage.edit_member')}
+                    data-testid="member-edit-name-button"
+                  >
+                    <Pencil className="lucide-inline" />
+                  </Btn>
+                )}
               </div>
               {/* The header carries NO panel control while the panel sits
                   beside the thread: that panel is permanent, so a toggle would
@@ -1904,7 +1902,12 @@ export default function MembersPage() {
                 )}
               </div>
             )}
-            {activeSlot ? (
+            {sessionUnavailable && (
+              <div className="flex-1 flex items-center justify-center text-[13px] text-muted px-4" role="status" data-testid="member-session-unavailable">
+                {t('pages.chatPage.session_not_found', { name: urlSession })}
+              </div>
+            )}
+            {chatSlot ? (
               <div className="flex-1 min-h-0">
                 <ErrorBoundary>
                   {/* Same reading measure as the main chat transcript — the
@@ -1913,18 +1916,15 @@ export default function MembersPage() {
                       page's widest region, and an uncapped line length is
                       unreadable on wide screens.
 
-                      steer-only: a DM is a conversation with one named
-                      member, not an operator console. Talking to a person has
-                      no "queue this until they finish" step, so a send while
-                      the member is working goes straight into its running
-                      turn — no Steer/Queue split, no queue stack. The main
-                      chat and split view keep the split button. */}
+                      A DM sends directly into the member's running turn.
+                      Worker sessions keep their ordinary Steer/Queue choice. */}
                   <ChatPane
-                    slotKey={activeSlot}
-                    agentLocked
+                    slotKey={chatSlot}
+                    agentLocked={!urlSession}
+                    inlineHistory={!!urlSession}
                     frameless
                     followContentWidth
-                    busyMode="steer-only"
+                    busyMode={urlSession ? 'split' : 'steer-only'}
                     // The failure notice above owns the verdict on this thread
                     // while a repair has failed; the pane's own "Session
                     // ready" would contradict it one line down.
@@ -1934,7 +1934,7 @@ export default function MembersPage() {
                 </ErrorBoundary>
               </div>
             ) : (
-              !activeCollision && !activeThreadFailed && (
+              !activeCollision && !activeThreadFailed && !sessionUnavailable && (
                 <div className="flex-1 flex items-center justify-center text-xs text-muted">
                   {t('pages.membersPage.opening_thread')}
                 </div>
@@ -1949,8 +1949,8 @@ export default function MembersPage() {
           Read-only observation lives in its permanent first tab (Crew
           summary); writes live in the crew manager. The + menu is the chat
           panel's own (Files / Artifacts / Terminal / Browser / Side chat …),
-          all against the member's DM slot, and the strip is bucketed per
-          member so it follows the roster selection. Wide windows dock it as a
+          all against the selected conversation, with a strip bucketed per
+          slot so it follows the roster selection. Wide windows dock it as a
           column with NO close control (it is part of the page, like the roster);
           narrow ones make it an overlay the header button opens, with the
           panel's own close control, on the chat page's dock motion. */}
@@ -1990,7 +1990,7 @@ export default function MembersPage() {
           </div>
           {/* Sessions this member is driving — the worker sessions it opened
               and steers. Live rows off the WS slots frames (see the
-              drivingSessions memo); each row is a jump into that session.
+              shared member-session grouping); each row opens that session here.
               The status dot is the sidebar's vocabulary: approval (warn) >
               needs input (info) > running (ok) > idle (muted). */}
           <div className="text-[11px] font-semibold tracking-wide text-muted mb-1.5">
@@ -2008,44 +2008,16 @@ export default function MembersPage() {
           ) : (
             <div className="mb-4">
               <ul className="list-none m-0 p-0 space-y-0.5" data-testid="member-driving-sessions">
-                {visibleDriving.map((s) => {
-                  // Precedence is the shared tab-status contract (approval and
-                  // question outrank running); no unread set here, so the
-                  // fourth state is plain idle.
-                  const kind = tabStatus(s, [], s.key)
-                  const status = DRIVING_STATUS[kind]
-                  const label = t(status.label)
-                  // Slot timestamps are ISO strings; timeAgo wants epoch seconds.
-                  const activityTs = lastActivityEpoch(s)
-                  const title = s.title || s.key
-                  return (
-                    <li key={s.key}>
-                      <button
-                        type="button"
-                        onClick={() => navigate(`/chat?sid=${encodeURIComponent(s.key)}`)}
-                        className="w-full text-left flex items-center gap-2 text-[11px] px-1.5 py-1 -mx-1.5 rounded hover:bg-accent/40"
-                        title={title + PROJECT_SEPARATOR + label}
-                        data-testid="member-driving-row"
-                        data-status={kind}
-                      >
-                        <Circle size={8} className={`shrink-0 ${status.cls}`} aria-hidden />
-                        <span className="min-w-0 truncate flex-1">{title}</span>
-                        {/* The two states parked on the user get words, not
-                            just a colour — the sidebar's own idiom for the
-                            same signals; running/idle stay dot-only (the
-                            label is in the hover title and for AT). */}
-                        {status.spoken ? (
-                          <span className={`shrink-0 font-medium ${status.text}`}>{label}</span>
-                        ) : (
-                          <span className="sr-only">{label}</span>
-                        )}
-                        {activityTs > 0 && (
-                          <span className="text-muted shrink-0 whitespace-nowrap">{timeAgo(activityTs)}</span>
-                        )}
-                      </button>
-                    </li>
-                  )
-                })}
+                {visibleDriving.map((session) => (
+                  <li key={session.key}>
+                    <MemberSessionRow
+                      session={session}
+                      selected={session.key === urlSession}
+                      onOpen={(key) => openSession(active, key)}
+                      compact
+                    />
+                  </li>
+                ))}
               </ul>
               {drivingSessions.length > DRIVING_VISIBLE && (
                 <button
@@ -2518,7 +2490,7 @@ export default function MembersPage() {
             onArtifactOpen: openArtifact,
             onFileSave: saveFile,
             leadingTab,
-            slotTitle: active.name,
+            slotTitle: selectedSession?.title || (urlSession ? urlSession : active.name),
             canDockBottom: false,
           }
           // ONE SidePanel instance for both placements. Docked and overlay differ

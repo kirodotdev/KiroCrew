@@ -18,6 +18,7 @@ import QueueStack, { SubagentDeliveryProgress, splitPaneMessages } from './Queue
 import SubagentProgressBar from '../pages/chat/SubagentProgressBar'
 import ChatFooter from '../pages/chat/ChatFooter'
 import PinnedPrompt from '../pages/chat/PinnedPrompt'
+import EarlierMessagesBar from '../pages/chat/EarlierMessagesBar'
 import { usePinnedPrompt } from '../pages/chat/usePinnedPrompt'
 import type { DisplayItem } from '../pages/chat/types'
 import AgentDropdownList, { DefaultAgentRow, ManageAgentsFooter } from './AgentDropdownList'
@@ -35,7 +36,7 @@ import { usePlanActionMutation, isPlanAction } from '../hooks/usePlanActionMutat
 import { useQueuedMessageActions, queuedSendStash } from '../hooks/useQueuedMessageActions'
 import { useListboxKeyboard } from '../hooks/useListboxKeyboard'
 import { useAppSelector, useAppDispatch, store } from '../store'
-import { PANE_HYDRATE_LIMIT, retireStatelessQuestion, captureStatelessCard, capturePendingAskId, confirmOptimisticSend, resolveOptimisticSteer, selectSlotMessages, selectSendConfirmed, selectSlotStreamState, selectSlotRunEpoch, selectComposerBusy, hydrateSlotMessages, appendSlotMessage, requestStop, syncSlotRunningFromServer, setAgentSwitchNotice, pendingQuestionFor } from '../store/chatSlice'
+import { PANE_HYDRATE_LIMIT, retireStatelessQuestion, captureStatelessCard, capturePendingAskId, confirmOptimisticSend, resolveOptimisticSteer, selectSlotMessages, selectSendConfirmed, selectSlotStreamState, selectSlotRunEpoch, selectComposerBusy, hydrateSlotMessages, loadOlderMessages, warmSlotCache, appendSlotMessage, requestStop, syncSlotRunningFromServer, setAgentSwitchNotice, pendingQuestionFor } from '../store/chatSlice'
 import { handleStopPress, isEscalationState } from '../utils/stopDebounce'
 import { deriveFollowUpOptions } from '../app-sdk/protocol'
 import { CONTENT_WIDTH, loadChatConfig, type ChatConfig } from '../pages/chat/ChatSettings'
@@ -77,6 +78,7 @@ export default function ChatPane({
   onSplitRight,
   onSplitDown,
   onOpenFull,
+  inlineHistory = false,
   agentLocked,
   frameless,
   followContentWidth,
@@ -94,6 +96,9 @@ export default function ChatPane({
    *  the earlier-messages row is hidden rather than shown inert. The optional ts
    *  anchors the destination near the pane's oldest message, not the newest. */
   onOpenFull?: (slot: string, anchorTs?: string, anchorMid?: string) => void
+  /** Let embedded worker conversations load earlier messages without leaving
+   *  their host page. Split panes keep the onOpenFull handover by default. */
+  inlineHistory?: boolean
   /** The host declares the slot's agent server-pinned (member DM threads):
    *  the agent picker is not offered at all, instead of offering a control
    *  whose every selection the backend 409s. */
@@ -278,6 +283,10 @@ export default function ChatPane({
   // Prefer the warm's value: this pane's own query is staleTime:Infinity, so its
   // has_more freezes at mount while a later bounded warm can truncate the cache.
   const warmHasMore = useAppSelector((s) => s.chat.slotPaneHasMore?.[slotKey])
+  const activeHasMore = useAppSelector((s) =>
+    s.chat.activeSlot === slotKey && s.chat.slotCursorKey === slotKey && s.chat.slotHasMore)
+  const activeLoadingOlder = useAppSelector((s) => s.chat.activeSlot === slotKey && s.chat.loadingOlder)
+  const activeOlderFailed = useAppSelector((s) => s.chat.activeSlot === slotKey && s.chat.slotOlderError)
   const paneSlot = useAppSelector((s) => s.dashboard.slots.find((x) => x.key === slotKey))
   // The composer is a `Composer` root around the ChatInput preset (chat-core
   // P3-b). Its Voice atom is what gives the pane a microphone: the pane wires no
@@ -483,6 +492,22 @@ export default function ChatPane({
   useEffect(() => {
     if (slotDetail?.messages) dispatch(hydrateSlotMessages({ slot: slotKey, messages: slotDetail.messages, hasMore: slotDetail.has_more, bounded: hydrateLimit !== undefined, total: slotDetail.total, running: slotDetail.running }))
   }, [slotDetail, slotKey, dispatch, hydrateLimit])
+  const earlierHistory = useMutation({
+    // Refresh accepts both pane-hydrated caches and a partial main-chat history
+    // cached when the user switched away. It preserves messages received live.
+    mutationFn: (slot: string) => dispatch(warmSlotCache(slot)).unwrap(),
+  })
+  const backgroundOlderFailed = earlierHistory.variables === slotKey && earlierHistory.isError
+  const loadInlineHistory = () => {
+    if (slotKey === activeSlot) {
+      // The main chat owns this cursor even while Crew Members displays it.
+      void dispatch(loadOlderMessages())
+    } else {
+      earlierHistory.mutate(slotKey)
+    }
+  }
+  const olderFailed = slotKey === activeSlot ? activeOlderFailed : backgroundOlderFailed
+  const historyFailed = slotDetailFailed || (inlineHistory && olderFailed)
 
   // Scroll follow (auto-pin, release, jump pill) is owned by useChatScrollFollow
   // above — the ResizeObserver on the content wrapper replaces the old
@@ -1237,9 +1262,9 @@ export default function ChatPane({
             gives the WHOLE message list a draggable horizontal scrollbar that
             sits right above the composer. The conversation should never pan
             sideways; wide children scroll within themselves. */}
-        <div ref={follow.scrollerRef} onScroll={onScroll} className="chat-container flex-1 overflow-y-auto overflow-x-hidden py-3 min-h-0">
+        <div ref={follow.scrollerRef} tabIndex={inlineHistory ? -1 : undefined} onScroll={onScroll} className="chat-container flex-1 overflow-y-auto overflow-x-hidden py-3 min-h-0">
           <div ref={follow.contentRef}>
-          {slotDetailFailed && (
+          {historyFailed && (
             <div className="mx-4 my-2 flex items-start gap-2">
               {/* No hand-off: the composer draft (`input`) in this pane is unsaved local
                   state. The retry is the recovery path for the hydration read. */}
@@ -1248,15 +1273,26 @@ export default function ChatPane({
                 testId="chat-pane-hydrate-error"
                 message={i18nT('components.chatPane.history_load_failed')}
               />
-              <Btn onClick={() => { void refetchSlotDetail() }}>{i18nT('components.chatPane.retry')}</Btn>
+              <Btn onClick={() => {
+                if (inlineHistory && olderFailed) loadInlineHistory()
+                else void refetchSlotDetail()
+              }}>{i18nT('components.chatPane.retry')}</Btn>
             </div>
           )}
-          {messages.length === 0 && !running && !slotDetailFailed && !hideEmptyHint && (
+          {messages.length === 0 && !running && !historyFailed && !hideEmptyHint && (
             <div className="text-center text-muted text-[13px] py-8">{i18nT('components.chatPane.session_ready_type_a_message_to_start')}</div>
           )}
-          {/* Suppressed on the active slot: that pane renders the store's full
-              history, so the bound does not apply and the row would be false. */}
-          {warmHasMore && slotKey !== activeSlot && onOpenFull && (
+          {inlineHistory && (slotKey === activeSlot ? activeHasMore : warmHasMore) && (
+            <EarlierMessagesBar
+              loading={slotKey === activeSlot ? activeLoadingOlder : earlierHistory.variables === slotKey && earlierHistory.isPending}
+              // The pane's notice above owns errors and retry beside its draft.
+              failed={false}
+              onLoad={loadInlineHistory}
+              onFocusRelease={() => follow.scrollerRef.current?.focus({ preventScroll: true })}
+            />
+          )}
+          {/* Split panes hand their bounded background history to the full page. */}
+          {!inlineHistory && warmHasMore && slotKey !== activeSlot && onOpenFull && (
             <button
               onClick={() => onOpenFull(slotKey, messages[0]?.ts, messages[0]?.meta?.mid as string | undefined)}
               className="block w-full text-center text-accent text-[12px] underline py-2 bg-transparent border-none cursor-pointer hover:text-accent-hover transition-colors"

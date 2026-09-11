@@ -36,10 +36,33 @@ Missing history must never silently turn a private topic into Global memory.
 | `src/kiro_crew/dashboard/handlers/agents.py` | Crew CRUD on `/api/agents`, and the roster row serializer |
 | `src/kiro_crew/dashboard/handlers/members.py` | `/api/members` roster, thread get-or-create, rules, activity |
 | `website/src/pages/KiroCrewAgentsPage.tsx` | The Crews UI, mounted as the **Crews** tab of `CapabilitiesPage` (Agent Capabilities) |
+| `website/src/pages/members/MembersPage.tsx`, `MemberSessions.tsx` | Member roster, expandable worker sessions, embedded conversation and session-bound side panel |
 | `website/src/components/crew/crewEditorSections.ts` | The crew editor's pane registry, including the Routing pane that edits `triggers` |
 | `website/src/components/CrewWakeSection.tsx` | "What wakes this agent" — schedules, deliberately distinct from `triggers` |
 
 ## Crew records and binding
+
+The Crew Members roster shows an expandable Sessions list beneath each member
+with live worker sessions. Exact `created_by` attribution to the member's thread
+defines this list. Status and membership update from dashboard slot frames;
+activity updates keep row positions stable until the set changes.
+
+Selecting a worker in the roster or Crew summary stays on
+`/members?member=<exact-name>&sid=<session-key>`. The center pane shows that
+session, and Files, Artifacts, Terminal and Side chat bind to it. Crew summary
+continues to describe the owning member. Selecting the member or the header's
+member breadcrumb returns to its standing DM. Drafts and panel tabs remain
+scoped to their session; only the displayed conversation is marked read.
+Worker conversations initially load bounded history and offer Load earlier
+messages within Crew Members. Background workers upgrade their cached history;
+a worker already active in Sessions uses its existing history cursor.
+
+A worker URL requires the verified member-thread response and a current slot
+snapshot linking the worker to that thread. Missing, closed or foreign workers
+show an unavailable-session message without mounting an arbitrary conversation.
+Below the desktop breakpoint, opening a worker from the roster pushes a detail
+entry; switching sessions within that detail replaces it, so Back returns to
+the roster.
 
 A crew lives only in `config.json` under `agents.<name>`. It is not a kiro-cli
 agent file: `kiro_agent` points at one. `resolve_agent_bindings` turns a crew
