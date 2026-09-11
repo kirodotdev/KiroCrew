@@ -299,6 +299,7 @@ _SENSITIVE_RELATIVE_DIRS = (
     ".kube/config",
     ".local/share/amazon-q",
     ".local/share/kiro-cli",
+    ".local/share/opencode/auth.json",
     ".netrc",
     ".npmrc",
     ".pypirc",
