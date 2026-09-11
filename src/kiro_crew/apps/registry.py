@@ -3137,7 +3137,7 @@ async def _fetch_and_cache_external_registry(reg) -> list[dict[str, Any]] | None
         entry.setdefault("repo", public_registry_repo)
         entry["_registry"] = name
     _apply_configured_branch(entries, reg, warn=True)
-    await asyncio.to_thread(_write_external_registry_cache, name, entries)
+    await asyncio.to_thread(_write_external_registry_cache, _external_registry_cache_identity(reg), entries)
     return entries
 
 
