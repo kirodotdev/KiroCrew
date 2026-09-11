@@ -305,12 +305,36 @@ interface SidePanelProps {
    *  summary. Its `id` must also be handed to `usePanelTabs` as `leadingId` so
    *  a fresh strip opens on it and focus can fall back to it. */
   leadingTab?: SidePanelLeadingTab
-  /** Extra px the panel must keep clear to its left, on top of the shell's
-   *  own reserve (`measureSidePanelReservedW`, which budgets the nav rail and a
-   *  minimum chat pane). A host with more siblings in the row — the Members
-   *  page's roster column — passes their live width so a drag can never fold
-   *  the pane beside the panel to nothing. */
-  extraReserveW?: number
+  /** The widest the HOST can seat the panel, in px, when the host knows its own
+   *  row better than the shell reserve does. The shell reserve budgets ChatPage's
+   *  nav rail + chat minimum (`SIDE_PANEL_RESERVED_W`) and is the right floor
+   *  there; a host whose row has a different floor (the Members page: its
+   *  measured left edge, the roster's folded rail, its gaps and the thread's own
+   *  docked minimum) passes the width that leaves those intact, and the panel's
+   *  cap becomes the smaller of that and what the top bar's clusters need. The
+   *  shell floor is then bypassed — the host vouches for its row — while the
+   *  header's own need is still enforced, since no host can vouch for that. */
+  hostMaxW?: number
+  /** Reports the panel's rendered (clamped) width whenever it changes. A host
+   *  whose sibling column yields to the panel — the Members roster folds to its
+   *  rail when the panel would otherwise squeeze the thread below its floor —
+   *  needs the live figure, not the persisted preference. */
+  onEffectiveWidthChange?: (px: number) => void
+  /** A width the HOST asks the panel to take, once per `nonce`. The panel
+   *  adopts `px` (clamped to its own minimum and its live cap) and persists it
+   *  exactly as a drag would — the request IS the user's choice, made through
+   *  a host control rather than the splitter. The Members page uses it so the
+   *  rail's fold toggle can keep its promise while the panel squeezes the
+   *  roster: the click narrows the panel to the widest width that seats the
+   *  open roster instead of going dead. A fresh `nonce` per request lets the
+   *  same figure be asked twice. The host MUST clear the prop when
+   *  `onWidthRequestApplied` fires: a request that stays mounted is replayed
+   *  by any later effect run (a remount, the prop flipping through
+   *  `undefined` and back) and would overwrite a width the user dragged since. */
+  widthRequest?: { px: number; nonce: number }
+  /** Fired once per applied `widthRequest`, with its nonce; the host clears
+   *  the request in response (see `widthRequest`). */
+  onWidthRequestApplied?: (nonce: number) => void
   /** Views this host WITHDRAWS from the strip: dropped from the pinned block
    *  and the + menu alike (a stored tab of such a kind is left in the bucket,
    *  just not offered). For a host that cannot feed a view's data — the
@@ -430,9 +454,9 @@ export function sidePanelEffectiveWidth(
   return Math.max(SIDE_PANEL_MIN_W, Math.min(width, maxW))
 }
 
-export function measureSidePanelReservedW(): number {
+export function measureSidePanelReservedW(floor: number = SIDE_PANEL_RESERVED_W): number {
   const header = document.querySelector('header.topbar-glass')
-  if (!header) return SIDE_PANEL_RESERVED_W
+  if (!header) return floor
   const clusters = Array.from(header.children).filter(
     c => c.tagName !== 'A' && !c.hasAttribute('data-topbar-overlay'),
   ) as HTMLElement[]
@@ -453,7 +477,21 @@ export function measureSidePanelReservedW(): number {
   const cs = getComputedStyle(header as HTMLElement)
   const pad = (parseFloat(cs.paddingLeft) || 0) + (parseFloat(cs.paddingRight) || 0)
   // +24: minimum breathing gap between the two clusters.
-  return Math.max(SIDE_PANEL_RESERVED_W, Math.ceil(content + pad + 24))
+  return Math.max(floor, Math.ceil(content + pad + 24))
+}
+
+/** The panel's width cap. Without a host cap this is the shell rule — the
+ *  window less the shell reserve (or the header's need, whichever is larger)
+ *  less any sibling reserve. With one, the host's figure replaces the shell
+ *  floor and the header's need is the only thing still measured against it:
+ *  `min(hostMaxW, winW − headerNeed)`. Pure so the two paths are pinned
+ *  separately (ChatPage's cap must not move). */
+export function sidePanelMaxW(
+  { winW, headerNeed, hostMaxW }:
+  { winW: number; headerNeed: number; hostMaxW?: number },
+): number {
+  const shell = winW - headerNeed
+  return hostMaxW == null ? shell : Math.min(hostMaxW, shell)
 }
 
 export default function SidePanel({
@@ -464,7 +502,7 @@ export default function SidePanel({
   pins, pinsLoading, onJumpToPin, onUnpin,
   slotTitle, chatMode,
   expanded, fillWidth, canDockBottom = true,
-  leadingTab, extraReserveW = 0, hiddenViews, onActiveTabChange,
+  leadingTab, hostMaxW, onEffectiveWidthChange, widthRequest, onWidthRequestApplied, hiddenViews, onActiveTabChange,
 }: SidePanelProps) {
   const { tabs, activeId: storedActiveId, openView, openPanelTab, openTerminal, setActive, closeTab, patchTab, setOrder, syncPinned } = tabsCtl
   // A permanent panel has no close control and answers Escape with nothing —
@@ -623,13 +661,19 @@ export default function SidePanel({
   // Bottom dock only applies on desktop; mobile always renders as the
   // full-width inline panel regardless of the stored preference.
   const isBottom = canDockBottom && dock === 'bottom' && !isMobile
-  const [maxW, setMaxW] = useState(() => window.innerWidth - measureSidePanelReservedW() - extraReserveW)
+  // With a host cap the shell floor is the host's business (floor 0 here):
+  // only the header's measured need still applies. See sidePanelMaxW.
+  const reserveFloor = hostMaxW == null ? SIDE_PANEL_RESERVED_W : 0
+  const computeMaxW = () => sidePanelMaxW({
+    winW: window.innerWidth, headerNeed: measureSidePanelReservedW(reserveFloor), hostMaxW,
+  })
+  const [maxW, setMaxW] = useState(computeMaxW)
   // Bottom-dock height cap: leave the topbar row + a usable chat minimum
   // visible above the panel. Re-measured on resize.
   const [maxH, setMaxH] = useState(() => Math.max(MIN_H, Math.round(window.innerHeight * 0.85)))
   useEffect(() => {
     const recalc = () => {
-      setMaxW(window.innerWidth - measureSidePanelReservedW() - extraReserveW)
+      setMaxW(computeMaxW())
       setMaxH(Math.max(MIN_H, Math.round(window.innerHeight * 0.85)))
     }
     recalc()
@@ -642,10 +686,29 @@ export default function SidePanel({
       .filter(c => !c.hasAttribute('data-topbar-overlay'))
       .forEach(c => ro.observe(c))
     return () => { window.removeEventListener('resize', recalc); ro.disconnect() }
-    // `extraReserveW` is a sibling column's LIVE width (the Members roster is
-    // drag-resizable), so the clamp re-derives when it moves.
-  }, [extraReserveW])
+    // `hostMaxW` is a LIVE host figure (the Members page edge moves with the
+    // nav rail, its roster folds), so the clamp re-derives when it moves.
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- computeMaxW closes over exactly hostMaxW
+  }, [hostMaxW])
+  // A host-requested width (see the prop): adopted and persisted like a drag's
+  // end, then handed back to the host to clear — the request must not outlive
+  // its application, or a remount / prop flip would replay it over a width
+  // the user has dragged since. The cap is read live because the request is
+  // the host's answer to its own cap.
+  useEffect(() => {
+    if (!widthRequest) return
+    const next = Math.max(MIN_W, Math.min(Math.round(widthRequest.px), computeMaxW()))
+    setWidth(next)
+    safeSetItem(WIDTH_KEY, String(next))
+    onWidthRequestApplied?.(widthRequest.nonce)
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- one application per request; computeMaxW and the callback are read live
+  }, [widthRequest])
   const effectiveWidth = sidePanelEffectiveWidth({ fillWidth, isMobile, expanded, width, maxW })
+  // Report the rendered width to a host that yields to it (see the prop).
+  // Numbers only: the mobile '100%' fallback is not a figure a host can budget.
+  useEffect(() => {
+    if (onEffectiveWidthChange && typeof effectiveWidth === 'number') onEffectiveWidthChange(effectiveWidth)
+  }, [effectiveWidth, onEffectiveWidthChange])
   const effectiveHeight = Math.max(MIN_H, Math.min(height, maxH))
   // While the user drags the resize handle, every mousemove shifts the whole
   // panel's viewport position (the handle is on the LEFT edge; the right edge
@@ -660,7 +723,7 @@ export default function SidePanel({
     onStart: () => { startWRef.current = widthRef.current; setResizing(true) },
     onMove: ({ dx }) => {
       // Left-edge handle with the right edge pinned: dragging left (dx < 0) widens.
-      const max = Math.min(Math.round(window.innerWidth * 0.7), window.innerWidth - measureSidePanelReservedW() - extraReserveW)
+      const max = Math.min(Math.round(window.innerWidth * 0.7), computeMaxW())
       setWidth(Math.max(MIN_W, Math.min(startWRef.current - dx, max)))
     },
     onEnd: () => { setResizing(false); safeSetItem(WIDTH_KEY, String(widthRef.current)) },

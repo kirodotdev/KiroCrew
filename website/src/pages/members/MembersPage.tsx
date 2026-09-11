@@ -31,7 +31,7 @@
  * opened is remembered per browser: a visit that names no member lands on
  * the remembered one (else the first row), never on the empty column.
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom'
 import { ArrowLeft, Check, ChevronRight, ChevronsRight, Circle, Clock, ExternalLink, Goal, MessageCircleQuestionMark, Pencil, Route, Star, UserPlus, Users, Webhook, Zap } from 'lucide-react'
 import { PanelLeftLight, PanelRightSolid } from '../../components/icons/panels'
@@ -191,9 +191,33 @@ function clearRosterCollapsedPref(): void {
 /** Whether the roster shows as the avatar rail. Pure, so the boundary is
  *  tested directly. Mobile never folds: below `md` the page is single-pane and
  *  the roster IS the page. A stored preference wins over the width rule. */
-export function rosterIsRail({ winW, isMobile, pref }: { winW: number; isMobile: boolean; pref: boolean | null }): boolean {
+export function rosterIsRail({ winW, isMobile, pref, squeezed = false }: { winW: number; isMobile: boolean; pref: boolean | null; squeezed?: boolean }): boolean {
   if (isMobile) return false
+  // The docked side panel has been dragged to where the full roster would push
+  // the thread under its floor: the roster yields for as long as that holds,
+  // whatever the width rule or a stored preference says (see rosterSqueezed).
+  if (squeezed) return true
   return pref ?? winW < ROSTER_RAIL_BREAKPOINT
+}
+/** The widest the docked side panel may be on this page: the window less the
+ *  page's measured left edge (the nav rail, expanded or collapsed), the
+ *  roster at its narrowest reachable width, the row's gaps and the thread's
+ *  docked floor. `rosterMinW` is the rail while the roster can yield to the
+ *  panel (rosterSqueezed) — that yield is what buys the panel its last
+ *  ~200px — and the open roster's width while it is forced open (an error or
+ *  empty state holds it, so the panel must not count on the fold). Pure,
+ *  handed to SidePanel as `hostMaxW`; the shell's chat-page floor no longer
+ *  applies here (the top bar's own need still does, inside SidePanel). */
+export function panelHostMaxW({ winW, pageLeft, rosterMinW = ROSTER_RAIL_W }: { winW: number; pageLeft: number; rosterMinW?: number }): number {
+  return winW - pageLeft - rosterMinW - PANEL_GAPS_W - THREAD_DOCKED_MIN_W
+}
+/** Whether the docked panel at `panelW` leaves the OPEN roster no room: the
+ *  thread would fall under THREAD_DOCKED_MIN_W. While true the roster folds to
+ *  its rail (rosterIsRail's `squeezed`); it unfolds the moment the panel is
+ *  narrowed back. Pure; `beside` is the caller's, because an overlay squeezes
+ *  nothing. */
+export function rosterSqueezed({ winW, pageLeft, rosterW, panelW }: { winW: number; pageLeft: number; rosterW: number; panelW: number }): boolean {
+  return panelW > 0 && winW - pageLeft - panelW - PANEL_GAPS_W - THREAD_DOCKED_MIN_W < rosterW
 }
 /** The permanent first tab of the member's side panel. Its id is what
  *  `usePanelTabs` stores as the strip's focus while it is selected, so it must
@@ -243,8 +267,9 @@ const PANEL_GAPS_W = 24
  *  332px beside a 432px panel — the observation wider than what it observes.
  *  420 keeps the composer's control row on one line and a bubble wider than
  *  its own padding; below it the panel overlays instead.
- *  The extra over the shell reserve is what both the dock decision and the
- *  panel's live clamp (`extraReserveW`) add, so the two never disagree. */
+ *  The dock decision adds the extra over the shell reserve; the panel's live
+ *  cap budgets the same floor from the page's measured edge (panelHostMaxW),
+ *  and the roster yields to the panel before the thread would (rosterSqueezed). */
 export const THREAD_DOCKED_MIN_W = 420
 const THREAD_EXTRA_RESERVE_W = THREAD_DOCKED_MIN_W - CHAT_PANE_MIN_W
 /** Whether the side panel can sit BESIDE the thread as a permanent column,
@@ -524,9 +549,58 @@ export default function MembersPage() {
   // take effect would still store a preference and surface later, unasked.
   const rosterEmpty = loaded && !loadError && members.length === 0
   const forcedOpen = loadError || rosterEmpty || patrol.failed || starError !== null
-  const railed = rosterIsRail({ winW, isMobile, pref: rosterCollapsedPref }) && !forcedOpen
+  // Where the page starts (the nav rail's live width plus the shell inset),
+  // measured, so the panel's cap and the squeeze test see the rail collapsed
+  // or expanded as it actually is. Re-read on resize; the rail toggle fires a
+  // resize-equivalent through the same listener the window width uses.
+  const pageRef = useRef<HTMLDivElement>(null)
+  const [pageLeft, setPageLeft] = useState(0)
+  useLayoutEffect(() => {
+    const measure = () => { const el = pageRef.current; if (el) setPageLeft(Math.round(el.getBoundingClientRect().left)) }
+    measure()
+    window.addEventListener('resize', measure)
+    const ro = typeof ResizeObserver !== 'undefined' && pageRef.current ? new ResizeObserver(measure) : null
+    if (ro && pageRef.current) ro.observe(pageRef.current)
+    return () => { window.removeEventListener('resize', measure); ro?.disconnect() }
+  }, [])
+  // The docked panel's rendered width, reported by SidePanel. 0 until it does;
+  // 0 squeezes nothing.
+  const [panelW, setPanelW] = useState(0)
+  // The dock decision must not depend on the squeeze (which depends on the
+  // panel, which exists only when docked), so it is taken on the OPEN roster's
+  // width; the squeeze is read after it.
+  const besideForSqueeze = panelSitsBeside({ winW, rosterW: roster.width, isMobile })
+  const squeezed = besideForSqueeze && rosterSqueezed({ winW, pageLeft, rosterW: roster.width, panelW })
+  const railed = rosterIsRail({ winW, isMobile, pref: rosterCollapsedPref, squeezed }) && !forcedOpen
+  // The fold toggle steps aside only when the fold is not the user's to make:
+  // forced open (an error or empty state) hides it, nothing to fold into.
+  // Squeezed keeps it LIVE and keeps its promise: "Expand" cannot simply
+  // unfold (the panel would push the thread under its floor), so the click
+  // narrows the panel to the widest width that seats the open roster — the
+  // squeeze can outlive the drag (the panel width is persisted), and a
+  // returning user who never watched the fold must not meet a dead control
+  // whose way out hides in a tooltip. The request goes to SidePanel, which
+  // owns and persists the width (SidePanel.widthRequest).
+  const toggleHidden = forcedOpen
+  const [panelWidthRequest, setPanelWidthRequest] = useState<{ px: number; nonce: number } | undefined>(undefined)
+  // The request is one-shot: SidePanel reports it applied and it is cleared
+  // here, so nothing remains to replay if the panel remounts or the prop
+  // flips (dock → overlay → dock with a live tab keeping the panel mounted)
+  // after the user has dragged a different width. The nonce keeps counting
+  // across clears so a repeated identical figure is still a new request.
+  const nonceRef = useRef(0)
+  const clearPanelWidthRequest = useCallback((nonce: number) => {
+    setPanelWidthRequest(prev => (prev && prev.nonce === nonce ? undefined : prev))
+  }, [])
   const toggleRoster = useCallback(() => {
-    if (forcedOpen) return
+    if (toggleHidden) return
+    if (squeezed) {
+      // The widest panel beside the OPEN roster is the host cap computed with
+      // the roster's full width in the rail's place (panelHostMaxW's rosterMinW).
+      nonceRef.current += 1
+      setPanelWidthRequest({ px: panelHostMaxW({ winW, pageLeft, rosterMinW: roster.width }), nonce: nonceRef.current })
+      return
+    }
     const next = !railed
     // A FOLD is the only stored preference, and only when made at lg and
     // above, where unfolded is the default the user is departing from. ANY
@@ -545,7 +619,7 @@ export default function MembersPage() {
     }
     setRosterCollapsedPref(true)
     if (atLg) safeSetItem(ROSTER_COLLAPSED_KEY, '1')
-  }, [railed, forcedOpen, winW])
+  }, [railed, toggleHidden, squeezed, winW, pageLeft, roster.width])
   // The roster's LIVE width — what the thread and the panel actually sit
   // beside. Every consumer (the dock decision, the panel's clamp, the CSS
   // var) reads this one value so the rail can never be budgeted as a column.
@@ -1396,7 +1470,7 @@ export default function MembersPage() {
     // either — the panel docks FLUSH to the window's right edge, exactly as it
     // does in the chat page's actbar column; the card columns' pr-2 lives on
     // the inner wrapper below.
-    <div className="flex h-full min-h-0" data-testid="members-page">
+    <div ref={pageRef} className="flex h-full min-h-0" data-testid="members-page">
       {/* Card columns (roster + thread) keep the page's original insets. */}
       <div className="flex flex-1 min-w-0 gap-2 pr-2 pb-2">
       {/* Member list. Below md the page is single-pane: the roster IS the
@@ -1445,7 +1519,7 @@ export default function MembersPage() {
           {/* Not offered while the roster is forced open (see forcedOpen):
               the fold could not take effect, and a click would only store a
               preference that surfaces later. */}
-          {!forcedOpen && (
+          {!toggleHidden && (
           <button
             type="button"
             onClick={toggleRoster}
@@ -1454,8 +1528,9 @@ export default function MembersPage() {
               'hidden md:flex items-center justify-center rounded-md transition-colors bg-transparent border-none shrink-0 text-muted hover:text-text hover:bg-bg-hover cursor-pointer',
               railed ? 'flex-col gap-0.5 w-12 px-0.5 py-1' : 'w-7 h-7',
             )}
-            aria-label={t(railed ? 'pages.membersPage.expand_roster' : 'pages.membersPage.collapse_roster')}
-            title={t(railed ? 'pages.membersPage.expand_roster' : 'pages.membersPage.collapse_roster')}
+            aria-label={t(squeezed ? 'pages.membersPage.roster_squeezed_hint' : railed ? 'pages.membersPage.expand_roster' : 'pages.membersPage.collapse_roster')}
+            title={t(squeezed ? 'pages.membersPage.roster_squeezed_hint' : railed ? 'pages.membersPage.expand_roster' : 'pages.membersPage.collapse_roster')}
+            data-squeezed={squeezed ? 'true' : undefined}
             data-testid="member-roster-toggle"
           >
             {railed ? (
@@ -1481,7 +1556,7 @@ export default function MembersPage() {
                toggle leads and the inset is its own gap. The page icon leads
                the title where the sidebar's reads bare, because this header
                names a page, not a pane. */
-            <div className={cn('flex items-center gap-1.5 min-w-0 flex-1 pl-1.5', !forcedOpen && 'md:pl-0')}>
+            <div className={cn('flex items-center gap-1.5 min-w-0 flex-1 pl-1.5', !toggleHidden && 'md:pl-0')}>
               <Users size={15} className="lucide-inline text-muted shrink-0" />
               <h1 className={LIST_TITLE_CLS}>{t('pages.membersPage.title')}</h1>
             </div>
@@ -2801,14 +2876,22 @@ export default function MembersPage() {
                       {...panelProps}
                       panelHidden={panelHidden}
                       /* Docked: permanent — no onClose, so the strip renders no
-                         close control and Escape inside a view does nothing.
-                         `extraReserveW` keeps the live roster width (rail or
-                         column), the page's gaps and the docked thread floor
-                         clear on top of the shell reserve, so a drag can never
-                         fold the thread below THREAD_DOCKED_MIN_W. Overlay: the
-                         panel covers the thread, so nothing to reserve. */
+                         close control and Escape inside a view does nothing. */
                       onClose={beside ? undefined : closeOverlay}
-                      extraReserveW={beside ? rosterW + PANEL_GAPS_W + THREAD_EXTRA_RESERVE_W : 0}
+                      /* Docked: the page vouches for its own row (panelHostMaxW —
+                         measured left edge, folded rail, gaps, thread floor), so
+                         SidePanel's chat-page floor is bypassed and only the top
+                         bar's need still caps it; the roster yields to the panel
+                         (rosterSqueezed) rather than being reserved against it.
+                         Overlay: the panel covers the thread, nothing to cap. */
+                      hostMaxW={beside ? panelHostMaxW({ winW, pageLeft, rosterMinW: forcedOpen ? roster.width : ROSTER_RAIL_W }) : undefined}
+                      onEffectiveWidthChange={beside ? setPanelW : undefined}
+                      /* The squeezed fold toggle's click (see toggleRoster):
+                         narrow the panel until the open roster fits again.
+                         Passed ungated and cleared once applied, so the
+                         request can never be replayed by a later mode flip. */
+                      widthRequest={panelWidthRequest}
+                      onWidthRequestApplied={clearPanelWidthRequest}
                       /* Phone only (see panelFillWidth): the overlay fills the
                          window. Off the phone this is undefined and the panel
                          sizes itself. */

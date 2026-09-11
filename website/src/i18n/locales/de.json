@@ -14520,6 +14520,7 @@
       "resize_roster": "Mitgliederliste in der Größe ändern",
       "collapse_roster": "Mitgliederliste einklappen",
       "expand_roster": "Mitgliederliste ausklappen",
+      "roster_squeezed_hint": "Seitenleiste verschmälern, um Mitgliedernamen anzuzeigen",
       "expand_roster_short": "Öffnen",
       "sort_filter_members": "Mitglieder sortieren und filtern",
       "filter_origin": "Herkunft",

@@ -14521,6 +14521,7 @@
       "resize_roster": "सदस्य सूची का आकार बदलें",
       "collapse_roster": "सदस्य सूची संक्षिप्त करें",
       "expand_roster": "सदस्य सूची विस्तृत करें",
+      "roster_squeezed_hint": "सदस्यों के नाम देखने के लिए साइड पैनल को संकीर्ण करें",
       "expand_roster_short": "खोलें",
       "sort_filter_members": "सदस्यों को क्रमबद्ध और फ़िल्टर करें",
       "filter_origin": "स्रोत",

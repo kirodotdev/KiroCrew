@@ -105,7 +105,7 @@ vi.mock('react-router-dom', async (importOriginal) => {
 })
 
 import { api } from '../../api/client'
-import MembersPage, { CREW_SUMMARY_TAB_ID, MEMBERS_UNCONFIRMED_WITHHELD_VIEWS, MEMBERS_UNFED_VIEWS, MEMBERS_WITHHELD_VIEWS, ROSTER_RAIL_BREAKPOINT, ROSTER_RAIL_W, THREAD_DOCKED_MIN_W, panelSitsBeside, resolveDefaultMember, rosterIsRail } from './MembersPage'
+import MembersPage, { CREW_SUMMARY_TAB_ID, MEMBERS_UNCONFIRMED_WITHHELD_VIEWS, MEMBERS_UNFED_VIEWS, MEMBERS_WITHHELD_VIEWS, ROSTER_RAIL_BREAKPOINT, ROSTER_RAIL_W, THREAD_DOCKED_MIN_W, panelHostMaxW, panelSitsBeside, resolveDefaultMember, rosterIsRail, rosterSqueezed } from './MembersPage'
 import { __resetPanelTabs, VIEW_DATA_SOURCE } from '../../hooks/usePanelTabs'
 
 /** The page's own memory key (mirrors the constant in MembersPage.tsx). */
@@ -991,6 +991,87 @@ describe('MembersPage side panel (Crew summary tab) and edit jump', () => {
     expect(panelSitsBeside({ winW: 1060, rosterW: ROSTER_RAIL_W, isMobile: false })).toBe(true)
     expect(panelSitsBeside({ winW: 1059, rosterW: ROSTER_RAIL_W, isMobile: false })).toBe(false)
     expect(panelSitsBeside({ winW: 2000, rosterW: 264, isMobile: true })).toBe(false)
+  })
+
+  it('panelHostMaxW / rosterSqueezed: the panel may grow until the thread hits its floor beside the RAIL; the open roster yields before that', () => {
+    // 1440 window, page starting at 236 (nav rail expanded): the panel's cap
+    // is the window less the page edge, the rail, the gaps and the 420 floor.
+    expect(panelHostMaxW({ winW: 1440, pageLeft: 236 })).toBe(1440 - 236 - ROSTER_RAIL_W - 24 - THREAD_DOCKED_MIN_W)
+    // Nav rail collapsed (page edge nearer): a wider cap, no code change.
+    expect(panelHostMaxW({ winW: 1440, pageLeft: 72 })).toBe(panelHostMaxW({ winW: 1440, pageLeft: 236 }) + 164)
+    // The OPEN roster (264) is squeezed once the panel passes 1440 − 236 − 24 − 420 − 264 = 496.
+    expect(rosterSqueezed({ winW: 1440, pageLeft: 236, rosterW: 264, panelW: 496 })).toBe(false)
+    expect(rosterSqueezed({ winW: 1440, pageLeft: 236, rosterW: 264, panelW: 497 })).toBe(true)
+    // No reported width yet squeezes nothing.
+    expect(rosterSqueezed({ winW: 1440, pageLeft: 236, rosterW: 264, panelW: 0 })).toBe(false)
+    // Squeezed wins over a stored unfold and over the lg+ default; never on mobile.
+    expect(rosterIsRail({ winW: 1440, isMobile: false, pref: null, squeezed: true })).toBe(true)
+    expect(rosterIsRail({ winW: 1440, isMobile: true, pref: null, squeezed: true })).toBe(false)
+  })
+
+  it('a docked panel dragged wide folds the roster to the rail; the fold toggle stays live and its click narrows the panel until the roster fits', async () => {
+    // The panel's persisted width is what SidePanel renders (clamped to the
+    // host cap); happy-dom lays the page out at x=0 with no top bar, so the cap
+    // is 1440 − 0 − 56 − 24 − 420 = 940 and 900 fits. 900 leaves the open
+    // roster 1440 − 900 − 24 − 420 = 96px: squeezed.
+    localStorage.setItem('mc-side-panel-width', '900')
+    await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
+    fireEvent.click(await rosterRow('oncall'))
+    await screen.findByTestId('member-crew-summary')
+    await waitFor(() => expect(screen.getByTestId('member-roster')).toHaveAttribute('data-rail', 'true'))
+    // The toggle is NOT a dead control: it stays enabled, and its name says
+    // what the click will do — the panel width persists, so a returning user
+    // may never have seen the drag that caused the fold.
+    const toggle = screen.getByTestId('member-roster-toggle')
+    expect(toggle).not.toBeDisabled()
+    expect(toggle).toHaveAttribute('data-squeezed', 'true')
+    expect(toggle).toHaveAttribute('aria-label', 'Narrow the side panel to show member names')
+    fireEvent.click(toggle)
+    // The click keeps "Expand"'s promise by narrowing the panel to the widest
+    // width that seats the open roster: 1440 − 0 − 264 − 24 − 420 = 732,
+    // persisted as the panel's width exactly as a drag would have been.
+    await waitFor(() => expect(screen.getByTestId('member-roster')).not.toHaveAttribute('data-rail'))
+    expect(localStorage.getItem('mc-side-panel-width')).toBe(String(1440 - 264 - 24 - THREAD_DOCKED_MIN_W))
+    expect(screen.getByTestId('member-roster-toggle')).not.toHaveAttribute('data-squeezed')
+    // Nothing is stored as a fold preference: the squeeze was the panel's.
+    expect(localStorage.getItem('mc-members-roster-collapsed')).toBeNull()
+  })
+
+  it('the squeezed toggle\'s width request is one-shot: once applied it is cleared, so a dock → overlay → dock round-trip after a later drag does not replay it', async () => {
+    localStorage.setItem('mc-side-panel-width', '900')
+    await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
+    fireEvent.click(await rosterRow('oncall'))
+    await screen.findByTestId('member-crew-summary')
+    await waitFor(() => expect(screen.getByTestId('member-roster')).toHaveAttribute('data-rail', 'true'))
+    fireEvent.click(screen.getByTestId('member-roster-toggle'))
+    await waitFor(() => expect(localStorage.getItem('mc-side-panel-width')).toBe(String(1440 - 264 - 24 - THREAD_DOCKED_MIN_W)))
+    // The user later settles on another width (a drag's end persists it the
+    // same way), then the window narrows — the docked panel unmounts — and
+    // widens again — it remounts and reads the stored width back.
+    localStorage.setItem('mc-side-panel-width', '600')
+    setWindowWidth(NARROW_WINDOW)
+    fireEvent(window, new Event('resize'))
+    await waitFor(() => expect(screen.queryByTestId('member-crew-summary')).toBeNull())
+    setWindowWidth(WIDE_WINDOW)
+    fireEvent(window, new Event('resize'))
+    await screen.findByTestId('member-crew-summary')
+    await waitFor(() => expect(screen.getByTestId('member-side-panel')).toHaveAttribute('data-placement', 'docked'))
+    // The consumed request did not come back: the dragged width stands.
+    expect(localStorage.getItem('mc-side-panel-width')).toBe('600')
+  })
+
+  it('a roster forced open cannot yield, so the panel cap reserves its full width', () => {
+    expect(panelHostMaxW({ winW: 1440, pageLeft: 236, rosterMinW: 264 })).toBe(panelHostMaxW({ winW: 1440, pageLeft: 236 }) - (264 - ROSTER_RAIL_W))
+  })
+
+  it('a docked panel that leaves the open roster its room does not fold it', async () => {
+    localStorage.setItem('mc-side-panel-width', '600')
+    await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
+    fireEvent.click(await rosterRow('oncall'))
+    await screen.findByTestId('member-crew-summary')
+    await waitFor(() => expect(screen.getByTestId('member-count')).toBeInTheDocument())
+    expect(screen.getByTestId('member-roster')).not.toHaveAttribute('data-rail')
+    expect(screen.getByTestId('member-roster-toggle')).not.toBeDisabled()
   })
 
   it('rosterIsRail: folds below lg unless the user said otherwise; never on mobile', () => {

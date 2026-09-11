@@ -14708,6 +14708,7 @@
       "resize_roster": "Cambiar el tamaño de la lista de miembros",
       "collapse_roster": "Contraer la lista de miembros",
       "expand_roster": "Expandir la lista de miembros",
+      "roster_squeezed_hint": "Estrecha el panel lateral para mostrar los nombres de los miembros",
       "expand_roster_short": "Abrir",
       "sort_filter_members": "Ordenar y filtrar miembros",
       "filter_origin": "Origen",

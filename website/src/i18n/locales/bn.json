@@ -14521,6 +14521,7 @@
       "resize_roster": "সদস্য তালিকার আকার পরিবর্তন করুন",
       "collapse_roster": "সদস্য তালিকা সংকুচিত করুন",
       "expand_roster": "সদস্য তালিকা প্রসারিত করুন",
+      "roster_squeezed_hint": "সদস্যদের নাম দেখতে সাইড প্যানেল সংকুচিত করুন",
       "expand_roster_short": "খুলুন",
       "sort_filter_members": "সদস্যদের সাজান ও ফিল্টার করুন",
       "filter_origin": "উৎস",

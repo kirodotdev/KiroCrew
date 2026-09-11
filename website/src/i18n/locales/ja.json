@@ -14333,6 +14333,7 @@
       "resize_roster": "メンバー一覧のサイズを変更",
       "collapse_roster": "メンバー一覧を折りたたむ",
       "expand_roster": "メンバー一覧を展開",
+      "roster_squeezed_hint": "メンバー名を表示するにはサイドパネルを狭くしてください",
       "expand_roster_short": "展開",
       "sort_filter_members": "メンバーの並べ替えと絞り込み",
       "filter_origin": "出自",
