@@ -13,7 +13,7 @@
  * commits) before any switch, which the last case pins down.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent, act } from '@testing-library/react'
+import { render, screen, fireEvent, act, waitFor } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
@@ -203,5 +203,172 @@ describe('ChatPage – header rename is pinned to the session it opened on', () 
     const revived = screen.queryByDisplayValue(TITLE_A)
     if (revived) act(() => { fireEvent.blur(revived) })
     expect(apiMocks.renameSlot).not.toHaveBeenCalled()
+  })
+})
+
+/**
+ * Regression for #10203 (the header-side mirror of #10151): a server-refused
+ * header rename dispatched the optimistic `sseSlotTitle` and then only reported
+ * the failure via `showActionError` -- the refused title stayed in the store
+ * (header AND sidebar read it) until an unrelated slot refetch or a reload.
+ * The `.catch` now re-reads the server truth and applies ONLY this slot's
+ * title, guarded on the store still holding the refused value -- never the
+ * whole snapshot, whose late fulfillment could clobber a newer concurrent
+ * write (the residual both review lanes flagged on a fetchSlots-based shape).
+ * When the re-read itself fails too, the catch falls back to a guarded local
+ * revert to the pre-rename title.
+ */
+describe('ChatPage - a refused header rename reverts the optimistic title (#10203)', () => {
+  beforeEach(() => { Object.keys(apiMocks).forEach(k => delete apiMocks[k]) })
+
+  it('snaps the store title back to the server truth when renameSlot rejects', async () => {
+    const store = renderChatPage()
+    const input = await openRename()
+    apiMocks.renameSlot = vi.fn().mockRejectedValue(new Error('refused'))
+    act(() => { fireEvent.change(input, { target: { value: 'Refused title' } }) })
+    act(() => { fireEvent.blur(input) })
+    // The optimistic title lands first (no microtask has run between the
+    // synchronous blur commit and this assertion)...
+    expect(store.getState().dashboard.slots.find(s => s.key === 'chat-a')?.title).toBe('Refused title')
+    // ...then the catch re-reads the server truth and the keyed apply
+    // restores the value delivered by api.chatSlots.
+    await waitFor(() => {
+      expect(store.getState().dashboard.slots.find(s => s.key === 'chat-a')?.title).toBe(TITLE_A)
+    })
+  })
+
+  it('falls back to a local revert when the recovery re-read also fails', async () => {
+    const store = renderChatPage()
+    const input = await openRename()
+    // Transport/auth failures take renameSlot and chatSlots down together, so
+    // the catch must revert locally to the pre-rename title.
+    apiMocks.renameSlot = vi.fn().mockRejectedValue(new Error('gateway down'))
+    apiMocks.chatSlots = vi.fn().mockRejectedValue(new Error('gateway down'))
+    act(() => { fireEvent.change(input, { target: { value: 'Refused title' } }) })
+    act(() => { fireEvent.blur(input) })
+    await waitFor(() => {
+      expect(store.getState().dashboard.slots.find(s => s.key === 'chat-a')?.title).toBe(TITLE_A)
+    })
+  })
+
+  it('a late recovery never clobbers a newer concurrent title write', async () => {    const store = renderChatPage()
+    const input = await openRename()
+    // The rename is refused; while the recovery re-read is in flight, a newer
+    // server-persisted title for the same slot lands (another client, or a
+    // generated title). The guard must see the store no longer holds the
+    // refused value and apply nothing.
+    apiMocks.renameSlot = vi.fn().mockRejectedValue(new Error('refused'))
+    let releaseSlots!: (v: unknown) => void
+    apiMocks.chatSlots = vi.fn().mockReturnValue(new Promise(r => { releaseSlots = r }))
+    act(() => { fireEvent.change(input, { target: { value: 'Refused title' } }) })
+    act(() => { fireEvent.blur(input) })
+    // Let the catch start the re-read, then land the newer write before the
+    // stale snapshot resolves.
+    await act(async () => { await new Promise(r => setTimeout(r, 0)) })
+    act(() => { store.dispatch({ type: 'dashboard/sseSlotTitle', payload: { key: 'chat-a', title: 'Newer concurrent title' } }) })
+    act(() => { releaseSlots([mkSlot('chat-a', TITLE_A), mkSlot('chat-b', TITLE_B)]) })
+    await act(async () => { await new Promise(r => setTimeout(r, 0)) })
+    expect(store.getState().dashboard.slots.find(s => s.key === 'chat-a')?.title).toBe('Newer concurrent title')
+  })
+
+  it('overlapping refused renames revert to the confirmed title, not to each other', async () => {
+    const store = renderChatPage()
+    // First rename is refused and the recovery re-read is held pending, so the
+    // store keeps the first refused optimistic value on screen. The re-read is
+    // deduped through queryClient.fetchQuery, so a second attempt joins this
+    // same in-flight request.
+    const input = await openRename()
+    apiMocks.renameSlot = vi.fn().mockRejectedValue(new Error('refused'))
+    let rejectSlots!: (e: unknown) => void
+    apiMocks.chatSlots = vi.fn().mockReturnValue(new Promise((_r, rej) => { rejectSlots = rej }))
+    act(() => { fireEvent.change(input, { target: { value: 'Refused B' } }) })
+    act(() => { fireEvent.blur(input) })
+    await act(async () => { await new Promise(r => setTimeout(r, 0)) })
+    // Second rename while the first recovery is pending: also refused. Its
+    // re-read joins the shared in-flight request, which then fails outright ->
+    // local fallback. It must restore the confirmed pre-rename baseline, not
+    // the first attempt's refused value.
+    const label = await screen.findByTestId('header-title')
+    act(() => { fireEvent.click(label) })
+    const second = screen.getByDisplayValue('Refused B') as HTMLInputElement
+    act(() => { fireEvent.change(second, { target: { value: 'Refused C' } }) })
+    act(() => { fireEvent.blur(second) })
+    await act(async () => { await new Promise(r => setTimeout(r, 0)) })
+    act(() => { rejectSlots(new Error('gateway down')) })
+    await waitFor(() => {
+      expect(store.getState().dashboard.slots.find(s => s.key === 'chat-a')?.title).toBe(TITLE_A)
+    })
+  })
+
+  it('a pending failure never drags a confirmed external rename back to the baseline', async () => {
+    const store = renderChatPage()
+    // First rename is refused with its re-read held pending (baseline = TITLE_A).
+    const input = await openRename()
+    apiMocks.renameSlot = vi.fn().mockRejectedValue(new Error('refused'))
+    let rejectSlots!: (e: unknown) => void
+    apiMocks.chatSlots = vi.fn().mockReturnValue(new Promise((_r, rej) => { rejectSlots = rej }))
+    act(() => { fireEvent.change(input, { target: { value: 'Refused B' } }) })
+    act(() => { fireEvent.blur(input) })
+    await act(async () => { await new Promise(r => setTimeout(r, 0)) })
+    // Another client's CONFIRMED rename lands over SSE while B is pending.
+    act(() => { store.dispatch({ type: 'dashboard/sseSlotTitle', payload: { key: 'chat-a', title: 'Confirmed external' } }) })
+    // A second refused rename commits on top of the confirmed value; the shared
+    // re-read then fails outright -> local fallback. The baseline must have
+    // been refreshed to the confirmed title at commit time, so the fallback
+    // restores 'Confirmed external', never the stale TITLE_A.
+    const label = await screen.findByTestId('header-title')
+    act(() => { fireEvent.click(label) })
+    const second = screen.getByDisplayValue('Confirmed external') as HTMLInputElement
+    act(() => { fireEvent.change(second, { target: { value: 'Refused C' } }) })
+    act(() => { fireEvent.blur(second) })
+    await act(async () => { await new Promise(r => setTimeout(r, 0)) })
+    act(() => { rejectSlots(new Error('gateway down')) })
+    await waitFor(() => {
+      expect(store.getState().dashboard.slots.find(s => s.key === 'chat-a')?.title).toBe('Confirmed external')
+    })
+  })
+
+  it('a delayed recovery never overwrites a newer confirmed rename to the same title', async () => {
+    const store = renderChatPage()
+    // Attempt 1: rename to X is refused; its recovery re-read is held pending,
+    // so the snapshot it will eventually deliver predates everything below.
+    const input = await openRename()
+    apiMocks.renameSlot = vi.fn().mockRejectedValue(new Error('refused'))
+    let releaseSlots!: (v: unknown) => void
+    apiMocks.chatSlots = vi.fn().mockReturnValue(new Promise(r => { releaseSlots = r }))
+    act(() => { fireEvent.change(input, { target: { value: 'Title X' } }) })
+    act(() => { fireEvent.blur(input) })
+    await act(async () => { await new Promise(r => setTimeout(r, 0)) })
+    // A newer title lands, then a SECOND attempt renames to the IDENTICAL
+    // string X and SUCCEEDS. Title equality alone cannot tell this confirmed X
+    // from attempt 1's stale optimistic X.
+    act(() => { store.dispatch({ type: 'dashboard/sseSlotTitle', payload: { key: 'chat-a', title: 'Title Y' } }) })
+    const label = await screen.findByTestId('header-title')
+    act(() => { fireEvent.click(label) })
+    const second = screen.getByDisplayValue('Title Y') as HTMLInputElement
+    apiMocks.renameSlot = vi.fn().mockResolvedValue({})
+    act(() => { fireEvent.change(second, { target: { value: 'Title X' } }) })
+    act(() => { fireEvent.blur(second) })
+    await act(async () => { await new Promise(r => setTimeout(r, 0)) })
+    expect(store.getState().dashboard.slots.find(s => s.key === 'chat-a')?.title).toBe('Title X')
+    // Attempt 1's delayed re-read now resolves with its STALE pre-rename
+    // snapshot (server still says TITLE_A in it). Its generation is stale, so
+    // it must apply nothing: the newer confirmed X stays.
+    act(() => { releaseSlots([mkSlot('chat-a', TITLE_A), mkSlot('chat-b', TITLE_B)]) })
+    await act(async () => { await new Promise(r => setTimeout(r, 0)) })
+    expect(store.getState().dashboard.slots.find(s => s.key === 'chat-a')?.title).toBe('Title X')
+  })
+
+  it('a successful rename keeps the new title and never refetches slots', async () => {
+    const store = renderChatPage()
+    const input = await openRename()
+    const slotsCallsBefore = apiMocks.chatSlots.mock.calls.length
+    act(() => { fireEvent.change(input, { target: { value: 'Renamed alpha' } }) })
+    act(() => { fireEvent.blur(input) })
+    // Flush a macrotask so a refetch scheduled any number of microtask hops
+    // down the resolved renameSlot promise would have landed by now.
+    await act(async () => { await new Promise(r => setTimeout(r, 0)) })
+    expect(store.getState().dashboard.slots.find(s => s.key === 'chat-a')?.title).toBe('Renamed alpha')
+    expect(apiMocks.chatSlots.mock.calls.length).toBe(slotsCallsBefore)
   })
 })
