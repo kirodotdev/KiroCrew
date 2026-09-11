@@ -53,11 +53,12 @@ class ClaudeCodeMirror(AgentConfigMirror):
                 "pooled broker stubs placed HERE beside the translation so one "
                 "withhold rule covers both halves of the array -- codex parity. "
                 "The adapter reads no agent file, so this array is the session's "
-                "whole MCP surface. Delivered ONLY when Crew authored "
-                "settings.local.json: that file is this backend's permission "
-                "surface, and a tool Crew cannot gate must not be handed to the "
-                "session at all -- stubs included, since a stub is the same "
-                "server under the same name",
+                "whole MCP surface. Delivered ONLY when Crew governs "
+                "settings.local.json -- authored it, or verified it is a sibling "
+                "session's byte-identical seed: that file is this backend's "
+                "permission surface, and a tool Crew cannot gate must not be "
+                "handed to the session at all -- stubs included, since a stub is "
+                "the same server under the same name",
             ),
             Concern.TOOL_ALLOWLIST: Ruling(
                 _D.TRANSLATED,
@@ -158,11 +159,14 @@ class ClaudeCodeMirror(AgentConfigMirror):
         ``spawn_run``, ``cron_add``, ``send_message`` and every configured server
         into a permission surface Crew does not control.
 
-        So the array is withheld unless Crew authored the file. The cost is
-        stated rather than hidden: such a session runs with no Crew MCP tools,
-        which is exactly how every claude session behaved before this array
-        existed, so nothing regresses — it simply does not gain tools Crew could
-        not take back.
+        So the array is withheld unless Crew governs the file -- authored it
+        this session, or verified byte-for-byte that it is a sibling Crew
+        session's live seed identical to what this session would have written
+        (the caller's ``_permission_surface_governed``). The cost is
+        stated rather than hidden: a session where neither holds runs with no
+        Crew MCP tools, which is exactly how every claude session behaved before
+        this array existed, so nothing regresses — it simply does not gain tools
+        Crew could not take back.
 
         ``work_dir`` is the session's project checkout, and it is required for
         CORRECTNESS rather than convenience: kiro-cli resolves ``--agent`` against

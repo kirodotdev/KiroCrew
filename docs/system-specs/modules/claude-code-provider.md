@@ -260,6 +260,66 @@ race declines rather than clobbering the winner. Nothing on the teardown path wr
 a file, so reset is a single `unlink` — the same operation the pre-change code
 performed at that point.
 
+**One relaxation: a byte-identical sibling seed is SHARED, not refused.** Two
+sessions of the same agent in the same `work_dir` render the same payload, and
+refusing the second one bought nothing — it ran with the whole `mcpServers` array
+withheld, so only one session per project directory ever had Crew's tools
+(`spawn_run`, `cron_*`, `session_checkpoint`). When the file on disk is a live
+sibling's seed whose bytes equal BOTH Crew's durable record
+(`seed_provenance.share`, checked ignoring the live holder) AND the exact
+payload this client would have written, the client takes a shared-reader state
+(`_claude_settings_shared`): the permission surface counts as governed
+(`_permission_surface_governed`), so the array is delivered — but the client takes
+no live claim, records nothing, and `_claude_settings_authored` stays false, so its
+teardown neither unlinks the file the owning session is still running against nor
+pops that owner's live slot. A payload that differs in any byte — another
+permission mode, another agent's deny rules, another allowlist — fails the digest
+half and is refused exactly as before. The hazard the live-holder rule exists for
+only arises when the payloads differ, so byte-equality is the precise boundary of
+the relaxation. The boundary deliberately includes the model keys: the file pins
+model resolution for every session that reads it, so sharing across a model
+difference would silently override the sibling's own pick. The one refusal a user
+can fix — same permissions block, different model keys — is diagnosed and logged
+as a warning naming the remedy (`_log_declined_share`); a foreign file keeps the
+quiet informational message.
+
+The sharer's stake is a live registration (`seed_provenance.share`, taken BEFORE
+the byte checks so the owner's teardown cannot validate-race it; withdrawn on the
+sharer's reset, and on a failed validation only when that validation created it —
+a re-validating sharer keeps the lease its original validation earned). The
+registry is PROCESS-LOCAL, like the `_LIVE` slot: it pins the file against the
+owner, adopters and re-seeds in the same gateway process, which is where sibling
+sessions sharing a `work_dir` live. A Crew client in a DIFFERENT process never
+shares — it sees the durable record with no live holder and takes the adoption
+path — so the pin's guarantees are in-process by construction, not absolute
+across the host. While any sharer is registered, the file's future is pinned for
+it: the owner's teardown leaves the file and the durable record in place (the
+recorded-orphan shape a `kill -9` already produces, which the next session adopts
+and repairs once the sharers are gone), `seed_provenance.claim` refuses new
+adoptions, and the owner's own re-seed writes only when its `permissions` block is
+unchanged — model keys may refresh, but an edited agent spec cannot loosen deny
+rules under a reader that validated the stricter set, and the barrier is re-run
+after the write so a sharer registering mid-re-seed retracts a permissions-moving
+one exactly as it retracts an in-flight adoption. The lingering file after a
+clean owner exit under a live sharer is a disclosed cost of that pin, accepted by
+design: no leaver ever deletes a permission surface another session is still
+reading, and the residue is recorded and self-healing — the next session
+recognizes the record, adopts the file, and repairs or removes it on its own
+teardown. A user replacing the file by
+hand remains their own action on their own machine — the same disclosed boundary
+the owner path has always had.
+
+Two supporting invariants keep every interleaving honest. A record reaches the
+in-memory table only once its sidecar persist has LANDED, so a sibling can never
+validate a share against a grant that then fails — which is also what lets a
+failing re-seed persist restore the moved-aside prior bytes (still the recorded
+ones) instead of stranding an unrecorded file. And every restore of a moved-aside
+seed into a vacated pathname is a validated no-clobber byte copy — the source is
+opened without following links and must be a small regular file, so a symlink
+swapped in at the aside name is refused rather than dereferenced, and the
+destination is an `O_CREAT | O_EXCL` create, so a settings file recreated at the
+pathname in that window is preserved rather than silently overwritten.
+
 What this deliberately does NOT do is preserve and restore a user's own file.
 Doing that means reading and rewriting a path a checked-out repository controls,
 which is how a snapshot read, a cross-session ownership registry, an ACL-preserving
