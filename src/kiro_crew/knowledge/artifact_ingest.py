@@ -372,7 +372,12 @@ async def ingest_artifact(
         # group rather than returning early and leaving obsolete chunks live.
         # Offloaded: remove_artifact -> delete_items_batch -> store._load_graph
         # is a graph rebuild inside a SQLite transaction, never loop-safe work.
-        prev_hash, old_item_ids = _get_state(kstore, source_id, slug)
+        # _get_state is a synchronous kstore.db read; run it off the loop too,
+        # or a contended knowledge DB busy-waits the whole loop (watchdog
+        # heartbeat included) for the connection's busy timeout.
+        prev_hash, old_item_ids = await asyncio.to_thread(
+            _get_state, kstore, source_id, slug
+        )
         if old_item_ids or prev_hash:
             await asyncio.to_thread(remove_artifact, kstore, source_id, slug)
         return None
@@ -383,7 +388,13 @@ async def ingest_artifact(
     title = _redact_for_ingest(art.name)
 
     content_hash = hashlib.sha256(text.encode()).hexdigest()
-    prev_hash, old_item_ids = _get_state(kstore, source_id, slug)
+    # Synchronous kstore.db read on the gateway loop: offload it so a contended
+    # knowledge DB cannot busy-wait the loop (watchdog heartbeat included) past
+    # the stall deadline. Mirrors the art_store.get / remove_artifact offloads
+    # in this same coroutine.
+    prev_hash, old_item_ids = await asyncio.to_thread(
+        _get_state, kstore, source_id, slug
+    )
     if prev_hash == content_hash and old_item_ids:
         # Unchanged since last ingest AND still holding its items -- cheap no-op
         # (per-slug short-circuit). A row with an empty group was left by a refused
