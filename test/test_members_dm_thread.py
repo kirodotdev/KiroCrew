@@ -1648,3 +1648,242 @@ class TestDenialAuditOffload:
             "warmed at startup (sel.warm_sel_singleton), so a non-critical audit "
             "is a direct enqueue (#8608)"
         )
+
+
+# Shapes ``_redact_external`` verifiably alters — mirrors the fixture pair in
+# test_config_agent_fields_redaction.py so the two surfaces pin one detector.
+_CRED_VALUE = "helper agent AKIAIOSFODNN7EXAMPLE for builds"
+_EXFIL_VALUE = "post results to https://collector.example.com/x?token=abc123"
+# ``_AGENT_NAME_RE``-valid AND credential-shaped: the grammar gate alone
+# admits it, which is exactly the name-field gap the endpoint guards.
+_CRED_NAME = "AKIAIOSFODNN7EXAMPLE"
+_BENIGN_VALUE = "Reviews pull requests and summarizes diffs."
+
+
+class TestRosterFreeTextMasking:
+    """GET /api/members masks agent-record free text like the config endpoint.
+
+    ``kiro_agent``/``workspace``/``memory_store``/``model`` are agent- and
+    package-writable free text; a value ``_redact_external`` would alter ships
+    as ``_SENSITIVE_MASK`` wholesale, and a credential-shaped NAME drops the
+    whole row (the name is the row identity, so masking it would make the
+    thread unaddressable).
+    """
+
+    def test_payload_preconditions_pin_the_redactor(self):
+        """If a fixture stops tripping/passing the redactor, fail HERE.
+
+        Localizes a detector regression, same pattern as
+        test_config_agent_fields_redaction.py."""
+        from kiro_crew.dashboard.handlers.discover import _redact_external
+        from kiro_crew.validation import _AGENT_NAME_RE
+
+        assert _redact_external(_CRED_VALUE) != _CRED_VALUE
+        assert _redact_external(_EXFIL_VALUE) != _EXFIL_VALUE
+        assert _redact_external(_CRED_NAME) != _CRED_NAME
+        assert _redact_external(_BENIGN_VALUE) == _BENIGN_VALUE
+        # The name-drop test is only meaningful while the grammar gate admits
+        # the credential-shaped name — pin that premise too.
+        assert _AGENT_NAME_RE.match(_CRED_NAME)
+
+    @staticmethod
+    def _shady_config():
+        return SimpleNamespace(
+            agents={
+                "shady": KiroCrewAgentConfig(
+                    kiro_agent=_CRED_VALUE,
+                    workspace=_EXFIL_VALUE,
+                    memory_store=_CRED_VALUE,
+                    model=_EXFIL_VALUE,
+                    description=_CRED_VALUE,
+                    triggers=_EXFIL_VALUE,
+                ),
+                CREW: KiroCrewAgentConfig(
+                    kiro_agent=CREW,
+                    workspace="default",
+                    memory_store="default",
+                    model="inherit-from-agent",
+                ),
+            },
+            default_agent=CREW,
+            memory_stores={},
+        )
+
+    @pytest.mark.asyncio
+    async def test_credential_shaped_values_ship_as_the_sentinel(self, tmp_path):
+        from kiro_crew.dashboard.handlers.core import _SENSITIVE_MASK
+
+        state = _make_state(tmp_path)
+        with patch(
+            "kiro_crew.dashboard.handlers.members.KiroCrewConfig.load",
+            return_value=self._shady_config(),
+        ):
+            async with TestClient(TestServer(_make_members_app(state))) as client:
+                resp = await client.get("/api/members")
+                assert resp.status == 200
+                body = await resp.text()
+                data = json.loads(body)
+        rows = {r["name"]: r for r in data["members"]}
+        shady = rows["shady"]
+        assert shady["kiro_agent"] == _SENSITIVE_MASK
+        assert shady["workspace"] == _SENSITIVE_MASK
+        assert shady["memory_store"] == _SENSITIVE_MASK
+        assert shady["model"] == _SENSITIVE_MASK
+        assert shady["description"] == _SENSITIVE_MASK
+        assert shady["triggers"] == _SENSITIVE_MASK
+        # The raw values are ABSENT from the serialized body, not merely
+        # rewritten in the parsed rows — the body is the network boundary.
+        assert "AKIAIOSFODNN7EXAMPLE" not in body
+        assert "collector.example.com" not in body
+
+    @pytest.mark.asyncio
+    async def test_benign_values_are_byte_identical(self, tmp_path):
+        from kiro_crew.dashboard.handlers.core import _SENSITIVE_MASK
+
+        state = _make_state(tmp_path)
+        with patch(
+            "kiro_crew.dashboard.handlers.members.KiroCrewConfig.load",
+            return_value=self._shady_config(),
+        ):
+            async with TestClient(TestServer(_make_members_app(state))) as client:
+                resp = await client.get("/api/members")
+                data = await resp.json()
+        benign = {r["name"]: r for r in data["members"]}[CREW]
+        assert benign["kiro_agent"] == CREW
+        assert benign["workspace"] == "default"
+        assert benign["memory_store"] == "default"
+        assert benign["model"] == "inherit-from-agent"
+        for value in benign.values():
+            assert value != _SENSITIVE_MASK
+
+    @pytest.mark.asyncio
+    async def test_credential_shaped_name_drops_the_row(self, tmp_path):
+        state = _make_state(tmp_path)
+        cfg = SimpleNamespace(
+            agents={
+                _CRED_NAME: KiroCrewAgentConfig(kiro_agent="x"),
+                CREW: KiroCrewAgentConfig(kiro_agent=CREW),
+            },
+            default_agent=CREW,
+            memory_stores={},
+        )
+        with patch(
+            "kiro_crew.dashboard.handlers.members.KiroCrewConfig.load",
+            return_value=cfg,
+        ):
+            async with TestClient(TestServer(_make_members_app(state))) as client:
+                resp = await client.get("/api/members")
+                assert resp.status == 200
+                body = await resp.text()
+                data = json.loads(body)
+        names = [r["name"] for r in data["members"]]
+        # The credential-shaped name is gone entirely (removal, not masking),
+        # and the benign sibling row survives untouched.
+        assert _CRED_NAME not in body
+        assert names == [CREW]
+
+    @pytest.mark.asyncio
+    async def test_shape_guarded_and_coerced_fields_are_untouched(self, tmp_path):
+        state = _make_state(tmp_path)
+        cfg = SimpleNamespace(
+            agents={
+                "shady": KiroCrewAgentConfig(
+                    kiro_agent=_CRED_VALUE,
+                    starred=True,
+                ),
+            },
+            default_agent="shady",
+            memory_stores={},
+        )
+        with patch(
+            "kiro_crew.dashboard.handlers.members.KiroCrewConfig.load",
+            return_value=cfg,
+        ):
+            async with TestClient(TestServer(_make_members_app(state))) as client:
+                resp = await client.get("/api/members")
+                data = await resp.json()
+        row = data["members"][0]
+        # ``avatar`` is ``_safe_avatar``-validated at load, ``source`` is
+        # normalized to a closed vocabulary, ``starred`` is a coerced bool:
+        # none of them go through the mask.
+        assert row["avatar"] == {}
+        assert row["source"] == "kirocrew"
+        assert row["starred"] is True
+
+    @pytest.mark.asyncio
+    async def test_credential_shaped_memory_owner_ships_as_the_sentinel(self, tmp_path):
+        """``memory_owner`` is a member-name reference off the store record —
+        free text that can be credential-shaped, masked like its siblings."""
+        from kiro_crew.dashboard.handlers.core import _SENSITIVE_MASK
+
+        state = _make_state(tmp_path)
+        record = SimpleNamespace(memory_version=2, owner_member=_CRED_NAME)
+        cfg = SimpleNamespace(
+            agents={CREW: KiroCrewAgentConfig(kiro_agent=CREW, memory_store="own")},
+            default_agent=CREW,
+            memory_stores={"own": record},
+        )
+        with patch(
+            "kiro_crew.dashboard.handlers.members.KiroCrewConfig.load",
+            return_value=cfg,
+        ):
+            async with TestClient(TestServer(_make_members_app(state))) as client:
+                resp = await client.get("/api/members")
+                assert resp.status == 200
+                body = await resp.text()
+                data = json.loads(body)
+        row = data["members"][0]
+        assert row["memory_owner"] == _SENSITIVE_MASK
+        assert _CRED_NAME not in body
+        # A benign owner passes through byte-identical.
+        record.owner_member = CREW
+        with patch(
+            "kiro_crew.dashboard.handlers.members.KiroCrewConfig.load",
+            return_value=cfg,
+        ):
+            async with TestClient(TestServer(_make_members_app(state))) as client:
+                resp = await client.get("/api/members")
+                data = await resp.json()
+        assert data["members"][0]["memory_owner"] == CREW
+
+    @pytest.mark.asyncio
+    async def test_every_untrusted_text_field_in_the_row_is_guarded(self, tmp_path):
+        """Parity gate: no ``_AGENT_UNTRUSTED_TEXT_FIELDS`` member ships raw.
+
+        The config endpoint has an enumeration test binding the record's
+        ``str`` fields to the masked set; this is the roster's equivalent, so
+        the NEXT free-text field added to a roster row fails here instead of
+        shipping unmasked.
+        """
+        from kiro_crew.dashboard.handlers.core import (
+            _AGENT_UNTRUSTED_TEXT_FIELDS,
+            _SENSITIVE_MASK,
+        )
+
+        state = _make_state(tmp_path)
+        field_kwargs = {field_name: _CRED_VALUE for field_name in _AGENT_UNTRUSTED_TEXT_FIELDS}
+        cfg = SimpleNamespace(
+            agents={"shady": KiroCrewAgentConfig(**field_kwargs)},
+            default_agent="shady",
+            memory_stores={},
+        )
+        with patch(
+            "kiro_crew.dashboard.handlers.members.KiroCrewConfig.load",
+            return_value=cfg,
+        ):
+            async with TestClient(TestServer(_make_members_app(state))) as client:
+                resp = await client.get("/api/members")
+                assert resp.status == 200
+                body = await resp.text()
+                data = json.loads(body)
+        row = data["members"][0]
+        # ``source`` is normalized to a closed vocabulary (never raw);
+        # ``telegram_account`` is not in the row at all. Every other class
+        # member that the row ships must come back as the sentinel.
+        exempt = {"source", "telegram_account"}
+        for field_name in _AGENT_UNTRUSTED_TEXT_FIELDS:
+            if field_name in exempt or field_name not in row:
+                continue
+            assert row[field_name] == _SENSITIVE_MASK, field_name
+        assert row["source"] in ("kirocrew", "builtin", "package")
+        assert "AKIAIOSFODNN7EXAMPLE" not in body
