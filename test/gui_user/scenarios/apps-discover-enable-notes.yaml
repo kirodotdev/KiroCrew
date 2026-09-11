@@ -1,0 +1,32 @@
+# Smoke: the App Store's core path -- find a bundled app and turn it on. This
+# runs in the Library, not Discover: Discover lists published catalog rows and
+# the registry fetch fails closed on the target, so nothing there is guaranteed.
+# The Library lists what is on the machine, including the default-off builtins
+# the wheel ships, behind a "Show N disabled apps" toggle. "Notes" is such a
+# builtin, needs nothing external and skips the third-party trust prompt, so its
+# tile reads "Disabled" and its overflow menu offers "Enable".
+name: apps-discover-enable-notes
+tier: smoke
+feature: apps
+user_story: >-
+  As a user, I want to see the apps already on my machine and switch one on
+  from its tile, so that the app appears in my dashboard without installing
+  anything.
+docs_url: docs/system-specs/modules/app-kit-platform.md
+summary: Open the Library, reveal disabled apps and enable the Notes builtin from its tile
+preconditions:
+  seed: rich
+  members: [nova-sky]
+  start_url: /apps/library
+steps:
+  - You are on the Apps page, on its "Library" tab (heading "Library"). If a notice says the store or registry could not be reached, ignore it.
+  - If the page says "No enabled apps" or you cannot see a tile named "Notes", click the small toggle that reads "Show N disabled apps" (N is a number, e.g. "Show 12 disabled apps"). The grid of app tiles now includes the disabled ones; its label changes to "Show enabled only".
+  - Find the tile named "Notes" (a grid tile with an icon, the name "Notes" and the caption "Disabled" under it). Hover it and click its "More actions for Notes" button (a small "..." at the tile's corner).
+  - In the menu that opens click "Enable".
+  - Wait two seconds for the tile to update.
+expectations:
+  - The "Notes" tile's caption no longer reads "Disabled"; it reads "In sidebar", "Not in sidebar" or "No sidebar page".
+  - No red error message about failing to enable the app is visible.
+  - The "Notes" tile is still in the grid, in the same place, not moved or removed.
+max_steps: 14
+max_seconds: 300

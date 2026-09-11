@@ -18,15 +18,21 @@ SCENARIOS_DIR = Path(__file__).parent / "scenarios"
 
 
 SHIPPED_SMOKE = {
+    "apps-discover-enable-notes",
     "auth-sign-in-card-signed-out",
     "chat-switch-seeded-sessions",
+    "schedule-add-cron-job",
     "search-everywhere-open-schedule",
     "sessions-new-chat",
     "settings-search-jump-to-theme",
     "settings-theme-toggle",
     "sidebar-folders-and-older-sessions",
 }
-SHIPPED = SHIPPED_SMOKE | {"members-dm-hello"}
+SHIPPED = SHIPPED_SMOKE | {
+    "chat-subagents-panel-empty",
+    "members-dm-hello",
+    "members-roster-filter-and-summary",
+}
 
 
 class TestShippedScenarios:
@@ -79,15 +85,30 @@ class TestShippedScenarios:
     def test_shipped_scenarios_group_by_feature(self) -> None:
         groups = scenarios.by_feature(scenarios.load_all(SCENARIOS_DIR))
         assert {slug: [s.name for s in g] for slug, g in groups.items()} == {
-            "chat": ["chat-switch-seeded-sessions", "sessions-new-chat"],
+            "chat": [
+                "chat-subagents-panel-empty",
+                "chat-switch-seeded-sessions",
+                "sessions-new-chat",
+            ],
             "sidebar": ["sidebar-folders-and-older-sessions"],
             "search": ["search-everywhere-open-schedule"],
-            "members": ["members-dm-hello"],
+            "members": ["members-dm-hello", "members-roster-filter-and-summary"],
+            "apps": ["apps-discover-enable-notes"],
+            "schedule": ["schedule-add-cron-job"],
             "auth": ["auth-sign-in-card-signed-out"],
             "settings": ["settings-search-jump-to-theme", "settings-theme-toggle"],
         }
         # FEATURES order, not alphabetical: chat is the product's primary surface.
-        assert list(groups) == ["chat", "sidebar", "search", "members", "auth", "settings"]
+        assert list(groups) == [
+            "chat",
+            "sidebar",
+            "search",
+            "members",
+            "apps",
+            "schedule",
+            "auth",
+            "settings",
+        ]
 
     def test_members_scenario_holds_across_the_crew_mode_retirement(self) -> None:
         """The Feature Previews card carries two titles across the Crew Mode retirement; the steps name both."""
@@ -433,7 +454,7 @@ class TestReport:
         md = report.render_features(catalog, _summary(), run_url="https://x/run")
         assert md.startswith("# GUI user-test feature catalog\n")
         assert (
-            f"_6 of {len(scenarios.FEATURES)} features covered · 8 scenarios (7 smoke / 1 nightly)._"
+            f"_8 of {len(scenarios.FEATURES)} features covered · 12 scenarios (9 smoke / 3 nightly)._"
             in md
         )
         assert (
