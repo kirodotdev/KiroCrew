@@ -2894,9 +2894,13 @@ class DashboardConfig:
             "Terminal panel configuration. Set enabled=false to hide the CLI panel in the dashboard.",
             # Declared sub-keys become first-class schema entries
             # (dashboard.terminal.<key>) so Settings controls can reference
-            # them by configKey. The field stays a plain dict — undeclared
-            # keys (max_sessions, completion.commands, cwd) remain valid via
-            # additionalProperties and round-trip untouched.
+            # them by configKey and `kirocrew config set` accepts them on a
+            # config that has never written one (the CLI's key check consults
+            # SCHEMA_REGISTRY - see cli_config._declared_entry). `enabled` needs
+            # no declaration for that: it rides on the default_factory below, so
+            # it is always in the document that check walks. The field stays a
+            # plain dict, so a key added by a future release still round-trips
+            # untouched via additionalProperties.
             properties={
                 "shell": {
                     "type": "string",
@@ -2909,9 +2913,29 @@ class DashboardConfig:
                         ),
                     },
                 },
-                # Only `enabled` is declared; `completion.commands` (the
-                # subcommand-probe allowlist) stays an undeclared key, so the
-                # object is left open the same way `terminal` itself is.
+                "max_sessions": {
+                    "type": "integer",
+                    "default": 12,
+                    "x-meta": {
+                        "label": "Max terminal sessions",
+                        "help": (
+                            "Ceiling on concurrent terminal sessions across every chat, "
+                            "server-wide. Each chat's activity bar caps its own terminals "
+                            "below this; a session beyond the ceiling is refused."
+                        ),
+                    },
+                },
+                "cwd": {
+                    "type": "string",
+                    "default": "",
+                    "x-meta": {
+                        "label": "Default working directory",
+                        "help": (
+                            "Directory a terminal opens in when the chat passes no project "
+                            "directory of its own. Empty = $HOME."
+                        ),
+                    },
+                },
                 "completion": {
                     "type": "object",
                     "additionalProperties": True,
@@ -2929,6 +2953,28 @@ class DashboardConfig:
                                     "Show the completion popup while typing in the "
                                     "Terminal tab. Off = no popup; the shell's own Tab "
                                     "completion still works."
+                                ),
+                            },
+                        },
+                        # Left open like `completion` itself: a typed
+                        # `additionalProperties` would flatten into a
+                        # `commands.*` registry entry, which is not reachable
+                        # from the dataclass hierarchy the schema mirrors. The
+                        # values are protocol names and a value that is not one
+                        # is ignored by `terminal_commands.protocol_for`.
+                        "commands": {
+                            "type": "object",
+                            "additionalProperties": True,
+                            "default": {},
+                            "x-meta": {
+                                "label": "Completion protocol overrides",
+                                "help": (
+                                    "Re-point an already-allowlisted command at a different "
+                                    'completion protocol, e.g. {"docker": "cobra"}. It can '
+                                    "only change the protocol of a command the release "
+                                    "already knows - it cannot add one, because the "
+                                    "allowlist is the set of tools whose probe argv is "
+                                    "known to be inert."
                                 ),
                             },
                         },
