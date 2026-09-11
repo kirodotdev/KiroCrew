@@ -1163,7 +1163,13 @@ V2 context includes essential preference/project anchors and query-free,
 project-scoped lessons. V2 prompt construction performs no embedding search or
 episodic/semantic retrieval. Its runtime tells the agent to call `memory_recall`
 for a changed topic or prior decision and to
-use `learn_add` for corrections. Retrieval is reference material and does not
+use `learn_add` for corrections. The agent prompts (`config/prompt.md`,
+`config/prompt-orchestrator.md`) give both versions the same order for a question
+about the past: the injected block and lessons, then `memory_recall`, then
+`search_chat_history` for verbatim transcript text. That order is what keeps a V2
+member — whose injected block carries no facts or episodes — from falling through
+to a transcript keyword search, and tells a V1 session that the block was ranked
+once against its first message. Retrieval is reference material and does not
 override the current user's instruction. Forgetting removes a row from future
 long-term recall; it does not erase text already in an active conversation.
 Backup and staged restoration cover the entire member memory bundle, as
