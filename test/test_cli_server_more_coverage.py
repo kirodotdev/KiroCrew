@@ -967,6 +967,11 @@ class TestRunTask:
 # --------------------------------------------------------------------------
 
 
+# The OID the stub pins origin/<branch> to: what every later git call and the
+# reset itself must name, in place of the branch name.
+_PIN = "0123456789abcdef0123456789abcdef01234567"
+
+
 class _GitStub:
     """Routes ``subprocess.run`` by argv prefix so each branch is reachable."""
 
@@ -977,9 +982,15 @@ class _GitStub:
         # Behind-only by default: these tests model a fast-forwardable
         # checkout, which the divergence guard waves through.
         self.rev_list_out = "0\t5\n"
+        self.show_out: bytes | None = None
 
     def __call__(self, argv, **kw):
         self.calls.append(list(argv))
+        if argv[:3] == ["git", "rev-parse", "--verify"]:
+            # The upstream pin, taken right after the fetch.
+            return subprocess.CompletedProcess(
+                argv, self.rc.get("rev_parse_verify", 0), _PIN + "\n", "unknown revision"
+            )
         if argv[:2] == ["git", "rev-parse"]:
             return subprocess.CompletedProcess(argv, self.rc.get("rev_parse", 0), "main\n", "")
         if argv[:2] == ["git", "fetch"]:
@@ -992,6 +1003,14 @@ class _GitStub:
             )
         if argv[:2] == ["git", "status"]:
             return subprocess.CompletedProcess(argv, 0, self.status_out, "")
+        if argv[:2] == ["git", "show"]:
+            # The pre-reset interpreter-floor gate reads pyproject/setup.cfg out
+            # of the fetched commit. BYTES, like the real call. Absent by
+            # default (git's "no such path" exit), so the gate does not fire
+            # unless a test hands it a floor.
+            if self.show_out is None:
+                return subprocess.CompletedProcess(argv, 128, b"", b"fatal: path does not exist")
+            return subprocess.CompletedProcess(argv, 0, self.show_out, b"")
         if argv[:2] == ["git", "reset"]:
             return subprocess.CompletedProcess(argv, self.rc.get("reset", 0), "", "dirty")
         if argv[0] == "kiro-cli":
@@ -1142,6 +1161,84 @@ class TestUpdateGitPath:
         out = capsys.readouterr().out
         assert "--force: discarding 3 local commit(s)" in out
         assert any(c[:2] == ["git", "reset"] for c in stub.calls)
+
+    def test_a_revision_the_venv_cannot_run_is_refused_before_the_reset(
+        self, monkeypatch, git_checkout, capsys
+    ) -> None:
+        """The floor is judged on the FETCHED commit, before the tree moves.
+
+        pip would refuse the same revision during the reinstall, but only after
+        `reset --hard` had already moved the checkout to code this interpreter
+        cannot import -- the stranded state every later run then repeats.
+        """
+        from kiro_crew import dep_sync
+
+        stub = _GitStub()
+        stub.show_out = b'[project]\nname = "kirocrew"\nrequires-python = ">=3.12"\n'
+        # Tracked edits present: the refusal must land BEFORE the operator is
+        # asked whether to discard them, so the prompt is never reached.
+        stub.status_out = " M src/a.py\n"
+        monkeypatch.setattr(subprocess, "run", stub)
+        monkeypatch.setattr(dep_sync, "interpreter_version", lambda *a, **k: (3, 11, 9))
+
+        def _never_prompt(prompt=""):
+            raise AssertionError("discard prompt reached after a floor refusal")
+
+        monkeypatch.setattr("builtins.input", _never_prompt)
+        with pytest.raises(SystemExit) as exc:
+            cli_server._update()
+        assert exc.value.code == 1
+        out = capsys.readouterr().out
+        assert "Refusing to update" in out
+        assert ">=3.12" in out and "3.11.9" in out
+        # Read from the PINNED commit about to be applied, and the tree left alone.
+        assert any(c[:3] == ["git", "show", f"{_PIN}:pyproject.toml"] for c in stub.calls)
+        assert not any(c[:2] == ["git", "reset"] for c in stub.calls)
+
+    def test_a_venv_that_meets_the_incoming_floor_still_resets(
+        self, monkeypatch, git_checkout, capsys
+    ) -> None:
+        from kiro_crew import dep_sync
+
+        stub = _GitStub()
+        stub.show_out = b'[project]\nname = "kirocrew"\nrequires-python = ">=3.12"\n'
+        monkeypatch.setattr(subprocess, "run", stub)
+        monkeypatch.setattr(dep_sync, "interpreter_version", lambda *a, **k: (3, 12, 0))
+        cli_server._update()
+        assert any(c[:2] == ["git", "reset"] for c in stub.calls)
+
+    def test_every_judgment_and_the_reset_name_the_pinned_commit(
+        self, monkeypatch, git_checkout, capsys
+    ) -> None:
+        """Check and apply describe ONE revision, by construction.
+
+        The floor read, the divergence counts and the reset all take the OID
+        pinned right after the fetch, never the origin/<branch> name a fetch
+        from another terminal could move between them.
+        """
+        stub = _GitStub()
+        monkeypatch.setattr(subprocess, "run", stub)
+        cli_server._update()
+        assert ["git", "rev-parse", "--verify", "origin/main^{commit}"] in stub.calls
+        assert ["git", "reset", "--hard", _PIN] in stub.calls
+        assert not any("origin/main" in c for c in stub.calls if c[:2] == ["git", "reset"])
+        assert any(c[:3] == ["git", "show", f"{_PIN}:pyproject.toml"] for c in stub.calls)
+        rev_lists = [c for c in stub.calls if c[:2] == ["git", "rev-list"]]
+        assert rev_lists and all(any(_PIN in arg for arg in c) for c in rev_lists)
+        assert any(c[:2] == ["git", "diff"] and _PIN in c for c in stub.calls)
+
+    def test_an_unresolvable_upstream_pin_exits_before_any_judgment(
+        self, monkeypatch, git_checkout, capsys
+    ) -> None:
+        stub = _GitStub(rev_parse_verify=128)
+        monkeypatch.setattr(subprocess, "run", stub)
+        with pytest.raises(SystemExit) as exc:
+            cli_server._update()
+        assert exc.value.code == 1
+        assert "Could not resolve origin/main" in capsys.readouterr().out
+        assert not any(
+            c[:2] in (["git", "diff"], ["git", "rev-list"], ["git", "reset"]) for c in stub.calls
+        )
 
     def test_unreadable_divergence_refuses_the_reset(
         self, monkeypatch, git_checkout, capsys

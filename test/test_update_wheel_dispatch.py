@@ -507,6 +507,9 @@ class TestUpdateDivergenceGuard:
                     result.stdout = f"{proj}\n"
                 elif "--abbrev-ref" in args:
                     result.stdout = "main\n"
+                elif "--verify" in args:
+                    # The upstream pin every later judgment and the reset name.
+                    result.stdout = "0123456789abcdef0123456789abcdef01234567\n"
                 elif "diff" in args:
                     # Non-zero: the upstream has new commits, so the update
                     # proceeds past the up-to-date early return.
@@ -524,6 +527,14 @@ class TestUpdateDivergenceGuard:
                         result.stdout = counts
                 elif "status" in args:
                     result.stdout = porcelain
+                elif "show" in args:
+                    # The pre-reset interpreter-floor gate reads pyproject /
+                    # setup.cfg out of the fetched commit, capturing BYTES like
+                    # the real call. Answer "no such path" so the gate does not
+                    # fire: the divergence guard is what these tests are about.
+                    result.returncode = 128
+                    result.stdout = b""
+                    result.stderr = b""
             return result
 
         monkeypatch.setattr("subprocess.run", fake_run)

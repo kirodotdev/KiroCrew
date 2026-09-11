@@ -10,6 +10,7 @@ different checkout.
 """
 
 import ast
+import os
 import subprocess
 import sys
 import textwrap
@@ -180,6 +181,99 @@ def test_requires_python_reads_a_static_omission_as_no_floor_at_all(repo):
 
     # setup.cfg still says >=3.10; the static omission means it is not consulted.
     assert dep_sync.requires_python(repo) is None
+
+
+def test_requires_python_from_texts_judges_a_revision_without_a_working_tree():
+    """The same precedence as the checkout reader, applied to raw file bodies."""
+    py = '[project]\nname = "kirocrew"\nrequires-python = ">=3.12"\n'
+    assert dep_sync.requires_python_from_texts(py, _SETUP_CFG) == ">=3.12"
+    # No pyproject at all: setup.cfg is the authority.
+    assert dep_sync.requires_python_from_texts(None, _SETUP_CFG) == ">=3.10"
+    # A static omission in `[project]` is "no floor", never setup.cfg's copy.
+    assert dep_sync.requires_python_from_texts('[project]\nname = "kirocrew"\n', _SETUP_CFG) is None
+    assert dep_sync.requires_python_from_texts(None, None) is None
+
+
+def _git(repo: Path, *args: str) -> str:
+    return subprocess.run(
+        ["git", *args],
+        cwd=str(repo),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=True,
+        # A fixed identity and no user gitconfig, so the fixture commits the
+        # same way on every host.
+        env={
+            "PATH": os.environ["PATH"],
+            "HOME": str(repo),
+            "GIT_AUTHOR_NAME": "t",
+            "GIT_AUTHOR_EMAIL": "t@x",
+            "GIT_COMMITTER_NAME": "t",
+            "GIT_COMMITTER_EMAIL": "t@x",
+        },
+    ).stdout.strip()
+
+
+@pytest.fixture
+def floor_repo(tmp_path):
+    """A checkout at a >=3.10 revision whose fetched successor demands >=3.12.
+
+    Mirrors the shape that stranded a live install: the working tree still
+    declares the floor the venv meets, and the revision the update would apply
+    -- reachable only by ref, not on disk -- raises it past the interpreter.
+    """
+    repo = tmp_path / "checkout"
+    repo.mkdir()
+    _git(repo, "init", "-q", "-b", "main")
+    (repo / "pyproject.toml").write_text(
+        '[project]\nname = "kirocrew"\nrequires-python = ">=3.10"\n', encoding="utf-8"
+    )
+    _git(repo, "add", "pyproject.toml")
+    _git(repo, "commit", "-q", "-m", "floor 3.10")
+    _git(repo, "branch", "incoming")
+    _git(repo, "checkout", "-q", "incoming")
+    (repo / "pyproject.toml").write_text(
+        '[project]\nname = "kirocrew"\nrequires-python = ">=3.12"\n', encoding="utf-8"
+    )
+    _git(repo, "commit", "-q", "-am", "floor 3.12")
+    _git(repo, "checkout", "-q", "main")
+    return repo
+
+
+def test_incoming_floor_breach_reads_the_fetched_revision_not_the_working_tree(floor_repo):
+    """The working tree says 3.10 and passes; the incoming commit says 3.12 and refuses."""
+    with patch.object(dep_sync, "interpreter_version", return_value=(3, 11, 9)):
+        reason = dep_sync.incoming_python_floor_breach(floor_repo, "incoming", Path(sys.executable))
+        assert reason is not None
+        assert ">=3.12" in reason and "3.11.9" in reason
+        # The tree itself is untouched by the question.
+        assert dep_sync.requires_python(floor_repo) == ">=3.10"
+        assert (
+            dep_sync.incoming_python_floor_breach(floor_repo, "main", Path(sys.executable)) is None
+        )
+
+
+def test_incoming_floor_breach_does_not_fire_when_the_venv_meets_the_floor(floor_repo):
+    with patch.object(dep_sync, "interpreter_version", return_value=(3, 12, 0)):
+        assert (
+            dep_sync.incoming_python_floor_breach(floor_repo, "incoming", Path(sys.executable))
+            is None
+        )
+
+
+def test_incoming_floor_breach_does_not_fire_on_what_it_cannot_read(floor_repo):
+    """An unresolvable ref, or an unprobeable interpreter, is not a proven breach."""
+    with patch.object(dep_sync, "interpreter_version", return_value=(3, 10, 0)):
+        assert (
+            dep_sync.incoming_python_floor_breach(floor_repo, "no-such-ref", Path(sys.executable))
+            is None
+        )
+    with patch.object(dep_sync, "interpreter_version", return_value=None):
+        assert (
+            dep_sync.incoming_python_floor_breach(floor_repo, "incoming", Path(sys.executable))
+            is None
+        )
 
 
 def test_python_floor_breach_reports_the_highest_unmet_floor():

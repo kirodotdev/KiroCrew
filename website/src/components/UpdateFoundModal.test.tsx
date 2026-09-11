@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { screen, fireEvent, waitFor, act } from '@testing-library/react'
 
 import { renderWithProviders, createTestStore } from '../test/helpers'
-import { sseStatus } from '../store/dashboardSlice'
+import { sseStatus, setUpdateProgress } from '../store/dashboardSlice'
 import { i18nT } from '../i18n/t'
 import { api, ApiError } from '../api/client'
 import { SNOOZE_SECS } from '../utils/updateNudge'
@@ -343,6 +343,93 @@ describe('UpdateFoundModal — gateway source', () => {
     ).toBeInTheDocument())
   })
 
+  it('a background step failure after the accepted POST replaces "restarting" with the reason', async () => {
+    // The endpoint answers `updating` before pull/build/pip run; a pip refusal
+    // arrives later on the update_progress stream. Left unread, the modal
+    // would say "restarting…" forever for a restart that never comes.
+    mockedApi.applyUpdate.mockResolvedValue({} as never)
+    const store = gatewayStore({
+      update_available: true, update_latest_version: '8.8.8', update_can_apply: true,
+    })
+    await mount(undefined, store)
+    await waitFor(() => expect(dialog()).toBeInTheDocument())
+    fireEvent.click(byName('components.updateFoundModal.update_now'))
+    await waitFor(() => expect(
+      screen.getByText(i18nT('components.updateFoundModal.updating_and_restarting')),
+    ).toBeInTheDocument())
+    // The worker announces its first live step before anything can fail.
+    act(() => { store.dispatch(setUpdateProgress({ step: 'pulling', detail: 'Pulling latest changes…' })) })
+    act(() => { store.dispatch(setUpdateProgress({ step: 'error', detail: 'zzq pip install -e exited 1' })) })
+    await waitFor(() => expect(screen.getByText('zzq pip install -e exited 1')).toBeInTheDocument())
+    expect(screen.queryByText(i18nT('components.updateFoundModal.updating_and_restarting'))).toBeNull()
+    // The primary action is back so the user can retry once the cause is fixed.
+    expect(byName('components.updateFoundModal.update_now')).not.toBeDisabled()
+  })
+
+  it('a retry does not re-read the previous attempt\'s failure still in the store', async () => {
+    // Nothing clears update_progress between attempts: the previous terminal
+    // step sits in the store until the worker's first push replaces it. A
+    // retry that honoured it would flip straight back to the old failure and
+    // never show the update it just started.
+    mockedApi.applyUpdate.mockResolvedValue({} as never)
+    const store = gatewayStore({
+      update_available: true, update_latest_version: '8.8.8', update_can_apply: true,
+    })
+    await mount(undefined, store)
+    await waitFor(() => expect(dialog()).toBeInTheDocument())
+    fireEvent.click(byName('components.updateFoundModal.update_now'))
+    await waitFor(() => expect(
+      screen.getByText(i18nT('components.updateFoundModal.updating_and_restarting')),
+    ).toBeInTheDocument())
+    act(() => { store.dispatch(setUpdateProgress({ step: 'pulling', detail: '' })) })
+    act(() => { store.dispatch(setUpdateProgress({ step: 'error', detail: 'zzq first attempt' })) })
+    await waitFor(() => expect(screen.getByText('zzq first attempt')).toBeInTheDocument())
+
+    fireEvent.click(byName('components.updateFoundModal.update_now'))
+    await waitFor(() => expect(
+      screen.getByText(i18nT('components.updateFoundModal.updating_and_restarting')),
+    ).toBeInTheDocument())
+    // Settle: the stale terminal step is still what the store holds.
+    for (let i = 0; i < 4; i++) await act(async () => { await new Promise(r => setTimeout(r, 10)) })
+    expect(screen.queryByText('zzq first attempt')).toBeNull()
+    expect(screen.getByText(i18nT('components.updateFoundModal.updating_and_restarting'))).toBeInTheDocument()
+
+    // The second attempt's own failure still lands.
+    act(() => { store.dispatch(setUpdateProgress({ step: 'pulling', detail: '' })) })
+    act(() => { store.dispatch(setUpdateProgress({ step: 'error', detail: 'zzq second attempt' })) })
+    await waitFor(() => expect(screen.getByText('zzq second attempt')).toBeInTheDocument())
+  })
+
+  it('handing the failure to the agent closes the modal so the chat it opens is visible', async () => {
+    // The hand-off soft-navigates to chat UNDER this full-screen modal; left
+    // open, the click would look like it did nothing.
+    mockedApi.applyUpdate.mockResolvedValue({} as never)
+    const store = gatewayStore({
+      update_available: true, update_latest_version: '8.8.8', update_can_apply: true,
+    })
+    await mount(undefined, store)
+    await waitFor(() => expect(dialog()).toBeInTheDocument())
+    fireEvent.click(byName('components.updateFoundModal.update_now'))
+    await waitFor(() => expect(
+      screen.getByText(i18nT('components.updateFoundModal.updating_and_restarting')),
+    ).toBeInTheDocument())
+    act(() => { store.dispatch(setUpdateProgress({ step: 'pulling', detail: '' })) })
+    act(() => { store.dispatch(setUpdateProgress({ step: 'error', detail: 'zzq pip refused' })) })
+    await waitFor(() => expect(screen.getByText('zzq pip refused')).toBeInTheDocument())
+    fireEvent.click(byName('components.askAgent.ask_the_agent'))
+    await waitFor(() => expect(dialog()).toBeNull())
+  })
+
+  it('an unrelated progress event before any apply here leaves the modal alone', async () => {
+    const store = gatewayStore({
+      update_available: true, update_latest_version: '8.8.8', update_can_apply: true,
+    })
+    await mount(undefined, store)
+    await waitFor(() => expect(dialog()).toBeInTheDocument())
+    act(() => { store.dispatch(setUpdateProgress({ step: 'failed', detail: 'zzq other panel' })) })
+    expect(screen.queryByText('zzq other panel')).toBeNull()
+  })
+
   it('a real server rejection surfaces its message', async () => {
     mockedApi.applyUpdate.mockRejectedValue(new ApiError('zzq dirty tree'))
     await mount(undefined, gatewayStore({
@@ -425,6 +512,28 @@ describe('UpdateFoundModal — mandatory update (update_required)', () => {
     await mount(undefined, gatewayStore(requiredStatus))
     await waitFor(() => expect(dialog()).toBeInTheDocument())
     expect(screen.getByTestId('update-required-note').textContent).toContain('8.0.0')
+  })
+
+  it('a failed mandatory apply offers no agent hand-off and stays up', async () => {
+    // The hand-off closes the modal; a mandatory prompt that a failed apply
+    // could wave away would enforce nothing. The failure still reads, and the
+    // installer command remains the way out via a terminal.
+    mockedApi.applyUpdate.mockResolvedValue({} as never)
+    const store = gatewayStore({ ...requiredStatus, update_command: 'zzq installer --channel stable' })
+    await mount(undefined, store)
+    await waitFor(() => expect(dialog()).toBeInTheDocument())
+    fireEvent.click(byName('components.updateFoundModal.update_now'))
+    await waitFor(() => expect(
+      screen.getByText(i18nT('components.updateFoundModal.updating_and_restarting')),
+    ).toBeInTheDocument())
+    act(() => { store.dispatch(setUpdateProgress({ step: 'pulling', detail: '' })) })
+    act(() => { store.dispatch(setUpdateProgress({ step: 'error', detail: 'zzq pip refused' })) })
+    await waitFor(() => expect(screen.getByText('zzq pip refused')).toBeInTheDocument())
+    expect(screen.queryByRole('button', { name: i18nT('components.askAgent.ask_the_agent') })).toBeNull()
+    expect(screen.getByTestId('update-required-fallback-command').textContent)
+      .toContain('zzq installer --channel stable')
+    expect(dialog()).toBeInTheDocument()
+    expect(byName('components.updateFoundModal.update_now')).not.toBeDisabled()
   })
 
   it('required without a candidate version never opens (nothing to offer)', async () => {

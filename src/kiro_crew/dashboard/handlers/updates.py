@@ -1645,18 +1645,76 @@ async def api_update_apply(request: web.Request) -> web.Response:
             status=409,
         )
 
+    # Pin the revision this update will apply. The guard above fetched and
+    # measured against `@{u}`, but a ref name is re-resolved by every later git
+    # command, so a remote that moves between here and the apply would let the
+    # floor check below judge one commit and the fast-forward land on another.
+    # An OID cannot move: it is what gets floor-checked AND what gets applied.
+    target_proc = await asyncio.create_subprocess_exec(
+        "git",
+        "rev-parse",
+        "--verify",
+        "@{u}^{commit}",
+        cwd=proj,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    try:
+        target_out, _ = await asyncio.wait_for(target_proc.communicate(), timeout=10)
+    except asyncio.TimeoutError:
+        try:
+            target_proc.kill()
+        except ProcessLookupError:
+            pass
+        await target_proc.communicate()
+        return web.json_response(
+            {"error": "Timed out resolving the upstream revision", "code": "git_read_failed"},
+            status=500,
+        )
+    target = (target_out or b"").strip().decode()
+    if target_proc.returncode != 0 or not target:
+        logger.warning("Update refused: could not resolve the tracked upstream in %s", proj)
+        return web.json_response(
+            {
+                "error": "Could not resolve the tracked upstream revision — check the tracked remote",
+                "code": "git_read_failed",
+            },
+            status=409,
+        )
+
+    # Interpreter floor, checked against the pinned revision before the tree
+    # moves to it. pip enforces the same floor during the reinstall, but by then
+    # the checkout has already advanced to code this venv can never import: the
+    # gateway keeps serving the old revision from memory while every lazy import
+    # reads the new files, and each later click repeats the pull and the
+    # refusal. Refusing here leaves the checkout where it was and names the
+    # remedy. Offloaded: it shells out to git and probes the interpreter.
+    floor_breach = await asyncio.get_running_loop().run_in_executor(
+        subprocess_executor(),
+        lambda: dep_sync.incoming_python_floor_breach(Path(proj), target, Path(sys.executable)),
+    )
+    if floor_breach:
+        logger.warning("Update refused: %s", floor_breach)
+        return web.json_response(
+            {"error": f"Update refused: {floor_breach}", "code": "python_floor"},
+            status=409,
+        )
+
     async def _apply() -> None:
         try:
             state.push_update_progress("pulling", "Pulling latest changes…")
-            # --ff-only makes the non-fast-forward classes unreachable at the
-            # action primitive itself, not just at the precondition above: a
-            # remote that moves in the window between the guard's fetch and
-            # this pull fails the pull instead of minting an unrequested merge
-            # commit into the user's branch.
+            # Fast-forward to the PINNED commit, not `git pull`: a pull refetches
+            # and re-resolves the upstream, so a remote that moved after the
+            # floor check would land a revision nobody checked. --ff-only keeps
+            # the non-fast-forward classes unreachable at the action primitive
+            # itself, not just at the precondition above, so an upstream that
+            # was rewritten in the window fails the merge instead of minting an
+            # unrequested merge commit into the user's branch.
             pull = await asyncio.create_subprocess_exec(
                 "git",
-                "pull",
+                "merge",
                 "--ff-only",
+                target,
                 cwd=proj,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,

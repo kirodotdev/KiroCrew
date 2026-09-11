@@ -568,7 +568,9 @@ def _stop_mcp_gateway_daemon() -> None:
     elif outcome == "draining":
         print("⏳ MCP gateway daemon is draining its pooled MCP servers; it exits on its own.")
     elif outcome == "denied":
-        print("⚠️  No permission to stop the MCP gateway daemon; it exits once it sees its gateway is gone.")
+        print(
+            "⚠️  No permission to stop the MCP gateway daemon; it exits once it sees its gateway is gone."
+        )
     elif outcome == "unverified":
         print("⚠️  Something other than gatewayd answers the MCP gateway socket; left it alone.")
 
@@ -1236,10 +1238,35 @@ def _update(force: bool = False) -> None:
         print(f"  ❌ git fetch failed:\n{result.stderr.strip()}")
         sys.exit(1)
 
+    # Pin the fetched upstream to one commit. Every judgment below -- "already
+    # up to date", the divergence counts, the interpreter floor -- and the reset
+    # itself name this OID rather than origin/<branch>, so they all describe
+    # the same revision by construction: a fetch run concurrently from another
+    # terminal can move the name, never the pin.
+    try:
+        pin_result = subprocess.run(
+            ["git", "rev-parse", "--verify", f"origin/{branch}^{{commit}}"],
+            cwd=proj,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            timeout=10,
+            **UTF8_TEXT,
+        )
+    except subprocess.TimeoutExpired as exc:
+        logging.getLogger(__name__).warning(
+            "git rev-parse timed out after %ss during update", exc.timeout
+        )
+        print(f"  ❌ Could not resolve origin/{branch} (git rev-parse timed out)")
+        sys.exit(1)
+    target = pin_result.stdout.strip()
+    if pin_result.returncode != 0 or not target:
+        print(f"  ❌ Could not resolve origin/{branch}:\n{pin_result.stderr.strip()}")
+        sys.exit(1)
+
     # Check if there are new commits
     try:
         diff_result = subprocess.run(
-            ["git", "diff", "HEAD", f"origin/{branch}", "--quiet"],
+            ["git", "diff", "HEAD", target, "--quiet"],
             cwd=proj,
             stdin=subprocess.DEVNULL,
             capture_output=True,
@@ -1264,9 +1291,8 @@ def _update(force: bool = False) -> None:
     # Mirror the dashboard check's verdict: only a fast-forwardable checkout
     # (behind and not ahead) proceeds to the reset; ahead-only has nothing to
     # pull and returns without resetting; true divergence refuses unless the
-    # operator explicitly opted in with --force. Counted against
-    # origin/<branch> — the exact ref the reset targets, freshly updated by
-    # the fetch above.
+    # operator explicitly opted in with --force. Counted against the pinned
+    # commit — exactly what the reset targets.
     #
     # This runs TWICE — once here, once immediately before the reset — because
     # the prompt below makes the gap to the destructive step unbounded. Both
@@ -1274,7 +1300,7 @@ def _update(force: bool = False) -> None:
     # PRINT, never in which states they recognise: a state handled in one and
     # forgotten in the other is how a guard grows a hole.
     def _divergence_verdict() -> tuple[str, int, int]:
-        """Classify HEAD against ``origin/<branch>`` for the reset decision.
+        """Classify HEAD against the pinned upstream commit for the reset decision.
 
         Returns ``(verdict, ahead, behind)`` where verdict is one of:
 
@@ -1289,7 +1315,7 @@ def _update(force: bool = False) -> None:
         * ``"diverged"`` — ahead AND behind; resettable only under ``--force``.
         * ``"fast_forward"`` — behind and not ahead; nothing of its own to lose.
         """
-        counts = count_divergence_sync(proj, f"origin/{branch}")
+        counts = count_divergence_sync(proj, target)
         if isinstance(counts, DivergenceUnreadable):
             if counts.reason == UNREADABLE_UNPARSEABLE:
                 print(f"  ❌ Could not parse the commit counts against origin/{branch}:")
@@ -1325,6 +1351,18 @@ def _update(force: bool = False) -> None:
             print("      kirocrew update --force")
             sys.exit(1)
         print(f"  ⚠️  --force: discarding {ahead} local commit(s) not on origin/{branch}.")
+
+    # Interpreter floor of the pinned revision, read from the commit itself. The
+    # reinstall below would refuse it anyway, but only after the reset has moved
+    # the tree to code this venv cannot import -- leaving a running gateway
+    # serving old code out of memory while every lazy import reads the new
+    # files, and every later `kirocrew update` repeating the reset and the
+    # refusal. Judged here: before the operator is asked to discard anything,
+    # and outside the re-classification that must stay adjacent to the reset.
+    floor_breach = dep_sync.incoming_python_floor_breach(Path(proj), target, Path(sys.executable))
+    if floor_breach:
+        print(f"  ❌ Refusing to update: {floor_breach}")
+        sys.exit(1)
 
     # Warn about local tracked-file changes before discarding
     try:
@@ -1364,8 +1402,8 @@ def _update(force: bool = False) -> None:
     # natural next step — the first leaves the snapshot stale, the second
     # turns the checkout ahead-only, and both end in the reset deleting the
     # commits the operator just made to save that work. Only HEAD can move
-    # here (origin/<branch> is a local ref that only a fetch rewrites), so
-    # this needs no second network round trip.
+    # here: the reset targets the pinned commit, which no concurrent fetch can
+    # rewrite, so this needs no second network round trip.
     verdict, ahead, behind = _divergence_verdict()
     if verdict == "unreadable":
         sys.exit(1)
@@ -1380,10 +1418,10 @@ def _update(force: bool = False) -> None:
         print(f"      Reconcile with: git rebase origin/{branch}")
         sys.exit(1)
 
-    print(f"  🔄 git reset --hard origin/{branch}…")
+    print(f"  🔄 git reset --hard origin/{branch} ({target[:12]})…")
     try:
         result = subprocess.run(
-            ["git", "reset", "--hard", f"origin/{branch}"],
+            ["git", "reset", "--hard", target],
             cwd=proj,
             stdin=subprocess.DEVNULL,
             capture_output=True,
@@ -1542,7 +1580,9 @@ def _update_wheel(layout) -> None:
         sys.exit(1)
     try:
         req = urllib.request.Request(feed_url, headers={"User-Agent": "kirocrew-update/1"})
-        with urllib.request.urlopen(req, timeout=15) as resp:  # nosemgrep: dynamic-urllib-use-detected
+        with urllib.request.urlopen(  # nosemgrep: dynamic-urllib-use-detected
+            req, timeout=15
+        ) as resp:
             raw = resp.read(65536 + 1)
     except (urllib.error.URLError, OSError, ValueError) as e:
         print(f"  ❌ Could not reach release feed: {e}")
@@ -1730,7 +1770,9 @@ def _update_approve() -> None:
             detail = json.loads(e.read()).get("error", "")
         except Exception:
             detail = ""
-        print(f"❌ Gateway refused the approval (HTTP {e.code})" + (f": {detail}" if detail else ""))
+        print(
+            f"❌ Gateway refused the approval (HTTP {e.code})" + (f": {detail}" if detail else "")
+        )
         sys.exit(1)
     except (urllib.error.URLError, OSError):
         print("❌ Gateway is not running — start it, or update directly with: kirocrew update")
@@ -1956,8 +1998,8 @@ async def _run_task(args: argparse.Namespace) -> None:
         await asyncio.to_thread(skills.sync_builtins)
     except Exception:
         logging.getLogger(__name__).warning(
-            "builtin-skill sync failed; continuing with the skills already "
-            "on disk", exc_info=True,
+            "builtin-skill sync failed; continuing with the skills already " "on disk",
+            exc_info=True,
         )
     consolidator = HistoryConsolidator(
         log=conv_log,

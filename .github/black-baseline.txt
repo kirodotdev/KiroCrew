@@ -160,7 +160,6 @@ src/kiro_crew/channel_history.py
 src/kiro_crew/channel_transcript_migration.py
 src/kiro_crew/cli_cloud.py
 src/kiro_crew/cli_desktop.py
-src/kiro_crew/cli_server.py
 src/kiro_crew/cloud/connect.py
 src/kiro_crew/cloud/ec2.py
 src/kiro_crew/cloud/launch_engine.py

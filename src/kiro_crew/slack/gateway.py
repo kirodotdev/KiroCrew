@@ -10615,6 +10615,27 @@ class GatewayOrchestrator:
                     self.dashboard_state.push_refresh("update_available")
                 return
 
+            # 5. Interpreter floor of the TARGET revision, read from the fetched
+            #    commit itself. pip would refuse the reinstall below on the same
+            #    floor, but only after the reset has moved the tree to code this
+            #    venv cannot import -- a state every boot then re-enters, because
+            #    the next check sees the commit already applied and never retries.
+            #    Refuse before the reset, with the remedy, and leave the tree.
+            floor_breach = await asyncio.get_running_loop().run_in_executor(
+                subprocess_executor(),
+                lambda: dep_sync.incoming_python_floor_breach(
+                    Path(proj), target, Path(sys.executable), git_bin=_git, env=_git_env
+                ),
+            )
+            if floor_breach:
+                logger.warning("Auto-update refused: %s", floor_breach)
+                if self.dashboard_state:
+                    self.dashboard_state.push_update_progress(
+                        "failed", f"Update refused: {floor_breach}"
+                    )
+                    self.dashboard_state.push_refresh("update_available")
+                return
+
             # Hard reset to remote. Reached only with a clean tracked tree and no
             # untracked collisions, so it overwrites nothing the developer owns.
             reset = await asyncio.create_subprocess_exec(

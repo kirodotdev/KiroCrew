@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { Trans } from 'react-i18next'
 import MarkdownRenderer from './MarkdownRenderer'
+import ErrorNotice from './ErrorNotice'
 import { Download, X, Copy, Check } from 'lucide-react'
 
 import { api, ApiError } from '../api/client'
@@ -148,6 +149,14 @@ export default function UpdateFoundModal() {
   // long-lived window (the desktop app's normal lifetime is days).
   const [dismissedVersion, setDismissedVersion] = useState('')
   const sessionDismissed = !!candidate && dismissedVersion === candidate.version
+  // The failure notice's "Ask the agent" hand-off soft-navigates to chat, which
+  // this full-screen modal would otherwise cover -- the click would look like
+  // it did nothing. Handing off closes the modal for this page session, and
+  // deliberately ALSO for a mandatory update: the user is going to get the
+  // refusal fixed, which is what the mandate wants, and the modal comes back
+  // on the next load because nothing is persisted.
+  const [handedOffVersion, setHandedOffVersion] = useState('')
+  const handedOff = !!candidate && handedOffVersion === candidate.version
   const [copied, setCopied] = useState(false)
   const [restarting, setRestarting] = useState(false)
   const [applyError, setApplyError] = useState('')
@@ -164,9 +173,13 @@ export default function UpdateFoundModal() {
   // Waiting for the record before opening is what makes "skip 0.5.0" hold
   // across reloads: opening optimistically would flash the modal at every
   // user who already skipped.
+  // The agent hand-off is one more dismissal, so it is confined to the
+  // voluntary branch: a mandatory prompt that a failed apply could wave away
+  // would enforce nothing.
   const open = !!candidate
     && (required || (
-      recordLoaded
+      !handedOff
+      && recordLoaded
       && !sessionDismissed
       && shouldNudge(candidate.version, record, Date.now() / 1000)
     ))
@@ -201,6 +214,13 @@ export default function UpdateFoundModal() {
       queryClient.setQueryData(['mc-config-update-nudge'], rec)
     },
   })
+
+  // The gateway's apply endpoint answers `updating` BEFORE the work runs and
+  // reports the rest (pull, build, pip, restart) over the update_progress
+  // stream. A failure there — pip refusing the merged revision, a pull that
+  // cannot fast-forward — would otherwise leave this modal on "restarting…"
+  // for a restart that is never coming.
+  const gwProgress = useAppSelector(s => s.dashboard.updateProgress)
 
   const gwApply = useMutation({
     mutationFn: () => api.applyUpdate(),
@@ -259,6 +279,32 @@ export default function UpdateFoundModal() {
   useEffect(() => {
     if (open) dialogRef.current?.focus()
   }, [open])
+
+  // Surface a background apply failure in the same slot a synchronous
+  // rejection uses, and drop the restarting latch so the buttons come back:
+  // the user can read the reason, retry, or dismiss. Only while this modal's
+  // own apply is in flight — an unrelated failed step from the About panel
+  // must not rewrite a modal that never started an update — and only after a
+  // live step of THIS apply has been seen: the store holds the previous
+  // attempt's terminal step until the worker's first push replaces it, so a
+  // retry would otherwise read its predecessor's failure the instant the POST
+  // is accepted. The worker always announces a live step before it can fail.
+  const gwProgressStep = gwProgress?.step ?? ''
+  const gwProgressDetail = gwProgress?.detail ?? ''
+  const sawLiveStepRef = useRef(false)
+  useEffect(() => {
+    if (!restarting) {
+      sawLiveStepRef.current = false
+      return
+    }
+    if (gwProgressStep !== 'failed' && gwProgressStep !== 'error') {
+      if (gwProgressStep) sawLiveStepRef.current = true
+      return
+    }
+    if (!sawLiveStepRef.current) return
+    setRestarting(false)
+    setApplyError(gwProgressDetail || i18nT('components.updateFoundModal.update_failed'))
+  }, [restarting, gwProgressStep, gwProgressDetail])
 
   // A save failure is a verdict on ONE version's write, not a permanent
   // downgrade to session-only dismissal: left sticky, the NEXT release's
@@ -379,7 +425,22 @@ export default function UpdateFoundModal() {
           {candidate.source === 'gateway' && candidate.affordance === 'command' && (
             <code data-testid="update-found-command" className="block mt-2 text-[12px] bg-bg border border-border rounded-md px-2 py-1.5 overflow-x-auto whitespace-nowrap">{candidate.command}</code>
           )}
-          {applyError && <p className="mt-2 text-[12px] text-danger">{applyError}</p>}
+          {/* askAgent ON for a voluntary update: a refused or failed apply has
+              changed nothing the hand-off could destroy (the endpoint rejects
+              before it acts, and a failed step stops the worker), and the usual
+              causes -- a venv below the merged revision's interpreter floor, a
+              diverged checkout -- are exactly what the agent can diagnose and
+              fix. OFF for a mandatory one: the hand-off closes this modal, and
+              a mandatory prompt's whole enforcement is staying up; the
+              installer command below is its way out. */}
+          <ErrorNotice
+            variant="inline"
+            askAgent={!required}
+            className="mt-2"
+            message={applyError || null}
+            onHandoff={() => setHandedOffVersion(candidate.version)}
+            testId="update-found-apply-error"
+          />
           {required && applyError && candidate.affordance === 'apply' && gwCommand && (
             // Escape hatch for the worst state: a mandatory update whose
             // in-process apply keeps failing would otherwise strand the user

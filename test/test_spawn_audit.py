@@ -798,6 +798,17 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         "dep_sync.py::_probe_interpreter",
         "dep_sync.py::sync",
         "dep_sync.py::sync_or_reinstall",
+        # _git_blob_text is the pre-mutation interpreter-floor gate's one read:
+        # `<git> show <ref>:<fixed filename>` (pyproject.toml / setup.cfg) in the
+        # operator-configured checkout, so an update can refuse a revision the
+        # venv cannot import BEFORE the pull/reset moves the tree to it. Nothing
+        # in the argv is agent-influenced: the ref is either the literal `@{u}`
+        # or the OID the auto-apply already resolved and is about to reset to,
+        # the filenames are fixed, and the git binary is whatever the calling
+        # update path already uses for its own pull/reset (the trusted pinned
+        # binary on the unattended path). Same read shape and grounds as
+        # npm_preflight._extract above.
+        "dep_sync.py::_git_blob_text",
         # npm_preflight is the sync's pre-merge installability probe, and like
         # dep_sync it runs AS one of the sync steps -- which server.py already
         # wrapped through sandboxed_spawn_argv before handing it to the runner.

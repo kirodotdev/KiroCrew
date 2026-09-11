@@ -52,6 +52,7 @@ import { GithubIcon, DiscordIcon } from './components/BrandIcon'
 import { Toggle } from './components/ui'
 import OnboardingFlow from './components/OnboardingFlow'
 import AgentImportFlow from './components/AgentImportFlow'
+import ErrorNotice from './components/ErrorNotice'
 import PrivacyChapter from './components/PrivacyChapter'
 import { OnboardingShellHost } from './components/OnboardingChapterShell'
 import { PREVIEW_EXPAND_EVENT } from './components/WebPreviewPanel'
@@ -379,7 +380,11 @@ export function UpdateOverlay({ onCancel }: { onCancel: () => void }) {
   const detail = progress?.detail || ''
   const info = UPDATE_STEPS[step]
   const currentIdx = STEP_ORDER.indexOf(step)
-  const isFailed = step === 'failed'
+  // Both spellings are terminal: the apply path pushes `failed` from its
+  // outer handler and `error` from its per-step handlers (pull, pip), and a
+  // step the overlay does not recognise as final renders as a stall until the
+  // stuck timer fires five minutes later.
+  const isFailed = step === 'failed' || step === 'error'
   const [elapsed, setElapsed] = useState(0)
   const startRef = useRef(Date.now())
 
@@ -433,7 +438,18 @@ export function UpdateOverlay({ onCancel }: { onCancel: () => void }) {
         </div>
         {isFailed ? (
           <div className="flex flex-col gap-3 items-center">
-            <div className="text-sm text-danger">{detail || i18nT('app.check_logs_for_details')}</div>
+            {/* askAgent ON: a failed step has already stopped the worker, so
+                the hand-off can destroy nothing; the causes (pull refused,
+                pip refusing the merged revision) are diagnosable by the agent.
+                The hand-off navigates to chat UNDER this z-[100] overlay, so
+                it also dismisses the overlay -- the same clear as Dismiss. */}
+            <ErrorNotice
+              askAgent
+              className="text-left"
+              message={detail || i18nT('app.check_logs_for_details')}
+              onHandoff={handleCancel}
+              testId="update-overlay-error"
+            />
             <button className="px-4 py-1.5 rounded-lg text-[13px] font-medium cursor-pointer bg-card border border-border text-text hover:border-border-strong transition-colors" onClick={handleCancel}>
               {i18nT('app.dismiss')}
             </button>
