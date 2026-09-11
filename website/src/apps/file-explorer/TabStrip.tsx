@@ -47,7 +47,10 @@ export default function TabStrip({ folderTabs, fileTabs, activeFolderId, activeF
             title={t.rootPath}
             role="tab"
             tabIndex={0}
-            onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') onActivateFolder(t.id) }}
+            // Row-only activation: the rename input below is a descendant, so
+            // without the target check a Space typed into it re-activates this
+            // tab on every keystroke.
+            onKeyDown={(e) => { if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) onActivateFolder(t.id) }}
           >
             <Folder size={11} style={{ opacity: 0.7, marginRight: 5, flexShrink: 0 }} />
             {renameId === t.id ? (

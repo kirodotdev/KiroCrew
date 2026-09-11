@@ -345,6 +345,24 @@ describe('TabStrip', () => {
     await userEvent.click(screen.getByLabelText('New workspace tab'))
     expect(newFolder).toHaveBeenCalled()
   })
+
+  // Regression: the tab is role="tab" with a Space/Enter activate handler, and
+  // the rename input is a descendant. Space typed into the rename field bubbled
+  // up and re-activated the tab on every keystroke, so a workspace tab could
+  // not be given a multi-word label. The handler now ignores descendant events.
+  it('does not re-activate the tab when Space is typed in the rename input', async () => {
+    const activate = vi.fn()
+    render(
+      <TabStrip folderTabs={folders} fileTabs={[]} activeFolderId="ft-1" activeFileId={null}
+        onActivateFolder={activate} onActivateFile={vi.fn()} onCloseFolder={vi.fn()}
+        onCloseFile={vi.fn()} onNewFolder={vi.fn()} onRenameFolder={vi.fn()} />,
+    )
+    await userEvent.dblClick(screen.getByText('Home'))
+    const input = screen.getByLabelText('Rename workspace tab')
+    activate.mockClear()
+    fireEvent.keyDown(input, { key: ' ' })
+    expect(activate).not.toHaveBeenCalled()
+  })
 })
 
 // ─── PathBar ────────────────────────────────────────────────────────────────

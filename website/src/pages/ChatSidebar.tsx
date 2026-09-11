@@ -5353,7 +5353,12 @@ function ChatSidebar({
           aria-label={boardFolderCollapsed(columnId, folder) ? i18nT('pages.chatSidebar.expand_folder_name', { name: folder.name }) : i18nT('pages.chatSidebar.collapse_folder_name', { name: folder.name })}
           {...(draggable ? dragHandleProps : {})}
           onClick={() => toggleColumnCollapse(columnId, folder)}
-          onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleColumnCollapse(columnId, folder) } }}
+          // `e.target === e.currentTarget` restricts the Space/Enter toggle to
+          // the row itself. Without it the row swallows every Space typed in a
+          // focused DESCENDANT — the inline rename input below — because
+          // preventDefault() drops the character and the folder collapses
+          // instead. Same guard as Clickable and UpdateModal.
+          onKeyDown={e => { if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); toggleColumnCollapse(columnId, folder) } }}
         >
           <FolderGlyph color={folder.color} size={11} open={!boardFolderCollapsed(columnId, folder)} />
           {editingId === folder.id && editScope === columnId ? (
@@ -5361,8 +5366,11 @@ function ChatSidebar({
              *  Without this branch the ⋯-menu "Rename" set editingId but no
              *  field ever appeared, so rename silently did nothing here. The
              *  collapse handler is on the OUTER div, so the input's onClick +
-             *  onMouseDown stopPropagation are load-bearing (they keep typing/
-             *  clicking the field from bubbling to toggleCollapse). */
+             *  onMouseDown stopPropagation are load-bearing (they keep clicking
+             *  the field from bubbling to toggleColumnCollapse). Keys are
+             *  handled the other way round — the row's onKeyDown ignores events
+             *  whose target is not the row — so Space types a space here rather
+             *  than collapsing the folder. */
             <Input ref={folderEditInputRef} className="flex-1 py-0.5 text-[12px] min-w-0" value={editName} onChange={e => setEditName(e.target.value)} onClick={e => e.stopPropagation()} onMouseDown={e => e.stopPropagation()} {...ime.bindEnter<HTMLInputElement>({ onEnter: () => renameCommit(folder.id, editName), onEscape: () => setEditingId(null), onBlur: () => renameCommit(folder.id, editName) })} />
           ) : (
             // Double-click rename is a mouse-only power shortcut; the accessible
