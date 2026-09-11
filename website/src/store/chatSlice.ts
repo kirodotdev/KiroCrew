@@ -3543,6 +3543,19 @@ export const selectContinuable = (state: RootState): boolean => {
   return false
 }
 
+/** The characters Python's no-argument `str.split()` splits on. JS `\s` is NOT
+ *  the same set: it adds U+FEFF and lacks U+0085 and U+001C-001F, so a `\s`
+ *  scan of the same content can produce a different first token than the
+ *  backend's `content.split()[0]` -- the rule `is_turn_interrupted` and the
+ *  runner's `user_requested_compaction` key on. */
+const PYTHON_WHITESPACE_RE = /[\t\n\v\f\r\u001c-\u001f \u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+/
+
+/** First whitespace-separated token by PYTHON's splitting rule, or undefined
+ *  for all-whitespace content. Mirrors `content.split()[:1]` in
+ *  `src/kiro_crew/dashboard/state.py`. */
+const firstPythonToken = (content: string): string | undefined =>
+  content.split(PYTHON_WHITESPACE_RE).find(Boolean)
+
 /**
  * True when the transcript SHOWS the last turn ending without the assistant
  * handing the floor back — the user's row is last, or an `error` row trails the
@@ -3555,10 +3568,19 @@ export const selectContinuable = (state: RootState): boolean => {
  *
  * A false result means "nothing in the transcript proves an interruption", never
  * "the turn definitely finished": the force-quit case leaves no evidence.
+ *
+ * A `/compact` answered by its compaction notice (the assistant row tagged
+ * `meta.kind="compaction"`) reads as FINISHED: the slash command IS the whole
+ * request and the notice IS its result. The tag alone cannot decide -- an
+ * automatic compaction can write the same tagged row inside an ordinary turn
+ * whose real reply never arrived, and that tail is a genuine interruption --
+ * so the rule needs BOTH halves, matching `is_turn_interrupted` in
+ * `src/kiro_crew/dashboard/state.py`.
  */
 export const selectTurnInterrupted = (state: RootState): boolean => {
   const msgs = state.chat.messages
   let sawTrailingError = false
+  let sawCompactionResult = false
   for (let i = msgs.length - 1; i >= 0; i--) {
     const m = msgs[i]
     // A deliberate Stop ENDS the turn; it does not interrupt it. This must be
@@ -3576,8 +3598,25 @@ export const selectTurnInterrupted = (state: RootState): boolean => {
     if (m.role === 'error') { sawTrailingError = true; continue }
     if (CONTINUE_SCAN_SKIP.has(m.role)) continue
     if ((m.role === 'user' || m.role === 'assistant') && m.content) {
-      if (m.role === 'assistant' && isSystemNoticeKind((m.meta as { kind?: string } | undefined)?.kind)) continue
-      return m.role === 'user' ? true : sawTrailingError
+      const meta = m.meta as { kind?: string; notice?: string } | undefined
+      if (m.role === 'assistant' && isSystemNoticeKind(meta?.kind)) {
+        // Remember a compaction RESULT row on the newest turn; whether it
+        // completes the turn depends on the user row it leads back to. The
+        // recycle and stuck-turn notices borrow `kind="compaction"` and mark
+        // themselves with `meta.notice`; they report no compaction, so they
+        // must not complete one.
+        if (meta?.kind === 'compaction' && !meta?.notice) sawCompactionResult = true
+        continue
+      }
+      if (m.role !== 'user') return sawTrailingError
+      // A `/compact` answered by its compaction notice is a FINISHED turn --
+      // unless an error row trails the notice, the same evidence the
+      // plain-assistant branch honors. First-whitespace-token match using
+      // PYTHON's whitespace set (the backend rule is `content.split()`, and
+      // JS `\s` / `trim()` disagree with it on U+FEFF and U+0085), so the two
+      // mirrors cannot split the same content differently.
+      if (sawCompactionResult && firstPythonToken(m.content) === '/compact') return sawTrailingError
+      return true
     }
   }
   return false

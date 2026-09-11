@@ -2103,9 +2103,16 @@ def is_turn_interrupted(messages: list[dict]) -> bool:
     ASSISTANT's but an error row follows it (the turn streamed partway then died,
     which is otherwise shape-identical to a clean completion).
 
-    One shape is explicitly excluded: a trailing ``stop_event``. The user pressing
-    Stop is a deliberate ending, not an interruption, and stopping before the
-    reply emitted any text produces the same ``[user, ...]`` tail as a crash.
+    Two shapes are explicitly excluded. A trailing ``stop_event``: the user
+    pressing Stop is a deliberate ending, not an interruption, and stopping
+    before the reply emitted any text produces the same ``[user, ...]`` tail as
+    a crash. And a ``/compact`` request answered by its compaction notice (the
+    assistant row ``chat_utils._append_compaction_notice`` tags
+    ``meta.kind="compaction"``): the slash command IS the whole request and the
+    notice IS its result, so nothing is missing. The discriminator is
+    deliberately BOTH halves -- the tag alone cannot decide, because an
+    automatic compaction can write the same tagged row inside an ordinary turn
+    whose real reply never arrived, and that tail is a genuine interruption.
 
     Selects the wording injected for the model (``_MANUAL_RESUME_MSG`` vs
     ``_MANUAL_CONTINUE_MSG``), gates whether the composer offers the Resume
@@ -2126,6 +2133,7 @@ def is_turn_interrupted(messages: list[dict]) -> bool:
     distinction would buy a branch and nothing else.
     """
     saw_trailing_error = False
+    saw_compaction_result = False
     for m in reversed(messages):
         role = m.get("role")
         meta = m.get("meta") or {}
@@ -2139,9 +2147,37 @@ def is_turn_interrupted(messages: list[dict]) -> bool:
         if is_stop_event_row(m):
             return False
         if is_system_notice(role, meta):
+            # Remember a compaction RESULT row on the newest turn. Skipping the
+            # row is still right in general (an auto-compaction notice inside
+            # an ordinary turn is not that turn's reply), but when the user row
+            # this scan lands on IS the ``/compact`` request, this row is that
+            # request's whole result -- see the user branch below. The recycle
+            # and stuck-turn notices borrow ``kind="compaction"`` for the
+            # follow-up scan's skip and mark themselves with ``meta["notice"]``;
+            # they report no compaction, so they must not complete one.
+            if (
+                isinstance(meta, dict)
+                and meta.get("kind") == "compaction"
+                and not meta.get("notice")
+            ):
+                saw_compaction_result = True
             continue
         if role in ("user", "assistant") and m.get("content"):
-            return True if role == "user" else saw_trailing_error
+            if role != "user":
+                return saw_trailing_error
+            # A ``/compact`` answered by its compaction notice is a FINISHED
+            # turn -- unless an error row trails the notice, which is the same
+            # evidence the plain-assistant branch honors. Matched on the first
+            # whitespace token, the same rule the runner uses for
+            # ``user_requested_compaction``.
+            content = m.get("content")
+            if (
+                saw_compaction_result
+                and isinstance(content, str)
+                and content.split()[:1] == ["/compact"]
+            ):
+                return saw_trailing_error
+            return True
         if role == "error":
             saw_trailing_error = True
     return False
@@ -5618,8 +5654,15 @@ class DashboardState:
             try:
                 # Tag kind="compaction" so the dashboard's follow-up [OPTIONS:]
                 # backward scan skips this proactive system notice, matching the
-                # auto-compact notice invariant.
-                slot.append("assistant", message, "msg msg-a", meta={"kind": "compaction"})
+                # auto-compact notice invariant. `notice` marks it as borrowing
+                # the tag: it reports no compaction, so `is_turn_interrupted`
+                # must not read it as a `/compact` request's result.
+                slot.append(
+                    "assistant",
+                    message,
+                    "msg msg-a",
+                    meta={"kind": "compaction", "notice": "session_recycled"},
+                )
             except Exception:
                 logging.getLogger(__name__).exception(
                     "Failed to append recycle notice to slot %s", slot_key
@@ -5663,7 +5706,15 @@ class DashboardState:
                 # kind="compaction" for the same reason as the recycle notice: it
                 # keeps the dashboard's follow-up [OPTIONS:] backward scan from
                 # treating a proactive system notice as the turn's own output.
-                slot.append("assistant", message, "msg msg-a", meta={"kind": "compaction"})
+                # `notice` marks the borrowed tag: a stuck turn is the OPPOSITE
+                # of a completed one, so `is_turn_interrupted` must not read
+                # this row as a `/compact` request's result.
+                slot.append(
+                    "assistant",
+                    message,
+                    "msg msg-a",
+                    meta={"kind": "compaction", "notice": "stuck_turn"},
+                )
             except Exception:
                 logging.getLogger(__name__).exception(
                     "Failed to append stuck-turn notice to slot %s", slot_key

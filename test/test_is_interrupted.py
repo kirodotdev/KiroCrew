@@ -152,3 +152,115 @@ class TestDeliberateStop:
             _is_interrupted(slot(user(), stop_event(), user(), assistant(), error()))
             is True
         )
+
+
+def compaction_notice(content: str = "Conversation compacted: summary") -> dict:
+    """A compaction result row: an assistant row tagged ``meta.kind="compaction"``.
+
+    Four writers emit this shape -- ``chat_utils._append_compaction_notice``
+    plus three direct ``slot.append`` sites in ``state.py`` (the proactive
+    auto-compact paths, which bypass the chat_utils helper to avoid an import
+    cycle). The tag, not the writer, is what this predicate keys on.
+    """
+    return {"role": "assistant", "content": content, "meta": {"kind": "compaction"}}
+
+
+class TestCompletedCompaction:
+    """A ``/compact`` answered by its compaction notice is FINISHED.
+
+    The five tail shapes pin the discriminator from both sides: the tag alone
+    must not decide (case D is a real interruption carrying the same tagged
+    row), and the request alone must not decide (case C got nothing back). Only
+    the pair -- a ``/compact`` user row whose compaction result row is present
+    -- reads as a completed turn.
+    """
+
+    def test_compact_answered_by_notice_is_finished(self):
+        # Case A: the slash command IS the request and the notice IS its result.
+        assert (
+            _is_interrupted(
+                slot(user(), assistant(), user("/compact"), compaction_notice())
+            )
+            is False
+        )
+
+    def test_untagged_lookalike_text_reads_as_an_ordinary_reply(self):
+        # Case B: the same text without the tag is a plain assistant reply, so
+        # it already reads as the floor. Isolates the tag as A's trigger.
+        assert (
+            _is_interrupted(
+                slot(user("/compact"), assistant("Conversation compacted: summary"))
+            )
+            is False
+        )
+
+    def test_compact_with_nothing_back_is_interrupted(self):
+        # Case C: the request went out and no result row ever arrived.
+        assert _is_interrupted(slot(user(), assistant(), user("/compact"))) is True
+
+    def test_auto_compaction_inside_an_unanswered_turn_is_interrupted(self):
+        # Case D: an automatic compaction wrote its notice inside a turn whose
+        # real reply never came. Skipping the notice is deliberate and correct
+        # here -- the tag alone must not flip this shape.
+        assert _is_interrupted(slot(user("do the thing"), compaction_notice())) is True
+
+    def test_ordinary_completed_turn_is_finished(self):
+        # Case E: the unchanged baseline.
+        assert _is_interrupted(slot(user(), assistant())) is False
+
+    def test_compact_with_arguments_still_counts(self):
+        # The runner keys ``user_requested_compaction`` on the first whitespace
+        # token, so trailing text does not change what the turn asked for.
+        assert (
+            _is_interrupted(slot(user("/compact focus on tests"), compaction_notice()))
+            is False
+        )
+
+    def test_stale_compact_does_not_mask_a_later_unanswered_turn(self):
+        # The pair must belong to the NEWEST turn: a later user row that got
+        # nothing back is a genuine interruption whatever happened before it.
+        assert (
+            _is_interrupted(slot(user("/compact"), compaction_notice(), user()))
+            is True
+        )
+
+    def test_error_trailing_the_notice_is_still_interrupted(self):
+        # The same evidence rule as the plain-assistant branch: a completed
+        # compaction followed by an error row ended badly, and hiding the
+        # Resume control on that tail would strand the user.
+        assert (
+            _is_interrupted(slot(user("/compact"), compaction_notice(), error()))
+            is True
+        )
+
+    def test_first_token_match_uses_pythons_whitespace_rule(self):
+        # The runner keys on content.split()[0], where U+0085 separates tokens
+        # and U+FEFF does not. The TS mirror pins the same pair, so the two
+        # sides cannot split identical content differently.
+        assert (
+            _is_interrupted(slot(user("/compact\x85focus"), compaction_notice()))
+            is False
+        )
+        assert (
+            _is_interrupted(
+                slot(user("/compact\ufeffcontinue"), compaction_notice())
+            )
+            is True
+        )
+        assert (
+            _is_interrupted(slot(user("\ufeff/compact"), compaction_notice()))
+            is True
+        )
+
+    def test_borrowed_tag_notices_do_not_complete_a_compact(self):
+        # The recycle and stuck-turn notices reuse kind="compaction" for the
+        # follow-up scan's skip and mark themselves with meta["notice"]. A
+        # stuck /compact is the opposite of a completed one: the turn stays
+        # interrupted so Resume remains offered.
+        for notice_kind in ("stuck_turn", "session_recycled"):
+            row = {
+                "role": "assistant",
+                "content": "notice text",
+                "meta": {"kind": "compaction", "notice": notice_kind},
+            }
+            assert _is_interrupted(slot(user("/compact"), row)) is True
