@@ -163,6 +163,29 @@ describe('FilesHomePanel tree availability', () => {
     expect(screen.getAllByRole('button', { name: 'Refresh' })).toHaveLength(1)
   })
 
+  it.each([
+    ['a deadline', Object.assign(new Error('deadline'), { name: 'TimeoutError' })],
+    ['a refused root', { code: 'unknown_project_dir' }],
+  ])('takes the same error arm on %s as on any other failed read', async (_label, failure) => {
+    // `useTreeState` splits failures into `recoverable` and `error` for the FILE-TAB rail's
+    // sake; this panel must not inherit that split. Whatever the cause, the directory IS set,
+    // so the answer is the fetch notice with its Refresh -- never the no-directory hint, and
+    // never a rail with nothing to show.
+    const err = failure instanceof Error
+      ? failure
+      : new (await import('../api/apiError')).ApiError(404, 'nope', JSON.stringify(failure))
+    H.api.projectTree.mockRejectedValue(err)
+    const { qc } = mount()
+    await waitFor(() =>
+      expect(qc.getQueryState(['project-tree', DIR])?.status).toBe('error'))
+
+    expect(await screen.findByText("Couldn't load the file tree")).toBeInTheDocument()
+    expect(screen.getAllByRole('button', { name: 'Refresh' })).toHaveLength(1)
+    expect(screen.queryByText('No project directory is set for this chat')).toBeNull()
+    expect(screen.queryByText('Select a file from the tree to open it in a new tab')).toBeNull()
+    expect(screen.queryByTestId('tree')).toBeNull()
+  })
+
   it('shows no rail at all without a project directory', async () => {
     mount('')
     expect(await screen.findByText('No project directory is set for this chat')).toBeInTheDocument()
