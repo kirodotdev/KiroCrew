@@ -2098,6 +2098,18 @@ class SlackConfig:
             tags=["slack"],
         ),
     )
+    dm_single_session: bool = field(
+        default=False,
+        metadata=_meta(
+            "DM Single Session",
+            "Treat each 1:1 DM as one continuous conversation instead of starting "
+            "a new session per top-level message. Replies post at channel root "
+            "rather than in a thread. Threaded replies, group channels and group "
+            "DMs are unaffected. Off by default: turning it on routes the next DM "
+            "to a different session than the previous one.",
+            tags=["slack"],
+        ),
+    )
     home_tab_sessions_per_kind: int = field(
         default=5,
         metadata=_meta(

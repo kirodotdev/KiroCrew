@@ -414,9 +414,7 @@ class SlackRenderer(Renderer):
 
     async def _ensure_stream(self) -> str:
         if self._stream_ts is None:
-            ts = await self.slack.start_stream(
-                self.channel, self.thread_ts or "", user_id=self._user_id or None
-            )
+            ts = await self._start_stream_if_threaded()
             if ts:
                 self._stream_ts = ts
                 self._use_slack_stream = True
@@ -429,16 +427,29 @@ class SlackRenderer(Renderer):
                 )
         return self._stream_ts
 
+    async def _start_stream_if_threaded(self, *, initial_text: str | None = None) -> str | None:
+        """Start a Slack stream, unless this reply has no thread to stream into.
+
+        ``chat.startStream`` streams into a thread. A flat reply (``thread_ts``
+        None, as a single-session DM posts at channel root) has none, so calling
+        it would fail and log a warning on every turn for no gain. Returning None
+        routes the caller to the chat.update fallback, which still renders the
+        answer progressively.
+        """
+        if not self.thread_ts:
+            return None
+        return await self.slack.start_stream(
+            self.channel,
+            self.thread_ts,
+            initial_text=initial_text,
+            user_id=self._user_id or None,
+        )
+
     async def _rotate_stream(self) -> str | None:
         """Stop the dead stream and start a fresh one (native ``_rotate_stream``)."""
         if self._stream_ts:
             await self.slack.stop_stream(self.channel, self._stream_ts)
-        new_ts = await self.slack.start_stream(
-            self.channel,
-            self.thread_ts or "",
-            initial_text=_STREAM_CONTINUED,
-            user_id=self._user_id or None,
-        )
+        new_ts = await self._start_stream_if_threaded(initial_text=_STREAM_CONTINUED)
         if new_ts:
             self._stream_ts = new_ts
         else:

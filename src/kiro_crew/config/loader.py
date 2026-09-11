@@ -3534,6 +3534,7 @@ class KiroCrewConfig:
                 reactions_enabled=bool(slack_data.get("reactions_enabled", True)),
                 use_tunnel_url=bool(slack_data.get("use_tunnel_url", False)),
                 show_thinking=bool(slack_data.get("show_thinking", True)),
+                dm_single_session=bool(slack_data.get("dm_single_session", False)),
                 home_tab_sessions_per_kind=_safe_int(
                     slack_data.get("home_tab_sessions_per_kind", 5), 5
                 ),

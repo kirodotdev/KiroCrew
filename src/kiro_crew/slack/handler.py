@@ -720,6 +720,7 @@ async def _apply_privacy_mode(
     slack: SlackClientOps,
     sessions: SessionManager,
     reply_ts: str,
+    link_thread: bool = True,
 ) -> None:
     """Mark a session as *mode* and notify the user (idempotent).
 
@@ -729,13 +730,20 @@ async def _apply_privacy_mode(
     """
 
     async def _notify(message: str) -> None:
-        await slack.post_message(channel, message, reply_ts)
+        await slack.post_message(channel, message, reply_ts or None)
 
     async def _on_applied(_mode: str) -> None:
         # Register thread so follow-up messages pass the in_active_thread
         # gate in mention/observe channels without needing another @mention.
         # reply_ts is the bare Slack thread_ts; session_key may be namespaced.
-        sessions.set_slack_link(session_key, reply_ts, channel)
+        # Skipped when there is no thread, and when the caller says this session
+        # is not thread-scoped at all (``link_thread=False`` -- a flat 1:1 DM,
+        # whose session is keyed by the channel): claiming a thread there would
+        # hand the dashboard mirror one branch to post into. Posting is a
+        # separate decision, so the confirmation still lands where the modifier
+        # was typed.
+        if reply_ts and link_thread:
+            sessions.set_slack_link(session_key, reply_ts, channel)
 
     await privacy_mode.apply_mode(
         mode,
@@ -756,10 +764,18 @@ async def _apply_temporary_modifier(
     slack: SlackClientOps,
     sessions: SessionManager,
     reply_ts: str,
+    link_thread: bool = True,
 ) -> None:
     """Mark a session as temporary and notify the user (idempotent)."""
     await _apply_privacy_mode(
-        privacy_mode.MODE_TEMPORARY, session_key, user_id, channel, slack, sessions, reply_ts
+        privacy_mode.MODE_TEMPORARY,
+        session_key,
+        user_id,
+        channel,
+        slack,
+        sessions,
+        reply_ts,
+        link_thread,
     )
 
 
@@ -770,10 +786,18 @@ async def _apply_incognito_modifier(
     slack: SlackClientOps,
     sessions: SessionManager,
     reply_ts: str,
+    link_thread: bool = True,
 ) -> None:
     """Mark a session as incognito and notify the user (idempotent)."""
     await _apply_privacy_mode(
-        privacy_mode.MODE_INCOGNITO, session_key, user_id, channel, slack, sessions, reply_ts
+        privacy_mode.MODE_INCOGNITO,
+        session_key,
+        user_id,
+        channel,
+        slack,
+        sessions,
+        reply_ts,
+        link_thread,
     )
 
 
@@ -786,6 +810,7 @@ async def maybe_apply_privacy_modifiers(
     slack: SlackClientOps,
     sessions: SessionManager,
     reply_ts: str,
+    link_thread: bool = True,
 ) -> tuple[str, str, bool]:
     """Strip and apply the ``!temporary`` / ``!incognito`` privacy modifiers.
 
@@ -814,7 +839,9 @@ async def maybe_apply_privacy_modifiers(
         cmd_stripped, had_mode = privacy_mode.strip_token(cmd_text, mode)
         if not had_mode:
             continue
-        await _apply_privacy_mode(mode, session_key, user_id, channel, slack, sessions, reply_ts)
+        await _apply_privacy_mode(
+            mode, session_key, user_id, channel, slack, sessions, reply_ts, link_thread
+        )
         cmd_text = cmd_stripped
         text = pattern.sub("", text)
         text = " ".join(text.split()) or text  # collapse whitespace
