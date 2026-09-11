@@ -852,6 +852,24 @@ adding a parallel watcher (see `kiro_crew.knowledge.artifact_ingest`):
   content-affecting mutation (create, content-changing update, delete). A
   metadata-only rename fires a separate `rename` signal that refreshes the
   stored group label without re-ingesting (no chunk churn).
+- **Every store take runs in a worker thread.** `on_change` schedules the
+  handler on the gateway loop, so `_handle` and `ingest_artifact` run on the
+  loop thread — where a contended knowledge connection would busy-wait every
+  task (the watchdog heartbeat included) for the connection's whole busy timeout
+  and, past 25s, get the gateway killed (see the on-loop guard in
+  [knowledge](knowledge.md)). Each store call on these paths is offloaded with
+  `asyncio.to_thread`: the `get_source_by_uri` lookups (delete/rename/upsert),
+  `ensure_artifact_source`, `refresh_artifact_name`, `ingest_artifact`'s
+  `_get_state` read and `release_stale_claim` write, the per-job
+  `get_job_status` read in `reconcile_artifacts`, and `remove_artifact` (a
+  `delete_items_batch` → graph rebuild). The one take still on the loop is
+  `ingest_artifact`'s post-ingest `get_job_status` read: it sits between the
+  commit and the fallback ownership write, so offloading it belongs with the
+  ownership-write change that keeps those two from being separated by a
+  cancellation point. The ordering the handler describes is preserved across
+  the hops — name refresh before ingest, the kind-change reconcile before the
+  ingest — and the deduped/ownership finalizers still run on the pipeline's own
+  worker hop, not the loop.
 - **Reconcile on every start, not a creation-gated backfill.** The feature is
   opt-in, and while it is off the change-listener is not registered, so writes in
   that window never reach the Library. Tying the catch-up pass to *creation of

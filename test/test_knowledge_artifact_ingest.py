@@ -23,6 +23,7 @@ from kiro_crew.knowledge.artifact_ingest import (
 from kiro_crew.knowledge.ingestion import DUPLICATE_JOB_STATUS, IngestionPipeline
 from kiro_crew.knowledge.readers import FileReader
 from kiro_crew.knowledge.store import KnowledgeStore
+from kiro_crew.on_loop_db import OnLoopStoreError
 
 DEFAULT_KINDS = {"markdown", "text", "html", "json"}
 
@@ -915,6 +916,130 @@ class TestArtifactKnowledgeSync:
         row = await asyncio.to_thread(
             kstore.get_source_by_uri, ARTIFACT_SOURCE_URI)
         assert row is not None, "start() never created the aggregate source"
+
+    @pytest.mark.asyncio
+    async def test_handle_upsert_takes_no_db_connection_on_the_loop(
+        self, pipeline, art_store, kstore, monkeypatch
+    ):
+        """The artifact-upsert handler runs on the gateway loop. Its store calls
+        -- ``ensure_artifact_source`` (get-or-create) and, one frame down,
+        ``ingest_artifact``'s ``_get_state`` read and ``release_stale_claim``
+        write -- must each run in a worker thread. On the loop a contended
+        knowledge DB busy-waits every task (watchdog heartbeat included) for the
+        connection's whole busy timeout.
+
+        Strict mode turns an on-loop take into a raise, so a regression to any
+        direct call fails loudly. ``pipeline.ingest_file`` is stubbed so the
+        assertion is about the handler's own store access, not the extraction
+        pipeline's internals.
+        """
+        art = art_store.create(name="Doc", content="hello body", kind="markdown")
+        monkeypatch.setattr(
+            pipeline, "ingest_file", AsyncMock(return_value=None))
+        monkeypatch.setenv("KIROCREW_STRICT_ON_LOOP_STORE", "1")
+        sync = ArtifactKnowledgeSync(
+            art_store=art_store, pipeline=pipeline, kinds=DEFAULT_KINDS,
+            loop=asyncio.get_running_loop())
+        # Raises OnLoopStoreError if ensure_artifact_source, _get_state or
+        # release_stale_claim is taken on the loop.
+        await sync._handle("upsert", art.slug)
+
+    @pytest.mark.asyncio
+    async def test_handle_upsert_of_a_changed_artifact_stays_off_the_loop(
+        self, pipeline, art_store, kstore, monkeypatch
+    ):
+        """The changed-content branch of ``ingest_artifact`` reaches
+        ``release_stale_claim`` (a write-lock take). Ingest once off strict, then
+        edit and re-upsert under strict: the second upsert exercises the
+        ``_get_state`` read AND the ``release_stale_claim`` write, both of which
+        must be offloaded.
+        """
+        sid, _ = await asyncio.to_thread(ensure_artifact_source, kstore)
+        art = art_store.create(name="Doc", content="v1 body", kind="markdown")
+        await ingest_artifact(pipeline, art_store, art.slug, sid, DEFAULT_KINDS)
+        art_store.update(art.slug, content="v2 body", snapshot=True)
+        monkeypatch.setattr(
+            pipeline, "ingest_file", AsyncMock(return_value=None))
+        monkeypatch.setenv("KIROCREW_STRICT_ON_LOOP_STORE", "1")
+        sync = ArtifactKnowledgeSync(
+            art_store=art_store, pipeline=pipeline, kinds=DEFAULT_KINDS,
+            loop=asyncio.get_running_loop())
+        await sync._handle("upsert", art.slug)  # raises if a store take is on-loop
+
+    @pytest.mark.asyncio
+    async def test_handle_delete_takes_no_db_connection_on_the_loop(
+        self, pipeline, art_store, kstore, monkeypatch
+    ):
+        """The delete handler's ``get_source_by_uri`` lookup must be offloaded
+        too; strict mode raises if it is taken on the loop."""
+        sid, _ = await asyncio.to_thread(ensure_artifact_source, kstore)
+        art = art_store.create(name="Doc", content="doomed body", kind="markdown")
+        await ingest_artifact(pipeline, art_store, art.slug, sid, DEFAULT_KINDS)
+        monkeypatch.setenv("KIROCREW_STRICT_ON_LOOP_STORE", "1")
+        sync = ArtifactKnowledgeSync(
+            art_store=art_store, pipeline=pipeline, kinds=DEFAULT_KINDS,
+            loop=asyncio.get_running_loop())
+        await sync._handle("delete", art.slug)  # raises if a store take is on-loop
+        row = await asyncio.to_thread(
+            kstore.get_source_by_uri, ARTIFACT_SOURCE_URI)
+        assert row is not None
+        assert await asyncio.to_thread(
+            lambda: _contents(kstore, row["id"])) == []
+
+    @pytest.mark.asyncio
+    async def test_handle_rename_takes_no_db_connection_on_the_loop(
+        self, pipeline, art_store, kstore, monkeypatch
+    ):
+        """The rename handler's ``get_source_by_uri`` lookup and
+        ``refresh_artifact_name`` update must both be offloaded; strict mode
+        raises if either is taken on the loop."""
+        sid, _ = await asyncio.to_thread(ensure_artifact_source, kstore)
+        art = art_store.create(name="Before", content="stable body", kind="markdown")
+        await ingest_artifact(pipeline, art_store, art.slug, sid, DEFAULT_KINDS)
+        art_store.update(art.slug, name="After")
+        monkeypatch.setenv("KIROCREW_STRICT_ON_LOOP_STORE", "1")
+        sync = ArtifactKnowledgeSync(
+            art_store=art_store, pipeline=pipeline, kinds=DEFAULT_KINDS,
+            loop=asyncio.get_running_loop())
+        await sync._handle("rename", art.slug)  # raises if a store take is on-loop
+        row = await asyncio.to_thread(
+            lambda: kstore.db.execute(
+                "SELECT name FROM artifact_item_state WHERE source_id = ? "
+                "AND slug = ?", (sid, art.slug)).fetchone())
+        assert row["name"] == "After"
+
+
+class TestArtifactUpsertOnLoopGuardIsWired:
+    """A raising-mode probe of the guard, independent of the ingest pipeline.
+
+    Proves the guard actually fires on the paths above rather than the tests
+    passing because no contended query happened. Drives ``ingest_artifact``'s
+    changed-content branch with a stubbed pipeline and asserts the guard would
+    have raised had the store calls been left on the loop.
+    """
+
+    @pytest.mark.asyncio
+    async def test_ingest_artifact_changed_content_is_fully_offloaded(
+        self, pipeline, art_store, kstore, monkeypatch
+    ):
+        sid, _ = await asyncio.to_thread(ensure_artifact_source, kstore)
+        art = art_store.create(name="Doc", content="first body", kind="markdown")
+        await ingest_artifact(pipeline, art_store, art.slug, sid, DEFAULT_KINDS)
+        art_store.update(art.slug, content="second body", snapshot=True)
+        monkeypatch.setattr(
+            pipeline, "ingest_file", AsyncMock(return_value=None))
+        monkeypatch.setenv("KIROCREW_STRICT_ON_LOOP_STORE", "1")
+        # Must not raise: _get_state and release_stale_claim are offloaded.
+        assert await ingest_artifact(
+            pipeline, art_store, art.slug, sid, DEFAULT_KINDS) is None
+
+    @pytest.mark.asyncio
+    async def test_the_guard_is_armed_on_this_store(self, kstore, monkeypatch):
+        """Control: a direct on-loop take of this store's connection under strict
+        mode raises, so the passes above are meaningful."""
+        monkeypatch.setenv("KIROCREW_STRICT_ON_LOOP_STORE", "1")
+        with pytest.raises(OnLoopStoreError):
+            kstore.db  # noqa: B018 - the on-loop take is the operation under test
 
 
 class TestKnowledgeConfigDefaults:
