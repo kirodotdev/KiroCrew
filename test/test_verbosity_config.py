@@ -80,7 +80,9 @@ class TestVerbosityBlockPlaceholder:
     def test_missing_verbosity_attr_defaults_to_empty(self):
         fake_cfg = SimpleNamespace(dashboard=SimpleNamespace(widget_density="more"))
         with patch("kiro_crew.context.KiroCrewConfig.load", return_value=fake_cfg):
-            result = ContextBuilder._resolve_prompt_templates("a {{VERBOSITY_BLOCK}} b", "dashboard:x")
+            result = ContextBuilder._resolve_prompt_templates(
+                "a {{VERBOSITY_BLOCK}} b", "dashboard:x"
+            )
         assert result == "a  b"
 
 
@@ -207,9 +209,7 @@ class TestUltraConciseBlock:
         step IS an omission, and payload (code, commands, errors) was already
         exempt as correctness, not stakes.
         """
-        result = " ".join(
-            _resolve("{{VERBOSITY_BLOCK}}", "dashboard:x", verbosity="ultra").split()
-        )
+        result = " ".join(_resolve("{{VERBOSITY_BLOCK}}", "dashboard:x", verbosity="ultra").split())
         # The unbounded length licence is gone — including its echo in the
         # required-formats bullet, which listed security warnings as a
         # never-cut format ("regardless of brevity").
@@ -230,11 +230,15 @@ class TestUltraConciseBlock:
 class TestAnswerOnlyBlock:
     """``answer_only`` is the strictest level: the answer, and no prose around it.
 
-    ``ultra`` still budgets a 1-2 sentence answer plus up to three supporting
-    bullets, so it shortens explanation without removing it. ``answer_only``
-    removes it: explanation becomes opt-in, capped at one sentence when the
-    answer genuinely cannot stand alone.
+    The block is a short checklist, not an essay. It ran as 1,300 words of
+    rules and the model copied the register of its instructions -- long,
+    dense, text-only -- rather than the rule they stated. Three checks with a
+    hard test each replaced it: draw the shape, cap the words, cut the rest.
+    The measurements behind it live in the PR that made the change.
     """
+
+    def _block(self) -> str:
+        return _resolve("{{VERBOSITY_BLOCK}}", "dashboard:x", verbosity="answer_only")
 
     def test_answer_only_emits_its_own_block_on_every_transport(self):
         for key in ("dashboard:abc", "slack:C1:1.2", "cli:local", ""):
@@ -244,451 +248,133 @@ class TestAnswerOnlyBlock:
             assert "Concise mode is on" not in result
             assert "Ultra-Brief" not in result
 
-    def test_answer_only_makes_explanation_opt_in(self):
-        """The whole point of the level: the user asks, or it does not exist."""
-        result = _resolve("{{VERBOSITY_BLOCK}}", "dashboard:x", verbosity="answer_only")
-        assert "Explanation is opt-in" in result
-        assert "No explanation by default" in result
-
-    def test_answer_only_caps_unavoidable_context_at_one_sentence(self):
-        """A hard numeric cap, because "brief" is what ultra already says and
-        the model reads it as a licence to expand. The cap is stated as a
-        general rule about reasons rather than a list of cases that earn one:
-        the recurring failure is re-deriving a decision already made (chiefly
-        justifying an action the model is confident in), and enumerating that
-        case as its own bullet would need a new bullet for the next one.
+    def test_the_block_is_a_short_checklist_not_an_essay(self):
+        """The model mirrors the register of its instructions. A brevity rule
+        delivered as 1,300 words of prose produced 1,300-word-register replies;
+        the fix is structural, so the length of the block itself is pinned.
         """
-        result = _resolve("{{VERBOSITY_BLOCK}}", "dashboard:x", verbosity="answer_only")
-        assert "it is ONE sentence" in result
-        assert "never a paragraph" in result
-        assert "re-derivation of a decision you have already made" in result
+        words = len(self._block().split())
+        assert words < 300, f"answer_only block grew to {words} words"
 
-    def test_answer_only_demands_plain_words_not_only_fewer(self):
-        """Every other rule here governs LENGTH, so a compliant reply can still
-        be four dense, jargon-laden lines -- terse and unreadable. Density is a
-        separate axis and needs its own rule.
+    def test_three_checks_in_a_fixed_order(self):
+        """Order is load-bearing: the shape check must run before any prose is
+        drafted, or the model writes the paragraph and then asks whether a
+        picture would have been shorter.
         """
-        result = _resolve("{{VERBOSITY_BLOCK}}", "dashboard:x", verbosity="answer_only")
-        assert "Plain words, short sentences" in result
-        assert "Brevity is not enough" in result
-        assert "jargon that dresses up a simple point" in result
+        block = self._block()
+        assert "three checks, in this order, before you write" in block
+        assert block.index("1. Shape check") < block.index("2. Word check")
+        assert block.index("2. Word check") < block.index("3. Cut check")
 
-    def test_answer_only_puts_the_point_at_the_front_of_the_sentence(self):
-        """Word choice was governed but sentence SHAPE was not, so a reply of
-        short plain words could still bury the point mid-sentence behind chained
-        clauses ("here", "then", "but", "which means") and contrastive framing
-        ("this is not X, it's Y"). The reported symptom was having to hunt for
-        what to know. Also fences off the opposite failure: Age 5 names the
-        register, not the reader -- a capable adult in a hurry, never talked
-        down to.
+    def test_shape_check_draws_the_shape_in_the_form_the_surface_renders(self):
+        """The old rule lived in the fourteenth paragraph as "prefer" and was
+        never reached. Now it is the first check and imperative. The form is
+        gated on the surface: a widget or mermaid only where the Inline Widgets
+        section is present (the dashboard renders both), else a plain table --
+        an unconditional "emit a widget" would land raw ``<mcwidget>`` markup in
+        a Slack or CLI reply, and a mermaid fence reaches Discord as raw source.
         """
-        result = _resolve("{{VERBOSITY_BLOCK}}", "dashboard:x", verbosity="answer_only")
-        one_line = " ".join(result.split())
-        assert "the point at the front of each one" in one_line
-        assert "never talk down, never pad" in one_line
-        assert "Age 5 is the register, not the reader" in one_line
-        assert "capable adult in a hurry" in one_line
-        assert "never trade a precise fact for a cute one" in one_line
-        assert "in the first few words and stop" in one_line
-        assert "here, then, but, so that or which means" in one_line
-        assert "read twice to find the point, rewrite it" in one_line
+        block = self._block()
+        assert "Does the answer have a shape" in block
+        assert "steps, before/after, cases and verdicts, sizes" in block
+        assert (
+            "a widget or a mermaid fence when your instructions carry an Inline "
+            "Widgets section, else a plain table" in block
+        )
+        # The Inline Widgets section already says to load the `widgets` skill;
+        # repeating it here would be a second spelling of the same instruction.
+        assert "load `widgets`" not in block
 
-    def test_answer_only_names_the_categories_it_removes(self):
+    def test_a_picture_holds_labels_not_sentences(self):
+        """A widget that is a table of prose is text in a box -- the reported
+        failure once pictures did appear. The check caps what goes inside.
+        """
+        block = self._block()
+        assert "labels of one to three words and numbers, never a sentence" in block
+        assert "it goes under the picture, once" in block
+
+    def test_word_check_caps_sentence_length_and_vocabulary(self):
+        """Age 5 as a named register was read as style advice and ignored;
+        "a technical term stays when it IS the fact" was read as a licence for
+        every term the model thought precise. Two mechanical tests replace it.
+        """
+        block = self._block()
+        assert "Each sentence: at most 12 words" in block
+        assert "one the user has used, or one a child knows" in block
+        assert "replaced, or defined in three words" in block
+
+    def test_cut_check_names_what_goes_and_what_stays(self):
         """Enumerated bans, not a vague "be brief" -- each named category is a
-        distinct way explanation creeps back in.
+        distinct way explanation creeps back in. The keep-list is the payload
+        floor: this mode cuts prose, never code, commands or required formats.
         """
-        result = _resolve("{{VERBOSITY_BLOCK}}", "dashboard:x", verbosity="answer_only")
-        for banned in (
-            "preamble",
-            "restating the question",
-            "what you just did",
-            "rationale",
-            "alternatives",
-            "caveats",
-            "trade-offs",
-            "offers to help",
-        ):
-            assert banned in result, banned
-        assert "do not narrate it" in result
-
-    def test_answer_only_cuts_prose_never_payload(self):
-        """Regression floor: a mode that removes explanation must not start
-        truncating the thing being asked for.
-        """
-        result = _resolve("{{VERBOSITY_BLOCK}}", "dashboard:x", verbosity="answer_only")
-        assert "verbatim and complete" in result
-        assert "cuts prose, never payload" in result
-
-    def test_the_payload_carve_out_does_not_cover_quoted_evidence(self):
-        """Measured gap this closes: asked "check the logs, what could be
-        wrong", answer_only returned a multi-section report -- log excerpts, a
-        stack trace, a per-crash timeline, a ruled-out list -- and the user
-        could not tell what was broken or what to do. The payload rule was the
-        loophole: log text IS an error string and a file's contents, so
-        "verbatim and complete, never payload" read as licence to paste every
-        line consulted. Payload is scoped to what was ASKED for; quoting to
-        prove a point is evidence, which is explanation and therefore opt-in.
-        """
-        result = _resolve("{{VERBOSITY_BLOCK}}", "dashboard:x", verbosity="answer_only")
-        assert "Payload is what the user asked for or has to act on" in result
-        assert "Material you quote to prove a point is evidence, not payload" in " ".join(
-            result.split()
+        block = self._block()
+        assert (
+            "Delete: preamble, what you did, where you found it, why, options you "
+            "rejected, caveats, offers to help" in block
         )
-        assert "evidence is opt-in: leave it out and offer it" in result
+        # "verbatim" is scoped to what the user asked for or must run; an
+        # unscoped verbatim licence let a log-check reply paste every line read.
+        assert "code, commands and paths the user asked for or must run, verbatim" in block
+        # "any" keeps the list open: the parenthetical is examples, not the set.
+        assert "any required format ([OPTIONS:], diffs, PR links)" in block
 
-    def test_answer_only_bounds_a_halted_or_deviated_task(self):
-        """Measured gap this closes: told to fold three things into a PR, the
-        model found that main had moved, correctly stopped -- and then wrote
-        seven paragraphs justifying the stop (what landed, a quoted docstring,
-        the design collision, why its own call was right) before the two
-        decisions the user actually had to make. Every other rule frames the
-        reply as answering a QUESTION, so a deviation had no answer shape and
-        the derivation became the reply. Justifying a deviation feels
-        non-optional in a way that explaining an answer does not, so the rule
-        has to say the reasoning is opt-in like any other explanation. ORDER is
-        the load-bearing half: the user's own manual repair of that reply
-        ("what is the suggested action here with simple words") produced an
-        imperative first line followed by two sentences of state, so the rule
-        names the action as the opener explicitly -- an unordered "state and
-        call" still licenses opening on the situation, which is the wall.
+    def test_an_ordered_procedure_stays_complete(self):
+        """A dropped step causes the mistake, so steps are payload, not prose.
+        The shape check may draw steps as a picture; this keeps every step in
+        it, in order, so the picture cannot shorten a procedure by omission.
+        The Settings help text promises this for every level.
         """
-        result = _resolve("{{VERBOSITY_BLOCK}}", "dashboard:x", verbosity="answer_only")
-        assert "Stopping or deviating is still an answer" in result
-        assert "LEAD WITH THE ACTION you recommend" in result
-        assert "not with what you found, not with the situation" in " ".join(
-            result.split()
-        )
-        assert "at most two sentences of the state" in result
-        assert "Justifying a deviation feels mandatory; it is not" in result
+        assert "every step of an ordered procedure, in order" in self._block()
 
-    def test_the_answer_itself_is_bounded_per_item(self):
-        """The gap the user was papering over by hand. Every length rule in the
-        block governed EXPLANATION -- the one-sentence cap, the cut list, plain
-        words -- and nothing bounded the answer, so a verdict plus
-        recommendations written as three numbered findings with sub-bullets
-        satisfied the whole block. The user ended up appending "use few
-        sentences, one sentence for each" to request after request, which is
-        the missing rule stated in their own words.
-
-        Bounded PER ITEM on purpose, not as a reply total: a total cap would
-        collide with "an ordered multi-step procedure ... stays complete" the
-        way ultra's `numbered lists > 3 items` prohibition already does, and
-        the invariant here is that no rule governs length and omission at once.
-        Per-item scales -- seven steps stay seven steps -- so the two rules are
-        orthogonal.
+    def test_a_destructive_command_carries_its_undo_line(self):
+        """A bare destructive one-liner is a trap, not a terse answer. The undo
+        note is bounded to one line so it cannot reopen explanation.
         """
-        result = _resolve("{{VERBOSITY_BLOCK}}", "dashboard:x", verbosity="answer_only")
-        one_line = " ".join(result.split())
-        assert "One sentence per thing you are telling them" in result
-        assert "This bounds each item, not the reply" in one_line
-        assert "seven one-sentence steps" in one_line
-        assert "is a report, and the answer is buried inside it" in one_line
+        assert "one undo line for anything destructive" in self._block()
 
-    def test_grounding_is_not_the_answer(self):
-        """Third measured shape of the same gap, and the one the payload rule
-        could not reach on its own. Asked why a UI fold never fires, the reply
-        came back as three numbered findings carrying `gateway.py:6979`, a
-        quoted python block, two more `file:line` cites and a leading step
-        count -- the verdict (the flag it depends on is never written) was one
-        clause inside thirty lines of citation. A code reference is genuinely
-        load-bearing for TRUST, which is why the pull toward showing it is
-        strong, and the payload clause protects `paths` and `identifiers`
-        verbatim, so showing it read as required rather than optional. The rule
-        separates the two jobs: grounding is what makes the answer true,
-        exposing the grounding is evidence, and evidence is already opt-in.
+    def test_high_stakes_gets_one_risk_line(self):
+        """Stakes change what must not be omitted, never the length: one line
+        naming the risk, on the domains where a wrong call is hard to undo.
         """
-        result = _resolve("{{VERBOSITY_BLOCK}}", "dashboard:x", verbosity="answer_only")
-        one_line = " ".join(result.split())
-        assert "Verify against the real thing, then answer without showing the work" in one_line
-        assert "only shows that you read it" in result
-        assert "Say what the thing does, not where you found it" in result
-        assert "hand the reference over when the user asks to check it" in one_line
+        assert "one risk line for anything touching security, data or spend" in self._block()
 
-    def test_the_answer_rule_covers_knowing_not_just_receiving(self):
-        """Same measured gap, other half. The rule named three artifact kinds
-        (a change, a command, a value), so a question whose answer is a
-        JUDGEMENT -- what is wrong, which option, whether it is safe -- matched
-        none of them and the model shipped its investigation instead. Every
-        other rule was obeyed: no preamble, no rationale, nothing narrated.
-        Generalised to what the user needs in order to know or to act, with the
-        work that produced it named as explanation, so the rule reaches the
-        next question class without enumerating one.
+    def test_asking_why_keeps_the_checks_and_adds_one_line_per_point(self):
+        """A request for the reason is not a request for a document: the reason
+        turns on, the three checks stay on.
         """
-        result = _resolve("{{VERBOSITY_BLOCK}}", "dashboard:x", verbosity="answer_only")
-        one_line = " ".join(result.split())
-        assert "Whatever the user needs in order to know or to act IS the answer" in one_line
-        assert "a verdict" in result
-        assert "The work that produced it" in result
-        assert "Naming your findings is not naming the answer" in result
-        assert "you have not answered" in result
+        block = self._block()
+        assert "Asked why? Same three checks, plus the reason as one line per point" in block
+
+    def test_the_reason_stays_discoverable_by_a_three_word_offer(self):
+        """The delete-list drops offers to help, not the one offer that tells
+        the user the reasoning exists. Bounded to three words so it cannot
+        grow back into the explanation it points at.
+        """
+        assert 'Not asked? Offer it in three words: "say why".' in self._block()
 
     def test_answer_only_turns_itself_off_when_depth_is_requested(self):
-        """Detailed explanations are still reachable -- by asking for depth.
-        Without this the level is a dead end rather than a default. The escape
-        hatch is scoped to an explicit depth request, NOT to any question that
-        contains the word "why" (see the sibling test below).
-        """
-        result = _resolve("{{VERBOSITY_BLOCK}}", "dashboard:x", verbosity="answer_only")
-        one_line = " ".join(result.split())
-        assert "Only an explicit request for depth" in one_line
-        assert "this mode is off" in result
-        assert "full detail they asked for" in result
-
-    def test_asking_why_does_not_lift_the_length_rules(self):
-        """The carve-out must not fire on "asks why" and switch the whole mode
-        off, or a bare "why did you override that?" -- a one-line question --
-        would license a full report. The user's own workaround was to append "simple
-        sentences to explain" to every why-question, which is the missing bound
-        written by hand. A why-question opts into the REASON, not into length:
-        the per-item sentence bound and the plain-words rule stay in force.
-        """
-        result = _resolve("{{VERBOSITY_BLOCK}}", "dashboard:x", verbosity="answer_only")
-        one_line = " ".join(result.split())
-        assert "A request for the reason is not a request for a document" in one_line
-        assert "every length rule stays in force" in one_line
-        assert "a few plain sentences, one per point" in one_line
-        # The old wholesale flip must be gone, or both readings survive and the
-        # model picks the longer one.
-        assert "The moment the user asks why" not in one_line
-
-    def test_the_whole_reply_is_pinned_to_explain_for_age_5(self):
-        """The bare plain-words rule left the register to taste, and the same
-        block also says answer like an expert -- so replies drifted back into
-        jargon. The `explain-for` skill already carries a calibrated Age 5 row
-        (Age 10 was tried first and still let jargon through),
-        so the block names it as the register for the WHOLE reply rather than
-        re-deriving one, and names it as the default so it is not a per-reply
-        judgement call the model can decline.
-        """
-        result = _resolve("{{VERBOSITY_BLOCK}}", "dashboard:x", verbosity="answer_only")
-        one_line = " ".join(result.split())
-        assert "Write the WHOLE reply at the `explain-for` skill's Age 5" in one_line
-        assert "That Age 5 row is the register for everything this mode emits" in one_line
-        assert "Age 10" not in one_line
-        assert "not a choice you weigh per reply" in one_line
-        # Register and depth are separate axes; conflating the two is how a
-        # plain-words rule turns into a licence to write more.
-        assert "It sets the REGISTER, never the depth" in one_line
-        assert "costs the answer nothing" in one_line
-
-    def test_the_age_5_pin_borrows_calibration_not_length(self):
-        """Pointing at another document imports whatever else it says, and
-        `explain-for` lifts terseness for explanation requests. Unscoped, the
-        two documents disagree about length and the model takes the longer
-        reading, which is the exact failure this mode exists to prevent. The pin
-        therefore borrows the calibration only and restates that the length
-        bound survives -- plus the two things that genuinely outrank it.
-        """
-        result = _resolve("{{VERBOSITY_BLOCK}}", "dashboard:x", verbosity="answer_only")
-        one_line = " ".join(result.split())
-        assert "load `explain-for`, follow its Age 5 row" in one_line
-        assert "its terseness clause lifts the ban on explaining, not" in one_line
-        assert "every length rule above still holds" in one_line
-        assert "An audience named in the request wins over Age 5" in one_line
-
-    def test_the_age_5_pin_is_unique_to_answer_only(self):
-        """The pin is a property of this tier, not house style. `concise` and
-        `ultra` have their own registers, and copying the pin upward would erase
-        the distinction between the levels.
-        """
-        for level in ("concise", "ultra"):
-            other = _resolve("{{VERBOSITY_BLOCK}}", "dashboard:x", verbosity=level)
-            assert "Age 5" not in other
-            assert "Age 10" not in other
-            assert "explain-for" not in other
-
-    def test_unrequested_explanation_is_the_rare_exception(self):
-        """The block must not carry a broad judgement-based licence to
-        explain unasked, which the model reaches for constantly -- the
-        symptom being that answer_only reads verbose. The default is the
-        terse answer plus a one-line offer, and an UNCERTAIN case resolves
-        toward omitting, since an unread explanation costs the reader nothing
-        to ask for and everything to skip.
-        """
-        result = _resolve("{{VERBOSITY_BLOCK}}", "dashboard:x", verbosity="answer_only")
-        assert "Explaining in full, unasked, is the rare exception" in result
-        assert "not a lane you look for" in result
-        assert "Assume the user will NOT read an unrequested explanation" in result
-
-    def test_high_stakes_changes_omission_not_length(self):
-        """The one contradiction in the earlier block: it demanded mechanism +
-        failure modes + reversibility (a paragraph) directly under a
-        one-sentence cap, so the two rules disagreed and the longer one won.
-        Recast on a single axis -- stakes govern what may not be OMITTED, never
-        how long the reply is -- the rules become orthogonal and cannot fight.
-        """
-        result = _resolve("{{VERBOSITY_BLOCK}}", "dashboard:x", verbosity="answer_only")
-        assert "High stakes change what you must NOT omit, never the length" in result
-        assert "the mechanism, the failure modes and the reasoning are opt-in" in result
-
-    def test_answer_only_names_the_high_stakes_domains(self):
-        """Named domains, so the model does not have to infer what "important"
-        means from an abstraction it can rationalise away.
-        """
-        result = _resolve("{{VERBOSITY_BLOCK}}", "dashboard:x", verbosity="answer_only")
-        for domain in (
-            "destructive",
-            "irreversible",
-            "security",
-            "credentials",
-            "data exposure",
-            "permissions",
-            "spend",
-        ):
-            assert domain in result, domain
-
-    def test_high_stakes_warning_leads_with_the_call(self):
-        """What the user needs first is the decision, not the derivation: the
-        call (or the refusal) plus whether the door swings back. Reasoning that
-        arrives before the verdict is not a decision aid, it is a wall the
-        verdict is buried in.
-        """
-        result = _resolve("{{VERBOSITY_BLOCK}}", "dashboard:x", verbosity="answer_only")
-        assert "lead with the call" in result
-        assert "naming the risk and whether it can be undone" in result
-        assert "That single line is the whole warning" in result
-
-    def test_high_stakes_silence_is_named_as_the_failure_not_brevity(self):
-        """The failure to guard against is a one-way door handed over without
-        mention. Naming brevity as the failure instead is what produced the
-        unprompted security essays this level exists to prevent.
-        """
-        result = _resolve("{{VERBOSITY_BLOCK}}", "dashboard:x", verbosity="answer_only")
-        assert "The defect here is silence about a one-way door" in result
-        assert "not brevity about it" in result
-
-    def test_the_stakes_hatch_is_unique_to_answer_only(self):
-        """All three levels now carry a stakes-govern-omission rule, each in
-        its own voice — what stays unique to answer_only is its framing: the
-        named failure mode (silence about a one-way door) and the
-        whole-warning cap sentence. The discriminators below are fragments
-        the other levels genuinely do not carry (their own rules differ by
-        more than case), which keeps the levels from converging into copies
-        of one block.
-        """
-        answer_only = _resolve("{{VERBOSITY_BLOCK}}", "dashboard:x", verbosity="answer_only")
-        assert "High stakes change what you must NOT omit" in answer_only
-        assert "That single line is the whole warning" in answer_only
-        assert "The defect here is silence about a one-way door" in answer_only
-        for level in ("concise", "ultra"):
-            result = _resolve("{{VERBOSITY_BLOCK}}", "dashboard:x", verbosity=level)
-            assert "That single line is the whole warning" not in result
-            assert "The defect here is silence about a one-way door" not in result
-
-    def test_a_picture_is_payload_and_the_surface_picks_its_form(self):
-        """Measured gap this closes: asked how a guard change stops false
-        positives across platforms, answer_only wrote the case matrix out as
-        sentences — one per row — and the reader rebuilt the table in their
-        head. The block classes a picture as payload, so the one-sentence
-        bound does not read as a ban on drawing, and it ranks the forms by
-        what the surface renders: the widget clause is keyed on the Inline
-        Widgets section being present in the prompt, which
-        ``_resolve_prompt_placeholders`` already withholds off-dashboard, so
-        a Slack-only session degrades to a mermaid fence or a table without a
-        second surface check here.
-        """
-        result = _resolve("{{VERBOSITY_BLOCK}}", "dashboard:x", verbosity="answer_only")
-        assert "A picture is payload, not prose" in result
-        assert "a matrix of cases and verdicts" in result
-        assert "when your instructions carry an Inline Widgets section" in result
-        assert "else a mermaid fence, else an image file, else a plain table" in result
-
-    def test_a_picture_that_restates_the_text_is_cut(self):
-        """The preference for pictures must not become a licence to draw a
-        box with the paragraph inside it — that is explanation in a frame,
-        and the same opt-in rule removes it.
-        """
-        result = _resolve("{{VERBOSITY_BLOCK}}", "dashboard:x", verbosity="answer_only")
-        assert "do not repeat in words what the picture already shows" in result
-        assert "A picture that only restates the text is cut" in result
-
-    def test_a_destructive_command_carries_its_undo_path(self):
-        """Measured gap this closes: asked how to delete every local branch
-        merged into main, answer_only returned the bare command and conveyed
-        reversibility in 0/3 samples where unconstrained default managed 2/3
-        (two independent graders agreeing). The high-stakes paragraph covers
-        RECOMMENDING an action in a consequential class; it did not cover the
-        answer simply BEING the destructive command, where "show it and stop"
-        applies and stops too early.
-        """
-        result = _resolve("{{VERBOSITY_BLOCK}}", "dashboard:x", verbosity="answer_only")
-        assert "destroys, overwrites or rewrites something" in result
-        assert "the undo path rides along with it in the same reply" in " ".join(result.split())
-        assert "or plainly that you cannot" in result
-
-    def test_the_undo_note_is_bounded_so_it_cannot_reopen_explanation(self):
-        """The rule has to buy exactly one clause. Without a bound it becomes a
-        licence to explain, which is the failure mode this whole level exists
-        to prevent.
-        """
-        result = _resolve("{{VERBOSITY_BLOCK}}", "dashboard:x", verbosity="answer_only")
-        assert "One clause is enough" in result
-
-    def test_the_undo_rule_is_scoped_to_the_lead_with_it_and_stop_rule(self):
-        """It is an exception to stopping, not a new general obligation -- a
-        non-destructive command still gets handed over bare.
-        """
-        result = _resolve("{{VERBOSITY_BLOCK}}", "dashboard:x", verbosity="answer_only")
-        assert "One exception to stopping" in result
-        assert "Lead with it and stop" in result
-
-    def test_the_undo_rule_names_the_cost_of_omitting_it(self):
-        """Naming the consequence is what makes the model treat a missing undo
-        path as a defect rather than as successful brevity.
-        """
-        result = _resolve("{{VERBOSITY_BLOCK}}", "dashboard:x", verbosity="answer_only")
-        assert "is not a terse answer, it is a trap" in " ".join(result.split())
-
-    def test_the_undo_rule_is_unique_to_answer_only(self):
-        """concise and ultra still permit explanation around a command, so they
-        need no such rule; asserting it keeps the levels from converging.
-        """
-        for level in ("concise", "ultra"):
-            assert "One exception to stopping" not in _resolve(
-                "{{VERBOSITY_BLOCK}}", "dashboard:x", verbosity=level
-            )
-
-    def test_answer_only_keeps_safety_carveout(self):
-        """What survives compression unconditionally is narrower than before:
-        an ordered procedure (a dropped step causes the mistake) and required
-        formats. A risk warning is not in this list because the one-line
-        high-stakes rule governs it instead -- present always,
-        long never.
-        """
-        result = _resolve("{{VERBOSITY_BLOCK}}", "dashboard:x", verbosity="answer_only")
-        assert "ordered multi-step procedure" in result
-        assert "a dropped step causes the mistake" in result
-        # The risk warning is mandatory but bounded, not exempt from brevity.
-        assert "irreversible" in result
-
-    def test_answer_only_never_cuts_a_required_output_format(self):
-        result = _resolve("{{VERBOSITY_BLOCK}}", "dashboard:x", verbosity="answer_only")
-        assert "any output format the surface REQUIRES" in result
-        assert "[OPTIONS:] lines" in result
-        assert "diff blocks for file changes" in result
-        assert "full PR/MR URLs" in result
-
-    def test_the_required_format_list_is_illustrative_not_closed(self):
-        """The three named formats are only today's set -- per-surface rules and
-        steering files add more. A list the model reads as exhaustive silently
-        authorises dropping anything unlisted, which is the inverse of intent.
-        """
-        result = _resolve("{{VERBOSITY_BLOCK}}", "dashboard:x", verbosity="answer_only")
-        assert "illustrative, not exhaustive" in result
-        assert "brevity never overrides it" in result
+        block = self._block()
+        assert 'Asked for depth (a doc, a walkthrough, "in detail")' in block
+        assert "This mode is off for that reply" in block
 
     def test_answer_only_preserves_the_users_language(self):
-        result = _resolve("{{VERBOSITY_BLOCK}}", "dashboard:x", verbosity="answer_only")
-        assert "Preserve the user's language" in result
+        assert "Reply in the user's language." in self._block()
+
+    def test_the_three_checks_are_unique_to_answer_only(self):
+        for level in ("concise", "ultra"):
+            other = _resolve("{{VERBOSITY_BLOCK}}", "dashboard:x", verbosity=level)
+            assert "Shape check" not in other
+            assert "at most 12 words" not in other
 
     def test_answer_only_is_stricter_than_ultra(self):
-        answer_only = _resolve("{{VERBOSITY_BLOCK}}", "dashboard:x", verbosity="answer_only")
+        answer_only = self._block()
         ultra = _resolve("{{VERBOSITY_BLOCK}}", "dashboard:x", verbosity="ultra")
         assert answer_only != ultra
         # ultra budgets an explanation (bullets); answer_only grants none.
         assert "Max 3" in ultra
         assert "Max 3" not in answer_only
-        assert "No explanation by default" not in ultra
+        assert "Say only the answer" not in ultra
 
 
 class TestShippedPromptCarriesToken:
@@ -760,6 +446,7 @@ def mock_sel():
 @pytest.fixture()
 def handler_app(cfg_file, mock_sel):
     from kiro_crew.dashboard.handlers.files import api_dashboard_config
+
     app = web.Application()
     app.router.add_put("/api/dashboard/config", api_dashboard_config)
     app.router.add_get("/api/dashboard/config", api_dashboard_config)

@@ -1076,7 +1076,6 @@ test/test_validation_user_actions.py
 test/test_vector_memory.py
 test/test_vector_memory_coverage.py
 test/test_vendored_llama_payload.py
-test/test_verbosity_config.py
 test/test_voice_reply.py
 test/test_wait_countdown_keepalive.py
 test/test_watchdog.py
