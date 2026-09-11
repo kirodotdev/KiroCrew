@@ -2910,6 +2910,8 @@ DENY_CAUSE_INVALID_NAME = "invalid_name"
 DENY_CAUSE_HOOK_ERROR = "hook_error"
 DENY_CAUSE_BATCH_CASCADE = "batch_cascade"
 DENY_CAUSE_APPROVAL_TIMEOUT = "approval_timeout"
+DENY_CAUSE_APPROVAL_NO_BUDGET = "approval_no_budget"
+DENY_CAUSE_APPROVAL_UNDELIVERABLE = "approval_undeliverable"
 
 #: cause → (clause completing "The tool call you just made …", what to do next).
 _DENY_CAUSE_TEXT: dict[str, tuple[str, str]] = {
@@ -2947,6 +2949,22 @@ _DENY_CAUSE_TEXT: dict[str, tuple[str, str]] = {
         "it. Do not immediately reissue the same call: the person who did not "
         "answer is still away, and re-prompting re-arms the same wait for the "
         "same silence.",
+    ),
+    DENY_CAUSE_APPROVAL_NO_BUDGET: (
+        "was auto-declined because the turn had no budget left to host its approval prompt",
+        "the prompt was never shown, so the action itself was never judged — do "
+        "not abandon it or route around it on this evidence. State the "
+        "permission you need and why, then continue with what you can do "
+        "without it. Do not immediately reissue the same call: this turn cannot "
+        "host an approval wait, so the identical call would be declined the "
+        "same way.",
+    ),
+    DENY_CAUSE_APPROVAL_UNDELIVERABLE: (
+        "was auto-declined because its approval prompt could not be delivered "
+        "to the operator's channel",
+        "delivery failed, so the action itself was never judged — do not "
+        "abandon it or route around it on this evidence. State the permission "
+        "you need and why, then continue with what you can do without it.",
     ),
 }
 

@@ -239,7 +239,20 @@ unattended transcript line remains the only agent-facing explanation. The
 timeout card stays the sole user-visible surface — this steer paints no
 tool-blocked row.
 
-The recovery classification for the last two is **structural**: the queue entry
+**The other two host-originated approval auto-declines take the same path**,
+each with its own cause and the same no-ledger, no-row discipline as the
+timeout: `approval_no_budget` (the turn had no budget left to host the prompt
+— the agent is told the prompt was never shown, to state the permission it
+needs, and not to immediately reissue the identical call, since this turn
+cannot host an approval wait) and `approval_undeliverable` (the approval card
+could not be delivered to the operator's channel — the agent is told the call
+was never judged and to state the permission it needs). All three are steered
+once, at the shared reject branch, gated on the host-recorded provenance; a
+genuine user refusal records no cause, so kiro-cli's generic denial stays the
+true attribution there and no notice is sent.
+
+The recovery classification for the last two rows of the marker table above
+is **structural**: the queue entry
 carries `kind == "synthetic_recovery"` (`SYNTHETIC_RECOVERY_KIND`), set at insert
 time. Metadata survives every queue transformation (merge, prefixing, truncation)
 and cannot collide with a user pasting the transcript-visible recovery text back

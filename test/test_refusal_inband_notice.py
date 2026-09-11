@@ -29,7 +29,9 @@ from kiro_crew.dashboard.chat_runner import (
 )
 from kiro_crew.dashboard.state import (
     _DENY_CAUSE_TEXT,
+    DENY_CAUSE_APPROVAL_NO_BUDGET,
     DENY_CAUSE_APPROVAL_TIMEOUT,
+    DENY_CAUSE_APPROVAL_UNDELIVERABLE,
     DENY_CAUSE_BATCH_CASCADE,
     DENY_CAUSE_HOOK_ERROR,
     DENY_CAUSE_INVALID_NAME,
@@ -422,6 +424,37 @@ class TestCauseSpecificWording:
         assert "do not immediately reissue" in out.lower()
         assert "budget" not in out.lower()
 
+    def test_approval_no_budget_says_never_shown_not_denied(self):
+        out = build_refusal_steer_notice(
+            "bash",
+            "the turn had no budget left to wait for approval",
+            cause=DENY_CAUSE_APPROVAL_NO_BUDGET,
+        )
+        assert "no budget left to host its approval prompt" in out
+        assert "never judged" in out
+        # The action was never judged, so neither a policy verdict nor the
+        # policy guidance may appear: both would send the model routing around
+        # a call nobody refused.
+        assert "safety policy" not in out
+        assert "allowed alternative" not in out
+        assert "state the permission you need" in out.lower()
+        # Unlike the timeout, the no-reissue advice here IS justified by the
+        # budget: the window is recomputed from what is left of THIS turn, so
+        # an immediately reissued identical call is declined the same way.
+        assert "do not immediately reissue" in out.lower()
+
+    def test_approval_undeliverable_says_delivery_failed_not_denied(self):
+        out = build_refusal_steer_notice(
+            "bash",
+            "the approval prompt could not be delivered to Slack",
+            cause=DENY_CAUSE_APPROVAL_UNDELIVERABLE,
+        )
+        assert "could not be delivered" in out
+        assert "never judged" in out
+        assert "safety policy" not in out
+        assert "allowed alternative" not in out
+        assert "state the permission you need" in out.lower()
+
     def test_policy_wording_is_unchanged_by_default(self):
         # Every pre-existing caller passes no cause; the policy text must be
         # byte-identical to what shipped, or the model's correction changes
@@ -437,10 +470,13 @@ class TestCauseSpecificWording:
         # The cascade's members were never individually judged, so the wording
         # must neither claim a policy verdict nor scope itself to one call: the
         # single notice stands in for every cascaded member of the batch.
+        # The reason below is the batch-framed copy the setter records: the
+        # notice shows it under the CASCADED member's title, so it must speak
+        # about the batch's originating tool, not the member it is shown under.
         out = build_refusal_steer_notice(
             "list_files",
-            "the approval prompt for an earlier tool in this batch went unanswered "
-            "for 600s, so the host declined it",
+            "the host declined an earlier tool of this batch "
+            "(the approval prompt went unanswered for 600s)",
             cause=DENY_CAUSE_BATCH_CASCADE,
         )
         assert "every remaining call in its batch" in out
@@ -760,30 +796,80 @@ class TestEveryHostDenyCallSiteIsWired:
             (
                 "slack delivery-failure (None branch)",
                 "Linked approval delivery to Slack failed; auto-rejecting tool %r",
-                1000,
+                1100,
+                "DENY_CAUSE_APPROVAL_UNDELIVERABLE",
             ),
             (
                 "slack delivery-failure (except arm)",
                 "Error mirroring approval prompt to Slack",
-                800,
+                900,
+                "DENY_CAUSE_APPROVAL_UNDELIVERABLE",
             ),
-            ("no-budget", "format_approval_no_budget_card()", 400),
-            ("approval timeout", "format_approval_timeout_card(_approval_window)", 400),
+            (
+                "no-budget",
+                "format_approval_no_budget_card()",
+                400,
+                "DENY_CAUSE_APPROVAL_NO_BUDGET",
+            ),
+            (
+                "approval timeout",
+                "format_approval_timeout_card(_approval_window)",
+                400,
+                "DENY_CAUSE_APPROVAL_TIMEOUT",
+            ),
         )
         missing = []
-        for arm, anchor, window in arm_anchors:
+        for arm, anchor, window, constant in arm_anchors:
             assert (
                 src.count(anchor) == 1
             ), f"the {arm} arm's source landmark is no longer unique -- guard is stale"
-            if "_host_deny_cause = (" not in src.split(anchor, 1)[1][:window]:
+            win = src.split(anchor, 1)[1][:window]
+            if f"_host_deny_cause = {constant}" not in win or "_host_deny_reason = " not in win:
                 missing.append(arm)
         assert not missing, (
-            f"these host auto-decline arms no longer record a cause: {missing} -- "
-            "their cascades are again indistinguishable from a user refusal"
+            f"these host auto-decline arms no longer record their cause constant "
+            f"and reason: {missing} -- their declines are again indistinguishable "
+            "from a user refusal"
         )
+        setter = "slot._batch_rejected_cause = ("
         assert (
-            "slot._batch_rejected_cause = _host_deny_cause" in src
+            setter in src and "_host_deny_reason" in src.split(setter, 1)[1][:300]
         ), "the batch setter no longer copies the decline's provenance onto the slot"
+        # The copy must stay BATCH-FRAMED: the cascade notice embeds it under
+        # the cascaded member's title, where the bare per-tool reason would
+        # claim that member's own prompt failed.
+        assert "earlier tool of this batch" in src.split(setter, 1)[1][:300], (
+            "the batch copy lost its batch framing — the cascade notice now "
+            "misattributes the originating decline to the cascaded member"
+        )
+
+    def test_shared_reject_branch_steers_the_host_cause(self):
+        # The three host auto-decline arms (no budget, Slack ts-None, Slack
+        # except) record their cause upstream and funnel into the interactive
+        # rejected branch; the correction is steered there ONCE, gated on the
+        # provenance, BEFORE the rejection is answered. Guarded at source
+        # level because the branch lives inside the turn coroutine, where the
+        # direct unit fixtures of this file cannot reach it.
+        src = self._src()
+        anchor = "# deny-notice-exempt: interactive user denial."
+        assert src.count(anchor) == 1, "the interactive exemption marker moved -- guard is stale"
+        before = src.split(anchor, 1)[0][-1400:]
+        gate = "if _host_deny_cause:"
+        assert gate in before, (
+            "the shared reject branch no longer gates a steer on the " "host-decline provenance"
+        )
+        gated = before.split(gate, 1)[1]
+        assert "_steer_policy_notice(" in gated, "the provenance gate no longer steers"
+        assert (
+            "cause=_host_deny_cause" in gated
+        ), "the shared steer no longer carries the arm's recorded cause"
+        assert (
+            "_host_deny_reason" in gated
+        ), "the shared steer no longer carries the arm's recorded reason"
+        after = src.split(anchor, 1)[1][:1200]
+        assert (
+            "await client.reject_tool(event.request_id)" in after
+        ), "the steer must precede the rejection going on the wire"
 
     def test_flag_and_provenance_clear_together(self):
         # A stale cause is never READ today (the flag gates the only reader and

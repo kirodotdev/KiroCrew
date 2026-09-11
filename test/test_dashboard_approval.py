@@ -240,7 +240,9 @@ def _context_builder(hook_result: ToolHookResult | None = None) -> MagicMock:
     # from the operator's real config: an exporter bound to the real
     # ~/.kiro/crew/metrics for the life of the worker. Built per call instead.
     cb = MagicMock()
-    cb.hooks.on_tool_call.return_value = hook_result if hook_result is not None else ToolHookResult.allow()
+    cb.hooks.on_tool_call.return_value = (
+        hook_result if hook_result is not None else ToolHookResult.allow()
+    )
     cb.build_message.return_value = ("hello", None)
     return cb
 
@@ -366,9 +368,7 @@ class TestApprovalModes:
         """The blocked pill must carry the deny reason, not just '(blocked)',
         so the user learns WHY (e.g. 'Blocked by security policy: git push')
         instead of seeing a silent/cryptic stop."""
-        cb = _context_builder(
-            ToolHookResult.deny("Blocked by security policy: git push")
-        )
+        cb = _context_builder(ToolHookResult.deny("Blocked by security policy: git push"))
         state, client = _make_state(tmp_path, context_builder=cb)
         slot = _make_slot()
         _set_stream(client, [_permission_event(), _complete_event()])
@@ -377,18 +377,15 @@ class TestApprovalModes:
             await _run_chat(state, slot, "hello")
 
         msgs = _tool_messages(slot)
-        assert any(
-            "security policy: git push" in m.get("content", "").lower()
-            for m in msgs
-        ), [m.get("content") for m in msgs]
+        assert any("security policy: git push" in m.get("content", "").lower() for m in msgs), [
+            m.get("content") for m in msgs
+        ]
 
     @pytest.mark.asyncio
     async def test_hook_deny_broadcasts_activity_event(self, tmp_path):
         """A host-gate deny must broadcast a visible activity_event (mirroring
         the auto-approve branch) so the block is not silent."""
-        cb = _context_builder(
-            ToolHookResult.deny("Blocked by security policy: git push")
-        )
+        cb = _context_builder(ToolHookResult.deny("Blocked by security policy: git push"))
         state, client = _make_state(tmp_path, context_builder=cb)
         slot = _make_slot()
         _set_stream(client, [_permission_event(), _complete_event()])
@@ -399,15 +396,14 @@ class TestApprovalModes:
         perm_activity = [
             c.args
             for c in state.broadcast_ws.call_args_list
-            if c.args and c.args[0] == "activity_event"
+            if c.args
+            and c.args[0] == "activity_event"
             and isinstance(c.args[1], dict)
             and c.args[1].get("kind") == "permission"
         ]
         assert perm_activity, state.broadcast_ws.call_args_list
         # The broadcast text should mention the block.
-        assert any(
-            "block" in a[1].get("text", "").lower() for a in perm_activity
-        ), perm_activity
+        assert any("block" in a[1].get("text", "").lower() for a in perm_activity), perm_activity
 
     @pytest.mark.asyncio
     async def test_hook_deny_never_registers_approval_future(self, tmp_path):
@@ -541,9 +537,7 @@ class TestApprovalModes:
         client.approve_tool.assert_not_called()
         # User-facing pill must reflect the block (NOT a hook_error).
         msgs = _tool_messages(slot)
-        assert any(
-            "hook blocked" in m.get("content", "").lower() for m in msgs
-        ), msgs
+        assert any("hook blocked" in m.get("content", "").lower() for m in msgs), msgs
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
@@ -602,9 +596,7 @@ class TestApprovalModes:
         client.reject_tool.assert_called_once()
         client.approve_tool.assert_not_called()
         msgs = _tool_messages(slot)
-        assert any(
-            "hook blocked" in m.get("content", "").lower() for m in msgs
-        ), (label, msgs)
+        assert any("hook blocked" in m.get("content", "").lower() for m in msgs), (label, msgs)
 
     @pytest.mark.asyncio
     async def test_auto_approve_allowed_when_pretooluse_hook_exits_zero(self, tmp_path):
@@ -833,9 +825,13 @@ class TestToolCallIdRedaction:
         state.broadcast_ws.assert_any_call(
             "tool_call",
             {
-                "slot": slot.key, "tool": evt.title, "kind": evt.tool_kind,
-                "auto": True, "tool_call_id": "tcid-clean",
-                "purpose": "test purpose", "input_preview": "",
+                "slot": slot.key,
+                "tool": evt.title,
+                "kind": evt.tool_kind,
+                "auto": True,
+                "tool_call_id": "tcid-clean",
+                "purpose": "test purpose",
+                "input_preview": "",
             },
         )
 
@@ -903,9 +899,7 @@ class TestDenialCascadeLifetime:
 
     @pytest.mark.parametrize("resume_kind", [EVENT_TEXT_CHUNK, EVENT_THINKING_CHUNK])
     @pytest.mark.asyncio
-    async def test_later_sequential_call_is_evaluated_independently(
-        self, tmp_path, resume_kind
-    ):
+    async def test_later_sequential_call_is_evaluated_independently(self, tmp_path, resume_kind):
         """Call N+1 gets its own prompt once the model resumed after N was denied."""
         state, client = _make_state(tmp_path, context_builder=_context_builder())
         slot = _make_slot()
@@ -1031,9 +1025,16 @@ class TestBatchCascadeAttribution:
         with _patch_stats():
             await _run_chat(state, slot, "hello")
 
+        client.reject_tool.assert_any_call("req-1")
         client.reject_tool.assert_any_call("req-2")
-        client.steer.assert_called_once()
-        notice = client.steer.call_args[0][0]
+        # The declined tool itself is corrected first — its own no-budget
+        # notice — then exactly ONE cascade notice covers the remainder.
+        assert client.steer.call_count == 2
+        no_budget_notice = client.steer.call_args_list[0][0][0]
+        assert "no budget left" in no_budget_notice
+        assert "every remaining call in its batch" not in no_budget_notice
+        assert "NOT a user action" in no_budget_notice
+        notice = client.steer.call_args_list[1][0][0]
         assert "every remaining call in its batch" in notice
         assert "no budget left" in notice
 
@@ -1224,9 +1225,7 @@ class TestDenyOnce:
         state._approval_futures["req-bg"] = state_fut
 
         with patch.object(state, "_log") as log:
-            assert (
-                state.resolve_approval("req-bg", False, rejected_once=True) is True
-            )
+            assert state.resolve_approval("req-bg", False, rejected_once=True) is True
         assert state_fut.result() is False
         assert log.warning.called
         assert "rejected_once" in repr(log.warning.call_args)
@@ -1331,9 +1330,7 @@ class TestBackgroundApprovalDenyFast:
 
         monkeypatch.setattr("kiro_crew.dashboard.state.asyncio.wait_for", _fake_wait_for)
 
-        result = await state.request_approval(
-            "req-bg", "heartbeat", "fs_write", is_background=True
-        )
+        result = await state.request_approval("req-bg", "heartbeat", "fs_write", is_background=True)
 
         assert result is False  # deny-fast on expiry
         assert captured["timeout"] == DashboardState._BACKGROUND_APPROVAL_TIMEOUT_SECS
@@ -1371,9 +1368,7 @@ class TestBackgroundApprovalDenyFast:
             state.resolve_approval("req-bg2", True)
 
         asyncio.get_event_loop().create_task(_approve_soon())
-        result = await state.request_approval(
-            "req-bg2", "cron", "fs_write", is_background=True
-        )
+        result = await state.request_approval("req-bg2", "cron", "fs_write", is_background=True)
         assert result is True
 
 
@@ -1382,11 +1377,14 @@ class TestStateMetaAndPermissions:
 
     def test_append_with_meta(self):
         slot = _make_slot()
-        slot.append("tool", "test", meta={"tool_call_id": "tc-1", "purpose": "testing"}, broadcast=False)
+        slot.append(
+            "tool", "test", meta={"tool_call_id": "tc-1", "purpose": "testing"}, broadcast=False
+        )
         assert slot.messages[-1]["meta"]["tool_call_id"] == "tc-1"
 
     def test_mark_permission_resolved(self):
         import json
+
         slot = _make_slot()
         cls_data = json.dumps({"request_id": "req-42"})
         slot.append("permission", "tool_x", cls_data, broadcast=False)
@@ -1420,9 +1418,7 @@ class TestRefusalRecovery:
     async def test_host_gate_deny_enqueues_recovery_continuation(self, tmp_path):
         """A host-gate deny records the reason and the finally-block dequeue
         re-dispatches it as an 'inject' continuation carrying that reason."""
-        cb = _context_builder(
-            ToolHookResult.deny("Blocked by security policy: git push")
-        )
+        cb = _context_builder(ToolHookResult.deny("Blocked by security policy: git push"))
         state, client = _make_state(tmp_path, context_builder=cb)
         slot = _make_slot()
 
@@ -1470,9 +1466,7 @@ class TestRefusalRecovery:
         left off" — so it answered the same question again, at full turn cost,
         once per blocked call.
         """
-        cb = _context_builder(
-            ToolHookResult.deny("Blocked by security policy: git push")
-        )
+        cb = _context_builder(ToolHookResult.deny("Blocked by security policy: git push"))
         state, client = _make_state(tmp_path, context_builder=cb)
         slot = _make_slot()
         client.context_usage_pct = MagicMock(return_value=0.0)
@@ -1528,9 +1522,7 @@ class TestRefusalRecovery:
         alone sent the resume instruction for this ordering, which is the same
         duplicate answer at full turn cost.
         """
-        cb = _context_builder(
-            ToolHookResult.deny("Blocked by security policy: git push")
-        )
+        cb = _context_builder(ToolHookResult.deny("Blocked by security policy: git push"))
         state, client = _make_state(tmp_path, context_builder=cb)
         slot = _make_slot()
         client.context_usage_pct = MagicMock(return_value=0.0)
@@ -1585,9 +1577,7 @@ class TestRefusalRecovery:
             if slot.task:
                 await slot.task
 
-        assert not any(
-            REFUSAL_RECOVERY_PREFIX in m.get("content", "") for m in slot.messages
-        )
+        assert not any(REFUSAL_RECOVERY_PREFIX in m.get("content", "") for m in slot.messages)
         assert not slot._queue
 
 
@@ -1658,11 +1648,11 @@ class TestBuildRefusalRecoveryPrompt:
         # The awareness variant drops the resume instruction, not the guidance:
         # "how to do this properly" is the awareness the user is owed.
         reason = "Blocked by security policy: cat ~/.aws/credentials"
-        assert build_refusal_recovery_prompt(
-            [("Running: cat creds", reason)], answered=True
-        ).count("How to do this properly:") == build_refusal_recovery_prompt(
-            [("Running: cat creds", reason)]
-        ).count("How to do this properly:")
+        assert build_refusal_recovery_prompt([("Running: cat creds", reason)], answered=True).count(
+            "How to do this properly:"
+        ) == build_refusal_recovery_prompt([("Running: cat creds", reason)]).count(
+            "How to do this properly:"
+        )
 
 
 class TestPendingProjectReset:
@@ -1801,9 +1791,7 @@ class TestInteractiveDenyDoesNotTriggerRecovery:
     async def test_hook_deny_still_populates_refusal_recovery(self, tmp_path):
         """Complementary check: a system-side hook deny DOES trigger recovery,
         confirming the hook-deny path (L1974) is unaffected by the fix."""
-        cb = _context_builder(
-            ToolHookResult.deny("Blocked by security policy: rm -rf /")
-        )
+        cb = _context_builder(ToolHookResult.deny("Blocked by security policy: rm -rf /"))
         state, client = _make_state(tmp_path, context_builder=cb)
         slot = _make_slot()
 
@@ -1921,9 +1909,7 @@ class TestPreToolUseHookBlockRecovery:
         )
 
     @pytest.mark.asyncio
-    async def test_blocked_row_and_audit_redact_the_model_authored_title(
-        self, tmp_path
-    ) -> None:
+    async def test_blocked_row_and_audit_redact_the_model_authored_title(self, tmp_path) -> None:
         """A credential the model put in the tool title must not reach either surface.
 
         ``event.title`` prefers the model's own ``description`` field
@@ -1950,9 +1936,7 @@ class TestPreToolUseHookBlockRecovery:
         with patch("kiro_crew.dashboard.chat_runner.sel") as mock_sel:
             audit = MagicMock()
             mock_sel.return_value = audit
-            await _drive_hook_blocked_turn(
-                state, client, slot, title=f"Deploy with {secret} now"
-            )
+            await _drive_hook_blocked_turn(state, client, slot, title=f"Deploy with {secret} now")
 
         rows = [m.get("content", "") for m in slot.messages]
         assert not any(secret in row for row in rows), rows
@@ -2182,9 +2166,7 @@ class TestDenyRowTitleRedaction:
             for call in audit.log_tool_invocation.call_args_list
             if call.kwargs.get("outcome") == "denied"
         ]
-        assert any(
-            (c.get("metadata") or {}).get("reason") == "trust_reads" for c in denied
-        ), denied
+        assert any((c.get("metadata") or {}).get("reason") == "trust_reads" for c in denied), denied
 
     @pytest.mark.asyncio
     async def test_trust_mode_invalid_name_redacts(self, tmp_path):
@@ -2308,8 +2290,7 @@ class TestApprovalAnswerersDoNotRaceTheStream:
             if fn.name == "_answer_approval":
                 continue  # the one place allowed to wait, and it polls
             touches = any(
-                isinstance(n, ast.Attribute) and n.attr == "_approval_futures"
-                for n in ast.walk(fn)
+                isinstance(n, ast.Attribute) and n.attr == "_approval_futures" for n in ast.walk(fn)
             )
             if not touches:
                 continue
@@ -2326,8 +2307,7 @@ class TestApprovalAnswerersDoNotRaceTheStream:
         offenders = [
             f"{fn.name} (line {fn.lineno})"
             for fn in self._functions()
-            if fn.name != "_answer_approval"
-            and self._calls(fn, attr="get", on="_approval_futures")
+            if fn.name != "_answer_approval" and self._calls(fn, attr="get", on="_approval_futures")
         ]
         assert not offenders, (
             "these functions look up an approval future themselves instead of "
