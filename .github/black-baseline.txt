@@ -628,8 +628,6 @@ test/test_design_tweak_relay_paths.py
 test/test_dev_fleet_app.py
 test/test_dev_fleet_node_toolchain.py
 test/test_dev_fleet_repo_accessor.py
-test/test_dev_fleet_server_coverage.py
-test/test_dev_fleet_server_more_coverage.py
 test/test_diagnostics.py
 test/test_discord_client_coverage.py
 test/test_discord_config_handlers.py
@@ -748,7 +746,6 @@ test/test_lesson_contradiction.py
 test/test_lesson_ranking.py
 test/test_lifecycle_hooks.py
 test/test_link_dashboard.py
-test/test_live_target.py
 test/test_llm_helpers_tool_gate.py
 test/test_llm_pool.py
 test/test_local_gate.py

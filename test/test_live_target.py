@@ -28,6 +28,7 @@ from kiro_crew.service.live_target import (
     InvalidTarget,
     maybe_reexec,
     pointer_path,
+    read_previous_target,
     read_target,
     read_target_reason,
     restore,
@@ -41,9 +42,7 @@ from kiro_crew.service.live_target import (
 @pytest.fixture(autouse=True)
 def _isolate_pointer(tmp_path, monkeypatch):
     """Route pointer_path() to tmp_path so no test touches the real data home."""
-    monkeypatch.setattr(
-        "kiro_crew.config.loader.config_dir", lambda: tmp_path
-    )
+    monkeypatch.setattr("kiro_crew.config.loader.config_dir", lambda: tmp_path)
 
 
 def _place_entry_point(checkout: Path, mode: int = 0o755) -> Path:
@@ -270,6 +269,36 @@ class TestReadTargetReason:
     def test_read_target_returns_none_when_absent(self):
         assert read_target() is None
 
+    def test_previous_target_round_trips_when_both_checkouts_validate(self, tmp_path):
+        current_root = tmp_path / "current"
+        previous_root = tmp_path / "previous"
+        current_root.mkdir()
+        previous_root.mkdir()
+        current = _make_valid_checkout(current_root)
+        previous = _make_valid_checkout(previous_root)
+
+        write_target(current, previous_checkout=previous)
+
+        assert read_target() == current.resolve()
+        assert read_previous_target() == previous.resolve()
+
+    def test_legacy_pointer_has_no_previous_target(self, tmp_path):
+        checkout = _make_valid_checkout(tmp_path)
+        write_target(checkout)
+        assert read_previous_target() is None
+
+    def test_invalid_previous_target_fails_closed(self, tmp_path):
+        checkout = _make_valid_checkout(tmp_path)
+        pointer_path().write_text(
+            json.dumps(
+                {
+                    "checkout": str(checkout),
+                    "previous_checkout": str(tmp_path / "missing"),
+                }
+            )
+        )
+        assert read_previous_target() is None
+
 
 # ─── write_target() ────────────────────────────────────────────────────────
 
@@ -404,7 +433,8 @@ class TestSnapshotRestore:
         """Deleting leaves no file, so there is nothing to apply a DACL to."""
         hardened: list = []
         monkeypatch.setattr(
-            "kiro_crew.platform_compat.restrict_to_owner", lambda path: hardened.append(path))
+            "kiro_crew.platform_compat.restrict_to_owner", lambda path: hardened.append(path)
+        )
         path = pointer_path()
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("anything")
@@ -420,6 +450,7 @@ class TestSnapshotRestore:
         The lockdown failure now happens BEFORE the rename, so a rollback that
         could not be hardened also never publishes an unprotected pointer.
         """
+
         def boom(_path):
             raise OSError(5, "icacls failed")
 
@@ -478,9 +509,7 @@ class TestMaybeReexec:
         maybe_reexec(["gateway"])
         mock_execve.assert_not_called()
 
-    def test_returns_without_exec_when_pointer_invalid_and_warns(
-        self, tmp_path, monkeypatch
-    ):
+    def test_returns_without_exec_when_pointer_invalid_and_warns(self, tmp_path, monkeypatch):
         """An unusable pointer is ignored with a warning."""
         path = pointer_path()
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -552,9 +581,7 @@ class TestMaybeReexec:
         # Must NOT raise — the caller keeps booting
         maybe_reexec(["gateway"])
 
-    def test_chdir_failure_warned_but_exec_still_happens(
-        self, tmp_path, monkeypatch
-    ):
+    def test_chdir_failure_warned_but_exec_still_happens(self, tmp_path, monkeypatch):
         """A cwd we cannot enter is warned, not fatal — the exec still fires."""
         checkout = _make_valid_checkout(tmp_path)
         write_target(checkout)
@@ -572,10 +599,7 @@ class TestMaybeReexec:
         # The exec was still attempted despite chdir failure
         mock_execve.assert_called_once()
         # A warning was emitted about chdir
-        warn_calls = [
-            c for c in log.warning.call_args_list
-            if "chdir" in (c[0][0] % c[0][1:])
-        ]
+        warn_calls = [c for c in log.warning.call_args_list if "chdir" in (c[0][0] % c[0][1:])]
         assert len(warn_calls) >= 1
 
 

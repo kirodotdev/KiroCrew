@@ -16,6 +16,7 @@ from kiro_crew.apps.builtins.dev_fleet import live, repository, runtime
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.platform_compat import is_link_or_junction
+from kiro_crew.service import live_target
 
 # --- build-pending detection (server-side truth) ---
 _START_EPOCH = time.time()
@@ -1054,9 +1055,36 @@ def _orphan_count_sync(cfg: Any) -> int | None:
         return None
 
 
+def _completed_cutover_undo_target(
+    worktrees: list[dict],
+    rows: list[dict],
+    *,
+    live_path: str | None,
+    staged_path: str | None,
+    previous_path: Path | None,
+) -> dict | None:
+    """Return the discovered previous checkout only after a completed cutover."""
+    if (
+        staged_path is not None
+        or live_path is None
+        or previous_path is None
+        or repository._same_path(live_path, str(previous_path))
+    ):
+        return None
+    return next(
+        (
+            {"name": row["name"], "path": row["path"]}
+            for raw, row in zip(worktrees, rows)
+            if repository._same_path(str(previous_path), raw.get("path", ""))
+        ),
+        None,
+    )
+
+
 async def _build_fleet() -> dict:
     live_path = await live._live_worktree_path()
     staged_path = live._staged_target()
+    previous_path = live_target.read_previous_target()
     worktrees = await repository._discover_worktrees()
     cfg = runtime._load_cfg()
     loop = asyncio.get_running_loop()
@@ -1266,6 +1294,19 @@ async def _build_fleet() -> dict:
             )
         except Exception:  # noqa: BLE001
             pass
+    # Undo exists only for a COMPLETED cutover: while a pointer is staged the
+    # existing Cancel staged cutover action is the truthful inverse. Bind the
+    # payload to a currently discovered row so a pruned/foreign checkout never
+    # becomes a clickable target; _make_live re-checks the pointer history under
+    # its mutation lock before acting.
+    undo_target = _completed_cutover_undo_target(
+        worktrees,
+        wts,
+        live_path=live_path,
+        staged_path=staged_path,
+        previous_path=previous_path,
+    )
+
     # The run pointers a reloaded page reattaches to -- `sync_run_id` and each
     # row's `provision_run_id` -- are deliberately NOT set here. This snapshot is
     # cached and served stale-while-revalidate, so a pointer written at build
@@ -1284,6 +1325,9 @@ async def _build_fleet() -> dict:
         # persistent pending-restart state from this, so the instruction outlives
         # the toast that announced it.
         "staged_target": runtime._redact(staged_path) if staged_path else None,
+        # One-level post-cutover inverse. Null for legacy pointers, invalid or
+        # pruned previous checkouts, and every still-staged transition.
+        "undo_target": undo_target,
         # Whether the pointer-only cancel of that stage would be accepted (see
         # _staged_cancel_available). Only probed while a stage exists; false
         # otherwise so the dashboard's cancel control stays hidden.

@@ -780,8 +780,20 @@ def _make_live_plan(
     return plan
 
 
-async def _make_live(path: str, dry_run: bool = False, expected_staged: str | None = None) -> dict:
+async def _make_live(
+    path: str,
+    dry_run: bool = False,
+    expected_staged: str | None = None,
+    *,
+    undo: bool = False,
+) -> dict:
     """Repoint the live gateway at *path* by staging the live-target pointer.
+
+    ``undo=True`` binds the request to the pointer's validated
+    ``previous_checkout``. The binding is checked before validation and again
+    under the single-flight lock, so a banner rendered for an older cutover can
+    never repoint a newer live target. A successful undo clears the one-level
+    history instead of turning itself into an implicit redo.
 
     ``expected_staged`` binds a CANCEL to the state the operator confirmed:
     when set, the request proceeds only while the staged target still
@@ -855,6 +867,24 @@ async def _make_live(path: str, dry_run: bool = False, expected_staged: str | No
             ),
         }
 
+    if undo and expected_staged is not None:
+        return {
+            "ok": False,
+            "code": "invalid_request",
+            "error": "undo and expected_staged are mutually exclusive",
+        }
+    if undo:
+        previous_entry = live_target.read_previous_target()
+        if previous_entry is None or not repository._same_path(str(real), str(previous_entry)):
+            return {
+                "ok": False,
+                "code": "undo_changed",
+                "error": (
+                    "Undo is no longer available because the previous live "
+                    "checkout changed — refresh the fleet before retrying"
+                ),
+            }
+
     # A request carrying expected_staged is a CANCEL of that exact stage and
     # nothing else. Validated HERE, before any branching: if the named stage
     # completed or was re-pointed while the confirm dialog sat open, the
@@ -904,6 +934,15 @@ async def _make_live(path: str, dry_run: bool = False, expected_staged: str | No
 
     live = await _live_worktree_path()
     same_as_running = live is not None and repository._same_path(str(real), live)
+    if undo and (live is None or same_as_running):
+        return {
+            "ok": False,
+            "code": "undo_not_ready",
+            "error": (
+                "Undo is available only after the cutover has completed and "
+                "the new checkout is running"
+            ),
+        }
     if expected_staged is not None and not same_as_running:
         # A request carrying expected_staged is a CANCEL: it re-pins the
         # checkout the operator saw as live. If the live checkout moved since
@@ -1179,6 +1218,8 @@ async def _make_live(path: str, dry_run: bool = False, expected_staged: str | No
             ),
         }
     plan["target"] = str(real)
+    if undo:
+        plan["action"] = "undo_make_live"
     if dry_run:
         return {"ok": True, "dry_run": True, "plan": plan}
 
@@ -1215,6 +1256,17 @@ async def _make_live(path: str, dry_run: bool = False, expected_staged: str | No
         if artifact_err is not None:
             code, msg = artifact_err
             return {"ok": False, "code": code, "error": msg}
+        if undo:
+            previous_now = live_target.read_previous_target()
+            if previous_now is None or not repository._same_path(str(real), str(previous_now)):
+                return {
+                    "ok": False,
+                    "code": "undo_changed",
+                    "error": (
+                        "Undo is no longer available because the previous live "
+                        "checkout changed — refresh the fleet before retrying"
+                    ),
+                }
         # Snapshot the prior live target BEFORE staging so a failed cutover can
         # be rolled back — a persisted pointer would otherwise silently activate
         # on the NEXT unrelated restart. Staging itself is atomic (temp file +
@@ -1285,7 +1337,23 @@ async def _make_live(path: str, dry_run: bool = False, expected_staged: str | No
             # on Windows. Run it off the loop so a cutover cannot stall every
             # other gateway request for the duration of that subprocess.
             loop = asyncio.get_running_loop()
-            await loop.run_in_executor(subprocess_executor(), live_target.write_target, real)
+
+            def _write_pointer_sync() -> Path:
+                previous = None
+                if not undo and live is not None:
+                    try:
+                        previous = live_target.validate(live)
+                    except live_target.InvalidTarget:
+                        # Make Live remains available when the running checkout
+                        # is not itself provisioned enough to be a safe Undo
+                        # destination. The pointer simply carries no history.
+                        pass
+                return live_target.write_target(
+                    real,
+                    previous_checkout=previous,
+                )
+
+            await loop.run_in_executor(subprocess_executor(), _write_pointer_sync)
         except live_target.InvalidTarget as exc:
             return {"ok": False, "code": "unsafe_path", "error": runtime._redact(str(exc))}
         except OSError as exc:
