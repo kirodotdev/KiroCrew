@@ -116,8 +116,13 @@ tests in `test_autonudge_stop_auth.py` pin those distinctions.
 `autonudge_stop` is deliberately non-confirming at tool-call time because the
 consumer applies it after the turn result is processed. The applier removes an
 ordinary monitor loop on the calling binding and reports an idempotent local
-miss. It never exposes a cross-session target; `test_autonudge_stop_auth.py`
-pins both the request wording and the local-binding behavior.
+miss. Before removal it calls the shared `chat_utils.subagents_attached`
+predicate and refuses while the session has running or queued children, or a
+completion event still being delivered. This keeps a goal driver alive until
+its delegated work has settled; the dashboard's direct Stop control remains the
+user-owned override. It never exposes a cross-session target;
+`test_autonudge_stop_auth.py` pins the request wording, local-binding behavior,
+and child-work refusal.
 
 ## PR watch probe
 

@@ -751,18 +751,20 @@ def subagents_attached(
     second copy is how the probes diverge, and both callers must fail toward
     keeping a child's work.
 
-    Three probes, none optional:
+    Four probes, none optional on the live manager/slot path:
 
     * ``running_agents_for`` on the true session key. QUEUED children count too:
       a spawn that hit the concurrency/stagger gate is deliberately absent from
       ``_agents`` (see ``SubagentInfo.queued``), yet it WILL start on its own.
-    * IN-FLIGHT RESULT DELIVERY: the last child can finish — emptying both
-      probes — while its ``[Subagent completion event]`` injection is still
-      landing, and that injection needs both the transcript order and the
-      session it reports to.
-    * Fail closed on a None running-probe: that is the probe FAILING, not a slot
-      with no children, and mistaking the two is exactly the hazard this guard
-      exists to prevent.
+    * MANAGER TERMINAL DELIVERY: ``info.done`` is set before the terminal report
+      awaits ``_on_done``, so ``terminal_delivery_inflight_for`` keeps the child
+      attached through that await even when a channel turn has no dashboard slot.
+    * SLOT RESULT DELIVERY: dashboard injection can outlive the manager callback;
+      ``slot._subagent_deliveries_inflight`` keeps transcript order and the target
+      session intact until that delivery settles.
+    * Fail closed on a None running-probe or a broken delivery probe: that is the
+      probe FAILING, not a session with no children, and mistaking the two is
+      exactly the hazard this guard exists to prevent.
 
     A state with no ``subagents`` registry answers False — there is no runtime
     for a child to be attached to.
@@ -779,8 +781,20 @@ def subagents_attached(
             # An unreadable queue is unknown children, not zero children.
             logger.debug("%s: queued-depth probe failed", operation, exc_info=True)
             queued = 1
-    inflight = getattr(slot, "_subagent_deliveries_inflight", 0)
-    return bool(running is None or running or queued or inflight)
+    terminal_delivery = False
+    delivery_probe = getattr(type(subs), "terminal_delivery_inflight_for", None)
+    if callable(delivery_probe):
+        try:
+            terminal_delivery = delivery_probe(subs, session_key) is not False
+        except Exception:
+            logger.debug(
+                "%s: terminal-delivery probe failed",
+                operation,
+                exc_info=True,
+            )
+            terminal_delivery = True
+    slot_delivery = getattr(slot, "_subagent_deliveries_inflight", 0)
+    return bool(running is None or running or queued or terminal_delivery or slot_delivery)
 
 
 def slack_options_slot(state: DashboardState, session_key: str) -> _ChatSlot | None:

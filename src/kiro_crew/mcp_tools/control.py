@@ -208,9 +208,12 @@ def schemas() -> list[dict[str, Any]]:
                 "Stop the auto-nudge loop driving your current session. Call this "
                 "when you determine the loop should halt (e.g. goal complete, "
                 "blocked on user input, or a STOP sentinel file indicates shutdown). "
-                "Removes the loop from the AutoNudgeService so no further nudges "
-                "fire into this session. Safe to call even if no loop is active — "
-                "returns a no-op message."
+                "Do not stop a goal merely because spawned sub-agents report back "
+                "automatically. An agent-issued stop is refused while this session "
+                "still has running, queued, or completing sub-agent work. Removes "
+                "the loop from the AutoNudgeService so no further nudges fire into "
+                "this session. Safe to call even if no loop is active — returns a "
+                "no-op message."
             ),
             "inputSchema": {
                 "type": "object",

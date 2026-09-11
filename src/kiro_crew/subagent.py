@@ -2068,6 +2068,9 @@ class SubagentManager:
     def running_agents_for(self, parent_key: str) -> list[dict]:
         return self._run_events.running_agents_for_impl(parent_key)
 
+    def terminal_delivery_inflight_for(self, parent_session_key: str) -> bool:
+        return self._terminal.terminal_delivery_inflight_for_impl(parent_session_key)
+
     def task_memory_rows(self) -> list[dict[str, object]]:
         return self._monitor.task_memory_rows_impl()
 

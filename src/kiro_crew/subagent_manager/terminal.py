@@ -315,6 +315,19 @@ class TerminalCoordinator(ManagerComponent):
         task.add_done_callback(_forget)
         return task
 
+    def terminal_delivery_inflight_for_impl(self, parent_session_key: str) -> bool:
+        """Whether *parent_session_key* owns an unfinished terminal report.
+
+        ``info.done`` becomes true before ``_on_done`` injects the completion,
+        so the running-agent registry alone cannot represent this interval.
+        ``_report_owners`` retains the parent identity until the report task
+        finishes, including the whole ``_on_done`` await.
+        """
+        return any(
+            not task.done() and info.parent_session_key == parent_session_key
+            for task, info in self._manager._report_owners.items()
+        )
+
     def _release_slot_impl(self, info: SubagentInfo) -> bool:
         """Claim the exclusive right to free ``info``'s concurrency slot.
 

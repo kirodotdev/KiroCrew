@@ -357,13 +357,14 @@ def build_auto_approve(ctx_builder: Any) -> Callable[[Any], bool]:
 class _ChannelDirectiveState:
     """Minimal ``NudgeAuthzState`` stand-in for a turn with no gateway state.
 
-    Carries the one thing the monitor-trio authorizer can validate for a
-    channel session — ``sessions`` (Slack routability). The empty ``_slots`` /
-    ``channel_transports`` make every other lookup fail CLOSED (deny), never
-    crash.
+    Carries the state a channel turn can validate without a dashboard slot:
+    ``sessions`` for routability and ``subagents`` for child-work teardown guards.
+    The empty ``_slots`` / ``channel_transports`` make every other lookup fail
+    CLOSED (deny), never crash.
     """
 
     sessions: Any
+    subagents: Any = None
     channel_transports: dict[str, Any] = field(default_factory=dict)
     _slots: dict[str, Any] = field(default_factory=dict)
 
@@ -373,6 +374,7 @@ def build_directive_consumer(
     session_key: str,
     sessions: Any,
     dispatcher: Any = None,
+    subagents: Any = None,
 ) -> DirectiveConsumer:
     """Session-directive consumer for one channel turn (``TurnDriver`` injection).
 
@@ -388,8 +390,9 @@ def build_directive_consumer(
     ``dashboard_state`` attached at boot (``register_channel_transport``), and
     it is re-read per directive so a consumer built before that attachment
     still sees it. Slack's function-style dispatch has no dispatcher object;
-    the minimal *sessions*-backed stand-in covers the Slack routability check,
-    and everything it cannot answer fails CLOSED in the authorizer.
+    the minimal *sessions*/*subagents*-backed stand-in covers routability and
+    child-work guards, and everything it cannot answer fails CLOSED in the
+    authorizer.
     """
 
     async def _consume(kind: str, args: dict[str, Any]) -> None:
@@ -399,7 +402,7 @@ def build_directive_consumer(
 
         state: Any = getattr(dispatcher, "dashboard_state", None)
         if state is None:
-            state = _ChannelDirectiveState(sessions=sessions)
+            state = _ChannelDirectiveState(sessions=sessions, subagents=subagents)
         result = await apply_session_directive(state, None, session_key, kind, args)
         # The channel surface never renders tool results, so the applier's
         # confirmation has no user-facing sink here; this log is the operator's

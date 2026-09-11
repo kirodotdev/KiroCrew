@@ -6013,6 +6013,7 @@ class GatewayOrchestrator:
                     directive_consumer=build_directive_consumer(
                         session_key=key,
                         sessions=self.sessions,
+                        subagents=self.subagent_mgr,
                     ),
                     monitor_completion=(
                         (

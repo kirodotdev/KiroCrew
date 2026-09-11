@@ -22,7 +22,8 @@ These tests lock the three halves of the fix:
   the session key would pass ``has_dashboard_surface``.
 * **Consumer wiring** — ``build_directive_consumer`` funnels into the shared
   applier with the dispatcher's live ``dashboard_state`` when present, and a
-  fail-closed ``sessions``-backed stand-in when not (the Slack shape).
+  fail-closed ``sessions``/``subagents``-backed stand-in when not (the Slack
+  shape).
 """
 
 from __future__ import annotations
@@ -621,12 +622,18 @@ class TestBuildDirectiveConsumer:
             "kiro_crew.dashboard.session_directive_apply.apply_session_directive", _spy
         )
         sessions = object()
-        consume = build_directive_consumer(session_key="slack:1755000000.1", sessions=sessions)
+        subagents = object()
+        consume = build_directive_consumer(
+            session_key="slack:1755000000.1",
+            sessions=sessions,
+            subagents=subagents,
+        )
         await consume("autonudge_stop", {})
         assert len(seen) == 1
         state = seen[0]
         assert isinstance(state, _ChannelDirectiveState)
         assert state.sessions is sessions
+        assert state.subagents is subagents
         assert state._slots == {} and state.channel_transports == {}
 
 

@@ -258,10 +258,13 @@ because the policy can become stricter after monitor creation. After its advisor
 busy check, Slack also takes the SessionManager's non-waiting semaphore claim; a
 user turn that wins that boundary returns `BUSY` without waiting, starting a turn,
 or creating completion evidence. A claimed Slack structured wake runs through
-the same `TurnDriver` directive consumer as ordinary channel turns, so an
-authenticated `monitor_update`, `monitor_stop`, or structured
-`autonudge_stop` result is applied to that Slack session before a later raw
-completion is accounted; legacy nudges retain their existing collector path.
+the same `TurnDriver` directive consumer as ordinary channel turns. Both
+Slack paths pass the live subagent manager into the dispatcher-less fallback,
+so an authenticated `autonudge_stop` refuses while child work is running,
+queued, or being delivered even when no dashboard slot exists. Authenticated
+`monitor_update`, `monitor_stop`, and eligible stop results are applied to that
+Slack session before a later raw completion is accounted; legacy nudges retain
+their existing collector path.
 If Slack's bounded timeout fires before the structured completion hook is
 accepted, the claim is retryable and returns `BUSY`; after acceptance it remains
 `DISPATCHED`, and the durable completion-evidence deadline owns recovery.

@@ -1166,6 +1166,23 @@ class TestQueueDepth:
         mgr._agents["a"] = _info("a", parent_session_key="dash:1")
         assert mgr.has_pending_work_for("dash:1") is True
 
+    @pytest.mark.asyncio
+    async def test_terminal_delivery_stays_pending_after_agent_done(self) -> None:
+        mgr = _manager()
+        release = asyncio.Event()
+        task = asyncio.create_task(release.wait())
+        info = _info("done", parent_session_key="dash:1", done=True)
+        mgr._report_tasks.add(task)
+        mgr._report_owners[task] = info
+
+        assert mgr.running_agents_for("dash:1") == []
+        assert mgr.terminal_delivery_inflight_for("dash:1") is True
+        assert mgr.terminal_delivery_inflight_for("dash:2") is False
+
+        release.set()
+        await task
+        assert mgr.terminal_delivery_inflight_for("dash:1") is False
+
     def test_pending_work_false_when_idle(self) -> None:
         assert _manager().has_pending_work_for("dash:1") is False
 
