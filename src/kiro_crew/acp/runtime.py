@@ -29,7 +29,7 @@ from collections import deque
 from pathlib import Path
 from typing import Any, Callable, TypeVar
 
-from kiro_crew import agent_scratch, platform_compat
+from kiro_crew import acp_tool_gate, agent_scratch, platform_compat
 from kiro_crew.acp._dispatch import (
     agent_version_from_init,
     attach_kas_custom_agents,
@@ -43,6 +43,7 @@ from kiro_crew.acp._dispatch import (
 )
 from kiro_crew.acp._frame_record import record_frame
 from kiro_crew.acp.client import (
+    AcpToolGateUnroutable,
     OversizeLineUnrecoverable,
     _apply_pod_home_remap,
     _drain_oversize_line,
@@ -73,7 +74,7 @@ from kiro_crew.acp.session_handle import (
     AcpRuntimeProtocol,
     AcpSessionHandle,
     _load_watchdog_settings,
-    parse_advertised_models,
+    advertised_models_from_session,
 )
 from kiro_crew.acp.types import (
     ACP_BACKEND_KAS,
@@ -89,6 +90,7 @@ from kiro_crew.acp.types import (
     JsonRpcRequest,
     backends_retired_by_host_logout,
 )
+from kiro_crew.agent_sdk.backends import ENV_CODEX_ACP_RUNTIME
 from kiro_crew.browser_cli.launch import browser_session_env, browser_socket_env
 from kiro_crew.config import live
 from kiro_crew.config.paths import kiro_agents_dir
@@ -102,6 +104,7 @@ from kiro_crew.metrics.events import (
     DROPPED_FRAMES,
     emit_counter,
 )
+from kiro_crew.providers.mirrors.registry import has_mirror
 from kiro_crew.resource_status import inject_xdist_auto_cap
 from kiro_crew.sandbox import (
     RLIMIT_PROFILE_SESSION_HOST,
@@ -3065,6 +3068,22 @@ class AcpRuntime:
             self._pending_init_notifications.clear()
         return matched
 
+    def _activates_agent_by_mode(self) -> bool:
+        """Whether ``session/set_mode`` names something this host can resolve.
+
+        Read from ``ACP_BACKEND_ROUTING`` rather than declared here or asked of
+        the harness: the hosts whose privileged tools are governed by an agent
+        spec are exactly the hosts that HAVE an agent to activate, and a second
+        copy of that membership would be free to disagree with the one that
+        decides. kiro-cli and the KAS relay are that population.
+
+        A host routed another way has no agent id to send. codex's modes are its
+        own permission tiers (``read-only`` / ``agent``), so a Crew agent name
+        resolves to nothing there and the request faults — taking down, on the
+        cleanup path below, a session that had started fine.
+        """
+        return acp_tool_gate.routing_for(self.acp_backend) is acp_tool_gate.Routing.AGENT_SPEC
+
     @staticmethod
     def _mode_available(agent: str, resp: dict[str, Any]) -> bool:
         """Whether ``set_mode`` should be attempted for ``agent`` given a
@@ -3211,6 +3230,46 @@ class AcpRuntime:
             self._session_start_timeout = await asyncio.to_thread(_resolve_session_start_timeout)
         return self._session_start_timeout
 
+    def _refuse_unprojected_pooled_servers(self, pooled: list[dict[str, Any]]) -> None:
+        """Refuse pooled MCP servers this path cannot apply a projection to.
+
+        A host whose MCP surface is reached through an agent-config MIRROR
+        (:func:`~kiro_crew.providers.mirrors.registry.has_mirror`) has its
+        ``session/new`` array built by that mirror's ``session_projection`` on the
+        :class:`~kiro_crew.acp.client.AcpClient` path, and the projection does two
+        things nothing here does: it WITHHOLDS a pooled broker stub for a server the
+        agent's ``tools`` never references, and it returns the per-tool deny set the
+        client enforces at the approval request. This path has neither -- it resolves
+        the pooled array and hands it to the harness, which can narrow transports and
+        nothing else -- and a mirrored host approves its own tools internally, so a
+        stub that reaches it is a live tool surface Crew never granted.
+
+        So the refusal is FAIL-CLOSED rather than a documented gap: the array is
+        non-empty only when the shared MCP gateway is on (``pooled_session_servers``
+        answers ``[]`` with no overlay), and refusing makes the widening unreachable
+        instead of merely described. Nothing changes for a host with no mirror --
+        kiro and KAS reach their servers natively, so ``has_mirror`` is False and this
+        returns immediately -- which is why it reads the registry rather than naming a
+        backend: a future mirrored host joining this runtime inherits the refusal
+        instead of the gap.
+
+        Raised BEFORE ``session/new`` goes out, so there is no session to tear down;
+        ``AcpToolGateUnroutable`` is non-retryable because the condition is a
+        configuration fact a respawn would re-read. Carrying the projection onto this
+        path is what lifts the refusal.
+        """
+        if not pooled or not has_mirror(self.acp_backend):
+            return
+        raise AcpToolGateUnroutable(
+            f"{self.acp_backend} on AcpRuntime cannot mount the shared MCP gateway's "
+            f"servers: the agent allowlist and per-tool deny set that decide which of "
+            f"them this agent may have are applied only on the AcpClient path, and this "
+            f"host approves its own tools ({len(pooled)} pooled server(s) offered). "
+            f"Either disable the shared MCP gateway for this agent, or unset the "
+            f"preview switch that put this host on the runtime "
+            f"({ENV_CODEX_ACP_RUNTIME}) so the session runs on AcpClient."
+        )
+
     async def create_session(
         self,
         cwd: str | Path | None = None,
@@ -3243,6 +3302,7 @@ class AcpRuntime:
             mcp_servers = await asyncio.to_thread(
                 pooled_session_servers, self._mcp_gateway_overlay, agent or self._agent
             )
+            self._refuse_unprojected_pooled_servers(mcp_servers)
         if member_session_key:
             # circular import: members' module graph is heavy; resolved at call
             # time like the projection seams below.
@@ -3329,6 +3389,21 @@ class AcpRuntime:
         # served-default check answerable: the model the backend picked for
         # this session can be one the account's partition does not serve.
         await handle.ensure_served_default()
+        # Make a SESSION_CONFIG host actually ask, before anything can prompt it.
+        # Wired HERE and not earlier because the call reads the option list
+        # ``store_session_config`` just parsed: it has to know whether the option
+        # was advertised to tell "not advertised" (INDETERMINATE) from "the write
+        # was rejected" (BYPASSED). Self-gating on the routing table, so kiro-cli
+        # and the KAS relay send nothing extra — they route through their agent
+        # spec. An enforced host that cannot be routed refuses, and the refusal
+        # travels the same cleanup path as a failed set_mode below: session/new
+        # already succeeded, so a plain local unregister would leak the session in
+        # the shared process.
+        try:
+            await handle.apply_session_permission_routing()
+        except Exception:
+            await self.terminate_session(session_id)
+            raise
         # The roster this session put on the wire. Set BEFORE drain_init so the
         # report can be read as "of the N we sent, these reported" rather than
         # as a bare list of names.
@@ -3363,7 +3438,16 @@ class AcpRuntime:
         # session silently runs KAS's own default mode. On kiro ``kas_agents`` is
         # None and the --agent spawn already selected the default, so only an
         # explicit override reaches set_mode here.
-        mode_agent = agent or (self._agent if kas_agents else None)
+        #
+        # Asked of the routing table first (see _activates_agent_by_mode): a host
+        # that governs its privileged tools some other way has no agent for
+        # set_mode to resolve, so there is nothing to activate and nothing for
+        # Guard (A) to fail closed on.
+        mode_agent = (
+            agent or (self._agent if kas_agents else None)
+            if self._activates_agent_by_mode()
+            else None
+        )
         if mode_agent and self._mode_available(mode_agent, resp):
             # Measured BEFORE the request goes out, which is the only moment the
             # answer is unambiguous: everything queued right now initialized
@@ -3474,7 +3558,12 @@ class AcpRuntime:
                 logger.debug("entitlement probe session/new failed", exc_info=True)
                 return []
             try:
-                fresh = parse_advertised_models(resp)
+                # Reads BOTH shapes, through the same fold the session-init capture
+                # uses. Reading only ``models`` answers [] for a host whose list is a
+                # ``configOptions`` select, and [] is contractually "no evidence" --
+                # so the degraded snapshot this probe exists to correct would be the
+                # one thing it could never correct.
+                fresh = advertised_models_from_session(resp, self.acp_backend)
             finally:
                 if session_id:
                     # Evict the probe session from the shared process; never
@@ -3528,6 +3617,7 @@ class AcpRuntime:
         mcp_servers = await asyncio.to_thread(
             pooled_session_servers, self._mcp_gateway_overlay, active_agent
         )
+        self._refuse_unprojected_pooled_servers(mcp_servers)
         if member_session_key:
             # circular import: members' module graph is heavy; resolved at call
             # time, same as create_session().
@@ -3644,6 +3734,17 @@ class AcpRuntime:
         # back on a default the account does not serve — so the resumed session gets
         # the same served-default check as a fresh one.
         await handle.ensure_served_default()
+        # Same as create_session, and for the same reason a resumed session gets
+        # the served-default check: the option list came back on THIS response,
+        # and a resumed session prompts the host exactly as a fresh one does, so
+        # its permission boundary has to be armed here too. Refusal terminates
+        # the resume_sid session rather than leaking it, matching the set_mode
+        # cleanup below.
+        try:
+            await handle.apply_session_permission_routing()
+        except Exception:
+            await self.terminate_session(resume_sid)
+            raise
         # session/load re-initializes this session's servers, so the resumed
         # session gets its own report against the roster load re-declared.
         handle.mcp_session_report().begin_session(mcp_servers)
@@ -3664,7 +3765,10 @@ class AcpRuntime:
         # re-reads the spec from disk, so the spawn agent can fail to load here
         # exactly as it can on a cold start.
         await self._verify_spawn_agent_active(resume_sid, resp, override=agent)
-        if agent and self._mode_available(agent, resp):
+        # Same routing-table question as create_session: a host with no agent
+        # spec has no mode to resume onto either.
+        mode_agent = agent if self._activates_agent_by_mode() else None
+        if mode_agent and self._mode_available(mode_agent, resp):
             # Same reason as create_session: measured before the request goes
             # out, the only moment "queued" and "pre-switch" mean the same thing.
             staged_before_switch = handle.queued_frame_count()
@@ -3676,7 +3780,7 @@ class AcpRuntime:
                 # the session-start budget already resolved above.
                 await self._send_and_await(
                     METHOD_SET_MODE,
-                    set_mode_params(resume_sid, agent),
+                    set_mode_params(resume_sid, mode_agent),
                     timeout=budget,
                 )
             except Exception:
@@ -3685,8 +3789,8 @@ class AcpRuntime:
             # See create_session: after a real mode switch, registration frames
             # staged during session/load describe the pre-switch roster.
             _ids, _current, _adv = parse_session_modes(resp)
-            mode_switched = bool(_current) and agent != _current
-        elif agent:
+            mode_switched = bool(_current) and mode_agent != _current
+        elif mode_agent:
             # Guard (A) — see create_session. A resumed session always echoes a
             # `modes` list (checked above), so an absent agent means its config
             # isn't loaded. Fail closed rather than silently resuming on a

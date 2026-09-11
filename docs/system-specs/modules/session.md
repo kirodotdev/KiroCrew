@@ -146,9 +146,21 @@ Callers: heartbeat callback, taskrunner lesson extraction.
 `get_bg_session()` acquires a `_bg` handle, dispatching by `agent.acp_backend`
 and returning `AcpSessionHandle | _ProviderBgSession`. Dispatch is via
 `_bg_backend_supports_runtime()` — positive membership in
-`ACP_BACKENDS_ACP_RUNTIME`, never an inequality (harness parity):
+`_bg_runtime_backends()`, i.e. `ACP_BACKENDS_ACP_RUNTIME & selectable_backends()`,
+never an inequality (harness parity). The intersection is defense-in-depth: a
+runtime-capable harness that is not operator-selectable must not be spawnable
+here from a config object that skipped the loader's normalisation.
 
-- **runtime-capable backend** (`ACP_BACKENDS_ACP_RUNTIME`) — each caller (title
+This path reads the frozenset and **not** `acp_runtime_backends()`, so the
+`KIROCREW_CODEX_ACP_RUNTIME` preview switch does not reach it. Background handles
+are the high-churn ones — title generation, suggestions, folders and nav each take
+their own ephemeral `sessionId` — and codex's teardown verb `session/cancel` ends
+the turn without evicting the session from the adapter's map, which on a shared
+process is unbounded growth at a rate the user never controls. The preview is
+scoped to the foreground, where the runtime's age/RSS recycle eventually collects
+the process; codex joins this set only once per-session eviction exists.
+
+- **runtime-capable backend** (`_bg_runtime_backends()`) — each caller (title
   generation, suggestions, folders, nav) gets its **own** ephemeral `sessionId`
   multiplexed on a single shared `_bg_runtime` (an `AcpRuntime` spawned under
   the CONFIGURED backend), created lazily under `_bg_runtime_lock`.

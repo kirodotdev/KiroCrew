@@ -531,6 +531,18 @@ BACKGROUND_AGENT = "kirocrew-lite"
 # ``register_selectable_backend`` — strictly after this module is imported. A
 # module-level intersection would snapshot the baseline and permanently exclude
 # a backend the operator did register.
+#
+# The SET here, deliberately, and NOT ``acp_runtime_backends()``: the codex
+# preview switch does not reach the background path. Background handles are the
+# high-churn ones — title generation, suggestions, folders and nav each take their
+# own ephemeral sessionId, many per conversation — and codex's teardown verb is
+# ``session/cancel``, which ends the turn without evicting the session from the
+# adapter's own map. On a shared process that is unbounded growth in the adapter,
+# at a rate a user never controls, and nothing Crew can send reclaims it.
+# Foreground sessions leak the same way but at the rate a person opens chats, and
+# the runtime's age/RSS recycle eventually collects the process. So the preview is
+# scoped to the path whose exposure is bounded; making codex a member of this set
+# requires a real per-session eviction first.
 def _bg_runtime_backends() -> frozenset[str]:
     return ACP_BACKENDS_ACP_RUNTIME & selectable_backends()
 

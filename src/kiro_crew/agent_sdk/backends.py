@@ -93,6 +93,14 @@ with no row here.
      - driver-internal (whether ``$HOME`` is relocated onto the pod tree)
    * - ``ACP_BACKENDS_ACP_RUNTIME``
      - pre-session registry query (which start path a session takes)
+   * - ``acp_runtime_backends()``
+     - pre-session registry query (the same question as the row above, with the
+       ``KIROCREW_CODEX_ACP_RUNTIME`` preview switch applied). The FOREGROUND
+       start path reads this; the background ``_bg`` path reads the set above on
+       purpose, so a preview never reaches high-churn handles. A function rather
+       than a set for the reason
+       ``backends_retired_by_host_logout()`` is one: the answer is derived, and
+       ``ACP_BACKENDS_*`` is reserved for vocabulary
    * - ``host_auth.backends_retired_by_host_logout()``
      - pre-session registry query (whether a kiro-cli logout retires the child).
        Declared per harness in :mod:`kiro_crew.agent_sdk.host_auth`, not here, and a
@@ -135,6 +143,8 @@ from __future__ import annotations
 import logging
 from enum import Enum
 from typing import FrozenSet, Set
+
+from kiro_crew.constants import env_flag_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -613,6 +623,80 @@ ACP_BACKENDS_POD_HOME_REMAP = frozenset({ACP_BACKEND_KIRO})
 # opencode is not a member: it is spawned per session and reads none of the
 # kiro-family cli.json overlay, so it takes the AcpClient path.
 ACP_BACKENDS_ACP_RUNTIME = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
+
+# ── The preview switch: codex-acp on AcpRuntime ──
+#
+# ``ENV_CODEX_ACP_RUNTIME`` is the ONE thing that moves codex-acp from AcpClient
+# onto AcpRuntime, and it is OFF unless an operator sets it. With it unset this
+# build behaves exactly as the frozenset above says: the FOREGROUND start path asks
+# "is this backend on the shared runtime?" through :func:`acp_runtime_backends`,
+# which with the switch unset returns that frozenset verbatim, so a codex session
+# still gets its own AcpClient process. The background ``_bg`` path does not ask
+# through this function at all -- ``session._bg_runtime_backends`` reads the
+# frozenset directly, so the switch cannot reach it even when it is on. Its reason
+# is in ``session.py`` beside that reader: codex's teardown verb ends a turn without
+# evicting the session, and background handles churn at a rate the user never
+# controls.
+#
+# Why a switch rather than a member. The frozenset above is the SHIPPED answer,
+# and adding codex to it IS the product change. That change is worth its own
+# commit -- one line, reviewed on its own, reverted on its own -- rather than
+# being folded into the commit that writes the harness. So the harness lands
+# first, dark, with a switch that exercises it; then the member lands and this
+# switch is deleted. Deleting it is the whole flip: nothing else moves.
+#
+# Why an env read rather than a second registry. ``register_selectable_backend``
+# exists because an EDITION must be able to add a harness this build has never
+# heard of. Nothing of the kind is happening here -- codex is already known and
+# already selectable, and the only open question is which transport it takes --
+# so a registry would be a mutable global that one caller writes once. An env read
+# holds no state, is re-read per call so a test can turn it on around a single
+# assertion, and cannot be aimed at a harness other than codex.
+ENV_CODEX_ACP_RUNTIME = "KIROCREW_CODEX_ACP_RUNTIME"
+
+
+def codex_runs_on_acp_runtime() -> bool:
+    """Whether the codex-on-AcpRuntime preview switch is on. Default ``False``.
+
+    Read per call and never cached at import, for the same reason
+    :func:`kiro_crew.session._bg_runtime_backends` is computed per call: the
+    gateway sets its environment before it spawns anything and a test sets the
+    variable around one assertion, so a value frozen at import answers for
+    whichever of the two happened to run first.
+
+    The truthy set is spelled out by :data:`kiro_crew.constants.ENV_TRUTHY` and read
+    through :func:`kiro_crew.constants.env_flag_enabled`, which exists for exactly
+    this footgun: an operator who exports ``=0`` or ``=false`` to keep a preview OFF
+    must not get it on, and a bare ``bool()`` would give it to them silently, since
+    the session starts either way and only the transport differs. ``constants`` is
+    stdlib-only, so reading it here keeps this module's leaf property (see the
+    module docstring) -- the forbidden edges are ``kiro_crew.config``,
+    ``kiro_crew.platform`` and ``kiro_crew.acp``.
+    """
+    return env_flag_enabled(ENV_CODEX_ACP_RUNTIME)
+
+
+def acp_runtime_backends() -> FrozenSet[str]:
+    """Backends served by AcpRuntime in THIS process, preview switch included.
+
+    The one home the switch has: every FOREGROUND site asking "is this backend on
+    the shared runtime?" reads this instead of the environment. Equal to
+    ``ACP_BACKENDS_ACP_RUNTIME`` whenever the switch is off, which is the default.
+
+    Not every reader of that question. ``session._bg_runtime_backends`` reads the
+    frozenset directly, deliberately, so the switch is scoped to the foreground —
+    its reason lives beside that reader. A site that wants the switch reads here; a
+    site the switch must not reach reads the set and says why.
+
+    A function rather than a set for the reason the module docstring gives for
+    ``host_auth.backends_retired_by_host_logout()``: this is a DERIVED answer, not
+    vocabulary, and the harness-parity gate reserves the ``ACP_BACKENDS_*``
+    spelling for vocabulary.
+    """
+    if codex_runs_on_acp_runtime():
+        return ACP_BACKENDS_ACP_RUNTIME | {ACP_BACKEND_CODEX}
+    return ACP_BACKENDS_ACP_RUNTIME
+
 
 # ``ACP_BACKENDS_KIRO_IDENTITY_STORE`` is gone, and it has no replacement HERE.
 # Whether a ``kiro-cli logout`` may retire a running child is a fact about how the
