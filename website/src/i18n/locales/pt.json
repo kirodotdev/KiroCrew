@@ -2501,6 +2501,14 @@
             "agent_language_follow": "Igual ao painel ({{language}})"
           },
           "repoSettings": {
+            "browse_for_workspace_folder": "Procurar pasta do espaço de trabalho",
+            "browse": "Procurar",
+            "workspace": "Espaço de trabalho",
+            "local_workspace_path": "Caminho local do espaço de trabalho",
+            "where_this_repo_is_checked_out_investigate_cwd": "Onde este repositório está clonado na máquina que executa o gateway. Investigar abre sua sessão de chat neste diretório para que o agente veja o código-fonte real do repositório. Somente local — nunca enviado ao host de origem.",
+            "users_you_code_owner_repo": "/Users/you/code/owner/repo",
+            "investigate_will_run_in": "As novas sessões de Investigação serão executadas em",
+            "leave_empty_to_use_the_default_working_directory": "Deixe vazio para usar o diretório de trabalho padrão.",
             "ai_label_recommendations": "Recomendações de etiquetas por IA",
             "also_treat_issues_with": "Também tratar issues",
             "and_can_t_be_changed_here_to_add_or_remove_a_mem": "e não podem ser alterados aqui — para adicionar ou remover um membro ou\n              colaborador, gerencie o acesso no",

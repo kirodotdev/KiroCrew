@@ -2450,6 +2450,14 @@
             "agent_language_follow": "ড্যাশবোর্ডের মতো ({{language}})"
           },
           "repoSettings": {
+            "browse_for_workspace_folder": "ওয়ার্কস্পেস ফোল্ডার ব্রাউজ করুন",
+            "browse": "ব্রাউজ করুন",
+            "workspace": "ওয়ার্কস্পেস",
+            "local_workspace_path": "স্থানীয় ওয়ার্কস্পেস পাথ",
+            "where_this_repo_is_checked_out_investigate_cwd": "গেটওয়ে চালানো মেশিনে এই রিপোজিটরিটি যেখানে চেক আউট করা আছে। Investigate তার চ্যাট সেশন এই ডিরেক্টরিতে খোলে যাতে এজেন্ট রিপোজিটরির আসল সোর্স দেখতে পায়। শুধু-স্থানীয় — কখনও সোর্স হোস্টে পাঠানো হয় না।",
+            "users_you_code_owner_repo": "/Users/you/code/owner/repo",
+            "investigate_will_run_in": "নতুন Investigate সেশনগুলি এখানে চলবে:",
+            "leave_empty_to_use_the_default_working_directory": "ডিফল্ট কাজের ডিরেক্টরি ব্যবহার করতে খালি রাখুন।",
             "ai_label_recommendations": "AI লেবেল সুপারিশ",
             "also_treat_issues_with": "যে ইস্যুগুলোতে",
             "and_can_t_be_changed_here_to_add_or_remove_a_mem": "থেকে, এবং এখানে বদলানো যায় না — কোনো সদস্য বা\n              কোলাবরেটর যোগ বা সরাতে অ্যাক্সেস ব্যবস্থাপনা করুন এখানে:",

@@ -33,14 +33,14 @@ import { useAgentSession } from '../apps/issue-radar/lib/agentSession'
 const TITLE = '#4237 · session/new times out'
 
 /** The options object the SUT handed `createSlot`. */
-function createArg(): { folder_id?: string; title?: string } | undefined {
+function createArg(): { folder_id?: string; title?: string; project?: string | null } | undefined {
   const call = dispatch.mock.calls
-    .map((c) => c[0] as { type: string; arg?: { folder_id?: string; title?: string } })
+    .map((c) => c[0] as { type: string; arg?: { folder_id?: string; title?: string; project?: string | null } })
     .find((a) => a.type === 'createSlot')
   return call?.arg
 }
 
-async function open() {
+async function open(workspacePath?: string) {
   const { result } = renderHook(() => useAgentSession())
   return result.current.openSession({
     repoRef: { host: 'github.com', owner: 'acme', repo: 'demo-repo' } as never,
@@ -48,6 +48,7 @@ async function open() {
     title: TITLE,
     prompt: 'seed',
     existing: null,
+    workspacePath,
   })
 }
 
@@ -80,5 +81,48 @@ describe('Issue Radar names the session it opens up front', () => {
     await open()
     expect(apiMock.createChatFolder).not.toHaveBeenCalled()
     expect(createArg()?.folder_id).toBe('repo-1')
+  })
+
+  // The Investigate action forwards the repo's configured workspace_path as the
+  // new slot's `project`, so the chat session opens in the repo's real working
+  // copy instead of the gateway's default cwd -- the whole point of the setting.
+  it('opens the session in the configured workspace path', async () => {
+    await open('/Users/me/code/acme/demo-repo')
+    expect(createArg()?.project).toBe('/Users/me/code/acme/demo-repo')
+  })
+
+  // No configured path must not pin a cwd: it passes `null` so `createSlot` skips
+  // the chatSlotProject call and the slot keeps the gateway default (the
+  // pre-workspace behavior). An empty string would be a real, wrong path.
+  it('passes null when no workspace path is configured', async () => {
+    await open()
+    expect(createArg()?.project).toBeNull()
+    await open('')
+    expect(createArg()?.project).toBeNull()
+  })
+
+  // A stored workspace_path is never filesystem-validated, so the gateway can
+  // reject it (missing dir on the gateway host, sensitive path) — createSlot then
+  // deletes the slot and throws. That must degrade to a session on the default
+  // cwd, not a dead Investigate button: retry once without the project.
+  it('falls back to the default cwd when the configured path is rejected', async () => {
+    const createArgs: Array<{ project?: string | null }> = []
+    dispatch.mockImplementation((action: { type: string; arg?: { project?: string | null } }) => ({
+      unwrap: () => {
+        if (action.type !== 'createSlot') return Promise.resolve(undefined)
+        createArgs.push(action.arg ?? {})
+        // First attempt carries the (bad) project and is rejected; the retry
+        // carries null and succeeds.
+        return action.arg?.project
+          ? Promise.reject(new Error('Not a directory'))
+          : Promise.resolve({ key: 'slot-1' })
+      },
+    }))
+
+    const rec = await open('/does/not/exist')
+    // Two create attempts: the rejected one with the path, then the retry with null.
+    expect(createArgs.map((a) => a.project)).toEqual(['/does/not/exist', null])
+    // The session still opened (record linked), rather than the whole action failing.
+    expect(rec).not.toBeNull()
   })
 })

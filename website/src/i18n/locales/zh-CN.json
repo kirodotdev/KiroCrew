@@ -2399,6 +2399,14 @@
             "agent_language_follow": "与仪表板一致（{{language}}）"
           },
           "repoSettings": {
+            "browse_for_workspace_folder": "浏览工作区文件夹",
+            "browse": "浏览",
+            "workspace": "工作区",
+            "local_workspace_path": "本地工作区路径",
+            "where_this_repo_is_checked_out_investigate_cwd": "此仓库在运行网关的机器上的检出位置。调查会在该目录中打开聊天会话，让代理看到仓库的真实源代码。仅限本地 — 绝不会发送到源主机。",
+            "users_you_code_owner_repo": "/Users/you/code/owner/repo",
+            "investigate_will_run_in": "新的调查会话将在此运行：",
+            "leave_empty_to_use_the_default_working_directory": "留空则使用默认工作目录。",
             "ai_label_recommendations": "AI 标签推荐",
             "also_treat_issues_with": "同时将带有以下标签的 issue 视为",
             "and_can_t_be_changed_here_to_add_or_remove_a_mem": "无法在此更改 — 如需添加或移除成员或\n              协作者，请在以下位置管理访问权限：",

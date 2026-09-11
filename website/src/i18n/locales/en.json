@@ -1484,6 +1484,14 @@
             "your": "Your"
           },
           "repoSettings": {
+            "browse_for_workspace_folder": "Browse for workspace folder",
+            "browse": "Browse",
+            "workspace": "Workspace",
+            "local_workspace_path": "Local workspace path",
+            "where_this_repo_is_checked_out_investigate_cwd": "Where this repo is checked out on the machine running the gateway. Investigate opens its chat session in this directory so the agent sees the repo's real source. Local-only — never sent to the source host.",
+            "users_you_code_owner_repo": "/Users/you/code/owner/repo",
+            "investigate_will_run_in": "New Investigate sessions will run in",
+            "leave_empty_to_use_the_default_working_directory": "Leave empty to use the default working directory.",
             "ai_label_recommendations": "AI label recommendations",
             "also_treat_issues_with": "Also treat issues with",
             "and_can_t_be_changed_here_to_add_or_remove_a_mem": "and can't be changed here — to add or remove a member or\n              collaborator, manage access on",

@@ -1,8 +1,9 @@
 import { useMemo, useRef, useState, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
-  Bell, RefreshCw, ExternalLink, Trash2, AlertTriangle, Sparkles, ListChecks, Users, Wand2, Tags, Check, Handshake, type LucideIcon,
+  Bell, RefreshCw, ExternalLink, Trash2, AlertTriangle, Sparkles, ListChecks, Users, Wand2, Tags, Check, Handshake, FolderGit2, FolderOpen, type LucideIcon,
 } from 'lucide-react'
+import ProjectPicker from '../../../../components/ProjectPicker'
 import { ProviderLogo, ProviderHostTag } from '../../components/ProviderBadge'
 import {
   issueRadarApi, DEFAULT_REPO_SETTINGS, SettingsConflictError,
@@ -133,6 +134,11 @@ export default function RepoSettings({ repoRef }: { repoRef: RepoRef }) {
   // change. Failures surface in the banner below instead of silently reverting.
   const [draft, setDraft] = useState<RepoSettings | null>(null)
   const settings = draft ?? settingsQuery.data?.settings ?? DEFAULT_REPO_SETTINGS
+
+  // Workspace folder picker (same dashboard ProjectPicker chat/folders use). The
+  // Browse button is the popover's anchor; the picker portals to <body>.
+  const [wsPickerOpen, setWsPickerOpen] = useState(false)
+  const wsBrowseRef = useRef<HTMLButtonElement>(null)
 
   /** Saves are SERIALIZED and the newest draft always wins.
    *
@@ -414,6 +420,57 @@ export default function RepoSettings({ repoRef }: { repoRef: RepoRef }) {
           {i18nT('apps.issueRadar.views.settings.repoSettings.checks_about_once_a_minute_inside_kirocrew_no_cr')} <code>{terms.cli}</code> {i18nT('apps.issueRadar.views.settings.repoSettings.sign_in_no_extra_credentials_no_webhook', { provider: terms.providerName })}
         </StatLine>
       </Card>
+
+      <Card
+        icon={FolderGit2}
+        title={i18nT('apps.issueRadar.views.settings.repoSettings.workspace')}
+        desc={i18nT('apps.issueRadar.views.settings.repoSettings.where_this_repo_is_checked_out_investigate_cwd')}
+      >
+        <label className="block text-[13px] font-medium text-text mb-1.5">
+          {i18nT('apps.issueRadar.views.settings.repoSettings.local_workspace_path')}
+        </label>
+        <div className="flex gap-2">
+          <input
+            type="text"
+            className="flex-1 min-w-0 rounded-lg border border-border bg-bg px-3 py-2 text-[13px] font-mono text-text placeholder:text-muted focus:border-accent focus:outline-none disabled:opacity-50"
+            aria-label={i18nT('apps.issueRadar.views.settings.repoSettings.local_workspace_path')}
+            placeholder={i18nT('apps.issueRadar.views.settings.repoSettings.users_you_code_owner_repo')}
+            spellCheck={false}
+            autoCapitalize="off"
+            autoCorrect="off"
+            value={settings.workspace_path}
+            disabled={!settingsReady}
+            onChange={(e) => update({ workspace_path: e.target.value })}
+          />
+          <button
+            ref={wsBrowseRef}
+            type="button"
+            disabled={!settingsReady}
+            onClick={() => setWsPickerOpen(true)}
+            aria-label={i18nT('apps.issueRadar.views.settings.repoSettings.browse_for_workspace_folder')}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-bg px-3 py-2 text-[13px] text-text hover:bg-bg-hover disabled:opacity-40 cursor-pointer shrink-0"
+          >
+            <FolderOpen size={13} className="text-accent" /> {i18nT('apps.issueRadar.views.settings.repoSettings.browse')}
+          </button>
+        </div>
+        <StatLine>
+          {settings.workspace_path
+            ? <>{i18nT('apps.issueRadar.views.settings.repoSettings.investigate_will_run_in')} <code>{settings.workspace_path}</code>.</>
+            : i18nT('apps.issueRadar.views.settings.repoSettings.leave_empty_to_use_the_default_working_directory')}
+        </StatLine>
+      </Card>
+
+      {/* Portals to <body> at z-[9999], anchored to the Browse button. Reused
+       *  rather than reimplemented so workspace picking stays identical to the
+       *  chat/folder project pickers. */}
+      {wsPickerOpen && (
+        <ProjectPicker
+          open={true}
+          onOpenChange={(o) => { if (!o) setWsPickerOpen(false) }}
+          anchorRef={wsBrowseRef}
+          onSelect={(path) => { update({ workspace_path: path }); setWsPickerOpen(false) }}
+        />
+      )}
 
       <Card
         icon={ListChecks}

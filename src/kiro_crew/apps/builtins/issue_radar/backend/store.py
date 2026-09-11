@@ -738,6 +738,12 @@ DEFAULT_REPO_SETTINGS: dict[str, Any] = {
     "unlabeled_is_untriaged": True,
     "good_first_issue_labels": [],
     "notify_on_new_issue": False,
+    # Local absolute path to this repo's working copy. Empty string means "use
+    # the gateway's default cwd" (the pre-workspace behavior). Local-only, like
+    # every other field here -- never written back to the source host. The
+    # Investigate action opens its chat session with this as the working
+    # directory so the agent sees the repo's real source.
+    "workspace_path": "",
     # Bumped by every write; a full-document PUT must echo what it read so a
     # stale snapshot cannot overwrite a newer change. See SettingsConflict.
     "revision": 0,
@@ -768,11 +774,21 @@ def _normalize_settings(raw: dict[str, Any] | None) -> dict[str, Any]:
         revision = int(raw.get("revision", 0))
     except (TypeError, ValueError):
         revision = 0
+
+    # A local filesystem path is stored verbatim (only stripped): it is NOT
+    # validated against the filesystem here. The gateway may run on a different
+    # host than the one the operator has in mind, and a path that does not exist
+    # yet is a legitimate not-yet-checked-out state -- an empty string, not an
+    # error. A non-string (or missing) value degrades to "" (default cwd).
+    ws = raw.get("workspace_path", "")
+    workspace_path = ws.strip() if isinstance(ws, str) else ""
+
     return {
         "triage_labels": _labels("triage_labels"),
         "unlabeled_is_untriaged": bool(raw.get("unlabeled_is_untriaged", True)),
         "good_first_issue_labels": _labels("good_first_issue_labels"),
         "notify_on_new_issue": bool(raw.get("notify_on_new_issue", False)),
+        "workspace_path": workspace_path,
         # Monotonic per-repo counter, bumped by every write. A full-document PUT
         # carries the revision it read, so a write built on a snapshot that has
         # since moved is REFUSED instead of silently discarding the newer change

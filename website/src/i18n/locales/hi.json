@@ -2292,6 +2292,14 @@
             "agent_language_follow": "डैशबोर्ड जैसा ({{language}})"
           },
           "repoSettings": {
+            "browse_for_workspace_folder": "वर्कस्पेस फ़ोल्डर ब्राउज़ करें",
+            "browse": "ब्राउज़ करें",
+            "workspace": "वर्कस्पेस",
+            "local_workspace_path": "स्थानीय वर्कस्पेस पथ",
+            "where_this_repo_is_checked_out_investigate_cwd": "गेटवे चलाने वाली मशीन पर यह रिपॉज़िटरी कहाँ चेक आउट है। Investigate अपना चैट सत्र इसी डायरेक्टरी में खोलता है ताकि एजेंट रिपॉज़िटरी का असली स्रोत देख सके। केवल-स्थानीय — कभी भी स्रोत होस्ट को नहीं भेजा जाता।",
+            "users_you_code_owner_repo": "/Users/you/code/owner/repo",
+            "investigate_will_run_in": "नए Investigate सत्र यहाँ चलेंगे:",
+            "leave_empty_to_use_the_default_working_directory": "डिफ़ॉल्ट कार्य डायरेक्टरी उपयोग करने के लिए खाली छोड़ें।",
             "ai_label_recommendations": "AI लेबल सुझाव",
             "also_treat_issues_with": "उन इश्यू को भी मानें जिनमें",
             "and_can_t_be_changed_here_to_add_or_remove_a_mem": "और इसे यहाँ बदला नहीं जा सकता — सदस्य या\n              सहयोगी जोड़ने या हटाने के लिए एक्सेस यहाँ प्रबंधित करें:",
