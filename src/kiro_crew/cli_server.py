@@ -1242,10 +1242,14 @@ def _update(force: bool = False) -> None:
     # up to date", the divergence counts, the interpreter floor -- and the reset
     # itself name this OID rather than origin/<branch>, so they all describe
     # the same revision by construction: a fetch run concurrently from another
-    # terminal can move the name, never the pin.
+    # terminal can move the name, never the pin. Spelled as the full
+    # remote-tracking ref: the short form is resolved with tags ahead of
+    # remotes, so a tag named `origin/<branch>` -- which a fetch auto-follows
+    # from the remote -- would otherwise be what every judgment and the reset
+    # took as the upstream.
     try:
         pin_result = subprocess.run(
-            ["git", "rev-parse", "--verify", f"origin/{branch}^{{commit}}"],
+            ["git", "rev-parse", "--verify", f"refs/remotes/origin/{branch}^{{commit}}"],
             cwd=proj,
             stdin=subprocess.DEVNULL,
             capture_output=True,
@@ -1359,7 +1363,15 @@ def _update(force: bool = False) -> None:
     # files, and every later `kirocrew update` repeating the reset and the
     # refusal. Judged here: before the operator is asked to discard anything,
     # and outside the re-classification that must stay adjacent to the reset.
-    floor_breach = dep_sync.incoming_python_floor_breach(Path(proj), target, Path(sys.executable))
+    try:
+        floor_breach = dep_sync.incoming_python_floor_breach(
+            Path(proj), target, Path(sys.executable)
+        )
+    except dep_sync.IncomingFloorUnreadable as exc:
+        # Unreadable is not absent: a git failure here must refuse, or it is
+        # the one way the revision the gate exists to keep out still lands.
+        print(f"  ❌ Could not read the incoming revision's interpreter requirement: {exc}")
+        sys.exit(1)
     if floor_breach:
         print(f"  ❌ Refusing to update: {floor_breach}")
         sys.exit(1)

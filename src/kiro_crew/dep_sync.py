@@ -77,6 +77,7 @@ from __future__ import annotations
 import configparser
 import os
 import re
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -444,6 +445,27 @@ def requires_python_from_texts(pyproject: str | None, setup_cfg: str | None) -> 
     return cfg.get("options", "python_requires").strip() or None
 
 
+class IncomingFloorUnreadable(Exception):
+    """Git could not say what interpreter floor the incoming revision declares.
+
+    Raised by :func:`incoming_python_floor_breach` when reading a floor file
+    out of the revision fails for any reason OTHER than the file not existing
+    there: an unresolvable ref, a git that will not start, a timeout. The
+    distinction matters because the gate exists to keep a revision the venv
+    cannot import out of the working tree. A file that is genuinely absent
+    declares no floor and there is nothing to enforce; a read that failed says
+    nothing about the floor at all, and treating it as "no floor" would let
+    exactly the update the gate refuses go through whenever git hiccups.
+    """
+
+
+# git's two spellings for "that path is not in this revision" -- one when the
+# path exists nowhere, one when it exists in the working tree but not at the
+# ref. Both are a plain absence; every other failure is a read that did not
+# happen.
+_GIT_PATH_ABSENT = (b"does not exist in", b"exists on disk, but not in")
+
+
 def _git_blob_text(
     repo: Path,
     ref: str,
@@ -455,11 +477,12 @@ def _git_blob_text(
 ) -> str | None:
     """``<name>`` as committed at git *ref* in *repo*, or ``None`` when absent.
 
-    ``None`` covers every way of not having the file -- no such path at that
-    revision, an unresolvable ref, git itself failing or timing out -- because
-    the one caller treats all of them identically: a floor it cannot read is a
-    floor it does not enforce, exactly as :func:`requires_python` does for an
-    unreadable working tree.
+    ``None`` means git resolved the revision and reported the path missing
+    from it -- the file was not there, which is an answer. Every other way of
+    not getting the text (an unresolvable ref, git failing to start, a
+    timeout) raises :class:`IncomingFloorUnreadable`, because it is not an
+    answer, and the caller enforcing an interpreter floor must not read a
+    failed lookup as "no floor declared".
 
     ``env`` is the environment the calling update path gives its OWN git
     commands. The unattended path builds one that strips ``GIT_DIR`` and its
@@ -476,11 +499,26 @@ def _git_blob_text(
             env=env,
             timeout=timeout,
         )
-    except (OSError, subprocess.TimeoutExpired):
-        return None
+    except subprocess.TimeoutExpired as exc:
+        raise IncomingFloorUnreadable(f"git show {ref}:{name} timed out") from exc
+    except OSError as exc:
+        raise IncomingFloorUnreadable(f"git show {ref}:{name} could not run: {exc}") from exc
     if proc.returncode != 0:
-        return None
+        if any(marker in proc.stderr for marker in _GIT_PATH_ABSENT):
+            return None
+        detail = proc.stderr.decode("utf-8", errors="replace").strip() or f"exit {proc.returncode}"
+        raise IncomingFloorUnreadable(f"git show {ref}:{name} failed: {detail}")
     return proc.stdout.decode("utf-8", errors="replace")
+
+
+def _highest_floor(spec: str) -> tuple[int, int] | None:
+    """``(major, minor)`` of the highest floor *spec* declares, or ``None``."""
+    highest: tuple[int, int] | None = None
+    for match in _PY_FLOOR.finditer(spec):
+        floor = (int(match.group("major")), int(match.group("minor")))
+        if highest is None or floor > highest:
+            highest = floor
+    return highest
 
 
 def incoming_python_floor_breach(
@@ -510,9 +548,13 @@ def incoming_python_floor_breach(
 
     The floor is read from the commit itself (``git show <ref>:pyproject.toml``,
     then ``setup.cfg``), never from the working tree, because the working tree
-    is the OLD revision at this point. A missing or unreadable floor, or an
+    is the OLD revision at this point. A revision that declares no floor, or an
     interpreter that cannot be probed, does not fire: the gate refuses only on
     a breach it can prove, and pip remains the backstop for everything else.
+    A floor file git could not READ is different: that is
+    :class:`IncomingFloorUnreadable`, which the caller must treat as a refusal
+    of its own, because on a pinned revision "could not read" is the one way
+    left for the stranded pull-then-pip-refuses state to be re-admitted.
     """
     spec = requires_python_from_texts(
         _git_blob_text(repo, ref, "pyproject.toml", git_bin=git_bin, env=env, timeout=timeout),
@@ -533,15 +575,21 @@ def incoming_python_floor_breach(
     # (`<venv>/bin/python`, `<venv>/Scripts/python.exe`); name it rather than
     # leaving a placeholder the operator has to fill in with a value the
     # system already holds. The reinstall command names the interpreter path
-    # as probed, so it is layout-correct wherever it is pasted.
+    # as probed, so it is layout-correct wherever it is pasted. The
+    # interpreter the remedy asks for is the floor the revision declares, not
+    # a constant that would go stale the next time the floor moves; the paths
+    # are shell-quoted because the remedy is written to be pasted.
     interpreter = Path(os.path.abspath(target_py))
     venv = interpreter.parent.parent
+    floor = _highest_floor(spec)
+    wanted = f"{floor[0]}.{floor[1]}" if floor else breach
     return (
         f"the incoming revision requires Python {spec} but this install's venv "
         f"({venv}) runs {version[0]}.{version[1]}.{version[2]}, so it cannot be "
         "installed there. Rebuild that venv on a supported interpreter "
-        f"(e.g. `uv venv --python 3.12 --seed {venv}` then "
-        f"`{interpreter} -m pip install -e {repo}`), then update again."
+        f"(e.g. `uv venv --python {wanted} --seed {shlex.quote(str(venv))}` then "
+        f"`{shlex.quote(str(interpreter))} -m pip install -e {shlex.quote(str(repo))}`), "
+        "then update again."
     )
 
 

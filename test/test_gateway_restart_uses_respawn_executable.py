@@ -293,6 +293,9 @@ class TestAutoApplyGitUpdate:
         )
         monkeypatch.setattr(gw, "commits_ahead", lambda _proj, _target: 0)
         monkeypatch.setattr(gw, "hidden_worktree_edits", lambda _proj: [])
+        # The floor gate reads the pinned commit with a real `git show`, which
+        # fails against this non-repo, and a failed read refuses.
+        monkeypatch.setattr(gw.dep_sync, "incoming_python_floor_breach", lambda *a, **k: None)
         spawn = self._scripted_git(monkeypatch)
         # Post-reset rebuild steps: no optional backend, frontend and deps sync
         # come back clean, and the package reload is a no-op (reloading the real

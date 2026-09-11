@@ -2946,6 +2946,12 @@ class TestAutoApplyUpdateGitPath:
         ), patch(
             "kiro_crew.slack.gateway.platform_compat.trusted_git_bin",
             return_value="/trusted/bin/git",
+        ), patch(
+            # The interpreter-floor gate reads the pinned commit with a real
+            # `git show`; against a non-repo that read FAILS, and a failed read
+            # refuses (its own tests are in TestAutoApplyUpdateResetPath).
+            "kiro_crew.slack.gateway.dep_sync.incoming_python_floor_breach",
+            return_value=None,
         ):
             yield
 
@@ -3851,6 +3857,12 @@ class TestAutoApplyUpdateVenvPath:
         ), patch(
             "kiro_crew.slack.gateway.platform_compat.trusted_git_bin",
             return_value="/trusted/bin/git",
+        ), patch(
+            # The interpreter-floor gate reads the pinned commit with a real
+            # `git show`; against a non-repo that read FAILS, and a failed read
+            # refuses (its own tests are in TestAutoApplyUpdateResetPath).
+            "kiro_crew.slack.gateway.dep_sync.incoming_python_floor_breach",
+            return_value=None,
         ):
             yield
 
@@ -4673,8 +4685,84 @@ class TestAutoApplyUpdateResetPath:
         ), patch(
             "kiro_crew.slack.gateway.platform_compat.trusted_git_bin",
             return_value="/trusted/bin/git",
+        ), patch(
+            # The interpreter-floor gate reads the pinned commit with a real
+            # `git show`; against a non-repo that read FAILS, and a failed read
+            # refuses (its own tests are in TestAutoApplyUpdateResetPath).
+            "kiro_crew.slack.gateway.dep_sync.incoming_python_floor_breach",
+            return_value=None,
         ):
             yield
+
+    @pytest.mark.asyncio
+    async def test_a_floor_refusal_is_redacted_and_capped_before_it_is_pushed(self, tmp_path):
+        """The refusal quotes the remote's `requires-python` and local paths verbatim.
+
+        Every sibling push of text the gateway did not author is redacted and
+        capped; the floor refusal is text the remote wrote, so it gets the same.
+        """
+        orch = _make_orchestrator()
+        ds = _mock_dashboard_state()
+        orch.dashboard_state = ds
+        secret = "https://evil.example/leak?token=AKIA" + "X" * 40
+        breach = "the incoming revision requires Python >=3.12 (" + secret + ") " + "p" * 900
+        with patch.dict(os.environ, {"KIROCREW_PROJECT_DIR": str(tmp_path)}), patch(
+            "kiro_crew.slack.gateway.dep_sync.incoming_python_floor_breach",
+            return_value=breach,
+        ), patch("asyncio.create_subprocess_exec", side_effect=self._scripted_git):
+            await orch._auto_apply_update()
+        pushed = [c.args for c in ds.push_update_progress.call_args_list if c.args[0] == "failed"]
+        assert len(pushed) == 1
+        detail = pushed[0][1]
+        assert detail.startswith("Update refused: ")
+        assert secret not in detail and "AKIA" not in detail
+        assert len(detail) <= len("Update refused: ") + 500
+        spawned = [[str(a) for a in c.args[1:3]] for c in self._spawns]
+        assert ["reset", "--hard"] not in spawned
+
+    @pytest.mark.asyncio
+    async def test_a_floor_git_cannot_read_refuses_before_the_reset(self, tmp_path):
+        """Unreadable is not absent: a git hiccup must not re-admit the stranded state."""
+        orch = _make_orchestrator()
+        ds = _mock_dashboard_state()
+        orch.dashboard_state = ds
+        with patch.dict(os.environ, {"KIROCREW_PROJECT_DIR": str(tmp_path)}), patch(
+            "kiro_crew.slack.gateway.dep_sync.incoming_python_floor_breach",
+            side_effect=gw.dep_sync.IncomingFloorUnreadable("git show timed out"),
+        ), patch("asyncio.create_subprocess_exec", side_effect=self._scripted_git):
+            await orch._auto_apply_update()
+        pushed = [c.args for c in ds.push_update_progress.call_args_list if c.args[0] == "failed"]
+        assert len(pushed) == 1 and "could not read" in pushed[0][1]
+        spawned = [[str(a) for a in c.args[1:3]] for c in self._spawns]
+        assert ["reset", "--hard"] not in spawned
+
+    async def _scripted_git(self, *argv, **_kwargs):
+        """Answer each pre-reset git step as a clean, behind-origin checkout would."""
+        self.__dict__.setdefault("_spawns", []).append(MagicMock(args=argv))
+
+        def _proc(rc: int, stdout: bytes = b"") -> MagicMock:
+            proc = MagicMock()
+            proc.returncode = rc
+            proc.communicate = AsyncMock(return_value=(stdout, b""))
+            proc.wait = AsyncMock(return_value=rc)
+            return proc
+
+        words = [str(a) for a in argv[1:]]
+        if words[:2] == ["rev-parse", "--abbrev-ref"]:
+            return _proc(0, b"main\n")
+        if words[:1] == ["fetch"]:
+            return _proc(0)
+        if words[:2] == ["rev-parse", "--verify"]:
+            return _proc(0, b"0123456789abcdef0123456789abcdef01234567\n")
+        if words[:1] == ["diff"] and "--quiet" in words:
+            return _proc(1)
+        if words[:2] == ["status", "--porcelain"]:
+            return _proc(0)
+        if words[:2] == ["diff", "--name-only"]:
+            return _proc(0)
+        if words[:2] == ["reset", "--hard"]:
+            return _proc(0)
+        raise AssertionError(f"unexpected spawn on the git update path: {argv!r}")
 
     @pytest.mark.asyncio
     async def test_reset_then_frontend_then_pip(self):

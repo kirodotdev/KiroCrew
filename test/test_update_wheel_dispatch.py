@@ -530,11 +530,13 @@ class TestUpdateDivergenceGuard:
                 elif "show" in args:
                     # The pre-reset interpreter-floor gate reads pyproject /
                     # setup.cfg out of the fetched commit, capturing BYTES like
-                    # the real call. Answer "no such path" so the gate does not
-                    # fire: the divergence guard is what these tests are about.
+                    # the real call. Answer "no such path" in git's own words
+                    # (the gate distinguishes an absent path from a failed
+                    # read by them) so the gate does not fire: the divergence
+                    # guard is what these tests are about.
                     result.returncode = 128
                     result.stdout = b""
-                    result.stderr = b""
+                    result.stderr = b"fatal: path 'pyproject.toml' does not exist in 'origin/main'"
             return result
 
         monkeypatch.setattr("subprocess.run", fake_run)

@@ -366,6 +366,34 @@ describe('UpdateFoundModal — gateway source', () => {
     expect(byName('components.updateFoundModal.update_now')).not.toBeDisabled()
   })
 
+  it('a failure whose frames beat the POST answer still ends the attempt', async () => {
+    // The gateway answers `updating` before the worker runs, but a merge that
+    // fails at once pushes `pulling` then `error` within milliseconds — both
+    // can land before the HTTP answer. An attempt that only started listening
+    // on that answer would read the failure as a stale predecessor and spin
+    // forever; and the answer, arriving after the failure rendered, must not
+    // raise the restarting latch back over it.
+    let resolvePost: (v: unknown) => void = () => {}
+    mockedApi.applyUpdate.mockReturnValue(new Promise(r => { resolvePost = r }) as never)
+    const store = gatewayStore({
+      update_available: true, update_latest_version: '8.8.8', update_can_apply: true,
+    })
+    await mount(undefined, store)
+    await waitFor(() => expect(dialog()).toBeInTheDocument())
+    fireEvent.click(byName('components.updateFoundModal.update_now'))
+    await waitFor(() => expect(mockedApi.applyUpdate).toHaveBeenCalledTimes(1))
+    // Worker frames first, POST still pending.
+    act(() => { store.dispatch(setUpdateProgress({ step: 'pulling', detail: '' })) })
+    act(() => { store.dispatch(setUpdateProgress({ step: 'error', detail: 'zzq ff failed before the answer' })) })
+    await waitFor(() => expect(screen.getByText('zzq ff failed before the answer')).toBeInTheDocument())
+    // Then the late answer.
+    await act(async () => { resolvePost({}) })
+    for (let i = 0; i < 4; i++) await act(async () => { await new Promise(r => setTimeout(r, 10)) })
+    expect(screen.getByText('zzq ff failed before the answer')).toBeInTheDocument()
+    expect(screen.queryByText(i18nT('components.updateFoundModal.updating_and_restarting'))).toBeNull()
+    expect(byName('components.updateFoundModal.update_now')).not.toBeDisabled()
+  })
+
   it('a retry does not re-read the previous attempt\'s failure still in the store', async () => {
     // Nothing clears update_progress between attempts: the previous terminal
     // step sits in the store until the worker's first push replaces it. A

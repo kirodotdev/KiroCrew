@@ -163,7 +163,7 @@ choice blob makes the usage line unreadable.
 | `kirocrew token` | Print a dashboard access URL with auth token |
 | `kirocrew logout` | Revoke all active dashboard sessions, refresh chains included |
 | `kirocrew manifest` | Generate Slack manifest with user alias auto-populated |
-| `kirocrew update` | Update to latest version (git fetch + hard reset to upstream + rebuild; a diverged checkout is refused — `--force` discards its local commits) |
+| `kirocrew update` | Update to latest version (git fetch, pin the upstream commit, refuse a revision whose `requires-python` this venv fails, hard reset to the pinned commit + rebuild; a diverged checkout is refused — `--force` discards its local commits) |
 | `kirocrew status` | Show runtime stats from running gateway |
 | `kirocrew stop` | Stop a running gateway (service-aware: stops the systemd/launchd service if active, otherwise terminates the gateway found by a cross-platform port lookup — lsof on POSIX, netstat on Windows). Pass `--port N` to bypass the service short-circuit and target a specific gateway. |
 | `kirocrew restart` | Restart a running gateway (service-aware: restarts the systemd/launchd service if active, otherwise terminates the foreground gateway and respawns it detached). Pass `--port N` to bypass the service short-circuit and target a specific gateway. |
@@ -916,10 +916,17 @@ Each step checks if the tool is already installed and skips if present.
 
 `kirocrew update` pulls the latest source and rebuilds:
 
-1. `git fetch` + `git reset --hard origin/<branch>` from `KIROCREW_PROJECT_DIR`.
+1. `git fetch`, then `git reset --hard <oid>` from `KIROCREW_PROJECT_DIR`, where
+   `<oid>` is `origin/<branch>` resolved ONCE right after the fetch (`git
+   rev-parse --verify origin/<branch>^{commit}`). Every later judgment — "already
+   up to date", the divergence counts, the interpreter floor below — and the
+   reset itself name that pinned commit rather than the ref, so a fetch run
+   concurrently from another terminal can move the ref but never what this
+   command checked and applies. A pin that cannot be resolved (or times out)
+   is refused with a non-zero exit before anything else is judged.
    The reset only runs for a FAST-FORWARDABLE checkout — behind its upstream
    and not ahead of it (`git rev-list --count --left-right
-   HEAD...origin/<branch>` shows behind > 0, ahead = 0) — mirroring the
+   HEAD...<oid>` shows behind > 0, ahead = 0) — mirroring the
    dashboard check's verdict, because the hard reset discards committed local
    work and the uncommitted-changes prompt does not cover it. A DIVERGED
    checkout (both sides non-zero) is refused with a non-zero exit and a
@@ -935,6 +942,25 @@ Each step checks if the tool is already installed and skips if present.
    edits in another terminal to rescue them is the natural response to the
    prompt, and is exactly what would otherwise be reset away). Only `HEAD` can
    move in that window, so the re-check needs no second fetch.
+
+   **Interpreter floor of the pinned revision, judged before the tree moves.**
+   After the fast-forwardable verdict and before the uncommitted-changes prompt,
+   `dep_sync.incoming_python_floor_breach()` reads `requires-python` out of the
+   pinned commit itself (`git show <oid>:pyproject.toml`, then `setup.cfg` —
+   never the working tree, which is still the OLD revision) and compares it to
+   the interpreter this command runs under. A floor the venv does not meet
+   refuses with a non-zero exit and a remedy naming the venv, the interpreter
+   the revision wants (`uv venv --python <floor> --seed <venv>`) and the
+   reinstall command, and the checkout is left where it was. Step 3's `pip
+   install -e .` enforces the same floor, but by then the reset has already
+   moved the tree to code this interpreter cannot import — the running gateway
+   keeps serving the old revision from memory while every lazy import reads
+   the new files, and every later run repeats the reset and the refusal. A
+   revision with no floor file does not fire; a floor file git could not READ
+   (`IncomingFloorUnreadable`: unresolvable ref, git failing, timeout) refuses
+   too, because on a pinned revision "could not read" is the one way left for
+   that stranded state to be re-admitted. The same gate guards `POST
+   /api/update` and the gateway's unattended auto-apply.
 2. Rebuilds the dashboard via `build_frontend_sync()` (npm; non-fatal on failure).
    Non-fatal also means non-destructive: `npm ci` deletes `node_modules` before it
    installs, so the tree is moved aside and restored unless the install succeeds
@@ -1260,7 +1286,9 @@ took.
 
 Both conditions are narrower than "is it behind", because `available` is also
 read by an unattended apply. `GatewayOrchestrator._auto_apply_update` applies
-`git fetch` + `git reset --hard origin/<branch>` with no prompt, so:
+`git fetch` + `git reset --hard <oid>` with no prompt — `<oid>` being
+`origin/<branch>` resolved once after the fetch, the same pin `kirocrew update`
+takes, so what it floor-checks is what it resets to — so:
 
 - "Behind" alone is true both for a checkout that is purely behind and for a
   DIVERGED one carrying its own commits, and the second would have those commits
@@ -1277,14 +1305,44 @@ on commit distance alone that would mean any upstream commit — resetting a
 source checkout within 12 hours of one, where the version-only verdict only did
 so at a release. Requiring both keeps that path firing no more often than
 before. Commit distance without a version bump lights the dashboard badge, and
-`POST /api/update` (`git pull`, dirty tree refused with 409) is the
-non-destructive way to apply it.
+`POST /api/update` is the non-destructive way to apply it.
+
+**`POST /api/update` refuses before it moves the tree, and fast-forwards to a
+pinned commit rather than pulling.** In order: a dirty tracked tree is 409
+`dirty_tree`; a pre-apply `git fetch` that fails is 409 `git_fetch_failed`
+(500 on timeout); a divergence count it cannot read is 409 `git_read_failed`;
+a diverged checkout is 409 `checkout_diverged`; then `@{u}` is resolved ONCE to
+a commit OID (`git rev-parse --verify @{u}^{commit}` — unresolvable is 409
+`git_read_failed`, a timeout 500 `git_read_failed`); then the interpreter floor
+of THAT commit is read with `git show <oid>:pyproject.toml` (then `setup.cfg`)
+and compared to the gateway's own interpreter — a floor the venv fails is 409
+`python_floor` with the remedy in `error`, and a floor git could not read is
+409 `git_read_failed`, never waved through. Only then does the handler answer
+`{"ok": true, "status": "updating"}` and start the worker, which runs `git merge
+--ff-only <oid>` — the same OID, so the revision that was floor-checked is the
+revision that lands, and an upstream rewritten in the window fails the merge
+instead of minting a merge commit — then rebuilds, `pip install -e .`, and
+restarts. A merge that fails or times out ends the worker with an `error` step
+whose detail names the command and the pinned OID; that detail is what the
+overlay's failure card shows and what its "Ask the agent" hand-off sends.
+The unattended auto-apply and `kirocrew update` apply the same floor gate
+(see the Update Command above); all three refuse with the checkout untouched.
 
 - Topbar shows `📦 v0.1.3` badge — click to check and view changelog
 - If newer version found: badge turns into "📦 Update Available"
 - Clicking opens a dismissible changelog modal with rendered markdown
-- "Update Now" button: `git pull` → rebuild → `os.execv()` restart
-- Health indicator shows "Updating…" during the process
+- "Update Now" button: `POST /api/update` → fast-forward to the pinned commit →
+  rebuild → `os.execv()` restart. A 409 renders inline in the modal through
+  `ErrorNotice`; on a voluntary update the notice offers "Ask the agent" (the
+  hand-off closes the modal for this page session and opens chat with the
+  refusal), on a mandatory one it does not (the modal's enforcement is staying
+  up) and the installer command remains the way out
+- Health indicator shows "Updating…" during the process. A `failed` or `error`
+  progress step is terminal for both the modal and the full-screen overlay: the
+  modal drops its restarting latch and shows the reason in the same slot a
+  synchronous 409 uses; the overlay replaces the spinner with a failure card
+  (`ErrorNotice`, "Ask the agent" + Dismiss) instead of stalling until the
+  five-minute stuck timer
 - SSE auto-reconnects when the new process starts
 
 ## Status Command

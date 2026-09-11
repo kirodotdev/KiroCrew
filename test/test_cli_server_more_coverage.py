@@ -983,6 +983,7 @@ class _GitStub:
         # checkout, which the divergence guard waves through.
         self.rev_list_out = "0\t5\n"
         self.show_out: bytes | None = None
+        self.show_fails = False
 
     def __call__(self, argv, **kw):
         self.calls.append(list(argv))
@@ -1006,10 +1007,24 @@ class _GitStub:
         if argv[:2] == ["git", "show"]:
             # The pre-reset interpreter-floor gate reads pyproject/setup.cfg out
             # of the fetched commit. BYTES, like the real call. Absent by
-            # default (git's "no such path" exit), so the gate does not fire
-            # unless a test hands it a floor.
+            # default, in git's own words for "not in this revision" -- the gate
+            # tells that apart from a failed read, so the wording is the contract
+            # -- and so the gate does not fire unless a test hands it a floor.
+            if self.show_fails:
+                return subprocess.CompletedProcess(
+                    argv,
+                    128,
+                    b"",
+                    b"fatal: not a git repository (or any of the parent directories)",
+                )
             if self.show_out is None:
-                return subprocess.CompletedProcess(argv, 128, b"", b"fatal: path does not exist")
+                path = argv[2].split(":", 1)[1]
+                return subprocess.CompletedProcess(
+                    argv,
+                    128,
+                    b"",
+                    f"fatal: path '{path}' does not exist in '{argv[2].split(':')[0]}'".encode(),
+                )
             return subprocess.CompletedProcess(argv, 0, self.show_out, b"")
         if argv[:2] == ["git", "reset"]:
             return subprocess.CompletedProcess(argv, self.rc.get("reset", 0), "", "dirty")
@@ -1162,6 +1177,23 @@ class TestUpdateGitPath:
         assert "--force: discarding 3 local commit(s)" in out
         assert any(c[:2] == ["git", "reset"] for c in stub.calls)
 
+    def test_a_floor_git_cannot_read_refuses_before_the_reset(
+        self, monkeypatch, git_checkout, capsys
+    ) -> None:
+        """A failed `git show` is not "no floor declared": the reset must not run."""
+        from kiro_crew import dep_sync
+
+        stub = _GitStub()
+        stub.show_fails = True
+        monkeypatch.setattr(subprocess, "run", stub)
+        monkeypatch.setattr(dep_sync, "interpreter_version", lambda *a, **k: (3, 11, 9))
+        with pytest.raises(SystemExit) as exc:
+            cli_server._update()
+        assert exc.value.code == 1
+        out = capsys.readouterr().out
+        assert "Could not read the incoming revision's interpreter requirement" in out
+        assert not any(c[:2] == ["git", "reset"] for c in stub.calls)
+
     def test_a_revision_the_venv_cannot_run_is_refused_before_the_reset(
         self, monkeypatch, git_checkout, capsys
     ) -> None:
@@ -1219,7 +1251,13 @@ class TestUpdateGitPath:
         stub = _GitStub()
         monkeypatch.setattr(subprocess, "run", stub)
         cli_server._update()
-        assert ["git", "rev-parse", "--verify", "origin/main^{commit}"] in stub.calls
+        # The FULL remote-tracking ref: a short `origin/main` resolves a tag of
+        # that name first, which a fetch auto-follows from the remote.
+        assert ["git", "rev-parse", "--verify", "refs/remotes/origin/main^{commit}"] in stub.calls
+        assert not any(
+            c[:3] == ["git", "rev-parse", "--verify"] and "origin/main^{commit}" in c
+            for c in stub.calls
+        )
         assert ["git", "reset", "--hard", _PIN] in stub.calls
         assert not any("origin/main" in c for c in stub.calls if c[:2] == ["git", "reset"])
         assert any(c[:3] == ["git", "show", f"{_PIN}:pyproject.toml"] for c in stub.calls)

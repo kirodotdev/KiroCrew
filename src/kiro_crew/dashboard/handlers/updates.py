@@ -1689,10 +1689,24 @@ async def api_update_apply(request: web.Request) -> web.Response:
     # reads the new files, and each later click repeats the pull and the
     # refusal. Refusing here leaves the checkout where it was and names the
     # remedy. Offloaded: it shells out to git and probes the interpreter.
-    floor_breach = await asyncio.get_running_loop().run_in_executor(
-        subprocess_executor(),
-        lambda: dep_sync.incoming_python_floor_breach(Path(proj), target, Path(sys.executable)),
-    )
+    try:
+        floor_breach = await asyncio.get_running_loop().run_in_executor(
+            subprocess_executor(),
+            lambda: dep_sync.incoming_python_floor_breach(Path(proj), target, Path(sys.executable)),
+        )
+    except dep_sync.IncomingFloorUnreadable as exc:
+        # The pinned revision is real, but its floor could not be read. That is
+        # not "no floor": waving it through would land exactly the revision
+        # the gate exists to keep out, on the one path git happened to fail on.
+        logger.warning("Update refused: could not read the incoming interpreter floor (%s)", exc)
+        return web.json_response(
+            {
+                "error": "Could not read the incoming revision's interpreter requirement — "
+                "check the tracked remote",
+                "code": "git_read_failed",
+            },
+            status=409,
+        )
     if floor_breach:
         logger.warning("Update refused: %s", floor_breach)
         return web.json_response(
@@ -1727,10 +1741,19 @@ async def api_update_apply(request: web.Request) -> web.Response:
                 except ProcessLookupError:
                     pass
                 await pull.communicate()
-                state.push_update_progress("error", "git pull timed out")
+                state.push_update_progress(
+                    "error", f"Fast-forward to {target[:12]} timed out (git merge --ff-only)"
+                )
                 return
             if pull.returncode != 0:
-                state.push_update_progress("error", "git pull failed")
+                # The detail is what the failure card shows and what its
+                # "Ask the agent" hand-off sends along, so it names the
+                # command that ran and the revision it targeted.
+                state.push_update_progress(
+                    "error",
+                    f"Fast-forward to {target[:12]} failed (git merge --ff-only) — "
+                    "the checkout may have moved; check `git status` in a terminal",
+                )
                 return
 
             # Rebuild the in-tree frontend and stage website/dist into the

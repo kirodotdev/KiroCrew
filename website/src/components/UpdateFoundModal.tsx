@@ -151,10 +151,9 @@ export default function UpdateFoundModal() {
   const sessionDismissed = !!candidate && dismissedVersion === candidate.version
   // The failure notice's "Ask the agent" hand-off soft-navigates to chat, which
   // this full-screen modal would otherwise cover -- the click would look like
-  // it did nothing. Handing off closes the modal for this page session, and
-  // deliberately ALSO for a mandatory update: the user is going to get the
-  // refusal fixed, which is what the mandate wants, and the modal comes back
-  // on the next load because nothing is persisted.
+  // it did nothing. Handing off closes the modal for this page session only
+  // (nothing is persisted, so it comes back on the next load). The hand-off
+  // is offered on a voluntary update only; a mandatory one never sets this.
   const [handedOffVersion, setHandedOffVersion] = useState('')
   const handedOff = !!candidate && handedOffVersion === candidate.version
   const [copied, setCopied] = useState(false)
@@ -222,15 +221,45 @@ export default function UpdateFoundModal() {
   // for a restart that is never coming.
   const gwProgress = useAppSelector(s => s.dashboard.updateProgress)
 
+  // This modal's own apply attempt: open from the click that sends the POST
+  // until a synchronous rejection or a terminal progress step ends it. It is
+  // NOT the POST's pending state — the gateway answers `updating` before the
+  // worker runs, but the worker's own frames can still arrive before that
+  // answer does (a merge that fails at once pushes `pulling` then `error` in
+  // milliseconds), and an attempt that only opened on the answer would read
+  // that failure as stale and spin forever. The ref is what the mutation
+  // callbacks consult, because they run from closures older than the state.
+  const attemptRef = useRef(false)
+  const [attemptActive, setAttemptActive] = useState(false)
+  const sawLiveStepRef = useRef(false)
+  const beginAttempt = () => {
+    attemptRef.current = true
+    sawLiveStepRef.current = false
+    setAttemptActive(true)
+  }
+  const endAttempt = () => {
+    attemptRef.current = false
+    setAttemptActive(false)
+    setRestarting(false)
+  }
+
   const gwApply = useMutation({
     mutationFn: () => api.applyUpdate(),
-    onSuccess: () => setRestarting(true),
+    // The attempt may already have ended on a terminal step that beat the
+    // answer here; re-raising the restarting latch then would hide the
+    // failure that just rendered.
+    onSuccess: () => { if (attemptRef.current) setRestarting(true) },
     onError: (e: unknown) => {
       // Same contract as the About panel's apply: a bare network failure is
       // the gateway restarting out from under the POST — the success path —
-      // and only a real server rejection (ApiError) is worth surfacing.
-      if (e instanceof ApiError) setApplyError(e.message || i18nT('components.updateFoundModal.update_failed'))
-      else setRestarting(true)
+      // and only a real server rejection (ApiError) is worth surfacing. A
+      // rejection means no worker ran, so the attempt is over.
+      if (e instanceof ApiError) {
+        endAttempt()
+        setApplyError(e.message || i18nT('components.updateFoundModal.update_failed'))
+      } else if (attemptRef.current) {
+        setRestarting(true)
+      }
     },
   })
 
@@ -282,29 +311,27 @@ export default function UpdateFoundModal() {
 
   // Surface a background apply failure in the same slot a synchronous
   // rejection uses, and drop the restarting latch so the buttons come back:
-  // the user can read the reason, retry, or dismiss. Only while this modal's
-  // own apply is in flight — an unrelated failed step from the About panel
-  // must not rewrite a modal that never started an update — and only after a
-  // live step of THIS apply has been seen: the store holds the previous
-  // attempt's terminal step until the worker's first push replaces it, so a
-  // retry would otherwise read its predecessor's failure the instant the POST
-  // is accepted. The worker always announces a live step before it can fail.
+  // the user can read the reason, retry, or dismiss. Only during this modal's
+  // own attempt — an unrelated failed step from the About panel must not
+  // rewrite a modal that never started an update — and only after a live step
+  // of THIS attempt has been seen: the store holds the previous attempt's
+  // terminal step until the worker's first push replaces it, so a retry would
+  // otherwise read its predecessor's failure the instant it is clicked. The
+  // worker always announces a live step before it can fail, and each frame is
+  // its own store update, so the live step is observed even when the failure
+  // follows it within the same millisecond.
   const gwProgressStep = gwProgress?.step ?? ''
   const gwProgressDetail = gwProgress?.detail ?? ''
-  const sawLiveStepRef = useRef(false)
   useEffect(() => {
-    if (!restarting) {
-      sawLiveStepRef.current = false
-      return
-    }
+    if (!attemptActive) return
     if (gwProgressStep !== 'failed' && gwProgressStep !== 'error') {
       if (gwProgressStep) sawLiveStepRef.current = true
       return
     }
     if (!sawLiveStepRef.current) return
-    setRestarting(false)
+    endAttempt()
     setApplyError(gwProgressDetail || i18nT('components.updateFoundModal.update_failed'))
-  }, [restarting, gwProgressStep, gwProgressDetail])
+  }, [attemptActive, gwProgressStep, gwProgressDetail])
 
   // A save failure is a verdict on ONE version's write, not a permanent
   // downgrade to session-only dismissal: left sticky, the NEXT release's
@@ -334,6 +361,7 @@ export default function UpdateFoundModal() {
       setDismissedVersion(candidate.version)
     } else if (candidate.affordance === 'apply') {
       setApplyError('')
+      beginAttempt()
       gwApply.mutate()
     }
   }

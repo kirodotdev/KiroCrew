@@ -71,6 +71,16 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
     Promise.resolve(new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } }))
   if (url.includes('/api/config/kirocrew')) return json({ dashboard: { update_nudge: {} } })
   if (url.includes('/api/update/check')) return json({ changes: NOTES, latest_version: '0.5.0' })
+  if (scene.endsWith('-refused') && (init?.method || 'GET').toUpperCase() === 'POST' && /\/api\/update$/.test(url.split('?')[0])) {
+    // The gateway's own refusal shape and wording (dep_sync.incoming_python_floor_breach).
+    return Promise.resolve(new Response(JSON.stringify({
+      code: 'python_floor',
+      error: 'Update refused: the incoming revision requires Python >=3.12 but this install\u2019s venv '
+        + '(/home/me/.kiro/crew-venv) runs 3.11.16, so it cannot be installed there. Rebuild that venv on a '
+        + 'supported interpreter (e.g. `uv venv --python 3.12 --seed /home/me/.kiro/crew-venv` then '
+        + '`/home/me/.kiro/crew-venv/bin/python -m pip install -e /home/me/KiroCrew`), then update again.',
+    }), { status: 409, headers: { 'Content-Type': 'application/json' } }))
+  }
   return realFetch(input, init)
 }) as typeof window.fetch
 
@@ -111,6 +121,19 @@ if (scene === 'desktop') {
     update_available: true, update_latest_version: '0.6.0', update_can_apply: false,
     update_command: 'curl -fsSL https://download.crew.kiro.dev/cli.sh | sh',
     update_required: true, update_min_version: '0.6.0',
+  } as StatusData))
+} else if (scene === 'apply-refused' || scene === 'required-refused') {
+  // The gateway refuses the apply before touching the tree (409 `python_floor`:
+  // the fetched revision needs an interpreter this venv does not have). The
+  // capture script clicks "Update now" and the modal renders the refusal in
+  // place; the mandatory variant keeps its enforcement (no dismissal, no
+  // hand-off) and leaves the installer command as the way out.
+  const required = scene === 'required-refused'
+  store.dispatch(sseStatus({
+    update_available: true, update_latest_version: required ? '0.6.0' : '0.5.0',
+    update_can_apply: true,
+    ...(required ? { update_required: true, update_min_version: '0.6.0' } : {}),
+    update_command: 'curl -fsSL https://download.crew.kiro.dev/cli.sh | sh',
   } as StatusData))
 } else if (scene.startsWith('pill')) {
   store.dispatch(setDesktopUpdateAvailable(true))

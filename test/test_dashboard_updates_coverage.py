@@ -698,11 +698,94 @@ class TestApplyRefusals:
         assert req.app["state"]._background_tasks == set()
         assert not any(step == "pulling" for step, _ in self._progress(req.app["state"]))
 
-    async def _drive_worker(self, monkeypatch, tmp_path, procs: list[_FakeProc]):
-        """Accept the request, then await the background worker it scheduled."""
+    @pytest.mark.asyncio
+    async def test_a_floor_git_cannot_read_refuses_rather_than_passing(self, monkeypatch, tmp_path):
+        """ "Could not read the floor" is not "no floor": the pinned revision stays out."""
+        from kiro_crew import dep_sync
+
         monkeypatch.setenv("KIROCREW_PROJECT_DIR", _git_proj(monkeypatch, tmp_path))
         monkeypatch.setattr(updates, "resolve_remote_url", lambda _p: "")
         monkeypatch.setattr(updates, "update_blocked_reason", lambda _u: "")
+        _sequence_procs(
+            monkeypatch,
+            [
+                _FakeProc(out=b""),
+                _FakeProc(out=b""),
+                _FakeProc(out=b"0\t1\n"),
+                _FakeProc(out=_UPSTREAM_OID + b"\n"),
+            ],
+        )
+
+        def _unreadable(repo, ref, target_py, **_kw):
+            raise dep_sync.IncomingFloorUnreadable("git show timed out")
+
+        monkeypatch.setattr(dep_sync, "incoming_python_floor_breach", _unreadable)
+
+        req = _request({})
+        resp = await updates.api_update_apply(req)
+        assert resp.status == 409
+        assert json.loads(resp.body.decode())["code"] == "git_read_failed"
+        assert req.app["state"]._background_tasks == set()
+
+    @pytest.mark.asyncio
+    async def test_an_unresolvable_upstream_pin_is_refused(self, monkeypatch, tmp_path):
+        """rev-parse @{u} failing means nothing to floor-check and nothing to land on."""
+        from kiro_crew import dep_sync
+
+        monkeypatch.setenv("KIROCREW_PROJECT_DIR", _git_proj(monkeypatch, tmp_path))
+        monkeypatch.setattr(updates, "resolve_remote_url", lambda _p: "")
+        monkeypatch.setattr(updates, "update_blocked_reason", lambda _u: "")
+        _sequence_procs(
+            monkeypatch,
+            [
+                _FakeProc(out=b""),
+                _FakeProc(out=b""),
+                _FakeProc(out=b"0\t1\n"),
+                _FakeProc(out=b"", err=b"fatal: no upstream configured", returncode=128),
+            ],
+        )
+        judged: list[str] = []
+        monkeypatch.setattr(
+            dep_sync, "incoming_python_floor_breach", lambda *a, **k: judged.append(a[1])
+        )
+
+        req = _request({})
+        resp = await updates.api_update_apply(req)
+        assert resp.status == 409
+        assert json.loads(resp.body.decode())["code"] == "git_read_failed"
+        # Nothing was judged and nothing was scheduled: no pin, no apply.
+        assert judged == []
+        assert req.app["state"]._background_tasks == set()
+
+    @pytest.mark.asyncio
+    async def test_a_hung_upstream_pin_is_a_500_and_reaps_the_process(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("KIROCREW_PROJECT_DIR", _git_proj(monkeypatch, tmp_path))
+        monkeypatch.setattr(updates, "resolve_remote_url", lambda _p: "")
+        monkeypatch.setattr(updates, "update_blocked_reason", lambda _u: "")
+        pin = _FakeProc(time_out=True)
+        _sequence_procs(
+            monkeypatch,
+            [_FakeProc(out=b""), _FakeProc(out=b""), _FakeProc(out=b"0\t1\n"), pin],
+        )
+
+        req = _request({})
+        resp = await updates.api_update_apply(req)
+        assert resp.status == 500
+        assert json.loads(resp.body.decode())["code"] == "git_read_failed"
+        assert pin.killed and pin.communicate_calls == 2
+        assert req.app["state"]._background_tasks == set()
+
+    async def _drive_worker(self, monkeypatch, tmp_path, procs: list[_FakeProc]):
+        """Accept the request, then await the background worker it scheduled."""
+        from kiro_crew import dep_sync
+
+        monkeypatch.setenv("KIROCREW_PROJECT_DIR", _git_proj(monkeypatch, tmp_path))
+        monkeypatch.setattr(updates, "resolve_remote_url", lambda _p: "")
+        monkeypatch.setattr(updates, "update_blocked_reason", lambda _u: "")
+        # The fabricated checkout has no commits for the floor gate to read, and
+        # an unreadable floor now refuses; these tests are about the worker
+        # that runs AFTER the gate passes.
+        monkeypatch.setattr(dep_sync, "incoming_python_floor_breach", lambda *a, **k: None)
         # Clean tree, then the diverged guard's own fetch, a fast-forwardable
         # rev-list count and the upstream OID pin, so the request reaches the
         # worker whose procs follow.
@@ -736,14 +819,25 @@ class TestApplyRefusals:
         state = await self._drive_worker(
             monkeypatch, tmp_path, [_FakeProc(time_out=True, kill_raises=True)]
         )
-        assert ("error", "git pull timed out") in self._progress(state)
+        oid = _UPSTREAM_OID.decode()[:12]
+        assert ("error", f"Fast-forward to {oid} timed out (git merge --ff-only)") in (
+            self._progress(state)
+        )
         # No build and no restart followed the failure.
         assert not any(step == "restarting" for step, _ in self._progress(state))
 
     @pytest.mark.asyncio
     async def test_a_failed_pull_is_reported_and_stops_the_worker(self, monkeypatch, tmp_path):
         state = await self._drive_worker(monkeypatch, tmp_path, [_FakeProc(returncode=1)])
-        assert ("error", "git pull failed") in self._progress(state)
+        steps = self._progress(state)
+        assert any(
+            step == "error"
+            and detail.startswith(f"Fast-forward to {_UPSTREAM_OID.decode()[:12]} failed")
+            for step, detail in steps
+        )
+        # The detail is what the failure card's agent hand-off sends along, so it
+        # must name what actually ran (a fast-forward merge), never a pull.
+        assert not any(step == "error" and "git pull" in detail for step, detail in steps)
 
     @pytest.mark.asyncio
     async def test_the_worker_fast_forwards_to_the_pinned_oid_without_refetching(
@@ -766,9 +860,12 @@ class TestApplyRefusals:
         The overlay has no other way to leave the "updating" state, so a
         swallowed error strands the user on a spinner forever.
         """
+        from kiro_crew import dep_sync
+
         monkeypatch.setenv("KIROCREW_PROJECT_DIR", _git_proj(monkeypatch, tmp_path))
         monkeypatch.setattr(updates, "resolve_remote_url", lambda _p: "")
         monkeypatch.setattr(updates, "update_blocked_reason", lambda _u: "")
+        monkeypatch.setattr(dep_sync, "incoming_python_floor_breach", lambda *a, **k: None)
         calls = {"n": 0}
 
         async def _exec(*args: str, **_kwargs: object):

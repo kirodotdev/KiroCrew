@@ -11,6 +11,7 @@ different checkout.
 
 import ast
 import os
+import shlex
 import subprocess
 import sys
 import textwrap
@@ -204,14 +205,9 @@ def _git(repo: Path, *args: str) -> str:
         check=True,
         # A fixed identity and no user gitconfig, so the fixture commits the
         # same way on every host.
-        env={
-            "PATH": os.environ["PATH"],
-            "HOME": str(repo),
-            "GIT_AUTHOR_NAME": "t",
-            "GIT_AUTHOR_EMAIL": "t@x",
-            "GIT_COMMITTER_NAME": "t",
-            "GIT_COMMITTER_EMAIL": "t@x",
-        },
+        # Keeps the autouse `_git_identity` isolation the rest of the module
+        # runs under; only HOME is pinned so no user gitconfig leaks in.
+        env={**os.environ, "HOME": str(repo)},
     ).stdout.strip()
 
 
@@ -262,18 +258,68 @@ def test_incoming_floor_breach_does_not_fire_when_the_venv_meets_the_floor(floor
         )
 
 
-def test_incoming_floor_breach_does_not_fire_on_what_it_cannot_read(floor_repo):
-    """An unresolvable ref, or an unprobeable interpreter, is not a proven breach."""
-    with patch.object(dep_sync, "interpreter_version", return_value=(3, 10, 0)):
-        assert (
-            dep_sync.incoming_python_floor_breach(floor_repo, "no-such-ref", Path(sys.executable))
-            is None
-        )
+def test_incoming_floor_breach_does_not_fire_on_an_unprobeable_interpreter(floor_repo):
+    """A venv whose version cannot be asked is not a proven breach."""
     with patch.object(dep_sync, "interpreter_version", return_value=None):
         assert (
             dep_sync.incoming_python_floor_breach(floor_repo, "incoming", Path(sys.executable))
             is None
         )
+
+
+def test_incoming_floor_breach_refuses_when_git_cannot_read_the_floor(floor_repo):
+    """An unresolvable ref, a git that will not start, a timeout: none is "no floor".
+
+    On a pinned revision, reading a failed lookup as an absent floor is the one
+    way left to re-admit the stranded state the gate exists to refuse.
+    """
+    with patch.object(dep_sync, "interpreter_version", return_value=(3, 10, 0)):
+        with pytest.raises(dep_sync.IncomingFloorUnreadable):
+            dep_sync.incoming_python_floor_breach(floor_repo, "no-such-ref", Path(sys.executable))
+        with pytest.raises(dep_sync.IncomingFloorUnreadable):
+            dep_sync.incoming_python_floor_breach(
+                floor_repo, "incoming", Path(sys.executable), git_bin="/nonexistent/git"
+            )
+        with patch.object(
+            dep_sync.subprocess, "run", side_effect=subprocess.TimeoutExpired(["git"], 1)
+        ):
+            with pytest.raises(dep_sync.IncomingFloorUnreadable):
+                dep_sync.incoming_python_floor_breach(floor_repo, "incoming", Path(sys.executable))
+
+
+def test_incoming_floor_breach_reads_a_missing_floor_file_as_no_floor(floor_repo):
+    """A revision with neither floor file declares nothing; that is not a read failure."""
+    _git(floor_repo, "checkout", "-q", "-b", "floorless")
+    _git(floor_repo, "rm", "-q", "pyproject.toml")
+    _git(floor_repo, "commit", "-q", "-m", "no floor files")
+    _git(floor_repo, "checkout", "-q", "main")
+    with patch.object(dep_sync, "interpreter_version", return_value=(3, 8, 0)):
+        assert (
+            dep_sync.incoming_python_floor_breach(floor_repo, "floorless", Path(sys.executable))
+            is None
+        )
+
+
+def test_incoming_floor_breach_remedy_names_the_declared_floor_and_quotes_paths(tmp_path):
+    """The remedy asks for the interpreter the revision wants, not a constant."""
+    repo = tmp_path / "check out"
+    repo.mkdir()
+    _git(repo, "init", "-q", "-b", "main")
+    (repo / "pyproject.toml").write_text(
+        '[project]\nname = "kirocrew"\nrequires-python = ">=3.13"\n', encoding="utf-8"
+    )
+    _git(repo, "add", "pyproject.toml")
+    _git(repo, "commit", "-q", "-m", "floor 3.13")
+    venv_py = tmp_path / "my venv" / "bin" / "python"
+    with patch.object(dep_sync, "interpreter_version", return_value=(3, 12, 1)):
+        reason = dep_sync.incoming_python_floor_breach(repo, "main", venv_py)
+    assert reason is not None
+    assert "uv venv --python 3.13 --seed" in reason
+    assert "3.12" not in reason.split("uv venv")[1].split("--seed")[0]
+    # Paths with spaces are pasteable only when quoted.
+    assert shlex.quote(str(tmp_path / "my venv")) in reason
+    assert shlex.quote(str(venv_py)) in reason
+    assert shlex.quote(str(repo)) in reason
 
 
 def test_python_floor_breach_reports_the_highest_unmet_floor():

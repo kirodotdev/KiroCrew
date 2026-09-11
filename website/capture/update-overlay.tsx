@@ -16,6 +16,9 @@
  *   reconnecting — the socket dropped mid-restart (the gateway exec'd itself):
  *                  the explicit "Gateway is restarting — reconnecting…" state
  *                  this PR adds, in place of the frozen step list.
+ *   error        — a per-step handler failed (the worker pushes `error`, not
+ *                  `failed`): the overlay must treat it as terminal and show
+ *                  the failure card with the step's detail.
  */
 import { createRoot } from 'react-dom/client'
 import { Provider } from 'react-redux'
@@ -33,8 +36,18 @@ const scene = params.get('scene') || 'restarting'
 const theme = params.get('theme') || 'dark'
 document.documentElement.setAttribute('data-theme', theme)
 
-store.dispatch(setUpdateProgress({ step: 'restarting', detail: 'Restarting server…' }))
-store.dispatch(scene === 'reconnecting' ? sseDisconnected() : sseConnected())
+if (scene === 'error') {
+  // Exactly what the apply worker pushes when the fast-forward fails after the
+  // request was accepted; the detail is the gateway's own wording.
+  store.dispatch(setUpdateProgress({
+    step: 'error',
+    detail: 'Fast-forward to 9f8202496fcf failed (git merge --ff-only) — the checkout may have moved; check `git status` in a terminal',
+  }))
+  store.dispatch(sseConnected())
+} else {
+  store.dispatch(setUpdateProgress({ step: 'restarting', detail: 'Restarting server…' }))
+  store.dispatch(scene === 'reconnecting' ? sseDisconnected() : sseConnected())
+}
 
 initI18n('en')
 createRoot(document.getElementById('root')!).render(

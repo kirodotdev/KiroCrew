@@ -338,6 +338,9 @@ const UPDATE_STEPS: Record<string, { icon: ReactNode }> = {
   installing: { icon: <Package className="lucide-inline" /> },
   restarting: { icon: <Rocket className="lucide-inline" /> },
   failed:     { icon: <XCircle className="lucide-inline" /> },
+  // The per-step handlers report their failure as `error`; without an entry
+  // the header fell back to the spinning glyph over a failure card.
+  error:      { icon: <XCircle className="lucide-inline" /> },
 }
 
 /**
@@ -354,6 +357,7 @@ const UPDATE_STEP_LABEL_KEY: Record<string, string> = {
   installing: 'app.installing_packages',
   restarting: 'app.restarting_server',
   failed: 'app.update_failed_2',
+  error: 'app.update_failed_2',
 }
 
 const STEP_ORDER = ['pulling', 'syncing', 'building', 'installing', 'restarting']
@@ -418,7 +422,8 @@ export function UpdateOverlay({ onCancel }: { onCancel: () => void }) {
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center bg-bg/80 backdrop-blur-sm animate-rise">
       <div className="bg-card border border-border rounded-xl p-8 max-w-md w-full mx-4 shadow-xl text-center">
-        <div className="text-4xl mb-4 animate-pulse">{info?.icon || <RefreshCw className="lucide-inline" />}</div>
+        {/* A terminal step is not in progress, so it does not pulse. */}
+        <div className={`text-4xl mb-4 ${isFailed ? 'text-danger' : 'animate-pulse'}`} data-testid="update-overlay-step-icon">{info?.icon || <RefreshCw className="lucide-inline" />}</div>
         <div className="text-lg font-bold text-text-strong mb-2">{i18nT('app.updating_kirocrew')}</div>
         <div className="text-sm text-muted mb-5">{detail || i18nT('app.starting_update')}</div>
         {/* Step progress */}
