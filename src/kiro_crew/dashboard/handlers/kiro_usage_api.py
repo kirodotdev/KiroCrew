@@ -199,9 +199,12 @@ _MAX_BONUS_NAME_CHARS = 100
 # a few KB; 1 MB is comfortably above any real response.
 _MAX_RESP_BYTES = 1_000_000
 
-# Memoized account profile ARN (stable per account). Populated only from a
-# definitive ListAvailableProfiles 200 (the value may be None for individual
-# accounts); transient failures are never cached. See _list_profile_arn.
+# Memoized account profile ARN (stable per account). Keyed by
+# (token digest, expected-ARN digest) -- see _profile_cache_key -- so two probes
+# with the same token but different expected ARNs never serve each other's
+# answer. Populated only from a definitive ListAvailableProfiles 200 that
+# yielded an ARN; transient failures, empty lists, and anchored misses are
+# never cached. See _list_profile_arn.
 _PROFILE_ARN_CACHE: dict[str, str | None] = {}
 
 # Size cap for the two profile caches below. They are keyed by token digest and
@@ -577,22 +580,49 @@ def _read_capped(fp: object) -> str:
     return data.decode("utf-8", "replace")
 
 
-def _list_profile_arn(token: str, *, endpoint: str | None = None) -> str | None:
-    """Return the account's profile ARN, or None for non-enterprise accounts.
+def _profile_cache_key(token: str, expected_arn: str | None) -> str:
+    """Cache key for the profile caches: token digest + expected-ARN digest.
+
+    Keyed by BOTH so two probes with the same token but different expected
+    ARNs can never serve each other's answer — one memoized ARN per token
+    digest is what made a wrong first selection sticky for the process
+    lifetime. Never the raw token (control 5); the ARN is digested too so the
+    key shape stays uniform. A falsy anchor ("" or None) means "no question
+    asked" and maps to one shared key.
+    """
+    tok = hashlib.sha256(token.encode()).hexdigest()[:16]
+    anchor = hashlib.sha256((expected_arn or "").encode()).hexdigest()[:16]
+    return f"{tok}:{anchor}"
+
+
+def _list_profile_arn(
+    token: str, *, expected_arn: str | None = None, endpoint: str | None = None
+) -> str | None:
+    """Return the profile ARN this token should use, or None.
 
     Enterprise/IdC accounts (KIRO POWER etc.) must pass ``profileArn`` to
     GetUsageLimits or it returns 403 FEATURE_NOT_SUPPORTED.
 
-    The ARN is account-stable per token, so a found ARN is memoized in
-    ``_PROFILE_ARN_CACHE`` keyed by a token digest (never the token itself) to
-    save one RTS round-trip per refresh. Two things are deliberately NOT
-    cached: transient failures (network error, non-200), and a 200 with no
-    profiles — an empty list can be post-login propagation lag on an
-    enterprise account, so pinning arn=None would strand that account on the
-    text fallback until restart. Both are re-probed on the next refresh, and
-    each candidate token is probed for its own account (no cross-token reuse).
+    ``expected_arn`` is the question being asked: when supplied, the answer
+    is that ARN if it is present in THIS token's own ListAvailableProfiles
+    list, else None. Presence in the token's own list is what proves the
+    credential belongs to the signed-in account — position proves nothing,
+    because a token entitled to several profiles returns them in an order the
+    caller does not control. When no anchor is supplied (source-anchored
+    mode) the first entry carrying an ARN is the answer.
+
+    The answer is account-stable per (token, question), so a found ARN is
+    memoized in ``_PROFILE_ARN_CACHE`` keyed by :func:`_profile_cache_key`
+    (never the token itself) to save one RTS round-trip per refresh. Three
+    things are deliberately NOT cached: transient failures (network error,
+    non-200), a 200 with no profiles, and an anchored miss (expected ARN
+    absent from the list) — an empty or incomplete list can be post-login
+    propagation lag on an enterprise account, so pinning the miss would
+    strand that account on the text fallback until restart. All are re-probed
+    on the next refresh, and each candidate token is probed for its own
+    account (no cross-token reuse).
     """
-    key = hashlib.sha256(token.encode()).hexdigest()[:16]
+    key = _profile_cache_key(token, expected_arn)
     if key in _PROFILE_ARN_CACHE:
         return _PROFILE_ARN_CACHE[key]
     try:
@@ -616,15 +646,19 @@ def _list_profile_arn(token: str, *, endpoint: str | None = None) -> str | None:
         if not isinstance(p, dict):
             continue
         candidate = p.get("arn") or p.get("profileArn")
-        if candidate:
-            arn = candidate
-            # Human label for the signed-in account. Bounded like the plan name
-            # so a hostile/oversized value can't reach the cache/UI unbounded;
-            # only a non-empty string qualifies.
-            pname = p.get("profileName") or p.get("profileDisplayName")
-            if isinstance(pname, str) and pname:
-                name = pname[:100]
-            break
+        if not candidate:
+            continue
+        if expected_arn and candidate != expected_arn:
+            # Anchored mode: only the asked-about profile is an answer.
+            continue
+        arn = candidate
+        # Human label for the signed-in account. Bounded like the plan name
+        # so a hostile/oversized value can't reach the cache/UI unbounded;
+        # only a non-empty string qualifies.
+        pname = p.get("profileName") or p.get("profileDisplayName")
+        if isinstance(pname, str) and pname:
+            name = pname[:100]
+        break
     if arn is not None:
         _remember_profile(key, arn, name)
     return arn
@@ -648,14 +682,15 @@ def _remember_profile(key: str, arn: str, name: str | None) -> None:
     _PROFILE_NAME_CACHE[key] = name
 
 
-def _account_name(token: str) -> str | None:
+def _account_name(token: str, expected_arn: str | None = None) -> str | None:
     """Return the cached profile display name for ``token``, or None.
 
     Populated as a side effect of :func:`_list_profile_arn`; this getter never
     issues a request itself, so the ARN probe must have run first (it always
-    does in ``fetch_usage_limits``). Keyed by the same token digest (never the
-    token itself)."""
-    return _PROFILE_NAME_CACHE.get(hashlib.sha256(token.encode()).hexdigest()[:16])
+    does in ``fetch_usage_limits``), and ``expected_arn`` must be the same
+    anchor that probe was asked about. Keyed by :func:`_profile_cache_key`
+    (never the token itself)."""
+    return _PROFILE_NAME_CACHE.get(_profile_cache_key(token, expected_arn))
 
 
 def _bounded(value: object) -> float | None:
@@ -899,14 +934,18 @@ def fetch_usage_limits(expected_arn: str | None) -> dict | None:
                     "kiro-cli's own auth store"
                 )
                 continue
-            arn = _list_profile_arn(token, endpoint=endpoint)
+            arn = _list_profile_arn(token, expected_arn=expected_arn, endpoint=endpoint)
             if expected_arn and (not arn or arn != expected_arn):
-                # ARN-anchored mode: not provably the signed-in account. Skip
-                # WITHOUT calling GetUsageLimits. A null ``arn`` is rejected rather
-                # than compared, because None carries no identity — it is what a
-                # transient profile lookup returns AND what every profile-less
-                # account returns, so comparing it would match one account's
-                # leftover credential against a different one.
+                # ARN-anchored mode: the expected profile is genuinely absent
+                # from this token's own profile list (or the probe failed), so
+                # nothing proves the credential belongs to the signed-in
+                # account. Skip WITHOUT calling GetUsageLimits. The probe was
+                # asked about ``expected_arn`` and answers with that ARN or
+                # None; a null answer is rejected rather than compared, because
+                # None carries no identity — it is what a transient profile
+                # lookup returns AND what every profile-less account returns,
+                # so comparing it would match one account's leftover credential
+                # against a different one.
                 #
                 # ARNs are not secret, but they identify an account, so only the
                 # outcome is logged.
@@ -941,7 +980,7 @@ def fetch_usage_limits(expected_arn: str | None) -> dict | None:
                 # Tag the usage with WHO the plan belongs to (profile display
                 # name from the ListAvailableProfiles probe above). Absent for
                 # individual Builder ID accounts, which have no profile.
-                account = _account_name(token)
+                account = _account_name(token, expected_arn)
                 if account:
                     mapped["account"] = account
                 # Coupling metadata for the caller's identity check (private —
