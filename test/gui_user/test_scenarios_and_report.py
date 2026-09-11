@@ -17,24 +17,38 @@ SCENARIOS_DIR = Path(__file__).parent / "scenarios"
 # --------------------------------------------------------------------------
 
 
+SHIPPED_SMOKE = {
+    "auth-sign-in-card-signed-out",
+    "chat-switch-seeded-sessions",
+    "search-everywhere-open-schedule",
+    "sessions-new-chat",
+    "settings-search-jump-to-theme",
+    "settings-theme-toggle",
+    "sidebar-folders-and-older-sessions",
+}
+SHIPPED = SHIPPED_SMOKE | {"members-dm-hello"}
+
+
 class TestShippedScenarios:
     def test_every_shipped_scenario_loads(self) -> None:
         loaded = scenarios.load_all(SCENARIOS_DIR)
-        assert {s.name for s in loaded} == {
-            "settings-theme-toggle",
-            "sessions-new-chat",
-            "members-dm-hello",
-        }
+        assert {s.name for s in loaded} == SHIPPED
 
-    def test_pr_smoke_tier_is_the_cheap_pair(self) -> None:
+    def test_smoke_tier_is_the_short_core_paths(self) -> None:
         smoke = scenarios.select(scenarios.load_all(SCENARIOS_DIR), tier="smoke")
-        assert {s.name for s in smoke} == {"settings-theme-toggle", "sessions-new-chat"}
-        # The bill for a PR run is bounded by the smoke tier's own limits.
-        assert sum(s.max_steps for s in smoke) <= 30
+        assert {s.name for s in smoke} == SHIPPED_SMOKE
+        # A smoke scenario is a core path in a handful of actions; the tier's bill is
+        # bounded by the scenarios' own limits, which the nightly tier then inherits.
+        for s in smoke:
+            assert len(s.steps) <= 5, s.name
+            assert s.max_steps <= 14, s.name
+        assert sum(s.max_steps for s in smoke) <= 120
+        assert sum(s.max_seconds for s in smoke) <= 3000
 
     def test_nightly_includes_smoke(self) -> None:
         nightly = scenarios.select(scenarios.load_all(SCENARIOS_DIR), tier="nightly")
-        assert len(nightly) == 3
+        assert {s.name for s in nightly} == SHIPPED
+        assert SHIPPED_SMOKE < SHIPPED
 
     def test_explicit_name_selection(self) -> None:
         picked = scenarios.select(scenarios.load_all(SCENARIOS_DIR), names=["members-dm-hello"])
@@ -65,12 +79,15 @@ class TestShippedScenarios:
     def test_shipped_scenarios_group_by_feature(self) -> None:
         groups = scenarios.by_feature(scenarios.load_all(SCENARIOS_DIR))
         assert {slug: [s.name for s in g] for slug, g in groups.items()} == {
-            "chat": ["sessions-new-chat"],
+            "chat": ["chat-switch-seeded-sessions", "sessions-new-chat"],
+            "sidebar": ["sidebar-folders-and-older-sessions"],
+            "search": ["search-everywhere-open-schedule"],
             "members": ["members-dm-hello"],
-            "settings": ["settings-theme-toggle"],
+            "auth": ["auth-sign-in-card-signed-out"],
+            "settings": ["settings-search-jump-to-theme", "settings-theme-toggle"],
         }
         # FEATURES order, not alphabetical: chat is the product's primary surface.
-        assert list(groups) == ["chat", "members", "settings"]
+        assert list(groups) == ["chat", "sidebar", "search", "members", "auth", "settings"]
 
     def test_members_scenario_holds_across_the_crew_mode_retirement(self) -> None:
         """The Feature Previews card carries two titles across the Crew Mode retirement; the steps name both."""
@@ -416,7 +433,7 @@ class TestReport:
         md = report.render_features(catalog, _summary(), run_url="https://x/run")
         assert md.startswith("# GUI user-test feature catalog\n")
         assert (
-            f"_3 of {len(scenarios.FEATURES)} features covered · 3 scenarios (2 smoke / 1 nightly)._"
+            f"_6 of {len(scenarios.FEATURES)} features covered · 8 scenarios (7 smoke / 1 nightly)._"
             in md
         )
         assert (
@@ -444,7 +461,7 @@ class TestReport:
     def test_features_catalog_without_a_run(self) -> None:
         md = report.render_features(scenarios.load_all(SCENARIOS_DIR))
         assert "_No run attached" in md
-        assert md.count("▫️ not run") == 3 and "✅" not in md and "❌" not in md
+        assert md.count("▫️ not run") == len(SHIPPED) and "✅" not in md and "❌" not in md
 
     def test_neutralize_defangs_fences_mentions_and_control_chars(self) -> None:
         raw = "ok\n```\n@maintainer see <img src=x onerror=1>\x07\r~~~\n" + "z" * 50

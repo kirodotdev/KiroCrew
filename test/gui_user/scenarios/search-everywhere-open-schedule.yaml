@@ -1,0 +1,32 @@
+# Smoke: the one-box path to any page. The top bar carries a wide centre
+# trigger that opens the quick-search slot; on a fresh install the Command Bar
+# builtin owns that slot (it is enabled by default), so the trigger reads "Run a
+# command" and the surface lists commands, apps and settings without a network
+# request. Typing a page name and pressing Enter navigates. Ctrl+K (Cmd+K on
+# macOS) opens the same surface, but the harness key-chord allowlist in x11.py
+# does not admit it, so the scenario uses the visible trigger.
+name: search-everywhere-open-schedule
+tier: smoke
+feature: search
+user_story: >-
+  As a user, I want one search box that covers commands, apps, pages and
+  settings and takes me straight to what I typed, so that I can reach any part
+  of the dashboard without hunting through the sidebar.
+docs_url: docs/system-specs/modules/command-bar.md
+summary: Open the top-bar search trigger, type Schedule, press Enter and land on the Schedule page
+preconditions:
+  seed: rich
+  members: [nova-sky]
+  start_url: /chat
+steps:
+  - You are on the chat page. Look at the top bar. In its centre is a wide button that reads "Run a command" (or "⌘K — Search for anything…" if the plain search palette owns the slot -- either is fine). Click it once.
+  - A search box opens in the middle of the screen; its placeholder reads "Type a command…" (or "Search…" for the plain palette).
+  - Type exactly "Schedule" and wait a moment for the result list to filter.
+  - With a result named "Schedule" highlighted (press the Down arrow once if the first highlighted row is something else), press Enter.
+  - Wait a second for the page to change.
+expectations:
+  - The search box has closed.
+  - The main area now shows the Schedule page, with the heading "Schedule" and a List / Calendar / Executions switcher, and a table listing the job "daily rich fixture ping".
+  - The "Schedule" item is highlighted as active in the left rail.
+max_steps: 12
+max_seconds: 300
