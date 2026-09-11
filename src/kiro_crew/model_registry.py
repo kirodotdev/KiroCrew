@@ -44,6 +44,14 @@ logger = logging.getLogger(__name__)
 
 _REGISTRY_FILE = Path(__file__).resolve().parent / "model_registry.json"
 
+# Product-side concrete model-id shape used by the lesson writer. The trusted
+# workflow keeps its own literal copy so a PR cannot weaken the gate by changing
+# product code; a test pins the two spellings against silent drift.
+MODEL_ID_LITERAL_PATTERN = (
+    r"(claude-(opus|sonnet|haiku|fable)|"
+    r"opus-[0-9]|sonnet-[0-9]|haiku-[0-9]|fable-[0-9]|gpt-[0-9])"
+)
+
 # Hardcoded last-resort default so a corrupt/missing registry can't brick the
 # claude_code provider. _FALLBACK_CANONICAL is the canonical key default()
 # returns when the registry didn't load. _FALLBACK_PROVIDER_IDS maps every

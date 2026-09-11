@@ -15,12 +15,14 @@ stored nothing.
 
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from body_stream_helpers import attach_body
 
 from kiro_crew.history import ConversationLog
+from kiro_crew.model_registry import MODEL_ID_LITERAL_PATTERN
 from kiro_crew.vector_memory import (
     LessonWriteOutcome,
     LessonWriteResult,
@@ -42,6 +44,675 @@ def _rule_of(row) -> str:
 
     value = _json.loads(row["value_json"])
     return value["rule"] if isinstance(value, dict) else value
+
+
+class TestVolatileLessonWriteBoundary:
+    """Every vector lesson producer shares one volatile-fact boundary."""
+
+    VOLATILE_IDENTITY = "The current model identity is gpt-5.6-sol."
+
+    def test_consolidation_source_refuses_volatile_identity(self, tmp_path) -> None:
+        store = _store(tmp_path)
+        try:
+            result = store.write_lesson(
+                self.VOLATILE_IDENTITY,
+                "knowledge",
+                source="consolidation",
+            )
+
+            assert result.outcome is LessonWriteOutcome.REFUSED
+            assert result.reason == "volatile_session_fact"
+            assert store.get_lessons() == []
+        finally:
+            store.close()
+
+    def test_concrete_model_preference_is_refused_as_a_stale_pin(self, tmp_path) -> None:
+        store = _store(tmp_path)
+        try:
+            result = store.write_lesson(
+                "always use gpt-5.6-sol for cron summaries",
+                "preference",
+            )
+
+            assert result.outcome is LessonWriteOutcome.REFUSED
+            assert result.reason == "volatile_session_fact"
+        finally:
+            store.close()
+
+    def test_concrete_model_knowledge_fact_still_writes(self, tmp_path) -> None:
+        store = _store(tmp_path)
+        try:
+            result = store.write_lesson(
+                "the vision endpoint only accepts gpt-5.6-sol",
+                "knowledge",
+            )
+
+            assert result.outcome is LessonWriteOutcome.INSERTED
+            assert "gpt-5.6-sol" in store.get_lessons_context()
+        finally:
+            store.close()
+
+    @pytest.mark.parametrize(
+        "rule",
+        [
+            "the selected model is gpt-5.6-sol",
+            "the session model is gpt-5.6-sol",
+        ],
+    )
+    def test_selected_or_session_identity_is_refused_in_knowledge(
+        self, tmp_path, rule: str
+    ) -> None:
+        store = _store(tmp_path)
+        try:
+            result = store.write_lesson(rule, "knowledge")
+
+            assert result.outcome is LessonWriteOutcome.REFUSED
+            assert result.reason == "volatile_session_fact"
+        finally:
+            store.close()
+
+    def test_direct_running_as_identity_is_refused_in_knowledge(self, tmp_path) -> None:
+        store = _store(tmp_path)
+        try:
+            result = store.write_lesson(
+                "This session is running as gpt-5.6-sol",
+                "knowledge",
+            )
+
+            assert result.outcome is LessonWriteOutcome.REFUSED
+            assert result.reason == "volatile_session_fact"
+        finally:
+            store.close()
+
+    @pytest.mark.parametrize(
+        "rule",
+        [
+            "the Session model is persisted per tab",
+            "the selected model is the source of truth for login state",
+            "Use of gpt-5.6-sol requires the vision flag",
+        ],
+    )
+    def test_data_model_or_compatibility_fact_still_writes(self, tmp_path, rule: str) -> None:
+        store = _store(tmp_path)
+        try:
+            result = store.write_lesson(rule, "knowledge")
+
+            assert result.outcome is LessonWriteOutcome.INSERTED
+        finally:
+            store.close()
+
+    def test_behavioral_pin_cannot_bypass_through_knowledge(self, tmp_path) -> None:
+        store = _store(tmp_path)
+        try:
+            result = store.write_lesson(
+                "always use gpt-5.6-sol for cron summaries",
+                "knowledge",
+            )
+
+            assert result.outcome is LessonWriteOutcome.REFUSED
+            assert result.reason == "volatile_session_fact"
+        finally:
+            store.close()
+
+    def test_noninitial_behavioral_pin_cannot_bypass_through_knowledge(self, tmp_path) -> None:
+        store = _store(tmp_path)
+        try:
+            result = store.write_lesson(
+                "in cron jobs, always use gpt-5.6-sol",
+                "knowledge",
+            )
+
+            assert result.outcome is LessonWriteOutcome.REFUSED
+            assert result.reason == "volatile_session_fact"
+        finally:
+            store.close()
+
+    @pytest.mark.parametrize(
+        "rule",
+        [
+            "Compatibility varies. Select gpt-5.6-sol for reviews",
+            "Compatibility varies! Select gpt-5.6-sol for reviews",
+            "Compatibility varies? Select gpt-5.6-sol for reviews",
+            "Compatibility varies\nSelect gpt-5.6-sol for reviews",
+        ],
+    )
+    def test_sentence_boundary_behavioral_pin_cannot_bypass_through_knowledge(
+        self, tmp_path, rule: str
+    ) -> None:
+        store = _store(tmp_path)
+        try:
+            result = store.write_lesson(rule, "knowledge")
+
+            assert result.outcome is LessonWriteOutcome.REFUSED
+            assert result.reason == "volatile_session_fact"
+        finally:
+            store.close()
+
+    @pytest.mark.parametrize(
+        "rule",
+        [
+            "Please use gpt-5.6-sol for reviews",
+            "Kindly select gpt-5.6-sol for reviews",
+            "Do choose gpt-5.6-sol for reviews",
+            "Please do prefer gpt-5.6-sol for reviews",
+        ],
+    )
+    def test_prefixed_direct_imperative_cannot_bypass_through_knowledge(
+        self, tmp_path, rule: str
+    ) -> None:
+        store = _store(tmp_path)
+        try:
+            result = store.write_lesson(rule, "knowledge")
+
+            assert result.outcome is LessonWriteOutcome.REFUSED
+            assert result.reason == "volatile_session_fact"
+        finally:
+            store.close()
+
+    def test_descriptive_second_sentence_with_concrete_model_still_writes(self, tmp_path) -> None:
+        store = _store(tmp_path)
+        try:
+            result = store.write_lesson(
+                "Pricing changed. gpt-5.6-sol costs less than opus",
+                "knowledge",
+            )
+
+            assert result.outcome is LessonWriteOutcome.INSERTED
+        finally:
+            store.close()
+
+    def test_vector_context_hides_legacy_sentence_boundary_pin(self, tmp_path) -> None:
+        store = _store(tmp_path)
+        try:
+            assert (
+                store.set_semantic(
+                    "lesson.legacysentencepin",
+                    {
+                        "rule": "Compatibility varies. Select gpt-5.6-sol for reviews",
+                        "category": "knowledge",
+                        "negative": None,
+                    },
+                    1.0,
+                    "user_explicit",
+                )
+                is None
+            )
+            assert store.get_lessons(), "the legacy row must remain visible for deletion"
+
+            assert "gpt-5.6-sol" not in store.get_lessons_context()
+        finally:
+            store.close()
+
+    def test_jsonl_context_hides_legacy_sentence_boundary_pin(self, tmp_path) -> None:
+        import json as _json
+
+        from kiro_crew.learn import LessonStore
+
+        (tmp_path / "lessons.jsonl").write_text(
+            _json.dumps(
+                {
+                    "ts": "2026-09-11T00:00:00+00:00",
+                    "rule": "Compatibility varies. Select gpt-5.6-sol for reviews",
+                    "category": "knowledge",
+                    "negative": None,
+                    "repo_scope": None,
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        store = LessonStore(base_dir=tmp_path)
+        assert store.load_all(), "the legacy row must remain visible for deletion"
+
+        assert "gpt-5.6-sol" not in store.get_context()
+
+    def test_onboarding_reports_sentence_boundary_jsonl_directive_rejected(self, tmp_path) -> None:
+        from kiro_crew import onboarding_import
+        from kiro_crew.learn import LessonStore
+
+        item = onboarding_import._Item(
+            "codex",
+            "instructions",
+            "sentence-pin",
+            {"rule": "Compatibility varies. Select gpt-5.6-sol for reviews"},
+        )
+
+        outcome = onboarding_import._write_instruction(
+            item,
+            LessonStore(base_dir=tmp_path),
+        )
+
+        assert outcome.status == "rejected"
+
+    def test_active_model_operational_rule_still_writes(self, tmp_path) -> None:
+        store = _store(tmp_path)
+        try:
+            result = store.write_lesson(
+                "always confirm the active model supports the required context window",
+                "preference",
+            )
+
+            assert result.outcome is LessonWriteOutcome.INSERTED
+        finally:
+            store.close()
+
+    def test_volatile_negative_clause_is_refused(self, tmp_path) -> None:
+        store = _store(tmp_path)
+        try:
+            result = store.write_lesson(
+                "use automatic model selection",
+                "preference",
+                negative="use gpt-5.6-sol",
+            )
+
+            assert result.outcome is LessonWriteOutcome.REFUSED
+            assert result.reason == "volatile_session_fact"
+            assert store.get_lessons() == []
+        finally:
+            store.close()
+
+    def test_knowledge_negative_clause_cannot_carry_an_imperative_model_pin(self, tmp_path) -> None:
+        store = _store(tmp_path)
+        try:
+            result = store.write_lesson(
+                "automatic selection is safest",
+                "knowledge",
+                negative="Select gpt-5.6-sol for reviews",
+            )
+
+            assert result.outcome is LessonWriteOutcome.REFUSED
+            assert result.reason == "volatile_session_fact"
+            assert store.get_lessons() == []
+        finally:
+            store.close()
+
+    def test_automatic_jsonl_save_reports_refusal(self, tmp_path) -> None:
+        from kiro_crew.learn import Lesson, LessonStore
+
+        store = LessonStore(base_dir=tmp_path)
+        outcome = store.save(
+            Lesson(
+                ts="2026-09-11T00:00:00+00:00",
+                rule=self.VOLATILE_IDENTITY,
+                category="knowledge",
+            )
+        )
+
+        assert outcome == "refused"
+        assert store.load_all() == []
+
+    def test_vector_context_hides_preexisting_volatile_lesson(self, tmp_path) -> None:
+        store = _store(tmp_path)
+        try:
+            assert (
+                store.set_semantic(
+                    "lesson.legacyvolatile",
+                    {
+                        "rule": self.VOLATILE_IDENTITY,
+                        "category": "preference",
+                        "negative": None,
+                    },
+                    1.0,
+                    "user_explicit",
+                )
+                is None
+            )
+            assert store.get_lessons(), "the legacy row must remain visible for deletion"
+
+            assert "gpt-5.6-sol" not in store.get_lessons_context()
+        finally:
+            store.close()
+
+    def test_vector_context_hides_legacy_knowledge_negative_pin(self, tmp_path) -> None:
+        store = _store(tmp_path)
+        try:
+            assert (
+                store.set_semantic(
+                    "lesson.legacynegative",
+                    {
+                        "rule": "automatic selection is safest",
+                        "category": "knowledge",
+                        "negative": "Select gpt-5.6-sol for reviews",
+                    },
+                    1.0,
+                    "user_explicit",
+                )
+                is None
+            )
+            assert store.get_lessons(), "the legacy row must remain visible for deletion"
+
+            assert "gpt-5.6-sol" not in store.get_lessons_context()
+        finally:
+            store.close()
+
+    def test_vector_context_hides_key_confirmed_legacy_negative_pin(self, tmp_path) -> None:
+        from kiro_crew.vector_memory import _LESSON_NEGATIVE_SEP, _lesson_key
+
+        rule = "automatic selection is safest"
+        store = _store(tmp_path)
+        try:
+            assert (
+                store.set_semantic(
+                    _lesson_key(rule),
+                    f"{rule}{_LESSON_NEGATIVE_SEP}Select gpt-5.6-sol for reviews",
+                    1.0,
+                    "user_explicit",
+                )
+                is None
+            )
+            assert store.get_lessons(), "the legacy row must remain visible for deletion"
+
+            assert store.has_any_lesson() is False
+            assert "gpt-5.6-sol" not in store.get_lessons_context()
+        finally:
+            store.close()
+
+    def test_vector_context_keeps_key_confirmed_legacy_version_reference(self, tmp_path) -> None:
+        from kiro_crew.vector_memory import _LESSON_NEGATIVE_SEP, _lesson_key
+
+        rule = "check streaming compatibility before release"
+        negative = "assume gpt-5.6-sol supports the streaming flag"
+        store = _store(tmp_path)
+        try:
+            assert (
+                store.set_semantic(
+                    _lesson_key(rule),
+                    f"{rule}{_LESSON_NEGATIVE_SEP}{negative}",
+                    1.0,
+                    "user_explicit",
+                )
+                is None
+            )
+
+            assert store.has_any_lesson() is True
+            rendered = store.get_lessons_context()
+            assert rule in rendered
+            assert negative in rendered
+        finally:
+            store.close()
+
+    @pytest.mark.asyncio
+    async def test_lessons_api_marks_key_confirmed_legacy_negative_pin_withheld(
+        self, tmp_path
+    ) -> None:
+        import json as _json
+
+        from kiro_crew.dashboard.handlers import cron
+        from kiro_crew.vector_memory import _LESSON_NEGATIVE_SEP, _lesson_key
+
+        rule = "automatic selection is safest"
+        store = _store(tmp_path)
+        try:
+            assert (
+                store.set_semantic(
+                    _lesson_key(rule),
+                    f"{rule}{_LESSON_NEGATIVE_SEP}Select gpt-5.6-sol for reviews",
+                    1.0,
+                    "user_explicit",
+                )
+                is None
+            )
+            request = MagicMock()
+            state = MagicMock()
+            request.app = {"state": state}
+            request.headers = {"X-Session-Key": "dashboard:ui"}
+            request.query = {}
+            with (
+                patch.object(cron, "_blocks_reads_session", return_value=False),
+                patch.object(
+                    cron,
+                    "resolve_lesson_memory_store",
+                    new=AsyncMock(return_value=(None, None)),
+                ),
+                patch.object(
+                    cron,
+                    "_prepare_private_lesson_store",
+                    new=AsyncMock(return_value=None),
+                ),
+                patch.object(cron, "_get_memory", return_value=MagicMock(vector_store=store)),
+            ):
+                resp = await cron.api_lessons(request)
+
+            body = _json.loads(resp.text)
+            assert body["lessons"][0]["withheld_reason"] == "volatile_session_fact"
+        finally:
+            store.close()
+
+    def test_jsonl_context_hides_preexisting_volatile_lesson(self, tmp_path) -> None:
+        import json as _json
+
+        from kiro_crew.learn import LessonStore
+
+        (tmp_path / "lessons.jsonl").write_text(
+            _json.dumps(
+                {
+                    "ts": "2026-09-11T00:00:00+00:00",
+                    "rule": self.VOLATILE_IDENTITY,
+                    "category": "preference",
+                    "negative": None,
+                    "repo_scope": None,
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        store = LessonStore(base_dir=tmp_path)
+        assert store.load_all(), "the legacy row must remain visible for deletion"
+
+        assert "gpt-5.6-sol" not in store.get_context()
+
+    def test_jsonl_consolidation_does_not_count_a_refusal(self, tmp_path) -> None:
+        from kiro_crew.history import HistoryConsolidator
+        from kiro_crew.learn import LessonStore
+
+        store = LessonStore(base_dir=tmp_path)
+        consolidator = HistoryConsolidator(
+            log=MagicMock(),
+            memory=MagicMock(),
+            lesson_store=store,
+        )
+        with patch("kiro_crew.history_consolidation._HISTORY_LOGGER.info") as info:
+            consolidator._save_lessons([{"rule": self.VOLATILE_IDENTITY, "category": "knowledge"}])
+
+        assert store.load_all() == []
+        info.assert_not_called()
+
+    def test_onboarding_reports_volatile_jsonl_directive_rejected(self, tmp_path) -> None:
+        from kiro_crew import onboarding_import
+        from kiro_crew.learn import LessonStore
+
+        item = onboarding_import._Item(
+            "codex",
+            "instructions",
+            "volatile",
+            {"rule": self.VOLATILE_IDENTITY},
+        )
+
+        outcome = onboarding_import._write_instruction(
+            item,
+            LessonStore(base_dir=tmp_path),
+        )
+
+        assert outcome.status == "rejected"
+
+    def test_onboarding_reports_volatile_vector_directive_rejected(self, tmp_path) -> None:
+        from kiro_crew import onboarding_import
+        from kiro_crew.learn import LessonStore
+
+        vector_store = _store(tmp_path)
+        try:
+            item = onboarding_import._Item(
+                "codex",
+                "instructions",
+                "volatile",
+                {"rule": self.VOLATILE_IDENTITY},
+            )
+
+            outcome = onboarding_import._write_instruction(
+                item,
+                LessonStore(base_dir=tmp_path),
+                vector_store,
+            )
+
+            assert outcome.status == "rejected"
+            assert vector_store.get_lessons() == []
+        finally:
+            vector_store.close()
+
+    def test_durable_model_family_preference_still_writes(self, tmp_path) -> None:
+        store = _store(tmp_path)
+        try:
+            result = store.write_lesson(
+                "prefer the latest Claude Sonnet reviewer",
+                "preference",
+                source="consolidation",
+            )
+
+            assert result.outcome is LessonWriteOutcome.INSERTED
+            assert _rule_of(store.get_lessons()[0]) == "prefer the latest Claude Sonnet reviewer"
+        finally:
+            store.close()
+
+    def test_workflow_literal_regex_matches_the_product_guard(self) -> None:
+        workflow_path = Path(__file__).parents[1] / ".github" / "workflows" / "code-review.yml"
+        workflow = workflow_path.read_text(encoding="utf-8")
+        model_gate = workflow.split(
+            'echo "::group::model-selection — no hardcoded model id as a default/fallback"',
+            1,
+        )[1].split('echo "::endgroup::"', 1)[0]
+
+        assert MODEL_ID_LITERAL_PATTERN in model_gate
+        assert "from kiro_crew.model_registry" not in model_gate
+
+
+class TestDurableModelVersionReferences:
+    """A version literal alone is durable; identity claims and imperatives are not."""
+
+    RULE = "the Python 3.12 wheel needs claude-opus-4.8 pinned in role_models"
+    NEGATIVE = "assume gpt-5.6-sol supports the streaming flag"
+
+    @pytest.mark.parametrize(
+        "rule,category,negative",
+        [
+            (RULE, "tool", None),
+            ("check streaming compatibility before release", "preference", NEGATIVE),
+        ],
+    )
+    def test_learn_add_writes_durable_version_references(
+        self,
+        tmp_path: Path,
+        rule: str,
+        category: str,
+        negative: str | None,
+    ) -> None:
+        from kiro_crew.mcp_tools import learn
+
+        store = _store(tmp_path)
+
+        def _post(path: str, payload: dict[str, str]) -> dict[str, object]:
+            assert path == "/api/lessons"
+            result = store.write_lesson(
+                payload["rule"],
+                payload["category"],
+                payload.get("negative"),
+            )
+            return {
+                "ok": result.stored,
+                "outcome": result.outcome.value,
+                "reason": result.reason,
+                "superseded": list(result.superseded),
+            }
+
+        try:
+            args = {"rule": rule, "category": category}
+            if negative is not None:
+                args["negative"] = negative
+            with (
+                patch.object(learn.mcp_core, "_post", side_effect=_post),
+                patch.object(learn.mcp_core, "_resolve_session_key", return_value="dashboard:ui"),
+                patch.object(learn.mcp_core, "_vet_memory_writes_governance", return_value=None),
+            ):
+                text = learn.learn_add("learn_add", args)
+
+            assert text.startswith("Saved lesson")
+            assert store.has_any_lesson() is True
+            rendered = store.get_lessons_context()
+            assert rule in rendered
+            if negative is not None:
+                assert negative in rendered
+        finally:
+            store.close()
+
+    def test_consolidation_keeps_durable_version_references(self, tmp_path: Path) -> None:
+        from kiro_crew.history import HistoryConsolidator
+        from kiro_crew.learn import LessonStore
+
+        store = LessonStore(base_dir=tmp_path)
+        consolidator = HistoryConsolidator(
+            log=MagicMock(),
+            memory=MagicMock(),
+            lesson_store=store,
+        )
+
+        consolidator._save_lessons(
+            [
+                {"rule": self.RULE, "category": "tool"},
+                {
+                    "rule": "check streaming compatibility before release",
+                    "category": "preference",
+                    "negative": self.NEGATIVE,
+                },
+            ]
+        )
+
+        assert [lesson.rule for lesson in store.load_all()] == [
+            self.RULE,
+            "check streaming compatibility before release",
+        ]
+        context = store.get_context()
+        assert self.RULE in context
+        assert self.NEGATIVE in context
+
+    @pytest.mark.parametrize("use_vector_store", [False, True])
+    def test_onboarding_keeps_durable_version_reference(
+        self, tmp_path: Path, use_vector_store: bool
+    ) -> None:
+        from kiro_crew import onboarding_import
+        from kiro_crew.learn import LessonStore
+
+        jsonl_store = LessonStore(base_dir=tmp_path)
+        vector_store = _store(tmp_path) if use_vector_store else None
+        item = onboarding_import._Item(
+            "codex",
+            "instructions",
+            "durable-model-version",
+            {"rule": self.RULE},
+        )
+        try:
+            outcome = onboarding_import._write_instruction(
+                item,
+                jsonl_store,
+                vector_store,
+            )
+
+            assert outcome.status == "imported"
+            if vector_store is not None:
+                assert vector_store.has_any_lesson() is True
+                assert self.RULE in vector_store.get_lessons_context()
+            else:
+                assert self.RULE in jsonl_store.get_context()
+        finally:
+            if vector_store is not None:
+                vector_store.close()
+
+    def test_tool_description_states_the_narrow_boundary(self) -> None:
+        from kiro_crew.mcp_tools import learn
+
+        descriptor = next(item for item in learn.schemas() if item["name"] == "learn_add")
+        description = descriptor["description"]
+        assert "runtime identity assertions" in description
+        assert "model-selection imperatives" in description
+        assert "A model version mentioned by itself is allowed" in description
 
 
 class TestWriteLessonOutcomes:
@@ -359,14 +1030,21 @@ class TestCliLearnAddReportsTheOutcome:
 class TestLessonsRouteReportsTheOutcome:
     """The response names the outcome, not a bare ``{"ok": true}`` on every path."""
 
-    def _request(self):
+    def _request(
+        self,
+        rule: str = "a real rule",
+        negative: str | None = None,
+        category: str = "knowledge",
+    ):
         request = MagicMock()
         state = MagicMock()
         state.conversation_log = ConversationLog()
         state._background_tasks = set()
         request.app = {"state": state}
         request.headers = {"X-Session-Key": "dashboard:ui"}
-        body = {"rule": "a real rule", "category": "knowledge"}
+        body = {"rule": rule, "category": category}
+        if negative is not None:
+            body["negative"] = negative
         attach_body(request, body)
         return request, state
 
@@ -403,6 +1081,195 @@ class TestLessonsRouteReportsTheOutcome:
             "reason": "injection_blocked",
             "superseded": [],
         }
+
+    async def test_dashboard_post_refuses_volatile_identity(self, tmp_path) -> None:
+        from kiro_crew.dashboard.handlers import cron
+
+        request, state = self._request("The active model identity is gpt-5.6-sol.")
+        store = _store(tmp_path)
+        try:
+            with (
+                patch.object(cron, "_get_memory", return_value=MagicMock(vector_store=store)),
+                patch.object(cron, "_is_restricted_session", return_value=False),
+                patch.object(cron, "_sel"),
+            ):
+                resp = await cron.api_lessons_create(request)
+
+            import json as _json
+
+            body = _json.loads(resp.text)
+            assert body == {
+                "ok": False,
+                "outcome": "refused",
+                "reason": "volatile_session_fact",
+                "superseded": [],
+            }
+            assert store.get_lessons() == []
+            state.push_refresh.assert_called_once_with("lessons")
+        finally:
+            store.close()
+
+    async def test_jsonl_fallback_refuses_volatile_negative_clause(self, tmp_path) -> None:
+        import json as _json
+
+        from kiro_crew.dashboard.handlers import cron
+        from kiro_crew.learn import LessonStore
+
+        request, state = self._request(
+            "use automatic model selection",
+            negative="use gpt-5.6-sol",
+            category="preference",
+        )
+        store = LessonStore(base_dir=tmp_path)
+        state.lessons = store
+        with (
+            patch.object(cron, "_get_memory", return_value=MagicMock(vector_store=None)),
+            patch.object(cron, "_is_restricted_session", return_value=False),
+            patch.object(cron, "_sel"),
+        ):
+            resp = await cron.api_lessons_create(request)
+
+        assert _json.loads(resp.text) == {
+            "ok": False,
+            "outcome": "refused",
+            "reason": "volatile_session_fact",
+            "superseded": [],
+        }
+        assert store.load_all() == []
+        state.push_refresh.assert_called_once_with("lessons")
+
+    async def test_list_marks_legacy_volatile_jsonl_row_withheld(self, tmp_path) -> None:
+        import json as _json
+
+        from kiro_crew.dashboard.handlers import cron
+        from kiro_crew.learn import LessonStore
+
+        (tmp_path / "lessons.jsonl").write_text(
+            _json.dumps(
+                {
+                    "ts": "2026-09-11T00:00:00+00:00",
+                    "rule": "always use gpt-5.6-sol for cron summaries",
+                    "category": "preference",
+                    "negative": None,
+                    "repo_scope": None,
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        request = MagicMock()
+        state = MagicMock()
+        state.lessons = LessonStore(base_dir=tmp_path)
+        request.app = {"state": state}
+        request.headers = {"X-Session-Key": "dashboard:ui"}
+        request.query = {}
+        with (
+            patch.object(cron, "_blocks_reads_session", return_value=False),
+            patch.object(
+                cron,
+                "resolve_lesson_memory_store",
+                new=AsyncMock(return_value=(None, None)),
+            ),
+            patch.object(
+                cron,
+                "_prepare_private_lesson_store",
+                new=AsyncMock(return_value=None),
+            ),
+            patch.object(cron, "_get_memory", return_value=MagicMock(vector_store=None)),
+            patch.object(cron, "_get_active_workspace", return_value="default"),
+        ):
+            resp = await cron.api_lessons(request)
+
+        body = _json.loads(resp.text)
+        assert body["lessons"][0]["withheld_reason"] == "volatile_session_fact"
+
+    async def test_list_marks_legacy_string_vector_row_withheld(self, tmp_path) -> None:
+        import json as _json
+
+        from kiro_crew.dashboard.handlers import cron
+
+        store = _store(tmp_path)
+        try:
+            assert (
+                store.set_semantic(
+                    "lesson.legacystring",
+                    "For reviews, use claude-opus-4.6",
+                    1.0,
+                    "user_explicit",
+                )
+                is None
+            )
+            request = MagicMock()
+            state = MagicMock()
+            request.app = {"state": state}
+            request.headers = {"X-Session-Key": "dashboard:ui"}
+            request.query = {}
+            with (
+                patch.object(cron, "_blocks_reads_session", return_value=False),
+                patch.object(
+                    cron,
+                    "resolve_lesson_memory_store",
+                    new=AsyncMock(return_value=(None, None)),
+                ),
+                patch.object(
+                    cron,
+                    "_prepare_private_lesson_store",
+                    new=AsyncMock(return_value=None),
+                ),
+                patch.object(cron, "_get_memory", return_value=MagicMock(vector_store=store)),
+            ):
+                resp = await cron.api_lessons(request)
+
+            body = _json.loads(resp.text)
+            assert body["lessons"][0]["withheld_reason"] == "volatile_session_fact"
+        finally:
+            store.close()
+
+    async def test_list_marks_legacy_mapping_negative_pin_withheld(self, tmp_path) -> None:
+        import json as _json
+
+        from kiro_crew.dashboard.handlers import cron
+
+        store = _store(tmp_path)
+        try:
+            assert (
+                store.set_semantic(
+                    "lesson.legacynegative",
+                    {
+                        "rule": "automatic selection is safest",
+                        "category": "knowledge",
+                        "negative": "Select gpt-5.6-sol for reviews",
+                    },
+                    1.0,
+                    "user_explicit",
+                )
+                is None
+            )
+            request = MagicMock()
+            state = MagicMock()
+            request.app = {"state": state}
+            request.headers = {"X-Session-Key": "dashboard:ui"}
+            request.query = {}
+            with (
+                patch.object(cron, "_blocks_reads_session", return_value=False),
+                patch.object(
+                    cron,
+                    "resolve_lesson_memory_store",
+                    new=AsyncMock(return_value=(None, None)),
+                ),
+                patch.object(
+                    cron,
+                    "_prepare_private_lesson_store",
+                    new=AsyncMock(return_value=None),
+                ),
+                patch.object(cron, "_get_memory", return_value=MagicMock(vector_store=store)),
+            ):
+                resp = await cron.api_lessons(request)
+
+            body = _json.loads(resp.text)
+            assert body["lessons"][0]["withheld_reason"] == "volatile_session_fact"
+        finally:
+            store.close()
 
     async def test_no_op_stays_ok_but_names_the_outcome(self):
         resp, state = await self._post(LessonWriteResult(LessonWriteOutcome.UNCHANGED))
@@ -464,6 +1331,93 @@ class TestLessonsRouteReportsTheOutcome:
             "reason": None,
             "superseded": [],
         }
+
+
+class TestLearnAddVolatileSessionFactBoundary:
+    """``learn_add`` must not turn one session's runtime identity into policy."""
+
+    @staticmethod
+    def _call(rule: str, response: dict | None = None):
+        from kiro_crew.mcp_tools import learn
+
+        with (
+            patch.object(learn.mcp_core, "_post", return_value=response or {"ok": True}) as post,
+            patch.object(learn.mcp_core, "_resolve_session_key", return_value="dashboard:ui"),
+            patch.object(learn.mcp_core, "_vet_memory_writes_governance", return_value=None),
+        ):
+            text = learn.learn_add("learn_add", {"rule": rule, "category": "preference"})
+        return text, post
+
+    @pytest.mark.parametrize(
+        "rule",
+        [
+            ("The current model identity shown by runtime/system context is " "gpt-5.6-sol."),
+            "The current model is selected by this session.",
+            "The active model identity changes per tab.",
+            "This session is running as the model chosen by the runtime.",
+        ],
+    )
+    def test_volatile_session_identity_is_rejected_by_the_shared_writer(self, rule: str) -> None:
+        text, post = self._call(
+            rule,
+            {
+                "ok": False,
+                "outcome": "refused",
+                "reason": "volatile_session_fact",
+                "superseded": [],
+            },
+        )
+
+        assert text.startswith("Error: volatile_session_fact:")
+        assert "NOT saved" in text
+        assert "reusable behavioral rule" in text
+        assert "agent.role_models.<role>" in text
+        assert "config" in text
+        post.assert_called_once_with(
+            "/api/lessons",
+            {"rule": rule, "category": "preference", "scope": "global"},
+        )
+
+    def test_cross_model_reviewer_preference_still_persists(self) -> None:
+        rule = "for cross-model review prefer the latest Claude Sonnet reviewer"
+        text, post = self._call(rule)
+
+        assert text == f"Saved lesson: {rule}"
+        post.assert_called_once_with(
+            "/api/lessons",
+            {"rule": rule, "category": "preference", "scope": "global"},
+        )
+
+    def test_descriptor_warns_before_the_model_calls_the_tool(self) -> None:
+        from kiro_crew.mcp_tools import learn
+
+        descriptor = next(item for item in learn.schemas() if item["name"] == "learn_add")
+        description = descriptor["description"]
+        assert "unrelated future sessions" in description
+        assert "active model identity" in description
+        assert "volatile" in description
+
+
+class TestLearnListWithheldRows:
+    def test_withheld_reason_is_visible(self) -> None:
+        from kiro_crew.mcp_tools import learn
+
+        with patch.object(
+            learn.mcp_core,
+            "_get",
+            return_value={
+                "lessons": [
+                    {
+                        "rule": "always use gpt-5.6-sol for cron summaries",
+                        "category": "preference",
+                        "withheld_reason": "volatile_session_fact",
+                    }
+                ]
+            },
+        ):
+            text = learn.learn_list("learn_list", {})
+
+        assert "WITHHELD: volatile_session_fact" in text
 
 
 class TestLearnAddToolReportsTheOutcome:

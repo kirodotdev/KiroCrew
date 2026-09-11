@@ -47,6 +47,7 @@ from kiro_crew.dashboard.state import DashboardState, SlotOrigin
 from kiro_crew.executors import discovery_executor
 from kiro_crew.history import is_incognito_transcript
 from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes_nolink
+from kiro_crew.lesson_validation import contains_volatile_lesson_fact
 from kiro_crew.llm_helpers import run_bg_oneliner
 from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.messaging.link import is_channel_session_key
@@ -2422,17 +2423,14 @@ async def api_lessons_create(request: web.Request) -> web.Response:
         # Off the loop because it reads the file and rewrites it whole -- the
         # same reason dashboard/ws.py offloads load_all.
         #
-        # This store answers with the same three words the vector store's outcome uses
-        # (inserted / enriched / unchanged) and validates no content, so it has no
-        # refusing outcome to report. Its value is echoed as-is: every arm of
-        # ``_lesson_jsonl_store`` answers with a real ``LessonStore``, and its
-        # ``save_or_enrich`` is annotated ``-> str`` with three string-literal returns,
-        # so there is nothing here for a filter to catch. ``test_lesson_write_outcome`` pins
-        # LessonWriteOutcome's wire values against those three words, so the two
-        # stores cannot drift apart in silence.
+        # Every arm of _lesson_jsonl_store shares the vector store's volatile-text
+        # predicate and otherwise answers with its original three outcomes.
+        # ``refused`` means neither field was persisted; this is the one content
+        # refusal the fallback owns, and its string outcome matches
+        # LessonWriteOutcome on the wire.
         outcome = await asyncio.to_thread(store.save_or_enrich, lesson)
-        reason = None
-        stored = True
+        reason = "volatile_session_fact" if outcome == "refused" else None
+        stored = outcome != "refused"
         # A genuine empty, not an unfilled field. ``_insert_or_enrich`` has no dedup
         # rule that supersedes: it matches on exact rule text plus scope and either
         # attaches a clause or reports ``unchanged``, appending every other record
@@ -2821,7 +2819,12 @@ async def api_lessons(request: web.Request) -> web.Response:
         return web.json_response({"lessons": []})
     workspace = request.query.get("workspace")
 
-    def _safe_lesson(rule: object, category: object, ts: object) -> dict:
+    def _safe_lesson(
+        rule: object,
+        category: object,
+        ts: object,
+        negative: object = None,
+    ) -> dict:
         """One sanitization chokepoint for every branch of this endpoint.
 
         Lesson rows can carry consolidation (LLM) or import output: normalize
@@ -2835,9 +2838,13 @@ async def api_lessons(request: web.Request) -> web.Response:
         """
         if not isinstance(rule, str):
             rule = str(rule)
+        normalized_category = normalize_lesson_category(category, strict=False)
         safe_rule = _redact_memory_field(rule)
-        safe_category = _redact_memory_field(normalize_lesson_category(category, strict=False))
-        return {"rule": safe_rule, "category": safe_category, "ts": ts}
+        safe_category = _redact_memory_field(normalized_category)
+        result = {"rule": safe_rule, "category": safe_category, "ts": ts}
+        if contains_volatile_lesson_fact(rule, negative):
+            result["withheld_reason"] = "volatile_session_fact"
+        return result
 
     # Read from vector store if it has lessons, else JSONL
     # THE CALLER'S silo, not the global store. This is the agent's only durable
@@ -2863,7 +2870,7 @@ async def api_lessons(request: web.Request) -> web.Response:
         # Deferred import: ``vector_memory`` pulls snowballstemmer plus the
         # optional numpy/faiss imports, and this helper is the handler's only
         # use of it, on one dashboard read path.
-        from kiro_crew.vector_memory import _lesson_display_text
+        from kiro_crew.vector_memory import _lesson_display_text, _lesson_fields_for_row
 
         data = []
         for e in vs_lessons[-50:]:
@@ -2879,8 +2886,10 @@ async def api_lessons(request: web.Request) -> web.Response:
             # substring, and this list is the only surface that can show it. The
             # memory graph applies the same policy for the same reason.
             rule = _lesson_display_text(decoded) or str(decoded)
+            fields = _lesson_fields_for_row(decoded, e["key"])
+            negative = fields[1] if fields is not None else None
             raw_category = decoded.get("category") if isinstance(decoded, dict) else None
-            data.append(_safe_lesson(rule, raw_category, e.get("updated_at", "")))
+            data.append(_safe_lesson(rule, raw_category, e.get("updated_at", ""), negative))
     else:
         # The JSONL tier of the store this caller is BOUND to, which for a silo is its
         # own file and never the operator's -- an empty silo answers "no lessons", not
@@ -2896,7 +2905,7 @@ async def api_lessons(request: web.Request) -> web.Response:
                 for le in ws_lessons:
                     if le.rule.lower().strip() not in seen:
                         rows.append(le)
-        data = [_safe_lesson(le.rule, le.category, le.ts) for le in rows[-50:]]
+        data = [_safe_lesson(le.rule, le.category, le.ts, le.negative) for le in rows[-50:]]
     return web.json_response({"lessons": data})
 
 

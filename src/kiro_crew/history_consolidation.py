@@ -1526,7 +1526,7 @@ class HistoryConsolidator:
         count = 0
         for item in raw:
             if isinstance(item, dict) and item.get("rule"):
-                lesson_store.save(
+                outcome = lesson_store.save(
                     Lesson(
                         ts=datetime.now(tz=_tz.utc).isoformat(),
                         rule=item["rule"],
@@ -1534,7 +1534,8 @@ class HistoryConsolidator:
                         negative=item.get("negative"),
                     )
                 )
-                count += 1
+                if outcome != "refused":
+                    count += 1
         if count:
             self._logger.info("Extracted %d lesson(s) from chat", count)
 
