@@ -283,6 +283,14 @@ _OAUTH_AUTHORIZATION_ENDPOINTS: frozenset[tuple[str, str]] = frozenset(
         # MCP authorization server here too.
         ("access.stripe.com", "/mcp/oauth2/authorize"),
         ("gitlab.com", "/oauth/authorize"),
+        # Atlassian's MCP authorization server (host mcp.atlassian.com, distinct
+        # from the classic web-OAuth auth.atlassian.com/authorize above),
+        # advertised via RFC 8414 metadata reached by RFC 9728 discovery from
+        # the registry's mcp_url on mcp.atlassian.com and corroborated by an
+        # authorize URL kiro-cli actually minted. Without this pair the
+        # fail-closed banner blocks every attempt to connect the Atlassian
+        # remote MCP server.
+        ("mcp.atlassian.com", "/v1/authorize"),
         ("mcp.auth.mail.superhuman.com", "/oauth2/authorize"),
         ("mcp.linear.app", "/authorize"),
         # Miro's authorization_endpoint per its RFC 8414 metadata at

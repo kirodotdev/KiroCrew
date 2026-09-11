@@ -169,6 +169,23 @@ LEGIT_OAUTH_URLS: list[tuple[str, str]] = [
         "&code_challenge_method=S256"
         "&state=" + ("Kp7mQ2xR" * 12),  # 96-char opaque state
     ),
+    # Atlassian remote MCP server — authorization endpoint (host
+    # mcp.atlassian.com, distinct from the classic auth.atlassian.com web-OAuth
+    # entry above) verified via RFC 8414 metadata reached by RFC 9728 discovery
+    # from the registry's mcp_url on mcp.atlassian.com. The state/PKCE
+    # values kiro-cli mints are high-entropy, which is what tripped the gate
+    # before the endpoint was added to the builtin set.
+    (
+        "atlassian-mcp",
+        "https://mcp.atlassian.com/v1/authorize"
+        "?client_id=atlassian_mcp_0123456789abcdef"
+        "&response_type=code"
+        "&redirect_uri=http%3A%2F%2F127.0.0.1%3A33418%2Fcallback"
+        "&scope=read%3Ajira-work+offline_access"
+        "&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+        "&code_challenge_method=S256"
+        "&state=" + ("Kp7mQ2xR" * 12),  # 96-char opaque state
+    ),
     # Miro remote MCP server — authorization endpoint verified via RFC 8414
     # metadata.
     (
