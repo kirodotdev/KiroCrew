@@ -3380,7 +3380,8 @@ class _ChatSlot:
         "_frozen_prefix_cache",
         "_pending_rewrite",
         "_file_changes",
-        "linked_session_key",
+        "_linked_session_key",
+        "_refused_linked_session_key",
         # Remote-execution binding: this slot lives in the LOCAL list and local
         # history, but its turns run on a connected peer crew. See
         # ``dashboard/remote_relay.py``.
@@ -4004,7 +4005,12 @@ class _ChatSlot:
         self._file_changes: list[dict[str, str]] = (
             []
         )  # [{path, content}] before-snapshots accumulated per turn for file-chip diffs
-        self.linked_session_key: str = ""  # when set, _run_chat uses this as session key
+        self._linked_session_key: str = ""  # when set, _run_chat uses this as session key
+        # A refused app-slot binding is not routing authority, but forgetting it
+        # would make authorization treat the attempted rebind as if it never
+        # happened. Keep it separately so downstream gates and stamped-note
+        # checks fail closed without exposing the foreign session to a turn.
+        self._refused_linked_session_key: str = ""
         # Where the turn CURRENTLY in flight actually started, as opposed to
         # where the slot would route a new one. The two diverge whenever the
         # routing above is reassigned on a live slot — a cron injection binds an
@@ -4163,6 +4169,65 @@ class _ChatSlot:
             # impossible and a missed bump can only cause an extra (harmless)
             # flush, never a skipped one.
             self._dirty_gen += 1
+
+    @property
+    def linked_session_key(self) -> str:
+        """The session this slot's conversation actually runs on, if any.
+
+        A binding is authority: app routes authorize against ``_app`` and then
+        address ``effective_session_key(slot)``. Slot ownership does not imply
+        ownership of a channel or cron session, so an app-owned slot may not
+        carry a binding.
+
+        Keep the rule at the attribute boundary because bindings are assigned
+        by the slot factory, restore paths, and background injectors. This also
+        disarms app-owned rows persisted by an older vulnerable build when
+        those rows are restored after an upgrade.
+        """
+        return self._linked_session_key
+
+    @linked_session_key.setter
+    def linked_session_key(self, value: str) -> None:
+        if value and getattr(self, "_app", ""):
+            # Refuse without raising: one poisoned legacy tab must not abort an
+            # otherwise healthy restore. The app keeps its own dashboard
+            # conversation and loses only authority it was never granted.
+            logger.warning(
+                "refusing session binding on app-scoped slot %r (app=%r)",
+                getattr(self, "key", ""),
+                self._app,
+            )
+            try:
+                sel().log_api_access(
+                    caller=self._app,
+                    operation="slot_session_bind",
+                    outcome="denied",
+                    source="app_isolation",
+                    resources=f"slot={getattr(self, 'key', '')}",
+                    error="app-scoped slots cannot carry a linked session binding",
+                )
+            except Exception:  # noqa: BLE001
+                # The audit is best-effort; the refusal itself is the control.
+                logger.debug("SEL write for a refused slot binding failed", exc_info=True)
+            # Preserve the denied claim separately from the live route. If it
+            # vanished into the empty-string fallback, downstream app gates
+            # would authorize reset/note/context against the dashboard session
+            # and already-stamped note content would survive the rebind attempt.
+            self._refused_linked_session_key = value
+            return
+        self._refused_linked_session_key = ""
+        self._linked_session_key = value
+
+    @property
+    def linked_session_claim(self) -> str:
+        """The accepted or refused binding relevant to authorization.
+
+        This value must never be used for routing or persistence. A refused
+        binding is retained only so a later operation cannot reinterpret the
+        slot as safely unbound, and so content stamped before a rebind attempt
+        is discarded at its late delivery seams.
+        """
+        return self._refused_linked_session_key or self._linked_session_key
 
     @property
     def _plan_stage_count(self) -> int:
@@ -6494,6 +6559,11 @@ class DashboardState:
         reads the persisted link off the slot's effective session key, so a
         binding applied later would hydrate against the wrong key and leave a
         channel-born tab looking unlinked.
+
+        A channel-shaped *name* also resolves a binding for an unscoped caller.
+        An app-owned slot takes no binding through either route; the
+        :attr:`_ChatSlot.linked_session_key` property enforces that invariant
+        across explicit assignment and legacy restore as well.
         """
         existing, creation = _registry_for(self).prepare_creation(
             self,
@@ -6585,7 +6655,7 @@ class DashboardState:
             slot.channel_origin = True
         if linked_session_key:
             slot.linked_session_key = linked_session_key
-        elif self.sessions:
+        elif self.sessions and not app:
             # No caller-supplied binding, but a channel-stem name means this slot
             # displays a conversation that runs on the channel's own session.
             # Resolving it HERE rather than in each caller is what makes the
@@ -6599,6 +6669,10 @@ class DashboardState:
             # only a real channel key may become a binding, so a malformed map
             # answer leaves the slot unbound (a supported state) rather than
             # routing the user's replies to a session no channel reads.
+            #
+            # Skip inference for an app-owned slot. The property above is the
+            # security boundary; this guard avoids a session-map lookup and an
+            # expected refusal for the common app creation path.
             if is_channel_session_key(name):
                 resolved = self.sessions.channel_key_for_stem(name)
                 if isinstance(resolved, str) and is_channel_session_key(resolved):
