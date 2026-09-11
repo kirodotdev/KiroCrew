@@ -3870,7 +3870,7 @@ def _external_registry_row(name: str) -> dict[str, Any] | None:
     attached here at the lookup boundary so a stale cache cannot omit it.
     """
     for reg in _effective_registries():
-        cache_name = reg.name or reg.repo
+        cache_name = _external_registry_cache_identity(reg)
         public_name = _public_registry_name(reg)
         cached = _read_external_registry_cache(cache_name, ignore_ttl=True)
         if cached:
