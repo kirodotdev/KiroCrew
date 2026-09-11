@@ -29,6 +29,7 @@ while the code holding credentials is not. `pr-readiness.yml` does not read this
 | `test/gui_user/x11.py` | Screenshots (Pillow `ImageGrab`) and input (`xdotool`); coordinate scaling, key aliases and argv building are pure and unit-tested. |
 | `test/gui_user/scenarios.py` + `scenarios/*.yaml` | The scenario DSL (including the `FEATURES` registry) and the shipped scenarios. |
 | `test/gui_user/report.py` | Renders `summary.json` into `verdict.md`, the PR comment and the nightly issue, all grouped by feature; renders `features.md` from the scenario directory. |
+| [`test/gui_user/FEATURES.md`](../../test/gui_user/FEATURES.md) + `features.json` | The scenario backlog: every user-visible feature as one record (feature slug, user story, start URL, seed, runnable tier, priority). `features.json` is the source of truth; `FEATURES.md` is rendered from it by `features_catalog.py` (`--write` / `--check`), which also validates every record and refuses cross-slug duplicates. |
 
 The unit tests under `test/gui_user/` run in the ordinary Backend Tests shards; they
 need no display and never call Bedrock.
@@ -125,13 +126,17 @@ scenario yet. The workflow uploads `results/features.md` with the artifact and a
 it to the run's step summary, so "what does the product do, and is it healthy" is
 answered from any run page without opening the YAML.
 
-- `feature` is a slug from the closed registry `scenarios.FEATURES` (`chat`, `sidebar`,
-  `members`, `settings`, `apps`, `schedule`, `knowledge`, `artifacts`, `files`,
-  `browser-panel`, `voice`, `notifications`, `onboarding`, `search`, `developer`). A closed
-  list, not a free-form slug, so a typo cannot split one feature into two report groups.
-  To add a product area, add `slug: "Human title"` to `FEATURES` in the order you want
-  it reported and mention it in the list above; a scenario naming an unknown feature
-  is rejected at load time.
+- `feature` is a slug from the closed registry `scenarios.FEATURES`, one per product
+  area, in report order: `chat`, `side-panel`, `terminal`, `sidebar`, `navigation`,
+  `topbar`, `search`, `members`, `capabilities`, `connections`, `memory`, `knowledge`,
+  `artifacts`, `files`, `browser-panel`, `apps`, `task-runner`, `worlds`, `dev-fleet`,
+  `schedule`, `api`, `webhooks`, `channels`, `voice`, `notifications`, `computer-use`,
+  `instances`, `remote-instances`, `popout`, `auth`, `onboarding`, `settings`, `themes`,
+  `security`, `developer`. A closed list, not a free-form slug, so a typo cannot split
+  one feature into two report groups. To add a product area, add `slug: "Human title"`
+  to `FEATURES` in the order you want it reported, mirror it in
+  `features_catalog.FEATURE_TITLES` (a unit test holds the two equal) and mention it in
+  the list above; a scenario naming an unknown feature is rejected at load time.
 - `user_story` is one sentence of at most 300 characters, in the user's voice: `As a
   <who>, I want <what>, so that <why>`, or a plain use case when the persona adds
   nothing. Say what the user is trying to achieve, not which control they press --
