@@ -5255,6 +5255,17 @@
     "viewPr": "Pull request"
   },
   "components": {
+    "pendingDecisionCard": {
+      "add_to_message_box": "Ajouter à la zone de message",
+      "add_to_message_box_hint": "Place les options choisies dans la zone de message sans envoyer.",
+      "asked_ago": "demandé {{time}}",
+      "dismiss": "Ignorer",
+      "dismiss_failed": "Impossible d’ignorer cette décision. Réessayez.",
+      "dismiss_hint": "Masquer sans répondre. La décision reste dans la discussion et la boucle continue.",
+      "submit": "Envoyer",
+      "submit_n_answers": "Envoyer {{count}} réponses",
+      "waiting_on_you": "En attente de vous"
+    },
     "voicePlaybackNotice": {
       "failed": "« {{speak}} » a échoué. Vérifie les paramètres de synthèse vocale et réessaie.",
       "blocked": "Le navigateur a bloqué la lecture automatique. Ouvre « {{moreActions}} » sous la réponse terminée, puis sélectionne « {{speak}} ».",
@@ -10228,6 +10239,7 @@
       "new_chat": "Nouveau chat",
       "new_chat_in_folder": "Nouveau chat dans le dossier",
       "new_chat_on_crew": "Nouveau chat sur un Crew",
+      "pending_your_response": "En attente de votre réponse",
       "runs_on_crew": "S'exécute sur {{name}} — un Crew connecté, pas sur cette machine",
       "new_chat_in_name": "Nouveau chat dans {{name}}",
       "new_chat_session": "Nouvelle session de chat",

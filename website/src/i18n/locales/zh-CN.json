@@ -5077,6 +5077,17 @@
     "viewPr": "拉取请求"
   },
   "components": {
+    "pendingDecisionCard": {
+      "add_to_message_box": "添加到消息框",
+      "add_to_message_box_hint": "把选中的选项放入消息框，但不发送。",
+      "asked_ago": "{{time}}提问",
+      "dismiss": "忽略",
+      "dismiss_failed": "无法忽略此决定。请重试。",
+      "dismiss_hint": "不作答直接隐藏。该决定仍留在聊天中，循环继续运行。",
+      "submit": "提交",
+      "submit_n_answers": "提交 {{count}} 个回答",
+      "waiting_on_you": "等待你决定"
+    },
     "voicePlaybackNotice": {
       "failed": "{{speak}}失败。请检查文字转语音设置后重试。",
       "blocked": "浏览器阻止了自动播放。回复完成后，打开回复下方的“{{moreActions}}”，然后选择“{{speak}}”。",
@@ -9934,6 +9945,7 @@
       "new_chat": "新建对话",
       "new_chat_in_folder": "在文件夹中新建聊天",
       "new_chat_on_crew": "在 Crew 上新建聊天",
+      "pending_your_response": "等待你的回复",
       "runs_on_crew": "在 {{name}} 上运行 —— 一个已连接的 Crew，而非本机",
       "new_chat_in_name": "在 {{name}} 中新建聊天",
       "new_chat_session": "新建聊天会话",

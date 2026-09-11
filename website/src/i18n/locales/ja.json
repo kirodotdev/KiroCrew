@@ -5077,6 +5077,17 @@
     "viewPr": "プルリクエスト"
   },
   "components": {
+    "pendingDecisionCard": {
+      "add_to_message_box": "メッセージ欄に追加",
+      "add_to_message_box_hint": "選んだ選択肢を送信せずにメッセージ欄に入れます。",
+      "asked_ago": "{{time}}に質問",
+      "dismiss": "閉じる",
+      "dismiss_failed": "この決定を閉じられませんでした。もう一度お試しください。",
+      "dismiss_hint": "回答せずに隠します。決定はチャットに残り、ループは動き続けます。",
+      "submit": "送信",
+      "submit_n_answers": "{{count}}件の回答を送信",
+      "waiting_on_you": "あなたの対応待ち"
+    },
     "voicePlaybackNotice": {
       "failed": "「{{speak}}」に失敗しました。テキスト音声変換の設定を確認して、もう一度お試しください。",
       "blocked": "ブラウザーが自動再生をブロックしました。完了した返信の下にある「{{moreActions}}」を開き、「{{speak}}」を選択してください。",
@@ -9934,6 +9945,7 @@
       "new_chat": "新しいチャット",
       "new_chat_in_folder": "フォルダー内に新しいチャット",
       "new_chat_on_crew": "Crew で新しいチャット",
+      "pending_your_response": "あなたの回答待ち",
       "runs_on_crew": "{{name}} 上で実行 — 接続済みの Crew であり、このマシンではありません",
       "new_chat_in_name": "「{{name}}」で新しいチャットを開始",
       "new_chat_session": "新しいチャットセッション",

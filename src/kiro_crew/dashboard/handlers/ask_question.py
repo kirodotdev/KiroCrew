@@ -24,6 +24,13 @@ below.
 ``POST /api/ask-question/dismiss``
     Retires a STATELESS card's pending state. It cannot resolve a blocking wait.
 
+``POST /api/pending-decision/dismiss``
+    Silences a buried [OPTIONS:] decision (``pending_decision`` on the slot
+    payload) without answering it. The sibling of the stateless-card dismiss:
+    same ownership rules, same "name the exact thing you are dismissing"
+    contract, but the record is derived from the transcript rather than stored,
+    so the dismissal writes a tombstone naming the options row's ``ts``.
+
 The blocking half mirrors the tool-approval round-trip in
 :meth:`kiro_crew.dashboard.state.DashboardState.request_approval` — the
 difference is that the resolution value is the user's answer map rather than an
@@ -355,6 +362,53 @@ async def api_ask_question_dismiss(request: web.Request) -> web.Response:
             {
                 "error": "no pending question card for that slot and card_id",
                 "code": "question_card_not_found",
+            },
+            status=404,
+        )
+    return web.json_response({"ok": True})
+
+
+async def api_pending_decision_dismiss(request: web.Request) -> web.Response:
+    """POST /api/pending-decision/dismiss — silence a buried [OPTIONS:] decision.
+
+    Body: ``{slot, ts}`` — the slot key and the ``ts`` the slot payload's
+    ``pending_decision`` carries, which names the options-bearing assistant row
+    being waved away. ``ts`` is required for the same reason the card dismiss
+    requires ``card_id``: the decision can be superseded by a newer options turn
+    before this lands, and a slot-only dismissal would silence the NEW decision
+    unseen. A dismissal is not an answer — answering happens through the
+    ordinary composer send, which as a ``user`` row retires the derivation by
+    itself.
+
+    Owner-only on the same grounds as the question-card dismiss above: it
+    mutates the owner's own session status.
+    """
+    state: DashboardState = request.app["state"]
+    deny = _deny_app_token(request, "pending_decision_dismiss")
+    if deny is not None:
+        return deny
+    deny = _deny_non_owner(request, "pending_decision_dismiss")
+    if deny is not None:
+        return deny
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
+    if not isinstance(body, dict):
+        return web.json_response(
+            {"error": "body must be a JSON object", "code": "invalid_body"}, status=400
+        )
+    slot_key = str(body.get("slot") or "")
+    if not slot_key:
+        return web.json_response({"error": "slot is required", "code": "missing_slot"}, status=400)
+    ts = str(body.get("ts") or "")
+    if not ts:
+        return web.json_response({"error": "ts is required", "code": "missing_ts"}, status=400)
+    if not state.dismiss_pending_decision(slot_key, ts):
+        return web.json_response(
+            {
+                "error": "no session with that slot key",
+                "code": "pending_decision_slot_not_found",
             },
             status=404,
         )

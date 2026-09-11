@@ -5166,6 +5166,17 @@
     "viewPr": "पुल रिक्वेस्ट"
   },
   "components": {
+    "pendingDecisionCard": {
+      "add_to_message_box": "संदेश बॉक्स में जोड़ो",
+      "add_to_message_box_hint": "चुने गए विकल्प भेजे बिना संदेश बॉक्स में डालता है।",
+      "asked_ago": "{{time}} पूछा गया",
+      "dismiss": "खारिज करें",
+      "dismiss_failed": "इस निर्णय को खारिज नहीं किया जा सका। फिर से प्रयास करें।",
+      "dismiss_hint": "बिना जवाब दिए छिपाओ। फ़ैसला चैट में रहता है और लूप चलता रहता है।",
+      "submit": "भेजो",
+      "submit_n_answers": "{{count}} जवाब भेजो",
+      "waiting_on_you": "तुम्हारे इंतज़ार में"
+    },
     "voicePlaybackNotice": {
       "failed": "“{{speak}}” नहीं चल सका। टेक्स्ट-टू-स्पीच सेटिंग जाँचें और फिर कोशिश करें।",
       "blocked": "ब्राउज़र ने ऑडियो का स्वतः चलना रोक दिया। पूरे हो चुके जवाब के नीचे “{{moreActions}}” खोलें और “{{speak}}” चुनें।",
@@ -10081,6 +10092,7 @@
       "new_chat": "नई चैट",
       "new_chat_in_folder": "फ़ोल्डर में नई चैट",
       "new_chat_on_crew": "Crew पर नई चैट",
+      "pending_your_response": "तुम्हारे जवाब का इंतज़ार है",
       "runs_on_crew": "{{name}} पर चलता है — एक कनेक्टेड Crew, इस मशीन पर नहीं",
       "new_chat_in_name": "{{name}} में नई चैट",
       "new_chat_session": "नया चैट सत्र",

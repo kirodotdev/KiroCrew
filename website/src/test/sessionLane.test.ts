@@ -8,17 +8,22 @@ import { SESSION_LANES, inferLane, type LaneSlotFields } from '../pages/chat/ses
  *  that matches two is rendered twice and double-counted. */
 describe('inferLane exhaustiveness and exclusivity', () => {
   const FIELDS: (keyof LaneSlotFields)[] = [
-    'pending_approval', 'needs_input', 'has_options', 'interrupted',
+    'pending_approval', 'needs_input', 'has_options', 'pending_decision', 'interrupted',
     'running', 'orchestrating', 'subagents_running',
   ]
 
   it('assigns every combination of state flags to exactly one known lane', () => {
     const keys = SESSION_LANES.map(l => l.key)
-    // 2^7 flag combinations × sub-agent-approval present/absent.
+    // 2^8 flag combinations × sub-agent-approval present/absent.
     for (let mask = 0; mask < 1 << FIELDS.length; mask++) {
       for (const subagentAwaiting of [0, 2]) {
         const slot: LaneSlotFields = {}
-        FIELDS.forEach((f, i) => { if (mask & (1 << i)) slot[f] = true })
+        FIELDS.forEach((f, i) => {
+          if (!(mask & (1 << i))) return
+          // The one non-boolean flag: truthiness is what the rule reads.
+          if (f === 'pending_decision') slot.pending_decision = { options: ['A'] }
+          else slot[f as Exclude<keyof LaneSlotFields, 'pending_decision' | 'queue_depth'>] = true
+        })
         const lane = inferLane(slot, { subagentAwaiting })
         expect(keys, `mask ${mask}`).toContain(lane)
         expect(keys.filter(k => k === lane)).toHaveLength(1)
@@ -54,6 +59,12 @@ describe('inferLane precedence', () => {
 
   it('treats an options card as waiting on the user', () => {
     expect(inferLane({ has_options: true })).toBe('waiting')
+  })
+
+  it('treats a buried [OPTIONS:] decision as waiting on the user', () => {
+    // The loop talked over its own question; a running cycle must not file
+    // the session under Working while a click is owed.
+    expect(inferLane({ pending_decision: { options: ['Retry'] }, running: true })).toBe('waiting')
   })
 
   it('treats an interrupted turn as waiting, not idle', () => {

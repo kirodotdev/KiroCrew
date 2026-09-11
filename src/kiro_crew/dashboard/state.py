@@ -56,7 +56,12 @@ from kiro_crew.dashboard.slot_registry import SlotRegistry
 from kiro_crew.dashboard.system_notices import is_system_notice
 from kiro_crew.dashboard.websocket_hub import WebSocketHub
 from kiro_crew.deny_guidance import remediation_for
-from kiro_crew.history import latest_transcript_ts, mint_row_mid, monotonic_transcript_ts
+from kiro_crew.history import (
+    latest_transcript_ts,
+    mint_row_mid,
+    monotonic_transcript_ts,
+    transcript_sort_key,
+)
 from kiro_crew.knowledge.store import KnowledgeStore
 from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.messaging.link import (
@@ -3232,6 +3237,7 @@ class _ChatSlot:
 
     __slots__ = (
         "_buffers",
+        "_decision_dismissed_ts",
         "_projection",
         "_queue_repository",
         "_source_links_cache",
@@ -4129,6 +4135,15 @@ class _ChatSlot:
         # "the agent is done and asked you something", and which entries a user
         # message may retire.
         self._question_pending: dict[str, dict] = {}
+        # Dismiss tombstone for the projection's buried-decision scan
+        # (slot_projection.py): the ``ts`` of the one options-bearing assistant
+        # row whose ``pending_decision`` the user explicitly waved away. The
+        # projection re-derives from the transcript on every push, so dismissal
+        # cannot be a state delete — there is no state to delete — it has to name
+        # the message it silences. A LATER options turn has a different ts and
+        # surfaces normally. In-memory like ``_question_pending``: after a
+        # restart the card may reappear, which errs on the side of re-asking.
+        self._decision_dismissed_ts: str = ""
 
     @property
     def _dirty(self) -> bool:
@@ -6203,6 +6218,46 @@ class DashboardState:
     def _broadcast_question_retired(self, slot_key: str, card_ids: list[str]) -> None:
         """Tell owner clients that question cards are no longer actionable."""
         _questions_for(self).broadcast_retired(self, slot_key, card_ids)
+
+    def dismiss_pending_decision(self, slot_key: str, ts: str) -> bool:
+        """Silence one buried [OPTIONS:] decision without answering it.
+
+        ``ts`` names the options-bearing assistant row (the ``pending_decision``
+        payload carries it), not the slot: the decision can be superseded by a
+        newer options turn before the dismissal lands, and a slot-wide clear
+        would silence THAT one unseen. The projection re-derives on every push,
+        so this only records the tombstone and pushes; there is no record to
+        delete. The tombstone is monotonic under ``transcript_sort_key``
+        ordering (transcripts can mix naive and offset-aware rows): a dismiss
+        naming an OLDER ts than the recorded one is a delayed request about a
+        superseded decision and is refused rather than letting it un-silence
+        the newer dismissal. Returns False for an unknown slot, a blank ts, or
+        a stale ts so the route can 404 instead of acknowledging a no-op.
+        """
+        slot = self._slots.get(slot_key)
+        if slot is None or not ts:
+            return False
+        current = getattr(slot, "_decision_dismissed_ts", "") or ""
+        if current:
+            # Out-of-order dismiss: a delayed request naming a superseded
+            # decision must not overwrite the tombstone of the newer one that
+            # was dismissed after it. Ordered by transcript_sort_key, not
+            # string compare -- transcripts can mix naive rows (older builds)
+            # with offset-aware ones, and on a non-UTC host string order is
+            # not row order for that pair (see history.transcript_sort_key).
+            # Only refuse when BOTH sides parse (bucket 0): an unparseable
+            # value carries no order, and refusing against one would let a
+            # single bad ts brick every later dismissal. Either way the named
+            # decision is already superseded -- 404 tells the client its
+            # card was stale, which is already that caller's
+            # take-the-card-away exit.
+            key_new = transcript_sort_key(ts)
+            key_cur = transcript_sort_key(current)
+            if key_new[0] == 0 and key_cur[0] == 0 and key_new < key_cur:
+                return False
+        slot._decision_dismissed_ts = ts
+        _questions_for(self).push_slots(self)
+        return True
 
     def _push_slots(self) -> None:
         """Push question status without failing the question lifecycle."""

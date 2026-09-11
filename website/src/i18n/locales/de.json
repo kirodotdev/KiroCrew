@@ -5166,6 +5166,17 @@
     "viewPr": "Pull Request"
   },
   "components": {
+    "pendingDecisionCard": {
+      "add_to_message_box": "In das Nachrichtenfeld übernehmen",
+      "add_to_message_box_hint": "Übernimmt die gewählten Optionen in das Nachrichtenfeld, ohne zu senden.",
+      "asked_ago": "gefragt {{time}}",
+      "dismiss": "Verwerfen",
+      "dismiss_failed": "Diese Entscheidung konnte nicht verworfen werden. Versuche es erneut.",
+      "dismiss_hint": "Ohne Antwort ausblenden. Die Entscheidung bleibt im Chat und die Schleife läuft weiter.",
+      "submit": "Absenden",
+      "submit_n_answers": "{{count}} Antworten absenden",
+      "waiting_on_you": "Wartet auf dich"
+    },
     "voicePlaybackNotice": {
       "failed": "„{{speak}}“ ist fehlgeschlagen. Prüfe die Text-zu-Sprache-Einstellungen und versuche es erneut.",
       "blocked": "Dein Browser hat die automatische Wiedergabe blockiert. Öffne unter der abgeschlossenen Antwort „{{moreActions}}“ und wähle „{{speak}}“ aus.",
@@ -10081,6 +10092,7 @@
       "new_chat": "Neuer Chat",
       "new_chat_in_folder": "Neuer Chat im Ordner",
       "new_chat_on_crew": "Neuer Chat auf einer Crew",
+      "pending_your_response": "Wartet auf deine Antwort",
       "runs_on_crew": "Läuft auf {{name}} — einer verbundenen Crew, nicht auf diesem Rechner",
       "new_chat_in_name": "Neuer Chat in {{name}}",
       "new_chat_session": "Neue Chat-Sitzung",

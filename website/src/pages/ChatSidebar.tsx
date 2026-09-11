@@ -1,7 +1,7 @@
 import { useState, useRef, useReducer, useEffect, useLayoutEffect, memo, useMemo, useCallback, useId, Fragment } from 'react'
 import { createPortal } from 'react-dom'
 import { LayoutGroup, AnimatePresence, motion } from 'framer-motion'
-import { Plus, X, Pin, Monitor, Eye, EyeOff, VenetianMask, Ghost, FolderPlus, MessageSquare, MessageSquarePlus, MessagesSquare, Folder, ChevronRight, ChevronDown, ChevronUp, Clock, Pencil, BrushCleaning, Link2, Circle, MoreVertical, Tag as TagIcon, Columns3, GripVertical, Zap, Check, Copy, List, Loader, Loader2, Settings, RotateCcw, Bot, ExternalLink, Cpu, GitMerge, Workflow, CircleDot, Users, TriangleAlert, Goal, MessageCircleQuestionMark, ShieldCheck, Repeat, Server } from 'lucide-react'
+import { Plus, X, Pin, Monitor, Eye, EyeOff, VenetianMask, Ghost, FolderPlus, MessageSquare, MessageSquarePlus, MessagesSquare, Folder, ChevronRight, ChevronDown, ChevronUp, Clock, Pencil, BrushCleaning, Link2, Circle, MoreVertical, Tag as TagIcon, Columns3, GripVertical, Zap, Check, Copy, List, Loader, Loader2, Settings, RotateCcw, Bot, ExternalLink, Cpu, GitMerge, Workflow, CircleDot, Users, TriangleAlert, Goal, MessageCircleQuestionMark, Reply, ShieldCheck, Repeat, Server } from 'lucide-react'
 import GithubLogo from '../components/icons/GithubLogo'
 import GitlabLogo from '../components/icons/GitlabLogo'
 import { FolderBody } from '../components/FolderBody'
@@ -639,6 +639,10 @@ interface Slot {
   // An unanswered question card the turn is parked on. Its own subtitle, and it
   // suppresses the "your turn" dot for the same reason an approval does.
   needs_input?: boolean
+  // A buried [OPTIONS:] decision: an earlier turn offered choices and later
+  // loop-cycle replies talked over them. Its own warn-coloured subtitle,
+  // ranked just under needs_input (an explicit card outranks a marker).
+  pending_decision?: { options?: string[]; excerpt?: string; ts?: string } | null
   // The transcript shows the last turn ending without a reply (trailing error
   // row or unanswered user row) — the state behind the composer's Resume
   // button. Always false while a turn runs. Read by the goal-loop subtitle so a
@@ -1638,6 +1642,8 @@ const SessionRow = memo(function SessionRow({
     // turn is parked on it, so this replaces a "Thinking…" that would otherwise
     // never change rather than annotating a finished turn.
     const needsInputLabel = i18nT('pages.chatSidebar.needs_your_answer')
+    // A buried [OPTIONS:] ask — the loop talked over its own question.
+    const pendingDecisionLabel = i18nT('pages.chatSidebar.pending_your_response')
     const monitorStatus = monitor ? deriveAutomationStatus(monitor) : null
     const monitorOwnsRunning = !!monitor && monitor.active && !monitor.terminal
     const monitorLabel = monitorStatus
@@ -1765,6 +1771,25 @@ const SessionRow = memo(function SessionRow({
           <div className={ROW_STATUS_LINE_CLS} title={needsInputLabel}>
             <MessageCircleQuestionMark size={ROW_ICON_PX} className="shrink-0" style={{ color: 'var(--info)' }} aria-hidden />
             <span className="truncate font-medium" style={{ color: 'var(--info)' }}>{needsInputLabel}</span>
+          </div>
+        ),
+      },
+      {
+        // A buried [OPTIONS:] decision: an earlier turn offered choices and
+        // later automation replies (loop cycles) talked over the composer
+        // chips. Same "the user owes a click" family as the approval branches,
+        // so it sits with them above every working signal — but UNDER
+        // needs_input: an explicit question card outranks a marker, and the
+        // composer band makes the same call (the decision card yields to the
+        // question card). Warn-coloured to match the owed-decision rows; the
+        // label stands alone for the needs_input reason above — last_message
+        // is the loop's own chatter, not the question.
+        key: 'pending_decision',
+        when: !!s.pending_decision,
+        build: () => (
+          <div className={ROW_STATUS_LINE_CLS} title={pendingDecisionLabel}>
+            <Reply size={ROW_ICON_PX} className="shrink-0" style={{ color: 'var(--warn)' }} aria-hidden />
+            <span className="truncate font-medium" style={{ color: 'var(--warn)' }}>{pendingDecisionLabel}</span>
           </div>
         ),
       },
@@ -3340,7 +3365,7 @@ function ChatSidebar({
   const isStaleExempt = useCallback((s: Slot): boolean =>
     pinned.has(s.key) || s.key === activeSlot || runningSet.has(s.key)
     || (subagentCounts[s.key] ?? 0) > 0 || !!s.pending_approval
-    || !!s.needs_input || unreadSet.has(s.key)
+    || !!s.needs_input || !!s.pending_decision || unreadSet.has(s.key)
     // Read-time expiry: an entry only counts while younger than one heartbeat
     // interval, so correctness never depends on the prune timer having fired
     // (the timer is gated on the feature being on; the writer is not).

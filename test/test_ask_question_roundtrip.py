@@ -1332,6 +1332,129 @@ async def test_non_owner_dashboard_token_cannot_dismiss() -> None:
     assert st._slots["chat-1"].to_dict()["needs_input"] is True
 
 
+# ── POST /api/pending-decision/dismiss — the buried-[OPTIONS:] sibling ──
+
+
+def _buried_slot(key: str = "chat-1"):
+    """A slot whose options turn was talked over: ``pending_decision`` is set."""
+    from kiro_crew.dashboard.state import _ChatSlot
+
+    slot = _ChatSlot(key)
+    slot.append("assistant", "Pick one.\n\n[OPTIONS: Retry | Stop]", broadcast=True)
+    slot.append("assistant", "Cycle 12: still blocked.", broadcast=True)
+    assert slot.to_dict()["pending_decision"] is not None
+    return slot
+
+
+@pytest.mark.asyncio
+async def test_pending_decision_dismiss_silences_the_named_row() -> None:
+    from kiro_crew.dashboard.handlers.ask_question import api_pending_decision_dismiss
+
+    st = _state()
+    slot = _buried_slot()
+    st._slots = {"chat-1": slot}
+    ts = slot.to_dict()["pending_decision"]["ts"]
+
+    request = MagicMock()
+    request.app = {"state": st}
+    _as_owner(request)
+
+    async def _json() -> dict:
+        return {"slot": "chat-1", "ts": ts}
+
+    request.json = _json
+    resp = await api_pending_decision_dismiss(request)
+    assert resp.status == 200
+    assert slot.to_dict()["pending_decision"] is None
+
+
+@pytest.mark.asyncio
+async def test_pending_decision_dismiss_requires_a_ts() -> None:
+    """Same contract as the card dismiss's ``card_id``: name the exact thing.
+
+    A slot-only dismissal would silence a NEWER options turn that superseded
+    this one while the request was in flight.
+    """
+    from kiro_crew.dashboard.handlers.ask_question import api_pending_decision_dismiss
+
+    st = _state()
+    st._slots = {"chat-1": _buried_slot()}
+    request = MagicMock()
+    request.app = {"state": st}
+    _as_owner(request)
+
+    async def _json() -> dict:
+        return {"slot": "chat-1"}
+
+    request.json = _json
+    resp = await api_pending_decision_dismiss(request)
+    assert resp.status == 400
+    assert st._slots["chat-1"].to_dict()["pending_decision"] is not None
+
+
+@pytest.mark.asyncio
+async def test_pending_decision_dismiss_404s_on_unknown_slot() -> None:
+    from kiro_crew.dashboard.handlers.ask_question import api_pending_decision_dismiss
+
+    st = _state()
+    st._slots = {}
+    request = MagicMock()
+    request.app = {"state": st}
+    _as_owner(request)
+
+    async def _json() -> dict:
+        return {"slot": "nope", "ts": "2026-01-01T00:00:00"}
+
+    request.json = _json
+    resp = await api_pending_decision_dismiss(request)
+    assert resp.status == 404
+
+
+@pytest.mark.asyncio
+async def test_app_token_cannot_dismiss_a_pending_decision() -> None:
+    """Same gate as the sibling endpoints: this mutates the owner's own status."""
+    from kiro_crew.dashboard.handlers.ask_question import api_pending_decision_dismiss
+
+    st = _state()
+    slot = _buried_slot()
+    st._slots = {"chat-1": slot}
+    ts = slot.to_dict()["pending_decision"]["ts"]
+    request = MagicMock()
+    request.app = {"state": st}
+    request.__contains__.return_value = True
+    request.get = lambda k, d="": "evil-app" if k == "app" else d
+
+    async def _json() -> dict:
+        return {"slot": "chat-1", "ts": ts}
+
+    request.json = _json
+    resp = await api_pending_decision_dismiss(request)
+    assert resp.status == 403
+    assert slot.to_dict()["pending_decision"] is not None
+
+
+@pytest.mark.asyncio
+async def test_non_owner_cannot_dismiss_a_pending_decision() -> None:
+    from kiro_crew.dashboard.handlers.ask_question import api_pending_decision_dismiss
+
+    st = _state()
+    st.owner_id = "U_OWNER"
+    slot = _buried_slot()
+    st._slots = {"chat-1": slot}
+    ts = slot.to_dict()["pending_decision"]["ts"]
+    request = MagicMock()
+    request.app = {"state": st}
+    _as_owner(request, user="U_SOMEONE_ELSE")
+
+    async def _json() -> dict:
+        return {"slot": "chat-1", "ts": ts}
+
+    request.json = _json
+    resp = await api_pending_decision_dismiss(request)
+    assert resp.status == 403
+    assert slot.to_dict()["pending_decision"] is not None
+
+
 # ── Machine-readable error codes ──
 
 
@@ -1390,18 +1513,19 @@ class TestErrorCodes:
     def test_the_ratchet_can_actually_fail(self) -> None:
         """Self-check: a scan matching nothing would pass the assertion above vacuously.
 
-        20, not the 21 this pinned before the owner-denial migration. The
-        non-owner ``403`` is not written out here: its ``{"error":
+        25 = the 20 pinned after the owner-denial migration plus the five coded
+        sites ``api_pending_decision_dismiss`` added (``invalid_json``,
+        ``invalid_body``, ``missing_slot``, ``missing_ts``,
+        ``pending_decision_slot_not_found``). The earlier drop from 21: the
+        non-owner ``403`` is not written out here — its ``{"error":
         "forbidden", "code": "owner_only"}`` body is now produced by
         ``handlers._shared._owner_denial_response``, which the module calls with
         exactly that message and code. The WIRE contract is unchanged -- only the
         literal moved, and it is still coded at its new home, which is why
-        ``test_no_refusal_in_this_module_is_prose_only`` stays empty. The count
-        drops because the scanner is per-file and that site is now in another
-        file.
+        ``test_no_refusal_in_this_module_is_prose_only`` stays empty.
         """
         coded = [f for f in self._findings() if f.bucket == "compliant"]
-        assert len(coded) == 20, f"scanner reached {len(coded)} coded sites, expected 20"
+        assert len(coded) == 25, f"scanner reached {len(coded)} coded sites, expected 25"
         assert all(f.code_value for f in coded)
 
     # -- POST /api/ask-question (the MCP tool's leg) --

@@ -1616,6 +1616,7 @@ def _register_mcp_routes(app: web.Application) -> None:
         api_ask_question_answer,
         api_ask_question_dismiss,
         api_ask_question_pending,
+        api_pending_decision_dismiss,
     )
 
     app.router.add_post("/api/ask-question", api_ask_question)
@@ -1624,6 +1625,9 @@ def _register_mcp_routes(app: web.Application) -> None:
     app.router.add_get("/api/ask-question/pending", api_ask_question_pending)
     app.router.add_post("/api/ask-question/dismiss", api_ask_question_dismiss)
     app.router.add_post("/api/ask-question/{ask_id}/answer", api_ask_question_answer)
+    # Buried [OPTIONS:] decision dismiss — sibling of the stateless-card
+    # dismiss above (handlers/ask_question.py).
+    app.router.add_post("/api/pending-decision/dismiss", api_pending_decision_dismiss)
 
     # Artifacts — persistent, versioned LLM-generated UI
     app.router.add_get("/api/artifacts", api_artifacts_list)

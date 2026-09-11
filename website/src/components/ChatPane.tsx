@@ -14,6 +14,7 @@ import ErrorNotice from './ErrorNotice'
 import { Btn } from './ui'
 import ChatDropOverlay, { useChatFileDrop } from './ChatDropOverlay'
 import PendingQuestionCard from './PendingQuestionCard'
+import PendingDecisionCard from './PendingDecisionCard'
 import QueueStack, { SubagentDeliveryProgress, splitPaneMessages } from './QueueStack'
 import SubagentProgressBar from '../pages/chat/SubagentProgressBar'
 import ChatFooter from '../pages/chat/ChatFooter'
@@ -1333,6 +1334,33 @@ export default function ChatPane({
             })
           }}
         />
+
+        {/* Buried [OPTIONS:] decision, per pane like the question card above —
+            in split mode the loop that buried its ask may not be the pane the
+            user is looking at. The question card owns the band when both are
+            pending (sidebar precedence: needs_input outranks pending_decision);
+            needs_input rides the same slot payload as pending_decision, so the
+            gate holds even while the async questions map is still hydrating. */}
+        {!pendingQuestion && !paneSlot?.needs_input && paneSlot?.pending_decision && (
+          <div className="mx-4 mb-2">
+            <PendingDecisionCard
+              slotKey={slotKey}
+              decision={paneSlot.pending_decision}
+              onPick={(o) => setInput((prev) => (prev.trim() ? `${prev.trimEnd()}, ${o}` : o))}
+              onSendDirect={(o) => {
+                // Same failure recovery as the question card's fallback send:
+                // a refused/failed direct send goes back into the composer
+                // rather than vanishing.
+                void sendTurn({ message: o, slot: slotKey }).then((receipt) => {
+                  if (receipt.status === 'refused' || receipt.status === 'transport-error' || receipt.status === 'response-late') {
+                    reportSendFailure(receipt.reason, receipt.status)
+                    restoreIntoComposer(o, [], slotKey)
+                  }
+                })
+              }}
+            />
+          </div>
+        )}
 
         {/* No hand-off: the composer draft (`input`) below is unsaved local state. */}
         <ErrorNotice

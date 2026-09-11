@@ -30,6 +30,8 @@ export interface LaneSlotFields {
   pending_approval?: boolean
   needs_input?: boolean
   has_options?: boolean
+  /** A buried [OPTIONS:] decision (structural subset of `PendingDecision`). */
+  pending_decision?: { options?: string[] } | null
   interrupted?: boolean
   running?: boolean
   orchestrating?: boolean
@@ -100,8 +102,9 @@ export function inferLane(slot: LaneSlotFields, extras: LaneExtras = {}): Sessio
   if (slot.pending_approval || (extras.subagentAwaiting ?? 0) > 0) return 'needs_approval'
   // Parked on a human answer. Deliberately NOT `waiting_for_input`, which is
   // true of every finished turn and would swallow the whole idle lane: only an
-  // explicit unanswered question or options card outranks live work.
-  if (slot.needs_input || slot.has_options) return 'waiting'
+  // explicit unanswered question, options card, or a buried [OPTIONS:]
+  // decision outranks live work.
+  if (slot.needs_input || slot.has_options || slot.pending_decision) return 'waiting'
   if (hasLiveSessionWork(slot, extras)) return 'working'
   // An interrupted turn waits on the user only when no newer work supersedes
   // it. An armed goal loop does not supersede its own stalled turn.

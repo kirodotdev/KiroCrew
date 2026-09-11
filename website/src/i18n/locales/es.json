@@ -5255,6 +5255,17 @@
     "viewPr": "Solicitud"
   },
   "components": {
+    "pendingDecisionCard": {
+      "add_to_message_box": "Añadir al cuadro de mensaje",
+      "add_to_message_box_hint": "Pone las opciones elegidas en el cuadro de mensaje sin enviar.",
+      "asked_ago": "preguntado {{time}}",
+      "dismiss": "Descartar",
+      "dismiss_failed": "No se pudo descartar esta decisión. Inténtalo de nuevo.",
+      "dismiss_hint": "Ocultar sin responder. La decisión sigue en el chat y el bucle continúa.",
+      "submit": "Enviar",
+      "submit_n_answers": "Enviar {{count}} respuestas",
+      "waiting_on_you": "Esperando tu decisión"
+    },
     "voicePlaybackNotice": {
       "failed": "No se pudo usar «{{speak}}». Revisa los ajustes de texto a voz e inténtalo de nuevo.",
       "blocked": "El navegador bloqueó la reproducción automática. Abre «{{moreActions}}» debajo de la respuesta completada y selecciona «{{speak}}».",
@@ -10228,6 +10239,7 @@
       "new_chat": "Nuevo chat",
       "new_chat_in_folder": "Nuevo chat en la carpeta",
       "new_chat_on_crew": "Nuevo chat en un Crew",
+      "pending_your_response": "Pendiente de tu respuesta",
       "runs_on_crew": "Se ejecuta en {{name}} — un Crew conectado, no en esta máquina",
       "new_chat_in_name": "Nuevo chat en {{name}}",
       "new_chat_session": "Nueva sesión de chat",

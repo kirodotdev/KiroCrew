@@ -5077,6 +5077,17 @@
     "viewPr": "풀 리퀘스트"
   },
   "components": {
+    "pendingDecisionCard": {
+      "add_to_message_box": "메시지 입력란에 추가",
+      "add_to_message_box_hint": "선택한 옵션을 보내지 않고 메시지 입력란에 넣습니다.",
+      "asked_ago": "{{time}} 질문함",
+      "dismiss": "닫기",
+      "dismiss_failed": "이 결정을 닫지 못했습니다. 다시 시도하세요.",
+      "dismiss_hint": "답하지 않고 숨깁니다. 결정은 채팅에 남고 루프는 계속 돌아갑니다.",
+      "submit": "보내기",
+      "submit_n_answers": "답변 {{count}}개 보내기",
+      "waiting_on_you": "당신의 결정을 기다리는 중"
+    },
     "voicePlaybackNotice": {
       "failed": "‘{{speak}}’를 실행하지 못했습니다. 텍스트 음성 변환 설정을 확인하고 다시 시도하세요.",
       "blocked": "브라우저가 자동 재생을 차단했습니다. 완료된 답변 아래에서 ‘{{moreActions}}’을 열고 ‘{{speak}}’를 선택하세요.",
@@ -9934,6 +9945,7 @@
       "new_chat": "새 채팅",
       "new_chat_in_folder": "폴더에 새 채팅",
       "new_chat_on_crew": "Crew에서 새 채팅",
+      "pending_your_response": "답변 대기 중",
       "runs_on_crew": "{{name}}에서 실행 — 연결된 Crew이며 이 컴퓨터가 아닙니다",
       "new_chat_in_name": "‘{{name}}’에 새 채팅",
       "new_chat_session": "새 채팅 세션",

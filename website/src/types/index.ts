@@ -1032,6 +1032,12 @@ export interface ChatSlot {
    * `waiting_for_input` (true of every finished turn, and therefore no signal)
    * and separate from `pending_approval` (a tool gate). */
   needs_input?: boolean
+  /** A buried [OPTIONS:] decision: an earlier assistant turn offered choices
+   * and a later option-less reply (a monitor-loop cycle, typically) shadowed
+   * the composer chips, with no human row in between. Derived server-side from
+   * the transcript on every push — null/absent when nothing is owed. `ts`
+   * names the options row for `api.dismissPendingDecision`. */
+  pending_decision?: PendingDecision | null
   /** The transcript shows the last turn ending without a reply (trailing error
    * row or unanswered user row) — the state behind the composer's Resume
    * button. Always false while `running`. Lets the sidebar stop rendering a
@@ -1357,6 +1363,16 @@ export interface PendingApproval {
   tool_input: string
   tool_kind: string
   request_id: string
+}
+
+/** The slot payload's buried [OPTIONS:] decision (see `ChatSlot.pending_decision`). */
+export interface PendingDecision {
+  /** The choices the buried marker offered, in order. */
+  options?: string[]
+  /** The options turn's text with the marker stripped, capped server-side. */
+  excerpt?: string
+  /** Transcript ts of the options row — the identity a dismissal names. */
+  ts?: string
 }
 
 export interface SubagentInfo {

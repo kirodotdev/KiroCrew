@@ -392,6 +392,16 @@
     "apps.awsControl.console.library_add_empty": "Empty state of the \"Add from Artifacts\" picker (AWS Control cloud drive) when the user has NO artifacts at all — distinct from library_add_none, which is a search or filter that matched nothing.",
     "components.markdownCard.raw": "Segment label on the Formatted | Raw toggle of a markdown content card in the chat transcript, paired with \"Formatted\". Selects the verbatim markdown SOURCE (the exact text, unrendered, with an edit affordance) over the rendered view. \"Raw\" as in unprocessed source, not uncooked food; keep it to one short word, it sits in a two-segment toggle.",
     "components.featurePreviewIntro.gif_badge": "Tiny corner badge over a looping animated capture in the Feature Preview \"Learn more\" dialog (Settings > Developer), marking the picture as an animation rather than a still. The file-format abbreviation GIF; most languages keep it as-is.",
-    "components.avatarBuilder.lib_format_svg": "Format badge on an appearance-pack card in the crew avatar builder's Library tab, beside the built-in/custom badge. \"SVG\" is a file-format acronym naming the only format a crew can wear, so keep the form practitioners in the target language use (usually the Latin acronym, untranslated) and keep it short — it sits in a compact badge next to Lottie and Sprite."
+    "components.avatarBuilder.lib_format_svg": "Format badge on an appearance-pack card in the crew avatar builder's Library tab, beside the built-in/custom badge. \"SVG\" is a file-format acronym naming the only format a crew can wear, so keep the form practitioners in the target language use (usually the Latin acronym, untranslated) and keep it short — it sits in a compact badge next to Lottie and Sprite.",
+    "components.pendingDecisionCard.waiting_on_you": "Bold header of the card that re-surfaces a buried multiple-choice question from the agent; rendered uppercase, warning-coloured.",
+    "components.pendingDecisionCard.asked_ago": "Age suffix in that card's header; {{time}} is an already-localized relative time like '3h ago', so the string wraps it as 'asked 3h ago'.",
+    "components.pendingDecisionCard.dismiss": "Accessible label and tooltip of the small X button that hides the card without answering the question.",
+    "components.pendingDecisionCard.dismiss_failed": "Retryable error notice shown under the card when hiding it failed; mirrors pendingQuestionCard.dismiss_failed.",
+    "pages.chatSidebar.pending_your_response": "One-line warning-coloured status under a session's title in the sidebar: an agent loop asked the user a multiple-choice question and later replies pushed it off screen.",
+    "components.pendingDecisionCard.submit": "Primary button on the buried-decision card; submits the toggled option(s) as the user's chat message. Verb matches questionCard.submit.",
+    "components.pendingDecisionCard.submit_n_answers": "Primary button label when several options are toggled; {{count}} is the number of picked options, e.g. 'Submit 2 answers'.",
+    "components.pendingDecisionCard.add_to_message_box": "Secondary button on that card; puts the toggled option(s) into the message box below without sending.",
+    "components.pendingDecisionCard.add_to_message_box_hint": "Tooltip of that secondary button; uses the same 'message box' term as the label.",
+    "components.pendingDecisionCard.dismiss_hint": "Tooltip of the X button stating the outcome: the card hides without answering, the decision stays in the chat, the loop keeps running."
   }
 }

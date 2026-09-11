@@ -3763,6 +3763,13 @@ export const api = {
    *  it lands, and the server refuses rather than retiring the wrong ask. */
   dismissQuestionCard: (slot: string, cardId: string) =>
     post('/api/ask-question/dismiss', { slot, card_id: cardId }).then(j),
+  /** Silence a buried [OPTIONS:] decision (`pending_decision` on the slot
+   *  payload) without answering it. `ts` is the options row's identity from
+   *  the payload — the sibling of `dismissQuestionCard`'s `cardId`: a newer
+   *  options turn can supersede this one before the request lands, and the
+   *  server silences only the row named. */
+  dismissPendingDecision: (slot: string, ts: string) =>
+    post('/api/pending-decision/dismiss', { slot, ts }).then(j),
   // Logs
   logLevel: () => fetch('/api/logs/level').then(j),
   setLogLevel: (level: string) => post('/api/logs/level', { level }).then(j),

@@ -1257,6 +1257,17 @@
     }
   },
   "components": {
+    "pendingDecisionCard": {
+      "add_to_message_box": "Add to message box",
+      "add_to_message_box_hint": "Put the picked options into the message box without sending.",
+      "asked_ago": "asked {{time}}",
+      "dismiss": "Dismiss",
+      "dismiss_failed": "Couldn’t dismiss this decision. Try again.",
+      "dismiss_hint": "Hide without answering. The decision stays in the chat and the loop keeps running.",
+      "submit": "Submit",
+      "submit_n_answers": "Submit {{count}} answers",
+      "waiting_on_you": "Waiting on you"
+    },
     "queueStack": {
       "hidden_attachments_one": "+{{count}} attachment",
       "hidden_attachments_other": "+{{count}} attachments",
@@ -3908,6 +3919,7 @@
       "loop": "Loop {{count}}/{{total}}",
       "loop_2": "Loop · {{count}}",
       "loop_interrupted": "interrupted",
+      "pending_your_response": "Pending your response",
       "running_queued": "{{started}} running · {{queued}} queued",
       "show_all_older_sessions": "Show all older sessions",
       "show_in_flat_view": "Show {{name}} in flat view",

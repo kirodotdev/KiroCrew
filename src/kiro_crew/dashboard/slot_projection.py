@@ -5,6 +5,12 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
+#: How many transcript rows the buried-decision scan may walk past the newest
+#: conversational row before giving up. Loop cycles append a handful of rows
+#: each (nudge, tool activity, reply); this covers dozens of option-less cycles
+#: while keeping the per-projection cost bounded on huge windows.
+_PENDING_DECISION_SCAN_ROWS = 150
+
 
 class SlotProjection:
     """Build cached source links and the public summary of a slot.
@@ -128,6 +134,24 @@ class SlotProjection:
         last_conv_role = ""
         last_activity_ts = ""
         found_conv = False
+
+        def _options_preview(text_value: str) -> str:
+            stripped_value = redact(strip_options(text_value))
+            return stripped_value[:240] + "…" if len(stripped_value) > 240 else stripped_value
+
+        # A buried [OPTIONS:] decision. Raised only when the NEWEST conversational
+        # row is an assistant reply WITHOUT options (a monitor-loop cycle's report,
+        # typically) and an earlier assistant turn still carries an unanswered
+        # [OPTIONS:] marker with no human row in between. Deliberately narrower
+        # than its two neighbours: ``has_options`` is the marker on the newest row
+        # (the composer chips already show it — nothing is owed a badge, see
+        # test_slot_needs_input_status.py's boundary), and ``needs_input`` is an
+        # unanswered question card. This is the one state no field carried: the
+        # loop talked over its own question. A ``user`` row between the marker and
+        # now answers it; ``nudge`` and ``inject`` rows are automation and do not.
+        pending_decision: dict | None = None
+        decision_scan_open = False
+        decision_rows_left = _PENDING_DECISION_SCAN_ROWS
         for message in reversed(slot.messages):
             role = message.get("role")
             msg_meta = message.get("meta") or {}
@@ -148,16 +172,40 @@ class SlotProjection:
                             options = parse_options(text)
                             has_options = bool(options)
                             if has_options:
-                                stripped = redact(strip_options(text))
-                                prompt_preview = (
-                                    stripped[:240] + "…" if len(stripped) > 240 else stripped
-                                )
+                                prompt_preview = _options_preview(text)
+                            else:
+                                decision_scan_open = True
+                    elif decision_scan_open:
+                        if role == "user":
+                            # The human spoke after the marker: whatever was
+                            # pending is answered (or overtaken). Nothing owed.
+                            decision_scan_open = False
+                        else:
+                            buried_options = parse_options(text)
+                            if buried_options:
+                                decision_scan_open = False
+                                message_ts = message.get("ts") or ""
+                                dismissed_ts = getattr(slot, "_decision_dismissed_ts", "")
+                                if not message_ts or message_ts != dismissed_ts:
+                                    pending_decision = {
+                                        "options": [redact(o) for o in buried_options],
+                                        "excerpt": _options_preview(text),
+                                        "ts": message_ts,
+                                    }
                     if not last_msg:
                         # Strip before redaction so markdown cannot split a
                         # credential signature and then rejoin it on the wire.
                         redacted = redact(strip_markdown_preview(text))
                         last_msg = redacted[:80] + "…" if len(redacted) > 80 else redacted
-            if found_conv and last_msg and last_activity_ts:
+            if decision_scan_open:
+                decision_rows_left -= 1
+                if decision_rows_left <= 0:
+                    # ponytail: bounded backward scan — a decision buried deeper
+                    # than this many rows stops being surfaced, rather than every
+                    # projection walking the whole window. Raise the constant if
+                    # real loops out-talk it.
+                    decision_scan_open = False
+            if found_conv and last_msg and last_activity_ts and not decision_scan_open:
                 break
 
         pending_approval = any(not future.done() for future in slot._approval_futures.values())
@@ -247,6 +295,11 @@ class SlotProjection:
             "last_activity_ts": last_activity_ts,
             "waiting_for_input": waiting_for_input,
             "needs_input": needs_input,
+            # A buried [OPTIONS:] decision (see the scan above): the options an
+            # earlier assistant turn offered that later automation talked over.
+            # None when nothing is owed — the common case, and the explicit null
+            # keeps the frontend branch a plain truthiness check.
+            "pending_decision": pending_decision,
             "interrupted": interrupted,
             "stop_state": slot._stop_state,
             "wait_state": slot._wait_state,
