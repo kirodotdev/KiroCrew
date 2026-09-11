@@ -6969,6 +6969,7 @@
       "resize_roster": "Resize member list",
       "collapse_roster": "Collapse member list",
       "expand_roster": "Expand member list",
+      "roster_squeezed_hint": "Narrow the side panel to show member names",
       "expand_roster_short": "Expand",
       "sort_filter_members": "Sort and filter members",
       "filter_origin": "Origin",

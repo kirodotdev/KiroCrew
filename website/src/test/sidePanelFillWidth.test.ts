@@ -7,7 +7,7 @@
  * which is the whole point of the rule.
  */
 import { describe, it, expect } from 'vitest'
-import { SIDE_PANEL_MIN_W, CHAT_PANE_MIN_W, sidePanelFillWidth, sidePanelEffectiveWidth } from '../pages/chat/SidePanel'
+import { SIDE_PANEL_MIN_W, CHAT_PANE_MIN_W, sidePanelFillWidth, sidePanelEffectiveWidth, SIDE_PANEL_RESERVED_W, measureSidePanelReservedW, sidePanelMaxW } from '../pages/chat/SidePanel'
 
 const THRESHOLD = SIDE_PANEL_MIN_W + CHAT_PANE_MIN_W // 640
 const RAIL_EXPANDED = 236
@@ -98,5 +98,26 @@ describe('sidePanelEffectiveWidth', () => {
   it('takes the maximum in preview-expand mode', () => {
     expect(sidePanelEffectiveWidth({ ...base, expanded: true, maxW: 800 })).toBe(800)
     expect(sidePanelEffectiveWidth({ ...base, expanded: true, maxW: 100 })).toBe(SIDE_PANEL_MIN_W)
+  })
+})
+
+describe('sidePanelMaxW — the host cap beside the shell rule', () => {
+  it('without a host cap the cap is the shell rule (ChatPage unchanged)', () => {
+    expect(sidePanelMaxW({ winW: 1440, headerNeed: 560 })).toBe(880)
+    expect(sidePanelMaxW({ winW: 1440, headerNeed: 700 })).toBe(740)
+  })
+
+  it('with a host cap the cap is the smaller of the host figure and the header need', () => {
+    // The host vouches for its row; the shell floor is not in the sum.
+    expect(sidePanelMaxW({ winW: 1440, headerNeed: 0, hostMaxW: 704 })).toBe(704)
+    // A wide top bar still wins over the host.
+    expect(sidePanelMaxW({ winW: 1440, headerNeed: 900, hostMaxW: 704 })).toBe(540)
+  })
+
+  it('measureSidePanelReservedW keeps the shell floor by default and takes a host floor', () => {
+    // No header in this document: the floor is the whole answer.
+    expect(document.querySelector('header.topbar-glass')).toBeNull()
+    expect(measureSidePanelReservedW()).toBe(SIDE_PANEL_RESERVED_W)
+    expect(measureSidePanelReservedW(0)).toBe(0)
   })
 })

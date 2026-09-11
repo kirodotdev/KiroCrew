@@ -14333,6 +14333,7 @@
       "resize_roster": "调整成员列表大小",
       "collapse_roster": "收起成员列表",
       "expand_roster": "展开成员列表",
+      "roster_squeezed_hint": "缩窄右侧面板以显示成员名称",
       "expand_roster_short": "展开",
       "sort_filter_members": "排序和筛选成员",
       "filter_origin": "来源",

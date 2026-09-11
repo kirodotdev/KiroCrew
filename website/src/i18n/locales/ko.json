@@ -14333,6 +14333,7 @@
       "resize_roster": "멤버 목록 크기 조정",
       "collapse_roster": "멤버 목록 접기",
       "expand_roster": "멤버 목록 펼치기",
+      "roster_squeezed_hint": "멤버 이름을 보려면 사이드 패널을 좁히세요",
       "expand_roster_short": "펼치기",
       "sort_filter_members": "멤버 정렬 및 필터",
       "filter_origin": "출처",
