@@ -1814,6 +1814,121 @@ way; the two update paths in `apps/routes.py` now match them, and
 For an adopted backend, where we hold no handle to poll, "we still track it"
 is the only honest answer and `healthy` is the load-bearing signal.
 
+### 17.1 A spawned backend is bound to the app-secret generation it received
+
+`kirocrew app uninstall` followed by `app install` runs in another process. It
+replaces `.app_secret` and never reaches the running gateway, which keeps
+tracking a healthy child spawned under the OLD secret. Before this contract the
+proxy signed every request with the NEW secret (its cache was keyed by app name,
+so it did not even notice the rotation until an install handler invalidated
+it), the child refused each one as `PROXY_AUTH_FAILED`, and only a full gateway
+restart recovered — for every app without Python hooks, because the hook
+reconciler (§ below) only examined hook-declaring apps. A client cannot fix this
+and must not try: the secret is host-internal, and a client that restarts
+infrastructure to repair a 401 is coupled to a platform defect.
+
+Three host-side pieces, each load-bearing:
+
+- **The record carries a digest, never the secret.** `AppProcess.proxy_secret_digest`
+  is the SHA-256 of the secret injected into the child's environment at spawn;
+  it is absent from `repr`, `to_dict()` and the pidfile. `backend_proxy_secret_matches`
+  compares digest-to-digest in constant time and is **tri-state**: `True`/`False`
+  only for a SPAWNED tracked process with a recorded digest and a non-empty
+  candidate secret; `None` for an untracked, adopted, legacy-record or
+  empty-secret case. Only a positive `False` is ever acted on — an adopted
+  external backend or a mid-transaction absent file must not trigger a restart.
+- **The proxy fails closed, and its cache follows the file.** `_get_app_secret`
+  is keyed by the opened file's `(dev, ino, mtime_ns, size)`, so a rotation is
+  visible on the first request after it lands; the read is off-loop. The
+  forward target for a gateway-managed backend is ONE snapshot of the tracked
+  process record — `tracked_backend_target` returns port, pid and the secret
+  digest of the same record under one lock — so the generation check is about
+  the process at the captured port, not about whatever the app name resolves
+  to after the body has been read. Before signing, `handle_app_api_proxy`
+  checks the secret against that snapshot and answers `503 {code:
+  app_restarting}` on a mismatch instead of forwarding (the 503 status is the
+  retry signal; `code` is what a client switches on); and
+  immediately before forwarding it re-snapshots and refuses with the same 503
+  if the record changed since capture (a replacement, a restart, or an `auto`
+  port freed and claimed by another app across the await points). A stale
+  child therefore never sees a request it will refuse, a replaced target never
+  receives a body signed for its predecessor, and clients see a bounded
+  retryable outage, never `PROXY_AUTH_FAILED`.
+- **The runtime reconciler replaces stale generations; it does nothing else to
+  a backend.** `hook_reconcile` now also examines every tracked backend and
+  every enabled gateway-managed backend (`backend.entryPoint`, `resources:
+  gateway`). Under the per-app lifecycle lock, the ONE backend transition it
+  owns, for a **hookless** app and a **hook-declaring** app alike, is:
+  stop-then-start a tracked child THIS gateway spawned (`proc` set — an adopted
+  record is never cycled or signalled) whose `backend_secret_generation_matches`
+  is `False`. For a hook app this runs in the order `on_gateway_shutdown` and
+  the dashboard update path keep: on a reinstall, `on_shutdown` runs against
+  the still-live old backend, then the backend is stopped and re-spawned under
+  the new secret, then `on_startup` runs against the new one. Everything else
+  is deliberately left as the platform leaves it today: an enabled app with
+  nothing tracked is NOT started (a first start belongs to boot and the
+  dashboard, which vet governance, admission and execution before they spawn);
+  a disabled or removed app's backend is NOT stopped (the CLI uninstall does
+  not stop it either, and the proxy refuses a disabled or removed app with 403
+  before forwarding); a CLI enable loads the hooks but starts no backend;
+  loaded hooks over a missing process leave the process alone. The reconciler
+  adds no policy evaluation and never widens who runs: the process it replaces
+  was admitted when it started and is serving right now, the replacement
+  changes which secret it holds, not whether the app may run, and the
+  reinstalled files passed `install_app`'s admission gate in the installing
+  process before they landed. Because nothing is stopped on removal, a tick
+  landing between a CLI `uninstall` and `install` changes nothing: the old
+  child is still tracked when the reinstall lands, and the rotation replaces it
+  exactly as if the tick had landed after both steps. Every reconciler spawn
+  re-reads `app_enabled_state` immediately before spawning (proceeds only on a
+  positive `True`) and again after (stops the new child only on a positive
+  `False`), so a CLI disable landing while the spawn is in flight does not
+  leave a disabled app serving until the next tick. If a stop cannot release
+  the record (an unsignallable adopted backend restores it), no competitor is
+  spawned onto the same port.
+- **Shutdown leaves no unsupervised backend of the gateway's own making.**
+  Nothing is spawned once the shutdown sweep has begun, and a respawn already
+  in flight can outlive the bounded drain (`SHUTDOWN_DRAIN_BUDGET_SECS`) and
+  register its child after `on_gateway_shutdown` swept the tracked set.
+  `_stopping` is set before that sweep, so `_respawn_with_backoff` — the one
+  chokepoint every reconciler spawn goes through — re-reads it after the spawn
+  returns and stops a child THIS gateway spawned while it was set. A record the
+  spawn ADOPTED instead (an external instance already on the fixed port) is
+  left alone, exactly as the sweep leaves adopted backends: their contract is
+  to survive gateway exit.
+- **A failing respawn is not retried every tick.** The boot path tries a
+  backend once; the reconciler bounds its own attempts with
+  `START_RETRY_BACKOFF_SECS` per app after a respawn that returned no process,
+  so a crashing, port-blocked or execution-refused replacement does not become
+  a 15-second retry-and-log loop. The mark is what authorises the retry at all
+  (the reconciler starts nothing it did not itself stop), and only the
+  reconciler consults it — a dashboard enable calls `start_app_backend`
+  directly. It is dropped as soon as a tracked process is observed, on a
+  readable disabled record, and on a POSITIVELY confirmed absence (never on
+  unreadable metadata), so a later install under the same name is a first
+  start rather than a replacement. It belongs to the install whose respawn
+  failed: it records the install identity (the `.app_secret` inode + mtime
+  every install mints afresh), so a reinstall between two ticks is not held by
+  the previous install's backoff even though the reconciler never saw the app
+  absent; and an app holding a mark stays in the candidate set, so its removal
+  reaches that clearing even with nothing tracked and nothing enabled on disk.
+
+Pinned by `test_hook_reconcile.py` (the rotation, never-starts-fresh,
+pending-replacement-retry, tick-between-uninstall-and-install,
+disable-leaves-backend, uninstall-leaves-backend, disable-drops-mark,
+disable-during-respawn, disable-before-respawn, unstoppable-adopted,
+adopted-never-replaced, backoff, reinstall-between-ticks,
+spawned-during-shutdown, adopted-during-shutdown and refused-once-stopping
+cases for hookless apps; the hooks-ordered rotation, enable-loads-hooks-only,
+missing-backend-left-alone, drifted-backend, gone-leaves-backend,
+disabled-leaves-backend, disabled-with-no-hooks-loaded, denied, hookless-now
+and unsettled-teardown cases for hook-declaring apps),
+`test_apps_routes_coverage.py`
+(the 503 that is never forwarded, the `None` case that still forwards, the
+replaced-target-before-forward 503, the unchanged-target forward to the
+captured port, the rotation-following cache) and `test_apps_backend_coverage.py` (digest binding
+and the tri-state verifier).
+
 Writers: `apps/backend.py` (`_health_check_loop`, `_watch_backend_health`,
 `_demote`, `_promote`, `_supervise_backend_health`, `_start_health_supervisor`,
 `_start_adopted_health_watch`, `AppProcess.is_running`), `apps/routes.py`

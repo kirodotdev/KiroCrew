@@ -8,6 +8,7 @@ from __future__ import annotations
 import concurrent.futures
 import contextlib
 import hashlib
+import hmac
 import http.client
 import json
 import logging
@@ -390,6 +391,12 @@ class AppProcess:
     proc: subprocess.Popen | None = field(default=None, repr=False)
     log_fh: Any = field(default=None, repr=False)
     healthy: bool = False
+    # Digest of the app proxy secret injected into THIS spawned backend.
+    # The secret itself is never retained on the supervisor record. A CLI
+    # uninstall/reinstall can replace .app_secret without reaching the running
+    # gateway; binding the process to this digest lets the proxy refuse that
+    # stale generation and lets the runtime reconciler replace it.
+    proxy_secret_digest: bytes = field(default=b"", repr=False)
     # The `healthy` value last SUCCESSFULLY reconciled into mcp.json, or None if nothing
     # has been written for this record yet. Distinct from `healthy` because the flag
     # moves even when the mcp.json write fails; the gap between them is what the watch
@@ -1968,6 +1975,7 @@ def _start_app_backend_body(app_name: str, manifest) -> AppProcess | None:
     # Inject the per-app proxy secret so the backend can verify the
     # X-KiroCrew-Proxy HMAC the gateway signs on every forwarded request
     # (CWE-306). Without it the loopback backend would trust any local caller.
+    _proxy_secret = ""
     try:
         _proxy_secret = (root / ".app_secret").read_text().strip()
         if _proxy_secret:
@@ -2377,6 +2385,9 @@ def _start_app_backend_body(app_name: str, manifest) -> AppProcess | None:
         proc=proc,
         log_fh=log_fh,
         healthy=False,
+        proxy_secret_digest=(
+            hashlib.sha256(_proxy_secret.encode()).digest() if _proxy_secret else b""
+        ),
         started_at=time.time(),
         log_path=str(log_path),
     )
@@ -2620,6 +2631,95 @@ def get_app_process(app_name: str) -> AppProcess | None:
     """Get the process info for a running app backend."""
     with _lock:
         return _processes.get(app_name)
+
+
+def tracked_backend_names() -> list[str]:
+    """Every app backend tracked by this gateway, spawned or adopted."""
+    with _lock:
+        return sorted(_processes)
+
+
+@dataclass(frozen=True)
+class BackendTarget:
+    """One tracked backend as the proxy may forward to it: a single snapshot.
+
+    ``port`` is where a request goes and ``proxy_secret_digest`` is the digest
+    of the secret the SAME process record was spawned with (``b""`` when the
+    gateway cannot claim one: adopted, or a record from before the digest
+    existed). Reading them together, under the one lock, is what lets the proxy
+    prove the port it captured still belongs to the generation it verified --
+    two separate by-name lookups could straddle a replacement, and an ``auto``
+    port freed by the old process can be claimed by another app in between.
+    Frozen so a later snapshot compares by value: any change to the record
+    (replacement, restart, port reassignment) reads as inequality.
+    """
+
+    port: int
+    pid: int
+    proxy_secret_digest: bytes = field(repr=False)
+
+    def secret_matches(self, secret: str) -> bool | None:
+        """Whether *secret* belongs to this snapshot's process generation.
+
+        ``None`` when the claim cannot be made (no recorded digest, or an empty
+        candidate); only a positive ``False`` is actionable. Constant-time,
+        digest-to-digest; the secret never enters the record.
+        """
+        return _secret_digest_matches(self.proxy_secret_digest, secret)
+
+
+def tracked_backend_target(app_name: str) -> BackendTarget | None:
+    """Snapshot the HEALTHY tracked backend the proxy would forward to, or None.
+
+    The same admission as :func:`get_app_backend_port` (a healthy record), plus
+    the generation digest read in the same critical section.
+    """
+    with _lock:
+        ap = _processes.get(app_name)
+        if not ap or not ap.healthy:
+            return None
+        return BackendTarget(
+            port=ap.port,
+            pid=ap.pid,
+            proxy_secret_digest=ap.proxy_secret_digest if ap.proc is not None else b"",
+        )
+
+
+def _secret_digest_matches(expected: bytes, secret: str) -> bool | None:
+    if not expected or not secret:
+        return None
+    actual = hashlib.sha256(secret.encode()).digest()
+    return hmac.compare_digest(expected, actual)
+
+
+def backend_proxy_secret_matches(app_name: str, secret: str) -> bool | None:
+    """Whether *secret* belongs to the tracked spawned backend generation.
+
+    ``None`` means the gateway cannot make the claim: there is no tracked
+    process, the process was adopted from another supervisor, or the spawned
+    record predates a usable secret. Only a positive ``False`` is actionable.
+    The comparison is digest-to-digest and constant-time; the secret never
+    enters process metadata, logs, API responses, or persisted state.
+    """
+    with _lock:
+        ap = _processes.get(app_name)
+        expected = ap.proxy_secret_digest if ap and ap.proc is not None else b""
+    return _secret_digest_matches(expected, secret)
+
+
+def backend_secret_generation_matches(app_name: str) -> bool | None:
+    """Compare the tracked spawned backend to the current on-disk app secret.
+
+    Blocking file I/O: callers on the gateway event loop must offload this.
+    An absent or unreadable secret is unknown rather than a mismatch because an
+    out-of-process install may be between its remove and replace steps; the next
+    reconcile pass retries after the transaction settles.
+    """
+    try:
+        secret = (app_dir(app_name) / ".app_secret").read_text().strip()
+    except OSError:
+        return None
+    return backend_proxy_secret_matches(app_name, secret)
 
 
 def list_app_processes() -> list[dict[str, Any]]:
