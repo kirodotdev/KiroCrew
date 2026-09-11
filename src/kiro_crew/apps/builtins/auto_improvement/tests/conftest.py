@@ -33,7 +33,7 @@ that escaped a temporary directory would be obvious in a log.
 against. ``write_json_atomic`` REPLACES the document rather than merging, so the live
 ``target_url``/``target_display`` are dropped and ``clone`` is left naming a pytest temporary
 directory that is reaped when the session ends. The app's page then renders with no repository,
-and calibration refuses because the configured clone no longer exists.
+and calibration refuses because the configured clone does not exist.
 
 Nothing in the suite fails when that happens — the damage lands outside the assertions — so the
 redirect is ``autouse``: a per-file opt-in fixture only protects the files that remember to ask

@@ -413,7 +413,7 @@ class TestCronExprPassthrough:
         self, tmp_path: Path
     ) -> None:
         # Harder variant: the manual run starts AND FINISHES during the
-        # admission await, so the job is no longer in _executing. An id-only
+        # admission await, so the job is not in _executing. An id-only
         # revalidation would double-fire; the live-object _is_due re-check
         # (advanced last_run_ts) must catch it.
         executed: list[str] = []

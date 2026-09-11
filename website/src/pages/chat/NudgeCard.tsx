@@ -39,14 +39,8 @@ export function parseNudgeMessage(
   return { cycle, body }
 }
 
-/**
- * The chip's one-line label for a nudge turn.
- *
- * Exported because the pinned-prompt banner shows the same label for a pinned
- * nudge: two spellings of this ternary over the same two keys would drift the
- * moment the chip's wording changes.
- */
-export function nudgeLabel(cycle: number | null): string {
+/** The row's one-line label for a nudge turn. */
+function nudgeLabel(cycle: number | null): string {
   return cycle !== null
     ? i18nT('pages.chat.nudgeCard.auto_nudge_cycle', { count: cycle })
     : i18nT('pages.chat.nudgeCard.auto_nudge')
@@ -68,12 +62,15 @@ export function nudgeMatchesLoop(message: ChatMessage, activeLoopId?: string | n
 }
 
 /**
- * Compact inline card for auto-nudge turns.
+ * One-line system row for auto-nudge turns.
  *
  * The nudge instruction blob is machine-facing context, not something the user
- * needs to re-read every cycle, so it collapses to a one-line chip. Clicking
- * the chip expands the full instruction text; clicking the cycle badge opens
- * the auto-nudge loop popover.
+ * needs to re-read every cycle — and it is not something the user SAID, so it
+ * must not look like a message either. Drawn as a quiet, centred, muted line
+ * (the same register as a "N earlier steps" divider): the cycle label plus an
+ * expand/collapse word, and the Loop button when this row's loop is the slot's
+ * active one. Clicking the label reveals the raw payload underneath in a
+ * monospace panel; the row itself never grows into a card.
  */
 export default memo(function NudgeCard({
   message,
@@ -87,49 +84,65 @@ export default memo(function NudgeCard({
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const [expanded, setExpanded] = useRowDisclosure(disclosureKey, false)
   const { cycle, body } = parseNudgeMessage(message)
-  const firstLine = body.split('\n').find(l => l.trim().length > 0)?.trim() ?? ''
   const label = nudgeLabel(cycle)
+  const toggleWord = expanded
+    ? i18nT('pages.chat.nudgeCard.collapse')
+    : i18nT('pages.chat.nudgeCard.expand')
 
   return (
     <div
-      className="self-center w-full max-w-full min-w-0 rounded-md ring-1 ring-inset forced-colors:border ring-border bg-card text-muted animate-scale-in"
+      className="self-center w-full max-w-full min-w-0 text-muted animate-scale-in"
       data-testid="nudge-card"
       data-cycle={cycle ?? ''}
+      data-expanded={expanded ? 'true' : 'false'}
     >
-      <div className="flex items-center gap-2 px-3 py-2 min-w-0">
+      <div className="flex items-center justify-center gap-2 min-w-0 px-3 py-0.5">
         <button
           type="button"
           onClick={() => setExpanded(v => !v)}
           aria-expanded={expanded}
           aria-label={expanded ? i18nT('pages.chat.nudgeCard.hide_nudge_instructions') : i18nT('pages.chat.nudgeCard.show_nudge_instructions')}
-          className="flex items-center gap-2 min-w-0 flex-1 text-left text-[13px] leading-5 hover:text-text transition-colors"
+          // Sighted users get what AT already gets: the toggle word alone
+          // ("Expand") read as "what happened this round"; the payload is the
+          // loop's INSTRUCTION, and the tooltip says so.
+          title={expanded ? i18nT('pages.chat.nudgeCard.hide_nudge_instructions') : i18nT('pages.chat.nudgeCard.show_nudge_instructions')}
+          className="flex items-center gap-1.5 min-w-0 text-[12px] leading-5 hover:text-text transition-colors rounded px-1 -mx-1"
           data-testid="nudge-card-toggle"
         >
-          <ChevronRight
-            size={13}
-            className={`lucide-inline shrink-0 transition-transform ${expanded ? 'rotate-90' : ''}`}
-            aria-hidden="true"
-          />
-          <RefreshCw size={13} className="lucide-inline shrink-0" aria-hidden="true" />
-          <span className="font-medium shrink-0">{label}</span>
-          {!expanded && firstLine && (
-            <span className="truncate text-[12px] leading-5 opacity-70 min-w-0">{firstLine}</span>
-          )}
+          <RefreshCw size={12} className="lucide-inline shrink-0 opacity-70" aria-hidden="true" />
+          <span className="truncate">{label}</span>
+          <span aria-hidden="true" className="opacity-50">·</span>
+          <span className="shrink-0 inline-flex items-center gap-0.5 underline-offset-2 hover:underline">
+            {toggleWord}
+            <ChevronRight
+              size={11}
+              className={`lucide-inline shrink-0 transition-transform ${expanded ? 'rotate-90' : ''}`}
+              aria-hidden="true"
+            />
+          </span>
         </button>
         {onOpenLoop && (
+          // Reads as a CONTROL, not a tag: the row has no card chrome any more,
+          // so a bare outlined chip beside a centred divider looked like a
+          // status label nobody would dare click (UX review). Hover fill, a
+          // darker border and a trailing chevron say "this opens something".
           <button
             type="button"
             onClick={onOpenLoop}
-            className="shrink-0 text-[11px] leading-4 px-1.5 py-0.5 rounded border border-border hover:text-text transition-colors"
+            // Names the destination: "View loop" beside "Expand" both promise
+            // "more about this row" until the tooltip says WHICH more.
+            title={i18nT('pages.chat.nudgeCard.view_loop_title')}
+            className="shrink-0 inline-flex items-center gap-0.5 text-[11px] leading-4 pl-1.5 pr-1 py-0.5 rounded border border-border hover:border-text/40 hover:bg-bg-hover hover:text-text active:bg-accent/10 transition-colors cursor-pointer"
             data-testid="nudge-card-open-loop"
           >
             {i18nT('pages.chat.nudgeCard.loop')}
+            <ChevronRight size={11} className="lucide-inline shrink-0" aria-hidden="true" />
           </button>
         )}
       </div>
       {expanded && (
         <div
-          className="px-3 pb-3 pt-0 text-[12px] font-mono leading-5 whitespace-pre-wrap overflow-hidden"
+          className="mt-1 rounded-md ring-1 ring-inset forced-colors:border ring-border bg-card px-3 py-2 text-[12px] font-mono leading-5 whitespace-pre-wrap overflow-hidden animate-rise motion-reduce:animate-none"
           style={{ overflowWrap: 'anywhere', wordBreak: 'break-word' }}
           data-testid="nudge-card-body"
         >

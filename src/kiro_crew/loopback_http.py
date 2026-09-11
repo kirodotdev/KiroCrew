@@ -187,9 +187,9 @@ def loopback_urlopen(
     handlers are stateless, so a cache would be safe for the FIXED code -- but
     it would capture ``getproxies()`` at import time, making the module's
     behaviour depend on when it was first imported and silently defeating any
-    test that sets a proxy variable afterwards. That is not hypothetical: the
-    first version of this module cached the opener, and the regression tests
-    passed even with ``ProxyHandler({})`` deleted. Constructing a few stateless
+    test that sets a proxy variable afterwards. That is not hypothetical: with a
+    cached opener the regression tests pass even with ``ProxyHandler({})``
+    deleted. Constructing a few stateless
     handlers is far cheaper than the loopback round trip that follows.
 
     Use this for the local gateway ONLY. External requests must keep the

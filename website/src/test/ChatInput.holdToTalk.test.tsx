@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { screen, fireEvent, act } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
 import ChatInput from '../components/ChatInput'
+import { ComposerVoiceSliceOverride } from '../chat-core/composer/Composer'
 import { createAudioSample } from '../hooks/mic'
 import { HOLD_MS_DEFAULT } from '../lib/pushToTalk'
 
@@ -83,21 +84,27 @@ beforeEach(() => {
 
 describe('ChatInput — hold-to-talk mode', () => {
   it('offers the mode switch on touch and swaps the textarea for the hold target', () => {
-    renderWithProviders(<ChatInput {...base} {...voiceProps} />)
+    renderWithProviders(<ComposerVoiceSliceOverride inputProps={voiceProps}><ChatInput {...base} /></ComposerVoiceSliceOverride>)
 
     const toSpeech = screen.getByRole('button', { name: 'Switch to voice' })
     expect(screen.queryByTestId('hold-to-talk')).toBeNull()
+    // Keyboard mode: the mic is a bare icon.
+    expect(toSpeech).not.toHaveTextContent('Type instead')
 
     fireEvent.click(toSpeech)
     expect(screen.getByTestId('hold-to-talk')).toBeTruthy()
     // The textarea stays MOUNTED (sr-only) so value, caret and IME state survive.
     expect(screen.getByLabelText('Message input')).toBeTruthy()
-    expect(screen.getByRole('button', { name: 'Switch to keyboard' })).toBeTruthy()
+    const toKeyboard = screen.getByRole('button', { name: 'Switch to keyboard' })
+    expect(toKeyboard).toBeTruthy()
+    // Hold mode is a touch surface: the switch's `title` is hover-only, so the
+    // icon carries a visible word saying what it toggles to.
+    expect(toKeyboard).toHaveTextContent('Type instead')
   })
 
   it('does not offer the mode switch on a fine pointer', () => {
     stubTouch(false)
-    renderWithProviders(<ChatInput {...base} {...voiceProps} />)
+    renderWithProviders(<ComposerVoiceSliceOverride inputProps={voiceProps}><ChatInput {...base} /></ComposerVoiceSliceOverride>)
     expect(screen.queryByRole('button', { name: 'Switch to voice' })).toBeNull()
     expect(screen.getByRole('button', { name: 'Voice input' })).toBeTruthy()
   })
@@ -108,7 +115,7 @@ describe('ChatInput — hold-to-talk mode', () => {
   // the only voice entry point there.
   it('suspends hold mode with a draft and reverts the mic to a record control', () => {
     localStorage.setItem('mc-voice-mode', '1')
-    renderWithProviders(<ChatInput {...base} {...voiceProps} value="a typed draft" />)
+    renderWithProviders(<ComposerVoiceSliceOverride inputProps={voiceProps}><ChatInput {...base} value="a typed draft" /></ComposerVoiceSliceOverride>)
 
     expect(screen.queryByTestId('hold-to-talk')).toBeNull()
     const mic = screen.getByRole('button', { name: 'Voice input' })
@@ -130,7 +137,7 @@ describe('ChatInput — hold-to-talk mode', () => {
       localStorage.setItem('mc-voice-mode', '1')
       voiceProps.onVoiceStart.mockClear()
       voiceProps.onVoiceStop.mockClear()
-      const { rerender } = renderWithProviders(<ChatInput {...base} {...voiceProps} />)
+      const { rerender } = renderWithProviders(<ComposerVoiceSliceOverride inputProps={voiceProps}><ChatInput {...base} /></ComposerVoiceSliceOverride>)
       const bar = screen.getByTestId('hold-to-talk')
 
       pressHoldTarget(bar)
@@ -140,7 +147,7 @@ describe('ChatInput — hold-to-talk mode', () => {
 
       // Capture goes live and a partial arrives: the composer now holds text, but
       // the finger is still down — the bar must not be unmounted from under it.
-      rerender(<ChatInput {...base} {...voiceProps} voiceRecording value="arm auto merge on" />)
+      rerender(<ComposerVoiceSliceOverride inputProps={{ ...voiceProps, voiceRecording: true }}><ChatInput {...base} value="arm auto merge on" /></ComposerVoiceSliceOverride>)
       expect(screen.getByTestId('hold-to-talk')).toBeTruthy()
       expect(screen.getByRole('button', { name: 'Switch to keyboard' })).toBeTruthy()
 
@@ -155,7 +162,7 @@ describe('ChatInput — hold-to-talk mode', () => {
       expect((mic as HTMLButtonElement).disabled).toBe(false)
 
       // Capture ends — the draft keeps the textarea.
-      rerender(<ChatInput {...base} {...voiceProps} value="arm auto merge on" />)
+      rerender(<ComposerVoiceSliceOverride inputProps={voiceProps}><ChatInput {...base} value="arm auto merge on" /></ComposerVoiceSliceOverride>)
       expect(screen.queryByTestId('hold-to-talk')).toBeNull()
     } finally {
       vi.useRealTimers()
@@ -175,7 +182,7 @@ describe('ChatInput — hold-to-talk mode', () => {
     try {
       localStorage.setItem('mc-voice-mode', '1')
       const { rerender } = renderWithProviders(
-        <ChatInput {...base} {...voiceProps} voiceRecording={false} />,
+        <ComposerVoiceSliceOverride inputProps={{ ...voiceProps, voiceRecording: false }}><ChatInput {...base} /></ComposerVoiceSliceOverride>,
       )
       pressHoldTarget(screen.getByTestId('hold-to-talk'))
       // Past the hold threshold: the press is a recognised HOLD, as the name says.
@@ -185,7 +192,7 @@ describe('ChatInput — hold-to-talk mode', () => {
       // partial already fills the composer: the bar must survive on the gesture's
       // ownership plus the ungated flag alone.
       rerender(
-        <ChatInput {...base} {...voiceProps} voiceRecording={false} voiceCaptureActive value="a streaming partial" />,
+        <ComposerVoiceSliceOverride inputProps={{ ...voiceProps, voiceRecording: false, voiceCaptureActive: true }}><ChatInput {...base} value="a streaming partial" /></ComposerVoiceSliceOverride>,
       )
       expect(screen.getByTestId('hold-to-talk')).toBeTruthy()
     } finally {
@@ -204,19 +211,19 @@ describe('ChatInput — hold-to-talk mode', () => {
   // describing a capture neither of them owned.
   it('does not keep a keyboard-binding capture in hold mode once its partial lands', () => {
     localStorage.setItem('mc-voice-mode', '1')
-    const { rerender } = renderWithProviders(<ChatInput {...base} {...voiceProps} />)
+    const { rerender } = renderWithProviders(<ComposerVoiceSliceOverride inputProps={voiceProps}><ChatInput {...base} /></ComposerVoiceSliceOverride>)
     expect(screen.getByTestId('hold-to-talk')).toBeTruthy()
 
     // Keyboard PTT starts capture: no pointer ever touches the bar. While the
     // composer is still empty there is no draft to read, so hold mode
     // legitimately stays — the bar doubles as a "one mic at a time" stop target.
-    rerender(<ChatInput {...base} {...voiceProps} voiceRecording voiceCaptureActive />)
+    rerender(<ComposerVoiceSliceOverride inputProps={{ ...voiceProps, voiceRecording: true, voiceCaptureActive: true }}><ChatInput {...base} /></ComposerVoiceSliceOverride>)
     expect(screen.getByTestId('hold-to-talk')).toBeTruthy()
 
     // A streaming partial lands. The draft suspends hold mode exactly as if no
     // capture were running, because the touch gesture owns none of it: the
     // keyboard dictation keeps the ordinary composer surface.
-    rerender(<ChatInput {...base} {...voiceProps} voiceRecording voiceCaptureActive value="a keyboard partial" />)
+    rerender(<ComposerVoiceSliceOverride inputProps={{ ...voiceProps, voiceRecording: true, voiceCaptureActive: true }}><ChatInput {...base} value="a keyboard partial" /></ComposerVoiceSliceOverride>)
     expect(screen.queryByTestId('hold-to-talk')).toBeNull()
     // ...and the capture keeps its own live stop control: the mic is a record
     // toggle again, enabled, labelled for the session it can actually end.
@@ -235,18 +242,18 @@ describe('ChatInput — hold-to-talk mode', () => {
     try {
       localStorage.setItem('mc-voice-mode', '1')
       const { rerender } = renderWithProviders(
-        <ChatInput {...base} {...voiceProps} voiceDictationPanel />,
+        <ComposerVoiceSliceOverride inputProps={{ ...voiceProps, voiceDictationPanel: true }}><ChatInput {...base} /></ComposerVoiceSliceOverride>,
       )
       pressHoldTarget(screen.getByTestId('hold-to-talk'))
       act(() => { vi.advanceTimersByTime(HOLD_MS_DEFAULT) })
       rerender(
-        <ChatInput {...base} {...voiceProps} voiceDictationPanel voiceRecording value="a streaming partial" />,
+        <ComposerVoiceSliceOverride inputProps={{ ...voiceProps, voiceDictationPanel: true, voiceRecording: true }}><ChatInput {...base} value="a streaming partial" /></ComposerVoiceSliceOverride>,
       )
 
       // Release with the draft present: hold mode drops, capture keeps draining.
       releaseHoldTarget(screen.getByTestId('hold-to-talk'))
       rerender(
-        <ChatInput {...base} {...voiceProps} voiceDictationPanel voiceRecording value="a streaming partial" />,
+        <ComposerVoiceSliceOverride inputProps={{ ...voiceProps, voiceDictationPanel: true, voiceRecording: true }}><ChatInput {...base} value="a streaming partial" /></ComposerVoiceSliceOverride>,
       )
 
       expect(screen.getByTestId('voice-dictation-panel')).toBeTruthy()
@@ -263,7 +270,7 @@ describe('ChatInput — hold-to-talk mode', () => {
   it('keeps the dictation panel keyboard hint for a keyboard-binding capture', () => {
     localStorage.setItem('mc-voice-mode', '1')
     renderWithProviders(
-      <ChatInput {...base} {...voiceProps} voiceDictationPanel voiceRecording value="a keyboard partial" />,
+      <ComposerVoiceSliceOverride inputProps={{ ...voiceProps, voiceDictationPanel: true, voiceRecording: true }}><ChatInput {...base} value="a keyboard partial" /></ComposerVoiceSliceOverride>,
     )
     expect(screen.getByTestId('voice-dictation-panel')).toBeTruthy()
     expect(screen.getByText(/Esc to cancel/)).toBeTruthy()
@@ -276,7 +283,7 @@ describe('ChatInput — hold-to-talk mode', () => {
     // must NOT swap in a bar that renders `settling` (disabled) beside a disabled
     // mode switch — that leaves a live microphone with nothing able to stop it.
     renderWithProviders(
-      <ChatInput {...base} {...voiceProps} voiceRecording voiceCaptureActive value="a draft the user typed" />,
+      <ComposerVoiceSliceOverride inputProps={{ ...voiceProps, voiceRecording: true, voiceCaptureActive: true }}><ChatInput {...base} value="a draft the user typed" /></ComposerVoiceSliceOverride>,
     )
 
     expect(screen.queryByTestId('hold-to-talk')).toBeNull()
@@ -296,21 +303,29 @@ describe('ChatInput — hold-to-talk mode', () => {
       localStorage.setItem('mc-voice-mode', '1')
       // The gesture is REAL, so this is a transcript landing mid-gesture rather
       // than dictation started over a draft — only ownership tells them apart.
-      const { rerender } = renderWithProviders(<ChatInput {...base} {...voiceProps} />)
+      const { rerender } = renderWithProviders(<ComposerVoiceSliceOverride inputProps={voiceProps}><ChatInput {...base} /></ComposerVoiceSliceOverride>)
       pressHoldTarget(screen.getByTestId('hold-to-talk'))
       // Past the hold threshold: the press is a recognised HOLD.
       act(() => { vi.advanceTimersByTime(HOLD_MS_DEFAULT) })
       rerender(
-        <ChatInput {...base} {...voiceProps} voiceRecording voiceCaptureActive value="a streaming partial" />,
+        <ComposerVoiceSliceOverride inputProps={{ ...voiceProps, voiceRecording: true, voiceCaptureActive: true }}><ChatInput {...base} value="a streaming partial" /></ComposerVoiceSliceOverride>,
       )
 
       // Hold mode survives the draft while the gesture owns the capture, so this is
       // still a switch.
       const mic = screen.getByRole('button', { name: 'Switch to keyboard' })
-      // ...and a mode cannot be changed mid-capture, so the switch is disabled rather
-      // than silently doing the other job.
-      expect((mic as HTMLButtonElement).disabled).toBe(true)
+      // ...and it stays ENABLED mid-capture: a greyed switch beside an identical
+      // enabled one in a sibling pane read as "no idea why it's off". Pressing it
+      // hands the keyboard back; the hold bar unmounts with the mode and the
+      // gesture's `abandon` discards the press it owned (a release never arrived,
+      // so there is no choice to honour) — the same rule as `pointercancel`.
+      expect((mic as HTMLButtonElement).disabled).toBe(false)
       expect(screen.queryByRole('button', { name: 'Stop recording' })).toBeNull()
+      voiceProps.onVoiceStop.mockClear(); voiceProps.onVoiceCancel.mockClear()
+      fireEvent.click(mic)
+      expect(voiceProps.onVoiceCancel).toHaveBeenCalledTimes(1)
+      expect(voiceProps.onVoiceStop).not.toHaveBeenCalled()
+      expect(localStorage.getItem('mc-voice-mode')).toBe('0')
     } finally {
       vi.useRealTimers()
     }
@@ -323,7 +338,7 @@ describe('ChatInput — hold-to-talk mode', () => {
     // nothing. Same shape as the capture split: an ownership-gated flag being
     // asked a question that is global.
     renderWithProviders(
-      <ChatInput {...base} {...voiceProps} voiceTranscribing={false} voiceTranscribeActive />,
+      <ComposerVoiceSliceOverride inputProps={{ ...voiceProps, voiceTranscribing: false, voiceTranscribeActive: true }}><ChatInput {...base} /></ComposerVoiceSliceOverride>,
     )
 
     const bar = screen.getByTestId('hold-to-talk') as HTMLButtonElement
@@ -337,13 +352,28 @@ describe('ChatInput — hold-to-talk mode', () => {
     expect(mic.disabled).toBe(false)
   })
 
+  it('keeps the held-elsewhere reason in the status row in hold mode, with a plain disabled bar', () => {
+    // One message, one shape: the notice row (and its way to the capturing chat)
+    // shows in hold mode too, instead of the hold bar carrying the sentence in a
+    // second form the reader could not tell apart from the row.
+    localStorage.setItem('mc-voice-mode', '1')
+    renderWithProviders(
+      <ComposerVoiceSliceOverride inputProps={{ ...voiceProps, voiceBusyElsewhere: true }}><ChatInput {...base} /></ComposerVoiceSliceOverride>,
+    )
+    const bar = screen.getByTestId('hold-to-talk') as HTMLButtonElement
+    expect(bar.disabled).toBe(true)
+    expect(bar.textContent).toContain('Hold to talk')
+    expect(bar.textContent).not.toContain('Microphone in use')
+    expect(screen.getByTestId('voice-status-notice')).toHaveTextContent('Microphone in use in another chat')
+  })
+
   it('remembers the mode across mounts', () => {
-    const first = renderWithProviders(<ChatInput {...base} {...voiceProps} />)
+    const first = renderWithProviders(<ComposerVoiceSliceOverride inputProps={voiceProps}><ChatInput {...base} /></ComposerVoiceSliceOverride>)
     fireEvent.click(screen.getByRole('button', { name: 'Switch to voice' }))
     expect(localStorage.getItem('mc-voice-mode')).toBe('1')
     first.unmount()
 
-    renderWithProviders(<ChatInput {...base} {...voiceProps} />)
+    renderWithProviders(<ComposerVoiceSliceOverride inputProps={voiceProps}><ChatInput {...base} /></ComposerVoiceSliceOverride>)
     expect(screen.getByTestId('hold-to-talk')).toBeTruthy()
   })
 })

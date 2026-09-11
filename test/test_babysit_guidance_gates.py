@@ -1,7 +1,7 @@
 """The guidance an agent copies must demonstrate a form that actually gates.
 
-Every place that teaches an agent to arm a babysit loop used to show the subject
-as a bare ``PR #123``. Inference deliberately refuses that form, so a loop armed
+Every place that teaches an agent to arm a babysit loop must show the subject
+as a full PR URL. Inference refuses a bare number, so a loop armed
 from the example stayed on the plain timer and every interval spent a turn -- the
 saving read as zero while the mechanism worked perfectly. Measured on a live
 gateway: of six loops that asked to be gated, five had written a bare number and

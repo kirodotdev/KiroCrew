@@ -69,7 +69,6 @@ export interface RunSummary {
   run_id: string
   name: string
   status: RunStatus
-  result: unknown
   error: string | null
   author: string | null
   session_key: string | null
@@ -84,6 +83,7 @@ export interface RunSummary {
 }
 
 export interface RunDetail extends RunSummary {
+  result: unknown
   source?: string
   events: WfEvent[]
 }

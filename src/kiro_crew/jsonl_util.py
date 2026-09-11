@@ -142,7 +142,7 @@ class UndecodableRecord(UnreadableRecord):
     record's contribution. It is wrong for a caller that writes what it read,
     because the replacement is what gets persisted -- ``compact_cost_log``
     would ``os.replace`` the log with U+FFFD substituted for the original
-    bytes, and a dedupe key built from a replaced record no longer matches the
+    bytes, and a dedupe key built from a replaced record does not match the
     record it came from.
     """
 
@@ -222,15 +222,14 @@ def _frames(handle: IO[bytes], cap: int) -> Iterator[bytes | _Oversized]:
     decide skip-versus-abort and never see a buffer, so a framing subtlety
     cannot turn into a policy bug.
 
-    That split is a direct response to three review findings on this pull
-    request, which looked like three bugs and were one entanglement -- framing
-    state and policy state being read off the same raw buffer. A trailing
+    Reading framing state and policy state off the same raw buffer entangles the
+    two, and the entanglement looks like separate bugs. A trailing
     ``\\r`` must be HELD rather than split (its ``\\n`` may be in the next
-    read), and every one of the three was that held byte interacting with a
-    policy decision: counted as body, so an at-cap record was refused; carried
-    into a read that completed it, so an over-cap record was admitted; and
-    erased when dropping, so the next record's terminator ended the drop and a
-    valid record vanished. None of those is expressible here, because the only
+    read), and each way that goes wrong is that held byte interacting with a
+    policy decision: counted as body, so an at-cap record is refused; carried
+    into a read that completed it, so an over-cap record is admitted; and
+    erased when dropping, so the next record's terminator ends the drop and a
+    valid record vanishes. None of those is expressible here, because the only
     things that leave this function are a whole record and a marker.
 
     Two properties the callers depend on:
@@ -243,9 +242,9 @@ def _frames(handle: IO[bytes], cap: int) -> Iterator[bytes | _Oversized]:
       line's tail could forge a record that framing had just reported as
       dropped.
 
-    Peak memory is MEASURED, not reasoned about, because an earlier version of
-    this docstring claimed "roughly twice the cap" and that was simply wrong --
-    of this reader and of the one it generalises. With ``tracemalloc`` at a 4 MiB
+    Peak memory is MEASURED, not reasoned about: a plausible "roughly twice the
+    cap" estimate is simply wrong -- for this reader and for the one it
+    generalises. With ``tracemalloc`` at a 4 MiB
     cap: main's ``session_digest._bounded_lines`` peaks at 3.03x the cap, and so
     does this reader. It reached 4.03x while each read asked for a full ``cap``
     regardless of what the carried tail already held, which added a whole cap on

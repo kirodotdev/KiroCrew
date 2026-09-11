@@ -16,6 +16,7 @@ from kiro_crew.messaging.session_resume import (
     RoutingDecision,
     SessionChoice,
     SessionResumeController,
+    same_bucket_origin_keys,
 )
 from kiro_crew.messaging.split import split_markdown_safe
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
@@ -164,10 +165,10 @@ class _DiscordResumeSurface:
         if normalized:
             label = _safe_discord_text(" ".join(query.split()), 100).replace("`", "ˋ")
             return (
-                f"No dashboard sessions matched `{label}`. Try fewer words, "
+                f"No sessions matched `{label}`. Try fewer words, "
                 f"or run `!sessions` to see up to {PICKER_LIMIT} recent sessions."
             )
-        return "No recent dashboard sessions."
+        return "No recent sessions."
 
     def picker_heading(self, query: str, total: int) -> str:
         normalized = " ".join(query.casefold().split())
@@ -181,17 +182,17 @@ class _DiscordResumeSurface:
                     f"{'s' if total != 1 else ''} (maximum {PICKER_LIMIT})"
                 )
             return (
-                "🔎 **Dashboard session search**\n"
+                "🔎 **Session search**\n"
                 f"{summary} for `{label}`, ranked over titles and message content."
             )
         if total > PICKER_LIMIT:
-            summary = f"Showing {PICKER_LIMIT} of {total} most recent dashboard sessions."
+            summary = f"Showing {PICKER_LIMIT} of {total} most recent sessions."
         else:
             summary = (
-                f"Showing {total} most recent dashboard session"
+                f"Showing {total} most recent session"
                 f"{'s' if total != 1 else ''} (maximum {PICKER_LIMIT})."
             )
-        return f"🧵 **Recent dashboard sessions**\n{summary}"
+        return f"🧵 **Recent sessions**\n{summary}"
 
     def choice_success(self, choice: SessionChoice) -> str:
         return (
@@ -227,7 +228,7 @@ class _DiscordResumeSurface:
 
 
 class DiscordSessionResume:
-    """Lists dashboard sessions and binds one bidirectionally to Discord."""
+    """Lists dashboard + same-DM native sessions and binds one to Discord."""
 
     def __init__(
         self,
@@ -310,6 +311,7 @@ class DiscordSessionResume:
         user_id: str,
         channel_id: str,
         query: str = "",
+        native_key: str = "",
     ) -> None:
         await self._controller.show_picker(
             _DiscordResumeSurface(client, channel_id),
@@ -317,6 +319,7 @@ class DiscordSessionResume:
             picker_owner=_picker_owner(user_id, channel_id),
             is_owner=self.is_owner(user_id),
             query=query,
+            native_key=native_key,
         )
 
     async def choose(
@@ -324,8 +327,10 @@ class DiscordSessionResume:
         client: "DiscordClient",
         interaction: "DiscordInteraction",
         custom_id: str,
+        native_key: str = "",
     ) -> None:
         nonce, index = self._parse_choice(custom_id)
+        link = self.link_for(interaction.channel_id)
         choice = await self._controller.choose(
             _DiscordResumeSurface(client, interaction.channel_id),
             caller=interaction.user_id,
@@ -334,7 +339,8 @@ class DiscordSessionResume:
             message_id=interaction.message_id,
             nonce=nonce,
             index=index,
-            link=self.link_for(interaction.channel_id),
+            link=link,
+            replace_outbound_keys=same_bucket_origin_keys(self.sessions, link, native_key),
         )
         if choice is not None:
             await self._replay(client, interaction.channel_id, choice.key)

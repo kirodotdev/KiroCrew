@@ -10,7 +10,7 @@ That is load-bearing rather than untidy. ``notify_slot_closed`` reports a hook
 failure instead of swallowing it, and ``api_chat_slot_delete`` REFUSES the
 dismissal on a false return — deliberately, so a dismissed tab can never outlive
 a still-running worker. Applied to a stale hook the same rule inverts: a slot
-belonging to an uninstalled app can no longer be closed at all, because the hook
+belonging to an uninstalled app cannot be closed at all, because the hook
 that must approve the close belongs to an app that is gone.
 """
 

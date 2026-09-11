@@ -1,6 +1,6 @@
-"""Contract tests for the stateless ``ask_question`` MCP tool (issue #755).
+"""Contract tests for the stateless ``ask_question`` MCP tool.
 
-``ask_question`` no longer resolves a user-scoped token or blocks on a
+``ask_question`` does not resolve a user-scoped token or block on a
 server-side HTTP round-trip. It VALIDATES its arguments and returns a session
 DIRECTIVE — a human confirmation plus an opaque marker carrying the validated
 questions (and NO session key). The session-aware consumer
@@ -20,10 +20,9 @@ The tests split along that seam:
   the slot's key, that the confirmation tells the model to END its turn, and
   that a no-client post steers the model to ask in plain text instead.
 
-The former mock-dashboard HTTP server, the ``_post_user`` user-token handshake,
-the socket-timeout margin, and the answered/timeout/error round-trip tests are
-gone: that logic no longer exists — the tool is stateless and the card is posted
-in-process by the applier.
+The tool is stateless: there is no mock-dashboard HTTP server, no ``_post_user``
+user-token handshake, no socket-timeout margin, and no answered/timeout/error
+round-trip test, because the card is posted in-process by the applier.
 """
 
 from __future__ import annotations
@@ -128,7 +127,7 @@ def test_advertised_description_does_not_promise_a_blocking_result():
     """The description is what an agent reads BEFORE its first call, so it has to
     match the seam the rest of this file tests.
 
-    It used to say the tool would "BLOCK until they answer" and hand back the
+    It must not say the tool will "BLOCK until they answer" and hand back the
     answer "as this tool's result — no extra turn". Acting on that is the failure
     mode: the agent posts a card and then keeps working through the turn the
     answer can never arrive in, because delivery is the user's NEXT message.

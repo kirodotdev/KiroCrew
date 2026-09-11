@@ -29,6 +29,7 @@ import json
 from collections.abc import Iterator
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 from aiohttp import web
@@ -89,6 +90,72 @@ async def test_dashboard_create_translates_unreadable_store(tmp_path: Path) -> N
 
     # The refusal is the point: the pre-existing record is still on disk.
     assert b'"j-keep"' in (tmp_path / "crons.json").read_bytes()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("schedule", [{"every": 300}, {"cron": "0 * * * *"}])
+@pytest.mark.parametrize("member", ["unknown", "broken"])
+async def test_dashboard_create_refuses_unavailable_member_without_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, schedule: dict, member: str
+) -> None:
+    from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig
+
+    config = KiroCrewConfig()
+    config.agents["broken"] = KiroCrewAgentConfig(
+        kiro_agent="kirocrew", memory_store="missing-store"
+    )
+    monkeypatch.setattr(KiroCrewConfig, "load", classmethod(lambda cls: config))
+    svc = await CronService.create(base_dir=tmp_path)
+    keep = await svc.add_job_async("keep", "existing task", every_secs=300)
+    before = (tmp_path / "crons.json").read_bytes()
+    refresh = Mock()
+    async with _dashboard_client(svc) as client:
+        client.app["state"].push_refresh = refresh
+        resp = await client.post(
+            "/api/crons",
+            json={"name": "private", "message": "member task", "member_id": member, **schedule},
+        )
+        assert resp.status == 400
+        body = await resp.json()
+        assert body["code"] == "invalid_cron"
+        reason = (
+            "unknown Crew Member" if member == "unknown" else "missing or invalid memory binding"
+        )
+        assert reason in body["error"]
+    refresh.assert_not_called()
+    assert (tmp_path / "crons.json").read_bytes() == before
+    reloaded = await CronService.create(base_dir=tmp_path)
+    assert [job.id for job in reloaded.list_jobs()] == [keep.id]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("schedule", [{"every": 300}, {"cron": "0 * * * *"}])
+async def test_dashboard_create_keeps_valid_member_binding(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, schedule: dict
+) -> None:
+    from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig
+    from kiro_crew.memory_stores import provision_member_memory
+
+    config = KiroCrewConfig()
+    config.agents["writer"] = KiroCrewAgentConfig(kiro_agent="kirocrew")
+    store = provision_member_memory(config, "writer")
+    monkeypatch.setattr(KiroCrewConfig, "load", classmethod(lambda cls: config))
+    svc = await CronService.create(base_dir=tmp_path)
+    refresh = Mock()
+    async with _dashboard_client(svc) as client:
+        client.app["state"].push_refresh = refresh
+        resp = await client.post(
+            "/api/crons",
+            json={"name": "private", "message": "member task", "member_id": "writer", **schedule},
+        )
+        assert resp.status == 200
+        body = await resp.json()
+        assert body["ok"] is True
+    refresh.assert_called_once_with("crons")
+    reloaded = await CronService.create(base_dir=tmp_path)
+    job = reloaded.get_job(body["id"])
+    assert job is not None
+    assert (job.member_id, job.memory_store) == ("writer", store)
 
 
 # ── Positive B: the CLI boundary -- the reproduction named by review ──
@@ -459,7 +526,7 @@ def test_a_transient_read_failure_does_not_brick_an_unchanged_store(tmp_path: Pa
 # this app own?" answers zero for a reason that has nothing to do with ownership.
 # App uninstall reads that zero as authoritative and deletes the app, while the
 # app's still-ENABLED jobs sit on disk and resume the moment the store parses
-# again -- now owned by an app that no longer exists.
+# again -- now owned by an app that does not exist.
 #
 # The vacuous-pass trap specific to these tests: asserting `_jobs == []` over an
 # unreadable store passes with AND without the fix, because the empty list is
@@ -846,8 +913,8 @@ def test_a_read_failure_refuses_an_ack_without_consuming_it(tmp_path: Path) -> N
 # drain returns at `if not to_remove` having already emptied the queue. The
 # requeue arm is never reached.
 #
-# The docstring line "an id no longer present was already removed elsewhere, so
-# dropping it is correct" is what makes this subtle: it is true only when the
+# The production rationale -- that an absent id was "already removed elsewhere, so
+# dropping it is correct" -- is what makes this subtle: it is true only when the
 # load SUCCEEDED. Under a failed load, absence means the list is unknown, not
 # empty, and dropping the intent lets the repaired store re-run a completed
 # one-shot and notify a second time.

@@ -1,7 +1,7 @@
 """Infer WHICH subject a monitor instruction is about, from its own text.
 
 The point of this module is that nothing new has to be passed in. A babysit
-instruction already names its subject -- "Babysit PR #7491
+instruction already names its subject -- "Babysit PR #42
 (kirodotdev/KiroCrew, branch ...)" -- so asking the caller to also supply a
 target parameter would add an opt-in, and an opt-in only pays off for the
 callers that remember to pass it. Inference has no adoption problem because
@@ -47,8 +47,8 @@ _PR_URL = re.compile(
 #: retires a loop whose own work is #42.
 #:
 #: The lookbehind refuses a PATH fragment. A babysit instruction routinely cites
-#: source locations, and ``src/kiro_crew/autonudge.py#1751`` would otherwise read as
-#: owner ``kiro_crew`` / repo ``autonudge.py`` / PR 1751 -- so it would manufacture
+#: source locations, and ``src/kiro_crew/autonudge.py#91`` would otherwise read as
+#: owner ``kiro_crew`` / repo ``autonudge.py`` / PR 91 -- so it would manufacture
 #: an ambiguity out of a line reference and refuse to gate anything.
 #:
 #: Quantifiers bounded for the same reason as the URL pattern's.
@@ -68,7 +68,7 @@ _PR_SHORTHAND = re.compile(
 #: once and then relies on it: matching only the first number let the second one
 #: through unseen, so a loop gated on the URL for #42 retired with the work on #7
 #: unfinished. The chain is bounded to ``#N`` separated by a comma, ``and`` or ``&``
-#: -- it stops at the first token that is neither -- so a later unrelated ``#7511``
+#: -- it stops at the first token that is neither -- so a later unrelated ``#88``
 #: elsewhere in the instruction is not swept in.
 _PR_BARE = re.compile(
     r"\b(?:PRs?|pull requests?)\s*(?P<chain>#\d{1,12}(?:\s*(?:,|and|&)\s*#\d{1,12})*)",
@@ -103,7 +103,7 @@ def infer(text: str) -> Target | None:
     ``None`` on every doubtful case, and specifically when the text names more
     than one distinct pull request. That case is common and it is exactly where
     guessing does damage: a babysit instruction routinely names its own PR *and*
-    a PR it is blocked on ("gated on #4137 merging first"), and a watch armed on
+    a PR it is blocked on ("gated on #7 merging first"), and a watch armed on
     the blocker would report the blocker's progress while staying silent about
     the PR the loop actually owns.
     """

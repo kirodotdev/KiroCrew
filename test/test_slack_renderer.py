@@ -621,7 +621,7 @@ class TestTaskCardNeverAbandonsTheStream:
 
     Rotating on a task-card failure stops the stream the reader is watching and
     continues the answer in a NEW message, so the thread reads as a reply that
-    failed followed minutes later by an unexplained second reply (issue 8511).
+    failed followed minutes later by an unexplained second reply.
     The card is decoration; skipping it withholds no answer text, and
     ``_append_stream`` still rotates when real text is refused.
     """

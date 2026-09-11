@@ -144,8 +144,8 @@ def test_a_short_record_list_never_misattributes(monkeypatch, _cfg):
 def test_home_size_cache_drops_pods_that_stopped(monkeypatch, _cfg):
     """A worktree evicted mid-TTL must stop contributing its cached size.
 
-    The cache used to be left to expire on its own TTL, so a removed pod's size
-    went on being summed into the fleet total and the dict grew unbounded. It is
+    A cache left to expire on its own TTL lets a removed pod's size
+    keep being summed into the fleet total and the dict grow unbounded. It is
     now pruned against the same liveness signal as the CPU samples.
     """
     _stub_rt(monkeypatch, show_stdout=_CANNED_TWO_PODS)
@@ -257,7 +257,7 @@ def test_cpu_percent_null_across_a_fast_restart():
 def test_empty_running_set_clears_stale_caches(monkeypatch, _cfg):
     """No pods running is liveness information, not a reason to skip pruning.
 
-    The early return used to answer before the prune ran, so once every pod
+    The early return would answer before the prune runs, so once every pod
     stopped both caches kept every entry indefinitely -- a stale home size would
     keep feeding the fleet total and a stale CPU sample would be compared against
     a restarted pod's counter.

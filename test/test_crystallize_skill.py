@@ -30,9 +30,9 @@ def test_crystallize_gates_on_recurrence_like_the_auto_pass():
 
     Both paths stage into ``auto/.pending/``, so two different bars for what
     qualifies means the queue's contents depend on which path proposed them.
-    ``_run_skill_detection`` gates on recurrence; this file used to gate on a
+    ``_run_skill_detection`` gates on recurrence; gating instead on a
     "non-trivial, reusable procedure" -- complexity, which an elaborate one-off
-    satisfies -- and excluded only small things (a trivial one-shot answer, a
+    satisfies -- would exclude only small things (a trivial one-shot answer, a
     one-off failure), never large one-off ones. Whitespace is normalized because
     the file is hard-wrapped and a line break would otherwise split a phrase.
     """

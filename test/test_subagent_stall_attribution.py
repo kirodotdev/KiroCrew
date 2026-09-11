@@ -1,4 +1,4 @@
-"""Liveness-attributed stall detection (issue #3920).
+"""Liveness-attributed stall detection.
 
 Separate module so the pre-existing idle-time tests in
 ``test_subagent_stall.py`` stay a readable record of the fallback behaviour.
@@ -59,7 +59,7 @@ def _oracle(verdict: str, evidence: str = "ev") -> MagicMock:
 
 
 def test_dispatch_snapshot_captures_the_trusted_shell_fields():
-    """The loop used to keep only ``title`` and drop the rest of the event.
+    """The loop must keep the whole event, not only ``title``.
 
     That discarded exactly what the oracle needs to attribute evidence: the
     command to cmdline-match against, and the TRUSTED ``is_shell`` /
@@ -356,7 +356,7 @@ async def test_working_cannot_suppress_the_badge_forever():
         await mgr._maybe_flag_stall("a1b2c3d4", below, now)
     assert below.stalled is False, "WORKING should still suppress below the ceiling"
 
-    # Past the ceiling: the same WORKING reading no longer holds the badge back.
+    # Past the ceiling: the same WORKING reading does not hold the badge back.
     over = _info(
         turns=1,
         _pid=4242,

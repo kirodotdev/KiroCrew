@@ -56,6 +56,7 @@ from kiro_crew.dashboard.state import (
 )
 from kiro_crew.dashboard.stop_retry import allow_escalation
 from kiro_crew.history import metadata_now_iso, transcript_stem
+from kiro_crew.memory_stores import named_store_or_empty
 from kiro_crew.security import redact, redact_and_truncate
 from kiro_crew.sel import sel
 from kiro_crew.validation import MAX_LONG_STRING
@@ -220,7 +221,7 @@ def _app_owned_cron_refusal(state: "DashboardState", caller_key: str) -> tuple[s
     an app" and not a third. **A new field on the job that can name a principal is
     a hole here until it is added to this function.**
 
-    Fail-CLOSED when ``session_key`` names a session that is no longer open: its
+    Fail-CLOSED when ``session_key`` names a closed session: its
     ``_app`` cannot be read, and "could not verify the owner is not an app" must
     not read as "has no owner". ``mcp_cron``'s ``cron_add`` records an app's
     authority ONLY in ``session_key`` -- so once that slot is gone, allowing the
@@ -549,7 +550,6 @@ _CONTAINMENT_CHANGE_LABELS = {
     "linked": "the session was linked to a channel",
     "mirrored": "the session gained an outbound channel mirror",
     "mirror_retarget": "the session's outbound mirror was retargeted to a different channel",
-    "crew": "the session was switched to crew mode",
     "ephemeral": "the session became incognito/temporary",
     "app": "the session became app-scoped",
     "unattended": "the session became unattended",
@@ -608,7 +608,6 @@ def containment_snapshot(
     snap: dict[str, Any] = {
         "linked": bool(getattr(slot, "linked_session_key", "")),
         "mirrored": on_probe_failure if probed is None else bool(probed),
-        "crew": getattr(slot, "mode", "") == "crew",
         "ephemeral": getattr(slot, "memory_mode", "persistent") != "persistent",
         "app": bool(getattr(slot, "_app", "")),
         "unattended": str(getattr(slot, "key", "")).startswith(UNATTENDED_SLOT_PREFIXES),
@@ -670,7 +669,7 @@ def newly_held_constraints(
     destroy user speech on a supported flow (``api_chat`` applies no linked
     refusal to composer input). A NEW outbound mirror is never exempt — the
     message's author does not control mirror links, so it still drops. Every
-    other constraint — crew, ephemeral, app, unattended, workspace — applies
+    other constraint — ephemeral, app, unattended, workspace — applies
     to directive entries too.
     """
     recorded: dict[str, Any] = {}
@@ -1030,12 +1029,12 @@ async def create_session(
         # awaited HERE, still ahead of the caller re-resolve below, so the decisions
         # that authorize the allocation are all made after the last suspension.
         cfg = await asyncio.to_thread(KiroCrewConfig.load)
+        bindings = await asyncio.to_thread(resolve_agent_bindings, cfg, agent_name, project_dir)
     except Exception:
         raise SessionControlError(
             "cannot verify the effective agent's workspace binding",
             code="agent_unverifiable",
         ) from None
-    bindings = resolve_agent_bindings(cfg, agent_name, project_dir)
     agent_workspace = _workspace_name_for_dir(cfg, bindings.workspace_dir)
     if agent_workspace != workspace:
         who = repr(agent_name) if agent_name else "the default agent"
@@ -1267,6 +1266,11 @@ async def create_session(
         inherited_trust_reads = bool(getattr(live_caller, "_trust_reads", False))
         slot._trust = inherited_trust
         slot._trust_reads = inherited_trust_reads
+        # The agent's memory silo, from the bindings already resolved above. Held
+        # on the slot so every later save can name it: `memory_store` is
+        # slot-owned metadata, so a save that could not read it would drop the
+        # key and silently return this session to the global store.
+        slot.memory_store = bindings.memory_store_name
         # cwd must follow the workspace too, or file search and project-scoped agents
         # resolve against a directory the slot does not claim -- the same
         # authorization-vs-execution split as the agent binding, one layer down.
@@ -1332,6 +1336,21 @@ async def create_session(
                     # losing it on restart would strand every worker a member
                     # dispatched — controllable in memory, orphaned after reboot.
                     **({"created_by": slot._created_by} if slot._created_by else {}),
+                    # The agent's memory silo, recorded ONLY when it is not the
+                    # default. This is what lets the consolidator write an agent's
+                    # semantic, episodic and lesson rows into its own store
+                    # instead of the global one, and this dict is the only record
+                    # for a session that is created and then sits idle.
+                    #
+                    # Omitted for the default store on purpose: absence is the
+                    # signal for "global", so a default user's metadata line stays
+                    # byte-identical and a session written before crews had stores
+                    # reads the same as one written now.
+                    **(
+                        {"memory_store": _named_store}
+                        if (_named_store := named_store_or_empty(slot.memory_store))
+                        else {}
+                    ),
                 },
             )
         except Exception:
@@ -1525,19 +1544,6 @@ def authorize_target(
         # that channel's content back and a stop would act on a conversation
         # other people are party to.
         raise deny("sessions mirrored to a channel are not addressable", "mirrored_target")
-    if getattr(slot, "mode", "") == "crew":
-        # A crew session's ingress is NOT a turn. `/api/chat` routes it to
-        # `state.crew.ingest`, which makes the message a durable queue entry and
-        # fans it out to topic sub-sessions; the orchestrator acks instantly and
-        # the message is only shown once the entry is durable. Delivering here as
-        # a turn instead would run generic work that is neither queued nor routed
-        # -- accepted, apparently fine, and silently outside the mode.
-        #
-        # Refused rather than emulated, for the same reason a channel-linked
-        # target is: a target whose turn lifecycle differs needs its own
-        # handling rather than a second, drifting copy of the orchestrator's
-        # rules.
-        raise deny("crew-mode sessions are not addressable", "crew_mode_target")
 
     # The caller's own isolation gates it too, and for the same reasons the
     # target's does: an incognito or temporary session is one the user asked to

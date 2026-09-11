@@ -1236,6 +1236,80 @@ def _heredoc_marker(raw: str) -> "str | None":
     return raw[3:] if raw.startswith("<<-") else raw[2:]
 
 
+def _xargs_here_string_rebuild(
+    verb: str, tokens: "list[str]", xargs_index: int, verb_index: int
+) -> "str | None":
+    """The command an xargs-launched verb runs when a here-string feeds it.
+
+    ``xargs ssh <<< localhost`` reaches ``ssh localhost``: bash removes the
+    ``<<< word`` pair from the command's argv and delivers the word on stdin,
+    and xargs turns stdin into ARGUMENTS for the program it launches --
+    appended after the verb's own args, or substituted for every ``-I``/``-i``
+    replacement token (round-35).  Every piece is in the source text, so the
+    caller can judge the rebuilt command exactly like a directly-typed one.
+    Returns ``None`` when no here-string feeds this simple command.  Tokens
+    are kept verbatim (quotes and mask sentinels intact) so the rebuilt text
+    walks the caller's own tokenizer unchanged.
+    """
+    payload: "str | None" = None
+    consumed: "set[int]" = set()
+    # A redirection can sit anywhere in the simple command, including BEFORE
+    # the utility word (``<<< localhost xargs ssh``), so the scan covers the
+    # whole simple command: back to the token after the previous separator,
+    # forward to the next one.
+    start = xargs_index
+    while start > 0 and not _ends_argv(tokens[start - 1]):
+        start -= 1
+    for j in range(start, len(tokens)):
+        tok = tokens[j]
+        if _ends_argv(tok):
+            break
+        hs = _here_string_payload(tok)
+        if hs is None:
+            continue
+        if hs:
+            payload = hs
+            consumed = {j}
+        elif j + 1 < len(tokens) and not _ends_argv(tokens[j + 1]):
+            payload = tokens[j + 1]
+            consumed = {j, j + 1}
+        break
+    if payload is None:
+        return None
+    # xargs's own options decide HOW stdin becomes argv: an ``-I``/``-i``
+    # replacement token is swapped in wherever it appears among the verb's
+    # args; with none, the stdin words are APPENDED after them.
+    replstr: "str | None" = None
+    for k in range(xargs_index + 1, verb_index):
+        opt = tokens[k].strip("\"'")
+        if opt == "-I" and k + 1 < verb_index:
+            replstr = tokens[k + 1].strip("\"'")
+        elif opt.startswith("-I") and len(opt) > 2:
+            replstr = opt[2:]
+        elif opt in ("-i", "--replace"):
+            replstr = "{}"
+        elif opt.startswith("--replace="):
+            replstr = opt.split("=", 1)[1] or "{}"
+        elif opt.startswith("-i") and not opt.startswith("--") and len(opt) > 2:
+            replstr = opt[2:]
+    args: "list[str]" = []
+    for j in range(verb_index + 1, len(tokens)):
+        if j in consumed:
+            continue
+        tok = tokens[j]
+        if _ends_argv(tok):
+            break
+        args.append(tok)
+    if replstr is not None:
+        # xargs substitutes the replacement token ANYWHERE inside an argument
+        # (``ssh user@{}`` becomes ``ssh user@localhost``), so the rebuild
+        # replaces substrings, not only whole tokens.
+        args = [tok.replace(replstr, payload) if replstr in tok else tok for tok in args]
+    else:
+        args.append(payload)
+    return " ".join([verb, *args]).strip()
+
+
 def _operand_span_end(run: list[str], idx: int, text: str) -> int:
     """Index just past a redirect OPERAND that continues into later tokens.
 
@@ -1324,11 +1398,16 @@ def _fold_line_continuations(text: str) -> str:
     ``"A\\<nl>A" BB``        ``<AA><BB>``        yes
     ``'A\\<nl>A' BB``        ``<A\\<nl>A><BB>``   no
     ``$'A\\<nl>A' BB``       ``<A\\<nl>A><BB>``   no
+    ``A\\<cr><nl>A BB``      ``<A\\r>`` + new cmd  no
     ======================  ==================  ========
 
     So: fold unquoted and inside double quotes; preserve inside single quotes and
     inside ANSI-C (``$'…'``) spans.  ``$"…"`` follows the double-quote rule, which
     falls out of the scan because only ``$'`` opens a preserving span.
+
+    Only a BARE newline ends a continuation.  A ``\\`` before ``\\r\\n`` escapes the
+    CR into a literal carriage return and the LF then ends the command, so the two
+    lines stay apart -- see :func:`_continuation_width`.
 
     Runs BEFORE the ANSI-C decode, which is the shell's own order: continuations
     are removed while lexing, and the escape body is interpreted after -- so a
@@ -1406,13 +1485,16 @@ def _fold_line_continuations(text: str) -> str:
 def _continuation_width(text: str, i: int) -> int:
     """Characters to drop for a continuation at *i*, or 0 if there is none.
 
-    ``text[i]`` is known to be a backslash.  Handles both ``\\n`` and ``\\r\\n``
-    line endings so a CRLF command is folded the same way.
+    ``text[i]`` is known to be a backslash.  Only a backslash directly followed
+    by a bare newline is a line continuation.  A backslash before ``\\r\\n`` is
+    NOT: bash reads the backslash as escaping the CR into a literal carriage
+    return, and the LF then ends the command -- measured, ``echo a\\`` + CRLF +
+    ``echo b`` prints ``a`` then ``b`` as two commands, not one.  Folding it
+    would join the two lines and hide a second-line command (e.g. a credential
+    mint) from the argv check while bash still runs it.
     """
     if text.startswith("\\\n", i):
         return 2
-    if text.startswith("\\\r\n", i):
-        return 3
     return 0
 
 
@@ -2162,10 +2244,30 @@ def _self_tokens(text_lower: str) -> "list[str]":
     unsafe for these rules: it cuts on a ``;`` or ``|`` that is INSIDE a quoted
     argument, so ``pkill -f '[;]*kirocrew'`` loses its own target. ``shlex``
     resolves the quotes first, so a quoted separator stays part of one token.
+
+    Line continuations are folded away FIRST, because the shell removes
+    ``\\`` + newline while READING, before it tokenizes anything, so the two
+    characters vanish rather than reaching the operator split as a ``[;&|\\n]+``
+    SEPARATOR. Folding keeps an assignment and the invocation it feeds in one
+    command: ``T=$(ca\\`` + newline + ``se …); kirocrew $T`` resolves ``$T`` and
+    forms the ``kirocrew token`` argv pair the self-protection check needs, the
+    same command bash assembles and runs.
+
+    The fold is the quote- and escape-aware :func:`_fold_line_continuations`,
+    NOT the bare :func:`_shell_join_continuations` regex. Only a LONE
+    ``\\`` + newline is a continuation; an EVEN backslash run before the newline
+    is an escaped literal backslash that ENDS the line, so bash starts a new
+    command. ``true\\\\`` + newline + ``python -m kirocrew token`` runs the mint
+    on the second line, and a bare regex that folds any ``\\`` before a newline
+    would join the two, mangle the ``python`` token, and hide the mint from the
+    argv check while bash still runs it. ``_fold_line_continuations`` folds only
+    the lone case and leaves the escaped run intact, matching bash.
     """
     try:
         return _resolve_function_aliases(
-            _resolve_local_assignments(normalize_shell_command(text_lower))
+            _resolve_local_assignments(
+                normalize_shell_command(_fold_line_continuations(text_lower))
+            )
         )
     except Exception:
         return []

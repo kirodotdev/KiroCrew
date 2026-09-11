@@ -1,10 +1,9 @@
 """AWS Control backups as durable Job SDK runs.
 
-What moved: starting a backup used to execute it inside the request and return
-its terminal record, so "a backup of mine is running" lived only in the React
-component that started it -- a reload or a navigation destroyed the fact while
-the work kept going. The route now claims a server-owned run and returns its
-id, and the browser follows it on the shared ``_jobs`` surface.
+The route claims a server-owned run and returns its id, and the browser follows
+it on the shared ``_jobs`` surface. Because the run is server-owned, "a backup of
+mine is running" survives a reload or a navigation instead of living only in the
+React component that started it and dying with it while the work keeps going.
 
 The cases here are the ones that shape the design rather than merely cover it:
 
@@ -787,7 +786,7 @@ class TestRunnerAuthorization:
 
 class TestReconcile:
     def _write_orphan(self, data_dir: Path, *, status: str = job_sdk.RUNNING) -> str:
-        """A record from a process that no longer exists (a FOREIGN origin)."""
+        """A record from a process that does not exist (a FOREIGN origin)."""
         run_id = "d" * 32
         runs = data_dir / "jobs"
         runs.mkdir(parents=True, exist_ok=True)

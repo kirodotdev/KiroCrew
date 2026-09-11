@@ -83,6 +83,28 @@ hatches exist for mirrored or airgapped installs:
 `memory.embedding_provider` accepts only `llama_cpp`; any other value in an old
 config is coerced to it on load.
 
+Global V1 retains its existing session-start memory retrieval. Crew Member V2
+injects current persona, permanent rules and admitted project guides every turn;
+facts and past experiences are retrieved through the explicit `memory_recall`
+tool. All stores share one model and inference worker. The interactive
+`memory.embedding_threads` default is 4; `memory.embedding_bulk_threads` remains
+1. Explicit settings are honored up to the host's CPU count. Bulk threads may
+be 0 to inherit the normal setting. Background jobs share the configured bulk
+duty cycle, while waiting interactive queries take priority. A full inference
+queue leaves new rows pending and permits keyword retrieval, so additional
+members do not create unbounded native work.
+
+Private V2 execution requires `agent.sandbox=auto` and working Linux/WSL namespaces
+or macOS outer Seatbelt. Native Windows, unconfined execution, unsupported MCP
+backends and Kiro internal delegation refuse private member turns with a reason.
+The owner can still manage memory in the dashboard. Existing members, including
+the default assistant selection, keep their declared V1 memory after upgrading.
+To opt in, open Crew Manager, select the member, open **Workspace · Memory**, and
+choose **Create private memory**. The new V2 store starts empty; previous V1
+stores remain available for an explicit copy of selected starting knowledge.
+Check the execution requirements above before choosing V2. New members receive
+V2 automatically, and an existing V2 member never falls back to V1 on failure.
+
 ## Install paths
 
 ### Which path on Linux

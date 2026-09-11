@@ -159,7 +159,7 @@ class TestInProcessEmbedder:
             def is_ready(self):
                 return False
 
-            def embed(self, text):
+            def embed(self, text, *, priority=PRIORITY_NORMAL):
                 self.embed_calls += 1
                 return None  # model still downloading
 

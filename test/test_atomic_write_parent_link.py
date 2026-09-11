@@ -1,4 +1,4 @@
-"""Tests for ``atomic_write``'s parent link/junction refusal (issue #4381).
+"""Tests for ``atomic_write``'s parent link/junction refusal.
 
 ``mkdir(parents=True)``, ``mkstemp(dir=...)`` and ``os.replace`` follow every
 path component except the final one, so a symlink pre-planted at a secret's

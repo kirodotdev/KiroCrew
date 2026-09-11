@@ -707,7 +707,7 @@ class TestNoOpPassThrough:
     The dashboard renders an explicit "no changes" caption for them; a
     backend drop would compare post-truncation/post-redaction content and
     silently discard real changes past the snapshot limit or inside
-    redacted spans (PR #920 review finding).
+    redacted spans.
     """
 
     def test_noop_write_is_surfaced(self, short_tmp_dir: Path):
@@ -750,8 +750,8 @@ class TestNoOpPassThrough:
 
     def test_flush_always_resets_accumulator(self, short_tmp_dir: Path):
         """The accumulator is cleared on every flush path, so an all-no-op
-        turn can never leak its entries into a later turn (stale-entry
-        misattribution, PR #920 review finding)."""
+        turn can never leak its entries into a later turn and misattribute a
+        stale entry."""
         d = short_tmp_dir
         f = d / "a.py"
         f.write_text("content_a\n")

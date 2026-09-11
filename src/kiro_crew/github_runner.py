@@ -5,9 +5,9 @@ and the child-environment key set — for every ``gh``-spawning surface: the
 dashboard's PR sidebar (``dashboard/handlers/source_providers.py``), Issue
 Radar (``apps/builtins/issue_radar/backend/github_client.py``), and Code
 Review Sage (``apps/builtins/code_review_sage/sage_lib/discovery.py`` /
-``pipeline.py``). Each previously carried its own copy of the hardened-runner
-pattern, so a hardening fix had to land in three places and a missed copy
-silently kept the weaker guard.
+``pipeline.py``). Without one home each carries its own copy of the
+hardened-runner pattern, so a hardening fix has to land in three places and a
+missed copy silently keeps the weaker guard.
 
 Spawning is shared for the sync app-side callers only: Issue Radar and Sage
 route every spawn through :func:`run_gh` below, while the sidebar keeps its
@@ -441,8 +441,8 @@ def provider_executable_candidates(executable: str) -> tuple[str, ...]:
     Resolution inside a directory is delegated to :func:`shutil.which`, which
     applies whatever the platform defines as "runnable there": ``PATHEXT`` on
     Windows, so a bare ``gh`` matches ``gh.exe``, and ``X_OK`` on POSIX. Joining
-    the bare name by hand is why this scan previously found nothing at all on
-    Windows.
+    the bare name by hand is why this scan must not do so: on Windows it would
+    find nothing at all.
 
     A hit is then required to actually LIE INSIDE the directory that was asked
     for, because on Windows ``which`` does not only search ``path``::
@@ -710,8 +710,8 @@ def run_gh(
     keeps its own error taxonomy, and a non-zero exit is returned as-is for
     the caller to classify.
 
-    NOT sandbox-routed today: these sync callers historically spawned bare and
-    this refactor is behavior-preserving. Strict-mode sandboxing would hide
+    NOT sandbox-routed today: these sync callers spawn bare.
+    Strict-mode sandboxing would hide
     ``~/.config/gh`` + the keychain and break auth, though the sidebar's async
     path shows standard-mode routing is compatible — adopting it here is a
     follow-up, not a constraint. The trusted-binary requirement, minimal env,

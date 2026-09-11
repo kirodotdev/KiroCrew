@@ -835,8 +835,8 @@ class TestPortAllocation:
     def test_the_scan_leaks_no_descriptors(self, tmp_path, monkeypatch) -> None:
         """Every branch closes its fd, including the non-regular refusal.
 
-        Worth pinning rather than assuming: round 10 made an un-runnable probe RAISE
-        precisely because descriptor exhaustion is a real state, so a scan leaking one
+        Worth pinning rather than assuming: an un-runnable probe RAISES precisely
+        because descriptor exhaustion is a real state, so a scan leaking one
         per peer would be feeding the very failure it sits in front of.
         """
         c = self._plane(tmp_path, monkeypatch)
@@ -1025,10 +1025,9 @@ class TestPortAllocation:
     def test_the_shared_parser_defines_what_counts_as_a_port(self, value, expected, why) -> None:
         """One parser, one answer, every character class pinned.
 
-        Three call sites used to guard this themselves and each got it wrong
-        differently -- on length, on a sibling that was never audited, and on
-        character class. The guard is now a single function, so these cases are
-        asserted once here instead of being rediscovered per site.
+        Guarding this per call site gets it wrong differently -- on length, on a
+        sibling that was never audited, and on character class. The parser is a
+        single function, so these cases are asserted once here instead of per site.
 
         `isdecimal` rather than `isdigit` is the whole point: `isdigit` is not the
         predicate that matches `int()`. And `isascii` would have been wrong in the
@@ -1198,7 +1197,7 @@ class TestWorktreeResolution:
     ) -> None:
         monkeypatch.setenv("KIROCREW_POD_ENV_DIR", str(tmp_path / "env"))
         c = PodConfig.load()
-        rt.pin_checkout(c, "demo", tmp_path / "gone")  # pinned dir no longer exists
+        rt.pin_checkout(c, "demo", tmp_path / "gone")  # pinned dir is absent
         (tmp_path / "real").mkdir()
         monkeypatch.setattr(rt, "_git_worktrees", lambda ref: {"demo": tmp_path / "real"})
         assert rt.resolve_checkout(c, "demo", cwd=tmp_path) == tmp_path / "real"
@@ -1848,8 +1847,8 @@ class TestProvisionBuildPaths:
 
 
 class TestProvisionDependencyInstall:
-    """Dependency-gap fixes: npm deps before dist build (#229), dev extras in
-    the venv with graceful fallback for old pip (#230)."""
+    """npm deps install before the dist build, and dev extras install in
+    the venv with a graceful fallback for old pip."""
 
     def _venv_seeding_run(self, co: Path, calls: list[list[str]], group_fails: bool = False):
         """Return a fake _run that records calls and materializes the venv bin on
@@ -2029,7 +2028,7 @@ class TestSeedPodOsHome:
     those copied HOST bearer tokens to any agent shell in the pod, and live
     acceptance had already shown the copy was not load-bearing (sign-in comes from
     the runtime's own data store, ``_RUNTIME_AUTH_STORES``). These tests pin the
-    absence of that copy; the tests that used to pin its presence are inverted here.
+    absence of that copy.
 
     ``Path.home()`` inside these tests resolves to the module's autouse
     per-test ``HOME`` pin, not the real invoking user's home -- see the
@@ -2517,10 +2516,10 @@ class TestEveryBootPathWriteRefusesAPlantedLink:
         assert victim.read_text() == "do not truncate me"
 
     def test_a_link_at_the_seed_config_is_refused(self, tmp_path: Path) -> None:
-        """`config.json` carries provider tokens. The create-only guard used to be
-        `exists()`, which FOLLOWS a link -- so a link pointing at any existing host
-        file read as "already configured" and the pod booted on the attacker's file
-        with no write and no error. The guard is an lstat now and a link is refused."""
+        """`config.json` carries provider tokens. The create-only guard is an lstat,
+        not `exists()`: `exists()` FOLLOWS a link, so a link pointing at any existing
+        host file would read as "already configured" and boot the pod on the
+        attacker's file with no write and no error. A link is refused."""
         victim = tmp_path / "host-secret"
         victim.write_text("keep me")
         home = tmp_path / "home"
@@ -2555,11 +2554,10 @@ class TestEveryBootPathWriteRefusesAPlantedLink:
 
 
 class TestEveryTerminalReturnOnTheBootPathIsRecorded:
-    """CLASS 2 of the round-8 restructure. Round 7 unified the terminal returns
-    through `_refuse` but MISSED the scenario-seed path, which printed its own FATAL
-    and returned 3 with no record. Enumerating the returns by AST is what makes a
-    third miss structurally impossible: a new bare `return <terminal code>` fails
-    this test rather than shipping."""
+    """Every terminal return on the boot path is recorded, including the
+    scenario-seed path, which prints its own FATAL and returns 3. Enumerating the
+    returns by AST is what makes a miss structurally impossible: a new bare
+    `return <terminal code>` fails this test rather than shipping."""
 
     def _boot_returns(self) -> list[ast.Return]:
         import inspect
@@ -2601,7 +2599,7 @@ class TestEveryTerminalReturnOnTheBootPathIsRecorded:
     def test_the_scenario_seed_refusal_is_recorded(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """The specific path round 7 missed, pinned end to end."""
+        """The scenario-seed refusal is recorded, pinned end to end."""
         monkeypatch.setenv("KIROCREW_POD_ENV_DIR", str(tmp_path / "env"))
         monkeypatch.setenv("KIROCREW_POD_ROOT", str(tmp_path / "pods"))
         cfg = PodConfig.load()
@@ -2685,13 +2683,11 @@ class TestTheExitTranslationRequiresTheRecord:
 
 
 class TestNoRefusalEscapesBootWithANonTerminalExit:
-    """Round 9's class closure. Rounds 7 and 8 unified the explicit `return` sites
-    and then AST-guarded them -- and a `raise PodError` walked past both, escaping
-    to the CLI's generic handler which exits 1, a code NOT in
-    TERMINAL_BOOT_EXIT_CODES, so systemd retried and launchd's KeepAlive restarted
-    it every ThrottleInterval. `boot` is now a wrapper that converts any refusal
-    into a recorded terminal exit, so escape is impossible by construction rather
-    than by enumeration."""
+    """A `raise PodError` must not escape boot to the CLI's generic handler, which
+    exits 1 -- a code NOT in TERMINAL_BOOT_EXIT_CODES, so systemd retries and
+    launchd's KeepAlive restarts it every ThrottleInterval. `boot` is a wrapper
+    that converts any refusal into a recorded terminal exit, so escape is
+    impossible by construction rather than by enumeration."""
 
     def test_boot_is_a_wrapper_that_converts_refusals(self) -> None:
         import inspect
@@ -2710,8 +2706,8 @@ class TestNoRefusalEscapesBootWithANonTerminalExit:
         for.
 
         Raised from `read_env_file`, the first thing the body does AFTER the name is
-        validated. Round 9 used `validate_name` here, but round 10 moved validation
-        OUTSIDE the guard on purpose: recording a refusal for an unvalidated name made
+        validated. Validation is OUTSIDE the guard on purpose: recording a refusal
+        for an unvalidated name would make
         the refusal machinery a host-write primitive (see
         `TestTheRefusalRecordIsNotAHostWritePrimitive`). So the guard is proved with a
         post-validation site, which is the region it is actually responsible for."""
@@ -2773,9 +2769,9 @@ class TestNoRefusalEscapesBootWithANonTerminalExit:
 
 
 class TestAnAcpTurnHasNoInheritedAwsCredentials:
-    """Round 9 comment-truth fix. The prose claimed "env-credentialed turns are
-    unaffected", which confused the pod GATEWAY's environment with the ACP child's:
-    `build_pod_env` does keep `AWS_*`, but the child is scrubbed AFTER it."""
+    """An ACP turn inherits no AWS credentials. `build_pod_env` does keep `AWS_*`
+    for the pod GATEWAY, but the ACP child is scrubbed AFTER it -- the gateway's
+    environment and the child's are not the same."""
 
     def test_the_scrubber_removes_the_secret_and_session_token(self) -> None:
         from kiro_crew import sandbox
@@ -2806,12 +2802,12 @@ class TestAnAcpTurnHasNoInheritedAwsCredentials:
 
 
 class TestTheRefusalRecordIsNotAHostWritePrimitive:
-    """Round 10. The round-9 wrapper records every refusal it catches, and
-    `_record_refusal` derives its path from the NAME -- so catching a
-    name-VALIDATION failure made `pod _run /tmp/important` atomically overwrite
-    `/tmp/important.refused` outside the pod plane. Two independent controls now:
-    validation happens before the guard, and the record refuses to write outside
-    `pods_dir` regardless of caller."""
+    """The wrapper records every refusal it catches, and `_record_refusal` derives
+    its path from the NAME -- so catching a name-VALIDATION failure would let
+    `pod _run /tmp/important` atomically overwrite `/tmp/important.refused` outside
+    the pod plane. Two independent controls prevent that: validation happens before
+    the guard, and the record refuses to write outside `pods_dir` regardless of
+    caller."""
 
     @pytest.mark.parametrize(
         "bad_name",
@@ -3347,9 +3343,8 @@ class TestTheUnitFileNeverOutlivesAFailedLoad:
 
 @requires_posix_pod_lifecycle
 class TestPodNameMutexOnLinux:
-    """Linux teardown moved onto the ``down`` path, so Linux now has the same
-    down/up race the launchd backend needed the flock for: the mutex can no longer
-    be a no-op there."""
+    """Linux teardown runs on the ``down`` path, so Linux has the same down/up race
+    the launchd backend needs the flock for: the mutex must not be a no-op there."""
 
     def test_start_and_stop_hold_it(self, cfg: PodConfig, monkeypatch: pytest.MonkeyPatch) -> None:
         import contextlib as _ctx
@@ -4011,7 +4006,7 @@ class TestDownSamplesStateUnderTheLock:
 @requires_posix_pod_lifecycle
 class TestDownReclaimsResidue:
     """``pod down`` is the reclaim command the orphan report points at, so it has
-    to work on a pod that is no longer running."""
+    to work on a pod that is not running."""
 
     def _orphan(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[PodConfig, Path]:
         monkeypatch.setenv("KIROCREW_POD_ROOT", str(tmp_path / "pods"))
@@ -4375,12 +4370,11 @@ class TestAuditEvents:
 
 
 class TestLsSurfacesARefusedPod:
-    """`PodConfig.refusal_file`'s stated justification is that `pod ls` reports a
-    terminal refusal the same way on both service managers. It did not: a refused pod
-    is not running, so it fell out of the listing entirely and `ls` printed "no pods
-    running" -- the note existed with no reader, and a pod that silently vanishes from
-    `ls` is exactly how a boot failure hides. Round 11 made the claim true rather than
-    deleting it."""
+    """`PodConfig.refusal_file`'s justification is that `pod ls` reports a terminal
+    refusal the same way on both service managers. A refused pod is not running, so
+    without this it falls out of the listing entirely and `ls` prints "no pods
+    running" -- the note has no reader, and a pod that silently vanishes from `ls`
+    is exactly how a boot failure hides."""
 
     def test_a_refused_pod_appears_with_its_reason(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
@@ -4749,7 +4743,7 @@ class TestUpVerb:
         exists to give them.
 
         So the marker is cleared the moment an operator pin is detected, and the
-        follow-on is asserted too: pinning the previously-auto value is respected.
+        follow-on is asserted too: pinning the once-auto value is respected.
         """
         c = self._prep(tmp_path, monkeypatch)
         c.pods_dir.mkdir(parents=True, exist_ok=True)
@@ -4773,7 +4767,7 @@ class TestUpVerb:
             f"a stale marker survived as {env.get(rt.AUTO_PORT_KEY)!r}; if the "
             "operator later pins that same port it would read as machine-made"
         )
-        # The follow-on: pinning the previously-auto port is now respected.
+        # The follow-on: pinning the once-auto port is respected.
         c.env_file("demo").write_text(f"PORT='7850'\n{rt.AUTO_PORT_KEY}=''\n")
         assert rt.operator_pinned(c, "demo") is True, (
             "after the marker is cleared, pinning the old auto port must read as "

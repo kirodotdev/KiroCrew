@@ -205,9 +205,8 @@ def _report(embedder: str) -> dict:
             "retrieval": {"mmr": True},
             "search_backend": "sqlite_cosine",
             "embedder": embedder,
-            # Required since round 13: absent provenance is refused,
-            # not compared -- two reports both missing a field used
-            # to compare as compatible.
+            # Absent provenance is refused, not compared: two reports both
+            # missing a field would otherwise compare as compatible.
             "environment": {"python": "3.12.10", "platform": "linux-x86_64"},
         },
         "metrics": {

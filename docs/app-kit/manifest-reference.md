@@ -642,6 +642,43 @@ symlinked sibling resolves wherever it points. Do not use a bare
 shipping a `config.py` would end up sharing one module. `from kiro_crew...`
 absolute imports are for built-in apps only.
 
+**Python dependencies.** Runtime `requirements.txt` provisioning — the
+`data/.kirocrew-deps/` tree described in the stdio `command`-resolution passage
+above (see #7878 / #7901 for the mechanism) — runs only where app code executes
+as its own process: the `backend.entryPoint` spawn path (a real file entry
+point in the app's own tree) and stdio MCP server registration. Hook code gets
+nothing from it: the tree reaches processes **spawned on the app's behalf** —
+through a `site`-processing launch shim for Python commands, on `PYTHONPATH`
+for ABI-matched others — and is never placed on the Gateway's own import path,
+because hooks run inside the Gateway process, where an app-controlled tree
+ahead of the trusted modules could shadow the Gateway's own code. That is the
+same rule that keeps `-m kiro_crew...` servers off the app deps, and it binds
+your hook code too: do not push your own tree onto `sys.path` ahead of the
+Gateway's modules from inside a hook.
+
+What serves hooks instead is the **install-time build step**: a registry
+install (which clones the app's git source) runs `pip install .` (or
+`pip install -r requirements.txt` when there is no `pyproject.toml`/`setup.py`)
+into the Gateway's own interpreter — the one that imports your hooks (see the
+publishing guide's install flow) — but only when the app's source directory
+(the `subdirectory` when one is declared) has no `package.json`, which takes
+precedence and routes the build to npm instead. Two caveats: the desktop app's
+bundled interpreter fails the build step outright, and a failed `pip` run —
+including a Gateway interpreter that has no `pip` module — fails the install
+rather than skipping the build. An app installed by other means, one whose
+`package.json` routed the build to npm, or one declaring no
+`requirements.txt`/`pyproject.toml`/`setup.py` at all, imports only the stdlib
+plus whatever the Gateway's environment already provides.
+
+If you create a directory to hold your own dependencies, do **not** name it
+`.venv`. Interpreter resolution (`resolve_app_python`) runs only for spawned
+surfaces — a backend entry point or a stdio MCP server — so a purely
+hooks-only app never triggers it; but the moment your app also declares one of
+those (now or in a later version), a real, probe-usable virtual environment at
+`<app>/.venv` becomes the interpreter for anything spawned on the app's
+behalf whenever no provisioned deps tree is active, even when it holds no
+packages at all.
+
 ## Permissions
 
 ### `permissions` — Declared Capabilities
@@ -858,10 +895,12 @@ Two things decide whether your app can honestly claim `windows`:
    it is unaffected by the item below. An app with a `backend.entryPoint` is
    spawned through `sandbox.wrap_argv` without the first-party carve-out, and
    Kiro Crew has no native Windows sandbox backend — so on native Windows that
-   spawn needs the operator's `agent.sandbox_allow_unsandboxed_exec=true` (or
-   `agent.sandbox='off'`). That is a documented prerequisite, not a reason to
-   publish "does not run here": state it in your app's `configuration` copy so
-   the dependency is not a surprise. See `docs/guides/windows-install.md` and
+   spawn runs unconfined under this platform's default, since no backend is
+   installable here; it is refused only where the operator declared
+   `agent.sandbox_allow_unsandboxed_exec=false` or a governance
+   `sandbox.min_level` floor is pinned. Say so in your app's `configuration`
+   copy rather than publishing "does not run here", so a locked-down host is
+   not a surprise. See `docs/guides/windows-install.md` and
    `docs/system-specs/common/platform-compat.md`.
 
 When `installMode` is `"client"`, the App Store shows copy-paste terminal

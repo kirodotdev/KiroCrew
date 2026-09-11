@@ -58,7 +58,7 @@ def _fake_config(*, turn_timeout: float = CHAT_TURN_TIMEOUT, **watchdog: float) 
     """A real config object with only the two sections under test set.
 
     Real ``AgentConfig``/``WatchdogConfig`` rather than a namespace double, so a
-    key that no longer exists in production fails the test instead of silently
+    key that does not exist in production fails the test instead of silently
     passing on an invented attribute.
     """
     return KiroCrewConfig(

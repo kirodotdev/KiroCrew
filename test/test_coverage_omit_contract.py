@@ -1,6 +1,6 @@
 """Contract: CI runs every test file, and coverage measures every test file.
 
-This used to enforce the opposite direction. ``BACKEND_DESELECTS`` in
+``BACKEND_DESELECTS`` in
 ``.github/workflows/ci.yml`` deselected eleven test files from EVERY backend pytest
 invocation, because the GitHub Actions runners deny ``unshare(CLONE_NEWNS)`` and the
 suites drive a real ``git``/``gh``/``pytest`` through ``sandboxed_spawn_argv``. Files CI

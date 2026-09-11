@@ -4,13 +4,13 @@ kiro-cli wraps every mid-stream provider failure in one envelope::
 
     Encountered an error in the response stream: <the real cause>
 
-``_RE_5XX_HINT`` used to match the literal ``response stream``, i.e. the
-ENVELOPE rather than anything about the failure inside it. Because the 5xx
-branch sits near the end of the if/elif chain, that made it a catch-all: every
-provider failure without an earlier curated branch was rewritten to "The model
-backend hit a transient error (HTTP 5xx) ... retry in a moment", the real cause
-was discarded, and ``_is_transient_raw_error`` agreed it was retryable so the
-turn burned the whole retry ladder first.
+``_RE_5XX_HINT`` must NOT match the literal ``response stream`` -- that is the
+ENVELOPE, not anything about the failure inside it. Because the 5xx branch sits
+near the end of the if/elif chain, matching the envelope makes it a catch-all:
+every provider failure without an earlier curated branch is rewritten to "The
+model backend hit a transient error (HTTP 5xx) ... retry in a moment", the real
+cause is discarded, and ``_is_transient_raw_error`` agrees it is retryable so the
+turn burns the whole retry ladder first.
 
 Reported case: a monthly-usage-limit rejection. The terminal CLI printed "The
 monthly usage limit has been reached" while the dashboard, for the same class of
@@ -19,7 +19,7 @@ succeed until the allowance resets.
 
 Two changes are pinned here:
 
-1. The envelope is no longer a transient token, and unrecognised failures show
+1. The envelope is not a transient token, and unrecognised failures show
    the provider's own text (CLI parity) instead of a ``repr`` of the JSON-RPC
    dict.
 2. Usage-limit exhaustion is a first-class TERMINAL branch, so it is never
@@ -148,7 +148,7 @@ class TestProviderDetail:
 
 
 class TestMalformedRequestIsTerminalAndActionable:
-    """A structural "Improperly formed request" rejection (#6022) must become
+    """A structural "Improperly formed request" rejection must become
     actionable repair guidance and lock a terminal (non-retryable) verdict, so a
     deterministically-rejected payload is never re-sent in a loop."""
 
@@ -166,10 +166,9 @@ class TestMalformedRequestIsTerminalAndActionable:
         assert "structural" in out.lower()
         # It says retrying as-is won't help.
         assert "will not help" in out.lower()
-        # It offers a concrete repair affordance (#6022). Only `/compact` is
-        # accepted, and the disjunction that once also accepted the non-existent
-        # `/chat new` is why the defect passed -- see
-        # docs/system-specs/common/error-handling.md (#7213).
+        # It offers a concrete repair affordance. Only `/compact` is accepted;
+        # the non-existent `/chat new` is not, per
+        # docs/system-specs/common/error-handling.md.
         assert "/compact" in out
 
     def test_request_id_is_preserved(self):

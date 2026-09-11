@@ -524,7 +524,7 @@ def _user_record_of_length(total: int) -> str:
 
 
 class TestBoundedRecords:
-    """A crafted newline-free record must not be materialised (#6345).
+    """A crafted newline-free record must not be materialised.
 
     Both trees read here are agent-writable, so `for line in handle` let one
     line without a newline in it allocate the whole file. These tests pin the
@@ -759,16 +759,10 @@ class TestBoundedRecords:
     ) -> None:
         """A CRLF-terminated record of exactly cap bytes is accepted.
 
-        This REVERSES a one-byte refusal that main pinned deliberately. The pin's
-        stated cost was that buying the byte back "would cost the reader its
-        single invariant (a return shorter than cap+1 is a whole record)" -- true
-        of the old reader, which decided over-cap straight from the length of one
-        `readline(cap + 1)`. The shared reader no longer has that invariant to
-        lose: it already defers a trailing carriage return across reads, because
+        The shared reader defers a trailing carriage return across reads, because
         it must not split a CRLF whose line feed has not arrived. Excluding that
-        pending byte from the body length therefore costs nothing that was not
-        already being paid, and the record below is legal by the cap's own
-        definition -- its body IS cap bytes.
+        pending byte from the body length therefore costs nothing, and the record
+        below is legal by the cap's own definition -- its body IS cap bytes.
 
         Left refused, it suppressed a real participation entry in
         `members.read_activity`, which is why this is a correctness fix rather

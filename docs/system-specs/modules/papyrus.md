@@ -667,8 +667,10 @@ no bare `fcntl`/`os.killpg`/`signal.SIGKILL`, `start_new_session=IS_POSIX`
   422 `compiler_sandbox_unavailable`, and `gitops` raises
   `GitSandboxUnavailable` (a `GitError` subclass, so existing handlers keep
   working) → 422 `git_sandbox_unavailable`. Both carry the sandbox layer's own
-  remedy text, which names the `agent.sandbox_allow_unsandboxed_exec` opt-in that
-  `docs/guides/windows-install.md` documents for this host. Bypassing the wrap was
+  remedy text, which names the `agent.sandbox_allow_unsandboxed_exec` setting that
+  `docs/guides/windows-install.md` documents for this host. On Windows these 422s
+  are reached only where that key is declared `false` or a governance
+  `sandbox.min_level` floor is pinned, since the platform default permits the spawn. Bypassing the wrap was
   rejected: `strict` mode is what stops `\input{../../.aws/credentials}` from
   typesetting the operator's keys into the PDF, and `gitops` runs `standard`
   precisely so an SSH push can see the key.

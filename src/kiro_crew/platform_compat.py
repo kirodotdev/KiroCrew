@@ -14,6 +14,7 @@ import ctypes.util
 import errno
 import functools
 import io
+import ipaddress
 import logging
 import ntpath
 import os
@@ -613,9 +614,9 @@ def file_lock(
     section unserialized, since proceeding lock-less is the exact fail-open that
     loses writes. The timeout is a safety ceiling against a stuck holder, not a
     normal wait (every in-tree critical section is a sub-second read + atomic
-    rename). ``required`` is retained for call-site intent but no longer changes
+    rename). ``required`` is kept for call-site intent and does not change
     the outcome (both paths refuse to proceed without the lock). On POSIX the
-    acquire blocks until the lock is free, as before.
+    acquire blocks until the lock is free.
 
     *wait* is for a caller whose work is OPTIONAL and retried later, and which
     may run on the event-loop thread: with ``wait=False`` the acquire is
@@ -653,11 +654,11 @@ def file_lock(
         # than enter the critical section unserialized. Entering anyway is the
         # exact fail-open that loses writes; a loud error in that rare case is
         # strictly safer, and callers already run under `with`, so the fd is
-        # cleaned up. `required` is retained for call-site intent but no longer
-        # changes the outcome — both paths now refuse to proceed lock-less.
+        # cleaned up. `required` is kept for call-site intent and does not
+        # change the outcome — both paths refuse to proceed lock-less.
         timeout = _WIN_LOCK_TIMEOUT_SECS if wait else 0.0
         # Called with no keyword on the waiting path, so the default-argument
-        # call shape existing tests stub out stays exactly as it was.
+        # call shape existing tests stub out is preserved.
         acquired = _win_acquire_blocking(fd) if wait else _win_acquire_blocking(fd, timeout=0.0)
         if not acquired:
             if not wait:
@@ -1496,9 +1497,14 @@ def get_process_start_id(pid: int) -> str | None:
     - macOS: ``libproc.proc_pidinfo`` ``pbi_start_tvsec``/``pbi_start_tvusec``
       (microsecond resolution, so processes spawned in the same second do not
       alias — unlike ``ps -o lstart=``, which is 1-second granularity).
-    - Windows / any failure (including a process we may not introspect): ``None``,
-      meaning "identity unknown" — callers must not treat that as a mismatch.
+    - Windows: creation FILETIME from a query-only process handle (100 ns).
+    - Any failure: ``None``, meaning "identity unknown"; identity-sensitive
+      callers must refuse authorization when they cannot confirm it.
     """
+    if pid <= 0:
+        return None
+    if sys.platform == "win32":
+        return process_start_time(pid)
     if sys.platform == "linux":
         try:
             stat_data = Path(f"/proc/{pid}/stat").read_text()
@@ -1534,6 +1540,302 @@ def get_process_start_id(pid: int) -> str | None:
             return f"{sec}.{usec:06d}"
         except Exception:
             return None
+    return None
+
+
+def process_namespaces_match(pid: int, reference_pid: int) -> bool | None:
+    """Compare live Linux user AND mount namespaces; unknown is never a match.
+
+    These kernel identities survive reparenting and cannot be replaced by a
+    descendant with identities from its parent's user namespace. Comparing both
+    prevents a new mount view in the same user namespace from borrowing host
+    authority. Process incarnation checks bracket the reads to reject PID reuse.
+    """
+    if sys.platform != "linux" or any(
+        isinstance(value, bool) or not isinstance(value, int) or value <= 1
+        for value in (pid, reference_pid)
+    ):
+        return None
+    try:
+        starts = [get_process_start_id(value) for value in (pid, reference_pid)]
+        if not all(starts):
+            return None
+        identities = []
+        for value in (pid, reference_pid):
+            identity = []
+            for namespace in ("user", "mnt"):
+                info = Path(f"/proc/{value}/ns/{namespace}").stat()
+                identity.append((info.st_dev, info.st_ino))
+            identities.append(identity)
+        if starts != [get_process_start_id(value) for value in (pid, reference_pid)]:
+            return None
+        return identities[0] == identities[1]
+    except (OSError, ValueError):
+        return None
+
+
+def process_is_sandboxed(pid: int) -> bool | None:
+    """Read inherited macOS Seatbelt state without applying a policy.
+
+    The null-operation sandbox_check query reports whether the process has a
+    sandbox, including after its original parent exits. Missing SPI, errors and
+    process recycling are unknown; callers must not treat them as unsandboxed.
+    """
+    if sys.platform != "darwin" or isinstance(pid, bool) or not isinstance(pid, int) or pid <= 1:
+        return None
+    try:
+        start = get_process_start_id(pid)
+        if not start:
+            return None
+        library = ctypes.CDLL("/usr/lib/libsandbox.dylib", use_errno=True)
+        check = library.sandbox_check
+        check.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int]
+        check.restype = ctypes.c_int
+        result = check(pid, None, 0)
+        if get_process_start_id(pid) != start or result not in (0, 1):
+            return None
+        return result == 1
+    except (AttributeError, OSError, ValueError):
+        return None
+
+
+def process_can_read_under_sandbox(pid: int, path: Path) -> bool | None:
+    """Query a live Darwin process's Seatbelt read permission without reading.
+
+    A sandboxed V1 runtime can read Global memory; a private member cannot.
+    The sandbox-presence bit alone cannot distinguish those policies. Callers
+    supply a trusted absolute path and accept only an explicit True result.
+    """
+    if sys.platform != "darwin" or isinstance(pid, bool) or not isinstance(pid, int) or pid <= 1:
+        return None
+    try:
+        if not path.is_absolute():
+            return None
+        start = get_process_start_id(pid)
+        if not start:
+            return None
+        library = ctypes.CDLL("/usr/lib/libsandbox.dylib", use_errno=True)
+        check = library.sandbox_check
+        # sandbox_check is variadic. Declare only its three fixed arguments;
+        # Apple ARM64 passes the fourth (path) argument using the varargs ABI.
+        check.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int]
+        check.restype = ctypes.c_int
+        no_report = ctypes.c_int.in_dll(library, "SANDBOX_CHECK_NO_REPORT").value
+        # SANDBOX_FILTER_PATH is 1 in Apple's SandboxSPI.h declaration.
+        result = check(pid, b"file-read-data", 1 | no_report, ctypes.c_char_p(os.fsencode(path)))
+        if get_process_start_id(pid) != start or result not in (0, 1):
+            return None
+        return result == 0
+    except (AttributeError, OSError, TypeError, ValueError):
+        return None
+
+
+def _normalized_tcp_endpoint(endpoint: tuple[str, int]) -> tuple[str, int]:
+    address = ipaddress.ip_address(endpoint[0])
+    if isinstance(address, ipaddress.IPv6Address):
+        address = address.ipv4_mapped or address
+    if not address.is_loopback or not 0 < endpoint[1] <= 65535:
+        raise ValueError("A concrete loopback endpoint is required")
+    return str(address), endpoint[1]
+
+
+def _linux_tcp_peer_pid(server: tuple[str, int], client: tuple[str, int]) -> int | None:
+    """Map the reverse kernel connection inode to its unique process owner."""
+
+    def endpoint(raw: str) -> tuple[str, int]:
+        address, port = raw.split(":")
+        packed = bytes.fromhex(address)
+        # /proc uses native-endian 32-bit address words, including IPv6.
+        packed = b"".join(
+            int.from_bytes(packed[i : i + 4], sys.byteorder).to_bytes(4, "big")
+            for i in range(0, len(packed), 4)
+        )
+        return _normalized_tcp_endpoint((str(ipaddress.ip_address(packed)), int(port, 16)))
+
+    inodes: set[str] = set()
+    for table in ("tcp", "tcp6"):
+        try:
+            lines = Path(f"/proc/net/{table}").read_text(encoding="ascii").splitlines()[1:]
+        except FileNotFoundError:
+            continue  # IPv6 can be disabled on the host.
+        for line in lines:
+            fields = line.split()
+            if len(fields) < 10 or fields[3] != "01":
+                continue
+            try:
+                if endpoint(fields[1]) == client and endpoint(fields[2]) == server:
+                    if fields[9].isdigit() and int(fields[9]) > 0:
+                        inodes.add(fields[9])
+            except ValueError:
+                continue  # Non-loopback rows cannot identify this caller.
+    if len(inodes) != 1:
+        return None
+    target = f"socket:[{next(iter(inodes))}]"
+    owners: set[int] = set()
+    for process in Path("/proc").iterdir():
+        if not process.name.isdigit():
+            continue
+        try:
+            for descriptor in (process / "fd").iterdir():
+                try:
+                    if os.readlink(descriptor) == target:
+                        owners.add(int(process.name))
+                        break
+                except OSError:
+                    continue  # An unrelated descriptor closed during the scan.
+        except (OSError, ValueError):
+            continue
+    # A socket shared across processes, or hidden by /proc access controls,
+    # cannot positively identify a caller. In-sandbox clients should use UDS.
+    return next(iter(owners)) if len(owners) == 1 else None
+
+
+def _macos_tcp_peer_pid(server: tuple[str, int], client: tuple[str, int]) -> int | None:
+    """Read system lsof's machine fields, never a human-formatted port listing."""
+    binary = trusted_system_bin("lsof")
+    if binary is None:
+        return None
+    output = subprocess.check_output(
+        [binary, "-nP", "-a", f"-iTCP:{client[1]}", "-sTCP:ESTABLISHED", "-Fpn"],
+        stderr=subprocess.DEVNULL,
+        timeout=2,
+    ).decode("ascii")
+    owners: set[int] = set()
+    pid = 0
+    for line in output.splitlines():
+        if line.startswith("p"):
+            pid = int(line[1:]) if line[1:].isdigit() else 0
+        elif pid > 0 and line.startswith("n") and "->" in line:
+            local, remote = line[1:].split("->", 1)
+            try:
+                local_host, local_port = local.rsplit(":", 1)
+                remote_host, remote_port = remote.rsplit(":", 1)
+                if (
+                    _normalized_tcp_endpoint((local_host.strip("[]"), int(local_port))) == client
+                    and _normalized_tcp_endpoint((remote_host.strip("[]"), int(remote_port)))
+                    == server
+                ):
+                    owners.add(pid)
+            except ValueError:
+                continue
+    return next(iter(owners)) if len(owners) == 1 else None
+
+
+def get_tcp_peer_pid(
+    server_endpoint: tuple[str, int], client_endpoint: tuple[str, int]
+) -> int | None:
+    """Resolve a loopback TCP caller from the kernel's exact 4-tuple.
+
+    Pass the accepted socket's sockname then peername, never HTTP headers.
+    Only a unique ESTABLISHED reverse connection is accepted. An unreadable,
+    changing or ambiguous table returns None; authorization must fail closed.
+    Linux uses /proc socket inodes, macOS system lsof, Windows the owner-PID
+    table. Call from a worker thread; Unix socket peer credentials are preferred.
+    """
+    if not IS_WINDOWS:
+        try:
+            server_tuple = _normalized_tcp_endpoint(server_endpoint)
+            client_tuple = _normalized_tcp_endpoint(client_endpoint)
+            if sys.platform == "linux":
+                return _linux_tcp_peer_pid(server_tuple, client_tuple)
+            if sys.platform == "darwin":
+                return _macos_tcp_peer_pid(server_tuple, client_tuple)
+        except (OSError, ValueError, TypeError, subprocess.SubprocessError):
+            logger.debug("Cannot verify loopback TCP peer PID", exc_info=True)
+        return None
+    try:
+        server = ipaddress.ip_address(server_endpoint[0])
+        client = ipaddress.ip_address(client_endpoint[0])
+        addresses = [server, client]
+        normalized = [
+            (
+                address.ipv4_mapped or address
+                if isinstance(address, ipaddress.IPv6Address)
+                else address
+            )
+            for address in addresses
+        ]
+        if not all(address.is_loopback for address in normalized):
+            return None
+        if not all(0 < endpoint[1] <= 65535 for endpoint in (server_endpoint, client_endpoint)):
+            return None
+        ipv6 = any(address.version == 6 for address in addresses)
+        if ipv6:
+            packed = [
+                (
+                    address.packed
+                    if address.version == 6
+                    else ipaddress.IPv6Address(f"::ffff:{address}").packed
+                )
+                for address in addresses
+            ]
+            row_format = struct.Struct("<16sII16sIIII")
+        else:
+            packed = [address.packed for address in addresses]
+            row_format = struct.Struct("<I4sI4sII")
+
+        iphlpapi = ctypes.WinDLL("iphlpapi", use_last_error=True)  # type: ignore[attr-defined]
+        query = iphlpapi.GetExtendedTcpTable
+        query.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(wintypes.DWORD),
+            wintypes.BOOL,
+            wintypes.ULONG,
+            ctypes.c_int,
+            wintypes.ULONG,
+        ]
+        query.restype = wintypes.DWORD
+        size = wintypes.DWORD()
+        # TCP_TABLE_OWNER_PID_CONNECTIONS = 4. Windows AF_INET6 = 23.
+        family = 23 if ipv6 else 2
+        if query(None, ctypes.byref(size), False, family, 4, 0) != 122:
+            return None
+        for _ in range(3):
+            if not 4 <= size.value <= 8 * 1024 * 1024:
+                return None
+            buffer = ctypes.create_string_buffer(size.value)
+            result = query(buffer, ctypes.byref(size), False, family, 4, 0)
+            if result == 122:  # Table grew between the sizing and read calls.
+                continue
+            if result != 0 or not 4 <= size.value <= len(buffer):
+                return None
+            raw = buffer.raw[: size.value]
+            count = struct.unpack_from("<I", raw)[0]
+            if 4 + count * row_format.size > len(raw):
+                return None
+            matches = []
+            for index in range(count):
+                fields = row_format.unpack_from(raw, 4 + index * row_format.size)
+                if ipv6:
+                    (
+                        local,
+                        local_scope,
+                        local_port,
+                        remote,
+                        remote_scope,
+                        remote_port,
+                        state,
+                        pid,
+                    ) = fields
+                    if local_scope or remote_scope:
+                        continue  # Loopback endpoints do not need a scope zone.
+                else:
+                    state, local, local_port, remote, remote_port, pid = fields
+                # Ports occupy the first two bytes of a DWORD in network order.
+                local_port = int.from_bytes(struct.pack("<I", local_port)[:2], "big")
+                remote_port = int.from_bytes(struct.pack("<I", remote_port)[:2], "big")
+                if (
+                    state == 5
+                    and pid > 0
+                    and local == packed[1]
+                    and local_port == client_endpoint[1]
+                    and remote == packed[0]
+                    and remote_port == server_endpoint[1]
+                ):
+                    matches.append(int(pid))
+            return matches[0] if len(matches) == 1 else None
+    except (AttributeError, OSError, TypeError, ValueError, struct.error):
+        logger.debug("Cannot verify loopback TCP peer PID", exc_info=True)
     return None
 
 
@@ -3888,6 +4190,14 @@ def _win_open_without_following(path: str | os.PathLike) -> int:
 
     The handle is wrapped in a CRT descriptor so ``os.fstat`` can read the
     attributes of what was actually opened and ``os.close`` can release it.
+
+    ``O_BINARY`` is part of that wrapping, not a detail. A CRT descriptor in TEXT
+    mode translates CRLF and stops at the first ``0x1A``, and a caller reading
+    with a raw ``os.read`` gets that translation: on a body of 55 bytes holding
+    one ``0x1A``, such a descriptor yields 12. ``os.fdopen(fd, "rb")`` hides the
+    difference because ``io.FileIO`` sets the mode itself, so only a raw-read
+    caller is exposed -- which is precisely the caller that copies media files.
+    Naming the flag here makes the descriptor's contract the same for both.
     """
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
     kernel32.CreateFileW.argtypes = [
@@ -3911,10 +4221,12 @@ def _win_open_without_following(path: str | os.PathLike) -> int:
     )
     if handle is None or handle == wintypes.HANDLE(-1).value:
         raise ctypes.WinError(ctypes.get_last_error())  # type: ignore[attr-defined]
-    return msvcrt.open_osfhandle(handle, os.O_RDONLY)  # type: ignore[attr-defined]
+    return msvcrt.open_osfhandle(  # type: ignore[attr-defined]
+        handle, os.O_RDONLY | getattr(os, "O_BINARY", 0)
+    )
 
 
-def open_file_no_reparse(path: str | os.PathLike) -> int:
+def open_file_no_reparse(path: str | os.PathLike, *, nonblocking: bool = False) -> int:
     """Open a regular FILE for reading, refusing a reparse point at the final name.
 
     The leaf counterpart to :func:`pin_directory`. ``pin_directory`` freezes the
@@ -3935,9 +4247,16 @@ def open_file_no_reparse(path: str | os.PathLike) -> int:
     Refuses a directory with ``IsADirectoryError`` (POSIX reports ``EISDIR`` from the
     read, Windows from ``os.open``; the two are made to agree here). Release the
     descriptor with ``os.close``.
+
+    ``nonblocking`` adds ``O_NONBLOCK`` on POSIX so a caller can reject a FIFO
+    with ``fstat`` before an open waits for a writer. Regular file reads are
+    unaffected. Windows has no POSIX FIFO open; its handle checks stay the same.
     """
     if IS_POSIX:
-        return os.open(os.fspath(path), os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        if nonblocking:
+            flags |= getattr(os, "O_NONBLOCK", 0)
+        return os.open(os.fspath(path), flags)
 
     fd = _win_open_without_following(path)
     try:
@@ -4521,6 +4840,20 @@ def restrict_dir_to_owner(path: str | os.PathLike) -> None:
 
     Fail-loud like :func:`restrict_to_owner`: any failure raises ``OSError`` so
     callers reach their warn-and-continue handlers.
+
+    On Windows the DACL is applied only when the directory's own descriptor does
+    not already match, because that write is an O(descendants) propagation (see
+    :func:`_apply_owner_only_dacl`). RECORDED DECISION: two states leave the
+    directory itself correct while a descendant does not, and neither is
+    detectable without the walk this avoids -- a propagation interrupted part way
+    through, and a child moved in on the same NTFS volume, since a move preserves
+    the child's ACL rather than inheriting the destination's. Measured on a local
+    NTFS volume, the propagation DOES rewrite such a child's INHERITED entries, so
+    skipping the write also stops healing a moved-in child whose foreign grant was
+    inherited at its source; a grant written EXPLICITLY on the child survives the
+    propagation and was never healed by it. Repairing either is a non-goal here:
+    it would cost the propagation on every launch, and a repair path that can
+    afford it belongs with the caller that needs one.
     """
     if IS_POSIX:
         # Semgrep's insecure-file-permissions rule reads 0o700 as "widely
@@ -4544,23 +4877,29 @@ def _apply_owner_only_dacl(path: str | os.PathLike, *, inherit: bool) -> None:
     one function: an owner-only DACL that two call paths could drift apart on is
     the defect this consolidation exists to prevent.
 
-    This used to shell out to ``icacls /inheritance:r /grant:r ...``. It now
-    builds the same descriptor through ``advapi32`` directly, which is what
-    removed the "must not run on the event loop" constraint this helper used to
-    impose on every one of its callers: measured on a local NTFS volume, the
-    subprocess cost 313 ms per call and this costs 0.24 ms. Callers that already
-    offload it are still free to -- a filesystem call can block on a slow volume,
-    so offloading remains good practice -- but it is no longer mandatory, and a
-    caller on the loop is no longer parking the gateway for a third of a second
-    per secret written.
+    The descriptor is built through ``advapi32`` directly rather than by shelling
+    out to ``icacls /inheritance:r /grant:r ...``, so no "must not run on the
+    event loop" constraint falls on the callers: measured on a local NTFS
+    volume, the subprocess costs 313 ms per call and this costs 0.24 ms. Callers
+    that already offload it are still free to -- a filesystem call can block on
+    a slow volume, so offloading remains good practice -- but it is not
+    mandatory, and a caller on the loop does not park the gateway for a third of
+    a second per secret written.
+
+    That 0.24 ms is PER OBJECT, and with ``inherit=True`` the write reaches more
+    than one: Windows propagates an inheritable ACE to every descendant, so on a
+    directory the call is O(descendants). Measured on a local NTFS volume: 86 ms
+    on a 337-object tree and **2.94 s on a 12358-object one**, linear at 0.238 ms
+    per object. Quote the per-object figure as the cost of a directory call and it
+    understates that by four orders of magnitude, which is what the probe below
+    exists to bound.
 
     Resolve the invoking user's SID BEFORE writing anything, and resolve it
     WITHOUT the possibility of a spawn: :func:`current_user_sid` reads the
-    process's own access token and nothing else. The ``whoami``-fallback helper
-    this used while the lockdown was itself a subprocess is gone -- it would have
-    put a blocking spawn back on the event loop on any host where the token read
-    fails, defeating the whole point of removing the icacls call, and once this
-    was its last caller it was dead code.
+    process's own access token and nothing else. There is deliberately no
+    ``whoami`` fallback -- it would put a blocking spawn back on the event loop
+    on any host where the token read fails, defeating the whole point of not
+    shelling out.
 
     If the SID cannot be resolved we CANNOT safely apply the DACL: an
     Owner-Rights-only descriptor (S-1-3-4 alone) would lock the current user out
@@ -4570,7 +4909,7 @@ def _apply_owner_only_dacl(path: str | os.PathLike, *, inherit: bool) -> None:
     prevent). Fail loud with ``OSError``, the same shape callers already handle,
     so the security-warning path fires instead of silently re-introducing the
     ownership-lockout regression. Note the consequence of the token-only rule:
-    on a host whose token read fails we now refuse rather than spawning
+    on a host whose token read fails we refuse rather than spawning
     ``whoami``. That is the safe direction -- a caller that must not fail passes
     ``restrict_on_error="warn"`` and gets a warning instead of a stall.
     """
@@ -4584,6 +4923,42 @@ def _apply_owner_only_dacl(path: str | os.PathLike, *, inherit: bool) -> None:
         )
     sids = (_OWNER_RIGHTS_SID,) if user_sid == _OWNER_RIGHTS_SID else (_OWNER_RIGHTS_SID, user_sid)
     try:
+        # Probe before writing. On a DIRECTORY the write carries inheritable ACEs,
+        # which makes Windows propagate them to every descendant, so the cost is
+        # O(descendants) -- measured 0.238 ms per object, i.e. 2.94 s on a
+        # 12358-object data home. Reading this object's own descriptor is O(1), so
+        # an unchanged DACL costs a constant check instead of a full re-propagation
+        # on every boot. `vector_memory.init()` applies this to the whole data home
+        # on every gateway start, so that saving is paid on every launch.
+        #
+        # TWO STATES THE PROBE CANNOT SEE, both of which leave the parent matching
+        # while a descendant does not:
+        #   1. A propagation interrupted part way (the process dies inside
+        #      SetNamedSecurityInfoW). The parent is committed, some children are
+        #      not, and the parent alone reads as correct from then on.
+        #   2. A child MOVED in on the same NTFS volume. A move preserves the
+        #      child's own ACL rather than inheriting the destination's. Measured:
+        #      the propagation DOES rewrite that child's INHERITED entries, so
+        #      skipping it also stops healing a moved-in child whose foreign grant
+        #      was inherited at its source (Everyone:(I)(R) -> replaced by the
+        #      parent's grants). A grant written EXPLICITLY on the child
+        #      (Everyone:(R)) survives the propagation and was never healed by it.
+        # RECORDED DECISION: neither is repaired here. Detecting either one needs
+        # the descendant walk this removes, and the alternative is an
+        # O(descendants) write on every launch. A caller that must repair a drifted
+        # subtree needs a maintenance path of its own; this is the boot path.
+        #
+        # The probe answers False on any doubt (read failure, NULL or unprotected
+        # DACL, unexpected ACE shape), so a wrong answer costs a redundant write
+        # rather than a skipped lockdown. It is wrapped anyway: the fallback must be
+        # "write", and a probe that somehow raises must not be able to turn a
+        # lockdown into an exception on a path that would otherwise be fixed.
+        try:
+            already_locked = windows_acl.owner_only_dacl_matches(path, inherit=inherit, sids=sids)
+        except Exception:
+            already_locked = False
+        if already_locked:
+            return
         windows_acl.apply_owner_only(path, inherit=inherit, sids=sids)
     except (windows_acl.AclWriteFailed, windows_acl.AclUnavailable) as exc:
         # Translated to OSError so both platforms raise the same type: every
@@ -5112,10 +5487,10 @@ def proc_rss_bytes_for_pid(pid: int) -> int | None:
 
 # --- /proc process-subtree sampling ----------------------------------------
 #
-# ONE walk for the two callers that used to carry their own copy of it:
-# ``mcp_gateway.pool`` and ``subagent`` each had a line-for-line BFS over
-# ``/proc/<pid>/task/<tid>/children`` and its own ``256`` ceiling, so a fix to
-# either policy reached only one surface. :func:`proc_subtree_sample` is now the
+# ONE walk for its two callers, ``mcp_gateway.pool`` and ``subagent``: a
+# per-caller BFS over ``/proc/<pid>/task/<tid>/children`` with its own ``256``
+# ceiling would let a fix to either policy reach only one surface.
+# :func:`proc_subtree_sample` is the
 # single entry point for BOTH, and the helpers below are the per-process reads it
 # is built from -- module-private, because no caller outside this module wants a
 # single read on its own. Pure stdlib: on a host without ``/proc`` every access
@@ -6125,3 +6500,13 @@ def resume_process_main_thread(pid: int) -> bool:
                 kernel32.CloseHandle(snapshot)
             except Exception:
                 logger.debug("CloseHandle(snapshot) failed", exc_info=True)
+
+
+def is_readonly_filesystem(path: Path) -> bool:
+    """Confirm a Linux readonly mount; absence or probe failure grants nothing."""
+    if sys.platform != "linux":
+        return False
+    try:
+        return bool(os.statvfs(path).f_flag & os.ST_RDONLY)
+    except OSError:
+        return False

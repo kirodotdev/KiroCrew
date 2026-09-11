@@ -334,7 +334,7 @@ def terminate_pgid(
             try:
                 os.killpg(pgid, 0)
             except (ProcessLookupError, PermissionError):
-                return  # whole group gone (or no longer ours) — done
+                return  # whole group gone (or not ours) — done
             with contextlib.suppress(ProcessLookupError, PermissionError):
                 os.killpg(pgid, signal.SIGKILL)
             return
@@ -456,7 +456,7 @@ def spawn_feature_gateway(
             **os.environ,
             "PYTHONPATH": str(src) + os.pathsep + os.environ.get("PYTHONPATH", ""),
             "KIROCREW_HOME": str(home),
-            # Isolate the AGENT-SPEC home too, not just the data home (issue #4912).
+            # Isolate the AGENT-SPEC home too, not just the data home.
             # ``kirocrew gateway`` boot runs ``rebuild_agent_config``, which writes the
             # managed MCP specs into ``kiro_agents_dir()``. Left at the default that
             # resolves the operator's real machine-wide ``~/.kiro/agents`` -- and the

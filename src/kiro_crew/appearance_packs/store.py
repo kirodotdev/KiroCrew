@@ -603,12 +603,12 @@ class AppearanceStore:
     def _save_colours(self) -> None:
         """Persist the colour maps. Raises OSError on write failure.
 
-        This used to catch-and-log, which meant a disk-full or read-only
-        write was acknowledged as success: the route returned 200, the UI
-        showed the new colour, and a restart silently reloaded the old map.
-        Callers that can roll back do so; the route wrapper maps the raised
-        OSError to 503 store_write_failed (same contract as the reminder
-        store).
+        Raises rather than catch-and-log: swallowing the error would
+        acknowledge a disk-full or read-only write as success -- the route
+        returns 200, the UI shows the new colour, and a restart silently
+        reloads the old map. Callers that can roll back do so; the route
+        wrapper maps the raised OSError to 503 store_write_failed (same
+        contract as the reminder store).
         """
         tmp = self._colour_path.with_suffix(f".json.tmp.{os.getpid()}")
         tmp.write_text(json.dumps(self._colour_maps, indent=2), "utf-8")

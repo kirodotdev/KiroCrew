@@ -207,7 +207,7 @@ class TestPinsSurviveTheOtherWriter:
         # The agent pins something from the MCP process while the service holds
         # only `a` in memory.
         self._write_disk_pin(tmp_path, b)
-        # Any further service mutation used to persist [a] and erase b.
+        # A further service mutation must persist [a] without erasing b.
         svc.mark_seen(a)
 
         paths = {p["path"] for p in svc.get_pins()}

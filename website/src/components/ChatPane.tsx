@@ -35,7 +35,7 @@ import { usePlanActionMutation, isPlanAction } from '../hooks/usePlanActionMutat
 import { useQueuedMessageActions, queuedSendStash } from '../hooks/useQueuedMessageActions'
 import { useListboxKeyboard } from '../hooks/useListboxKeyboard'
 import { useAppSelector, useAppDispatch, store } from '../store'
-import { PANE_HYDRATE_LIMIT, retireStatelessQuestion, captureStatelessCard, capturePendingAskId, confirmOptimisticSend, resolveOptimisticSteer, selectSlotMessages, selectSlotStreamState, selectSlotRunEpoch, selectComposerBusy, hydrateSlotMessages, appendSlotMessage, requestStop, syncSlotRunningFromServer, setAgentSwitchNotice, pendingQuestionFor } from '../store/chatSlice'
+import { PANE_HYDRATE_LIMIT, retireStatelessQuestion, captureStatelessCard, capturePendingAskId, confirmOptimisticSend, resolveOptimisticSteer, selectSlotMessages, selectSendConfirmed, selectSlotStreamState, selectSlotRunEpoch, selectComposerBusy, hydrateSlotMessages, appendSlotMessage, requestStop, syncSlotRunningFromServer, setAgentSwitchNotice, pendingQuestionFor } from '../store/chatSlice'
 import { handleStopPress, isEscalationState } from '../utils/stopDebounce'
 import { deriveFollowUpOptions } from '../app-sdk/protocol'
 import { CONTENT_WIDTH, loadChatConfig, type ChatConfig } from '../pages/chat/ChatSettings'
@@ -48,11 +48,13 @@ import FlyingQuote from './FlyingQuote'
 import { revealComposer } from '../pages/chat/composerFocus'
 import { triggerRefresh, updateSlot } from '../store/dashboardSlice'
 import { performSlotSwitch } from '../lib/slotSwitch'
+import { drainPendingChunks } from '../lib/pendingChunkDrain'
 import { performAgentSlotSwitch } from '../lib/agentSwitch'
 import { api } from '../api/client'
 import { resolveAskAfterSend } from '../lib/resolveAskAfterSend'
 import { classifyDrop } from '../utils/dropClassify'
 import { prepareSendPayload, serializeDirTokens, spliceDirTokens, VIDEO_EXT } from '../utils/fileTokens'
+import { Composer, type ComposerHandle, type ComposerVoiceOptions } from '../chat-core/composer/Composer'
 import { displayModel } from '../lib/model'
 
 
@@ -277,6 +279,19 @@ export default function ChatPane({
   // has_more freezes at mount while a later bounded warm can truncate the cache.
   const warmHasMore = useAppSelector((s) => s.chat.slotPaneHasMore?.[slotKey])
   const paneSlot = useAppSelector((s) => s.dashboard.slots.find((x) => x.key === slotKey))
+  // The composer is a `Composer` root around the ChatInput preset (chat-core
+  // P3-b). Its Voice atom is what gives the pane a microphone: the pane wires no
+  // voice props, only the two things the atom cannot know — the endpointer's
+  // auto-submit, and (through the root) that a pane's composer IS its slot's, so
+  // the atom's default on-screen predicate is exact. No push-to-talk here: that
+  // key binding is document-wide and ChatPage owns it (follow-up: focused-pane
+  // ownership). The pane's steer-not-queue rule (#8852) stays on `canSteer`
+  // below until the Send atom exists.
+  const composerRef = useRef<ComposerHandle>(null)
+  const doSendRef = useRef<((optionText?: string) => void) | null>(null)
+  const composerVoiceOptions = useMemo<ComposerVoiceOptions>(() => ({
+    onAutoSubmit: () => { doSendRef.current?.() },
+  }), [])
   // Shared composer-busy rule (chatSlice.selectComposerBusy): main turn
   // streaming OR sub-agents running (dual signal). Drives the queue affordance
   // and skips the optimistic user bubble (the backend returns a "queued"
@@ -670,6 +685,9 @@ export default function ChatPane({
     // start a real turn instead of queueing. Same `/api/chat` flag as a steer.
     const text = (optionText || input).trim()
     if (!text && !pendingFiles.length) return
+    // A send while STREAMING dictation is live ends the dictation, before the
+    // composer is read and cleared (see useComposerVoice.disarmForSend).
+    composerRef.current?.voice()?.disarmForSend()
     // Capture the stateless card pending at ENTRY (before any state updates
     // or yields): this send consumes the answer channel of the card the user
     // saw when they hit send. Retired only after the server confirms it
@@ -720,7 +738,8 @@ export default function ChatPane({
     const sendId = `s-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
     // Optimistic user bubble: show immediately in the right position (mirrors the
     // single-chat send). Skipped while busy (main turn streaming OR sub-agents
-    // running) — the backend returns a "queued" message instead, avoiding a duplicate.
+    // running). A real queue has its own card; an immediate dispatch supplies
+    // the skipped row through its correlated user echo.
     const meta = {
       ...(filePaths.length ? { files: filePaths } : {}),
       ...(dirPaths.length ? { dirs: dirPaths } : {}),
@@ -755,6 +774,8 @@ export default function ChatPane({
     // invite a retry that duplicates a turn already in flight, side effects
     // included, so the optimistic composer row stays pending.
     void sendTurn({ message: llm, slot: slotKey, meta, ...(steerNow ? { steer: true } : {}) }).then((receipt) => {
+      if ((receipt.status === 'response-late' || receipt.status === 'transport-error')
+        && selectSendConfirmed(store.getState(), slotKey, sendId)) return
       if (receipt.status === 'refused' || receipt.status === 'transport-error') {
         reportFailedSend(receipt.reason, receipt.status)
         return
@@ -776,26 +797,14 @@ export default function ChatPane({
           // The cost is a visible duplicate (card + refilled draft + notice)
           // when the card did belong to this send; the alternative is silent
           // loss, and the notice says to check the conversation first.
-          const echoed = selectSlotMessages(store.getState(), slotKey).some(m => m.role === 'user' && m.meta?.sendId === sendId)
-          if (!echoed) {
-            restoreIntoComposer(text, files, slotKey)
-            dispatch(appendSlotMessage({ slot: slotKey, message: { role: 'notice', content: '\u26A0\uFE0F ' + i18nT('pages.chatPage.delivery_unconfirmed'), cls: '' } }))
-          }
+          restoreIntoComposer(text, files, slotKey)
+          dispatch(appendSlotMessage({ slot: slotKey, message: { role: 'notice', content: '\u26A0\uFE0F ' + i18nT('pages.chatPage.delivery_unconfirmed'), cls: '' } }))
         }
         return
       }
-      // A steer-flagged send the server neither queued nor injected started a
-      // turn: no `queue_push` or `steer_push` echo is coming, and the busy
-      // rule above skipped the optimistic bubble, so nothing represents the
-      // text. Append it now, addressed to the SENDING slot (ChatPage does the
-      // same, for the same reason). It goes in before the confirm below so
-      // the confirm retires exactly this row.
-      if (steerNow && busy && receipt.status === 'dispatched' && !(receipt.body as { steered?: boolean }).steered && (text || files.length)) {
-        dispatch(appendSlotMessage({
-          slot: slotKey,
-          message: { role: 'user', content: displayTxt, cls: 'msg msg-u', ts: new Date().toISOString(), meta },
-        }))
-      }
+      // The correlated user echo owns insertion before streaming, including
+      // when a busy snapshot skipped the optimistic bubble. A receipt only
+      // confirms an existing row; appending here would duplicate or reorder it.
       // The receipt names the queue entry this send became: bind the
       // pre-send composer state to it so cancelling that card restores the
       // TYPED text and re-stages the files (issue #560). The stash is the
@@ -810,7 +819,7 @@ export default function ChatPane({
         queuedSendStash.set(receipt.body.queue_id, { raw: text, files, sent: llm })
       }
       // The response is the delivery receipt for this pane's optimistic bubble
-      // because no `chat_message` echo is coming for a dashboard send. Only
+      // independently of when its correlated user echo arrives. Only
       // an IMMEDIATE dispatch counts: a queued acceptance is not a receipt for
       // this bubble.
       if (receipt.status === 'dispatched') {
@@ -827,6 +836,9 @@ export default function ChatPane({
       void resolveAskAfterSend(receipt.body, askAtSend, dispatch)
     })
   }, [input, pendingFiles, busy, slotKey, dispatch, restoreIntoComposer, reportSendFailure])
+  // The endpointer auto-submit (handed to the Voice atom above) reads the
+  // latest send through this ref.
+  doSendRef.current = doSend
 
   // Mid-turn steer: inject the composer content into the RUNNING turn instead
   // of queueing behind it. The pane's counterpart to ChatPage.steer, on the
@@ -855,6 +867,12 @@ export default function ChatPane({
     // A steer cannot restore what it cleared on an empty payload, so refuse a
     // payload of nothing (mirrors ChatPage.steer's `!raw && !files.length`).
     if (!raw && !files.length) return
+    // A steer while STREAMING dictation is live ends the dictation, like
+    // doSend: this path clears the composer below, and a partial landing after
+    // the clear would rebuild the sent text (see useComposerVoice.disarmForSend).
+    // AFTER the empty-payload check, like doSend: an Enter on an empty composer
+    // before the first partial lands sends nothing and must not end the capture.
+    composerRef.current?.voice()?.disarmForSend()
     const { txt, filePaths } = prepareSendPayload(raw, files)
     const sendId = `s-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
     // `meta.files` is the ORDERED non-image list the `[attached_file N]`
@@ -864,6 +882,10 @@ export default function ChatPane({
     // channel itself is text-only, but the echo reconciles by merging meta
     // onto this bubble, so the index rides the row from here.
     const steerMeta = { sendId, ...(filePaths.length ? { files: filePaths } : {}) }
+    // Drain the per-frame chunk buffer first, same as ChatPage's steer(): a
+    // pre-steer chunk still pending in useWebSocket's buffer would otherwise
+    // flush BELOW this card (see lib/pendingChunkDrain.ts).
+    drainPendingChunks()
     dispatch(appendSlotMessage({
       slot: slotKey,
       message: { role: 'user', content: txt, cls: 'msg msg-u', ts: new Date().toISOString(), meta: { steer: true, optimistic: true, ...steerMeta } },
@@ -872,8 +894,10 @@ export default function ChatPane({
     setInput('')
     setPendingFiles([])
     void sendTurn({ message: txt, slot: slotKey, steer: true, meta: steerMeta }).then((receipt) => {
+      if ((receipt.status === 'response-late' || receipt.status === 'transport-error')
+        && selectSendConfirmed(store.getState(), slotKey, sendId)) return
       // Receipt policy, same rulings as ChatPage's steerMutation:
-      // - refused / transport-error: nothing was accepted. Drop the bubble
+      // - refused / unconfirmed transport-error: drop the bubble
       //   (left standing it would be a false third copy next to the error row
       //   and the refilled composer), say so in this transcript, hand the
       //   payload back.
@@ -889,8 +913,6 @@ export default function ChatPane({
       //   as delivered), hand the text back, and warn — a duplicate is visible
       //   and deletable, a lost steer is not.
       if (receipt.status === 'response-late') {
-        const bubble = selectSlotMessages(store.getState(), slotKey).find(m => m.role === 'user' && m.meta?.sendId === sendId)
-        if (bubble && !bubble.meta?.optimistic) return
         dispatch(resolveOptimisticSteer({ slot: slotKey, sendId, outcome: 'queued' }))
         restoreIntoComposer(raw, files, slotKey)
         // \u26A0 is NoticeCard's warn-tone selector (parseNotice).
@@ -1344,6 +1366,13 @@ export default function ChatPane({
             shape as ChatPage's inputAreaRef). */}
         {quoteFlight && <FlyingQuote text={quoteFlight.text} from={quoteFlight.from} targetRef={inputAreaRef} onComplete={endQuoteFlight} />}
         <div ref={inputAreaRef} className="relative z-10">
+        <Composer
+          ref={composerRef}
+          slotKey={slotKey}
+          value={input}
+          onChange={setInput}
+          voice={composerVoiceOptions}
+        >
         <ChatInput
           value={input}
           onChange={setInput}
@@ -1443,6 +1472,7 @@ export default function ChatPane({
           onDragOver={dropTargetProps.onDragOver}
           onDragLeave={dropTargetProps.onDragLeave}
         />
+        </Composer>
         </div>
         </div>
 
@@ -1478,7 +1508,7 @@ export default function ChatPane({
               <AgentDropdownList agents={agentDD.filtered} activeAgent={paneAgentName} defaultAgent={defaultAgent} onSelect={(name) => { switchAgent(name); agentDD.setOpen(false) }} />
             </div>
             <DefaultAgentRow agentName={paneAgentName} isDefault={paneAgentName === defaultAgent} onSetDefault={() => toggleDefaultAgent(paneAgentName)} />
-            <ManageAgentsFooter error={defaultAgentFailed} onManage={() => { agentDD.setOpen(false); navigate('/capabilities?tab=templates') }} />
+            <ManageAgentsFooter error={defaultAgentFailed} onManage={() => { agentDD.setOpen(false); navigate('/capabilities?tab=crews') }} />
           </div>,
           document.body,
         )}

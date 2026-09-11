@@ -53,7 +53,7 @@ def _scan_source() -> str:
     block = textwrap.dedent(script[start:end])
     # Pin what the slice must contain, so an edit that moves either marker and
     # shrinks the block fails HERE rather than leaving every assertion below
-    # vacuously green against a fragment that no longer holds the gate.
+    # vacuously green against a fragment that does not hold the gate.
     missing = [landmark for landmark in _SLICE_LANDMARKS if landmark not in block]
     assert not missing, f"the extracted scan block is missing {missing}"
     return block

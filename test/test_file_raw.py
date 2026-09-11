@@ -187,7 +187,7 @@ class TestOpenRbNofollow:
         assert exc_info.value.errno == errno.ELOOP
 
 
-# ── both file endpoints share ONE security envelope (#4031) ──────────────────
+# ── both file endpoints share ONE security envelope ──────────────────────────
 
 
 def test_both_endpoints_route_through_the_shared_envelope():

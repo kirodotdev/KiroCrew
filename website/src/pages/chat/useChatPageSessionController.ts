@@ -11,10 +11,12 @@ import {
   fetchHistory,
   resumeFromHistory,
   setActiveSlot,
+  setPendingInput,
   switchSlot,
 } from '../../store/chatSlice'
 import type { ChatSlot, SessionInfo } from '../../types'
 import { isChatPageSurface } from '../../utils/channelOrigin'
+import { writePrefill } from '../../utils/navIntent'
 import type { PasteBlock } from '../../utils/pasteTokens'
 import { safeSetItem } from '../../utils/safeStorage'
 import { shouldReplaceSessionUrl, popMaySwitchSession } from '../../utils/sessionUrlHistory'
@@ -213,6 +215,26 @@ export function useChatPageSessionController({
   const initialMsgRef = useRef(searchParams.get('msg'))
   const initialMidRef = useRef(searchParams.get('mid'))
   const initialNewRef = useRef(searchParams.get('new') === '1')
+  /**
+   * A prompt to seed the new session's composer with, carried by the SAME cold
+   * URL that asks for the session: `/chat?new=1&prefill=<text>`. This is the deep
+   * link an external launcher (a Slack card, a bookmarklet, a CLI `--open`) can
+   * build, since the only other cold-URL prompt channel is the signed `?token=`
+   * one it cannot mint. It SEEDS ONLY — auto-send stays behind that token path,
+   * so a link can never spend a model turn without a human pressing Enter.
+   *
+   * Read only when `?new=1` is also present, which is the whole guard. A bare
+   * `?prefill=<v>` is an in-app SENTINEL in this dashboard — the file explorer's
+   * "Chat about this file" navigates to `/chat?prefill=1` and a project idea's
+   * "Edit in chat" to `/chat?prefill=plan`, both with the real text riding Redux
+   * `pendingInput` — so honouring one here would spawn a spurious empty session
+   * and drop the literal `1` / `plan` into its composer.
+   *
+   * Captured at MOUNT because ChatPage's own `?prefill=` reader strips the param
+   * from the URL, and consumed in `newSlotMutation.onSuccess` below, the only
+   * place that knows the created session's key.
+   */
+  const initialPrefillRef = useRef(initialNewRef.current ? (searchParams.get('prefill') ?? '') : '')
   // Deep-link mount activation in progress — stops the sync effect from stripping
   // ?sid before activation lands. Cleared once activeSlot is truthy.
   const pendingSidRef = useRef(!!initialSidRef.current)
@@ -263,6 +285,26 @@ export function useChatPageSessionController({
       setNewSlotFailed(false)
       setSidError('')
       if (!slot?.key) return
+      // Stage the launcher's prompt BEFORE the navigate below: that navigate
+      // drops the query string, and the reader on the other side (ChatPage's
+      // slot-restore effect, via `kirocrew_prefill` with its 30s TTL) consumes
+      // the staged value when the new slot becomes active — so a seed written
+      // afterwards has nothing left to seed from. Spent once: a retry of a failed
+      // create still carries the same intent, but must not re-seed a session the
+      // user has since typed into.
+      if (initialPrefillRef.current) {
+        // Storage can refuse the write (disabled, or full past the store's own
+        // reclaim). Fall back to the in-memory `pendingInput` channel the command
+        // bar and file explorer already seed composers through, so a refused write
+        // degrades to "the prompt still arrives" rather than "the prompt is gone" —
+        // the launcher's URL is consumed by the navigate below either way.
+        if (!writePrefill(slot.key, initialPrefillRef.current)) {
+          dispatch(setPendingInput(initialPrefillRef.current))
+        }
+        // Cleared only after the prompt is staged SOMEWHERE, so neither branch can
+        // drop it: this is what makes the seed spent-once rather than lost-once.
+        initialPrefillRef.current = ''
+      }
       navigate(
         embedMode ? `/embed/chat/${slot.key}` : `/chat?sid=${encodeURIComponent(slot.key)}`,
         { replace: true },

@@ -127,11 +127,8 @@ class TestRegistration:
     def test_a_skipped_entry_for_an_unscanned_source_still_reports_a_name(self):
         """An unknown id has no projected name, and must not render as blank.
 
-        The engine used to carry its own `_source_name` placeholder, but its only
-        caller passed a name unconditionally — so the fallback was dead code kept
-        alive by this test. The LIVE placeholder is the handler's, which projects
-        a skipped entry whose source was never scanned, so the coverage moves here
-        rather than being deleted with the dead path.
+        The handler projects a skipped entry whose source was never scanned and
+        gives it a placeholder name, so an unknown id does not render blank.
         """
         from kiro_crew.dashboard.handlers import onboarding_import as handler
 
@@ -162,8 +159,8 @@ class TestRegistration:
     def test_the_api_layer_accepts_a_registered_id(self):
         """The HTTP validator derives its id set from the registry.
 
-        A second hardcoded copy in the handler is what previously let a source be
-        known to the engine and rejected by the API.
+        A hardcoded copy in the handler would let a source be known to the engine
+        yet rejected by the API, so the id set derives from the one registry.
         """
         from kiro_crew.dashboard.handlers import onboarding_import as handler
 
@@ -200,8 +197,8 @@ class TestScannerIsolation:
     def test_a_failing_reader_contributes_no_items(self, tmp_path):
         """A reader that died mid-way must not have partial findings imported.
 
-        Whatever it added before dying is a partial read of a source we now know
-        we cannot read correctly; offering half of it presents that partial state
+        Whatever it added before dying is a partial read of a source that cannot
+        be read correctly; offering half of it presents that partial state
         to the user as their data.
         """
         root = tmp_path / ".predecessor"
@@ -212,7 +209,7 @@ class TestScannerIsolation:
             raise RuntimeError("died after adding")
 
         # `_Source` is the engine's own normalized record, so a test may build one
-        # directly to drive a reader the public descriptor can no longer supply.
+        # directly to drive a reader the public descriptor cannot supply.
         source = onboarding_import._Source(
             id="predecessor",
             display_name="Predecessor",
@@ -633,7 +630,7 @@ class TestLineageScanner:
 class TestRegistrySnapshotIsStable:
     """A preview validates ids, resolves roots and dispatches scanners — those
     must agree. Each read is fail-closed, so a degrading adapter between two of
-    them previously left an accepted id with no resolved root and crashed."""
+    them must not leave an accepted id with no resolved root and crash."""
 
     def test_a_provider_that_degrades_mid_preview_does_not_crash(self, tmp_path):
         predecessor = tmp_path / ".predecessor"

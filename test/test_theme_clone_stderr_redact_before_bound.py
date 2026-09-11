@@ -2,10 +2,10 @@
 
 ``_clone_github`` reaches git with a user-supplied URL, and on an auth failure
 git echoes that URL — userinfo and all — to stderr. Bounding BEFORE redaction
-can cut the credential mid-match, leaving a fragment that no longer matches any
-credential regex, so it escapes redaction and lands in the returned error text.
-The fix (issue #7374, same class as PR #7316 / PR #7350) is
-``security.redact_and_truncate``: scrub the FULL text first, bound after.
+can cut the credential mid-match, leaving a fragment that matches no credential
+regex, so it escapes redaction and lands in the returned error text.
+The fix is ``security.redact_and_truncate``: scrub the FULL text first, bound
+after.
 
 The behavioral test pins the site with the straddle layout: the secret is
 placed so the 200-char bound falls INSIDE it, so a raw slice AND a

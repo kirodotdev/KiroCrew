@@ -12,6 +12,7 @@ from kiro_crew.context import ContextBuilder, _neutralize_structural_markers
 from kiro_crew.hooks import ContextRule, HookManager, HooksConfig
 from kiro_crew.learn import LessonStore
 from kiro_crew.memory import MemoryStore
+from kiro_crew.memory_stores import memory_store_name_defect
 from kiro_crew.skills import SkillsLoader
 
 # One xdist worker for the whole module: every test here derives from ONE module-cached
@@ -31,6 +32,13 @@ _name_st = st.text(
     max_size=30,
 )
 
+# A store name is a single path segment, so its grammar is narrower than a
+# workspace's: lowercase alphanumerics and interior hyphens only. Generating an
+# invalid name here would only ever exercise the refusal path.
+_store_name_st = st.from_regex(r"\A[a-z0-9](?:[a-z0-9-]{0,28}[a-z0-9])?\Z", fullmatch=True).filter(
+    lambda name: name != "default" and memory_store_name_defect(name) is None
+)
+
 
 # ---------------------------------------------------------------------------
 # Property-based tests
@@ -39,7 +47,7 @@ _name_st = st.text(
 
 class TestMemoryStoreOverrideProperty:
     # Feature: multi-agent-orchestration, Property 7: Memory store parameter overrides workspace for memory lookup
-    @given(workspace=_name_st, memory_store=_name_st)
+    @given(workspace=_name_st, memory_store=_store_name_st)
     @settings(deadline=None)
     def test_memory_store_overrides_workspace_in_build_session_context(
         self, workspace: str, memory_store: str, tmp_path_factory
@@ -50,18 +58,34 @@ class TestMemoryStoreOverrideProperty:
         distinct memory_store parameter, get_memory_for must be called
         with the memory_store value, not the workspace value.
         """
+        from kiro_crew.config.loader import KiroCrewConfig
+        from kiro_crew.config.sections import MemoryStoreConfig
+        from kiro_crew.memory_stores import memory_store_dir_for
+
+        # These are legacy named V1 stores: the property checks routing, while
+        # the member-isolation suite covers owned V2 provisioning and algorithms.
+        # The shared test fixture pins the data home to a temporary directory.
+        cfg = KiroCrewConfig.load()
+        cfg.memory_stores[memory_store] = MemoryStoreConfig()
+        cfg.save()
+        memory_store_dir_for(memory_store).mkdir(parents=True, exist_ok=True)
         tmp = tmp_path_factory.mktemp("ws")
         builder = ContextBuilder(
             memory=MemoryStore(workspace=tmp / "ws"),
             skills=SkillsLoader(skills_path=tmp / "skills", install_builtins=False),
         )
 
-        calls: list[str | None] = []
+        # Assert the resolved target: store names and workspace names use
+        # separate namespaces, so inspecting one positional argument can miss
+        # a store-routing error.
+        from kiro_crew import context as ctx_mod
+
+        calls: list[tuple[str | None, str | None]] = []
         original_get_memory = ContextBuilder.get_memory_for
 
-        def _tracking_get_memory(key=None):
-            calls.append(key)
-            return original_get_memory(key)
+        def _tracking_get_memory(ws=None, store=None):
+            calls.append((ws, store))
+            return original_get_memory(ws, store)
 
         with patch.object(ContextBuilder, "get_memory_for", side_effect=_tracking_get_memory):
             builder.build_session_context(
@@ -69,15 +93,25 @@ class TestMemoryStoreOverrideProperty:
                 memory_store=memory_store,
             )
 
-        # get_memory_for should have been called with memory_store, not workspace
+        assert calls, "build_session_context must resolve a memory target"
+        # Both names reach the resolver; the store is what it prefers.
         assert any(
-            c == memory_store for c in calls
-        ), f"Expected get_memory_for to be called with {memory_store!r}, got calls: {calls}"
-        # When memory_store differs from workspace, workspace should NOT appear
-        if memory_store != workspace:
-            assert not any(
-                c == workspace for c in calls
-            ), f"get_memory_for should NOT be called with workspace {workspace!r} when memory_store={memory_store!r}"
+            store == memory_store for _ws, store in calls
+        ), f"Expected the store name {memory_store!r} to reach get_memory_for, got {calls}"
+
+        # Assert the actual destination, so ignoring the store argument cannot
+        # pass by routing both names into global or workspace memory.
+        ws_key, _ = ctx_mod._target_key(workspace, None)
+        store_key, store_name = ctx_mod._target_key(workspace, memory_store)
+        assert store_name == memory_store, (
+            f"a DECLARED store must win over the workspace; got {store_name!r} for "
+            f"{memory_store!r}"
+        )
+        assert store_key == f"store:{memory_store}", store_key
+        assert store_key != ws_key, "a declared store must not share the workspace's target"
+        assert ContextBuilder.get_memory_for(
+            workspace, memory_store
+        )._workspace == memory_store_dir_for(memory_store)
 
 
 class TestContextBuilder:
@@ -1552,12 +1586,11 @@ class TestMemoryGetContextQueryWiring:
 
 
 class TestKeepVisibleMarkerRule:
-    """#7948: the keep-visible collapse exemption must be documented in the
-    DASHBOARD critical rules (collapse-all is a dashboard-transcript feature
-    and rehype-raw is what renders the marker invisible), and must NOT ship in
-    the channel variant -- Slack/Discord outbound formatters never strip HTML
-    comments, so a channel agent following the rule would show users the
-    literal marker text."""
+    """The keep-visible collapse exemption must be documented in the DASHBOARD
+    critical rules (collapse-all is a dashboard-transcript feature and rehype-raw
+    is what renders the marker invisible), and must NOT ship in the channel
+    variant -- Slack/Discord outbound formatters never strip HTML comments, so a
+    channel agent following the rule would show users the literal marker text."""
 
     def test_marker_documented_in_dashboard_rules_only(self):
         from kiro_crew.context import _CRITICAL_RULES, _CRITICAL_RULES_CHANNEL

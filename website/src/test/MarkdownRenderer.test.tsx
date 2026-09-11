@@ -205,6 +205,34 @@ describe('isPathCandidate — path chip pre-filter', () => {
     expect(isPathCandidate('../sibling/file.json')).toBe(true)
   })
 
+  it('accepts a directory named with a trailing separator (issue #9409)', () => {
+    // PATH_SHAPE_RE requires the string to END in a name character, so a
+    // trailing `/` fails the shape and the directory chip renders dead -- even
+    // though the same directory without the slash classifies. A single trailing
+    // separator is dropped before the shape test so both forms behave alike.
+    expect(isPathCandidate('/home/you/other/notes/')).toBe(true)
+    expect(isPathCandidate('/home/you/other/notes')).toBe(true) // control: already worked
+    expect(isPathCandidate('~/\u6587\u6863/\u8bf4\u660e/')).toBe(true) // Unicode terminal segment, trailing slash
+    expect(isPathCandidate('./src/')).toBe(true)
+    expect(isPathCandidate('C:\\Users\\me\\')).toBe(true) // drive-rooted, trailing backslash
+    expect(isPathCandidate('C:/Users/me/')).toBe(true) // drive-rooted, trailing forward slash
+  })
+
+  it('a trailing separator does not rescue a non-path -- no widening (issue #9409)', () => {
+    // The strip re-tests the same rules, so a trailing slash classifies only a
+    // string whose slash-less form is already a candidate. These stay rejected
+    // because their slash-less forms are rejected.
+    expect(isPathCandidate('owner/repo/')).toBe(false)
+    expect(isPathCandidate('refs/heads/fix/')).toBe(false)
+    expect(isPathCandidate('text/plain/')).toBe(false)
+    expect(isPathCandidate('2026/08/02/')).toBe(false)
+    expect(isPathCandidate('and/or/')).toBe(false)
+    // UNC is refused on the ORIGINAL string, so the strip cannot launder a
+    // host-naming shape into a probe.
+    expect(isPathCandidate('//host/share/')).toBe(false)
+    expect(isPathCandidate('\\\\host\\share\\')).toBe(false)
+  })
+
   it('accepts a bare relative path when the last segment has an extension', () => {
     expect(isPathCandidate('src/main.py')).toBe(true)
     expect(isPathCandidate('website/src/components/MarkdownRenderer.tsx')).toBe(true)

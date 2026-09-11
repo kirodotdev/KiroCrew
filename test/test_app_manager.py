@@ -721,7 +721,7 @@ class TestAppAdmission:
     def test_register_external_admits_signed_manifest(self, tmp_path, app_home):
         # register_external_app now passes its self-reported manifest to
         # admission, so a correctly-signed app self-registers under
-        # require_signature (previously denied because no manifest was passed).
+        # require_signature (denied when no manifest is passed).
         import hashlib
         import hmac
 
@@ -1384,7 +1384,7 @@ class TestCleanupMigratedBuiltin:
 
 # ---------------------------------------------------------------------------
 # _copy_app_tree — symlink / denylist / off-loop regression tests
-# (app install used to run a raw follow-symlinks copytree on the event loop;
+# (app install must not run a raw follow-symlinks copytree on the event loop;
 # a large `build` symlink target froze the loop until the watchdog killed
 # the gateway)
 # ---------------------------------------------------------------------------
@@ -2268,7 +2268,7 @@ class TestBootSkillReconcile:
 # backend three ways — the third being a fallback that derives a loopback base
 # URL from a manifest's mcpServers entry (self-managed apps whose backend is a
 # separate loopback process, e.g. the Crew Companion desktop app on :7778).
-# register_builtin_apps() used to write a .app_secret ONLY when
+# register_builtin_apps() must not write a .app_secret ONLY when
 # backend.entryPoint was present, so a builtin declaring only mcpServers
 # resolved a backend fine but was refused a secret — and every proxied request
 # then 502'd with "has no secret". The fix generates the secret whenever a

@@ -72,6 +72,7 @@ class FakeSessions:
         self.mirror_links: dict = {}
         self.opt_outs: dict = {}
         self.locked = False
+        self.reserved_generations: list[str] = []
 
     # -- dashboard mirror -------------------------------------------------
     def mirror_opt_out(self, key) -> bool:
@@ -162,6 +163,9 @@ class FakeSessions:
 
     def is_busy(self, key) -> bool:
         return self._busy
+
+    def reserve_generation(self, session_key: str) -> None:
+        self.reserved_generations.append(session_key)
 
     def max_generation(self, bucket: str) -> int:
         return -1
@@ -335,7 +339,7 @@ class TestTurn:
     @pytest.mark.asyncio
     async def test_hard_threshold_declines_silently_on_auto_managed_backend(self) -> None:
         # No /compact to dispatch and no notice: the backend compacts on its
-        # own as context fills (#8156).
+        # own as context fills.
         provider = FakeProvider(
             [AcpEvent(kind=EVENT_TEXT_CHUNK, text="answer"), AcpEvent(kind=EVENT_COMPLETE)]
         )
@@ -352,7 +356,7 @@ class TestTurn:
     @pytest.mark.asyncio
     async def test_soft_nudge_suppressed_on_auto_managed_backend(self) -> None:
         # The nudge advises /compact, which this backend refuses — it compacts
-        # on its own, so there is nothing for the user to act on (#8156).
+        # on its own, so there is nothing for the user to act on.
         provider = FakeProvider(
             [AcpEvent(kind=EVENT_TEXT_CHUNK, text="answer"), AcpEvent(kind=EVENT_COMPLETE)]
         )
@@ -377,6 +381,7 @@ class TestCommands:
 
         assert client.sent == [("CONV", "✅ Started a fresh conversation.", _SVC)]
         assert d._conv.current_gen(_EMAIL) == 1
+        assert sessions.reserved_generations == [d._session_key(_EMAIL)]
         assert sessions.successes == []
 
     @pytest.mark.asyncio
@@ -409,7 +414,7 @@ class TestCommands:
     @pytest.mark.asyncio
     async def test_compact_declined_on_auto_managed_backend(self) -> None:
         # A backend that cannot serve /compact gets the informational reply and
-        # compact() is NEVER dispatched (#8156).
+        # compact() is NEVER dispatched.
         provider = FakeProvider([])
         provider.manual_compact_unsupported_backend = "kas"
         sessions = FakeSessions(provider)

@@ -11,10 +11,9 @@ allowlist. This module is a thin, app-specific *interpreter* on top of it.
 
 What it adds over the raw provider payload is the single question the watcher
 loop needs answered: **is this PR done, does it need work, or is it blocked?**
-That verdict was previously parsed out of an LLM's free-text reply, which made
-the loop's control flow depend on prose. Here it is computed from structured
-provider fields instead, and the agent is only asked to *act*, never to report
-state.
+That verdict is computed from structured provider fields rather than parsed out
+of an LLM's free-text reply, so the loop's control flow does not depend on prose,
+and the agent is only asked to *act*, never to report state.
 
 Mergeability vocabulary (GitHub, via the provider's own normalization):
   ``mergeable``   — no conflicts; ``conflicting`` — needs a rebase;

@@ -89,7 +89,7 @@ class TestTheStamperItself:
     def test_the_row_after_a_dst_fold_row_does_not_sort_an_hour_early(self):
         # When daylight saving ends the local wall clock repeats for an hour, and
         # isoformat does not record which pass a naive value belongs to. 01:30
-        # local on 2026-11-01 in Los Angeles happens twice: at 08:30 UTC and
+        # local in Los Angeles on a fall-back day happens twice: at 08:30 UTC and
         # again at 09:30 UTC. A row stamped as a bare wall clock during the
         # SECOND pass reads back as the first -- an hour before the offset-aware
         # row it actually followed. Resolving the clock to an instant removes it.

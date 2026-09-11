@@ -14,8 +14,7 @@ Ubuntu already ships exactly this for every application in the same position
 outlier.
 
 **Why a NAMED profile ATTACHED to the launcher script, not the interpreter, and
-not systemd's ``AppArmorProfile=`` alone (#3463).** Two designs were tried before
-this one and both were wrong:
+not systemd's ``AppArmorProfile=`` alone.** Two other designs do not work:
 
 1. *Attach to the interpreter.* ``~/.kiro/crew-venv/bin/python3`` is a *symlink*
    to the system interpreter (verified on Ubuntu 26.04: it resolves to
@@ -25,9 +24,9 @@ this one and both were wrong:
    to **every Python process on the machine**.
 2. *Name-only profile, applied by systemd's ``AppArmorProfile=`` alone, no
    attachment path at all.* This confines exactly one unit and does not depend on
-   how the interpreter is resolved, so it looked like the right fix — and #1210
-   shipped it. It does not work: #3463 traced a live failure via
-   ``/proc/<pid>/attr/current`` and the kernel audit log and found that
+   how the interpreter is resolved, so it looks like the right fix. It does not
+   work: a live failure traced via ``/proc/<pid>/attr/current`` and the kernel
+   audit log shows that
    ``AppArmorProfile=`` labels only the literal top-level unit PID
    (``change_onexec`` "converted to stacking"). The gateway's sandbox probe
    (``sandbox.py``'s ``_probe_child_sequence``) runs in a **different PID**
@@ -41,7 +40,7 @@ this one and both were wrong:
    kernel's automatic path attachment and silently wins, so the two mechanisms
    are mutually exclusive in practice, not merely redundant.
 
-The fix verified in #3463 is to attach the profile **by path to the
+The fix is to attach the profile **by path to the
 fully-resolved launcher script** — not the interpreter, not any symlink in the
 chain (``~/.local/bin/kirocrew`` → ``~/.kiro/crew-venv/bin/kirocrew``, itself a
 shebang script naming the shared interpreter) — and to drop
@@ -298,7 +297,7 @@ def render_profile(abi: str | None, exec_path: Path) -> str:
 
     ``exec_path`` ATTACHES the profile to that resolved executable path (the
     venv launcher script, already validated by :func:`validate_exec_path`) —
-    see the module docstring and #3463 for why an unattached,
+    see the module docstring for why an unattached,
     systemd-``AppArmorProfile=``-only profile does not actually confine the
     gateway's sandbox probe.
     """
@@ -478,7 +477,7 @@ def install(
 
     ``exec_path`` is resolved and validated (:func:`validate_exec_path`,
     forwarding ``expected_uid``) and the profile is ATTACHED to the result — see
-    the module docstring and #3463 for why the service profile needs this
+    the module docstring for why the service profile needs this
     instead of relying on ``AppArmorProfile=`` alone. A validation failure
     returns a clean, non-fatal :class:`ProfileOutcome` naming the problem, same
     shape as every other failure branch here; nothing is written to disk.
@@ -669,7 +668,7 @@ def _substitutable_by_others(resolved: Path, expected_uid: int | None = None) ->
 
     ``expected_uid`` defaults to the CALLING process's uid (the AppImage launcher
     case: an unprivileged user runs ``kirocrew sandbox install-profile`` on their
-    own account). The systemd service case (#3463) is different: ``kirocrew
+    own account). The systemd service case is different: ``kirocrew
     service install`` may itself run as root (bare root, or ``sudo``), while the
     path being attached is the venv launcher script owned by the human the
     *service* runs as (``User=`` in the unit) — a different account from whichever
@@ -704,7 +703,7 @@ def _substitutable_by_others(resolved: Path, expected_uid: int | None = None) ->
         # "not by you" when the check is against the invoking process's own uid
         # (the AppImage/launcher case, expected_uid=None); "not by the expected
         # account" when a caller passed an explicit expected_uid (the systemd
-        # service case, #3463) -- a message wouldn't otherwise say who "you" is
+        # service case) -- a message wouldn't otherwise say who "you" is
         # supposed to mean when the installer and the service run as different
         # accounts.
         whom = "you" if expected_uid is None else "the expected account"
@@ -768,12 +767,12 @@ def validate_exec_path(raw: str, expected_uid: int | None = None) -> tuple[Path 
     over-grant or a path that could never match, and the message names which.
 
     The path is RESOLVED first because AppArmor matches the path the kernel
-    resolves, not the symlink used to reach it. Validating before resolving is
+    resolves, not the symlink that points at it. Validating before resolving is
     how a link in a safe directory pointing at ``/usr/bin/python3`` would sneak a
     host-wide grant past these checks.
 
     Shared by both attachment shapes: the AppImage launcher case (``exec_path``
-    from ``--path`` / ``$APPIMAGE``) and the systemd service case (#3463,
+    from ``--path`` / ``$APPIMAGE``) and the systemd service case (
     ``kirocrew_bin()``). ``expected_uid`` is forwarded to
     :func:`_substitutable_by_others` unchanged — see its docstring for why the
     service case needs an explicit override there.
@@ -830,7 +829,7 @@ def conflicting_attachment(resolved: Path) -> str | None:
     """Name another profile in ``/etc/apparmor.d`` already attached to *resolved*.
 
     A hand-written profile attached to the same AppImage is common — it is the
-    workaround people find first, and #1139's own reproduction host had one. Two
+    workaround people find first. Two
     profiles claiming one attachment is an ambiguous load, so the caller warns.
     Best effort by design: a literal scan of the top-level files, no policy
     parsing, and any unreadable file is skipped rather than failing the install.
@@ -893,11 +892,11 @@ def installed_attachment(
     """Path the installed profile at *profile_path* attaches to, or None.
 
     Defaults to the launcher profile (``kirocrew sandbox status``'s original
-    caller). The service profile (#3463) is attached too now, so
+    caller). The service profile is attached too, so
     ``cli_doctor.py`` passes ``PROFILE_PATH`` / ``PROFILE_NAME`` here to answer
     the same question for the systemd service — "is the profile actually
     attached to the launcher script this host currently resolves?" — instead of
-    the retired unit-directive check.
+    the unit-directive check.
 
     Defaults are resolved INSIDE the body, not bound as parameter defaults:
     a default bound at def time would freeze in the ORIGINAL

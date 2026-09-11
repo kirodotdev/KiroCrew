@@ -407,7 +407,7 @@ class TestSteerRun:
 
     @pytest.mark.asyncio
     async def test_no_session_reachable(self) -> None:
-        """A live run with no reachable session now gets the #1113 startup
+        """A live run with no reachable session now gets the startup
         grace, then the typed ``session_starting`` refusal (retryable) —
         not the old terminal bare ``no_session``."""
         import kiro_crew.subagent as subagent_mod
@@ -435,7 +435,7 @@ class TestReleaseAndSweep:
         assert not ok and detail.startswith("conversation_busy")
 
     def test_queued_continuation_blocks_release_and_continue(self) -> None:
-        """GPT review (PR #1023): a continuation waiting in the spawn queue
+        """A continuation waiting in the spawn queue
         must count as busy — otherwise spawn_release deletes the session
         files the queued run needs (it would die with resume_failed), and a
         second continue could race the same conversation."""
@@ -1272,7 +1272,7 @@ class TestPersistenceGuards:
         agent_id = "cleanup-store-lockdown"
         sp.create_agent_folder(agent_id, task="t")
         protected_path = sp._cleanup_identities_path(agent_id)
-        protected_path.parent.mkdir(parents=True)
+        protected_path.parent.mkdir(parents=True, exist_ok=True)
         original = json.dumps({"identities": [{"session_id": "sid-original"}]})
         protected_path.write_text(original)
 

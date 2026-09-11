@@ -199,12 +199,12 @@ class OpsProviderRegistry:
         the heartbeat or suppress the others, so each source gets its own timeout
         and its failure is reported rather than raised.
 
-        Two things happen around each poll, both of which exist because a failed poll
-        used to be indistinguishable from a quiet one:
+        Two things happen around each poll, both of which exist because otherwise a
+        failed poll is indistinguishable from a quiet one:
 
-        1. **A source in backoff is skipped**, and says so in ``errors``. A provider
-           that returned 429 was previously re-polled at full rate on the very next
-           heartbeat, which is how a rate limit becomes a ban.
+        1. **A source in backoff is skipped**, and says so in ``errors``. Re-polling a
+           provider that returned 429 at full rate on the very next heartbeat is how a
+           rate limit becomes a ban.
         2. **The outcome is recorded in ``poll_health``.** Absence of a signal only
            means "it cleared" if the poll that would have reported it actually
            succeeded; callers that resolve work on absence MUST consult this.

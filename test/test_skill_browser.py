@@ -887,7 +887,7 @@ class TestEndpoints:
 
 
 class TestApiSkillsAgentScoping:
-    """#3348: GET /api/skills?agent=<name> scopes the listing to that
+    """GET /api/skills?agent=<name> scopes the listing to that
     agent's own skill:// mapping, instead of the chat `$` picker always
     showing the unfiltered global catalog regardless of the active agent
     template."""
@@ -938,7 +938,7 @@ class TestApiSkillsAgentScoping:
             resp = await client.get("/api/skills", params={"agent": "custom"})
             assert resp.status == 200
             payload = await resp.json()
-        # #6028: an applied agent filter answers with the scoped envelope —
+        # an applied agent filter answers with the scoped envelope —
         # the arrays alone are byte-identical to the legacy shape, so this
         # flag is the ONLY way the picker can cue that filtering happened.
         assert payload["agent_scoped"] is True
@@ -947,7 +947,7 @@ class TestApiSkillsAgentScoping:
 
     @pytest.mark.asyncio
     async def test_scoped_envelope_is_kept_when_the_mapping_matches_nothing(self, fake_home):
-        """#6028: an agent whose skill:// mapping resolves to zero listed
+        """An agent whose skill:// mapping resolves to zero listed
         skills still gets the envelope (``skills: []``, ``agent_scoped``
         true). This is the empty state the picker must attribute to the
         MAPPING ("no skills mapped to this agent"), not to the catalog
@@ -990,7 +990,7 @@ class TestApiSkillsAgentScoping:
             assert resp.status == 200
             payload = await resp.json()
         # No filter applied → the legacy bare-array shape, no envelope: the
-        # picker must render this with zero scope cues (#6028).
+        # picker must render this with zero scope cues.
         assert isinstance(payload, list)
         assert {s["name"] for s in payload} == {"alpha", "beta"}
 
@@ -1024,7 +1024,7 @@ class TestApiSkillsAgentScoping:
 
 
 class TestSessionScopedSkillResolution:
-    """#2457: kiro-workspace/ resolution is scoped to the requesting chat slot.
+    """kiro-workspace/ resolution is scoped to the requesting chat slot.
 
     With two chats on DIFFERENT projects, the keyless shared-project fallback
     fails closed and workspace skills silently vanished. A session key now
@@ -1242,7 +1242,7 @@ class TestPackageSkillDetailReadsThroughTheGate:
     """``api_skill_detail``'s ``package/`` branch reads what it validated.
 
     ``validate_file_path(row["path"])`` canonicalizes and refuses a sensitive
-    target, and then the read used to open that same name a second time. A
+    target, and a naive read would open that same name a second time. A
     HARDLINK defeats the first resolution with no race and no link: it shares its
     target's inode, so ``realpath`` yields the alias's own innocent path and
     ``is_sensitive_path`` judges that instead of the file whose bytes come back.

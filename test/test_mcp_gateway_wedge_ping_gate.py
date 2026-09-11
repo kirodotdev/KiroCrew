@@ -279,7 +279,7 @@ def test_tool_cancelled_exception_suppresses_response() -> None:
     JSON-RPC response: the tool cooperatively raises ToolCancelled and
     respond() is never called with that request id.
 
-    Regression for the str/int id mismatch: the gateway sends requestId as a
+    Guards the str/int id mismatch: the gateway sends requestId as a
     STRING ("2") while the loop stored the tools/call id as an INT (2) --
     suppression must still fire (ids are normalized to str internally)."""
     import kiro_crew.mcp_shared as mod

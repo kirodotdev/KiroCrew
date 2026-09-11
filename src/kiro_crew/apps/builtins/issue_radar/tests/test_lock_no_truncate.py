@@ -1,25 +1,24 @@
 """issue_radar lock sidecars must be opened WRITABLE but WITHOUT truncation.
 
-Regression for #9263 (part of the #9248 sweep). Every lock context manager in
-``store.py`` and ``crew_store.py`` used ``open(lock_path, "w")`` and then handed
-the descriptor to ``platform_compat.file_lock(..., exclusive=True)``. ``"w"``
-truncates at open, BEFORE the lock is held. ``msvcrt.locking`` needs a writable
-handle, so ``"r"`` is not an option either; but on Windows a truncating open of a
-lock file whose first byte another holder already locked raises a sharing
-violation instead of waiting, so the second contending acquirer crashes before it
-ever reaches ``file_lock`` and the critical section is never mutually excluded.
-POSIX ``flock`` tolerates the truncate, which is why the defect is Windows-only.
+Every lock context manager in ``store.py`` and ``crew_store.py`` opens the lock
+file and hands the descriptor to ``platform_compat.file_lock(..., exclusive=True)``.
+``open(path, "w")`` truncates at open, BEFORE the lock is held. ``msvcrt.locking``
+needs a writable handle, so ``"r"`` is not an option either; but on Windows a
+truncating open of a lock file whose first byte another holder already locked
+raises a sharing violation instead of waiting, so the second contending acquirer
+crashes before it ever reaches ``file_lock`` and the critical section is never
+mutually excluded. POSIX ``flock`` tolerates the truncate, which is why the
+defect is Windows-only.
 
-Truncation is the direct, platform-independent observable, exactly as the
-work_ledger regression (#9237) pins it: seed the lock file with bytes, acquire
-and release the lock, and assert the bytes survived. Under the old
-``open(path, "w")`` these fail on every platform (the file is emptied); under the
-``touch`` + ``"r+"`` open they pass, and the same non-truncating open is what
-stops the Windows sharing violation.
+Truncation is the direct, platform-independent observable, and the work_ledger
+suite pins it the same way: seed the lock file with bytes, acquire and release the
+lock, and assert the bytes survived. A truncating ``open(path, "w")`` fails these
+on every platform (the file is emptied); the ``touch`` + ``"r+"`` open passes, and
+that same non-truncating open is what stops the Windows sharing violation.
 
-The cases below cover both modules and all three path expressions the sweep
-touched: a bound ``lock_path`` variable, a ``.with_suffix(".json.lock")`` cache
-sidecar, and a per-item ``.lock`` name.
+The cases below cover both modules and all three path expressions in use: a bound
+``lock_path`` variable, a ``.with_suffix(".json.lock")`` cache sidecar, and a
+per-item ``.lock`` name.
 """
 
 import shutil

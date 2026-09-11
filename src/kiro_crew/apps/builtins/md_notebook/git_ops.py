@@ -721,8 +721,8 @@ async def status(dir_: str, subfolder: Optional[str] = None) -> list[FileChange]
     # transaction. Everything else is filesystem content and stays visible.
     #
     # The consequence is deliberate: an orphan left behind when a cleanup unlink
-    # lost the race becomes VISIBLE once its transaction ends and ownership can
-    # no longer be evidenced. That is the safe direction to fail. Reaping an
+    # lost the race becomes VISIBLE once its transaction ends and nothing can
+    # evidence ownership. That is the safe direction to fail. Reaping an
     # aged orphan is a lifecycle problem with its own answer; a permanent
     # filename-shape exclusion is not that answer, because it cannot tell an
     # orphan from a file the user put there.
@@ -1041,7 +1041,7 @@ async def sync(
         elif not origin_urls:
             raise GitError(f"No remote.origin.url configured for {dir_}")
 
-        # Refuse to sync if the vault's git remote no longer matches the URL it
+        # Refuse to sync if the vault's git remote does not match the URL it
         # was created/attached with. A vault's `.git/config` is agent-writable,
         # so a prompt-injected agent could repoint `remote.origin.url` (or
         # `pushurl`) at an attacker and have auto-sync upload the note history

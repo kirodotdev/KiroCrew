@@ -213,9 +213,10 @@ class TestFolderDelete:
         self, stores, patch_restricted, monkeypatch
     ) -> None:
         """The cascade destroys artifacts through `ArtifactStore.delete`, which knows
-        nothing about publications -- so it used to erase the record while the public copy
-        stayed served, with nothing left able to withdraw it. Same defect as the single
-        delete, reached through the folder door.
+        nothing about publications, so on its own it erases the record while the public
+        copy stays served, with nothing left able to withdraw it. The cascade must
+        withdraw the published copy first, the same rule as the single delete, reached
+        through the folder door.
         """
         import kiro_crew.publish_sync as _ps
         from kiro_crew.artifacts import ArtifactPublication
@@ -535,7 +536,7 @@ class TestUpdateFolderAudit:
         assert success and "folder_id" not in success[-1]["extra"]
 
 
-# ── Folder color + auto-emoji icon (UX feedback round 2) ────────────────────
+# ── Folder color + auto-emoji icon ────────────────────
 
 
 class TestFolderColorHandlers:

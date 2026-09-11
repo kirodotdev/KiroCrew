@@ -328,7 +328,7 @@ class TestFfmpegInstallCommands:
     def test_present_ffmpeg_asks_for_nothing(self, monkeypatch) -> None:
         # Stubbed at `_find_ffmpeg`, which is the seam the production code now asks:
         # ffmpeg is resolved from fixed directories rather than from PATH, so a
-        # `shutil.which` stub no longer decides the answer (and, being a module-global
+        # `shutil.which` stub does not decide the answer (and, being a module-global
         # patch, the real resolver would receive it and reject its `path=` argument).
         monkeypatch.setattr(core_mod, "_find_ffmpeg", lambda: "/usr/local/bin/ffmpeg")
         assert core_mod._ffmpeg_install_commands() == []
@@ -374,7 +374,7 @@ class TestFfmpegInstallCommands:
     def test_without_a_build_script_there_is_nothing_to_tell_a_terminal(self, monkeypatch) -> None:
         """No fallback command, because the fallback was a dead end.
 
-        A distribution with no ffmpeg package and no build script in reach used to
+        A distribution with no ffmpeg package and no build script in reach would
         be handed ``echo 'Build ffmpeg from source: …'``, which a user pasted into a
         terminal and got a URL echoed back. An empty list is what makes the Settings
         page offer the decoder fetch, or the agent hand-off, instead.
@@ -616,6 +616,7 @@ class TestPipInstallChannel:
         resolves to the BASE interpreter's directory where distro pythons put
         the marker — the recommended install layout (venv on a Debian/brew
         python) must not be misread as unsupported."""
+        monkeypatch.setattr(shared_mod.importlib.util, "find_spec", lambda name: object())
         monkeypatch.setattr(shared_mod.sys, "prefix", str(tmp_path / "venv"))
         monkeypatch.setattr(shared_mod.sys, "base_prefix", str(tmp_path / "base"))
         (tmp_path / "EXTERNALLY-MANAGED").write_text("", encoding="utf-8")
@@ -623,6 +624,7 @@ class TestPipInstallChannel:
         assert core_mod._pip_install_channel_available() is True
 
     def test_ordinary_venv_has_a_channel(self, monkeypatch, tmp_path) -> None:
+        monkeypatch.setattr(shared_mod.importlib.util, "find_spec", lambda name: object())
         monkeypatch.setattr(shared_mod.sys, "prefix", shared_mod.sys.base_prefix)
         monkeypatch.setattr(shared_mod.sysconfig, "get_path", lambda name: str(tmp_path))
         assert core_mod._pip_install_channel_available() is True
@@ -907,7 +909,7 @@ def _availability(ok: bool, code: str = "", detail: str = ""):
 def _seed_stt(path: Path, **fields) -> None:
     """Merge *fields* into the ``stt`` section of the config at *path*.
 
-    Used to give a test a configured value that is NOT the default, so "used the
+    Gives a test a configured value that is NOT the default, so "used the
     configured model" is distinguishable from "fell back to the catalog default".
     """
     data = json.loads(path.read_text(encoding="utf-8"))

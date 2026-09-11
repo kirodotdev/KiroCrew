@@ -1,6 +1,6 @@
 """Contract tests for the watch kernel and the GitHub-PR probe on top of it.
 
-The kernel's whole value is that a poller no longer hand-rolls dedupe, epoch
+The kernel's whole value is that a poller does not hand-roll dedupe, epoch
 resets, an error backstop or a convergence window -- so these tests pin the
 behaviours that are easy to regress into something which still LOOKS like
 success: a dedupe that goes permanently silent, a window that never fires, a
@@ -827,7 +827,7 @@ def test_a_sticky_key_is_dropped_once_past_the_realert_window():
     """Epoch-scoped keys are bounded by the reset that wipes them; sticky keys
     have no such bound, so a long-lived watch would grow its state forever.
     Dropping them past the re-alert window frees state without changing any
-    decision -- they no longer suppress anything at that age."""
+    decision -- they suppress nothing at that age."""
     probe = ScriptedProbe(
         [
             Tick(epoch="e1", observations=[_sticky("comment:1")]),
@@ -883,7 +883,7 @@ def test_state_written_before_the_sentinels_existed_costs_no_extra_wake():
 
 
 def test_an_open_sticky_wake_is_not_pruned_when_the_probe_stops_reporting_it():
-    """The prune assumes "no longer observed" means "cleared", which is true of a
+    """The prune assumes "not observed" means "cleared", which is true of a
     check and false of a comment: a probe with a horizon stops reporting a signal
     that is still just as true. Pruning on that destroys the wake instead of
     delaying it -- reachable on shipped defaults, because a signal first seen

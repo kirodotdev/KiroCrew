@@ -5,7 +5,7 @@ the browser and the ``chat_folder_*`` MCP tools. An audit line that labels
 every write ``dashboard`` cannot answer "did I file that session, or did the
 agent?", which is the whole point of auditing a mutation.
 
-Since #3503 the audit splits interface from identity: ``source`` stays in
+The audit splits interface from identity: ``source`` stays in
 SEL's closed interface vocabulary (``dashboard`` / ``mcp``) so operator
 queries like ``source == "mcp"`` keep matching every MCP-driven event
 uniformly, while ``caller`` carries the internal caller's own declared
@@ -158,8 +158,8 @@ class TestFolderAuditOrigin:
     ) -> None:
         """Secret present, no caller header: audit loudly, never guess.
 
-        This is the exact latent bug of #3503 made visible — an internal
-        caller that never declared itself used to inherit the ``mcp`` label
+        This is the latent bug this guards, made visible — an internal
+        caller that never declared itself would inherit the ``mcp`` label
         silently; now it shows up as ``unknown-internal`` plus a warning that
         names the fix (add the caller to the known set, with a test).
         """
@@ -212,7 +212,7 @@ class TestKnownCallerRatchet:
     def test_known_internal_callers_exact_list(self) -> None:
         """RATCHET: adding an internal caller is a conscious, reviewed edit.
 
-        The known set is the entire defense #3503 asks for — a second internal
+        The known set is the entire defense this asks for — a second internal
         caller must fail loudly (``unknown-internal`` + warning) until someone
         adds it HERE, alongside its own audit test. Widening this assertion is
         that conscious edit.

@@ -156,7 +156,7 @@ class TestGenerateSourceSummary:
     async def test_unshaped_fallback_does_not_erase_an_existing_summary(self, pipeline, store):
         # The scanner falls back to the first dict when nothing is
         # payload-shaped; a bare "{}" echo in the reply must not overwrite a
-        # previously stored summary with empty topic/themes on re-ingestion.
+        # already-stored summary with empty topic/themes on re-ingestion.
         sid = store.add_source("test", "local_file", "/tmp/test.md")
         store.add_item("title", "content", "doc", source_id=sid, summary="A summary")
         pipeline.extractor._pool.send.return_value = (

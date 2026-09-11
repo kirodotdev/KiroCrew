@@ -414,9 +414,9 @@ class TestSpoolFailureLeavesNoOrphanFrame:
     """A post-allocation spool failure must not orphan the ``mkstemp`` frame.
 
     ``mkstemp`` allocates the name AND creates the file, so every raiser after
-    it — the write, the permission tighten, the ring trim — used to leave a
+    it — the write, the permission tighten, the ring trim — can leave a
     zero-owner frame behind in the spool when the blanket fail-soft handler
-    discarded the path without unlinking. The degraded return value alone
+    discards the path without unlinking. The degraded return value alone
     passes on the unfixed code; the no-new-file assertion is the point.
     """
 

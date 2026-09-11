@@ -85,9 +85,8 @@ class CorruptDocumentError(json.JSONDecodeError):
     corruption arm comes first.
 
     The subclass exists so the raises are greppable and their intent explicit instead of a
-    parser exception carrying a meaning the parser never assigned it. Suggested in review
-    (Design Review) and worth having before #7805 replicates this idiom across the four
-    merged siblings.
+    parser exception carrying a meaning the parser never assigned it. The idiom is shared
+    across the four merged siblings, so one named type keeps them all readable.
     """
 
 
@@ -157,7 +156,7 @@ LEGAL_TRANSITIONS: dict[str, frozenset[str]] = {
     # whole job is to resolve incidents whose signal stopped firing, and without
     # this edge it has NO legal move for that case: the incident sticks at
     # ``dispatched`` until the stale sweep hours later, so the board claims work is
-    # in progress on a problem that no longer exists. Found by exercising the
+    # in progress on a problem that does not exist. Found by exercising the
     # reconcile SOP against a real cleared GitHub signal.
     STATUS_DISPATCHED: frozenset(
         {STATUS_INVESTIGATING, STATUS_NEEDS_HUMAN, STATUS_RESOLVED, STATUS_STALE}
@@ -292,7 +291,7 @@ VERIFIABLE_ACTIONS: frozenset[str] = frozenset({ACTION_RESOLVE, ACTION_SILENCE})
 #: ``""`` (the default) means no action was ever executed — NOT "verified fine". Every
 #: incident written before this existed reads as that, which is correct.
 VERIFY_PENDING = "pending"
-#: The recheck ran against a SUCCESSFUL poll and the signal is no longer firing.
+#: The recheck ran against a SUCCESSFUL poll and the signal is not firing.
 VERIFY_CLEARED = "cleared"
 #: The recheck ran against a successful poll and the signal is STILL firing — the 2xx
 #: did not mean what the board reported it meant.
@@ -624,7 +623,7 @@ class Signal:
             labels=dict(labels or {}),
             fingerprint=compute_fingerprint(source, resource, title),
             # Namespaced by source so two providers cannot collide on a bare numeric
-            # id — Sentry issue 12345 and a Zabbix trigger 12345 are unrelated.
+            # id — a Sentry issue id and a Zabbix trigger id can be the same number.
             provider_key=f"{source}:{provider_key}" if provider_key else "",
             # NOT namespaced by source, unlike provider_key: this is display text for a
             # human, not a match key, so prefixing it would only make the board read
@@ -779,7 +778,7 @@ class LedgerEntry:
     #: what it does not, and silently treats a row it only partly understands as fully
     #: understood. Review named this the nearest thing in the app to a one-way door.
     #:
-    #: Deliberately NOT used to reject anything today — there is exactly one version, so a
+    #: Deliberately rejects nothing today — there is exactly one version, so a
     #: gate would be dead code. It exists so the NEXT format change has somewhere to say so.
     #:
     #: The default is the LITERAL 1, not ``LEDGER_RECORD_V1``. A dataclass field default is

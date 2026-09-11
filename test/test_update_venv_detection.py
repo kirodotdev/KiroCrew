@@ -58,7 +58,7 @@ def _track_errors(state):
 class TestVenvPipInstall:
     """Tests for the _venv_pip_install helper.
 
-    The helper no longer spawns pip itself — it hands the install to
+    The helper does not spawn pip itself — it hands the install to
     ``dep_sync.sync_or_reinstall``, which picks an editable reinstall or a
     dependency-only sync depending on whether the console script can be
     rewritten. These stub that one seam, so they assert what this endpoint owns:

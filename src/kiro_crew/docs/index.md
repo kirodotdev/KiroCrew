@@ -113,6 +113,9 @@ gracefully rather than failing the turn.
 - [MCP Apps](mcp-apps.md): render interactive MCP tool output (diagrams, viewers,
   forms) in chat, the two gates that enable it, what a server must declare, and why
   output stays plain text otherwise
+- [Settings deep links](settings-deeplink.md): answer "where is that setting?" with
+  a link that opens the tab and flashes the control, from the generated
+  `settings-registry.generated.json` in this directory
 
 ## Security
 

@@ -115,7 +115,7 @@ def _write_cli_overlay(work_dir: Path, model: str, effort: str) -> None:
     existing["chat.modelDefaults"] = model_defaults
     atomic_write(
         cli_json, json.dumps(existing, indent=2)
-    )  # atomic: readers never see a partial file (#426)
+    )  # atomic: readers never see a partial file
 
 
 #: kiro-cli's own Tool Search activation thresholds. Mirrored as the defaults of
@@ -201,7 +201,7 @@ def _write_tool_search_overlay(
         existing.pop("toolSearch.minTokens", None)
     atomic_write(
         cli_json, json.dumps(existing, indent=2)
-    )  # atomic: readers never see a partial file (#426)
+    )  # atomic: readers never see a partial file
 
 
 def _clear_cli_overlay_effort(work_dir: Path, model: str) -> None:
@@ -236,7 +236,7 @@ def _clear_cli_overlay_effort(work_dir: Path, model: str) -> None:
         if not model_cfg:
             model_defaults.pop(model, None)
     try:
-        atomic_write(cli_json, json.dumps(data, indent=2))  # atomic (#426)
+        atomic_write(cli_json, json.dumps(data, indent=2))  # atomic
     except OSError:
         logger.debug("ACP effort overlay clear failed", exc_info=True)
 
@@ -308,6 +308,7 @@ class AcpProvider(LLMProvider):
         mcp_gateway_socket: str | Path | None = None,
         permission_mode: str | None = None,
         crew_agent: str | None = None,
+        private_memory: bool = False,
     ) -> None:
         # An unrecognized backend would pass every ``_is_<backend>`` check and
         # spawn kiro-cli, so a typo'd config would drive the wrong agent with no
@@ -334,6 +335,13 @@ class AcpProvider(LLMProvider):
         }
         if agent:
             kwargs["agent"] = agent
+        self._private_memory = private_memory is True
+        # Retain the original identity when start() swaps the placeholder client
+        # for a runtime handle whose session key is not yet populated.
+        self._private_memory_session_key = session_key
+        self._private_memory_prepared = False
+        if self._private_memory:
+            kwargs["private_memory"] = True
         self._client = AcpClient(**kwargs)
         # Consumer opt-in for the low-fidelity child permission downgrade
         # (see child_fidelity_aware property). Set by fidelity-aware
@@ -552,8 +560,8 @@ class AcpProvider(LLMProvider):
         in-prompt, while KAS treats the prompt as ordinary text and never emits
         a status — its ``summarization_*`` frames fire only for KAS-initiated
         auto-summarization — so an ungated dispatch strands
-        ``wait_for_compaction()`` for the full ``COMPACT_WAIT_TIMEOUT_SECS``
-        (#7800). Read off the backend STRING, not the ``is_*_backend``
+        ``wait_for_compaction()`` for the full ``COMPACT_WAIT_TIMEOUT_SECS``.
+        Read off the backend STRING, not the ``is_*_backend``
         properties, matching ``provider_label``'s MagicMock caution; a
         non-``str`` value answers ``None`` so a spec'd double never reads as a
         refusal. The empty string is ``ACP_BACKEND_KIRO`` (a member), so a
@@ -811,6 +819,8 @@ class AcpProvider(LLMProvider):
         extra_env = getattr(self._client, "_extra_env", None) or {}
         mcp_gateway_overlay = getattr(self._client, "_mcp_gateway_overlay", None)
         mcp_gateway_socket = getattr(self._client, "_mcp_gateway_socket", None)
+        if self._private_memory:
+            mcp_gateway_socket = getattr(self._client, "_private_mcp_gateway_socket", "")
 
         # Check for session resume
         resume_sid = getattr(self._client, "_resume_session_id", "")
@@ -821,6 +831,7 @@ class AcpProvider(LLMProvider):
         # would silently run on the agent's default.
         configured_model = getattr(self._client, "_model", "") or ""
 
+        private_kwargs: dict[str, Any] = {"private_memory": True} if self._private_memory else {}
         runtime = AcpRuntime(
             work_dir=work_dir,
             agent=agent or "kirocrew",
@@ -830,6 +841,7 @@ class AcpProvider(LLMProvider):
             mcp_gateway_socket=mcp_gateway_socket,
             acp_backend=self._client.backend,
             crew_agent=self._crew_agent,
+            **private_kwargs,
         )
         _t_spawn = time.monotonic()
         try:
@@ -844,7 +856,10 @@ class AcpProvider(LLMProvider):
                 # (it is the value passed as ``acp_backend`` above) — so the
                 # sign-in advice names the harness that actually failed to
                 # authenticate rather than assuming kiro-cli.
-                raise AcpAuthRequired(host_auth.signed_out_message(self._client.backend)) from exc
+                raise AcpAuthRequired(
+                    host_auth.signed_out_message(self._client.backend),
+                    backend=self._client.backend,
+                ) from exc
             raise
         finally:
             # subprocess launch + ACP `initialize` handshake
@@ -935,13 +950,15 @@ class AcpProvider(LLMProvider):
                         mcp_gateway_socket=mcp_gateway_socket,
                         acp_backend=self._client.backend,
                         crew_agent=self._crew_agent,
+                        **private_kwargs,
                     )
                     try:
                         await runtime.spawn()
                     except AcpRuntimeError as exc:
                         if runtime.saw_not_logged_in():
                             raise AcpAuthRequired(
-                                host_auth.signed_out_message(self._client.backend)
+                                host_auth.signed_out_message(self._client.backend),
+                                backend=self._client.backend,
                             ) from exc
                         raise
                 try:
@@ -953,7 +970,8 @@ class AcpProvider(LLMProvider):
                 except AcpRuntimeError as exc:
                     if runtime.saw_not_logged_in():
                         raise AcpAuthRequired(
-                            host_auth.signed_out_message(self._client.backend)
+                            host_auth.signed_out_message(self._client.backend),
+                            backend=self._client.backend,
                         ) from exc
                     raise
                 finally:
@@ -982,7 +1000,7 @@ class AcpProvider(LLMProvider):
                 _send_model = configured_model
                 if model_is_unusable(configured_model, _advertised):
                     # A literal miss can be a stale `<namespace>::` qualifier on
-                    # a model the backend fully serves (#8521): resolve to the
+                    # a model the backend fully serves: resolve to the
                     # advertised spelling and send THAT — same fold the display
                     # verdict uses, so chip and wire agree. A pin absent under
                     # either spelling still takes the withhold.
@@ -1329,7 +1347,39 @@ class AcpProvider(LLMProvider):
         logger.info("ACP effort cleared (kiro); session reset needed for built-in default")
         return False
 
+    async def prepare_private_memory(self) -> None:
+        """Resolve the trusted process fence before allocation or direct startup."""
+        if self._private_memory_prepared:
+            return
+        from kiro_crew.member_memory_auth import (
+            private_memory_store_for_session,
+            require_private_memory_mcp_backend,
+        )
+
+        store = (
+            await asyncio.to_thread(
+                private_memory_store_for_session, self._private_memory_session_key
+            )
+            if self._private_memory_session_key
+            else ""
+        )
+        # An explicitly trusted private constructor must never lose its fence.
+        # Factory extra kwargs cannot supply this decision; the factory ignores
+        # them and this read derives identity from protected session state.
+        private_memory = self._private_memory or bool(store)
+        if private_memory:
+            require_private_memory_mcp_backend(self._client.backend)
+        # The worker only reads. Publish flags and routing together on the loop,
+        # after validation, so cancellation cannot leave a partly prepared client.
+        self._private_memory = private_memory
+        self._client._private_memory = private_memory
+        if private_memory:
+            self._client._mcp_gateway_overlay = None
+            self._client._mcp_gateway_socket = None
+        self._private_memory_prepared = True
+
     async def start(self) -> None:
+        await self.prepare_private_memory()
         # Re-apply the overlay on every (re)start to cover resume / model swap.
         # (no-op for claude backend — that path applies effort live below.)
         self._apply_effort_overlay()

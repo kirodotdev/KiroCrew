@@ -22,7 +22,9 @@ const css = read('index.css')
 /** hook class -> the source that must render it, and the regex proving it does */
 const HOOKS: Record<string, { file: string[]; carries: RegExp }> = {
   'focus-chrome-rail': { file: ['App.tsx'], carries: /className="focus-chrome-rail / },
-  'sidebar-inner': { file: ['pages', 'ChatSidebar.tsx'], carries: /className="sidebar sidebar-inner / },
+  // Carried by the shared list-shell recipe, which both the sessions sidebar and
+  // the members roster mount (pinned below) — one string, two cards.
+  'sidebar-inner': { file: ['components', 'listShell.ts'], carries: /export const LIST_SHELL_CLS = 'sidebar sidebar-inner / },
   'user-bubble': { file: ['pages', 'chat', 'UserMessage.tsx'], carries: /'user-bubble bg-card text-card-fg'/ },
   'tb-capsule': { file: ['App.tsx'], carries: /className={`tb-capsule / },
   'feedback-pill': { file: ['components', 'FeedbackPill.tsx'], carries: /className="feedback-pill / },
@@ -55,6 +57,19 @@ describe('kiro-light shell hooks', () => {
 
   it.each(Object.entries(HOOKS))('`.%s` is still rendered by its component', (hook, { file, carries }) => {
     expect(read(...file), KEEP_HOOK(hook, file)).toMatch(carries)
+  })
+
+  it.each([
+    ['pages', 'ChatSidebar.tsx'],
+    ['pages', 'members', 'MembersPage.tsx'],
+  ])('%s/%s mounts the shared list shell, so the kiro-light --panel step-back reaches both cards', (...file) => {
+    // The roster once carried its own bg-bg-elevated card and stayed white on
+    // the white canvas while the sessions list beside it stepped back to
+    // --panel — the hook only reaches a card that mounts LIST_SHELL_CLS.
+    const src = read(...file)
+    expect(src, KEEP_HOOK('sidebar-inner', file)).toMatch(/import \{[^}]*\bLIST_SHELL_CLS\b[^}]*\} from '(\.\.\/)+components\/listShell'/)
+    expect(src, KEEP_HOOK('sidebar-inner', file)).toMatch(/\$\{LIST_SHELL_CLS\}/)
+    expect(src, KEEP_HOOK('sidebar-inner', file)).not.toMatch(/className="sidebar sidebar-inner /)
   })
 
   it('the user bubble tint is scoped to the non-steer branch only', () => {

@@ -65,6 +65,7 @@ class TestBuckets:
         assert r.record_frame(_ready("github-mcp"), owned=True) is True
         assert r.payload() == {
             "configured": [],
+            "unresolved_refs": [],
             "ready": ["github-mcp"],
             "failed": [],
             "awaiting_auth": [],
@@ -95,6 +96,7 @@ class TestBuckets:
         assert r.record_frame(_ready("builder-mcp"), owned=True) is True
         assert r.payload() == {
             "configured": [],
+            "unresolved_refs": [],
             "ready": ["builder-mcp"],
             "failed": [],
             "awaiting_auth": [],
@@ -355,8 +357,8 @@ class TestSupersetSemantics:
         # (here: failed) recovers while the ready bucket is full. Removing it
         # from ``failed`` and then refusing it at the full ``ready`` made a
         # real server vanish from the report entirely — the worst direction,
-        # since an absent server reads as "no claim" while the truth is the
-        # report USED to describe it. The transition must land: the tracked
+        # since an absent server reads as "no claim" while in truth the
+        # report still tracks it. The transition must land: the tracked
         # server moves, and the oldest ready entry is evicted to make room.
         r = McpSessionReport()
         for i in range(_BUCKET_CAP):

@@ -1,4 +1,4 @@
-"""Issue #3690 -- the internal-secret transport must carry an app identity.
+"""The internal-secret transport must carry an app identity.
 
 App-ownership checks gate on ``request["app"]``. The app-token branch publishes
 it; the internal-secret branch (the managed MCP set) carried no app claim at
@@ -287,7 +287,7 @@ class TestAKeyNamingAMissingSlotIsNotProofOfThePerson:
     have confined it is exactly what got popped when the tab closed.
 
     One writer, one reader: the route that publishes ``source="system"``.
-    Deliberately not applied in the middleware -- a popped slot no longer says
+    Deliberately not applied in the middleware -- a popped slot does not say
     whose tab it was, so a central refusal would also refuse the person's own
     in-flight calls on every internal route.
     """

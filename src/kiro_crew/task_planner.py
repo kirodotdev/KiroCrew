@@ -192,7 +192,7 @@ def parse_tasks(text: str) -> list[Task]:
             # The `_log_` spelling because this is a diagnostic path: it must not
             # raise, and on a process with no composed context it keeps the
             # baseline rather than blanking the snippet. It also subsumes the
-            # URL-before-credential ordering this site used to spell out by
+            # URL-before-credential ordering this site would otherwise spell out by
             # hand -- `security.redact` runs the exfil pass first for exactly
             # that reason (replacing a credential inside a URL would split it so
             # the URL redactor no longer matches).
@@ -284,6 +284,9 @@ async def decompose(
     # Route onto the run's shared AcpRuntime (one process per run), keyed by the
     # run's task_id. get_or_create would cold-start a dedicated process instead.
     parent_key = f"{SESSION_PREFIX}:{task_id}:runtime" if task_id else f"{SESSION_PREFIX}:runtime"
+    from kiro_crew.context import inherit_session_memory
+
+    memory_store = await inherit_session_memory(ctx, parent_key, session_key)
     try:
         client, is_new, _resumed = await sessions.open_task_session(
             parent_key, session_key, agent=agent or None, cwd=work_dir or None
@@ -297,6 +300,7 @@ async def decompose(
                 session_key,
                 agent=agent or None,
                 project=work_dir or None,
+                memory_store=memory_store,
             )
         else:
             full_prompt = prompt
@@ -321,6 +325,9 @@ async def decompose(
                         diff_path=event.diff_path,
                         command=event.shell_command,
                         is_shell=event.is_shell,
+                        mcp_server_name=event.mcp_server_name,
+                        mcp_tool_name=event.tool_name,
+                        mcp_identity_trusted=event.mcp_identity_trusted,
                     )
                     if hook_result.action == TOOL_DENY:
                         await client.reject_tool(event.request_id)

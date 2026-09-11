@@ -3,8 +3,8 @@
 The model picker loads its list once via React Query and caches the result. A
 successful (HTTP 200) empty list is cached as "there are zero models" and only a
 manual page refresh re-fires the request. The common trigger was a slow cold
-`kiro-cli --list-models` spawn: on timeout / spawn failure the handler used to
-return `[]` with HTTP 200, so the picker rendered empty until refresh.
+`kiro-cli --list-models` spawn: on timeout / spawn failure, returning
+`[]` with HTTP 200 leaves the picker rendered empty until refresh.
 
 These tests pin the fix: every DEGRADED branch (binary unresolved, timeout,
 unexpected exception) must return HTTP 503 so the frontend's fetch helper throws

@@ -25,6 +25,7 @@ from typing import Any
 from kiro_crew import name_grant
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.paths import config_dir
+from kiro_crew.llm_helpers import is_prompt_busy
 from kiro_crew.trust_patterns import extract_bash_command
 
 logger = logging.getLogger(__name__)
@@ -784,7 +785,34 @@ async def run_channel_agent(
             )
             orch_toplevel = agent.is_orchestrator and (is_toplevel_human or is_agent_report_back)
             tid = None if orch_toplevel else (msg.thread_id or msg.id)
-            await _stream_task(agent, channel, client, prompt, thread_id=tid, is_yolo=is_yolo)
+            busy = await _stream_task(
+                agent, channel, client, prompt, thread_id=tid, is_yolo=is_yolo
+            )
+            if busy:
+                # This loop owns the SessionManager, so it is the only place that
+                # can clear a wedge: replace the session and replay the message
+                # once on a cold one, then rebind the now-dead client.
+                replacement = await _recover_busy_agent(
+                    agent, channel, sessions, prompt, thread_id=tid, is_yolo=is_yolo
+                )
+                if replacement is None:
+                    # Report the dead end EXACTLY ONCE and stop consuming the
+                    # inbox. Re-running the reset on every later message would
+                    # spam the channel — strictly worse than the wedge itself.
+                    # ``api_channel_wake_agent`` is the restart affordance, and
+                    # it cold-starts because _recover_busy_agent tore the
+                    # abandoned replacement out of the session registry.
+                    await channel.post(
+                        agent.id,
+                        "❌ This agent's session is stuck and could not be recovered. "
+                        "Clear its context or wake it to try again.",
+                        from_role=agent.role,
+                        msg_type="system",
+                        thread_id=tid,
+                    )
+                    agent.state = "failed"
+                    break
+                client = replacement
 
             agent.state = "listening"
             channel._broadcast(
@@ -810,6 +838,93 @@ async def run_channel_agent(
         logger.info("Channel agent %s (%s) finished: %s", agent.id, agent.role, agent.state)
 
 
+async def _reset_busy_session(sessions: Any, agent: ChannelAgent) -> Any | None:
+    """Replace *agent*'s wedged session and return a lease on a cold one.
+
+    ``SessionManager.reset`` pops the registry entry and never awaits its
+    semaphore, so resetting while ``run_channel_agent`` still holds the permit
+    cannot deadlock; ``get_or_create`` then builds a fresh entry with a free
+    semaphore, and the single ``release(key)`` in that loop's ``finally``
+    resolves the key at call time, so it balances against the replacement. The
+    orphaned permit dies with the discarded session.
+
+    ``expect_session`` makes the swap a compare-and-swap: a concurrent
+    ``clear-context`` reset (``api_channel_clear_context``) may already have
+    replaced or removed the occupant, and neither outcome may be torn down
+    here. A guarded reset that declines is not a failure — it leaves the key
+    cold, which is exactly what the re-acquire below needs. Returns ``None``
+    only when the replacement lease cannot be obtained.
+    """
+    try:
+        await sessions.reset(
+            agent.session_key,
+            expect_session=sessions._sessions.get(agent.session_key),
+        )
+    except Exception:
+        logger.exception("Failed to reset wedged session %s", agent.session_key)
+        return None
+    try:
+        client, _is_new, _resumed = await sessions.get_or_create(
+            agent.session_key,
+            agent=agent.agent_name or None,
+            approval_policy=agent.approval_policy.value,
+        )
+    except Exception:
+        logger.exception("Failed to re-acquire session %s after reset", agent.session_key)
+        return None
+    return client
+
+
+async def _recover_busy_agent(
+    agent: ChannelAgent,
+    channel: Channel,
+    sessions: Any,  # SessionManager
+    message: str,
+    thread_id: str | None = None,
+    is_yolo: Any = None,  # callable returning bool
+) -> Any | None:
+    """Replace a prompt-busy session and replay *message* once on a cold one.
+
+    Returns the replacement client, or ``None`` when the agent cannot be used
+    again: the replacement lease was unobtainable, or the wedge survived it. In
+    that second case the replacement is torn back down here
+    rather than left behind — ``channel:``-keyed sessions are exempt from both
+    reapers (``session_cleanup._rss_threshold_check`` and ``_expire_idle`` skip
+    any key starting with ``session._CHANNEL_PREFIX``), so an abandoned one
+    leaks until the channel closes, and ``api_channel_wake_agent`` would
+    otherwise re-acquire that same wedged session straight out of the registry
+    and re-wedge instantly.
+    """
+    logger.warning(
+        "Channel agent %s (%s) session is prompt-busy — replacing it",
+        agent.id,
+        agent.role,
+    )
+    client = await _reset_busy_session(sessions, agent)
+    if client is None:
+        return None
+    still_busy = await _stream_task(
+        agent, channel, client, message, thread_id=thread_id, is_yolo=is_yolo
+    )
+    if not still_busy:
+        return client
+    logger.error(
+        "Channel agent %s (%s) still prompt-busy after a session reset",
+        agent.id,
+        agent.role,
+    )
+    try:
+        await sessions.reset(
+            agent.session_key,
+            expect_session=sessions._sessions.get(agent.session_key),
+        )
+    except Exception:
+        logger.exception(
+            "Failed to tear down the abandoned replacement session %s", agent.session_key
+        )
+    return None
+
+
 async def _stream_task(
     agent: ChannelAgent,
     channel: Channel,
@@ -817,8 +932,13 @@ async def _stream_task(
     message: str,
     thread_id: str | None = None,
     is_yolo: Any = None,  # callable returning bool
-) -> None:
-    """Stream an LLM task, posting output as channel messages."""
+) -> bool:
+    """Stream an LLM task, posting output as channel messages.
+
+    Returns True when the provider reported a prompt-busy wedge, which only the
+    caller can clear (it owns the ``SessionManager``); False on success and on
+    every other error, which a session reset cannot fix.
+    """
     from kiro_crew.providers.base import (
         EVENT_COMPLETE,
         EVENT_PERMISSION_REQUEST,
@@ -1061,7 +1181,14 @@ async def _stream_task(
 
             elif event.kind == EVENT_COMPLETE:
                 break
-    except Exception:
+    except Exception as exc:
+        if is_prompt_busy(exc):
+            # No card here: a card is a dead end. The backend still holds an
+            # in-flight prompt, so every later message on this session is
+            # rejected identically until the session is replaced — and only the
+            # caller can do that. Report the wedge upward instead.
+            logger.warning("Prompt busy for channel agent %s (%s): %s", agent.id, agent.role, exc)
+            return True
         logger.exception("LLM stream error for agent %s (%s)", agent.id, agent.role)
         await channel.post(
             agent.id,
@@ -1070,11 +1197,11 @@ async def _stream_task(
             msg_type="system",
             thread_id=thread_id,
         )
-        return
+        return False
 
     full_text = "".join(chunks).strip()
     if not full_text:
-        return
+        return False
     # Sanitize LLM output before posting
     full_text, _ = redact_exfiltration_urls(full_text)
     full_text, _ = redact_credentials(full_text)
@@ -1090,3 +1217,4 @@ async def _stream_task(
         thread_id=thread_id,
         mention=mention_ids or None,
     )
+    return False

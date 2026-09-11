@@ -381,8 +381,8 @@ class TestArchiveInventoryBound:
     """doc_parser gains an inventory bound it did not have before.
 
     This is the one intended behaviour change of the shared-vet extraction: the
-    two OOXML sites previously opened any archive, however many members it
-    declared, because the per-entry size cap cannot bound the inventory.
+    two OOXML sites would otherwise open any archive, however many members it
+    declares, because the per-entry size cap cannot bound the inventory.
     """
 
     def _many_member_docx(self, tmp_path, members: int):
@@ -494,9 +494,9 @@ class TestMaxCharsBudget:
         first = "a" * 100
         path = _make_docx([first, "TAIL-MARKER"])
         try:
-            # Budget = len(first) + 1: previously the first paragraph alone
-            # met it (100 + phantom separator); now it is 100 < 101, so
-            # extraction must continue into the second paragraph.
+            # Budget = len(first) + 1: the first paragraph alone is 100, with
+            # no phantom separator added, so 100 < 101 and extraction must
+            # continue into the second paragraph.
             text = extract_text(path, filename="doc.docx", max_chars=101)
         finally:
             os.unlink(path)

@@ -1220,7 +1220,7 @@ def test_sweep_purges_probe_cache_entry_when_dir_swept(monkeypatch, tmp_path) ->
     probe_dir.mkdir()
     os.utime(probe_dir, (aged, aged))
     # A cache entry pointing at the soon-to-be-swept dir must be purged too, so the
-    # cache never hands /render a path for a directory that no longer exists.
+    # cache never hands /render a path for a directory that does not exist.
     routes._probe_put(
         "clone-old",
         routes._probe_claim("clone-old"),

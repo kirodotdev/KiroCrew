@@ -67,10 +67,11 @@ organized for someone browsing the repository.
 | Doc | Covers |
 |---|---|
 | [mcp-apps.md](mcp-apps.md) | Rendering interactive MCP tool output in chat: the two gates, what a server declares, and the plain-text fallback. |
+| [settings-deeplink.md](settings-deeplink.md) | Answering "where is that setting?" with a link that opens and flashes the control, and the generated registry it comes from. |
 
 ## Maintaining this directory
 
-Two constraints make this tree different from `docs/`:
+Three constraints make this tree different from `docs/`:
 
 - **Filenames are an API.** `tips.py` globs `*.md` here and filters through
   `tips_allowlist.py`, extracting each doc's H1 and first paragraph into the in-app
@@ -81,6 +82,11 @@ Two constraints make this tree different from `docs/`:
 - **The tree is flat, deliberately.** `setup.cfg`'s `package_data` glob for this
   directory does not recurse, so a file in a subdirectory would ship in the sdist
   but be missing from the wheel.
+- **Not every file here is prose.** `settings-registry.generated.json` is a build
+  artifact of the dashboard (`npm run gen:settings`), shipped beside
+  [settings-deeplink.md](settings-deeplink.md) so the agent can enumerate the
+  Settings controls at runtime. Do not hand-edit it; a frontend test byte-matches
+  it against the live panels.
 
 Because every doc here reaches every user, keep the content task-oriented and free
 of internal design narration. An engineering note belongs in

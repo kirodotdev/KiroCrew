@@ -88,12 +88,12 @@ class TestChatSlotProject:
 
     @pytest.mark.asyncio
     async def test_data_home_overlap_returns_actionable_400(self, tmp_path, monkeypatch):
-        """#7392 pre-flight: a workspace containing the voice runtime is refused
+        """Pre-flight: a workspace containing the voice runtime is refused
         at the endpoint with the actionable message, before any session spawn."""
         import kiro_crew.sandbox as sandbox_mod
 
         # The pre-flight is darwin-gated to match the spawn-time guards it
-        # mirrors (review round 1), so pin the platform for the refusal path.
+        # mirrors, so pin the platform for the refusal path.
         monkeypatch.setattr(sandbox_mod.sys, "platform", "darwin")
         runtime = tmp_path / "data" / "run" / "voice-runtime"
         runtime.mkdir(parents=True)
@@ -113,7 +113,7 @@ class TestChatSlotProject:
             data = await resp.json()
             assert data["code"] == "workspace_overlaps_data_home"
             assert "protected voice runtime" in data["error"]
-            # The guard message embeds paths with !r (#7407), so on Windows the
+            # The guard message embeds paths with !r, so on Windows the
             # backslashes are repr-escaped — assert the repr form, which is the
             # exact token the formatter emits on every platform.
             assert repr(str(runtime)) in data["error"]
@@ -182,10 +182,10 @@ class TestChatSlotProject:
 
 
 class TestFolderProjectDirOverlapPreflight:
-    """#7392 review round 3: the folder ``project_dir`` write path is the third
+    """The folder ``project_dir`` write path is the third
     user-driven project chokepoint — it must refuse a data-home overlap at the
     moment of choice with the SAME message as the endpoint and set_project.
-    Round 4: the check lives in ``_folder_project_overlap_denied`` (run off-loop
+    The check lives in ``_folder_project_overlap_denied`` (run off-loop
     by the create/update handlers), NOT in ``_validate_project_dir``, which the
     slot-create read path re-runs against stored values."""
 
@@ -208,7 +208,7 @@ class TestFolderProjectDirOverlapPreflight:
         runtime = self._pin_runtime(tmp_path, monkeypatch)
         err = _folder_project_overlap_denied(str(tmp_path))
         assert err is not None
-        # Byte-identical family: same formatter as endpoint + spawn guard (#7407).
+        # Byte-identical family: same formatter as endpoint + spawn guard.
         assert "protected voice runtime" in err
         assert repr(str(runtime)) in err
         assert "Pick a project subdirectory" in err

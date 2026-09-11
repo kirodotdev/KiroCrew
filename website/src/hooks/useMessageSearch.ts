@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import type { ChatMessage } from '../types'
 import { searchableTextMemo } from '../utils/searchableText'
 import { hasCommandModifier } from '../utils/commandModifier'
+import { isMac } from '../utils/platform'
 import { focusComposer } from '../pages/chat/composerFocus'
 
 export interface SearchMatch {
@@ -111,7 +112,15 @@ export function useMessageSearch(messages: ChatMessage[], activeSlot: string | n
   // Keyboard shortcuts
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if (hasCommandModifier(e) && e.key === 'f') {
+      // `hasCommandModifier` accepts either primary modifier, which is right for
+      // every chord except this one on a Mac: Ctrl+F is Cocoa's `forward-char`
+      // Emacs binding, live in every text field including the composer, so
+      // answering it here would open the find pane instead of moving the caret
+      // one character right. On Mac the pane is ⌘F only and bare Ctrl+F falls
+      // through unhandled; Windows/Linux keep Ctrl+F, where no such binding
+      // exists. (Ctrl+⌘F stays with macOS either way — hasCommandModifier
+      // rejects both-modifiers so Toggle Full Screen survives.)
+      if (hasCommandModifier(e) && (!isMac || e.metaKey) && e.key === 'f') {
         // Yield to a surface that already answered the chord. In an edit
         // session Pierre binds cmdOrCtrl+f on its own content element and calls
         // preventDefault() without stopPropagation(), so this document-level

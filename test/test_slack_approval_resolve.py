@@ -1,7 +1,7 @@
 """Tests for Slack dispatch approval-mode resolution.
 
-The two Slack dispatch sites previously hardcoded APPROVAL_INTERACTIVE,
-ignoring the resolved approval mode that dashboard/subagent paths honor.
+The two Slack dispatch sites resolve the approval mode instead of hardcoding
+APPROVAL_INTERACTIVE, matching what the dashboard/subagent paths honor.
 """
 
 from __future__ import annotations

@@ -478,15 +478,15 @@ class IMessageClient:
 
         The all-chat watch sees every row, including the ones this client caused,
         and ``is_from_me`` alone does not separate them in every chat. In a
-        **self-chat** -- the user's own handle, which the docs used to prescribe
+        **self-chat** -- the user's own handle, which the docs prescribe
         for the first run -- the allow-listed sender IS the identity the agent
         sends as, so an echo of the agent's reply is indistinguishable from user
         input unless that flag is both present and correct on the row. The
         bridge's contract says it need not be: ``watch.subscribe`` defaults to a
         500ms debounce expressly so an ``is_from_me`` *correction* can land
         first, and ``sender`` is documented as empty for some self-sent
-        messages. Trusting it as the only guard is what let the channel answer
-        itself without limit (issue #5246).
+        messages. Trusting it as the only guard lets the channel answer
+        itself without limit.
 
         So the guard is a record of what this client itself sent, which is the
         one signal it fully owns. The matching record is CONSUMED WHOLE, so the

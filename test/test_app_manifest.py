@@ -84,7 +84,7 @@ class TestValidation:
 
     @pytest.mark.parametrize("name", ["registry", "registries", "blob", "install", "register"])
     def test_literal_route_segment_name_rejected(self, name):
-        """Issue #7111: the literal first-segment routes under /api/apps/ are
+        """The literal first-segment routes under /api/apps/ are
         shared routes registered before the /api/apps/{name} catch-all. Reserving
         these names is the defense-in-depth backstop that keeps NEW apps from
         claiming them (the token_auth carve-out is the primary boundary)."""
@@ -1683,11 +1683,11 @@ class TestContributedCommands:
         m.validate()
 
     def test_non_dict_entries_in_the_command_list_are_reported(self):
-        # This test previously asserted `validate() == []` -- that the bad entries were
-        # simply filtered out. That WAS the behaviour and it was the fail-open shape this
-        # class keeps producing: three entries vanished and the app installed with one
-        # row, its author told nothing. The parse still skips them (so one typo cannot
-        # take the whole array down), but validation now names the count.
+        # Bad entries must be REPORTED, not silently filtered out: dropping them is the
+        # fail-open shape this class keeps producing, where entries vanish and the app
+        # installs with fewer rows and its author is told nothing. The parse still skips
+        # them (so one typo cannot take the whole array down), but validation names the
+        # count.
         data = self._manifest(self._command())
         data["contributes"]["commands"] = ["approve-all", None, 7, self._command()]
         m = AppManifest.from_dict(data)
@@ -1742,7 +1742,7 @@ class TestContributesPanelTabs:
     def test_paneltabs_only_manifest_is_covered_by_the_signing_payload(self):
         """A tab's ``entry`` is an ESM module the AppHost imports and RUNS.
 
-        The payload guard used to test ``commands or sessionControls``, and the body it
+        The payload guard would test ``commands or sessionControls``, and the body it
         guarded serializes ALL of ``contributes`` — so a manifest contributing only
         panelTabs was left out of the signed bytes entirely, making ``entry`` the one
         part of a signed app an attacker could repoint with the signature still
@@ -1891,3 +1891,63 @@ class TestContributesPanelTabs:
         tabs = [_panel_tab(id=f"t{i}") for i in range(_MAX_PANEL_TABS_PER_APP + 1)]
         m = AppManifest.from_dict(_valid_manifest(contributes={"panelTabs": tabs}))
         assert any("exceeds the limit of" in e for e in m.validate())
+
+
+class TestShippedManifestsAreWellFormedJson:
+    """Every shipped ``app.json`` must be JSON no reader can disagree about.
+
+    A duplicate key is not a parse error in Python or in JavaScript -- both keep the LAST
+    occurrence -- so a manifest carrying two ``"platform"`` blocks loads, validates, and
+    behaves, while saying two different things to anyone reading it. That is how five
+    built-in manifests came to declare ``"os": ["macos", "linux"]`` immediately above
+    ``"os": ["macos", "linux", "windows"]``: an edit appended a second block instead of
+    changing the first, and last-wins hid it.
+
+    Two reasons that is worth a test rather than a one-time cleanup. A stricter reader
+    rejects the file outright -- ``jq`` flags it, JSON Schema validators flag it, and Rust
+    and Go parsers error by default -- so the manifests are one tool away from being
+    unreadable. And an editor who later deletes "the" ``platform`` block has even odds of
+    deleting the live one, silently dropping a platform with nothing failing.
+    """
+
+    def _builtin_manifests(self) -> list[Path]:
+        paths = sorted((_REPO_ROOT / "src/kiro_crew/apps/builtins").glob("*/app.json"))
+        assert paths, "no built-in manifests found -- the glob or the layout moved"
+        return paths
+
+    def test_no_shipped_manifest_has_a_duplicate_key(self):
+        """Recursively: a duplicate anywhere, at any nesting depth, fails here."""
+        offenders: list[str] = []
+
+        def _reject_duplicates(pairs: list[tuple[str, object]]) -> dict:
+            seen: set[str] = set()
+            for key, _value in pairs:
+                if key in seen:
+                    offenders.append(key)
+                seen.add(key)
+            return dict(pairs)
+
+        for manifest in self._builtin_manifests():
+            offenders.clear()
+            json.loads(manifest.read_text(encoding="utf-8"), object_pairs_hook=_reject_duplicates)
+            assert not offenders, (
+                f"{manifest.parent.name}/app.json declares {sorted(set(offenders))!r} "
+                "more than once. Both copies load and the LAST one wins, so the file "
+                "reads as two different manifests -- edit the existing block instead of "
+                "appending a second one."
+            )
+
+    def test_every_builtin_declares_its_platforms_exactly_once(self):
+        """The specific shape that went wrong, asserted on the shipped files.
+
+        Complements the general check: this one names ``platform`` so a regression here
+        reports the field a reader cares about rather than a generic duplicate.
+        """
+        for manifest in self._builtin_manifests():
+            raw = manifest.read_text(encoding="utf-8")
+            count = raw.count('"platform"')
+            assert count <= 1, (
+                f"{manifest.parent.name}/app.json contains {count} \"platform\" keys; "
+                "the effective value is whichever comes last, which is not what the "
+                "file appears to say."
+            )

@@ -4,12 +4,20 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 from aiohttp import web
 
-from kiro_crew.dashboard.handlers.secrets import _sanitize_for_log, setup_secrets_routes
+from kiro_crew.config import loader as config_loader
+from kiro_crew.config.loader import MANAGED_VAULT_FIXED_CONSUMERS
+from kiro_crew.dashboard.handlers.secrets import (
+    _managed_secret_catalog,
+    _sanitize_for_log,
+    _unused_stored_secrets,
+    setup_secrets_routes,
+)
 from kiro_crew.secrets import SecretVault
 
 
@@ -57,8 +65,27 @@ def empty_vault_dir(tmp_path: Path) -> Path:
     return tmp_path
 
 
+_WAKATIME_MANAGED = {"name": "WAKATIME_API_KEY", "kind": "wakatime_api_key"}
+
+
 class TestApiSecretsList:
     """Tests for GET /api/secrets."""
+
+    def test_fixed_vault_consumer_registry_drives_catalog(self) -> None:
+        catalog = _managed_secret_catalog([], ["example.com"], True, True)
+        assert {entry["name"] for entry in catalog} == set(MANAGED_VAULT_FIXED_CONSUMERS)
+
+    def test_unused_stored_reasons_follow_runtime_applicability(self) -> None:
+        assert _unused_stored_secrets(["WAKATIME_API_KEY"], [], False, False) == [
+            {"name": "WAKATIME_API_KEY", "reason": "wakatime_disabled"}
+        ]
+        assert _unused_stored_secrets(["JIRA_API_TOKEN"], ["a", "b"], False, True) == [
+            {"name": "JIRA_API_TOKEN", "reason": "jira_multi_host"}
+        ]
+        host_name = config_loader.jira_host_token_name("example.com")
+        assert _unused_stored_secrets(
+            ["JIRA_API_TOKEN", host_name], ["example.com"], True, True
+        ) == [{"name": "JIRA_API_TOKEN", "reason": "jira_host_precedence"}]
 
     @pytest.mark.asyncio
     async def test_lists_names_sorted(self, vault_dir: Path) -> None:
@@ -71,7 +98,7 @@ class TestApiSecretsList:
                 resp = await client.get("/api/secrets")
                 assert resp.status == 200
                 data = await resp.json()
-                assert data == {"names": ["DB_PASS", "TEST_KEY"]}
+                assert data == {"names": ["DB_PASS", "TEST_KEY"], "managed": []}
 
     @pytest.mark.asyncio
     async def test_empty_vault(self, empty_vault_dir: Path) -> None:
@@ -86,7 +113,261 @@ class TestApiSecretsList:
                 resp = await client.get("/api/secrets")
                 assert resp.status == 200
                 data = await resp.json()
-                assert data == {"names": []}
+                assert data == {"names": [], "managed": []}
+
+    @pytest.mark.asyncio
+    async def test_classifies_only_actual_jira_vault_consumers(self, tmp_path: Path) -> None:
+        vault = SecretVault(tmp_path)
+        vault._set_sync("JIRA_API_TOKEN", "global-token")
+        vault._set_sync("JIRA_TOKEN_6578616D706C652E636F6D", "host-token")
+        vault._set_sync("JIRA_TOKEN_6F727068616E2E636F6D", "orphan-token")
+        vault._set_sync("JIRA_TOKEN_not_hex", "ordinary-entry")
+        app = _app()
+
+        from aiohttp.test_utils import TestClient, TestServer
+
+        jira_config = SimpleNamespace(
+            wakatime=SimpleNamespace(enabled=True),
+            dashboard=SimpleNamespace(jira_auth=[SimpleNamespace(host="example.com")]),
+        )
+        with (
+            patch("kiro_crew.dashboard.handlers.secrets.config_dir", return_value=str(tmp_path)),
+            patch(
+                "kiro_crew.dashboard.handlers.secrets.KiroCrewConfig.load",
+                return_value=jira_config,
+            ),
+        ):
+            async with TestClient(TestServer(app)) as client:
+                resp = await client.get("/api/secrets")
+                assert resp.status == 200
+                data = await resp.json()
+
+        assert data["names"] == [
+            "JIRA_API_TOKEN",
+            "JIRA_TOKEN_6578616D706C652E636F6D",
+            "JIRA_TOKEN_6F727068616E2E636F6D",
+            "JIRA_TOKEN_not_hex",
+        ]
+        assert data["managed"] == [
+            _WAKATIME_MANAGED,
+            {
+                "name": "JIRA_TOKEN_6578616D706C652E636F6D",
+                "kind": "jira_host_token",
+                "host": "example.com",
+            },
+        ]
+
+    @pytest.mark.asyncio
+    async def test_multiple_jira_hosts_omit_global_and_advertise_per_host_slots(
+        self, tmp_path: Path
+    ) -> None:
+        app = _app()
+        jira_config = SimpleNamespace(
+            wakatime=SimpleNamespace(enabled=True),
+            dashboard=SimpleNamespace(
+                jira_auth=[
+                    SimpleNamespace(host="One.Example:443"),
+                    SimpleNamespace(host="two.example"),
+                ]
+            ),
+        )
+
+        from aiohttp.test_utils import TestClient, TestServer
+
+        with (
+            patch("kiro_crew.dashboard.handlers.secrets.config_dir", return_value=str(tmp_path)),
+            patch(
+                "kiro_crew.dashboard.handlers.secrets.KiroCrewConfig.load",
+                return_value=jira_config,
+            ),
+        ):
+            async with TestClient(TestServer(app)) as client:
+                resp = await client.get("/api/secrets")
+                assert resp.status == 200
+                managed = (await resp.json())["managed"]
+
+        assert managed == [
+            _WAKATIME_MANAGED,
+            {
+                "name": "JIRA_TOKEN_6F6E652E6578616D706C65",
+                "kind": "jira_host_token",
+                "host": "one.example",
+            },
+            {
+                "name": "JIRA_TOKEN_74776F2E6578616D706C65",
+                "kind": "jira_host_token",
+                "host": "two.example",
+            },
+        ]
+
+    @pytest.mark.asyncio
+    async def test_port_only_jira_entry_is_ignored(self, tmp_path: Path) -> None:
+        app = _app()
+        jira_config = SimpleNamespace(
+            wakatime=SimpleNamespace(enabled=False),
+            dashboard=SimpleNamespace(jira_auth=[SimpleNamespace(host=":443")]),
+        )
+
+        from aiohttp.test_utils import TestClient, TestServer
+
+        with (
+            patch("kiro_crew.dashboard.handlers.secrets.config_dir", return_value=str(tmp_path)),
+            patch(
+                "kiro_crew.dashboard.handlers.secrets.KiroCrewConfig.load",
+                return_value=jira_config,
+            ),
+        ):
+            async with TestClient(TestServer(app)) as client:
+                response = await client.get("/api/secrets")
+                assert response.status == 200
+                assert await response.json() == {"names": [], "managed": []}
+
+    @pytest.mark.asyncio
+    async def test_single_whitespace_jira_entry_is_ignored(self, tmp_path: Path) -> None:
+        app = _app()
+        jira_config = SimpleNamespace(
+            wakatime=SimpleNamespace(enabled=False),
+            dashboard=SimpleNamespace(jira_auth=[SimpleNamespace(host="   ")]),
+        )
+
+        from aiohttp.test_utils import TestClient, TestServer
+
+        with (
+            patch("kiro_crew.dashboard.handlers.secrets.config_dir", return_value=str(tmp_path)),
+            patch(
+                "kiro_crew.dashboard.handlers.secrets.KiroCrewConfig.load",
+                return_value=jira_config,
+            ),
+        ):
+            async with TestClient(TestServer(app)) as client:
+                response = await client.get("/api/secrets")
+                assert response.status == 200
+                assert await response.json() == {"names": [], "managed": []}
+
+    @pytest.mark.asyncio
+    async def test_config_failure_keeps_names_and_reports_managed_error(
+        self, vault_dir: Path
+    ) -> None:
+        app = _app()
+
+        from aiohttp.test_utils import TestClient, TestServer
+
+        with (
+            patch("kiro_crew.dashboard.handlers.secrets.config_dir", return_value=str(vault_dir)),
+            patch(
+                "kiro_crew.dashboard.handlers.secrets.KiroCrewConfig.load",
+                side_effect=ValueError("broken config"),
+            ),
+        ):
+            async with TestClient(TestServer(app)) as client:
+                response = await client.get("/api/secrets")
+                assert response.status == 200
+                assert await response.json() == {
+                    "names": ["DB_PASS", "TEST_KEY"],
+                    "managed": [],
+                    "managed_error": True,
+                }
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("degraded", [{"*"}, {"dashboard"}, {"wakatime"}])
+    async def test_degraded_managed_sections_report_managed_error(
+        self, tmp_path: Path, degraded: set[str]
+    ) -> None:
+        app = _app()
+        config = SimpleNamespace(
+            degraded_sections=frozenset(degraded),
+            wakatime=SimpleNamespace(enabled=False),
+            dashboard=SimpleNamespace(jira_auth=[]),
+        )
+
+        from aiohttp.test_utils import TestClient, TestServer
+
+        with (
+            patch("kiro_crew.dashboard.handlers.secrets.config_dir", return_value=str(tmp_path)),
+            patch(
+                "kiro_crew.dashboard.handlers.secrets.KiroCrewConfig.load",
+                return_value=config,
+            ),
+        ):
+            async with TestClient(TestServer(app)) as client:
+                response = await client.get("/api/secrets")
+                assert response.status == 200
+                assert await response.json() == {
+                    "names": [],
+                    "managed": [],
+                    "managed_error": True,
+                }
+
+    @pytest.mark.asyncio
+    async def test_whitespace_jira_entry_uses_raw_count_for_applicability(
+        self, tmp_path: Path
+    ) -> None:
+        app = _app()
+        jira_config = SimpleNamespace(
+            wakatime=SimpleNamespace(enabled=False),
+            dashboard=SimpleNamespace(
+                jira_auth=[
+                    SimpleNamespace(host="example.com"),
+                    SimpleNamespace(host="   "),
+                ]
+            ),
+        )
+
+        from aiohttp.test_utils import TestClient, TestServer
+
+        with (
+            patch("kiro_crew.dashboard.handlers.secrets.config_dir", return_value=str(tmp_path)),
+            patch(
+                "kiro_crew.dashboard.handlers.secrets.KiroCrewConfig.load",
+                return_value=jira_config,
+            ),
+        ):
+            async with TestClient(TestServer(app)) as client:
+                managed = (await (await client.get("/api/secrets")).json())["managed"]
+
+        assert managed == [
+            {
+                "name": "JIRA_TOKEN_6578616D706C652E636F6D",
+                "kind": "jira_host_token",
+                "host": "example.com",
+            }
+        ]
+
+    @pytest.mark.asyncio
+    async def test_duplicate_normalized_hosts_do_not_enable_global_fallback(
+        self, tmp_path: Path
+    ) -> None:
+        app = _app()
+        jira_config = SimpleNamespace(
+            wakatime=SimpleNamespace(enabled=True),
+            dashboard=SimpleNamespace(
+                jira_auth=[
+                    SimpleNamespace(host="Jira.Corp:443"),
+                    SimpleNamespace(host="jira.corp"),
+                ]
+            ),
+        )
+
+        from aiohttp.test_utils import TestClient, TestServer
+
+        with (
+            patch("kiro_crew.dashboard.handlers.secrets.config_dir", return_value=str(tmp_path)),
+            patch(
+                "kiro_crew.dashboard.handlers.secrets.KiroCrewConfig.load",
+                return_value=jira_config,
+            ),
+        ):
+            async with TestClient(TestServer(app)) as client:
+                managed = (await (await client.get("/api/secrets")).json())["managed"]
+
+        assert managed == [
+            _WAKATIME_MANAGED,
+            {
+                "name": "JIRA_TOKEN_6A6972612E636F7270",
+                "kind": "jira_host_token",
+                "host": "jira.corp",
+            },
+        ]
 
 
 class TestApiSecretsSet:
@@ -157,7 +438,7 @@ class TestApiSecretsDelete:
     @pytest.mark.asyncio
     async def test_deletes_secret_removes_from_list(self, vault_dir: Path) -> None:
         """A successful DELETE removes the name from the vault; a subsequent list
-        no longer includes it.  Proves the membership check does not block the
+        does not include it.  Proves the membership check does not block the
         actual deletion path."""
         app = _app()
 

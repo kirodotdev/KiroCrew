@@ -189,7 +189,7 @@ class WorkflowService:
             definition_library if definition_library is not None else WorkflowDefinitionLibrary()
         )
         # Library calls run in worker threads from async gateway paths. Preserve
-        # the single-writer ordering the event loop previously provided so slug
+        # the single-writer ordering an event loop gives for free so slug
         # allocation and optimistic revision checks remain atomic in-process.
         self._definition_lock = threading.RLock()
         if on_done is not None:

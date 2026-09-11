@@ -180,6 +180,56 @@ async def test_nothing_is_pending_once_the_model_is_on_disk(fake):
 
 
 @pytest.mark.asyncio
+async def test_a_present_but_unresident_model_reports_a_pending_load(fake):
+    """The load prepare() will block on, so a transport can announce it.
+
+    The `fake` fixture puts the model on disk but leaves the engine resident for a
+    DIFFERENT key (the stub `/stub/ggml-base.bin`), which is exactly the first-session
+    state: weights present, nothing loaded for them yet. That load is silent, so the
+    transport has to know it is coming.
+    """
+    assert _session().pending_download() is None
+    assert _session().pending_load() is True
+
+
+@pytest.mark.asyncio
+async def test_no_pending_load_once_the_model_is_resident(monkeypatch, tmp_path):
+    """A resident model loads nothing, so nothing needs announcing.
+
+    ``pending_load`` compares the engine's resident key against the one this session
+    would build; when they match, prepare() returns without loading and the transport
+    skips the ``preparing`` frame.
+    """
+    monkeypatch.setattr(models, "models_dir", lambda: tmp_path)
+    model = models.resolve(models.DEFAULT_MODEL)
+    with (tmp_path / model.filename).open("wb") as weights:
+        weights.truncate(model.size_bytes)
+    eng = _FakeEngine()
+    # Make the engine resident for exactly the key this session builds.
+    eng.loaded_key = engine_mod.LoadedKey(
+        str(models.model_path(model)), "en", engine_mod.thread_count()
+    )
+    monkeypatch.setattr(engine_mod, "shared_engine", lambda **_kw: eng)
+    assert _session().pending_load() is False
+
+
+@pytest.mark.asyncio
+async def test_no_pending_load_when_the_model_is_absent(monkeypatch, tmp_path):
+    """An absent model is a pending DOWNLOAD, not a pending load.
+
+    The two are distinct: the download path already announces itself, and the load
+    only happens after the weights are on disk. Reporting a load while the file is
+    missing would send a ``preparing`` frame the download refusal immediately
+    contradicts.
+    """
+    monkeypatch.setattr(models, "models_dir", lambda: tmp_path)
+    monkeypatch.setattr(engine_mod, "shared_engine", lambda **_kw: _FakeEngine())
+    session = _session()
+    assert session.pending_download() is not None
+    assert session.pending_load() is False
+
+
+@pytest.mark.asyncio
 async def test_prepare_surfaces_an_unavailable_recogniser_with_its_code(monkeypatch, tmp_path):
     monkeypatch.setattr(models, "models_dir", lambda: tmp_path)
     model = models.resolve(models.DEFAULT_MODEL)

@@ -68,18 +68,24 @@ function probeRow(
   }
 }
 
-function wrap() {
+function wrapWithClient() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   render(
     <QueryClientProvider client={qc}>
       <AgentBackendTab />
     </QueryClientProvider>,
   )
+  return { qc }
+}
+
+function wrap() {
+  wrapWithClient()
 }
 
 const button = (name: string) => screen.getByRole('button', { name })
 
 beforeEach(() => {
+  localStorage.clear()
   patchConfigMock.mockClear()
   patchConfigMock.mockResolvedValue({})
   kirocrewConfigMock.mockClear()
@@ -144,6 +150,57 @@ describe('AgentBackendTab', () => {
     wrap()
     fireEvent.click(await screen.findByRole('button', { name: 'KAS (kiro-agent)' }))
     await waitFor(() => expect(patchConfigMock).toHaveBeenCalledWith('agent.acp_backend', 'kas'))
+  })
+
+  it('re-clicking the already-selected backend saves nothing and leaves the model list alone', async () => {
+    // The chip group fires onChange for the pressed option as well, and a PATCH
+    // writing the current value would still succeed -- which would reset the
+    // model list and spawn `--list-models` for a backend that never changed.
+    localStorage.setItem('kc.acp.models.v1', JSON.stringify({ ts: Date.now(), models: [{ name: 'auto', description: '' }] }))
+    const { qc } = wrapWithClient()
+    qc.setQueryData(['available-models', 'acp'], [{ name: 'auto' }, { name: 'kiro-model' }])
+    const reset = vi.spyOn(qc, 'resetQueries')
+    fireEvent.click(await screen.findByRole('button', { name: 'Kiro CLI' }))
+    await waitFor(() => expect(button('Kiro CLI')).toHaveAttribute('aria-pressed', 'true'))
+    expect(patchConfigMock).not.toHaveBeenCalled()
+    expect(reset).not.toHaveBeenCalled()
+    expect(qc.getQueryData(['available-models', 'acp'])).toHaveLength(2)
+    expect(localStorage.getItem('kc.acp.models.v1')).not.toBeNull()
+  })
+
+  it('resets the model list and drops its localStorage cache after a switch', async () => {
+    // The picker's list belongs to the OLD backend until something re-asks
+    // `/api/models`, and nothing but a session spawn does -- so without this the
+    // list only changed after a gateway restart. RESET, not invalidate: the old
+    // rows must leave the screen before the refetch lands, or a pick during a
+    // slow `--list-models` spawn writes an id the new backend rejects. The cache
+    // drop keeps a failing first fetch from serving the old backend's ids.
+    localStorage.setItem('kc.acp.models.v1', JSON.stringify({ ts: Date.now(), models: [{ name: 'auto', description: '' }] }))
+    const { qc } = wrapWithClient()
+    qc.setQueryData(['available-models', 'acp'], [{ name: 'auto' }, { name: 'old-backend-model' }])
+    const reset = vi.spyOn(qc, 'resetQueries')
+    fireEvent.click(await screen.findByRole('button', { name: 'KAS (kiro-agent)' }))
+    await waitFor(() => expect(patchConfigMock).toHaveBeenCalledWith('agent.acp_backend', 'kas'))
+    await waitFor(() => expect(reset).toHaveBeenCalledWith({ queryKey: ['available-models'] }))
+    // The old rows are gone the moment the switch saves, not after a refetch.
+    expect(qc.getQueryData(['available-models', 'acp'])).toBeUndefined()
+    expect(localStorage.getItem('kc.acp.models.v1')).toBeNull()
+  })
+
+  it('leaves the model list alone when the save is rejected', async () => {
+    // A refused PATCH means the backend did NOT change; refetching would spawn
+    // `--list-models` for nothing, and dropping the cache would throw away a
+    // list that is still correct.
+    patchConfigMock.mockRejectedValueOnce(new Error('403'))
+    localStorage.setItem('kc.acp.models.v1', JSON.stringify({ ts: Date.now(), models: [{ name: 'auto', description: '' }] }))
+    const { qc } = wrapWithClient()
+    qc.setQueryData(['available-models', 'acp'], [{ name: 'auto' }, { name: 'still-valid-model' }])
+    const reset = vi.spyOn(qc, 'resetQueries')
+    fireEvent.click(await screen.findByRole('button', { name: 'KAS (kiro-agent)' }))
+    await screen.findByText('Could not save the agent backend.')
+    expect(reset).not.toHaveBeenCalled()
+    expect(qc.getQueryData(['available-models', 'acp'])).toHaveLength(2)
+    expect(localStorage.getItem('kc.acp.models.v1')).not.toBeNull()
   })
 
   it('hides a backend the deployment may not select, rather than dimming it', async () => {

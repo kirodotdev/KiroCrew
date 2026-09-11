@@ -136,11 +136,15 @@ def _notify_artifact_update(state: Any, slug: str, version: int, *, deleted: boo
     Called from the mutation funnel (create / content update / revert /
     relocate / delete) — the same choke points as the SEL audit, so panel
     chat, other dashboard sessions, Slack, and CLI mutations all emit.
-    Fire-and-forget:
-    react-query's 30s staleness window remains the safety net if the broadcast
-    fails or a client misses it. Known limitation (accepted): external edits to
-    a file-backed artifact's source_path never pass through a handler, so those
-    stay on pull-based refresh.
+    Fire-and-forget: a dropped or missed broadcast is picked up the next time a
+    client fetches the artifact.
+
+    External edits to a file-backed artifact's source_path never pass through a
+    handler, so this never fires for them. The dashboard covers that case from
+    the other side: ``useArtifactLiveReload`` watches ``source_path`` over
+    ``GET /api/file-watch`` and refetches the artifact on a change (see
+    docs/system-specs/modules/artifacts.md, "Live refresh — file-backed
+    artifacts").
     """
     try:
         if state is not None:

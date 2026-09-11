@@ -273,12 +273,11 @@ def persist_kiro_windows() -> None:
 # ground truth. kiro-cli advertises via ``chat --list-models``; claude-agent-acp
 # advertises its versioned list in the ``session/new`` response
 # (``AcpClient._capture_available_models``). This cache records those advertised
-# provider ids per provider so the consumers that used to read the static
-# ``available_models(provider)`` allowlist can read what the provider served
-# instead — chiefly the claude_code ``settings.local.json`` ``availableModels``
-# seed, which unlocks a model's real window and previously carried only the
-# registry's Anthropic ids (so a served-but-unlisted model, e.g. a new Opus,
-# collapsed to the base window).
+# provider ids per provider so consumers read what the provider served rather
+# than the static ``available_models(provider)`` allowlist — chiefly the
+# claude_code ``settings.local.json`` ``availableModels`` seed, which unlocks a
+# model's real window. Seeding the registry's Anthropic ids alone collapses a
+# served-but-unlisted model, e.g. a new Opus, to the base window.
 #
 # Runtime state, not committed data (like ``_KIRO_WINDOWS`` / session_map). A
 # corrupt/missing cache degrades silently to the registry allowlist and can
@@ -458,7 +457,7 @@ def seed_available_models(provider: str) -> list[str]:
     returns ``[]``, which callers must read as "seed no allowlist at all" —
     NOT as "fall back to the static registry".
 
-    That fallback used to live here and was actively harmful. The adapter merges
+    That fallback must NOT live here: it is actively harmful. The adapter merges
     ``availableModels`` union+dedup across every settings source, so seeding the
     hand-maintained registry list POISONS the merge for anything the registry has
     not caught up on: a model the account is served but the registry never listed
@@ -887,11 +886,11 @@ def canonical_key(name: str) -> str | None:
     (``us.anthropic.…``, ``global.anthropic.…``) -- and returns ``None`` for
     anything the registry does not list. A provider-prefixed id is not itself a
     registry key/alias, so the prefix is peeled and the lookup retried (the "fold
-    a provider/partition prefix" half of #5339). This is the single "which
+    a provider/partition prefix" half of the fold). This is the single "which
     registry model is this id?" fold shared by ``_normalize_model_key``
     (dashboard/handlers/agents.py) and the frontend ``canonicalKey``
     (providers/modelRegistry.ts) -- the peel lives HERE so any backend caller of
-    this documented fold gets both #5339 halves, not just the dashboard handler.
+    this documented fold gets both halves, not just the dashboard handler.
     """
     for provider in ("acp", "claude_code"):
         key = _resolve_canonical(name, provider)
@@ -911,8 +910,8 @@ def canonicalize_for_provider(stored_model: str, provider: str) -> str:
     ``claude_code``, where the wire/dropdown values are canonical keys.
 
     Single home for the "canonicalize a persisted/advertised model iff it's a
-    claude_code value" rule (previously open-coded with ad-hoc provider gates in
-    usage.py, chat_persistence, and chat_runner). For any other provider the
+    claude_code value" rule, rather than ad-hoc provider gates in usage.py,
+    chat_persistence, and chat_runner. For any other provider the
     value is returned unchanged, so a kiro/acp model that happens to share a
     registry alias spelling is never rewritten. ``from_provider_id`` resolves
     canonical keys, provider ids, AND aliases, so a bare ``opus`` or a

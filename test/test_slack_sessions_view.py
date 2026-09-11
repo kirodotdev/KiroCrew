@@ -422,7 +422,7 @@ class TestBuildSessionsBlocks:
         assert "AKIAIOSFODNN7EXAMPLE" not in rendered
 
     def test_redacts_exfiltration_urls_in_message_content(self):
-        """Regression for review-bot security-controls comment on rev 1.
+        """Message content is redacted before it is posted to Slack.
 
         The pre-refactor inline code applied BOTH ``redact_exfiltration_urls()``
         and ``redact_credentials()`` to message content before posting to Slack.
@@ -598,9 +598,8 @@ class TestHandleSessionsCommandDelegation:
     async def test_keyword_collector_failure_emits_error_audit(
         self, tmp_path, monkeypatch
     ):
-        """Regression for review-bot security-controls. The keyword path
-        previously called the collector outside any try/except, so an
-        OSError would skip the SEL audit entirely. Locks in that the
+        """The keyword path must call the collector inside a try/except, or an
+        OSError skips the SEL audit entirely. Locks in that the
         error-outcome audit fires on collector failure, mirroring the
         slash and Home Tab error-path patterns.
         """
@@ -761,7 +760,7 @@ class TestSlashSessionsAudit:
     async def test_slash_unauthorized_denied_with_audit(
         self, tmp_path, monkeypatch
     ):
-        """Regression for review-bot security-controls / authorization rule.
+        """The slash command enforces the authorization rule.
 
         Per the deny-by-default guideline, the slash command must reject
         callers that are neither the owner nor an explicitly-allowed user,

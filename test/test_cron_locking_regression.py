@@ -137,7 +137,7 @@ class TestReadPathsLocked:
     def test_reads_never_block_even_while_store_lock_held(self, tmp_path: Path) -> None:
         """Cache-only reads return promptly even while the store lock is held.
 
-        The read paths no longer touch the lock at all, so a mutator holding
+        The read paths do not touch the lock at all, so a mutator holding
         the store lock from a separate open description can never delay or
         block a read.
         """

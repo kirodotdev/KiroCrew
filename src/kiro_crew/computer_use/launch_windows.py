@@ -332,8 +332,8 @@ def _under_protected(path: str) -> bool:
     ``C:\\Windows\\System32\\Microsoft\\Crypto\\RSA\\MachineKeys`` are both writable by
     an unprivileged user while ``System32`` itself is not — so "under System32" admitted
     a planted binary, and an ``App Paths`` entry in the writable ``HKCU`` hive can name
-    one. (``C:\\Windows`` was worse still: ``Temp``, ``Tasks`` and the same colour
-    directory. It is no longer a root at all.)
+    one. (``C:\\Windows`` is worse still — ``Temp``, ``Tasks`` and the same colour
+    directory — so it is not a root at all.)
 
     ``realpath`` FIRST, and that is load-bearing too: a junction under a writable
     directory would otherwise present a protected-looking prefix while resolving into

@@ -351,7 +351,7 @@ class TestRealSigninHandleFailures:
 
     def test_a_failure_starting_device_login_does_not_strand_the_crew(self, monkeypatch):
         # start_device_login shells out to SSM. If it raises in the constructor, the
-        # job used to fail BEFORE register() — stranding a provisioned, billing
+        # job would fail BEFORE register() — stranding a provisioned, billing
         # instance outside the crew list. The handle must instead come back empty and
         # unconfirmed so the launch still registers the crew.
         from kiro_crew.cloud import launch_engine as le

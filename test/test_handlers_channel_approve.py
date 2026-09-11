@@ -1,6 +1,6 @@
 """Tests for /api/channels/{id}/agents/{aid}/approve handler.
 
-Covers the trust-tier allowlist (issue #5231): channel approval cards offer
+Covers the trust-tier allowlist: channel approval cards offer
 ``trust_command`` / ``trust_base`` via the shared TrustDropdown. Grants are
 derived SERVER-SIDE from the pending approval's canonical shell command, the
 client-supplied pattern serves as the consent proof (mismatch fails closed),
@@ -115,7 +115,7 @@ class TestChannelApproveTrustTiers:
     @pytest.mark.asyncio
     async def test_stale_card_pattern_is_refused(self):
         """A click on an OLD approval card (its pattern describes a command
-        that is no longer the pending one) must not trust the newer pending
+        that is not the pending one) must not trust the newer pending
         command."""
         agent = _make_agent(pending_command="rm -rf /data")
         resp, _ = await _call({"action": "trust_command", "pattern": "ls /tmp"}, agent)

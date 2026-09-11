@@ -72,6 +72,30 @@ def _pristine_logging():
     kc.handlers[:], kc.level = saved_kc
 
 
+def test_private_cli_persists_logs_without_mutating_gateway_log(monkeypatch, tmp_path):
+    from kiro_crew.config import paths
+
+    log_dir = tmp_path / "execution-logs"
+    log_dir.mkdir()
+    monkeypatch.setattr(paths, "private_runtime_log_dir", lambda: log_dir)
+    global_log = config_dir() / "gateway.log"
+    global_log.write_text("owner gateway log\n", encoding="utf-8")
+    _setup_cli_logging("status", 1)
+    logging.getLogger("kiro_crew").warning("private diagnostic canary")
+    assert global_log.read_text(encoding="utf-8") == "owner gateway log\n"
+    assert "private diagnostic canary" in (log_dir / f"member-{os.getpid()}.log").read_text(
+        encoding="utf-8"
+    )
+
+
+def test_private_cli_logging_failure_is_explicit(monkeypatch, tmp_path):
+    from kiro_crew.config import paths
+
+    monkeypatch.setattr(paths, "private_runtime_log_dir", lambda: tmp_path / "missing")
+    with pytest.raises(OSError):
+        _setup_cli_logging("status", 1)
+
+
 class TestFdTargetsFile:
     def test_true_when_fd_open_on_path(self, tmp_path):
         target = tmp_path / "gateway.log"

@@ -108,7 +108,7 @@ class TestPostureReportsEffectivePinScope:
         assert "Per-client" in _pin_detail()
 
     def test_proxied_bind_reports_shared_pin(self) -> None:
-        """The state the guide used to advertise as a mitigation."""
+        """A proxied bind reports the pin as SHARED, not per-client."""
         from kiro_crew.dashboard.token_auth import bind_token_ip, proxied_pin_observed
 
         bind_token_ip("t-proxied", "127.0.0.1", _live(), True)
@@ -129,7 +129,7 @@ class TestPostureReportsEffectivePinScope:
         """The reason this is derived rather than latched.
 
         A single tunnelled login must not pin the posture row to SHARED for the
-        rest of the gateway's life. Once that session is no longer live and only
+        rest of the gateway's life. Once that session is not live and only
         direct ones remain, the row has to say per-client again — a stale SHARED
         is the same class of untrue claim this row exists to remove.
         """

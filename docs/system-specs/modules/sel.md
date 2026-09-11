@@ -8,6 +8,18 @@ See also the SEL section in [`security.md`](security.md) for the threat-model vi
 
 Storage: `~/.kiro/crew/security_events.jsonl` (append-only JSONL with HMAC-SHA256 chain).
 
+Private member subprocesses keep a separate diagnostic chain in their isolated
+execution log directory: the host path is
+`memory_stores/.execution-logs/member-<random>/audit-<pid>/security_events.jsonl`.
+This host location is hidden from Global V1 and private peers. Linux exposes only
+that execution directory at the child's `agent-logs/`; outer Seatbelt denies peer
+execution paths. The directory choice is established at launch, before protected
+PID publication, so early MCP initialization cannot append to the global chain.
+These are process-local diagnostics with their own keys, not trusted gateway
+audit or session-identity authority. The gateway continues to record memory API
+mutations in its original chain. CLI text logs are persisted beside these local
+chains; write failures remain explicit. V1 storage and verification are unchanged.
+
 ## Event Schema
 
 Each entry records:
@@ -76,6 +88,13 @@ hop (#8608). A failed warm logs a warning and leaves that init retry to the
 first later touch, on its caller's thread. `critical=True` writes are
 synchronous by design and their call sites still offload themselves when
 reached from the loop.
+
+Private-member authorization denials keep their typed 403 responses even when
+SEL initialization or event submission fails. Their shared denial audit resolves
+the singleton and submits the event in a worker thread, including after an
+unsuccessful startup warm. Audit failure is diagnostic only: it cannot grant
+access or allow the protected handler to read or mutate a resource. Critical
+grant audits retain their audit-or-deny contract.
 
 - **Durability**: eventually-durable, not synchronously-durable — a crash/kill
   can lose at most the events still queued. Acceptable for an audit log; the

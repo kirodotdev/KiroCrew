@@ -790,7 +790,7 @@ async def _make_live(path: str, dry_run: bool = False, expected_staged: str | No
     refusing with ``stage_changed`` otherwise — without both bindings, a
     cancel confirmed against one stage/live pair could silently discard a
     different stage, or fall through to the cutover path and restart the
-    gateway into a checkout that is no longer live.
+    gateway into a checkout that is not the live one.
 
     Validation order (all enforced for ``dry_run`` too): the path is a known,
     existing worktree (``unknown_path`` / ``missing_path``); NOT inside a pod,
@@ -908,7 +908,7 @@ async def _make_live(path: str, dry_run: bool = False, expected_staged: str | No
         # A request carrying expected_staged is a CANCEL: it re-pins the
         # checkout the operator saw as live. If the live checkout moved since
         # the dialog (a cutover landed and re-staged in between), the request
-        # names a checkout that is no longer running — falling through to the
+        # names a checkout that is not the running one — falling through to the
         # cutover path below would restart the gateway into it, the
         # destructive opposite of a cancel. Refuse instead.
         live_name = Path(live).name if live else "an unknown checkout"
@@ -989,7 +989,7 @@ async def _make_live(path: str, dry_run: bool = False, expected_staged: str | No
                 }
             # Re-read under the lock: the awaits above mean the stage may have
             # been completed or re-pointed since the entry check, and cancelling
-            # a stage that no longer exists would delete a pointer someone else
+            # a stage that is already gone would delete a pointer someone else
             # just wrote.
             pending_now = _staged_target()
             if pending_now is None:

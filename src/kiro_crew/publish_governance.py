@@ -89,16 +89,16 @@ def _read_allowed_destinations() -> tuple[list[str], str | None]:
     The two questions this gate needs — "is the config trustworthy" and "what
     did the operator allow" — are answered from a single ``load()``, because
     answering them from two independent reads is what let a malformed section
-    reopen the allowlist (#4057).
+    reopen the allowlist.
 
-    The old shape: a probe called ``read_config_for_update`` (which rejects only
-    a non-object TOP level) and, separately, the value came from
-    ``KiroCrewConfig.load().publish.allowed_destinations``. A ``config.json`` of
-    ``{"publish": []}`` is a valid object at the top level, so the probe PASSED —
-    and the loader then coerced the non-dict ``publish`` section to ``{}``, so
-    the allowlist came back empty. Empty is indistinguishable from "no
-    restriction configured", i.e. default-open. A malformed section did not deny
-    publishing and did not surface an error; it removed the restriction.
+    Two independent reads cannot do it: a probe like ``read_config_for_update``
+    (which rejects only a non-object TOP level) plus a value taken from
+    ``KiroCrewConfig.load().publish.allowed_destinations`` passes a ``config.json``
+    of ``{"publish": []}`` — a valid object at the top level — and the loader then
+    coerces the non-dict ``publish`` section to ``{}``, so the allowlist comes back
+    empty. Empty is indistinguishable from "no restriction configured", i.e.
+    default-open. A malformed section would not deny publishing and would not
+    surface an error; it would remove the restriction.
 
     Re-reading the FILE here cannot fix that, which is worth stating because it
     is the obvious approach: ``load()`` runs a migration that REWRITES

@@ -2071,8 +2071,13 @@ def is_stop_event_row(m: dict) -> bool:
     """
     if m.get("kind") == "stop_event":
         return True
+    # A truthy non-dict `meta` (a corrupt or foreign transcript row) is data,
+    # not a match: `.get` on it would raise into every caller — including the
+    # disk-tail preview walk, which already tolerates unparseable lines,
+    # non-dict rows, and the non-string `cls` refused below. Same guard, same
+    # sibling field.
     meta = m.get("meta") or {}
-    if meta.get("kind") == "stop_event":
+    if isinstance(meta, dict) and meta.get("kind") == "stop_event":
         return True
     # Live window: the discriminator is still JSON inside `cls`. Prefilter on
     # the literal before parsing — this runs from `to_dict()` on the
@@ -2357,13 +2362,20 @@ def append_and_surface(
     return msg
 
 
-#: Roles whose LIVE append starts the slot's next turn, and so consumes the answer
-#: channel an unanswered stateless question card was waiting on. Mirrors the
-#: frontend's ``QUESTION_RETIRING_ROLES``: the two must agree, or a session reports
-#: needs_input with no card on screen (client retired, server did not) or renders a
-#: card whose answer channel is already gone (server retired, client did not).
-#: Widening coverage is a data edit here.
-_QUESTION_RETIRING_ROLES = frozenset({"user", "nudge"})
+#: Roles whose LIVE append IS the next message an unanswered stateless question
+#: card was waiting on, and so retires it. Only ``user`` qualifies: the card's
+#: answer arrives as the user's next message, so only the human can spend it.
+#: ``nudge`` deliberately does NOT: an auto-nudge cycle wakes the SAME agent in
+#: the SAME conversation, so the answer channel survives it, and retiring there
+#: destroys both the card and the record a reload rehydrates from while the
+#: question is still open. A card whose question is genuinely dead is retired by
+#: its own Dismiss control, which clears this record through
+#: ``/api/ask-question/dismiss``.
+#: Mirrors the frontend's ``QUESTION_RETIRING_ROLES``: the two must agree, or a
+#: session reports needs_input with no card on screen (client retired, server did
+#: not) or renders a card whose answer channel is already gone (server retired,
+#: client did not). Widening coverage is a data edit here.
+_QUESTION_RETIRING_ROLES = frozenset({"user"})
 #: Roles that carry an inbound PROMPT -- the rows that ask this session to do
 #: something, as opposed to the rows produced while it works. ``user`` is a human
 #: send from any surface; ``inject`` is automation delivering a cron notification
@@ -3235,6 +3247,8 @@ class _ChatSlot:
         "autocompact_pct",
         "mode",
         "workspace",
+        "memory_store",
+        "_memory_assignment_from_history",
         "project",
         "created_at",
         "messages",
@@ -3429,6 +3443,15 @@ class _ChatSlot:
         # "" = default chat, "orchestrator" = orchestrated chat
         self.mode = mode
         self.workspace = workspace
+        # The crew's memory silo, or "" for the global store. Held on the slot
+        # rather than re-resolved per save because it is SLOT-OWNED metadata:
+        # absence retracts it, so a save that could not name it would drop the
+        # binding and silently return that session to the global store.
+        self.memory_store: str = ""
+        # Transcript fields can restore display state, never a new private
+        # assignment. Only a protected binding or an explicit owner pick clears
+        # that admission boundary; this marker is not persisted in the transcript.
+        self._memory_assignment_from_history = False
         self.project: str = ""
         # Remote-execution binding. ``executor`` is "local" for every ordinary
         # slot; "remote" means the turn is dispatched over an instance tunnel to
@@ -3607,8 +3630,12 @@ class _ChatSlot:
         # stop. Holds an id rather than a bool so the marker cannot leak onto a
         # later card: a boolean left set would make the NEXT card's cooperative
         # ack defer to a hard callback that never fires, stranding it at
-        # "stopping". Every card has a fresh uuid, so a stale id simply stops
-        # matching and no card-open path has to remember to clear it.
+        # "stopping". A later press usually mints a fresh uuid, so a stale id
+        # stops matching on its own — with ONE exception: a press that finds a
+        # same-turn orphan RE-ARMS that card under its existing id
+        # (chat_handlers._open_stop_event_card), so that path clears
+        # this marker explicitly, and per-attempt identity for the resolver
+        # callbacks is carried by `_stop_generation` above, not by the card id.
         self._stop_escalated_card_id: str | None = None
         # Set by api_chat_slot_project; consumed in _run_chat instead of
         # inline because the endpoint can be reached from inside the kiro-cli
@@ -4263,12 +4290,12 @@ class _ChatSlot:
         meta: dict | None = None,
         mint_mid: bool = True,
     ) -> dict[str, Any]:
-        # A LIVE turn-consuming row retires every unanswered STATELESS question:
-        # the card's own submit path sends one, and anything else that starts the
-        # slot's next turn consumes the answer channel the card was waiting on.
+        # A LIVE user row retires every unanswered STATELESS question: that row
+        # IS the next message the card's answer was contracted to arrive as.
         # Retiring here rather than at the composer covers every entrance —
-        # queued dispatch, an auto-nudge cycle, a channel row relayed from Slack —
-        # instead of the one send site that happens to be in front of the user.
+        # queued dispatch, a channel row relayed from Slack — instead of the one
+        # send site that happens to be in front of the user. An auto-nudge cycle
+        # is NOT one of them: see ``_QUESTION_RETIRING_ROLES``.
         #
         # The role set mirrors the frontend's `QUESTION_RETIRING_ROLES`, which
         # drops the card on the same frames. They must agree: a role the client
@@ -4920,6 +4947,12 @@ class DashboardState:
     # assign a fresh set(), so mutation only ever touches an instance attribute.
     unrestored_slot_keys: "frozenset[str] | set[str]" = frozenset()
     crew: Any = None  # Crew Mode control plane (set by gateway; None = unavailable)
+    # Gateway-owned restore/open task. The class default keeps lightweight
+    # ``__new__`` fixtures on the already-ready baseline; a real gateway
+    # publishes its task immediately before READY so chat admission can wait
+    # without mistaking a transient preparation fence for a failed turn.
+    memory_startup_task: "asyncio.Task[None] | None" = None
+    resume_channel_agents: "Callable[[], None] | None" = None
 
     def __init__(
         self,
@@ -4941,17 +4974,20 @@ class DashboardState:
         self.start_time = start_time
         # Published only at the final boot-to-ready boundary in server.py.
         # The socket binds earlier, so /api/ready can truthfully return 503
-        # while session restoration, channel relaunch, and tunnel setup finish.
+        # while session restoration and tunnel setup finish. The gateway may
+        # defer restored channel agents until its memory task completes.
         self.ready: bool = False
+        self.memory_startup_task: "asyncio.Task[None] | None" = None
         # Wired by server.py after the gateway-owned prerequisite service is
         # constructed. The central chat runner reads this latch so every turn
         # entry path is protected, including task/workflow continuations.
         self.kiro_prerequisite_service: Any = None
         self.subagents = subagents
-        # Crew Mode control plane; attached by the gateway after
-        # SubagentManager construction (None = crew mode unavailable).
-        self.crew: Any = None
         self.channel_manager: Any = None  # lazy-init in server.py
+        # A gateway launch defers legacy channel-agent relaunch until memory
+        # preparation settles. Standalone dashboard callers keep the immediate
+        # start behavior and leave this callback unset.
+        self.resume_channel_agents: "Callable[[], None] | None" = None
         self.tunnel_manager: Any = None  # lazy-init in server.py (TunnelManager)
         self.instances_manager: Any = None  # lazy-init in server.py (SshTunnelManager)
         self.instances_registry: Any = None  # lazy-init in server.py (InstancesRegistry)
@@ -5675,17 +5711,22 @@ class DashboardState:
         _BUNDLE_ID_CACHE["v"] = (key, digest)
         return digest
 
-    def _count_lessons(self) -> int:
-        """Count lessons from JSONL store + vector store (if enabled)."""
-        count = len(self.lessons.load_all())
-        if self.context_builder:
-            vs = self.context_builder.memory.vector_store
-            if vs:
-                # COUNT(*) — not get_lessons() — so the status paths that poll
-                # this per client do not materialize the whole lesson corpus
-                # just to len() it.
-                count += vs.count_lessons()
-        return count
+    def _count_lessons(self) -> int | None:
+        """Count available Global lessons without blocking the recovery dashboard."""
+        from kiro_crew.memory_startup import MemoryStartupUnavailable
+
+        try:
+            count = len(self.lessons.load_all())
+            if self.context_builder:
+                vs = self.context_builder.memory.vector_store
+                if vs:
+                    # COUNT(*) keeps status polling from materializing lessons.
+                    count += vs.count_lessons()
+            return count
+        except MemoryStartupUnavailable:
+            # The selected store's Recovery view supplies the diagnostic. Keep
+            # the dashboard shell usable and do not misreport unavailable as 0.
+            return None
 
     def status_snapshot(
         self,

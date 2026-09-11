@@ -1,4 +1,4 @@
-"""SEL audit coverage for cron-removal paths (issues #5408 and #5438).
+"""SEL audit coverage for cron-removal paths.
 
 These tests lock in the caller attribution and one-shot record shapes for:
 

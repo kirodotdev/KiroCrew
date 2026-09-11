@@ -255,7 +255,7 @@ class TestLifecycleDispatcherEdgeCases:
 
 
 # ---------------------------------------------------------------------------
-# Per-hook timeout at the dispatch boundary (issue #5443)
+# Per-hook timeout at the dispatch boundary
 # ---------------------------------------------------------------------------
 
 
@@ -1314,7 +1314,7 @@ class TestGatewayShutdownBackendSweep:
 
 
 # ---------------------------------------------------------------------------
-# Shutdown resolves the LOADED code, not disk (issue #7880 reconciler teardown)
+# Shutdown resolves the LOADED code, not disk (reconciler teardown)
 # ---------------------------------------------------------------------------
 
 

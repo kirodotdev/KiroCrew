@@ -163,8 +163,8 @@ class TestClone:
         """The destructive race, and the reason for the staging dir.
 
         Two concurrent clones of the same project name both proceed; the loser gets
-        git's "destination path already exists" error, and its cleanup used to delete
-        the WINNER's freshly-cloned checkout — turning a duplicate-request 500 into
+        git's "destination path already exists" error, and its cleanup must not delete
+        the WINNER's freshly-cloned checkout — which would turn a duplicate-request 500 into
         data loss for the request that succeeded.
         """
         dest = tmp_path / "dest"

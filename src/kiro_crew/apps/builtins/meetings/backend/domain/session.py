@@ -422,7 +422,7 @@ class MeetingSession:
     #: Lives on the session, not on the holder, so it is bound to the identity
     #: whose initialization it covers: a session that is replaced or torn down
     #: takes its hold with it, and a later session can never inherit and replay
-    #: lines that were spoken into a meeting that no longer exists.
+    #: lines that were spoken into a meeting that does not exist.
     #:
     #: The recipient set is stored rather than recomputed at drain because the
     #: hold must change WHEN a line is delivered, never WHO it was addressed to.
@@ -432,7 +432,7 @@ class MeetingSession:
     #:
     #: NAMES, not queue objects: an agent disabled mid-initialization has its
     #: queue removed from ``agents``, and holding a reference would enqueue into
-    #: a queue nothing flushes. A name that no longer resolves is simply skipped.
+    #: a queue nothing flushes. A name that does not resolve is simply skipped.
     init_buffer: list[tuple[str, frozenset[str]]] = field(default_factory=list)
     #: How many of the OLDEST held lines the cap displaced. Read at drain time
     #: to size the marker, so a drop is announced once with an exact count
@@ -558,7 +558,7 @@ class MeetingSession:
 
         The agents cannot receive anything yet — they do not know which file they
         own until ``init_agents`` has run — but the speaker is already talking, and
-        refusing the line is what lost the opening of every meeting (issue #4610).
+        refusing the line loses the opening of the meeting.
 
         Normalized and filtered HERE, at arrival, and stored with the recipients of
         this moment: both halves of "what happens to this line" are decided when a

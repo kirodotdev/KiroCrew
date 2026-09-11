@@ -330,7 +330,7 @@ async def test_me_reads_session_exp_from_the_validated_credential(
     """``session_exp`` comes from ``request["auth_token"]``, not a re-extracted cookie.
 
     The middleware publishes the credential it actually validated. Extraction
-    order here is no longer guaranteed to reproduce it (a valid ``?token=`` wins
+    order here is not guaranteed to reproduce it (a valid ``?token=`` wins
     over the cookie, and an invalid one now falls back to it), so reading the
     cookie blind can report another credential's expiry — and this value is what
     drives the frontend's proactive-refresh scheduler.
@@ -368,7 +368,7 @@ async def test_require_peer_is_enforced_before_the_grace_replay_return(
 ) -> None:
     """The grace-replay branch must not hand back a cached pair unverified.
 
-    Regression for a check sited too late: grace replay re-serves the previously
+    Grace replay re-serves the
     issued pair and re-sets BOTH cookies without minting anything, so a peer
     check placed at the mint left a REFRESH_GRACE_SECS window in which a replayed
     token was honoured with no identity check at all.
@@ -759,7 +759,7 @@ async def test_a_boot_bound_rotation_keeps_its_address_pin(
 ) -> None:
     """The pin must survive rotation, or enabling refresh loses it silently.
 
-    A phone-access session used to be minted ``no_refresh``, so it never rotated
+    A phone-access session is minted ``no_refresh``, so it never rotates
     and the ``ip:`` pin set at the token->session exchange held for its whole
     life. Letting it rotate without carrying the pin means a stolen rotated
     cookie authenticates from any reachable peer — which is the regression this

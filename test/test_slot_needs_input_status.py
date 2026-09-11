@@ -334,18 +334,41 @@ def test_clear_announces_the_retirement() -> None:
     )
 
 
-def test_a_live_nudge_row_retires_a_stateless_card() -> None:
-    """An auto-nudge cycle starts the next turn, so it consumes the answer channel.
+def test_a_live_nudge_row_keeps_a_stateless_card() -> None:
+    """An auto-nudge cycle does NOT consume the answer channel.
 
-    The frontend drops the card on a `nudge` frame; a server that kept the record
-    would leave the session reporting needs_input with nothing on screen, and a
-    later rehydration would re-render a card whose answer channel is gone.
+    The nudge wakes the same agent in the same conversation, so a message the
+    user sends after ten cycles still reaches the agent that asked. Retiring here
+    deleted the record a reload rehydrates from — the card was gone on the next
+    visit and the question was never answerable again. An unanswered stateless
+    record is retired by the user's own message or by an explicit dismiss.
     """
     slot = _ChatSlot("chat-1")
     announced: list[list[str]] = []
     slot._on_question_retired = lambda _key, ids: announced.append(list(ids))
     slot._question_pending = {"card-a": {"ts": 0.0, "blocking": False}}
-    slot.append("nudge", "[auto-nudge] keep going", broadcast=True)
+    for cycle in range(1, 11):
+        slot.append("nudge", f"[auto-nudge cycle {cycle}] keep going", broadcast=True)
+        slot.append("assistant", f"cycle {cycle}: still red", broadcast=True)
+    assert slot._question_pending == {"card-a": {"ts": 0.0, "blocking": False}}
+    assert announced == []
+    # And the status the record drives is still true: the agent did ask.
+    assert slot.to_dict()["needs_input"] is True
+
+
+def test_a_user_row_after_nudges_still_retires_the_card() -> None:
+    """The one exit that must keep working: the user answers.
+
+    A card no frame can retire parks on the composer forever, so the retirement
+    the user's own message performs has to survive any number of nudge cycles
+    before it — that message is what the card was waiting for.
+    """
+    slot = _ChatSlot("chat-1")
+    announced: list[list[str]] = []
+    slot._on_question_retired = lambda _key, ids: announced.append(list(ids))
+    slot._question_pending = {"card-a": {"ts": 0.0, "blocking": False}}
+    slot.append("nudge", "[auto-nudge cycle 1] keep going", broadcast=True)
+    slot.append("user", "use the assets branch", broadcast=True)
     assert slot._question_pending == {}
     assert announced == [["card-a"]]
 

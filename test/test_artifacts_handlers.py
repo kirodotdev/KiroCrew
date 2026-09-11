@@ -570,12 +570,10 @@ class TestCreate:
     async def test_artifact_error_fallback_returns_500(
         self, isolated_store, patch_restricted, monkeypatch
     ) -> None:
-        # Regression: store.create() raising the base ArtifactError (e.g. a
-        # sensitive-path refusal from _write_text() that fires after the
-        # duplicate-slug check passes) used to be caught by the same except
-        # branch as ArtifactAlreadyExistsError, returning a misleading 409. Now
-        # the two are distinguished — duplicates are 409, all other store
-        # errors are 500.
+        # store.create() raising the base ArtifactError (e.g. a sensitive-path
+        # refusal from _write_text() that fires after the duplicate-slug check
+        # passes) must be distinguished from ArtifactAlreadyExistsError:
+        # duplicates are 409, all other store errors are 500.
         from kiro_crew.artifacts import ArtifactError
 
         def _boom(*_a, **_kw):
@@ -791,7 +789,7 @@ class TestCreate:
         # NOT silently merge into one — because a chat-backed artifact's
         # identity is its slug, not its source. Regression guard for the
         # bug alice hit where a markdown file's "Add to artifacts" was
-        # matching a previously-saved widget because the lookup degraded
+        # matching an already-saved widget because the lookup degraded
         # to "first artifact in list".
         body = {"name": "widget", "content": "<p>hi</p>", "kind": "widget", "source": "chat"}
         first = await api_artifacts_create(_request(body=body))
@@ -804,10 +802,10 @@ class TestCreate:
     async def test_mcp_dedup_resave_tags_event_as_agent(
         self, isolated_store, patch_restricted, linkable_project
     ) -> None:
-        # review-bot round 12: the dedup path used to hardcode actor='user' so
-        # MCP-driven re-saves silently appeared on the activity timeline as
-        # 'edited by user' instead of 'iterated by agent'. Now the handler
-        # infers actor from X-Internal-Secret like api_artifact_update.
+        # The dedup path must not hardcode actor='user': it infers actor from
+        # X-Internal-Secret like api_artifact_update, so an MCP-driven re-save
+        # appears on the activity timeline as 'iterated by agent', not
+        # 'edited by user'.
         src = linkable_project / "brd.md"
         src.write_text("# v1", encoding="utf-8")
         body = {
@@ -1276,9 +1274,9 @@ class TestUpdate:
     async def test_dashboard_save_without_snapshot_keeps_version(
         self, isolated_store, patch_restricted
     ) -> None:
-        # New behavior (round 5, explicit-snapshot model): a
-        # dashboard PATCH with no snapshot flag updates the live state but
-        # does NOT bump version. Versioning becomes deliberate.
+        # Explicit-snapshot model: a dashboard PATCH with no snapshot flag
+        # updates the live state but does NOT bump version. Versioning is
+        # deliberate.
         isolated_store.create(name="x", content="v1", slug="x")
         resp = await api_artifact_update(_request(body={"content": "v2"}, match={"slug": "x"}))
         assert resp.status == 200
@@ -1339,10 +1337,9 @@ class TestUpdate:
     async def test_artifact_error_fallback_returns_500(
         self, isolated_store, patch_restricted, monkeypatch
     ) -> None:
-        # Regression: store.update() raising the base ArtifactError (e.g. a
-        # sensitive-path refusal from _write_text) used to escape the handler
-        # and surface as an unhandled 500 with no audit trail. Now caught
-        # explicitly and audited as an error.
+        # store.update() raising the base ArtifactError (e.g. a sensitive-path
+        # refusal from _write_text) must be caught explicitly and audited as an
+        # error, not escape the handler as an unhandled 500 with no audit trail.
         from kiro_crew.artifacts import ArtifactError
 
         isolated_store.create(name="x", content="v1", slug="x")
@@ -1563,13 +1560,13 @@ class TestDelete:
         propagates straight through it, so the decision genuinely lives in
         ``delete_for_artifact`` rather than being duplicated here.
 
-        Second -- and this REPLACES what this test used to assert -- a publication naming a
-        destination this edition does not register yields UNREACHABLE, and the delete is
-        now REFUSED. The old assertion (delete completes, on the grounds that refusing
-        "would leave an artifact its owner could never delete") traded a recoverable
-        annoyance for an unrecoverable one: the record it dropped was the only handle that
-        could ever withdraw a world-readable copy. A refused delete can be retried, or the
-        owner can unpublish and accept the exposure deliberately.
+        Second, a publication naming a destination this edition does not register
+        yields UNREACHABLE, and the delete is REFUSED. Completing the delete instead
+        -- on the grounds that refusing "would leave an artifact its owner could never
+        delete" -- trades a recoverable annoyance for an unrecoverable one: the record
+        it drops is the only handle that can ever withdraw a world-readable copy. A
+        refused delete can be retried, or the owner can unpublish and accept the
+        exposure deliberately.
         """
         from kiro_crew.artifacts import ArtifactPublication
 
@@ -1606,7 +1603,7 @@ class TestDelete:
     async def test_a_reachable_withdrawal_failure_keeps_the_artifact_and_its_handle(
         self, isolated_store, patch_restricted, monkeypatch
     ) -> None:
-        """Regression for the finding: when the destination is REACHABLE but rejects the
+        """When the destination is REACHABLE but rejects the
         withdrawal, a retry can still succeed -- so the publication (the only handle that
         can withdraw the still-public copy) must NOT be discarded. The delete is refused
         with an error, the artifact stays, and its publication record survives."""
@@ -1635,9 +1632,8 @@ class TestDelete:
     async def test_an_unreachable_destination_refuses_the_delete(
         self, isolated_store, patch_restricted, monkeypatch
     ) -> None:
-        """This test previously asserted the OPPOSITE, and named the reasoning: an
-        unreachable destination was an "escape hatch" because "no retry from here can reach
-        it", so the delete proceeded.
+        """An unreachable destination must NOT be an "escape hatch" that lets the
+        delete proceed on the reasoning that "no retry from here can reach it".
 
         The premise was that an unreachable destination means the copy is beyond help. It
         does not -- unreachable describes THIS PROCESS's access (revoked credentials, a
@@ -1700,9 +1696,9 @@ class TestDelete:
     async def test_artifact_error_fallback_returns_500(
         self, isolated_store, patch_restricted, monkeypatch
     ) -> None:
-        # Regression: a base ArtifactError raised by store.delete() (e.g. a
-        # future store-level sensitive-path or filesystem refusal) used to
-        # escape the handler and 500 silently. Now caught and audited.
+        # A base ArtifactError raised by store.delete() (e.g. a future
+        # store-level sensitive-path or filesystem refusal) must be caught and
+        # audited, not escape the handler and 500 silently.
         from kiro_crew.artifacts import ArtifactError
 
         isolated_store.create(name="x", content="a", slug="x")

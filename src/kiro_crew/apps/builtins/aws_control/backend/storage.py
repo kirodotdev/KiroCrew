@@ -723,7 +723,7 @@ def get_object_head_bytes(
     # tree -- a pinned directory can be neither renamed nor deleted, and
     # neither can anything above it. So by the time the destination is created
     # below, every component of the path the CLI will write through is held
-    # in place: a watcher can no longer rename the directory away and plant a
+    # in place: a watcher cannot rename the directory away and plant a
     # junction at its name between our create and the CLI's open.
     root_fd = platform_compat.pin_directory(staging_parent)
     dir_fd = -1
@@ -1011,7 +1011,7 @@ def create_folder(
     shape the listing filters on cannot be spoofed into some other form.
 
     Owner-pinned like every other write: ``--expected-bucket-owner`` makes S3
-    itself reject the put if the globally-unique bucket name is no longer this
+    itself reject the put if the globally-unique bucket name is not this
     account's, the same reason :func:`put_file` cannot use ``s3 cp``. A body is
     deliberately omitted so the object is zero bytes.
     """

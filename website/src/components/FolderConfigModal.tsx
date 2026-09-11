@@ -7,7 +7,7 @@ import ProjectPicker from './ProjectPicker'
 import SimpleSelect from './SimpleSelect'
 import { FOLDER_COLOR_PALETTE } from './folderColorCatalog'
 import { useImeGuard } from '../hooks/useImeGuard'
-import { resolveFolderProjectDir } from '../utils/folderAgent'
+import { resolveFolderAgent, resolveFolderProjectDir } from '../utils/folderAgent'
 import { ChatFolder, ChatTag } from '../types'
 import { i18nT } from '../i18n/t'
 
@@ -188,6 +188,18 @@ export default function FolderConfigModal({
     const from = mode === 'edit' ? folder?.parent_id : parentId
     return from ? resolveFolderProjectDir(folders, from) : undefined
   }, [folders, mode, folder?.parent_id, parentId])
+
+  // The default agent inherits the same way, so the empty option has to name the
+  // agent an empty selection would ACTUALLY run: the nearest ancestor that pins
+  // one, and only then the global default. Naming the global default
+  // unconditionally reads "Inherit (kirocrew)" on a subfolder of an
+  // agent-pinned folder whose chats will in fact run that ancestor's agent.
+  const inheritedAgent = useMemo(() => {
+    const from = mode === 'edit' ? folder?.parent_id : parentId
+    return from
+      ? resolveFolderAgent(folders, from, globalDefaultAgent || '')
+      : globalDefaultAgent || undefined
+  }, [folders, mode, folder?.parent_id, parentId, globalDefaultAgent])
 
   const trimmedName = draft.name.trim()
   const canSubmit = trimmedName.length > 0
@@ -486,8 +498,8 @@ export default function FolderConfigModal({
               aria-label={i18nT('components.folderConfigModal.default_agent')}
               options={agentOptions}
               optionLabels={agentOptionLabels}
-              clearLabel={globalDefaultAgent
-                ? i18nT('components.folderConfigModal.inherit_named', { agent: globalDefaultAgent })
+              clearLabel={inheritedAgent
+                ? i18nT('components.folderConfigModal.inherit_named', { agent: inheritedAgent })
                 : i18nT('components.folderConfigModal.none')}
               value={draft.defaultAgent}
               onChange={v => setDraft(d => ({ ...d, defaultAgent: v }))}

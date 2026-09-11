@@ -60,11 +60,11 @@ APP_NAME = os.environ.get("KIROCREW_APP_NAME", "md-notebook")
 _STAGING_LEAF = "md-notebook-staging"
 
 
-# Data-home paths are resolved LAZILY, never at import time (issue #874): the
+# Data-home paths are resolved LAZILY, never at import time: the
 # active KiroCrew home depends on KIROCREW_HOME, which a pod, the legacy-home
 # migration, or the test-isolation fixture can change AFTER this module is
 # imported. `_HOME` is the override hook (None = live-resolve); tests do
-# `monkeypatch.setattr(server, "_HOME", tmp)`. See config/paths.py / issue #874.
+# `monkeypatch.setattr(server, "_HOME", tmp)`. See config/paths.py.
 _HOME: Optional[Path] = None
 
 
@@ -915,7 +915,7 @@ async def trash_dir_path(vault: dict[str, Any]) -> Path:
     So any symlink is refused, escaping or not. `lstat` via `is_symlink()` is the
     only test that can see it — `exists()` and `is_dir()` both follow the link.
     On Windows the same redirection is possible via a directory JUNCTION, which
-    `is_symlink()` does NOT report, so `is_link_or_junction` is used to catch both.
+    `is_symlink()` does NOT report, so `is_link_or_junction` catches both.
     """
     trash_dir = await vault_mutation_path(vault, git_ops.TRASH_DIR)
     if await asyncio.to_thread(platform_compat.is_link_or_junction, trash_dir):
@@ -1084,8 +1084,8 @@ async def read_note_text(path: Path) -> Optional[str]:
     not enough on its own. `safe_read_file_bytes` canonicalizes via realpath,
     refuses a sensitive resolved target and opens with O_NOFOLLOW.
 
-    Centralized deliberately: this gate was previously applied per call site and
-    each new read path was a fresh hole.
+    Centralized deliberately: applied per call site instead, every new read path
+    is a fresh hole.
     """
     try:
         data = await asyncio.to_thread(hooks.safe_read_file_bytes, str(path))
@@ -1369,7 +1369,7 @@ async def api_vault_clone(request: web.Request) -> web.Response:
         raise ApiError("url is required", 400, code="url_required")
     # Use a submitted token TRANSIENTLY for this clone; persist it only after the
     # clone succeeds. Writing it up front would let a failed clone (bad URL or
-    # bad token) overwrite a previously-valid stored PAT and break every existing
+    # bad token) overwrite a valid stored PAT and break every existing
     # vault's auth.
     submitted_pat = str(body["pat"]) if body.get("pat") else None
     pat = submitted_pat or await resolve_auth()
@@ -2040,7 +2040,7 @@ async def api_note_delete(request: web.Request) -> web.Response:
     mark_self_write(trash_dir / trashed)
     # Rebuild rather than drop one index entry: the deleted note's own
     # [[wikilinks]] disappear with it, so every note it pointed at keeps a
-    # backlink to a note that no longer exists until the next rebuild.
+    # backlink to a missing note until the next rebuild.
     await rebuild_cache(vault)
     return web.json_response({"ok": True, "trashed": f"{git_ops.TRASH_DIR}/{trashed}"})
 

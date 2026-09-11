@@ -541,7 +541,7 @@ class TestBodyCaps:
         """Functional half of the arithmetic above.
 
         A multibyte document comfortably inside ``MAX_MINUTES_CHARS`` exceeds the
-        256 KiB default, so this request is exactly the one that used to 413.
+        256 KiB default, so this request is exactly the one the default would 413.
         """
         from kiro_crew.apps.builtins.meetings.backend.routes import _common
 

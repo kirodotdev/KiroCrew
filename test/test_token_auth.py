@@ -185,7 +185,7 @@ def test_try_consume_returns_true_once_then_false() -> None:
 
 
 def test_expired_token_rejected() -> None:
-    """Token link window (5 min) expires — URL no longer valid."""
+    """Token link window (5 min) expires — the URL stops being valid."""
     with patch("kiro_crew.dashboard.token_auth.time") as mock_time:
         mock_time.time.return_value = 1000.0
         token = generate_token("user6", ttl_seconds=3600)
@@ -335,7 +335,7 @@ async def test_cookie_set_on_query_param_auth() -> None:
 
 @pytest.mark.asyncio
 async def test_embed_parent_port_claim_survives_session_exchange() -> None:
-    """PR #118 follow-up: the connect link token carries an embed_parent_port
+    """The connect link token carries an embed_parent_port
     claim, but token_auth_middleware exchanges the link token for a fresh
     session cookie (CWE-613, never reuse the URL token). That exchange MUST
     carry the claim across, or the cookie the framed document actually presents
@@ -358,7 +358,7 @@ async def test_embed_parent_port_claim_survives_session_exchange() -> None:
     # And the middleware stashed the validated parent port on the request BEFORE
     # revoking the link nonce, so the first ?token= framed document's header
     # (server._extra_frame_ancestors) sees it even though the link token is now
-    # revoked (PR #129 follow-up — the first-hit blank-pane fix).
+    # revoked — the first-hit blank-pane fix.
     req.__setitem__.assert_any_call("embed_parent_port", "5476")
 
 
@@ -770,7 +770,7 @@ async def test_bare_app_path_is_spa_shell_request(path: str, method: str) -> Non
     refresh (which issues a direct GET to the gateway) returns index.html
     rather than 404.
 
-    Regression for: GET /apps/code-review-sage on refresh returned 404 because
+    Without the shell fallback, GET /apps/code-review-sage on refresh returns 404 because
     SPA_FALLBACK_EXCLUDED_PREFIXES included '/apps/' wholesale, causing the
     spa_fallback middleware to re-raise HTTPNotFound instead of serving shell.
     """
@@ -824,7 +824,7 @@ def test_apps_router_subpaths_are_spa_shell(path: str, method: str) -> None:
     """React Router owns /apps/detail/{name} and /apps/migrate/{name} (App.tsx).
     Neither has a server-side route, so both must get the SPA shell.
 
-    Regression for: _APPS_SPA_EXCLUDED_RE matched any /apps/{seg}/ path, so it
+    If _APPS_SPA_EXCLUDED_RE matched any /apps/{seg}/ path, it would
     read "detail" and "migrate" as the app name and excluded these from the
     shell. Pasting /apps/detail/task-runner into the address bar (or refreshing
     on it) returned 404; the routes worked only via in-app navigation.
@@ -884,7 +884,7 @@ def test_app_assets_paths_are_not_spa_shell(path: str) -> None:
     letting the <img onError> fallback run) instead of being answered with
     index.html.
 
-    Regression for: recently added colorful builtin icons / hero images did not
+    Without the exclusion, the colorful builtin icons / hero images would not
     render because /app-assets/ had no static route AND was not in
     SPA_FALLBACK_EXCLUDED_PREFIXES, so the SVG requests were served index.html
     (HTML) and every <img> tripped its placeholder fallback.
@@ -898,7 +898,7 @@ def test_app_assets_paths_are_not_spa_shell(path: str) -> None:
     ), f"GET {path} should NOT be a SPA shell request (static brand asset)"
 
 
-# -- Property 9: Loopback no longer bypasses auth (port-forward fix) --
+# -- Property 9: Loopback does not bypass auth (port-forward fix) --
 
 
 @pytest.mark.asyncio
@@ -1237,7 +1237,7 @@ def test_revoke_all_sessions_kills_established_cookie() -> None:
 def test_signing_secret_persisted_across_loads(tmp_path, monkeypatch) -> None:
     """Regression: the HMAC signing secret must persist across processes.
 
-    Previously _SECRET was os.urandom(32) per import, so every restart rotated
+    A per-import ``os.urandom(32)`` _SECRET would rotate
     the key and invalidated all outstanding tokens/cookies ("invalid
     signature"). The secret is now loaded-or-created from a 0600 key file.
     """
@@ -1262,7 +1262,7 @@ def test_signing_secret_persisted_across_loads(tmp_path, monkeypatch) -> None:
 
 
 def test_signing_secret_concurrent_first_init_converges(tmp_path, monkeypatch) -> None:
-    """Regression (PR #338 / GPT 5.6 HIGH): concurrent first-time inits MUST
+    """Concurrent first-time inits MUST
     converge on a single signing key.
 
     ``warm_auth_singletons()`` primes the signing secret BEFORE the gateway
@@ -1693,7 +1693,7 @@ def test_signing_secret_binary_write_survives_windows_text_mode(tmp_path, monkey
 
     On Windows ``os.open()`` defaults to TEXT mode, so the ``os.write()`` that
     persists the random key translates every ``0x0A`` ('\\n') byte to
-    ``0x0D 0x0A`` ('\\r\\n'). The on-disk key then grows and no longer equals
+    ``0x0D 0x0A`` ('\\r\\n'). The on-disk key then grows and does not equal
     the creator's in-memory bytes (nor a sibling's read) — silent auth
     divergence, and the root cause of the flaky Windows failures in
     ``test_signing_secret_{concurrent_first_init_converges,create_contention_retries_not_ephemeral,write_failure_cleans_up_incomplete_file}``.
@@ -1727,7 +1727,7 @@ def test_signing_secret_binary_write_survives_windows_text_mode(tmp_path, monkey
 
 
 def test_signing_secret_existing_file_never_overwritten(tmp_path, monkeypatch) -> None:
-    """Regression (PR #338): warming must never overwrite or truncate an
+    """Warming must never overwrite or truncate an
     existing key file.
 
     A pre-existing valid key is read verbatim across repeated warms (multiple
@@ -1755,12 +1755,11 @@ def test_signing_secret_existing_file_never_overwritten(tmp_path, monkeypatch) -
 
 
 def test_signing_secret_write_failure_cleans_up_incomplete_file(tmp_path, monkeypatch) -> None:
-    """Regression (PR #338 / GPT 5.6 HIGH): a write failure DURING exclusive
+    """A write failure DURING exclusive
     creation must NOT leave a poisoned short key file behind.
 
     A creator that writes 32 bytes and fails partway (ENOSPC, quota) must leave
-    NOTHING short or empty where the key belongs. Previously the incomplete file
-    was left on disk: every future boot's fast-path read saw < 32 bytes, the
+    NOTHING short or empty where the key belongs. An incomplete file left on disk makes every future boot's fast-path read see < 32 bytes, the
     create then hit FileExistsError, the bounded retry budget exhausted, and the
     gateway fell back to a FRESH ephemeral key on EVERY restart (tokens die on
     each restart; concurrent gateways cannot validate one another) until a human
@@ -1807,7 +1806,7 @@ def test_signing_secret_write_failure_cleans_up_incomplete_file(tmp_path, monkey
     #     left behind to poison future boots.
     assert not key_file.exists(), "incomplete key file was left on disk (poisoned)"
 
-    # Restore a working write and prove the path is no longer poisoned: the
+    # Restore a working write and prove the path is not poisoned: the
     # next init must create a full, durable, owner-only key and return it.
     monkeypatch.setattr(os, "write", real_write)
     secret2 = ts._load_or_create_secret()
@@ -2048,7 +2047,7 @@ def test_no_get_route_outside_shell_exclusions() -> None:
 
     Note: /apps/ routes are validated against _APPS_SPA_EXCLUDED_RE (which
     requires a sub-path after {name}/), NOT against SPA_FALLBACK_EXCLUDED_PREFIXES
-    (which no longer contains "/apps/" since that entry was dead code after
+    (which does not contain "/apps/"; that entry is dead code given
     _is_spa_shell_request gained its own /apps/ early-return branch).
     (Reads source rather than importing server.py to avoid heavy import side effects.)
     """
@@ -2668,12 +2667,12 @@ def test_app_owns_path_boundaries() -> None:
     # /api/app-store/refresh, a namespace no app name can collide with. The
     # reserved-segment carve-out below: even under the /api/apps/registry/refresh
     # spelling (never a registered route — this pins the boundary, not a live
-    # endpoint) the name no longer owns the path, so relocating a shared route
-    # under /api/apps/ can no longer silently hand it to a same-named app.
+    # endpoint) the name does not own the path, so relocating a shared route
+    # under /api/apps/ cannot silently hand it to a same-named app.
     assert not _app_owns_path("registry", "/api/app-store/refresh")
     assert not _app_owns_path("registry", "/api/apps/registry/refresh")
 
-    # Reserved-segment carve-out (issue #7111, sibling of #6206): the literal
+    # Reserved-segment carve-out: the literal
     # first-segment routes under /api/apps/ (registry, registries, blob, install,
     # register) are SHARED routes registered before the /api/apps/{name}
     # catch-all. An app that names itself after one of them must NOT implicitly
@@ -2703,7 +2702,7 @@ def test_app_owns_path_boundaries() -> None:
 
 
 def test_reserved_app_path_segments_stay_in_sync() -> None:
-    """Issue #7111 drift guard: RESERVED_APP_PATH_SEGMENTS is defined
+    """Drift guard: RESERVED_APP_PATH_SEGMENTS is defined
     INDEPENDENTLY in dashboard.token_auth and apps.manifest (duplicated rather
     than shared to avoid a manifest <-> token_auth import cycle). Both sets, plus
     the literal /api/apps/<segment> route table in apps.routes.setup_routes, are
@@ -2738,7 +2737,7 @@ async def test_app_token_denied_on_unscoped_endpoint(monkeypatch) -> None:
 
 @pytest.mark.asyncio
 async def test_app_token_named_registries_denied_on_refresh(monkeypatch) -> None:
-    """Issue #7111: an app token named 'registries' must NOT reach the shared
+    """An app token named 'registries' must NOT reach the shared
     POST /api/apps/registries/refresh (which triggers outbound git fetches of
     every configured registry). With _app_api_allowlist forced empty, the only
     way a grant could happen is the _app_owns_path carve-out failing — so a 403
@@ -3044,7 +3043,7 @@ async def test_index_serves_guidance_when_bundle_missing(tmp_path, monkeypatch) 
     assert "someminted.token.value" not in body
 
 
-# -- index() SPA shell caching (issue #5087) -----------------------------------
+# -- index() SPA shell caching -----------------------------------
 
 
 @pytest.mark.asyncio
@@ -3053,8 +3052,8 @@ async def test_index_caches_html_and_rerereads_only_on_rebuild(tmp_path, monkeyp
     an UNCHANGED file read disk once; a rebuild (mtime change) is picked up on
     the next request WITHOUT a restart.
 
-    Regression test for #5087 (unnecessary per-request read of a static bundle)
-    AND for the review finding that a process-lifetime cache would pin a
+    Two things are pinned: no unnecessary per-request read of a static bundle,
+    and no process-lifetime cache that would pin a
     pre-rebuild shell after a Vite rebuild rewrote the hashed asset refs.
     """
     import kiro_crew.dashboard.handlers.core as core
@@ -3272,7 +3271,7 @@ def test_warm_auth_singletons_primes_both_off_loop(monkeypatch) -> None:
 
     Both lazily do blocking file I/O on first use (read/create
     token_signing.key + read the nonce denylist; on Windows also the owner-only
-    DACL). They are NO LONGER warmed synchronously in
+    DACL). They are not warmed synchronously in
     the token_auth_middleware() factory, because that factory runs on the loop
     via the async start_dashboard()/start_api_server(). The async startup paths
     await this helper instead, so the first auth op hits warm singletons with
@@ -3349,7 +3348,7 @@ def test_start_paths_warm_auth_singletons_off_loop() -> None:
 
 
 def test_ambiguous_app_and_window_names_cannot_collide(tmp_path) -> None:
-    """The pair that used to collide now yields two distinct routes.
+    """A name pair that could collide now yields two distinct routes.
 
     The old scheme served these flat at ``/<app>-<window>.html``, which is
     ambiguous the moment either name contains a hyphen: app ``foo`` + window
@@ -3439,7 +3438,7 @@ def test_app_window_entries_register_route_and_exclusion(tmp_path) -> None:
         ta._APP_WINDOW_EXCLUDED_PATHS = prior
 
 
-# -- Identity-pinned sessions (RFC Phase 3, issue #1762) --
+# -- Identity-pinned sessions (RFC Phase 3) --
 #
 # Middleware-level behaviour of the peer-keyed pin: the tailnet branch is new,
 # the ip: branch must be byte-for-byte the pre-peer behaviour. Whois is mocked

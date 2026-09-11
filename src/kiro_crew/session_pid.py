@@ -1148,7 +1148,7 @@ _MARKED_MCP_LAUNCHER_MARKERS = (
     b"mcp start-server",  # generic ``<launcher> mcp start-server <name>`` shims
 )
 
-# ── Stranded playwright-cli browser daemon (issue #5986) ─────────────────────
+# ── Stranded playwright-cli browser daemon ───────────────────────────────────
 # playwright-core spawns its browser daemon as
 #   ``node <...>/playwright-core/lib/entry/cliDaemon.js <session-name> [flags]``
 # with ``detached: true`` and no ``env`` override (cli-client/session.js
@@ -1313,7 +1313,7 @@ def _is_sweepable_orphan_browser_daemon(pid: int, cmdline: bytes, age_seconds: f
 
     Every signal is a kernel fact (argv, exec-time environ, SID, process
     liveness). Nothing here reads agent-writable filesystem state, which is
-    what made the previously withdrawn reapers unsafe.
+    what would make a reaper unsafe.
     """
     if age_seconds < _ORPHAN_WORK_MIN_AGE_SECONDS:
         return False
@@ -1738,8 +1738,9 @@ _reported_untracked_agent_pids: set[int] = set()
 # ``_cleanup_orphaned_mcp_servers`` kills the child once its parent is gone), and
 # an owner is never reclaimed *through* the entry that names it. Counting an
 # owner field would let a stale entry whose owner has died and had its PID
-# recycled silently suppress a genuine leak report — exactly the silence issue
-# #2930 is about. A bare line names its own process, whichever file it is in.
+# recycled silently suppress a genuine leak report — exactly the silence this
+# field exists to prevent. A bare line names its own process, whichever file it
+# is in.
 _REAPABLE_PID_FIELD: tuple[tuple[str, int], ...] = (
     ("session", 1),  # kiro_session_pids.txt: <gateway_pid>:<child_pid>[:start-id]
     ("child", 0),  # kiro_pids.txt: <child_pid>:<parent_pid>

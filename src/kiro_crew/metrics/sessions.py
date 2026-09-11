@@ -137,7 +137,7 @@ END_REASON_SHUTDOWN = "shutdown"
 #: than folded into ``reset``: it pops the registry directly and never calls
 #: ``reset``, and an identity change is a different event from an idle sweep.
 #: ``reload_provider_factory`` reports this too for the registry it clears on a
-#: provider switch -- both are "this process is no longer the right host for these
+#: provider switch -- both are "this process is not the right host for these
 #: sessions", which is why they share a label rather than minting a second one.
 END_REASON_RETIRED = "retired"
 #: ``CompactionCoordinator._recycle_held`` -- context overflow replaced the
@@ -430,7 +430,7 @@ def _write_crumb(
     but does NOT stop the thread, so the caller's rollback can unlink before this
     write lands and leave an orphan crumb the next boot reports as a crash. Rather
     than make the await non-cancellable, this checks the generation on BOTH sides
-    of the write: it declines to write once its own ``started_at`` is no longer the
+    of the write: it declines to write once its own ``started_at`` is not the
     installed generation, and removes what it just wrote if that changed while the
     write was in flight -- so an end, a discard and a cancellation are all covered
     by the same test.
@@ -712,10 +712,9 @@ def backfill_crashed_sessions(started_before: float | None = None) -> int:
         for path in sorted(crumb_dir.glob("*.json")):
             # Read, judge and unlink under ONE lock hold, which now serialises this
             # scan against THIS process's own crumb writer rather than guarding an
-            # identity race. The race it used to guard is gone: a path names one
+            # identity race. There is no identity race to guard: a path names one
             # writer and one generation, so a session registering mid-scan gets a
-            # file of its own and the successor this once could have deleted no
-            # longer shares a name with anything here.
+            # file of its own and never shares a name with anything here.
             with _crumb_io_lock:
                 key, started_at, pid, start_id = _read_crumb(path)
                 if _owner_still_running(pid, start_id):
@@ -829,9 +828,9 @@ async def _unlink_generations(generations: Sequence[tuple[str, float]]) -> None:
     ``futures._chain_future``'s ``_call_check_cancel``, which cancels a work item
     that has not begun. That is the dropped unlink this whole design exists to
     prevent -- the crumb survives to the next boot and a cleanly ended session is
-    reported as ``crashed``. Unlinking inline in the cancellation handler fixed the
-    drop but put a filesystem syscall back on the event loop, which is the thing
-    #7537 is about.
+    reported as ``crashed``. Unlinking inline in the cancellation handler removes
+    the drop but puts a filesystem syscall back on the event loop, which this
+    hop exists to avoid.
 
     So the hop is a BARE ``run_in_executor`` future, awaited through
     :func:`asyncio.shield`. Cancelling the shield leaves the inner future alone, so

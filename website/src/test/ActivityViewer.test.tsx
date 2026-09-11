@@ -126,8 +126,11 @@ describe('ActivityViewer', () => {
       { wrapper },
     )
 
-    expect(screen.getByRole('tab', { name: 'PR #42' })).toBeInTheDocument()
-    expect(screen.getByRole('tab', { name: 'MR !7' })).toBeInTheDocument()
+    // Two distinct projects (octo/alpha, team/beta), so each tab is qualified
+    // by its project path — a bare `PR #42` / `MR !7` would be ambiguous across
+    // projects, and GitLab IIDs collide across projects in particular.
+    expect(screen.getByRole('tab', { name: 'octo/alpha PR #42' })).toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: 'team/beta MR !7' })).toBeInTheDocument()
     expect(screen.getByText('Loading source provider…')).toBeInTheDocument()
   })
 

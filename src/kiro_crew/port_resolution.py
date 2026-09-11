@@ -48,7 +48,7 @@ from kiro_crew.config.loader import _DEFAULT_PORT
 from kiro_crew.dashboard.origin import parse_dashboard_url
 from kiro_crew.instances import run_marker
 
-#: Module whose namespace test patches of the chain historically target.
+#: Module whose namespace test patches of the chain target.
 #: Looked up lazily via ``sys.modules`` — importing it here would recreate the
 #: exact heavy import edge this module exists to remove.
 _PATCH_NS = "kiro_crew.cli_server"

@@ -165,8 +165,8 @@ def test_every_anchored_leaf_is_actually_on_the_floor() -> None:
     """The override table cannot name a leaf the read tier does not classify.
 
     Guards the opposite drift from the tests above: an entry removed from
-    ``_SENSITIVE_HOME_DIRS`` while its override anchor stayed would leave the
-    table describing protection that no longer exists.
+    ``_SENSITIVE_HOME_DIRS`` while its override anchor stays leaves the table
+    describing protection that is not there.
     """
     for leaf, _root_fields in security._OVERRIDE_ANCHORED_LEAVES:
         assert (

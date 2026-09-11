@@ -204,7 +204,7 @@ class TestFileIndexPruning:
 
     @pytest.mark.asyncio
     async def test_home_root_offers_dot_dir_but_not_tcc_dir(self, tmp_path):
-        """A dot-dir is an offered candidate (#5677); a TCC dir is not.
+        """A dot-dir is an offered candidate; a TCC dir is not.
 
         Regression: offering dot-dirs as candidates must not also start offering
         (and os.stat-ing) the TCC-gated top-level folders from a $HOME root --

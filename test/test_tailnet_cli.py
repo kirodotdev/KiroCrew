@@ -359,7 +359,7 @@ class TestCorruptConfigIsNeverReplaced:
     ):
         """The refusal happens BEFORE publishing, so there is no partial state.
 
-        This is stronger than the behaviour it replaced. Previously `up` published
+        This is stronger than the behaviour it replaced. `up` published
         first and only then discovered it could not record the setting, leaving the
         dashboard exposed with a config that said otherwise. The pre-load check makes
         the failure atomic: nothing published, nothing written, and a message naming
@@ -560,7 +560,7 @@ class TestUpNeverWritesConfig:
     dedicated busy error. All of that existed to make a read-modify-write of the shared
     config safe from a second process, which cannot be done from the caller side: the
     window between "compared" and "renamed" is only closable by a lock every writer
-    takes (#2147). Removing the write removes the whole problem, so what needs locking
+    takes. Removing the write removes the whole problem, so what needs locking
     in is the ABSENCE of the write.
     """
 

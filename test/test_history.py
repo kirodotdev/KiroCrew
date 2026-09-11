@@ -112,7 +112,7 @@ class TestConversationLog:
         # Rotation needs BOTH gates crossed: more than ``_SESSION_KEEP_LINES``
         # lines and more than ``_SESSION_MAX_BYTES`` bytes. Derive the row size
         # from the budget instead of hardcoding a byte total, so raising the cap
-        # cannot leave this test green while no longer reaching rotation at all.
+        # cannot leave this test green while not reaching rotation at all.
         rows = _SESSION_KEEP_LINES + 50
         content = "x" * (_SESSION_MAX_BYTES // rows + 1024)
         for i in range(rows):
@@ -210,8 +210,8 @@ class TestConversationLog:
     def test_update_metadata_upserts_when_file_absent(self, tmp_path):
         """update_metadata() on a not-yet-created session must create the file.
 
-        Regression: ``!ta <agent> --clean`` issued before the first message is
-        logged used to be silently dropped (the file did not exist yet), so the
+        A ``!ta <agent> --clean`` issued before the first message is logged
+        would be silently dropped (the file did not exist yet), so the
         agent/clean_mode selection lived only in memory and was lost on restart
         -- the session then resumed under the default agent with full tools.
         """
@@ -479,7 +479,7 @@ class TestListSessionsDedup:
         An older session that was recently updated should appear before a
         newer session that hasn't been touched.  Sorting by 'created' would
         put the newer-but-stale session first — that's the bug we're guarding
-        against (see commit 789209e, reverted by f04690d, re-fixed in 07a7099).
+        against.
         """
         import os
 
@@ -595,8 +595,8 @@ class TestSearchSessions:
     def test_ignores_json_structural_fields(self, tmp_path):
         """Query must match message ``content`` only, not JSON keys/values.
 
-        Regression: searching for common tokens like ``user`` or ``role``
-        used to hit every file because the raw JSONL contains
+        Searching for common tokens like ``user`` or ``role`` would otherwise
+        hit every file because the raw JSONL contains
         ``"role": "user"`` on every line.
         """
         log = ConversationLog(base_dir=tmp_path)
@@ -1264,8 +1264,8 @@ class TestNeedlesMatchText:
 class TestForgeReferenceSearch:
     """Pull-request / merge-request / issue numbers as first-class queries.
 
-    A transcript names the same pull request several ways — ``#4411`` in prose,
-    ``…/pull/4411`` when a link was pasted, ``pr 4411`` when it was typed. A
+    A transcript names the same pull request several ways — a ``#`` sigil in prose,
+    a pasted ``…/pull/`` link, or a typed ``pr`` reference. A
     literal-substring query finds only the spelling the searcher happened to
     guess, so these pin the alternation, its digit boundary, and the ranking
     hint a bare number gets.
@@ -1333,7 +1333,7 @@ class TestForgeReferenceSearch:
         assert keys == {"url_only", "hash_form", "prose_form"}, query
 
     def test_digit_boundary_excludes_a_longer_number(self, tmp_path):
-        """``#4411`` is not a prefix search — pull request 44110 is a different PR."""
+        """A ``#``-number query is not a prefix search — a longer number is a different PR."""
         log = self._corpus(tmp_path)
 
         assert [s["key"] for s in log.search_sessions("#4411", 10)] != []
@@ -1341,7 +1341,7 @@ class TestForgeReferenceSearch:
         assert {s["key"] for s in log.search_sessions("#44110", 10)} == {"longer_number"}
 
     def test_digit_boundary_excludes_digits_inside_a_run_id(self, tmp_path):
-        """A reference query means the item, not the digits: 1544110293 is not PR 4411."""
+        """A reference query means the item, not the digits: a run id is not a PR."""
         log = self._corpus(tmp_path)
 
         assert "digit_noise" not in {s["key"] for s in log.search_sessions("#4411", 10)}
@@ -1460,7 +1460,7 @@ class TestForgeReferenceSearch:
         assert "pull/4411" in results[0]["snippet"]
 
     def test_a_spelling_that_is_already_required_does_not_also_score(self):
-        """"4411 #4411" names one item twice — its hits must not count twice.
+        """A number and its ``#`` sigil names one item twice — its hits must not count twice.
 
         Order matters and this is the load-bearing one: with the bare number
         FIRST a ranking hint is created before the sigil makes it redundant, so
@@ -1579,8 +1579,8 @@ class TestForgeReferenceSearch:
     def test_naming_one_item_twice_never_narrows_it(self, tmp_path):
         """"#42 issue 42" must find everything either spelling finds alone.
 
-        The dedup path used to skip outright, which kept `issue` required and
-        threw away the bare-digit spelling the sigil-free occurrence contributes
+        Skipping outright in the dedup path keeps `issue` required and throws
+        away the bare-digit spelling the sigil-free occurrence contributes
         — narrowing a query that named the item MORE ways, which the loosen-only
         contract forbids.
         """
@@ -1710,8 +1710,8 @@ class TestForgeReferenceSearch:
     def test_a_repo_name_ending_in_a_digit_still_matches(self, tmp_path):
         """The left boundary guards the NUMBER, not the delimiter before it.
 
-        Applying it to a delimited spelling refuses ``#4411`` inside
-        ``owner/repo2#4411`` — the exact reference the query named.
+        A too-eager left boundary refuses a ``#``-number inside a repo name
+        ending in a digit — the exact reference the query named.
         """
         log = ConversationLog(base_dir=tmp_path)
         log.append("digit_repo", "assistant", "see kirocrew2#4411 for the fix")
@@ -1787,7 +1787,7 @@ class TestForgeReferenceSearch:
         assert {s["key"] for s in log.search_sessions("merge #12", 10)} == {"wanted"}
 
     def test_a_type_word_before_a_sigil_is_still_dropped(self, tmp_path):
-        """"pull request #4411" must still reach a transcript that only has the URL."""
+        """A leading-type-word query must still reach a transcript that only has the URL."""
         log = self._corpus(tmp_path)
 
         keys = {s["key"] for s in log.search_sessions("pull request #4411", 10)}
@@ -1867,7 +1867,7 @@ class TestForgeReferenceSearch:
         assert keys[0] == "gl_mr", keys
 
     def test_three_token_lead_chain_reaches_the_reference(self, tmp_path):
-        """"pull request #4411": both words are dropped, not just the nearest."""
+        """A two-word type lead: both words are dropped, not just the nearest."""
         log = self._corpus(tmp_path)
 
         keys = {s["key"] for s in log.search_sessions("pull request #4411", 10)}
@@ -2099,7 +2099,7 @@ class TestProviderSearchRefSeam:
 
         Only ``TypeError``/``ValueError`` were caught, so a two-item generator that
         raises while being unpacked escaped ``parse_search_query`` into a 500 on
-        every search -- the collector no longer shape-checks ahead of this.
+        every search -- the collector does not shape-check ahead of this.
         """
 
         def lazy_unpack_boom(token: str):
@@ -2848,6 +2848,7 @@ class TestConsolidationDoesNotBlockLoop:
         )
         log.get_metadata.return_value = {}
         # A fresh span is eligible; _consolidate's inner gate reads this.
+        log.get_metadata_status.return_value = ({}, True)
         log.consolidation_retry_state.return_value = (0, 0.0)
 
         memory = MagicMock()
@@ -2862,7 +2863,7 @@ class TestConsolidationDoesNotBlockLoop:
             vector_store=vector_store, migrated=True,
         )
 
-        def _fake_write(result, key):
+        def _fake_write(result, key, vector_store=None, **_):
             # Simulate the blocking embed call; record the executing thread.
             write_thread_id["id"] = threading.get_ident()
 
@@ -2897,6 +2898,7 @@ class TestConsolidationDoesNotBlockLoop:
         )
         log.get_metadata.return_value = {}
         # A fresh span is eligible; _consolidate's inner gate reads this.
+        log.get_metadata_status.return_value = ({}, True)
         log.consolidation_retry_state.return_value = (0, 0.0)
 
         memory = MagicMock()
@@ -2914,7 +2916,7 @@ class TestConsolidationDoesNotBlockLoop:
 
         original_save = c._save_lessons
 
-        def _instrumented_save(raw):
+        def _instrumented_save(raw, vector_store=None, lesson_store=None, **_):
             save_thread_id["id"] = threading.get_ident()
             original_save(raw)
 
@@ -3711,8 +3713,8 @@ class TestAutoSkillSELAudit:
 class TestAutoSkillSELAuditCompleteness:
     """Every no-write decision must emit a SEL audit event.
 
-    Regression tests for review-bot round 2 findings — each distinct rejection
-    branch in _process_auto_skills must surface via sel().log_tool_invocation.
+    Each distinct rejection branch in _process_auto_skills must surface via
+    sel().log_tool_invocation.
     """
 
     @pytest.mark.asyncio
@@ -3906,7 +3908,7 @@ class TestAutoSkillSELAuditCompleteness:
 
 
 class TestConsolidationPromptJsonShape:
-    """Regression test for review-bot round 2 finding #6: the new_skill prompt
+    """The new_skill prompt
     JSON shape example must itself be a valid JSON fragment so the LLM
     doesn't see an unclosed string and emit malformed output.
 
@@ -3942,7 +3944,7 @@ class TestConsolidationPromptJsonShape:
     async def test_prompt_gates_on_recurrence_not_effort(self, tmp_path):
         """The built prompt must demand recurrence and must not bias toward yes.
 
-        The observed failure this pins: the prompt used to instruct the model to
+        The observed failure this pins: the prompt would instruct the model to
         "lean toward returning it" on any plausible procedure and judged only
         triviality, so elaborate ONE-OFF sessions (a single bug's fix, a
         one-time component audit, a probe answering a now-answered question)
@@ -4025,7 +4027,7 @@ class TestConsolidationPromptJsonShape:
 class TestSkillDetectionFullWindow:
     """Skill detection judges the full-session window, not the consolidated tail.
 
-    Regression for the tail-only recall gap: a reusable procedure that was
+    A reusable procedure that was
     already consolidated away (offset advanced past it) must still be seen by
     skill detection, because it reads the last-N of the FULL session rather
     than only the unconsolidated tail.
@@ -4385,7 +4387,7 @@ class TestLRUCache:
         c["a"] = 1
         c["b"] = 2
         c["c"] = 3
-        # Touch 'a' so it is no longer the LRU victim.
+        # Touch 'a' so it is not the LRU victim.
         assert c.get("a") == 1
         c["d"] = 4
         # 'b' (now the LRU) is evicted instead of the touched 'a'.
@@ -5179,8 +5181,8 @@ async def test_script_bearing_candidate_stages_even_when_all_scripts_invalid(tmp
 class TestMetadataReadSurvivesATransientSharingViolation:
     """A read that FAILED must not be reported as a session with no metadata.
 
-    ``_read_metadata`` returns ``{}`` both for "this session has no metadata line"
-    and (previously) for "I could not open the file". Callers cannot tell those
+    ``_read_metadata`` returning ``{}`` both for "this session has no metadata
+    line" and for "I could not open the file" leaves callers unable to tell those
     apart and at least one acts destructively on the answer -- the open-tab
     restore treats ``{}`` as "never persisted" and silently drops the tab. On
     Windows a just-written file is transiently unopenable while an indexer or AV
@@ -5480,10 +5482,17 @@ class TestConsolidationValueGuard:
         assert store.get_semantic("project.beta.status") is None
 
     def test_well_formed_item_still_overwrites(self, tmp_path) -> None:
-        """Negative control: the harness above can detect a clobber when one happens."""
+        """Negative control: the harness above can detect a clobber when one happens.
+
+        The seeded row is a lower-confidence *consolidation* row rather than a
+        ``user_explicit`` one, because consolidation is never allowed to overwrite
+        ``user_explicit`` (see ``TestConsolidationDoesNotImpersonateUser``) — seeding one
+        here would make this control pass for the wrong reason and stop detecting clobbers.
+        """
         store = self._store(tmp_path)
         assert (
-            store.set_semantic("project.alpha.status", "curated text", 1.0, "user_explicit") is None
+            store.set_semantic("project.alpha.status", "curated text", 0.85, "consolidation:sess-0")
+            is None
         )
         c = self._consolidator(store)
 
@@ -5531,3 +5540,81 @@ class TestConsolidationValueGuard:
         ), "the cause was not read from the reject code"
         assert not any("value_empty" in m for m in msgs), "a non-empty value reported value_empty"
         assert any("0 skipped (no value), 1 refused" in m for m in msgs)
+
+
+class TestConsolidationDoesNotImpersonateUser:
+    """Consolidation writes under its own source, never under ``user_explicit``."""
+
+    @staticmethod
+    def _consolidator(store):
+        memory = MagicMock()
+        memory.read_preferences.return_value = ""
+        memory.read_projects.return_value = ""
+        return HistoryConsolidator(
+            log=MagicMock(),
+            memory=memory,
+            sessions=None,
+            vector_store=store,
+            migrated=True,
+        )
+
+    def _store(self, tmp_path):
+        from kiro_crew.vector_memory import VectorMemoryStore
+
+        store = VectorMemoryStore(db_path=tmp_path / "mem.db")
+        store.init()
+        return store
+
+    def test_confident_item_does_not_overwrite_a_user_explicit_row(self, tmp_path) -> None:
+        """A re-summarization at confidence 1.0 must lose the ``user_explicit`` conflict path."""
+        store = self._store(tmp_path)
+        assert (
+            store.set_semantic("project.alpha.status", "curated text", 1.0, "user_explicit") is None
+        )
+        c = self._consolidator(store)
+
+        c._write_structured_memory(
+            {"semantic": [{"key": "project.alpha.status", "value": "shrunk", "confidence": 1.0}]},
+            "sess-1",
+        )
+
+        row = store.get_semantic("project.alpha.status")
+        assert row["value_json"] == json.dumps("curated text")
+        assert row["source"] == "user_explicit"
+
+    def test_confident_item_still_creates_a_new_key_under_consolidation_source(
+        self, tmp_path
+    ) -> None:
+        """Demoting the source must not stop consolidation from writing its own keys."""
+        store = self._store(tmp_path)
+        c = self._consolidator(store)
+
+        c._write_structured_memory(
+            {"semantic": [{"key": "project.beta.status", "value": "fresh", "confidence": 1.0}]},
+            "sess-1",
+        )
+
+        row = store.get_semantic("project.beta.status")
+        assert row["value_json"] == json.dumps("fresh")
+        assert row["source"] == "consolidation:sess-1"
+
+    def test_v1_extracted_lesson_cannot_displace_user_lesson(self, tmp_path) -> None:
+        taught = "Zebra crossings need beacons"
+        inferred = "Submarine hatches demand orange lanterns for visibility"
+        store = self._store(tmp_path)
+        try:
+            assert store.algorithm_version == "v1"
+            store.embed_fn = lambda _text: [1.0, 0.0]
+            assert store.write_lesson(taught, source="user_explicit")
+            before = store.get_lessons()
+            events = store.get_events()
+
+            self._consolidator(store)._save_lessons([{"rule": inferred}])
+
+            assert store.get_lessons() == before
+            assert store.get_events() == events
+            [lesson] = store.get_lessons()
+            assert json.loads(lesson["value_json"])["rule"] == taught
+            assert lesson["source"] == "user_explicit"
+        finally:
+            store.close()

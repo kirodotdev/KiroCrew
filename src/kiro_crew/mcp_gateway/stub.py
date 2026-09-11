@@ -4,8 +4,10 @@ The stub is the shim kiro-cli execs in place of the real MCP binary. It
 connects to gatewayd over a unix socket, Registers with a full
 :class:`PoolKey` payload, then bridges kiro-cli stdio ↔ gateway until
 either side closes. On handshake failure it logs a structured fallback
-record to ``$KIROCREW_HOME/logs/stub_fallback.jsonl`` and ``execvpe``\u200bs
-the real MCP backend in place, preserving per-session correctness.
+record to ``$KIROCREW_HOME/logs/stub_fallback.jsonl`` and hands the session
+to the real MCP backend, preserving per-session correctness: ``execvpe`` in
+place on POSIX, and on Windows -- which has no in-place exec -- a child
+inheriting this process's stdio (see :func:`_fallback_spawn_child`).
 
 Register fields match :meth:`PoolKey.from_register`; hashes use SHA-256
 (stdlib). Bridge phase is NOT wrapped in a timeout (learned correction
@@ -26,6 +28,7 @@ import os
 import queue
 import shutil
 import signal
+import subprocess
 import sys
 import threading
 import time
@@ -1603,10 +1606,112 @@ async def alog_fallback(
     )
 
 
+def _inherited_std_fd(stream: Any, default: int) -> int:
+    """The fd to hand a child for one of our own standard streams.
+
+    ``sys.stdin`` and friends can be replaced or detached (pytest's capture, a
+    ``pythonw`` host), in which case ``fileno()`` raises rather than answering.
+    Fall back to the well-known number: this runs in a process kiro-cli spawned
+    with real pipes on 0/1/2, so the constant is right whenever the object is
+    not.
+    """
+    try:
+        fd = stream.fileno()
+    except (AttributeError, OSError, ValueError):
+        return default
+    return fd if isinstance(fd, int) and fd >= 0 else default
+
+
+def _child_exit_status(rc: object) -> int:
+    """The status to exit with after relaying a Windows child's own.
+
+    Windows reports an exit code as an unsigned ``DWORD``, and a crash lands far
+    above ``INT_MAX``: an access violation is ``0xC0000005``, i.e. 3221225477.
+    ``os._exit`` parses its argument as a C ``int``, so handing that straight
+    over raises ``OverflowError`` -- the stub would die on an exception instead
+    of relaying the status, which is the one thing this function exists to do,
+    and it would do so on the ordinary signature of a crashing backend rather
+    than in some corner.
+
+    Reinterpret such a value as signed 32-bit instead of clamping it. The OS
+    reads the low 32 bits back out, so the code kiro-cli observes is the exact
+    ``DWORD`` the backend exited with -- a clamp would silently rewrite a crash
+    into some unrelated status. Anything still outside a C ``int``, or not an
+    int at all, becomes 1: unrepresentable, so report plain failure.
+    """
+    if not isinstance(rc, int):
+        return 1
+    if rc > 0x7FFFFFFF:
+        rc -= 0x100000000
+    return rc if -0x80000000 <= rc <= 0x7FFFFFFF else 1
+
+
+def _fallback_spawn_child(argv: list[str], exec_env: dict[str, str]) -> NoReturn:
+    """Stand in for ``execvpe`` on Windows, which has no in-place exec.
+
+    CPython documents the replacement as in-place *"On Unix"*, where the image
+    is loaded into this process and keeps its pid. Windows has no such call, so
+    the ``exec*`` family is emulated as spawn-then-exit: the backend comes up
+    under a NEW pid and THIS process dies. kiro-cli owns this process's stdio
+    pipe and waits on the pid it spawned, so that exit reads to it as the server
+    hanging up -- it reports ``connection closed: initialize response`` and the
+    server's whole tool surface is missing from the session. The degrade path was
+    fatal on the one platform it existed to rescue, and every stubbed server
+    failed while every directly-launched one worked.
+
+    Run the backend as a CHILD and stay alive as its parent instead. Its stdin,
+    stdout and stderr are this process's own fds, duplicated into it explicitly
+    (``close_fds`` blocks handle inheritance on Windows, so passing the numbers
+    is what guarantees the child gets the real pipe rather than a fresh
+    console). kiro-cli therefore talks to the real backend over the pipe it
+    already holds, and the pid it waits on lives for the session. Every
+    ``fallback_exec`` call site is reached with kiro-cli's ``initialize`` still
+    unread -- the stub's own "clean per-session exec" invariant, asserted by the
+    comments at each of those sites -- so the hand-off loses no buffered request.
+
+    Resolve the command against the CHILD's ``PATH``, because that is what
+    ``execvpe`` searches; Windows ``CreateProcess`` would search this process's
+    instead, so a relative command could otherwise resolve differently on the
+    two platforms. An unresolvable name is passed through unchanged so the
+    resulting ``FileNotFoundError`` still surfaces, matching ``execvpe``.
+
+    Exit through ``os._exit``: this stands in for a process replacement, which
+    runs no cleanup handlers and flushes nothing, and a ``SystemExit`` raised
+    here would have to survive the teardown of the stub's own event loop.
+    """
+    resolved = shutil.which(argv[0], path=exec_env.get("PATH")) or argv[0]
+    # Our own buffers, not the child's: it inherits the same fds, so anything
+    # still queued here would interleave into the middle of its JSON-RPC stream.
+    for stream in (sys.stdout, sys.stderr):
+        with contextlib.suppress(AttributeError, OSError, ValueError):
+            stream.flush()
+    proc = subprocess.Popen(  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
+        [resolved, *argv[1:]],
+        env=exec_env,
+        stdin=_inherited_std_fd(sys.stdin, 0),
+        stdout=_inherited_std_fd(sys.stdout, 1),
+        stderr=_inherited_std_fd(sys.stderr, 2),
+    )
+    try:
+        rc = proc.wait()
+    except BaseException:
+        # Do not leave the backend holding kiro-cli's pipe with nobody waiting on
+        # it. A hard ``TerminateProcess`` on us cannot be intercepted at all, and
+        # the child survives that; what saves the session there is the pipe
+        # itself -- kiro-cli's exit closes fd 0 and an MCP server exits on stdin
+        # EOF, exactly as a directly-launched one would.
+        with contextlib.suppress(OSError):
+            proc.terminate()
+        raise
+    os._exit(_child_exit_status(rc))
+
+
 def fallback_exec(args: argparse.Namespace) -> None:
     """Replace the current process with the real MCP backend. ``execvpe``
     never returns on success; a return raises so the caller surfaces a
-    diagnostic."""
+    diagnostic. Windows has no in-place exec, so there the backend runs as a
+    child inheriting this process's stdio -- see :func:`_fallback_spawn_child`
+    for why the emulated ``exec*`` would kill the session outright."""
     target_args = _split_target_args(args.target_args, args.target_args_sep)
     argv = [args.target_command, *target_args]
     # Restore the server's declared env. The rewriter moves declared env
@@ -1616,6 +1721,8 @@ def fallback_exec(args: argparse.Namespace) -> None:
     # the non-pooled baseline — the daemon's own environment lacks it.
     exec_env = dict(os.environ)
     exec_env.update(_parse_env_file(getattr(args, "env_file", "") or ""))
+    if platform_compat.IS_WINDOWS:
+        _fallback_spawn_child(argv, exec_env)
     # exec IS this fallback stub's whole purpose: when the gateway is
     # unavailable, replace this process with the operator's real MCP backend.
     # argv (target_command / target_args) and exec_env (the server's declared

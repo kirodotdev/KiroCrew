@@ -4,17 +4,16 @@ An ``asyncio.Lock`` binds to the event loop it is first used on; acquiring it
 from a *different* loop raises ``RuntimeError`` on Python 3.10+. A module-global
 ``asyncio.Lock()`` therefore breaks whenever one process runs more than one
 event loop over the module's lifetime — pytest-asyncio spinning a fresh loop
-per test, or a gateway restart-in-process. This is the defect class behind
-issue #4800 (and the flake trio it produced via a swallowed ``RuntimeError``:
-#4177, #4789).
+per test, or a gateway restart-in-process. A swallowed ``RuntimeError`` from
+this surfaces as an intermittent failure far from its cause.
 
-The repo grew ad-hoc versions of the fix shape (``_get_config_lock`` in
+Narrower versions of the fix shape exist (``_get_config_lock`` in
 ``dashboard/handlers/agents.py``, ``get_lock`` in ``messaging/auto_title.py``,
-which every channel's auto-title now shares; ``__init__._LazyShutdownEvent``
+which every channel's auto-title shares; ``__init__._LazyShutdownEvent``
 and the semaphore in
 ``dashboard/handlers/link_meta.py`` are cousins for other primitives, left
 as-is);  :class:`LoopBoundLock` is the shared chokepoint the module-global
-locks now route through. Declare it at module level exactly like the lock it
+locks route through. Declare it at module level exactly like the lock it
 replaces::
 
     _CACHE_LOCK = LoopBoundLock()

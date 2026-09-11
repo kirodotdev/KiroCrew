@@ -1951,7 +1951,7 @@ class TestCompletionKeepLoader:
 
 
 class TestSubagentUsageRow:
-    """Issue #647: a completed subagent turn appends one usage row tagged
+    """A completed subagent turn appends one usage row tagged
     surface='subagent', carrying the resolved agent and context occupancy."""
 
     @pytest.mark.asyncio
@@ -2045,7 +2045,7 @@ class TestSubagentUsageRow:
 
 class TestIdentityTrustedChildParentPolicyAuto:
     """A low-fidelity child MCP permission event whose canonical identity IS
-    verified (remote server streamed no rawInput — issue #6163) honors an
+    verified (remote server streamed no rawInput) honors an
     unconditional ``parent_policy=auto`` grant instead of stalling on the
     interactive downgrade; without the verified identity the same event stays
     fail-closed.
@@ -2142,6 +2142,113 @@ class TestIdentityTrustedChildParentPolicyAuto:
 
         provider.approve_tool.assert_not_awaited()
         provider.reject_tool.assert_awaited_once_with(7001)
+
+
+class TestIdentityTrustedChildHookIdentityGrant:
+    """A low-fidelity child MCP event with a VERIFIED canonical identity honors
+    a hook auto-approve that was decided by that identity
+    (``ToolHookResult.identity_grant``) — the user's own narrow grant — with no
+    ``parent_policy=auto``. A hook grant that read the title, or the same grant
+    on a child whose identity is NOT verified, stays fail-closed.
+    """
+
+    def _manager_and_stream(self, event, hook_result):
+        from kiro_crew.subagent import SubagentInfo, SubagentManager
+
+        sessions = _mock_sessions()
+        # No unconditional grant: only the hook can approve.
+        sessions.get_approval_policy = MagicMock(return_value="")
+        provider = sessions.get_or_create.return_value[0]
+
+        async def _stream(*_a, **_kw):
+            yield event
+
+        provider.stream = MagicMock(side_effect=lambda *a, **kw: _stream())
+        provider.approve_tool = AsyncMock()
+        provider.reject_tool = AsyncMock()
+
+        ctx = MagicMock()
+        ctx.build_message = MagicMock(return_value=("msg", None))
+        ctx.hooks.on_tool_call = MagicMock(return_value=hook_result)
+
+        manager = SubagentManager(sessions=sessions, ctx_builder=ctx, default_turn_limit=1)
+        info = SubagentInfo(id="idhook01", task="t", parent_session_key="dashboard:default")
+        manager._agents["idhook01"] = info
+        return manager, info, provider
+
+    @staticmethod
+    def _child_mcp_event(**overrides):
+        from kiro_crew.providers.base import EVENT_PERMISSION_REQUEST, LLMEvent
+
+        base: dict = dict(
+            kind=EVENT_PERMISSION_REQUEST,
+            title="Running: @memory-mcp/search_memory",
+            request_id=7101,
+            sub_session_id="child-a",
+            is_shell=False,
+            mcp_server_name="memory-mcp",
+            tool_name="search_memory",
+            mcp_identity_trusted=True,
+        )
+        base.update(overrides)
+        return LLMEvent(**base)
+
+    def _patches(self):
+        return (
+            patch("kiro_crew.subagent.Stats"),
+            patch("kiro_crew.subagent.sel"),
+            patch("kiro_crew.subagent.update_state"),
+            patch("kiro_crew.subagent.create_agent_folder", MagicMock(), create=True),
+        )
+
+    @pytest.mark.asyncio
+    async def test_identity_grant_approves_identity_trusted_child(self) -> None:
+        from kiro_crew.hooks import ToolHookResult
+
+        event = self._child_mcp_event()
+        assert event.child_low_fidelity and event.child_mcp_identity_trusted
+        manager, info, provider = self._manager_and_stream(
+            event, ToolHookResult.auto_approve(identity_grant=True)
+        )
+        p1, p2, p3, p4 = self._patches()
+        with p1, p2, p3, p4:
+            await manager._run_inner(info, "subagent:idhook01")
+
+        provider.approve_tool.assert_awaited_once_with(7101)
+        provider.reject_tool.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_title_grant_stays_downgraded_for_child(self) -> None:
+        """The same auto-approve WITHOUT identity provenance (a title-keyed
+        match) is still fail-closed for the low-fidelity child."""
+        from kiro_crew.hooks import ToolHookResult
+
+        event = self._child_mcp_event()
+        manager, info, provider = self._manager_and_stream(event, ToolHookResult.auto_approve())
+        p1, p2, p3, p4 = self._patches()
+        with p1, p2, p3, p4:
+            await manager._run_inner(info, "subagent:idhook01")
+
+        provider.approve_tool.assert_not_awaited()
+        provider.reject_tool.assert_awaited_once_with(7101)
+
+    @pytest.mark.asyncio
+    async def test_identity_grant_needs_verified_identity(self) -> None:
+        """An identity grant cannot carry a child whose own identity did not
+        verify (cache miss): nothing ties the grant to the tool that runs."""
+        from kiro_crew.hooks import ToolHookResult
+
+        event = self._child_mcp_event(mcp_identity_trusted=False)
+        assert event.child_low_fidelity and not event.child_mcp_identity_trusted
+        manager, info, provider = self._manager_and_stream(
+            event, ToolHookResult.auto_approve(identity_grant=True)
+        )
+        p1, p2, p3, p4 = self._patches()
+        with p1, p2, p3, p4:
+            await manager._run_inner(info, "subagent:idhook01")
+
+        provider.approve_tool.assert_not_awaited()
+        provider.reject_tool.assert_awaited_once_with(7101)
 
 
 class TestChildEscalationLimit:

@@ -594,6 +594,44 @@ class TestCronServiceSecretEnvGate:
         assert resolved == {}
         assert err is not None and "code changed" in err
 
+    def test_rethreading_via_update_job_kills_pin(self, tmp_path, cron_home):
+        """``thread_ts`` is mutable after creation, so re-threading a granted
+        job moves its delivery fingerprint and the next run fails CLOSED
+        pending re-approval. Driven through ``update_job`` rather than by handing the
+        precheck a different literal, so the store write and the fingerprint
+        the runner recomputes from it are both exercised."""
+        svc = self._service(tmp_path)
+        spec = _grant_script(cron_home)
+        job = svc.add_job("j", "m", every_secs=3600, script=spec, thread_ts="1776298241.408339")
+        grant = {"MY_TOKEN": "slack-sandbox"}
+        pin = compute_secret_env_pin(
+            spec,
+            "",
+            "m",
+            job_id=job.id,
+            grant=grant,
+            domain="active",
+            delivery=delivery_fingerprint("", False, "", "1776298241.408339"),
+        )
+        svc.update_job(job.id, secret_env=grant, secret_env_pin=pin)
+        # Agent re-threads the job: the persisted fingerprint moves with it.
+        svc.update_job(job.id, thread_ts="1776298241.999999")
+        stored = CronService(base_dir=tmp_path / "crons-store").list_jobs()[0]
+        assert stored.thread_ts == "1776298241.999999"
+        resolved, err = _secret_env_precheck(
+            stored.secret_env,
+            stored.secret_env_pin,
+            script=spec,
+            script_body=(cron_home() / "crons" / "grantee.py").read_bytes(),
+            message="m",
+            job_id=job.id,
+            delivery=delivery_fingerprint(
+                stored.session_key, stored.silent, stored.channel or "", stored.thread_ts or ""
+            ),
+        )
+        assert resolved == {}
+        assert err is not None and "code changed" in err
+
     def test_deleted_job_grant_cannot_be_replayed(self, tmp_path, cron_home):
         """Deleting a granted job kills its grant: every removal path bumps
         the grant epoch BEFORE the store swap, so an agent that re-creates
@@ -1619,7 +1657,7 @@ class TestGrantEndpointPendingFlow:
     async def test_compensation_never_resurrects_concurrent_revoke(self, cron_home):
         """Epoch commit fails AND a concurrent revoke cleared the grant in
         the gap: the compensating restore must yield to the revocation — the
-        active-field compare-and-swap sees the fields no longer hold the
+        active-field compare-and-swap sees the fields do not hold the
         just-promoted grant and skips, never writing grant A back over what
         the operator withdrew."""
         from aiohttp.test_utils import TestClient, TestServer

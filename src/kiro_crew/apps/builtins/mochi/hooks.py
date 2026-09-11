@@ -709,9 +709,9 @@ class MochiRuntime:
         # browser — summary/chatMessage via the mochi:notify broadcast and the chat
         # push, mood via the state manager and the /pet-state + /stats reads. Scrub
         # credentials/exfiltration URLs ONCE up front so EVERY sink below consumes
-        # the redacted copy. A mood-only notify (no summary) previously skipped the
-        # redaction that lived inside the has_summary block and leaked the raw mood
-        # to /pet-state and /stats — hoisting it closes that path.
+        # the redacted copy. Redacting inside the has_summary block instead would
+        # let a mood-only notify (no summary) skip it and leak the raw mood to
+        # /pet-state and /stats, so it is hoisted above the branch.
         action = redact_tree(action)
         summary = action.get("summary")
         if has_summary:
@@ -760,7 +760,7 @@ class MochiRuntime:
 
         The active flag is bounded by ``_CHAT_TURN_MAX_MS``: past that age a
         turn whose terminal event never arrived (panel closed / socket dropped)
-        no longer counts as busy, so the drain can release its backlog rather
+        does not count as busy, so the drain can release its backlog rather
         than deferring forever."""
         if self._chat_turn_active and now_ms - self._last_user_input_ms < self._CHAT_TURN_MAX_MS:
             return True

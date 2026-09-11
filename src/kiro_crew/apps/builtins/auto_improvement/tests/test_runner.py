@@ -60,7 +60,7 @@ def _tiny_repo(root: Path, *, push_disabled: bool = True) -> Path:
     _git("remote", "add", "origin", "https://example.invalid/owner/repo.git", cwd=root)
     if push_disabled:
         # Neutralize BOTH urls, exactly as `clone_setup._disable_push` does in production.
-        # A push-only disable no longer satisfies the runtime `push_disabled()` gate: a
+        # A push-only disable does not satisfy the runtime `push_disabled()` gate: a
         # live FETCH url is a live push target, so both must be sentinelled.
         _git("remote", "set-url", "--push", "origin", "DISABLED_NO_PUSH", cwd=root)
         _git("remote", "set-url", "origin", "DISABLED_NO_PUSH", cwd=root)
@@ -318,8 +318,8 @@ class TestOfflineRunIsNotReportedAsDone:
 
     With ``agent_runner=None`` the profile's discovery early-returns an empty candidate
     list, so every cycle finds nothing, the budget's quiescence break fires, and
-    ``driver.run()`` returns its stats CLEANLY. The supervisor used to take that as success
-    and report ``done`` with an empty ``error`` -- a state indistinguishable from a run that
+    ``driver.run()`` returns its stats CLEANLY. Taking that as success and reporting
+    ``done`` with an empty ``error`` is a state indistinguishable from a run that
     genuinely searched and found nothing.
 
     ``_build_driver`` is patched, which is exactly how the sibling tests in this file drive
@@ -710,12 +710,11 @@ def _join_calibration(supervisor: R.RunSupervisor, *, timeout: float = 30.0) -> 
 
 
 class TestCalibrationWritesToTheLaunchedWorkspace:
-    """`_calibrate_loop` runs on a background thread and used to write the ruler via
-    `store.ruler_dir()`, which re-reads the LIVE `config.json`. If the operator retargeted
-    (or started another repo's calibration) while this one measured, the ruler landed in a
-    DIFFERENT workspace, overwriting a ruler calibrated on unrelated code. The write now
-    derives its path from the CAPTURED config the worker was launched with. Raised by the
-    GPT review of this branch.
+    """`_calibrate_loop` runs on a background thread, so it must NOT write the ruler via
+    `store.ruler_dir()`, which re-reads the LIVE `config.json`. If the operator retargets
+    (or starts another repo's calibration) while this one measures, that path lands the
+    ruler in a DIFFERENT workspace, overwriting a ruler calibrated on unrelated code. The
+    write derives its path from the CAPTURED config the worker was launched with.
     """
 
     def test_a_retarget_mid_calibration_does_not_move_the_ruler(
@@ -1010,7 +1009,7 @@ class TestCalibrationRespondsToStop:
     def test_stopping_a_recalibration_preserves_the_prior_ruler(
         self, supervisor: R.RunSupervisor, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Stopping a RECALIBRATION must leave a previously-proven ruler intact.
+        """Stopping a RECALIBRATION must leave an already-proven ruler intact.
 
         A stop is as often "this is taking too long" as "supersede this", so the
         abort lever must not destroy prior work the operator would have to re-pay a

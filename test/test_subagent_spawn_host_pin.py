@@ -119,7 +119,7 @@ class TestTheSpawnHostMemoryPinRatchet:
         )
 
     def test_the_exclusion_list_has_not_gone_stale(self) -> None:
-        """An exclusion for a module that no longer spawns hides the next one."""
+        """An exclusion for a module that does not spawn hides the next one."""
         reached = {name for name, _pinned in _spawning_modules()}
         stale = sorted(name for name in self._EXCLUDED if name not in reached)
 

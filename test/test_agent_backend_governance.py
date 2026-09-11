@@ -5,9 +5,8 @@ between them: ``agent_sdk.backends.selectable_backends`` answers "can this BUILD
 (a capability fact, not governable) and this scope answers "may THIS DEPLOYMENT
 select it".
 
-The semantics under test is the decision #6622 was blocked on: an ``allow`` list ADDS
-to the floor rather than replacing the set, so no policy can leave an install with no
-startable harness.
+The semantics under test: an ``allow`` list ADDS to the floor rather than replacing
+the set, so no policy can leave an install with no startable harness.
 
 The ENFORCEMENT POSITION is equally load-bearing and is pinned here too. Policy
 narrows the registry once at boot; nothing downstream gains a check. That is what

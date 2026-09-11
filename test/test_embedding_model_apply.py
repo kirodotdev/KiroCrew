@@ -233,7 +233,7 @@ class TestEnvOverrideRefusal:
     ``resolve_custom_model`` takes the PATH from the env var but always reads
     ``memory.embedding_dim`` from CONFIG. Persisting a model's width here while the
     env pins a different path produces a pair ``_load_model`` refuses on the width
-    check — so the previously-working env-pinned model becomes unloadable on every
+    check — so the already-working env-pinned model becomes unloadable on every
     restart until config.json is hand-edited. A config write cannot take effect
     under the override anyway, so the only safe answer is to refuse.
     """
@@ -409,14 +409,14 @@ class TestNonObjectJsonBody:
         )
         assert resp.status == 400, f"{payload!r} must be a 400, not a crash"
         # The shared guard separates "unparseable" from "parsed, wrong shape";
-        # this handler used to answer invalid_json for both.
+        # this handler would answer invalid_json for both.
         assert b"body_not_object" in resp.body
 
     def test_the_guard_runs_before_the_first_field_read(self) -> None:
         """Guard against a refactor that only special-cases lists.
 
-        The check itself lives in ``_shared.read_bounded_json`` now (issue
-        #5587), so this pins the two properties that made the inline version
+        The check itself lives in ``_shared.read_bounded_json`` now, so this pins
+        the two properties that made the inline version
         correct: the handler consults the guard BEFORE its first ``.get()``,
         and the guard is a general ``isinstance(body, dict)`` test rather than a
         list-only special case. The parametrized cases above prove the
@@ -876,7 +876,7 @@ class TestApplyOrdering:
     def test_activation_comes_after_config_write_and_reconcile(self) -> None:
         src = self._src()
         write_at = src.find("_write_embed_model_config(raw, embedder.dim)")
-        reconcile_at = src.find("reconcile_store_embedding_space(store)")
+        reconcile_at = src.find("reconcile_store_embedding_space(target)")
         activate_at = src.find("activate_shared_embedder()")
         assert -1 not in (write_at, reconcile_at, activate_at)
         assert write_at < activate_at, "activating before persistence exposes the new space"
@@ -891,7 +891,7 @@ class TestApplyOrdering:
         than config, so deferring the write costs nothing.
         """
         src = self._src()
-        reconcile_at = src.find("reconcile_store_embedding_space(store)")
+        reconcile_at = src.find("reconcile_store_embedding_space(target)")
         write_at = src.find("_write_embed_model_config(raw, embedder.dim)")
         assert -1 not in (reconcile_at, write_at)
         assert reconcile_at < write_at

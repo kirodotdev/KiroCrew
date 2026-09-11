@@ -528,6 +528,7 @@ describe('WebPreviewPanel', () => {
 describe('WebPreviewPanel — Playwright CLI browser view', () => {
   beforeEach(() => {
     localStorage.clear()
+    sessionStorage.clear()
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(undefined))
   })
   afterEach(() => { vi.unstubAllGlobals() })
@@ -691,6 +692,8 @@ describe('WebPreviewPanel — native browser transport', () => {
 
   beforeEach(() => {
     localStorage.clear()
+    // The annotate mirror persists per slot in sessionStorage; tests reuse slot ids.
+    sessionStorage.clear()
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(undefined))
     class RO { observe() {} unobserve() {} disconnect() {} }
     ;(globalThis as unknown as { ResizeObserver: unknown }).ResizeObserver = RO
@@ -754,4 +757,472 @@ describe('WebPreviewPanel — native browser transport', () => {
     unmount()
     await waitFor(() => expect(api.close).toHaveBeenCalledWith('sess-1'))
   })
+
+  // ── Annotate: element notes on the live page ──
+  // The pick overlay lives in the page; the panel mirrors its picks through
+  // the bridge's `annotate` op and OWNS the notes (typed in the panel, never in
+  // the page). These assert the mirror, the editor and the hand-off -- never
+  // pixels.
+
+  const TARGET = {
+    id: 1, n: 1, ref: 'e12', tag: 'button', role: 'button', name: 'Save', text: 'Save',
+    selector: 'form > footer > button.primary', detached: false,
+  }
+  function installAnnotateBridge(items: typeof TARGET[] = [], picked?: number) {
+    const api = installNativeBridge(true, 'https://example.com/settings') as Record<string, unknown>
+    const state: { items: typeof TARGET[]; picking: boolean; picked?: number; edit?: number } = { items, picking: true, picked }
+    const annotate = vi.fn(async (_p: string, op: string, args?: Record<string, unknown>) => {
+      switch (op) {
+        case 'start': return { ok: true, url: 'https://example.com/settings', title: 'Settings' }
+        case 'poll': {
+          const out: Record<string, unknown> = { ok: true, picking: state.picking, url: 'https://example.com/settings', title: 'Settings', items: state.items }
+          if (state.picked !== undefined) { out.picked = state.picked; state.picked = undefined }
+          if (state.edit !== undefined) { out.edit = state.edit; state.edit = undefined }
+          return out
+        }
+        case 'stop': state.picking = false; return { ok: true }
+        case 'remove': state.items = state.items.filter(i => i.id !== args?.id); return { ok: true }
+        case 'clear': state.items = []; return { ok: true }
+        case 'capture': return { ok: true, png: btoa('png'), url: 'https://example.com/settings', title: 'Settings' }
+        default: return { ok: true }
+      }
+    })
+    api.annotate = annotate
+    return { api, annotate, state }
+  }
+  /** Pick TARGET (as the page would) and type its note in the panel editor. */
+  async function pickAndNote(state: { items: typeof TARGET[]; picked?: number }, note: string, target = TARGET) {
+    state.items = [...state.items, target]
+    state.picked = target.id
+    const input = await screen.findByTestId('browser-annotation-note-input')
+    await waitFor(() => expect(input).toHaveFocus())
+    fireEvent.change(input, { target: { value: note } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    await waitFor(() => expect(screen.getByTestId('browser-annotations')).toHaveTextContent(note))
+  }
+
+  it('shows Annotate only when a native view is open AND the shell exposes the annotate bridge', async () => {
+    installAnnotateBridge()
+    const { unmount } = renderWithProviders(<WebPreviewPanel sessionKey="sess-1" active />)
+    expect(await screen.findByTestId('browser-annotate')).toHaveTextContent('Annotate')
+    unmount()
+    installNativeBridge(true) // older shell: no `annotate`
+    renderWithProviders(<WebPreviewPanel sessionKey="sess-2" active />)
+    await waitFor(() => expect(screen.queryByTitle('Live browser session')).toBeNull())
+    expect(screen.queryByTestId('browser-annotate')).toBeNull()
+  })
+
+  it('clicking Annotate starts pick mode (badge hint localized, numbering from 0), flips to Done, and Done stops', async () => {
+    const { annotate } = installAnnotateBridge()
+    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" active />)
+    fireEvent.click(await screen.findByTestId('browser-annotate'))
+    await waitFor(() => expect(annotate).toHaveBeenCalledWith('sess-1', 'start', { editHint: expect.any(String), roleNames: expect.objectContaining({ combobox: 'dropdown', textbox: 'text field' }), seq: 0, idStart: 0 }))
+    await waitFor(() => expect(screen.getByTestId('browser-annotate')).toHaveTextContent('Done annotating'))
+    expect(screen.getByTestId('browser-annotate')).toHaveAttribute('aria-pressed', 'true')
+    // Empty state explains the gesture while nothing has been picked yet.
+    expect(await screen.findByTestId('browser-annotations')).toHaveTextContent(/Click an element on the page/)
+    fireEvent.click(screen.getByTestId('browser-annotate'))
+    await waitFor(() => expect(annotate).toHaveBeenCalledWith('sess-1', 'stop', undefined))
+  })
+
+  it('a pick on the page opens the note editor here, focused; Enter keeps the note in the panel (never sent to the page)', async () => {
+    const { annotate, state } = installAnnotateBridge()
+    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" active />)
+    fireEvent.click(await screen.findByTestId('browser-annotate'))
+    await screen.findByTestId('browser-annotations')
+    await pickAndNote(state, 'too far right')
+    const row = screen.getByTestId('browser-annotations').querySelector('li')!
+    expect(row).toHaveTextContent('button "Save"')
+    expect(row).toHaveTextContent('too far right')
+    expect(screen.queryByTestId('browser-annotation-note-input')).toBeNull()
+    // The note text never crossed the bridge in any op.
+    for (const call of annotate.mock.calls) expect(JSON.stringify(call)).not.toContain('too far right')
+  })
+
+  it('Esc on a fresh pick with nothing typed removes the pick on the page; a marker click (edit) reopens the editor prefilled', async () => {
+    const { annotate, state } = installAnnotateBridge()
+    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" active />)
+    fireEvent.click(await screen.findByTestId('browser-annotate'))
+    await screen.findByTestId('browser-annotations')
+    state.items = [TARGET]
+    state.picked = 1
+    const input = await screen.findByTestId('browser-annotation-note-input')
+    fireEvent.keyDown(input, { key: 'Escape' })
+    await waitFor(() => expect(annotate).toHaveBeenCalledWith('sess-1', 'remove', { id: 1 }))
+    // Now a noted pick; the page reports a marker click.
+    const t2 = { ...TARGET, id: 2, n: 2, ref: 'e4', tag: 'input', role: 'combobox', name: 'Search', text: '' }
+    await pickAndNote(state, 'change placeholder', t2)
+    state.edit = 2
+    const again = await screen.findByTestId('browser-annotation-note-input')
+    expect(again).toHaveValue('change placeholder')
+    // The row speaks plainly: the opaque ARIA role is shown as "dropdown" (the draft keeps the raw role).
+    expect(screen.getByTestId('browser-annotation-editing')).toHaveTextContent('dropdown "Search"')
+  })
+
+  it('Add to chat captures the page with markers and hands ChatPage a draft + the PNG for THIS slot; only noted picks go, notes stay', async () => {
+    const { annotate, state } = installAnnotateBridge()
+    const seen: CustomEvent[] = []
+    const onEv = (e: Event) => { seen.push(e as CustomEvent) }
+    window.addEventListener('kirocrew-web-preview-annotate', onEv)
+    try {
+      renderWithProviders(<WebPreviewPanel sessionKey="sess-1" active />)
+      fireEvent.click(await screen.findByTestId('browser-annotate'))
+      await screen.findByTestId('browser-annotations')
+      const send = screen.getByTestId('browser-annotations-send')
+      expect(send).toBeDisabled()
+      await pickAndNote(state, 'too far right')
+      // A second pick left without a note must not appear in the draft.
+      state.items = [...state.items, { ...TARGET, id: 2, n: 2, ref: 'e9', name: 'Cancel' }]
+      await waitFor(() => expect(screen.getByTestId('browser-annotations').querySelectorAll('li')).toHaveLength(2))
+      await waitFor(() => expect(send).not.toBeDisabled())
+      fireEvent.click(send)
+      await waitFor(() => expect(seen).toHaveLength(1))
+      const d = seen[0].detail as { slot: string; files: File[]; draft: string }
+      expect(d.slot).toBe('sess-1')
+      expect(d.files).toHaveLength(1)
+      expect(d.files[0].name).toMatch(/^browser-annotations-.+\.png$/)
+      expect(d.draft.split('\n')[0]).toBe('Notes on the page shown in the Browser panel:')
+      expect(d.draft).toContain('1. (e12) -- too far right')
+      expect(d.draft).toContain('Page: Settings -- https://example.com/settings')
+      expect(d.draft).toContain('e12: button "Save" -- form > footer > button.primary')
+      expect(d.draft).not.toContain('Cancel')
+      expect(d.draft).toContain(d.files[0].name)
+      expect(annotate).toHaveBeenCalledWith('sess-1', 'capture', undefined)
+      await waitFor(() => expect(annotate).toHaveBeenCalledWith('sess-1', 'stop', undefined))
+      expect(screen.getByTestId('browser-annotations')).toHaveTextContent('too far right')
+    } finally {
+      window.removeEventListener('kirocrew-web-preview-annotate', onEv)
+    }
+  })
+
+  it('keeps noted picks (detached) when the page navigated away; Add to chat works without a screenshot; re-Annotate continues numbering and keeps them', async () => {
+    const { annotate, state } = installAnnotateBridge()
+    const seen: CustomEvent[] = []
+    const onEv = (e: Event) => { seen.push(e as CustomEvent) }
+    window.addEventListener('kirocrew-web-preview-annotate', onEv)
+    try {
+      renderWithProviders(<WebPreviewPanel sessionKey="sess-1" active />)
+      fireEvent.click(await screen.findByTestId('browser-annotate'))
+      await screen.findByTestId('browser-annotations')
+      await pickAndNote(state, 'too far right')
+      // The document navigated: the overlay is gone with it.
+      const impl = annotate.getMockImplementation()!
+      annotate.mockImplementation(async (p: string, op: string, args?: Record<string, unknown>) => op === 'poll'
+        ? { ok: false, code: 'no_overlay', error: 'no annotate overlay on this page' }
+        : impl(p, op, args))
+      await waitFor(() => expect(screen.getByTestId('browser-annotate')).toHaveTextContent('Annotate'))
+      const list = screen.getByTestId('browser-annotations')
+      expect(list).toHaveTextContent('too far right')
+      expect(list).toHaveTextContent(/The page changed since these notes were made/)
+      fireEvent.click(screen.getByTestId('browser-annotations-send'))
+      await waitFor(() => expect(seen).toHaveLength(1))
+      const d = seen[0].detail as { files: File[]; draft: string }
+      expect(d.files).toHaveLength(0)
+      expect(d.draft).toContain('(element no longer on the page)')
+      expect(annotate).not.toHaveBeenCalledWith('sess-1', 'capture', undefined)
+      // Re-entering pick mode on the new page continues numbering after the
+      // retained note and does NOT wipe it when the fresh overlay polls empty.
+      annotate.mockImplementation(impl)
+      state.items = []
+      fireEvent.click(screen.getByTestId('browser-annotate'))
+      await waitFor(() => expect(annotate).toHaveBeenCalledWith('sess-1', 'start', { editHint: expect.any(String), roleNames: expect.any(Object), seq: 1, idStart: 1 }))
+      await waitFor(() => expect(screen.getByTestId('browser-annotate')).toHaveTextContent('Done annotating'))
+      await new Promise(r => setTimeout(r, 400))
+      expect(screen.getByTestId('browser-annotations')).toHaveTextContent('too far right')
+    } finally {
+      window.removeEventListener('kirocrew-web-preview-annotate', onEv)
+    }
+  })
+
+  it('a live pick whose id collides with a retained note is ignored, never aliasing the note', async () => {
+    const { annotate, state } = installAnnotateBridge()
+    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" active />)
+    fireEvent.click(await screen.findByTestId('browser-annotate'))
+    await screen.findByTestId('browser-annotations')
+    await pickAndNote(state, 'too far right')
+    const impl = annotate.getMockImplementation()!
+    annotate.mockImplementation(async (p: string, op: string, args?: Record<string, unknown>) => op === 'poll'
+      ? { ok: false, code: 'no_overlay', error: 'no annotate overlay on this page' }
+      : impl(p, op, args))
+    await waitFor(() => expect(screen.getByTestId('browser-annotate')).toHaveTextContent('Annotate'))
+    // The page comes back forging a pick with the retained note's id.
+    annotate.mockImplementation(impl)
+    state.items = [{ ...TARGET, id: 1, n: 7, ref: 'e77', name: 'Impostor' }]
+    fireEvent.click(screen.getByTestId('browser-annotate'))
+    await waitFor(() => expect(screen.getByTestId('browser-annotate')).toHaveTextContent('Done annotating'))
+    await new Promise(r => setTimeout(r, 400))
+    const list = screen.getByTestId('browser-annotations')
+    expect(list.querySelectorAll('li')).toHaveLength(1)
+    expect(list).toHaveTextContent('too far right')
+    expect(list).not.toHaveTextContent('Impostor')
+  })
+
+  it('a transient poll failure does not drop the notes; three in a row surface an error and pause', async () => {
+    const { annotate, state } = installAnnotateBridge()
+    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" active />)
+    fireEvent.click(await screen.findByTestId('browser-annotate'))
+    await screen.findByTestId('browser-annotations')
+    await pickAndNote(state, 'too far right')
+    annotate.mockImplementation(async (_p: string, op: string) => op === 'poll'
+      ? { ok: false, code: 'annotate_timeout', error: 'annotate poll timed out after 8000ms' }
+      : { ok: true })
+    await waitFor(() => expect(screen.getByText('annotate poll timed out after 8000ms')).toBeInTheDocument())
+    expect(screen.getByTestId('browser-annotations')).toHaveTextContent('too far right')
+    // Nothing was detached, so the "page changed" notice must not misdiagnose next to the real error.
+    expect(screen.getByTestId('browser-annotations')).not.toHaveTextContent(/The page changed since these notes were made/)
+    // Resuming after the pause must not start from an empty page: the overlay
+    // is still there and so are the notes.
+    annotate.mockImplementation(async (_p: string, op: string) => op === 'poll'
+      ? { ok: true, picking: true, url: 'https://example.com/settings', title: 'Settings', items: state.items }
+      : op === 'start' ? { ok: true, url: 'https://example.com/settings', title: 'Settings' } : { ok: true })
+    fireEvent.click(screen.getByTestId('browser-annotate'))
+    await waitFor(() => expect(screen.getByTestId('browser-annotate')).toHaveTextContent('Done annotating'))
+    await new Promise(r => setTimeout(r, 400))
+    expect(screen.getByTestId('browser-annotations')).toHaveTextContent('too far right')
+  })
+
+  it('a refused overlay removal keeps the note (nothing vanishes from here before the page confirms)', async () => {
+    const { annotate, state } = installAnnotateBridge()
+    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" active />)
+    fireEvent.click(await screen.findByTestId('browser-annotate'))
+    await screen.findByTestId('browser-annotations')
+    await pickAndNote(state, 'too far right')
+    const impl = annotate.getMockImplementation()!
+    annotate.mockImplementation(async (p: string, op: string, args?: Record<string, unknown>) => op === 'remove'
+      ? { ok: false, code: 'annotate_failed', error: 'page refused' }
+      : impl(p, op, args))
+    fireEvent.click(screen.getByRole('button', { name: 'Remove note 1' }))
+    await waitFor(() => expect(screen.getByText('page refused')).toBeInTheDocument())
+    expect(screen.getByTestId('browser-annotations')).toHaveTextContent('too far right')
+  })
+
+  it('a pick abandoned with nothing typed is dropped when the next element is picked (list, count and draft agree)', async () => {
+    const { annotate, state } = installAnnotateBridge()
+    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" active />)
+    fireEvent.click(await screen.findByTestId('browser-annotate'))
+    await screen.findByTestId('browser-annotations')
+    state.items = [TARGET]
+    state.picked = 1
+    await screen.findByTestId('browser-annotation-note-input')
+    const t2 = { ...TARGET, id: 2, n: 2, ref: 'e4', tag: 'input', role: 'combobox', name: 'Search', text: '' }
+    state.items = [TARGET, t2]
+    state.picked = 2
+    await waitFor(() => expect(annotate).toHaveBeenCalledWith('sess-1', 'remove', { id: 1 }))
+    await waitFor(() => expect(screen.getByTestId('browser-annotations').querySelectorAll('li')).toHaveLength(1))
+    expect(screen.getByTestId('browser-annotations')).toHaveTextContent('1 note')
+  })
+
+  it('a noted pick the page stops reporting is kept as detached rather than losing its note', async () => {
+    const { state } = installAnnotateBridge()
+    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" active />)
+    fireEvent.click(await screen.findByTestId('browser-annotate'))
+    await screen.findByTestId('browser-annotations')
+    await pickAndNote(state, 'too far right')
+    // A tampered reply omits the pick without any remove/clear from the user.
+    state.items = []
+    await new Promise(r => setTimeout(r, 400))
+    expect(screen.getByTestId('browser-annotations')).toHaveTextContent('too far right')
+  })
+
+  it('a destroyed view (no_view) is treated like a vanished overlay: notes kept as detached', async () => {
+    const { annotate, state } = installAnnotateBridge()
+    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" active />)
+    fireEvent.click(await screen.findByTestId('browser-annotate'))
+    await screen.findByTestId('browser-annotations')
+    await pickAndNote(state, 'too far right')
+    annotate.mockImplementation(async (_p: string, op: string) => op === 'poll'
+      ? { ok: false, code: 'no_view', error: 'the browser view is gone' }
+      : { ok: true })
+    await waitFor(() => expect(screen.getByTestId('browser-annotate')).toHaveTextContent('Annotate'))
+    const list = screen.getByTestId('browser-annotations')
+    expect(list).toHaveTextContent('too far right')
+    expect(list).toHaveTextContent(/The page changed since these notes were made/)
+  })
+
+  it('picking another element while a note is half-typed keeps that draft as the first pick\'s note', async () => {
+    const { state } = installAnnotateBridge()
+    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" active />)
+    fireEvent.click(await screen.findByTestId('browser-annotate'))
+    await screen.findByTestId('browser-annotations')
+    state.items = [TARGET]
+    state.picked = 1
+    const input = await screen.findByTestId('browser-annotation-note-input')
+    fireEvent.change(input, { target: { value: 'half a thought' } })
+    const t2 = { ...TARGET, id: 2, n: 2, ref: 'e4', tag: 'input', role: 'combobox', name: 'Search', text: '' }
+    state.items = [TARGET, t2]
+    state.picked = 2
+    await waitFor(() => expect(screen.getByTestId('browser-annotation-editing')).toHaveTextContent('dropdown "Search"'))
+    const rows = screen.getByTestId('browser-annotations').querySelectorAll('li')
+    expect(rows[0]).toHaveTextContent('half a thought')
+  })
+
+  it('Clear asks once (restating the count) before wiping typed notes', async () => {
+    const { annotate, state } = installAnnotateBridge()
+    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" active />)
+    fireEvent.click(await screen.findByTestId('browser-annotate'))
+    await screen.findByTestId('browser-annotations')
+    await pickAndNote(state, 'too far right')
+    fireEvent.click(screen.getByRole('button', { name: 'Clear' }))
+    expect(annotate).not.toHaveBeenCalledWith('sess-1', 'clear', undefined)
+    fireEvent.click(screen.getByRole('button', { name: 'Clear 1 note?' }))
+    await waitFor(() => expect(annotate).toHaveBeenCalledWith('sess-1', 'clear', undefined))
+  })
+
+  it('never shows or sends another session\'s notes after a session switch, and finds them again on return', async () => {
+    const { annotate, state } = installAnnotateBridge()
+    const { rerender, unmount } = renderWithProviders(<WebPreviewPanel sessionKey="sess-1" active />)
+    fireEvent.click(await screen.findByTestId('browser-annotate'))
+    await screen.findByTestId('browser-annotations')
+    await pickAndNote(state, 'too far right')
+    rerender(<WebPreviewPanel sessionKey="sess-2" active />)
+    // Synchronously after the switch: the old slot's mirror is not rendered.
+    expect(screen.queryByTestId('browser-annotations')).toBeNull()
+    // A switch is not a teardown: the other session's view (and overlay) stays alive.
+    expect(annotate.mock.calls.some(c => c[1] === 'teardown')).toBe(false)
+    rerender(<WebPreviewPanel sessionKey="sess-1" active />)
+    await waitFor(() => expect(screen.getByTestId('browser-annotations')).toHaveTextContent('too far right'))
+    // Only the panel closing tears the live overlays down.
+    unmount()
+    expect(annotate.mock.calls.some(c => c[0] === 'sess-1' && c[1] === 'teardown')).toBe(true)
+  })
+
+  it('Done annotating → Annotate again keeps every pick and note', async () => {
+    const { annotate, state } = installAnnotateBridge()
+    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" active />)
+    fireEvent.click(await screen.findByTestId('browser-annotate'))
+    await screen.findByTestId('browser-annotations')
+    await pickAndNote(state, 'too far right')
+    fireEvent.click(screen.getByTestId('browser-annotate')) // Done picking
+    await waitFor(() => expect(annotate).toHaveBeenCalledWith('sess-1', 'stop', undefined))
+    fireEvent.click(screen.getByTestId('browser-annotate')) // Annotate again
+    await waitFor(() => expect(screen.getByTestId('browser-annotate')).toHaveTextContent('Done annotating'))
+    await new Promise(r => setTimeout(r, 400))
+    expect(screen.getByTestId('browser-annotations')).toHaveTextContent('too far right')
+    expect(screen.getByTestId('browser-annotations-send')).not.toBeDisabled()
+  })
+
+  it('a note still being typed when the page navigates away is kept, not lost', async () => {
+    const { annotate, state } = installAnnotateBridge()
+    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" active />)
+    fireEvent.click(await screen.findByTestId('browser-annotate'))
+    await screen.findByTestId('browser-annotations')
+    state.items = [TARGET]
+    state.picked = 1
+    const input = await screen.findByTestId('browser-annotation-note-input')
+    fireEvent.change(input, { target: { value: 'half a thought' } })
+    const impl = annotate.getMockImplementation()!
+    annotate.mockImplementation(async (p: string, op: string, args?: Record<string, unknown>) => op === 'poll'
+      ? { ok: false, code: 'no_overlay', error: 'no annotate overlay on this page' }
+      : impl(p, op, args))
+    await waitFor(() => expect(screen.getByTestId('browser-annotate')).toHaveTextContent('Annotate'))
+    expect(screen.getByTestId('browser-annotations')).toHaveTextContent('half a thought')
+  })
+
+  it('survives a dashboard reload: notes are restored from sessionStorage for the same slot', async () => {
+    const { state } = installAnnotateBridge()
+    const { unmount } = renderWithProviders(<WebPreviewPanel sessionKey="sess-1" active />)
+    fireEvent.click(await screen.findByTestId('browser-annotate'))
+    await screen.findByTestId('browser-annotations')
+    await pickAndNote(state, 'too far right')
+    unmount()
+    installAnnotateBridge([TARGET])
+    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" active />)
+    await waitFor(() => expect(screen.getByTestId('browser-annotations')).toHaveTextContent('too far right'))
+  })
+
+  it('counts what is listed (picks, noted or not) -- the same rows Clear would wipe; only noted picks are sent', async () => {
+    const { state } = installAnnotateBridge()
+    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" active />)
+    fireEvent.click(await screen.findByTestId('browser-annotate'))
+    await screen.findByTestId('browser-annotations')
+    await pickAndNote(state, 'too far right')
+    state.items = [...state.items, { ...TARGET, id: 2, n: 2, ref: 'e9', name: 'Cancel' }]
+    await waitFor(() => expect(screen.getByTestId('browser-annotations').querySelectorAll('li')).toHaveLength(2))
+    expect(screen.getByTestId('browser-annotations')).toHaveTextContent('2 notes')
+    fireEvent.click(screen.getByRole('button', { name: 'Clear' }))
+    expect(screen.getByRole('button', { name: 'Clear 2 notes?' })).toBeInTheDocument()
+  })
+
+  it('a failed stop is surfaced and leaves pick mode on for the poll to reconcile', async () => {
+    const { annotate, state } = installAnnotateBridge()
+    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" active />)
+    fireEvent.click(await screen.findByTestId('browser-annotate'))
+    await screen.findByTestId('browser-annotations')
+    const impl = annotate.getMockImplementation()!
+    annotate.mockImplementation(async (p: string, op: string, args?: Record<string, unknown>) => op === 'stop'
+      ? { ok: false, code: 'timeout', error: 'annotate stop timed out after 8000ms' }
+      : impl(p, op, args))
+    fireEvent.click(screen.getByTestId('browser-annotate'))
+    await waitFor(() => expect(screen.getByText('annotate stop timed out after 8000ms')).toBeInTheDocument())
+    expect(state.picking).toBe(true)
+    expect(screen.getByTestId('browser-annotate')).toHaveTextContent('Done annotating')
+  })
+
+  it('Add to chat still drafts when the stop fails, but reports it and leaves pick mode on', async () => {
+    const { annotate, state } = installAnnotateBridge()
+    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" active />)
+    fireEvent.click(await screen.findByTestId('browser-annotate'))
+    await screen.findByTestId('browser-annotations')
+    await pickAndNote(state, 'too far right')
+    const impl = annotate.getMockImplementation()!
+    annotate.mockImplementation(async (p: string, op: string, args?: Record<string, unknown>) => op === 'stop'
+      ? { ok: false, code: 'timeout', error: 'annotate stop timed out after 8000ms' }
+      : impl(p, op, args))
+    const seen: Event[] = []
+    window.addEventListener('kirocrew-web-preview-annotate', e => seen.push(e))
+    fireEvent.click(screen.getByTestId('browser-annotations-send'))
+    await waitFor(() => expect(seen).toHaveLength(1))
+    await waitFor(() => expect(screen.getByText('annotate stop timed out after 8000ms')).toBeInTheDocument())
+    expect(state.picking).toBe(true)
+    expect(screen.getByTestId('browser-annotate')).toHaveTextContent('Done annotating')
+  })
+
+  it('an armed Clear does not carry over to another session', async () => {
+    const { state } = installAnnotateBridge()
+    const { rerender } = renderWithProviders(<WebPreviewPanel sessionKey="sess-1" active />)
+    fireEvent.click(await screen.findByTestId('browser-annotate'))
+    await screen.findByTestId('browser-annotations')
+    await pickAndNote(state, 'too far right')
+    fireEvent.click(screen.getByRole('button', { name: 'Clear' }))
+    expect(screen.getByRole('button', { name: 'Clear 1 note?' })).toBeInTheDocument()
+    rerender(<WebPreviewPanel sessionKey="sess-2" active />)
+    rerender(<WebPreviewPanel sessionKey="sess-1" active />)
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Clear' })).toBeInTheDocument())
+    expect(screen.queryByRole('button', { name: 'Clear 1 note?' })).toBeNull()
+  })
+
+  it('Add to chat mid-edit sends the text still open in the editor, not the previously saved note', async () => {
+    const { state } = installAnnotateBridge()
+    const seen: CustomEvent[] = []
+    const onEv = (e: Event) => { seen.push(e as CustomEvent) }
+    window.addEventListener('kirocrew-web-preview-annotate', onEv)
+    try {
+      renderWithProviders(<WebPreviewPanel sessionKey="sess-1" active />)
+      fireEvent.click(await screen.findByTestId('browser-annotate'))
+      await screen.findByTestId('browser-annotations')
+      await pickAndNote(state, 'too far right')
+      fireEvent.click(screen.getByRole('button', { name: 'Edit note 1' }))
+      const input = await screen.findByTestId('browser-annotation-note-input')
+      fireEvent.change(input, { target: { value: 'actually too far LEFT' } })
+      fireEvent.click(screen.getByTestId('browser-annotations-send'))
+      await waitFor(() => expect(seen).toHaveLength(1))
+      const d = seen[0].detail as { draft: string }
+      expect(d.draft).toContain('-- actually too far LEFT')
+      expect(d.draft).not.toContain('too far right')
+      expect(screen.getByTestId('browser-annotations')).toHaveTextContent('actually too far LEFT')
+    } finally {
+      window.removeEventListener('kirocrew-web-preview-annotate', onEv)
+    }
+  })
+
+  it('Add to chat acknowledges inline that nothing was sent yet', async () => {
+    const { state } = installAnnotateBridge()
+    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" active />)
+    fireEvent.click(await screen.findByTestId('browser-annotate'))
+    await screen.findByTestId('browser-annotations')
+    await pickAndNote(state, 'too far right')
+    fireEvent.click(screen.getByTestId('browser-annotations-send'))
+    expect(await screen.findByTestId('browser-annotations-added')).toHaveTextContent(/nothing is sent until you send the message/)
+  })
 })
+

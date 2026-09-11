@@ -39,7 +39,7 @@ class TestStripMarkdownPreview:
         assert strip_markdown_preview("run `npm ci` first") == "run npm ci first"
 
     def test_keep_visible_marker_stripped(self):
-        # #7948: the collapse-exemption marker is emitted "as its final line"
+        # the collapse-exemption marker is emitted "as its final line"
         # (prompt contract) — a trailing tag LINE is stripped from previews.
         assert (
             strip_markdown_preview("Fleet synthesis banked.\n<!-- keep-visible -->")

@@ -1,8 +1,5 @@
 import { type RefObject, useCallback, useRef, useState } from 'react'
 
-import { parseNudgeMessage, nudgeLabel } from './NudgeCard'
-import { parseSubagentCompletionMessage } from './subagentCompletion'
-import { headline as subagentHeadline } from './SubagentCompletionCard'
 import type { DisplayItem } from './types'
 import type { PasteBlock } from '../../utils/pasteTokens'
 import {
@@ -21,6 +18,8 @@ import { attachUserScrollIntent } from '../../utils/searchScroll'
 export interface UsePinnedPromptOptions {
   /** The transcript scroll container. Rows inside it carry `data-display-index`. */
   scrollerRef: RefObject<HTMLElement | null>
+  /** A gap at the hand-off line is unmounted spacer, not transcript content. */
+  requiresMountedHandoff?: boolean
 }
 
 /**
@@ -42,7 +41,7 @@ export interface UsePinnedPromptOptions {
  * the live banner geometry) plus `jumpToPinnedPromptInPlace`, the unvirtualized
  * glide, and lets a virtualized host supply its own jump.
  */
-export function usePinnedPrompt({ scrollerRef }: UsePinnedPromptOptions) {
+export function usePinnedPrompt({ scrollerRef, requiresMountedHandoff = false }: UsePinnedPromptOptions) {
   const displayItemsRef = useRef<DisplayItem[]>([])
   // Pinned-prompt banner. `pinFoldRef` is a zero-height sentinel sitting
   // directly under the title row: its top edge is the fold line the banner
@@ -80,11 +79,16 @@ export function usePinnedPrompt({ scrollerRef }: UsePinnedPromptOptions) {
     // band scrolls away line by line instead of collapsing the moment it is sent.
     const handoffY = pinHandoffY(foldY, pinCollapsedHRef.current)
     // First row whose bottom is still below that line = the topmost row not yet
-    // fully scrolled behind the band.
+    // fully scrolled behind the band. The row must also REACH the line. A far
+    // jump or fast upward fling can leave unmounted spacer between the viewport
+    // and the first mounted row for one commit; treating that later row as the
+    // hand-off would select a prompt below what the reader can see.
     let handoffIdx = -1
     for (const item of items) {
       const htmlItem = item as HTMLElement
-      if (htmlItem.getBoundingClientRect().bottom > handoffY) {
+      const rect = htmlItem.getBoundingClientRect()
+      if (rect.bottom > handoffY) {
+        if (requiresMountedHandoff && rect.top > handoffY) { setPinned(null); return }
         handoffIdx = parseInt(htmlItem.getAttribute('data-display-index') || '0', 10)
         break
       }
@@ -119,37 +123,20 @@ export function usePinnedPrompt({ scrollerRef }: UsePinnedPromptOptions) {
     // to zero still shows a hairline of its bottom edge under sub-pixel rounding
     // and browser zoom — a bubble fragment parked over the prompt being read.
     if (push >= pinPushTravel(bannerH)) { setPinned(null); return }
-    const full = pinItem.msg.content
-    // A nudge's content is a machine-facing instruction payload behind an
-    // `[auto-nudge cycle N]` tag, and a subagent completion's is a header block
-    // plus digest. Quoting either verbatim would park kilobytes of machine text
-    // over the transcript, so both reuse the compact label their transcript card
-    // already shows and keep the body for the expanded state.
-    const nudge = pinItem.msg.role === 'nudge' ? parseNudgeMessage(pinItem.msg) : null
-    // Detected by PARSING, not by role: the same completion event reaches the
-    // transcript under `subagent`, `assistant` (delivery-timeout variant) and
-    // `user` (older scrollback), and the parser already tolerates all three.
-    // Matching on the role here would both miss those variants and duplicate
-    // dispatch knowledge this file has no business holding.
-    const sub = nudge ? null : parseSubagentCompletionMessage(pinItem.msg)
-    const machineLabel = nudge
-      ? nudgeLabel(nudge.cycle)
-      : sub
-        ? subagentHeadline(sub)
-        : null
+    // Only a user-authored prompt reaches here (isPrompt in utils/pinnedPrompt):
+    // nudge and subagent rows are never pin candidates, so there is no machine
+    // payload to substitute a label for.
     // Stored content is COLLAPSED (recollapsePastes), so a big paste is a
     // `[ Paste #N ]` token; the reducer unwraps it and decides whether to derive.
     setPinned(prev => nextPinnedPromptState(prev, {
       idx: pinIdx,
       ts: pinItem.msg.ts,
-      raw: full,
+      raw: pinItem.msg.content,
       pastes: (pinItem.msg.meta?.pastes as PasteBlock[] | undefined) || [],
-      machineLabel,
-      machineBody: nudge ? nudge.body : (sub ? full : undefined),
       push,
       bannerH,
     }))
-  }, [scrollerRef])
+  }, [requiresMountedHandoff, scrollerRef])
   // rAF-throttle the per-scroll recompute: updatePinnedPrompt does a
   // querySelectorAll + getBoundingClientRect loop (a forced layout read), and a
   // fling fires scroll dozens of times/sec. Coalesce to at most once per frame,

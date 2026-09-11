@@ -943,7 +943,7 @@ class TestReviewRoutePinning(unittest.TestCase):
 
         GitLab's ``/approve`` takes a real ``sha`` precondition, but GitHub's
         ``commit_id`` is only ATTRIBUTION — GitHub accepts a review naming a commit that
-        is no longer the head and records it there, and whether that stale approval still
+        is not the head and records it there, and whether that stale approval still
         counts toward branch protection is a per-repo setting. Where "dismiss stale
         approvals" is off, an unchecked approval satisfies protection on code nobody
         read. So the app reads the head itself, exactly as the merge route does.

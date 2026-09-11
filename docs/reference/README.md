@@ -14,6 +14,7 @@ writing both marks, not editing the page and leaving the rule to look broken.
 | Mirror | Upstream |
 |---|---|
 | [kiro-cli/](kiro-cli/README.md) | The `kiro-cli` documentation, taken from the 2.x line. kiro-cli is Kiro Crew's required agent backend, so its ACP surface, agent-spec schema, and MCP config shape are load-bearing here. |
+| [ledger-conductor-sequence.md](ledger-conductor-sequence.md) | **Named exception — local page, no upstream.** Kiro Crew's own end-to-end sequence for the work-ledger dispatch lifecycle. Preserve it across a re-fetch. |
 
 Where Kiro Crew's own behavior differs from a mirrored page, Kiro Crew's docs win:
 this fork is KiroACP-only and does not use every capability the upstream CLI

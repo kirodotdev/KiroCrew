@@ -86,7 +86,7 @@ async def _run_gh(args: list[str]) -> tuple[int, str, str]:
         # ASYNC spawn a preexec_fn forces a plain fork() of the threaded gateway and runs
         # Python in the child before exec, which can wedge the event loop and leak every
         # inherited fd. The shim applies the same limits post-exec. See
-        # `test/test_spawn_preexec_guard.py` (issue #935) and the fuller note on
+        # `test/test_spawn_preexec_guard.py` and the fuller note on
         # `ledger_sync._git`.
         proc = await create_subprocess_limited(
             *argv,

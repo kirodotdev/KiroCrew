@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   AlertTriangle,
@@ -12,7 +12,12 @@ import {
   RefreshCw,
   ExternalLink,
 } from 'lucide-react'
-import { api, type KasLoginDeviceSession, type KasLoginLoopbackSession } from '../api/client'
+import {
+  api,
+  type KasLoginDeviceSession,
+  type KasLoginLoopbackSession,
+  type KasLoginStatus,
+} from '../api/client'
 import { ApiError } from '../api/apiError'
 import {
   PANEL_CLASS,
@@ -104,11 +109,78 @@ function providerLabel(provider: KasLoginProvider): string {
   }
 }
 
+/**
+ * Display name for the provider a STORED sign-in reports. The gateway spells
+ * it as the governance classification the token carries ('Google' | 'Github' |
+ * 'BuilderId' | 'Enterprise' | 'ExternalIdp'), not as the chooser's wire
+ * identifiers, so the mapping is by loose match; anything unrecognised is shown
+ * verbatim rather than mislabelled as a provider it is not.
+ */
+export function providerLabelFromWire(stored: string | null | undefined): string {
+  const key = (stored ?? '').toLowerCase()
+  if (key === 'google') return providerLabel('google')
+  if (key === 'github') return providerLabel('github')
+  if (key === 'builderid' || key === 'builder_id') return providerLabel('builder_id')
+  if (key === 'enterprise' || key === 'idc' || key === 'externalidp') return providerLabel('idc')
+  return stored ?? ''
+}
+
+/**
+ * Which chrome the flow renders in. `gate` is the full-screen door (scrim +
+ * panel + accent aside, a sibling of KiroPrerequisiteGate); `card` is the same
+ * flow embedded inside a Settings card, where the card already supplies the
+ * title and there is no room for a 3xl headline or an aside. The views below
+ * read this instead of taking a prop each, so adding the embedded variant did
+ * not fork six components.
+ */
+type Chrome = 'gate' | 'card'
+const ChromeContext = createContext<Chrome>('gate')
+
+/** Per-chrome class choices for the recurring text roles. Gate values are the
+ *  strings the full-screen views always rendered; card values scale them down
+ *  to sit under a CardTitle. */
+function useChrome() {
+  const chrome = useContext(ChromeContext)
+  const card = chrome === 'card'
+  // The view headline: a page title on the gate, a section heading in a card.
+  const headline = card
+    ? 'text-base font-semibold tracking-tight text-text-strong'
+    : 'text-3xl font-bold tracking-tight text-text-strong'
+  return {
+    card,
+    headline,
+    // The headline with its usual gap below an eyebrow.
+    h1: `${card ? 'mt-1' : 'mt-2'} ${headline}`,
+    // The accent eyebrow above it.
+    eyebrow: card
+      ? 'text-[11px] font-bold uppercase tracking-[0.14em] text-accent'
+      : 'text-[12px] font-bold uppercase tracking-[0.16em] text-accent',
+    // The status icon tile; smaller in a card so it does not dominate the row.
+    tile: card
+      ? 'flex h-8 w-8 items-center justify-center rounded-lg'
+      : 'flex h-11 w-11 items-center justify-center rounded-xl',
+    // Vertical rhythm between the tile and the eyebrow.
+    afterTile: card ? 'mt-3' : 'mt-6',
+  }
+}
+
 // Same full-screen chrome as KiroPrerequisiteGate's SetupShell: scrim + panel +
 // accent aside from OnboardingChapterShell, so this gate reads as a sibling of
 // the CLI setup gate rather than a look-alike. The aside copy is per-view here
 // (chooser vs device wait), so it is a required prop instead of a default.
-function GateShell({ aside, children }: { aside: ShellAsideCopy; children: ReactNode }) {
+//
+// In card chrome the aside has nowhere to go (the card's own title carries the
+// context) and the scrim would cover the Settings page, so the view renders as
+// a plain region: same children, same aria-label, no door.
+function ViewShell({ aside, children }: { aside: ShellAsideCopy; children: ReactNode }) {
+  const { card } = useChrome()
+  if (card) {
+    return (
+      <section aria-label={aside.ariaLabel} data-testid="kas-login-embedded">
+        {children}
+      </section>
+    )
+  }
   return (
     <main className={SCRIM_CLASS} aria-label={aside.ariaLabel}>
       <div className={PANEL_CLASS}>
@@ -214,8 +286,9 @@ function Chooser({
   const [startUrl, setStartUrl] = useState('')
   const [region, setRegion] = useState('')
   const startUrlReady = startUrl.trim().length > 0
+  const chrome = useChrome()
   return (
-    <GateShell
+    <ViewShell
       aside={{
         ariaLabel: i18nT('components.kasLogin.sign_in_to_kiro'),
         panelHeadline: i18nT('components.kasLogin.aside_headline'),
@@ -223,13 +296,20 @@ function Chooser({
         panelFootnote: i18nT('components.kasLogin.aside_footnote'),
       }}
     >
-      <p className="text-[12px] font-bold uppercase tracking-[0.16em] text-accent">
-        {i18nT('components.kasLogin.get_started')}
-      </p>
-      <h1 className="mt-2 text-3xl font-bold tracking-tight text-text-strong">
-        {i18nT('components.kasLogin.sign_in_to_kiro')}
-      </h1>
-      <div className="mt-7 flex w-full max-w-md flex-col gap-3">
+      {chrome.card ? (
+        // The card's title already says "Kiro sign-in"; what the embedded
+        // chooser needs is the one sentence the gate's aside used to carry --
+        // why signing in here matters (agents run as this identity).
+        <p className="text-sm leading-relaxed text-muted" data-testid="kas-login-card-intro">
+          {i18nT('components.kasLogin.card_intro')}
+        </p>
+      ) : (
+        <>
+          <p className={chrome.eyebrow}>{i18nT('components.kasLogin.get_started')}</p>
+          <h1 className={chrome.h1}>{i18nT('components.kasLogin.sign_in_to_kiro')}</h1>
+        </>
+      )}
+      <div className={`${chrome.card ? 'mt-4' : 'mt-7'} flex w-full max-w-md flex-col gap-3`}>
         <ProviderButton
           icon={<Globe className="lucide-inline" />}
           label={i18nT('components.kasLogin.continue_with_google')}
@@ -319,11 +399,14 @@ function Chooser({
           The raw backend detail is the `message` (kept verbatim for bug
           reports) under the fixed title — never suffixed onto the connection
           advice, where "Unknown provider: x" reads as a contradiction. */}
-      {/* No hand-off: the Company SSO start-URL field (the form above) is
-          unsaved, and this gate stands between the user and the chat the
-          hand-off would navigate to. */}
+      {/* Hand-off decision per chrome. Gate: none -- the Company SSO start-URL
+          field (the form above) is unsaved, and the gate stands between the
+          user and the chat the hand-off would navigate to. Card: the chat is
+          one click away and there is no draft unless the SSO form is open, so
+          the agent is offered exactly when nothing would be lost. */}
       <ErrorNotice
         className="mt-4 max-w-md"
+        askAgent={chrome.card && !ssoOpen}
         title={i18nT('components.kasLogin.could_not_start_sign_in')}
         message={beginError || null}
         testId="kas-login-begin-error"
@@ -331,7 +414,7 @@ function Chooser({
       <p className="mt-5 max-w-md text-[13px] leading-relaxed text-muted">
         {i18nT('components.kasLogin.browser_note')}
       </p>
-    </GateShell>
+    </ViewShell>
   )
 }
 
@@ -359,8 +442,9 @@ function LoopbackWaiting({
     const t = window.setTimeout(() => setSlow(true), LOOPBACK_SLOW_HINT_MS)
     return () => window.clearTimeout(t)
   }, [session.login_id])
+  const chrome = useChrome()
   return (
-    <GateShell
+    <ViewShell
       aside={{
         ariaLabel: i18nT('components.kasLogin.loopback_waiting_title'),
         panelHeadline: i18nT('components.kasLogin.loopback_aside_headline'),
@@ -368,13 +452,13 @@ function LoopbackWaiting({
         panelFootnote: i18nT('components.kasLogin.loopback_aside_footnote'),
       }}
     >
-      <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-accent-subtle text-accent">
+      <div className={`${chrome.tile} bg-accent-subtle text-accent`}>
         <Loader2 className="lucide-inline animate-spin" />
       </div>
-      <p className="mt-6 text-[12px] font-bold uppercase tracking-[0.16em] text-accent">
+      <p className={`${chrome.afterTile} ${chrome.eyebrow}`}>
         {i18nT('components.kasLogin.signing_in_with', { provider: providerLabel(provider) })}
       </p>
-      <h1 className="mt-2 text-3xl font-bold tracking-tight text-text-strong">
+      <h1 className={chrome.h1}>
         {i18nT('components.kasLogin.loopback_waiting_title')}
       </h1>
       <p className="mt-3 max-w-md text-sm leading-relaxed text-muted">
@@ -391,8 +475,15 @@ function LoopbackWaiting({
           {i18nT('components.kasLogin.loopback_slow_hint')}
         </p>
       ) : null}
-      {/* No hand-off: sign-in gate — the chat behind it is not reachable. */}
-      <ErrorNotice className="mt-4 max-w-md" message={notice || null} testId="kas-login-settle-error" />
+      {/* Hand-off per chrome: none on the gate (the chat behind it is not
+          reachable); offered in the card, where the chat is a click away and a
+          cancel that did not settle holds no draft. */}
+      <ErrorNotice
+        className="mt-4 max-w-md"
+        askAgent={chrome.card}
+        message={notice || null}
+        testId="kas-login-settle-error"
+      />
       <div className="mt-6 flex flex-wrap items-center gap-2">
         <Btn type="button" primary disabled={busy} onClick={() => openAuthTab(session.auth_url)}>
           <ExternalLink className="lucide-inline" />
@@ -410,7 +501,7 @@ function LoopbackWaiting({
       >
         {i18nT('components.kasLogin.use_different_sign_in')}
       </button>
-    </GateShell>
+    </ViewShell>
   )
 }
 
@@ -432,8 +523,9 @@ function DeviceWaiting({
   notice: string
   onCancel: () => void
 }) {
+  const chrome = useChrome()
   return (
-    <GateShell
+    <ViewShell
       aside={{
         ariaLabel: i18nT('components.kasLogin.enter_the_code_in_your_browser'),
         panelHeadline: i18nT('components.kasLogin.device_aside_headline'),
@@ -441,19 +533,19 @@ function DeviceWaiting({
         panelFootnote: i18nT('components.kasLogin.device_aside_footnote'),
       }}
     >
-      <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-accent-subtle text-accent">
+      <div className={`${chrome.tile} bg-accent-subtle text-accent`}>
         <Link2 className="lucide-inline" />
       </div>
       {/* The mockup's "REMOTE HOST" aside eyebrow lives here as a badge: the
           shared ShellAside owns its brand lockup, and forking it for one word
           would un-share the chrome the sibling gates rely on. */}
-      <p className="mt-6 flex items-center gap-2 text-[12px] font-bold uppercase tracking-[0.16em] text-accent">
+      <p className={`${chrome.afterTile} flex items-center gap-2 ${chrome.eyebrow}`}>
         {i18nT('components.kasLogin.signing_in_with', { provider: providerLabel(provider) })}
         <span className="rounded-full bg-[var(--bg-hover)] px-2 py-[2px] text-[11px] font-semibold normal-case tracking-normal text-muted">
           {i18nT('components.kasLogin.remote_host')}
         </span>
       </p>
-      <h1 className="mt-2 text-3xl font-bold tracking-tight text-text-strong">
+      <h1 className={chrome.h1}>
         {i18nT('components.kasLogin.enter_the_code_in_your_browser')}
       </h1>
       {fellBack ? (
@@ -502,8 +594,15 @@ function DeviceWaiting({
       <p className="mt-2 text-[12px] text-muted">
         {i18nT('components.kasLogin.code_valid_note')}
       </p>
-      {/* No hand-off: sign-in gate — the chat behind it is not reachable. */}
-      <ErrorNotice className="mt-4 max-w-md" message={notice || null} testId="kas-login-settle-error" />
+      {/* Hand-off per chrome: none on the gate (the chat behind it is not
+          reachable); offered in the card, where the chat is a click away and a
+          cancel that did not settle holds no draft. */}
+      <ErrorNotice
+        className="mt-4 max-w-md"
+        askAgent={chrome.card}
+        message={notice || null}
+        testId="kas-login-settle-error"
+      />
       <button
         type="button"
         disabled={busy}
@@ -512,7 +611,7 @@ function DeviceWaiting({
       >
         {i18nT('components.kasLogin.use_different_sign_in')}
       </button>
-    </GateShell>
+    </ViewShell>
   )
 }
 
@@ -528,8 +627,9 @@ function SignInProblem({
   detail: string
   onStartOver: () => void
 }) {
+  const chrome = useChrome()
   return (
-    <GateShell
+    <ViewShell
       aside={{
         ariaLabel: i18nT('components.kasLogin.sign_in_to_kiro'),
         panelHeadline: i18nT('components.kasLogin.aside_headline'),
@@ -537,24 +637,27 @@ function SignInProblem({
         panelFootnote: i18nT('components.kasLogin.aside_footnote'),
       }}
     >
-      <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-danger/10 text-danger">
+      <div className={`${chrome.tile} bg-danger/10 text-danger`}>
         <AlertTriangle className="lucide-inline" />
       </div>
-      <p className="mt-6 text-[12px] font-bold uppercase tracking-[0.16em] text-danger">
+      <p className={`${chrome.afterTile} ${chrome.eyebrow.replace('text-accent', 'text-danger')}`}>
         {expired
           ? i18nT('components.kasLogin.the_code_expired')
           : i18nT('components.kasLogin.sign_in_failed')}
       </p>
-      <h1 className="mt-2 text-3xl font-bold tracking-tight text-text-strong">
+      <h1 className={chrome.h1}>
         {expired
           ? i18nT('components.kasLogin.the_code_expired_body')
           : i18nT('components.kasLogin.sign_in_failed_body')}
       </h1>
-      {/* No hand-off: this is the sign-in gate — the chat the hand-off would
-          open sits behind it, and without a signed-in account there is no
-          agent to hand the failure to. Start over is the remedy. */}
+      {/* Hand-off per chrome. Gate: none -- the chat the hand-off would open
+          sits behind it, and without a signed-in account there is no agent to
+          hand the failure to; Start over is the remedy. Card: the dashboard
+          is signed in to itself regardless of this sign-in, and the card holds
+          no draft, so the agent is offered. */}
       <ErrorNotice
         className="mt-3 max-w-lg"
+        askAgent={chrome.card}
         message={detail || null}
         testId="kas-login-problem-detail"
       />
@@ -564,8 +667,34 @@ function SignInProblem({
           {i18nT('components.kasLogin.start_over')}
         </Btn>
       </div>
-    </GateShell>
+    </ViewShell>
   )
+}
+
+/**
+ * Render hooks the two chromes plug into the shared flow. The gate renders
+ * `children` (the app) for both; the embedded card renders a loader and a
+ * signed-in summary. Kept as props on the flow rather than branches inside it,
+ * so the flow's state machine has exactly one copy.
+ */
+export interface KasLoginFlowSlots {
+  /** While the first status read is in flight. Default: `children`. */
+  renderPending?: () => ReactNode
+  /**
+   * When the gateway holds a credential and no re-authentication was asked
+   * for. `reauth` starts the chooser over the current sign-in (a new
+   * credential landing in the same slot replaces it). Default: `children`.
+   */
+  renderAuthenticated?: (status: KasLoginStatus, actions: { reauth: () => void }) => ReactNode
+  /**
+   * Shown under the chooser while a signed-in identity is being replaced, so
+   * the user can back out of the replacement. `busy` is true while a begin is
+   * in flight; the control MUST be disabled then, because backing out at that
+   * moment would let the begin's success open a poll that persists the
+   * replacement after the user thinks they cancelled. Only meaningful with
+   * `renderAuthenticated`; the gate never re-authenticates.
+   */
+  renderReauthCancel?: (cancel: () => void, busy: boolean) => ReactNode
 }
 
 /**
@@ -574,11 +703,41 @@ function SignInProblem({
  * (Google / GitHub / AWS Builder ID / company SSO) starts a browser
  * authorization, and on a remote gateway — where the OAuth callback cannot
  * reach the user's browser — it switches to the device-code flow and shows the
- * code to approve. NOT yet wired into the app root: pre-integration sibling of
- * KiroPrerequisiteGate.
+ * code to approve. Not mounted at the app root: the flow's product entry point
+ * is the embedded variant on the Settings page (`KasLoginEmbedded`, rendered by
+ * `KiroSignInCard`); this full-screen form stays available for a future
+ * app-root mount as a sibling of KiroPrerequisiteGate.
  */
 export default function KasLoginGate({ children }: { children?: ReactNode }) {
+  return (
+    <ChromeContext.Provider value="gate">
+      <KasLoginFlow>{children}</KasLoginFlow>
+    </ChromeContext.Provider>
+  )
+}
+
+/**
+ * The same flow embedded in a Settings card: no scrim, compact headings, and
+ * instead of rendering the app when signed in it renders a token-free summary
+ * of the identity (with sign-out and sign-in-again). `renderAuthenticated` is
+ * required here because a card has no "app" to fall through to.
+ */
+export function KasLoginEmbedded(props: Required<Pick<KasLoginFlowSlots, 'renderAuthenticated'>> & KasLoginFlowSlots) {
+  return (
+    <ChromeContext.Provider value="card">
+      <KasLoginFlow {...props} />
+    </ChromeContext.Provider>
+  )
+}
+
+function KasLoginFlow({
+  children,
+  renderPending,
+  renderAuthenticated,
+  renderReauthCancel,
+}: { children?: ReactNode } & KasLoginFlowSlots) {
   const queryClient = useQueryClient()
+  const chrome = useChrome()
   // The sign-in in flight, tagged by transport. `loopback` means the gateway is
   // listening on a local port for the portal's redirect; `device` means the user
   // confirms a code. Null whenever the chooser owns the screen.
@@ -586,6 +745,15 @@ export default function KasLoginGate({ children }: { children?: ReactNode }) {
   // Set when a loopback attempt degraded to the device flow, so the code screen
   // can say why it appeared instead of the promised no-typing sign-in.
   const [fellBack, setFellBack] = useState(false)
+  // True while the user is replacing a signed-in identity from the embedded
+  // card: the chooser renders over a still-authenticated status, and the next
+  // credential to land supersedes the stored one. Cleared when the poll answers
+  // authorized (the status re-read then shows the new account) or on cancel.
+  const [reauth, setReauth] = useState(false)
+  // Set when a switch's new credential landed but the previous slot could not
+  // be removed (`previous_identity_not_removed`): the old account still takes
+  // precedence, and the signed-in view must say so until the user acts.
+  const [replaceWarning, setReplaceWarning] = useState(false)
   // True from the moment the user abandons a login until the gateway has
   // acknowledged the cancel and the status has been re-read. The waiting screen
   // stays up with its transition buttons disabled, so no second login can be
@@ -601,14 +769,28 @@ export default function KasLoginGate({ children }: { children?: ReactNode }) {
     refetchInterval: 30_000,
   })
 
+  // While replacing a signed-in identity, every begin -- first attempt or the
+  // loopback→device fallback -- names the slot being replaced. The gateway
+  // removes that slot only after the NEW credential has landed, so the switch
+  // is real (the store resolves by slot priority, not recency: a Google sign-in
+  // stored beside a still-present Identity Center entry would leave the agents
+  // on the old account) and a failed or abandoned attempt leaves it untouched.
+  const replaces =
+    reauth && statusQuery.data?.authenticated && statusQuery.data.identity
+      ? statusQuery.data.identity
+      : undefined
+
   const beginDevice = useMutation({
     mutationFn: ({ provider, extra }: { provider: KasLoginProvider; extra?: KasLoginExtra }) =>
-      api.kasLoginBeginDevice(provider, extra),
+      api.kasLoginBeginDevice(provider, replaces ? { ...(extra ?? {}), replaces } : extra),
     onSuccess: (s, { provider }) => setSession({ kind: 'device', provider, ...s }),
   })
 
   const beginLoopback = useMutation({
-    mutationFn: (provider: KasLoginProvider) => api.kasLoginBeginLoopback(provider),
+    mutationFn: (provider: KasLoginProvider) =>
+      replaces
+        ? api.kasLoginBeginLoopback(provider, { replaces })
+        : api.kasLoginBeginLoopback(provider),
     onSuccess: (s, provider) => {
       setSession({ kind: 'loopback', provider, ...s })
       openAuthTab(s.auth_url)
@@ -649,12 +831,20 @@ export default function KasLoginGate({ children }: { children?: ReactNode }) {
   // the gateway now holds a token, so re-read status (the single authority on
   // `authenticated`) and drop the session.
   const authorized = pollQuery.data?.status === 'authorized'
+  const authorizedCode = pollQuery.data?.code
   useEffect(() => {
     if (!authorized) return
     void queryClient.invalidateQueries({ queryKey: QUERY_KEY })
+    // A switch whose old slot could not be removed is a sign-in that landed AND
+    // a failure the user has to act on: the previous account still wins by slot
+    // priority, so the re-read status will keep showing it. Kept as a notice
+    // over the signed-in view (rendered below) rather than dropped with the
+    // session, and cleared only by the user or by the next sign-in attempt.
+    setReplaceWarning(authorizedCode === 'previous_identity_not_removed')
     setSession(null)
     setFellBack(false)
-  }, [authorized, queryClient])
+    setReauth(false)
+  }, [authorized, authorizedCode, queryClient])
 
   // Loopback degradation: a listener nobody reached (timeout — the browser is
   // not on this machine) or that failed before persisting a token restarts the
@@ -746,11 +936,11 @@ export default function KasLoginGate({ children }: { children?: ReactNode }) {
 
   // Mirror KiroPrerequisiteGate: an unresolved check is UNKNOWN, never a locked
   // door — render the app rather than flashing a sign-in screen at every load.
-  if (statusQuery.isPending) return <>{children}</>
+  if (statusQuery.isPending) return <>{renderPending ? renderPending() : children}</>
 
   if (!status) {
     return (
-      <GateShell
+      <ViewShell
         aside={{
           ariaLabel: i18nT('components.kasLogin.sign_in_to_kiro'),
           panelHeadline: i18nT('components.kasLogin.aside_headline'),
@@ -758,21 +948,25 @@ export default function KasLoginGate({ children }: { children?: ReactNode }) {
           panelFootnote: i18nT('components.kasLogin.aside_footnote'),
         }}
       >
-        <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-danger/10 text-danger">
+        <div className={`${chrome.tile} bg-danger/10 text-danger`}>
           <AlertTriangle className="lucide-inline" />
         </div>
-        <h1 className="mt-6 text-3xl font-bold tracking-tight text-text-strong">
+        <h1 className={`${chrome.afterTile} ${chrome.headline}`}>
           {i18nT('components.kasLogin.sign_in_status_unavailable')}
         </h1>
-        {/* No hand-off: the gate cannot tell whether anyone is signed in, so
-            the chat behind it (and the agent) is not reachable from here;
-            Check again is the remedy. */}
+        {/* Hand-off per chrome. Gate: none -- it cannot tell whether anyone is
+            signed in, so the chat behind it (and the agent) is not reachable;
+            Check again is the remedy. Card: the dashboard's own agent is
+            reachable whatever this status read says, and a failed status read
+            (a vault it cannot open) is exactly what `kirocrew doctor` and the
+            agent diagnose. */}
         <ErrorNotice
           className="mt-3 max-w-lg"
+          askAgent={chrome.card}
           message={statusQuery.error?.message || null}
           testId="kas-login-status-error"
         />
-        <div className="mt-6">
+        <div className={chrome.card ? 'mt-3' : 'mt-6'}>
           <Btn
             type="button"
             disabled={statusQuery.isFetching}
@@ -784,11 +978,31 @@ export default function KasLoginGate({ children }: { children?: ReactNode }) {
             {i18nT('components.kasLogin.check_again')}
           </Btn>
         </div>
-      </GateShell>
+      </ViewShell>
     )
   }
 
-  if (status.authenticated) return <>{children}</>
+  if (status.authenticated && !reauth) {
+    return (
+      <>
+        {replaceWarning ? (
+          // askAgent on: nothing here is a draft, and a vault entry that could
+          // not be deleted is a store/permissions fault the agent can diagnose.
+          // Dismissable: once the user has signed the old account out by hand
+          // the notice has done its job.
+          <ErrorNotice
+            className={chrome.card ? 'mb-3' : 'mb-4 max-w-lg'}
+            askAgent
+            title={i18nT('components.kasLogin.previous_sign_in_not_removed')}
+            message={i18nT('components.kasLogin.previous_sign_in_not_removed_body')}
+            onDismiss={() => setReplaceWarning(false)}
+            testId="kas-login-replace-warning"
+          />
+        ) : null}
+        {renderAuthenticated ? renderAuthenticated(status, { reauth: () => setReauth(true) }) : children}
+      </>
+    )
+  }
 
   if (session) {
     const effective = pollQuery.error ? 'error' : (pollQuery.data?.status ?? 'pending')
@@ -836,26 +1050,45 @@ export default function KasLoginGate({ children }: { children?: ReactNode }) {
   const loopbackOk = status.transport === 'loopback' && browserOnLoopback()
 
   return (
-    <Chooser
-      busy={beginDevice.isPending || beginLoopback.isPending}
-      beginError={
-        beginDevice.error?.message ??
-        (beginLoopback.error && !isLoopbackUnavailable(beginLoopback.error)
-          ? beginLoopback.error.message
-          : '')
-      }
-      onPick={(provider, extra) => {
-        beginDevice.reset()
-        beginLoopback.reset()
-        setFellBack(false)
-        // Only the two portal-brokered social providers have a loopback flow;
-        // Builder ID / IdC run the SSO-OIDC device flow on every shape (as in kiro-cli).
-        if (loopbackOk && (provider === 'google' || provider === 'github')) {
-          beginLoopback.mutate(provider)
-          return
+    <>
+      <Chooser
+        busy={beginDevice.isPending || beginLoopback.isPending}
+        beginError={
+          beginDevice.error?.message ??
+          (beginLoopback.error && !isLoopbackUnavailable(beginLoopback.error)
+            ? beginLoopback.error.message
+            : '')
         }
-        beginDevice.mutate({ provider, extra })
-      }}
-    />
+        onPick={(provider, extra) => {
+          beginDevice.reset()
+          beginLoopback.reset()
+          setFellBack(false)
+          setReplaceWarning(false)
+          // Only the two portal-brokered social providers have a loopback flow;
+          // Builder ID / IdC run the SSO-OIDC device flow on every shape (as in kiro-cli).
+          if (loopbackOk && (provider === 'google' || provider === 'github')) {
+            beginLoopback.mutate(provider)
+            return
+          }
+          beginDevice.mutate({ provider, extra })
+        }}
+      />
+      {/* Replacing a signed-in identity is reversible until a new credential
+          lands: the stored one is untouched while the chooser is up. NOT while
+          a begin is in flight, though -- its onSuccess would open a session and
+          start polling after the cancel had already closed the chooser, and the
+          poll would then persist the replacement nobody is watching. The card
+          disables the back-out for that window (`busy`). */}
+      {reauth && status.authenticated && renderReauthCancel
+        ? renderReauthCancel(
+            () => {
+              beginDevice.reset()
+              beginLoopback.reset()
+              setReauth(false)
+            },
+            beginDevice.isPending || beginLoopback.isPending,
+          )
+        : null}
+    </>
   )
 }

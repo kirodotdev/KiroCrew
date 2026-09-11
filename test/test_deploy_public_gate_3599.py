@@ -1,9 +1,9 @@
-"""The public-web deploy destination is closable by the operator (issue #3599).
+"""The public-web deploy destination is closable by the operator.
 
-Before this, ``deploy-web-aws`` was the one publish destination exempt from the
-``capabilities.publish`` chokepoint: the provider row was appended to
-``/api/publish-providers`` unconditionally and ``POST /api/deploy/deploy``
-consulted no ceiling at all. These tests pin the three properties that make the
+``deploy-web-aws`` must not be exempt from the ``capabilities.publish``
+chokepoint: an unguarded destination would append its provider row to
+``/api/publish-providers`` unconditionally and let ``POST /api/deploy/deploy``
+consult no ceiling at all. These tests pin the three properties that make the
 destination genuinely closable rather than merely hidden:
 
 1. the provider row disappears from the registry when the destination is denied;
@@ -327,8 +327,8 @@ def narrowed_allowlist(tmp_path, monkeypatch):
     Written as real bytes to a real config.json rather than by mocking
     ``KiroCrewConfig.load()``. The gate now reads the FILE, and a mock here would
     make the test agree with the reader instead of with what an operator typed —
-    which is exactly how a malformed section that reopens the allowlist went
-    unnoticed (#4057).
+    which is exactly how a malformed section that reopens the allowlist can go
+    unnoticed.
     """
     import kiro_crew.config.loader as loader
 
@@ -593,14 +593,13 @@ def test_an_absent_config_still_permits(tmp_path, monkeypatch, _quiet_sel):
     assert _quiet_sel == [], "a permitted publish must not audit"
 
 
-# ── a MALFORMED publish section must deny, not reopen the allowlist (#4057) ──
+# ── a MALFORMED publish section must deny, not reopen the allowlist ──
 #
-# The gate used to answer "is the config usable" and "what did the operator
-# allow" from two independent reads. `read_config_for_update` only rejects a
-# non-object TOP level, so `{"publish": []}` passed the probe -- and then the
-# loader coerced the non-dict section to `{}`, so the allowlist came back empty,
-# which is indistinguishable from "no restriction configured". A malformed
-# section removed the restriction instead of denying.
+# `read_config_for_update` only rejects a non-object TOP level, so
+# `{"publish": []}` passes that probe, and the loader coerces the non-dict
+# section to `{}`, so the allowlist comes back empty -- indistinguishable from
+# "no restriction configured". A malformed section must therefore be denied,
+# not read as "no restriction".
 #
 # Written as real bytes to a real config.json. Mocking KiroCrewConfig.load()
 # makes the test agree with the reader instead of with the file, which is what
@@ -672,11 +671,9 @@ def test_a_non_list_allowed_destinations_denies(tmp_path, monkeypatch, _quiet_se
 
 
 def test_non_string_entries_do_not_reopen_the_allowlist(tmp_path, monkeypatch, _quiet_sel):
-    """An all-invalid narrowing like [1, 2] used to parse to [] — silently
-    indistinguishable from "unconfigured", the #4057 widening one level down.
-    The loader now records the drop as a degradation, so the gate denies.
-    (This test previously pinned the permit as the anchor for a follow-up;
-    the loader-side treatment the PR prescribed landed here instead.)"""
+    """An all-invalid narrowing like [1, 2] parses to [] — silently
+    indistinguishable from "unconfigured", the same widening one level down.
+    The loader records the drop as a degradation, so the gate denies."""
     import kiro_crew.publish_governance as pg
 
     _config_on_disk(tmp_path, monkeypatch, '{"publish": {"allowed_destinations": [1, 2]}}')

@@ -690,7 +690,7 @@ class TestTranscodeTempOwnership:
     async def test_transcode_closes_authenticated_decoder_after_child_exit(
         self, tmp_path, monkeypatch
     ):
-        """Regression guard for #8918 at this call site: the staged decoder
+        """Cleanup at this call site: the staged decoder
         handle outlives the spawn (the macOS syspolicy assessment resolves the
         staged path asynchronously after ``create_subprocess_exec`` returns) and
         is released exactly once, after the child has exited, by the invocation
@@ -750,7 +750,7 @@ class TestTranscodeTempOwnership:
         """A cancellation landing exactly on the deferred close await -- the
         only suspension point between the child exiting and the success return
         transferring the temp to the caller -- must not propagate with the
-        invocation-owned ``.wav`` still on disk (#8918 round 2)."""
+        invocation-owned ``.wav`` still on disk."""
         _stub_probe_under_cap(monkeypatch)
         owned = self._owned_temp(tmp_path, monkeypatch)
         src = tmp_path / "voice.webm"
@@ -899,7 +899,7 @@ class TestTranscodeTempOwnership:
     @pytest.mark.asyncio
     async def test_sandbox_rejection_removes_the_owned_native_temp(self, tmp_path, monkeypatch):
         """The fail-closed sandbox refusal returns after `transcribe` received an
-        owned temp but used to exit before the cleanup `finally` was armed."""
+        owned temp, before the cleanup `finally` is armed, and must still remove it."""
         from kiro_crew import sandbox as sb
 
         owned = tmp_path / "native.wav"
@@ -1002,7 +1002,7 @@ class TestStreamingSession:
 
 
 class TestHelperArgvPinsFast:
-    """Pin the ``--fast`` flag in the STREAMING helper argv (#5896).
+    """Pin the ``--fast`` flag in the STREAMING helper argv.
 
     ``--fast`` inserts ``.frequentFinalization`` into the transcriber's reporting
     options; without it the helper emits only volatile partials for the whole open
@@ -1074,7 +1074,7 @@ class TestHelperArgvPinsFast:
 
 
 class TestSandboxCleanupPathIsDropped:
-    """Every `_sandboxed` call site must unlink the returned cleanup path (#5776).
+    """Every `_sandboxed` call site must unlink the returned cleanup path.
 
     The third tuple element is a real temp file on any host with a sandbox
     backend (Linux namespace launcher / macOS ``.sb`` profile), and the

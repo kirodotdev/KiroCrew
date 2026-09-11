@@ -1,6 +1,6 @@
 ---
 name: goal-ledger-conductor
-description: Own a long-horizon goal end to end while tracking it in the work ledger - decompose it into items, stand up one session per item, read each worker's reported status as structured data rather than as a transcript, verify claims with the acceptance evaluator, and decide each next round until the goal is met or a stop condition fires. Use when the user hands over a goal too large for one session ("clear the flaky-test backlog", "take this feature from design to PRs", "push these N PRs green") and wants the fleet's state to be readable rather than inferred.
+description: Use when the user hands over a goal too large for one session ("clear the flaky-test backlog", "take this feature from design to PRs", "push these N PRs green") and wants the fleet's state to be readable rather than inferred. Own a long-horizon goal end to end while tracking it in the work ledger - decompose it into items, stand up one session per item, read each worker's reported status as structured data rather than as a transcript, verify claims with the acceptance evaluator, and decide each next round until the goal is met or a stop condition fires.
 ---
 
 # Goal Ledger Conductor
@@ -47,6 +47,7 @@ A candidate qualifies only if **all three** hold:
    work — CI runs the suite, and its verdict is the one that counts. If an item's
    completion genuinely cannot be stated as one of these, it is not assertable:
    say so and treat it as a needs-human item rather than inventing a condition.
+   A `pr_checks` condition names a NON-DRAFT pull request: while a pull request is a draft, a repository that gates readiness on draft state holds its checks incomplete, so the verdict stays `pending` for as long as the draft lasts and the item can never pass.
 3. **Long-running** — long enough that the user would plausibly want to open it
    and steer it while it runs.
 
@@ -129,6 +130,8 @@ For each item in the round, in **exactly this order**:
    The seed is the item's whole contract: the child session gets no other
    context from you.
 
+**A `pr_checks` seed says how the pull request is opened.** Tell the worker to open it non-draft — `gh pr create` without `--draft` — or to run `gh pr ready` before it reports done. A completion claim that arrives on a draft costs a whole verify cycle that can only answer `pending`.
+
 **Bind BEFORE you seed.** This inverts `goal-conductor`'s "seed before you
 record" rule, deliberately. That rule protects against a ledger row with no
 session behind it; this one protects against a running worker with no binding,
@@ -171,10 +174,13 @@ check AND the exit condition in the message. Then end your turn.
 Each cycle:
 
 1. **`work_ledger_read` first, every cycle.** It returns the conductor record,
-   every item with all its fields, each item's derived `orphaned` and `stale`
-   flags, the newest events per item, and a ready-to-pipe `accept_batch`. This
-   one read replaces the whole transcript-reading cycle, and it is O(record) —
-   which is why this loop's cost does not grow with its own history.
+   every item with all its fields, each item's derived `orphaned`, `stale` and
+   `acceptance_concrete` flags, the newest events per item, and a ready-to-pipe
+   `accept_batch`. This one read replaces the whole transcript-reading cycle, and
+   it is O(record) — which is why this loop's cost does not grow with its own
+   history. An item is never `stale` on the strength of silence alone: its worker
+   also has to be not running, and its last word has to have left the next move
+   with the worker, so a `done` item waiting on you is not flagged.
 2. **Act on three statuses, and only three:**
 
    | status | what it means | what you do |
@@ -189,18 +195,20 @@ Each cycle:
 3. **Verify every `done` with the evaluator — never by reading the child's
    transcript and judging, and never by believing the claim.** Take the
    `accept_batch` that `work_ledger_read` already built, **keep only the entries
-   whose item is currently `status: done`**, and pipe that filtered document
-   through a **quoted heredoc**:
+   whose item is currently `status: done`** — each entry carries that status, so
+   the filter is a read of the document you already have — and pipe that filtered
+   document through a **quoted heredoc**:
 
    ```bash
    python3 <this skill's dir>/scripts/accept_eval.py <<'ACCEPT_BATCH'
-   <the accept_batch document, with every non-done item's entry removed>
+   <the accept_batch document, with every non-done and every placeholder entry removed>
    ACCEPT_BATCH
    ```
 
    **The filter is yours to apply, and it is not optional.** `accept_batch` is
-   composed from every open item that has a concrete acceptance, whatever its
-   status — it is the two-phase promotion seam, not a verdict gate. The evaluator
+   composed from every open item whose `acceptance` is not empty — whatever its
+   status, and whether or not the condition's own values are filled in yet. It is
+   the two-phase promotion seam, not a verdict gate. The evaluator
    answers a world-state question ("does this file exist", "are this PR's checks
    green"), and a worker that is still `progress` can have made that true early:
    a stub written before the real content, a PR that is green before the last
@@ -236,17 +244,22 @@ Each cycle:
    kind); never try to route around a refusal. `error` is a broken spec or
    environment — fix the spec or ask.
 
-   **Two-phase acceptance is a field now, not a manual omission.** A condition may
+   **Two-phase acceptance is a manual omission, not a server filter.** A condition may
    name a value that only exists after the item starts — a PR number for
    `pr_checks` is the common case. Store the condition with the value marked TBD
    at `create`, tell the child in its seed to report the number through
-   `work_report`'s `pr`, and `accept_batch` will leave that item OUT of the batch
-   until the stored `acceptance` is concrete. **The worker's claimed `pr` is
+   `work_report`'s `pr`, and **drop that item from the batch yourself until you have
+   promoted the real value** — the server does not omit it, and a `pr` that is still
+   `TBD` is an `error` verdict, not `pending`. **The worker's claimed `pr` is
    never read as the bar.** Promote it yourself with `work_ledger_record`
    `action=accept` once you have looked at it, and verify on the next cycle. A
    worker that could fill in its own acceptance could point it at anybody's
    already-green pull request, which is exactly why the claim and the condition
    are separate fields.
+
+   **A `human_approval` item is verified by asking, and the ask is fragile.** The evaluator answers `pending` for it forever, so slow patrol FIRST — `monitor_update` `interval_secs=1800`, or the largest interval the goal tolerates — and only then put the decision to the user with `ask_question`, which ends your turn. Restore the interval on the cycle that reads the answer.
+
+   If the user says the card is gone, re-issue it. A report that the card vanished is not an answer.
 4. `work_ledger_record` `action=close` with the item's `state` when an item is
    finally done with — that is what ends it. `action=decide` records an
    instruction you want the worker to read out of `work_brief`; it is the ONE
@@ -388,6 +401,7 @@ what the composer renders:
   arm that instead and the quiet cycles stop costing a turn. Until then, size
   the interval for the report cadence you expect rather than for the latency you
   want.
+- **A question card can be displaced by your own later turns.** `ask_question` posts a card into the dashboard transcript, and every patrol turn you take while it is outstanding can push it out of the user's view.
 - **The session and ledger tools may not be in your tool list yet.** With MCP
   Tool Search active their specs are deferred, so a first `session_create` fails
   with `A tool with the name 'session_create' does not exist`. That means
@@ -456,7 +470,7 @@ what the composer renders:
   is reopened, and the worker's binding stays valid meanwhile. Its reports simply
   go unread until someone takes the item over or stops it.
 - **Some targets are out of bounds by design.** Incognito/temporary sessions,
-  app-scoped sessions, channel-linked or mirrored sessions, crew-mode sessions,
+  app-scoped sessions, channel-linked or mirrored sessions,
   and sessions in another workspace are all refused by the shared guard. Plan
   work items onto plain persistent dashboard sessions only.
 - **Shell is for the bundled script only, and the evaluator runs no command you

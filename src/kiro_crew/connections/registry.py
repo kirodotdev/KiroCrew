@@ -146,7 +146,7 @@ _LOCAL_HOST_SUFFIXES = (".localhost", ".local", ".internal", ".home.arpa")
 REVOKE_VERIFICATION_MAX_AGE_DAYS = 180
 # The L0 baseline needs re-deriving on its own schedule: a provider can change
 # its authorization server or drop DCR, and an expectation nobody has re-derived
-# in months describes a provider that may no longer exist.
+# in months describes a provider that may not exist.
 #
 # Two tiers, because the remedy needs live network and CI does not have it. The
 # refresh is `python -m kiro_crew.connections.l0_probe --record` run by a human
@@ -379,7 +379,7 @@ def _validate_provider(raw: object, index: int) -> Provider:
                     "underscores, and hyphens",
                 )
             if alias != f"{slug}_{tool}":
-                # The emission pass recognises its OWN previously-written aliases
+                # The emission pass recognises its OWN already-written aliases
                 # by re-deriving this exact name from the ref, which is what lets a
                 # withdrawn declaration's stale entry be cleaned up WITHOUT the
                 # prefix test that would also claim a user's hand-written alias.

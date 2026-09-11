@@ -26,7 +26,39 @@ describe('VoiceStatusBar', () => {
     )
     expect(screen.getByText('Microphone permission denied.')).toBeTruthy()
     expect(screen.queryByText('Recording')).toBeNull()
-    fireEvent.click(screen.getByLabelText('Dismiss microphone error'))
+    fireEvent.click(screen.getByLabelText('Dismiss'))
     expect(onDismissError).toHaveBeenCalledTimes(1)
+  })
+
+  it('renders the notice action label as a button inside the sentence', () => {
+    const onClick = vi.fn()
+    render(
+      <VoiceStatusBar recording={false} level={0} notice={{ text: 'Microphone in use in kirocrew', tone: 'muted', action: { label: 'kirocrew', onClick } }} />,
+    )
+    const notice = screen.getByTestId('voice-status-notice')
+    expect(notice).toHaveTextContent('Microphone in use in kirocrew')
+    fireEvent.click(screen.getByRole('button', { name: 'kirocrew' }))
+    expect(onClick).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps the quotation marks around the name inside the button, so a wrap cannot orphan them', () => {
+    const onClick = vi.fn()
+    render(
+      <VoiceStatusBar recording={false} level={0} notice={{ text: 'Microphone in use in “kirocrew”', tone: 'muted', action: { label: 'kirocrew', onClick } }} />,
+    )
+    const button = screen.getByRole('button')
+    // Word joiners (U+2060) glue the quotes to the name so a wrap cannot split them.
+    expect(button.textContent).toBe('“\u2060kirocrew\u2060”')
+    expect(screen.getByTestId('voice-status-notice').textContent?.replace(/\u2060/g, '')).toBe('Microphone in use in “kirocrew”')
+    fireEvent.click(button)
+    expect(onClick).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps the notice plain text when there is no action, or the label is not in the text', () => {
+    const { rerender } = render(<VoiceStatusBar recording={false} level={0} notice={{ text: 'Dictation added to your message', tone: 'ok' }} />)
+    expect(screen.queryByRole('button')).toBeNull()
+    rerender(<VoiceStatusBar recording={false} level={0} notice={{ text: 'Microphone in use in another chat', tone: 'muted', action: { label: 'kirocrew', onClick: vi.fn() } }} />)
+    expect(screen.queryByRole('button')).toBeNull()
+    expect(screen.getByTestId('voice-status-notice')).toHaveTextContent('Microphone in use in another chat')
   })
 })

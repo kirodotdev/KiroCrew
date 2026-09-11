@@ -104,7 +104,7 @@ _MAX_KNOWN_UNGATED_ROUTES = 20
 # --------------------------------------------------------------------------- #
 # Coherence floor: the walk must find at least this many GATED mutating routes.
 # This is the count of owner-gated routes the walk enforces, measured live at
-# issue #8505 (registered by handlers.agents, handlers.connections,
+# Registered by handlers.agents, handlers.connections,
 # handlers.files, and handlers.members). Keep it equal to the real count -- a
 # slack floor cannot catch a refactor that silently drops routes out of the
 # walk. Hardcoded deliberately: deriving it from the walk itself would

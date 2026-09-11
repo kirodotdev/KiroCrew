@@ -106,7 +106,7 @@ def test_self_identity_cached_from_auth_test_and_reset_on_failure(tmp_path):
     The accessor must answer "" after a failed re-validation: the trusted-bot
     admission fails CLOSED on an unverified self identity, so a stale cached
     id surviving a failed auth.test would report an identity the current
-    token no longer proves.
+    token does not prove.
     """
     resp = {
         "team_id": "T_GOOD",
@@ -179,9 +179,9 @@ def test_auth_test_failure_reader_exception_fails_closed_not_crash(tmp_path):
 def test_degraded_read_refuses_swapped_non_grid_workspace(tmp_path):
     """A degraded read must not admit whichever workspace authenticated.
 
-    The reachable shape GPT named. `candidate = enterprise_id or team_id`, so on
-    a NON-Grid workspace the candidate IS the bare team_id -- which used to be
-    the one id a degraded read admitted. A bot token pointing at a foreign
+    `candidate = enterprise_id or team_id`, so on
+    a NON-Grid workspace the candidate IS the bare team_id -- the one id a
+    degraded read must refuse to admit unaided. A bot token pointing at a foreign
     workspace therefore validated against itself and the operator's restriction
     silently stopped applying, while startup still reported success.
 
@@ -469,11 +469,11 @@ def test_auth_test_failure_with_allowlist_and_bad_config_load_fails_closed(tmp_p
 def test_auth_test_failure_unreadable_config_no_extra_ids_fails_closed(tmp_path):
     """auth.test fails AND config is unreadable, no extra_ids -> deny.
 
-    BEHAVIOUR CHANGE. This branch used to swallow the config-read error, leave
+    This branch must not swallow the config-read error, leave
     the allowlist empty, and read that as "no restriction configured" -- which
     ACCEPTS an unverifiable workspace. An unreadable config cannot be told apart
     from a configured restriction, so it must not be read as permission: this
-    path now fails closed like the startup path. A genuinely ABSENT config still
+    path fails closed like the startup path. A genuinely ABSENT config still
     defaults open (next test).
     """
     (tmp_path / "config.json").write_text("}{ broken", encoding="utf-8")
@@ -632,12 +632,12 @@ def test_governance_posture_empty_enterprise_id_ok_when_not_pinned(tmp_path):
 
 
 # --------------------------------------------------------------------------
-# Fail-closed: a corrupt config.json silently reopens the allowlist (#3945).
+# Fail-closed: a corrupt config.json must not silently reopen the allowlist.
 #
 # KiroCrewConfig.load() degrades a torn/corrupt config to a *defaults* object
-# instead of raising, so allowed_enterprise_ids comes back empty -- which the
-# old code could not tell apart from "operator configured no allowlist" and so
-# fell back to default-open. These tests exercise the REAL loader against a
+# instead of raising, so allowed_enterprise_ids comes back empty -- which must
+# not be read as "operator configured no allowlist", the default-open path.
+# These tests exercise the REAL loader against a
 # genuinely malformed file on disk.
 # --------------------------------------------------------------------------
 
@@ -645,7 +645,7 @@ def test_governance_posture_empty_enterprise_id_ok_when_not_pinned(tmp_path):
 def test_corrupt_config_json_fails_closed(tmp_path):
     """A malformed config.json must fail CLOSED, not reopen the allowlist.
 
-    Regression for #3945: writes a malformed config.json, then asserts
+    Writes a malformed config.json, then asserts
     check_message_origin() REFUSES a foreign team_id (and still admits the
     validated one). Without the fix _allowlist_configured flips False and the
     foreign origin is accepted default-open.
@@ -862,3 +862,83 @@ def test_no_config_file_stays_default_open(tmp_path):
 
     assert enterprise._allowlist_configured is False
     assert enterprise.check_message_origin("T_FOREIGN") is True
+
+
+class TestTrustedBotAdmission:
+    """The ONE trusted-bot admission rule, shared by both Slack drop sites.
+
+    These tests own the rule itself. The two call sites keep their own tests for
+    what they DO with the answer (audit line, subtype gate, normalization); the
+    point of the extraction is that the rule below is asserted once instead of
+    twice, so it cannot drift between the paths.
+    """
+
+    def test_a_human_event_is_not_a_bot_and_is_never_denied(self):
+        enterprise._validated_self_bot_id = "B_SELF"
+
+        assert enterprise.trusted_bot_admission("", {"B_PEER"}) == (False, "")
+
+    def test_an_allowlisted_peer_bot_is_admitted(self):
+        enterprise._validated_self_bot_id = "B_SELF"
+
+        assert enterprise.trusted_bot_admission("B_PEER", {"B_PEER"}) == (True, "")
+
+    def test_an_unlisted_bot_is_denied_as_untrusted(self):
+        enterprise._validated_self_bot_id = "B_SELF"
+
+        assert enterprise.trusted_bot_admission("B_OTHER", {"B_PEER"}) == (
+            False,
+            "untrusted_bot",
+        )
+
+    def test_an_empty_allowlist_admits_nobody(self):
+        """Deny by default: the feature unconfigured drops every bot event."""
+        enterprise._validated_self_bot_id = "B_SELF"
+
+        assert enterprise.trusted_bot_admission("B_PEER", frozenset()) == (
+            False,
+            "untrusted_bot",
+        )
+
+    def test_our_own_bot_id_is_never_trusted_even_when_listed(self):
+        """Admitting our own id makes every reply re-enter as fresh input."""
+        enterprise._validated_self_bot_id = "B_SELF"
+
+        assert enterprise.trusted_bot_admission("B_SELF", {"B_SELF", "B_PEER"}) == (
+            False,
+            "own_bot_id_never_trusted",
+        )
+
+    def test_an_unverified_self_id_fails_closed(self):
+        """auth.test unavailable -> the self-exclusion cannot be applied, so a
+        configured trust feature trusts nobody rather than trusting on faith."""
+        enterprise._validated_self_bot_id = ""
+
+        assert enterprise.trusted_bot_admission("B_PEER", {"B_PEER"}) == (
+            False,
+            "trusted_bot_requires_verified_self_id",
+        )
+
+    def test_the_deny_reason_distinguishes_listed_from_unlisted(self):
+        """A listed id blocked by an unverifiable self identity must NOT read as
+        `untrusted_bot`: the two need different operator action (fix auth.test
+        vs. fix the allowlist), and the reason string is what the audit line
+        carries."""
+        enterprise._validated_self_bot_id = ""
+
+        assert enterprise.trusted_bot_admission("B_STRANGER", {"B_PEER"})[1] == "untrusted_bot"
+        assert (
+            enterprise.trusted_bot_admission("B_PEER", {"B_PEER"})[1]
+            == "trusted_bot_requires_verified_self_id"
+        )
+
+    def test_the_set_is_an_argument_so_the_caller_owns_read_timing(self):
+        """The predicate never reads config: the event gate passes the live set
+        and the transport passes a constructor snapshot, and that difference is
+        the wiring's business, not the rule's."""
+        enterprise._validated_self_bot_id = "B_SELF"
+        live = {"B_PEER"}
+
+        assert enterprise.trusted_bot_admission("B_PEER", live) == (True, "")
+        live.clear()
+        assert enterprise.trusted_bot_admission("B_PEER", live) == (False, "untrusted_bot")

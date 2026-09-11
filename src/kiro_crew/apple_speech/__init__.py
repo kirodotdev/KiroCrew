@@ -398,7 +398,7 @@ async def _sandboxed_off_loop(argv: list[str]) -> tuple[list[str], dict[str, str
 
     Delegates to the shared :func:`sandbox.shielded_prepare_off_loop`, which
     owns the shield-and-recover pattern (worker-thread hop + settle-then-unlink
-    under cancellation, repeat-cancellation safe per #5841) for every async
+    under cancellation, repeat-cancellation safe) for every async
     caller of the chokepoint.  Preparation stays behind :func:`_sandboxed` so
     this module keeps owning its own ``mode="strict"`` + ``_build_env()``
     policy.  ``SandboxUnavailableError`` still propagates to the caller
@@ -704,7 +704,7 @@ async def _to_native_audio(
                 pass
             raise
     finally:
-        # The authenticated handle must outlive the spawn (#8918): every branch
+        # The authenticated handle must outlive the spawn: every branch
         # above has already reaped the child (``communicate`` on success,
         # kill-and-reap on failure) or never spawned one, so the staged image
         # can be released now — off the loop, unconditionally, instead of by

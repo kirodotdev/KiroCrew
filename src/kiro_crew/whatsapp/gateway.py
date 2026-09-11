@@ -35,14 +35,11 @@ def _configured_group_jids(groups: object) -> list[str]:
     """The non-empty ``jid`` of each group entry, keyed exactly as the gate keys it.
 
     ``GroupGate`` indexes its entries through :func:`normalize_jid`, so this reads
-    the same value the same way. It previously replicated a bare ``.strip()``, on
-    the reasoning that a JID differing by case or a ``:device`` suffix was one the
-    gate never matched either -- true at the time, and precisely why this check
-    could not see the defect: it compared the operator's raw text against
-    membership answers that ARE normalized, so a group the gate was silently
-    dropping looked configured and joined from here. Both sides normalize now, and
-    this has to keep matching the gate or the diagnostic starts lying in the other
-    direction.
+    the same value the same way. Both sides MUST normalize: a bare ``.strip()`` here
+    would compare the operator's raw text against membership answers that ARE
+    normalized, so a group the gate silently drops would look configured and be
+    joined from here. This has to keep matching the gate or the diagnostic starts
+    lying in the other direction.
     """
     if not isinstance(groups, list):
         return []

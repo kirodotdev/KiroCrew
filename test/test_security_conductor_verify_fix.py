@@ -1146,7 +1146,11 @@ class TestTheShippedCorpusIsALiveGate:
         return ledger_mod.load_golden_path_corpus(CORPUS.read_text(encoding="utf-8"))
 
     def test_the_seed_carries_a_real_corpus(self, rows: list[dict]) -> None:
-        assert 25 <= len(rows) <= 40, len(rows)
+        # A band, not a count: the point is "a real corpus, not a stub and not an
+        # unreviewed dump". The ceiling moved when the denial differential adopted
+        # this file as its own corpus and the rows that only its retired fixture
+        # carried were folded in here.
+        assert 25 <= len(rows) <= 60, len(rows)
         assert all(row["reason"] for row in rows)
         kinds = {row["kind"] for row in rows}
         assert kinds == {"shell", "flow", "cron"}

@@ -1,6 +1,6 @@
 """A name-based auto-approve must not be honoured for a shadowed program name.
 
-Upstream issue #4438: trust grants and the read-only allowlist authorize a
+Trust grants and the read-only allowlist authorize a
 command by program NAME, while the shell resolves that name afterwards through a
 ``PATH`` that can lead with directories the agent itself writes. These tests pin
 both halves -- the decision function and the tiers wired to it.
@@ -109,8 +109,8 @@ class TestProgramNames:
     )
     def test_execution_affecting_assignment_refuses(self, assignment):
         # GPT 5.6 round-10: `PATH=/writable/bin head file` decides which `head`
-        # runs, and the loader variables decide what code runs inside it. The walk
-        # used to skip every assignment and vouch for the system `head`.
+        # runs, and the loader variables decide what code runs inside it. A
+        # leading assignment must not be skipped to vouch for the system `head`.
         assert name_grant.program_names(f"{assignment} head file") is None
 
     @pytest.mark.parametrize(
@@ -836,8 +836,8 @@ class TestDispatchers:
     @pytest.mark.parametrize("shell", ["sh", "bash", "zsh", "dash", "fish"])
     def test_command_shell_is_refused(self, world, shell):
         # GPT 5.6 round-12: `sh -c 'head file'` runs an arbitrary command string,
-        # so vouching for `/bin/sh` says nothing about what executes. Scoped out in
-        # round 9 and asked for here; a grant naming a shell is a grant to run
+        # so vouching for `/bin/sh` says nothing about what executes: a grant
+        # naming a shell is a grant to run
         # anything, which belongs on the approval card.
         system_dir, _ = world
         _program(system_dir, shell)
@@ -948,7 +948,7 @@ class TestDispatchers:
 
     def test_a_legacy_bare_name_function_export_refuses(self, world, monkeypatch):
         # The pre-2014 spelling: the key is the bare function name and only the
-        # `() {` value marks it as a function. Supported bash no longer imports
+        # `() {` value marks it as a function. Supported bash does not import
         # this, so it is belt-and-braces -- but the value form costs one check.
         system_dir, _ = world
         _program(system_dir, "head")
@@ -995,8 +995,8 @@ class TestInheritedHostEnvironment:
     ``/etc/profile.d/which2.sh``, so ``BASH_FUNC_which%%`` is inherited by every
     login shell -- and the AMBIGUOUS_ENV refusal above is checked before every
     narrower code, so without the scrub 79 of the 163 tests in this file observed
-    ``inherited_env_can_redefine_programs`` instead of the code they assert
-    (issue #8395). ``_inherited_preload()``'s OTHER half is host state just as
+    ``inherited_env_can_redefine_programs`` instead of the code they assert.
+    ``_inherited_preload()``'s OTHER half is host state just as
     easily: a login profile exporting ``BASH_ENV``, or a container image setting
     ``ENV``, reproduces the same shape with no ``which2.sh`` anywhere. Ubuntu CI
     carries neither, which is why this class injects both itself: the defect has
@@ -1091,7 +1091,7 @@ class TestInterpreterChain:
         script = user_dir / "tool"
         # The env path must be the fixture's OWN system env, not a literal
         # `/usr/bin/env`: the shebang's env binary is now held to the same
-        # standard as any program (round 21), and a host path would make this
+        # standard as any program, and a host path would make this
         # test depend on the runner's filesystem, which the fixture exists to
         # avoid.
         system_env = _program(system_dir, "env")
@@ -1309,7 +1309,7 @@ class TestHookTierIsUntouched:
         assert HookManager(cfg).on_tool_call("ReadFile").action == TOOL_AUTO_APPROVE
 
     def test_non_system_program_is_granted_here_and_judged_by_the_caller(self, world):
-        # The hook layer no longer defers a non-system program: it grants, and the
+        # The hook layer does not defer a non-system program: it grants, and the
         # async caller decides. `TestDowngradePath` is where the decision is
         # pinned; this only records that the hook layer stopped doing filesystem
         # work of its own.

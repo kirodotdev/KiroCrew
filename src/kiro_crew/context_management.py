@@ -184,13 +184,12 @@ class OrchestrationTracker:
         the orchestrator prompt promises the model ("max 3 rounds per stage").
         Entering a stage is not a wave.
 
-        The stage loop used to enter through :meth:`record_round`, called for its
-        side effects rather than its count -- harmless while nothing on that path
-        consulted the cap. Once the cap IS consulted there (issue #1783), that
-        tick spent a third of the stage's budget before any subagent had run: a
-        dashboard stage was cut after two waves, while the same stage driven from
-        the Slack handler -- which has no stage loop and so no entry tick -- got
-        three. Stricter than the prompt promises AND inconsistent between paths.
+        Entering through :meth:`record_round` for its side effects would spend a
+        third of the stage's budget before any subagent had run, because that
+        method consults the cap: a dashboard stage would be cut after two waves,
+        while the same stage driven from the Slack handler -- which has no stage
+        loop and so no entry tick -- would get three. Stricter than the prompt
+        promises AND inconsistent between paths.
 
         So the side effects live here and the counting stays in
         :meth:`record_round`. Registering the stage at zero rounds is what makes
@@ -262,13 +261,13 @@ class OrchestrationTracker:
     def budgets_unset(self) -> bool:
         """True while this tracker has never had its configured budgets applied.
 
-        The stage loop used to gate its config load on "did I just create this
-        tracker", which meant a tracker it did NOT create -- the one the Slack
-        gateway creates lazily when a subagent result lands on a slot the loop has
-        not reached -- ran the whole plan on constructor defaults: the plan
-        watchdog disabled at 0 and the stage budget at
-        :data:`DEFAULT_STAGE_TIMEOUT` regardless of config. Asking the tracker
-        instead makes the answer independent of how the loop obtained it.
+        Gating the config load on "did I just create this tracker" would leave a
+        tracker the loop did NOT create -- the one the Slack gateway creates lazily
+        when a subagent result lands on a slot the loop has not reached -- running
+        the whole plan on constructor defaults: the plan watchdog disabled at 0 and
+        the stage budget at :data:`DEFAULT_STAGE_TIMEOUT` regardless of config.
+        Asking the tracker instead makes the answer independent of how the loop
+        obtained it.
         """
         return self._budgets_unset
 

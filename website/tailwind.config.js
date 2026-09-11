@@ -29,7 +29,18 @@ import tailwindPlugin from 'tailwindcss/plugin.js'
  * `top-safe-offset-[42px]` resolve as well as a spacing-scale step.
  */
 const EDGES = ['top', 'right', 'bottom', 'left']
-const inset = edge => `env(safe-area-inset-${edge})`
+/* TOP goes through --safe-area-top (index.css), which is 0 outside the
+ * standalone/fullscreen display modes: with browser chrome on screen the UA's
+ * own bar already sits below the status bar / display cutout, so a non-zero
+ * top env() there is spurious — Android WebView browsers report the cutout
+ * height regardless of where the web view actually sits, which rendered as a
+ * dead band above the header (the app only extends under the cutout when it
+ * IS the window, i.e. an installed PWA). The other three edges are real even
+ * in-browser (iOS landscape notch flanks, home indicator) and stay bare env().
+ * The env() fallback inside var() covers a stylesheet-load race only. */
+const inset = edge => edge === 'top'
+  ? 'var(--safe-area-top, env(safe-area-inset-top))'
+  : `env(safe-area-inset-${edge})`
 
 const safeArea = tailwindPlugin(({ addUtilities, matchUtilities, theme }) => {
   addUtilities({

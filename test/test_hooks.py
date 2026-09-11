@@ -188,8 +188,8 @@ class TestToolHooks:
         assert mgr.on_tool_call("ls -la /workplace").action == TOOL_AUTO_APPROVE
 
     def test_exfil_command_denied_at_gate(self):
-        """security-review 5682f92b: data-egress / reverse-shell command shapes must be
-        DENIED at the tool-invocation gate (previously only passively audited).
+        """Data-egress / reverse-shell command shapes must be DENIED at the
+        tool-invocation gate, not only passively audited.
 
         These carry the exfiltration reason specifically (they do not also name a
         sensitive credential path, which is caught by an earlier gate)."""
@@ -228,8 +228,8 @@ class TestToolHooks:
         """A file-read tool whose title is the BARE path (Claude Code provider —
         no 'Reading ' prefix) must be DENIED via is_sensitive_path.
 
-        is_sensitive_path was previously gated on the 'Reading ' prefix, so a
-        bare '~/.aws/credentials' title slipped through (is_sensitive_bash_command
+        Gating is_sensitive_path on the 'Reading ' prefix lets a bare
+        '~/.aws/credentials' title slip through (is_sensitive_bash_command
         needs a command verb, so it can't catch a bare path).
         """
         mgr = HookManager()
@@ -287,6 +287,249 @@ class TestToolHooks:
         assert mgr.on_tool_call("Running: ls -la").action == TOOL_AUTO_APPROVE
         # Plain tool name deny still works via normalized
         assert mgr.on_tool_call("Running: rm foo").action == TOOL_DENY
+
+    def test_auto_approve_matches_verified_mcp_identity_not_title(self):
+        """With a verified MCP identity the grant is keyed on the identity.
+
+        The title is agent-influenced (``select_tool_title`` prefers a
+        model-authored ``description``), so a title that reads like an allowed
+        tool must not approve a different one. The identity is rendered in
+        kiro-cli's own title spelling, so a pattern written against that title
+        keeps matching when the two agree.
+        """
+        cfg = HooksConfig(auto_approve_tools=["Running: @memory-mcp/*"])
+        mgr = HookManager(cfg)
+        # Title and identity agree: approved.
+        assert (
+            mgr.on_tool_call(
+                "Running: @memory-mcp/search_memory",
+                mcp_server_name="memory-mcp",
+                mcp_tool_name="search_memory",
+                mcp_identity_trusted=True,
+            ).action
+            == TOOL_AUTO_APPROVE
+        )
+        # A description-derived title that does not spell the identity still
+        # approves, because the identity (not the title) is what is matched.
+        assert (
+            mgr.on_tool_call(
+                "Look up the paper the user mentioned",
+                mcp_server_name="memory-mcp",
+                mcp_tool_name="search_memory",
+                mcp_identity_trusted=True,
+            ).action
+            == TOOL_AUTO_APPROVE
+        )
+        # A forged title over a DIFFERENT verified tool is not approved.
+        assert (
+            mgr.on_tool_call(
+                "Running: @memory-mcp/search_memory",
+                mcp_server_name="ops-mcp",
+                mcp_tool_name="delete_everything",
+                mcp_identity_trusted=True,
+            ).action
+            == TOOL_ALLOW
+        )
+        # An identity that is present but UNPROVEN (no provenance flag) does not
+        # key the grant: the call falls back to the title branch, which here
+        # matches -- the same behavior as before this change, never wider.
+        unproven = mgr.on_tool_call(
+            "Running: @memory-mcp/search_memory",
+            mcp_server_name="memory-mcp",
+            mcp_tool_name="search_memory",
+        )
+        assert unproven.action == TOOL_AUTO_APPROVE and unproven.identity_grant is False
+        # The lossy wire spelling is NOT a grant target: `github`+`repo__delete`
+        # and `github__repo`+`delete` share `mcp__github__repo__delete`, so a
+        # grant written against it would approve the other tool.
+        cfg3 = HooksConfig(auto_approve_tools=["mcp__github__repo__delete"])
+        for server, tool in (("github", "repo__delete"), ("github__repo", "delete")):
+            assert (
+                HookManager(cfg3)
+                .on_tool_call(
+                    "anything",
+                    mcp_server_name=server,
+                    mcp_tool_name=tool,
+                    mcp_identity_trusted=True,
+                )
+                .action
+                == TOOL_ALLOW
+            )
+        # The bare "@server/tool" spelling matches too.
+        cfg2 = HooksConfig(auto_approve_tools=["@memory-mcp/search_*"])
+        mgr2 = HookManager(cfg2)
+        assert (
+            mgr2.on_tool_call(
+                "anything",
+                mcp_server_name="memory-mcp",
+                mcp_tool_name="search_memory",
+                mcp_identity_trusted=True,
+            ).action
+            == TOOL_AUTO_APPROVE
+        )
+        # No identity (a built-in, or a backend without _meta.kiro): the title
+        # path is unchanged.
+        assert mgr.on_tool_call("Running: @memory-mcp/search_memory").action == TOOL_AUTO_APPROVE
+        assert mgr.on_tool_call("Running: @other/thing").action == TOOL_ALLOW
+
+    def test_deny_binds_to_verified_identity_spelling_too(self):
+        """A deny written in the same `@server/tool` spelling the approve loop
+        matches binds to the identity, not only to the title: a benign title
+        over a denied verified tool is denied, and deny still beats approve
+        when both lists are written against the identity."""
+        cfg = HooksConfig(
+            auto_approve_tools=["@ops/*"],
+            auto_deny_tools=["@ops/delete_*"],
+        )
+        mgr = HookManager(cfg)
+        # Benign title, denied identity -> DENY (the title never mattered).
+        assert (
+            mgr.on_tool_call(
+                "Tidy up the workspace",
+                mcp_server_name="ops",
+                mcp_tool_name="delete_everything",
+                mcp_identity_trusted=True,
+            ).action
+            == TOOL_DENY
+        )
+        # The deny binds even without provenance: a deny target can only deny.
+        assert (
+            mgr.on_tool_call(
+                "Tidy up the workspace", mcp_server_name="ops", mcp_tool_name="delete_everything"
+            ).action
+            == TOOL_DENY
+        )
+        # A non-denied tool on the same server still auto-approves by identity.
+        assert (
+            mgr.on_tool_call(
+                "anything",
+                mcp_server_name="ops",
+                mcp_tool_name="list_items",
+                mcp_identity_trusted=True,
+            ).action
+            == TOOL_AUTO_APPROVE
+        )
+        # A server-level deny binds to every tool of that server.
+        mgr2 = HookManager(HooksConfig(auto_deny_tools=["@ops"]))
+        assert (
+            mgr2.on_tool_call("anything", mcp_server_name="ops", mcp_tool_name="list_items").action
+            == TOOL_DENY
+        )
+
+    def test_identity_grant_provenance_and_child_coverage(self):
+        """``identity_grant`` marks exactly the grants decided by verified MCP
+        identity, and ``identity_grant_covers_child`` admits only those, and
+        only for a child whose own identity verified."""
+        from types import SimpleNamespace
+
+        from kiro_crew.hooks import ToolHookResult, identity_grant_covers_child
+
+        cfg = HooksConfig(auto_approve_tools=["@memory-mcp/*", "Reading *"])
+        mgr = HookManager(cfg)
+        by_identity = mgr.on_tool_call(
+            "whatever",
+            mcp_server_name="memory-mcp",
+            mcp_tool_name="search_memory",
+            mcp_identity_trusted=True,
+        )
+        unproven_identity = mgr.on_tool_call(
+            "whatever", mcp_server_name="memory-mcp", mcp_tool_name="search_memory"
+        )
+        # Without provenance the identity keys nothing: title "whatever" matches
+        # no pattern, and the result carries no identity_grant.
+        assert unproven_identity.action == TOOL_ALLOW and unproven_identity.identity_grant is False
+        by_title = mgr.on_tool_call("Reading /tmp/x")
+        assert by_identity.action == TOOL_AUTO_APPROVE and by_identity.identity_grant is True
+        assert by_title.action == TOOL_AUTO_APPROVE and by_title.identity_grant is False
+
+        verified_child = SimpleNamespace(child_mcp_identity_trusted=True)
+        unverified_child = SimpleNamespace(child_mcp_identity_trusted=False)
+        assert identity_grant_covers_child(by_identity, verified_child) is True
+        assert identity_grant_covers_child(by_title, verified_child) is False
+        assert identity_grant_covers_child(by_identity, unverified_child) is False
+        assert identity_grant_covers_child(ToolHookResult.allow(), verified_child) is False
+        # A directly constructed result (the runner's downgrade shape) carries
+        # no identity provenance.
+        assert (
+            identity_grant_covers_child(ToolHookResult(action=TOOL_AUTO_APPROVE), verified_child)
+            is False
+        )
+
+    def test_title_only_pattern_logs_the_rewrite_once(self, caplog):
+        """A pattern that matches only the agent-authored title of an
+        identity-verified MCP call does not grant, and the gate logs the
+        rewrite once per (pattern, identity) so an unattended card can be
+        traced to its pattern."""
+        import logging
+
+        from kiro_crew import hooks as hooks_mod
+
+        hooks_mod._TITLE_ONLY_GRANT_NOTED.clear()
+        cfg = HooksConfig(auto_approve_tools=["Look up*"])
+        mgr = HookManager(cfg)
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.hooks"):
+            for _ in range(2):
+                assert (
+                    mgr.on_tool_call(
+                        "Look up the paper the user mentioned",
+                        mcp_server_name="memory-mcp",
+                        mcp_tool_name="search_memory",
+                        mcp_identity_trusted=True,
+                    ).action
+                    == TOOL_ALLOW
+                )
+        notes = [r for r in caplog.records if "@memory-mcp/search_memory" in r.getMessage()]
+        assert len(notes) == 1
+        assert "'Look up*'" in notes[0].getMessage()
+        # No breadcrumb when the identity is unproven: the title branch is the
+        # grant key there and the pattern simply grants.
+        caplog.clear()
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.hooks"):
+            assert (
+                mgr.on_tool_call(
+                    "Look up the paper", mcp_server_name="memory-mcp", mcp_tool_name="search_memory"
+                ).action
+                == TOOL_AUTO_APPROVE
+            )
+        assert not [r for r in caplog.records if "verified MCP identity" in r.getMessage()]
+
+    def test_every_permission_path_caller_passes_mcp_identity(self):
+        """Every ``on_tool_call`` caller in the package hands the gate the event's
+        verified MCP identity. The identity is what an ``auto_approve_tools``
+        pattern is matched against for an MCP-served call; a caller that omits
+        it falls back to the agent-authored title on that one surface, which is
+        exactly the forgery the identity match closes."""
+        import re
+        from pathlib import Path
+
+        import kiro_crew
+
+        root = Path(kiro_crew.__file__).resolve().parent
+        offenders: list[str] = []
+        for path in root.rglob("*.py"):
+            rel = path.relative_to(root).as_posix()
+            if "/tests/" in f"/{rel}" or rel.startswith("hooks.py"):
+                continue
+            text = path.read_text(encoding="utf-8")
+            # Gate consultations are assignments (`result = ...hooks.on_tool_call(`);
+            # the renderer's unrelated `on_tool_call` handler and docstring mentions
+            # are not.
+            for match in re.finditer(r"=\s*[\w.]+\.on_tool_call\(", text):
+                depth, i = 1, match.end()
+                while i < len(text) and depth:
+                    depth += {"(": 1, ")": -1}.get(text[i], 0)
+                    i += 1
+                call = text[match.start() : i]
+                if (
+                    "mcp_tool_name=" not in call
+                    or "mcp_server_name=" not in call
+                    or "mcp_identity_trusted=" not in call
+                ):
+                    line = text.count("\n", 0, match.start()) + 1
+                    offenders.append(f"{rel}:{line}")
+        assert not offenders, "on_tool_call callers missing mcp identity kwargs: " + ", ".join(
+            offenders
+        )
 
 
 class TestToolCallEvaluatesRawCommand:
@@ -390,8 +633,8 @@ class TestShellCommandProperty:
     def test_from_tool_input_json_permission_event(self):
         """permission_request events set tool_input (JSON), NOT raw_tool_params
         — this is the dashboard's primary gate path, so the fallback is
-        load-bearing. Regression for the review-bot finding that the first cut
-        only read raw_tool_params and was a no-op on permission events."""
+        load-bearing: reading only raw_tool_params is a no-op on permission
+        events."""
         from kiro_crew.acp.types import AcpEvent
 
         ev = AcpEvent(
@@ -465,9 +708,7 @@ class TestShellCommandUseAws:
         ev = AcpEvent(
             kind="permission_request",
             is_shell=True,
-            tool_input=_json.dumps(
-                {"service_name": "s3api", "operation_name": "list-buckets"}
-            ),
+            tool_input=_json.dumps({"service_name": "s3api", "operation_name": "list-buckets"}),
         )
         assert ev.shell_command == "aws s3api list-buckets"
 
@@ -529,12 +770,10 @@ class TestShellCommandUseAws:
         stay armed for it."""
         from kiro_crew.acp.types import AcpEvent
 
-        ev = AcpEvent(
-            kind="tool_call", is_shell=True, raw_tool_params={"service_name": "ssm"}
-        )
+        ev = AcpEvent(kind="tool_call", is_shell=True, raw_tool_params={"service_name": "ssm"})
         assert ev.shell_command is None
 
-    # ── Casing normalization hardening (2026-08-05) ──
+    # ── Casing normalization hardening ──
 
     def test_pascal_case_operation_normalized_to_kebab(self):
         """PascalCase operation_name (the AWS API name, e.g. 'DeleteStack')
@@ -572,9 +811,7 @@ class TestShellCommandUseAws:
         result = HookManager().on_tool_call(
             "AWS: cloudformation DeleteStack", command=ev.shell_command, is_shell=True
         )
-        assert result.action == TOOL_DENY, (
-            f"PascalCase 'DeleteStack' bypassed deny gate: {result}"
-        )
+        assert result.action == TOOL_DENY, f"PascalCase 'DeleteStack' bypassed deny gate: {result}"
 
     def test_camel_case_operation_normalized(self):
         """camelCase operation_name must also normalize (e.g. 'deleteStack')."""
@@ -671,8 +908,11 @@ class TestShellCommandUseAws:
             kind="permission_request",
             is_shell=True,
             tool_input=_json.dumps(
-                {"service_name": "dynamodb", "operation_name": "DeleteTable",
-                 "parameters": {"table-name": "users-prod"}}
+                {
+                    "service_name": "dynamodb",
+                    "operation_name": "DeleteTable",
+                    "parameters": {"table-name": "users-prod"},
+                }
             ),
         )
         result = HookManager().on_tool_call(
@@ -972,13 +1212,82 @@ class TestEventIsSpawnRun:
         assert event_is_spawn_run(self._event(tool_name="", title="grep")) is False
 
 
+class TestClassifierOnlyHostTrustedProof:
+    """The READ_ONLY (``classifier_only``) non-shell proof is host-trusted only.
+
+    ``_is_host_read_only_builtin`` is the sole non-shell read-only proof the gate
+    accepts for the side chat. It demands a POSITIVE provenance signal
+    (``mcp_identity_trusted``) plus a host-known built-in name with no MCP server
+    behind it, and the allowlist itself is pinned to read scopes so a
+    write-capable built-in cannot join by mistake.
+    """
+
+    _WRITE_SCOPES = frozenset({"filesystem.write", "commands", "tools"})
+
+    def test_host_read_only_builtins_map_only_to_read_scopes(self):
+        # Every allowlisted name is a governed built-in whose scopes are read
+        # scopes only. A name absent from BUILTIN_TOOL_SCOPES has no governed
+        # scope at all and is not presumed read-only either.
+        from kiro_crew.hooks import _HOST_READ_ONLY_BUILTIN_TOOLS
+        from kiro_crew.platform.governance import BUILTIN_TOOL_SCOPES
+
+        read_scopes = {"filesystem.read", "network.egress"}
+        for name in sorted(_HOST_READ_ONLY_BUILTIN_TOOLS):
+            assert name in BUILTIN_TOOL_SCOPES, name
+            scopes = set(BUILTIN_TOOL_SCOPES[name])
+            assert scopes, name
+            assert scopes <= read_scopes, (name, scopes)
+            assert not (scopes & self._WRITE_SCOPES), (name, scopes)
+
+    def test_write_capable_builtins_are_not_allowlisted(self):
+        # The converse pin: no built-in that can write, run commands, or govern
+        # tools is on the read-only allowlist.
+        from kiro_crew.hooks import _HOST_READ_ONLY_BUILTIN_TOOLS
+        from kiro_crew.platform.governance import BUILTIN_TOOL_SCOPES
+
+        for name, scopes in BUILTIN_TOOL_SCOPES.items():
+            if self._WRITE_SCOPES & set(scopes):
+                assert name not in _HOST_READ_ONLY_BUILTIN_TOOLS, name
+
+    def test_trusted_host_builtin_is_proven_read_only(self):
+        from kiro_crew.hooks import _is_host_read_only_builtin
+
+        assert _is_host_read_only_builtin("fs_read", "", mcp_identity_trusted=True) is True
+
+    def test_untrusted_identity_refuses_a_host_known_name(self):
+        # The seam: a host-known name whose provenance is not the _meta.kiro
+        # parse this client made (inline payload, hand-built event, cache miss)
+        # is prose, not identity. The absence of a server name proves nothing.
+        from kiro_crew.hooks import _is_host_read_only_builtin
+
+        assert _is_host_read_only_builtin("fs_read", "", mcp_identity_trusted=False) is False
+
+    def test_mcp_served_tool_named_like_a_builtin_is_refused(self):
+        from kiro_crew.hooks import _is_host_read_only_builtin
+
+        assert (
+            _is_host_read_only_builtin("fs_read", "evil-server", mcp_identity_trusted=True) is False
+        )
+
+    def test_empty_identity_matches_nothing(self):
+        from kiro_crew.hooks import _is_host_read_only_builtin
+
+        assert _is_host_read_only_builtin("", "", mcp_identity_trusted=True) is False
+
+    def test_write_capable_builtin_is_not_a_read_only_proof(self):
+        from kiro_crew.hooks import _is_host_read_only_builtin
+
+        for name in ("fs_write", "code", "execute_bash"):
+            assert _is_host_read_only_builtin(name, "", mcp_identity_trusted=True) is False, name
+
+
 class TestMutatingKindBeatsTheTitle:
     """Only an explicitly READ-ONLY ``tool_kind`` may auto-approve on a title.
 
     ``tool_name`` is the display title, and ``select_tool_title``
     (``acp/_dispatch.py``) prefers the LLM-authored ``description`` — so it is
     agent-controlled, which ``on_tool_call``'s own docstring states outright. The
-    computer-use read-only auto-approve used to be tested BEFORE any kind guard, so
+    computer-use read-only auto-approve must not be tested BEFORE any kind guard: otherwise,
     once the operator enabled computer use, an ``edit``/``execute``/``write``/
     ``delete`` call titled ``mcp__kirocrew-computer__computer_get_state`` skipped
     interactive approval entirely.
@@ -1526,9 +1835,7 @@ class TestAppOwnMcpServerAutoApprove:
             "_is_first_party_app",
             lambda app: app.casefold() in {"myapp"},
         )
-        monkeypatch.setattr(
-            hooks_mod, "_BUILTIN_APP_MCP_SERVERS", frozenset({"myapp:srv"})
-        )
+        monkeypatch.setattr(hooks_mod, "_BUILTIN_APP_MCP_SERVERS", frozenset({"myapp:srv"}))
 
     def test_own_server_tool_auto_approved(self, _builtin):
         mgr = HookManager()
@@ -1966,7 +2273,7 @@ class TestTargetPathNestedExtraction:
     read shape ``{"operations": [{"mode": "Line", "path": …}]}`` — yielded ``[]``
     and the sensitive-path keystone in ``on_tool_call`` never saw the target.
     Worse than a missed deny: a read-kind call with the nested spelling was
-    AUTO-APPROVED while the flat spelling of the same path is denied (#6543).
+    AUTO-APPROVED while the flat spelling of the same path is denied.
 
     The fix recurses into dict/list values (depth-bounded) and stays
     extract-only; ``cli_chat``'s consent prompt shares the helper, so the
@@ -2089,9 +2396,7 @@ class TestTargetPathNestedExtraction:
         """The caps must not start refusing real batch reads."""
         from kiro_crew.hooks import target_paths
 
-        params = {
-            "operations": [{"mode": "Line", "path": f"/tmp/f{i}.txt"} for i in range(40)]
-        }
+        params = {"operations": [{"mode": "Line", "path": f"/tmp/f{i}.txt"} for i in range(40)]}
         result = target_paths(params)
         assert len(result) == 40
         assert result.truncated is False

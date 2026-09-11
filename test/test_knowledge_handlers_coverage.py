@@ -23,6 +23,8 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from kiro_crew._sqlite_compat import sqlite3
 from kiro_crew.dashboard.handlers import knowledge as kh
+from kiro_crew.embeddings import PRIORITY_NORMAL
+from kiro_crew.knowledge.embedder import embedder_signature
 from kiro_crew.knowledge.store import KnowledgeStore
 
 MODULE = "kiro_crew.dashboard.handlers.knowledge"
@@ -39,21 +41,26 @@ class _FakeEmbedder:
     """Minimal stand-in for InProcessEmbedder (real model never loaded)."""
 
     def __init__(self, *, available=True, vec=(0.1, 0.2, 0.3, 0.4),
-                 model="fake-embed:1"):
+                 model="fake-embed:1", dim=4):
         self.model = model
+        # Width is part of the vector-space identity embed_signature hashes, so a
+        # stand-in has to declare one just as InProcessEmbedder does.
+        self.dim = dim
         self.content_budget = 2000
         self._available = available
         self._vec = list(vec)
         self.embed_calls: list[str] = []
+        self.priorities: list[int] = []
 
     async def is_available_async(self) -> bool:
         return self._available
 
-    def embed_for_item(self, title, summary, content):
+    def embed_for_item(self, title, summary, content, *, priority=PRIORITY_NORMAL):
         self.embed_calls.append(title or "")
+        self.priorities.append(priority)
         return list(self._vec) if self._vec else None
 
-    def embed(self, text):
+    def embed(self, text, *, priority=PRIORITY_NORMAL):
         return list(self._vec) if self._vec else None
 
 
@@ -647,7 +654,7 @@ class TestImportBundle:
 
     @pytest.mark.asyncio
     async def test_corrupt_json_column_is_a_clean_400(self, store, monkeypatch):
-        # The store's writer-side invariant (issue #5559) rejects this value
+        # The store's writer-side invariant rejects this value
         # AT THE STORE: a lone-surrogate escape passes json.loads (so it gets
         # through the handler's pre-redaction shape validator) but cannot be
         # UTF-8-encoded at SQLite bind time. The handler surfaces the store's
@@ -1296,8 +1303,9 @@ class TestSearchForContext:
         async def _direct(fn, *args, **kwargs):
             return fn(*args, **kwargs)
 
-        def _retriever(_store, embedder=None):
+        def _retriever(_store, embedder=None, *, embed_sig=None):
             seen["embedder"] = embedder
+            seen["embed_sig"] = embed_sig
             return MagicMock(search=MagicMock(return_value=[]))
 
         monkeypatch.setattr(f"{MODULE}.run_in_embed_pool", _direct)
@@ -1307,6 +1315,9 @@ class TestSearchForContext:
             assert (await client.get("/api/knowledge/search-for-context",
                                      params={"q": "z"})).status == 200
         assert seen["embedder"] == emb.embed
+        # Wiring the embedder without its signature would leave the vector leg
+        # scoring items from any space, which is the defect the pair closes.
+        assert seen["embed_sig"] == embedder_signature(emb)
 
     @pytest.mark.asyncio
     async def test_unavailable_embedder_is_not_wired(self, store, monkeypatch, tmp_path):
@@ -1316,8 +1327,9 @@ class TestSearchForContext:
         async def _direct(fn, *args, **kwargs):
             return fn(*args, **kwargs)
 
-        def _retriever(_store, embedder=None):
+        def _retriever(_store, embedder=None, *, embed_sig=None):
             seen["embedder"] = embedder
+            seen["embed_sig"] = embed_sig
             return MagicMock(search=MagicMock(return_value=[]))
 
         monkeypatch.setattr(f"{MODULE}.run_in_embed_pool", _direct)
@@ -1327,6 +1339,7 @@ class TestSearchForContext:
             assert (await client.get("/api/knowledge/search-for-context",
                                      params={"q": "z"})).status == 200
         assert seen["embedder"] is None
+        assert seen["embed_sig"] is None
 
 
 # ------------------------------------------------------------ agent document
@@ -1830,7 +1843,7 @@ _NON_OBJECT_BODIES = ([1, 2], 7)
 
 class TestJsonObjectBodyGuard:
     """Every ``request.json()`` site answers 400, not 500, on a body that is
-    valid JSON but not an object -- and the two previously-unguarded sites
+    valid JSON but not an object -- and two further sites
     (files/retry, files/skip) now answer 400 on invalid JSON too."""
 
     @pytest.mark.asyncio
@@ -1873,8 +1886,8 @@ class TestJsonObjectBodyGuard:
     @pytest.mark.asyncio
     @pytest.mark.parametrize("endpoint", ["retry", "skip"])
     async def test_file_state_invalid_json_is_400_not_500(self, store, endpoint):
-        # These two sites previously had no try/except at all: a malformed
-        # body escaped as a raw JSONDecodeError and surfaced as a 500.
+        # Without a try/except these two sites would let a malformed
+        # body escape as a raw JSONDecodeError and surface as a 500.
         sid = store.add_source("s", "local_folder", "/tmp/x")
         async with _client(_guard_app(store)) as client:
             resp = await client.post(
@@ -1938,7 +1951,7 @@ class TestJsonObjectBodyGuard:
 
     @pytest.mark.asyncio
     async def test_invalid_json_yields_code_at_every_site(self, store, monkeypatch):
-        # At the previously-guarded sites the parse-failure path's entire
+        # At the already-guarded sites the parse-failure path's entire
         # change is the machine-readable ``code`` field -- pin it everywhere.
         monkeypatch.setattr(f"{MODULE}.KiroCrewConfig.load", staticmethod(_cfg))
         item_id = store.add_item("a", "body", "note")

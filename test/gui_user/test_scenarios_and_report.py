@@ -51,6 +51,38 @@ class TestShippedScenarios:
         for exp in sc.expectations:
             assert exp in prompt
         assert f"at most {sc.max_steps} actions" in prompt
+        # The catalog fields describe the scenario to people, not to the model.
+        assert sc.user_story not in prompt
+
+    def test_every_shipped_scenario_is_classified(self) -> None:
+        for sc in scenarios.load_all(SCENARIOS_DIR):
+            assert sc.feature in scenarios.FEATURES
+            assert sc.user_story.startswith("As a "), sc.name
+            assert sc.docs_url.startswith("docs/") or sc.docs_url.startswith("https://")
+            if sc.docs_url.startswith("docs/"):
+                assert (Path(__file__).parents[2] / sc.docs_url.split("#")[0]).is_file(), sc.name
+
+    def test_shipped_scenarios_group_by_feature(self) -> None:
+        groups = scenarios.by_feature(scenarios.load_all(SCENARIOS_DIR))
+        assert {slug: [s.name for s in g] for slug, g in groups.items()} == {
+            "chat": ["sessions-new-chat"],
+            "members": ["members-dm-hello"],
+            "settings": ["settings-theme-toggle"],
+        }
+        # FEATURES order, not alphabetical: chat is the product's primary surface.
+        assert list(groups) == ["chat", "members", "settings"]
+
+    def test_members_scenario_holds_across_the_crew_mode_retirement(self) -> None:
+        """The Feature Previews card carries two titles across the Crew Mode retirement; the steps name both."""
+        sc = scenarios.load_scenario(SCENARIOS_DIR / "members-dm-hello.yaml")
+        preview_step = next(
+            s for s in sc.steps if "preview" in s.lower() and "turn on" in s.lower()
+        )
+        assert 'starts with "Crew Members"' in preview_step
+        assert (
+            "Crew Members and Crew Mode" in preview_step
+        )  # the longer title is still a valid reading
+        assert any('"Crew Members" item appears in the left rail' in s for s in sc.steps)
 
 
 def _write(tmp_path: Path, name: str, doc: dict) -> Path:
@@ -63,6 +95,8 @@ def _valid(name: str = "demo") -> dict:
     return {
         "name": name,
         "tier": "smoke",
+        "feature": "settings",
+        "user_story": "As a user, I want to do a thing, so that the thing is done.",
         "summary": "do a thing",
         "preconditions": {"seed": "rich", "members": ["nova-sky"], "start_url": "/settings"},
         "steps": ["click the thing"],
@@ -76,6 +110,18 @@ class TestScenarioValidation:
     def test_valid_document_round_trips(self, tmp_path: Path) -> None:
         sc = scenarios.load_scenario(_write(tmp_path, "demo", _valid()))
         assert sc.members == ("nova-sky",) and sc.start_url == "/settings" and sc.seed == "rich"
+        assert sc.feature == "settings" and sc.user_story.startswith("As a user")
+        assert sc.docs_url == ""
+
+    def test_docs_url_accepts_https_and_repo_docs_paths(self, tmp_path: Path) -> None:
+        for url in (
+            "https://github.com/kirodotdev/KiroCrew/issues/9578",
+            "docs/system-specs/modules/themes.md",
+            "docs/build/gui-user-test.md#adding-a-scenario",
+        ):
+            doc = _valid()
+            doc["docs_url"] = url
+            assert scenarios.load_scenario(_write(tmp_path, "demo", doc)).docs_url == url
 
     def test_defaults(self, tmp_path: Path) -> None:
         doc = _valid()
@@ -97,6 +143,16 @@ class TestScenarioValidation:
             (lambda d: d.update(name="Demo"), "lowercase slug"),
             (lambda d: d.update(name="other"), "file stem"),
             (lambda d: d.update(tier="weekly"), "tier"),
+            (lambda d: d.pop("feature"), "'feature' is required"),
+            (lambda d: d.update(feature="Settings"), "'feature' is required"),
+            (lambda d: d.update(feature="not-a-feature"), "'feature' is required"),
+            (lambda d: d.pop("user_story"), "'user_story' is required"),
+            (lambda d: d.update(user_story="   "), "'user_story' is required"),
+            (lambda d: d.update(user_story="x" * (scenarios.USER_STORY_MAX + 1)), "user_story"),
+            (lambda d: d.update(docs_url="http://insecure.example"), "docs_url"),
+            (lambda d: d.update(docs_url="docs/../secret.md"), "docs_url"),
+            (lambda d: d.update(docs_url="README.md"), "docs_url"),
+            (lambda d: d.update(docs_url=7), "docs_url"),
             (lambda d: d.update(summary=""), "summary"),
             (lambda d: d.update(steps=[]), "steps"),
             (lambda d: d.update(expectations=[""]), "expectations"),
@@ -251,6 +307,8 @@ def _summary() -> dict:
             {
                 "name": "settings-theme-toggle",
                 "tier": "smoke",
+                "feature": "settings",
+                "user_story": "As a user, I want to switch theme | quickly.",
                 "summary": "s",
                 "status": "PASS",
                 "attempts": [
@@ -270,6 +328,8 @@ def _summary() -> dict:
             {
                 "name": "sessions-new-chat",
                 "tier": "smoke",
+                "feature": "chat",
+                "user_story": "As a user, I want a new chat.",
                 "summary": "s",
                 "status": "FAIL",
                 "attempts": [
@@ -317,13 +377,74 @@ class TestReport:
         )
         assert md.count("| `settings-theme-toggle` |") == 1
         assert (
-            "| ❌ FAIL | `sessions-new-chat` | smoke | 14 | 90.0s | 2 | $0.12 | MAX_STEPS |" in md
+            "| ❌ FAIL | `sessions-new-chat` | As a user, I want a new chat. | smoke "
+            "| 14 | 90.0s | 2 | $0.12 | MAX_STEPS |" in md
         )
         assert "≈ $0.17 of $3.00 budget" in md
         assert "[screenshots + steps.jsonl](https://x/artifact)" in md
         # A failing scenario's final report is shown; a passing one only if it flagged UI issues.
         assert "no new row" in md
         assert "VERDICT: PASS" not in md
+
+    def test_markdown_is_grouped_by_feature_in_registry_order(self) -> None:
+        md = report.render_markdown(_summary())
+        chat = md.index("### Chat sessions (`chat`) — ❌ FAIL 0/1")
+        settings = md.index("### Settings (`settings`) — ✅ PASS 1/1")
+        assert chat < settings  # FEATURES order, even though the fixture lists settings first
+        assert md.count("| | Scenario | User story | Tier |") == 2
+        # A pipe inside a repo-authored user story cannot break the table.
+        assert "switch theme / quickly." in md and "theme | quickly" not in md
+
+    def test_pre_feature_summaries_still_render(self) -> None:
+        s = _summary()
+        for sc in s["scenarios"]:
+            sc.pop("feature")
+            sc.pop("user_story")
+        md = report.render_markdown(s)
+        assert "### Unclassified (`unclassified`) — ❌ FAIL 1/2" in md
+        assert md.count("| `") == 2
+        assert report.group_by_feature([]) == {}
+
+    def test_console_groups_too(self) -> None:
+        out = report.render_console(_summary())
+        assert out.splitlines()[0].startswith("GUI user test: FAIL")
+        assert "  [chat] Chat sessions: FAIL" in out
+        assert "  [settings] Settings: PASS" in out
+
+    def test_features_catalog_lists_stories_verdicts_and_gaps(self) -> None:
+        catalog = scenarios.load_all(SCENARIOS_DIR)
+        md = report.render_features(catalog, _summary(), run_url="https://x/run")
+        assert md.startswith("# GUI user-test feature catalog\n")
+        assert (
+            f"_3 of {len(scenarios.FEATURES)} features covered · 3 scenarios (2 smoke / 1 nightly)._"
+            in md
+        )
+        assert (
+            "_Latest verdict: **FAIL** on tier `smoke` with `test-model` ([workflow run](https://x/run))._"
+            in md
+        )
+        # Sections in FEATURES order, each with its stories; the nightly-only member
+        # scenario was not selected by this smoke run and says so.
+        assert (
+            md.index("## Chat sessions (`chat`)")
+            < md.index("## Crew Members (`members`)")
+            < md.index("## Settings (`settings`)")
+        )
+        assert "| ❌ FAIL | As a user, I want to start a new chat" in md
+        assert "| ▫️ not run | As a user with several agents" in md
+        assert (
+            "| `settings-theme-toggle` | smoke | [docs](docs/system-specs/modules/themes.md) |"
+            in md
+        )
+        # Uncovered features are the backlog.
+        assert "## Not yet covered" in md
+        assert "- `knowledge` Knowledge library" in md
+        assert "- `chat` Chat sessions" not in md
+
+    def test_features_catalog_without_a_run(self) -> None:
+        md = report.render_features(scenarios.load_all(SCENARIOS_DIR))
+        assert "_No run attached" in md
+        assert md.count("▫️ not run") == 3 and "✅" not in md and "❌" not in md
 
     def test_neutralize_defangs_fences_mentions_and_control_chars(self) -> None:
         raw = "ok\n```\n@maintainer see <img src=x onerror=1>\x07\r~~~\n" + "z" * 50
@@ -372,3 +493,32 @@ class TestReport:
         )
         assert report.COMMENT_MARKER in capsys.readouterr().out
         assert report.main(["--summary", str(tmp_path / "missing.json")]) == 2
+        capsys.readouterr()
+        # Every non-catalog format needs a summary.
+        assert report.main(["--format", "verdict"]) == 2
+        assert "--summary is required" in capsys.readouterr().err
+
+    def test_cli_features_with_and_without_summary(
+        self, tmp_path: Path, capsys, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        p = tmp_path / "summary.json"
+        p.write_text(json.dumps(_summary()), encoding="utf-8")
+        assert report.main(["--format", "features", "--summary", str(p)]) == 0
+        out = capsys.readouterr().out
+        assert "# GUI user-test feature catalog" in out and "Latest verdict: **FAIL**" in out
+        assert report.main(["--format", "features"]) == 0
+        assert "_No run attached" in capsys.readouterr().out
+        # A malformed shipped scenario is a hard error, not a half catalog.
+        (tmp_path / "bad.yaml").write_text("name: bad\n", encoding="utf-8")
+        monkeypatch.setattr(report, "SCENARIOS_DIR", tmp_path)
+        assert report.main(["--format", "features"]) == 2
+        assert "could not load scenarios" in capsys.readouterr().err
+
+
+class TestScenarioResultCarriesTheCatalogFields:
+    def test_for_scenario_copies_feature_and_story(self) -> None:
+        sc = scenarios.load_scenario(SCENARIOS_DIR / "members-dm-hello.yaml")
+        res = harness.ScenarioResult.for_scenario(sc, "SKIPPED")
+        assert (res.name, res.tier, res.status) == ("members-dm-hello", "nightly", "SKIPPED")
+        assert res.feature == "members" and res.user_story == sc.user_story
+        assert res.attempts == []

@@ -28,6 +28,7 @@ import json
 import logging
 import re
 import threading
+from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 from unittest.mock import AsyncMock
@@ -154,7 +155,7 @@ class TestHelpers:
     def test_audit_routes_the_sel_write_off_the_event_loop(self):
         # The SEL write's first touch pays log construction, so the async
         # _audit wrapper must hand the sync writer to a worker thread instead
-        # of running it inline on the loop — the regression issue #8139 locks
+        # of running it inline on the loop — the regression this test locks
         # out. Observed from inside the writer itself (which thread ran it)
         # rather than by patching the stdlib asyncio module object, which
         # would leak the mock to unrelated code on other threads.
@@ -972,7 +973,7 @@ class TestDriveUpload:
         # stays the same. A name resolved before the spool is exactly the
         # staleness the module's no-cache rule forbids, so the post-spool
         # re-authorization re-resolves the drive and refuses on a mismatch --
-        # otherwise put_file would land the object in the previously-discovered
+        # otherwise put_file would land the object in the already-discovered
         # bucket.
         handlers = _registered()
         p1, p2, p3 = _enabled_owner_env()
@@ -1843,7 +1844,7 @@ class TestDriveShare:
         assert resp.status == 502
 
     def test_share_withholds_the_url_when_the_ledger_refuses_as_corrupt(self):
-        # #7805: the ledger reader refuses a corrupt document rather than
+        # The ledger reader refuses a corrupt document rather than
         # replacing it. A mint that could not be RECORDED must not be handed
         # out — the URL would be a live unrevokable bearer grant with no local
         # record, the exact under-reporting the strict reader exists to prevent.
@@ -2098,7 +2099,7 @@ class TestSharesListForget:
 
     def test_an_unavailable_account_is_audited_as_a_denial(self):
         # A permission decision reaches SEL even though the route degrades: the
-        # profile no longer resolves to the requested account, and that is the
+        # profile does not resolve to the requested account, and that is the
         # one event an incident review asks about.
         handlers = _registered()
         entries = [{"id": "sh-1", "section": "drive", "key": "a.txt"}]
@@ -2151,9 +2152,9 @@ class TestSharesListForget:
         assert _payload(resp)["code"] == "unknown_share"
 
     def test_forget_reports_a_corrupt_ledger_instead_of_claiming_unknown(self):
-        # #7805: on the old lenient read a corrupt ledger made every share read
-        # as absent, so forget answered 404 "unknown share" while the record sat
-        # readable in the corrupt bytes — and the rewrite then destroyed it.
+        # A lenient read would make a corrupt ledger scan as every share absent,
+        # so forget would answer 404 "unknown share" while the record sat readable
+        # in the corrupt bytes — and the rewrite would then destroy it.
         handlers = _registered()
         with (
             mock.patch.object(routes_mod, "is_app_enabled", return_value=True),
@@ -2531,7 +2532,7 @@ class TestLibrary:
         body = _payload(resp)
         assert resp.status == 200
         assert body["reconciled"] is False and body["remoteError"]
-        # No AWS call and no prune on a grant that no longer holds.
+        # No AWS call and no prune on a grant that does not hold.
         lister.assert_not_called()
         rec.assert_not_called()
 
@@ -2608,7 +2609,7 @@ class TestLibrary:
         assert body["reconciled"] is False and body["remoteError"]
 
     def test_library_list_survives_a_corrupt_ledger(self):
-        # #7805: the strict update reader refuses a corrupt ledger with
+        # The strict update reader refuses a corrupt ledger with
         # JSONDecodeError. The list route is best-effort by contract and its
         # rows come from the LENIENT display read, so the render must survive
         # and the degradation must be reported — with a reason that says
@@ -2814,7 +2815,7 @@ class TestLibrary:
         assert _payload(resp)["code"] == "not_pushable"
 
     def test_push_reports_a_corrupt_ledger_not_a_client_error(self):
-        # #7805, the trap the issue names: JSONDecodeError subclasses ValueError,
+        # The trap here: JSONDecodeError subclasses ValueError,
         # so without its own arm the ledger's corruption refusal would be
         # reported as 400 not_pushable — blaming the artifact for a store the
         # operator has to repair, on a push whose upload may already be in the
@@ -2906,7 +2907,7 @@ class TestLibrary:
         assert _payload(resp)["code"] == "invalid_slug"
 
     def test_remove_reports_a_corrupt_ledger_not_an_invalid_slug(self):
-        # #7805: JSONDecodeError subclasses ValueError, so without its own arm
+        # JSONDecodeError subclasses ValueError, so without its own arm
         # the ledger's corruption refusal reads as 400 invalid_slug — blaming
         # the request for a store the operator has to repair.
         resp, _removed = self._remove(
@@ -3117,7 +3118,7 @@ class TestBackupEndpoints:
     def _run_backup(self, kind, *, start=None, sdk_present=True):
         """Drive ``POST /backup/{account}/run``.
 
-        The handler no longer performs the backup: it claims a durable Job SDK
+        The handler does not perform the backup itself: it claims a durable Job SDK
         run and returns its id. So this stubs the SDK rather than the backup
         functions. The runner's own behaviour -- resolving its account, refusing
         a key that names none, and the reconciliation of a run left behind by a
@@ -3329,6 +3330,277 @@ class TestBackupEndpoints:
                 handlers[("POST", "/backup/{account}/restore")](req)  # type: ignore[operator]
             )
         assert resp.status == 502
+
+    def test_status_carries_this_installs_identity_with_no_aws_call(self):
+        # The install block rides the UN-POLLED payload: it is local state, so a
+        # poll every few seconds must learn it without a paid round trip. A
+        # 32-hex id and a non-empty label are what let every archive row be told
+        # from every other install's.
+        handlers = _registered()
+        p1, p2, p3 = _enabled_owner_env()
+        identity = {"id": "a" * 32, "label": "install-aaaa"}
+        with (
+            p1,
+            p2,
+            p3,
+            mock.patch.object(routes_mod.backup_mod, "nightly_enabled", return_value=False),
+            mock.patch.object(routes_mod.backup_mod, "last_runs", return_value={}),
+            mock.patch.object(routes_mod, "_account_jobs", return_value={}),
+            mock.patch.object(routes_mod.backup_mod, "install_identity", return_value=identity),
+            mock.patch.object(routes_mod.aws_consent, "refuse_and_log") as consent,
+            mock.patch.object(routes_mod.storage_mod, "find_drive") as find,
+        ):
+            resp = asyncio.run(
+                handlers[("GET", "/backup/{account}")](  # type: ignore[operator]
+                    _request("GET", f"/backup/{ACCOUNT}", match_info={"account": ACCOUNT})
+                )
+            )
+        body = _payload(resp)
+        assert re.fullmatch(r"[0-9a-f]{32}", body["install"]["id"])
+        assert body["install"]["label"]
+        assert body["remote"] is None
+        # The un-polled payload reaches neither consent nor the drive.
+        consent.assert_not_called()
+        find.assert_not_called()
+
+    def test_remote_listing_is_opt_in_and_others_is_a_second_opt_in(self):
+        # `?remote=1` lists this install's own prefixes only (include_others
+        # False); `?remote=1&others=1` also enumerates the OTHER installs'
+        # prefixes -- a second, costlier opt-in because each other install
+        # costs a list per kind plus a label read. The flag reaches
+        # list_remote_backups exactly as the query said.
+        handlers = _registered()
+        for query, expected in (("remote=1", False), ("remote=1&others=1", True)):
+            p1, p2, p3 = _enabled_owner_env()
+            with (
+                p1,
+                p2,
+                p3,
+                _consent_ok(),
+                _drive_found(),
+                mock.patch.object(routes_mod.backup_mod, "nightly_enabled", return_value=False),
+                mock.patch.object(routes_mod.backup_mod, "last_runs", return_value={}),
+                mock.patch.object(routes_mod, "_account_jobs", return_value={}),
+                mock.patch.object(
+                    routes_mod.backup_mod,
+                    "install_identity",
+                    return_value={"id": "a" * 32, "label": "install-aaaa"},
+                ),
+                mock.patch.object(
+                    routes_mod.backup_mod, "list_remote_backups", return_value={}
+                ) as listed,
+            ):
+                asyncio.run(
+                    handlers[("GET", "/backup/{account}")](  # type: ignore[operator]
+                        _request(
+                            "GET",
+                            f"/backup/{ACCOUNT}?{query}",
+                            match_info={"account": ACCOUNT},
+                        )
+                    )
+                )
+            assert listed.call_args.kwargs["include_others"] is expected, query
+
+    def _restore(self, body: dict, *, restore=None):
+        handlers = _registered()
+        p1, p2, p3 = _enabled_owner_env()
+        req = _request("POST", f"/backup/{ACCOUNT}/restore", match_info={"account": ACCOUNT})
+        req.json = AsyncMock(return_value=body)  # type: ignore[method-assign]
+        restore_patch = (
+            mock.patch.object(routes_mod.backup_mod, "restore_download", side_effect=restore)
+            if isinstance(restore, Exception)
+            else mock.patch.object(
+                routes_mod.backup_mod,
+                "restore_download",
+                return_value=restore if restore is not None else {"path": "/staging/x"},
+            )
+        )
+        with (
+            p1,
+            p2,
+            p3,
+            _consent_ok(),
+            _drive_found(),
+            mock.patch.object(routes_mod.storage_mod, "validate_key", return_value=None),
+            restore_patch as restored,
+        ):
+            resp = asyncio.run(
+                handlers[("POST", "/backup/{account}/restore")](req)  # type: ignore[operator]
+            )
+        return resp, restored
+
+    def test_restore_of_a_foreign_archive_is_409_naming_the_owning_install(self):
+        # A restore of a key another install wrote is a 409 (a conflict with the
+        # state of the thing, not a caller-authority problem). The machine
+        # readable `code` is mandatory -- test_error_code_contract.py reds every
+        # shard without one -- and the owning id rides along so the dialog can
+        # say WHOSE archive this is.
+        owner = "b" * 32
+        resp, _ = self._restore(
+            {"key": f"snapshots/{owner}/x.tar.gz"},
+            restore=routes_mod.backup_mod.UnprovenArchive(
+                routes_mod.backup_mod.ORIGIN_OTHER, owner
+            ),
+        )
+        assert resp.status == 409
+        body = _payload(resp)
+        assert body["code"] == "foreign_install_archive"
+        assert body["install"] == owner
+
+    def test_restore_with_foreign_ok_true_reaches_the_download_with_the_override(self):
+        # The same request with an explicit override succeeds, and foreign_ok
+        # travels to restore_download as True -- the override is the operator's
+        # deliberate decision, which is the whole point of the gate.
+        resp, restored = self._restore(
+            {"key": "snapshots/" + "b" * 32 + "/x.tar.gz", "foreignOk": True},
+            restore={"path": "/staging/x", "origin": "other", "install": "b" * 32},
+        )
+        assert resp.status == 200
+        assert _payload(resp)["downloaded"] is True
+        assert restored.call_args.kwargs["foreign_ok"] is True
+
+    def test_foreign_ok_sent_as_the_string_false_is_a_400_and_downloads_nothing(self):
+        # THE stringly-typed trap: `bool("false")` is True in Python, so a caller
+        # sending {"foreignOk": "false"} to ask NOT to override would be granted
+        # the override -- overwriting this machine's memory with another's. The
+        # flag is validated, never coerced, so a non-bool is a 400 and
+        # restore_download is never reached.
+        resp, restored = self._restore({"key": "snapshots/x.tar.gz", "foreignOk": "false"})
+        assert resp.status == 400
+        assert _payload(resp)["code"] == "invalid_foreign_ok"
+        restored.assert_not_called()
+
+    def _restore_for_real(self, body: dict, tmp_path, *, get_file=None):
+        """Run the route against the REAL ``restore_download``.
+
+        The rest of this class stands a mock in for that function, which is the right
+        shape for testing the route's own translation of a result into a response.
+        It is the wrong shape for asserting what the backend DECIDES: a mock returns
+        whatever the test says, so an assertion about a refusal is really an
+        assertion about the mock. Only ``storage.get_file`` is stubbed here -- the
+        classification and both override gates are the shipped ones.
+        """
+        handlers = _registered()
+        p1, p2, p3 = _enabled_owner_env()
+        req = _request("POST", f"/backup/{ACCOUNT}/restore", match_info={"account": ACCOUNT})
+        req.json = AsyncMock(return_value=body)  # type: ignore[method-assign]
+        backup = routes_mod.backup_mod
+        with (
+            p1,
+            p2,
+            p3,
+            _consent_ok(),
+            _drive_found(),
+            mock.patch.object(routes_mod.storage_mod, "validate_key", return_value=None),
+            mock.patch.object(backup, "_state_path", lambda: tmp_path / "backup.json"),
+            mock.patch.object(backup, "app_data_dir", lambda name: tmp_path / "appdata"),
+            mock.patch.object(backup.storage, "get_file", side_effect=get_file) as got,
+        ):
+            resp = asyncio.run(
+                handlers[("POST", "/backup/{account}/restore")](req)  # type: ignore[operator]
+            )
+        return resp, got
+
+    def test_a_legacy_key_is_refused_by_the_real_backend_before_any_download(self, tmp_path):
+        # A pre-namespace archive carries no id, so nothing proves whose it is, and
+        # the shipped rule refuses every origin except a proven self one until the
+        # caller accepts the risk. Being plausibly this operator's own pre-upgrade
+        # backup is a reason to word the confirmation for that case, not a reason to
+        # skip it. Asserted against the REAL backend: the refusal has to come from
+        # the code, not from a mock told to produce it.
+        resp, got = self._restore_for_real(
+            {"key": "snapshots/kirocrew-snapshot-20260101T000000Z-abcdef.tar.gz"},
+            tmp_path,
+        )
+        assert resp.status == 409
+        body = _payload(resp)
+        assert body["code"] == "foreign_install_archive"
+        assert body["origin"] == "legacy"
+        # Nothing was transferred: the origins local state can settle are refused
+        # before a paid GET, so a planted object cannot bill the account.
+        got.assert_not_called()
+
+    def test_a_legacy_key_downloads_once_the_caller_accepts_it(self, tmp_path):
+        # The same request with the override reaches the download and the reply names
+        # the origin the caller accepted, so a client learns WHICH unproven case it
+        # just took.
+        def fake_get(profile, region, bucket, section, key, dest, *, account, timeout=600):
+            Path(dest).write_bytes(b"legacy archive")
+
+        resp, got = self._restore_for_real(
+            {
+                "key": "snapshots/kirocrew-snapshot-20260101T000000Z-abcdef.tar.gz",
+                "foreignOk": True,
+            },
+            tmp_path,
+            get_file=fake_get,
+        )
+        assert resp.status == 200
+        body = _payload(resp)
+        assert body["downloaded"] is True
+        assert body["origin"] == "legacy"
+        got.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Install label — rename THIS install (display only, local, no AWS)
+# ---------------------------------------------------------------------------
+
+
+class TestInstallLabel:
+    def _label(self, body: dict, *, set_label=None):
+        handlers = _registered()
+        req = _request("POST", "/install/label")
+        req.json = AsyncMock(return_value=body)  # type: ignore[method-assign]
+        label_patch = (
+            mock.patch.object(routes_mod.backup_mod, "set_install_label", side_effect=set_label)
+            if isinstance(set_label, Exception)
+            else mock.patch.object(
+                routes_mod.backup_mod,
+                "set_install_label",
+                return_value=set_label if set_label is not None else {"id": "a" * 32, "label": "x"},
+            )
+        )
+        with (
+            mock.patch.object(routes_mod, "is_app_enabled", return_value=True),
+            mock.patch.object(routes_mod.storage_mod, "find_drive") as find,
+            label_patch as labeled,
+        ):
+            resp = asyncio.run(handlers[("POST", "/install/label")](req))  # type: ignore[operator]
+        return resp, labeled, find
+
+    def test_a_valid_label_returns_the_stored_identity_with_no_aws_call(self):
+        # The rename is local: it changes what is displayed and reaches the drive
+        # only on the next backup, so this endpoint must make no AWS call. The
+        # stored identity comes back so the console shows the sanitised value.
+        stored = {"id": "a" * 32, "label": "my laptop"}
+        resp, labeled, find = self._label({"label": "my laptop"}, set_label=stored)
+        assert resp.status == 200
+        assert _payload(resp) == {"install": stored}
+        labeled.assert_called_once_with("my laptop")
+        find.assert_not_called()
+
+    def test_a_non_string_label_is_a_400_and_never_stored(self):
+        # The id decides what is allowed; the label decides only what is shown --
+        # but it must still be a string. A non-string shape is refused before
+        # set_install_label is reached.
+        for raw in (123, None, [], {}, True):
+            resp, labeled, _ = self._label({"label": raw})
+            assert resp.status == 400, f"{raw!r} was accepted"
+            assert _payload(resp)["code"] == "invalid_label"
+            labeled.assert_not_called()
+
+    def test_a_label_that_could_not_persist_fails_with_a_structured_error(self):
+        # set_install_label can genuinely fail to write. It must fail loudly with
+        # the machine-readable `code` every non-2xx here carries, and must not
+        # echo the OSError's own text, which renders the state file's absolute
+        # path.
+        boom = OSError(28, "No space left on device", "/home/someone/.kirocrew/backup.json")
+        resp, _labeled, _find = self._label({"label": "ok"}, set_label=boom)
+        body = _payload(resp)
+        assert resp.status == 500
+        assert body["code"] == "state_persist_failed"
+        assert ".kirocrew" not in body["error"]
 
 
 # ---------------------------------------------------------------------------

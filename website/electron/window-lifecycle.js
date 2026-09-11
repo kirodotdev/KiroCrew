@@ -28,6 +28,7 @@ const {
   OWNER,
 } = require("./browser-control");
 const { createBrowserOps } = require("./browser-ops");
+const { runAnnotateOp } = require("./browser-annotate");
 const { createAgentCommandChannel } = require("./browser-agent-channel");
 const { attachContextMenu } = require("./context-menu");
 const { validateRemoteSettings } = require("./validation");
@@ -1861,6 +1862,83 @@ function createWindowLifecycle(options) {
     return dispatchBrowserOp(panel, op, args);
   }
 
+  // Human-initiated element annotation on the page the user is looking at.
+  // Served through executeJavaScript/capturePage, never the agent control
+  // plane: it needs no CDP owner and Browser Mode may be off. Closed op set.
+  // Native pointer input seen by the browser view, per WebContents. The
+  // annotate focus hand-back keys off THIS (a signal the page cannot forge),
+  // never off the page-controlled poll reply alone. WebContents 'input-event'
+  // is a documented Electron event, present in the pinned v43 line, whose
+  // InputEvent.type covers mouseDown/mouseUp:
+  // https://www.electronjs.org/docs/latest/api/web-contents#event-input-event
+  const annotateInputArmed = new WeakSet();
+  const ANNOTATE_FOCUS_WINDOW_MS = 2000;
+  function focusAnnotateSender(panel) {
+    try {
+      const s = panel.annotateSender;
+      if (s && !s.isDestroyed()) s.focus();
+    } catch {
+      // Focus is a courtesy; the editor still works after a click.
+    }
+  }
+  function armAnnotateInput(panel, wc) {
+    if (!wc || annotateInputArmed.has(wc)) return;
+    annotateInputArmed.add(wc);
+    try {
+      wc.on("input-event", (_e, input) => {
+        if (!input || (input.type !== "mouseDown" && input.type !== "mouseUp")) return;
+        panel.lastNativeInput = Date.now();
+        // While picking, the mouse-up that completes a pick hands focus back
+        // to the panel RIGHT HERE -- on the native input path, before the
+        // ~150 ms poll that reports the pick -- so a note typed immediately
+        // after the click lands in the panel's editor, never in the page.
+        // Nothing the page can do triggers this: it is real input, and the
+        // picking flag is written only from this process's own op results.
+        if (input.type === "mouseUp" && panel.annotatePicking) focusAnnotateSender(panel);
+      });
+    } catch {
+      // No native input feed: the hand-back simply never fires.
+    }
+  }
+  async function browserAnnotate(sender, panelId, op, args) {
+    const panel = panelForSender(sender, panelId, { create: false });
+    if (!panel) return { ok: false, code: "no_view", error: "no native browser panel" };
+    const wc = panel.manager.getWebContents();
+    if (op === "start") { panel.annotateSender = sender; armAnnotateInput(panel, wc); }
+    const res = await runAnnotateOp(wc, op, args);
+    // Pick-mode flag for the native input path above -- from this process's
+    // own view of the ops (start/stop/teardown) and the sanitized poll reply.
+    if (res && res.ok) {
+      if (op === "start") panel.annotatePicking = true;
+      else if (op === "stop" || op === "teardown") panel.annotatePicking = false;
+      else if (op === "poll" && typeof res.picking === "boolean") panel.annotatePicking = res.picking;
+    } else if (res && !res.ok && (res.code === "no_overlay" || res.code === "no_view")) {
+      panel.annotatePicking = false;
+    }
+    // The click that picked an element (or a marker) landed in the native
+    // view, so keyboard focus is there. The note is typed in the PANEL -- hand
+    // focus back to the dashboard renderer so its editor can take it without
+    // a second click. Poll-only, one-shot (the flags are cleared on read).
+    // The page owns the reply, so it is never enough on its own: the id must
+    // name a pick the sanitizer kept AND a real mouse press must have reached
+    // the view (Electron's input-event, which page script cannot synthesize)
+    // within the last two seconds; that press is then consumed. A hostile
+    // page re-reporting `picked` every poll moves focus zero times, while
+    // EVERY real pick -- however quick the previous one -- gets focus back,
+    // so the next keystrokes land in the panel's editor, never in the page.
+    if (op === "poll" && res && res.ok && (res.picked !== undefined || res.edit !== undefined)) {
+      const id = res.picked !== undefined ? res.picked : res.edit;
+      const known = Array.isArray(res.items) && res.items.some((it) => it && it.id === id);
+      const now = Date.now();
+      const native = panel.lastNativeInput && now - panel.lastNativeInput <= ANNOTATE_FOCUS_WINDOW_MS;
+      if (known && native) {
+        panel.lastNativeInput = 0;
+        focusAnnotateSender(panel);
+      }
+    }
+    return res;
+  }
+
   function recordMemorySample(sender, payload) {
     if (!mainWindow || mainWindow.isDestroyed()) return;
     if (sender !== mainWindow.webContents) return;
@@ -1942,6 +2020,7 @@ function createWindowLifecycle(options) {
       setControlOwner: browserSetControlOwner,
       getControl: browserGetControl,
       control: browserControl,
+      annotate: browserAnnotate,
     },
     security: {
       configureSession: configureSessionSecurity,

@@ -633,9 +633,9 @@ async def test_a_mismatched_entry_in_another_scope_survives_the_purge(
 ) -> None:
     """Blocker 2: the purge removes only the scopes ownership actually matched.
 
-    Ownership used to be judged from the merged winner and acted on across EVERY
-    scope, so a same-named entry in a lower-priority scope pointing somewhere else
-    was deleted unseen -- config the user wrote, gone because a higher scope
+    Judging ownership from the merged winner and acting across EVERY scope would
+    delete, unseen, a same-named entry in a lower-priority scope pointing somewhere
+    else -- config the user wrote, gone because a higher scope
     happened to win under the same name.
     """
     scopes: list[tuple[str, ...]] = []
@@ -664,8 +664,8 @@ async def test_the_revoke_runs_inside_the_lock_that_judged_ownership(
 ) -> None:
     """Blocker 3: decide and act are ONE transaction, not two.
 
-    The revoke used to run after the locked section returned, so an entry added at
-    the same endpoint in that window lost a grant it had not used yet. The lock is
+    A revoke that runs after the locked section returns lets an entry added at
+    the same endpoint in that window lose a grant it had not used yet. The lock is
     instrumented rather than raced: a real concurrency test would have to win a
     scheduling race to fail, while ordering is the property the fix establishes and
     holds on every run.

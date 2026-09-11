@@ -1,7 +1,7 @@
 """The shared UTF-8 subprocess decode mapping must actually pin UTF-8.
 
-Follow-up to #3219/#3669: a text-mode subprocess call without ``encoding=``
-decodes with the locale code page -- mojibake on Windows. ``UTF8_TEXT`` is the
+A text-mode subprocess call without ``encoding=`` decodes with the locale code
+page -- mojibake on Windows. ``UTF8_TEXT`` is the
 one shared definition of "this child's output is UTF-8"; these tests pin that
 the definition is complete (text mode on, UTF-8, replacement errors), that it
 survives a real subprocess round-trip, and that it cannot be mutated by a
@@ -32,7 +32,7 @@ _CHILD_UTF8_ENV = {**os.environ, "PYTHONIOENCODING": "utf-8"}
 class TestUtf8TextMapping:
     def test_carries_the_complete_decode_pin(self):
         # text=True stays present so kwargs spies that check it keep seeing it;
-        # encoding is the actual fix; errors=replace matches the #3669 shape.
+        # encoding pins UTF-8; errors=replace tolerates an undecodable byte.
         assert dict(UTF8_TEXT) == {
             "text": True,
             "encoding": "utf-8",

@@ -6,9 +6,9 @@ to the session afterwards. That leaves the property this module exists for
 unasserted: *after the broker comes back, can the session still call its
 servers?*
 
-The answer used to be no, and the failure was silent and permanent. A session's
-MCP toolset is frozen at ``session/new``, so the tools stayed listed and simply
-failed for the rest of the session's life; the only recovery was opening a new
+Without a reconnect the failure is silent and permanent. A session's
+MCP toolset is frozen at ``session/new``, so the tools stay listed and simply
+fail for the rest of the session's life; the only recovery is opening a new
 one. Two shapes, neither observable from a "nothing errored" assertion:
 
 * with a call in flight, the liveness monitor failed it with ``-32603`` and a
@@ -472,7 +472,7 @@ async def test_replay_refuses_a_generation_that_answers_differently() -> None:
     The session's toolset was frozen at ``session/new`` against the first
     answer. If a new generation resolves this server to something else -- a
     different binary, a changed config -- then reconnecting would leave the
-    session calling tools that are no longer the ones it was offered. Answering
+    session calling tools that differ from the ones it was offered. Answering
     wrongly is worse than the terminal exit, so this fails closed. It is also
     REFUSE rather than RETRY: that generation owns the endpoint, so the next
     attempt would get the same answer.
@@ -671,8 +671,8 @@ async def test_a_closed_stdin_is_not_a_reconnectable_ending() -> None:
 # --- A reconnect must not silently drop resource subscriptions --------------
 # The daemon's subscription table lives in its process. Replaying only
 # ``initialize`` would return a connection that answers calls while resource
-# updates never arrive again -- a quiet degradation where there used to be a
-# visible one, which is the opposite of what this fix is for. A subscribed
+# updates never arrive again -- a quiet degradation in place of a visible
+# one, which is the opposite of what this fix is for. A subscribed
 # session is refused the reconnect until replaying subscriptions is done
 # properly.
 

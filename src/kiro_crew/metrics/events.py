@@ -33,20 +33,20 @@ def emit_counter(name: str, attrs: dict[str, str | int | bool | float]) -> None:
 # Hang-resilience series (see docs in the emitting call sites)
 # ---------------------------------------------------------------------------
 
-#: Every fast-fail denial of a backend-child permission request — the paths
-#: that replaced the pre-fix silent 2-hour hangs (issue #3785). ``reason`` is
+#: Every fast-fail denial of a backend-child permission request — the path
+#: that prevents a silent 2-hour hang. ``reason`` is
 #: the closed SEL reason enum; ``surface`` names the choke point.
 CHILD_PERMISSION_DENIED = "kirocrew.acp.child_permission.denied"
 
 #: Every backend-child permission request successfully ROUTED into the
 #: mode-parity pipeline (owner queue → policy gates / interactive card).
-#: This is the impact numerator: each increment is a request that, before
-#: #3786, was silently dropped and wedged its crew until the 2h ceiling.
+#: This is the impact numerator: each increment is a request that would
+#: otherwise be silently dropped and wedge its crew until the 2h ceiling.
 #: ``routed + denied`` ≈ total child permission requests handled.
 CHILD_PERMISSION_ROUTED = "kirocrew.acp.child_permission.routed"
 
-#: Unroutable ACP frames per method class. ``method_class=permission`` was the
-#: pre-fix hang signature and MUST stay ~0 after #3786/#3889 — any nonzero
+#: Unroutable ACP frames per method class. ``method_class=permission`` is the
+#: hang signature and MUST stay ~0 — any nonzero
 #: value is a routing regression alarm.
 DROPPED_FRAMES = "kirocrew.acp.dropped_frames"
 

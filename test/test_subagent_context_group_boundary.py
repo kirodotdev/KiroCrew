@@ -121,7 +121,7 @@ class TestApiSpawnHandler:
         mgr = MagicMock()
         mgr.spawn.return_value = SimpleNamespace(id="a1", done=False, error="")
         mgr.max_concurrent = 4
-        state = SimpleNamespace(subagents=mgr)
+        state = SimpleNamespace(subagents=mgr, conversation_log=MagicMock())
         request = MagicMock()
         request.app = {"state": state}
 

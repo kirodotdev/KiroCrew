@@ -1,6 +1,6 @@
-"""Regression tests for #4664: one malformed job entry must not drop the store.
+"""Regression tests: one malformed job entry must not drop the store.
 
-``CronService._load`` used to deserialize the job list in a single
+A naive ``CronService._load`` would deserialize the job list in a single
 all-or-nothing comprehension inside ``except (json.JSONDecodeError, KeyError)``:
 a ``KeyError`` from any ONE entry aborted the whole comprehension and the
 handler replaced the registry with an empty list — one malformed or legacy
@@ -54,7 +54,7 @@ def test_malformed_entry_is_skipped_and_good_jobs_survive(tmp_path, caplog) -> N
 
 
 def test_non_object_entry_is_skipped(tmp_path) -> None:
-    """A non-dict entry (would raise TypeError, previously uncaught) is skipped."""
+    """A non-dict entry (would raise TypeError if uncaught) is skipped."""
     mgr = CronService(base_dir=tmp_path)
     _write_store(mgr._path, [_good("a"), "garbage", _good("b")])
 
@@ -151,7 +151,7 @@ def test_top_level_non_object_resets_store_and_counts_zero(tmp_path, caplog) -> 
 
 # --- Narrowing the per-record catch: a code defect is not "bad data" -------
 #
-# ``CronService._load`` used to catch ``AttributeError`` around
+# ``CronService._load`` must not catch ``AttributeError`` around
 # ``_job_from_record``, which cannot raise it from any JSON-representable
 # record (proved by
 # ``test_json_shaped_malformations_raise_only_key_or_type_error`` below). The

@@ -1207,8 +1207,8 @@ describe('sseChatMessage — pipelined sends reconcile (#3898)', () => {
     expect(state.messages).toHaveLength(2)
     expect(state.messages[0].meta?.mid).toBe('m-first')
     expect(state.messages[0].meta?.optimistic).toBeUndefined()
-    // sendId stripped after reconcile
-    expect(state.messages[0].meta?.sendId).toBeUndefined()
+    // Keep correlation for the first send's still-pending HTTP request.
+    expect(state.messages[0].meta?.sendId).toBe('s-first')
     // Second message still optimistic
     expect(state.messages[1].meta?.optimistic).toBe(true)
     expect(state.messages[1].meta?.sendId).toBe('s-second')
@@ -1235,8 +1235,8 @@ describe('sseChatMessage — pipelined sends reconcile (#3898)', () => {
     expect(state.messages[1].meta?.mid).toBe('m-second')
     expect(state.messages[0].meta?.optimistic).toBeUndefined()
     expect(state.messages[1].meta?.optimistic).toBeUndefined()
-    expect(state.messages[0].meta?.sendId).toBeUndefined()
-    expect(state.messages[1].meta?.sendId).toBeUndefined()
+    expect(state.messages[0].meta?.sendId).toBe('s-first')
+    expect(state.messages[1].meta?.sendId).toBe('s-second')
   })
 
   it('reconciles pipelined sends even with streaming frames interleaved', () => {
@@ -1261,7 +1261,7 @@ describe('sseChatMessage — pipelined sends reconcile (#3898)', () => {
     expect(userMsgs[0].meta?.optimistic).toBeUndefined()
   })
 
-  it('strips sendId from meta after successful reconcile', () => {
+  it('keeps sendId after reconciliation so a late HTTP failure can recognize delivery', () => {
     let state = withSlot
     state = reducer(state, appendMessage({ role: 'user', content: 'hello', cls: '', ts: '2026-08-16T10:00:00.000Z', meta: { sendId: 's-hello' } }))
     expect(state.messages[0].meta?.sendId).toBe('s-hello')
@@ -1271,8 +1271,7 @@ describe('sseChatMessage — pipelined sends reconcile (#3898)', () => {
       ts: '2026-08-16T10:00:00.100Z', meta: { mid: 'm-hello', sendId: 's-hello' },
     }))
 
-    // sendId stripped — it was a wire-only correlation ID
-    expect(state.messages[0].meta?.sendId).toBeUndefined()
+    expect(state.messages[0].meta?.sendId).toBe('s-hello')
     expect(state.messages[0].meta?.mid).toBe('m-hello')
   })
 

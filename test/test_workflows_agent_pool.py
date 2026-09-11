@@ -47,7 +47,7 @@ class _FakeSessions:
         # Every (agent, model, cwd) identity a cold-started worker was created
         # with — so a test can assert per-call overrides reach get_or_create.
         self.created_identities: list[tuple] = []
-        # extra_env seen on each cold start (issue #2207) — index-aligned with
+        # extra_env seen on each cold start — index-aligned with
         # created_identities so a test can assert the run-level env pin threads through.
         self.created_extra_env: list = []
 
@@ -214,7 +214,6 @@ async def test_shutdown_releases_warm_sessions():
 # ephemeral path must honor ctx.agent(prompt, agent=…, model=…, cwd=…) instead
 # of collapsing every call to the pool default — otherwise a multi-specialist
 # fan-out (a primary dynamic-workflow use case) all runs as one agent/model.
-# Regression for the blocking review finding on the upstream pool review.
 # --------------------------------------------------------------------------- #
 
 
@@ -486,7 +485,7 @@ async def test_send_message_enforces_timeout(monkeypatch):
 @pytest.mark.asyncio
 async def test_worker_pool_send_timeout_reaches_worker(monkeypatch):
     """End-to-end via WorkerPool.send: the pool's per-task timeout is enforced,
-    proving the worker no longer ignores the protocol's timeout argument."""
+    proving the worker honors the protocol's timeout argument."""
 
     async def _hang(provider, prompt, **kwargs):
         await asyncio.sleep(3600)
@@ -515,7 +514,7 @@ async def test_worker_pool_send_timeout_reaches_worker(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_extra_env_pin_reaches_all_three_pool_call_sites():
-    """Issue #2207: a run-level extra_env pin threads into every get_or_create the
+    """A run-level extra_env pin threads into every get_or_create the
     pooled adapter makes — the warm pooled worker, the named-session bypass, and
     the identity-cap unpooled overflow."""
     env = {"CORRELATION_ID": "xyz", "MC_ENDPOINT": "https://example.test"}

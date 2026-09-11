@@ -114,7 +114,7 @@ def test_only_this_changes_files_can_be_its_offenders() -> None:
     source = SCRIPT.read_text(encoding="utf-8")
     assert "unlisted & changed" in source
     # The resolver itself lives in scripts/ratchet_scope.py, which four merge-ref
-    # ratchets now share (#3057): a private copy per gate is how they would come to
+    # ratchets share: a private copy per gate is how they would come to
     # disagree about the same added line. So this gate must DELEGATE, and the shape
     # assertions below hold against the module that owns the answer.
     assert "ratchet_scope.py" in source, "the gate no longer delegates its scope resolution"
@@ -147,7 +147,7 @@ def test_only_this_changes_files_can_be_its_offenders() -> None:
 
 def test_no_operation_can_add_a_path_to_the_baseline() -> None:
     # The rule that keeps the gate from being a formality. With the verdict scoped
-    # to the caller's own files there is no longer any reason to absorb a path, so
+    # to the caller's own files there is no reason to absorb a path, so
     # the add-capable operation is gone entirely rather than merely guarded.
     source = SCRIPT.read_text(encoding="utf-8")
     assert "snapshot" not in source.lower(), "an add-capable operation came back"

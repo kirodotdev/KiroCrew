@@ -6,6 +6,7 @@ import type { ChatSlot } from '../../types'
 import { compareBySort, comparePinnedThenSort } from './sessionOrder'
 import { i18nT } from '../../i18n/t'
 import { PINNED_SESSION_ORDER_CHANGED_EVENT, PINNED_SESSION_ORDER_KEY, readPinnedSessionOrder, reconcilePinnedSessionOrder } from '../../utils/pinnedSessionOrder'
+import { LIST_TITLE_CLS } from '../../components/listShell'
 
 /** Rows shown before the list defers to "show all". Sized so the flyout stays
  *  a glance rather than a panel: past ~8 rows the eye has to scan, at which
@@ -252,7 +253,7 @@ const SessionFlyout = forwardRef<HTMLDivElement, Props>(function SessionFlyout({
               than a flyout-local copy means the two can never disagree, in any
               locale. A distinct "Recent" caption would put a text swap in the
               middle of a morph whose whole point is that nothing moves. */}
-          <span className="sessions-panel-title truncate text-sm font-semibold tracking-[.04em] text-text-strong">
+          <span className={LIST_TITLE_CLS}>
             {i18nT('pages.chatSidebar.sessions')}
           </span>
         </div>

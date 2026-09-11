@@ -145,7 +145,7 @@ def options_card(*, prompt: str, options: list[str], nonce: str) -> dict[str, An
 
 
 def session_picker_card(*, prompt: str, choices: Any, nonce: str) -> dict[str, Any]:
-    """The ``/sessions`` picker: one Submit per offered dashboard session.
+    """The ``/sessions`` picker: one Submit per offered session.
 
     The payload carries only the nonce and the INDEX -- never the session key. A submit
     is client input, so a key in it would be an instruction to bind whatever the sender

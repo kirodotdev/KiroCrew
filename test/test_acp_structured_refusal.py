@@ -310,7 +310,7 @@ class TestCardDoesNotRepeatStreamedText:
 
 class TestRedactionSeesTheWholeValue:
     """Round-3 GPT finding: a pre-redaction slice can cut a secret so its prefix
-    no longer matches and reaches the surface raw. The redactors run on the
+    does not match and reaches the surface raw. The redactors run on the
     full value; only the result is capped."""
 
     def test_credential_beyond_the_cap_is_still_redacted(self):
@@ -413,7 +413,7 @@ class TestSendMessageStreamFoldsRefusal:
 
 
 class TestRefusalTerminalIsScoped:
-    """Design Review round: only the bare -32603 after a recorded refusal is
+    """Only the bare -32603 after a recorded refusal is
     the refusal's terminal. Any other error keeps its own classification and
     the swallow is logged at WARNING."""
 
@@ -480,7 +480,7 @@ class TestRefusalTerminalIsScoped:
 
 
 class TestRefusalTerminalFlushesToolResults:
-    """GPT round on 6a58089f9: the refusal terminal in ``_dispatch_events``
+    """The refusal terminal in ``_dispatch_events``
     must drain pending tool results before EVENT_COMPLETE, like ``complete``
     does, or a result from the tool that ran just before the filtered
     inference is dropped or leaks into the next turn."""

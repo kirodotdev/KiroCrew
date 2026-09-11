@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
+from kiro_crew.member_memory_auth import private_memory_store_for_session
 from kiro_crew.metrics.sessions import (
     END_REASON_EVICTED,
     discard_session_start,
@@ -362,6 +363,8 @@ class SessionAllocationService:
 
     async def get_subagent_runtime(self, parent_session_key: str, agent: str | None = None) -> Any:
         """Get or spawn the canonical shared companion runtime for a parent."""
+        if await asyncio.to_thread(private_memory_store_for_session, parent_session_key):
+            raise RuntimeError("Private member memory requires a dedicated runtime")
         runtime_type, runtime_dead = self._deps.runtime_types()
         max_retries = 1
         attempt = 0
@@ -439,6 +442,8 @@ class SessionAllocationService:
         cwd: str | None = None,
     ) -> Any:
         """Adopt a configured bootstrap provider's runtime for a task run."""
+        if await asyncio.to_thread(private_memory_store_for_session, parent_session_key):
+            raise RuntimeError("Private member memory requires a dedicated runtime")
         owner = self._owner
         if not owner._provider_factory:
             # Outside the per-key lock: get_subagent_runtime takes that lock and
@@ -550,6 +555,18 @@ class SessionAllocationService:
 
         owner = self._owner
         key = owner._fold_key(session_key)
+        private_stores = await asyncio.gather(
+            asyncio.to_thread(private_memory_store_for_session, key),
+            asyncio.to_thread(private_memory_store_for_session, parent_session_key),
+        )
+        if private_stores[1] and not private_stores[0]:
+            raise RuntimeError(
+                "A private member task requires a trusted child memory binding before execution"
+            )
+        if any(private_stores):
+            return await owner.get_or_create(
+                key, agent=agent, approval_policy=approval_policy, cwd=cwd
+            )
 
         async with self._lock:
             existing = self._sessions.get(key)
@@ -650,6 +667,8 @@ class SessionAllocationService:
         session = self._sessions.get(parent_session_key)
         if session is None:
             return False
+        if getattr(session.provider, "_private_memory", False) is True:
+            return False
         return getattr(session.provider, "is_session_sharing_eligible", False)
 
     @staticmethod
@@ -716,47 +735,6 @@ class SessionAllocationService:
         )
         for parent_key, runtime in list(self._subagent_runtimes.items()):
             add(f"Subagent runtime ({parent_key})", runtime, "")
-
-    def context_info(self) -> list[dict[str, object]]:
-        """Return the dashboard-facing context snapshot for live sessions."""
-        result: list[dict[str, object]] = []
-        for key, session in self._sessions.items():
-            provider = session.provider
-            pct = provider.context_usage_pct()
-            model = "unknown"
-            agent = ""
-            if self._deps.is_claude_provider(provider):
-                model = provider._model or "auto"
-                agent = provider._agent or ""
-            elif self._deps.is_acp_provider(provider):
-                model = provider.client._model or "auto"
-                agent = provider.client._agent or ""
-                if model == "auto" and agent and agent != "kirocrew":
-                    model = self._owner._resolve_agent_model(agent)
-                model = model or "auto"
-
-            if key == self._deps.constants.background_key:
-                name = "Background (titles, cron, heartbeat)"
-            elif key.startswith("dashboard:"):
-                name = f"Chat ({key.split(':', 1)[1]})"
-            else:
-                name = key
-
-            window = 0
-            if hasattr(provider, "context_window_tokens"):
-                window = provider.context_window_tokens()
-            result.append(
-                {
-                    "key": key,
-                    "name": name,
-                    "model": model,
-                    "agent": agent,
-                    "context_pct": round(pct, 1),
-                    "context_window_tokens": window,
-                    "prompts": session.prompt_count,
-                }
-            )
-        return result
 
     def record_success(self, key: str) -> None:
         session = self._sessions.get(self._owner._fold_key(key))
@@ -1109,6 +1087,9 @@ class SessionAllocationService:
         owner = self._owner
         constants = self._deps.constants
         key = owner._fold_key(key)
+        # A binding can belong to any session kind (cron, delegated run, or
+        # consolidation), and must be checked before even reusing a live client.
+        private_memory = bool(await asyncio.to_thread(private_memory_store_for_session, key))
         stale_provider: LLMProvider | None = None
         stale_session: Any | None = None
         claimed: Any | None = None
@@ -1125,6 +1106,13 @@ class SessionAllocationService:
                 recycling = existing is not None and owner._recycling.get(key) is existing
                 if existing is not None and not recycling:
                     session = existing
+                    if (
+                        getattr(session.provider, "_private_memory", False) is True
+                    ) != private_memory:
+                        raise RuntimeError(
+                            "Session runtime memory isolation does not match its trusted binding; "
+                            "restart the session before continuing"
+                        )
                     alive = session.provider.is_process_alive()
                     if not alive:
                         if (
@@ -1233,6 +1221,8 @@ class SessionAllocationService:
         cwd_blocks_pool = bool(cwd and cwd != owner._pool_cwd)
         if not owner._pool_size:
             pool_decision = "disabled"
+        elif private_memory:
+            pool_decision = "bypass_private_memory"
         elif resume_sid:
             pool_decision = "bypass_resume"
         elif is_stateless:
@@ -1322,8 +1312,8 @@ class SessionAllocationService:
                                 switch_model, advertised
                             ):
                                 # A literal miss can be a stale `<namespace>::`
-                                # qualifier on a model the backend fully serves
-                                # (#8521): resolve to the advertised spelling and
+                                # qualifier on a model the backend fully serves:
+                                # resolve to the advertised spelling and
                                 # send THAT — the same fold the cold-start spawn
                                 # and the display verdict use, so a warm claim
                                 # runs exactly what a cold start of the same pin
@@ -1401,6 +1391,10 @@ class SessionAllocationService:
                 extra_env=extra_env,
                 **extra_factory_kwargs,
             )
+            if self._deps.is_acp_provider(provider):
+                await cast(Any, provider).prepare_private_memory()
+            if (getattr(provider, "_private_memory", False) is True) != private_memory:
+                raise RuntimeError("Provider does not match the session's memory isolation")
             provider_switched = False
             if resume_sid:
                 is_claude_now = self._deps.is_claude_provider(
@@ -1467,6 +1461,12 @@ class SessionAllocationService:
                 recycling = existing is not None and owner._recycling.get(key) is existing
                 if existing is not None and not recycling:
                     session = existing
+                    if (
+                        getattr(session.provider, "_private_memory", False) is True
+                    ) != private_memory:
+                        raise RuntimeError(
+                            "Concurrent session runtime has incompatible memory isolation"
+                        )
                     session.last_used = time.monotonic()
                     if approval_policy:
                         session.approval_policy = approval_policy

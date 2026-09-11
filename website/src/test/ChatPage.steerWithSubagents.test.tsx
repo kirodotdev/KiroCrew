@@ -14,16 +14,17 @@
  * there is no live turn to inject into). Choosing Queue must still queue, and
  * an ordinary idle send must not acquire the flag.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import type { ReactNode } from 'react'
 import { render, screen, act, waitFor, fireEvent } from '@testing-library/react'
 import type { RootState } from '../store'
+import { store as appStore } from '../store'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
 import { configureStore } from '@reduxjs/toolkit'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { ThemeProvider } from '../hooks/useTheme'
-import chatReducer from '../store/chatSlice'
+import chatReducer, { sseChatMessage } from '../store/chatSlice'
 import dashboardReducer from '../store/dashboardSlice'
 import notificationsReducer from '../store/notificationsSlice'
 
@@ -113,6 +114,9 @@ async function renderChat(opts: { subagentsRunning: boolean; turnRunning: boolea
   detail.running = opts.turnRunning
   slotsFixture.rows = [slotRow({ running: opts.turnRunning, subagents_running: opts.subagentsRunning })]
   const store = makeStore(opts)
+  // The send handler reads the singleton directly; selectors read Provider.
+  // Both must observe the same busy snapshot to exercise the skipped bubble.
+  vi.spyOn(appStore, 'getState').mockImplementation(store.getState)
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   await act(async () => {
     render(
@@ -126,7 +130,7 @@ async function renderChat(opts: { subagentsRunning: boolean; turnRunning: boolea
     )
   })
   await waitFor(() => expect(screen.getByLabelText('Message input')).toBeTruthy())
-  return { input: screen.getByLabelText('Message input') as HTMLTextAreaElement }
+  return { input: screen.getByLabelText('Message input') as HTMLTextAreaElement, store }
 }
 
 async function typeAndSubmit(input: HTMLTextAreaElement, text: string) {
@@ -146,6 +150,8 @@ beforeEach(() => {
   sendChat.mockReset()
   sendChat.mockResolvedValue({ ok: true, json: () => Promise.resolve({ ok: true }) })
 })
+
+afterEach(() => vi.restoreAllMocks())
 
 describe('steer default while sub-agents run', { timeout: 20_000 }, () => {
   it('offers the split Steer button when only sub-agents are running', async () => {
@@ -177,6 +183,49 @@ describe('steer default while sub-agents run', { timeout: 20_000 }, () => {
 
     await waitFor(() => expect(sendChat).toHaveBeenCalled())
     expect(steerArgOf(sendChat.mock.calls[0])).toBeFalsy()
+  })
+
+  it.each([false, true])('shows a busy send from its echo with an early receipt: %s', async (earlyReceipt) => {
+    localStorage.setItem('mc-busy-send-mode', 'queue')
+    let deliverReceipt!: (value: unknown) => void
+    sendChat.mockImplementation(() => new Promise(resolve => { deliverReceipt = resolve }))
+    const { input, store } = await renderChat({ subagentsRunning: true, turnRunning: false })
+    await typeAndSubmit(input, 'show this before the reply finishes')
+
+    await waitFor(() => expect(sendChat).toHaveBeenCalledTimes(1))
+    expect(steerArgOf(sendChat.mock.calls[0])).toBeFalsy()
+    const receipt = { ok: true, json: async () => ({ ok: true, mid: 'm-dispatched' }) }
+    if (earlyReceipt) await act(async () => deliverReceipt(receipt))
+    const echo = {
+      slot: 'slot-a', role: 'user', content: sendChat.mock.calls[0][0],
+      meta: { ...sendChat.mock.calls[0][4], mid: 'm-dispatched' },
+    }
+    act(() => {
+      store.dispatch(sseChatMessage(echo))
+      store.dispatch(sseChatMessage({ slot: 'slot-a', role: 'chunk', content: 'answer in progress' }))
+    })
+    if (!earlyReceipt) await act(async () => deliverReceipt(receipt))
+    act(() => store.dispatch(sseChatMessage(echo)))
+    // No chat_done or history refresh: echo/receipt order and event redelivery
+    // must leave one user row ahead of the still-growing reply.
+    await waitFor(() => {
+      const rows = store.getState().chat.messages.filter(m => m.role === 'user')
+      expect(rows).toHaveLength(1)
+      expect(rows[0].content).toBe('show this before the reply finishes')
+      expect(rows[0].meta?.mid).toBe('m-dispatched')
+      expect(rows[0].meta?.optimistic).toBeUndefined()
+    })
+    expect(store.getState().chat.messages.slice(-2).map(m => m.role)).toEqual(['user', 'streaming'])
+  })
+
+  it('does not add a user bubble when the busy send really queues', async () => {
+    localStorage.setItem('mc-busy-send-mode', 'queue')
+    sendChat.mockResolvedValue({ ok: true, json: () => Promise.resolve({ ok: true, queued: true, queue_id: 'q-pending' }) })
+    const { input, store } = await renderChat({ subagentsRunning: true, turnRunning: false })
+    await typeAndSubmit(input, 'wait for the current turn')
+
+    expect(sendChat).toHaveBeenCalledTimes(1)
+    expect(store.getState().chat.messages.filter(m => m.role === 'user')).toHaveLength(0)
   })
 
   it('still injects mid-turn when a real turn is running', async () => {

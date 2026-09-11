@@ -173,8 +173,8 @@ ERR_GATEWAY_UNREACHABLE = (
 # the unattended-surface refusal that was removed by product decision. On a POOLED
 # backend one process serves many sessions, so the pid alone separates only what the
 # injected caller block does not already name: co-tenants gatewayd can name get real
-# per-session keys, and the unnamed ones USED to collapse onto one
-# ``unresolved:<pid>`` namespace (#5322). They no longer do — gatewayd injects a
+# per-session keys, and the unnamed ones would otherwise collapse onto one
+# ``unresolved:<pid>`` namespace. gatewayd injects a
 # per-CONNECTION nonce on every forwarded call, which is appended here, so two
 # unnamed co-tenants of one pooled process hold separate namespaces. It is
 # deliberately NOT presented as trustworthy attribution: the prefix names it as
@@ -199,11 +199,11 @@ def _unresolved_session_key() -> str:
     * 1:1 shim (no gateway, no nonce) — kiro-cli spawns one shim per session, so
       the pid is already the separator and the key is unchanged.
     * Pooled backend — one process serves N connections, so the pid separates
-      nothing; the gateway-minted per-connection nonce does (#5322).
+      nothing; the gateway-minted per-connection nonce does.
 
-    Without the nonce half, two unnamed co-tenants of a pooled backend shared one
-    key, which is what let ``SnapshotIndex``'s ``(session_key, window_key)``
-    namespace alias them onto one entry and let one session's action resolve
+    Without the nonce half, two unnamed co-tenants of a pooled backend share one
+    key, which lets ``SnapshotIndex``'s ``(session_key, window_key)``
+    namespace alias them onto one entry and one session's action resolve
     against another's element indices — while each session's own fingerprint
     check still passed, because both trees describe the same window.
 

@@ -434,7 +434,7 @@ class TestMeetingSession:
         assert len(session.agents["note-taker"].queue[0]) == k.MAX_TRANSCRIPT_CHARS
 
     def test_broadcast_strips_chat_prefix_from_the_translation_source(self, root: Path):
-        """#6763: the ``[chat]`` marker is agent context, not speech.
+        """The ``[chat]`` marker is agent context, not speech.
 
         The agents keep the prefixed line (their prompt relies on the marker), but
         the translation source must be the clean text — otherwise the literal
@@ -741,7 +741,7 @@ class TestDispatchThreadsGovernanceIdentity:
 
 
 class TestTheInitWindowHoldIsBounded:
-    """Unit-level arithmetic for the #4610 hold, without the HTTP surface."""
+    """Unit-level arithmetic for the init-window hold, without the HTTP surface."""
 
     @staticmethod
     def _session() -> sess.MeetingSession:

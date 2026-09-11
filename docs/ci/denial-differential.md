@@ -91,10 +91,12 @@ into its own directory, and a child process classifies against it with
   checkout it was given. Without the check, an installed copy of the package
   shadowing the path would serve *both* refs from one tree and every differential
   would come back empty — a false green with no symptom.
-- **Each child is hermetic.** Every `KIROCREW_*` variable is stripped and
-  `KIROCREW_HOME` is repointed at a throwaway directory, so the verdict depends
-  on the checkout alone and the best-effort audit writes never reach a real
-  security log.
+- **Each child is hermetic.** Every `KIROCREW_*` variable is stripped, and both
+  the OS home (`HOME` / `USERPROFILE`) and `KIROCREW_HOME` are repointed at a
+  throwaway directory. `KIRO_HOME` and the agent harnesses' declared credential
+  home overrides are also stripped. The sensitive-path target set therefore
+  never probes an inherited operator home, the verdict depends on the checkout
+  alone, and the best-effort audit writes never reach a real security log.
 
 Exit codes: `0` no regressions, `1` regressions, `2` corpus or ref error. A `2`
 fails the job — a differential that could not run is not a pass.
@@ -118,13 +120,25 @@ rule checks", and that is narrower than "no golden path is newly refused".
 
 ## The corpus
 
-The corpus is `scripts/deny_diff_fixture.json`, whose rows each name an operation
+The corpus is `src/kiro_crew/builtin_skills/security-conductor/golden-paths.json`, the
+security-conductor's committed golden-paths seed, whose rows each name an operation
 that is legitimate **by decision** plus the reason it is:
 
 ```json
-{ "kind": "shell", "command_or_flow": "gh pr view 8014 --json state",
+{ "kind": "shell", "surface": "gh-read",
+  "command_or_flow": "gh pr view 9332 --json state",
   "platform": "any", "reason": "Read-only PR status query." }
 ```
+
+That file is also what the security-conductor's `verify_fix.py` reads, so the
+fixer's acceptance gate and this one judge a change against **one** corpus. A
+second corpus was the earlier arrangement — a small fixture under `scripts/` that
+this gate classified while the seed only fed `verify_fix.py` — and two corpora can
+drift into disagreeing about what a golden path is. The fixture is retired; the
+rows it alone carried were folded into the seed by the same change that repointed
+this gate, so the handover withdrew nothing.
+
+`surface` groups rows for a reader and is ignored by the gate.
 
 `kind` is `shell`, `flow` or `cron`; `platform` is `any`, `posix` or `windows`.
 Only `shell` rows are classified here — a flow and a cron have no single command
@@ -154,13 +168,13 @@ withdraw to escape one.
 The reason a row belongs in the corpus is the reason a reviewer needs when the gate
 goes red, so a row without one is not much use.
 
-The security-conductor's own golden-paths seed is meant to become this corpus. That
-switch is an **explicit PR** that edits the corpus path in the workflow and deletes
-the fixture — not an automatic preference for whichever file exists. A gate that
-changed contracts the moment another file appeared would hand coverage over with
-nobody's diff showing the handover, and rows this corpus carries could drop out
-silently; the adopting PR instead shows that the seed covers them. The script itself
-takes any corpus path, so pointing it at the seed is a one-line change.
+The corpus path stays a **named line** in the workflow rather than a lookup, which
+is what made adopting the seed an explicit PR instead of an automatic preference
+for whichever file exists. A gate that changed contracts the moment another file
+appeared would hand coverage over with nobody's diff showing the handover, and rows
+the old corpus carried could drop out silently. The script itself takes any corpus
+path, so a future move is a one-line change plus the same obligation: show that the
+new file covers the rows the old one carried.
 
 ## Why a three-platform matrix
 
@@ -216,7 +230,7 @@ cannot: a row the PR *adds*, which the base-owned corpus does not contain.
 
 ```
 python3 scripts/deny_diff.py --base origin/main --head HEAD \
-    --corpus scripts/deny_diff_fixture.json
+    --corpus src/kiro_crew/builtin_skills/security-conductor/golden-paths.json
 ```
 
 Add `--json` for machine-readable rows, or `--platform posix|windows` to classify

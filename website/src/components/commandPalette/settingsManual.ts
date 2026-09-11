@@ -253,4 +253,36 @@ export const SETTINGS_MANUAL: ManualSettingEntry[] = [
     occurrence: 1,
     configKey: 'instances.enabled',
   },
+  {
+    // Managed credential slots are server-provided, so the shared SecretField
+    // label is dynamic at extraction time. These entries index the two fixed
+    // integration labels and highlight the matching runtime SecretField.
+    id: 'secrets.wakatime-api-key',
+    labelKey: 'settings.secrets.wakatime_api_key_label',
+    descriptionKey: 'settings.secrets.wakatime_api_key_description',
+    tab: 'secrets',
+    type: 'input',
+    occurrence: 1,
+  },
+  {
+    id: 'secrets.jira-api-token',
+    labelKey: 'settings.secrets.jira_api_token_label',
+    descriptionKey: 'settings.secrets.jira_api_token_description',
+    tab: 'secrets',
+    type: 'input',
+    occurrence: 1,
+  },
+  {
+    // Kiro sign-in card (Settings > Overview): provider chooser / device-code
+    // wait / signed-in summary with sign-out. A multi-state composite with no
+    // primitive shape; the chooser's provider buttons are the closest fit. The
+    // id is also the deep-link target the chat's "not signed in" error row
+    // navigates to (KIRO_SIGN_IN_SETTING_ID in KiroSignInCard.tsx).
+    id: 'overview.kiro-sign-in',
+    labelKey: 'pages.settings.kiroSignInCard.title',
+    descriptionKey: 'pages.settings.kiroSignInCard.registry_description',
+    tab: 'overview',
+    type: 'buttonGroup',
+    occurrence: 1,
+  },
 ]

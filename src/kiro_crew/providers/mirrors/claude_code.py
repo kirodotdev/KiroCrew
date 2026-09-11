@@ -135,7 +135,7 @@ class ClaudeCodeMirror(AgentConfigMirror):
         wraps — and is keyed by — the same name as the agent-spec entry it rewrites,
         so translating both halves would put two elements with one ``name`` into a
         single array. Either the raw entry shadows the stub and the session bypasses
-        the broker, or both register and every pooled backend runs twice (#927).
+        the broker, or both register and every pooled backend runs twice.
 
         **``permission_surface_owned`` is a precondition, not an option, and it
         defaults to withholding.** Crew's gate fires on

@@ -54,7 +54,7 @@ def canonical_non_shell_tool(mcp_server_name: str, tool_name: str) -> str:
 def _trust_identity_component(value: str) -> str:
     """Encode one identity component for case-insensitive durable matching.
 
-    ``matches_trusted_pattern`` historically compares with ``str.lower()``.
+    ``matches_trusted_pattern`` compares with ``str.lower()``.
     Normalize with that exact operation before encoding (not ``casefold()``,
     which would silently widen the established equivalence classes), then use
     UTF-8 ``surrogatepass`` + lowercase hex.  Hex contains no delimiter, shell

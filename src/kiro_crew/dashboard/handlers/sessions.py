@@ -29,7 +29,11 @@ from kiro_crew.acp.client import _resolve_kiro_bin_for_spawn
 from kiro_crew.config.paths import kiro_agents_dir
 from kiro_crew.dashboard import directive_queue
 from kiro_crew.dashboard.handlers import kiro_usage_api
-from kiro_crew.dashboard.handlers._shared import SESSION_SEARCH_TEXT_FIELDS
+from kiro_crew.dashboard.handlers._shared import (
+    SESSION_SEARCH_TEXT_FIELDS,
+    guard_owner_surface_routes,
+    internal_memory_scope,
+)
 from kiro_crew.dashboard.kiro_readiness import reject_if_kiro_unverified
 from kiro_crew.dashboard.session_memory import SessionMemorySampler
 from kiro_crew.dashboard.state import DashboardState
@@ -57,12 +61,6 @@ def _sel():
     import kiro_crew.dashboard.handlers as _pkg  # noqa: F811 — circular import
 
     return _pkg.sel()
-
-
-async def api_sessions_context(request: web.Request) -> web.Response:
-    """GET /api/sessions/context — context usage for all active sessions."""
-    state: DashboardState = request.app["state"]
-    return web.json_response({"sessions": state.sessions.context_info()})
 
 
 # One sampler per process: it carries the CPU jiffy baseline and the rolling load
@@ -1327,23 +1325,6 @@ async def _remove_slot_for_history_key(state: DashboardState, key: str) -> None:
         slot = state._slots.pop(normalized, None)
     if slot:
         pin_slot_keys.add(slot.key)
-    # Crew persists independently of the transcript, so a permanent delete has to
-    # reach into it too: its durable queue holds the user's own request texts and
-    # its dispatched subagents keep running whether or not a tab is open. Purging
-    # every candidate key rather than just the slot's, because the slot may already
-    # be gone (closed tab, restart) while the store on disk is not.
-    crew = getattr(state, "crew", None)
-    if crew is not None:
-        # Deferred: `handlers.sessions` loads with the dashboard package, which the
-        # gateway imports on its boot path. Crew is dashboard-only, and a delete
-        # with no live crew never needs the class at all.
-        from kiro_crew.crew_chat import CrewOrchestrator
-    if crew is not None and isinstance(crew, CrewOrchestrator):
-        for candidate in pin_slot_keys:
-            try:
-                await crew.purge_slot(candidate)
-            except Exception:
-                logger.warning("History delete: crew purge failed for %s", candidate, exc_info=True)
     try:
         await state.remove_chat_pins_for_slots(pin_slot_keys)
     except Exception:
@@ -1520,10 +1501,9 @@ def _clearable_history_keys(
     Returns ``(clearable, skipped)``. A session is skipped when it is reachable as
     an open tab, when its metadata says ``pinned``, or when that metadata could not
     be read — the same exclusions ``delete_session(..., skip_pinned=True)``
-    applies, so the two agree. Note that metadata which is present but unparseable
-    is NOT an exclusion: ``get_metadata_status`` reports it as readable-with-no-
-    metadata (``({}, True)``), so such a session reads as unpinned and is cleared.
-    The delete resolves it identically, which is what matters here.
+    applies, so the two agree. Present but unparseable metadata is unreadable:
+    ``get_metadata_status`` returns ``({}, False)``, so both the preview and
+    the delete exclude it rather than treating missing identity as permission.
 
     Reads the filesystem (``list_sessions`` globs and stats every session file),
     so callers offload it off the event loop.
@@ -1636,6 +1616,11 @@ async def api_session_directive(request: web.Request) -> web.Response:
     not a silent drop: the only legitimate callers are Kiro Crew's own directive
     tools, so a request that does not derive did not come from one.
     """
+    _, refusal = await internal_memory_scope(
+        request, "api_session_directive", claimed_session=request.headers.get("X-Session-Key", "")
+    )
+    if refusal is not None:
+        return refusal
     # Re-assert the caller's locality BEFORE the header is read. The route is in
     # server.py's strict allowlist, but a ``local_only=False`` deployment
     # reclassifies strict paths as MIXED — so the auth middleware also admits a
@@ -1766,6 +1751,11 @@ async def api_session_keepalive(request: web.Request) -> web.Response:
     field in it is advisory: a caller that sends ``{}`` gets the original
     touch-only behaviour.
     """
+    _, refusal = await internal_memory_scope(
+        request, "api_session_keepalive", claimed_session=request.headers.get("X-Session-Key", "")
+    )
+    if refusal is not None:
+        return refusal
     state: DashboardState = request.app["state"]
     session_key = request.headers.get("X-Session-Key", "").strip()
     if not session_key:
@@ -2036,6 +2026,11 @@ async def api_session_tool_policy(request: web.Request) -> web.Response:
     callers that cannot prove identity get an error, not an empty policy).
     Authenticated via X-Internal-Secret + X-Session-Key.
     """
+    _, refusal = await internal_memory_scope(
+        request, "api_session_tool_policy", claimed_session=request.headers.get("X-Session-Key", "")
+    )
+    if refusal is not None:
+        return refusal
     state: DashboardState = request.app["state"]
     session_key = request.headers.get("X-Session-Key", "").strip()
     if not session_key:
@@ -2287,3 +2282,15 @@ async def api_session_archive_read(request: web.Request) -> web.Response:
     # Archives contain LLM output; redact credentials and exfiltration URLs before serving.
     redacted = await asyncio.to_thread(lambda: redact(raw))
     return web.Response(text=redacted, content_type="application/x-ndjson")
+
+
+# Every ``api_session*`` handler is an owner surface, so a private member's
+# internal call is refused before it runs (audit label = handler name). These
+# three verify and scope their own caller instead.
+guard_owner_surface_routes(
+    globals(),
+    prefix="api_session",
+    member_scoped=frozenset(
+        {"api_session_directive", "api_session_keepalive", "api_session_tool_policy"}
+    ),
+)

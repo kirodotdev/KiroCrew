@@ -26,6 +26,7 @@ const BASE_DASH = {
   restore_sessions: false,
   restore_window_minutes: 30,
   merge_queued_messages: false,
+  default_memory_mode: 'persistent' as const,
   widget_density: 'more' as const,
   verbosity: 'default' as const,
   quick_send: false,
@@ -86,19 +87,37 @@ vi.mock('../api/client', () => ({
     updateSttConfig: () => Promise.resolve({}),
     tipsStatus: tipsStatusMock,
     tipsFeedback: tipsFeedbackMock,
+    // The panel reads the feature-video cache on mount. Downloads OFF here, so
+    // the readout renders its policy line and no button -- these files measure
+    // other settings, and a live control would put a stray button in their reach.
+    featureVideoStatus: () => Promise.resolve({
+      enabled: true, download_enabled: false, release: 'r1',
+      cached: 0, total: 0, downloading: null,
+    }),
+    featureVideoFetchAll: () => Promise.resolve({ ok: true }),
   },
 }))
 
 import { ChatPanel } from '../pages/settings/ChatPanel'
+import { resolveDefaultMemoryMode } from '../api/queryClient'
+
+import { Provider } from 'react-redux'
+
+// ChatPanel reads the active slot from redux to name the session on its
+// feature-video calls, so these renders need a store. A FRESH one per file,
+// not the app singleton: a shared store would carry `activeSlot` across suites.
+import { createTestStore } from './helpers'
 
 const LS_KEY = 'mc-chat-config'
 
 function wrap() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
+    <Provider store={createTestStore()}>
     <QueryClientProvider client={qc}>
       <ChatPanel />
     </QueryClientProvider>
+    </Provider>
   )
 }
 
@@ -397,6 +416,82 @@ describe('ChatPanel — Messages', () => {
 })
 
 describe('ChatPanel — Sessions', () => {
+  it('makes an in-flight default mode authoritative for new chats', async () => {
+    let settle!: (value: unknown) => void
+    updateDashboardConfigMock.mockImplementationOnce(
+      () => new Promise(resolve => { settle = resolve }) as never,
+    )
+    const view = wrap()
+    await pickOption('Default Memory Mode', 2)
+    await waitFor(() => expect(updateDashboardConfigMock).toHaveBeenCalled())
+    expect(screen.getByRole('combobox', { name: 'Default Memory Mode' }))
+      .toHaveAttribute('data-disabled')
+    view.unmount()
+
+    const staleRead = vi.fn(() => Promise.resolve({ default_memory_mode: 'persistent' }))
+    await expect(resolveDefaultMemoryMode(staleRead)).resolves.toBe('temporary')
+    expect(staleRead).not.toHaveBeenCalled()
+
+    settle({})
+    await waitFor(async () => {
+      const settledRead = vi.fn(() => Promise.resolve({ default_memory_mode: 'persistent' }))
+      await expect(resolveDefaultMemoryMode(settledRead)).resolves.toBe('persistent')
+      expect(settledRead).toHaveBeenCalled()
+    })
+  })
+
+  it('stays locked when an unrelated dashboard mutation settles first', async () => {
+    let settleMode!: (value: unknown) => void
+    let settleQuickSend!: (value: unknown) => void
+    updateDashboardConfigMock
+      .mockImplementationOnce(() => new Promise(resolve => { settleMode = resolve }) as never)
+      .mockImplementationOnce(() => new Promise(resolve => { settleQuickSend = resolve }) as never)
+    wrap()
+
+    await pickOption('Default Memory Mode', 2)
+    fireEvent.click(await settledSwitch('Quick Send'))
+    await waitFor(() => expect(updateDashboardConfigMock).toHaveBeenCalledTimes(2))
+    settleQuickSend({})
+    await waitFor(() => expect(dashboardConfigMock.mock.calls.length).toBeGreaterThan(1))
+    expect(screen.getByRole('combobox', { name: 'Default Memory Mode' }))
+      .toHaveAttribute('data-disabled')
+
+    settleMode({})
+    await waitFor(() =>
+      expect(screen.getByRole('combobox', { name: 'Default Memory Mode' }))
+        .not.toHaveAttribute('data-disabled')
+    )
+  })
+
+  it('reports a failed mode save after an unrelated dashboard save settles', async () => {
+    let rejectMode!: (reason?: unknown) => void
+    let settleQuickSend!: (value: unknown) => void
+    updateDashboardConfigMock
+      .mockImplementationOnce(
+        () => new Promise((_resolve, reject) => { rejectMode = reject }) as never,
+      )
+      .mockImplementationOnce(() => new Promise(resolve => { settleQuickSend = resolve }) as never)
+    wrap()
+
+    await pickOption('Default Memory Mode', 2)
+    fireEvent.click(await settledSwitch('Quick Send'))
+    await waitFor(() => expect(updateDashboardConfigMock).toHaveBeenCalledTimes(2))
+    settleQuickSend({})
+    rejectMode(new Error('mode save failed'))
+
+    expect(await screen.findByText(/Failed to save dashboard config/)).toBeInTheDocument()
+  })
+
+  it('persists the default memory mode', async () => {
+    wrap()
+    await pickOption('Default Memory Mode', 1)
+    await waitFor(() =>
+      expect(updateDashboardConfigMock).toHaveBeenCalledWith({
+        default_memory_mode: 'incognito',
+      })
+    )
+  })
+
   it.each([
     ['Split View (Session Grid)', 'session_grid', true],
     ['Tail-only Fork', 'tail_fork_enabled', true],

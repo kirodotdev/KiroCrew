@@ -12,7 +12,7 @@ Each test class reproduces one audited failure scenario:
    (a few huge messages), instead of growing without bound.
 5. ``delete_session`` uses ``unlink(missing_ok=True)`` and tolerates a
    concurrent removal instead of raising ``FileNotFoundError``.
-6. One-line metadata rewrites no longer ``fsync`` while holding the lock,
+6. One-line metadata rewrites do not ``fsync`` while holding the lock,
    shrinking the critical section every other writer contends on.
 """
 
@@ -656,8 +656,8 @@ class TestTabIdIndexInvalidation:
         self, tmp_path: Path
     ) -> None:
         """A session opened under an existing tab_id AFTER the chain was first
-        read must be linked in. Previously the append didn't invalidate the
-        cached index, so the second session's messages vanished from
+        read must be linked in. An append that does not invalidate the
+        cached index makes the second session's messages vanish from
         ``recent_chained``.
         """
         log = ConversationLog(base_dir=tmp_path)
@@ -693,8 +693,8 @@ class TestTabIdIndexInvalidation:
 
     def test_no_permanent_negative_sentinel(self, tmp_path: Path) -> None:
         """A chained read for a tab_id with no dashboard siblings must not poison
-        the cache: a sibling created afterwards is still discovered (the removed
-        ``[]`` sentinel used to suppress every future rebuild)."""
+        the cache: a sibling created afterwards is still discovered (a cached
+        ``[]`` sentinel would suppress every future rebuild)."""
         log = ConversationLog(base_dir=tmp_path)
         # slack-style key with a tab_id that the dashboard_chat-* glob misses,
         # so the first rebuild finds no entry for tab_id S.
@@ -1527,7 +1527,7 @@ class TestDashboardSaveHoldsLock:
         The very NEXT save (window and disk both unchanged) then matches that
         cache and takes the O(window) fast path. If the fast path returns EMPTY
         foreign lines, the rebuilt ``meta + frozen + window`` payload drops the
-        previously-preserved append — a cron/workflow result followed by two
+        already-preserved append — a cron/workflow result followed by two
         dashboard saves silently loses the transcript line.
 
         Reproduces the sequence save -> foreign-append -> save -> save -> save
@@ -1614,7 +1614,7 @@ class TestDashboardSaveHoldsLock:
         """Pin the LEGACY id-less fallback: the narrowed, timestamp-first
         foreign-append identity (GPT 5.6 HIGH + arbiter long-term item 2).
 
-        Since the ``meta.mid`` tier landed (#5152), this ladder is the fallback
+        Since the ``meta.mid`` tier landed, this ladder is the fallback
         for disk lines that carry NO stable id — pre-id transcripts and writers
         that persist id-less durable copies. Every disk line and window entry
         here is deliberately id-less, so the input must reproduce the pre-id
@@ -1712,12 +1712,11 @@ class TestDashboardSaveHoldsLock:
 
 
 class TestForeignFoldMidIdentity:
-    """Pin the ``meta.mid`` tier (pass 0) of the save-side foreign-merge fold
-    (#5152, the save-side slice of the #381 successor identity).
+    """Pin the ``meta.mid`` tier (pass 0) of the save-side foreign-merge fold.
 
     Every window append mints a stable per-message id (``meta.mid``), a save
     persists it, and the durable-copy writers (workflow/cron injectors, CLI)
-    carry the window row's id onto their copy — so since #5133 the id is on
+    carry the window row's id onto their copy — so the id is on
     BOTH sides of the fold's comparison. Pass 0 uses it: an id match IS the
     same message (folded silently, never archived); an id-carrying disk line
     whose id matches NO window entry is foreign regardless of body equality
@@ -1772,7 +1771,7 @@ class TestForeignFoldMidIdentity:
         row) folds in pass 0 with an EMPTY ``dedup_dropped``: the ids matching
         exactly makes it unambiguous, so it must not be routed to the
         ``foreign-dedup`` archive the way the id-less fresh-ts tiebreak is
-        (issue #5152 consequence 1 — archive churn on every injection+save).
+        (consequence 1 — archive churn on every injection+save).
         """
         _prefix, foreign, dedup_dropped = self._fold(
             tmp_path,
@@ -1807,7 +1806,7 @@ class TestForeignFoldMidIdentity:
     ):
         """Two identical-content rows with DISTINCT ids resolve exactly: the
         window row's copy (same id) folds silently, the genuinely distinct row
-        (different id) is preserved as foreign (issue #5152 consequence 2 — the
+        (different id) is preserved as foreign (consequence 2 — the
         residual ambiguity the count-bounded tiebreak could only bound).
         """
         import json

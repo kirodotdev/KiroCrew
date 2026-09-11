@@ -529,8 +529,8 @@ def _copy_app_tree(source: Path, dest: Path) -> None:
 # destroy preserved user data.  Different apps proceed in parallel.
 _LIFECYCLE_LOCKS: dict[str, LoopBoundLock] = {}
 
-# Registry installs historically call ``install_app(source)`` / ``update_app(source)``
-# with one positional argument. Keep that internal callable contract (tests and
+# Registry installs call ``install_app(source)`` / ``update_app(source)`` with one
+# positional argument. Keep that internal callable contract (tests and
 # downstream integrations replace these functions), while carrying the server-
 # resolved repository through ``asyncio.to_thread`` without putting it in the
 # app-controlled manifest. Context variables are copied into to_thread workers
@@ -560,7 +560,7 @@ def _effective_source_repository(explicit: str) -> str:
 
 
 def app_lifecycle_lock(name: str) -> LoopBoundLock:
-    """Return the per-app lock guarding install/update/uninstall (loop-bound, #4800).
+    """Return the per-app lock guarding install/update/uninstall (loop-bound).
 
     Must be called from (and the lock used on) the event loop thread; the
     guarded blocking work itself runs off-loop via executor/``to_thread``.
@@ -2062,7 +2062,7 @@ def app_enabled_state(name: str) -> bool | None:
         data = json.loads(meta_path.read_text(encoding="utf-8"))
         return bool(InstalledApp.from_dict(data).enabled)
     # No `json.JSONDecodeError` member: it subclasses ValueError, so pairing the two is
-    # redundant and the repo ratchets against it (see #5287).
+    # redundant and the repo ratchets against it.
     except (OSError, ValueError, TypeError, KeyError) as exc:
         logger.warning("Could not determine enabled state from %s: %s", meta_path, exc)
         return None
@@ -2768,8 +2768,7 @@ def _builtin_owns_install(existing: InstalledApp) -> bool:
     False means a USER installed an app under this name, and the builtin must not
     touch it. That distinction cannot be recovered once lost: registration would
     overwrite ``origin`` and set ``lifecycle="locked"``, so afterwards nothing on
-    disk shows the install was ever user-owned, and the user can no longer
-    uninstall it.
+    disk shows the install was ever user-owned, and the user cannot uninstall it.
 
     ``source`` is the discriminator: this function is the only writer of
     ``source="builtin"``, while ``install_app()`` records the install path or
@@ -3131,7 +3130,7 @@ def register_builtin_apps() -> int:
 
                 write_app_secret(name, generate_app_secret())
             # Invalidate the proxy secret cache so the newly-written (or
-            # previously existing) secret is picked up on the next request.
+            # pre-existing) secret is picked up on the next request.
             try:
                 # circular import: routes → manager
                 # kiro_crew.apps.routes imports from kiro_crew.apps.manager

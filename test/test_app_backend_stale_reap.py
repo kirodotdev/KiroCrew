@@ -362,7 +362,7 @@ def test_reap_keeps_the_entry_when_the_kill_identity_cannot_be_pinned(pidfile):
     """The reap goes through the identity-PINNED terminate, and honours its refusal.
 
     ``kill_process_tree_pinned`` returns False when the process cannot be opened
-    or its identity no longer matches, which on Windows is the pid having been
+    or its identity does not match, which on Windows is the pid having been
     recycled between the start-time check and the signal. That must behave like
     every other unconfirmed-identity case here: no kill, and the entry is KEPT so
     a later start can retry -- leak-not-mis-kill.

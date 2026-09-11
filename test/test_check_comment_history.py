@@ -1,17 +1,17 @@
-"""The comment-history gate must be real, wired into CI, and ratchet-only.
+"""The comment-history gate must be real, wired into CI, and diff-scoped.
 
 ``docs/system-specs/common/code-style.md`` forbids change history in comments and
 docstrings. ``scripts/check_comment_history.py`` is what makes that rule
 enforceable. These tests pin the halves that must stay true together: CI actually
 runs the gate (a gate that exists only on disk is not a gate), the detector reads
-comments and docstrings but NOT ordinary string literals, and the baseline can
-only shrink -- no operation may add a path or raise a count.
+comments and docstrings but NOT ordinary string literals, and the verdict covers
+exactly the lines a change adds -- a marker on a pre-existing line is the base
+branch's, and a marker on an added line fails whoever added it.
 """
 
 from __future__ import annotations
 
 import importlib.util
-import json
 import tokenize
 from pathlib import Path
 
@@ -20,8 +20,7 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "check_comment_history.py"
-BASELINE = ROOT / "comment-history-baseline.json"
-CI = ROOT / ".github" / "workflows" / "ci.yml"
+FAST_GATE = ROOT / ".github" / "workflows" / "fast-gate.yml"
 CODE_STYLE = ROOT / "docs" / "system-specs" / "common" / "code-style.md"
 
 SPEC = importlib.util.spec_from_file_location("check_comment_history", SCRIPT)
@@ -30,38 +29,40 @@ gate = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(gate)
 
 
-def _lint_steps() -> list[dict]:
-    workflow = yaml.safe_load(CI.read_text(encoding="utf-8"))
-    for job in workflow["jobs"].values():
-        steps = job.get("steps") or []
-        if any("isort --check-only" in str(step.get("run", "")) for step in steps):
-            return steps
-    raise AssertionError("ci.yml has no job running isort --check-only")
+def _gate_step() -> dict:
+    workflow = yaml.safe_load(FAST_GATE.read_text(encoding="utf-8"))
+    job = workflow["jobs"].get("comment-history-lint")
+    assert job, "fast-gate.yml has no comment-history-lint job"
+    for step in job.get("steps") or []:
+        if "scripts/check_comment_history.py" in str(step.get("run", "")):
+            return step
+    raise AssertionError("comment-history-lint runs no check_comment_history.py step")
 
 
 class TestCiWiring:
-    def test_ci_actually_runs_the_gate(self) -> None:
-        runs = [str(step.get("run", "")) for step in _lint_steps()]
-        assert any(
-            "scripts/check_comment_history.py" in run for run in runs
-        ), "ci.yml's lint job no longer runs the comment-history gate"
+    def test_fast_gate_actually_runs_the_gate(self) -> None:
+        step = _gate_step()
+        assert "scripts/check_comment_history.py" in str(step.get("run", ""))
 
-    def test_ci_runs_the_self_test_first(self) -> None:
+    def test_the_gate_runs_the_self_test_first(self) -> None:
         # The self-test plants one probe per rule family, so a typo that
         # silently disables a rule fails in CI instead of shipping green.
-        for run in (str(step.get("run", "")) for step in _lint_steps()):
-            if "check_comment_history.py" not in run:
-                continue
-            assert "--test" in run, "the gate step must run the --test self-test"
-            return
-        raise AssertionError("gate step not found")
+        assert "--test" in str(_gate_step().get("run", ""))
+
+    def test_the_gate_is_diff_scoped_via_the_base_ref_env(self) -> None:
+        # Without the env the script only reports. A step that forgot to export
+        # it would print counts and pass every PR.
+        step = _gate_step()
+        assert gate.BASE_ENV in (step.get("env") or {}), "step does not set the base ref"
+        assert f"export {gate.BASE_ENV}" in str(step.get("run", ""))
 
     def test_scope_resolver_coupling_is_alive(self) -> None:
-        # The gate loads scripts/ratchet_scope.py, which OWNS both answers. A
+        # The gate loads scripts/ratchet_scope.py, which OWNS the diff answers. A
         # rename there must fail HERE, not as an AttributeError inside a CI run.
         scope = gate._load_scope()
-        assert callable(scope.changed_paths)
-        assert callable(scope.added_lines)
+        assert callable(scope.resolve_base)
+        assert callable(scope.changed_paths_at)
+        assert callable(scope.added_lines_at)
 
     def test_code_style_doc_names_every_enforced_phrase(self) -> None:
         # The doc's DO-NOT list IS the rule set. A pattern the doc does not name
@@ -87,12 +88,13 @@ class TestCiWiring:
         ):
             assert phrase in text, f"code-style.md does not name {phrase!r}"
 
-    def test_code_style_doc_names_the_gate_and_the_baseline(self) -> None:
+    def test_code_style_doc_names_the_gate_and_its_base_ref(self) -> None:
         # The rule and its enforcement must be discoverable from one another:
         # a contributor who reads the rule needs the command that checks it.
         text = CODE_STYLE.read_text(encoding="utf-8")
         assert "scripts/check_comment_history.py" in text
-        assert "comment-history-baseline.json" in text
+        assert gate.BASE_ENV in text
+        assert "comment-history-baseline.json" not in text, "the baseline is gone"
 
 
 class TestRuleFamilies:
@@ -153,6 +155,15 @@ class TestRuleFamilies:
         source = '"""Head.\n\nTail: previously it blocked.\n"""\n'
         assert self._found(source) == [(3, "previously")]
 
+    def test_a_marker_wrapped_across_docstring_lines_spans_both(self) -> None:
+        # The regex for "issue #N" tolerates whitespace, including a newline, so
+        # a docstring can carry ``issue`` at the end of one line and the number at
+        # the start of the next. Both lines must be reported as covered.
+        source = '"""Head.\n\nSee issue\n#4211 for the shape.\n"""\n'
+        assert gate.violation_spans(source) == [(3, 4, "issue\n#4211")]
+        # The report shape still names the start line only.
+        assert gate.violations_in_source(source) == [(3, "issue\n#4211")]
+
     def test_present_tense_purpose_is_not_narration(self) -> None:
         # Naming the incident a change answers is narration; naming what a test
         # pins is purpose. code-style.md forbids the first, not the second.
@@ -161,10 +172,10 @@ class TestRuleFamilies:
 
     @pytest.mark.parametrize("broken", ["def broken(:\n", "x = (\n"])
     def test_unparseable_source_raises_instead_of_reading_clean(self, broken: str) -> None:
-        # A parse failure reading as "zero violations" would invite a baseline
-        # prune that deletes the file's real entry. Which of the two exceptions
-        # comes out depends on whether tokenize or ast gives up first, so the
-        # scanner catches both and this pins both.
+        # A parse failure reading as "zero violations" would let a broken file
+        # pass the gate. Which of the two exceptions comes out depends on whether
+        # tokenize or ast gives up first, so the scanner catches both and this
+        # pins both.
         with pytest.raises((SyntaxError, tokenize.TokenError)):
             self._found(broken)
 
@@ -197,218 +208,67 @@ class TestScopeExclusions:
         assert gate.DEFAULT_TARGETS == ("src/kiro_crew", "test")
 
 
-class TestVerdicts:
-    """The ratchet's verdict logic, on synthetic inputs."""
+class TestAddedLineVerdict:
+    """The verdict on synthetic inputs: added lines only, at any count."""
 
-    def test_unbaselined_file_in_scope_is_a_new_offender(self) -> None:
-        new, grown, on_added, shrunk = gate._verdicts(
-            {"src/x.py": [(10, "previously")]}, {}, {"src/x.py"}, None
+    def test_a_marker_on_an_added_line_is_an_offender(self) -> None:
+        offenders = gate.added_line_violations(
+            {"src/x.py": [(10, 10, "previously")]}, {"src/x.py": {10}}
         )
-        assert new == ["src/x.py"]
-        assert not grown and not on_added and not shrunk
+        assert offenders == {"src/x.py": [(10, "previously")]}
 
-    def test_out_of_scope_files_are_not_judged(self) -> None:
-        # CI evaluates a merge ref: someone else's file must not colour this PR.
-        new, grown, on_added, shrunk = gate._verdicts(
-            {"src/x.py": [(10, "previously")], "src/y.py": [(5, "hotfix"), (6, "we now")]},
-            {"src/y.py": 1},
-            {"src/other.py"},
-            None,
+    def test_a_marker_on_a_pre_existing_line_is_not_judged(self) -> None:
+        # The base branch's line, not this contributor's. CI evaluates a merge
+        # ref, so a pre-existing marker in a touched file must not colour the PR.
+        offenders = gate.added_line_violations(
+            {"src/x.py": [(10, 10, "previously")]}, {"src/x.py": {30, 31}}
         )
-        assert not new and not grown and not on_added and not shrunk
+        assert offenders == {}
 
-    def test_baseline_exceeded_fails(self) -> None:
-        new, grown, on_added, shrunk = gate._verdicts(
-            {"src/x.py": [(1, "a"), (2, "b"), (3, "c")]}, {"src/x.py": 2}, {"src/x.py"}, None
+    def test_swapping_one_marker_for_another_is_caught(self) -> None:
+        # Delete one old marker, write one new one: the file's count is level,
+        # and only an added-line rule can see that the new one is new.
+        offenders = gate.added_line_violations(
+            {"src/x.py": [(10, 10, "previously"), (30, 30, "we now")]}, {"src/x.py": {30}}
         )
-        assert grown == ["src/x.py"]
+        assert offenders == {"src/x.py": [(30, "we now")]}
 
-    def test_level_count_within_the_baseline_passes(self) -> None:
-        new, grown, on_added, shrunk = gate._verdicts(
-            {"src/x.py": [(1, "a"), (2, "b")]}, {"src/x.py": 2}, {"src/x.py"}, None
+    def test_a_marker_wrapped_onto_an_added_line_is_an_offender(self) -> None:
+        # ``issue`` on old line 10, the number on added line 11: the match starts on
+        # a pre-existing line, so attributing it to its start alone would pass.
+        offenders = gate.added_line_violations(
+            {"src/x.py": [(10, 11, "issue\n#4211")]}, {"src/x.py": {11}}
         )
-        assert not new and not grown and not on_added and not shrunk
+        assert offenders == {"src/x.py": [(10, "issue\n#4211")]}
 
-    def test_swapping_one_marker_for_another_is_caught_by_added_lines(self) -> None:
-        # Delete one old marker, write one new one: the count is level, but the
-        # new one sits on an added line and must still fail.
-        new, grown, on_added, shrunk = gate._verdicts(
-            {"src/x.py": [(10, "previously"), (30, "we now")]},
-            {"src/x.py": 2},
-            {"src/x.py"},
-            {"src/x.py": {30}},
-        )
-        assert on_added == {"src/x.py": [(30, "we now")]}
-        assert not new and not grown
+    def test_a_file_with_no_added_lines_is_not_judged(self) -> None:
+        offenders = gate.added_line_violations({"src/x.py": [(10, 10, "previously")]}, {})
+        assert offenders == {}
 
-    def test_stale_baseline_demands_a_lower(self) -> None:
-        # The count dropped and the entry was not lowered in the same change.
-        new, grown, on_added, shrunk = gate._verdicts(
-            {"src/x.py": [(10, "previously")]}, {"src/x.py": 3}, {"src/x.py"}, None
-        )
-        assert shrunk == ["src/x.py"]
-
-    def test_a_file_cleaned_to_zero_must_be_removed(self) -> None:
-        new, grown, on_added, shrunk = gate._verdicts({}, {"src/x.py": 3}, {"src/x.py"}, None)
-        assert shrunk == ["src/x.py"]
-
-    def test_undeterminable_scope_judges_the_whole_tree(self) -> None:
-        # A scoping mechanism that fails open would disable the gate exactly
-        # when its inputs are unusual.
-        new, grown, on_added, shrunk = gate._verdicts(
-            {"src/x.py": [(10, "previously")]}, {}, None, None
-        )
-        assert new == ["src/x.py"]
+    def test_only_scanned_trees_are_in_targets(self) -> None:
+        assert gate._in_targets("src/kiro_crew/agent.py")
+        assert gate._in_targets("test/test_agent.py")
+        assert not gate._in_targets("scripts/check_comment_history.py")
+        assert not gate._in_targets("src/kiro_crew/_vendor/x.py")
+        assert not gate._in_targets("src/kiro_crew/static/dist/index.js")
 
 
-class TestGrownWording:
-    """The grown-count message must accuse only a diff that adds marker lines."""
+class TestEnforceDiff:
+    """``enforce_diff`` end to end on a synthetic repo.
 
-    def test_grown_with_no_marker_on_added_lines_reads_as_inherited_drift(self) -> None:
-        # The count exceeds baseline on the base branch while this diff adds
-        # none of the matched lines: the wording must not accuse the diff.
-        message = gate._grown_error(
-            "src/x.py", 2, 3, [(1, "a"), (2, "b"), (3, "c")], {"src/x.py": {90}}
-        )
-        assert "this diff adds none of the matched lines" in message
-        assert "does not license new ones" not in message
-        assert "docs/system-specs/common/code-style.md" in message
-
-    def test_grown_with_a_marker_on_an_added_line_keeps_the_licensing_wording(self) -> None:
-        message = gate._grown_error(
-            "src/x.py", 2, 3, [(1, "a"), (2, "b"), (3, "c")], {"src/x.py": {3}}
-        )
-        assert "does not license new ones" in message
-        assert "adds none of the matched lines" not in message
-
-    def test_unavailable_added_line_scope_keeps_the_stricter_wording(self) -> None:
-        # Without added-line scope the two cases cannot be told apart, so the
-        # message must not assert inherited drift on a guess.
-        message = gate._grown_error("src/x.py", 2, 3, [(1, "a"), (2, "b"), (3, "c")], None)
-        assert "does not license new ones" in message
-
-    def test_a_file_absent_from_the_added_map_reads_as_inherited_drift(self) -> None:
-        # Added-line scope exists but records no added lines for this file:
-        # every match sits on a line the diff did not add.
-        message = gate._grown_error("src/x.py", 1, 2, [(1, "a"), (2, "b")], {"src/y.py": {5}})
-        assert "this diff adds none of the matched lines" in message
-
-    def test_run_gate_hands_added_line_scope_to_the_grown_wording(
-        self,
-        tmp_path: Path,
-        capsys: pytest.CaptureFixture[str],
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        # The helper's branch is only real if run_gate feeds it the added map;
-        # wiring None there would keep every grown message on the licensing
-        # wording with the helper's own tests still green.
-        baseline = tmp_path / "baseline.json"
-        baseline.write_text(json.dumps({"files": {"src/x.py": 1}}), encoding="utf-8")
-
-        class Scope:
-            def changed_paths(self) -> tuple[set[str], str]:
-                return {"src/x.py"}, "stub"
-
-            def added_lines(self, label: str) -> dict[str, set[int]]:
-                return {"src/x.py": {90}}
-
-        monkeypatch.setattr(gate, "_scan", lambda targets: {"src/x.py": [(1, "a"), (2, "b")]})
-        monkeypatch.setattr(gate, "_load_scope", lambda: Scope())
-        assert gate.run_gate(baseline, write=False) == 1
-        assert "this diff adds none of the matched lines" in capsys.readouterr().out
-
-
-class TestBaselineIsShrinkOnly:
-    def test_refresh_lowers_counts(self) -> None:
-        assert gate._shrunken_baseline({"src/x.py": 5}, {"src/x.py": 2}) == {"src/x.py": 2}
-
-    def test_refresh_never_raises_a_count(self) -> None:
-        # The one rule that keeps the gate from being a formality: a grown file
-        # is a red gate to fix, not an entry to raise.
-        assert gate._shrunken_baseline({"src/x.py": 2}, {"src/x.py": 9}) == {"src/x.py": 2}
-
-    def test_refresh_drops_a_clean_file(self) -> None:
-        assert gate._shrunken_baseline({"src/x.py": 2}, {}) == {}
-
-    def test_refresh_never_adds_a_path(self) -> None:
-        assert gate._shrunken_baseline({}, {"src/new.py": 4}) == {}
-
-    def test_write_baseline_round_trips(self, tmp_path: Path) -> None:
-        path = tmp_path / "baseline.json"
-        entries = {"src/b.py": 2, "src/a.py": 7}
-        gate._write_baseline(path, entries)
-        assert gate._read_baseline(path) == entries
-
-    def test_written_baseline_is_sorted_and_carries_a_total(self, tmp_path: Path) -> None:
-        # Sorted so an entry lowered by one PR is a one-line diff, not a
-        # reordering that hides the change.
-        path = tmp_path / "baseline.json"
-        gate._write_baseline(path, {"src/b.py": 2, "src/a.py": 7})
-        document = json.loads(path.read_text(encoding="utf-8"))
-        assert list(document["files"]) == ["src/a.py", "src/b.py"]
-        assert document["_total"] == 9
-
-    def test_write_baseline_refuses_when_the_baseline_is_absent(self, tmp_path: Path) -> None:
-        # Otherwise `rm baseline && --write-baseline` records the whole tree as
-        # pre-existing, which amnesties every marker in one command.
-        with pytest.raises(SystemExit):
-            gate.run_gate(tmp_path / "absent.json", write=True)
-
-    def test_missing_baseline_refuses_to_regenerate_itself(self, tmp_path: Path) -> None:
-        # Regenerating on absence would silently absorb every offender added
-        # since the file was recorded.
-        with pytest.raises(SystemExit):
-            gate._read_baseline(tmp_path / "absent.json")
-
-    def test_malformed_count_is_an_error(self, tmp_path: Path) -> None:
-        path = tmp_path / "baseline.json"
-        path.write_text(json.dumps({"files": {"src/x.py": "many"}}), encoding="utf-8")
-        with pytest.raises(SystemExit):
-            gate._read_baseline(path)
-
-    def test_zero_count_is_an_error(self, tmp_path: Path) -> None:
-        # A zero entry is an exemption dressed as a count: the file is clean, so
-        # the entry must be gone.
-        path = tmp_path / "baseline.json"
-        path.write_text(json.dumps({"files": {"src/x.py": 0}}), encoding="utf-8")
-        with pytest.raises(SystemExit):
-            gate._read_baseline(path)
-
-
-class TestCommittedBaseline:
-    def test_committed_baseline_parses(self) -> None:
-        entries = gate._read_baseline(BASELINE)
-        assert entries, "the committed baseline records no files"
-
-    def test_committed_baseline_lists_no_vendor_or_excluded_path(self) -> None:
-        for rel in gate._read_baseline(BASELINE):
-            assert not gate._excluded(rel), f"{rel} is excluded but recorded"
-
-    def test_committed_baseline_only_lists_scanned_trees(self) -> None:
-        for rel in gate._read_baseline(BASELINE):
-            assert rel.startswith(gate.DEFAULT_TARGETS), f"{rel} is outside the scanned trees"
-
-
-class TestDirtyTreeScope:
-    """The gate's added-line rule on a tree with uncommitted edits.
-
-    The gate scans violations from the working tree, and ``ratchet_scope``
-    provides the added-line set for the same diff. On a dirty tree those two
-    descriptions must be of the same file state: a baselined marker shifted by
-    an uncommitted insert must not be judged as newly added just because its
-    working-tree line number falls inside the committed diff's added range,
-    while a marker the uncommitted edit genuinely writes must still fail. Each
-    test builds a synthetic repo, computes scope and added lines through a
-    fresh ``ratchet_scope`` pointed at it, scans the working-tree bytes with
-    the gate's real detector, and reads the verdict from ``_verdicts`` -- the
-    same pipeline ``run_gate`` wires together.
+    Builds a base commit carrying one legacy marker, a topic commit that appends
+    clean lines, then edits the working tree and asks the real gate -- scope
+    resolution through a fresh ``ratchet_scope`` pointed at the repo, detection
+    through ``violations_in_source``, verdict through ``added_line_violations``
+    -- the same pipeline ``enforce_diff`` wires together. A gate that only ever
+    saw its unit tests could still pass every PR through a mis-wired scope.
     """
 
     BASE_SOURCE = "# hotfix\nvalue = 1\n"
     COMMITTED_SOURCE = "# hotfix\nvalue = 1\nextra_a = 2\nextra_b = 3\nextra_c = 4\n"
 
     @pytest.fixture()
-    def dirty_repo(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    def repo(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         import subprocess
 
         from test_ratchet_scope import _fixture_git_env
@@ -421,7 +281,7 @@ class TestDirtyTreeScope:
             monkeypatch.delenv(var, raising=False)
 
         repo = tmp_path / "repo"
-        repo.mkdir()
+        (repo / "src" / "kiro_crew").mkdir(parents=True)
 
         def git(*args: str) -> None:
             subprocess.run(
@@ -434,51 +294,125 @@ class TestDirtyTreeScope:
                 env=_fixture_git_env(),
             )
 
+        target = repo / "src" / "kiro_crew" / "pkg.py"
         git("init", "-b", "main", ".")
-        (repo / "pkg.py").write_text(self.BASE_SOURCE, encoding="utf-8")
-        git("add", "pkg.py")
-        git("commit", "-m", "base file with one recorded marker")
+        target.write_text(self.BASE_SOURCE, encoding="utf-8")
+        git("add", "src/kiro_crew/pkg.py")
+        git("commit", "-m", "base file with one legacy marker")
         git("update-ref", "refs/remotes/origin/main", "HEAD")
         git("checkout", "-b", "topic")
-        (repo / "pkg.py").write_text(self.COMMITTED_SOURCE, encoding="utf-8")
-        git("add", "pkg.py")
+        target.write_text(self.COMMITTED_SOURCE, encoding="utf-8")
+        git("add", "src/kiro_crew/pkg.py")
         git("commit", "-m", "append clean lines below the marker")
 
         spec = importlib.util.spec_from_file_location(
-            "ratchet_scope_dirty_tree", ROOT / "scripts" / "ratchet_scope.py"
+            "ratchet_scope_for_gate", ROOT / "scripts" / "ratchet_scope.py"
         )
         assert spec and spec.loader
         rs = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(rs)
         monkeypatch.setattr(rs, "ROOT", repo)
-        return repo, rs
+        monkeypatch.setattr(gate, "ROOT", repo)
+        monkeypatch.setattr(gate, "_load_scope", lambda: rs)
+        return repo, target
 
-    def _verdict(self, repo: Path, rs, worktree_source: str):
-        (repo / "pkg.py").write_text(worktree_source, encoding="utf-8")
-        changed, label = rs.changed_paths()
-        assert label == "origin/main...HEAD"
-        added = rs.added_lines(label)
-        assert added is not None
-        violations = {"pkg.py": gate.violations_in_source(worktree_source)}
-        return gate._verdicts(violations, {"pkg.py": 1}, changed, added)
+    def test_a_legacy_marker_the_change_did_not_write_passes(
+        self, repo, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # The committed diff only appended clean lines below the marker.
+        assert gate.enforce_diff("origin/main") == 0
+        assert "passed" in capsys.readouterr().out
 
-    def test_a_shifted_baselined_marker_is_not_flagged(self, dirty_repo) -> None:
-        # Uncommitted insert above the marker: it moves to working-tree line 3,
-        # a number inside the committed diff's added range {3, 4, 5}. The gate
-        # must read it as the pre-existing line it is; committing these exact
-        # bytes produces the same verdict.
-        repo, rs = dirty_repo
-        new, grown, on_added, shrunk = self._verdict(
-            repo, rs, "wip_a = 0\nwip_b = 0\n" + self.COMMITTED_SOURCE
-        )
-        assert not new and not grown and not on_added and not shrunk
+    def test_a_shifted_legacy_marker_is_not_flagged(self, repo) -> None:
+        # Uncommitted insert ABOVE the marker moves it to line 3, inside the
+        # committed diff's added range {3, 4, 5}. The scope must describe the
+        # working tree, so it reads the marker as the pre-existing line it is.
+        _, target = repo
+        target.write_text("wip_a = 0\nwip_b = 0\n" + self.COMMITTED_SOURCE, encoding="utf-8")
+        assert gate.enforce_diff("origin/main") == 0
 
-    def test_a_marker_written_by_the_uncommitted_edit_still_fails(self, dirty_repo) -> None:
-        # Swap: the uncommitted edit deletes the recorded marker and writes a
-        # fresh one at the end. The count stays level, so only the added-line
-        # rule can catch it -- and it must.
-        repo, rs = dirty_repo
+    def test_a_marker_the_change_writes_fails(self, repo, capsys) -> None:
+        _, target = repo
+        target.write_text(self.COMMITTED_SOURCE + "# previously this parsed lazily\n", "utf-8")
+        assert gate.enforce_diff("origin/main") == 1
+        out = capsys.readouterr().out
+        assert "src/kiro_crew/pkg.py:6: previously" in out
+        assert "::error file=src/kiro_crew/pkg.py" in out
+
+    def test_swapping_the_legacy_marker_for_a_fresh_one_fails(self, repo) -> None:
+        # Delete the old marker, write a new one at the end: the count is level
+        # at 1, so only the added-line rule catches it -- and it must.
+        _, target = repo
         source = self.COMMITTED_SOURCE.replace("# hotfix\n", "") + "# hotfix\n"
-        new, grown, on_added, shrunk = self._verdict(repo, rs, source)
-        assert on_added == {"pkg.py": gate.violations_in_source(source)}
-        assert not new and not grown and not shrunk
+        target.write_text(source, encoding="utf-8")
+        assert gate.enforce_diff("origin/main") == 1
+
+    def test_appending_the_second_half_of_a_wrapped_marker_fails(self, repo) -> None:
+        # Base carries a docstring ending in "See issue" -- no marker on its own,
+        # "issue" alone matches nothing. The change appends a line with the number.
+        # The match now spans an old line and an added one; a start-line rule
+        # would attribute it to the old line and pass. It must fail.
+        repo_dir, target = repo
+        import subprocess
+
+        from test_ratchet_scope import _fixture_git_env
+
+        def git(*args: str) -> None:
+            subprocess.run(
+                ["git", *args],
+                cwd=repo_dir,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                check=True,
+                env=_fixture_git_env(),
+            )
+
+        base = '"""Module.\n\nSee issue\n"""\nvalue = 1\n'
+        target.write_text(base, encoding="utf-8")
+        git("add", "src/kiro_crew/pkg.py")
+        git("commit", "-m", "docstring ends mid-phrase")
+        git("update-ref", "refs/remotes/origin/main", "HEAD")
+        assert gate.violation_spans(base) == [], "the base alone must be clean"
+
+        target.write_text(
+            '"""Module.\n\nSee issue\n#4211 for the shape.\n"""\nvalue = 1\n', "utf-8"
+        )
+        assert gate.enforce_diff("origin/main") == 1
+
+    def test_a_marker_in_a_file_outside_the_scanned_trees_is_not_judged(self, repo) -> None:
+        repo_dir, _ = repo
+        other = repo_dir / "notes.py"
+        other.write_text("# previously\n", encoding="utf-8")
+        assert gate.enforce_diff("origin/main") == 0
+
+    def test_a_deleted_file_adds_nothing(self, repo) -> None:
+        _, target = repo
+        target.unlink()
+        assert gate.enforce_diff("origin/main") == 0
+
+    def test_an_unreadable_base_fails_closed(self, repo) -> None:
+        with pytest.raises(SystemExit):
+            gate.enforce_diff("refs/heads/does-not-exist")
+
+
+class TestReportMode:
+    def test_without_the_env_the_script_reports_and_does_not_enforce(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # A local run on a tree that still carries the legacy set must not be
+        # red; the number is printed to watch, and the env is named to gate.
+        monkeypatch.delenv(gate.BASE_ENV, raising=False)
+        monkeypatch.setattr(gate, "_scan_tree", lambda: {"src/x.py": [(1, "a"), (2, "b")]})
+        assert gate.main([]) == 0
+        out = capsys.readouterr().out
+        assert "2 marker(s) in 1 file(s)" in out
+        assert "Not enforced" in out
+        assert gate.BASE_ENV in out
+
+    def test_with_the_env_the_script_enforces(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv(gate.BASE_ENV, "some-ref")
+        seen: list[str] = []
+        monkeypatch.setattr(gate, "enforce_diff", lambda base: seen.append(base) or 0)
+        assert gate.main([]) == 0
+        assert seen == ["some-ref"]

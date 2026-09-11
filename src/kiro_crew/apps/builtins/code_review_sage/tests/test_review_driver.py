@@ -57,8 +57,8 @@ class TestHostQualifiedIdentity(unittest.TestCase):
         self.assertNotIn("--hostname", D.build_review_task("CR-1"))
 
     def test_prompt_builders_fail_closed_on_an_unresolvable_host(self):
-        """The leak guard: when the link's host no longer revalidates (e.g. the
-        GHE host was removed from `github_hosts` between run start and this
+        """The leak guard: when the link's host does not revalidate (e.g. the
+        GHE host removed from `github_hosts` between run start and this
         build), every prompt builder must REFUSE — a prompt whose `gh api`
         calls silently default to public github.com would fetch from, or post
         an internal enterprise draft onto, a public same-slug PR."""
@@ -394,8 +394,8 @@ class TestReviewDriver(unittest.TestCase):
             self.assertEqual(rec["skipped_reason"], entries[cid].get("reason"))
 
     def test_progress_entry_names_a_refused_host_as_review_failed(self):
-        # `build_review_task` fails CLOSED when the link's host no longer
-        # revalidates. Patched rather than reached through a crafted URL so the
+        # `build_review_task` fails CLOSED when the link's host does not
+        # revalidate. Patched rather than reached through a crafted URL so the
         # test pins THIS site's payload, not the host-allowlist rules.
         def refuse(link):
             raise D.pipeline.adapters.AdapterError("host is not allowed")
@@ -603,8 +603,8 @@ class TestWorkerPromptInterpreter(unittest.TestCase):
     def test_no_prompt_names_a_bare_interpreter(self):
         # Both needles are anchored on the opening backtick of an inline code
         # span: python_command() legitimately embeds the absolute
-        # sys.executable, which can itself end in "python3" (issue #8205), so
-        # an unanchored needle would fire on the correct path. Unbackticked
+        # sys.executable, which can itself end in "python3", so an unanchored
+        # needle would fire on the correct path. Unbackticked
         # prose is covered only by the span test below
         # (test_every_script_command_carries_the_resolved_interpreter).
         for p in self._prompts():

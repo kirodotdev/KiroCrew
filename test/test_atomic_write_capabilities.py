@@ -1,4 +1,4 @@
-"""Tests for ``atomic_write``'s bytes and owner-only capabilities (issue #1105).
+"""Tests for ``atomic_write``'s bytes and owner-only capabilities.
 
 These two gaps are why a set of hand-rolled temp-write-and-rename sites could
 not adopt the shared helper, and so silently missed the Windows rename retry:

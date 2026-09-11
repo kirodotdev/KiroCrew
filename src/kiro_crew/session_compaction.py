@@ -128,7 +128,7 @@ class _CompactionOwner(Protocol):
 def _compact_unsupported_backend(provider: LLMProvider) -> str | None:
     """Backend id this provider names as unable to serve ``/compact``, else None.
 
-    The same capability #7800 gave the manual entry points, read for the
+    The same capability the manual entry points read, asked for the
     automatic one.  The property is spelled ``manual_`` because the manual
     command was its first consumer, but its ANSWER is a property of the
     BACKEND -- ``ACP_BACKENDS_COMPACT`` membership -- not of the entry point,
@@ -277,11 +277,11 @@ class CompactionCoordinator:
         ``/compact`` still has a context meter worth reporting, and declining
         above the threshold check would take the per-turn usage line in
         ``check_context_usage`` with it.  Placing it here also means the only
-        behaviour that changes for such a backend is the one that was broken --
+        behaviour that changes for such a backend is the one that cannot work --
         the dispatch itself -- and it changes before ``_compact_session`` is
         ever scheduled, so no ``compacting`` entry, no background task and no
         ``session.semaphore`` acquisition happens for a compaction that could
-        only have ended in the 300s strand (#7812).
+        only end in the 300s strand.
         """
         baseline = self.state.pending_verdict.get(key)
         if baseline is not None and not self._deps.context_pct_is_unknown(provider):

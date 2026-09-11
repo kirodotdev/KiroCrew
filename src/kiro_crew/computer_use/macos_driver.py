@@ -630,7 +630,7 @@ def _addressed(app: AppRef, rec: ElementRec) -> "Iterator[object | None]":
     ~400KB of permanent growth per walk. ``snapshot_macos.resolve_element`` owns
     that bookkeeping; this wrapper adds the identity check.
 
-    ``None`` is yielded when the index no longer resolves OR when the control now
+    ``None`` is yielded when the index does not resolve OR when the control now
     at that index is not the one the model addressed
     (:func:`_same_identity`). The addressing walk uses the widest budgets rather
     than the original request's, so the two numberings are not guaranteed
@@ -870,7 +870,7 @@ def _click_text(req: ClickRequest, app: AppRef) -> str:
 
 
 def _missing_element(app: AppRef, rec: ElementRec) -> DriverResult:
-    """Refusal for an index that no longer resolves to an element."""
+    """Refusal for an index that does not resolve to an element."""
     return DriverResult(
         ok=False,
         text=_REASON_NO_ELEMENT.format(index=rec.index, app=app.bundle_id or app.name),

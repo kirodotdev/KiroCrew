@@ -10,12 +10,13 @@
  *  flag that can never do anything is how a setting starts lying.
  */
 
-import { screen } from '@testing-library/react'
+import { screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 
 import { renderWithProviders } from './helpers'
 import JobForm, { buildBody, parseJobDefaults } from '../components/JobForm'
 import type { CronJob } from '../types'
+import { api } from '../api/client'
 
 vi.mock('../api/client', () => ({
   api: {
@@ -34,6 +35,43 @@ function makeJob(overrides: Partial<CronJob> = {}): CronJob {
 }
 
 describe('minimal context in the job form', () => {
+  it.each([false, true])('keeps private binding and the minimal-context toggle when editing=%s', async editing => {
+    const onSaved = vi.fn()
+    vi.mocked(api.createCron).mockResolvedValue({})
+    vi.mocked(api.updateCron).mockResolvedValue({})
+    const prompt = editing ? 'Summarize the new failures for me.' : 'Check whether disk usage is above 80.'
+    renderWithProviders(<JobForm
+      layout="vertical" agents={[]} onSaved={onSaved}
+      memberId={editing ? 'different-member' : 'reviewer'} providerAgent="reviewer-provider"
+      job={editing ? makeJob({ member_id: 'reviewer', message: prompt, minimal_context: true }) : undefined}
+    />)
+    if (!editing) {
+      await userEvent.type(await screen.findByLabelText('Name'), 'Private check')
+      await userEvent.type(screen.getByLabelText('Message'), prompt)
+    }
+    expect(screen.queryByTestId('jobform-mode-advice')).not.toBeInTheDocument()
+    expect(screen.getByText("Skip optional context. This member's core guidance stays available.")).toBeVisible()
+    const toggle = screen.getByLabelText('Minimal context')
+    if (editing) expect(toggle).toBeChecked()
+    else expect(toggle).not.toBeChecked()
+    await userEvent.click(toggle)
+    if (editing) expect(toggle).not.toBeChecked()
+    else expect(toggle).toBeChecked()
+    await userEvent.click(screen.getByRole('button', { name: editing ? 'Save' : 'Create' }))
+    await waitFor(() => expect(onSaved).toHaveBeenCalledOnce())
+    const body = expect.objectContaining({ member_id: 'reviewer', agent: 'reviewer-provider', minimal_context: !editing })
+    if (editing) expect(api.updateCron).toHaveBeenCalledWith('mc1', body)
+    else expect(api.createCron).toHaveBeenCalledWith(body)
+  })
+
+  it('keeps script advice for an explicitly Global-bound job', async () => {
+    renderWithProviders(<JobForm layout="vertical" agents={[]} memberId="default" onSaved={() => {}} />)
+    await userEvent.type(await screen.findByLabelText('Message'), 'Check whether disk usage is above 80.')
+    expect(await screen.findByTestId('jobform-mode-advice')).toHaveTextContent(/script job/)
+    expect(screen.queryByText("Skip optional context. This member's core guidance stays available.")).not.toBeInTheDocument()
+    expect(screen.getByLabelText('Minimal context')).toBeEnabled()
+  })
+
   it('defaults to off for a new job', () => {
     expect(parseJobDefaults(undefined).minimalContext).toBe(false)
   })

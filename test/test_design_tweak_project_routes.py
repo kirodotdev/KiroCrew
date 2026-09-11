@@ -693,7 +693,7 @@ class TestDevServer:
 
         `proj` is resolved BEFORE `_stop_dev_proc`, which can take as long as a
         SIGKILL escalation. Mutating that pre-lock dict afterwards would persist a
-        registry the project is no longer part of, so the handler re-resolves
+        registry the project is not part of, so the handler re-resolves
         inside the lock and saves nothing when it is gone.
         """
         proj = {"id": "ds7", "path": "/tmp/stop7", "name": "stop7",
@@ -1007,7 +1007,7 @@ class TestSetSource:
 
     def test_set_url_rejects_non_loopback(self, isolated_queue, monkeypatch):
         """A non-loopback URL is rejected (SSRF); failure means the proxy can
-        be used to reach internal services."""
+        reach internal services."""
         h, rec = _post("/source", {"value": "http://internal.corp:8080"})
         h._h_set_source()
         assert rec.code == 400

@@ -26,7 +26,11 @@ from aiohttp import web
 import kiro_crew.dashboard.handlers as _h
 from kiro_crew import members as members_mod
 from kiro_crew.config.loader import KiroCrewConfig
-from kiro_crew.dashboard.chat_persistence import rehydrate_slot_from_history_async
+from kiro_crew.dashboard.chat_persistence import (
+    pin_private_agent_store,
+    rehydrate_slot_from_history_async,
+)
+from kiro_crew.dashboard.chat_utils import effective_session_key
 from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
 from kiro_crew.dashboard.state import DashboardState, request_slot_origin
 from kiro_crew.members import MemberSlugError
@@ -160,18 +164,27 @@ async def api_members(request: web.Request) -> web.Response:
             slug = members_mod.slug_for_name(name)
         except MemberSlugError:
             continue
+        store = agent_cfg.memory_store
+        record = getattr(cfg, "memory_stores", {}).get(store)
+        version = getattr(record, "memory_version", 1 if store == "default" else None)
+        owner = getattr(record, "owner_member", "")
+        if name != "default" and version == 1 and not owner:
+            if any(item.owner_member == name for item in cfg.memory_stores.values()):
+                version = None
         rows.append(
             {
                 # Explicit allowlist — never a dataclass spread. The response
                 # is a network-boundary contract: spreading `AgentConfig`
                 # would ship every future field (including a credential-shaped
-                # one) to the roster endpoint automatically. These are
-                # exactly what the detail drawer renders.
+                # one) to the roster endpoint automatically. Each field below is
+                # here because a caller renders or routes on it.
                 "name": name,
                 "slug": slug,
                 "kiro_agent": agent_cfg.kiro_agent,
                 "workspace": agent_cfg.workspace,
                 "memory_store": agent_cfg.memory_store,
+                "memory_version": version,
+                "memory_owner": owner,
                 "model": agent_cfg.model,
                 # Presentation-only and validated by _safe_avatar at load, so
                 # it cannot carry a credential-shaped value. Without it every
@@ -184,6 +197,15 @@ async def api_members(request: web.Request) -> web.Response:
                 # bool (the user's own favourite mark, PUT /api/agents/{name}).
                 "source": normalize_member_source(agent_cfg.source),
                 "starred": bool(agent_cfg.starred),
+                # A crew's IDENTITY: who it is, and the phrasings that should
+                # reach it. Both are operator-authored prose already stored on the
+                # crew, and both are needed off-config — a roster that shows a
+                # crew's memory store but not what it is for cannot answer "which
+                # of these should handle a ticket", by the reader or by a router.
+                # An empty `triggers` is meaningful rather than missing: it is the
+                # operator's opt-out from being routed to at all.
+                "description": agent_cfg.description,
+                "triggers": agent_cfg.triggers,
             }
         )
 
@@ -230,7 +252,9 @@ async def api_members(request: web.Request) -> web.Response:
             # any binding whose slot_key is not the slug's own derivation —
             # so the canonical alias helper reads the same key the binding
             # names, and the alias format stays owned by ONE function.
-            log_key = members_mod.member_thread_session_alias(row["slug"])
+            binding = bindings.get(row["slug"])
+            generation = binding.get("memory_store", "") if binding is not None else ""
+            log_key = members_mod.member_thread_session_alias(row["slug"], generation)
             mt = state.conversation_log.session_mtime(log_key)
             if not mt:
                 continue
@@ -249,6 +273,21 @@ async def api_members(request: web.Request) -> web.Response:
         row["last_message"] = preview
 
     return web.json_response({"members": rows})
+
+
+def _member_thread_slot(cfg, member: str, slug: str) -> tuple[str, str]:
+    """Keep protected V2 DMs; otherwise give private memory a fresh generation."""
+    from kiro_crew.member_memory_auth import read_private_session_store
+    from kiro_crew.memory_stores import require_member_memory_store
+
+    store = require_member_memory_store(cfg, member)
+    record = cfg.memory_stores.get(store)
+    if record is None or record.memory_version != 2:
+        return members_mod.member_slot_key(slug), ""
+    legacy_key = members_mod.member_thread_session_alias(slug)
+    if read_private_session_store(legacy_key) == store:
+        return members_mod.member_slot_key(slug), ""
+    return members_mod.member_slot_key(slug, store), store
 
 
 async def api_member_thread(request: web.Request) -> web.Response:
@@ -295,7 +334,21 @@ async def api_member_thread(request: web.Request) -> web.Response:
     # first crew (config order) whose name derives this slug. This keeps a
     # colliding slug's thread stably attributed to whoever bound it first.
     slug_owners = _member_names_for_slug(cfg, slug)
-    member_name = ""
+    member_name = (
+        binding["member"]
+        if binding is not None and binding.get("member") in slug_owners
+        else (slug_owners[0] if slug_owners else "")
+    )
+    slot_key, generation = "", ""
+    if member_name:
+        try:
+            slot_key, generation = await asyncio.to_thread(
+                _member_thread_slot, cfg, member_name, slug
+            )
+        except Exception as exc:
+            from kiro_crew.dashboard.handlers.memory import _store_unavailable_response
+
+            return _store_unavailable_response(cfg.agents[member_name].memory_store, exc)
     if binding is not None:
         if binding.get("member") in slug_owners:
             member_name = binding["member"]
@@ -339,7 +392,7 @@ async def api_member_thread(request: web.Request) -> web.Response:
         # the crew). A member key with NO history binds fresh as usual.
         if member_name and state.conversation_log is not None:
             _log = state.conversation_log
-            _history_key = members_mod.member_thread_session_alias(slug)
+            _history_key = members_mod.member_thread_session_alias(slug, generation)
             # STRUCTURAL existence, not metadata truthiness: get_metadata
             # answers {} for both "never persisted" and "present but
             # malformed/unreadable", and treating the second as the first
@@ -370,7 +423,6 @@ async def api_member_thread(request: web.Request) -> web.Response:
             {"error": "no crew member for this slug", "code": "member_not_found"}, status=404
         )
 
-    slot_key = members_mod.member_slot_key(slug)
     slot = state._slots.get(slot_key)
     if slot is None:
         # A dormant thread (gateway restart outside the restore window, or a
@@ -432,6 +484,58 @@ async def api_member_thread(request: web.Request) -> web.Response:
             status=409,
         )
 
+    member_store = getattr(cfg.agents[member_name], "memory_store", "")
+    store_record = cfg.memory_stores.get(member_store) if member_store else None
+    if store_record is not None and store_record.memory_version == 2:
+        from kiro_crew.member_memory_auth import read_private_session_store
+
+        canonical_key = members_mod.member_thread_session_alias(slug, generation)
+        async with slot._lock:
+            if effective_session_key(slot) != canonical_key or slot.running:
+                return web.json_response(
+                    {
+                        "error": "the member thread is running or linked to another session",
+                        "code": "member_slot_conflict",
+                    },
+                    status=409,
+                )
+            # The owner selected this slug, not an editable transcript or DM
+            # binding. A colliding slug needs an already protected assignment.
+            slot._memory_assignment_from_history = True
+            try:
+                if (
+                    len(slug_owners) != 1
+                    and (await asyncio.to_thread(read_private_session_store, canonical_key))
+                    != member_store
+                ):
+                    return web.json_response(
+                        {
+                            "error": "choose distinct member names before opening this private thread",
+                            "code": "member_pin_mismatch",
+                        },
+                        status=409,
+                    )
+                assigned_store = await pin_private_agent_store(
+                    state, canonical_key, member_name, cfg
+                )
+            except Exception as exc:
+                from kiro_crew.dashboard.handlers.memory import _store_unavailable_response
+
+                return _store_unavailable_response(member_store, exc)
+            if (
+                state._slots.get(slot_key) is not slot
+                or effective_session_key(slot) != canonical_key
+                or slot.agent != member_name
+            ):
+                return web.json_response(
+                    {
+                        "error": "member thread changed during assignment",
+                        "code": "member_slot_conflict",
+                    },
+                    status=409,
+                )
+            slot.memory_store = assigned_store
+
     created = (
         binding is None
         or binding.get("slot_key") != slot.key
@@ -440,7 +544,9 @@ async def api_member_thread(request: web.Request) -> web.Response:
     if created:
         try:
             await asyncio.to_thread(
-                lambda: members_mod.write_dm_binding(slug, member=member_name, slot_key=slot.key)
+                lambda: members_mod.write_dm_binding(
+                    slug, member=member_name, slot_key=slot.key, memory_store=generation
+                )
             )
         except OSError:
             logger.warning("failed to persist dm binding for %r", slug, exc_info=True)
@@ -762,7 +868,11 @@ async def api_member_rules_put(request: web.Request) -> web.Response:
     # teardown needed — and the flag is a no-op when no session is warm.
     try:
         state: DashboardState = request.app["state"]
-        state.sessions.mark_needs_reinjection(members_mod.member_thread_session_alias(slug))
+        binding = await asyncio.to_thread(members_mod.read_dm_binding, slug)
+        if binding is not None:
+            state.sessions.mark_needs_reinjection(
+                members_mod.member_thread_session_alias(slug, binding.get("memory_store", ""))
+            )
     except Exception:
         # Best-effort: the write LANDED (the durable state is correct), and a
         # cold session picks the new rules up at its next start regardless.

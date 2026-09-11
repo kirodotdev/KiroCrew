@@ -885,10 +885,10 @@ class TestMacOSPointerPaths:
 
 
 class TestReviewRegressions:
-    """Regressions for defects the adversarial review confirmed.
+    """Each scenario here is a reachable defect, not a hypothetical.
 
-    Each of these was a reachable defect, not a hypothetical: the scenarios were
-    reproduced against the real code before the fix landed.
+    Every one is reproducible against the real code, which is why the assertions
+    are worth the fixture weight they carry.
     """
 
     def test_secure_field_past_the_node_budget_still_suppresses_the_screenshot(self, fakes: _Fakes):

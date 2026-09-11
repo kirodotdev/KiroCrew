@@ -64,6 +64,7 @@ from kiro_crew.hooks import (
     TOOL_AUTO_APPROVE,
     TOOL_DENY,
     fire_tool_hooks,
+    identity_grant_covers_child,
     safe_read_file,
 )
 from kiro_crew.llm_helpers import (
@@ -206,9 +207,10 @@ def visible_agent_names(
     "+N more" only when there is a remainder to report).
 
     Three surfaces render this roster -- an unknown-agent refusal, the spawn
-    tools' parameter descriptions, and ``spawn_list``'s output -- and each one
-    used to re-implement the pipeline below. The duplication had already drifted
-    once, so the SAFETY half lives here where a fourth surface cannot omit it:
+    tools' parameter descriptions, and ``spawn_list``'s output -- and all three
+    come through the pipeline below rather than re-implementing it. Duplicated
+    copies drift, so the SAFETY half lives here where a fourth surface cannot
+    omit it:
 
     * **Grammar.** Every name must match ``_AGENT_NAME_RE`` before it is
       rendered. This is the load-bearing filter, not a tidiness check: an agent
@@ -252,9 +254,9 @@ def _available_agents_hint(available: list[str]) -> str:
     """Render the valid-name roster for an unknown-agent refusal.
 
     The names are computed anyway, to log the refusal. Withholding them from the
-    RETURNED error is what left the caller unable to self-correct: it retried
-    other invented names while every log line already held the answer, and the
-    log is not a surface the caller can read (#4842).
+    RETURNED error leaves the caller unable to self-correct: it retries other
+    invented names while every log line already holds the answer, and the
+    log is not a surface the caller can read.
 
     Filtering, redaction and the bound are :func:`visible_agent_names`; the
     caller already sorted *available*, and that order is preserved.
@@ -362,10 +364,9 @@ def _vet_spawn_governance(parent_session_key: str, agent: str, app: str = "") ->
     except PlatformCompositionError:
         raise
     except Exception:
-        # Fail CLOSED: a governance evaluation error must DENY the
-        # spawn, not silently permit it (previously returned None = no opinion =
-        # allow).  PlatformCompositionError already propagates above; every other
-        # error lands here and is audited before denial.
+        # Fail CLOSED: a governance evaluation error must DENY the spawn, not
+        # silently permit it. PlatformCompositionError already propagates above;
+        # every other error lands here and is audited before denial.
         try:
             from kiro_crew.platform.governance_profiles import audit_governance_degraded
 
@@ -391,7 +392,7 @@ def _redact_and_truncate(text: str, max_chars: int) -> str:
     """Redact over the FULL text, then truncate (never ``_redact(x[:n])``).
 
     Truncating first can cut a credential in half at the boundary, leaving a
-    fragment the redaction regexes no longer match — the raw remainder would
+    fragment the redaction regexes do not match — the raw remainder would
     then leak into the surface this feeds. Delegates to the canonical helper.
     """
     return redact_and_truncate(text, max_chars)
@@ -463,7 +464,7 @@ _REAPER_INTERVAL = 60  # seconds between reaper sweeps
 # run for this long has its session files + map entry deleted by the reaper.
 # Hibernated conversations cost a JSON file, not RSS, so this is generous.
 _CONVERSATION_TTL_SECS = 6 * 3600
-# Startup grace for spawn_steer (#1113): how long a steer on a live run
+# Startup grace for spawn_steer: how long a steer on a live run
 # waits for its session to register before returning the typed
 # ``session_starting`` refusal, and the poll cadence within that window.
 _STEER_STARTUP_WAIT_SECS = 15.0
@@ -485,8 +486,8 @@ _REPORT_DRAIN_TIMEOUT = (
     30.0  # max seconds cancel_all() waits for shielded terminal reports to drain
 )
 # Max seconds a cancelled run holds cancellation open for an in-flight off-loop
-# state.json write worker (#6306 review; widened to every off-loop writer by
-# #6308): long enough for any healthy fsync, short enough that a wedged FS
+# state.json write worker -- every off-loop writer: long enough for any healthy
+# fsync, short enough that a wedged FS
 # cannot hold cancel_all()'s untimed gather — bounded shutdown plus recoverable
 # state beats unbounded shutdown.
 _STATE_DRAIN_TIMEOUT = 5.0
@@ -699,13 +700,13 @@ _STALL_IDLE_SECS = (
 )
 
 # SUPPRESSION CEILING: the multiple of the idle threshold past which a WORKING
-# liveness verdict may no longer hold the "stalled" badge back.
+# liveness verdict stops holding the "stalled" badge back.
 #
 # Attribution is not infallible. Under ``agent.session_sharing`` (default true)
 # siblings share a runtime pid, so two subagents running similar commands can
 # cmdline-match the SAME child process; a genuinely wedged agent can then read
 # WORKING for as long as its sibling's child lives. Unbounded, that converts a
-# case the old idle-time-only path DID badge into a permanent false negative --
+# case idle time alone WOULD badge into a permanent false negative --
 # suppressing the only user-facing signal is worse than badging a healthy agent,
 # because the badge is self-clearing and a missing badge is not. With the ceiling
 # a misattribution costs extra latency instead of the signal itself.
@@ -720,7 +721,7 @@ _SUPPRESS_CEILING = 4
 # wave-close one. Every sibling's result is then withheld for the SLOWEST
 # member's entire remaining runtime; a member that HANGS rather than fails
 # withholds them for the full ``_TIMEOUT_SECS`` reap, which is
-# indistinguishable from a dead session (issue #2215).
+# indistinguishable from a dead session.
 #
 # This deadline is the latency half of that one-knob-two-jobs split: the count
 # trigger keeps bounding digest SIZE for large waves, while the deadline caps
@@ -803,11 +804,10 @@ def check_memory_available(min_gb: float = 4.0, path: str = "/proc/meminfo") -> 
 
 
 # Process-subtree readings come from ONE shared walker,
-# :func:`platform_compat.proc_subtree_sample`. RSS, CPU and the two counts used
-# to be three walks here carrying two copies of one 256 ceiling, and a fourth
-# copy of the same walk lived in ``mcp_gateway.pool``; the walk now has a single
-# home above both callers (#6096), so a ceiling or a sentinel can no longer
-# drift between them.
+# :func:`platform_compat.proc_subtree_sample`. RSS, CPU and the two counts all
+# come from that single walk, which lives above both this module and
+# ``mcp_gateway.pool``, so the 256 ceiling and the sentinels cannot drift
+# between separate copies.
 
 
 def _proc_subtree_sample(pid: Optional[int]) -> platform_compat.SubtreeSample:
@@ -1304,7 +1304,7 @@ class SubagentInfo:
     # retention clock, so the reaper would prune result.txt while the promise of
     # it is still queued, and the parent would be handed a dead path). The drain
     # settles the tombstone instead — see
-    # ``_ChatSlot.take_pending_subagent_deliveries`` (issue #4839).
+    # ``_ChatSlot.take_pending_subagent_deliveries``.
     _delivery_queued: bool = False
     max_turns: int = 0
     reaped: bool = False
@@ -1321,7 +1321,7 @@ class SubagentInfo:
     # (never a wildcard) — the ACP session/new response fills it at spawn, while
     # the CC/raw path only knows it after the first turn, so it is refreshed at
     # completion too. Surfaced on the subagent WS frames and completion meta so a
-    # model-pinned review's actual model is auditable (issue #3582).
+    # model-pinned review's actual model is auditable.
     resolved_model: str = ""
     # The EFFECTIVE requested model — the per-spawn pin (``model``) OR, when that
     # is empty, the ``agent.role_models['subagent']`` config pin
@@ -1329,7 +1329,7 @@ class SubagentInfo:
     # the config pin as *the* way to pin a subagent model). This is the side the
     # downgrade comparison must use: a config-pinned run served a different model
     # is exactly the "unverifiable pin" this feature exists to catch, and keying
-    # off the bare per-spawn ``model`` would miss it (Design review on #3582).
+    # off the bare per-spawn ``model`` would miss it.
     # ``"auto"`` ⇒ unpinned (no per-spawn pin, no role pin — the provider picks
     # the model). Resolved once at spawn.
     requested_model: str = ""
@@ -1354,6 +1354,17 @@ class SubagentInfo:
     include_memory: bool = True
     include_lessons: bool = True
     include_project: bool = True
+    # The memory silo this child reads and writes, or "" for the global store.
+    # Carried rather than derived: `agent` above holds a kiro-cli modeId, a
+    # namespace disjoint from cfg.agents, so resolving a store from it answers
+    # `default` for exactly the crew that configured otherwise — silently, and
+    # toward the operator's own memory. The caller passes a name it already
+    # resolved (ResolvedBindings.memory_store_name) or nothing at all.
+    #
+    # Empty is the correct default for a plain spawn: a child that inherits no
+    # crew reads the global store, which is what every spawn did before crews
+    # had silos.
+    memory_store: str = ""
     # Session key override for continuation runs: a spawn_continue run reuses
     # the ORIGINAL run's session key (``subagent:<conv-id>``) so get_or_create
     # finds the persisted sid and arms session/load. Empty ⇒ the default
@@ -1407,7 +1418,7 @@ class SubagentInfo:
     # shutdown) asyncio cancellation — mirrors the main path's cancel recovery.
     _cancel_retry_used: bool = False
     # True while a cancelled run is draining an in-flight off-loop state.json
-    # write worker (#6306; every off-loop writer since #6308). _run's
+    # write worker (every off-loop writer). _run's
     # unexpected-cancel recovery gate reads it: on Python 3.10 a second outer
     # cancel can deliver that gate BEFORE the drain finishes (wait_for's
     # _cancel_and_wait awaits an interruptible bare future), and scheduling a
@@ -1415,7 +1426,7 @@ class SubagentInfo:
     # the drain exists to close.
     _state_drain_active: bool = False
     # Set only on the synthetic marker `_conversation_busy` returns for a
-    # conversation held by an abandoned state writer (#6298 review), so the two
+    # conversation held by an abandoned state writer, so the two
     # retention callers can say "still settling a state write" instead of
     # promising a completion event that has already fired. The authoritative
     # record is `SubagentManager._abandoned_state_writers`, which survives
@@ -1543,8 +1554,8 @@ class SpawnApprovalUnreachable(Exception):
       mode, the YOLO override, slot trust -- is evaluated inside the callback and
       never reaches the gate's cascade, so a gate-side probe would have to
       re-derive all four and would reject spawns those rungs mean to allow (the
-      ``auto_approve_sources`` opt-in is issue #2381's own documented
-      workaround). Raising from the callback puts the check where "we are about
+      ``auto_approve_sources`` opt-in is the documented workaround). Raising from
+      the callback puts the check where "we are about
       to park with nobody attached" is the only remaining possibility.
 
     The message SHOULD name the surface that was missing ("no dashboard client is
@@ -1651,14 +1662,14 @@ class SubagentManager:
         # Continuable conversations: session_key ("subagent:<conv-id>") →
         # last-used unix ts. Drives the reaper's idle-TTL sweep. Rebuilt from
         # state.json (keep=True runs) on the reaper's first pass after a
-        # gateway restart (#1114), so promoted conversations stay owned by
+        # gateway restart, so promoted conversations stay owned by
         # the TTL sweep across restarts; a spawn_continue on an unknown key
         # also re-registers it on demand.
         self._conversations: dict[str, float] = {}
         self._conv_registry_rebuilt = False
         # Run ids whose bounded state-write drain EXPIRED, so a pool worker is
         # still live and its stale whole-file rewrite would roll back the
-        # retention `keep` a promote / release writes on the loop (#6298).
+        # retention `keep` a promote / release writes on the loop.
         # `_conversation_busy` reports these as held, which defers both retention
         # writes past the worker; each worker's own done-callback discards its id,
         # so the set holds at most one entry per live zombie. It lives on the
@@ -1666,7 +1677,7 @@ class SubagentManager:
         # prunes completed runs out of `_agents` and an eviction must not silently
         # release the hold.
         self._abandoned_state_writers: set[str] = set()
-        # state.json is the source of truth for retention (#1115): give the
+        # state.json is the source of truth for retention: give the
         # SessionManager's in-memory continuable cache a disk fallback so a
         # cache miss (restart window) cannot demote a promoted conversation.
         try:
@@ -1678,7 +1689,7 @@ class SubagentManager:
         # OUTLIVING both dicts above. A "delivered" tombstone excludes a folder from
         # restart orphan reconciliation, so it must never be written while the run's
         # child is still being killed -- and the settlement that writes it can happen
-        # outside the run (the parent's queue drain; issue #4839), long after a
+        # outside the run (the parent's queue drain), long after a
         # dashboard "clear completed" / "cancel" has popped BOTH ``_agents`` and
         # ``_tasks`` for a done-but-still-tearing-down run. Reading the gate from
         # here, rather than inferring "record gone means teardown finished", is what
@@ -1879,8 +1890,8 @@ class SubagentManager:
         already-redacted input, the dispatch instant, and the TRUSTED
         ``is_shell`` / ``tool_name`` fields from ``_meta.kiro`` (never the
         LLM-authored title). The subagent event loop already receives the same
-        ``AcpEvent``; it previously kept only ``title`` and dropped the rest,
-        which is why stall detection had nothing to attribute evidence with.
+        ``AcpEvent``, and keeping only ``title`` would leave stall detection
+        with nothing to attribute evidence with.
 
         Retiring the oracle here (rather than clearing it) is load-bearing: a
         movement walk still running against the PREVIOUS tool's command holds a
@@ -2081,6 +2092,7 @@ class SubagentManager:
         include_memory: bool = True,
         include_lessons: bool = True,
         include_project: bool = True,
+        memory_store: str = "",
         _agent_prevalidated: bool = False,
         _from_queue: bool = False,
         _preassigned_id: str = "",
@@ -2105,6 +2117,7 @@ class SubagentManager:
             include_memory,
             include_lessons,
             include_project,
+            memory_store,
             _agent_prevalidated,
             _from_queue,
             _preassigned_id,
@@ -2158,6 +2171,9 @@ class SubagentManager:
 
     def _inherited_context_groups(self, conv_id: str) -> tuple[bool, bool, bool]:
         return self._continuation._inherited_context_groups_impl(conv_id)
+
+    def _inherited_memory_store(self, conv_id: str) -> str:
+        return self._continuation._inherited_memory_store_impl(conv_id)
 
     async def steer_run(self, agent_id: str, message: str) -> tuple[bool, str]:
         return await self._continuation.steer_run_impl(agent_id, message)
@@ -2480,6 +2496,7 @@ _COMPONENT_GLOBAL_BINDINGS = (
     evict_completed_agents,
     extract_options,
     fire_tool_hooks,
+    identity_grant_covers_child,
     has_dashboard_surface,
     list_orphans,
     maintenance_executor,

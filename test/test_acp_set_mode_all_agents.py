@@ -1,6 +1,6 @@
 """Regression test: session/set_mode must be called for ALL agents, not just default.
 
-Bug introduced in 24f98e5 (2026-02-27) — set_mode was skipped for custom agents
+set_mode can be skipped for custom agents
 under the incorrect assumption that --agent CLI flag alone activates the agent.
 In reality, --agent loads the agent config but set_mode is required to activate
 the agent's prompt/persona in the session.

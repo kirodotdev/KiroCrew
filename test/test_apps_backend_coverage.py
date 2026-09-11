@@ -2591,7 +2591,7 @@ class TestStopAdoptedBackend:
         self, kills: list[tuple[int, int]], monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Revalidation is process identity, not a port heuristic: a PID whose
-        live start time no longer matches the adoption record was recycled and
+        live start time does not match the adoption record was recycled and
         must not be signalled, whatever it listens on now."""
 
         self._track(

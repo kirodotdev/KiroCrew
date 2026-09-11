@@ -156,7 +156,7 @@ class TestAgentOrderingFallback:
 
 
 class TestProjectScopeRoster:
-    """/api/agents surfaces the session project's agents (#1684's headline).
+    """/api/agents surfaces the session project's agents.
 
     Rows carry ``scope``: config aliases are ``"global"``, project discoveries
     ``"project"``. A name in both scopes lists once, as the alias — dispatch

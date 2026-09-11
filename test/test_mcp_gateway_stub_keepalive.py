@@ -1,4 +1,4 @@
-"""Gateway->stub keepalive transport probe (issue #1574).
+"""Gateway->stub keepalive transport probe.
 
 A stub whose transport dies without a clean close leaves its connection handler
 parked in ``reader.readuntil()``, so the ``finally`` that owns ``detach_stub``

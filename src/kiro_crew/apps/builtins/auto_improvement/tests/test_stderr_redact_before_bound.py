@@ -5,7 +5,7 @@ character count. ``commit.py`` reaches git with an AUTHENTICATED remote URL
 (``materialize_queued_diff`` passes ``_prefer_authenticated_remote``'s result as
 argv), and on an auth failure git echoes that URL — userinfo and all — to
 stderr. Bounding BEFORE redaction can cut the credential mid-match, leaving a
-prefix that no longer matches any credential regex, so the downstream serving
+prefix that matches no credential regex, so the downstream serving
 route's own redaction pass (``routes.py``'s ``_redact_for_display``) cannot
 recognise it either. The fix is redact-then-bound through the companion-aware
 context shims (``redact_via_context`` for payloads, ``redact_log_via_context``
@@ -122,7 +122,7 @@ class TestNoRawBoundedStderrSliceAnywhereInTheApp:
     bound must redact-then-bound through a redactor shim instead.
     """
 
-    # The shapes redaction can no longer see through once the slice has run:
+    # The shapes redaction cannot see through once the slice has run:
     # - a stderr expression head-sliced to a bound, with or without an interposed
     #   `or ''` default or `.strip()`  -> stderr...[:N]
     # - a stderr expression (or a var named like one) TAIL-sliced to a bound

@@ -215,11 +215,11 @@ class TestNormalizeLink:
         assert _normalize_link({}) == {"url": "", "context": ""}
 
     def test_non_string_url_coerced_to_empty(self):
-        # 123[:500] used to raise TypeError -> 500
+        # 123[:500] would raise TypeError -> 500
         assert _normalize_link({"url": 123, "context": "ctx"}) == {"url": "", "context": "ctx"}
 
     def test_non_string_context_coerced_to_empty(self):
-        # "".strip() on a list used to raise AttributeError -> 500
+        # "".strip() on a list would raise AttributeError -> 500
         assert _normalize_link({"url": "https://x.com", "context": ["a"]}) == {
             "url": "https://x.com",
             "context": "",
@@ -229,7 +229,7 @@ class TestNormalizeLink:
         assert _normalize_link({"url": None}) == {"url": "", "context": ""}
 
     def test_non_dict_entry_coerced_to_empty(self):
-        # link.get(...) on a str/None used to raise AttributeError -> 500
+        # link.get(...) on a str/None would raise AttributeError -> 500
         assert _normalize_link("https://x.com") == {"url": "", "context": ""}
         assert _normalize_link(None) == {"url": "", "context": ""}
 
@@ -257,7 +257,7 @@ class TestApiEndpointResilience:
         app["state"] = object()
         app.router.add_post("/api/chat/nav/resolve-links", api_chat_nav_resolve_links)
         async with TestClient(TestServer(app)) as client:
-            # Every shape that previously produced a 500.
+            # Every shape that would otherwise produce a 500.
             links = [
                 {"url": 123, "context": "x"},
                 {"url": "https://ok.com", "context": 99},

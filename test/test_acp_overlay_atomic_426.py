@@ -1,8 +1,8 @@
-"""Regression: ACP cli.json overlays must be written atomically (#426).
+"""ACP cli.json overlays are written atomically.
 
 A plain ``write_text`` truncates-then-writes, so a crash or concurrent read
 mid-write yields an empty/partial file and kiro-cli drops the effort / Tool
-Search settings. The overlay writers now route through ``atomic_write``
+Search settings. The overlay writers route through ``atomic_write``
 (temp file + ``os.replace``), so readers only ever see a complete file and no
 ``.tmp`` residue is left behind.
 """

@@ -57,7 +57,7 @@ describe('Fork Session Integration', () => {
     const store = createTestStore()
     server.use(
       http.post('/api/chat/slots/chat-1-100/fork', () =>
-        HttpResponse.json({ ok: false, error: 'cannot fork an ephemeral session' }, { status: 400 }),
+        HttpResponse.json({ ok: false, error: 'slot cap reached (64)', code: 'slot_cap_reached' }, { status: 429 }),
       ),
     )
 

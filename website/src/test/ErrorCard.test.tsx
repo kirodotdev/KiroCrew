@@ -1,7 +1,12 @@
 import { describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 
-import { ErrorCard, isModelUnentitled } from '../pages/chat/ErrorCard'
+import { ErrorCard, isAuthRequired, isModelUnentitled } from '../pages/chat/ErrorCard'
+
+const setupMeta = (member = 'reviewer') => ({
+  code: 'memory_unavailable',
+  recovery: { kind: 'initialize_member_memory', member },
+})
 
 /**
  * The error row used to be an actionless div whose own copy told the reader to
@@ -9,6 +14,30 @@ import { ErrorCard, isModelUnentitled } from '../pages/chat/ErrorCard'
  * (Continue), plus the guard that a press cannot double-fire.
  */
 describe('ErrorCard', () => {
+  it('treats retained setup metadata as an ordinary retryable error', () => {
+    const content = 'memory_unavailable: Owner setup required.'
+    render(<ErrorCard content={content} meta={setupMeta()} onContinue={() => {}} />)
+    expect(screen.getByTestId('error-card')).toHaveTextContent('Owner setup required.')
+    expect(screen.getByTestId('error-card')).not.toHaveTextContent('memory_unavailable:')
+    expect(screen.queryByRole('link')).toBeNull()
+    expect(screen.getByTestId('error-card-continue')).toBeVisible()
+  })
+
+  it('does not derive a setup action or strip diagnostic text from untyped prose', () => {
+    const content = 'memory_unavailable: Create private memory.'
+    render(<ErrorCard content={content} onContinue={() => {}} />)
+    expect(screen.getByTestId('error-card')).toHaveTextContent(content)
+    expect(screen.queryByRole('link')).toBeNull()
+    expect(screen.getByTestId('error-card-continue')).toBeTruthy()
+  })
+
+  it('hides the typed code without inventing initialization recovery for other memory errors', () => {
+    render(<ErrorCard content="memory_unavailable: Restore the original binding." meta={{ code: 'memory_unavailable' }} />)
+    expect(screen.getByTestId('error-card')).toHaveTextContent('Restore the original binding.')
+    expect(screen.getByTestId('error-card')).not.toHaveTextContent('memory_unavailable:')
+    expect(screen.queryByRole('link')).toBeNull()
+  })
+
   it('renders the prose verbatim with no action when the turn is not resumable', () => {
     render(<ErrorCard content="⟳ Connection lost — please retry." />)
     expect(screen.getByTestId('error-card')).toHaveTextContent('⟳ Connection lost — please retry.')
@@ -109,5 +138,44 @@ describe('ErrorCard — model entitlement rejection', () => {
     expect(isModelUnentitled({ meta: { kind: 'model_unentitled' } })).toBe(true)
     expect(isModelUnentitled({ kind: 'transient_retry' })).toBe(false)
     expect(isModelUnentitled({})).toBe(false)
+  })
+})
+
+/**
+ * A signed-out agent process is the other error whose fix is not a retry. Its
+ * row swaps Continue for a deep link to the Kiro sign-in card in Settings.
+ */
+describe('ErrorCard — agent not signed in', () => {
+  it('offers Sign in to Kiro and NO Continue, even when resumable', () => {
+    const onContinue = vi.fn()
+    const onOpenSignIn = vi.fn()
+    render(
+      <ErrorCard
+        content="Your session has expired. Sign in again, then start a new chat."
+        onContinue={onContinue}
+        onOpenSignIn={onOpenSignIn}
+      />,
+    )
+    const card = screen.getByTestId('error-card')
+    expect(card).toHaveAttribute('data-auth-required', 'true')
+    expect(card).toHaveTextContent('Your session has expired.')
+    expect(screen.queryByTestId('error-card-continue')).toBeNull()
+    fireEvent.click(screen.getByTestId('error-card-sign-in'))
+    expect(onOpenSignIn).toHaveBeenCalledTimes(1)
+    expect(onContinue).not.toHaveBeenCalled()
+    cleanup()
+  })
+
+  it('recognises the auth_required kind on both the live and the rebuilt carrier', () => {
+    expect(isAuthRequired({ kind: 'auth_required' })).toBe(true)
+    expect(isAuthRequired({ meta: { kind: 'auth_required' } })).toBe(true)
+    expect(isAuthRequired({ kind: 'model_unentitled' })).toBe(false)
+    expect(isAuthRequired({})).toBe(false)
+  })
+
+  it('falls back to plain prose on a surface with no settings route', () => {
+    render(<ErrorCard content="not signed in" />)
+    expect(screen.queryByTestId('error-card-sign-in')).toBeNull()
+    expect(screen.getByTestId('error-card')).not.toHaveAttribute('data-auth-required')
   })
 })

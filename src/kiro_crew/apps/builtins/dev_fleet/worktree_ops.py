@@ -759,10 +759,10 @@ async def _worktree_remove_locked(
     # about working-tree edits. `git worktree remove --force` bypasses git's
     # own dirty check and would irrecoverably destroy uncommitted edits.
     # Contract: NO path from this gate ever passes --force to git:
-    #   - dirty is not False → refuse outright (round 5)
+    #   - dirty is not False → refuse outright
     #   - dirty is False → drop --force so git's own dirty check is the
     #     atomic last line against edits arriving in the check-to-removal
-    #     window (round 6, mirrors the unmerged-clean TOCTOU pattern)
+    #     window (mirrors the unmerged-clean TOCTOU pattern)
     if force and fleet_state._is_pr_merged(pr) and branch:
         dirty = await _dirty_now()
         if dirty is not False:
@@ -1433,7 +1433,7 @@ def _frontend_build_steps(
     correct answer. Deciding it here at assembly time would read the per-PID sync
     ref before fetch wrote it, so on a long-lived gateway's second sync it would
     compare against the PRIOR tip and skip a rebuild an incoming frontend change
-    genuinely needed (#7132).
+    genuinely needed.
 
     The two steps suppress together because the runner keys on their labels off
     one preflight verdict, and they must: ``npm ci`` reifies the incoming
@@ -1797,7 +1797,7 @@ async def _sync_start_locked() -> dict:
                     # runner suppresses the later npm ci and build+stage steps.
                     # A flag, not a value -- the verdict travels as this step's
                     # exit code and lives in runner state, never a file another
-                    # same-UID step could forge (#7132).
+                    # same-UID step could forge.
                     "--emit-frontend-skip",
                 ],
                 "strict",
@@ -1878,7 +1878,7 @@ async def _sync_start_locked() -> dict:
         # before reinstalling from an unchanged lockfile) and a full vite build
         # that reproduces a byte-identical bundle. The decision is made
         # post-fetch, carried by the preflight's trusted exit code rather than
-        # in-process here where the ref is not yet fetched (#7132).
+        # in-process here where the ref is not yet fetched.
         raw_steps += _frontend_build_steps(npm_bin=npm_bin, git_bin=git_bin, repo=str(repo))
     cleanups: list[str] = []
     # The preflight's snapshot is removed with the run's other temporaries. It is
@@ -2047,7 +2047,7 @@ async def _rebase_locked(target: dict) -> dict:
     if st is None:
         return {"ok": False, "error": "cannot verify worktree state (git status failed)"}
     if st:
-        # Same fileless refusal the removal path used to give. Name the dirt so
+        # Same fileless refusal the removal path gives. Name the dirt so
         # the user can act on it. The GATE is deliberately unchanged: an
         # untracked file cannot conflict semantically, but it can still block
         # the rebase's checkout when it collides with a path a replayed commit

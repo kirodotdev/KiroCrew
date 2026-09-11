@@ -1,24 +1,16 @@
 """Programmatic slot creation must publish the active-slot set.
 
-The defect these pin: ``get_or_create_slot`` inserted the new slot into
-``state._slots`` and broadcast to websockets, but never published the updated
-key set to ``SessionManager.set_active_dashboard_slots`` — only the HTTP slot
-endpoints did (via ``_sync_dashboard_slots``). Slots created programmatically
-(auto-research campaign workers, cron/workflow inject, the task runner, spec
-builder) never pass through those endpoints, so ``_active_dashboard_slots``
-stayed stale and the idle sweep's orphan branch reaped their LIVE sessions as
-"slot gone".
-
-Observed in production (gateway.log, 2026-08-08): an actively running research
-campaign's session ``dashboard:research-9057ccf5`` was expired as orphaned on
-three consecutive sweeps (16:54:47, 17:04:53, 17:14:56) while its autonudge
-loop was mid-campaign. The first reap's ``reset()`` released the companion
-subagent runtime, killing subagent c6f44344 mid-prompt with
-``AcpProcessDied("Runtime process died during prompt")``.
+``get_or_create_slot`` inserts the new slot into ``state._slots`` and broadcasts
+to websockets. It must also publish the updated key set to
+``SessionManager.set_active_dashboard_slots`` — otherwise slots created
+programmatically (auto-research campaign workers, cron/workflow inject, the task
+runner, spec builder) never reach ``_sync_dashboard_slots`` (only the HTTP slot
+endpoints do), ``_active_dashboard_slots`` goes stale, and the idle sweep's
+orphan branch reaps their LIVE sessions as "slot gone".
 
 The busy-guard (see test_session_idle_busy_guard.py) does not cover this: an
 autonudge-driven session is legitimately idle BETWEEN cycles (the semaphore is
-released when a turn ends), which is exactly when the sweep caught it.
+released when a turn ends), which is exactly when the sweep catches it.
 """
 
 from __future__ import annotations

@@ -1,7 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { screen, fireEvent } from '@testing-library/react'
-import { renderWithProviders } from './helpers'
+import { renderWithProviders, createTestStore } from './helpers'
+import type { RootState } from '../store'
 import ChatInput from '../components/ChatInput'
+import { ComposerVoiceSliceOverride } from '../chat-core/composer/Composer'
 import { createAudioSample } from '../hooks/mic'
 
 /**
@@ -40,7 +42,7 @@ beforeEach(() => {
 describe('ChatInput — dictation panel', () => {
   it('shows the dictation panel instead of the status bar while recording', () => {
     renderWithProviders(
-      <ChatInput {...base} voiceRecording voiceDictationPanel voiceSampleRef={sampleRef} voiceDeviceLabel="Mic" />,
+      <ComposerVoiceSliceOverride inputProps={{ voiceRecording: true, voiceDictationPanel: true, voiceSampleRef: sampleRef, voiceDeviceLabel: "Mic" }}><ChatInput {...base} /></ComposerVoiceSliceOverride>,
     )
     expect(screen.getByTestId('voice-dictation-panel')).toBeInTheDocument()
     // The old thin bar's label must not also be on screen.
@@ -49,7 +51,7 @@ describe('ChatInput — dictation panel', () => {
 
   it('keeps the thin status bar when the setting is off', () => {
     renderWithProviders(
-      <ChatInput {...base} voiceRecording voiceDictationPanel={false} voiceSampleRef={sampleRef} />,
+      <ComposerVoiceSliceOverride inputProps={{ voiceRecording: true, voiceDictationPanel: false, voiceSampleRef: sampleRef }}><ChatInput {...base} /></ComposerVoiceSliceOverride>,
     )
     expect(screen.queryByTestId('voice-dictation-panel')).toBeNull()
     expect(screen.getByText('Recording')).toBeInTheDocument()
@@ -58,21 +60,18 @@ describe('ChatInput — dictation panel', () => {
   it('falls back to the status bar on a mic error so the error stays dismissible', () => {
     const onClearVoiceError = vi.fn()
     renderWithProviders(
-      <ChatInput
-        {...base}
-        voiceRecording
-        voiceDictationPanel
-        voiceSampleRef={sampleRef}
-        voiceError="Microphone permission denied."
-        onClearVoiceError={onClearVoiceError}
-      />,
+      <ComposerVoiceSliceOverride inputProps={{ voiceRecording: true, voiceDictationPanel: true, voiceSampleRef: sampleRef, voiceError: "Microphone permission denied.", onClearVoiceError: onClearVoiceError }}>
+        <ChatInput
+          {...base}
+        />
+      </ComposerVoiceSliceOverride>,
     )
     expect(screen.queryByTestId('voice-dictation-panel')).toBeNull()
     expect(screen.getByText('Microphone permission denied.')).toBeInTheDocument()
   })
 
   it('renders neither surface when not recording', () => {
-    renderWithProviders(<ChatInput {...base} voiceDictationPanel voiceSampleRef={sampleRef} />)
+    renderWithProviders(<ComposerVoiceSliceOverride inputProps={{ voiceDictationPanel: true, voiceSampleRef: sampleRef }}><ChatInput {...base} /></ComposerVoiceSliceOverride>)
     expect(screen.queryByTestId('voice-dictation-panel')).toBeNull()
     expect(screen.queryByText('Recording')).toBeNull()
   })
@@ -82,13 +81,12 @@ describe('ChatInput — dictation panel', () => {
     // mounted and focusable — Enter-to-send routes through its handler — but it
     // must not also display the same text next to the panel.
     renderWithProviders(
-      <ChatInput
-        {...base}
-        value="summarize the startup fix"
-        voiceRecording
-        voiceDictationPanel
-        voiceSampleRef={sampleRef}
-      />,
+      <ComposerVoiceSliceOverride inputProps={{ voiceRecording: true, voiceDictationPanel: true, voiceSampleRef: sampleRef }}>
+        <ChatInput
+          {...base}
+          value="summarize the startup fix"
+        />
+      </ComposerVoiceSliceOverride>,
     )
     const ta = screen.getByLabelText('Message input')
     expect(ta.parentElement?.className).toContain('sr-only')
@@ -104,13 +102,12 @@ describe('ChatInput — dictation panel', () => {
 
   it('shows the composer text in the panel, so what is shown is what will be sent', () => {
     renderWithProviders(
-      <ChatInput
-        {...base}
-        value="summarize the startup fix"
-        voiceRecording
-        voiceDictationPanel
-        voiceSampleRef={sampleRef}
-      />,
+      <ComposerVoiceSliceOverride inputProps={{ voiceRecording: true, voiceDictationPanel: true, voiceSampleRef: sampleRef }}>
+        <ChatInput
+          {...base}
+          value="summarize the startup fix"
+        />
+      </ComposerVoiceSliceOverride>,
     )
     expect(screen.getByTestId('voice-dictation-transcript').textContent).toBe('summarize the startup fix')
   })
@@ -119,7 +116,7 @@ describe('ChatInput — dictation panel', () => {
 describe('ChatInput — Escape while recording', () => {
   it('stops recording when focus is on the textarea', () => {
     const onVoiceToggle = vi.fn()
-    renderWithProviders(<ChatInput {...base} voiceRecording onVoiceToggle={onVoiceToggle} />)
+    renderWithProviders(<ComposerVoiceSliceOverride inputProps={{ voiceRecording: true, onVoiceToggle: onVoiceToggle }}><ChatInput {...base} /></ComposerVoiceSliceOverride>)
     fireEvent.keyDown(screen.getByLabelText('Message input'), { key: 'Escape' })
     expect(onVoiceToggle).toHaveBeenCalledTimes(1)
   })
@@ -129,7 +126,7 @@ describe('ChatInput — Escape while recording', () => {
     // not in the textarea. A textarea-scoped handler never fires, and the
     // panel's "Esc to cancel" hint would be a lie.
     const onVoiceToggle = vi.fn()
-    renderWithProviders(<ChatInput {...base} voiceRecording onVoiceToggle={onVoiceToggle} />)
+    renderWithProviders(<ComposerVoiceSliceOverride inputProps={{ voiceRecording: true, onVoiceToggle: onVoiceToggle }}><ChatInput {...base} /></ComposerVoiceSliceOverride>)
     fireEvent.keyDown(document.body, { key: 'Escape' })
     expect(onVoiceToggle).toHaveBeenCalledTimes(1)
   })
@@ -140,7 +137,7 @@ describe('ChatInput — Escape while recording', () => {
     const onVoiceToggle = vi.fn()
     const onVoiceCancel = vi.fn()
     renderWithProviders(
-      <ChatInput {...base} voiceRecording onVoiceToggle={onVoiceToggle} onVoiceCancel={onVoiceCancel} />,
+      <ComposerVoiceSliceOverride inputProps={{ voiceRecording: true, onVoiceToggle: onVoiceToggle, onVoiceCancel: onVoiceCancel }}><ChatInput {...base} /></ComposerVoiceSliceOverride>,
     )
     fireEvent.keyDown(document.body, { key: 'Escape' })
     expect(onVoiceCancel).toHaveBeenCalledTimes(1)
@@ -150,16 +147,16 @@ describe('ChatInput — Escape while recording', () => {
   it('detaches the listener when recording stops', () => {
     const onVoiceToggle = vi.fn()
     const { rerender } = renderWithProviders(
-      <ChatInput {...base} voiceRecording onVoiceToggle={onVoiceToggle} />,
+      <ComposerVoiceSliceOverride inputProps={{ voiceRecording: true, onVoiceToggle: onVoiceToggle }}><ChatInput {...base} /></ComposerVoiceSliceOverride>,
     )
-    rerender(<ChatInput {...base} voiceRecording={false} onVoiceToggle={onVoiceToggle} />)
+    rerender(<ComposerVoiceSliceOverride inputProps={{ voiceRecording: false, onVoiceToggle: onVoiceToggle }}><ChatInput {...base} /></ComposerVoiceSliceOverride>)
     fireEvent.keyDown(document.body, { key: 'Escape' })
     expect(onVoiceToggle).not.toHaveBeenCalled()
   })
 
   it('does nothing when not recording (Escape keeps its other meanings)', () => {
     const onVoiceToggle = vi.fn()
-    renderWithProviders(<ChatInput {...base} voiceRecording={false} onVoiceToggle={onVoiceToggle} />)
+    renderWithProviders(<ComposerVoiceSliceOverride inputProps={{ voiceRecording: false, onVoiceToggle: onVoiceToggle }}><ChatInput {...base} /></ComposerVoiceSliceOverride>)
     fireEvent.keyDown(document.body, { key: 'Escape' })
     fireEvent.keyDown(screen.getByLabelText('Message input'), { key: 'Escape' })
     expect(onVoiceToggle).not.toHaveBeenCalled()
@@ -167,7 +164,7 @@ describe('ChatInput — Escape while recording', () => {
 
   it('yields to an open slash menu — that picker owns Escape to close itself', () => {
     const onVoiceToggle = vi.fn()
-    renderWithProviders(<ChatInput {...base} voiceRecording onVoiceToggle={onVoiceToggle} />)
+    renderWithProviders(<ComposerVoiceSliceOverride inputProps={{ voiceRecording: true, onVoiceToggle: onVoiceToggle }}><ChatInput {...base} /></ComposerVoiceSliceOverride>)
     const ta = screen.getByLabelText('Message input')
     // Typing "/" opens the slash menu (setSlashMenuOpen in onChange).
     fireEvent.change(ta, { target: { value: '/' } })
@@ -183,7 +180,7 @@ describe('ChatInput — Escape while recording', () => {
     // dispatched from inside the component and is NOT pre-cancelled: cancelling
     // it beforehand would make the test pass under either phase.
     const onVoiceToggle = vi.fn()
-    renderWithProviders(<ChatInput {...base} voiceRecording onVoiceToggle={onVoiceToggle} />)
+    renderWithProviders(<ComposerVoiceSliceOverride inputProps={{ voiceRecording: true, onVoiceToggle: onVoiceToggle }}><ChatInput {...base} /></ComposerVoiceSliceOverride>)
     const ta = screen.getByLabelText('Message input')
     const consume = (e: Event) => e.preventDefault()
     ta.addEventListener('keydown', consume)
@@ -202,7 +199,7 @@ describe('ChatInput — Escape while recording', () => {
     // started during recording.
     const onVoiceToggle = vi.fn()
     const windowHandler = vi.fn()
-    renderWithProviders(<ChatInput {...base} voiceRecording onVoiceToggle={onVoiceToggle} />)
+    renderWithProviders(<ComposerVoiceSliceOverride inputProps={{ voiceRecording: true, onVoiceToggle: onVoiceToggle }}><ChatInput {...base} /></ComposerVoiceSliceOverride>)
     window.addEventListener('keydown', windowHandler)
     try {
       document.body.dispatchEvent(
@@ -217,7 +214,7 @@ describe('ChatInput — Escape while recording', () => {
 
   it('still fires when nothing consumed Escape', () => {
     const onVoiceToggle = vi.fn()
-    renderWithProviders(<ChatInput {...base} voiceRecording onVoiceToggle={onVoiceToggle} />)
+    renderWithProviders(<ComposerVoiceSliceOverride inputProps={{ voiceRecording: true, onVoiceToggle: onVoiceToggle }}><ChatInput {...base} /></ComposerVoiceSliceOverride>)
     const ev = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
     document.body.dispatchEvent(ev)
     expect(onVoiceToggle).toHaveBeenCalledTimes(1)
@@ -229,7 +226,7 @@ describe('ChatInput — Escape while recording', () => {
     // role="dialog", so one presence probe defers to every one of them.
     const onVoiceToggle = vi.fn()
     const dialogHandler = vi.fn()
-    renderWithProviders(<ChatInput {...base} voiceRecording onVoiceToggle={onVoiceToggle} />)
+    renderWithProviders(<ComposerVoiceSliceOverride inputProps={{ voiceRecording: true, onVoiceToggle: onVoiceToggle }}><ChatInput {...base} /></ComposerVoiceSliceOverride>)
     const dialog = document.createElement('div')
     dialog.setAttribute('role', 'dialog')
     document.body.appendChild(dialog)
@@ -249,7 +246,7 @@ describe('ChatInput — Escape while recording', () => {
 
   it('resumes claiming Escape once the dialog closes', () => {
     const onVoiceToggle = vi.fn()
-    renderWithProviders(<ChatInput {...base} voiceRecording onVoiceToggle={onVoiceToggle} />)
+    renderWithProviders(<ComposerVoiceSliceOverride inputProps={{ voiceRecording: true, onVoiceToggle: onVoiceToggle }}><ChatInput {...base} /></ComposerVoiceSliceOverride>)
     const dialog = document.createElement('div')
     dialog.setAttribute('role', 'dialog')
     document.body.appendChild(dialog)
@@ -261,7 +258,7 @@ describe('ChatInput — Escape while recording', () => {
   })
 
   it('does not fire without an onVoiceToggle handler', () => {
-    renderWithProviders(<ChatInput {...base} voiceRecording />)
+    renderWithProviders(<ComposerVoiceSliceOverride inputProps={{ voiceRecording: true }}><ChatInput {...base} /></ComposerVoiceSliceOverride>)
     expect(() => fireEvent.keyDown(document.body, { key: 'Escape' })).not.toThrow()
   })
 })
@@ -269,7 +266,7 @@ describe('ChatInput — Escape while recording', () => {
 describe('ChatInput — send is gated while a batch transcript is pending', () => {
   it('does NOT send on Enter while voiceTranscribing (transcript not landed yet)', () => {
     const onSend = vi.fn()
-    renderWithProviders(<ChatInput {...base} value="foo" connected voiceTranscribing onSend={onSend} />)
+    renderWithProviders(<ComposerVoiceSliceOverride inputProps={{ voiceTranscribing: true }}><ChatInput {...base} value="foo" connected onSend={onSend} /></ComposerVoiceSliceOverride>)
     fireEvent.keyDown(screen.getByLabelText('Message input'), { key: 'Enter' })
     expect(onSend).not.toHaveBeenCalled()
   })
@@ -277,12 +274,77 @@ describe('ChatInput — send is gated while a batch transcript is pending', () =
   it('sends on Enter once transcription has finished', () => {
     const onSend = vi.fn()
     const { rerender } = renderWithProviders(
-      <ChatInput {...base} value="foo bar" connected voiceTranscribing onSend={onSend} />,
+      <ComposerVoiceSliceOverride inputProps={{ voiceTranscribing: true }}><ChatInput {...base} value="foo bar" connected onSend={onSend} /></ComposerVoiceSliceOverride>,
     )
     fireEvent.keyDown(screen.getByLabelText('Message input'), { key: 'Enter' })
     expect(onSend).not.toHaveBeenCalled()
-    rerender(<ChatInput {...base} value="foo bar" connected voiceTranscribing={false} onSend={onSend} />)
+    rerender(<ComposerVoiceSliceOverride inputProps={{ voiceTranscribing: false }}><ChatInput {...base} value="foo bar" connected onSend={onSend} /></ComposerVoiceSliceOverride>)
     fireEvent.keyDown(screen.getByLabelText('Message input'), { key: 'Enter' })
     expect(onSend).toHaveBeenCalledTimes(1)
+  })
+
+  it('a mic held by another composer reads "in use elsewhere", disabled, and never spins as Transcribing', () => {
+    renderWithProviders(
+      <ComposerVoiceSliceOverride inputProps={{ voiceBusyElsewhere: true, onVoiceToggle: vi.fn() }}><ChatInput {...base} /></ComposerVoiceSliceOverride>,
+    )
+    const mic = screen.getByRole('button', { name: 'Microphone in use in another chat' })
+    expect(mic).toBeDisabled()
+    expect(screen.queryByRole('button', { name: 'Transcribing…' })).toBeNull()
+    expect(mic.querySelector('.animate-spin')).toBeNull()
+  })
+
+  it('a real transcription still wins over the held-elsewhere label', () => {
+    renderWithProviders(
+      <ComposerVoiceSliceOverride inputProps={{ voiceBusyElsewhere: true, voiceTranscribeActive: true, onVoiceToggle: vi.fn() }}><ChatInput {...base} /></ComposerVoiceSliceOverride>,
+    )
+    expect(screen.getByRole('button', { name: 'Transcribing…' })).toBeDisabled()
+  })
+
+  it('says WHY the mic is blocked as visible text, not only a tooltip', () => {
+    renderWithProviders(
+      <ComposerVoiceSliceOverride inputProps={{ voiceBusyElsewhere: true, onVoiceToggle: vi.fn() }}><ChatInput {...base} /></ComposerVoiceSliceOverride>,
+    )
+    const notice = screen.getByTestId('voice-status-notice')
+    expect(notice).toHaveTextContent('Microphone in use in another chat')
+    expect(notice).toHaveAttribute('role', 'status')
+  })
+
+  it('names the chat that holds the mic when the slot list knows it', () => {
+    // A lone DM thread shows nothing else that is capturing, so the blocked copy
+    // has to say which chat to go and end.
+    const store = createTestStore({
+      dashboard: { slots: [{ key: 'member-kirocrew', title: 'kirocrew', messages: 1, running: false }], unreadSlots: [], refreshTrigger: 0, subagentRunning: {}, subagentDetails: {}, subagentText: {} } as unknown as RootState['dashboard'],
+    })
+    renderWithProviders(
+      <ComposerVoiceSliceOverride inputProps={{ voiceBusyElsewhere: true, voiceBusyElsewhereSession: 'member-kirocrew', onVoiceToggle: vi.fn() }}><ChatInput {...base} /></ComposerVoiceSliceOverride>,
+      { store },
+    )
+    expect(screen.getByRole('button', { name: 'Microphone in use in “kirocrew”' })).toBeDisabled()
+    expect(screen.getByTestId('voice-status-notice').textContent?.replace(/\u2060/g, '')).toBe('Microphone in use in “kirocrew”')
+    // The name is the way there: one click switches to the chat that holds the
+    // mic (switchSlot.pending moves activeSlot synchronously).
+    fireEvent.click(screen.getByRole('button', { name: '“\u2060kirocrew\u2060”' }))
+    expect(store.getState().chat.activeSlot).toBe('member-kirocrew')
+  })
+
+  it('falls back to the unnamed copy when the owning session is not a known slot', () => {
+    renderWithProviders(
+      <ComposerVoiceSliceOverride inputProps={{ voiceBusyElsewhere: true, voiceBusyElsewhereSession: 'gone-slot', onVoiceToggle: vi.fn() }}><ChatInput {...base} /></ComposerVoiceSliceOverride>,
+    )
+    expect(screen.getByRole('button', { name: 'Microphone in use in another chat' })).toBeDisabled()
+  })
+
+  it('announces a held dictation landing in the composer', () => {
+    renderWithProviders(
+      <ComposerVoiceSliceOverride inputProps={{ voiceHeldLanded: true, onVoiceToggle: vi.fn() }}><ChatInput {...base} value="saved while you were away" /></ComposerVoiceSliceOverride>,
+    )
+    expect(screen.getByTestId('voice-status-notice')).toHaveTextContent('Dictation added to your message')
+  })
+
+  it('shows no notice row while idle with nothing to say', () => {
+    renderWithProviders(
+      <ComposerVoiceSliceOverride inputProps={{ onVoiceToggle: vi.fn() }}><ChatInput {...base} /></ComposerVoiceSliceOverride>,
+    )
+    expect(screen.queryByTestId('voice-status-notice')).toBeNull()
   })
 })

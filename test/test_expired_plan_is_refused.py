@@ -7,7 +7,7 @@ watching is not resumed across a gateway restart.
 
 What IS persisted is ``mode``, and the transcript keeps the plan turn's
 ``[OPTION: Go | Go All | Cancel]`` row. So a restored orchestrator slot renders
-those buttons over a plan that no longer exists. Pressing one used to do nothing
+those buttons over a plan that does not exist. Pressing one would do nothing
 at all -- ``range(start_idx, 0)`` is empty, and the completion message is gated on
 ``start_idx < total`` -- so the user pressed Go and got no response whatsoever, and
 no way to tell a dead plan from a hung one.

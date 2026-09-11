@@ -22,11 +22,14 @@ One test stages a regression on each non-catalog tier, and another reads the tie
 list back out of ``hooks.py`` -- so the fidelity claim is pinned against the gate
 it claims to mirror rather than asserted in a comment.
 
-Two tests then run the real composite: ``base == head == HEAD`` over the fallback
-corpus must find zero regressions, and no corpus row may be refused at HEAD at
-all. Those are the properties the fakes cannot check -- that the corpus names
-operations the shipped rules actually allow, so a red on a future PR means that
-PR tightened something rather than that the corpus was wrong when written.
+Two tests then run the real composite over the corpus the gate itself classifies
+-- the security-conductor's committed ``golden-paths.json``, which is also what
+``verify_fix.py`` reads, so the fixer's acceptance gate and this one cannot judge a
+change against two corpora that disagree. ``base == head == HEAD`` must find zero
+regressions, and no corpus row may be refused at HEAD at all. Those are the
+properties the fakes cannot check -- that the corpus names operations the shipped
+rules actually allow, so a red on a future PR means that PR tightened something
+rather than that the corpus was wrong when written.
 
 The gate has no waiver mechanism to test. A row that stops being a golden path is
 withdrawn in its own pull request, which is what the base-owned corpus makes
@@ -44,11 +47,14 @@ from pathlib import Path
 
 import pytest
 
+from kiro_crew.agent_sdk.host_auth import home_override_env_vars
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "deny_diff.py"
-FALLBACK_CORPUS = ROOT / "scripts" / "deny_diff_fixture.json"
+GOLDEN_PATHS = (
+    ROOT / "src" / "kiro_crew" / "builtin_skills" / "security-conductor" / "golden-paths.json"
+)
 HOOKS = ROOT / "src" / "kiro_crew" / "hooks.py"
 
 
@@ -437,14 +443,30 @@ def test_unresolvable_ref_exits_two(tmp_path):
 
 def test_child_environment_is_scrubbed_of_crew_variables(tmp_path, monkeypatch):
     """The verdict must not be a function of the caller's environment."""
+    monkeypatch.setenv("HOME", str(tmp_path / "real-os-home"))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "real-windows-home"))
     monkeypatch.setenv("KIROCREW_SANDBOX_ACTIVE", "1")
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "real-home"))
+    for name in deny_diff._INHERITED_HOME_OVERRIDE_ENV_VARS:
+        monkeypatch.setenv(name, str(tmp_path / name.lower()))
 
-    env = deny_diff._child_env(tmp_path / "checkout", tmp_path / "throwaway-home")
+    throwaway = tmp_path / "throwaway-home"
+    env = deny_diff._child_env(tmp_path / "checkout", throwaway)
 
     assert "KIROCREW_SANDBOX_ACTIVE" not in env
-    assert env["KIROCREW_HOME"] == str(tmp_path / "throwaway-home")
+    assert env["HOME"] == str(throwaway)
+    assert env["USERPROFILE"] == str(throwaway)
+    assert env["KIROCREW_HOME"] == str(throwaway)
     assert env["PYTHONPATH"] == str(tmp_path / "checkout" / "src")
+    assert throwaway.is_dir()
+    assert not set(deny_diff._INHERITED_HOME_OVERRIDE_ENV_VARS) & env.keys()
+
+
+def test_child_environment_scrubs_every_declared_home_override():
+    assert set(deny_diff._INHERITED_HOME_OVERRIDE_ENV_VARS) == {
+        "KIRO_HOME",
+        *home_override_env_vars(),
+    }
 
 
 def test_worker_refuses_a_tree_it_was_not_pointed_at(tmp_path):
@@ -508,12 +530,12 @@ def test_real_composite_finds_no_regressions_between_head_and_itself():
     ref and classify it at all. Both are things the fake trees never touch.
     """
     code = deny_diff.main(
-        ["--base", "HEAD", "--head", "HEAD", "--corpus", str(FALLBACK_CORPUS), "--json"]
+        ["--base", "HEAD", "--head", "HEAD", "--corpus", str(GOLDEN_PATHS), "--json"]
     )
     assert code == 0
 
 
-def test_fallback_corpus_rows_are_all_allowed_by_the_shipped_composite(tmp_path):
+def test_corpus_rows_are_all_allowed_by_the_shipped_composite(tmp_path):
     """Stronger than the differential above: no row is refused at HEAD at all.
 
     A row refused at BOTH refs is 'unchanged' to the differential, so it would ride
@@ -521,9 +543,10 @@ def test_fallback_corpus_rows_are_all_allowed_by_the_shipped_composite(tmp_path)
     This also proves all four real tiers run outside an event loop in a hermetic
     child, which the differential alone would not show.
     """
-    rows = deny_diff.load_corpus(FALLBACK_CORPUS)
-    shell_rows = [r for r in rows if r.kind == "shell" and r.applies_to("posix")]
-    assert shell_rows, "fallback corpus has no posix-applicable shell rows"
+    rows = deny_diff.load_corpus(GOLDEN_PATHS)
+    platform = deny_diff.resolve_platform("auto")
+    shell_rows = [r for r in rows if r.kind == "shell" and r.applies_to(platform)]
+    assert shell_rows, f"the corpus has no {platform}-applicable shell rows"
 
     checkout = deny_diff.resolve_checkout(ROOT, "HEAD", tmp_path / "head")
     verdicts, absent = deny_diff.classify(

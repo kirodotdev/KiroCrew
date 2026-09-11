@@ -192,6 +192,7 @@
       "browser-view.js",
       "browser-control.js",
       "browser-ops.js",
+      "browser-annotate.js",
       "browser-agent-channel.js",
       "external-scheme.js",
       "validation.js",

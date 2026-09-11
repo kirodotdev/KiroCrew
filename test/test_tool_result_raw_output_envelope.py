@@ -3,7 +3,7 @@
 Every payload below was captured from a live ACP session, not invented: the
 ``items[]`` shapes from ``kiro-cli acp`` (2.21.0) and the flat shapes from the
 same binary's KAS relay (``--agent-engine v3``, KAS 0.54.8) driven by a
-hand-rolled ACP client. Frame capture for issue #7799.
+hand-rolled ACP client.
 
 The distinction these pin: ``rawOutput`` is unstructured passthrough, so an
 object Crew does not recognise is NOT evidence the tool produced no output.

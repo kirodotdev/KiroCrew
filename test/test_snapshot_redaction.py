@@ -384,7 +384,7 @@ class TestRestoreAnnouncesARedactedBundle:
 class TestNoRowidIsBelowTheScan:
     """Every row is scanned, whatever its rowid -- including negative ones.
 
-    The pager used to open with `last = -1` and always select `handle > ?`, so any row whose
+    A pager that opens with `last = -1` and always selects `handle > ?` skips any row whose
     rowid was <= -1 was never yielded and its credential shipped in the "redacted" copy
     while the report still claimed a successful replacement. SQLite lets you set an explicit
     negative INTEGER PRIMARY KEY, so nothing exotic is needed to land there.
@@ -656,7 +656,7 @@ class TestAGeneratedColumnCannotCarryACredentialOffHost:
 
 
 class TestAStaleFtsIndexIsRebuiltEvenWithNoRowHits:
-    """The FTS rebuild used to be gated on `hits`, which cannot see this case.
+    """The FTS rebuild must not be gated on `hits`, which cannot see this case.
 
     An external-content FTS index keeps its own tokenized copy and does NOT auto-sync, so a
     base table can move on and leave the index holding text no live row contains. The row scan

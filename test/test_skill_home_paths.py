@@ -1,11 +1,11 @@
 """Guard: skill guidance must point at the CURRENT data home, not the legacy one.
 
-The data home moved from a top-level ``~/.kirocrew`` to ``~/.kiro/crew`` (nested
-under kiro-cli's ``~/.kiro``). Skill files were missed by that move, so agents
-following them ran commands against a path that no longer exists -- and the
-scripts some skills execute (``prepare-pr``'s ``$SKILL_DIR/scripts/*.py``,
+The data home is ``~/.kiro/crew`` (nested under kiro-cli's ``~/.kiro``), not the
+top-level ``~/.kirocrew``. A skill that points at the legacy path makes agents
+run commands against a path that does not exist, and the scripts some skills
+execute (``prepare-pr``'s ``$SKILL_DIR/scripts/*.py``,
 ``self-nudge-loop``'s ``.local_secret`` read, ``feature-demo-recording``'s venv)
-failed outright.
+fail outright.
 
 These tests keep the fix from silently regressing: a skill that reintroduces the
 legacy home fails here rather than at an agent's runtime.

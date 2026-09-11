@@ -160,9 +160,9 @@ CLASS_LABELS: dict[str, str] = {
 #: request is a grant an automated caller can take). One writer in one process is
 #: served by a process-local lock.
 #:
-#: WHAT IS NO LONGER SERIALISED, stated because it is a narrowing: two gateway
-#: processes sharing one data home would not serialise their writes against each
-#: other. That configuration was never served by the previous file lock either --
+#: WHAT IS NOT SERIALISED, stated because it is a narrowing: two gateway
+#: processes sharing one data home do not serialise their writes against each
+#: other. That configuration is not served by a cross-process file lock either --
 #: the precedent's cross-process lock exists for the CLI, not for multi-gateway --
 #: and a torn write still cannot widen a grant, because ``read_grant`` refuses any
 #: row whose ``destination_class`` disagrees with its key and ``_read_all`` fails

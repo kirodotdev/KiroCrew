@@ -763,7 +763,7 @@ def test_store_receives_the_configured_importance_and_the_bench_tag(tmp_path: Pa
 def test_a_null_embedding_refuses_instead_of_completing_a_degraded_run(
     tmp_path: Path,
 ) -> None:
-    """Changed contract (round 5). This used to count NULLs and carry on.
+    """A NULL embedding refuses the run instead of counting NULLs and carrying on.
 
     Counting made the degradation visible in the report, but a warning does not
     stop the headline recall number from being published as a semantic

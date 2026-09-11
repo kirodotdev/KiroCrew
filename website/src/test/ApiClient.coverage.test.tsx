@@ -601,6 +601,22 @@ describe('session-expired banner', () => {
 /* ──────────────────── 2. URL and body construction ──────────────────── */
 
 describe('query-string builders', () => {
+  it('memory records preserve the chosen store, filter and page without leaking query delimiters', async () => {
+    await api.memoryRecords('member-reviewer', { q: 'owner+team@example.com & release', kind: 'fact' }, 50, 25)
+    const query = new URL(call().url, 'http://localhost').searchParams
+    expect(Object.fromEntries(query)).toEqual({ store: 'member-reviewer', q: 'owner+team@example.com & release', kind: 'fact', offset: '50', limit: '25' })
+    await api.memoryRecords('', { q: '', kind: 'all' })
+    expect(call(1).url).toBe('/api/memory/records?store=default&q=&kind=all&offset=0&limit=50')
+  })
+
+  it('memory history encodes record identity and keeps later pages in the same store', async () => {
+    await api.memoryRecordHistory('member-reviewer', { kind: 'fact', id: 'user.contact+team&release' }, 25, 50)
+    const query = new URL(call().url, 'http://localhost').searchParams
+    expect(Object.fromEntries(query)).toEqual({ store: 'member-reviewer', kind: 'fact', id: 'user.contact+team&release', limit: '25', offset: '50' })
+    await api.memoryRecordHistory('', { kind: 'fact', id: 'user.contact' })
+    expect(call(1).url).toBe('/api/memory/records/history?store=default&kind=fact&id=user.contact&limit=25')
+  })
+
   it('wakatimeExportUrl builds the export href with encoded dates and the format', () => {
     expect(api.wakatimeExportUrl('2026-09-01', '2026-09-07', 'csv')).toBe(
       '/api/wakatime/export?start=2026-09-01&end=2026-09-07&format=csv',
@@ -881,11 +897,14 @@ describe('path encoding', () => {
 })
 
 describe('request bodies with conditionally-omitted keys', () => {
-  it('createChatSlot sends only the fields it was given', async () => {
+  it('createChatSlot resolves an omitted mode and preserves explicit fields', async () => {
+    fetchMock.mockResolvedValueOnce(okJson({ default_memory_mode: 'temporary' }))
     await api.createChatSlot()
-    expect(call().body).toEqual({})
+    expect(call().url).toBe('/api/dashboard/config')
+    expect(call(1).body).toEqual({ memory_mode: 'temporary' })
+
     await api.createChatSlot('n', 'a', 'm', 'mode', 'mem', 't', false, 'slug', 'f1')
-    expect(call(1).body).toEqual({
+    expect(call(2).body).toEqual({
       name: 'n', agent: 'a', model: 'm', mode: 'mode', memory_mode: 'mem',
       title: 't', clean_mode: false, artifact: 'slug', folder_id: 'f1',
     })
@@ -1562,6 +1581,10 @@ describe('every api method issues one well-formed /api request', () => {
   // URL from `undefined` — a harness artifact, not a defect in the method — so
   // each one names the minimal shape its URL is read from.
   const ARGS: Record<string, unknown[]> = {
+    // Memory reads take typed objects; positional strings do not satisfy the
+    // query/record contract and would manufacture undefined URL parameters.
+    memoryRecords: ['member-reviewer', { q: 'contact', kind: 'fact' }, 0, 50],
+    memoryRecordHistory: ['member-reviewer', { kind: 'fact', id: 'user.contact' }, 25, 0],
     // `invokeFileMenuItem(item, ctx)`: the URL is `item.endpoint`.
     invokeFileMenuItem: [
       { id: 'send', app: 'doc-store', endpoint: '/api/apps/doc-store/send' },
@@ -1580,8 +1603,9 @@ describe('every api method issues one well-formed /api request', () => {
     // botched template literal shows up as `undefined` inside the path.
     await Promise.resolve(fn(...(ARGS[name] ?? ['sw-1', 'sw-2', 'sw-3', 'sw-4'])))
 
-    expect(fetchMock, `${name} issued no request`).toHaveBeenCalledTimes(1)
-    const { url, init } = call()
+    const expectedRequests = name === 'createChatSlot' ? 2 : 1
+    expect(fetchMock, `${name} issued the wrong request count`).toHaveBeenCalledTimes(expectedRequests)
+    const { url, init } = call(expectedRequests - 1)
     expect(typeof url, `${name} did not pass a string URL`).toBe('string')
     expect(url.startsWith('/api/'), `${name} escaped the /api prefix: ${url}`).toBe(true)
     for (const junk of ['undefined', '[object Object]', 'NaN', '/null']) {

@@ -1,4 +1,4 @@
-"""Tests for :mod:`kiro_crew.mcp_gateway.backend_tmp` (issue #5064).
+"""Tests for :mod:`kiro_crew.mcp_gateway.backend_tmp`.
 
 Everything runs against a monkeypatched data home under ``tmp_path``; the
 real ``<data home>/run`` is never touched.

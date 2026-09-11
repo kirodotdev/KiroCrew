@@ -81,6 +81,7 @@ class FakeSessions:
         self.channels: list = []
         self.last_agent = None
         self._max_gen: dict[str, int] = {}
+        self.reserved_generations: list[str] = []
         # `closing` mirrors SessionManager._closing so begin_turn refuses the
         # dispatch the way the real gate does after close_all.
         self.closing = False
@@ -125,6 +126,12 @@ class FakeSessions:
 
     def is_busy(self, key) -> bool:
         return getattr(self, "_busy", False)
+
+    def reserve_generation(self, session_key: str) -> None:
+        self.reserved_generations.append(session_key)
+
+    async def aflush(self) -> None:
+        return None
 
     def max_generation(self, bucket: str) -> int:
         return self._max_gen.get(bucket, -1)
@@ -626,6 +633,7 @@ class TestCommands:
         assert client.replies == [("msg1", "✅ 已开始新对话")]
         route = d._route(_inbound("/new"))
         assert d._conv.current_gen(route) == 1
+        assert sessions.reserved_generations == [d._session_key(route)]
         assert sessions.successes == []  # no LLM turn
 
     @pytest.mark.asyncio
@@ -1028,7 +1036,7 @@ class TestSharedSessionContext:
 
 
 # ------------------------------------------------------------------
-# Tests: the /compact capability gate (#8156)
+# Tests: the /compact capability gate
 # ------------------------------------------------------------------
 
 
@@ -1036,7 +1044,7 @@ class TestCompactCapabilityGate:
     @pytest.mark.asyncio
     async def test_compact_declined_on_auto_managed_backend(self) -> None:
         # A backend that cannot serve /compact gets the informational reply and
-        # compact() is NEVER dispatched (#8156).
+        # compact() is NEVER dispatched.
         provider = FakeProvider([])
         provider.manual_compact_unsupported_backend = "kas"
         sessions = FakeSessions(provider)
@@ -1064,7 +1072,7 @@ class TestCompactCapabilityGate:
     @pytest.mark.asyncio
     async def test_thresholds_decline_silently_on_auto_managed_backend(self) -> None:
         # Hard: no forced compaction; soft: no /compact nudge — the backend
-        # compacts on its own as context fills (#8156).
+        # compacts on its own as context fills.
         provider = FakeProvider(
             [
                 AcpEvent(kind=EVENT_TEXT_CHUNK, text="answer"),

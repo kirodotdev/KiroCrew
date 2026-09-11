@@ -48,8 +48,8 @@ Honest limit, stated here and in the spec: fingerprinting narrows the race, it
 does not eliminate it. A tree can still change between the verifying walk and
 the action microseconds later. It converts a silent wrong-click into a loud
 refusal in the overwhelming majority of cases; it is not a transactional
-guarantee. Namespacing removes the CROSS-SESSION race entirely (two sessions can
-no longer share an entry); it does not remove the within-session one, which is
+guarantee. Namespacing removes the CROSS-SESSION race entirely (two sessions cannot
+share an entry); it does not remove the within-session one, which is
 inherent to driving a live UI.
 
 Pure: no ctypes, no I/O, no platform calls.

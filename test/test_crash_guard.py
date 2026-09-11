@@ -201,10 +201,10 @@ class TestWindowsProactorShutdownDowngrade:
 class TestInstallIdempotent:
     """``install()`` is documented "Idempotent." — pin the early-return contract.
 
-    The ``if _INSTALLED: return`` arc in ``install()`` previously executed only
-    when two tests calling ``install()`` landed in the same pytest-xdist worker,
-    so its line coverage was a scheduling coin flip that flipped the per-file
-    coverage floor on unrelated PRs (#5019). These tests exercise that arc
+    Without these tests, the ``if _INSTALLED: return`` arc in ``install()`` runs
+    only when two tests calling ``install()`` land in the same pytest-xdist worker,
+    so its line coverage is a scheduling coin flip that flips the per-file
+    coverage floor on unrelated PRs. These tests exercise that arc
     unconditionally and deterministically: one sets the flag explicitly, the
     other forces the flag off so the first call is the real installation and
     the second call takes the early return.

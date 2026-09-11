@@ -4,6 +4,21 @@ import { SETTINGS_REGISTRY } from '../components/commandPalette/settingsRegistry
 import { i18nT } from '../i18n/t'
 
 /**
+ * Deep-link target for the "Crew Members" card in Settings → Developer →
+ * Feature Previews — the switch that reveals the `/members` page.
+ *
+ * The sidebar's create-menu "Crew Members" entry navigates here while the
+ * page is still preview-gated, so the user lands on the switch that holds the
+ * page rather than on a toast about it. Same shape and same reason as
+ * {@link SETTINGS_DEFAULT_MODEL_ID} below: registry ids derive from the
+ * LABEL, so a rename would silently break an inlined string, and
+ * `ChatSidebar.createMenu.test.tsx` asserts this one resolves in
+ * SETTINGS_REGISTRY. Declared above `LEGACY_ID_EXACT` because that table
+ * maps the card's previous id onto it.
+ */
+export const SETTINGS_CREW_MEMBERS_PREVIEW_ID = 'developer.crew-members'
+
+/**
  * Legacy highlight-id migrations. Registry ids are `<tab>.<kebab-label>`, so
  * they shift when a tab or label is renamed; bookmarks and palette history
  * keep the old ids. Map old → new here instead of letting the link silently
@@ -32,6 +47,10 @@ const LEGACY_ID_EXACT: Record<string, string> = {
   // The pin toggle's label moved from "prompt" to "turn" vocabulary, shifting
   // the derived id with it.
   'chat.pin-the-latest-prompt': 'chat.pin-the-latest-turn',
+  // The Feature Previews crew card was relabeled from "Crew Members and Crew
+  // Mode" to "Crew Members" when Crew Mode retired; the flag and the card are
+  // the same ones, only the label (and so the id) narrowed.
+  'developer.crew-members-and-crew-mode': SETTINGS_CREW_MEMBERS_PREVIEW_ID,
 }
 
 /** Current registry ids, for fail-safe legacy rewrites below. */

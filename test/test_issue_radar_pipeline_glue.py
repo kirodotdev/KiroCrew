@@ -2,7 +2,7 @@
 
 Separate from the main suite because it targets one specific data-loss shape
 found by review: a well-formed record glued to a TORN one on the same line. The
-recovery walk used to abandon the whole line the moment any piece failed to
+recovery walk would abandon the whole line the moment any piece failed to
 decode, which threw away the intact leading record along with the broken tail --
 and that combination is exactly what a glued write followed by a mid-append tail
 produces in a log that is being read while it is written.
@@ -38,7 +38,7 @@ def _event(
 
     `repo` is stamped by default because the production writers stamp it on every
     event, and a SCOPED read admits only events that name the repository asked
-    for -- an unstamped fixture would exercise a trail that no longer occurs and
+    for -- an unstamped fixture would exercise a trail that does not occur and
     would report an empty list for reasons unrelated to what these tests assert.
     Pass `repo=None` to build a deliberately pre-stamp line.
     """
@@ -110,7 +110,7 @@ def test_a_re_entered_item_is_in_flight_again(
 ) -> None:
     """An item that entered, exited, and entered AGAIN is inside the step.
 
-    In-flight used to be `entered - left` over sets, which is blind to ORDER: once an
+    Computing in-flight as `entered - left` over sets is blind to ORDER: once an
     item appeared on the departure side it stayed gone forever. Re-entry is routine
     here -- the implement step logs 197 starts across 113 distinct items -- so most
     re-worked items were missing from the count operators read to find a stall.

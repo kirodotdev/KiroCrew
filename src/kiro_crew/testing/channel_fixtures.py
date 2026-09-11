@@ -130,7 +130,7 @@ class Fixture:
 
 
 class ShapeMismatch(AssertionError):
-    """A live response no longer matches the recorded fixture's shape."""
+    """A live response does not match the recorded fixture's shape."""
 
 
 def _safe_component(value: str, kind: str) -> str:

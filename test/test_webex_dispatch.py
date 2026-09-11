@@ -102,6 +102,7 @@ class FakeSessions:
         # dispatch the way the real gate does after close_all.
         self.closing = False
         self.begin_turns = 0
+        self.reserved_generations: set[str] = set()
 
     async def get_or_create(self, key, *, agent, channel_id):
         self.last_agent = agent
@@ -143,8 +144,22 @@ class FakeSessions:
     def is_busy(self, key) -> bool:
         return getattr(self, "_busy", False)
 
+    def reserve_generation(self, session_key: str) -> None:
+        self.reserved_generations.add(session_key)
+
+    async def aflush(self) -> None:
+        return None
+
     def max_generation(self, bucket: str) -> int:
-        return -1
+        prefix = f"{bucket}:gen"
+        return max(
+            (
+                int(key[len(prefix) :])
+                for key in self.reserved_generations
+                if key.startswith(prefix) and key[len(prefix) :].isdigit()
+            ),
+            default=-1,
+        )
 
     # -- mid-turn queue (drive_turn's drain + /stop) --
     def enqueue(self, key, ts, text, *, force=False, **kw) -> bool:
@@ -242,12 +257,24 @@ class FakeConvLog:
     def __init__(self) -> None:
         self.appended: list[tuple[str, str, str]] = []
         self.titles: dict[str, str] = {}
+        self.metadata: dict[str, dict] = {}
 
     def append(self, key, role, text, agent=None, mid=None) -> None:
         self.appended.append((key, role, text))
 
     def set_title(self, key, title) -> None:
         self.titles[key] = title
+
+    def update_metadata_if(self, key: str, fields: dict, guard) -> bool:
+        if not guard(self.metadata.get(key, {})):
+            return False
+        self.metadata.setdefault(key, {}).update(fields)
+        rows = getattr(self, "_rows", None)
+        if isinstance(rows, list):
+            from kiro_crew.history import transcript_stem
+
+            rows.insert(0, {"key": transcript_stem(key), **fields})
+        return True
 
 
 def _cfg(default_agent: str = "", approval_mode: str = "interactive"):
@@ -336,8 +363,8 @@ def _deny_webex_profile(monkeypatch, tmp_path):
 class TestTurn:
     @pytest.mark.asyncio
     async def test_channels_deny_drops_inbound_message(self, tmp_path, monkeypatch) -> None:
-        # HIGH (GPT round-4 #2): a channels DENY must stop handle_message from
-        # driving a turn. Regression-locks the Webex inbound chokepoint.
+        # A channels DENY must stop handle_message from driving a turn. This
+        # locks the Webex inbound chokepoint.
         from kiro_crew.platform import governance_profiles as gp
 
         _deny_webex_profile(monkeypatch, tmp_path)
@@ -430,7 +457,7 @@ class TestTurn:
     @pytest.mark.asyncio
     async def test_hard_threshold_declines_silently_on_auto_managed_backend(self) -> None:
         # No /compact to dispatch and no notice: the backend compacts on its
-        # own as context fills (#8156).
+        # own as context fills.
         provider = FakeProvider(
             [AcpEvent(kind=EVENT_TEXT_CHUNK, text="answer"), AcpEvent(kind=EVENT_COMPLETE)]
         )
@@ -447,7 +474,7 @@ class TestTurn:
     @pytest.mark.asyncio
     async def test_soft_nudge_suppressed_on_auto_managed_backend(self) -> None:
         # The nudge advises /compact, which this backend refuses — it compacts
-        # on its own, so there is nothing for the user to act on (#8156).
+        # on its own, so there is nothing for the user to act on.
         provider = FakeProvider(
             [AcpEvent(kind=EVENT_TEXT_CHUNK, text="answer"), AcpEvent(kind=EVENT_COMPLETE)]
         )
@@ -509,7 +536,7 @@ class TestCommands:
     @pytest.mark.asyncio
     async def test_compact_declined_on_auto_managed_backend(self) -> None:
         # A backend that cannot serve /compact gets the informational reply and
-        # compact() is NEVER dispatched (#8156).
+        # compact() is NEVER dispatched.
         provider = FakeProvider([])
         provider.manual_compact_unsupported_backend = "kas"
         sessions = FakeSessions(provider)
@@ -1104,7 +1131,7 @@ class TestApprovals:
 
     @pytest.mark.asyncio
     async def test_a_reply_that_lost_the_race_is_told_the_prompt_expired(self) -> None:
-        """Reporting "Approved" for a prompt that is no longer pending would tell
+        """Reporting "Approved" for a prompt that is not pending would tell
         the user a tool ran when it did not.
 
         And the report is deliberately NEUTRAL rather than "denied": an unmatched
@@ -1274,7 +1301,7 @@ class TestQueueAndDrain:
 
     @pytest.mark.asyncio
     async def test_the_drain_defers_past_the_collapse_cap_in_order(self) -> None:
-        # Once one message no longer fits, it AND everything behind it are
+        # Once one message does not fit, it AND everything behind it are
         # deferred, so queue order stays exact rather than being reordered.
         provider = FakeProvider([AcpEvent(kind=EVENT_COMPLETE)])
         sessions = FakeSessions(provider)
@@ -1573,7 +1600,7 @@ class TestDashboardLink:
 
         assert gen.call_args.kwargs["ttl_seconds"] == 7200
         # The WHOLE token, not a prefix: a redacted link would still contain
-        # "token=" and the failure is that it no longer authenticates.
+        # "token=" and the failure is that it does not authenticate.
         assert f"token={self.TOKEN}" in d.client.sent[-1][1]
         op = sel_mock.return_value.log_api_access.call_args.kwargs
         assert op["operation"] == "webex.dashboard_token"
@@ -1758,7 +1785,7 @@ class TestOptionsCardPress:
 
         It is published by a renderer that is gone by the time the press arrives —
         the card is the LAST thing a turn sends — so the store has to outlive the
-        turn or every press answers "no longer current".
+        turn or every press gets the stale-card reply.
         """
         provider = FakeProvider([AcpEvent(kind=EVENT_COMPLETE)])
         sessions = FakeSessions(provider)
@@ -2293,6 +2320,18 @@ class TestSessionsCommand:
 
         body = d.client.sent[-1][1]
         assert "newer" in body and "first" in body
+
+    @pytest.mark.asyncio
+    async def test_repeated_new_does_not_materialize_empty_history_rows(self) -> None:
+        log = FakeListingLog([])
+        sessions = FakeSessions(FakeProvider([]))
+        d = _dispatcher(sessions, FakeCtx(), FakeClient(), conv_log=log)
+
+        await d.handle_message(_inbound("/new"))
+        await d.handle_message(_inbound("/new"))
+
+        assert log.list_sessions() == []
+        assert len(sessions.reserved_generations) == 2
 
     @pytest.mark.asyncio
     async def test_another_users_conversations_are_not_listed(self) -> None:

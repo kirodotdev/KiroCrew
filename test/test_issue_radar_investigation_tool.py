@@ -271,7 +271,7 @@ class TestMiddlewareDecision:
 
     Set membership alone would still pass if the middleware's prefix matcher
     changed, so assert the actual decision: the credential-less call the seed
-    prompt used to ask for is refused, and the tool's internal-secret call is
+    prompt asks for is refused, and the tool's internal-secret call is
     granted.
     """
 
@@ -300,7 +300,7 @@ class TestMiddlewareDecision:
 
     @pytest.mark.asyncio
     async def test_a_credentialless_put_is_still_refused(self):
-        # This is the exact 403 the Investigate prompt used to earn. Admitting
+        # This is the exact 403 the Investigate prompt earns. Admitting
         # the path for the internal secret must NOT have opened it up generally.
         resp = await self._mw()(self._request(), _ok_handler)
         assert resp.status == 403

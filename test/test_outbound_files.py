@@ -206,6 +206,61 @@ class TestDestinationForms:
         assert local_destination("./rel.png") is None
 
 
+class TestStripUrlSyntaxExtendedLengthPath:
+    r"""A Windows extended-length path (``\\?\...``) survives
+    ``strip_url_syntax`` intact.
+
+    ``os.readlink`` returns a symlink target in this form. Its ``?`` belongs to
+    the ``\\?\`` prefix, not to a query string, so the query/fragment split does
+    not run on it and the full path reaches the UNC gate. See
+    ``hooks.validate_file_path`` for the same fold.
+    """
+
+    _LOCAL = "\\\\?\\C:\\Users\\me\\pic.png"  # \\?\C:\Users\me\pic.png
+    _LOCAL_LOWER = "\\\\?\\c:\\users\\me\\pic.png"  # \\?\c:\users\me\pic.png
+    _SHARE = "\\\\?\\UNC\\server\\share\\x.png"  # \\?\UNC\server\share\x.png
+    _DEVICE = "\\\\.\\PhysicalDrive0"  # \\.\PhysicalDrive0
+    _OBJNS = "\\\\?\\GLOBALROOT\\Device\\HarddiskVolume1\\x.png"
+
+    def test_query_and_fragment_stripping_still_works(self) -> None:
+        """The load-bearing behaviour is preserved: a URL-shaped destination
+        still loses its query and fragment (this is why the split exists)."""
+        assert strip_url_syntax("file:///tmp/a.png?v=2#top") == "/tmp/a.png"
+        assert strip_url_syntax("/tmp/a.png#frag") == "/tmp/a.png"
+        assert strip_url_syntax("C:/x/y.png?a=1") == "C:/x/y.png"
+
+    def test_extended_length_local_path_survives_the_strip(self) -> None:
+        """An extended-length local path is returned whole, not split at ``?``."""
+        assert strip_url_syntax(self._LOCAL) == self._LOCAL
+        assert strip_url_syntax(self._LOCAL_LOWER) == self._LOCAL_LOWER
+
+    def test_extended_length_share_form_survives_and_stays_refused(self) -> None:
+        r"""SECURITY: the ``\\?\UNC\...`` share form and the other extended
+        namespaces are returned whole AND remain UNC-shaped, so the UNC gate
+        refuses them. Asserted directly, because a strip that mangled them into a
+        non-share shape would let a share reach the filesystem.
+        """
+        from kiro_crew.hooks import is_unc_shape
+
+        for raw in (self._SHARE, self._DEVICE, self._OBJNS):
+            assert strip_url_syntax(raw) == raw, f"strip mangled {raw!r}"
+            assert is_unc_shape(strip_url_syntax(raw)) is True, f"share form slipped: {raw!r}"
+
+    def test_local_destination_refuses_the_share_form_end_to_end(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """End-to-end on a simulated Windows host: the surviving share form is
+        refused by ``local_destination`` (no ``Path`` is constructed for it)."""
+        from kiro_crew.messaging import outbound_files as module
+
+        monkeypatch.setattr(module, "os", type("OS", (), {"name": "nt"})(), raising=False)
+        monkeypatch.setattr(module, "unc_probe_allowed", lambda raw: False, raising=False)
+        monkeypatch.setattr(
+            module, "Path", lambda raw: pytest.fail(f"path constructed for share: {raw}")
+        )
+        assert module.local_destination(self._SHARE) is None
+
+
 class TestOutboundSecurity:
     def test_untrusted_windows_unc_is_rejected_before_path_construction(
         self, monkeypatch: pytest.MonkeyPatch
@@ -703,7 +758,7 @@ class TestLinkedAncestorGate:
     """On Windows, a destination beneath a linked ANCESTOR must be refused
     BEFORE ``is_symlink()`` -- that leaf probe is an lstat that resolves every
     ancestor, so the probe itself would traverse the link and open the SMB
-    connection the lexical UNC screen exists to prevent (#5962)."""
+    connection the lexical UNC screen exists to prevent."""
 
     def _windows(self, monkeypatch: pytest.MonkeyPatch) -> None:
         import types

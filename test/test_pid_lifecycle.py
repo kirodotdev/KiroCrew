@@ -20,7 +20,7 @@ from kiro_crew import platform_compat
 # APIs (os.killpg / os.getpgrp / os.getpgid), POSIX identity/age probes
 # (os.getuid / os.sysconf, /proc, ps), the raw signal.SIGKILL constant, and the
 # POSIX kill path of the orphan sweep (which no-ops on Windows). None of these
-# have a Windows equivalent, so they are skipped on Windows. See issue #2041.
+# have a Windows equivalent, so they are skipped on Windows.
 _POSIX_ONLY = pytest.mark.skipif(
     sys.platform == "win32", reason="POSIX process-management semantics only; see issue #2041"
 )
@@ -761,7 +761,7 @@ class TestKillOrphanMcps:
         assert killed == 0
 
     def test_skips_recycled_pid_on_reverify(self) -> None:
-        """If cmdline no longer matches at kill time, PID is skipped (TOCTOU)."""
+        """If cmdline stops matching at kill time, the PID is skipped (TOCTOU)."""
         from kiro_crew.session_pid import kill_orphan_mcps
 
         with (
@@ -1796,11 +1796,11 @@ class TestSpawnedMarkerInjection:
 
 
 # ── PID-recycle identity guard + cross-platform spawn grace ───────────
-# Regression cover for the quit->reopen race reproduced on macOS 2026-07-29:
-# a stale ``<dead_gw>:<pid>`` entry whose PID had been recycled onto a LIVE
-# kiro-cli was SIGKILL'd by the startup sweep (surfacing to the user as
-# "process exited (rc=None)"), because the file sweep verified only the
-# cmdline and the spawn-grace window was silently Linux-only.
+# The quit->reopen race: a stale ``<dead_gw>:<pid>`` entry whose PID has been
+# recycled onto a LIVE kiro-cli must not be SIGKILL'd by the startup sweep
+# (which would surface to the user as "process exited (rc=None)"). The file
+# sweep must verify more than the cmdline, and the spawn-grace window must not
+# be Linux-only.
 
 
 class TestPidStartTokenIdentityGuard:
@@ -2171,7 +2171,7 @@ class TestSpawnGraceCrossPlatform:
     sys.platform == "win32", reason="POSIX-only: relies on fork/exec + ps for identity"
 )
 class TestSweepSparesLiveProcess:
-    """End-to-end repro of the 2026-07-29 macOS incident with a REAL process.
+    """End-to-end repro with a REAL process that the sweep spares a live kiro-cli.
 
     The mock-based tests above pin the decision logic; this one proves the
     whole sweep leaves an actually-running process alive. The victim is a
@@ -2385,7 +2385,7 @@ class TestPidFileRewriteIsAtomic:
         )
 
 
-# ── Untracked managed-agent runtime orphan (REPORT-ONLY, issue #2930) ──
+# ── Untracked managed-agent runtime orphan (REPORT-ONLY) ──
 
 
 @pytest.fixture()
@@ -2558,7 +2558,7 @@ class TestUntrackedRuntimeReportIntegration:
         reset_untracked_report_dedup: None,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
-        """The regression this fixes: the leak was previously silent.
+        """An untracked runtime leak is reported, not silently dropped.
 
         Every existing reaper declines an untracked runtime, so before this arm
         the sweep produced no candidate AND no diagnostic. The report must
@@ -2719,7 +2719,7 @@ class TestUntrackedRuntimeReportIntegration:
         child entry name processes no reaper terminates through that entry.
         Once such an owner has died and its PID has been recycled into a leaked
         runtime, treating the field as tracked would return the sweep to the
-        exact silence issue #2930 reports.
+        exact silence the report exists to prevent.
         """
         from kiro_crew.session_pid import find_orphan_mcp_candidates
 
@@ -2768,7 +2768,7 @@ class TestUntrackedRuntimeReportIntegration:
         assert [r for r in caplog.records if "4646" in r.getMessage()] == []
 
 
-# ── Orphaned playwright-cli browser daemon sweep (issue #5986) ───────────────
+# ── Orphaned playwright-cli browser daemon sweep ───────────────
 
 #: A realistic NUL-separated cliDaemon argv. playwright-core spawns the daemon
 #: as ``node <...>/entry/cliDaemon.js <sessionName> [flags]`` (see
@@ -3006,8 +3006,8 @@ class TestAcquiringAPidLockDoesNotTruncateTheLockFile:
     exists to provide never happens. POSIX ``flock`` tolerates the truncate, which
     is why the defect is invisible on Linux and reddened only the Windows shards.
 
-    Issue #9248; same defect and same fix as ``work_ledger._open_lock`` (PR #9237)
-    and ``dashboard/handlers/mcp.py``'s ``_McpFileLock``, which was already
+    Same defect and same fix as ``work_ledger._open_lock`` and
+    ``dashboard/handlers/mcp.py``'s ``_McpFileLock``, which is already
     written this way.
 
     Truncation is the direct, PLATFORM-INDEPENDENT observable, and that is what

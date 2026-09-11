@@ -91,7 +91,7 @@ class TestApiBaseResolution:
             assert mcp_core._api_base() == "http://127.0.0.1:7778"
 
     def test_dead_pid_marker_is_ignored(self, monkeypatch: pytest.MonkeyPatch):
-        """A marker whose recorded pid no longer holds the port is discarded.
+        """A marker whose recorded pid does not hold the port is discarded.
 
         A crashed gateway leaves its marker and pid sidecar behind
         (``clear_marker`` only runs on graceful shutdown). The ownership check
@@ -152,7 +152,7 @@ class TestApiBaseResolution:
             assert mcp_core._api_base() == "http://127.0.0.1:6776"
             assert mcp_core._api_base() == "http://127.0.0.1:6776"
             assert markers.call_count == 2  # re-resolved, not cached
-        # The gateway moved: ownership of 6776 no longer verifies and the new
+        # The gateway moved: ownership of 6776 stops verifying and the new
         # marker names 7788 — the very next call follows it.
         with _cfg(""), _markers([7788]), _owned([7788]):
             assert mcp_core._api_base() == "http://127.0.0.1:7788"

@@ -4,6 +4,27 @@
 
 The CLI module (`kiro_crew/cli.py`) provides the `kirocrew` command using stdlib `argparse`.
 
+## Member memory commands
+
+`kirocrew agent create --name <name>` allocates the member's own empty private V2
+memory automatically. `--memory-store` is a compatibility field accepting only
+empty/default on create, or the unchanged identity on update; it cannot share or
+rebind a member's memory. Legacy members initialize an empty private store with
+`kirocrew agent update <name> --provision-memory`. Valid existing Global and named
+V1 bindings remain usable, including a member configured as `default_agent`, until
+the owner explicitly selects V2. This opt-in starts empty and preserves V1 data.
+Ordinary V1 initialization can add shared metadata and revision tables; it does
+not convert V1 into private memory. See the [memory contract](memory-skills-hooks.md).
+
+`kirocrew doctor` checks every configured member's memory binding, reports the
+member, configured store and refusal reason, and continues checking other members
+after a failure. The binding check neither initializes databases nor provisions,
+rebinds or repairs stores. A valid binding does not establish full database health
+or private execution capability. Normal CLI configuration loading and data-home
+setup still apply. SQLite identity reads can create transient WAL coordination
+files; they preserve the database and any committed WAL content. Damaged private
+ownership cannot be repaired by silently substituting Global V1.
+
 ## Import Weight Contract
 
 `cli.py` is the shared dispatcher for every subcommand — including the
@@ -242,13 +263,17 @@ path gives up is ancestor-swap resistance, not link resistance.
 | `kirocrew memory list/search/stats/audit` | Inspect vector memory (entries, semantic search, counts, suspicious-content scan) |
 | `kirocrew memory show [preferences\|projects\|history]` | Read the markdown memory layer (all three when no target given); `--format md\|json`, `--since YYYY-MM-DD` for history |
 | `kirocrew memory export/import/migrate` | Export memory to JSON (`--include-markdown` adds the markdown layer), import it back, or migrate legacy markdown memory into the vector store |
+| `kirocrew memory backup/backups/restore` | Take hot copies of Global, declared named V1 and actively owned V2 stores (`--keep <n>`), list a store's copies newest-first (`--store`), or stage a restore (`--store`, `--from <file>`, defaulting to that store's newest). Both V1 and V2 activate restoration at gateway restart. Archived V2 stores are excluded from routine backups. `restore --store <member-store> --cancel-pending` cancels a staged intent while preserving current memory and its backup; it is mutually exclusive with `--from`. A failed activation still requires restart after cancellation. All three dispatch BEFORE the shared vector store is opened, because opening it raises on exactly the corrupt file these verbs recover. See [memory-skills-hooks](memory-skills-hooks.md#automatic-backups-memory_backuppy) |
+| `kirocrew memory retired` | List the episodes a semantic write superseded and restore one (`--restore <id>`, `--limit`). Default store only — it has no `--store`, so restoring a retirement inside a silo is a dashboard action. See [memory-skills-hooks](memory-skills-hooks.md#supersession-retirement-and-why-it-is-bounded) |
+| `kirocrew memory carve --store <name>` | Filter or count a crew store's rows by their carve facets: one flag per facet (`--scope/--surface/--crew/--session-key/--derived-from`), `--kind`, `--count-by <axis>` for grouped counts, `--limit`/`--offset`. Facets exist only on a crew memory store, so the default store answers with a named refusal rather than an empty list. See [memory-skills-hooks](memory-skills-hooks.md#who-reads-a-facet) |
 | `kirocrew policy show/validate/explain/profile` | Inspect the effective enterprise security policy, load-check it and all profiles, explain one tool/scope decision for a surface, or print a profile. `show` also summarizes the built-in denied-command catalog as grouped counts (`--ids` lists each category's rule ids), on every install regardless of whether an enterprise policy is active — the one place an agent can learn a class of work is hard-denied before planning around it. |
 | `kirocrew pod up/down/ls/status/token/url/scenarios/api/logs/exec/install/provision` | Isolated worktree test gateways (**Linux `systemd --user` only** — every systemd-touching verb refuses with a one-line message on macOS/Windows). See `src/kiro_crew/pod/README.md`. |
 | `kirocrew pod scenarios [--json]` | List packaged seed scenarios in deterministic name order. Human output shortens each description to the last complete sentence that fits, cutting between words with an ellipsis when none does; `--json` emits an array of `{name, description}` rows with each fixture manifest's complete `description:` scalar; literal (`|`) blocks preserve newlines, while folded (`>`) blocks normalize to one paragraph. Extraction stays dependency-free without requiring PyYAML at runtime. An empty registry returns success with `[]` in JSON mode or an explicit human diagnostic. |
 | `kirocrew pod api` | `api <wt> <METHOD> <path> [--data JSON] [--allow-write]` makes one authenticated request and prints `{name, method, path, status, ok, body}`; GET/HEAD are the default surface and other methods require `--allow-write`. It refuses caller-supplied `token` query parameters without echoing them, authenticates with the dashboard's query-token contract, caps response reads, and mints only after the pod PID record agrees with systemd MainPID (listener tools are optional corroboration). The authenticated request goes over the pod's private `dashboard-<port>.sock` in the pod's own home with no TCP fallback, so the minted token cannot reach a process that took the pod's port; an absent socket refuses through the envelope before minting. See `src/kiro_crew/pod/README.md`. |
 | `kirocrew pod up --seed <scenario\|dir>` | Pre-populate the isolated home. A bare name is a packaged fixture and populates the whole home; a path contributes only its sanitized `config.json`. Unknown names are refused with the available list. Named fixtures copy directly into the final home through pinned source/destination directory descriptors; config/workspace setup uses the same held home, and the manifest lands last as the completion marker. Populated homes are never overwritten: a named-seed request against one refuses before start even when its marker matches; use plain `pod up` to restart it unchanged. Seeded config disables channel enablement and restores the sandbox floor. A per-instance systemd drop-in runs the checkout's own venv binary, post-health marker readback detects a seed that did not land, and `pod down` removes the drop-in with the home. Pod homes provide operational/state isolation, not protection from arbitrary same-UID host processes; Controller v1 invokes seeding from the host control plane and does not support nested pod control. |
 | `kirocrew pod up --no-embeddings` | Boot the pod without the embedding model. Records `EMBEDDINGS='0'` in the per-pod env file, which makes `boot` export `KIROCREW_SKIP_MODEL_DOWNLOAD=1` **into the pod's env only** — never the operator's shell, profile or real data home, which keep whatever model they already had. The pod downloads no GGUF and computes no vector; memory and knowledge search answer through the documented keyword fallback, so the instance stays usable rather than degraded. Exists for load-testing ingestion, which embeds per chunk: without the model, chunk count grows while embed compute does not, so a bundle that previously hit a 30-minute wall is drivable and any residual slowness is attributable elsewhere. The setting reaches `pod exec` through the same `pod_context` seam, so a command run against an embedding-light pod cannot start the download either; `build_pod_env` also drops any inherited `KIROCREW_EMBED_MODEL_PATH` / `KIROCREW_EMBED_MODEL_URL` alongside the switch, since the switch gates only the download and a custom model path would otherwise load and embed anyway. `boot` announces the mode in the journal from the env the pod actually runs with (an inherited `KIROCREW_SKIP_MODEL_DOWNLOAD=1` is announced as such), and the `pod.up` audit row keys `embeddings=off` on the merged env file plus that inherited switch, not on the flag alone. The switch is subsystem-wide, so the pod skips its speech-to-text (whisper) model download too. Read once at boot (recording it against a live pod applies on the next one, and `pod up` says so) and re-validated from the hand-editable env file, where an unrecognised value leaves embeddings ON — the pre-existing behavior. Because that file is hand-editable, a pod kept around for other work can be flipped persistently by editing its `EMBEDDINGS=` line and bringing it up again. Deliberately NOT an unreachable `KIROCREW_EMBED_MODEL_URL`: that spends the downloader's whole attempt budget on requests chosen to fail, and a non-`https://` value is ignored in favour of the real CDN, so a malformed sentinel downloads the model the option exists to avoid. |
-| `kirocrew knowledge dedup [--apply]` | Collapse cross-source duplicate knowledge documents (dry-run unless `--apply`) |
+| `kirocrew knowledge dedup [--apply]` | Collapse cross-source duplicate knowledge documents. Without `--apply` it is a dry run that lists the collapses and writes nothing: it opens the database with SQLite `mode=ro` (`KnowledgeStore.open_read_only`), so the constructor's schema migration and orphan sweep do not run, and a library behind the schema is reported (SEL `schema_behind`), not migrated. `--apply` takes the ordinary migrating open and performs the deletes. |
+| `kirocrew knowledge stats [--json]` | Count the knowledge library: sources, documents and items in total and per source. Read-only: it opens the database with SQLite `mode=ro` (`KnowledgeStore.open_read_only`), so it never runs the constructor's schema migration or orphan sweep, and a library behind the schema is reported, not migrated. There is deliberately no flush/rebuild/repair verb beside it. Its LLM-facing twin is `knowledge_list_sources`, which renders the same `aggregate_stats()` call (see [knowledge](knowledge.md) §6 and [mcp](../../architecture/mcp.md) § The MCP-first rule) |
 | `kirocrew cron preview <script>` | Run a script cron locally with real MCP tools; notifications are captured and printed instead of delivered |
 | `kirocrew workspace create/update --dir <name>` | `--dir` is a directory NAME that must resolve to a **strict descendant of the data home** (`~` is expanded first); anything landing outside — and the home **root itself**, in any spelling — is refused with a SEL `denied` audit event. Containment, not an absolute-path ban: an absolute path *under* the home resolves where the relative form would and is accepted. The strict-descendant test is what closes the root case for tilde paths, since the per-call-site root-equality checks compare un-expanded `config_dir() / ws_dir`. Deliberately stricter than the dashboard's `POST /api/workspaces`, which accepts an absolute `dir` anywhere, screened by `is_sensitive_path`. |
 | `kirocrew computer doctor [--json]` | Report computer-use availability: platform support, the keystone primary-enable state, and the **advisory** macOS Accessibility / Screen Recording probe with a `responsible_hint`. See [Computer Use Commands](#computer-use-commands). |
@@ -293,6 +318,44 @@ exfiltration redactors run.
 4. Offers to set up custom domain `kirocrew.localhost` (macOS/Linux)
 
 The saved project dir enables running `kirocrew` from any directory.
+
+### Slack credentials are checked before they are stored
+
+`kirocrew setup --slack` asks Slack about each value as it is pasted, so a typo,
+a revoked token, or a channel ID pasted where the member ID belongs is reported
+at the prompt instead of surfacing later as a "Slack disabled" line in the
+gateway log. The app-level token is checked with `apps.connections.open` (the
+call the gateway itself makes at startup) and the bot token with `auth.test`,
+which also names the workspace — the same two calls, and the same rules, as the
+dashboard's Slack credential save. The member ID is format-checked against
+`validation.USER_ID_RE` first (so `C…`/`B…` is refused with no network, and
+Enterprise Grid's `W…` is admitted) and then confirmed with `users.info`; only
+`user_not_found` / `users_not_found` (`cli_setup._SLACK_OWNER_REJECTIONS`) indict
+the ID, because any other Slack error (a missing `users:read` scope, a rate
+limit) indicts the check.
+
+Three verdicts, and only one of them refuses a value:
+
+- **Accepted** — saved, with the workspace or member name printed.
+- **Rejected by Slack** — reported with Slack's own error code and re-asked, up
+  to three times; if all three are refused the step writes **nothing**, so a
+  working credential already in `.env` is never replaced by a broken one.
+- **Unverifiable** (Slack unreachable, transport error) — a warning, and the
+  value is saved as typed. Being offline never costs the operator the
+  credentials they just typed.
+
+The check runs only when stdin and stdout are both a terminal. Off one, nobody
+can see a verdict and re-asking would consume the next line of a piped answer
+file and misassign every remaining answer, so an automated run (`kirocrew
+update` re-runs setup with its output captured and stdin on `/dev/null`) behaves
+exactly as it did before the check existed. After a successful write the step
+PRINTS `Restart the gateway to pick them up: kirocrew restart`, since Slack
+credentials are read once at startup and tokens written here stay inert until a
+running gateway restarts. It deliberately does not offer to perform the restart:
+doing so would drop every in-flight session, and probing whether a gateway is up
+in order to decide costs a service-manager query and a port probe that can each
+fail in ways the wizard then has to degrade around — all to save one command the
+line already names.
 
 ### First-run Kiro CLI prerequisite onboarding
 

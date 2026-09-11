@@ -663,7 +663,7 @@ describe('chatSlice slot-detail refresh merges', () => {
 
   it('a PLAIN optimistic send is never id-resolved into a boundary (#6075)', () => {
     // For a NON-steer send, "a persisted row with this id exists" does not
-    // prove "the turn above this bubble is over": crew mode persists the user
+    // prove "the turn above this bubble is over": a durable-queue ingress (the retired Crew Mode) persisted the user
     // row as a durable queue entry and starts no turn at all. Recording a
     // boundary there would re-open the over-drop class the retired text
     // heuristics were rejected for — id resolution is licensed for STEER

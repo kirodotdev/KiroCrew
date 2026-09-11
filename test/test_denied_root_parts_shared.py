@@ -1,4 +1,4 @@
-"""Pins the credential dot-dir denylist to ONE shared owner (#6613).
+"""Pins the credential dot-dir denylist to ONE shared owner.
 
 `design_critique` (local render target) and `design_tweak` (previewed project
 folder) each screen operator-picked paths against a set of credential dot-dirs

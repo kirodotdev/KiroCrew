@@ -199,7 +199,7 @@ class TestFoldCacheCoversTheScanWindow:
 
         Sized at 256 while scanning 500, the second query would re-fold every
         single session. Kept small enough to stay a fast test but larger than the
-        transcript cache it used to borrow its size from.
+        transcript cache whose size it once borrowed.
         """
         monkeypatch.setattr(history, "_TRANSCRIPT_CACHE_MAX", 8)
         monkeypatch.setattr(history, "_SEARCH_SCAN_WINDOW", 40)
@@ -445,7 +445,7 @@ class TestFoldDoesNotPinParsedTranscripts:
         the snippet memo the very list it folded, so a single traversal of
         ``_iter_message_texts`` serves both halves and there is no second
         traversal that could apply different rules. One call, not two — the
-        second call is what this used to assert, and its disappearance is the
+        second call is what this test now forbids, and its absence is the
         optimization. The fallback path (memo refused or stale) still routes
         through the shared iterator; see ``TestSnippetSourceIsMemoized``.
         """
@@ -711,7 +711,7 @@ class TestSnippetSourceIsMemoized:
         ``list_sessions``. After one of those the file's mtime still matches what
         the memo recorded, so the mtime guard in :meth:`_snippet_texts` is blind
         and ``_invalidate_cache`` is the only thing standing between the user and
-        a preview quoting text the session no longer contains.
+        a preview quoting text the session does not contain.
 
         Asserted on the memo directly rather than through a snippet, because a
         content-changing rewrite bumps the mtime and would pass on the guard

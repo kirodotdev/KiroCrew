@@ -49,7 +49,21 @@ GITHUB_PULL_REQUEST = "github_pull_request"
 #: the two spellings agree, so a drift fails loudly instead of silently.
 GH_PR = "gh-pr"
 
+#: A public GitHub Actions workflow run. A genuinely different subject from a pull
+#: request: its terminal states are success / failure / cancelled / timed_out, not
+#: merged or closed. Registered but NOT publicly armable, because a workflow run
+#: cannot be inferred from a message by URL the way a pull request can, so a caller
+#: has no way to name one -- see the note on ``publicly_armable`` below for whether
+#: that is a property of the subject or a limit still to lift.
+GITHUB_WORKFLOW_RUN = "github_workflow_run"
+
 REVIEW_READY = "review_ready"
+
+#: What a workflow run's completion IS. Declared by the workflow-run kind alone, not
+#: drawn from a shared vocabulary: ``review_ready`` means "a human can look at this
+#: pull request now", which is not a sentence about a run. A run's objective is that
+#: it REACHED a conclusion, whatever that conclusion turns out to be.
+RUN_COMPLETE = "run_complete"
 
 
 @dataclass(frozen=True)
@@ -78,6 +92,12 @@ _KINDS: dict[str, MonitorKind] = {
         objectives=frozenset({REVIEW_READY}),
         publicly_armable=False,
         supports_shadow=False,
+    ),
+    GITHUB_WORKFLOW_RUN: MonitorKind(
+        name=GITHUB_WORKFLOW_RUN,
+        objectives=frozenset({RUN_COMPLETE}),
+        publicly_armable=False,
+        supports_shadow=True,
     ),
 }
 

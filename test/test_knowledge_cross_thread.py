@@ -128,9 +128,9 @@ def test_close_only_releases_calling_threads_connection(store):
 
 
 # ── In-memory graph thread-safety ──
-# The thread-local sqlite fix (above) removed a de-facto guard: previously the
-# shared connection raised sqlite3.ProgrammingError in _keyword_search before
-# _graph_search ran, so the in-memory graph was never traversed cross-thread.
+# Per-thread sqlite connections remove a de-facto guard: a single shared
+# connection raises sqlite3.ProgrammingError in _keyword_search before
+# _graph_search runs, so the in-memory graph is never traversed cross-thread.
 # With per-thread connections, HybridRetriever.search() reaches the graph leg on
 # an mc-embed thread (get_neighbors -> successors/predecessors/nodes) while the
 # event-loop thread mutates the SAME SimpleDiGraph inline (ingest add_entity/

@@ -807,7 +807,7 @@ class TestSttHooks:
         """169 ms of numpy and native binding must not run inline on the loop.
 
         The boot delay was not enough on its own: it moved the import out of
-        ``runner.setup()`` (so it no longer delays the first socket bind) and left it
+        ``runner.setup()`` (so it does not delay the first socket bind) but leaves it
         running on the loop, where it stalls every socket and heartbeat the gateway is
         serving at that moment.
 

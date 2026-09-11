@@ -40,11 +40,46 @@ describe('useChatNavigation', () => {
     expect(result.current.sections[0].label).toBe('a'.repeat(60) + '…')
   })
 
+  it('keeps ids unique when legacy rows share a timestamp', () => {
+    const messages = [msg('user', 'One'), msg('user', 'Two'), msg('user', 'Three')]
+    const map = new Map([[0, 0], [1, 1], [2, 2]])
+    const { result } = renderHook(() => useChatNavigation(messages, map), { wrapper })
+    expect(result.current.sections.map(s => s.id)).toEqual(['2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z#1', '2026-01-01T00:00:00Z#2'])
+  })
+
   it('skips assistant messages for sections', () => {
     const messages = [msg('assistant', 'I am a bot')]
     const map = new Map([[0, 0]])
     const { result } = renderHook(() => useChatNavigation(messages, map), { wrapper })
     expect(result.current.sections).toHaveLength(0)
+  })
+
+  it('carries a stable id, the compact prompt, and the turn\'s final assistant response as written', () => {
+    const messages = [
+      { role: 'user', content: '  First\n prompt ', ts: '1', meta: { mid: 'm-1' } },
+      { role: 'assistant', content: 'draft' },
+      { role: 'assistant', content: ' Final\n response ' },
+      { role: 'assistant', content: 'Context compacted', meta: { kind: 'compaction' } },
+      { role: 'assistant', content: undefined },
+      { role: 'tool', content: 'ignored' },
+      { role: 'nudge', content: 'auto-nudge' },
+      { role: 'assistant', content: 'Reply to the nudge, not to the user' },
+      { role: 'inject', content: 'cron', meta: { injectKind: 'cron' } },
+      { role: 'assistant', content: 'Reply to the cron, not to the user' },
+      { role: 'user', content: 'Stalled prompt', ts: '4' },
+      { role: 'assistant', content: 'partial before stall' },
+      { role: 'inject', content: 'continue', meta: { injectKind: 'recovery' } },
+      { role: 'assistant', content: 'resumed final answer' },
+      { role: 'user', content: 'Second prompt', ts: '2' },
+      { role: 'user', content: 'Not yet mounted', ts: '3' },
+    ] as ChatMessage[]
+    const map = new Map([[0, 2], [10, 8], [14, 11]])
+    const { result } = renderHook(() => useChatNavigation(messages, map), { wrapper })
+    expect(result.current.sections).toEqual([
+      { id: 'm-1', label: 'First prompt', prompt: 'First prompt', response: ' Final\n response ', msgIdx: 0, displayIdx: 2 },
+      { id: '4', label: 'Stalled prompt', prompt: 'Stalled prompt', response: 'resumed final answer', msgIdx: 10, displayIdx: 8 },
+      { id: '2', label: 'Second prompt', prompt: 'Second prompt', response: '', msgIdx: 14, displayIdx: 11 },
+    ])
   })
 
   it('resolves bare URL links via single batched API call', async () => {

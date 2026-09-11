@@ -273,7 +273,7 @@ class TestCronJobCreation:
 class TestCronCalendarFieldsOnCreate:
     """``timezone``/``skip_dates`` reach ``CronService.add_job`` from the SDK.
 
-    Regression for the gap where ``_add_job_kwargs`` was a closed allowlist that
+    The gap this closes: ``_add_job_kwargs`` was a closed allowlist that
     omitted both fields, so an app could only ever create jobs with an empty
     timezone -- resolving to UTC at fire time -- and had to issue a SECOND
     ``update_job`` write to correct it. That second write is exactly the

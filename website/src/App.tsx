@@ -150,6 +150,7 @@ import ReportProblemModal from './components/ReportProblemModal'
 import FeedbackPill from './components/FeedbackPill'
 import KiroAccountModal, { type KiroAccountUsage } from './components/KiroAccountModal'
 import WindowsTitlebarMenu from './components/WindowsTitlebarMenu'
+import { NavHistoryArrows } from './components/NavHistoryArrows'
 
 import {
   canShowStartupVideo,
@@ -3300,6 +3301,13 @@ export default function App() {
               query responds to -- instead of eating the centred search's. */}
           {!isMobile && isWinElectron && <WindowsTitlebarMenu />}
 
+          {/* Route-history Back/Forward (#8258). Desktop layout only: on mobile
+              the platform owns Back (left-edge swipe), and the drill-in surfaces
+              navigate by component state that pushes nothing, so arrows there
+              would walk an unrelated stack. Order: after the Windows app menu,
+              before the instance selector — the leftmost NAVIGATION control,
+              matching where every browser puts it. */}
+          {!isMobile && <NavHistoryArrows />}
           {isMobile && (
             <button className="group p-2 rounded-md bg-transparent border-none cursor-pointer text-muted hover:text-text shrink-0" onClick={toggleNav} aria-label={i18nT('app.open_menu')}>
               {/* The product logo, not a generic menu glyph. A narrow layout has exactly

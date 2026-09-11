@@ -34,6 +34,9 @@ import {
   type ShortcutPlatform,
 } from '../lib/shortcutRegistry'
 import { i18nT } from '../i18n/t'
+import { canGoBack, canGoForward } from '../lib/routeHistoryPosition'
+import { useGuardedHistoryStep } from '../components/NavigationLeaveGuard'
+import { MOBILE_BREAKPOINT } from './useIsMobile'
 
 /**
  * Group ids + ordering live in the registry (`lib/shortcutRegistry`); re-exported
@@ -248,6 +251,10 @@ export const SHORTCUT_LABEL_KEY: Record<string, string> = {
   'nav-notifications': 'hooks.useKeyboardShortcuts.notifications_panel',
   'nav-projects': 'hooks.useKeyboardShortcuts.projects_panel',
   'nav-schedule': 'hooks.useKeyboardShortcuts.schedule_panel',
+  // Reused: the same commands as the top-bar arrows, so the reference list and
+  // the buttons cannot drift apart.
+  'history-back': 'app.nav_back',
+  'history-forward': 'app.nav_forward',
   'focus-input': 'hooks.useKeyboardShortcuts.focus_text_input',
   'focus-approval': 'hooks.useKeyboardShortcuts.focus_pending_approval',
   // Reused: the same command as the chat sidebar's own New chat / Close session
@@ -597,6 +604,14 @@ function isTerminalTarget(target: EventTarget | null): boolean {
   return !!el && typeof el.closest === 'function' && !!el.closest('.xterm')
 }
 
+/** The layout condition that hides the top-bar history arrows, read LIVE at
+ *  keypress so the handler's document listener never re-registers on resize.
+ *  Same breakpoint as `useIsMobile` — one source of truth for "narrow". */
+function isNarrowViewport(): boolean {
+  return typeof window.matchMedia === 'function'
+    && window.matchMedia(`(max-width: ${MOBILE_BREAKPOINT - 1}px)`).matches
+}
+
 export function formatShortcut(def: ShortcutDef): string {
   const mac = isMacPlatform()
   const parts: string[] = []
@@ -685,6 +700,7 @@ interface UseKeyboardShortcutsOpts {
 export function useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat, onCycleAgent, onCyclePrevAgent, onCycleReasoningEffort, onCyclePrevReasoningEffort, onCycleApprovalMode, onCyclePrevApprovalMode, onCycleModel, onCyclePrevModel, onToggleFocusMode, onToggleLeftSidebar, onToggleSessionPanel, onToggleSidePanel, onToggleTerminal, disabled }: UseKeyboardShortcutsOpts) {
   const dispatch = useAppDispatch()
   const navigate = useNavigate()
+  const guardedHistoryStep = useGuardedHistoryStep()
   const appStore = useAppStore()
   const mruIndexRef = useRef(-1)
   // Set true right after a char-producing Alt shortcut (Alt+`) fires inside a
@@ -818,6 +834,15 @@ export function useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat, onCycl
     // shipped behaviour and are not subject to either rule.
     let hit = matchShortcutEvent(e, bindings, shortcutPlatform())
     if (hit && (e.ctrlKey || e.metaKey) && (e.defaultPrevented || isTerminalTarget(e.target))) hit = null
+    // The history chords are UN-CLAIMED (nulled, falling through) for TEXT
+    // FIELDS only: there ⌘←/→ is caret line-start/line-end on macOS and
+    // Ctrl+←/→ is word-jump elsewhere, the field consumes the keystroke, and
+    // no browser navigation happens. The narrow-viewport gate is NOT an
+    // unclaim — see the map entries: on macOS an unclaimed ⌘← is the
+    // browser's own Back, which would pop PAST the draft guard whenever its
+    // trap is unarmed (post-reload) and unmount a dirty editor. Narrow
+    // viewports claim the chord and do nothing.
+    if ((hit === 'history-back' || hit === 'history-forward') && isInput) hit = null
 
     if (ctrlDigits && e.ctrlKey && !e.altKey && !e.metaKey && !e.shiftKey) {
       const jumpIdx = jumpIndexForCode(code)
@@ -846,6 +871,7 @@ export function useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat, onCycl
       navigate('/settings')
       return
     }
+
 
     // ⌘[ / ⌘] on macOS, Ctrl+[ / Ctrl+] on Windows-Linux: step to the
     // previous/next session in sidebar order, wrapping at both ends — the same
@@ -927,6 +953,19 @@ export function useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat, onCycl
     if (hit !== null) {
       if (!enabled || disabled) return
       const actions: Record<string, () => void> = {
+        // Route-history Back/Forward — the keyboard twin of the top-bar arrows
+        // (#8258), through the same guarded step so NavigationBackGuard's draft
+        // trap applies to both identically. Claimed even with nowhere to go,
+        // and claimed on a NARROW viewport as a deliberate no-op: on macOS
+        // browsers ⌘←/⌘→ is ALSO native history back/forward, so an unclaimed
+        // press would pop past the draft guard whenever its trap is unarmed
+        // (post-reload) and unmount a dirty editor — the arrows are hidden
+        // there (drill-ins navigate by component state), and a keystroke that
+        // walked a stack the visible UI does not reflect is the same wrong in
+        // native form. Only the text-field gate unclaims (see the hit-null
+        // above): the field consumes the caret chord and never navigates.
+        'history-back': () => { if (!isNarrowViewport() && canGoBack()) guardedHistoryStep(-1) },
+        'history-forward': () => { if (!isNarrowViewport() && canGoForward()) guardedHistoryStep(1) },
         'cycle-agent': () => onCycleAgent?.(),
         'cycle-prev-agent': () => onCyclePrevAgent?.(),
         'cycle-reasoning': () => onCycleReasoningEffort?.(),
@@ -1086,7 +1125,7 @@ export function useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat, onCycl
       navigate(panelMap[code])
       return
     }
-  }, [dispatch, navigate, appStore, onToggleShortcutsModal, onNewChat, onCycleAgent, onCyclePrevAgent, onCycleReasoningEffort, onCyclePrevReasoningEffort, onCycleApprovalMode, onCyclePrevApprovalMode, onCycleModel, onCyclePrevModel, onToggleFocusMode, panelToggleActions, disabled, enabled, ctrlDigits, panelBindings, bindings])
+  }, [dispatch, navigate, guardedHistoryStep, appStore, onToggleShortcutsModal, onNewChat, onCycleAgent, onCyclePrevAgent, onCycleReasoningEffort, onCyclePrevReasoningEffort, onCycleApprovalMode, onCyclePrevApprovalMode, onCycleModel, onCyclePrevModel, onToggleFocusMode, panelToggleActions, disabled, enabled, ctrlDigits, panelBindings, bindings])
 
   // Escape stops in-progress voice read-back. CAPTURE phase so it runs before the command palette's bubble-phase Escape
   // handler, which stopPropagation()s and would otherwise close the palette while

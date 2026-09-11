@@ -1,10 +1,10 @@
 """Episodic recall must admit a relevant memory before recency can rank it out.
 
-Regression for the bug where ``get_episodic_context`` filtered on raw cosine only
-AFTER ``search_episodic`` had ranked candidates by a time-decayed score and
-truncated to ``limit``: a highly relevant but old memory was ordered past the cut
-by a cluster of recent-but-irrelevant rows, which the filter then dropped, leaving
-empty context while an exact match sat in the store.
+``get_episodic_context`` must not filter on raw cosine only AFTER
+``search_episodic`` has ranked candidates by a time-decayed score and truncated
+to ``limit``: in that order a highly relevant but old memory is ordered past the
+cut by a cluster of recent-but-irrelevant rows and then dropped by the filter,
+leaving empty context while an exact match sits in the store.
 
 These exercise the stdlib ``_sqlite_vector_search`` path (FAISS is optional and its
 index is empty for directly-inserted rows), so they run identically with or without

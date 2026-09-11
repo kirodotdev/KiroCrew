@@ -436,6 +436,7 @@ def surface_channel_session(
     # without created_at, so the delete-won guard's evidence gate engages.
     slot._disk_meta_created_at = str(meta.get("created_at") or "")
     slot._disk_meta_observed = bool(meta)
+    slot._memory_assignment_from_history = True
     if meta.get("model"):
         slot.model = meta["model"]
     if meta.get("autocompact_pct") is not None:
@@ -451,6 +452,8 @@ def surface_channel_session(
             state.sessions.set_autocompact_pct(effective_session_key(slot), slot.autocompact_pct)
     if meta.get("workspace"):
         slot.workspace = meta["workspace"]
+    if meta.get("memory_store"):
+        slot.memory_store = str(meta["memory_store"])
     if meta.get("project"):
         slot.project = meta["project"]
     if meta.get("channel_folder_filed"):

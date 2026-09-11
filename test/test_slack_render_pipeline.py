@@ -1,4 +1,4 @@
-"""Build gate + behaviour tests for the single Slack render pipeline (#1712).
+"""Build gate + behaviour tests for the single Slack render pipeline.
 
 ``to_slack_mrkdwn`` is not a safe thing to call directly. It strips ANSI escapes
 and self-truncates at ``SLACK_MAX_TEXT`` before converting, and each of those
@@ -618,7 +618,7 @@ class TestOptionsChoicesAreRedacted:
         """The value is echoed back into the session on submit.
 
         ``value`` is ``choice[:150]``. Slicing first can cut a credential into a
-        prefix the regex no longer matches, so redaction has to precede the
+        prefix the regex does not match, so redaction has to precede the
         slice -- the same ordering hazard as the conversion ceiling.
         """
         pad = "p" * 140

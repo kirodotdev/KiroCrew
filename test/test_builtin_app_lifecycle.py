@@ -27,7 +27,7 @@ from kiro_crew.apps.routes import (
     handle_enable_app,
 )
 
-# Synthetic builtin used to drive the generic machinery.
+# Synthetic builtin that drives the generic machinery.
 _TEST_BUILTIN = "test-svc"
 _TEST_CFG_KEY = "test_svc"
 _TEST_RESTART_ATTR = "_test_svc_restart"

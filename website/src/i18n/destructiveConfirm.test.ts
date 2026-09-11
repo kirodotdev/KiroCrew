@@ -186,6 +186,12 @@ export const QUOTED_OPERAND_CONFIRM_KEYS = [
   'apps.papyrus.workspace.co_author_conflict_discard_confirm', // #4676
   'apps.papyrus.workspace.delete_file_confirm', // quoted by #4677
   'autoImprovement.commitConfirm', // bare {{branch}} #4821
+  // Template-pane confirms interpolate template names AND the changed-field
+  // list; both are user-facing prose, so all operands carry the glyph pair.
+  'components.agentTemplateDetail.reset_confirm_body',
+  'components.agentTemplateDetail.reset_confirm_title',
+  'components.agentTemplateDetail.switch_confirm_body',
+  'components.agentTemplateDetail.switch_confirm_title',
   // The code-execution grant's title AND body. #5725 quoted only the title, which left
   // the scope sentence one line under it reading as prose about every app (#6016).
   'components.appstore.trustAppModal.failed', // bare {{app}} #6016
@@ -212,6 +218,8 @@ export const QUOTED_OPERAND_CONFIRM_KEYS = [
   'pages.schedulePage.cronFolders.confirm_delete_folder',
   'pages.schedulePage.delete_named_job', // ASCII quotes → locale pair #5725
   'pages.settings.remoteCrewPanel.confirm_delete_of', // was fully bare #4821
+  'settings.secrets.delete_confirm',
+  'settings.secrets.delete_managed_confirm',
   'pages.settings.securityPanel.trustedApps.revoke_confirm_title',
   'pages.settings.securityPanel.trustedApps.revoke_confirm_body',
 ]
@@ -262,10 +270,13 @@ export const CONFIRM_OPERAND_KEY_EXEMPTIONS: Record<string, string> = {
   'apps.mochi.approval.inline_ask':
     'the {{tool}} operand renders as a styled <code> chip via renderAroundTool, '
     + 'so glyph quotes would double-decorate it (#5725)',
-  'pages.agentsPage.delete_the_template_named_confirm':
-    'kind word "template" sits next to the operand (#4657)',
   'pages.kiroCrewAgentsPage.delete_crew_named_confirm':
     'kind word "crew" sits next to the operand (#4657)',
+  'apps.awsControl.console.backup_restore_foreign_confirm':
+    'the {{install}} operand is the first 8 hex characters of an install id this app '
+    + 'mints itself (uuid4, never user-supplied text), and it already sits inside '
+    + 'parentheses after the words "another install" -- so the risk glyph quotes exist '
+    + 'to close, a crafted operand blending into the sentence, cannot arise here (#9554)',
 }
 
 function placeholdersIn(value: string): string[] {

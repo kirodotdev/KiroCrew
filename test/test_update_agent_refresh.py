@@ -1,7 +1,7 @@
 """The ``kirocrew update`` agent-only refresh must be hardened at its call site.
 
 The refresh runs ``setup --agent-only`` as a child with ``capture_output=True``,
-so two properties are load-bearing (issue #5616):
+so two properties are load-bearing:
 
 * ``stdin`` is redirected to ``DEVNULL`` — a captured-output child must never
   inherit the parent terminal, or any prompt it asks is invisible and blocks

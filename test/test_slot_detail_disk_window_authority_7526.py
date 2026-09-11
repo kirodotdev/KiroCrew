@@ -1,4 +1,4 @@
-"""POSITIVE CONTROL for issue #7526 — must be RED against unpatched main.
+"""POSITIVE CONTROL — must be RED against unpatched main.
 
 Builds the disk-vs-window disagreement the issue describes and asserts the
 bounded branch returns the WINDOW's answer. Both branches read the SAME corpus
@@ -22,11 +22,10 @@ OLDER = 4  # rows above the live window -> _disk_older_count
 LIMIT = 4
 
 #: These four are RED on current main and stay red until the authority contract for
-#: the bounded branch is ruled on (issue #7526). ``strict`` on purpose: whoever
-#: lands the fix gets a failure here telling them to delete the marker, so the
-#: reproduction cannot rot into a silently-passing test the way the round-1..4
-#: tests preserved in ``c9979c43`` did -- those stub ``read_messages_chained``,
-#: which the bounded branch no longer calls, so they now pass vacuously.
+#: the bounded branch is ruled on. ``strict`` on purpose: whoever lands the fix
+#: gets a failure here telling them to delete the marker, so the reproduction
+#: cannot rot into a silently-passing test. Stubs of ``read_messages_chained``
+#: are vacuous here, because the bounded branch does not call it.
 DISAGREEMENT = pytest.mark.xfail(
     strict=True,
     reason="#7526: the bounded branch is disk-authoritative for the window region",

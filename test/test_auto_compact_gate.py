@@ -1,6 +1,6 @@
-"""Automatic compaction is gated on backend capability (#7812).
+"""Automatic compaction is gated on backend capability.
 
-The defect these pin, and it is worse than the manual one #7800 fixed because
+The defect these pin, and it is worse than the manual one already fixed because
 no user action is needed to reach it: a KAS session crossing
 ``effective_autocompact_pct`` fell through ``_compact_session``'s
 claude-vs-everything-else branch into ``_compact_in_place``, which ACQUIRED THE
@@ -13,7 +13,7 @@ resulting timeout took the ``_recycle_held`` path: session popped, resume sid
 cleared, provider shut down. So the user lost the live conversation as well as
 five minutes of it.
 
-The fix reads the capability #7800 introduced from the gate ladder instead, and
+The fix reads that capability from the gate ladder instead, and
 that placement is the substance of it rather than an implementation detail:
 declining in ``_compaction_gate_decision`` happens before ``_compact_session``
 is ever scheduled, so there is no ``/compact`` dispatch, no ``compacting``
@@ -27,8 +27,6 @@ initiative and its ``summarization_completed`` frame calls
 falls back below the threshold without us acting -- the same relationship
 ``cc_managed`` already encodes for Claude-Code sessions. Recycling faster would
 have kept the half of the defect that destroys the conversation.
-
-Found by the Opus review lane during the #7800 drive.
 """
 
 from __future__ import annotations

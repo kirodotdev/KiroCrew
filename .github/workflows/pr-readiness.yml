@@ -852,7 +852,49 @@ jobs:
             else
               if [ "$file" = "dynamic/github-code-scanning/codeql" ]; then
                 case "$conclusion" in
-                  success|skipped) passed+=("$label") ;;
+                  success)
+                    # A successful managed workflow says the language analyses
+                    # ran. It does NOT say their security results passed: GitHub
+                    # publishes that verdict as a separate exact-SHA check-run
+                    # owned by github-advanced-security. Requiring only the
+                    # workflow conclusion let a revision with high alerts pass
+                    # this repository's sole required aggregate.
+                    codeql_checks="$(gh_retry gh api --method GET \
+                      "repos/$REPO/commits/$SHA/check-runs?check_name=CodeQL&per_page=100")" || {
+                      rc=$?
+                      if [ "$rc" -eq 22 ]; then exit 1; fi
+                      transport_failed=true
+                      break
+                    }
+                    # Bind by app as well as name and SHA. Another app is free
+                    # to publish a check called CodeQL; it must not answer for
+                    # GitHub's security result. Check-run ids are monotonic, so
+                    # an updated result supersedes an earlier interim row.
+                    codeql_check="$(jq -c '
+                      [.check_runs[]?
+                       | select((.app.slug // "") == "github-advanced-security")]
+                      | max_by(.id) // empty
+                    ' <<<"$codeql_checks")"
+                    if [ -z "$codeql_check" ]; then
+                      pending+=("$label (results not reported)")
+                      continue
+                    fi
+                    codeql_status="$(jq -r '.status // ""' <<<"$codeql_check")"
+                    codeql_conclusion="$(jq -r '.conclusion // ""' <<<"$codeql_check")"
+                    if [ "$codeql_status" != "completed" ]; then
+                      pending+=("$label (results $codeql_status)")
+                    else
+                      case "$codeql_conclusion" in
+                        success) passed+=("$label") ;;
+                        # Default setup publishes an interim neutral result while
+                        # one or more configured languages have not reported.
+                        # It is absence of a final result, not a clean verdict.
+                        neutral|"") pending+=("$label (results pending)") ;;
+                        *) failed+=("$label ($codeql_conclusion)") ;;
+                      esac
+                    fi
+                    ;;
+                  skipped) passed+=("$label") ;;
                   *) failed+=("$label ($conclusion)") ;;
                 esac
               elif [ "$label" = "Design Review" ] || [ "$label" = "UX Review" ] || [ "$label" = "First Principles Review" ]; then
@@ -1001,7 +1043,7 @@ jobs:
 
           # (The long-term "Arbiter — judge from comments" gate was retired: its
           # one-way-door / long-term-reversibility lens now lives in Design
-          # Review. Readiness no longer waits on any API-owned external check.)
+          # Review. Readiness no longer waits on that retired Arbiter check.)
 
           # Disposition-rule enforcement (issue #6658). A violation is a
           # condition waiting cannot fix -- only the author editing or deleting

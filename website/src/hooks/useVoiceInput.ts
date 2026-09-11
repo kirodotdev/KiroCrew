@@ -63,6 +63,24 @@ interface Opts {
    *  to the slot that initiated it — even if the user switches sessions before
    *  the (async) transcription finishes. */
   sessionId?: string | null
+  /**
+   * True when this instance's composer is the one on screen for a session, so a
+   * batch transcript that settles through the inbox is delivered to THIS `onText`
+   * alone rather than to every mounted instance. Composers co-mount (session
+   * grid, Crew Members DMs); without a claim each would receive the text and
+   * apply its own routing to it. Omit on a host that cannot show any session's
+   * composer — it then only receives unclaimed transcripts.
+   */
+  ownsSession?: (sessionId: string | null) => boolean
+  /**
+   * True when `onText` can take a batch transcript for a session this instance
+   * does NOT currently show (it routes it somewhere durable). When false the
+   * inbox never hands this instance unowned text — it keeps the text until an
+   * owner appears instead of letting it drop. Explicit: the one production
+   * caller (`useComposerVoice`) passes it alongside `ownsSession`; an instance
+   * that says nothing accepts nothing unowned.
+   */
+  acceptsUnowned?: boolean
 }
 
 /** Which capture path produced a transcript. The caller's disarm flags are all
@@ -229,13 +247,25 @@ export function useVoiceInput(onText: (text: string, sessionId: string | null, o
   )
   // The inbox request this instance currently displays as busy, if any.
   const shownRef = useRef<number | null>(null)
+  // Latest ownership predicate, read at settle time (not subscribe time) so a
+  // host whose on-screen composer changes — a slot switch, entering split mode —
+  // answers for the composer it shows NOW.
+  const ownsRef = useRef(opts.ownsSession)
+  ownsRef.current = opts.ownsSession
+  // Explicit flag, no inferred default: every production caller states both
+  // `ownsSession` and `acceptsUnowned`, so a legacy "no predicate means take
+  // everything" rule would have had no caller and one more branch to reason about.
+  const acceptsUnownedRef = useRef(opts.acceptsUnowned ?? false)
+  acceptsUnownedRef.current = opts.acceptsUnowned ?? false
 
   // A batch transcription outlives the component that started it (see
   // voiceTranscriptInbox): leaving Chat unmounts this hook while `/api/stt` is
   // still in flight, so its progress and result are routed through the inbox
-  // instead of into a dead closure. Whichever instance is mounted delivers it —
-  // restoring the busy indicator for the slot still waiting — and a result that
-  // settled with none mounted is drained here on the next mount.
+  // instead of into a dead closure. Every mounted instance shows the busy state
+  // (the mic is one shared device, so every composer's controls must read the
+  // same "in flight" fact); the TEXT is delivered once, to the instance whose
+  // composer owns the session, and a result that settled with none mounted is
+  // drained here on the next mount.
   useEffect(() => subscribeTranscripts({
     begin: request => {
       if (capturing()) return
@@ -243,7 +273,7 @@ export function useVoiceInput(onText: (text: string, sessionId: string | null, o
       setTranscribing(true)
       setSessionOwner(request.sessionId)
     },
-    settle: result => {
+    settle: (result, deliver) => {
       // Only the request actually on display releases the busy state, and only
       // while nothing is capturing here: a transcription that settles after this
       // instance started its own session must not blank that session's mic UI.
@@ -251,9 +281,12 @@ export function useVoiceInput(onText: (text: string, sessionId: string | null, o
         shownRef.current = null
         if (!capturing()) { setTranscribing(false); setSessionOwner(null) }
       }
+      if (!deliver) return
       if (result.error) setError(result.error)
       else if (result.text) onTextRef.current(result.text, result.sessionId, 'batch')
     },
+    owns: sessionId => ownsRef.current?.(sessionId) === true,
+    get acceptsUnowned() { return acceptsUnownedRef.current },
   }), [capturing])
 
   // Acquire (or reuse) a live mic stream and attach the level meter + device

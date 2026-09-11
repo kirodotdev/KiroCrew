@@ -1,16 +1,16 @@
 """Regression test for the dashboard WS status-count offload fix.
 
-``src/kiro_crew/dashboard/ws.py`` used to call ``state.crons.list_jobs()`` and
-``state.lessons.load_all()`` inline on the event loop inside the periodic WS
-status pusher. Both do blocking file I/O, so on a slow/large home dir they
-stalled the loop — and with it every other WebSocket/coroutine on the gateway.
+The periodic WS status pusher must not call ``state.crons.list_jobs()`` or
+``state.lessons.load_all()`` inline on the event loop. Both do blocking file
+I/O, so on a slow/large home dir they stall the loop — and with it every other
+WebSocket/coroutine on the gateway.
 
 The fix routes the lesson count and the cron count through
 ``asyncio.to_thread`` via ``_load_status_counts``. The lesson count uses
 ``DashboardState._count_lessons`` — the same JSONL + vector-store total that
 ``/api/status`` and the SSE updates path report — NOT ``lessons.load_all()``
 alone, whose JSONL-only result made the Overview card show 0 on hosts whose
-lessons live in the vector store (#7204). Crucially, the cron count
+lessons live in the vector store. Crucially, the cron count
 uses ``CronManager.count_enabled_from_disk`` — a pure read-only file parse —
 rather than ``list_jobs``: ``list_jobs`` triggers ``_sync()`` → ``_load()`` →
 ``_arm_timer()`` → ``asyncio.create_task`` which raises ``RuntimeError`` off the
@@ -113,7 +113,7 @@ async def test_load_status_counts_does_not_block_the_loop():
 
 @pytest.mark.asyncio
 async def test_ws_lesson_count_includes_vector_store_lessons():
-    """FAILURE SCENARIO (pre-fix, #7204): the pusher counted only
+    """FAILURE SCENARIO: the pusher counts only
     ``lessons.load_all()``, so on a host whose 70 lessons live in the vector
     store (``semantic_memory`` table) with no ``lessons.jsonl`` the WS frame
     reported 0, overriding the correct ``/api/status`` / SSE total in steady
@@ -193,7 +193,7 @@ async def test_status_count_failure_returns_fallback_and_recovers():
 async def test_first_refresh_failure_reports_unknown_not_zero():
     """FAILURE SCENARIO (regression guard): a freshly connected socket whose
     FIRST refresh fails must not publish an authoritative-looking 0 — that is
-    the exact false-zero symptom of #7204. The pusher seeds its cache with
+    the exact false-zero symptom. The pusher seeds its cache with
     ``None`` (= unknown, rendered as a loading skeleton) and the default
     fallback preserves it.
     """
@@ -344,7 +344,7 @@ async def test_gateway_wide_refresh_is_single_touch_per_ttl(monkeypatch):
 
 
 def test_status_frame_publishes_null_for_unknown_counts():
-    """Pins the frame emission itself — the load-bearing half of #7204. The
+    """Pins the frame emission itself — the load-bearing half. The
     sentinel 0 passed to ``status_snapshot`` (to suppress its inline on-loop
     default) must be OVERWRITTEN by the true cached values, so an
     unknown-lessons frame carries ``None`` (rendered as a skeleton) while the

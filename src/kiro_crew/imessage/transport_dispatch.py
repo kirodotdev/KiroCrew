@@ -34,6 +34,7 @@ from kiro_crew.imessage.renderer import IMessageRenderer
 from kiro_crew.imessage.rpc import RpcError, RpcTransportError
 from kiro_crew.imessage.transport import IMESSAGE_CAPABILITIES
 from kiro_crew.messaging.commands import compact_unsupported_backend
+from kiro_crew.messaging.conversation import reserve_new_generation
 from kiro_crew.messaging.dispatch import (
     ChannelTurn,
     build_directive_consumer,
@@ -97,7 +98,7 @@ class IMessageDispatcher:
         Command acknowledgements, help text and compaction notices are status
         chatter, not the answer, so a bridge failure while sending one must not
         abort the dispatch that produced it. ``client.send`` raises on a real
-        delivery failure (it no longer collapses failure into an empty guid), so
+        delivery failure (it does not collapse failure into an empty guid), so
         the tolerance lives here, at the call sites that genuinely want it,
         rather than inside the client where it would also hide a lost reply.
         """
@@ -129,7 +130,15 @@ class IMessageDispatcher:
         cmd = parse_command(text)
         if cmd == "new":
             self._conv.bump_gen(handle)
-            await self._notify(handle, "✅ Started a fresh conversation.")
+            saved = await reserve_new_generation(
+                self.sessions,
+                self._session_key(handle),
+                channel_type="iMessage",
+            )
+            message = "✅ Started a fresh conversation."
+            if not saved:
+                message += "\n⚠️ The new conversation could not be saved for restart."
+            await self._notify(handle, message)
             return
         if cmd == "compact":
             self._conv.clear_awaiting(handle)
@@ -312,7 +321,7 @@ class IMessageDispatcher:
         handle = inbound.handle
         pct = self.sessions.check_context_usage(session_key, provider)
         if pct >= self.cfg.imessage.soft_threshold_pct:
-            # Capability gate (#8156): no forced compaction to run and the
+            # Capability gate: no forced compaction to run and the
             # soft nudge's /compact advice cannot work — the backend compacts
             # on its own as context fills.
             unsupported = compact_unsupported_backend(provider)
@@ -361,7 +370,7 @@ class IMessageDispatcher:
             if provider is None:
                 await self._notify(handle, "ℹ️ There's no conversation to compact yet.")
                 return
-            # Capability gate (#8156, mirroring the dashboard's #7800 gate): a
+            # Capability gate (mirroring the dashboard's gate): a
             # backend that cannot serve a manual /compact treats the prompt as
             # ordinary text and never answers, so dispatching would strand the
             # unbounded wait below. Informational, never an error — and plain

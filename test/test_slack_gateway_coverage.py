@@ -1967,7 +1967,7 @@ class TestDigestChunkSize:
 
 
 class TestDigestHoldSecs:
-    """``KIROCREW_SUBAGENT_DIGEST_HOLD_SECS`` parse guard (issue #2215): the
+    """``KIROCREW_SUBAGENT_DIGEST_HOLD_SECS`` parse guard: the
     latency half of the digest split must never crash import, and 0 is the
     documented opt-out back to count-trigger-only delivery."""
 

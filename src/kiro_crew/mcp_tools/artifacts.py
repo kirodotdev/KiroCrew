@@ -801,12 +801,11 @@ def artifact_update(name: str, args: dict[str, Any]) -> str:
     update_body = {k: v for k, v in args.items() if k != "slug" and v is not None}
     if not update_body:
         return "Error: nothing to update (provide content/name/description/tags)"
-    # Note: 'actor' is no longer set in the body — the API handler infers
-    # it from the X-Internal-Secret header presence (MCP=agent,
-    # dashboard=user). This is more secure than trusting a body field
-    # and saves the agent from having to remember to set it.
-    # ``_patch`` is the PATCH verb helper (it did not exist when this was
-    # written, which is why the request used to be hand-rolled). Going through
+    # 'actor' is not set in the body — the API handler infers it from the
+    # X-Internal-Secret header presence (MCP=agent, dashboard=user). This is
+    # more secure than trusting a body field and saves the agent from having
+    # to remember to set it.
+    # ``_patch`` is the PATCH verb helper. Going through
     # it buys the refusal-invalidate-re-resolve-replay recovery every
     # other verb has, the ``X-Internal-Caller`` audit attribution, the
     # latin-1 session-key guard, and redaction of the gateway's error body.

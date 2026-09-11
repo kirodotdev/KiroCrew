@@ -27,6 +27,12 @@ state are composed behind that facade:
 - `session_cleanup.py` — cleanup-task state, watchdog hooks, idle/RSS/stuck-turn
   policy, and process/filesystem sweeps
 
+A dashboard slot bound to a remote crew keeps one memory boundary on both sides.
+`remote_relay.create_peer_slot()` always includes the validated `memory_mode` in
+the peer's `POST /api/chat/slots` payload, while agent and model remain sparse
+explicit picks. Omitting the mode would let a local Incognito or Temporary row
+execute as Persistent on the peer and read or write memory the user disabled.
+
 Cross-boundary calls that were observable on `SessionManager` route back through
 the facade, and patchable module dependencies are resolved through injected
 call-time functions. Persistence remains owned by the existing `SessionMap`
@@ -38,6 +44,66 @@ on the service that owns its state; widen a protocol or adapter only when an
 existing facade/import/monkeypatch seam requires it. Individual adapters may be
 retired in follow-up changes after repository-wide callers and characterization
 tests have moved off the corresponding legacy seam.
+
+## Private member session ownership
+
+An ordinary dashboard chat that has already used private member memory keeps
+that ownership for its lifetime. The agent-switch endpoint reads the protected
+binding for the effective session key before changing any slot fields, resetting
+the provider or writing history. Choosing another member (including the default
+assistant) returns `409 private_memory_session_pinned` and asks the owner to start
+a new conversation. An unreadable binding returns 503; resetting the same member
+and switching an unbound V1 conversation keep their existing behavior.
+
+The provider's in-turn agent-switch event follows the same private boundary in
+every dashboard slot mode. Before provider allocation, the runner validates the
+store off the event loop and freezes its V2 owner from the memory version and
+ownership record. Database schema migrations do not identify a V2 turn. Any
+provider-reported switch on that private turn leaves the selected member intact,
+shows a pinned-member notice, stops consuming further events and resets the
+provider. The notice prevents an empty-response retry from replaying completed
+tool actions. Ordinary unbound V1 chats retain their agent-switch behavior.
+
+Member chat turns validate the member's private memory before provider
+allocation and persist the binding used by memory tools and consolidation.
+Binding resolution runs off-loop using captured member, project and session
+selections. The runner rechecks those fields before private binding and again
+before provider allocation; a changed or replaced slot refuses. Owner
+create/switch paths recheck slot identity after resolution;
+switches retain their commit-token rollback and last pre-reset busy checks. This
+does not allow a protected session key to acquire a different member's store.
+History can restore a displayed agent and recorded store, but cannot grant a
+new private assignment. Recent-session restore, explicit resume, dormant-slot
+rehydration and channel surfacing require an existing protected session binding
+before a V2 turn. This also applies when an empty historical agent now resolves
+to a private configured default. An unresolved member, changed binding or
+unreadable private store surfaces an error instead of borrowing Global Memory V1.
+
+An owner creating a private chat pins the selected member before saving history.
+Opening a member from Members can pin its canonical session after positive owner
+authorization. A transcript's linked key and the legacy DM binding file cannot
+authorize another session; a colliding member slug needs an existing protected
+match. Uninitialized legacy members remain openable for explicit initialization.
+An explicit owner agent choice on an unbound restored ordinary chat admits its
+next turn only after the existing switch rollback checks succeed. Restarting
+before that turn requires the owner to choose again. Internal callers and
+restored metadata cannot perform that admission.
+
+Cron tabs require the protected assignment published by private cron dispatch.
+A legacy job's provider-template alias cannot become a private member on a
+dashboard follow-up; if it resolves to V2 without that assignment, the turn
+refuses and explains how the owner can select a member explicitly.
+
+Speculative eager allocation stops for every private V2 binding, including
+resume prefetch. The actual turn verifies the protected binding and persists
+the slot before provider allocation.
+It also stops when an explicitly selected member is unresolved, when a restored
+store disagrees with the current resolver, or when its declaration is
+unavailable or inconsistent, and leaves the user-facing explanation to that
+turn. Global Memory V1 and a valid named V1 declaration retain speculative
+eager allocation. Store identity is part of the eager binding snapshot, and
+slot replacement, a running real turn or any binding change after an awaited
+lookup makes the eager task stand down before allocation.
 
 ## Background Session
 
@@ -61,7 +127,16 @@ It checks context usage and **recycles** (kill + fresh spawn) the session
 if needed — no compaction, since background tasks are stateless:
 
 - At ≥ 70% context → recycle (same threshold as chat's default compaction)
-- After 20 prompts with no metadata → recycle (blind fallback)
+- A reported 0% that the provider flags as *unknown* (`context_usage_unknown` —
+  the backend compacted in place) → recycle
+- After 40 prompts (`_BG_BLIND_RECYCLE_PROMPTS`) → recycle (blind backstop).
+  This backstop is **not** gated on the reported percentage: background turns are
+  tiny text prompts that never approach 70%, so keying it on "the backend reports
+  no metadata" retired it permanently as soon as any real percentage was read,
+  leaving the provider with no lifetime bound for the whole gateway uptime.
+  `recycle_background()` counts the turn itself (`check_context_usage` is a
+  chat-turn hook and never advances `_bg`), and the log names the backstop rather
+  than the percentage that did not trigger it.
 - Below thresholds → no-op (session stays warm)
 
 Callers: heartbeat callback, taskrunner lesson extraction.
@@ -86,18 +161,40 @@ and returning `AcpSessionHandle | _ProviderBgSession`. Dispatch is via
   selectable, so this branch is the dormant fallback for the reserved
   `ACP_BACKEND_CLAUDE` seam only.
 
-A backend switch displaces the cached `_bg_runtime`. The displacement policy
-has ONE implementation, `_displace_bg_runtime_locked()`, reached from
-`_retire_stale_backend_bg_runtime()` and from the mismatch check inside
-`get_bg_session()`'s runtime branch: a runtime whose `acp_backend` no longer
-matches config is killed if idle, and **parked on `_draining_bg_runtimes` if it
-has live or initializing handles** — parked runtimes never receive a new
-session (only `_bg_runtime` is offered to callers), their in-flight work
-finishes untouched (killing mid-turn would abort an in-flight title
-generation), and `_reap_drained_bg_runtimes_locked()` kills each once its last
-handle drains. Either way the slot is freed, so the very next background call
-runs under the configured backend even while the old runtime is still
-draining. Parked runtimes stay shielded from the orphan-PID sweep
+Two conditions displace the cached `_bg_runtime`: a **backend switch** and
+**staleness** (`AcpRuntime._is_stale()` → `"age"` past 6h, or `"rss"` past
+500 MiB across the descendant tree). The displacement policy has ONE
+implementation, `_detach_bg_runtime_locked(runtime, cause)`: the runtime is
+killed if idle, and **parked on `_draining_bg_runtimes` if it has live or
+initializing handles** — parked runtimes never receive a new session (only
+`_bg_runtime` is offered to callers), their in-flight work finishes untouched
+(killing mid-turn would abort an in-flight title generation), and
+`_reap_drained_bg_runtimes_locked()` kills each once its last handle drains.
+Either way the slot is freed in the same lock hold that spawns the replacement,
+so the very next background call runs on a fresh process even while the old one
+is still draining. `cause` is threaded into every log line the displacement
+emits, because a staleness recycle and a backend flap have different remedies
+and must not read alike.
+
+Two paths reach it. The backend-switch adapter
+`_displace_bg_runtime_locked(runtime, cached_backend, configured_backend)` is
+called from `_retire_stale_backend_bg_runtime()` and from the `acp_backend`
+mismatch check inside `get_bg_session()`'s runtime branch (the mismatch outranks
+staleness). The staleness probe sits in that same branch and is run on **every**
+eligible runtime, busy or idle, using the full `_is_stale()` predicate rather
+than the cheap age-only `_stale_by_age()`: waiting for a zero-session window is
+not a bound, since a multiplexed runtime under sustained background load never
+has one, and RSS — not age — was the growth mode observed (multi-GB over ~24h).
+The cost of probing the busy path too is that `_bg_runtime_lock` is now held
+across `_is_stale()`'s offloaded RSS read for busy runtimes as well; that is
+bounded by `_RSS_PROBE_MIN_AGE_SECS` (5 min), below which the probe returns
+without any executor round-trip, and a runtime that answers "stale" is displaced
+rather than re-probed. `_draining_bg_runtimes` has **no cap** — a retiree whose
+handles never drain stays parked and sweep-shielded — so the
+`%d _bg runtimes are parked draining` warning is the signal that displacement is
+outpacing the drain.
+
+Parked runtimes stay shielded from the orphan-PID sweep
 (`_companion_runtime_pids`), block the account-identity sweep's completeness
 (`_retire_kiro_bg_runtime`) while they drain, and are reaped by a periodic
 watchdog hook (`bg_drain_reap`) as the backstop for an idle gateway where no
@@ -146,16 +243,31 @@ send time.
   1. **first empty** → the ORIGINAL message is silently re-queued at the
      front of the slot queue (no visible card). Reached ONLY by a turn with no
      activity — see the productive-turn exclusion below;
-  2. **second empty** (the same-message retry also produced nothing) → ONE
+  2. **later empties** (the same-message retry also produced nothing) → a
      synthetic continue nudge (`_EMPTY_AUTO_CONTINUE_MSG` — a DIFFERENT
      message, since re-sending the identical prompt tends to reproduce the
      identical empty generation) is queued on the SAME live session, with a
-     transcript-visible notice card ("auto-continuing once"). Gated by
+     transcript-visible notice card. The budget is
+     `session.empty_response_max_continues` (default 1 — one nudge, notice
+     "auto-continuing once"; above 1 consecutive failures keep continuing and
+     the notice shows "recovery N of M"). Gated by
      `session.empty_response_auto_continue` (default ON; the gate fails open),
      and suppressed while a Stop is active;
-  3. **third empty** (the nudge also produced nothing) → terminal notice card
+  3. **budget exhausted** (the nudges also produced nothing) → terminal notice card
      asking the user to send a message; the counter resets so the next
-     genuine user turn gets a fresh budget.
+     genuine user turn gets a fresh budget. The card's wording is cause-aware,
+     mirroring rung 2's split: a productive turn is told the turn ended
+     without a closing reply and that completed steps will not re-run (never
+     "returned nothing", which is false for it and — read back by the model
+     via the transcript — invites a redo of landed side effects). For
+     non-productive turns the recovery clause appears only when the counter
+     shows budget was spent, and claims only that automatic recovery was
+     attempted — the counter counts budget, not which rungs ran (with the
+     auto-continue gate off, give-up arrives at one with no auto-continue).
+     Give-up with the counter at zero is reachable non-productive only on
+     nested depth>0 turns, where the card reports only the empty turn (the
+     gate-off zero-counter path is productive by construction and takes the
+     productive wording).
 
   **A PRODUCTIVE turn never reaches rung 1.** "Empty" at this branch means only
   that the FINAL assistant segment is empty, which is not the same as "the turn
@@ -286,8 +398,8 @@ send time.
   declined reset maps back to `"ok"`; the still-critical session re-attempts
   the whole compact-and-escalate cycle at its next threshold crossing after
   the cooldown, with the mid-stream overflow guard covering the interim).
-  Blind
-  fallback after 40 prompts if metadata never reports %.
+  There is no prompt-count fallback on this path — the 40-prompt blind backstop
+  belongs to `recycle_background()` alone (see "Context Overflow Protection").
 - **Circuit breaker**: force-resets session after 5 consecutive failures.
 - **Dead provider detection**: `get_or_create()` checks `provider.is_alive()`
   on the fast path. If the backing process died (crash, SIGKILL, orphan
@@ -1112,11 +1224,20 @@ gen, dm_scope)`:
 - **Generation reset** rotates on `/new`, an idle window
   (`MessagingConfig.idle_reset_minutes`), or a daily boundary
   (`daily_reset_hour`), decided by `should_rotate_generation()`.
+- **Explicit `/new` is durable on every DM channel.** Discord, Telegram, Teams,
+  Webex, Feishu, iMessage, WhatsApp, Weixin and WeCom persist the new generation as
+  a monotonic floor on the stable `SessionMap` bucket and await its flush before
+  replying. A failed floor write leaves the in-memory bump intact but adds a
+  restart-safety warning. A zero-turn generation creates no conversation-log row:
+  it holds no work to recover, and repeated `/new` calls therefore update one floor
+  integer instead of crowding the newest-first picker with empty placeholders. The
+  first normal turn creates the real history row. Automatic idle/daily rotation still
+  materializes only when its first real turn runs.
 - **Restart-safe generation seeding.** The generation counter is in-memory (per
   `ConversationState`), so it resets on gateway restart. To stop `/new` from
   bumping a reset counter (0→1) straight onto a still-persisted generation and
   resurrecting that old conversation, the counter is seeded on first access to a
-  bucket from the highest persisted generation via
+  bucket from the highest mapped generation or explicit-new floor via
   `SessionMap.max_generation(bucket)` (shared helper
   `messaging.link.seed_generation`, used by every DM dispatcher). A normal
   post-restart message then resumes the latest generation (continuity); `/new`
@@ -1468,6 +1589,31 @@ a trust root on its own; publication therefore also writes a
   re-signs the mapping. Benign and self-healing — no migration step.
 - **Stale cleanup**: the orphan sweep removes `session_pid_<pid>.sig`
   alongside its `.txt` for dead pids (`session_pid.py`).
+- **Private member API authority**: the trusted publisher also writes the live
+  private process incarnation, session and immutable target store to
+  `member-memory-bindings/pids/<pid>.json`, under the precreated sandbox-readonly
+  root. Private V2 recall, lesson writes, and consolidation require a positive
+  kernel peer/ancestor match to this record, or a live-process-bound delegated proof
+  issued by the trusted MCP gateway after the same check. The shared internal
+  secret and legacy writable sidecars alone grant no private member authority.
+  A rekey, recycled process, unreadable record, or expired proof refuses the
+  request. Proof signing material is under the sandbox-hidden `memory_stores`
+  root; pooled backends receive proof only in the current call's trusted metadata.
+  Global V1 publication leaves no private PID binding, preserving shared V1 tab
+  behavior. A private session's first trusted preparation additionally pins
+  `member-memory-bindings/sessions/<sha256-key>/memory.json`; later metadata must
+  agree, including after restart. Neither erasing the metadata nor changing it
+  to another store can change this permanent private identity.
+- **Private runtime allocation**: every allocation resolves that trusted binding
+  off the event loop before reusing a provider or claiming a warm process. Private
+  cron, consolidation, delegated and interactive sessions bypass the V1 warm pool
+  and cannot share an ACP runtime. A task with a private parent or target uses its
+  own provider; a private parent with an unbound child refuses execution until the
+  child's trusted memory binding is established. An already-live provider whose isolation differs from its binding
+  is explicitly refused until the session is restarted. Global V1 allocation and
+  sharing stay unchanged. MCP caller discovery checks protected process ancestry
+  before cached identity, environment or legacy sidecars; a malformed protected
+  record remains unresolved and never falls back to those legacy sources.
 - **Threat model** (full version in the `session_pid_sig.py` module
   docstring): file forgery, cross-pid replay, tampering, and symlink
   planting are blocked; deliberate same-uid impersonation via

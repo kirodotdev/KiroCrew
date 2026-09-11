@@ -43,7 +43,10 @@ prompt, tools, workspace, and memory.
 2. Select a crew ONLY when its triggers clearly and specifically match the task
    with **high confidence**. Then `select_crew(crew="<name>")` binds it — the
    response returns its resolved workspace, memory store, kiro agent, and model.
-3. Run the work with `spawn_run(agent="<name>", task="<specific description>")`.
+3. Run the work with `spawn_run(crew="<name>", task="<specific description>")`.
+   Pass the crew name as `crew=`, NOT as `agent=`: `agent` names a kiro-cli
+   template, so a crew name there runs the work against the DEFAULT memory store
+   and the crew you selected never sees it — silently, with no error.
 4. If no crew is a strong match (or the roster is empty), do NOT route — fall
    back to the default crew and handle it yourself.
 

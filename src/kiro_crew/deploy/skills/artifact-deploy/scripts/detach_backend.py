@@ -32,7 +32,7 @@ def aws(profile, region, *args):
         )
         sys.exit(1)
     # Resolved absolutely (shared deploy-engine resolver) so a GUI-launched
-    # gateway's minimal PATH still finds the CLI (#4770).
+    # gateway's minimal PATH still finds the CLI.
     cmd = (
         [resolve_aws_bin()]
         + (["--profile", profile] if profile else [])
@@ -67,7 +67,7 @@ def _validate_args(profile: str, region: str, dist_id: str, slug: str) -> None:
     """Validate all argv before any aws call. Exit 2 on mismatch."""
     import re as _re
 
-    # VERBATIM copy of kiro_crew.constants.AWS_PROFILE_NAME_PATTERN (#6063):
+    # VERBATIM copy of kiro_crew.constants.AWS_PROFILE_NAME_PATTERN:
     # this script runs standalone (no package import), so the shared shape is
     # embedded literally and byte-equality is enforced by the drift guard in
     # test/test_aws_profile_charset.py. No leading '-' (option-shaped), '+'

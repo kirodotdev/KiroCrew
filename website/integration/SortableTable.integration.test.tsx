@@ -95,7 +95,7 @@ describe('SortableTable Integration Tests', () => {
       renderWithProviders(<MemoryTab refreshTrigger={0} />)
       await waitFor(() => expect(screen.getByText('Alpha rule')).toBeInTheDocument())
 
-      const ruleBtn = screen.getByRole('button', { name: /rule/i })
+      const ruleBtn = within(screen.getAllByRole('row')[0]).getByRole('button', { name: /rule/i })
       await user.click(ruleBtn) // asc (same as default order, not useful alone)
       await user.click(ruleBtn) // desc
 

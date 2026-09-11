@@ -1,7 +1,7 @@
 """Discovery reading FOCUS — the unscoped, edit-allowlist-narrowed case.
 
 When a run is UNSCOPED (no ``scopeDiffBase``) but the operator narrowed the edit
-allowlist to a subtree (the blast-radius control used to dogfood the app on its
+allowlist to a subtree (the blast-radius control for dogfooding the app on its
 own repo), discovery must read only that subtree. Reading the whole tree while
 the fence confines fixes to one subdir makes the agent spend its budget on files
 it cannot touch, so it finds nothing fixable and returns ``[]`` every cycle —

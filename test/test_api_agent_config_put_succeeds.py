@@ -131,8 +131,8 @@ async def test_api_agent_config_put_strips_governed_grants(tmp_path, monkeypatch
 async def test_api_agent_config_put_strips_bookkeeping_keys(tmp_path):
     """A dashboard PUT must not re-pollute the kiro spec with Kiro Crew keys.
 
-    Regression for #2570: the agent-detail PATCH strips ``model_managed`` /
-    ``cc_model``, but the whole-config PUT used to persist them verbatim.
+    The whole-config PUT strips ``model_managed`` / ``cc_model``, matching the
+    agent-detail PATCH. Persisting them verbatim is fatal:
     kiro-cli ``deny_unknown_fields`` then rejects the entire agent until the
     next ``migrate_agent_specs`` heal on gateway rebuild.
     """
@@ -174,7 +174,7 @@ async def test_api_agent_config_put_strips_bookkeeping_keys(tmp_path):
     assert "model_managed" not in written
     assert "cc_model" not in written
     assert written["name"] == "kirocrew"
-    # Lifted into the sidecar when previously unset (same rule as migrate).
+    # Lifted into the sidecar when unset (same rule as migrate).
     assert agent_state.get_model_managed("kirocrew") is True
     assert agent_state.get_cc_model("kirocrew") == "claude-sonnet-4.6"
 
@@ -231,7 +231,7 @@ async def test_api_agent_config_put_uses_atomic_write(tmp_path):
     """PUT must persist the installed spec via write_config_atomically, not a
     bare write_text.
 
-    Regression for #5086: a truncating in-place write leaves the spec corrupt
+    A truncating in-place write leaves the spec corrupt
     on a mid-write crash or disk-full, breaking every subsequent session start
     because kiro-cli reads the spec at spawn.  The fix routes the write through
     write_config_atomically (temp-file + os.replace), matching the mc_cfg sidecar
@@ -831,7 +831,7 @@ async def test_agent_config_put_keeps_a_concurrent_config_write_that_lands_befor
 ):
     """A ``config.json`` write landing before the worker must not be reverted.
 
-    The read that feeds the ``removedTools`` write used to happen in the handler,
+    The read that feeds the ``removedTools`` write must not happen in the handler,
     one executor hop before the worker published the result. Any concurrent
     whole-file ``config.json`` writer landing in that gap -- ``api_default_agent``
     does exactly such a read-modify-write, and takes no lock at all -- had its
@@ -1093,8 +1093,8 @@ async def test_default_agent_write_holds_the_config_lock(tmp_path):
     hold the same in-process lock every sibling RMW in the dashboard takes.
 
     The agent-config PUT moved its own RMW into a WORKER THREAD, holding
-    ``_get_config_lock`` across the offload. The event loop therefore no longer
-    serializes the two for free: an unlocked read here can capture a baseline
+    ``_get_config_lock`` across the offload. The event loop therefore does not
+    serialize the two for free: an unlocked read here can capture a baseline
     the worker is about to republish, and the last atomic rename silently
     reverts the other side's unrelated settings.
 
@@ -1134,7 +1134,7 @@ async def test_default_agent_write_holds_the_config_lock(tmp_path):
     def _recording_locked(path, *, mutate, **kwargs):  # noqa: ANN001 - real signature
         """Observe both halves of the locked read-modify-write.
 
-        The read is no longer a separate call the handler makes: it happens
+        The read is not a separate call the handler makes: it happens
         inside ``update_config_locked``, immediately before it invokes *mutate*.
         Recording at the callback is therefore the read, and recording after the
         primitive returns is the write -- the same two observations as before,
@@ -1169,7 +1169,7 @@ async def test_default_agent_write_holds_the_config_lock(tmp_path):
     assert all(held for _step, held in observed), (
         f"the default-agent read-modify-write ran OUTSIDE the config lock: {observed}"
     )
-    # And the ADVISORY lock was taken too, not just the in-process one (#8032).
+    # And the ADVISORY lock was taken too, not just the in-process one.
     # The asyncio lock above serializes same-loop callers only, so on its own it
     # leaves the CLI and other processes free to interleave with this RMW.
     assert (tmp_path / "config.json.lock").exists(), (

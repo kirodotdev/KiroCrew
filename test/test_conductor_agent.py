@@ -11,6 +11,7 @@ bare interpreters are NOT on the evaluator's allowlist (a spec could otherwise
 name ``python -c <payload>``), and pinning that is one of the tests below.
 """
 
+import inspect
 import json
 import subprocess
 import sys
@@ -272,7 +273,7 @@ class TestConductorInstaller:
             assert f"kirocrew-core/{denied}" not in match, denied
 
     def test_template_grants_never_leak_into_the_conductor_list(self, tmp_path, monkeypatch):
-        """No-op proof for #7401: the conductor replaces ``allowedTools``
+        """No-op proof: the conductor replaces ``allowedTools``
         wholesale with its own filtered ``granted`` list, so the ceiling filter
         moving into ``build_agent_config`` changes nothing here — and template
         grants (filtered or not) can never leak through.
@@ -509,7 +510,7 @@ class TestConductorInstaller:
         """``{"rules": []}`` when nothing qualifies — the key's PRESENCE loads the spec.
 
         Split from the test above once the dashboard grant meant a ceiling on one
-        ref alone no longer empties the rule list: without this, the empty-policy
+        ref alone does not empty the rule list: without this, the empty-policy
         branch would have silently lost its coverage.
         """
         data = self._install(tmp_path, monkeypatch, may_auto_approve=lambda ref: False)
@@ -591,7 +592,7 @@ class TestConductorInstaller:
         ]
 
     def test_skill_gates_the_plan_once_instead_of_interrogating(self):
-        """Round 0 must be ONE plan message, not a round of questions.
+        """The opening round must be ONE plan message, not a round of questions.
 
         The first live run opened with a clarification round: the previous
         wording ("restate the plan, wait for the user") left room for one ahead
@@ -628,11 +629,11 @@ class TestConductorInstaller:
         state — the exact durability this entry exists to provide. Pinned as a
         doc ratchet because the instruction, not the code, is what would drift.
 
-        The format is owned by ``scripts/ledger_entry.py`` (issue #5912), so
+        The format is owned by ``scripts/ledger_entry.py``, so
         the skill must route encoding through the codec rather than carrying a
         hand-written byte-format example for models to re-derive — the worked
-        example was the specification once, and produced real defects on
-        PR #5652.
+        example is easy for a model to copy wrong, which produces real
+        defects.
         """
         text = (SKILL_DIR / "SKILL.md").read_text(encoding="utf-8")
         assert "artifacts_not_string_map" in text
@@ -671,7 +672,7 @@ class TestConductorInstaller:
     def test_skill_files_the_session_at_creation_not_by_a_move(self):
         """Dispatch passes ``folder`` to ``session_create``; no move step exists.
 
-        ``session_create`` files the slot atomically at creation (#6118), which
+        ``session_create`` files the slot atomically at creation, which
         is what closed the create-then-move window a folder delete could land
         in. The instruction layer must not resurrect the workaround: a separate
         ``chat_folder_create`` precondition or ``chat_folder_move_session`` step
@@ -687,6 +688,19 @@ class TestConductorInstaller:
         # legitimate mention of the tool elsewhere in the skill must not fail a
         # pin whose intent is only that the precreation step stay deleted.
         assert "1. `chat_folder_create`" not in text, "no folder-precreation dispatch step"
+
+
+class _proc:
+    """Minimal ``CompletedProcess`` stand-in for the exec seam's two callers.
+
+    The real thing needs an argv and encoding to construct; these three fields
+    are the whole surface ``_run`` and ``_pr_is_draft`` read.
+    """
+
+    def __init__(self, returncode=0, stdout="", stderr=""):
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
 
 
 def _load_evaluator():
@@ -715,12 +729,46 @@ class TestAcceptEvaluatorInvariant:
         """The only exec path constructs argv from narrowly-typed fields."""
         mod = _load_evaluator()
         seen = []
+        mod._pr_is_draft = lambda pr, repo=None: False
         mod._run = lambda argv, cwd=None: (seen.append((argv, cwd)), ("pass", "ok"))[1]
         verdict, _ = mod._evaluate(
             {"accept": {"kind": "pr_checks", "pr": 123, "repo": "owner/name"}}
         )
         assert verdict == "pass"
         assert seen == [(["gh", "pr", "checks", "123", "--repo", "owner/name"], None)]
+
+    def test_the_draft_probe_builds_its_own_argv_too(self):
+        """The second invocation is built here as well, from the same fields.
+
+        Both go through ``_exec``, whose ``_SELF_BUILT_COMMANDS`` guard is the
+        one seam: a new invocation must not arrive with a new way past it.
+        """
+        mod = _load_evaluator()
+        seen = []
+
+        def _fake_exec(argv, cwd=None):
+            seen.append((argv, cwd))
+            return (None, _proc(stdout="false"))
+
+        mod._exec = _fake_exec
+        assert mod._pr_is_draft(123, "owner/name") is False
+        assert seen == [
+            (
+                [
+                    "gh",
+                    "pr",
+                    "view",
+                    "123",
+                    "--repo",
+                    "owner/name",
+                    "--json",
+                    "isDraft",
+                    "-q",
+                    ".isDraft",
+                ],
+                None,
+            )
+        ]
 
     def test_run_refuses_a_command_it_did_not_build(self):
         """The internal guard fails closed if a handler ever leaks spec input."""
@@ -729,6 +777,14 @@ class TestAcceptEvaluatorInvariant:
         assert verdict == "refused"
         assert "not a command this script builds" in evidence
         assert mod._SELF_BUILT_COMMANDS == {"gh"}
+
+    def test_the_draft_probe_refuses_a_command_it_did_not_build(self):
+        """Same guard, reached through the probe's own seam."""
+        mod = _load_evaluator()
+        problem, proc = mod._exec(["git", "--version"])
+        assert proc is None
+        assert problem[0] == "refused"
+        assert "not a command this script builds" in problem[1]
 
     def test_no_spec_field_can_name_a_command(self):
         """Source ratchet: no handler may read an argv/command/shell spec field.
@@ -836,7 +892,7 @@ class TestAcceptEvaluator:
     def test_the_cmd_kind_is_refused_and_says_what_to_use(self):
         """A conductor carrying an older skill gets guidance, not 'unknown kind'.
 
-        `cmd` used to exist, so the removal is named explicitly: the refusal
+        `cmd` is a removed kind, so it is named explicitly: the refusal
         points at `pr_checks` and notes it already covers "the tests pass",
         since CI runs them.
         """
@@ -869,3 +925,260 @@ class TestAcceptEvaluator:
             timeout=30,
         )
         assert proc.returncode == 2
+
+
+class TestDraftPullRequest:
+    """A draft PR whose checks stay PENDING is ``refused``, and only then.
+
+    Two halves, and the order between them is the whole design. A draft is not
+    unconditionally unsatisfiable: without an aggregate check gated on the draft
+    flag, a draft's checks resolve and ``gh pr checks`` exits 0. What cannot
+    resolve is pending BECAUSE the PR is a draft - so the probe explains a
+    pending verdict rather than pre-empting the check, which also keeps the pass
+    and fail paths free of it.
+    """
+
+    def _wire(self, mod, monkeypatch, script):
+        """Feed ``_exec`` scripted results, newest call last; record the argvs."""
+        seen = []
+
+        def _fake_run(argv, **kwargs):
+            seen.append(list(argv))
+            return _proc(*script[len(seen) - 1])
+
+        monkeypatch.setattr(mod.subprocess, "run", _fake_run)
+        return seen
+
+    def test_a_pending_draft_is_refused(self, monkeypatch):
+        mod = _load_evaluator()
+        seen = self._wire(mod, monkeypatch, [(8, "3 checks still running", ""), (0, "true\n", "")])
+        verdict, evidence = mod._evaluate(
+            {"accept": {"kind": "pr_checks", "pr": 123, "repo": "owner/name"}}
+        )
+        assert verdict == "refused"
+        assert "PR #123 is a draft" in evidence
+        assert "have not finished" in evidence
+        assert "mark it ready for review" in evidence
+        # The check ran first; the probe only explained its pending.
+        assert seen[0] == ["gh", "pr", "checks", "123", "--repo", "owner/name"]
+        assert seen[1][:4] == ["gh", "pr", "view", "123"]
+
+    def test_a_draft_whose_checks_are_still_running_is_refused_too(self, monkeypatch):
+        """The deliberate scope, pinned so it reads as a decision.
+
+        A stateless evaluator cannot tell "pending because a readiness check is
+        gated on the draft flag" (never resolves) from "pending because CI is
+        still running" (resolves), and this returns the same ``refused`` for
+        both. The ground is the spec, not a prediction about CI: a draft is the
+        author's own "not ready for review", so an unfinished check run on one
+        is a person's turn. "Mark it ready for review" is bounded and owed
+        anyway; waiting is the reported defect.
+        """
+        mod = _load_evaluator()
+        seen = self._wire(
+            mod,
+            monkeypatch,
+            [(8, "Backend Tests (1)\tpending\t0s\nE2E\tpending\t0s", ""), (0, "true", "")],
+        )
+        verdict, evidence = mod._evaluate({"accept": {"kind": "pr_checks", "pr": 55}})
+        assert verdict == "refused"
+        assert "have not finished" in evidence
+        assert "not a review-ready PR" in evidence
+        assert len(seen) == 2
+
+    def test_the_refusal_does_not_predict_what_ci_will_do(self):
+        """Source ratchet on the evidence a human reads.
+
+        Two earlier wordings claimed more than this script can know - that a
+        draft "cannot pass", and that its checks are "still pending" as though
+        the evaluator had established they would stay that way. The shipped
+        sentence must rest on the draft flag, which is observed.
+        """
+        src = SCRIPT.read_text(encoding="utf-8")
+        assert "cannot pass while draft" not in src
+        assert "is not a review-ready PR" in src
+
+    def test_a_green_draft_still_passes_and_is_never_probed(self, monkeypatch):
+        """The regression an unconditional probe would ship.
+
+        This script is a builtin skill pointed at whatever repo a work item
+        names. On a repo with no draft-gated aggregate check, a draft's checks
+        complete and exit 0 - the acceptance is genuinely met, and refusing it
+        would escalate a satisfied condition to a human. Only the pending loop
+        was ever the defect.
+        """
+        mod = _load_evaluator()
+        seen = self._wire(mod, monkeypatch, [(0, "all checks pass", "")])
+        verdict, evidence = mod._evaluate({"accept": {"kind": "pr_checks", "pr": 123}})
+        assert verdict == "pass"
+        assert "all checks pass" in evidence
+        assert len(seen) == 1, "a passing check must cost no draft probe"
+
+    def test_a_failing_check_is_never_probed_either(self, monkeypatch):
+        """``fail`` is already terminal; the draft flag cannot change it."""
+        mod = _load_evaluator()
+        seen = self._wire(mod, monkeypatch, [(1, "2 checks failing", "")])
+        verdict, evidence = mod._evaluate({"accept": {"kind": "pr_checks", "pr": 123}})
+        assert verdict == "fail"
+        assert "2 checks failing" in evidence
+        assert len(seen) == 1
+
+    def test_a_non_draft_pr_runs_the_check_unchanged(self, monkeypatch):
+        mod = _load_evaluator()
+        seen = self._wire(mod, monkeypatch, [(0, "all checks pass", "")])
+        verdict, evidence = mod._evaluate(
+            {"accept": {"kind": "pr_checks", "pr": 123, "repo": "owner/name"}}
+        )
+        assert verdict == "pass"
+        assert "all checks pass" in evidence
+        assert seen[0] == ["gh", "pr", "checks", "123", "--repo", "owner/name"]
+
+    def test_a_non_draft_pr_still_reports_pending_while_checks_run(self, monkeypatch):
+        """The wait contract for a ready-for-review PR is untouched."""
+        mod = _load_evaluator()
+        self._wire(mod, monkeypatch, [(8, "still running", ""), (0, "false", "")])
+        verdict, evidence = mod._evaluate({"accept": {"kind": "pr_checks", "pr": 7}})
+        assert verdict == "pending"
+        assert "still running" in evidence
+
+    def test_a_probe_that_cannot_answer_leaves_the_pending_standing(self, monkeypatch):
+        """gh missing, no such PR, an auth error: the verdict stays ``pending``.
+
+        One-sided on purpose. A probe that fails for any reason other than a
+        clean ``true`` must not turn a wait into a ``refused`` the conductor has
+        to escalate to a human.
+        """
+        mod = _load_evaluator()
+        for probe in [(1, "", "no pull requests found"), (0, "", ""), (0, "null", "")]:
+            self._wire(mod, monkeypatch, [(8, "still running", ""), probe])
+            verdict, evidence = mod._evaluate({"accept": {"kind": "pr_checks", "pr": 9}})
+            assert verdict == "pending", probe
+            assert "still running" in evidence, probe
+
+    def test_the_probe_omits_repo_when_the_spec_does_not_name_one(self, monkeypatch):
+        mod = _load_evaluator()
+        seen = self._wire(mod, monkeypatch, [(8, "still running", ""), (0, "false", "")])
+        mod._evaluate({"accept": {"kind": "pr_checks", "pr": 9}})
+        assert seen[1] == ["gh", "pr", "view", "9", "--json", "isDraft", "-q", ".isDraft"]
+
+    def test_a_malformed_pr_is_rejected_before_any_subprocess(self, monkeypatch):
+        """The integer guard still runs first; a bad spec spends no subprocess."""
+        mod = _load_evaluator()
+        seen = self._wire(mod, monkeypatch, [(0, "true", "")])
+        verdict, evidence = mod._evaluate({"accept": {"kind": "pr_checks", "pr": "123"}})
+        assert verdict == "error"
+        assert "integer pr" in evidence
+        assert seen == []
+
+
+class TestUsageInsteadOfBlockingOnStdin:
+    """No input means print usage and exit 2, never a read that hangs.
+
+    Run on a terminal or with ``--help``, the ``json.load(sys.stdin)`` below
+    blocks until the caller's tool timeout: an approval spent, no output, and
+    nothing that says the input goes on stdin.
+    """
+
+    def test_help_exits_2_with_usage_on_stderr(self):
+        proc = subprocess.run(
+            [sys.executable, str(SCRIPT), "--help"],
+            input="",
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=30,
+        )
+        assert proc.returncode == 2
+        assert proc.stdout == ""
+        assert "Usage:" in proc.stderr
+        assert "accept_eval.py < items.json" in proc.stderr
+        # Usage, not the module's security essay.
+        assert "THE SECURITY INVARIANT" not in proc.stderr
+
+    def test_help_runs_no_subprocess_and_reads_no_stdin(self, monkeypatch):
+        mod = _load_evaluator()
+
+        def _forbidden(*args, **kwargs):
+            raise AssertionError("--help must not run a subprocess")
+
+        monkeypatch.setattr(mod.subprocess, "run", _forbidden)
+        stdin = _RefusingStdin()
+        monkeypatch.setattr(mod.sys, "stdin", stdin)
+        for flag in ("-h", "--help"):
+            monkeypatch.setattr(mod.sys, "argv", ["accept_eval.py", flag])
+            assert mod.main() == 2
+        assert stdin.read_calls == 0
+
+    def test_a_tty_stdin_prints_usage_instead_of_reading(self, monkeypatch):
+        mod = _load_evaluator()
+        stdin = _RefusingStdin(tty=True)
+        monkeypatch.setattr(mod.sys, "stdin", stdin)
+        monkeypatch.setattr(mod.sys, "argv", ["accept_eval.py"])
+        assert mod.main() == 2
+        assert stdin.read_calls == 0
+
+    def test_a_stdin_that_cannot_answer_isatty_is_not_treated_as_a_tty(self, monkeypatch):
+        """Piped input must keep working when ``isatty`` raises (closed stdin)."""
+        mod = _load_evaluator()
+
+        class _Broken:
+            def isatty(self):
+                raise ValueError("I/O operation on closed file")
+
+        monkeypatch.setattr(mod.sys, "stdin", _Broken())
+        assert mod._stdin_is_a_tty() is False
+
+    def test_piped_input_keeps_its_exit_codes(self):
+        """The contract for real input is unchanged: 0 evaluated, 2 malformed."""
+        for payload, expected in (('{"items": []}', 0), ("not json", 2)):
+            proc = subprocess.run(
+                [sys.executable, str(SCRIPT)],
+                input=payload,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                timeout=30,
+            )
+            assert proc.returncode == expected, payload
+
+    def test_main_takes_no_injected_argv(self):
+        """``main`` reads ``sys.argv`` like the entry point that calls it.
+
+        An ``argv`` parameter had zero non-test consumers - the tests were its
+        only caller, and a parameter that exists to be passed by its own tests
+        is a seam the shipped script does not have.
+        """
+        mod = _load_evaluator()
+        assert list(inspect.signature(mod.main).parameters) == []
+
+    def test_usage_is_sliced_from_the_docstring_not_duplicated(self):
+        """One source for the contract, so help cannot drift from the module."""
+        mod = _load_evaluator()
+        usage = mod._usage_text()
+        assert usage in (mod.__doc__ or "")
+        # The anchors the slice depends on must both stay present, and the
+        # opening one must stay unique inside the docstring or the slice moves.
+        doc = mod.__doc__ or ""
+        assert doc.count("Usage:") == 1
+        assert "THE SECURITY INVARIANT" in doc
+
+
+class _RefusingStdin:
+    """A stdin that counts reads. ``isatty`` is configurable.
+
+    It returns "" rather than raising, because ``main`` catches every
+    ``Exception`` around ``json.load`` and would convert a raise into the same
+    exit 2 the usage path returns - hiding a gate that stopped working. The
+    count is what the assertion reads.
+    """
+
+    def __init__(self, tty=False):
+        self._tty = tty
+        self.read_calls = 0
+
+    def isatty(self):
+        return self._tty
+
+    def read(self, *args, **kwargs):
+        self.read_calls += 1
+        return ""

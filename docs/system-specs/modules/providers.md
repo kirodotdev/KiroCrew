@@ -14,6 +14,23 @@ Several are selectable on a plain public build, so "one provider" never meant
 
 ### Architecture
 
+Private V2 process isolation is a trusted provider preparation decision. The
+synchronous factory leaves identity reads to `AcpProvider.prepare_private_memory`,
+which resolves persisted/protected session memory in a worker before `start`
+chooses a runtime or starts a process. Session allocation also calls preparation
+before its existing pre-start privacy comparison. The result updates provider
+and client flags together on the event loop, removes shared MCP routing for a
+private provider, and retains the original socket for private-path validation.
+Successful preparation is reused by `start` and recovery; failure or cancellation
+does not publish it. `private_memory=True` is preserved through `AcpProvider`,
+`AcpClient` and `AcpRuntime`, including a recovery respawn. Caller extra kwargs and
+environment variables cannot opt into or out of that decision. The actual sandbox
+spawn applies the member-specific Global V1 masks
+and refuses an unenforced mode; the earlier context check is not a substitute.
+Private sessions bypass the global warm/shared runtime inventory. Dedicated
+private consolidation uses the same preparation boundary; V1 factory call shapes
+and background/pool behavior remain unchanged.
+
 ```
 ┌─────────────────────────────────────────────┐
 │  Consumers (handler, gateway, cli, session) │
@@ -176,7 +193,6 @@ are always present; user-configured servers from the agent config are merged in.
 
 - Provider-agnostic via factory (one provider, `AcpProvider`, over the resolved backend)
 - Calls `repair_agent_configs()` on gateway startup and periodically
-- context_info() reports model/agent
 - Resume: calls `set_resume_session_id()` before `start()`
 
 ### Subagent Approval Mode Inheritance (`subagent.py`)

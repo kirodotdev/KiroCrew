@@ -577,8 +577,8 @@ class TestPySpyPathShortening:
     def test_pyspy_output_is_shortened_before_being_written(self, monkeypatch, tmp_path):
         """The documented path-shortening guarantee must hold for BOTH strategies.
 
-        It previously lived only in _frame_label (in-process), so a py-spy profile
-        still carried the operator's home directory.
+        Applied only in _frame_label (in-process), it misses the py-spy path, so
+        a py-spy profile would still carry the operator's home directory.
         """
         monkeypatch.setenv(perf_sampler.DEBUG_ENV_VAR, "1")
         out = tmp_path / "p.folded"

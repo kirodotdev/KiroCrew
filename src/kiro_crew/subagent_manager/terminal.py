@@ -133,7 +133,7 @@ class TerminalCoordinator(ManagerComponent):
                 # lets a client fetch this node's own context-trace even after
                 # it has finished.
                 "child_session": info.conversation_key or f"subagent:{info.id}",
-                # The model actually served (issue #3582). By the terminal
+                # The model actually served. By the terminal
                 # report this is the authoritative value on every provider — the
                 # CC/raw path has completed at least one turn, so its
                 # ``_resolved_model_id`` is populated (refreshed in ``_run``).
@@ -347,10 +347,10 @@ class TerminalCoordinator(ManagerComponent):
         session_key = f"subagent:{agent_id}"
 
         # Reap-in-flight marker + recovery cancel BEFORE ANY await in this
-        # method. Both used to sit after the session teardown below, which yields
-        # (bounded by _RESET_TIMEOUT, longer still on the SIGKILL path). A
+        # method. The session teardown below yields (bounded by _RESET_TIMEOUT,
+        # longer still on the SIGKILL path). If they sat after it, a
         # cancel-recovery task whose bounded handshake expired inside that window
-        # respawned the very run being killed — tools executing after a user
+        # would respawn the very run being killed — tools executing after a user
         # Stop, strictly worse than a duplicate report. Note this sets
         # `_reap_started`, NOT `reaped`: setting `reaped` this early makes a run
         # woken by our own session reset skip its error synthesis and report a

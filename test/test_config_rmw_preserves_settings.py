@@ -1,8 +1,8 @@
 """A failed config read must never silently reset the user's settings.
 
-Every read-modify-write of ``config.json`` used to fall back to ``data = {}``
+Every read-modify-write of ``config.json`` must never fall back to ``data = {}``
 on a read failure and then write that empty dict back, so one unreadable or
-mid-write file turned "flip one toggle" into "erase every setting". These tests
+mid-write file would turn "flip one toggle" into "erase every setting". These tests
 pin the fail-closed contract of ``read_config_for_update``: an unreadable
 existing config raises, and a genuinely absent one still starts from ``{}``.
 """
@@ -314,8 +314,8 @@ class TestWriteConfigAtomically:
         This function runs inside async request handlers and KiroCrewConfig.save(),
         so a blocking subprocess here would freeze the gateway's event loop — the
         `no-blocking-call-on-event-loop` AUTOSDE rule. Pinned because the obvious
-        "harden the file" reflex used to reintroduce it: the owner-only lockdown
-        was an icacls subprocess, which is why this function used to skip it
+        "harden the file" reflex can reintroduce it: the owner-only lockdown
+        was an icacls subprocess, which is why a naive version would skip it
         entirely. It now applies the DACL in-process, so the ban is on SPAWNING,
         not on hardening — hardening is asserted positively below.
         """
@@ -622,7 +622,7 @@ class TestAutoUpdateToggleKeepsSettings:
 
 
 class TestEveryConfigWriterIsLocked:
-    """No direct ``write_config_atomically(config_path())`` caller may reappear (#8032).
+    """No direct ``write_config_atomically(config_path())`` caller may reappear.
 
     ``update_config_locked`` holds an advisory lock on a ``<path>.lock`` sidecar
     for its whole read-modify-write. Its guarantee is only as strong as the set
@@ -644,7 +644,7 @@ class TestEveryConfigWriterIsLocked:
     ``core.py``'s STT PUT, ``mcp.py``'s gateway-enable) and still bypasses the
     lock. :meth:`KiroCrewConfig.save` (``updates.py``'s log-level PUT, the
     workspace CRUD in ``files.py``, several ``agents.py`` CRUD endpoints) used
-    to be in that family and no longer is: since #4767 it holds the same
+    to be in that family but is not: it now holds the same
     ``<path>.lock`` sidecar — see ``TestSaveHoldsTheAdvisoryLock`` in
     ``test_config_save_locking.py``. Green here does not mean every config
     writer is locked -- it means this class of them is.

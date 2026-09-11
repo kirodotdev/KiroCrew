@@ -58,6 +58,7 @@ from kiro_crew.messaging.approval import PendingApprovals, SessionApprovalDecide
 from kiro_crew.messaging.attachments import append_attachment_context
 from kiro_crew.messaging.attachments import cleanup as cleanup_attachments
 from kiro_crew.messaging.commands import compact_unsupported_backend, compact_unsupported_reply
+from kiro_crew.messaging.conversation import reserve_new_generation
 from kiro_crew.messaging.dispatch import (
     ChannelTurn,
     build_directive_consumer,
@@ -370,7 +371,15 @@ class WebexDispatcher:
             cmd = parse_command(text)
             if cmd == "new":
                 self._conv.bump_gen(route)
-                await self._reply(inbound, "✅ Started a fresh conversation.")
+                saved = await reserve_new_generation(
+                    self.sessions,
+                    self._session_key(route),
+                    channel_type="Webex",
+                )
+                message = "✅ Started a fresh conversation."
+                if not saved:
+                    message += "\n⚠️ The new conversation could not be saved for restart."
+                await self._reply(inbound, message)
                 return
             if cmd == "compact":
                 self._conv.clear_awaiting(route)
@@ -1129,7 +1138,7 @@ class WebexDispatcher:
                         # reach the one turn that answers them.
                         files.extend(str(u) for u in (item[2].get("webex_file_urls") or []))
                     else:
-                        # Once one message no longer fits, defer it AND
+                        # Once one message does not fit, defer it AND
                         # everything behind it, so queue order stays exact.
                         remainder.append(item)
                 for _ts, rtext, rkw in remainder:
@@ -1535,7 +1544,7 @@ class WebexDispatcher:
         route = _route_of(inbound)
         pct = self.sessions.check_context_usage(session_key, provider)
         if pct >= self.cfg.webex.soft_threshold_pct:
-            # Capability gate (#8156): no forced compaction to run and the
+            # Capability gate: no forced compaction to run and the
             # soft nudge's /compact advice cannot work — the backend compacts
             # on its own as context fills.
             unsupported = compact_unsupported_backend(provider)
@@ -1612,7 +1621,7 @@ class WebexDispatcher:
             if provider is None:
                 await self._reply(inbound, "ℹ️ There's no conversation to compact yet.")
                 return
-            # Capability gate (#8156, mirroring the dashboard's #7800 gate): a
+            # Capability gate (mirroring the dashboard's gate): a
             # backend that cannot serve a manual /compact treats the prompt as
             # ordinary text and never answers, so dispatching would strand the
             # bounded wait. Informational, never an error.

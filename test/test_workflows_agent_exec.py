@@ -122,7 +122,7 @@ async def test_opts_and_defaults_flow_into_get_or_create() -> None:
 
 
 async def test_extra_env_run_level_pin_flows_into_get_or_create() -> None:
-    """Issue #2207: a run-level extra_env pin reaches every spawned session,
+    """A run-level extra_env pin reaches every spawned session,
     just like default_agent/default_model/cwd (WorkflowContext.agent has no
     per-call env= override, so this is a run-level pin)."""
     env = {"CORRELATION_ID": "abc123", "MC_ENDPOINT": "https://example.test"}
@@ -162,7 +162,7 @@ async def test_end_to_end_through_runner() -> None:
 
 
 async def test_agent_step_persists_usage_row_with_surface() -> None:
-    """Issue #647: each workflow agent step appends one usage row tagged
+    """Each workflow agent step appends one usage row tagged
     surface='workflow', carrying the step's agent/model and context occupancy."""
     sessions = FakeSessions()
     fn = build_agent_fn(

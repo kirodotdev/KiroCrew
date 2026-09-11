@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 # Per-identity in-process locks, so concurrent coroutines in THIS process serialize
 # on the asyncio lock (cooperative, no event-loop block) before contending the
 # cross-process flock. LoopBoundLock (not a bare module-global asyncio.Lock, which
-# binds to the import-time loop and breaks across loops/tests — issue #4800) is
+# binds to the import-time loop and breaks across loops/tests) is
 # safe to declare at module scope; the per-identity registry is created lazily.
 _identity_locks: dict[str, LoopBoundLock] = {}
 _locks_guard = LoopBoundLock()
@@ -67,6 +67,32 @@ _AMZ_HEADERS = {"Content-Type": "application/x-amz-json-1.1", "User-Agent": USER
 
 class RefreshError(Exception):
     """A token could not be refreshed."""
+
+
+class RefreshRejected(RefreshError):
+    """The issuer REFUSED the refresh grant (HTTP 400/401/403).
+
+    Distinct from every other refresh failure because it is not transient: an
+    unreachable or erroring issuer may honour the same refresh token a minute
+    later, but a refusal means the grant itself is dead (revoked,
+    expired, the client deregistered), so retrying cannot help and the user has
+    to sign in again. The refresher records this on the store
+    (:meth:`TokenStore.mark_refresh_rejected`) so the dashboard can say so; it
+    does NOT change which auth owner a KAS spawn gets -- a lapsed Crew identity
+    is reported to the user, never silently swapped for kiro-cli's login.
+    """
+
+
+# The issuer statuses that mean "this grant is refused" rather than "try later".
+_REJECTED_STATUSES = frozenset({400, 401, 403})
+
+
+def _http_failure(what: str, status: int, body: str) -> RefreshError:
+    """Build the right RefreshError subclass for a non-200 issuer answer."""
+    message = f"{what} refresh failed: HTTP {status} {body}"
+    if status in _REJECTED_STATUSES:
+        return RefreshRejected(message)
+    return RefreshError(message)
 
 
 class IdentitySignedOut(RefreshError):
@@ -131,7 +157,16 @@ async def ensure_fresh(
                     raise IdentitySignedOut(f"identity {token.identity} was signed out")
                 if not current.is_expired():
                     return current
-                refreshed = await _refresh(current, session=session)
+                try:
+                    refreshed = await _refresh(current, session=session)
+                except RefreshRejected:
+                    # Still under the identity's lock, so the marker lands beside
+                    # the token it describes and cannot be interleaved with a
+                    # sign-in that replaces that token (save clears it in the
+                    # same lock). Recorded, then re-raised unchanged: callers see
+                    # the same failure they always did.
+                    await asyncio.to_thread(store.mark_refresh_rejected, token.identity)
+                    raise
                 # store.save does blocking file IO (owner-only lockdown included) — off-loop.
                 # This coroutine already holds the identity's refresh lock on `fd`;
                 # a second acquire on another descriptor would deadlock against it.
@@ -164,7 +199,7 @@ async def _refresh_social(token: KasToken, *, session: aiohttp.ClientSession) ->
     ) as resp:
         if resp.status != 200:
             body = await resp.text()
-            raise RefreshError(f"social refresh failed: HTTP {resp.status} {body}")
+            raise _http_failure("social", resp.status, body)
         data = await resp.json()
     profile_arn = data.get("profileArn") or token.profile_arn
     if not profile_arn:
@@ -194,7 +229,7 @@ async def _refresh_sso_oidc(token: KasToken, *, session: aiohttp.ClientSession) 
     async with session.post(url, json=payload, headers=_AMZ_HEADERS) as resp:
         if resp.status != 200:
             body = await resp.text()
-            raise RefreshError(f"SSO-OIDC refresh failed: HTTP {resp.status} {body}")
+            raise _http_failure("SSO-OIDC", resp.status, body)
         data = await resp.json()
     return KasToken(
         access_token=data["accessToken"],
@@ -223,7 +258,7 @@ async def _refresh_external_idp(token: KasToken, *, session: aiohttp.ClientSessi
     ) as resp:
         if resp.status != 200:
             body = await resp.text()
-            raise RefreshError(f"external IdP refresh failed: HTTP {resp.status} {body}")
+            raise _http_failure("external IdP", resp.status, body)
         data = await resp.json()
     return KasToken(
         access_token=data["access_token"],

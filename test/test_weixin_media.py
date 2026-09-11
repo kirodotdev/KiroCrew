@@ -497,7 +497,7 @@ class TestInboundMediaRouting:
         assert WEIXIN_CAPABILITIES.files_outbound is False
 
     def test_media_only_message_is_dispatched_not_dropped(self, tmp_path) -> None:
-        """The regression: a screenshot with no caption used to vanish.
+        """A screenshot with no caption must not vanish.
 
         ``receive`` returned early on empty text, so the user saw the message
         send successfully while the agent was never told anything arrived.

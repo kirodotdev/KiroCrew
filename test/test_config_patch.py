@@ -183,6 +183,48 @@ class TestTerminalShell:
             assert resp.status == 400
 
 
+# ── Terminal completion popup (dashboard.terminal.completion.enabled) ─────
+
+
+class TestTerminalCompletionEnabled:
+    """The Settings → Display → Terminal toggle behind the completion popup."""
+
+    @pytest.mark.asyncio
+    async def test_false_written_nested(self, tmp_config) -> None:
+        app, _ = _make_app_with_state()
+        async with TestClient(TestServer(app)) as client:
+            resp = await _patch(client, "dashboard.terminal.completion.enabled", False)
+            assert resp.status == 200
+        data = json.loads(tmp_config.read_text())
+        assert data["dashboard"]["terminal"]["completion"]["enabled"] is False
+
+    @pytest.mark.asyncio
+    async def test_write_keeps_sibling_completion_keys(self, tmp_config) -> None:
+        # `completion.commands` (the probe allowlist) lives in the same object;
+        # flipping the toggle must not drop it.
+        tmp_config.write_text(
+            json.dumps({"dashboard": {"terminal": {"completion": {"commands": ["gh"]}}}})
+        )
+        app, _ = _make_app_with_state()
+        async with TestClient(TestServer(app)) as client:
+            resp = await _patch(client, "dashboard.terminal.completion.enabled", False)
+            assert resp.status == 200
+        data = json.loads(tmp_config.read_text())
+        assert data["dashboard"]["terminal"]["completion"] == {
+            "commands": ["gh"],
+            "enabled": False,
+        }
+
+    @pytest.mark.asyncio
+    async def test_non_boolean_rejected(self, tmp_config) -> None:
+        # `bool("false")` is True: the route must refuse rather than coerce, so
+        # the completion reader's literal-``False`` check keeps meaning "off".
+        app, _ = _make_app_with_state()
+        async with TestClient(TestServer(app)) as client:
+            resp = await _patch(client, "dashboard.terminal.completion.enabled", "false")
+            assert resp.status == 400
+
+
 class TestPatchGeneral:
     @pytest.mark.asyncio
     async def test_unknown_field_returns_400(self, tmp_config) -> None:

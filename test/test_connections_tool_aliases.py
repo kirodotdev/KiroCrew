@@ -441,7 +441,7 @@ def test_natural_tool_names_are_the_exposed_pre_alias_names():
         ("@linear/list_issues", "linear_issues", False),
         ("@notion/search", "notion_search", False),
         ("@vercel/list_projects", "vercel_list_projects", False),
-        # NOT claimed: right ref, but the value no longer matches the recorded
+        # NOT claimed: right ref, but the value does not match the recorded
         # form. Membership of the whole triple IS the byte-equality test.
         ("@linear/list_projects", "linear_list_projects ", False),
         ("@linear/list_projects", "Linear_List_Projects", False),
@@ -550,7 +550,7 @@ def test_a_committed_record_is_fingerprint_gated(tmp_path, monkeypatch):
         {_L, _V}
     )
 
-    # The user edits one alias, so the map is no longer the recorded generation. The
+    # The user edits one alias, so the map is not the recorded generation. The
     # claim is withdrawn wholesale; the siblings linger (the accepted cost above).
     edited = {**_MAP_LV, "@linear/list_projects": "my_projects"}
     assert load_claimed(spec_fingerprint(edited)) == frozenset()
@@ -739,8 +739,8 @@ def test_a_no_op_transaction_resolves_to_its_target(tmp_path, monkeypatch):
 
 
 def test_committing_replaces_the_pending_record(tmp_path, monkeypatch):
-    """After a clean pass the previous generation is no longer recoverable, and must
-    not be: it no longer describes anything on disk."""
+    """After a clean pass the previous generation is not recoverable, and must
+    not be: it does not describe anything on disk."""
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
     previous, target = _gen(_MAP_LV, {_L, _V}), _gen(_MAP_L, {_L})
     begin_transaction(previous, target)
@@ -749,7 +749,7 @@ def test_committing_replaces_the_pending_record(tmp_path, monkeypatch):
     assert load_claimed(target.fingerprint) == frozenset({_L})
     # Querying with the retired generation's fingerprint claims NOTHING, not the
     # previous claim and not the new one: a committed record answers only for the
-    # generation it describes. That is the stronger form of "no longer recoverable" --
+    # generation it describes. That is the stronger form of "not recoverable" --
     # the rollback candidate is gone, and the record does not answer for a map that
     # is not the one it was committed for either.
     assert load_claimed(previous.fingerprint) == frozenset()
@@ -1002,7 +1002,7 @@ def test_a_broken_registry_does_not_abort_the_rebuild_at_import_time(tmp_path, m
 
 def test_an_empty_emission_relinquishes_every_earlier_claim(tmp_path, monkeypatch):
     """Committing an EMPTY emission is not a no-op: it is how the pass gives up pairs
-    it no longer writes. Skipping it would leave a superseded triple claimable."""
+    it does not write. Skipping it would leave a superseded triple claimable."""
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
     commit_transaction(_gen(_MAP_L, {_L}))
     relinquished = _gen(None, frozenset())
@@ -1392,7 +1392,7 @@ def test_a_hand_written_notion_search_survives_a_rebuild():
 
 def test_a_user_edited_generated_alias_survives():
     """Once the user changes the VALUE, the spec's triple stops matching the
-    recorded one, so the pair is no longer claimed. Invariant 3 in the field."""
+    recorded one, so the pair is not claimed. Invariant 3 in the field."""
     first = _apply(_spec("linear", "vercel"))
     assert first["toolAliases"]["@linear/list_projects"] == "linear_list_projects"
 
@@ -1912,7 +1912,7 @@ def test_reverting_to_derivational_ownership_deletes_a_hand_written_notion_searc
 
 
 def test_narrowing_ownership_to_declared_providers_strands_the_pair_forever():
-    """The fix attempted in round 3 and reverted: withdrawing a declaration takes
+    """A rejected fix: withdrawing a declaration takes
     its slug out of the test, so the pair that declaration stranded can never be
     recognised again -- permanently unclearable, on every future rebuild."""
     from kiro_crew.connections import tool_aliases as ta
@@ -1920,7 +1920,7 @@ def test_narrowing_ownership_to_declared_providers_strands_the_pair_forever():
     stale = dict(_apply(_spec("linear", "vercel"))["toolAliases"])
 
     # The record clears it, because the record remembers the emission the
-    # withdrawn declaration no longer describes.
+    # withdrawn declaration does not describe.
     with patch.object(ta, "declared_tool_aliases", return_value={}):
         fixed = _apply({**_spec("linear", "vercel"), "toolAliases": dict(stale)})
     assert "toolAliases" not in fixed
@@ -1941,7 +1941,7 @@ def test_dropping_the_alias_from_the_record_key_deletes_a_user_edit():
     The record is written by hand here so that its fingerprint IS the map on disk,
     which keeps the committed branch's equality gate INERT and leaves the ownership
     rule as the only thing deciding. This boundary is defended twice -- the gate also
-    refuses a record that no longer describes the map -- and a mutation test has to
+    refuses a record that does not describe the map -- and a mutation test has to
     isolate the defence it is probing or it stops probing anything.
     """
     first = _apply(_spec("linear", "vercel"))
@@ -1951,7 +1951,7 @@ def test_dropping_the_alias_from_the_record_key_deletes_a_user_edit():
 
     # A committed record FOR THE EDITED GENERATION that still names the original
     # triples: the exact state invariant 3 adjudicates -- the record holds a pair
-    # whose alias is no longer the value the map carries.
+    # whose alias is not the value the map carries.
     record_path().write_text(
         json.dumps(
             {
@@ -2305,7 +2305,7 @@ def test_an_overlapping_rebuild_cannot_resurrect_a_removed_alias(tmp_path):
     Two rebuilds overlap. The first removes vercel's alias and writes the spec. The
     second is still holding the alias map it read BEFORE the lock, so without the
     reconcile it writes that stale map back and the removed alias returns -- and its
-    fingerprint would certify a generation that is no longer on disk.
+    fingerprint would certify a generation that is not on disk.
     """
     from kiro_crew import agent
 
@@ -2428,7 +2428,7 @@ def test_a_registry_endpoint_change_degrades_to_shadowing_not_worse():
     """A retired ``mcp_url`` makes an existing install's entry stop matching, so
     its tools keep their natural names -- the pre-feature behaviour, and the
     fail-safe direction. The old generated refs go with it, so no dead ref is
-    left pointing at a rename that is no longer applied."""
+    left pointing at a rename that is not applied."""
     aliased = _apply(_spec("linear", "vercel"))
     assert aliased["toolAliases"]
 

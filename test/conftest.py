@@ -304,7 +304,7 @@ def _windows_restrict_to_owner_stub(request, _floor_monkeypatch):
     through, so stubbing only the file helper would leave every test that
     creates an owner-only directory writing a real DACL.
 
-    Note the lockdown no longer spawns anything -- it applies the DACL through
+    Note the lockdown does not spawn anything -- it applies the DACL through
     ``advapi32`` in-process -- so the subprocess-stub collision this fixture was
     built for is mostly gone. The stub is kept because a hermetic test that
     patches the SID resolver or the writer seam can still trip the fail-loud
@@ -400,7 +400,7 @@ def pytest_configure(config: pytest.Config) -> None:
     # never-probe-on-the-loop guard and read it as "this host has no sandbox".
 
 
-# ── xdist INTERNALERROR terminal report (issue #2803) ───────────────────
+# ── xdist INTERNALERROR terminal report ───────────────────
 # When TWO pytest-timeout worker kills land in the same ``--dist loadgroup``
 # shard, xdist's loadscope scheduler can die with ``KeyError:
 # <WorkerController gwN>`` (a replaced node present in ``assigned_work`` but
@@ -680,7 +680,7 @@ def _disable_dev_fleet_background_tasks(_floor_monkeypatch):
     a genuine network ``git fetch``, as a fire-and-forget task. That task can
     still be running when the test's client tears down, and cancelling it then
     is what leaked into unrelated tests and flaked ``Gateway Tests (macOS)``
-    (issue #1832). A test that wants the real refresher overrides this itself
+   . A test that wants the real refresher overrides this itself
     via ``monkeypatch.setattr(worktree_ops, "_background_tasks_disabled", lambda: False)``.
     """
     _floor_monkeypatch.setenv("KIROCREW_DEVFLEET_NO_BACKGROUND", "1")
@@ -1259,7 +1259,7 @@ def _no_live_catalog_network(_floor_monkeypatch):
     through (its own docstring says tests must intercept there). Two paths
     reach it without a test asking to: the install path's
     ``inventory_for_install`` performs a fresh, deliberately UNCACHED HTTPS
-    fetch of ``official-registry.json`` on every call (#4236), and store
+    fetch of ``official-registry.json`` on every call, and store
     listings can trigger ``load_official_catalog``. Without this fixture,
     any test that walks either path makes a real HTTPS request to the live
     CDN — slow, offline-hostile, and nondeterministic: the test's verdict
@@ -1309,7 +1309,7 @@ def named_cron_caller(monkeypatch):
 
     Tests about cron's FIELD handling -- schedules, channels, models, validation
     -- have always assumed a caller the gateway vouches for; they simply never
-    said so, because the unidentified state used to be allowed to write. This
+    said so. This
     states the precondition. A test that is actually ABOUT the unidentified
     caller must not use this fixture.
 
@@ -1390,9 +1390,7 @@ def _reset_create_rate_limit_buckets():
     composition performs more than the per-window budget of creates within one
     wall-clock window then refuses a legitimate test create with
     ``create_rate_limited`` — a pass/fail outcome decided by shard composition
-    and runner speed, not the code under test (#7836; observed twice on the
-    Windows shard in one day, on PRs touching neither the limiter nor
-    session_control). The limiter's own direct tests build their scenarios on
+    and runner speed, not the code under test. The limiter's own direct tests build their scenarios on
     top of a clean slate, so clearing between tests changes nothing for them.
     """
     from kiro_crew.dashboard import create_rate_limit

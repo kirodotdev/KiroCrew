@@ -58,9 +58,9 @@ class _ActiveMeeting:
         #:
         #: ``accepting_dispatches`` alone cannot answer "should this line be
         #: refused?", because it is false for two opposite reasons: the meeting is
-        #: stopping/reviewing/expired (the line has nowhere to go — refuse it, which
-        #: is the gate issue #1981 added) or the meeting is STARTING and its agents
-        #: are not ready yet (the line is wanted — hold it). Conflating them is what
+        #: stopping/reviewing/expired (the line has nowhere to go — refuse it) or
+        #: the meeting is STARTING and its agents are not ready yet (the line is
+        #: wanted — hold it). Conflating them is what
         #: made a meeting refuse its own opening speech for ~46s.
         #:
         #: Stored as the SESSION rather than a bool so the state cannot outlive the
@@ -482,7 +482,7 @@ class Admission(NamedTuple):
     ingress is open (fan out normally); True is a session still INITIALIZING its
     agents, admitted only because the producer opted into the hold — the line is
     wanted, so it is appended to the transcript and buffered for the drain instead
-    of refused (issue #4610).
+    of refused.
     """
 
     session: MeetingSession

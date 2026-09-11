@@ -1,10 +1,10 @@
 """The single canonical table of kiro-cli / amazon-q identity-store locations.
 
-Six places in the tree used to resolve these stores, each with its own hardcoded
-per-platform list and no shared helper, so they drifted apart one reader at a
-time (#6352). This module is that shared source of truth: an ordered table of
+Resolving these stores per reader, each with its own hardcoded per-platform
+list and no shared helper, drifts apart one reader at a time. This module is
+the shared source of truth: an ordered table of
 ``(platform, home_relative_dir, product, trust)`` rows, plus the small set of
-projections every reader needs. Every other reader is now a thin wrapper over a
+projections every reader needs. Every other reader is a thin wrapper over a
 projection here, so a new location is added ONCE.
 
 Two properties are enforced by the table's shape, not by scattered convention:
@@ -31,7 +31,7 @@ from pathlib import Path
 from typing import Mapping, Optional
 
 # The on-disk filename of every identity/state SQLite database. One constant so
-# the six sites that used to spell ``"data.sqlite3"`` inline cannot drift.
+# no site spells ``"data.sqlite3"`` inline, so the readers cannot drift.
 AUTH_SQLITE_DB = "data.sqlite3"
 
 # SQLite records a transaction in a sidecar file beside the database and folds it

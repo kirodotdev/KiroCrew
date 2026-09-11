@@ -316,7 +316,7 @@ class TestMeetingLifecycleRoutes:
         not ``[A-Za-z0-9._-]``, so it never becomes a path segment at all. That makes
         400 the right status here: the request is malformed, not forbidden.
 
-        This assertion used to read ``in (400, 403, 404)``, and that looseness is how
+        This assertion must not read ``in (400, 403, 404)``: that looseness is how
         a real bug survived: ``contain``'s own violation carries 403 and was being
         reported as 400, and no HTTP-level test could tell. The pair is now split —
         this one pins 400, and ``TestContainmentIsReportedAsForbidden`` pins 403.
@@ -394,8 +394,8 @@ class TestMeetingLifecycleRoutes:
     async def test_restart_re_initializes_agents_and_then_notices(self, app, fake_sessions):
         """A restart must re-state OUTPUT_FILE, not just say "carry on".
 
-        This assertion previously required that ONLY the restart notice was sent —
-        encoding the bug it was meant to describe. The agent slots are ordinary
+        This assertion must not require that ONLY the restart notice was sent —
+        that would encode the bug it was meant to describe. The agent slots are ordinary
         kiro sessions and can be reclaimed between stop and restart (session
         cleanup, a gateway restart, an idle sweep); a fresh session then received
         "continue appending to your output" and nothing naming that output, so it
@@ -770,7 +770,7 @@ class TestMeetingLifecycleRoutes:
     @pytest.mark.parametrize(
         ("labels", "expected"),
         [
-            (1, []),  # not iterable -> used to raise TypeError
+            (1, []),  # not iterable
             ("urgent", []),  # iterable, but per-CHARACTER -> junk labels
             ({"a": 1}, []),  # iterable over keys
             (None, []),
@@ -1857,7 +1857,7 @@ class TestAgentAndPresetSanitizers:
     `agents.json` and the presets map are agent-writable AND user-editable, so
     every field is untrusted even though the app owns the path. These are the
     branches that drop a hostile or malformed record rather than letting it reach
-    a dispatch (an agent ref is used to resolve WHICH agent runs, and a preset id
+    a dispatch (an agent ref resolves WHICH agent runs, and a preset id
     becomes a filesystem path segment).
     """
 
@@ -2736,7 +2736,7 @@ class TestTeardownLeavesNoMeetingFalselyActive:
 
             await routes_pkg._on_cleanup(app)
 
-            # Both halves: the session is gone AND the disk no longer claims otherwise.
+            # Both halves: the session is gone AND the disk does not claim otherwise.
             assert _common.ACTIVE.get() is None
             assert store.read_meeting_meta("shutdown-me", root)["status"] == k.STATUS_ENDED
 
@@ -2866,7 +2866,7 @@ class TestTeardownLeavesNoMeetingFalselyActive:
         Only an expired meeting can be replaced (the guard 409s otherwise), and it is
         gone for good — so leaving it `active` means two meetings persist as active at
         once, breaking the single-active invariant the list view reads, and reopening
-        the evicted one dispatches into a session that no longer exists.
+        the evicted one dispatches into a session that does not exist.
         """
         async with client_for(app) as client:
             first = await _start_and_get_session(client, "the-long-one")
@@ -2968,7 +2968,7 @@ class TestFiledTasksStayFiled:
             filed = await client.post(f"{BASE}/meetings/m/tasks/file", json={"id": task_id})
             assert filed.status == 200, await filed.text()
 
-            # The archive that used to clobber it — the Archive All / second-tab case.
+            # The archive that would clobber it — the Archive All / second-tab case.
             resp = await client.post(
                 f"{BASE}/meetings/m/tasks/review",
                 json={"id": task_id, "review_status": k.REVIEW_ARCHIVED},
@@ -2998,9 +2998,9 @@ class TestFiledTasksStayFiled:
 class TestStartAndStopAreSerialized:
     """Agent initialization must not interleave with a teardown.
 
-    `init_agents` is a long sequence of awaited dispatches and it used to run OUTSIDE
+    `init_agents` is a long sequence of awaited dispatches and must run INSIDE
     `START_LOCK`. A stale Close in another tab could tear the session down midway, so
-    the remaining agents were initialized into a session no longer installed while the
+    the remaining agents would be initialized into a session that is gone while the
     start still answered `active` — a meeting the UI showed as running, with nothing
     live and `ended` on disk.
     """
@@ -3231,7 +3231,7 @@ class TestATaskIsNeverFiledTwice:
     def test_recording_a_filing_for_a_vanished_task_fails_loudly(self, tmp_path) -> None:
         """The deeper flaw the lock alone does not fix.
 
-        `_record_filing` used to `break` out of its loop when the id was absent, write
+        `_record_filing` must not `break` out of its loop when the id is absent, write
         the list unchanged, and RETURN — so a task removed by any path the lock does not
         order (the extractor agent rewriting `tasks.json`, a hand-edit, a future route)
         produced a real external item plus a success response and no reference to it.
@@ -3340,7 +3340,7 @@ def _held_lines(session) -> list[str]:
 
 
 class TestSpeechDuringAgentInitIsHeldNotRefused:
-    """Issue #4610: the opening of a meeting must survive agent initialization.
+    """The opening of a meeting must survive agent initialization.
 
     ``handle_start_meeting`` persists ``active``, installs the session, then awaits
     ``init_agents`` — a sequence of model turns measured at ~46s. Ingress is shut
@@ -3596,7 +3596,7 @@ class TestSpeechDuringAgentInitIsHeldNotRefused:
 
     @pytest.mark.asyncio
     async def test_a_reviewing_meeting_still_refuses_instead_of_buffering(self, app, fake_sessions):
-        """The #1981 gate is untouched: only INITIALIZATION holds a line.
+        """The existing gate is untouched: only INITIALIZATION holds a line.
 
         A reviewing meeting has nowhere to put the line — its agents were told to
         finalize — so it must keep answering 409 rather than quietly accumulating
@@ -3728,7 +3728,7 @@ class TestMuteCannotLandInsideADispatch:
     transcript write. A mute arriving inside that window re-addressed a line to
     the mute state of a moment after it was spoken — delivered to the wrong agent
     set on the live path, and recorded-then-replayed to the wrong set on the
-    initialization hold (issue #4610).
+    initialization hold.
     """
 
     @pytest.mark.asyncio

@@ -644,6 +644,28 @@ async def _run_local_session(
         await _give_up("error")
         return
 
+    # The model is on disk but may not be resident yet, and loading it is silent:
+    # `pending_download` is None on this path so no `status` goes out, and nothing
+    # else does until `ready` after the load. On a slow host that load outruns the
+    # client's pre-`ready` buffer (~60s), the mic releases, and the socket has sent
+    # nothing either way — the "connects, zero messages, no logs" report. So say the
+    # load is under way BEFORE it starts: a `preparing` status frame the client can
+    # show and DevTools records, plus a log line, turn a silent cold load into a
+    # visible one. Best-effort like every other pre-`ready` send. `pending_load` is
+    # advisory (a concurrent session may change residency between the check and the
+    # load), so this only ever adds or omits one announce — `prepare` still loads.
+    if session.pending_load():
+        logger.info("Loading local speech model %s before first transcript", cfg.stt.model)
+        await _send(
+            {
+                "type": "status",
+                "stage": stt.STAGE_PREPARING,
+                "downloaded_bytes": 0,
+                "total_bytes": 0,
+                "code": "",
+            }
+        )
+
     prepare_task = asyncio.create_task(session.prepare())
     try:
         events = await asyncio.wait_for(

@@ -9,7 +9,7 @@ absolute paths.
 **Nothing has to be installed by hand.** ``pip install kirocrew`` is the only
 prerequisite: ``uv`` is a declared Python dependency and is resolved through the
 installed package (:func:`resolve_uv`) rather than assumed to be on ``PATH``, and
-the engine arrives over plain HTTPS, so ``git`` is no longer required at all.
+the engine arrives over plain HTTPS, so ``git`` is not required at all.
 
 Why this is a Python job and not a ``setup.onInstall`` shell script: a BUILTIN
 app's source lives read-only inside the installed Python package, and the
@@ -39,7 +39,7 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-from kiro_crew.apps.builtins.pptx_maker.backend import engine_source, paths
+from kiro_crew.apps.builtins.pptx_maker.backend import engine, engine_source, paths
 from kiro_crew.apps.manager import app_dir
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.sandbox import cgroup_scope_argv, run_limited, sandboxed_spawn_argv
@@ -171,16 +171,25 @@ def mcp_tools_path() -> str:
     is no managed directory yet, so rendering never produces an empty entry (an
     empty element in ``PATH`` means "the current directory" on POSIX, which would
     make tool resolution depend on the server's cwd).
-    """
-    # Local import: `paths` imports the app manager, which imports the builtins
-    # package that owns this module.
-    from kiro_crew.apps.builtins.pptx_maker.backend import paths as _paths
 
+    A tool installed at a fixed platform install root that its installer does not put
+    on ``PATH`` — LibreOffice on Windows — is appended too, from
+    :func:`.engine.system_install_dirs`. Without that entry the engine's own
+    ``shutil.which("soffice")`` cannot see an install the app has already resolved,
+    so ``/deps`` reports LibreOffice present while every thumbnail still fails. It
+    sits before the managed directory and after the inherited ``PATH``: a system tool
+    keeps its precedence over the shim, and nothing already resolvable by name is
+    shadowed.
+    """
     inherited = os.environ.get("PATH", "")
-    managed = _paths.preview_tools_bin()
-    if not managed.is_dir():
-        return inherited
-    return f"{inherited}{os.pathsep}{managed}" if inherited else str(managed)
+    entries = [inherited] if inherited else []
+    system_dir = engine.soffice_install_dir()
+    if system_dir:
+        entries.append(system_dir)
+    managed = paths.preview_tools_bin()
+    if managed.is_dir():
+        entries.append(str(managed))
+    return os.pathsep.join(entries)
 
 
 def reset_uv_cache() -> None:
@@ -558,7 +567,7 @@ def provision() -> ProvisionOutcome:
 
     # `uv` ships as a declared Python dependency, so this only fails on a
     # genuinely broken install. Reported precisely (and only about uv — `git` is
-    # no longer used) so the message is actionable rather than a guess.
+    # not used) so the message is actionable rather than a guess.
     uv_bin = resolve_uv()
     if uv_bin is None:
         log.append(

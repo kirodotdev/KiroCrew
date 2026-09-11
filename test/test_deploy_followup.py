@@ -17,7 +17,7 @@ def _deploy_handler_source() -> str:
 
     Resolved through the import rather than a hardcoded path so the handler can
     move again without these source-text assertions silently passing against a
-    file that no longer contains the code.
+    file that does not contain the code.
     """
     from kiro_crew.mcp_tools import artifacts
 

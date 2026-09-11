@@ -339,7 +339,7 @@ class TestRestoreReplace:
 
     @requires_symlinks
     def test_replace_swaps_nothing_when_a_tree_backup_refuses(self, env, monkeypatch):
-        """Ordering ratchet for issue #2844, failure mode 3.
+        """Ordering ratchet, failure mode 3.
 
         The ENTIRE rollback set must exist before the first core-file swap. A
         tree backup can refuse through its fatal skip reporter (a symlink in
@@ -1216,7 +1216,7 @@ class TestTheArchiveIsLockedDownBeforeItIsPublished:
 
 
 class TestMergeRestoreLocksBeforePublish:
-    """#5346: merge restore of a missing security file must lock the temp first.
+    """Merge restore of a missing security file must lock the temp first.
 
     Merge only copies when the destination is absent, so a restrict failure
     must leave that name uncreated rather than unlinking a published secret.
@@ -1423,9 +1423,9 @@ class TestNotificationMergeWriteSideContract:
         """The destination scan is its own failure domain and must write nothing.
 
         This is the site the issue's own criterion required and did not name.
-        The scan used to run in text mode too, so pre-existing live corruption
-        aborted the merge with a traceback before the copy loop was reached; it
-        still aborts, but now with a named reason and without having touched the
+        A scan in text mode would let pre-existing live corruption abort the
+        merge with a traceback before the copy loop is reached; it still aborts,
+        but with a named reason and without having touched the
         destination.
         """
         src, dst = self._files(tmp_path, self.GOOD, self.LIVE + self.BAD_UTF8)
@@ -1690,7 +1690,7 @@ class TestNotificationMergeWriteSideContract:
         assert dst.read_bytes().count(row) == 1, "one row, not two"
 
     def test_two_rows_that_only_STRIP_alike_both_survive(self, tmp_path):
-        """Round 5's deletion, pinned against the key that caused it.
+        """Two rows that only STRIP alike both survive.
 
         A crash truncates a live row to ``b'{"a": "x'``; framing splits a source
         record at its bare carriage return, yielding ``b'{"a": "x\\r'``. Those two
@@ -1855,7 +1855,7 @@ class TestNotificationMergeWriteSideContract:
         assert dst.read_bytes() == self.LIVE, "the retry appended something"
 
 
-# ── Issue #8181: the copy branch installed unvalidated notification bytes ──────
+# ── The copy branch must not install unvalidated notification bytes ──────
 
 
 class _NotificationCopyFixtures:
@@ -1951,7 +1951,7 @@ class TestNotificationCopyWhenNoLiveFileExists(_NotificationCopyFixtures):
         """Byte-exactness is the property ``copy2`` had and the fix must keep.
 
         A ``\\r\\n`` terminator survives and a bare ``\\r`` inside the file ends a
-        record without being rewritten -- the text-mode round trip that #7771
+        record without being rewritten -- the text-mode round trip
         removed from the merge is not reintroduced here.
         """
         src_bytes = b'{"ts":"1","msg":"a"}\r\n{"ts":"2","msg":"b"}\r{"ts":"3","msg":"c"}\n'
@@ -2379,8 +2379,7 @@ class TestNotificationCopyWhenNoLiveFileExists(_NotificationCopyFixtures):
             # Scoped to the copy's own destination open, not to "the first O_CREAT
             # seen anywhere": this hook patches `os.open` PROCESS-WIDE, and on a
             # loaded CI shard the first creating open can belong to another thread
-            # entirely (issue #8893 -- both ordering tests in this class fired on
-            # shard 4 for PRs whose diffs never touch this path). A foreign trigger
+            # entirely. A foreign trigger
             # submits the append while the worker is still FREE, and the assertion
             # then reads a real ordering guarantee as broken. The destination is the
             # one open the copy performs while it occupies the worker, so it is the
@@ -2393,8 +2392,8 @@ class TestNotificationCopyWhenNoLiveFileExists(_NotificationCopyFixtures):
                 # worker is released and runs the queued append -- which is CORRECT and
                 # sets the event. `is_set()` after `_merge` therefore measured whether
                 # the main thread reached the assertion before that legitimate run, a
-                # footrace it loses on a loaded shard (issue #8893, second cause: #8992
-                # scoped the trigger but left this observation point). The wait's own
+                # footrace it loses on a loaded shard (scoping the trigger left this
+                # observation point). The wait's own
                 # return value is taken while the copy still holds the worker, which is
                 # the only window in which the defect -- and nothing else -- can set it.
                 ran_while_worker_held.append(ran_during_copy.wait(timeout=1.0))
@@ -2494,7 +2493,7 @@ class TestNotificationCopyWhenNoLiveFileExists(_NotificationCopyFixtures):
 
         def opening(path, flags, *args, **kwargs):
             fd = real_open(path, flags, *args, **kwargs)
-            # Same scoping as the READER test above, same reason (issue #8893): the
+            # Same scoping as the READER test above, same reason: the
             # hook patches `os.open` PROCESS-WIDE, and on a loaded shard the first
             # O_CREAT can come from a foreign thread while the notification worker is
             # still FREE -- the append then runs immediately and the assertion reads
@@ -2529,7 +2528,7 @@ class TestNotificationCopyWhenNoLiveFileExists(_NotificationCopyFixtures):
         ), f"the live notification was dropped by the positional cap ({len(rows)} rows)"
 
     def test_the_ordering_trigger_ignores_a_foreign_O_CREAT_open(self, tmp_path, monkeypatch):
-        """The loaded-shard condition itself, kept as a test (issue #8893).
+        """The loaded-shard condition itself, kept as a test.
 
         Both ordering tests in this class patch ``os.open`` PROCESS-WIDE, and both
         fired on a contended CI shard for PRs that never touch this path: some other
@@ -2669,7 +2668,7 @@ class TestNotificationCopyWhenNoLiveFileExists(_NotificationCopyFixtures):
         assert (home / "notifications.jsonl").read_bytes() == self.GOOD
 
     def test_concurrent_callers_all_get_the_SAME_executor(self, monkeypatch):
-        """Issue #8788: the lazy init was an unlocked check-then-set.
+        """The lazy init must not be an unlocked check-then-set.
 
         Two threads could each observe ``None``, each construct a pool, and each
         proceed -- one assignment won the global while the loser's worker was already
@@ -2725,7 +2724,7 @@ class TestNotificationCopyWhenNoLiveFileExists(_NotificationCopyFixtures):
             "different pools are not serialised against each other"
         )
         # Whatever the race produced must also be what the module kept, or a caller is
-        # queuing onto a pool the module no longer hands out.
+        # queuing onto a pool the module does not hand out.
         assert created[0] is dashboard_state._notification_io_pool
 
     @requires_symlinks
@@ -2746,7 +2745,7 @@ class TestNotificationCopyWhenNoLiveFileExists(_NotificationCopyFixtures):
         assert (home / "notifications.jsonl").is_symlink(), "the operator's link was removed"
 
 
-# ── Issue #8217: the restore status line must not claim success over a refused
+# ── The restore status line must not claim success over a refused
 # cron merge ───────────────────────────────────────────────────────────────────
 
 
@@ -2862,7 +2861,7 @@ class TestNotificationCopyRefusalWithoutONofollow(_NotificationCopyFixtures):
     def test_no_by_name_reparse_check_is_made_on_either_path(self, tmp_path):
         """The by-name check is gone, not merely bypassed where the open can decide.
 
-        It used to be a floor gated on the flag's absence. It is now nothing: where the
+        The by-name check is not a floor gated on the flag's absence: where the
         flag exists the open decides, and where it does not the copy is refused before
         reaching here. Counting calls rather than reading the source, so reintroducing
         the check -- the racy remedy this PR removed -- reddens here.
@@ -2886,7 +2885,7 @@ class TestARefusedCronMergeIsVisibleInTheRestoreStatus:
 
     The terminal shows the merger's own warning right above, but the status
     line is the summary an operator scans — a checkmark over a refusal is the
-    same false success the import summary had (#8217).
+    same false success as the import summary.
     """
 
     @staticmethod

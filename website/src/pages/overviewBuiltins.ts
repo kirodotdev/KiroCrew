@@ -50,8 +50,13 @@
  *
  * - `tailnet-mobile` — the phone-access guidance card (`TailnetMobileCard`),
  *   rendered above the summary cards.
+ * - `kiro-sign-in` — the Kiro identity sign-in card (`KiroSignInCard`),
+ *   rendered above the tailnet card. A distribution that provisions the
+ *   agents' Kiro identity itself (a managed vault, a fixed API key) has no
+ *   sign-in to offer and suppresses the card rather than showing a chooser
+ *   whose result it would overwrite.
  */
-export type SuppressibleOverviewBuiltin = 'tailnet-mobile'
+export type SuppressibleOverviewBuiltin = 'tailnet-mobile' | 'kiro-sign-in'
 
 const SUPPRESSED = new Set<SuppressibleOverviewBuiltin>()
 

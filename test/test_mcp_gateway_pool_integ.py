@@ -310,7 +310,7 @@ async def test_two_stubs_on_one_backend_are_told_apart(tmp_path: Path, short_soc
 async def test_two_UNNAMED_stubs_on_one_backend_get_distinct_namespaces(
     tmp_path: Path, short_sock_dir
 ) -> None:
-    """#5322: co-tenants gatewayd cannot NAME must still be separable.
+    """Co-tenants gatewayd cannot NAME must still be separable.
 
     The sibling test above proves a named co-tenant arrives carrying its own
     identity. This is the case that has no identity to arrive with: a stub whose
@@ -585,8 +585,8 @@ def _windows_collect_ignore() -> list[str]:
     the class of false pass this guard exists to prevent. Reading the file is
     platform-independent.
 
-    The names used to be string literals inside conftest and were extracted by
-    parsing its AST. They now live in ``windows-collect-ignore.txt`` because a
+    The names live in ``windows-collect-ignore.txt`` rather than as string
+    literals inside conftest, because a
     second reader needs them: naming a file explicitly on the pytest command
     line bypasses ``collect_ignore``, so the CI reduced-scope selector
     (``scripts/ci-surface-tests.py``) has to apply the same exclusion itself.

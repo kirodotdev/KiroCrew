@@ -104,11 +104,9 @@ def _safe_name(value: object, default: str = "unknown", limit: int = 300) -> str
     where the operator decides whether to restore it. Two of these sites print while
     REJECTING a hostile entry, so the raw name there is precisely the attacker's payload.
 
-    The escaping itself used to live beside the off-host destination code, because its
-    first caller printed S3 object keys. That destination is now the AWS Control app's,
-    and what is left to escape is a name out of an untrusted archive -- so the helper
-    lives with its remaining caller and its reason is stated in those terms. The length
-    is capped so one very long name cannot flood the view.
+    What is escaped is a name out of an untrusted archive, so the helper lives with its
+    caller and its reason is stated in those terms. The length is capped so one very
+    long name cannot flood the view.
     """
     cleaned = _CONTROL_CHARS.sub(lambda m: _escape_one(m.group()), str(value if value else default))
     if len(cleaned) > limit:
@@ -370,11 +368,11 @@ def resolve_components(requested: list[str] | None, purpose: Purpose) -> list[st
     an unknown name never silently stages nothing, and an ``UNRESOLVED`` component
     never rides a ``SHARE`` bundle just because nobody wrote the policy down.
 
-    Duplicates are collapsed, ORDER PRESERVED. ``--components config,config`` used to reach
-    the staging pass twice for one component, and the second pass hit the exclusive create
-    the pinned primitives make -- an uncaught ``FileExistsError`` traceback rather than a
-    snapshot. A repeated name is a typo, not a request to stage anything twice, so the
-    honest reading is to collapse it rather than to refuse the run.
+    Duplicates are collapsed, ORDER PRESERVED. Without that, ``--components config,config``
+    reaches the staging pass twice for one component, and the second pass hits the exclusive
+    create the pinned primitives make -- an uncaught ``FileExistsError`` traceback rather
+    than a snapshot. A repeated name is a typo, not a request to stage anything twice, so
+    the honest reading is to collapse it rather than to refuse the run.
     """
     names = list(COMPONENTS) if requested is None else list(dict.fromkeys(requested))
     unknown = [c for c in names if c not in COMPONENTS]
@@ -548,14 +546,13 @@ def _chain_is_link_free(root: Path, rel_parts: tuple[str, ...]) -> bool:
         # cannot verify as reachable without following a link.
         #
         # `open_dir_pinned` translates only `ELOOP`/`ENOTDIR` into `PinnedPathRefusal` and
-        # re-raises every other `OSError`, and this call sat OUTSIDE the try below. So a root
-        # lost to a concurrent rename or removal left `ENOENT` escaping as
-        # `FileNotFoundError` from a call site under `_build_snapshot`, whose enclosing try
-        # handles `PinnedPathRefusal`, `UnsafeComponentRoot` and `DatabaseCopyFailed` -- the
-        # `OSError` arm belongs to a later, separate try. The command exited on a traceback
-        # where the declared path owes a named refusal and the tree path owes a recorded
-        # skip. Returning False routes both through the `require_database` asymmetry the
-        # caller already implements. Review's finding.
+        # re-raises every other `OSError`, so a root lost to a concurrent rename or removal
+        # arrives as `FileNotFoundError`. Letting it escape from a call site under
+        # `_build_snapshot` exits on a traceback: that enclosing try handles
+        # `PinnedPathRefusal`, `UnsafeComponentRoot` and `DatabaseCopyFailed`, and its
+        # `OSError` arm belongs to a later, separate try. The declared path owes a named
+        # refusal and the tree path owes a recorded skip, so returning False routes both
+        # through the `require_database` asymmetry the caller already implements.
         #
         # `PinnedPathRefusal` is deliberately NOT caught here: `snapshot_main` handles it and
         # audits it as `unpinnable_staging`. That is a decision the operator should see, not
@@ -618,9 +615,9 @@ def _copy_database_consistently(
     """Copy the live SQLite database *src* to *dst* through the backup API, read-only.
 
     THE one place this module reads a live database on the creation path. Both staging
-    paths -- the fixed core-file list and the tree re-stage pass -- call it, because the
-    hardening below was arrived at over five review rounds on #5156 and a second,
-    structurally identical copy of it is how one of the two drifts back.
+    paths -- the fixed core-file list and the tree re-stage pass -- call it, because a
+    second, structurally identical copy of the hardening below is how one of the two
+    drifts back.
 
     Four properties, each closing a failure that reported success:
 
@@ -670,12 +667,12 @@ def _copy_database_consistently(
     """
     if not _chain_is_link_free(root, rel_parts):
         if require_database:
-            # Same reasoning as the not-a-database case below, and an earlier revision of
-            # this change applied it to only one of the two: omitting a REQUIRED database
-            # still let the snapshot succeed, so `--keep N` pruned the last complete
-            # archive in favour of one missing the database it claims. A recorded omission
-            # is "recoverable information" only while the operator still HAS the archive it
-            # could be recovered from. Review's finding.
+            # Same reasoning as the not-a-database case below, and it has to apply to
+            # BOTH: applying it to only one lets a snapshot that omitted a REQUIRED
+            # database succeed, so `--keep N` prunes the last complete archive in favour
+            # of one missing the database it claims. A recorded omission is "recoverable
+            # information" only while the operator still HAS the archive it could be
+            # recovered from.
             raise DatabaseCopyFailed(
                 src,
                 pinned_fs.PinnedPathRefusal(
@@ -720,11 +717,11 @@ def _copy_database_consistently(
         return DB_NOT_A_DATABASE
     # The connects are INSIDE the try, not just `backup()`. Between the probe above and
     # this open the file can disappear -- and `mode=ro` makes that a hard failure where a
-    # read-write open would have silently CREATED an empty database, so this change made
-    # the window matter more, not less. `sqlite3.connect` then raises `OperationalError`,
-    # which `snapshot_main` does not catch (it handles PinnedPathRefusal,
-    # UnsafeComponentRoot, DatabaseCopyFailed and _ArchiveTooLarge), so the command exited
-    # on a traceback instead of naming the database. Review's finding.
+    # read-write open would silently CREATE an empty database, so the window matters more,
+    # not less. `sqlite3.connect` then raises `OperationalError`, which `snapshot_main`
+    # does not catch (it handles PinnedPathRefusal, UnsafeComponentRoot, DatabaseCopyFailed
+    # and _ArchiveTooLarge), so letting it escape exits on a traceback instead of naming
+    # the database.
     try:
         with (
             closing(sqlite3.connect(ro_uri, uri=True)) as src_conn,
@@ -778,7 +775,7 @@ def _refuse_unsound_required_capture(src: Path, dst: Path) -> None:
     Raises ``DatabaseCopyFailed`` rather than restore's ``SourceComponentUnsound``: the try
     around ``_build_snapshot`` handles ``PinnedPathRefusal``, ``UnsafeComponentRoot`` and
     ``DatabaseCopyFailed``, so the restore-side type would leave here as a traceback --
-    the same escape this change fixed for the chain check. Review's finding.
+    the same escape the chain check avoids.
     """
     try:
         if src.stat().st_size == 0:
@@ -827,10 +824,9 @@ def _restage_databases(
     "validated as strictly as ``memory.db``", and the restore side already enforces exactly
     that (``_refuse_unless_sound(..., strict=rel in PRODUCT_TREE_DATABASES)``). Staging a
     corrupt ``workspace/knowledge/knowledge.db`` as bytes and reporting success therefore
-    produced an archive that restore is guaranteed to refuse, which is worse than failing:
+    produces an archive that restore is guaranteed to refuse, which is worse than failing:
     ``--keep N`` counts the new archive as the newest backup and prunes a real one, so the
-    operator loses their last restorable copy to a snapshot that "succeeded". Review's
-    finding.
+    operator loses their last restorable copy to a snapshot that "succeeded".
 
     *bundle_root* is what makes that key comparable. ``PRODUCT_TREE_DATABASES`` is spelled
     relative to a bundle root, while this pass walks one tree, so a tree-relative path would
@@ -1277,11 +1273,11 @@ def _copytree_safe(
     the replaced tree was an ordinary file. Now the traversal is descriptor-pinned by
     :func:`kiro_crew.pinned_fs.stage_tree_pinned`, including the chain above the root.
 
-    ``dirs_exist_ok`` is still accepted and dropped -- it was a ``shutil.copytree``
-    keyword and callers may pass it out of habit -- but it is no longer meaningless
-    generally: whether an existing destination is tolerated is now decided by
-    *must_create*, and it is decided identically on both branches. Every other keyword is
-    rejected rather than silently dropped.
+    ``dirs_exist_ok`` is accepted and dropped -- it is a ``shutil.copytree`` keyword and
+    callers may pass it out of habit -- but it is not meaningless generally: whether an
+    existing destination is tolerated is decided by *must_create*, and it is decided
+    identically on both branches. Every other keyword is rejected rather than silently
+    dropped.
 
     *must_create* says the caller REPLACES its destination rather than merging into it, so
     a root that exists is refused. Only a caller that removed the tree it is about to write
@@ -1362,14 +1358,13 @@ def _copytree_safe(
 def _copy_tree_no_overwrite(src: Path, dst: Path, *, allow_unpinned: bool = False) -> None:
     """Merge *src* into *dst* without overwriting, with both ends pinned.
 
-    The destination side is where #3797's third finding lives. The previous version
-    walked the source with ``rglob`` and wrote each file with ``shutil.copy2`` to a
-    path composed by name, so the destination's ancestor chain was never pinned: a
-    component of *dst* swapped for a link after ``mkdir`` redirected the write, and
-    ``not target.exists()`` answered for whatever the link pointed at rather than for
-    the directory the caller validated.
+    The destination side is the delicate one. Walking the source with ``rglob`` and
+    writing each file with ``shutil.copy2`` to a path composed by name leaves the
+    destination's ancestor chain unpinned: a component of *dst* swapped for a link after
+    ``mkdir`` redirects the write, and ``not target.exists()`` answers for whatever the
+    link points at rather than for the directory the caller validated.
 
-    This is now one call into the shared primitive with ``skip_existing=True``, which
+    This is one call into the shared primitive with ``skip_existing=True``, which
     is what makes the no-overwrite promise real: exclusive creation is atomic, so "it
     did not exist a moment ago" and "this call created it" are the same statement
     rather than two with a window between them.
@@ -1390,15 +1385,15 @@ def _copy_tree_no_overwrite(src: Path, dst: Path, *, allow_unpinned: bool = Fals
                 target.mkdir(parents=True, exist_ok=True)
             elif item.is_file():
                 target.parent.mkdir(parents=True, exist_ok=True)
-                # `copy2` opened the destination BY NAME for writing, so a symlink planted
-                # at that name after the `not target.exists()` check was followed and an
-                # arbitrary external file was overwritten. Review's finding, and the
-                # `exists()` guard was itself the name-based check that created the window.
+                # `copy2` opens the destination BY NAME for writing, so a symlink planted
+                # at that name after a `not target.exists()` check is followed and an
+                # arbitrary external file is overwritten -- that `exists()` guard is itself
+                # the name-based check that creates the window.
                 #
                 # copy_file_pinned opens the destination O_CREAT|O_EXCL|O_NOFOLLOW even
                 # with no directory descriptor, so the link is refused rather than
-                # followed, and O_EXCL subsumes the skip-if-present behaviour the old
-                # `not target.exists()` was there to provide -- without the race.
+                # followed, and O_EXCL subsumes the skip-if-present behaviour
+                # `not target.exists()` provides -- without the race.
                 pinned_fs.copy_file_pinned(
                     str(item), str(target), skip_existing=True, on_skip=_report_skip
                 )
@@ -1681,12 +1676,11 @@ def _build_snapshot(
     # archive rather than of whichever component ran last.
     pinned = _staging_is_pinned(allow_unpinned=allow_unpinned, what="data home")
 
-    # Every skip is recorded, not just printed. A snapshot that omitted a hardlinked
-    # or symlinked file used to report success with a console warning and nothing in
-    # the archive -- the same "silent partial" shape this change fixes on the restore
-    # side, raised in review. Paths are stored relative to the data home so the record
-    # names the file without carrying the absolute layout of the machine into an
-    # archive that may be moved somewhere else.
+    # Every skip is recorded, not just printed. Printing alone leaves a snapshot that
+    # omitted a hardlinked or symlinked file reporting success with a console warning
+    # and nothing in the archive -- a silent partial. Paths are stored relative to the
+    # data home so the record names the file without carrying the absolute layout of
+    # the machine into an archive that may be moved somewhere else.
     skipped: list[dict[str, str]] = []
 
     def _record_skip(reason: str, path: str) -> None:
@@ -1773,9 +1767,9 @@ def _build_snapshot(
                         # Through the SAME hardened copy the tree pass uses, so the two
                         # cannot drift: descriptor-verified chain, percent-escaped URI,
                         # `mode=ro`, and "not a database" told apart from "cannot read
-                        # this database". Before this, the core path was the last
-                        # unhardened SQLite read on the creation path -- it connected
-                        # READ-WRITE to the live name, which is what #5451 is about.
+                        # this database". Without it the core path is an unhardened
+                        # SQLite read on the creation path, connecting READ-WRITE to
+                        # the live name.
                         #
                         # `mc_fd` screened this name a few lines up and cannot be handed
                         # to SQLite, which takes only a path; the chain check inside the
@@ -1784,10 +1778,10 @@ def _build_snapshot(
                         # `require_database=True` makes every non-success outcome a raise,
                         # so there is no outcome to branch on here: a declared component
                         # file is either copied consistently or the snapshot fails. Both
-                        # degradations that used to live here -- byte-copying a corrupt
-                        # database, and omitting an unverifiable one -- let the command
-                        # succeed, which let `--keep` prune the last good archive in favour
-                        # of one that cannot be restored.
+                        # degradations it replaces -- byte-copying a corrupt database, and
+                        # omitting an unverifiable one -- let the command succeed, which
+                        # lets `--keep` prune the last good archive in favour of one that
+                        # cannot be restored.
                         _copy_database_consistently(
                             src,
                             stage / f,
@@ -1923,11 +1917,7 @@ def _build_snapshot(
         try:
             with tarfile.open(str(tmp_tar), "w:gz") as tar:
                 tar.add(str(stage), arcname=arcname, filter=_data_filter)
-            # Lock the archive down BEFORE it is published. Carried over from main's
-            # #5317 during the rebase: this block was extracted out of snapshot_main
-            # into this function, and main had meanwhile moved the lockdown to before
-            # the rename, so taking this side of the conflict wholesale would have
-            # silently dropped that fix.
+            # Lock the archive down BEFORE it is published.
             #
             # This tarball can contain sel_hmac.key, and the window between the rename
             # and a lockdown applied afterwards is not Windows-only: tarfile does not
@@ -2073,13 +2063,12 @@ def snapshot_main(
         if total_mb > 500:
             print(f"⚠️  {mc} is {total_mb:.0f} MB — snapshot may be large and slow")
 
-    # NO pre-staging WAL checkpoint. There used to be one here, and removing it is the
-    # point rather than an omission: it was the ONLY write this command made to the live
-    # database, and it could not be made safe. A checkpoint cannot run read-only, so the
-    # name has to be reopened for writing -- and verifying the name first does not close
-    # that, because SQLite re-resolves it, so a swap in the window between the check and
-    # the open put the checkpoint's WRITE into whatever the name then pointed at,
-    # truncating an external database's log. Review's finding, and the remedy it asked for.
+    # NO pre-staging WAL checkpoint, deliberately: it would be the ONLY write this command
+    # makes to the live database, and it cannot be made safe. A checkpoint cannot run
+    # read-only, so the name has to be reopened for writing -- and verifying the name first
+    # does not close that, because SQLite re-resolves it, so a swap in the window between
+    # the check and the open puts the checkpoint's WRITE into whatever the name then points
+    # at, truncating an external database's log.
     #
     # Nothing the archive depends on is lost. The backup API reads a consistent snapshot
     # that already INCLUDES rows living only in the `-wal`: measured against a
@@ -2430,18 +2419,17 @@ _NOTIFICATION_SOURCE_CAP = 32 * 1024 * 1024
 def _notification_key(record: bytes, path: Path) -> tuple[Any, ...] | None:
     """The dedupe key for one raw notification record, or ``None`` if it has none.
 
-    Well-defined and hashable for EVERY record shape, which the previous
-    ``json.loads(line).get("ts") or line.strip()`` was not: a non-object
-    record raised ``AttributeError`` off ``.get``, and a list or dict ``ts``
-    raised ``TypeError`` on set insert. Both escaped as an aborted restore.
+    Well-defined and hashable for EVERY record shape. A naive
+    ``json.loads(line).get("ts") or line.strip()`` is not: a non-object record
+    raises ``AttributeError`` off ``.get``, and a list or dict ``ts`` raises
+    ``TypeError`` on set insert, and both escape as an aborted restore.
 
     A ``ts`` is used whenever it is truthy AND hashable, which is every JSON
-    scalar. Restricting it to ``str`` would have been a REGRESSION: the
-    predecessor keyed a numeric ``ts`` on the number, so two rows carrying the
-    same numeric ``ts`` with different bytes -- one normalised, one not --
-    deduplicated, and keying them on their raw form instead persists a
-    duplicate. Only an unhashable ``ts``, which cannot be a set member at all,
-    falls through to the raw form.
+    scalar. Restricting it to ``str`` is WORSE than keying a numeric ``ts`` on
+    the number: two rows carrying the same numeric ``ts`` with different bytes
+    -- one normalised, one not -- have to deduplicate, and keying them on their
+    raw form instead persists a duplicate. Only an unhashable ``ts``, which
+    cannot be a set member at all, falls through to the raw form.
 
     The ``ts`` goes into the key under a KIND TAG that is deliberately coarser
     than its Python type, because two different equalities are in play at once
@@ -2696,36 +2684,33 @@ def _serialise_with_notification_writes(work: Callable[[], None]) -> None:
     ``_MAX_PERSISTED_NOTIFICATIONS`` rows, not the newest by timestamp -- so importing
     a full 200-record history pushes the live row out of the window. Measured: a note
     delivered mid-copy landed at line 0 of 201 and the reader returned 200 rows
-    without it. Review's finding, and it is silent: the operator was told the
-    notification was delivered, and after the next reload it is gone.
+    without it. The loss is silent: the operator was told the notification was
+    delivered, and after the next reload it is gone.
 
     Notification persistence runs on ONE worker in submission order
     (``_notification_io_executor``), so running the copy on that same worker is what
     makes the two ordered rather than concurrent. A queued append then runs strictly
     after the copy and lands at the end of the file, where the cap keeps it.
 
-    Three branches decided whether to serialise, and TWO of them shared one mistake:
-    they treated the absence of an OBSERVABLE writer as the absence of a writer. The
-    shortcut assumed "no pool" means "no writer"; the writer is what makes the pool. A
-    fresh gateway has persisted nothing, so the pool was ``None``, so the copy ran
-    inline -- and a delivery arriving at that moment CREATED the executor and appended
-    through it, concurrently, putting the live row back at line 0 of 201 and outside the
-    reader's window. Review found that instance. The broad ``except Exception`` on the
-    import one line above was the same error a second time: it turned "I could not
-    check" into "there is nothing to check", so an import failing inside a live gateway
-    would have lost the ordering silently.
+    The trap in deciding whether to serialise is treating the absence of an OBSERVABLE
+    writer as the absence of a writer. "No pool" does not mean "no writer"; the writer is
+    what makes the pool. A fresh gateway has persisted nothing, so its pool is ``None``,
+    and a copy running inline on that basis races a delivery arriving at that moment: the
+    delivery CREATES the executor and appends through it, concurrently, putting the live
+    row back at line 0 of 201 and outside the reader's window. A broad
+    ``except Exception`` on the import one line above is the same error in another form:
+    it turns "I could not check" into "there is nothing to check", losing the ordering
+    silently inside a live gateway.
 
     So this ACQUIRES rather than asks. ``_notification_io_executor()`` creates the
     worker if there is none and returns the existing one if there is. That removes the
-    first hole outright -- there is no longer any "is there a pool" question to get
-    wrong -- and narrows the second to ``ImportError``.
+    "is there a pool" question outright and narrows the import case to ``ImportError``.
 
     TWO inline cases remain, and neither reads an absence of OBSERVATION as an absence
     of a writer:
 
     1. Already ON the worker. Then we ARE the ordering point, and submitting would wait
-       for a queue only this call can drain -- a deadlock rather than a race. This is
-       the one branch that was always sound.
+       for a queue only this call can drain -- a deadlock rather than a race.
     2. The dashboard module does not import. A missing MODULE is categorically different
        from a missing pool: the sink lives in that module, so if it is not importable
        there is no writer that could exist, rather than none currently visible. That is
@@ -2733,19 +2718,19 @@ def _serialise_with_notification_writes(work: Callable[[], None]) -> None:
        anything else -- a module that fails to import for any OTHER reason is a real
        failure and must surface rather than quietly degrade the guarantee.
 
-    Acquiring costs the CLI path one idle worker thread it did not previously create.
-    That is a short-lived process and the thread exits at interpreter shutdown; a silent
-    ordering hole is permanent, so the trade is not close.
+    Acquiring costs the CLI path one idle worker thread. That is a short-lived process
+    and the thread exits at interpreter shutdown; a silent ordering hole is permanent, so
+    the trade is not close.
 
     The executor is released as soon as *work* returns OR raises: ``result()``
     re-raises rather than swallowing, so the failure path needs no separate release
     and cannot leave notification writes blocked.
 
     Relying on that executor for ordering means its own CREATION has to be ordered too.
-    It was an unlocked check-then-set, so two threads could each observe ``None``, each
-    build a pool, and never be serialised against one another -- which would void this
-    guarantee rather than weaken it. ``dashboard/state.py`` now takes a lock around the
-    lazy init (issue #8788), so acquiring the executor is itself race-free.
+    An unlocked check-then-set would let two threads each observe ``None``, each build a
+    pool, and never be serialised against one another -- which would void this guarantee
+    rather than weaken it. ``dashboard/state.py`` takes a lock around the lazy init, so
+    acquiring the executor is itself race-free.
     """
     try:
         from kiro_crew.dashboard import state as dashboard_state
@@ -2864,11 +2849,11 @@ def _install_notifications(src_path: Path, dst_path: Path) -> None:
       each other converts a faithful copy into a lossy one.
 
     Every path here is resolved to a descriptor EXACTLY ONCE and all later work goes
-    through that descriptor. That invariant is the fix for a whole class rather than
-    for the instances that surfaced it: three separate review findings were the same
-    defect, an operation resolving a name more than once where another process can
-    change what the name means, and each earlier fix moved which name was vulnerable
-    instead of removing the second resolution. The source is opened once
+    through that descriptor. That invariant closes a whole class rather than single
+    instances of it: the defect is an operation resolving a name more than once where
+    another process can change what the name means, and a fix that only re-checks moves
+    which name is vulnerable instead of removing the second resolution. The source is
+    opened once
     ``O_RDONLY|O_NOFOLLOW|O_NONBLOCK|O_BINARY`` and read once, never seeked; the
     destination is created once
     ``O_CREAT|O_EXCL|O_WRONLY|O_APPEND|O_NOFOLLOW|O_BINARY``. The
@@ -2903,10 +2888,10 @@ def _install_notifications(src_path: Path, dst_path: Path) -> None:
        touched again. Everything after that reads the bytes in hand.
     2. Those bytes are validated in full. A refusal here happens with the
        destination never created, so there is nothing to roll back -- which matters
-       because there is no safe rollback: an earlier revision created the live file
-       and unlinked it on refusal, and ``apply_import_zip`` runs inside the live
-       gateway, so the dashboard's notification sink could append to that file first
-       and the unlink took the operator's notification with it. Review's finding.
+       because there is no safe rollback: creating the live file and unlinking it on
+       refusal loses data -- ``apply_import_zip`` runs inside the live gateway, so the
+       dashboard's notification sink can append to that file first and the unlink
+       takes the operator's notification with it.
     3. The destination is then created
        ``O_CREAT|O_EXCL|O_WRONLY|O_APPEND|O_NOFOLLOW|O_BINARY`` and the validated
        bytes are written. ``O_EXCL`` decides inside one syscall, so a name that
@@ -2916,13 +2901,13 @@ def _install_notifications(src_path: Path, dst_path: Path) -> None:
        the data home.
 
     Reading once is not an optimisation, it is what makes a whole class of defect
-    UNREPRESENTABLE rather than detected. The predecessor read the file twice --
-    validate, then install -- and four consecutive review rounds each found a
-    different way for the source to change inside that window: swapped for a symlink
-    to a credential, reopened by name, truncated so the second pass met a clean EOF
-    and reported success having installed fewer records than it validated. Each fix
-    closed one variant and the next round produced another, because a check can only
-    catch the case someone thought of. With the bytes held in memory there is no name
+    UNREPRESENTABLE rather than detected. Reading the file twice -- validate, then
+    install -- leaves a window with many different ways for the source to change
+    inside it: swapped for a symlink to a credential, reopened by name, truncated so
+    the second pass meets a clean EOF and reports success having installed fewer
+    records than it validated. Closing one variant only exposes the next, because a
+    check can only catch the case someone thought of. With the bytes held in memory
+    there is no name
     left to resolve and no handle left open, so there is nothing for another process
     to swap, truncate or extend. The two loops below are two passes over the same
     immutable bytes, which is safe for exactly the reason two passes over the FILE
@@ -2936,9 +2921,9 @@ def _install_notifications(src_path: Path, dst_path: Path) -> None:
     cap is refused with its size named -- never truncated, never partially imported,
     because a silently dropped tail is the defect being removed wearing a hat.
 
-    No temporary file, deliberately, and this is the second review finding: a temp
-    file in the data home is published through a NAME, and a same-user process that
-    can list that directory can swap what the name holds between the write and the
+    No temporary file, deliberately: a temp file in the data home is published through
+    a NAME, and a same-user process that can list that directory can swap what the name
+    holds between the write and the
     publish -- which links bytes this function never validated into place as
     ``notifications.jsonl``. The mitigations for that are inode verification on both
     ends plus a non-hardlink fallback (``pinned_fs.put_back_no_clobber`` is the
@@ -2994,8 +2979,8 @@ def _install_notifications(src_path: Path, dst_path: Path) -> None:
     # `O_APPEND` because the dashboard's notification sink writes to this same file
     # with it, and its append goes to end-of-file while an ordinary write goes to
     # THIS handle's offset. Buffered, that offset is stale by the time it flushes, so
-    # a notification delivered mid-copy was overwritten by the flush. Review's
-    # finding. With `O_APPEND` every write lands at end-of-file, so the two writers
+    # a notification delivered mid-copy would be overwritten by the flush. With
+    # `O_APPEND` every write lands at end-of-file, so the two writers
     # interleave instead of clobbering. On the fresh file `O_EXCL` guarantees, it
     # changes nothing about the ordinary outcome.
     #
@@ -3105,21 +3090,21 @@ def _backup_and_copy(
     *installed*, when given, is the rollback ledger, and this function is the ONLY place
     that may add a core file to it: a name goes in immediately before that file's own first
     mutation and never before, because the recovery leg reads membership as "this run
-    reached this path". The caller used to add every file the component DECLARES up front,
-    which is a different set -- a bundle may legitimately carry only some of them, and the
-    loops below SKIP the rest. Recovery then saw a file with no saved copy that was
-    nonetheless "installed", concluded the restore had created it, and deleted the
-    operator's untouched file. Recording per file is what makes membership mean what the
-    recovery leg already documents it to mean.
+    reached this path". Adding every file the component DECLARES up front is a different
+    set -- a bundle may legitimately carry only some of them, and the loops below SKIP the
+    rest. Recovery would then see a file with no saved copy that is nonetheless
+    "installed", conclude the restore created it, and delete the operator's untouched
+    file. Recording per file is what makes membership mean what the recovery leg already
+    documents it to mean.
 
-    The restore side used to compose ``mc / f`` and hand it to ``shutil.copy2``, so
-    the destination was reached by name every time. Two consequences, both real: a
-    component of the data home swapped for a link redirected the write out of the
-    data home entirely, and a symlink left at the core file's own name was written
-    THROUGH rather than refused -- the name-based ``islink`` check above skipped the
-    backup move and then the copy followed the link it had just declined to move.
+    Composing ``mc / f`` and handing it to ``shutil.copy2`` would reach the destination
+    by name every time. Two consequences, both real: a component of the data home
+    swapped for a link redirects the write out of the data home entirely, and a symlink
+    left at the core file's own name is written THROUGH rather than refused -- the
+    name-based ``islink`` check above skips the backup move and then the copy follows
+    the link it just declined to move.
 
-    Now the data home is pinned once and each file is created relative to that
+    Instead the data home is pinned once and each file is created relative to that
     descriptor with ``O_EXCL``. A name that is still occupied after the backup move
     is refused instead of written through, which is the symlink case above.
     """
@@ -3148,22 +3133,19 @@ def _backup_and_copy(
                 shutil.move(str(live), str(backup / f))
             # Not `copy2`: it opens the destination by name for writing and follows a
             # symlink planted there in the window after the live file was moved aside,
-            # overwriting whatever it points at. Review's finding. copy_file_pinned uses
+            # overwriting whatever it points at. copy_file_pinned uses
             # O_CREAT|O_EXCL|O_NOFOLLOW even without a directory descriptor, so a link at
             # the destination name is refused rather than written through.
             # `fatal_skip_reporter`, NOT `_report_skip`: the live file has ALREADY been
             # moved into the backup by this point, so a skip here is not an omission from
             # an archive -- it is the live file gone AND the archive's version never
-            # applied, reported as success. That is the whole reason this change has a
-            # fatal reporter, and this is the third site to need it: a skip is correct
-            # while PRODUCING an archive and is data loss on any path that has already
-            # moved or deleted the original. Review caught this site still holding the
-            # non-fatal one.
+            # applied, reported as success. That is the whole reason for a fatal
+            # reporter: a skip is correct while PRODUCING an archive and is data loss on
+            # any path that has already moved or deleted the original.
             # A collision here means something recreated the name after the live file was
             # moved aside. It is a real condition, not a skip, but it must not surface as a
-            # traceback: review found the same escape on the pinned tree walk, and this
-            # path had it too. The live bytes are recoverable from the backup, which is what
-            # the message has to say.
+            # traceback: the same escape exists on the pinned tree walk. The live bytes
+            # are recoverable from the backup, which is what the message has to say.
             try:
                 pinned_fs.copy_file_pinned(
                     str(snap / f),
@@ -3197,9 +3179,9 @@ def _backup_and_copy(
                     # nothing was restored, reported as success. Raised in review; the
                     # same validate-before-mutate ordering the platform gate follows.
                     # Asked through src_fd, not by composing a path. The by-name form
-                    # re-resolved the snapshot root, so a root swapped after pinning had
-                    # this guard inspecting the replacement while the copy below acted on
-                    # the descriptor -- review's finding, and the same class as the
+                    # re-resolves the snapshot root, so a root swapped after pinning
+                    # leaves this guard inspecting the replacement while the copy below
+                    # acts on the descriptor -- the same class as the
                     # destination-ownership check.
                     if not pinned_fs.is_regular_at(src_fd, f):
                         continue
@@ -3364,17 +3346,15 @@ def _backup_tree_or_refuse(src: Path, dst: Path, *, allow_unpinned: bool = False
     Replace mode later runs ``rmtree`` on the live tree, so a file the backup pass
     SKIPPED is a file the restore is about to delete with no copy anywhere -- and the
     call site is deliberately hoisted ahead of every live mutation, so a refusal
-    arrives while nothing has been swapped yet (#2844). The staging
+    arrives while nothing has been swapped yet. The staging
     walk legitimately skips a hardlink alias, a symlink and a non-regular file -- which
     is right when producing an archive and catastrophic here, because the skip is
     followed by a delete rather than by an omission.
 
-    This was the second of the two findings that closed the earlier attempt at this
-    change (#2446): a concurrent writer's hardlinks were skipped at backup time and then
-    ``rmtree`` removed the only copies. Raised again in review against this diff, which
-    had carried the same shape forward. Refusing before the delete is the only ordering
-    that cannot lose data: the operator keeps a complete tree and a message naming what
-    could not be copied.
+    Without the refusal, a concurrent writer's hardlinks are skipped at backup time and
+    then ``rmtree`` removes the only copies. Refusing before the delete is the only
+    ordering that cannot lose data: the operator keeps a complete tree and a message
+    naming what could not be copied.
     """
     _copytree_safe(
         src,
@@ -3593,10 +3573,10 @@ def _refuse_unless_json_object(src: Path, label: str, *, installed: bool) -> Non
     into a failed restore of every other one, which is the opposite of what an off-host
     backup is for.
 
-    "Usually" is load-bearing, and this docstring used to say "never". Merge's per-component
-    branch merges only `if dst.is_file()`; its sibling `else` copies the bundle's file in
-    VERBATIM. So an absent destination -- the fresh-machine case, which is the scenario a
-    backup exists for -- does install, and was the one path skipping this check. The caller
+    "Usually" is load-bearing, not "never". Merge's per-component branch merges only
+    `if dst.is_file()`; its sibling `else` copies the bundle's file in VERBATIM. So an
+    absent destination -- the fresh-machine case, which is the scenario a backup exists
+    for -- does install, and is the one path that could skip this check. The caller
     therefore decides *installed* from "will this reach a consumer", not from "is this a
     replace". Reproduced before the fix: a well-formed JSON array, no live `crons.json`,
     merge copied it verbatim and reported success, and the cron loader then read zero jobs.
@@ -3627,10 +3607,9 @@ def _refuse_unless_json_object(src: Path, label: str, *, installed: bool) -> Non
     # The merge path is guarded by the merger: `_merge_crons` runs `_usable_cron_shape`
     # over BOTH sides and returns without writing when either is misshapen, and that guard
     # is a superset of these -- it also rejects a non-string job name and a lone surrogate
-    # inside one. An earlier revision ran the shape checks in both modes on the grounds
-    # that a merger's guard caught only a file it could not PARSE, so `{"jobs": ["x"]}`
-    # would flow past it; that is no longer true, so refusing on the merge path would only
-    # turn one misshapen component into a failed restore of every other one.
+    # inside one. It catches more than a file it cannot PARSE, so `{"jobs": ["x"]}` does
+    # not flow past it, and refusing on the merge path would only turn one misshapen
+    # component into a failed restore of every other one.
     #
     # The install path has no such guard -- it copies the file in and the consumer reads an
     # unusable one as empty -- so here this refusal is the only thing between a misshapen
@@ -3770,16 +3749,14 @@ def _do_replace(
             if safe_tree_root(d, what="destination root", home=mc) is None:
                 # REFUSED, not skipped. `_refuse_unsafe_destination_roots` already cleared
                 # this exact set moments ago, so a root that fails here failed AFTER that
-                # check -- something moved under us mid-run. This used to `continue`, which
-                # dropped the tree from `mem_roots` entirely: it was then neither saved nor
-                # restored, and the run still printed "Replace complete." Reproduced by
-                # letting the preflight pass and swapping `workspace` for an external link
-                # immediately after -- both memory trees were silently dropped and the
-                # command exited 0, so an operator restoring after losing a machine would
-                # believe memory came back when only the databases had. That is the very
-                # lie the hoisted preflight was written to end, surviving in the one site
-                # the hoist did not convert. Safe to raise here: this runs before phase
-                # one, so no live state has been mutated yet.
+                # check -- something moved under us mid-run. A `continue` here would drop
+                # the tree from `mem_roots` entirely: neither saved nor restored, with the
+                # run still printing "Replace complete." Letting the preflight pass and
+                # swapping `workspace` for an external link immediately after drops both
+                # memory trees silently and exits 0, so an operator restoring after losing
+                # a machine believes memory came back when only the databases did. That is
+                # exactly the lie the hoisted preflight exists to end. Safe to raise here:
+                # this runs before phase one, so no live state has been mutated yet.
                 unsafe_now.append(f"memory:{tree}")
             else:
                 mem_roots.append((tree, d))
@@ -3837,14 +3814,14 @@ def _do_replace(
             snap, mc, backup, components, mem_roots, installed, allow_unpinned=allow_unpinned
         )
     except BaseException as e:
-        # `BaseException`, not `Exception`, and deliberately wider than the three named
-        # classes this used to catch. `PinnedPathRefusal` was added here because it fires
-        # MID-mutation and leaving it out left live state half replaced; `KeyboardInterrupt`
-        # has exactly that property and is not an `Exception` at all, so it walked past this
-        # handler entirely. Reproduced: a Ctrl-C after the memory component was replaced left
-        # `memory.db` holding the archive's copy and `crons.json` still the live one, with no
-        # rollback attempted. A restore is the one operation where an interrupt must not be
-        # taken at face value -- the operator's own state is mid-swap.
+        # `BaseException`, not `Exception`, and deliberately wider than a few named
+        # classes. `PinnedPathRefusal` belongs here because it fires MID-mutation and
+        # leaving it out leaves live state half replaced; `KeyboardInterrupt` has exactly
+        # that property and is not an `Exception` at all, so a narrower handler misses it
+        # entirely. A Ctrl-C after the memory component is replaced otherwise leaves
+        # `memory.db` holding the archive's copy and `crons.json` still the live one, with
+        # no rollback attempted. A restore is the one operation where an interrupt must not
+        # be taken at face value -- the operator's own state is mid-swap.
         #
         # The exception is always re-raised, so an interrupt still terminates the command and
         # `SystemExit` still exits; what changes is that the previous state is put back first.
@@ -4155,27 +4132,26 @@ def _restore_everything_from_rollback(
                 elif target.is_dir():
                     shutil.rmtree(str(target))
                 target.parent.mkdir(parents=True, exist_ok=True)
-                # The plain staging copy is lossless HERE, which it would not have been
-                # for the save. `_backup_tree_or_refuse` reports a skipped entry as fatal,
-                # so a TREE containing a link never reaches the rollback directory at all
+                # The plain staging copy is lossless HERE, which it would not be for the
+                # save. `_backup_tree_or_refuse` reports a skipped entry as fatal, so a
+                # TREE containing a link never reaches the rollback directory at all
                 # -- whatever `backup` holds for a tree is links-free by construction, and
                 # there is nothing for a link-preserving copy to preserve on the way back.
                 #
-                # Scoped to trees deliberately. This used to read as a claim about the whole
-                # rollback directory, which is false: core FILES are saved by a different
-                # function that MOVES a symlink aside on purpose, and reading the claim that
-                # broadly is what left the saved-link case with no branch to match.
+                # Scoped to trees deliberately. Read as a claim about the whole rollback
+                # directory it is false: core FILES are saved by a different function that
+                # MOVES a symlink aside on purpose, and reading it that broadly leaves the
+                # saved-link case with no branch to match.
                 _copytree_safe(
                     saved,
                     target,
                     # The operator's opt-in has to reach HERE, not just the forward path.
-                    # Without it this copy took the default and refused on a platform with
+                    # Without it this copy takes the default and refuses on a platform with
                     # no directory descriptors -- so an operator who passed
-                    # `--allow-unpinned-staging` got a replace that was allowed to MUTATE
-                    # live state and a rollback that then refused to put it back. The safety
-                    # net became the one thing that would not run, at the only moment it
-                    # matters. Found by a test that could not be fixed from the test side
-                    # because this function had no way to be told.
+                    # `--allow-unpinned-staging` gets a replace that is allowed to MUTATE
+                    # live state and a rollback that then refuses to put it back. The
+                    # safety net becomes the one thing that will not run, at the only
+                    # moment it matters.
                     allow_unpinned=allow_unpinned,
                     must_create=True,
                     on_skip=pinned_fs.fatal_skip_reporter(f"rollback of {rel!r}"),

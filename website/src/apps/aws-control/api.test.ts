@@ -402,6 +402,44 @@ describe('awsControlApi.backup*', () => {
     expect(url).toBe(`${BASE}/backup/a/restore`)
     expect(JSON.parse(init.body as string)).toEqual({ key: 'archive/2026.tar' })
   })
+
+  it('backupRestore omits foreignOk entirely when it is not requested', async () => {
+    // A body carrying `foreignOk: false` would still be an override attempt to
+    // read; the client sends only the key when no override is asked for.
+    fetchSpy.mockResolvedValue(jsonResponse({ downloaded: true, path: '/tmp/x', bytes: 1 }))
+    await awsControlApi.backupRestore('a', 'archive/2026.tar', false)
+    const body = JSON.parse(firstCall(fetchSpy)[1].body as string)
+    expect(body).toEqual({ key: 'archive/2026.tar' })
+    expect('foreignOk' in body).toBe(false)
+  })
+
+  it('backupRestore sends foreignOk true only when the override is confirmed', async () => {
+    fetchSpy.mockResolvedValue(jsonResponse({ downloaded: true, path: '/tmp/x', bytes: 1 }))
+    await awsControlApi.backupRestore('a', 'archive/2026.tar', true)
+    expect(JSON.parse(firstCall(fetchSpy)[1].body as string)).toEqual({
+      key: 'archive/2026.tar',
+      foreignOk: true,
+    })
+  })
+
+  it('installLabel POSTs {label} as JSON to /install/label', async () => {
+    fetchSpy.mockResolvedValue(jsonResponse({ install: { id: 'a'.repeat(32), label: 'My Mac' } }))
+    const res = await awsControlApi.installLabel('My Mac')
+    const [url, init] = firstCall(fetchSpy)
+    expect(url).toBe(`${BASE}/install/label`)
+    expect(init.method).toBe('POST')
+    expect((init.headers as Record<string, string>)['Content-Type']).toBe('application/json')
+    expect(JSON.parse(init.body as string)).toEqual({ label: 'My Mac' })
+    expect(res.install.label).toBe('My Mac')
+  })
+
+  it('installLabel surfaces the backend refusal code (invalid_label) as the error message', async () => {
+    fetchSpy.mockResolvedValue(jsonResponse({ error: 'label too long', code: 'invalid_label' }, 400))
+    await expect(awsControlApi.installLabel('x'.repeat(999))).rejects.toMatchObject({
+      message: 'invalid_label',
+      status: 400,
+    })
+  })
 })
 
 /* ── profile discovery + registration ─────────────────────────────────────── */

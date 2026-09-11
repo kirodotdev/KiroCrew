@@ -677,9 +677,8 @@ def _refuse_linked_parent(path: Path) -> None:
     trust anchor — silently redirects the whole write: the secret lands under
     whatever the link points at, outside the sensitive-path fence that is the
     only real boundary against a same-UID reader, and the caller sees success.
-    Issue #4381 is the class report; a per-caller check was rejected there as
-    whack-a-mole, so the refusal lives in the one helper every secret write
-    already goes through.
+    A per-caller check is whack-a-mole, so the refusal lives in the one helper
+    every secret write already goes through.
 
     Two checks, because neither alone is sufficient:
 
@@ -851,8 +850,8 @@ def atomic_write(
     *content* may be ``str`` (written UTF-8 encoded in text mode) or ``bytes``
     (written verbatim in binary mode). Binary mode exists for callers whose
     payload is not text at all — a compiled helper binary, an archive — which
-    previously had to hand-roll the temp-write-and-rename and so silently
-    missed the Windows rename retry above.
+    would otherwise hand-roll the temp-write-and-rename and silently miss the
+    Windows rename retry above.
 
     *mode* sets explicit permissions (e.g. ``0o600`` for secrets).
     ``None`` (default) applies umask-based permissions (matching ``open()``).
@@ -877,8 +876,7 @@ def atomic_write(
     explicit *mode* alongside it is a caller bug, and narrowing it silently
     would hide that. It further implies :func:`_refuse_linked_parent`: a secret
     writer must never follow a link, because a pre-planted parent symlink or
-    junction redirects the whole write to a location the caller never named
-    (issue #4381).
+    junction redirects the whole write to a location the caller never named.
 
     *restrict_on_error* selects what happens when that lockdown fails, and only
     means anything alongside ``restrict_to_owner=True``. The default ``"raise"``

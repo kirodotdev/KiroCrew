@@ -328,7 +328,7 @@ class FieldSpec:
     # truncate it to the cap instead of rejecting the whole call. For a field
     # whose only job is to EXPLAIN a request — ``autonudge_stop`` /
     # ``monitor_stop`` ``reason`` — the length of the explanation must not be
-    # able to defeat the request itself (#8635). Never set this on a field the
+    # able to defeat the request itself. Never set this on a field the
     # handler acts on: a truncated control input is a wrong control input, and
     # rejecting is the only safe answer there.
     #
@@ -1052,6 +1052,21 @@ SPAWN_RUN_SCHEMA = ToolSchema(
         FieldSpec("include_memory", bool, default=True),
         FieldSpec("include_lessons", bool, default=True),
         FieldSpec("include_project", bool, default=True),
+        # DELEGATE TO A CREW BY NAME. A crew is a crew-member alias in
+        # ``cfg.agents``; ``agent`` above is a kiro-cli template id, a disjoint
+        # namespace. Naming the crew is what lets the child inherit that crew's
+        # memory silo and its template together, so an orchestrator can hand work
+        # to the coding crew without the email crew's memory travelling with it.
+        # Resolved through ``resolve_agent_bindings``, never by deriving a store
+        # from ``agent``, which answers `default` for exactly the crew that
+        # configured otherwise.
+        # NOT pattern-validated, for the reason SELECT_CREW_SCHEMA states above:
+        # crew creation only strips the name, so a crew may legitimately contain
+        # spaces or dots, and a regex here would refuse a crew the operator can
+        # see in the roster. The deny-by-default gate is the `crew not in
+        # cfg.agents` membership check at the endpoint, which answers 400 with an
+        # `unknown_crew` code rather than degrading to the global store.
+        FieldSpec("crew", str, max_len=MAX_SHORT_STRING),
     ],
 )
 
@@ -1187,11 +1202,11 @@ AUTONUDGE_STOP_SCHEMA = ToolSchema(
     tool_name="autonudge_stop",
     fields=[
         # Clamped, not rejected: a stop request must not be defeated by the
-        # length of its own explanation (#8635). ``reason`` is a human-readable
+        # length of its own explanation. ``reason`` is a human-readable
         # note — it selects no behavior in ``_autonudge_stop``, which only
         # interpolates it into the applied-outcome text and the persisted stop
         # record — so truncating it costs a few words of narrative and saves
-        # the stop. Rejecting cost the stop AND fired the consumer's
+        # the stop. Rejecting would cost the stop AND fire the consumer's
         # lost-marker WARNING.
         FieldSpec("reason", str, max_len=MAX_SHORT_STRING, clamp_to_max=True),
     ],
@@ -1301,7 +1316,7 @@ ASK_QUESTION_SCHEMA = ToolSchema(
         # mirrors DashboardState._QUESTION_TIMEOUT_MAX, which governs the legacy
         # blocking POST /api/ask-question path. Kept lenient rather than removed
         # so a caller still passing it gets its card instead of a validation
-        # error, while the tool's inputSchema no longer advertises it — a knob
+        # error, while the tool's inputSchema does not advertise it — a knob
         # with no effect should not be offered to a model.
         FieldSpec("timeout_secs", int, min_val=15, max_val=540),
     ],
@@ -1317,6 +1332,21 @@ DELETE_MESSAGE_SCHEMA = ToolSchema(
     fields=[
         FieldSpec("channel", str, required=True, max_len=MAX_SHORT_STRING),
         FieldSpec("ts", str, required=True, max_len=MAX_SHORT_STRING),
+    ],
+)
+
+# update_message addresses a message the same way delete_message does, so it is
+# schema-gated for the same reason (a missing key must be a clean ValidationError,
+# not a crash out of the stdio loop). ``text``/``blocks`` are optional HERE and
+# bounded like SEND_MESSAGE's: the "one of the two is required" rule is the
+# handler's, because a schema cannot express the either/or.
+UPDATE_MESSAGE_SCHEMA = ToolSchema(
+    tool_name="update_message",
+    fields=[
+        FieldSpec("channel", str, required=True, max_len=MAX_SHORT_STRING),
+        FieldSpec("ts", str, required=True, max_len=MAX_SHORT_STRING),
+        FieldSpec("text", str, max_len=MAX_MEDIUM_STRING),
+        FieldSpec("blocks", list, item_type=dict, max_items=50),
     ],
 )
 
@@ -1605,12 +1635,12 @@ def _validate_artifact_save(cleaned: dict) -> None:
 
 # Shared slug pattern (matches _ARTIFACT_SLUG_RE + deploy slug validation).
 _WM_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
-# constants.AWS_PROFILE_NAME_RE — the single source of truth (#6063): '+'
+# constants.AWS_PROFILE_NAME_RE — the single source of truth: '+'
 # admitted for IAM Identity Center derived profiles
-# ("<account>+<permission-set>", #6051); first char excludes '-' so a stored
+# ("<account>+<permission-set>"); first char excludes '-' so a stored
 # profile is never option-shaped when it later reaches `--profile <value>`
 # argv. \Z is load-bearing here: this path matches the raw value WITHOUT a
-# strip, so the old $ anchor let a trailing-newline value through.
+# strip, so a $ anchor would let a trailing-newline value through.
 _WM_PROFILE_RE = AWS_PROFILE_NAME_RE
 _WM_URL_RE = re.compile(r"^https?://.{1,2048}$")
 _WM_LIFECYCLE_STATUSES = {"draft", "deploying", "live", "error", "expired"}
@@ -2328,6 +2358,7 @@ CRON_ADD_SCHEMA = ToolSchema(
         FieldSpec("delay", (int, float), min_val=1, max_val=86400 * 30),  # 1s to 30 days
         FieldSpec("at_time", str, max_len=100),
         FieldSpec("agent", str, max_len=MAX_SHORT_STRING, pattern=_AGENT_NAME_RE),
+        FieldSpec("member_id", str, max_len=MAX_SHORT_STRING),
         FieldSpec("model", str, max_len=MAX_SHORT_STRING, pattern=_MODEL_NAME_RE),
         FieldSpec("silent", bool),
         FieldSpec("channel", str, max_len=CHANNEL_MAX_LEN, pattern=CHANNEL_ID_RE),
@@ -2387,6 +2418,10 @@ CRON_LIST_SCHEMA = ToolSchema(
     tool_name="cron_list",
     fields=[
         FieldSpec("verbose", bool),
+        # Registered here as well as in the tool's own inputSchema: _validate_args
+        # drops any field this list does not name, so a schema-only addition would
+        # silently never reach the handler.
+        FieldSpec("json", bool),
         FieldSpec(
             "ids",
             list,
@@ -2514,13 +2549,13 @@ HOOK_UPDATE_SCHEMA = ToolSchema(
 #: Syntactic shape gate for a filesystem path arriving over the dashboard's
 #: file endpoints. It admits POSIX (``/x``, ``~/x``) *and* native Windows
 #: (``C:\x``, ``C:/x``, UNC ``\\host\share\x``) absolute paths. A prefix is
-#: still required, so a bare relative path is refused exactly as before --
+#: still required, so a bare relative path is still refused --
 #: the endpoints that support relative input rewrite it to an absolute path
 #: via ``_resolve_project_relative`` under ``resolve=1``, ahead of this gate.
 #:
 #: One pattern rather than a ``sys.platform`` branch: a drive letter and a UNC
-#: root have no meaning on POSIX, so accepting those shapes there admits no
-#: path that was previously unreachable, and a single pattern cannot drift
+#: root have no meaning on POSIX, so accepting those shapes there grants
+#: nothing, and a single pattern cannot drift
 #: between platforms the way two would. This is a *syntax* gate only -- the
 #: security boundary is downstream, where ``hooks.validate_file_path``
 #: canonicalizes through ``realpath`` (resolving ``..`` and following symlinks)
@@ -2571,9 +2606,9 @@ _TARGET_ID_RE = re.compile(r"^[\x21-\x7e]{1,512}$")
 # channel a proactive send may name. Built from the shared
 # ``CHANNEL_SEND_NAMESPACES`` so this, the tool's advertised enum and the gateway's
 # accepted ``channel_type`` set are three views of ONE roster rather than three
-# lists that drift -- which is the #6514 defect, where this pattern and the tool's
-# enum both still read "discord" alone months after eight more transports were
-# registered and made serviceable by the gateway's channel-neutral owner-DM leg.
+# lists that drift. Drift here is a refusal: a pattern and an enum reading
+# "discord" alone reject every other transport the gateway's channel-neutral
+# owner-DM leg already serves.
 #
 # ``origin`` is added because it is a delivery MODE rather than a transport, and
 # ``slack`` because it routes through its own client instead of the channel ladder;
@@ -2657,7 +2692,7 @@ SEND_MESSAGE_SCHEMA = ToolSchema(
         # Must accept every value ``mcp_tools.messaging._SESSION_TARGETS``
         # advertises: this pattern runs BEFORE the handler, so a value missing
         # here is rejected as malformed even though the tool's own enum offers
-        # it. That is what happened to the eight non-Discord channels in #6514.
+        # it.
         #
         # DERIVED from the same roster the tool's enum and the gateway's accepted
         # ``channel_type`` set are built from, so the three cannot disagree.
@@ -2722,6 +2757,13 @@ REGISTER_HOOK_SCHEMA = ToolSchema(
     fields=[
         FieldSpec("hook_id", str, required=True, max_len=MAX_SHORT_STRING),
         FieldSpec("context_summary", str, required=True, max_len=MAX_MEDIUM_STRING),
+    ],
+)
+
+ROUTE_CREW_SCHEMA = ToolSchema(
+    tool_name="route_crew",
+    fields=[
+        FieldSpec("task", str, required=True, max_len=MAX_MEDIUM_STRING),
     ],
 )
 
@@ -2828,7 +2870,7 @@ SESSION_CREATE_SCHEMA = ToolSchema(
         # A sidebar-folder reference — a folder id OR a ``/``-separated human
         # path, the same shape ``chat_folder_move_session.folder`` takes — so
         # filing is atomic with creation instead of a create-then-move pair a
-        # folder delete can land between (#6118). Bounded like every other
+        # folder delete can land between. Bounded like every other
         # folder reference; the two readings share no charset, so only the
         # length is checked here.
         FieldSpec("folder", str, required=False, default="", max_len=_ARTIFACT_FOLDER_REF_MAX),
@@ -2869,6 +2911,7 @@ SESSION_READ_MESSAGE_SCHEMA = ToolSchema(
 # ── Schema Registry ──
 
 MCP_CORE_SCHEMAS: dict[str, ToolSchema] = {
+    "route_crew": ROUTE_CREW_SCHEMA,
     "spawn_run": SPAWN_RUN_SCHEMA,
     "spawn_sub_agents": SPAWN_SUB_AGENTS_SCHEMA,
     "spawn_list": SPAWN_LIST_SCHEMA,
@@ -2896,6 +2939,7 @@ MCP_CORE_SCHEMAS: dict[str, ToolSchema] = {
     "monitor_update": MONITOR_UPDATE_SCHEMA,
     "ask_question": ASK_QUESTION_SCHEMA,
     "delete_message": DELETE_MESSAGE_SCHEMA,
+    "update_message": UPDATE_MESSAGE_SCHEMA,
     "local_knowledge_search": LOCAL_KNOWLEDGE_SEARCH_SCHEMA,
     "knowledge_dedup": KNOWLEDGE_DEDUP_SCHEMA,
     "knowledge_add_document": KNOWLEDGE_ADD_DOCUMENT_SCHEMA,

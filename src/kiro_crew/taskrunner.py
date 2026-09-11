@@ -589,6 +589,11 @@ class TaskRunner:
             workflow_revision=workflow_revision,
         )
         try:
+            from kiro_crew.context import inherit_session_memory
+
+            await inherit_session_memory(
+                self._ctx, session_key, f"{_SESSION_PREFIX}:{task_id}:runtime"
+            )
             if source == "yaml":
                 run.tasks = _decompose_yaml_with_audit(decompose_input, task_id)
             else:
@@ -822,7 +827,7 @@ class TaskRunner:
         await self._apersist_runs()
 
         self._agent = agent
-        history_key = f"taskrunner:run:{task_id}"
+        history_key = await self._bound_history_key(run, f"taskrunner:run:{task_id}")
 
         async def _execute() -> None:
             watchdog_task: asyncio.Task | None = None  # type: ignore[type-arg]
@@ -936,7 +941,7 @@ class TaskRunner:
         await self._grant_run_trust(run, bool(auto_approve))
         self._runs[task_id] = run
         watchdog_task: asyncio.Task | None = None  # type: ignore[type-arg]
-        history_key = f"taskrunner:run:{spec_path.stem}"
+        history_key = await self._bound_history_key(run, f"taskrunner:run:{spec_path.stem}")
         try:
             await self._workflow_begin(run)
             await self._workflow_rebind(run)
@@ -1140,7 +1145,9 @@ class TaskRunner:
 
     async def self_review(self, run: Project, task: Task, session_key: str = "") -> bool:
         """Delegate to standalone self_review for backward compat."""
-        return await self_review_fn(run, task, self._sessions, self._agent, session_key=session_key)
+        return await self_review_fn(
+            run, task, self._sessions, self._agent, session_key=session_key, ctx=self._ctx
+        )
 
     async def _execute_single_task(
         self,
@@ -1244,7 +1251,9 @@ class TaskRunner:
         await self._notify(
             "\U0001f4cb Revised plan", f"{len(new_tasks)} new task(s):\n{task_list}", run=run
         )
-        history_key = f"taskrunner:run:{Path(run.spec_path).stem}"
+        history_key = await self._bound_history_key(
+            run, f"taskrunner:run:{Path(run.spec_path).stem}"
+        )
         for task in new_tasks:
             if run.status != "running" or shutdown_event.is_set():
                 break
@@ -1346,6 +1355,11 @@ class TaskRunner:
                 id_suffix += 1
                 task_id = f"{Path(spec_path).stem}_{id_suffix}"
 
+            from kiro_crew.context import inherit_session_memory
+
+            await inherit_session_memory(
+                self._ctx, session_key, f"{_SESSION_PREFIX}:{task_id}:runtime"
+            )
             self._runs[task_id] = Project(
                 spec_path=str(spec_path),
                 spec_content=early_content,
@@ -1515,11 +1529,11 @@ class TaskRunner:
             logger.debug("SEL audit failed for delete_run %s", task_id)
         return True
 
-    def cancel(self, task_id: str | None = None) -> None:
+    def cancel(self, task_id: str | None = None, *, exact: bool = False) -> None:
         """Cancel running tasks. Sets status to 'cancelling'; the finally block
         in run()/retry_from_task() handles actual cleanup and final status."""
         if task_id:
-            matches = [r for r in self._runs.values() if r.name == task_id]
+            matches = [] if exact else [r for r in self._runs.values() if r.name == task_id]
             keys = [r.task_id for r in matches] if matches else [task_id]
             for key in keys:
                 run = self._runs.get(key)
@@ -1585,7 +1599,9 @@ class TaskRunner:
         run.started_at = run.last_task_time = time.time()
         await self._apersist_runs()  # persist immediately so crash recovery works
         self._agent = agent
-        history_key = f"taskrunner:run:{Path(run.spec_path).stem}"
+        history_key = await self._bound_history_key(
+            run, f"taskrunner:run:{Path(run.spec_path).stem}"
+        )
 
         async def _retry() -> None:
             watchdog_task: asyncio.Task | None = None  # type: ignore[type-arg]
@@ -1678,6 +1694,17 @@ class TaskRunner:
 
     # ── History Integration ──
 
+    async def _bound_history_key(self, run: Project, legacy_key: str) -> str:
+        from kiro_crew.context import inherit_session_memory
+        from kiro_crew.member_memory_auth import read_private_session_store
+
+        runtime_key = f"{_SESSION_PREFIX}:{run.task_id}:runtime"
+        if await asyncio.to_thread(read_private_session_store, runtime_key) is None:
+            return legacy_key
+        history_key = f"taskrunner:run:{run.task_id}"
+        await inherit_session_memory(self._ctx, runtime_key, history_key)
+        return history_key
+
     def _log_task(self, history_key: str, run: Project, task: Task) -> None:
         if not self._conversation_log:
             return
@@ -1721,9 +1748,28 @@ class TaskRunner:
     # ── Learn from Failures ──
 
     async def _extract_lesson(self, task: Task, run: Project | None = None) -> None:
-        if not self._lesson_store:
-            return
         try:
+            from kiro_crew.member_memory_auth import read_private_session_store
+            from kiro_crew.memory_stores import UnknownMemoryStore
+
+            runtime_key = f"{_SESSION_PREFIX}:{run.task_id}:runtime" if run else ""
+            private_store = (
+                await asyncio.to_thread(read_private_session_store, runtime_key)
+                if runtime_key
+                else None
+            )
+            lesson_store = self._lesson_store
+            if not private_store and not lesson_store:
+                return
+            private_vectors = None
+            if private_store:
+                from kiro_crew.context import inherit_session_memory
+
+                context = self._ctx
+                if context is None:
+                    raise UnknownMemoryStore("The task's private lesson context is unavailable")
+                await inherit_session_memory(context, runtime_key, runtime_key)
+                private_vectors = await context.ensure_store(private_store)
             prompt = (
                 "A task failed after multiple attempts.\n\n"
                 f'Task: "{task.title}"\n'
@@ -1734,13 +1780,23 @@ class TaskRunner:
                 '"category": "tool"}\n\n'
                 "Respond with ONLY valid JSON."
             )
-            result = await self._call_llm_for_lesson(prompt)
+            result = (
+                await self._call_llm_for_lesson(prompt, runtime_key=runtime_key)
+                if private_store
+                else await self._call_llm_for_lesson(prompt)
+            )
             if not result or "rule" not in result:
                 return
             rule = result["rule"]
             category = result.get("category", "tool")
             negative = result.get("negative")
-            if self._consolidator and self._consolidator._vector_store:
+            if private_store:
+                if private_vectors is None:
+                    raise UnknownMemoryStore("The task's private lesson store is unavailable")
+                await run_in_embed_pool(
+                    private_vectors.write_lesson, rule, category, negative, "task_runner"
+                )
+            elif self._consolidator and self._consolidator._vector_store:
                 # write_lesson embeds via blocking urllib (Ollama); offload to
                 # keep the gateway event loop responsive (same pattern as
                 # dashboard/handlers/cron.py api_lessons_create).
@@ -1752,6 +1808,8 @@ class TaskRunner:
                     "task_runner",
                 )
             else:
+                if lesson_store is None:
+                    return
                 # Offloaded for the same reason as write_lesson above, and now
                 # necessarily so: LessonStore locks per PATH, so instances in
                 # different components share one lock. A dashboard writer holding
@@ -1759,7 +1817,7 @@ class TaskRunner:
                 # ran here. The lock is what makes the write atomic, so the fix is
                 # to move the caller off the loop rather than to weaken it.
                 await asyncio.to_thread(
-                    self._lesson_store.save,
+                    lesson_store.save,
                     Lesson(
                         ts=datetime.now(tz=timezone.utc).isoformat(),
                         rule=rule,
@@ -1774,20 +1832,32 @@ class TaskRunner:
         except Exception:
             logger.debug("Lesson extraction failed", exc_info=True)
 
-    async def _call_llm_for_lesson(self, prompt: str) -> dict | None:
-        session_key = BACKGROUND_KEY
+    async def _call_llm_for_lesson(self, prompt: str, *, runtime_key: str = "") -> dict | None:
+        session_key = f"{runtime_key}:lesson" if runtime_key else BACKGROUND_KEY
+        if runtime_key:
+            from kiro_crew.context import inherit_session_memory
+
+            await inherit_session_memory(self._ctx, runtime_key, session_key)
         try:
-            client, _is_new, _resumed = await self._sessions.get_or_create(
-                session_key,
-                agent=self._agent or None,
-            )
+            if runtime_key:
+                client, _is_new, _resumed = await self._sessions.open_task_session(
+                    runtime_key, session_key, agent=self._agent or None
+                )
+            else:
+                client, _is_new, _resumed = await self._sessions.get_or_create(
+                    session_key,
+                    agent=self._agent or None,
+                )
             return await stream_and_collect_json(client, prompt)
         except Exception:
             logger.debug("LLM lesson extraction call failed", exc_info=True)
             return None
         finally:
             self._sessions.release(session_key)
-            await self._sessions.recycle_background()
+            if runtime_key:
+                await self._sessions.reset(session_key)
+            else:
+                await self._sessions.recycle_background()
 
     # ── Task Watchdog ──
 

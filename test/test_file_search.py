@@ -259,7 +259,7 @@ class TestFileSearch:
             resp = await client.get(f"/api/file-search?q=xyz&project={tmp_path}")
             assert (await resp.json())["results"] == []
 
-    # ---- caller-supplied ``limit`` (#5639) ----------------------------------
+    # ---- caller-supplied ``limit`` ----------------------------------
 
     @pytest.mark.asyncio
     async def test_limit_param_honoured(self, tmp_path, mock_sel):

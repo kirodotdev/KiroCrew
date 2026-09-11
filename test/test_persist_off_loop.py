@@ -1,5 +1,5 @@
-"""Build gate + tests: the Slack persist path stays off the event loop (#1699),
-and a slot orders its rows against foreign on-disk rows (#1689).
+"""Build gate + tests: the Slack persist path stays off the event loop,
+and a slot orders its rows against foreign on-disk rows.
 
 ## Why a gate and not just tests
 
@@ -338,7 +338,7 @@ async def test_two_concurrent_turns_do_not_interleave(tmp_path) -> None:
     ``save_conversation_turn`` never yields between its two appends, so the pair
     was effectively atomic. Dispatching it to worker threads makes two concurrent
     turns for the same session genuinely interleavable into
-    ``user_A, user_B, assistant_A, assistant_B`` -- turns that no longer pair up,
+    ``user_A, user_B, assistant_A, assistant_B`` -- turns that do not pair up,
     which no timestamp ordering can repair because every row's ``ts`` is
     individually correct.
 
@@ -414,7 +414,7 @@ class TestLatestTranscriptTs:
         )
 
 
-# ── #1689: a slot orders against a foreign on-disk row ───────────────────────
+# ── A slot orders against a foreign on-disk row ─────────────────────────────
 #
 # The behavioural coverage for that lives in test_transcript_row_ordering.py,
 # which owns transcript ordering and already carries the colliding-clock
@@ -453,7 +453,7 @@ def test_all_candidates_corrupt_yields_no_floor(bad: str) -> None:
     assert latest_transcript_ts(bad, bad) is None
 
 
-# ── Restore-read tier: no startup restore read is INLINED on the loop (#895) ──
+# ── Restore-read tier: no startup restore read is INLINED on the loop ────────
 #
 # Same failure family as the persist gate above, opposite direction: a READ this
 # time, and the cost is not a dropped write but a stalled event loop. The startup

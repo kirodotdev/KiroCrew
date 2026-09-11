@@ -980,7 +980,7 @@ class TestWindowRenderScale:
     This ratio is what sizes a capture buffer. ``PrintWindow`` asks the window to
     draw in ITS OWN coordinate space, so a DPI-unaware window renders at its logical
     size into whatever buffer it is handed and an aware-sized one is left with a
-    black margin — an image that no longer maps linearly onto the window rect the
+    black margin — an image that does not map linearly onto the window rect the
     element frames use. Every failure answers 1.0, which is exactly right for an
     aware window and no worse than an unscaled capture for anything else.
     """
@@ -1294,7 +1294,7 @@ class TestTheMouseRecords:
         operator's real mouse button held, and it returns NORMALLY — so a spy that
         always reports full acceptance cannot exercise it.
 
-        *on_call* exists because a drag is no longer one batch. It submits
+        *on_call* exists because a drag is not one batch. It submits
         ``[move, down]``, then one call per path point, then ``[move, up]`` — so the
         state where the button is PHYSICALLY HELD is a truncation on an intermediate
         MOVE batch (call 2+), not on the press. Truncating call 1 only means the press
@@ -1514,7 +1514,7 @@ class TestTheMouseRecords:
 
         Pinned because a reviewer reading ``_send``'s docstring would reasonably
         "fix" this back into a single batch, and the regression is invisible in code:
-        it produces a drag that still works and no longer draws.
+        it produces a drag that still works and does not draw.
         """
         batches = self._spy(monkeypatch)
         points = [(float(i * 10), 0.0) for i in range(6)]

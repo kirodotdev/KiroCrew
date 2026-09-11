@@ -22,8 +22,13 @@ from kiro_crew import name_grant
 from kiro_crew.acp.client import AcpError, AcpPromptBusy, advertised_model_ids
 from kiro_crew.acp.types import EVENT_STEER_CONSUMED, TurnUsage
 from kiro_crew.config.loader import KiroCrewConfig
+from kiro_crew.credential_errors import is_credential_propagation_delay
 from kiro_crew.hooks import _EDIT_TOOL_KIND, fire_tool_hooks, get_global_hook_store
-from kiro_crew.platform.tool_paths import edit_target_candidates
+from kiro_crew.platform.tool_paths import (
+    command_shaped_strings,
+    edit_target_candidates,
+    is_document_writing_tool,
+)
 from kiro_crew.providers.base import (
     EVENT_COMPLETE,
     EVENT_PERMISSION_REQUEST,
@@ -86,7 +91,10 @@ _JITTER_RNG = random.Random()
 # Matched against the formatted AcpError message (see acp.client._format_acp_error).
 # Auth/validation markers are deliberately ABSENT so those fail fast — a retry
 # cannot fix an expired token or a bad request, and silently retrying them would
-# only delay the correct "re-auth"/"fix the request" signal to the operator.
+# only delay the correct "re-auth"/"fix the request" signal to the operator. The
+# one auth-shaped exception (a credential IAM has not propagated yet) is handled
+# structurally in _is_transient_acp_error, ABOVE the exclusion list, because no
+# marker here could ever be reached for it — see is_credential_propagation_delay.
 _TRANSIENT_MARKERS = (
     "internal server error",
     "internal error: api error",
@@ -119,6 +127,23 @@ _TRANSIENT_MARKERS = (
     # straight and typographic quotes both match the substring.
     "selected is temporarily unavailable",
     "transient error (http 5xx)",  # _format_acp_error's generic-5xx message
+    # IAM credential-propagation race, matched against _format_acp_error's
+    # rewritten wording. The RAW provider sentence ("The security token included
+    # in the request is invalid") is matched structurally instead — see the
+    # is_credential_propagation_delay call below.
+    "credential-propagation delay",
+    # Connection-level failures (client._RE_CONNECTION): raw errno tokens for
+    # restored errors, plus the formatter's wording for fresh ones.
+    "econnrefused",
+    "econnreset",
+    "econnaborted",
+    "etimedout",
+    "epipe",
+    "ehostunreach",
+    "eai_again",
+    "socket hang up",
+    "fetch failed",
+    "could not reach the model backend",
 )
 
 
@@ -126,6 +151,12 @@ def _is_transient_acp_error(msg: str) -> bool:
     """True iff an AcpError message looks like a retryable transient backend
     failure. Auth failures are explicitly excluded (they need re-auth, not retry)."""
     low = msg.lower()
+    if is_credential_propagation_delay(msg):
+        # The one auth-shaped failure a retry DOES fix: a credential IAM has not
+        # propagated yet. Checked BEFORE the exclusions below because Bedrock
+        # ships this rejection AS UnrecognizedClientException, so the
+        # short-circuit would return False and no marker could ever be reached.
+        return True
     if (
         "authentication failed" in low
         or "accessdenied" in low
@@ -155,6 +186,27 @@ def is_transient_backend_error(msg: str) -> bool:
     backend failure (5xx / throttle / stream-reset) rather than an
     auth/validation error. Public alias of :func:`_is_transient_acp_error`."""
     return _is_transient_acp_error(msg)
+
+
+def is_prompt_busy(exc: BaseException) -> bool:
+    """True when *exc* says the backend already holds an in-flight prompt.
+
+    Structural first, with the substring as a fallback: ``_format_acp_error``
+    rewrites the backend's "prompt already in progress" into friendly prose that
+    drops the marker, so a string-only check silently loses the recovery for
+    every producer that formats before raising — which the shared-runtime
+    ``AcpSessionHandle`` does. The fallback still covers unformatted /
+    history-restored messages, and stays scoped to ``AcpError`` so an unrelated
+    exception that happens to mention progress is never mistaken for a wedge.
+
+    Shared with ``channel.run_channel_agent``, whose recovery is the same
+    contract (replace the session, replay once) reached from a different surface.
+    One predicate, so the two cannot come to disagree about what a wedge IS —
+    and so a consumer outside this module never needs the ACP layer to ask.
+    """
+    return isinstance(exc, AcpPromptBusy) or (
+        isinstance(exc, AcpError) and "already in progress" in str(exc)
+    )
 
 
 def acp_error_is_transient(exc: BaseException) -> bool:
@@ -917,9 +969,13 @@ def _extract_tool_input_strings(tool_input: str) -> list[str]:
 # gateway and losing the whole turn.
 #
 # Known cost of that trade: a permission-gated write of a benign file larger
-# than this lands its whole content in ``tool_input`` and is refused. The durable
-# fix is to stop running the SHELL-COMMAND matcher over fields that never carry a
-# command. Tracked in https://github.com/kirodotdev/KiroCrew/issues/8053.
+# than this lands its whole content in ``tool_input`` and is refused WHEN the
+# frame's provenance is unknown. An edit with trusted provenance is judged by
+# its target path instead (``_edit_target_denial``), and every other non-shell
+# tool with trusted provenance has its document-body fields skipped
+# (``platform.tool_paths.command_shaped_strings``), so neither reaches this
+# ceiling on a body; the residual is the unclassified frame, which keeps the
+# full scan by design. Tracked in https://github.com/kirodotdev/KiroCrew/issues/8053.
 #
 # One number for both tiers: the shell gate refuses a command above
 # ``security.MAX_SCANNABLE_COMMAND_CHARS`` on its own (every caller, not only
@@ -1073,11 +1129,42 @@ def _first_tool_input_denial(
 
 
 class ToolApprovalPolicy(Enum):
-    """How to handle tool permission requests during streaming."""
+    """How to handle tool permission requests during streaming.
+
+    ``READ_ONLY`` is the dashboard "Reads" approval mode's semantics ported to
+    surfaces that have no interactive approver: provably read-only calls are
+    auto-approved through the SAME hook gate the Reads mode uses (deny floor
+    first, then the read-only classifier), and every call that is not provably
+    read-only is rejected — where the Reads mode would ask, this policy
+    refuses. Requires ``hooks``; without a gate to classify with it fails
+    closed and rejects everything, exactly like ``REJECT_ALL``.
+
+    Only the classifier's own verdict approves under ``READ_ONLY``. The hook
+    gate is asked ``classifier_only``, so its GRANT tiers — the operator's
+    ``auto_approve_tools`` globs and the app-own-server rule, which vouch for
+    the caller and say nothing about what the call does — are skipped rather
+    than honoured, and an auto-approve is then trusted only when the result
+    carries the classifier's ``read_only`` tag. A grant that shadows a
+    read-only call therefore still gets the read approved (by the classifier),
+    and a grant that shadows a write approves nothing.
+
+    With no approver to catch an over-approval, ``classifier_only`` also
+    restricts proof to HOST-TRUSTED facts: the recovered shell command judged
+    by ``is_read_only_bash``, or a built-in the host knows to be read-only
+    (``hooks._HOST_READ_ONLY_BUILTIN_TOOLS``) named by the non-model-authored
+    ``_meta.kiro.toolName`` with no MCP server behind it, and only when the
+    event carries ``mcp_identity_trusted`` (the pair came from the
+    provenance-verified caches, not an inline payload). The agent-influenced
+    ACP ``kind`` and the model-authored title may narrow but never prove, so a
+    mutating tool labelled ``kind="read"``, a read-looking title, and any
+    MCP-served tool (no host-trusted read-only marker exists for one) are
+    rejected here where the interactive Reads mode would still ask.
+    """
 
     AUTO_APPROVE = "auto_approve"
     REJECT_ALL = "reject_all"
     HOOK_BASED = "hook_based"
+    READ_ONLY = "read_only"
 
 
 # ── Stream and Collect ──
@@ -1341,7 +1428,7 @@ def _attempt_usage(provider: Any, *, since: Any = _NO_PRIOR_STATS) -> TurnUsage:
         # predating the converter) fall through to the credits-only constructor,
         # which is byte-identical for the kiro seam. The converter's failure is
         # contained so a faulty to_turn_usage degrades to the credits read
-        # rather than silently zeroing a turn that previously billed.
+        # rather than silently zeroing a turn that did bill.
         to_usage = getattr(stats, "to_turn_usage", None)
         if callable(to_usage):
             try:
@@ -1517,12 +1604,37 @@ def _provider_label(provider: Any) -> str:
         return ""
 
 
+async def _cleanup_memory_consolidation_session(
+    sessions: Any, key: str, memory_store: str, log: Any
+) -> None:
+    """Retire one generated runtime before removing its private artifacts."""
+    try:
+        await sessions.remove(key)
+    except Exception:
+        # A provider that failed to retire may still have a live process or a
+        # late PID proof. Preserve both the transcript and binding in that case;
+        # deleting authority while the process survives would be unsafe.
+        logger.debug("memory consolidation session retirement failed", exc_info=True)
+        return
+    try:
+        from kiro_crew.member_memory_auth import retire_memory_consolidation_binding
+
+        # remove() waits for retirement but preserves resumable mappings. This
+        # generated UUID has no user continuation, so discard that mapping too.
+        await sessions.destroy(key)
+        await asyncio.to_thread(log.delete_memory_consolidation_session, key, memory_store)
+        await asyncio.to_thread(retire_memory_consolidation_binding, key, memory_store)
+    except Exception:
+        logger.debug("memory consolidation artifact cleanup failed", exc_info=True)
+
+
 @asynccontextmanager
 async def background_turn(
     sessions: Any,
     *,
     task: str,
     agent: "str | None" = None,
+    memory_store: str = "",
 ) -> "AsyncIterator[Any]":
     """Take the shared background session for ONE turn, then release and account.
 
@@ -1554,10 +1666,34 @@ async def background_turn(
     """
     from kiro_crew.session import BACKGROUND_AGENT, BACKGROUND_KEY  # circular import
 
-    if agent is None:
-        client, _new, _resumed = await sessions.get_or_create(BACKGROUND_KEY)
-    else:
-        client, _new, _resumed = await sessions.get_or_create(BACKGROUND_KEY, agent=agent)
+    key = BACKGROUND_KEY
+    if memory_store:
+        from uuid import uuid4
+
+        from kiro_crew.history import ConversationLog
+        from kiro_crew.member_memory_auth import bind_private_session_store
+        from kiro_crew.memory_stores import memory_store_version, require_memory_store
+
+        await asyncio.to_thread(require_memory_store, memory_store)
+        if memory_store_version(memory_store) != 2:
+            raise ValueError("Dedicated member consolidation requires private V2 memory")
+        key = f"memory-consolidation:{memory_store}:{uuid4().hex}"
+        log = ConversationLog()
+        try:
+            await asyncio.to_thread(log.update_metadata, key, {"memory_store": memory_store})
+            await asyncio.to_thread(bind_private_session_store, key, memory_store)
+        except BaseException:
+            await _cleanup_memory_consolidation_session(sessions, key, memory_store, log)
+            raise
+    try:
+        if agent is None:
+            client, _new, _resumed = await sessions.get_or_create(key)
+        else:
+            client, _new, _resumed = await sessions.get_or_create(key, agent=agent)
+    except BaseException:
+        if memory_store:
+            await _cleanup_memory_consolidation_session(sessions, key, memory_store, log)
+        raise
     # The stats object as it stands BEFORE this turn. The shared session serves
     # many turns, and the runner replaces this object only once a turn actually
     # begins, so identity is what separates a turn that ran from one whose
@@ -1585,7 +1721,7 @@ async def background_turn(
         # and an await ordered ahead of this would let a cancelled task hold the
         # shared semaphore forever.
         try:
-            sessions.release(BACKGROUND_KEY)
+            sessions.release(key)
         except Exception:
             logger.debug("background session release failed task=%s", task, exc_info=True)
         # Recycle sits in a finally for the same cancellation reason, and follows
@@ -1607,7 +1743,7 @@ async def background_turn(
                 # dimensions alongside the kiro credits/token signals.
                 if usage_has_billing(usage):
                     await persist_token_record_async(
-                        BACKGROUND_KEY,
+                        key,
                         "",
                         usage,
                         _provider_label(client),
@@ -1620,7 +1756,10 @@ async def background_turn(
                 logger.debug("background turn accounting failed task=%s", task, exc_info=True)
         finally:
             try:
-                await sessions.recycle_background()
+                if memory_store:
+                    await _cleanup_memory_consolidation_session(sessions, key, memory_store, log)
+                else:
+                    await sessions.recycle_background()
             except Exception:
                 logger.debug("background recycle failed task=%s", task, exc_info=True)
 
@@ -1653,7 +1792,7 @@ async def stream_and_collect(
         provider: The LLM provider to stream through.
         message: The prompt to send.
         approval_policy: How to handle tool permission requests.
-        hooks: HookManager for HOOK_BASED approval policy.
+        hooks: HookManager for the HOOK_BASED and READ_ONLY approval policies.
         on_chunk: Optional callback invoked with each text chunk (for progress).
         on_tool_approval: Optional async callback for interactive approval.
         on_steer_consumed: Optional callback invoked with the backend's
@@ -1693,7 +1832,8 @@ async def stream_and_collect(
         app: Owning app name, forwarded to the gate so the app's governance
             PROFILE is resolved — not just the enterprise ceiling.
 
-            All three matter for ``HOOK_BASED`` callers specifically. The gate
+            All three matter for ``HOOK_BASED`` and ``READ_ONLY`` callers
+            specifically. The gate
             resolves ``ceiling ∩ profile``, and it can only look up a profile it
             has been told the name of; with all three empty it applied the
             ceiling alone, so an app profile narrowing (say) ``filesystem.write``
@@ -1844,18 +1984,14 @@ async def stream_and_collect(
             return result_text
         except AcpError as exc:
             msg = str(exc)
-            # Prompt-busy is matched STRUCTURALLY first, with the substring kept
-            # as a fallback. _format_acp_error rewrites the backend's "prompt
-            # already in progress" into friendly prose that no longer carries
-            # the marker, so a string-only check silently loses BOTH arms below
-            # (cancel+retry and PromptBusyExhaustedError) for any producer that
-            # formats before raising — which the shared-runtime AcpSessionHandle
-            # now does. Unattended callers (workflows/agent_pool, handlers/side,
-            # the subagent-completion injector) depend on those arms to reset a
-            # wedged parent session, so losing them surfaces a generic failure
-            # and leaves the session stuck. The fallback still covers
-            # unformatted / history-restored messages.
-            busy = isinstance(exc, AcpPromptBusy) or "already in progress" in msg
+            # See is_prompt_busy for why this is structural rather than a
+            # substring test. Both arms below (cancel+retry and
+            # PromptBusyExhaustedError) hang off it, and the unattended callers
+            # (workflows/agent_pool, handlers/side, the subagent-completion
+            # injector) depend on them to reset a wedged parent session, so a
+            # missed wedge surfaces a generic failure and leaves the session
+            # stuck.
+            busy = is_prompt_busy(exc)
 
             # ── Case 1: prompt-busy (provider mid-turn) — cancel + retry. ──
             if busy:
@@ -2236,18 +2372,56 @@ async def _resolve_permission(
     # target gate). Suppressing the document scan stays keyed on the fully
     # trusted edit reroute (``_edit_params is not None``) alone.
     _edit_target_gated = _edit_params is not None or bool(event.diff_path and not event.is_shell)
-    _input_strings = (
-        []
-        if _edit_params is not None
-        else (_extract_tool_input_strings(_tool_input) if _tool_input else [])
+    # Every OTHER non-shell tool with client-established provenance gets a
+    # FIELD-SCOPED scan: the same three predicates, over every string in the
+    # trusted params except a document body (``platform.tool_paths.
+    # DOCUMENT_BODY_KEYS`` -- ``content``, ``fileText``, ``newStr``, ...). A body
+    # is prose or source, and reading it as a shell command line refused a write
+    # that merely QUOTED ``rm -rf /`` or named a credential path. Provenance is
+    # the client's, never the payload's: ``shell_classified`` with ``is_shell``
+    # False (the shell cache the preceding tool_call frame populated -- a shell
+    # tool keeps the full scan, for it ``command`` IS what executes),
+    # ``raw_params_trusted`` (params from that same cache, so the strings judged
+    # are the ones that execute), and ``mcp_identity_trusted`` (the tool_name /
+    # server caches HIT, so the tool is a resolved built-in or a resolved MCP
+    # tool, not an unknown), and the resolved name must be a BUILT-IN document
+    # writer (``platform.tool_paths.is_document_writing_tool``): an MCP tool can
+    # execute whatever it calls ``content``, so its fields are all scanned. A frame
+    # missing any of those attributes, or carrying it as false, is an UNKNOWN tool
+    # and keeps the full document scan (fail closed). Every non-body string --
+    # a ``command`` word, a path, a URL -- still reaches the scan, and a walk
+    # that hits its work cap is denied as unverifiable.
+    _scoped_params = (
+        event.raw_tool_params
+        if (
+            _edit_params is None
+            and getattr(event, "shell_classified", False)
+            and not event.is_shell
+            and getattr(event, "raw_params_trusted", False)
+            and getattr(event, "mcp_identity_trusted", False)
+            and is_document_writing_tool(
+                getattr(event, "tool_name", ""), getattr(event, "mcp_server_name", "")
+            )
+            and isinstance(getattr(event, "raw_tool_params", None), dict)
+        )
+        else None
     )
+    _scoped_truncated = False
+    if _edit_params is not None:
+        _input_strings: list[str] = []
+    elif _scoped_params is not None:
+        _scoped_strings = command_shaped_strings(_scoped_params)
+        _scoped_truncated = _scoped_strings.truncated
+        _input_strings = list(_scoped_strings)
+    else:
+        _input_strings = _extract_tool_input_strings(_tool_input) if _tool_input else []
 
     def _scan_off_loop() -> tuple[str, str, str, str] | None:
         # One worker hop for the title and the whole tool_input loop. Both are
         # regex-heavy over agent-supplied text; on the event loop a ~9 KB shell
         # title held the loop past the 25 s stall watchdog and took the gateway
-        # down (the title tier used to run inline here while only the tool_input
-        # tier was offloaded, so that crash path survived the first offload).
+        # down (an inline title tier with only the tool_input
+        # tier offloaded leaves exactly that crash path open).
         # ``re`` HOLDS the GIL for one match call, so the hop does not keep the
         # loop live inside a single scan -- the linear patterns and the size
         # ceiling do that; what the hop buys is the realpath I/O inside
@@ -2261,6 +2435,15 @@ async def _resolve_permission(
             edit_hit = _edit_target_denial(_edit_params, event.diff_path)
             if edit_hit is not None:
                 return (*edit_hit, "always_deny_input")
+        if _scoped_truncated:
+            # The field-scoped walk could not finish, so the strings it did
+            # collect are not the whole payload: refuse rather than scan a part.
+            return (
+                "oversize",
+                "Blocked: tool arguments too large to security-scan (deny-by-default)",
+                "",
+                "always_deny_input",
+            )
         if _input_strings:
             input_hit = _first_tool_input_denial(_input_strings, _denied_regexes)
             if input_hit is not None:
@@ -2280,7 +2463,15 @@ async def _resolve_permission(
         )
         return False
 
-    if policy == ToolApprovalPolicy.HOOK_BASED and hooks:
+    if policy == ToolApprovalPolicy.READ_ONLY and hooks is None:
+        # Fail closed: READ_ONLY's classifier IS the hook gate. Without one
+        # there is no way to prove a call read-only, so the policy degrades to
+        # REJECT_ALL rather than to the caller-less auto-approve below.
+        await provider.reject_tool(event.request_id)
+        _log("rejected", metadata={"reason": "read_only_policy_no_hooks"})
+        return False
+
+    if policy in (ToolApprovalPolicy.HOOK_BASED, ToolApprovalPolicy.READ_ONLY) and hooks:
         tool_result = hooks.on_tool_call(
             event.title,
             session_key=session_key,
@@ -2291,6 +2482,18 @@ async def _resolve_permission(
             diff_path=event.diff_path,
             command=event.shell_command,
             is_shell=event.is_shell,
+            mcp_server_name=event.mcp_server_name,
+            mcp_tool_name=event.tool_name,
+            mcp_identity_trusted=event.mcp_identity_trusted,
+            # READ_ONLY asks for the classifier's verdict alone: the gate skips
+            # its grant tiers (`auto_approve_tools`, app-own-server), which vouch
+            # for the caller rather than for the call's effect, so a grant that
+            # shadows a read still lets the classifier approve the read and a
+            # grant that shadows a write approves nothing. Under READ_ONLY the
+            # provenance flag above is also what lets a host-known built-in
+            # (``fs_read``) count as proven read-only. HOOK_BASED keeps the
+            # grants — its approver is the card they skip.
+            classifier_only=policy == ToolApprovalPolicy.READ_ONLY,
         )
         if tool_result.action == TOOL_DENY:
             await provider.reject_tool(event.request_id)
@@ -2309,6 +2512,20 @@ async def _resolve_permission(
             )
             return False
         if tool_result.action == TOOL_AUTO_APPROVE:
+            if policy == ToolApprovalPolicy.READ_ONLY and not tool_result.read_only:
+                # READ_ONLY honours the classifier's verdict alone, and the
+                # result says which route produced it: ``read_only`` is set only
+                # by the read-only classifier, never by a grant (the operator's
+                # `auto_approve_tools` globs, the app-own-server rule), which
+                # vouches for the caller and says nothing about the call's
+                # effect. The gate is asked classifier-only above, so an
+                # untagged auto-approve here comes from a gate that does not
+                # carry the tag — a double, a tier that omits it — and this
+                # surface has no approver to hand it to. Refuse, as policy
+                # state: the same call is allowed where a card exists.
+                await provider.reject_tool(event.request_id)
+                _log("rejected", metadata={"reason": "read_only_policy_unclassified"})
+                return False
             # The hook granted this by NAME (its `auto_approve_tools` globs, or
             # the read-only allowlist). Verify it UNCONDITIONALLY: this helper
             # serves unattended callers (cron / autonudge / heartbeat / Meetings
@@ -2344,6 +2561,19 @@ async def _resolve_permission(
                 await provider.reject_tool(event.request_id)
                 _log("rejected", metadata={"reason": "name_grant_headless_reject"})
                 return False
+
+    if policy == ToolApprovalPolicy.READ_ONLY:
+        # Everything the hook gate did not deny (rejected above) or positively
+        # classify as read-only (approved above, name-grant verified) lands
+        # here: `allow` results, and auto-approves whose name grant was
+        # withheld (a grant-shaped auto-approve is refused above, before the
+        # name check). Where the interactive Reads mode would fall through to the
+        # approval card, this policy refuses — reject is the fallback, and it
+        # runs BEFORE the interactive callback so a caller passing one cannot
+        # widen the policy.
+        await provider.reject_tool(event.request_id)
+        _log("rejected", metadata={"reason": "read_only_policy"})
+        return False
 
     # Interactive approval if callback provided
     if on_tool_approval:
@@ -2418,7 +2648,7 @@ def _extract_json_of_type(
             # error must not escape. Fail the WHOLE scan closed: a truncated
             # scan cannot certify a preferred match as unambiguous, so keeping
             # candidates collected before the bomb would let a worked example
-            # launder past the ambiguity refusal (GPT review, #4974 round 4).
+            # launder past the ambiguity refusal.
             # Callers already have recovery paths for None (schema retry loop,
             # the spine's forcing re-emit); salvaging a prefix of a reply that
             # contains a nesting bomb is not worth defeating them.
@@ -2561,7 +2791,7 @@ async def save_conversation_turn_off_loop(
     The whole turn is written under one :meth:`~kiro_crew.history.ConversationLog.atomic_appends`
     hold. ``append`` locks per ROW, so without it two concurrent turns for the
     same session could interleave into ``user_A, user_B, assistant_A,
-    assistant_B`` -- turns that no longer pair up, which no timestamp ordering can
+    assistant_B`` -- turns that do not pair up, which no timestamp ordering can
     repair because each row's ``ts`` is individually correct. On the loop that was
     impossible (a synchronous caller never yields between its two appends), so the
     hazard is introduced BY offloading and has to be closed here rather than

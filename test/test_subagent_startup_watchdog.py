@@ -4,12 +4,11 @@ Covers ``SubagentManager._is_startup_stalled`` (which a wedged, never-started
 subagent trips) and ``_force_reap(reason="startup_timeout")`` (the clear
 "failed to start" error + tombstone cause it produces).
 
-Regression target: a subagent whose ``_run_inner`` wedged before launching its
-runtime (no pid) and before its first turn used to sit for the full 1800s
-deadline and then surface a misleading "Reaped after 1800s [turn 0/100]"
-error. The startup watchdog now reaps it after a short window with an accurate
-"Failed to start" message, while never touching an agent that is merely
-awaiting spawn approval.
+A subagent whose ``_run_inner`` wedges before launching its runtime (no pid)
+and before its first turn must not sit for the full 1800s deadline and then
+surface a misleading "Reaped after 1800s [turn 0/100]" error. The startup
+watchdog reaps it after a short window with an accurate "Failed to start"
+message, while never touching an agent that is merely awaiting spawn approval.
 """
 
 from __future__ import annotations

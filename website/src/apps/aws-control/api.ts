@@ -34,6 +34,7 @@ import type {
   BackupStatus,
   BackupRunResult,
   BackupRestoreResult,
+  InstallLabelResult,
   IamPolicyResponse,
 } from './types'
 
@@ -333,9 +334,12 @@ export const awsControlApi = {
    * every call, so polling it would spend paid AWS round trips to read a fact the
    * server holds in memory. Ask for it only when the stored-archive list is open.
    */
-  backup(account: string, opts?: { remote?: boolean }): Promise<BackupStatus> {
-    const q = opts?.remote ? '?remote=1' : ''
-    return request<BackupStatus>(`/backup/${enc(account)}${q}`)
+  backup(account: string, opts?: { remote?: boolean; others?: boolean }): Promise<BackupStatus> {
+    const q = new URLSearchParams()
+    if (opts?.remote) q.set('remote', '1')
+    if (opts?.others) q.set('others', '1')
+    const qs = q.toString()
+    return request<BackupStatus>(`/backup/${enc(account)}${qs ? `?${qs}` : ''}`)
   },
 
   /**
@@ -353,8 +357,23 @@ export const awsControlApi = {
     return postJson<{ nightly: boolean }>(`/backup/${enc(account)}/nightly`, { enabled })
   },
 
-  /** Restore one archived key into a local staging folder (nothing is hot-swapped). */
-  backupRestore(account: string, key: string): Promise<BackupRestoreResult> {
-    return postJson<BackupRestoreResult>(`/backup/${enc(account)}/restore`, { key })
+  /**
+   * Restore one archived key into a local staging folder (nothing is hot-swapped).
+   *
+   * `foreignOk` overrides the backend's refusal to restore any archive it cannot
+   * prove is this install's own (409 `foreign_install_archive`); it is sent only
+   * after the reader confirms in-page. That covers every non-self origin, legacy
+   * included -- a pre-namespace archive carries no id, so it confirms and then
+   * sends the override like any other unproven row. The decision is on the
+   * archive's owning id, never its human label.
+   */
+  backupRestore(account: string, key: string, foreignOk?: boolean): Promise<BackupRestoreResult> {
+    const body = foreignOk ? { key, foreignOk: true } : { key }
+    return postJson<BackupRestoreResult>(`/backup/${enc(account)}/restore`, body)
+  },
+
+  /** Rename this install, so its archives render as a name on a co-tenant drive. */
+  installLabel(label: string): Promise<InstallLabelResult> {
+    return postJson<InstallLabelResult>('/install/label', { label })
   },
 }

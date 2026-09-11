@@ -205,7 +205,7 @@ rule aimed at anything else never reaches the document.
 | Class | Where it is applied |
 |---|---|
 | `topbar` | the header shell (`App.tsx`) |
-| `sidebar` | the chat session list (`ChatSidebar.tsx`) |
+| `sidebar` | the conversation-list cards: the chat session list (`ChatSidebar.tsx`) and the Crew Members roster (`members/MembersPage.tsx`), both via `LIST_SHELL_CLS` in `components/listShell.ts` |
 | `chat-container` | the chat scroll region (`ChatPane.tsx`, `ChatPage.tsx`) |
 | `message-bubble` | a user or assistant turn (`chat/UserMessage.tsx`, `chat/AssistantMessage.tsx`) |
 | `input-area` | the composer (`ChatInput.tsx`) |

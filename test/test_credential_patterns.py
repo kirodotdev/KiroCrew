@@ -1,6 +1,6 @@
 """Tests for the shared home of the credential-pattern spellings.
 
-These replace two source-grep pins that used to read ``security.py`` as TEXT and
+These replace two source-grep pins that read ``security.py`` as TEXT and
 assert a literal appeared in it. With one home there is no drift left to pin, so
 what remains here guards the three properties the consolidation actually rests
 on: the home stays import-free, both consumers really do read from it, and the

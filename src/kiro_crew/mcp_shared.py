@@ -51,7 +51,7 @@ logger = logging.getLogger(__name__)
 # request helpers send no caller header at all rather than inventing an
 # identity. The header is ATTRIBUTION for the gateway's audit log (SEL
 # ``source`` — see ``chat_folders._audit_origin``), never authorization: the
-# ``X-Internal-Secret`` handshake alone authenticates the request (#3503).
+# ``X-Internal-Secret`` handshake alone authenticates the request.
 _internal_caller_name: str | None = None
 
 
@@ -69,6 +69,18 @@ def set_internal_caller(name: str | None) -> None:
 def internal_caller() -> str | None:
     """The declared component identity for internal HTTP requests, if any."""
     return _internal_caller_name
+
+
+def member_proof_header_value(proof: str) -> str:
+    """Return ``proof`` when it is safe to send as a header value, else ``""``.
+
+    A gateway-minted member proof is ASCII alphanumerics plus ``-_.``; anything
+    else (CR/LF, separators, non-ASCII) earns no header rather than a header
+    injection surface. One charset rule for every proof-forwarding client.
+    """
+    if proof and proof.isascii() and all(c.isalnum() or c in "-_." for c in proof):
+        return proof
+    return ""
 
 
 # Max tools/call requests buffered while a tool worker is busy.
@@ -304,13 +316,15 @@ _STARTUP_RACE_CACHE_TTL: float = 5.0  # seconds
 _MAX_WARNING_FAILURES: int = 2
 
 
-def _resolve_excluded_tools(caller_session: str = "") -> set[str]:
+def _resolve_excluded_tools(caller_session: str = "", *, member_memory_proof: str = "") -> set[str]:
     """Query the gateway for the current session's managedToolPolicy.exclude.
 
     ``caller_session`` is the verified per-call identity from the gateway's
     caller-meta extension (pooled topology); when non-empty it takes
     precedence over the env/PID resolution below and keys the cache, so
     sessions sharing one backend cannot inherit each other's policy.
+    ``member_memory_proof`` belongs only to that request. It is forwarded to
+    the policy endpoint and is never retained in a policy or connection cache.
 
     Returns a set of tool names that should be hidden from this session.
     Caches the result on success only.  On failure:
@@ -378,8 +392,14 @@ def _resolve_excluded_tools(caller_session: str = "") -> set[str]:
 
         # Resolve session key: the verified per-call caller identity wins
         # (pooled topology); env/PID resolution is the single-session path.
-        session_key = caller_session or os.environ.get("KIROCREW_SESSION_KEY", "")
-        if not session_key:
+        from kiro_crew.member_memory_auth import protected_member_session_for_pid
+
+        protected = None if caller_session else protected_member_session_for_pid(os.getpid())
+        session_key = caller_session or (
+            protected if protected is not None else os.environ.get("KIROCREW_SESSION_KEY", "")
+        )
+        if not session_key and protected is None:
+
             def _ppid_via_libproc(pid: int) -> int:
                 """macOS parent-PID via libproc proc_pidinfo (no exec, sandbox-safe)."""
                 proc_pidtbsdinfo = 3
@@ -467,6 +487,11 @@ def _resolve_excluded_tools(caller_session: str = "") -> set[str]:
 
         headers: dict[str, str] = {"X-Internal-Secret": secret}
         headers["X-Session-Key"] = session_key
+        proof_value = member_proof_header_value(member_memory_proof) if caller_session else ""
+        if proof_value:
+            from kiro_crew.member_memory_auth import PROOF_HEADER
+
+            headers[PROOF_HEADER] = proof_value
 
         req = urllib.request.Request(
             f"{api_base}/api/session-tool-policy",
@@ -622,12 +647,12 @@ def call_tool_with_logging(
     except ValidationError as e:
         # No ``tool_kind``: it is a CLASSIFICATION of the invocation -- callers
         # that write their own rows pass things like "authz" -- and this wrapper
-        # has no per-tool taxonomy to supply. It used to pass ``session_key``,
-        # which is both wrong and redundant, since ``caller_identity`` on the same
-        # record already carries it. The effect was that every row written through
-        # here, across all five MCP servers, held a high-cardinality session key
-        # where a kind belongs, which made the field useless to filter or
-        # aggregate on while still looking populated (#6448). The parameter
+        # has no per-tool taxonomy to supply. Passing ``session_key`` here would be
+        # both wrong and redundant, since ``caller_identity`` on the same
+        # record already carries it: every row written through
+        # here, across all five MCP servers, would hold a high-cardinality session
+        # key where a kind belongs, making the field useless to filter or
+        # aggregate on while still looking populated. The parameter
         # defaults to "", and an honestly empty kind beats a false one.
         sel().log_tool_invocation(
             session_key=session_key,
@@ -863,15 +888,23 @@ def _run_stdio_dispatch_loop(
                 outcome, tool_name, req_id, sel_exc,
             )
 
-    def _req_caller_key(request: dict) -> str:
-        """Parsed caller session key from a request's ``_meta``, or ""."""
+    def _req_caller(request: dict) -> "CallerContext | None":
+        """Current request identity, without borrowing the active worker's caller."""
         try:
-            ctx = CallerContext.from_meta(
-                request.get("params", {}).get("_meta")
-            )
-            return ctx.session_key if ctx is not None else ""
+            return CallerContext.from_meta(request.get("params", {}).get("_meta"))
         except Exception:
-            return ""
+            return None
+
+    def _req_caller_key(request: dict) -> str:
+        ctx = _req_caller(request)
+        return ctx.session_key if ctx is not None else ""
+
+    def _caller_excluded_tools(caller: "CallerContext | None") -> set[str]:
+        if caller is not None and caller.from_gateway and caller.member_memory_proof:
+            return _resolve_excluded_tools(
+                caller.session_key, member_memory_proof=caller.member_memory_proof
+            )
+        return _resolve_excluded_tools(caller.session_key if caller else "")
 
     def _run_tool(
         req_id: Any,
@@ -891,8 +924,8 @@ def _run_stdio_dispatch_loop(
         set_current_caller(caller_ctx)
         # And the connection's namespace separator, which is present even when
         # the caller is not: a tool that keys per-tenant state for a caller the
-        # gateway could not name reads it instead of a process-global fallback
-        # (#5322). Cleared in the same places as the caller.
+        # gateway could not name reads it instead of a process-global fallback.
+        # Cleared in the same places as the caller.
         set_current_tenant_nonce(tenant_nonce)
         try:
             result_text = call_tool_fn(tool_name, tool_args)
@@ -1033,7 +1066,7 @@ def _run_stdio_dispatch_loop(
             # Other messages while busy: drop gracefully. Notifications are
             # fine to drop; initialize/initialized never arrive mid-tool.
             elif method == "tools/list" and req_id is not None:
-                excluded = _resolve_excluded_tools(_req_caller_key(req))
+                excluded = _caller_excluded_tools(_req_caller(req))
                 tools = list_tools_fn()
                 if excluded:
                     tools = [t for t in tools if t.get("name") not in excluded]
@@ -1117,7 +1150,7 @@ def _run_stdio_dispatch_loop(
                     protected=_live_request_ids(),
                 )
         elif method == "tools/list":
-            excluded = _resolve_excluded_tools(_req_caller_key(req))
+            excluded = _caller_excluded_tools(_req_caller(req))
             tools = list_tools_fn()
             if excluded:
                 tools = [t for t in tools if t.get("name") not in excluded]
@@ -1137,7 +1170,7 @@ def _run_stdio_dispatch_loop(
             _caller_ctx = CallerContext.from_meta(params.get("_meta"))
             # The connection's namespace separator. Parsed separately because it
             # arrives WITHOUT an identity for a caller the gateway could not
-            # name — the case it exists for (#5322) — so it cannot be folded
+            # name — the case it exists for — so it cannot be folded
             # into ``_caller_ctx``, which is None exactly then.
             _tenant_nonce = tenant_nonce_from_meta(params.get("_meta"))
             # A queued request may have been cancelled while waiting -- emit
@@ -1153,9 +1186,7 @@ def _run_stdio_dispatch_loop(
             # Defense-in-depth: reject calls to excluded tools even if
             # the LLM somehow attempts to call them (hallucination).
             # Per-call caller identity keys the policy in pooled backends.
-            excluded = _resolve_excluded_tools(
-                _caller_ctx.session_key if _caller_ctx else ""
-            )
+            excluded = _caller_excluded_tools(_caller_ctx)
             if tool_name in excluded:
                 sel().log_tool_invocation(
                     session_key=(

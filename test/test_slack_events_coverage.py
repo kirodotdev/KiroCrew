@@ -619,8 +619,8 @@ class _SocketPatches:
 
     ``real_client=True`` leaves ``WSSocketModeClient`` and ``AsyncWebClient``
     UNPATCHED so the real constructor runs — the loop-requirement regression
-    tests need that, because a mocked constructor is exactly how the #7518
-    boot crash slipped past CI.
+    tests need that, because a mocked constructor is exactly how a boot crash
+    in this path hides from CI.
     """
 
     def __init__(self, validate: bool = True, real_client: bool = False):
@@ -712,14 +712,14 @@ class TestInitSocketMode:
             await ev.init_socket_mode(orch, ev.SeenCache())
         sp.setters["set_yolo_mode"].assert_called_once_with(True)
 
-    # ── Loop-requirement pins (regression for the #7518 boot crash) ──
+    # ── Loop-requirement pins ──
     #
     # WSSocketModeClient.__init__ ends in ``asyncio.ensure_future``, which
     # raises ``RuntimeError: There is no current event loop`` in any thread
-    # without a running loop.  #7518 offloaded the WHOLE of init_socket_mode
-    # via ``asyncio.to_thread``, which crashed every Slack-enabled gateway at
-    # boot — and CI never noticed, because every test on this path mocks
-    # either init_socket_mode itself or WSSocketModeClient.  The tests below
+    # without a running loop.  Offloading the WHOLE of init_socket_mode via
+    # ``asyncio.to_thread`` therefore crashes every Slack-enabled gateway at
+    # boot, and a test on this path that mocks either init_socket_mode itself
+    # or WSSocketModeClient hides it.  The tests below
     # close that hole: the constructor runs REAL, and the call form the
     # gateway uses is pinned at the source level.
 
@@ -750,8 +750,8 @@ class TestInitSocketMode:
     async def test_blocking_calls_run_off_the_loop_thread(self):
         """The YOLO grant and enterprise auth.test stay off the loop.
 
-        This is the constraint that motivated #7518's whole-function offload;
-        the fix keeps it, but per-call.
+        Blocking calls must stay off the loop thread; the code offloads them
+        per-call.
         """
         loop_thread = threading.current_thread()
         seen_threads: dict[str, threading.Thread] = {}
@@ -988,7 +988,7 @@ class TestOnEventDispatch:
             "text": "hi",
             "team": "T1",
         }
-        with patch("kiro_crew.slack.events.validated_self_bot_id", return_value="B_SELF"):
+        with patch("kiro_crew.slack.enterprise.validated_self_bot_id", return_value="B_SELF"):
             with patch("kiro_crew.slack.events._route_message", new_callable=AsyncMock) as route:
                 await on_event(_client(), _req("events_api", {"event": event}))
         route.assert_awaited_once()
@@ -1007,7 +1007,7 @@ class TestOnEventDispatch:
             "text": "hi",
             "team": "T1",
         }
-        with patch("kiro_crew.slack.events.validated_self_bot_id", return_value=""):
+        with patch("kiro_crew.slack.enterprise.validated_self_bot_id", return_value=""):
             with patch("kiro_crew.slack.events._route_message", new_callable=AsyncMock) as route:
                 await on_event(_client(), _req("events_api", {"event": event}))
         route.assert_not_called()
@@ -1029,7 +1029,7 @@ class TestOnEventDispatch:
             "text": "hi",
             "team": "T1",
         }
-        with patch("kiro_crew.slack.events.validated_self_bot_id", return_value="B_SELF"):
+        with patch("kiro_crew.slack.enterprise.validated_self_bot_id", return_value="B_SELF"):
             with patch("kiro_crew.slack.events._route_message", new_callable=AsyncMock) as route:
                 await on_event(_client(), _req("events_api", {"event": event}))
         route.assert_awaited_once()
@@ -1063,7 +1063,7 @@ class TestOnEventDispatch:
         orch._cfg.slack.trusted_bot_ids = {"B_SELF"}
         on_event = await _install_on_event(orch, ev.SeenCache())
         event = {"type": "message", "bot_id": "B_SELF", "channel": "C1", "text": "hi", "team": "T1"}
-        with patch("kiro_crew.slack.events.validated_self_bot_id", return_value="B_SELF"):
+        with patch("kiro_crew.slack.enterprise.validated_self_bot_id", return_value="B_SELF"):
             with patch("kiro_crew.slack.events._route_message", new_callable=AsyncMock) as route:
                 await on_event(_client(), _req("events_api", {"event": event}))
         route.assert_not_called()
@@ -1084,7 +1084,7 @@ class TestOnEventDispatch:
             "text": "hi",
             "team": "T1",
         }
-        with patch("kiro_crew.slack.events.validated_self_bot_id", return_value="B_SELF"):
+        with patch("kiro_crew.slack.enterprise.validated_self_bot_id", return_value="B_SELF"):
             with patch("kiro_crew.slack.events._route_message", new_callable=AsyncMock) as route:
                 await on_event(_client(), _req("events_api", {"event": event}))
         route.assert_awaited_once()
@@ -1104,7 +1104,7 @@ class TestOnEventDispatch:
             "text": "hi",
             "team": "T1",
         }
-        with patch("kiro_crew.slack.events.validated_self_bot_id", return_value="B_SELF"):
+        with patch("kiro_crew.slack.enterprise.validated_self_bot_id", return_value="B_SELF"):
             with patch("kiro_crew.slack.events._route_message", new_callable=AsyncMock) as route:
                 await on_event(_client(), _req("events_api", {"event": event}))
         route.assert_not_called()

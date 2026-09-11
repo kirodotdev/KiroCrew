@@ -92,7 +92,7 @@ class TestRedactAndConvert:
         assert result["description"] == ""
 
     def test_run_to_project_description_redacts_before_truncating(self):
-        """#5582: a credential straddling the 4000-char cut must not leak.
+        """A credential straddling the 4000-char cut must not leak.
 
         The old spelling ``_redact(desc[:4000])`` sliced first, so a key cut at
         the boundary lost its tail, stopped matching the credential regex, and

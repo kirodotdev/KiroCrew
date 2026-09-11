@@ -290,10 +290,9 @@ class TestFleetProbe:
 
     def test_a_protocol_word_in_prose_is_not_a_report(self, tmp_path, capsys, monkeypatch):
         """The protocol is ``<WORD>:``. A line that merely OPENS with a protocol
-        word -- ``PR #6580 is green ...`` -- is prose, and tagging it invents a
-        report nobody filed. Measured over the 60 most recent transcripts on the
-        development host, 20 of the 94 assistant rows that matched the old
-        ``^<WORD>\\b`` form were prose, 13 of them a bare ``PR #<n>``."""
+        word -- ``PR #<n> is green ...`` -- is prose, and tagging it invents a
+        report nobody filed. Among assistant rows matching a bare ``^<WORD>\\b``
+        form, many are prose, and a bare ``PR #<n>`` is the common shape."""
         mod = self._mod()
         cfg = self._config(tmp_path, monkeypatch, ["s-prose"])
         self._session(
@@ -1579,9 +1578,9 @@ class TestFleetProbe:
     def test_a_non_protocol_disposition_does_not_erase_the_terminal_tag(
         self, tmp_path, capsys, monkeypatch
     ):
-        """The defect 2b closes: the handled set keeps ONE entry per key, so a
-        later IDLE or GONE disposition used to overwrite the terminal report and
-        the finished worker read as wedged again on the next cycle."""
+        """The handled set keeps ONE entry per key, so a later IDLE or GONE
+        disposition must not overwrite the terminal report; otherwise the
+        finished worker reads as wedged again on the next cycle."""
         mod = self._mod()
         cfg = self._config(tmp_path, monkeypatch, ["s-done"], idle_alert_secs=100)
         sessions = tmp_path / "sessions"
@@ -1801,7 +1800,7 @@ class TestFleetProbe:
         self._run(
             mod, cfg, capsys, "--mark-handled", "s-gone", "GREEN", self._digest_of(out, "s-gone")
         )
-        # The report is no longer in the window; only the state file knows.
+        # The report is not in the window; only the state file knows.
         self._session(sessions, "s-gone", "trailing chatter with no prefix", age_secs=500)
         out = self._run(mod, cfg, capsys)
         assert "TERMINAL" in out
@@ -2492,10 +2491,10 @@ class TestFleetProbe:
         """An answered report must not re-present because a later tag was marked.
 
         The handled set holds ONE entry per key, so marking a condition tag
-        (``IDLE``/``NOPROGRESS``) over an answered payload tag used to overwrite
-        the record that the payload was dealt with -- and the answered ruling then
-        fired again, sending the conductor to re-adjudicate something it had
-        already decided. The payload disposition is now preserved beside the new
+        (``IDLE``/``NOPROGRESS``) over an answered payload tag must not overwrite
+        the record that the payload was dealt with -- otherwise the answered ruling
+        fires again, sending the conductor to re-adjudicate something it has
+        already decided. The payload disposition is preserved beside the new
         entry, which is the shape ``proto`` already uses for the terminal reading.
         """
         mod = self._mod()

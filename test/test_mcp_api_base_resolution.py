@@ -2,8 +2,8 @@
 
 The port a ``--port``-started gateway is bound to is recorded only in its run
 marker, so an MCP tool server that resolved its base before the gateway came up
-(or before it moved) holds a stale base. These tests lock in the recovery path
-this PR adds: every verb helper routes through ``mcp_core._send``, which on a
+(or before it moved) holds a stale base. These tests pin the recovery path:
+every verb helper routes through ``mcp_core._send``, which on a
 refused connection drops the resolution caches, re-resolves, and replays the
 request exactly once — and only when re-resolution actually produced a
 different base. ``mcp_computer._invoke`` applies the same rule to its one
@@ -11,8 +11,8 @@ request path.
 
 ``TestSameBaseRefusalRetry`` covers the case that rule deliberately declines --
 a gateway restarting on its OWN port, where there is no moved base to find. That
-used to fall through to a bare errno; it now gets a short bounded retry of the
-same target and, on exhaustion, an actionable message.
+case gets a short bounded retry of the same target and, on exhaustion, an
+actionable message.
 """
 
 from __future__ import annotations
@@ -41,8 +41,8 @@ def _bases(monkeypatch: pytest.MonkeyPatch, mcp: Any, sequence: list[str]) -> No
     """Feed the first-attempt resolution a scripted sequence of bases.
 
     Scripted at ``_resolve_api_target`` rather than ``_api_base``: one attempt
-    now resolves its ``(base, socket_path)`` pair once and threads both halves
-    through (#4106 item 1). The empty socket keeps these TCP-only cases dialling
+    resolves its ``(base, socket_path)`` pair once and threads both halves
+    through. The empty socket keeps these TCP-only cases dialling
     the base they name, which is what they assert on.
     """
     it = iter(sequence)
@@ -204,7 +204,7 @@ def test_no_replay_when_rediscovery_falls_through_to_default(mcp: Any, monkeypat
     internal secret, so the replay is skipped even though the base differs.
 
     The SAME evidence rule bounds the same-base retry. Re-resolution proving
-    nothing means the refused port is no longer proven to be ours either, so the
+    nothing means the refused port is not proven to be ours either, so the
     retry window is not spent dialling it: one dial in total, and the caller is
     told the gateway is unreachable.
     """
@@ -223,7 +223,7 @@ def test_no_replay_when_rediscovery_falls_through_to_default(mcp: Any, monkeypat
     assert "transport_error" not in out
     # Neither the unverified default port NOR the refused base receives a
     # further secret-bearing dial: re-resolution proved nothing, so ownership of
-    # 9999 is no longer established and the retry stops before sleeping again.
+    # 9999 is not established and the retry stops before sleeping again.
     assert all(":9999" in u for u in attempts), attempts
     assert len(attempts) == 1
 
@@ -295,15 +295,13 @@ def test_http_error_on_replay_surfaces_the_backend_body(mcp: Any, monkeypatch) -
 
 
 class TestMcpComputerReplay:
-    """``mcp_computer._invoke`` — the same refused-once-replay rule, now SHARED.
+    """``mcp_computer._invoke`` — the same refused-once-replay rule, SHARED.
 
-    #4106 item 2: this shim used to restate the rule (invalidate, re-resolve,
-    check the source, compare the base) in its own words, and restating it is
-    how it silently missed item 1 — it hand-built a ``retry_base`` with no
-    socket half at all. It now consumes ``mcp_core._replay_target``, so the
-    cases below script the rule at ITS seam (``_resolve_api_port`` on
-    ``mcp_core``) and assert this shim's error wording is unchanged: a
-    de-duplication of the rule must not normalise the two callers' messages.
+    This shim consumes ``mcp_core._replay_target`` rather than restating the
+    rule (invalidate, re-resolve, check the source, compare the base) itself, so
+    the cases below script the rule at ITS seam (``_resolve_api_port`` on
+    ``mcp_core``) and assert this shim's error wording stays distinct: sharing
+    the rule must not normalise the two callers' messages.
     """
 
     @pytest.fixture
@@ -457,7 +455,7 @@ class TestMcpComputerReplay:
 
 
 class TestOneResolutionPerAttempt:
-    """#4106 item 1: one request attempt resolves ONE ``(base, socket_path)`` pair.
+    """One request attempt resolves ONE ``(base, socket_path)`` pair.
 
     On a marker-discovered port -- the zero-config case -- neither the port, the
     base nor the socket path is cached: a marker resolution is proven for that

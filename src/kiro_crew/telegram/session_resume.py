@@ -6,7 +6,7 @@ import asyncio
 import logging
 from typing import TYPE_CHECKING
 
-from kiro_crew.messaging.link import ChannelLink, parse_session_key
+from kiro_crew.messaging.link import ChannelLink
 from kiro_crew.messaging.renderer import display_safe
 from kiro_crew.messaging.session_resume import ResumeReleaseError  # noqa: F401  (re-export)
 from kiro_crew.messaging.session_resume import (
@@ -17,6 +17,7 @@ from kiro_crew.messaging.session_resume import (
     RoutingDecision,
     SessionChoice,
     SessionResumeController,
+    same_bucket_origin_keys,
 )
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -35,7 +36,7 @@ _CALLBACK_DATA_MAX_BYTES = 64
 _BUTTON_LABEL_MAX_CHARS = 80
 _QUERY_LABEL_MAX_CHARS = 100
 _ROUTE_OWNER_REFUSAL = (
-    "🔒 This Telegram chat cannot resume a dashboard session because session "
+    "🔒 This Telegram chat cannot resume a persistent session because session "
     "resume requires exactly one configured operator in a private DM. Your "
     "message was NOT processed."
 )
@@ -67,7 +68,7 @@ def _picker_owner(user_id: int, chat_id: int, thread_id: int | None) -> str:
 
 class _TelegramResumeSurface:
     owner_refusal = (
-        "🔒 /session can resume dashboard conversations only from the single "
+        "🔒 /session can resume persistent conversations only from the single "
         "operator's private chat. Configure exactly one telegram.allowed_user_ids entry."
     )
     choice_owner_refusal = "🔒 Session resume is owner-only."
@@ -102,10 +103,10 @@ class _TelegramResumeSurface:
         if normalized:
             label = _safe_telegram_text(" ".join(query.split()), _QUERY_LABEL_MAX_CHARS)
             return (
-                f"No dashboard sessions matched “{label}”. Try fewer words, or run "
+                f"No sessions matched “{label}”. Try fewer words, or run "
                 f"/session to see up to {PICKER_LIMIT} recent sessions."
             )
-        return "No recent dashboard sessions."
+        return "No recent sessions."
 
     def picker_heading(self, query: str, total: int) -> str:
         shown = min(total, PICKER_LIMIT)
@@ -117,21 +118,18 @@ class _TelegramResumeSurface:
             else:
                 summary = f"Showing {shown} matching session{'s' if shown != 1 else ''}"
             return (
-                f"🔎 Dashboard session search\n{summary} for “{label}”, ranked over "
+                f"🔎 Session search\n{summary} for “{label}”, ranked over "
                 "titles and message content."
             )
         if total > PICKER_LIMIT:
-            summary = f"Showing {PICKER_LIMIT} of {total} most recent dashboard sessions."
+            summary = f"Showing {PICKER_LIMIT} of {total} most recent sessions."
         else:
-            summary = (
-                f"Showing {shown} most recent dashboard session" f"{'s' if shown != 1 else ''}."
-            )
-        return f"🧵 Recent dashboard sessions\n{summary}"
+            summary = f"Showing {shown} most recent session{'s' if shown != 1 else ''}."
+        return f"🧵 Recent sessions\n{summary}"
 
     def choice_success(self, choice: SessionChoice) -> str:
         return (
-            f"🔄 Resumed: {choice.title}\n"
-            "Ordinary messages here now continue that dashboard conversation."
+            f"🔄 Resumed: {choice.title}\n" "Ordinary messages here now continue that conversation."
         )
 
     async def post_picker(
@@ -195,7 +193,7 @@ def _decision_says_anything(decision: RoutingDecision) -> bool:
 
 
 class TelegramSessionResume:
-    """List dashboard sessions and bind one to the single operator's private DM."""
+    """List dashboard + same-DM native sessions for the single operator."""
 
     def __init__(
         self,
@@ -315,40 +313,6 @@ class TelegramSessionResume:
                 logger.debug("Telegram resume: title lookup failed", exc_info=True)
         return title or session_key.removeprefix("dashboard:")
 
-    def _native_origin_keys(self, link: ChannelLink, native_key: str = "") -> frozenset[str]:
-        """Outbound occupants that are native generations of this Telegram DM.
-
-        A dashboard session explicitly mirrored to the same DM is not an origin
-        mirror and must remain protected. Legacy origin rows are resolved through
-        ``channel_key_for_stem`` before applying the same canonical-key test.
-
-        *native_key* is the dispatcher's own key for this chat and is matched
-        DIRECTLY, because the namespace test below cannot recognise every scope: with
-        ``dm_scope="unified"`` the native bucket is a ``unified:`` key, so without
-        this a one-click takeover would refuse and demand a preparatory ``/unlink``.
-        Only an occupant of THIS link qualifies, so supplying a key that is not
-        bound here grants nothing.
-        """
-        keys: set[str] = set()
-        stem_resolver = getattr(self.sessions, "channel_key_for_stem", None)
-        for stored_key in self.sessions.find_mirror_sessions(link):
-            if native_key and stored_key == native_key:
-                keys.add(stored_key)
-                continue
-            candidate = stored_key
-            parsed = parse_session_key(candidate)
-            if parsed is None and stored_key.startswith("dashboard:") and callable(stem_resolver):
-                candidate = str(stem_resolver(stored_key.removeprefix("dashboard:")) or "")
-                parsed = parse_session_key(candidate)
-            if (
-                parsed is not None
-                and parsed.surface == "telegram"
-                and parsed.chat_type == "direct"
-                and parsed.scope == (link.channel_id,)
-            ):
-                keys.add(stored_key)
-        return frozenset(keys)
-
     async def show_picker(
         self,
         client: "TelegramClient",
@@ -357,6 +321,7 @@ class TelegramSessionResume:
         chat_type: str,
         thread_id: int | None,
         query: str = "",
+        native_key: str = "",
     ) -> None:
         await self._controller.show_picker(
             _TelegramResumeSurface(client, chat_id, thread_id),
@@ -364,6 +329,7 @@ class TelegramSessionResume:
             picker_owner=_picker_owner(user_id, chat_id, thread_id),
             is_owner=self.is_owner(user_id, chat_id, chat_type),
             query=query,
+            native_key=native_key,
         )
 
     async def choose(
@@ -396,7 +362,7 @@ class TelegramSessionResume:
             nonce=nonce,
             index=index,
             link=link,
-            replace_outbound_keys=self._native_origin_keys(link, native_key),
+            replace_outbound_keys=same_bucket_origin_keys(self.sessions, link, native_key),
         )
 
     @staticmethod

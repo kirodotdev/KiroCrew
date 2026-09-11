@@ -16,7 +16,7 @@ import logging
 from aiohttp import web
 
 from kiro_crew.dashboard import session_control as sc
-from kiro_crew.dashboard.handlers._shared import _read_session_key
+from kiro_crew.dashboard.handlers._shared import _read_session_key, private_owner_surface_refusal
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.sel import sel
 
@@ -41,7 +41,7 @@ async def _require_internal(request: web.Request) -> web.Response | None:
     when the caller is authentic.
     """
     if request.get("internal_auth") is True:
-        return None
+        return await private_owner_surface_refusal(request, "session_control")
     # Best-effort, the property `_audit_denied` exists to carry for exactly this
     # shape of site: a refusal logged BEFORE the audit middleware has run.
     # `log_api_access` only enqueues — SEL is warmed at gateway startup

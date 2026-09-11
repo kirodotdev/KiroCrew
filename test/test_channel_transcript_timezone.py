@@ -1,4 +1,4 @@
-"""Regression tests for issue #1948 — channel-session timestamps in UTC.
+"""Channel-session transcript timestamps are offset-aware UTC.
 
 A Slack/channel conversation persists to a session transcript whose first line
 is a metadata record carrying ``created_at`` (and, later, ``updated_at`` /
@@ -32,7 +32,7 @@ def _assert_offset_aware(value: str) -> datetime:
     """Parse *value* and assert it is an unambiguous, offset-aware instant."""
     assert isinstance(value, str) and value, f"missing timestamp: {value!r}"
     parsed = datetime.fromisoformat(value)
-    # The crux of #1948: a naive string (no offset) parses to tzinfo=None and
+    # A naive string (no offset) parses to tzinfo=None and
     # the frontend renders it verbatim as if UTC. An offset-aware string carries
     # the information needed to convert to the viewer's local zone.
     assert parsed.tzinfo is not None, f"timestamp is naive (no offset): {value!r}"

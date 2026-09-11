@@ -6,8 +6,8 @@ percent-escapes reach the backend still escaped. aiohttp's ``request.path``
 and ``request.query_string`` are DECODED, so a backend that reconstructs the
 target from them hashes a different string for any target carrying a space,
 comma, ``+``, ``#`` or non-ASCII byte -- and its HMAC check fails closed with
-401 "invalid or missing proxy signature" (issue #4192: in Notes, every note
-whose filename holds a space was unopenable while the app shell loaded fine).
+401 "invalid or missing proxy signature" (in Notes, a note whose filename holds a
+space is unopenable while the app shell loads fine).
 
 The trap is invisible in review and in manual testing, because the decoded
 and encoded forms coincide for every plain-ASCII path -- which is exactly how

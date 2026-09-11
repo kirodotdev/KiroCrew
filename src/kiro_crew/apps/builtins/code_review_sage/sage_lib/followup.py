@@ -73,7 +73,7 @@ logger = logging.getLogger(__name__)
 #: outside the run.
 ERR_LINKED_DIR = "chat_transcript_dir_unsafe"
 
-#: The run this follow-up belongs to no longer exists.
+#: The run this follow-up belongs to does not exist.
 ERR_RUN_GONE = "chat_run_deleted"
 
 #: No descriptor was recorded for this review (it predates the feature, or its

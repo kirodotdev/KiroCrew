@@ -27,6 +27,7 @@ minimal environment that excludes process secrets.
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import json
 import logging
 import os
@@ -1419,8 +1420,7 @@ async def _fetch_app_manifest(
         # was placed, never what it now holds. This manifest is what the admission and
         # platform gates read, so a local edit bypasses `installMode`/`os`
         # restrictions and gets the tree built server-side. It is the same reason a
-        # pinned install never reuses an existing checkout; the rule belongs here too,
-        # and previously stopped one caller short of this one.
+        # pinned install never reuses an existing checkout; the rule belongs here too.
         #
         # The cost is a shallow single-commit fetch per pinned listing, which the
         # pinned branch below already performs.
@@ -3512,8 +3512,8 @@ async def list_registry() -> list[dict[str, Any]]:
 
     # Probe the seed/catalog rows, then append external registries at the single
     # shared merge site. Reserving every seed/catalog name means an external row
-    # can only ADD a name none of them claim — the precedence the inline dedup
-    # here used to enforce.
+    # can only ADD a name none of them claim, which is the precedence this merge
+    # site enforces.
     detected = await _detect_installed_probe(entries, installed_map)
     entries, external_detected = await _append_external_registry_apps(
         entries, {e.get("name") for e in entries}, installed_map
@@ -3536,8 +3536,8 @@ async def list_registry() -> list[dict[str, Any]]:
     #
     # Annotate from the SAME fresh entries the inventory came from, never the cache.
     #
-    # Round 11 stopped the agent-writable cache from INTRODUCING a row; this stops it
-    # from REWRITING one. `annotate` overlays `displayName` and `description`, which
+    # Blocking the agent-writable cache from INTRODUCING a row is not enough; this
+    # stops it from REWRITING one. `annotate` overlays `displayName` and `description`, which
     # are exactly what the consent modal renders, and it only skips rows carrying
     # `_registry` -- so a poisoned cache entry could re-label a freshly fetched
     # first-party row and the name-scoped grant would then execute the real app under
@@ -5230,7 +5230,7 @@ async def _git_clone_or_pull(
                         "manually and retry the install."
                     ),
                 }
-            # Fall through: `dest` no longer exists, so the pinned fetch below
+            # Fall through: `dest` is gone, so the pinned fetch below
             # creates it fresh inside the try/finally that owns restoration.
         else:
             # Already cloned from the verified origin AND branch (or the branch
@@ -5743,8 +5743,8 @@ async def _unpoison_rejected_checkout(
         # is best-effort and must never mask the refusal it follows.
         logger.debug("post-rejection rollback failed for %s: %s", app_name, exc)
     if _contained_join(pkg_dir, manifest_relpath) is None:
-        # manifest_relpath (the FULL path, e.g. "sub/app.json") no longer
-        # resolves inside pkg_dir RIGHT NOW — some callers reach this point
+        # manifest_relpath (the FULL path, e.g. "sub/app.json") does not
+        # resolve inside pkg_dir RIGHT NOW — some callers reach this point
         # after a build step or onInstall script ran with write access to the
         # checkout, so a containment check the caller made earlier cannot be
         # trusted here. Checking only `subdirectory` (the directory, and only
@@ -5955,14 +5955,13 @@ async def _clone_build_app_locked(
 
     # Build in the directory that actually HOLDS the package, not the clone root.
     #
-    # A monorepo registry entry declares `subdirectory`, and historically it was
-    # joined only AFTER this build ran — so `_run_app_build` looked for
-    # pyproject.toml/package.json at the clone root, found none, logged "No build
-    # step detected — using source as-is", and returned ok=True having installed
-    # nothing. The app's own pyproject.toml was never seen. A silent success is
-    # the worst shape for this: `setup.onInstall` does get `cwd=app_source`, so
-    # an app could paper over it with a script, which is exactly how a bug like
-    # this stays hidden.
+    # A monorepo registry entry declares `subdirectory`, and joining it only AFTER
+    # this build ran would leave `_run_app_build` looking for
+    # pyproject.toml/package.json at the clone root, finding none, logging "No build
+    # step detected — using source as-is", and returning ok=True having installed
+    # nothing — the app's own pyproject.toml never seen. A silent success is the
+    # worst shape for this: `setup.onInstall` does get `cwd=app_source`, so an app
+    # could paper over it with a script, which is how such a break stays hidden.
     #
     # `app_source` is already the containment-checked join of `subdirectory`
     # under the clone root (the identity gate above fails closed on an escaping
@@ -6035,7 +6034,7 @@ async def _clone_build_app_locked(
                         f"{stale_path}"
                     )
         # Drop the checkouts actually put back from the caller-owned pending
-        # list: a restored checkout is no longer a retained `.stale-*` sibling,
+        # list: a restored checkout is not a retained `.stale-*` sibling,
         # so `_clone_build_app`'s single-exit stamp must not carry it and the
         # caller's `_report_retained_stale_checkouts` must not name it. A rename
         # that FAILED above stays in the list so it is still reported stranded.
@@ -6130,13 +6129,25 @@ async def _run_app_build(
                     "signed application bundle and cannot install packages"
                 ),
             }
-        pip_cmd = [sys.executable, "-m", "pip"]
-        if (build_dir / "requirements.txt").is_file() and not (
-            (build_dir / "pyproject.toml").is_file() or (build_dir / "setup.py").is_file()
-        ):
-            build_cmds.append([*pip_cmd, "install", "-r", "requirements.txt"])
+        # A missing `pip` module is a soft skip, exactly like a missing npm
+        # (see the docstring). `sys.executable` is the gateway interpreter, and a
+        # venv created with `--without-pip` — or any minimal runtime — has no `pip`
+        # module: running `-m pip` against it exits non-zero and would abort the
+        # whole registry install. Probe with `find_spec` on THIS interpreter (no
+        # subprocess: it is the interpreter that would run the build) and skip when
+        # pip is absent, so an app that needs no Python build still installs cleanly.
+        if importlib.util.find_spec("pip") is None:
+            log_lines.append(
+                "pip not available in the gateway interpreter — skipping Python build step"
+            )
         else:
-            build_cmds.append([*pip_cmd, "install", "."])
+            pip_cmd = [sys.executable, "-m", "pip"]
+            if (build_dir / "requirements.txt").is_file() and not (
+                (build_dir / "pyproject.toml").is_file() or (build_dir / "setup.py").is_file()
+            ):
+                build_cmds.append([*pip_cmd, "install", "-r", "requirements.txt"])
+            else:
+                build_cmds.append([*pip_cmd, "install", "."])
 
     if not build_cmds:
         log_lines.append("No build step detected — using source as-is")
@@ -6213,14 +6224,13 @@ def _report_retained_stale_checkouts(
       exception path is still named instead of being silently swept.
 
     Both routes funnel the wording through here precisely so they can never
-    drift: the reporter used to be hand-replicated across every exit with a
+    drift: hand-replicating the reporter across every exit, with a
     ``filter_restorable`` flag manually mirrored to ``durable_success`` at each
-    one, which is the scattered-per-exit stranding class the caller's
-    move-aside bookkeeping exists to avoid — a new exit could forget the call
-    or pass the wrong flag and silently strand or double-report a checkout.
-    Every normal exit now reaches the single ``finally`` call and derives the
-    flag once; the only other caller is the exception path that no ``finally``
-    return can cover.
+    one, is the scattered-per-exit stranding class the caller's move-aside
+    bookkeeping exists to avoid — a new exit could forget the call or pass the
+    wrong flag and silently strand or double-report a checkout. Every normal
+    exit reaches the single ``finally`` call and derives the flag once; the only
+    other caller is the exception path that no ``finally`` return can cover.
 
     ``_pending_stale_cleanup`` collects every move-aside regardless of
     reason, but ``_restorable_stale`` (a subset) is put back by the
@@ -6558,7 +6568,7 @@ async def install_from_registry(
 
     # NOTE: the provenance signer is computed LATER, from the identity-checked
     # CLONED manifest — not from this pre-clone prefetch. An update can pull a
-    # commit whose manifest is no longer signed (or signed by someone else);
+    # commit whose manifest is not signed (or is signed by someone else);
     # provenance must record the artifact actually installed, not the preview.
 
     # Platform compatibility check — if the app requires a specific OS and
@@ -6817,8 +6827,8 @@ async def install_from_registry(
 
         # ADMISSION GATE, third pass — the post-build manifest is what
         # install_app/update_app will actually register, and a build step can
-        # rewrite app.json; a manifest that no longer satisfies the admission
-        # policy (e.g. signature required and now absent) must not install.
+        # rewrite app.json; a manifest that does not satisfy the admission
+        # policy (e.g. signature required but absent) must not install.
         denied = app_admission_denied(
             name,
             manifest=AppManifest.from_dict(manifest_data),
@@ -7297,7 +7307,7 @@ async def install_from_registry(
             # never off `outcome`), so removing them here deprives no consumer.
             # Two of them -- `_pending_stale_cleanup` and `_restorable_stale` --
             # are `list[Path]`, which is not JSON-serializable, so a build
-            # refusal that spreads `{**build_result}` into `outcome` used to make
+            # refusal that spreads `{**build_result}` into `outcome` would make
             # the API/SSE layer raise `TypeError` when it serialized the refusal.
             # Scrubbing the CLASS (every `_`-prefixed key) rather than those two
             # names closes it at the single seam: `_checkout_preexisted`,

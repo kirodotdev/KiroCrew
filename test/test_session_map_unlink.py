@@ -145,7 +145,7 @@ class TestSetSlackLinkEvictsPriorOwner:
 
         session_map.set_slack_link("dash:b", "ts-1", "C-1")
 
-        # Loser keeps its entry and sid, but no longer claims the thread.
+        # Loser keeps its entry and sid, but does not claim the thread.
         assert session_map.get_slack_link("dash:a") == (None, None)
         assert session_map.get("dash:a") == "sid-a"
         # Winner owns the thread in both directions.

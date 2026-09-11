@@ -1,7 +1,7 @@
 """Tests for kiro_crew.apps.hook_reconcile — reload app hooks on out-of-process CLI mutation.
 
-Feature: issue #7880 (CLI enable/disable/install/uninstall does not reach the
-running gateway, so backend.hooks are never reloaded).
+Feature: the CLI enable/disable/install/uninstall does not reach the
+running gateway, so backend.hooks are never reloaded.
 
 The in-process teardown/reimport itself (on_app_enable / on_app_disable /
 unload_app_modules / the detached-startup machinery) is covered by
@@ -328,7 +328,7 @@ async def test_stop_final_drain_is_bounded(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_stop_does_not_reawait_a_hung_in_flight_pass(monkeypatch):
-    """GPT round-10 [BLOCKING]: when a pass is already IN FLIGHT and hung, stop's
+    """When a pass is already IN FLIGHT and hung, stop's
     bounded drain expires -- but the loop's cancel handler then re-awaits the same
     pass. That second await must ALSO be bounded, or it blocks up to the 60s pass
     watchdog and blows the ~10s graceful-shutdown budget before backend cleanup.
@@ -501,7 +501,7 @@ async def test_denied_app_teardown_runs_no_shutdown_hook(_harness):
 @pytest.mark.asyncio
 async def test_denied_reinstall_of_loaded_app_is_torn_down_first(_harness):
     """Opus [BLOCKING]: a LOADED (running) hook app reinstalled out-of-process
-    from a source that no longer matches its execution grant lands on the
+    from a source that does not match its execution grant lands on the
     "signature changed + now denied" branch. The denied enable path deregisters
     routes + records anti-churn + drops the manifest, but does NOT stop the
     already-loaded module or the background task its on_startup spawned -- so the
@@ -626,7 +626,7 @@ async def test_uninstall_drops_the_apps_in_process_hook_registries(_harness):
     so a CLI uninstall reached this reconciler's teardown and left the registries
     behind. The stale hook closes over a store the uninstall deleted, and
     ``notify_slot_closed`` reporting its failure is what ``api_chat_slot_delete``
-    turns into a tab the user cannot dismiss for an app that no longer exists.
+    turns into a tab the user cannot dismiss for an app that does not exist.
     """
 
     async def _stale(_key: str) -> None:
@@ -867,7 +867,7 @@ async def test_reimport_failure_leaves_signature_unset_for_retry(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_failed_shutdown_is_unsettled_and_retained(monkeypatch):
-    """GPT round-11 [BLOCKING]: a failed on_shutdown means the app's own stop
+    """A failed on_shutdown means the app's own stop
     routine did not complete, so its worker may still be live. _disable_loaded
     must treat hooks_shutdown=='failed' as UNSETTLED -- return False and RETAIN
     the loaded record so the reconciler retries, rather than clearing the
@@ -891,7 +891,7 @@ async def test_failed_shutdown_is_unsettled_and_retained(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_settled_teardown_unloads_modules_for_clean_reimport(monkeypatch):
-    """GPT round-11 [BLOCKING]: a CLI reinstall (disable/enable without a process
+    """A CLI reinstall (disable/enable without a process
     restart) that does not unload the app's modules reuses stale transitive
     helper modules via relative imports, so old code stays active. A SETTLED
     teardown must call unload_app_modules so the next enable re-imports fresh."""

@@ -227,7 +227,7 @@ class TestNormPull(unittest.TestCase):
 
     def test_a_deactivated_label_is_dropped(self):
         # Azure keeps a removed PR label as a row with ``active: false``. Rendering
-        # it would show a tag the PR no longer carries.
+        # it would show a tag the PR does not carry.
         row = azure_client._norm_pull(
             _pr_payload(
                 labels=[
@@ -1034,7 +1034,7 @@ class TestPrChecks(unittest.TestCase):
 
     def test_a_build_for_another_commit_is_not_reported(self):
         # Azure's build list has no commit filter, so the match happens locally.
-        # A run against an older commit describes code that no longer exists.
+        # A run against an older commit describes code that is not in the head.
         az = self._az(
             builds=[
                 {

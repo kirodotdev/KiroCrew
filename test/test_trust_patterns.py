@@ -27,7 +27,7 @@ from kiro_crew.trust_patterns import matches_trusted_pattern as _canonical_match
 def _legacy_title_command(value: str) -> str:
     """Adapt old title-shaped fixtures into canonical command input.
 
-    Production helpers no longer strip display prefixes.  Most segmentation
+    Production helpers do not strip display prefixes.  Most segmentation
     tests below predate structured ``tool_input`` and still use title-shaped
     fixtures; explicit boundary regressions exercise the raw helpers directly.
     """
@@ -1320,7 +1320,7 @@ class TestApproveHandlerTrustCommand:
         The session-identity owner scan skips the mismatched candidate, and the
         state-level fallback (resolve_state_approval) does not re-scan slots — so
         the crafted collision 404s instead of approving/executing slot-2's tool.
-        Regression for the cross-slot authorization hole in the old
+        Guards against the cross-slot authorization hole in the
         resolve_approval fallback."""
         state = _make_state(tmp_path)
         state.sessions.set_approval_policy = MagicMock()

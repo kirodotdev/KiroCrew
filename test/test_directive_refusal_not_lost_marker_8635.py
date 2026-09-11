@@ -1,4 +1,4 @@
-"""A directive tool's decline must not be defeated by, or mistaken for, its text (#8635).
+"""A directive tool's decline must not be defeated by, or mistaken for, its text.
 
 Two defects, one seam. ``autonudge_stop``'s ``reason`` was a hard-capped 500-char
 field, and ``mcp_core._call_tool`` validates arguments in the dispatch wrapper
@@ -81,7 +81,7 @@ def published(monkeypatch) -> list[tuple[str, dict]]:
 
     Returned as a RECORDER rather than a black hole, so the stub also buys
     coverage: the publish is half of the directive contract (marker + parked
-    record), and it was previously unasserted anywhere in these tests.
+    record), and it is otherwise unasserted anywhere in these tests.
     """
     posted: list[tuple[str, dict]] = []
 
@@ -189,7 +189,7 @@ class TestMarkerlessReturnsAreTaggedRefusals:
 
     def test_a_context_refusal_is_tagged(self, monkeypatch):
         """A session that can never carry the effect declines with plain prose --
-        marker-less, and previously indistinguishable from a dropped effect."""
+        marker-less, and without tagging indistinguishable from a dropped effect."""
         monkeypatch.setattr(mcp_core, "_resolve_session_key_strict", lambda: "cron:job-1")
         out = _call_tool("autonudge_stop", {"reason": "goal met"})
         assert "No auto-nudge loop to stop" in out
@@ -264,7 +264,7 @@ class TestARejectionCannotForgeADirective:
         out = _call_tool("autonudge_stop", {key: 1})
         assert session_directive.decode(out, "autonudge_stop") is None, out
         # And the defanged rejection is now tagged like any other decline, which
-        # the forged marker previously suppressed by making has_marker() true.
+        # a forged marker would suppress by making has_marker() true.
         assert session_directive.is_refusal(out)
         assert dashboard_session == []
 

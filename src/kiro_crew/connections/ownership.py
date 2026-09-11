@@ -212,8 +212,8 @@ def spec_census(
         try:
             if label.endswith("/"):
                 # An unenumerable-DIRECTORY sentinel from agent_spec_sources,
-                # screened by its label rather than by a stat. A stat test is what
-                # round 7 already had to fix once: a plain file sitting where the
+                # screened by its label rather than by a stat. A stat test is the wrong
+                # screen here: a plain file sitting where the
                 # agents directory belongs is ``is_file()``, so the sentinel would
                 # be parsed as a document and a source whose entries are unknown
                 # would read as a source that declares none.
@@ -359,11 +359,11 @@ async def remove_provider_entry(
         refuted.
 
         ONE pipeline: the string that is screened is BYTE-IDENTICAL to the string
-        that is hashed. Round 3 guarded three malformed shapes and round 4 found a
-        fourth (a trailing space after an explicit port -- ``urlsplit`` lstrips
-        only) precisely because ``normalized_endpoint`` parsed ``value.strip()``
-        while ``grant_key`` parsed the raw value, so the screen's guarantee never
-        transferred.
+        that is hashed. One malformed shape -- a trailing space after an explicit
+        port, which ``urlsplit`` lstrips only -- slips through when
+        ``normalized_endpoint`` parses ``value.strip()`` while ``grant_key`` parses
+        the raw value, so the screen's guarantee never transfers unless both parse
+        identical bytes.
 
         THREE-valued, because two implementations compute this key. kiro-cli
         derives the artifact pair with the WHATWG url parser, which
@@ -371,7 +371,7 @@ async def remove_provider_entry(
         dot-segments and backslashes, and percent-encodes non-ASCII paths --
         transformations ``urlsplit`` does not perform. Hashing such a URL here
         answers a question about different bytes than the ones kiro-cli hashed:
-        round 7 measured ``%6dcp.notion.com`` and ``/a/../mcp`` both naming the
+        ``%6dcp.notion.com`` and ``/a/../mcp`` both name the
         registry pair over there while missing it here, with no exception
         anywhere. So key equality is asserted only inside the PROVABLE set --
         lowercase-ASCII LDH hosts and printable-ASCII paths free of ``%``,

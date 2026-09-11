@@ -80,7 +80,7 @@ The five checks, all of them, every call:
                        blockquotes and quoted spans removed first, because a
                        phrase inside them is being cited. BOTH phrase sets need
                        standing (the reporter, or a repository insider), and for
-                       the SAME reason now that neither one closes anything:
+                       the SAME reason, because neither one closes anything:
                        each suppresses a dispatch, and a suppression any passer-by
                        can cast is a denial-of-work channel.
   4. ``symbol_on_base``every symbol the item names, by ``git grep`` on the
@@ -116,20 +116,19 @@ the checks dict so every branch is unit-testable with no forge access):
                                                symbol or an UNAUTHORIZED claim
                                                forces to ``high``
 
-Rule 3 is the one verdict here that is read out of HAND-WRITTEN ENGLISH, and it
-used to be CLOSE — the strongest response this script has, aimed at somebody
-else's live work, on the weakest evidence it collects. Nine separate false-CLOSE
-paths reached review in one change: a quotation bound truncated at a fixed
-offset, closure verbs with no object, bare pronouns resolving to a socket rather
-than the item, a means-versus-state confusion between two prepositions. Each was
-fixed on the merits and a ratchet now stops a new PATTERN shipping unguarded.
-What the ratchet cannot stop is the next unguarded PHRASING of a pattern that is
-already guarded, and the space of English that accidentally resembles "close
-this" has no edge to reach. So the pairing was wrong rather than the patterns:
-detection keeps its job, which is noticing that an item might be resolved, and
-loses the job it should never have had, which is deciding it. Rule 1 still
-CLOSES, because a merged commit that is an ancestor of the base is evidence, not
-prose.
+Rule 3 is the one verdict here that is read out of HAND-WRITTEN ENGLISH, which is
+why it is REVIEW and not CLOSE. CLOSE is the strongest response this script has,
+aimed at somebody else's live work, and prose is the weakest evidence it
+collects. Pairing the two is what nine separate false-CLOSE paths came out of: a
+quotation bound truncated at a fixed offset, closure verbs with no object, bare
+pronouns resolving to a socket rather than the item, a means-versus-state
+confusion between two prepositions. Each is fixed on its merits and a ratchet
+stops a new PATTERN shipping unguarded. What the ratchet cannot stop is the next
+unguarded PHRASING of a pattern that is already guarded, and the space of English
+that accidentally resembles "close this" has no edge to reach. So detection keeps
+the job it can do, which is noticing that an item might be resolved, and does not
+get the job of deciding it. Rule 1 still CLOSES, because a merged commit that is
+an ancestor of the base is evidence, not prose.
 
 Rules 2, 3 and 4 all suppress work on evidence anybody can manufacture, and all
 answer it the same way rather than by refusing to look: the finding stands, and
@@ -185,11 +184,10 @@ _REPO_RE = re.compile(r"^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$")
 #: NOT a closure request: that direction costs one dispatch, the other closes
 #: work in flight.
 #:
-#: Bare ``it`` and bare ``that`` are deliberately NOT objects, which cost a
-#: round to learn: the first version of this list accepted them, and "The
-#: connection leaks. Please close it." closed the item. A bare pronoun resolves
-#: to whatever was last mentioned, and in a bug report that is usually a socket,
-#: a file or a handle. ``this`` is kept because it points at the thread's topic
+#: Bare ``it`` and bare ``that`` are deliberately NOT objects. A bare pronoun
+#: resolves to whatever was last mentioned, and in a bug report that is usually a
+#: socket, a file or a handle, so accepting one fires on "The connection leaks.
+#: Please close it." ``this`` is kept because it points at the thread's topic
 #: rather than at the previous noun, and ``that issue`` still works with the noun
 #: present. The noun alternatives come FIRST so "this issue" is not consumed by
 #: bare ``this`` and then failed on the clause end.
@@ -263,12 +261,12 @@ WITHDRAWAL_RES: tuple[str, ...] = (
 )
 
 #: Closure requests, from the item whose reporter had already said it was done.
-#: Every pattern here still carries a continuation guard even though the verdict
-#: no longer closes anything: REVIEW does not write, but it does take the item
-#: out of the dispatch queue and put it in front of a human, so a phrase that
-#: fires on "please close the connection" still spends attention and still
-#: withholds work. This list produced four separate false positives before the
-#: guards, and losing them would restore that whether or not the verdict writes.
+#: Every pattern here carries a continuation guard even though the verdict does
+#: not close anything: REVIEW does not write, but it does take the item out of
+#: the dispatch queue and put it in front of a human, so a phrase that fires on
+#: "please close the connection" still spends attention and still withholds work.
+#: Without the guards this list yields four separate false positives, and losing
+#: them restores that whether or not the verdict writes.
 CLOSURE_RES: tuple[str, ...] = (
     rf"\bthis\s+(?:is|was)\s+(?:already\s+)?(?:resolved|fixed)\b{_STATE_END}",
     rf"\bhappy\s+to\s+have\s+(?:{_ISSUE_OBJECT})\s+closed\b",
@@ -286,9 +284,9 @@ CLOSURE_RES: tuple[str, ...] = (
 #: Patterns above that name the item in their own words rather than through
 #: ``_ISSUE_OBJECT`` or a guard. The ratchet test uses this: every closure
 #: pattern must either carry a guard or be listed here WITH a reason, so the next
-#: phrase added to the list cannot quietly ship without one. Six separate
-#: false-CLOSE defects reached review because a pattern was added without a
-#: guard and nothing checked.
+#: phrase added to the list cannot quietly ship without one. An unguarded pattern
+#: is what six separate false-CLOSE defects came out of, and this list plus that
+#: test are the only things that check for one.
 ITEM_SCOPED_CLOSURE_RES: frozenset[str] = frozenset(
     {
         # "an issue" and "reproducible" can only describe the item itself.
@@ -303,11 +301,11 @@ ACTIVE_ASSOCIATIONS = frozenset({"OWNER", "MEMBER", "COLLABORATOR", "CONTRIBUTOR
 
 #: Standing to ask for closure on somebody else's item. Narrower than
 #: ACTIVE_ASSOCIATIONS on purpose: CONTRIBUTOR means "has had a PR merged here
-#: once", which is not standing to declare another person's report finished. The
-#: set is unchanged now that a closure request produces REVIEW rather than CLOSE
-#: — only the reason is. It is no longer "this verdict writes"; it is that REVIEW
-#: withholds a dispatch, and a suppression any passer-by can cast is the same
-#: denial-of-work channel the self-claim path already refuses to open.
+#: once", which is not standing to declare another person's report finished. A
+#: closure request produces REVIEW rather than CLOSE, so the reason the set is
+#: this narrow is not "this verdict writes": it is that REVIEW withholds a
+#: dispatch, and a suppression any passer-by can cast is the same denial-of-work
+#: channel the self-claim path already refuses to open.
 INSIDER_ASSOCIATIONS = frozenset({"OWNER", "MEMBER", "COLLABORATOR"})
 
 #: GitHub's closing keywords. A merged PR is coverage only if it CLAIMS to close
@@ -718,28 +716,28 @@ def plain_prose(text: str) -> str:
 
     Measured on the item that specified this script: its body quotes the very
     closure phrases the check looks for ("this is resolved / happy to have it
-    closed", as a description of what to detect), and scanning it raw produced
-    CLOSE on a live item. That verdict is now REVIEW, so a false reading no
-    longer closes work in flight — but it still withholds the item from dispatch
-    and spends a human read, while a missed one only costs the dispatch that
-    discovers the work is done. The asymmetry narrowed and did not invert, so
-    citations still come out before matching.
+    closed", as a description of what to detect), and scanning it raw fires the
+    closure branch on a live item. That branch's verdict is REVIEW, so a false
+    reading does not close work in flight — but it still withholds the item from
+    dispatch and spends a human read, while a missed one only costs the dispatch
+    that discovers the work is done. The asymmetry is narrow and does not invert,
+    so citations come out before matching.
 
     Line structure first, then whitespace, then spans. Fences and blockquotes
     are line-shaped, so they have to go while the newlines are still there.
     Quotation marks are not, and markdown hard-wraps prose, so a quoted phrase
     routinely straddles a line break: collapsing whitespace before matching the
     spans is what makes the stripper as newline-tolerant as the ``\\s+`` in the
-    phrases it defends. Without that step it missed the very body that found
-    this bug, where the quote broke mid-phrase.
+    phrases it defends. Without that step a body whose quote breaks mid-phrase --
+    the shape this defends against -- slips through unstripped.
 
     Balanced spans go first, then any LEFTOVER delimiter takes the rest of the
-    text with it. Both halves matter and the second was missing: an unclosed
-    citation matches no pair, so the phrase inside it used to survive as the
-    author's own words and returned CLOSE on a live item. Every span rule here
-    is therefore allowed to strip too MUCH, never too little -- over-stripping
-    can hide a real closure request and cost one dispatch, while under-stripping
-    withholds one on a sentence the author was only citing.
+    text with it. Both halves matter: an unclosed citation matches no pair, so
+    without the second the phrase inside it survives as the author's own words
+    and withholds a live item from dispatch. Every span rule here is therefore
+    allowed to strip too MUCH, never too little -- over-stripping can hide a real
+    closure request and cost one dispatch, while under-stripping withholds one on
+    a sentence the author was only citing.
     """
     text = _HTML_COMMENT_RE.sub(" ", text)
     text = _FENCE_RE.sub(" ", text)
@@ -830,10 +828,10 @@ def newest_authorized_claim(comments: Any, reporter: str | None) -> dict | None:
     older claims, so recovery cannot park an item on somebody who already walked
     away.
 
-    A withdrawal only ever releases its OWN author's claim. The first version
-    applied any withdrawal to every earlier claim, which handed a stranger the
-    power to erase a maintainer's claim by typing "dropping this" -- the same
-    denial-of-work shape as an unauthorized claim, running the other direction
+    A withdrawal only ever releases its OWN author's claim. Applying any
+    withdrawal to every earlier claim would hand a stranger the power to erase a
+    maintainer's claim by typing "dropping this" -- the same denial-of-work shape
+    as an unauthorized claim, running the other direction
     and costing a duplicate dispatch instead of a suppression. You can only give
     up what you hold.
     """
@@ -868,20 +866,19 @@ def newest_authorized_claim(comments: Any, reporter: str | None) -> dict | None:
 def last_human_comment(comments: Any) -> dict | None:
     """The NEWEST non-bot comment, chosen by timestamp rather than by position.
 
-    Two measurements shaped this. First, the per-issue comments endpoint
-    documents only ``since``, ``per_page`` and ``page``: it silently IGNORES
-    ``sort`` and ``direction`` and answers oldest-first. An earlier version of
-    this function asked for ``direction=desc`` and took the first element, and
-    on a real item that returned the OLDEST of twelve comments (2026-09-01
-    10:40) against a newest of 2026-09-03 00:56 — so a reporter's later "please
-    close" was invisible to the check that exists to find it. Second, this
-    repository's triage bot comments on issues, and its summary was the OLDEST
-    entry rather than the newest, so skipping bots is right but reading from
-    either end is not.
+    Two measurements shape this. First, the per-issue comments endpoint documents
+    only ``since``, ``per_page`` and ``page``: it silently IGNORES ``sort`` and
+    ``direction`` and answers oldest-first. So asking for ``direction=desc`` and
+    taking the first element returns the OLDEST comment -- measured on a real
+    item, the oldest of twelve, some 38 hours behind the newest -- which hides a
+    reporter's later "please close" from the check that exists to find it.
+    Second, this repository's triage bot comments on issues and its summary lands
+    at the OLDEST end, so skipping bots is right but reading from either end is
+    not.
 
     Hence selection by ``max(created_at)`` over non-bot comments and never by
     position: an endpoint that changes its order, or a client that merges pages
-    in another sequence, cannot bring the bug back. Position breaks ties only
+    in another sequence, cannot reach either failure. Position breaks ties only
     when a timestamp is missing.
     """
     if not isinstance(comments, list):
@@ -914,9 +911,8 @@ def scan_prose(
     as somebody else's — the fail-safe direction is SKIP, never CLAIM.
 
     BOTH phrase sets need STANDING (the item's own author, always true of the
-    body, or a repository insider by ``author_association``). That used to be
-    two rules with opposite reasons; it is now one reason, because neither
-    reading closes anything any more:
+    body, or a repository insider by ``author_association``). One reason covers
+    both, because neither reading closes anything:
 
     * a closure request produces REVIEW, which withholds a dispatch and asks a
       human, so "please close" from a passer-by must not fire it;

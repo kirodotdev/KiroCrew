@@ -359,10 +359,9 @@ def test_seed_cmd_emits_sel_audit_on_copytree_oserror(
        ternary in ``seed_cmd`` had no coverage of the ``error`` branch.
 
     Triggers the failure by patching ``shutil.copytree`` to raise a disk-
-    full-style ``OSError``. 1.A's ``FileExistsError`` trigger (pre-creating
-    ``dst``) no longer works after 1.B because empty-dir targets are
-    accepted — and populated targets hit the non-empty guardrail (``denied``,
-    not ``error``).
+    full-style ``OSError``. Pre-creating ``dst`` cannot reach this branch: an
+    empty-dir target is accepted, and a populated target hits the non-empty
+    guardrail (``denied``, not ``error``).
     """
     target = tmp_path / "home"
     monkeypatch.setenv("KIROCREW_HOME", str(target))

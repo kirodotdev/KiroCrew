@@ -302,7 +302,7 @@ async def test_an_issuer_variant_is_flagged_end_to_end(advertised_issuer, label)
 
 @pytest.mark.asyncio
 async def test_a_trailing_slash_issuer_is_a_mismatch():
-    """Previously normalized away; under exact comparison it is a finding."""
+    """Under exact comparison a trailing-slash issuer is a finding, not a match."""
 
     session = FakeSession(routes(issuer=f"{ISSUER}/"))
 
@@ -356,7 +356,7 @@ async def test_an_advertised_issuer_change_is_never_fetched_in_probe_mode():
 
 @pytest.mark.asyncio
 async def test_an_advertised_issuer_change_is_never_fetched_in_record_mode():
-    """The SSRF seam: record mode used to dereference this value."""
+    """The SSRF seam: record mode must never dereference this value."""
 
     session = FakeSession(
         {

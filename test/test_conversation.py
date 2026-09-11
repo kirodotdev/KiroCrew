@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 import pytest
 
-from kiro_crew.messaging.conversation import ConversationState
+from kiro_crew.messaging.conversation import ConversationState, reserve_new_generation
 from kiro_crew.session_map import SessionMap
 
 
@@ -125,5 +125,44 @@ class TestRestartRegression:
         conv: ConversationState[str] = ConversationState(
             seed_fn=lambda k: session_map.max_generation(b)
         )
-        assert conv.current_gen("U") == 2   # resume the latest, not stale gen0
-        assert conv.bump_gen("U") == 3      # /new → fresh, no collision with gen1/gen2
+        assert conv.current_gen("U") == 2  # resume the latest, not stale gen0
+        assert conv.bump_gen("U") == 3  # /new → fresh, no collision with gen1/gen2
+
+
+class _ReservationSessions:
+    def __init__(self, *, flush_error: Exception | None = None) -> None:
+        self.reserved: list[str] = []
+        self.flushes = 0
+        self.flush_error = flush_error
+
+    def reserve_generation(self, session_key: str) -> None:
+        self.reserved.append(session_key)
+
+    async def aflush(self) -> None:
+        self.flushes += 1
+        if self.flush_error is not None:
+            raise self.flush_error
+
+
+class TestReserveNewGeneration:
+    @pytest.mark.asyncio
+    async def test_reserves_and_flushes_before_success(self) -> None:
+        sessions = _ReservationSessions()
+        key = "telegram:kirocrew:direct:u1:gen3"
+
+        assert await reserve_new_generation(sessions, key, channel_type="Telegram") is True
+        assert sessions.reserved == [key]
+        assert sessions.flushes == 1
+
+    @pytest.mark.asyncio
+    async def test_flush_failure_is_reported_to_the_channel(self) -> None:
+        sessions = _ReservationSessions(flush_error=OSError("disk unavailable"))
+
+        assert (
+            await reserve_new_generation(
+                sessions,
+                "telegram:kirocrew:direct:u1:gen3",
+                channel_type="Telegram",
+            )
+            is False
+        )

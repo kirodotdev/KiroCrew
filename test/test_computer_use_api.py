@@ -1371,7 +1371,7 @@ class TestAnAppTokenCannotWriteTheKeystone:
     ``enable_state.save_state`` deliberately bypasses ``is_sensitive_path`` — that is
     what lets the operator's own Settings panel write a file the agent cannot read or
     write with a tool. So this handler is the only thing standing between an
-    App-Kit-scoped token and ``enabled: true``. It used to check nothing at all:
+    App-Kit-scoped token and ``enabled: true``. Checking nothing is unsafe:
     ``request["user"]`` is truthy for an app token too, and an app whose manifest
     declares ``permissions.api: ["/api/computer-use"]`` passes
     ``app_token_path_allowed`` (verified: a bare ``/api/computer-use`` pattern matches
@@ -1429,7 +1429,7 @@ class TestAnAppTokenCannotWriteTheKeystone:
 class TestMixedSaveIsAllOrNothing:
     """A mixed state+limits PUT must not half-apply (reviewer finding).
 
-    The keystone write lands first, so a corrupt ``config.json`` used to leave the
+    The keystone write lands first, so a corrupt ``config.json`` can leave the
     SECURITY state applied — the feature enabled, or the real-pointer opt-in set —
     while the response told the operator the save had failed. The ceiling had moved
     and nothing said so.
@@ -1729,7 +1729,7 @@ class TestEnableRestartsSessions:
 
         ``api_computer_use_config_save`` imports ``rebuild_agent_config`` inside the
         function. Hoisting it to module scope would bind the name at import time,
-        so patching ``kiro_crew.agent`` would no longer reach this call site — and
+        so patching ``kiro_crew.agent`` would not reach this call site — and
         the guard above would keep passing while every enable-flipping test wrote
         the operator's real ``~/.kiro/agents`` again.
 
@@ -1931,7 +1931,7 @@ class TestErrorCodes:
 
     @pytest.mark.asyncio
     async def test_an_integer_limit_out_of_range_is_a_different_code(self, home: Path) -> None:
-        """The distinction a caller could not previously make without matching English.
+        """The distinction a caller cannot make without matching English.
 
         A value of the right type that is simply too large is a different refusal
         from a value of the wrong type, and only the code separates them.

@@ -3,8 +3,8 @@
 `redact_credentials` is the redaction boundary: a regression here writes live
 credentials into persisted chat history. The optimisation it guards is pure
 control flow — a pre-filter that skips a scan already known to be empty, one
-shared base64 scan feeding two passes, and a chunk decode that no longer
-re-scans its own input. None of it may change output, so this module pins the
+shared base64 scan feeding two passes, and a chunk decode that does not
+re-scan its own input. None of it may change output, so this module pins the
 ORIGINAL three-pass implementation as a reference oracle and asserts the live
 function is byte-identical to it, on both the returned text AND the warnings.
 
@@ -350,7 +350,7 @@ def test_output_is_byte_identical_to_reference(text: str) -> None:
 def test_matched_span_is_redacted_not_an_earlier_lookalike() -> None:
     """Pass 1 must redact the span that matched, not an earlier substring.
 
-    Regression for the shape ``result.replace(matched, tag, 1)``. Here the
+    Guards the shape ``result.replace(matched, tag, 1)``. Here the
     boundary-anchored pattern matches only the SECOND token; the first is an
     ``x``-prefixed lookalike that happens to contain the matched text. The old
     shape redacted the lookalike and emitted the real credential verbatim.

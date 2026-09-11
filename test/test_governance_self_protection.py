@@ -104,7 +104,7 @@ def test_agent_fs_write_to_run_marker_denied_at_gate():
 def test_the_named_ceiling_and_secret_leaves_are_fenced_at_the_OS_LAYER():
     """The leaves this file names are fenced where a SUBPROCESS is actually bound.
 
-    This assertion used to run ``is_sensitive_bash_command`` over eight attached-redirect
+    This assertion must not run ``is_sensitive_bash_command`` over eight attached-redirect
     spellings (``>~/.kiro/crew/./<leaf>`` and the ``<`` input forms). It was testing the
     wrong layer, and the layer it tested could not hold: a spawned shell reaches a file
     through an ``open()`` that never routes through the tool gate, so a path fenced only

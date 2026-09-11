@@ -98,6 +98,7 @@ const apiMock = vi.hoisted(() => ({
   chatSlots: vi.fn(),
   chatMode: vi.fn(),
   chatSlotProject: vi.fn(),
+  dashboardConfig: vi.fn(),
   createChatSlot: vi.fn(),
   deleteChatSlot: vi.fn(),
   deleteSession: vi.fn(),
@@ -141,6 +142,7 @@ const POISON = ['__proto__', 'constructor', 'prototype'] as const
 beforeEach(() => {
   for (const fn of Object.values(apiMock)) fn.mockReset()
   apiMock.chatSlots.mockResolvedValue([])
+  apiMock.dashboardConfig.mockResolvedValue({ default_memory_mode: 'persistent' })
   apiMock.setSlotColor.mockResolvedValue({})
   apiMock.stopChatSlot.mockResolvedValue({})
   apiMock.stopChatSlotForce.mockResolvedValue({})
@@ -1321,6 +1323,46 @@ describe('chatSlice thunks', () => {
     expect(chat(store).activeSlot).toBe('elsewhere')
   })
 
+  it('applies the configured default memory mode to a new dashboard chat', async () => {
+    apiMock.dashboardConfig.mockResolvedValue({ default_memory_mode: 'temporary' })
+    apiMock.createChatSlot.mockResolvedValue({ key: 'temporary-slot' })
+    const store = makeStore()
+    await store.dispatch(createSlot(undefined))
+    expect(apiMock.createChatSlot.mock.calls[0][4]).toBe('temporary')
+  })
+
+  it('preserves an explicit memory-mode choice without reading the default', async () => {
+    apiMock.createChatSlot.mockResolvedValue({ key: 'incognito-slot' })
+    const store = makeStore()
+    await store.dispatch(createSlot({ memory_mode: 'incognito' }))
+    expect(apiMock.dashboardConfig).not.toHaveBeenCalled()
+    expect(apiMock.createChatSlot.mock.calls[0][4]).toBe('incognito')
+  })
+
+  it('fails closed to temporary when the configured default is malformed', async () => {
+    apiMock.dashboardConfig.mockResolvedValue({ default_memory_mode: 'surprise' })
+    apiMock.createChatSlot.mockResolvedValue({ key: 'temporary-slot' })
+    const store = makeStore()
+    await store.dispatch(createSlot(undefined))
+    expect(apiMock.createChatSlot.mock.calls[0][4]).toBe('temporary')
+  })
+
+  it('keeps New chat available but temporary when the config read fails', async () => {
+    apiMock.dashboardConfig.mockRejectedValue(new Error('offline'))
+    apiMock.createChatSlot.mockResolvedValue({ key: 'temporary-slot' })
+    const store = makeStore()
+    await store.dispatch(createSlot(undefined))
+    expect(apiMock.createChatSlot.mock.calls[0][4]).toBe('temporary')
+  })
+
+  it('keeps the historical persistent default for an older backend', async () => {
+    apiMock.dashboardConfig.mockResolvedValue({})
+    apiMock.createChatSlot.mockResolvedValue({ key: 'persistent-slot' })
+    const store = makeStore()
+    await store.dispatch(createSlot(undefined))
+    expect(apiMock.createChatSlot.mock.calls[0][4]).toBe('persistent')
+  })
+
   it('carries a caller-supplied title on the create request', async () => {
     // The server pins a title given at create time, locking the background
     // auto-titler out, and the create broadcast already carries it. A later
@@ -1381,6 +1423,44 @@ describe('chatSlice thunks', () => {
     expect(apiMock.deleteChatSlot).toHaveBeenCalledWith('fg-slot')
     expect(root(store).dashboard.slots.map(s => s.key)).not.toContain('fg-slot')
     expect(chat(store).creatingSlot).toBe(false)
+  })
+
+  // The sidebar row and the activated empty transcript must land in ONE store
+  // update: a separate optimistic dispatch before `fulfilled` rendered the new
+  // row over the OLD chat for a frame and charged the sidebar its insertion
+  // render twice. Pinned by counting store notifications between the POST
+  // resolving and the thunk settling.
+  it('publishes and activates the created slot in a single store update', async () => {
+    apiMock.createChatSlot.mockResolvedValue({ key: 'one-shot' })
+    const store = makeStore()
+    store.dispatch(setActiveSlot('origin'))
+    const seen: Array<{ inList: boolean; active: string | null }> = []
+    const unsubscribe = store.subscribe(() => {
+      const state = root(store)
+      seen.push({
+        inList: state.dashboard.slots.some(s => s.key === 'one-shot'),
+        active: state.chat.activeSlot,
+      })
+    })
+    await store.dispatch(createSlot(undefined))
+    unsubscribe()
+    // The first notification in which the row exists is the one that activated
+    // it: no intermediate "row present, old chat still active" state.
+    const first = seen.find(s => s.inList)
+    expect(first).toEqual({ inList: true, active: 'one-shot' })
+    expect(root(store).dashboard.slots.filter(s => s.key === 'one-shot')).toHaveLength(1)
+  })
+
+  it('does not duplicate a slot the live slots frame announced before the create response', async () => {
+    apiMock.createChatSlot.mockImplementation(async () => {
+      // The broadcast beats the HTTP reply, the documented common case.
+      store.dispatch(sseSlots([{ key: 'announced', title: 'announced', running: false } as never]))
+      return { key: 'announced' }
+    })
+    const store = makeStore()
+    await store.dispatch(createSlot(undefined))
+    expect(root(store).dashboard.slots.filter(s => s.key === 'announced')).toHaveLength(1)
+    expect(chat(store).activeSlot).toBe('announced')
   })
 
   it('resyncs the slots list when a delete fails on the server', async () => {

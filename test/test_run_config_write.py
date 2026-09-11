@@ -1,4 +1,4 @@
-"""Both-locks discipline for Slack ``config.json`` writers (#3102 review).
+"""Both-locks discipline for Slack ``config.json`` writers.
 
 ``run_config_write`` exists because two writer generations serialize on two
 DIFFERENT locks: ``update_config_locked`` takes the sidecar advisory flock,

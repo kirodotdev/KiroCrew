@@ -16,6 +16,7 @@ import {
   Dialog, DialogBody, DialogContent, DialogFooter, DialogHeader, DialogTitle,
 } from '../components/ui/dialog'
 import SegmentedControl from '../components/SegmentedControl'
+import ErrorBoundary from '../components/ErrorBoundary'
 import InfoTip from '../components/InfoTip'
 import { FOCUSABLE } from '../hooks/useDialogFocusTrap'
 import SimpleSelect from '../components/SimpleSelect'
@@ -28,6 +29,7 @@ import CrewWakeSection from '../components/CrewWakeSection'
 import CrewWebhookSection from '../components/CrewWebhookSection'
 import CrewEditorRail from '../components/crew/CrewEditorRail'
 import CrewOverviewPane from '../components/crew/CrewOverviewPane'
+import AgentTemplateDetail from '../components/crew/AgentTemplateDetail'
 import { useCrewEditorSections, type CrewPaneKey } from '../components/crew/crewEditorSections'
 import { wakesCrew, crewWakeQueryKey, crewWebhooksQueryKey, webhookBoundToCrew, webhookCanCallIn } from '../components/crew/wakesCrew'
 import type { CronJob } from '../types'
@@ -35,13 +37,19 @@ import type { KiroCrewAgent } from '../components/AgentSelector'
 import { SourceBadge } from '../components/SourceBadge'
 import { errMessage } from '../utils/thunkError'
 import { EFFORT_LEVELS, effortLabel, modelSupportsEffort } from '../lib/effort'
+import { templateSourceBadge, type TemplateProvenance } from '../lib/templateSource'
 
 import { i18nT } from '../i18n/t'
+
+// An example input value, independent of the display language.
+const HEX_COLOR_EXAMPLE = '#4f8ef7'
 import ErrorNotice from '../components/ErrorNotice'
 /** Common shape returned by the agent/workspace mutation endpoints. */
 interface AgentMutationResult {
   error?: string
   name?: string
+  memory_store?: string
+  new_conversation_required?: boolean
 }
 
 /** Fields sent when creating a crew. */
@@ -323,19 +331,29 @@ function withCurrent(opts: string[], cur: string): string[] {
  * SAME control rather than two copies that drift. Create composes them through
  * `BindingFields`; the editor mounts them individually, one per rail pane.
  */
-export function TemplateField({ label, options, value, onChange, subject, editLaterNote }: {
+export function TemplateField({ label, options, value, onChange, subject, editLaterNote, provenance }: {
   label: string; options: string[]; value: string; onChange: (v: string) => void; subject: FormSubject
   /** Create-only reassurance that the pick is not a commitment. The editor never
    *  sets it: there the fields being edited are themselves the answer. */
   editLaterNote?: boolean
+  /** Provenance per template name, for the source label on each row. Absent while
+   *  the installed list is still loading, which just means no labels yet. */
+  provenance?: Record<string, TemplateProvenance>
 }) {
   const hint = subject === 'member'
     ? i18nT('pages.kiroCrewAgentsPage.template_hint_member')
     : i18nT('pages.kiroCrewAgentsPage.the_agent_definition_it_boots_from_tools_mcp_ser')
+  const opts = withCurrent(options, value)
   return (
     <Field label={label} hint={hint}>
       <SimpleSelect
-        options={withCurrent(options, value)}
+        options={opts}
+        optionBadges={opts.map(o => {
+          const p = provenance?.[o]
+          const label = templateSourceBadge(p)
+          return label ? { label, source: p?.source ?? '' } : undefined
+        })}
+        labelsInListOnly
         value={value}
         onChange={onChange}
         triggerFallback={i18nT('pages.kiroCrewAgentsPage.select_an_agent_template')}
@@ -378,26 +396,80 @@ export function WorkspaceField({ options, value, onChange, onNewWorkspace, subje
   )
 }
 
-export function MemoryStoreField({ options, value, onChange, subject }: {
-  options: string[]; value: string; onChange: (v: string) => void; subject: FormSubject
+export type MemberMemoryState = 'legacy' | 'private' | 'ownership_mismatch' | 'unavailable'
+
+export function memberMemoryState(member: string, store: string, stores: Record<string, { memory_version?: number; owner_member?: string }> | undefined): MemberMemoryState {
+  if (member === 'default') return store === 'default' ? 'legacy' : 'unavailable'
+  if (!stores) return 'unavailable'
+  const config = stores?.[store]
+  if (config?.owner_member && config.owner_member !== member) return 'ownership_mismatch'
+  if (config?.memory_version === 2 && config.owner_member === member) return 'private'
+  if (Object.values(stores).some(value => value.owner_member === member)) return 'unavailable'
+  if (store === 'default') return 'legacy'
+  if (!config) return 'unavailable'
+  const version = config.memory_version === undefined ? 1 : config.memory_version
+  if (version === 1 && (config.owner_member === undefined || config.owner_member === '')) return 'legacy'
+  return 'unavailable'
+}
+
+export function MemoryStoreField({ value = '', member, memoryState = 'unavailable', onInitialize, onManage, busy = false, initializing = false, manageDisabled = false }: {
+  value?: string; member?: string; memoryState?: MemberMemoryState
+  onInitialize?: () => void; onManage?: () => void; busy?: boolean; initializing?: boolean; manageDisabled?: boolean
+  /** Compatibility for external callers; stores are never selectable here. */
+  options?: string[]; onChange?: (value: string) => void
 }) {
+  const isGlobal = member === 'default' && memoryState === 'legacy'
+  const canInitialize = !!member && !isGlobal && memoryState === 'legacy' && !!onInitialize
+  const [confirming, setConfirming] = useState(false)
+  useEffect(() => { setConfirming(false) }, [member, value, memoryState])
+  const hint = !member
+    ? i18nT('pages.kiroCrewAgentsPage.private_memory_auto')
+    : isGlobal
+      ? i18nT('pages.kiroCrewAgentsPage.global_memory_v1')
+      : memoryState === 'private'
+        ? i18nT('pages.kiroCrewAgentsPage.private_memory_owned')
+        : memoryState === 'legacy'
+          ? i18nT('pages.kiroCrewAgentsPage.private_memory_legacy')
+          : memoryState === 'ownership_mismatch'
+            ? `${i18nT('pages.kiroCrewAgentsPage.memory_binding_mismatch')} ${i18nT('pages.kiroCrewAgentsPage.memory_binding_diagnostic', { command: 'kirocrew doctor' })}`
+            : `${i18nT('pages.kiroCrewAgentsPage.memory_binding_unavailable')} ${i18nT('pages.kiroCrewAgentsPage.memory_binding_diagnostic', { command: 'kirocrew doctor' })}`
   return (
-    <Field
-      label={i18nT('pages.kiroCrewAgentsPage.memory_store')}
-      hint={subject === 'member' ? i18nT('pages.kiroCrewAgentsPage.memory_store_hint_member') : i18nT('pages.kiroCrewAgentsPage.which_store_its_lessons_and_history_are_written')}
-      info={i18nT('pages.kiroCrewAgentsPage.bindings_preview_info')}
-    >
-      <SimpleSelect options={withCurrent(options, value)} value={value} onChange={onChange} aria-label={i18nT('pages.kiroCrewAgentsPage.memory_store')} />
-      {/* Show the "more coming" note only when `default` is the sole option —
-          an install that has declared extra `memory_stores` in config already
-          has a real choice here, and the copy must not contradict a picker
-          that is visibly offering other stores. */}
-      {options.length <= 1 && (
-        <span className="flex items-start gap-1.5 text-[11.5px] leading-relaxed text-accent">
-          <Sparkles className="lucide-inline h-3 w-3 mt-0.5 shrink-0" aria-hidden="true" />
-          {i18nT('pages.kiroCrewAgentsPage.additional_stores_coming_with_memory_v2')}
-        </span>
+    <Field label={i18nT('pages.kiroCrewAgentsPage.memory_store')} hint={hint}>
+      {member && <span className="break-all font-mono text-[12px] text-muted">{isGlobal ? 'default' : value}</span>}
+      <div className="flex flex-wrap gap-2">
+        {canInitialize && (
+          <Btn onClick={() => setConfirming(true)} disabled={busy}>{i18nT('pages.kiroCrewAgentsPage.initialize_private_memory')}</Btn>
+        )}
+        {(isGlobal || memoryState === 'private') && onManage && (
+          <Btn onClick={onManage} disabled={busy || manageDisabled}>
+            {i18nT('pages.kiroCrewAgentsPage.manage_private_memory')}
+          </Btn>
+        )}
+      </div>
+      {initializing && (
+        <p role="status" className="mt-2 text-[12px] text-muted">
+          {i18nT('memoryV2.creating_private_memory')}
+        </p>
       )}
+      {(isGlobal || memoryState === 'private') && onManage && manageDisabled && (
+        <p className="mt-2 text-[12px] text-muted">{i18nT('components.markdownPanel.save_or_discard_changes_first')}</p>
+      )}
+      <Dialog open={confirming && canInitialize} onOpenChange={setConfirming}>
+        <DialogContent maxWidth={440} className="z-[110]" aria-label={i18nT('pages.kiroCrewAgentsPage.initialize_private_memory')}>
+          <DialogHeader>
+            <DialogTitle>{i18nT('pages.kiroCrewAgentsPage.initialize_private_memory')}</DialogTitle>
+          </DialogHeader>
+          <DialogBody>
+            <p className="text-sm text-text">{i18nT('pages.kiroCrewAgentsPage.private_memory_legacy_confirm')}</p>
+          </DialogBody>
+          <DialogFooter>
+            <Btn onClick={() => setConfirming(false)}>{i18nT('components.confirmDialog.cancel')}</Btn>
+            <Btn danger disabled={busy || !canInitialize} onClick={() => { setConfirming(false); onInitialize?.() }}>
+              {i18nT('pages.kiroCrewAgentsPage.initialize_private_memory')}
+            </Btn>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </Field>
   )
 }
@@ -537,7 +609,7 @@ export function SessionColorField({ value, onChange, subject }: { value: string;
           aria-label={i18nT('pages.kiroCrewAgentsPage.session_color')}
         />
         <Input
-          placeholder="#rrggbb"
+          placeholder={HEX_COLOR_EXAMPLE}
           value={draft}
           onChange={e => {
             const v = e.target.value.trim().toLowerCase()
@@ -567,22 +639,21 @@ export function SessionColorField({ value, onChange, subject }: { value: string;
 
 /** The create form's binding block. */
 function BindingFields({
-  templateLabel, kiroAgentOptions, kiroAgent, setKiroAgent,
+  templateLabel, kiroAgentOptions, kiroAgent, setKiroAgent, templateProvenance,
   workspaceOptions, workspace, setWorkspace, onNewWorkspace,
-  memoryStoreOptions, memoryStore, setMemoryStore,
   modelOptions, model, setModel, subject,
 }: {
   templateLabel: string; subject: FormSubject
   kiroAgentOptions: string[]; kiroAgent: string; setKiroAgent: (v: string) => void
+  templateProvenance?: Record<string, TemplateProvenance>
   workspaceOptions: string[]; workspace: string; setWorkspace: (v: string) => void; onNewWorkspace: () => void
-  memoryStoreOptions: string[]; memoryStore: string; setMemoryStore: (v: string) => void
   modelOptions?: string[]; model?: string; setModel?: (v: string) => void
 }) {
   return (
     <>
-      <TemplateField label={templateLabel} options={kiroAgentOptions} value={kiroAgent} onChange={setKiroAgent} subject={subject} editLaterNote />
+      <TemplateField label={templateLabel} options={kiroAgentOptions} value={kiroAgent} onChange={setKiroAgent} subject={subject} editLaterNote provenance={templateProvenance} />
       <WorkspaceField options={workspaceOptions} value={workspace} onChange={setWorkspace} onNewWorkspace={onNewWorkspace} subject={subject} />
-      <MemoryStoreField options={memoryStoreOptions} value={memoryStore} onChange={setMemoryStore} subject={subject} />
+      <MemoryStoreField />
       {modelOptions && setModel && model !== undefined && (
         <ModelField options={modelOptions} value={model} onChange={setModel} />
       )}
@@ -780,7 +851,23 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
     queryKey: ['agents-installed'],
     queryFn: () => api.agentsInstalled(),
   })
-  const kiroAgentOptions = Array.isArray(installedAgents) ? installedAgents.map((x: { name: string }) => x.name).filter(Boolean) : ['kirocrew']
+  // Private fork copies (blueprint semantics: one crew's own definition) are
+  // not offered as bindable templates — a copy named after crew A means
+  // nothing in crew B's dropdown. The edit sheet re-adds the CURRENT binding
+  // below when it is the editing crew's own copy, same pattern as a pinned
+  // model missing from the advertised list.
+  const kiroAgentOptions = Array.isArray(installedAgents)
+    ? installedAgents
+      .filter((x: { name: string; private_to?: string }) => Boolean(x.name) && !x.private_to)
+      .map((x: { name: string }) => x.name)
+    : ['kirocrew']
+  const templateProvenance: Record<string, TemplateProvenance> = Array.isArray(installedAgents)
+    ? Object.fromEntries(
+      installedAgents
+        .filter((x: { name: string }) => Boolean(x.name))
+        .map((x: TemplateProvenance & { name: string }) => [x.name, x]),
+    )
+    : {}
 
   const { data: workspacesData, refetch: refetchWorkspaces, error: workspacesError } = useQuery({
     queryKey: ['workspaces'],
@@ -792,7 +879,6 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
     queryKey: ['kirocrewConfig'],
     queryFn: () => api.kirocrewConfig(),
   })
-  const memoryStoreOptions = kirocrewCfg?.memory_stores ? Object.keys(kirocrewCfg.memory_stores) : ['default']
   // The three option lists above fall back to a built-in default when their
   // fetch fails, so without this the editor would offer `default` / `kirocrew`
   // as though those were the only choices. One notice, first failure wins.
@@ -1041,7 +1127,7 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
   /** Reset the panel's state. Where the user LANDS afterwards is the caller's
    *  decision: `closeSheet` (dismissal, or a finished write on this page's own
    *  form) stays here; the Members-origin create answers with the roster. */
-  const dismissSheet = useCallback(() => { sheetEpoch.current += 1; setSheet(null); setError(''); setSheetHint(''); setConfirmDelete(false) }, [])
+  const dismissSheet = useCallback(() => { sheetEpoch.current += 1; setSheet(null); setError(''); setSheetHint(''); setConfirmDelete(false); setTemplateSwitchError('') }, [])
   const closeSheet = useCallback(() => {
     dismissSheet()
     // Asked for from the Crew Members roster and closed without a create:
@@ -1136,6 +1222,26 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
     onSuccess: (r: AgentMutationResult, vars) => { settleFor(vars.epoch, r.error); refetchAgents() },
     onError: (e: Error, vars) => settleFor(vars.epoch, e.message || i18nT('pages.kiroCrewAgentsPage.failed_to_update_agent')),
   })
+  const provisionMut = useMutation({
+    mutationFn: ({ name }: { name: string; epoch: number }) => api.updateKirocrewAgent(name, { provision_memory: true }),
+    onSuccess: (r: AgentMutationResult, vars) => {
+      void refetchAgents()
+      void queryClient.invalidateQueries({ queryKey: ['kirocrewConfig'] })
+      void queryClient.invalidateQueries({ queryKey: ['memory-stores'] })
+      if (!r.error && r.new_conversation_required) {
+        // A member moving from V1 to private V2 must not briefly remount its
+        // cached V1 thread. The next Open member action POSTs the authoritative
+        // thread endpoint and receives the fresh V2-bound slot.
+        queryClient.removeQueries({ queryKey: ['member-thread', vars.name], exact: true })
+      }
+      if (vars.epoch !== sheetEpoch.current) return
+      if (r.error) { setError(r.error); return }
+      if (r.memory_store) setMemoryStore(r.memory_store)
+    },
+    onError: (e: Error, vars) => {
+      if (vars.epoch === sheetEpoch.current) setError(e.message)
+    },
+  })
   /** Promotion is its own write, fired straight from the roster bar — it is not
    *  part of saving a crew's bindings, so it must not wait for a Save. */
   const defaultMut = useMutation({
@@ -1157,8 +1263,101 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
     // 'kirocrew' default: that default is what silently turns a new crew into an
     // alias for the DEFAULT agent (#1684).
     if (!kiroAgent) { setSheetHint(i18nT('pages.kiroCrewAgentsPage.agent_template_is_required')); return }
-    createMut.mutate({ name: n, kiro_agent: kiroAgent, workspace, memory_store: memoryStore, triggers, session_color: sessionColor, epoch: sheetEpoch.current })
+    createMut.mutate({ name: n, kiro_agent: kiroAgent, workspace, memory_store: 'default', triggers, session_color: sessionColor, epoch: sheetEpoch.current })
   }
+
+  /** Template switches from the definition pane persist IMMEDIATELY. The
+   *  pane hides the sheet footer (its contract is saved-as-you-go, and fork /
+   *  reset / publish already write server-side), so a dropdown switch left in
+   *  local state would silently die when the sheet closes. A failed PUT keeps
+   *  the switch as local state — `dirtyPanes` marks the pane and the close
+   *  path falls back to the discard confirm — and renders the failure in the
+   *  pane through ErrorNotice. The in-flight write is TRACKED so the close
+   *  path can hold until it settles: a "discard" confirmed while the request
+   *  is still in the air cannot un-send it, so answering the dialog before
+   *  the write lands would let a discarded binding commit anyway. */
+  const [templateSwitchError, setTemplateSwitchError] = useState('')
+  const templateSwitchInflight = useRef<Promise<void> | null>(null)
+  // The pane's shared instant-save chain (model pick, skill toggle), reported
+  // via onSaveChain. Tracked HERE so requestClose can hold a close until it
+  // settles: closing mid-PATCH unmounts the pane, its failure notice renders
+  // nowhere, and the edit is silently lost (GPT round-53).
+  const instantSaveInflight = useRef<Promise<unknown> | null>(null)
+  const onPaneSaveChain = useCallback((p: Promise<unknown>) => {
+    instantSaveInflight.current = p
+    void p.catch(() => undefined).then(() => {
+      if (instantSaveInflight.current === p) instantSaveInflight.current = null
+    })
+  }, [])
+  const latestTemplateSwitch = useRef<string | null>(null)
+  /** The binding the SERVER is known to hold — the roster's value, advanced by
+   *  each successful commit. Read inside the serialized chain (not at call
+   *  time), so a coalesced skip does not desynchronize the staleness check. */
+  const serverTemplateBinding = useRef<string | null>(null)
+  useEffect(() => {
+    if (editingAgent) serverTemplateBinding.current = editingAgent.kiro_agent || ''
+  }, [editingAgent])
+  const persistTemplateSwitch = useCallback(
+    (v: string) => {
+      setKiroAgent(v)
+      setTemplateSwitchError('')
+      if (!editing) return
+      // SERIALIZED and COALESCED: each write chains behind the previous one
+      // (two concurrent PUTs could acquire the server lock in reverse and
+      // persist the older choice), and a superseded selection is skipped so
+      // only the LATEST commits. The payload is binding-only and carries the
+      // expected prior binding, so the server's locked delta writer can 409 a
+      // switch racing another surface's rebind instead of clobbering it.
+      latestTemplateSwitch.current = v
+      const prev = templateSwitchInflight.current ?? Promise.resolve()
+      const commit = prev.then(async () => {
+        if (latestTemplateSwitch.current !== v) return
+        try {
+          const expected = serverTemplateBinding.current
+          await api.updateKirocrewAgent(editing, {
+            kiro_agent: v,
+            ...(expected ? { expected_kiro_agent: expected } : {}),
+          })
+          serverTemplateBinding.current = v
+          // Awaited so the settled promise implies fresh server state: the
+          // deferred close then re-evaluates dirtiness against reality.
+          await refetchAgents()
+          setTemplateSwitchError('')
+        } catch (e) {
+          setTemplateSwitchError(errorText(e))
+          // A conflict means another surface moved the binding. Resync BOTH the
+          // tracked server binding and the LOCAL pick from the authoritative
+          // roster: `setKiroAgent(v)` above already advanced the local state to
+          // the failed pick, and a later pane Save sends that local value on
+          // the generic path — left alone it would overwrite the other
+          // surface's binding with the very value the server just refused.
+          // Fetched directly (not via the query cache) so the value is in hand
+          // before this chain link settles; the roster query is invalidated
+          // too so the rest of the page catches up. Skipped when the user has
+          // since picked again: that newer pick is now the one in flight.
+          try {
+            const fresh = (await api.kirocrewAgents()) as { agents?: KiroCrewAgent[] } | undefined
+            const row = fresh?.agents?.find(a => a.name === editing)
+            if (row && latestTemplateSwitch.current === v) {
+              const actual = row.kiro_agent || ''
+              serverTemplateBinding.current = actual
+              setKiroAgent(actual)
+            }
+          } catch {
+            // The roster read failed too; the error above already tells the
+            // user the switch did not land, and the tracked binding still
+            // carries the last known server value for the next attempt.
+          }
+          refetchAgents()
+        }
+      })
+      templateSwitchInflight.current = commit
+      void commit.finally(() => {
+        if (templateSwitchInflight.current === commit) templateSwitchInflight.current = null
+      })
+    },
+    [editing, refetchAgents],
+  )
 
   const saveEdit = async () => {
     if (!editing) return
@@ -1347,7 +1546,7 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
   const creating = sheet?.mode === 'create'
   const [avatarUploading, setAvatarUploading] = useState(false)
   const sheetBusy =
-    createMut.isPending || updateMut.isPending || deleteMut.isPending || avatarUploading
+    createMut.isPending || updateMut.isPending || deleteMut.isPending || provisionMut.isPending || avatarUploading
 
   /**
    * The subset of `sheetBusy` that has already COMMITTED something — a write
@@ -1360,7 +1559,7 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
    * `sheetBusy` for that reason: skipping the discard question during staging
    * would let a dismissal drop the whole save silently.
    */
-  const committing = updateMut.isPending || deleteMut.isPending
+  const committing = updateMut.isPending || deleteMut.isPending || provisionMut.isPending
 
   /** Which rail pane the editor body is showing. Reset whenever the editor is
    *  pointed somewhere else, so a crew never opens on the pane the previous one
@@ -1493,6 +1692,22 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
    */
   const requestClose = useCallback(() => {
     if (schedDraft) { setDiscardAsk('close'); return }
+    // A template switch write still in the air cannot be discarded — the
+    // request is already sent. Hold the close until it settles (the tracked
+    // promise also awaits the roster refetch), then re-evaluate with fresh
+    // dirty state: a landed switch is no longer dirty, so the discard dialog
+    // never gets to promise an undo it cannot deliver.
+    if (templateSwitchInflight.current) {
+      void templateSwitchInflight.current.then(() => requestCloseRef.current())
+      return
+    }
+    // Same hold for the pane's instant saves (model pick, skill toggle): the
+    // PATCH is already sent, so the close waits for it to settle — a failure
+    // then renders in the still-mounted pane instead of nowhere.
+    if (instantSaveInflight.current) {
+      void instantSaveInflight.current.catch(() => undefined).then(() => requestCloseRef.current())
+      return
+    }
     if (committing || dirtyPanes.size === 0) { closeSheet(); return }
     // Published BEFORE the question goes up so a save still staging an upload
     // sees it and holds its PUT until the answer arrives. Only this leg arms
@@ -1503,6 +1718,11 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
     discardAnswer.current = { answered, settle }
     setDiscardAsk('close')
   }, [schedDraft, committing, dirtyPanes, closeSheet])
+
+  /** Latest requestClose, for the deferred re-invocation above — the settle
+   *  callback must not capture a stale closure's dirty state. */
+  const requestCloseRef = useRef<() => void>(() => {})
+  useEffect(() => { requestCloseRef.current = requestClose }, [requestClose])
 
   /** The header's "Chat with this crew" routes through here: it creates a
    *  chat slot, closes the sheet and navigates -- three steps that would
@@ -1634,6 +1854,13 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
     dirtyPanes,
   })
 
+  // While the agent-template pane is the active surface, its edits are saved as
+  // you go (a fork/patch lands immediately), so the sheet's Cancel + "Save
+  // changes" footer would advertise a second, contradictory save model over the
+  // pane's own "saved as you go" copy. Hide the footer there — the dialog's
+  // built-in ✕ still closes it, and the pane surfaces its own errors.
+  const templatePaneActive = !creating && pane === 'template'
+
   return (
     <>
       {!embedded && <PageHeader title={i18nT('pages.kiroCrewAgentsPage.agents')} subtitle={i18nT('pages.kiroCrewAgentsPage.manage_agent_workspace_memory_store_bindings')} />}
@@ -1657,13 +1884,8 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
           askAgent={!sheet}
           testId="crews-editor-options-load-error"
         />
-        {/* Says out loud what the bindings below cannot: a crew's workspace and
-            memory store are shown and editable, but the isolation they imply is
-            only partly built — every crew still reads one shared semantic
-            memory. Page-level rather than per-card: the claim is about the whole
-            surface, and repeating it on every card would put two "?" glyphs on
-            each of them. The editor panel and the list header carry the same
-            copy as a tooltip, because neither can see this line. */}
+        {/* New members receive private V2; an existing member keeps its declared
+            V1 binding until the owner chooses private memory. */}
         <div className="mb-3.5 flex items-start gap-2 rounded-lg border border-accent-subtle bg-bg-accent px-3 py-2.5">
           <Sparkles className="lucide-inline mt-0.5 shrink-0 text-accent" aria-hidden="true" />
           <span className="text-[12.5px] leading-relaxed text-muted">
@@ -1744,7 +1966,7 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
           <div className="flex-1" />
           <SendBtn onClick={openCreate} data-testid="new-crew">
             <Plus className="lucide-inline" aria-hidden="true" />
-            {i18nT('pages.kiroCrewAgentsPage.new_crew')}
+            {i18nT('pages.kiroCrewAgentsPage.add_crew_member')}
           </SendBtn>
         </div>
 
@@ -1774,8 +1996,8 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
                   {/* `aria-label` keeps the column's accessible name to the
                       label itself. Without it the InfoTip's own name is
                       concatenated into the header, and a screen reader
-                      announces every cell in the column as "Workspace,
-                      Preview. Isolated memory per crew is…". */}
+                      announces every cell in the column as the label followed
+                      by the whole paragraph of tip prose. */}
                   <TableHead aria-label={i18nT('pages.kiroCrewAgentsPage.workspace_2')}>
                     <span className="inline-flex items-center gap-1.5">
                       {i18nT('pages.kiroCrewAgentsPage.workspace_2')}
@@ -1817,13 +2039,13 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
             ))}
             <Clickable
               onClick={openCreate}
-              aria-label={i18nT('pages.kiroCrewAgentsPage.create_a_new_crew')}
+              aria-label={i18nT('pages.kiroCrewAgentsPage.add_crew_member')}
               className="flex min-h-[150px] flex-col items-center justify-center gap-2 rounded-lg border
                          border-dashed border-border-strong text-muted transition-colors focus-ring
                          hover:border-accent hover:bg-accent-subtle hover:text-accent"
             >
               <Plus className="lucide-inline" aria-hidden="true" />
-              <span className="text-[13px]">{i18nT('pages.kiroCrewAgentsPage.new_crew')}</span>
+              <span className="text-[13px]">{i18nT('pages.kiroCrewAgentsPage.add_crew_member')}</span>
             </Clickable>
           </div>
         )}
@@ -1841,7 +2063,7 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
              page's vocabulary: "Add crew member", the action the user pressed,
              not "Create Agent" — the app never says the two are one thing. */
           aria-label={creating
-            ? (fromMembers ? i18nT('pages.kiroCrewAgentsPage.add_crew_member') : i18nT('pages.kiroCrewAgentsPage.create_a_new_crew'))
+            ? i18nT('pages.kiroCrewAgentsPage.add_crew_member')
             : i18nT('pages.kiroCrewAgentsPage.edit_crew_named', { name: editing })}
           /* Radix closes on an outside pointerdown and on Escape. Dismissing
              mid-write is DELIBERATELY still allowed: the sheetEpoch/settleFor
@@ -1884,7 +2106,7 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
                 </CrewAvatarButton>
               )}
               <DialogTitle className="font-mono">
-                {creating ? (fromMembers ? i18nT('pages.kiroCrewAgentsPage.add_crew_member') : i18nT('pages.kiroCrewAgentsPage.create_agent')) : editing}
+                {creating ? i18nT('pages.kiroCrewAgentsPage.add_crew_member') : editing}
               </DialogTitle>
               {!creating && editingAgent?.source && <SourceBadge source={editingAgent.source} />}
             </div>
@@ -1898,9 +2120,9 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
                       title truncated to "on…"); aria-label carries the name. */}
                   <span className="hidden sm:inline">{i18nT('components.avatarBuilder.edit_avatar')}</span>
                 </Btn>
-                <Btn onClick={requestChat} title={i18nT('pages.kiroCrewAgentsPage.chat_with_this_crew')} aria-label={i18nT('pages.kiroCrewAgentsPage.chat_with_this_crew')}>
+                <Btn onClick={requestChat} title={i18nT('memoryV2.chat_member')} aria-label={i18nT('memoryV2.chat_member')}>
                   <MessageSquare className="lucide-inline" aria-hidden="true" />
-                  <span className="hidden sm:inline">{i18nT('pages.kiroCrewAgentsPage.chat_with_this_crew')}</span>
+                  <span className="hidden sm:inline">{i18nT('memoryV2.chat_member')}</span>
                 </Btn>
               </div>
             )}
@@ -1951,9 +2173,9 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
                     subject={formSubject}
                     templateLabel={provider.labels.agentTemplateField}
                     kiroAgentOptions={kiroAgentOptions} kiroAgent={kiroAgent} setKiroAgent={setKiroAgent}
+                    templateProvenance={templateProvenance}
                     workspaceOptions={workspaceOptions} workspace={workspace} setWorkspace={setWorkspace}
                     onNewWorkspace={() => setWsModalOpen(true)}
-                    memoryStoreOptions={memoryStoreOptions} memoryStore={memoryStore} setMemoryStore={setMemoryStore}
                   />
                 </section>
               </div>
@@ -2008,13 +2230,43 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
                   )}
 
                   {pane === 'template' && (
-                    <TemplateField
-                      label={provider.labels.agentTemplateField}
-                      options={kiroAgentOptions}
-                      value={kiroAgent}
-                      onChange={setKiroAgent}
-                      subject="agent"
-                    />
+                    /* The panel owns the selector: the template picker is
+                       the header bar of the container holding the
+                       definition it names (v5 design, usability-reviewed).
+                       The crew's private copy is filtered from the shared
+                       catalog; the panel re-adds the current binding when
+                       needed. The pane is imported statically — no lazy
+                       chunk, so no load-failure path — and the local
+                       ErrorBoundary contains a render crash to this pane;
+                       retryOnly keeps the fallback free of the /chat
+                       hand-off, which would discard the sheet's unsaved
+                       pane edits (dirtyPanes). */
+                    <ErrorBoundary scope="agent-template-pane" retryOnly>
+                      <>
+                        {/* No askAgent hand-off: it navigates to /chat,
+                            unmounting this sheet and destroying its
+                            unsaved pane edits (dirtyPanes). Errors inside
+                            the editor render in place, never as a
+                            hand-off. */}
+                        <ErrorNotice
+                          message={templateSwitchError || null}
+                          variant="inline"
+                          testId="crew-template-switch-error"
+                        />
+                        <AgentTemplateDetail
+                          template={kiroAgent}
+                          models={(availableModels || []).map((m: { name: string }) => m.name).filter(Boolean)}
+                          crew={editing || undefined}
+                          onForked={setKiroAgent}
+                          options={kiroAgentOptions}
+                          onSelect={persistTemplateSwitch}
+                          onRebound={setKiroAgent}
+                          provenance={templateProvenance}
+                          fieldLabel={provider.labels.agentTemplateField}
+                          onSaveChain={onPaneSaveChain}
+                        />
+                      </>
+                    </ErrorBoundary>
                   )}
 
                   {pane === 'model' && (
@@ -2106,8 +2358,19 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
                         onNewWorkspace={() => setWsModalOpen(true)}
                         subject="agent"
                       />
-                      <MemoryStoreField options={memoryStoreOptions} value={memoryStore} onChange={setMemoryStore} subject="agent" />
-                      {collidingCrews.length > 0 && (
+                      <MemoryStoreField
+                        value={memoryStore}
+                        member={editing}
+                        memoryState={memberMemoryState(editing, memoryStore, kirocrewCfg?.memory_stores)}
+                        onInitialize={() => provisionMut.mutate({ name: editing, epoch: sheetEpoch.current })}
+                        busy={sheetBusy || !kirocrewCfg}
+                        initializing={provisionMut.isPending && provisionMut.variables?.name === editing && provisionMut.variables.epoch === sheetEpoch.current}
+                        manageDisabled={dirtyPanes.size > 0 || schedDraft}
+                        onManage={() => navigate(`/settings/overview?view=memory&store=${encodeURIComponent(editing === 'default' ? 'default' : memoryStore)}`)}
+                      />
+                      {/* The default assistant's shared-workspace warning does not
+                          describe another member's memory ownership. */}
+                      {editing === 'default' && collidingCrews.length > 0 && (
                         <div className="rounded-md border border-warn-subtle bg-warn-subtle px-3 py-2.5 text-[11.5px] leading-relaxed text-muted">
                           {i18nT('pages.kiroCrewAgentsPage.also_used_by_these_crews', { crews: collidingCrews.join(', ') })}
                         </div>
@@ -2116,7 +2379,7 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
                   )}
 
                   {pane === 'schedules' && (
-                    <CrewWakeSection crew={editing} isDefaultCrew={editing === defaultAgent} onDraftChange={setSchedDraft} onSavingChange={setSchedSaving} onRequestCancel={requestCancelDraft} />
+                    <CrewWakeSection crew={editing} agentTemplate={kiroAgent} isDefaultCrew={editing === defaultAgent} onDraftChange={setSchedDraft} onSavingChange={setSchedSaving} onRequestCancel={requestCancelDraft} />
                   )}
 
                   {pane === 'webhook' && <CrewWebhookSection crew={editing} />}
@@ -2185,7 +2448,12 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
           {/* Save is disabled while nothing is pending. The schedule pause/run
               controls in the wake pane apply IMMEDIATELY, so a live Save button
               beside them implies those toggles are drafts that Cancel would roll
-              back — which it cannot. */}
+              back — which it cannot.
+
+              Hidden entirely while the agent-template pane is the active surface:
+              that pane saves as you go, so a Cancel + "Save changes" footer there
+              is a second, contradictory save model (see templatePaneActive). */}
+          {!templatePaneActive && (
           <DialogFooter>
             {/* No hand-off: the crew sheet's unsaved pane edits (dirtyPanes) —
                 a failed save is exactly what did not persist them. */}
@@ -2224,6 +2492,7 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
               >{i18nT('pages.kiroCrewAgentsPage.save_changes')}</SendBtn>
             )}
           </DialogFooter>
+          )}
 
           {/* Nested INSIDE the editor's DialogContent so Radix treats it as a
               stacked layer of the same dialog tree — that is what makes Escape

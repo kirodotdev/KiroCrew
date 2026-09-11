@@ -15,6 +15,7 @@ Covers spec task 2 of the Crew Members page:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import threading
 import time
@@ -46,6 +47,7 @@ def _fake_config(names, default=CREW):
     return SimpleNamespace(
         agents={name: KiroCrewAgentConfig(kiro_agent=name) for name in names},
         default_agent=default,
+        memory_stores={},
     )
 
 
@@ -286,9 +288,9 @@ class TestMemberRoutes:
         state.conversation_log.append(old_key, "user", "older message")
         state.conversation_log.append(new_key, "user", "newer message")
         # Touch the OLDER thread's file so its mtime is the newest of the two.
-        # Deliberately the REAL clock (2026-09-xx+), far ahead of the fake
-        # message timestamps (fixed 2026-07-25): the mtime-vs-ts contrast is
-        # the point of this test — do not "align" the two clocks.
+        # Deliberately the REAL clock, far ahead of the fixed fake message
+        # timestamps: the mtime-vs-ts contrast is the point of this test — do
+        # not "align" the two clocks.
         old_path = state.conversation_log._path(old_key)
         now = time.time() + 60
         os.utime(old_path, (now, now))
@@ -555,7 +557,7 @@ class TestPinEnforcement:
 
         state = _make_state(tmp_path)
         slot = _member_slot(state)
-        # Registry no longer contains CREW — only an unrelated crew.
+        # Registry holds only an unrelated crew, not CREW.
         with _patched_config([OTHER]):
             async with TestClient(TestServer(_make_app(state))) as client:
                 resp = await client.post("/api/chat", json={"slot": slot.key, "message": ""})
@@ -563,10 +565,31 @@ class TestPinEnforcement:
                 assert (await resp.json())["code"] == "member_pin_mismatch"
         assert slot.agent == CREW
 
-    def _runner_harness(self, tmp_path, *, mode):
+    def _runner_harness(self, tmp_path, monkeypatch, *, mode, private=True, switch_to=OTHER):
+        from kiro_crew.config.loader import KiroCrewConfig
         from kiro_crew.dashboard.chat_runner import _run_chat
+        from kiro_crew.memory_stores import provision_member_memory
 
-        state = _make_state(tmp_path)
+        cfg = KiroCrewConfig.load()
+        cfg.agents[CREW] = KiroCrewAgentConfig(kiro_agent="kirocrew")
+        provision_member_memory(cfg, CREW)
+        cfg.save()
+        # No real provider or embedding process runs in this stream harness.
+        # Keep private ownership and the protected session binding real.
+        monkeypatch.setattr(
+            "kiro_crew.member_memory_auth.private_memory_execution_supported",
+            lambda **kwargs: True,
+        )
+        monkeypatch.setattr("kiro_crew.dashboard.chat_runner._maybe_auto_title", AsyncMock())
+        monkeypatch.setattr("kiro_crew.dashboard.chat_runner.generate_session_summary", AsyncMock())
+        context = SimpleNamespace(
+            ensure_store=AsyncMock(return_value=object()),
+            build_message=lambda text, *args, **kwargs: (text, None),
+            conversation_log=None,
+            hooks=SimpleNamespace(auto_approve_subagent_tools=False),
+        )
+
+        state = _make_state(tmp_path, context_builder=context)
         state.sessions.get_or_create = AsyncMock(return_value=(MagicMock(), False, False))
         state.sessions.release = MagicMock()
         state.sessions.reset = AsyncMock()
@@ -581,7 +604,8 @@ class TestPinEnforcement:
         # Ordinary-mode control runs on an ordinary key: the constructor's
         # member-* reservation (correctly) refuses a bare member key.
         slot_key = "member-code-reviewer" if mode == DM_SLOT_MODE else "chat-1-100"
-        slot = state.get_or_create_slot(slot_key, agent=CREW, mode=mode)
+        agent = CREW if private else "default"
+        slot = state.get_or_create_slot(slot_key, agent=agent, mode=mode)
         slot.append("user", "hello", "msg msg-u")
 
         client = state.sessions.get_or_create.return_value[0]
@@ -595,7 +619,7 @@ class TestPinEnforcement:
         )
 
         async def _stream(msg):
-            yield LLMEvent(kind=EVENT_AGENT_SWITCHED, text=OTHER)
+            yield LLMEvent(kind=EVENT_AGENT_SWITCHED, text=switch_to)
             # Anything after the switch executes as the FOREIGN agent — the
             # veto must stop consumption here, so this text must never land.
             yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="foreign agent output after switch")
@@ -606,10 +630,17 @@ class TestPinEnforcement:
         return state, slot, _run_chat
 
     @pytest.mark.asyncio
-    async def test_mid_turn_agent_switch_is_vetoed_on_member_threads(self, tmp_path):
-        state, slot, _run_chat = self._runner_harness(tmp_path, mode=DM_SLOT_MODE)
+    @pytest.mark.parametrize("mode", [DM_SLOT_MODE, ""], ids=["member-dm", "ordinary-v2"])
+    @pytest.mark.parametrize("switch_to", [OTHER, CREW], ids=["other-agent", "alias-collision"])
+    async def test_mid_turn_agent_switch_is_vetoed_on_member_threads(
+        self, tmp_path, monkeypatch, mode, switch_to
+    ):
+        state, slot, _run_chat = self._runner_harness(
+            tmp_path, monkeypatch, mode=mode, switch_to=switch_to
+        )
 
         await _run_chat(state, slot, "test message")
+        await asyncio.gather(*state._background_tasks)
 
         # The pin held: agent unchanged, no switch advertised to the UI.
         assert slot.agent == CREW
@@ -644,15 +675,17 @@ class TestPinEnforcement:
         )
 
     @pytest.mark.asyncio
-    async def test_mid_turn_agent_switch_still_lands_on_ordinary_slots(self, tmp_path):
+    async def test_mid_turn_agent_switch_still_lands_on_ordinary_slots(self, tmp_path, monkeypatch):
         """Control for the veto: the same event MOVES a non-member slot.
 
         Proves the event path executes in this harness, so the member test
         above passes because of the veto, not because the event never ran.
         """
-        state, slot, _run_chat = self._runner_harness(tmp_path, mode="")
+        state, slot, _run_chat = self._runner_harness(tmp_path, monkeypatch, mode="", private=False)
+        assert slot.agent == "default"
 
         await _run_chat(state, slot, "test message")
+        await asyncio.gather(*state._background_tasks)
 
         assert slot.agent == OTHER
         switch_broadcasts = [
@@ -1224,9 +1257,9 @@ class TestPersistenceRestoreGate:
     def test_open_slot_restore_round_trips_a_bound_member_thread(self, tmp_path):
         """End to end: a bound member thread survives a restart pinned.
 
-        This is the invariant round 3's constructor reservation accidentally
-        broke (a bare member key was refused before the binding was consulted);
-        the binding-first resolution is what re-admits the legitimate restore.
+        A constructor reservation that refuses a bare member key before the
+        binding is consulted breaks this; binding-first resolution is what
+        admits the legitimate restore.
         """
         from kiro_crew.dashboard.chat_persistence import _rehydrate_slot_from_history
 
@@ -1507,9 +1540,9 @@ class TestMemberActivityRoute:
 
 
 class TestDenialAuditOffload:
-    """Deny-path SEL audits are direct enqueues since the startup warm (#8608).
+    """Deny-path SEL audits are direct enqueues, because startup warms SEL.
 
-    The per-site ``asyncio.to_thread`` wrappers existed because a fresh
+    A per-site ``asyncio.to_thread`` wrapper would only be needed if a fresh
     gateway's first ``_sel()`` touch performed synchronous filesystem
     initialization (HMAC key load/create, chain-head read). That first touch
     now happens once at gateway startup (``sel.warm_sel_singleton``, awaited
@@ -1573,8 +1606,8 @@ class TestDenialAuditOffload:
         assert not state._slots
 
     def test_no_members_sel_audit_is_offloaded(self):
-        """AST guard (inverted from #8523 by #8608): no ``log_api_access``
-        call in members.py hides inside an ``asyncio.to_thread`` lambda.
+        """AST guard: no ``log_api_access`` call in members.py hides inside an
+        ``asyncio.to_thread`` lambda.
 
         The startup warm makes a post-init ``log_api_access`` a non-blocking
         enqueue, so a per-site thread hop is pure overhead — an extra

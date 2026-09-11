@@ -181,7 +181,7 @@ _INLINE_BITMAP_RE = re.compile(
 # and stays O(1) per blob: a genuine raster always carries its signature, and a
 # smuggled secret essentially never decodes into one. The shared sniffer also
 # checks WebP's form tag at offset 8, so a bare `RIFF` container (e.g. a WAVE
-# audio file) no longer counts as a bitmap here.
+# audio file) does not count as a bitmap here.
 
 # AVIF/HEIF put a 4-byte box length BEFORE the `ftyp` brand, so the signature is
 # at an offset rather than at byte 0.
@@ -193,7 +193,7 @@ _BITMAP_FTYP_MAGIC = b"ftyp"
 # An AWS key id is a fixed 4-char prefix plus exactly 16 upper/digit chars — all of it
 # base64 alphabet — so it can be smuggled as body text and reproduced by the re-encode.
 # Chance collision is negligible (~1.6e-7 per 20 KB raster) because the 16-char body is
-# required; matching a BARE 4-char prefix instead is what used to blank real pictures at
+# required; matching a BARE 4-char prefix instead blanks real pictures at
 # 0.88% per 20 KB and 4.7% per 100 KB.
 #
 # Every other provider marker (`xox…`, `sk-ant…`, `gh[pousr]_…`, `pypi-`, `glpat-`, a
@@ -489,7 +489,7 @@ async def _json_body(request: web.Request) -> tuple[dict | None, web.Response | 
     ``styles/import`` endpoint instead, not this JSON path.
 
     The catch spans the client-input failure set: ``LookupError`` (an unknown
-    ``charset=`` codec) previously escaped as a 500 and is now a 400, and
+    ``charset=`` codec) answers 400 rather than escaping as a 500, and
     ``RecursionError`` (a deeply nested body) is caught for the same reason.
     ``UnicodeDecodeError`` is a ``ValueError`` subclass, so ``ValueError`` alone
     already covers undecodable bytes; it is dropped from the tuple as redundant.
@@ -685,7 +685,7 @@ async def _handle_deps(request: web.Request) -> web.Response:
     which is a privileged host mutation driven by an unauthenticated-to-the-OS
     caller — the dashboard shows the command and the user runs it.
 
-    ``pdftoppm`` is no longer in that category: it is provided by an app-private
+    ``pdftoppm`` is not in that category: it is provided by an app-private
     launcher over the engine venv's own ``pypdfium2`` (see :mod:`.preview_tools`),
     installed as part of ``POST /engine/provision``. Nothing is elevated and
     nothing is written outside this app's data dir, so there is still no
@@ -975,7 +975,7 @@ async def _handle_put_config(request: web.Request) -> web.Response:
     """PUT /config {"deckRoot": "<path>"} — set the deck output directory.
 
     ``deckRoot`` is the ONLY writable key: the body is checked for exact key
-    equality rather than merged, so this endpoint cannot be used to set an
+    equality rather than merged, so this endpoint cannot set an
     arbitrary engine option.
     """
     body, error = await _json_body(request)

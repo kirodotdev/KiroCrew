@@ -707,7 +707,7 @@ class TestBatchedSave:
 
 
 class TestAutomaticMirrorOptOut:
-    """The persisted refusal of automatic origin mirroring (issue #2959).
+    """The persisted refusal of automatic origin mirroring.
 
     A channel that binds its own conversation on every inbound turn re-asserts
     the mirror after a restart, so the in-channel "off" has to outlive the
@@ -961,7 +961,7 @@ class TestInboundUnbindIsLoud:
                 ),
                 "origin_rebind",
             ),
-            # Same location, inbound flag dropped: no longer resumable.
+            # Same location, inbound flag dropped: not resumable.
             (
                 lambda m, k: m.set_mirror_link(k, INBOUND_LINK, reason="origin_rebind"),
                 "origin_rebind",
@@ -1017,10 +1017,10 @@ class TestPruneRemovesThroughTheChokePoint:
 
     ``_survives_prune`` keeps every bound entry out of prune's delete branch, so
     today prune cannot reach a binding at all — which is precisely why this needs
-    pinning rather than leaving to inspection. Prune used to delete straight out
-    of ``_data``, so the audit and the announcement were not skipped by policy,
-    they were simply unreachable: any future loosening of that predicate would
-    have reopened a silent binding-removal path and nothing in the trail would
+    pinning rather than leaving to inspection. Deleting straight out of ``_data``
+    would leave the audit and the announcement not skipped by policy but simply
+    unreachable: any loosening of that predicate would reopen a silent
+    binding-removal path and nothing in the trail would
     have named prune as the remover.
     """
 
@@ -1064,7 +1064,7 @@ class TestPruneRemovesThroughTheChokePoint:
         """Prune on a running loop pays no inline whole-map write.
 
         ``_save`` defers the disk write to a worker thread precisely so the
-        loop never blocks on serialization (its docstring cites #2405), and
+        loop never blocks on serialization, and
         prune's sole caller is ``start_pool`` on the startup loop. Routing
         removals through the choke point must keep that property: per-key
         audits, zero loop-thread writes, one coalesced flush afterwards.

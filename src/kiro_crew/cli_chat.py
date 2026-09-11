@@ -804,6 +804,7 @@ async def _answer_permission(
             is_shell=event.is_shell,
             mcp_server_name=event.mcp_server_name,
             mcp_tool_name=event.tool_name,
+            mcp_identity_trusted=event.mcp_identity_trusted,
         )
     except Exception:
         logger.warning("CLI permission gate failed; refusing the request", exc_info=True)
@@ -890,8 +891,8 @@ async def _answer_permission(
         # provider is torn down with the session, so the unanswered request dies
         # with it.
         #
-        # The AUDIT is a different matter, and an earlier version of this comment
-        # wrongly generalised the transport rule to cover it. It is not a
+        # The AUDIT is a different matter, and the transport rule above does NOT
+        # cover it. It is not a
         # transport: it is local SEL I/O with a bounded caller, and running it
         # synchronously here blocks the loop -- which still owns the ACP reader
         # and stderr-drain tasks -- for as long as the audit store takes. Cold

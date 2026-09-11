@@ -718,8 +718,8 @@ class WebexClient:
             # ClientWebSocketResponse generic over its autoping flag, so
             # ``ws_connect`` yields ``[bool]`` while the attribute's bare
             # annotation resolves to the default ``[Literal[True]]``. Which
-            # parameter it carries is irrelevant here — the socket is only ever
-            # used to send an ack frame — and the versions differ between the two
+            # parameter it carries is irrelevant here — the socket only ever sends
+            # an ack frame — and the versions differ between the two
             # Python lanes, so subscripting the annotation would fix one and break
             # the other.
             self._ws = cast("aiohttp.ClientWebSocketResponse", ws)
@@ -1162,7 +1162,7 @@ class WebexClient:
         if len(self._room_types) >= _PERSON_CACHE_MAX:
             self._room_types.pop(next(iter(self._room_types)), None)
         # Cached even when empty: a bot removed from the room would otherwise
-        # re-request on every press of a card it can no longer be authorized for.
+        # re-request on every press of a card it is not authorized for.
         self._room_types[room_id] = room_type
         return room_type
 

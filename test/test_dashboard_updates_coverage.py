@@ -778,7 +778,7 @@ class TestLogLevel:
 
         def _fake_update_config_locked(*args, **kwargs):
             # The handler persists via a delta mutate through
-            # update_config_locked (#4767); record what it wrote.
+            # update_config_locked; record what it wrote.
             doc = kwargs["mutate"]({})
             saved.append(doc["agent"]["log_level"])
             return doc
@@ -959,7 +959,7 @@ class TestRingLogHandler:
         """The gateway shuts its loop down while the handler stays attached.
 
         ``call_soon_threadsafe`` then raises, and losing the ring entry over a
-        subscriber that can no longer be reached would blind the Logs page during
+        subscriber that cannot be reached would blind the Logs page during
         exactly the shutdown a reader wants to see.
 
         The send coroutine is built BEFORE the scheduling call, so this path also
@@ -1143,8 +1143,8 @@ def test_neither_chat_message_door_builds_the_frame_by_hand() -> None:
 
     `_broadcast()` feeds ONE note to two doors — the WS arm in `state.py` and
     the SSE arm in `handlers/updates.py`. While each built the frame by hand
-    they could disagree silently, which is exactly how `meta` stayed missing on
-    the SSE side after #7981 fixed the WS one (#8045).
+    they could disagree silently, which is exactly how `meta` can go missing on
+    the SSE side while the WS side carries it.
 
     Asserted on the SOURCE, not on a payload, because that is the only form
     that catches the regression this guards: a payload comparison calling
@@ -1337,7 +1337,7 @@ class TestDashboardStream:
         to drop a row an app may not see. `meta` carries tool/LLM content
         (`tool_input`, a live `oauth_url`, `approval_id`), so including it here
         would expose it to any app token granted this route regardless of its
-        `slots:*` scope — the class of GPT #6789, which leaked public-repo status
+        `slots:*` scope — the same class of leak that put public-repo status
         onto this same endpoint. The metadata therefore rides only the door that
         filters.
         """

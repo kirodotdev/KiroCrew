@@ -323,7 +323,7 @@ def check_ctx_surface(source: str, available: "frozenset[str] | set[str]") -> li
     references bound to the ``workflow`` entrypoint's context parameter are
     checked; a helper whose OWN parameter or local happens to share the name
     (e.g. ``def read(ctx): return ctx.get("key")`` called with a dict) is out of
-    scope — flagging it would retroactively reject previously-valid scripts.
+    scope — flagging it would retroactively reject already-valid scripts.
     Helpers that receive the REAL context are under-enforced by design: their
     misuse still fails at run time with the explicit unwired-port RuntimeError.
     A syntactically invalid source returns ``[]`` — ``validate`` rejects it.
@@ -559,7 +559,7 @@ def _check_undefined_names(source: str, errors: list[str]) -> None:
 
 def _is_ctx_call(node: ast.AST, methods: frozenset[str]) -> str | None:
     """If ``node`` is a call ``ctx.<m>(...)`` with ``<m>`` in ``methods``, return
-    the method name; else None. Used to spot DSL-contract misuse structurally."""
+    the method name; else None. Spots DSL-contract misuse structurally."""
     if not isinstance(node, ast.Call):
         return None
     func = node.func

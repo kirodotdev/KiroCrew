@@ -62,7 +62,7 @@ def _json_safe(value: Any, _seen: Optional[set[int]] = None) -> Any:
     """Coerce YAML-parsed values that JSON cannot serialize into safe forms.
 
     ``yaml.safe_load`` resolves the YAML core schema, so an unquoted frontmatter
-    date (``date: 2026-08-01`` — routine in Obsidian) becomes a ``datetime.date``,
+    date (``date:`` with a bare ISO day — routine in Obsidian) becomes a ``datetime.date``,
     a ``!!binary`` becomes ``bytes``, a ``!!set`` becomes ``set`` and ``.nan`` /
     ``.inf`` become non-finite floats — none of which round-trips as valid JSON,
     so the note read would 500 (or emit bare ``NaN``, which the browser's

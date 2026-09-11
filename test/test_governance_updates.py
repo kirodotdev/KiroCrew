@@ -1027,9 +1027,9 @@ class TestRepoExecConfigRefusal:
     def test_no_pinned_value_is_a_bare_program_name(self, monkeypatch):
         """A bare name hands the exec back to the agent-writable PATH.
 
-        Round 17 resolved `git` itself off PATH; pinning `core.sshCommand` to the
-        bare string "ssh" then let git resolve the TRANSPORT helper through the
-        same PATH, which is most of that hole reopened. Every program-valued pin
+        Resolving `git` itself off PATH but pinning `core.sshCommand` to the
+        bare string "ssh" lets git resolve the TRANSPORT helper through the
+        same PATH, which reopens most of that hole. Every program-valued pin
         must therefore reach git as an absolute path.
         """
         # Absolute on THIS host (see conftest.host_abs): the assertion below is

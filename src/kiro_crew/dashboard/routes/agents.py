@@ -29,7 +29,9 @@ def register(app: web.Application) -> None:
     app.router.add_get("/api/slash-commands", handlers.api_slash_commands)
     app.router.add_get("/api/agents/detail/{name}", handlers.api_agent_detail)
     app.router.add_patch("/api/agents/detail/{name}", handlers.api_agent_detail)
-    app.router.add_delete("/api/agents/detail/{name}", handlers.api_agent_detail)
+    app.router.add_post("/api/agents/detail/{name}/fork", handlers.api_agent_fork)
+    app.router.add_post("/api/agents/detail/{name}/publish", handlers.api_agent_publish)
+    app.router.add_post("/api/agents/detail/{name}/reset", handlers.api_agent_reset)
     # Kiro Crew Agent CRUD
     app.router.add_get("/api/agents", handlers.api_kirocrew_agents)
     app.router.add_get("/api/agents/resolved-model", handlers.api_kirocrew_agent_resolved_model)

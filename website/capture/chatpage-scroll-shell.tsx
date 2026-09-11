@@ -77,6 +77,9 @@ const store = configureStore({
       // (loadingOlder). Only the loadOlderMessages thunk flips loadingOlder,
       // so a preloaded true survives the mount refetch.
       slotHasMore: scene === 'paging', slotOldestIndex: scene === 'paging' ? 4 : 0, loadingOlder: scene === 'paging',
+      // The paging chrome (earlier-messages bar, minimap end-cap) is also gated
+      // on the paging cursor belonging to the active slot.
+      slotCursorKey: scene === 'paging' ? 'slot-a' : null,
       slotStatusDetail: {}, slotContextPct: {}, slotActivity: {}, slotHistory: [],
       historyOffset: 0, _wsChunkedDuringFetch: false,
       slotMessages: {}, slotLoading: false,

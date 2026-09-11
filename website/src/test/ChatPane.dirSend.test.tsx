@@ -8,7 +8,7 @@ import { MemoryRouter } from 'react-router-dom'
 import { configureStore } from '@reduxjs/toolkit'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { ThemeProvider } from '../hooks/useTheme'
-import chatReducer, { setQuestionCard } from '../store/chatSlice'
+import chatReducer, { setQuestionCard, sseChatMessage, selectComposerBusy } from '../store/chatSlice'
 import dashboardReducer from '../store/dashboardSlice'
 import notificationsReducer from '../store/notificationsSlice'
 
@@ -65,13 +65,13 @@ Object.defineProperty(window, 'matchMedia', {
 import ChatPane from '../components/ChatPane'
 import { api } from '../api/client'
 
-function makeStore(slotKey: string) {
+function makeStore(slotKey: string, busy = false) {
   return configureStore({
     reducer: { dashboard: dashboardReducer, chat: chatReducer, notifications: notificationsReducer },
     preloadedState: {
       dashboard: {
         status: null, connected: true,
-        slots: [{ key: slotKey, messages: 0, running: false, mode: '', pending_approval: false, waiting_for_input: false, last_activity_ts: undefined }],
+        slots: [{ key: slotKey, messages: 0, running: false, subagents_running: busy, mode: '', pending_approval: false, waiting_for_input: false, last_activity_ts: undefined }],
         unreadSlots: [], refreshTrigger: 0, approvalMode: 'normal',
         subagentRunning: {}, subagentDetails: {}, subagentText: {},
       } as unknown as RootState['dashboard'],
@@ -79,9 +79,9 @@ function makeStore(slotKey: string) {
   })
 }
 
-function renderPane(slotKey: string) {
+function renderPane(slotKey: string, busy = false) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  const store = makeStore(slotKey)
+  const store = makeStore(slotKey, busy)
   return renderWithStore(store, qc, slotKey)
 }
 
@@ -101,6 +101,37 @@ function renderWithStore(store: ReturnType<typeof makeStore>, qc: QueryClient, s
 
 beforeEach(() => {
   vi.clearAllMocks()
+})
+
+describe('ChatPane busy send echo', () => {
+  it.each([false, true])('keeps one user row before the reply with an early receipt: %s', async (earlyReceipt) => {
+    let deliverReceipt!: (value: unknown) => void
+    vi.mocked(api.sendChat).mockImplementationOnce(() => new Promise(resolve => { deliverReceipt = resolve }))
+    const { store } = renderPane('pane-busy', true)
+    const box = (await screen.findAllByRole('textbox'))[0]
+    await waitFor(() => expect(selectComposerBusy(store.getState(), 'pane-busy')).toBe(true))
+    await act(async () => {
+      fireEvent.change(box, { target: { value: 'inspect @/tmp/design/ please' } })
+      fireEvent.keyDown(box, { key: 'Enter', code: 'Enter' })
+    })
+    await waitFor(() => expect(api.sendChat).toHaveBeenCalledTimes(1))
+    const [content, , , , meta] = vi.mocked(api.sendChat).mock.calls[0]
+    const receipt = { ok: true, json: async () => ({ ok: true, mid: 'm-pane-user' }) }
+    if (earlyReceipt) await act(async () => deliverReceipt(receipt))
+    const echo = { slot: 'pane-busy', role: 'user', content, meta: { ...meta, mid: 'm-pane-user' } }
+    act(() => {
+      store.dispatch(sseChatMessage(echo))
+      store.dispatch(sseChatMessage({ slot: 'pane-busy', role: 'chunk', content: 'reading the folder' }))
+    })
+    if (!earlyReceipt) await act(async () => deliverReceipt(receipt))
+    act(() => store.dispatch(sseChatMessage(echo)))
+    const rows = store.getState().chat.slotMessages['pane-busy']
+    expect(rows.map(m => m.role)).toEqual(['user', 'streaming'])
+    expect(rows[0].content).toBe(content)
+    expect(rows[0].meta?.dirs).toEqual(['/tmp/design'])
+    expect(rows[0].meta?.mid).toBe('m-pane-user')
+    expect(rows[0].meta?.optimistic).toBeUndefined()
+  })
 })
 
 describe('ChatPane send — folder token serialization', () => {
@@ -131,9 +162,8 @@ describe('ChatPane send — folder token serialization', () => {
 })
 
 /* #4131: the pane's optimistic bubble is confirmed by the send's OWN response.
- * No `chat_message` user echo is coming — `DashboardState.append` suppresses it
- * for dashboard sends because the composer already rendered the bubble — so an
- * accepted response is the only thing that can retire the pending state at all.
+ * Dashboard sends now also emit a correlated user echo; an accepted response
+ * still retires the pending state when that echo is missed.
  * The 30s wall-clock notice that used to read that state is gone precisely
  * because it fired on every dashboard send, delivered ones included. */
 describe('ChatPane send — the response confirms the optimistic bubble', () => {

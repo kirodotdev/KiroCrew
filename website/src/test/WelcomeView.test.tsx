@@ -25,14 +25,14 @@ describe('WelcomeView', () => {
     expect(screen.getByText(/Try:/)).toBeInTheDocument()
   })
 
-  it('shows ephemeral mode toggle when onSwitchMode is provided', () => {
+  it('shows the memory mode chooser when onSwitchMode is provided', () => {
     renderWithProviders(<WelcomeView {...defaultProps} onSwitchMode={vi.fn()} />)
-    expect(screen.getByText('Switch to ephemeral mode')).toBeInTheDocument()
+    expect(screen.getByText('Choose memory mode')).toBeInTheDocument()
   })
 
-  it('shows revert toggle in incognito mode', () => {
+  it('names the active Incognito mode and persistent reset action', () => {
     renderWithProviders(<WelcomeView {...defaultProps} onSwitchMode={vi.fn()} memoryMode="incognito" />)
-    expect(screen.getByText('Switch back to default mode')).toBeInTheDocument()
+    expect(screen.getByText('Incognito — switch to persistent mode')).toBeInTheDocument()
   })
 
   describe('suggestion pills', () => {

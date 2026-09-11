@@ -266,7 +266,8 @@ class AcpSessionProvider(LLMProvider):
                 # remedy off its declaration rather than naming one harness's CLI
                 # to an operator running another.
                 raise AcpAuthRequired(
-                    host_auth.signed_out_message(self._runtime.acp_backend)
+                    host_auth.signed_out_message(self._runtime.acp_backend),
+                    backend=self._runtime.acp_backend,
                 ) from exc
             raise AcpProcessDied(str(exc)) from exc
         except AcpRuntimeError as exc:
@@ -322,7 +323,10 @@ class AcpSessionProvider(LLMProvider):
             # Same per-harness remedy as stream(): this translation is shared by
             # every runtime-touching call, so a literal here would misinform an
             # operator on any harness that does not sign in through kiro-cli.
-            return AcpAuthRequired(host_auth.signed_out_message(self._runtime.acp_backend))
+            return AcpAuthRequired(
+                host_auth.signed_out_message(self._runtime.acp_backend),
+                backend=self._runtime.acp_backend,
+            )
         return AcpProcessDied(str(exc))
 
     async def _guarded(self, awaitable: Any) -> Any:

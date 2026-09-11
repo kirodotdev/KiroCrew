@@ -15,9 +15,8 @@ by ``messaging/`` or by any channel package.
 
 Imports are at MODULE scope on purpose: channel modules pull in their vendor
 clients, and this module is imported by hosts (``slack/gateway.py``) at
-process import time — BEFORE any event loop starts. That preserves the
-pre-registry import timing exactly (the gateway used to import the
-``maybe_start_*`` factories at its own module scope). Lazy in-function imports
+process import time — BEFORE any event loop starts. That keeps every channel's
+dependency graph loading at host import time. Lazy in-function imports
 here would instead run those dependency graphs synchronously on the live
 gateway loop the first time ``_start_channel_transports()`` enumerates the
 roster, stalling the dashboard mid-boot. Executor-side callers such as

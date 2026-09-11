@@ -66,7 +66,7 @@ def test_dispatch_skipped_without_event_loop() -> None:
 
 
 class TestOverrideExpiryDmWording:
-    """The DM must be worded by CAUSE (issue #8850).
+    """The DM must be worded by CAUSE.
 
     After a POLICY revocation, ``_commit_activation``'s fail-closed
     ``approval_modes`` gate refuses the very ``/kirocrew yolo`` the generic text
@@ -75,7 +75,7 @@ class TestOverrideExpiryDmWording:
     re-armable wording byte-identical.
     """
 
-    # The pre-#8850 string, pinned byte-for-byte for every non-policy source.
+    # The generic string, pinned byte-for-byte for every non-policy source.
     _LEGACY_TEXT = (
         "\U0001f512 Safety override expired. Tools now require approval. "
         "Reply `/kirocrew yolo` to re-authorize."
@@ -227,8 +227,8 @@ def _channel_transport(*, available: bool = True, proactive: bool = True) -> Mag
 class TestOwnerNoticeReachesNonSlackChannels:
     """An operator does not necessarily live in Slack.
 
-    This notice used to no-op entirely without Slack, so an expiring unattended
-    grant was INVISIBLE on a Teams-only, Discord-only or Telegram-only install —
+    Without Slack this notice must still fire, or an expiring unattended
+    grant is INVISIBLE on a Teams-only, Discord-only or Telegram-only install —
     silence about a security grant lapsing is the one outcome it exists to prevent.
     """
 

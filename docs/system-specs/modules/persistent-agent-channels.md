@@ -48,6 +48,12 @@ ChannelAgent
 
 A new orchestrator posts a ready system message, while a new specialist posts its task and @mentions the orchestrator. A terminal agent can be restarted only through `api_channel_wake_agent`; it returns an error for an active or missing agent.
 
+### Prompt-Busy Recovery
+
+`_stream_task` returns whether the provider reported a prompt-busy wedge (`llm_helpers.is_prompt_busy`: an `AcpPromptBusy`, or an `AcpError` carrying `already in progress` for producers that format the marker away) and posts no error card for it, because only `run_channel_agent` owns the `SessionManager`. The predicate is shared with `llm_helpers.stream_and_collect`, which reaches the same recovery contract from the unattended surfaces, so the two cannot disagree about what a wedge is — and `channel.py` does not have to cross the agent-SDK import boundary to ask. On that signal the loop calls `_recover_busy_agent`, which replaces the session through `_reset_busy_session` — a `SessionManager.reset` bound to the observed entry via `expect_session`, so a concurrent `api_channel_clear_context` reset is never mistaken for a session this loop may discard — replays the same message once on the cold session, and rebinds the now-dead client. Every other stream error keeps its existing card, since a reset cannot fix it.
+
+If the wedge survives the replacement, or the replacement lease is unobtainable, the agent is not usable again: the loop posts one unrecoverable-session system message, sets `failed`, and stops consuming its inbox rather than resetting once per later message. `_recover_busy_agent` also tears the abandoned replacement back down, because `channel:`-keyed sessions are exempt from both session reapers (`session_cleanup._rss_threshold_check` and `_expire_idle` skip that prefix) and `api_channel_wake_agent` would otherwise re-acquire the same wedged session out of the registry. `test/test_channel_prompt_busy.py` pins the detection arms, the single replay, the one-shot report, and the teardown.
+
 ### Message Routing
 
 1. `Channel.post` delivers an unmentioned top-level human message to the orchestrator.

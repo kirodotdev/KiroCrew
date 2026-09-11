@@ -1,8 +1,16 @@
-import { useState, useCallback } from 'react'
+import { useState, useCallback, type ReactNode, type Ref } from 'react'
 import { Eye, EyeOff, X, ExternalLink, RotateCcw, Trash2, Lock } from 'lucide-react'
 import { Input } from './ui'
 
 import { i18nT } from '../i18n/t'
+
+export interface SecretFieldPermanentRemoval {
+  label: string
+  text: string
+  buttonRef?: Ref<HTMLButtonElement>
+  confirmation?: ReactNode
+}
+
 /**
  * A write-only credential field. Stored secrets are never displayed: the
  * stored state renders a masked preview (e.g. `xoxb-••••wxyz`) with Replace /
@@ -10,8 +18,9 @@ import { i18nT } from '../i18n/t'
  * replacing — it shows a paste input with a show/hide toggle (that toggle
  * covers only the user's own in-flight input, not a stored secret).
  *
- * The parent owns the pending `value` and `cleared` flags and folds them into
- * its save payload; this component only manages local edit UI state.
+ * The parent owns the pending `value` and `cleared` state. Replacement-editor
+ * state is local unless controlled through `editing` / `onEditingChange`; the
+ * parent also decides whether a remove request is deferred or confirmed now.
  */
 export interface SecretFieldProps {
   label: string
@@ -26,33 +35,52 @@ export interface SecretFieldProps {
   /** Pending new value being typed (empty when none). */
   value: string
   onChange: (v: string) => void
-  /** True when the user has marked the stored secret for removal on save. */
+  /** Optional controlled replacement-editor state. */
+  editing?: boolean
+  onEditingChange?: (editing: boolean) => void
+  /** True when the user has marked the stored secret for removal. */
   cleared: boolean
   onClearedChange: (cleared: boolean) => void
+  /** Optional permanent removal UI; absent means the standard deferred icon action. */
+  permanentRemoval?: SecretFieldPermanentRemoval
   /** Optional "where do I get this" link rendered as an external-link icon. */
   setupLink?: { href: string; label?: string }
 }
 
 export function SecretField({
   label, description, placeholder, isSet, preview, value, onChange,
-  cleared, onClearedChange, setupLink, readOnly = false,
+  editing: controlledEditing, onEditingChange,
+  cleared, onClearedChange, permanentRemoval,
+  setupLink, readOnly = false,
 }: SecretFieldProps) {
-  const [editing, setEditing] = useState(false)
+  const [localEditing, setLocalEditing] = useState(false)
   const [revealed, setRevealed] = useState(false)
+  const editing = controlledEditing ?? localEditing
+  const removeActionLabel = permanentRemoval?.label ?? i18nT('components.secretField.remove')
+
+  const updateEditing = useCallback((next: boolean) => {
+    setLocalEditing(next)
+    onEditingChange?.(next)
+  }, [onEditingChange])
 
   const startReplace = useCallback(() => {
-    setEditing(true)
+    updateEditing(true)
     setRevealed(false)
     onChange('')
-  }, [onChange])
+  }, [onChange, updateEditing])
 
   const cancelReplace = useCallback(() => {
-    setEditing(false)
+    updateEditing(false)
     setRevealed(false)
     onChange('')
-  }, [onChange])
+  }, [onChange, updateEditing])
 
-  const iconBtn = 'w-8 h-8 flex items-center justify-center rounded-md border border-border bg-bg-elevated text-muted hover:text-text hover:border-border-strong hover:bg-bg-hover transition-all disabled:opacity-40 disabled:cursor-not-allowed'
+  const requestRemove = () => onClearedChange(true)
+
+  const undoRemove = () => onClearedChange(false)
+
+  const buttonBase = 'h-8 flex items-center justify-center rounded-md border border-border bg-bg-elevated text-muted hover:text-text hover:border-border-strong hover:bg-bg-hover transition-all disabled:opacity-40 disabled:cursor-not-allowed'
+  const iconBtn = `w-8 ${buttonBase}`
 
   return (
     <div data-setting-label={label} className="flex flex-col gap-1.5 py-1.5">
@@ -80,23 +108,40 @@ export function SecretField({
       ) : cleared ? (
         <div className="flex items-center justify-between gap-2 rounded-md border border-danger bg-bg-elevated px-3 py-2">
           <span className="text-[12px] text-danger">{i18nT('components.secretField.will_be_removed_on_save')}</span>
-          <button type="button" className={iconBtn} onClick={() => onClearedChange(false)} aria-label={i18nT('components.secretField.undo_remove')} title={i18nT('components.secretField.undo')}>
+          <button type="button" className={iconBtn} onClick={undoRemove} aria-label={i18nT('components.secretField.undo_remove')} title={i18nT('components.secretField.undo')}>
             <RotateCcw size={14} />
           </button>
         </div>
       ) : isSet && !editing ? (
         <div className="flex flex-col gap-1.5">
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <code className="flex-1 truncate rounded-md border border-border bg-bg-elevated px-3 py-2 text-[13px] text-text font-mono">
               {preview}
             </code>
             <button type="button" className={iconBtn} onClick={startReplace} aria-label={i18nT('components.secretField.replace')} title={i18nT('components.secretField.replace')}>
               <RotateCcw size={14} />
             </button>
-            <button type="button" className={`${iconBtn} hover:text-danger hover:border-danger`} onClick={() => onClearedChange(true)}
-              aria-label={i18nT('components.secretField.remove')} title={i18nT('components.secretField.remove')}>
-              <Trash2 size={14} />
-            </button>
+            {permanentRemoval?.confirmation ? (
+              <div className="flex basis-full flex-wrap items-center gap-2">
+                {permanentRemoval.confirmation}
+              </div>
+            ) : (
+              <button
+                type="button"
+                ref={permanentRemoval?.buttonRef}
+                className={permanentRemoval
+                  ? `${buttonBase} gap-1.5 border-danger px-2 text-danger hover:border-danger hover:text-danger`
+                  : `${iconBtn} hover:text-danger hover:border-danger`}
+                onClick={requestRemove}
+                aria-label={removeActionLabel}
+                title={removeActionLabel}
+              >
+                <Trash2 size={14} />
+                {permanentRemoval && (
+                  <span className="text-[12px] font-medium">{permanentRemoval.text}</span>
+                )}
+              </button>
+            )}
           </div>
           <div className="flex items-center gap-1.5 text-[12px] text-muted">
             <Lock size={12} />

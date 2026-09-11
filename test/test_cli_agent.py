@@ -11,6 +11,7 @@ import unittest.mock
 from pathlib import Path
 
 import pytest
+from member_memory_helpers import PRIVATE_EXECUTION_GATE
 
 from kiro_crew.cli import main
 
@@ -87,6 +88,7 @@ class TestAgentCreate:
 
         with (
             unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=cfg_path),
+            unittest.mock.patch(PRIVATE_EXECUTION_GATE, return_value=True),
             unittest.mock.patch(
                 "sys.argv",
                 ["kirocrew", "agent", "create", "--name", "research"],
@@ -102,7 +104,10 @@ class TestAgentCreate:
         assert "research" in saved["agents"]
         assert saved["agents"]["research"]["kiro_agent"] == "kirocrew"
         assert saved["agents"]["research"]["workspace"] == "default"
-        assert saved["agents"]["research"]["memory_store"] == "default"
+        store = saved["agents"]["research"]["memory_store"]
+        assert store != "default"
+        assert saved["memory_stores"][store]["owner_member"] == "research"
+        assert saved["memory_stores"][store]["memory_version"] == 2
 
     def test_create_duplicate_exits_nonzero(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
@@ -126,6 +131,44 @@ class TestAgentCreate:
 
 class TestAgentUpdate:
     """Test ``kirocrew agent update``."""
+
+    def test_template_update_retains_a_concurrent_workspace_edit(self, tmp_path: Path) -> None:
+        from kiro_crew.config.loader import update_config_locked
+        from kiro_crew.memory_stores import persist_member_config
+
+        data = _base_config()
+        data["agents"]["research"] = {
+            "kiro_agent": "kirocrew",
+            "workspace": "default",
+            "memory_store": "default",
+        }
+        cfg_path = _write_config(tmp_path, data)
+
+        def publish_after_concurrent_edit(*args, **kwargs):
+            def mutate(doc):
+                doc["agents"]["research"]["workspace"] = "concurrent-workspace"
+                return doc
+
+            update_config_locked(mutate=mutate)
+            return persist_member_config(*args, **kwargs)
+
+        with (
+            unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=cfg_path),
+            unittest.mock.patch(
+                "kiro_crew.cli_commands.persist_member_config",
+                side_effect=publish_after_concurrent_edit,
+            ),
+            unittest.mock.patch(
+                "sys.argv",
+                ["kirocrew", "agent", "update", "research", "--kiro-agent", "new-template"],
+            ),
+        ):
+            main()
+
+        saved = json.loads(cfg_path.read_text(encoding="utf-8"))
+        assert saved["agents"]["research"]["kiro_agent"] == "new-template"
+        assert saved["agents"]["research"]["workspace"] == "concurrent-workspace"
+        assert saved["agents"]["research"]["memory_store"] == "default"
 
     def test_update_nonexistent_exits_nonzero(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]

@@ -92,7 +92,7 @@ def _refused(out: str) -> bool:
 
 
 def test_two_reports_with_no_fingerprint_do_not_compare() -> None:
-    """`None != None` is False, so this used to read as "same corpus"."""
+    """`None != None` is False, so a naive check reads two missing fingerprints as "same corpus"."""
     both_missing = _report(corpus={})
     out = compare_reports(both_missing, _report(corpus={}), k=5)
     assert _refused(out)

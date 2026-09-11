@@ -388,7 +388,7 @@ class TestThemeExperienceGate:
         assert not d.permitted
 
     def test_evaluation_error_fails_closed(self, monkeypatch):
-        # Regression (GPT 5.6 HIGH on PR #107): the chat_runner injection gate
+        # The chat_runner injection gate
         # passes fail_closed=True because governance is the ONLY enforcement of
         # the enterprise persona off-switch. A governance-evaluation error must
         # yield a DENYING Decision (persona skipped), not the default
@@ -1317,8 +1317,8 @@ class TestFilesystemEgressAtGate:
         )
         assert r.action == TOOL_DENY
 
-    # ── array-nested path extraction (issue #6558: governance parity with the
-    #    hooks keystone; the flat top-level-only extractor missed nested paths). ──
+    # ── array-nested path extraction (governance parity with the
+    #    hooks keystone; a flat top-level-only extractor misses nested paths). ──
     def test_nested_array_read_path_is_classified(self):
         # A batch-shaped tool buries its target inside an array argument. The
         # governance plane must surface it (before the fix this returned ()).
@@ -1616,7 +1616,7 @@ class TestKeystoneOnRealPath:
 
 
 class TestPermissionEventCarriesRawParams:
-    """Regression for the inert-wiring defect: the EVENT_PERMISSION_REQUEST the
+    """The EVENT_PERMISSION_REQUEST the
     gate actually runs on must carry raw_tool_params, or filesystem.write /
     network.egress enforcement is a no-op in production."""
 
@@ -1899,7 +1899,7 @@ class TestChokepointsFailClosed:
 
         monkeypatch.setattr(gp, "governance_permits", _boom)
         reason = subagent._vet_spawn_governance("dashboard:ui", "researcher")
-        assert reason is not None  # denial (previously returned None = allow)
+        assert reason is not None  # denial (None would mean allow)
         assert "fail-closed" in reason
 
     def test_vet_spawn_governance_reraises_composition_error(self, monkeypatch):

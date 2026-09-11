@@ -1,8 +1,8 @@
 """A cron job's output reaches the channel that scheduled it, not Slack alone.
 
-An unattended run used to be delivered to Slack and nowhere else, so a job
-created from Discord (or any other transport) was invisible on the surface its
-owner actually watches. Routing is keyed off the job's ORIGIN session key -- the
+Delivering an unattended run to Slack and nowhere else leaves a job created
+from Discord (or any other transport) invisible on the surface its owner
+actually watches. Routing is keyed off the job's ORIGIN session key -- the
 session that created it -- because a ``cron:{id}`` key carries no channel
 namespace of its own and so can never name the surface the job belongs to.
 

@@ -1,4 +1,4 @@
-"""Tests for Issue Radar's dependency edges + auto-unlock (issue #5187, M1).
+"""Tests for Issue Radar's dependency edges + auto-unlock.
 
 Four levels, matching how the six existing signals and the other caches are
 tested:
@@ -428,7 +428,7 @@ class DepsHandlerTest(unittest.TestCase):
         fetch.assert_not_called()
 
     def test_a_stale_cache_is_served_immediately_and_revalidated_behind(self):
-        # Serve-stale-revalidate-behind (issue #5612): a stale cache is returned
+        # Serve-stale-revalidate-behind: a stale cache is returned
         # RIGHT NOW with stale=true and the ~11s rebuild is moved OFF the request
         # path, so the handler must NOT await fetch_dependency_edges inline.
         stale = {"edges": [], "nodes": {}, "fetched_at": time.time() - 100000}
@@ -536,7 +536,7 @@ class DepsHandlerTest(unittest.TestCase):
         fetch.assert_not_called()
 
 
-# ── /deps serve-stale background revalidation (issue #5612) ───────────────────
+# ── /deps serve-stale background revalidation ───────────────────
 
 
 def _gh_key():
@@ -621,7 +621,7 @@ class DepsBackgroundRefreshTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(app[routes._DEPS_REFRESH_TASKS_APP_KEY]), 0)
 
     async def test_a_slow_rebuild_cannot_overwrite_a_newer_one(self):
-        # GPT round 1: a stale GET starts background rebuild A; an edge changes;
+        # A stale GET starts background rebuild A; an edge changes;
         # refresh=1 starts synchronous rebuild B. B writes the fresh graph, then
         # the slower A lands on top with its OLDER edges -- and because
         # write_deps_cache stamps fetched_at at WRITE time, those older edges are

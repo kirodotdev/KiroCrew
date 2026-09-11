@@ -1,11 +1,11 @@
 """Tests for the job_id / run_id URL path-parameter guard on the cron routes.
 
-PR #5789 (issue #5765) added a length/type guard to the ``folder_id`` URL path
-parameter on the cron-folder PATCH/DELETE routes, matching the body-param guard
-the job routes already apply. This locks in the parity follow-up (#5808): the
-sibling ``job_id`` / ``run_id`` URL path parameters on the cron job routes are
-now rejected with a 400 ``invalid_<name>`` BEFORE any lock acquisition, thread
-dispatch, or state lookup — closing the same asymmetric-perimeter gap.
+A length/type guard on the ``folder_id`` URL path parameter of the cron-folder
+PATCH/DELETE routes matches the body-param guard the job routes already apply.
+This pins the parity: the sibling ``job_id`` / ``run_id`` URL path parameters on
+the cron job routes are rejected with a 400 ``invalid_<name>`` BEFORE any lock
+acquisition, thread dispatch, or state lookup — closing the same
+asymmetric-perimeter gap.
 
 Each test drives the handler directly with a mocked request whose
 ``match_info`` carries an over-long or empty id, and asserts the downstream

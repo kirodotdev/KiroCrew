@@ -1448,8 +1448,8 @@ async def test_reads_normalize_crlf_to_lf(fixtures) -> None:
 async def test_reads_a_note_with_an_unquoted_frontmatter_date(fixtures) -> None:
     """An unquoted YAML date in frontmatter must not 500 the read.
 
-    `yaml.safe_load` turns `date: 2026-08-01` into a `datetime.date`, which
-    `json.dumps` rejects — the metadata is now coerced to a string.
+    `yaml.safe_load` turns an unquoted date into a `datetime.date`, which
+    `json.dumps` rejects, so the read coerces the metadata to a string.
     """
     _mod, remote, _seed = fixtures
     async with signed_client(_mod) as client:
@@ -1701,12 +1701,11 @@ async def test_delete_refreshes_backlinks(fixtures) -> None:
 async def test_sync_works_when_the_vault_already_ignores_the_trash(fixtures) -> None:
     """The Obsidian case: `.trash/` is in the vault's own .gitignore.
 
-    Regression for a real break. Keeping the trash out via an `:(exclude,literal)`
-    pathspec made `git add` treat `.trash` as an EXPLICITLY named ignored path and
-    fail the whole add ("use -f if you really want to add them", exit 1) — so sync
-    died in precisely the vaults most likely to have a trash folder already. No
-    pathspec names the trash now: staging lists only the paths `status()` reported,
-    and `status()` filters it out.
+    An `:(exclude,literal)` pathspec would make `git add` treat `.trash` as an
+    EXPLICITLY named ignored path and fail the whole add ("use -f if you really
+    want to add them", exit 1) in precisely the vaults most likely to have a
+    trash folder already. So staging names no pathspec for the trash: it lists
+    only the paths `status()` reported, and `status()` filters it out.
     """
     _mod, remote, _seed = fixtures
     async with signed_client(_mod) as client:
@@ -1953,7 +1952,7 @@ async def test_failed_pat_write_preserves_existing_token(fixtures, monkeypatch) 
 
 @pytest.mark.asyncio
 async def test_failed_clone_preserves_existing_pat(fixtures) -> None:
-    """A clone that fails must not overwrite a previously-stored, valid PAT with
+    """A clone that fails must not overwrite an already-stored, valid PAT with
     the (possibly bad) token submitted alongside the failing request."""
     server_mod, _remote, _seed = fixtures
     async with signed_client(server_mod) as client:
@@ -2081,7 +2080,7 @@ async def test_sync_refuses_a_redirected_gitdir(fixtures) -> None:
         )
         assert "conflicts" in res
 
-        # A git dir that no longer matches (redirected .git) must refuse.
+        # A git dir that does not match (redirected .git) must refuse.
         with pytest.raises(git_ops.GitError):
             await git_ops.sync(
                 root, branch=vault.get("branch"),
@@ -2166,7 +2165,7 @@ async def test_sync_reports_conflict_without_overwriting(fixtures) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Regression: GPT 5.6 review on PR #970
+# Subfolder path traversal must not escape the vault
 # ---------------------------------------------------------------------------
 
 
@@ -3048,7 +3047,7 @@ async def test_a_sync_while_the_temp_is_still_staging_never_commits_it(
     The retry-window test above begins only after staging returns. A large note
     exposes an earlier window: ``open`` creates the untracked temp, then the
     worker can spend arbitrarily long writing and fsyncing it before returning
-    to the coroutine that used to register it. A Sync in that interval could
+    to the coroutine that registers it. A Sync in that interval could
     commit a partial implementation detail.
 
     Deterministic: the staging worker writes the real temp and parks BEFORE it
@@ -4086,7 +4085,7 @@ async def test_a_conflicted_manual_sync_reports_no_sync_time(fixtures) -> None:
         assert body["settings"]["lastSync"] == {}
 
 
-# -- #4899 exact-head review blockers ----------------------------------------
+# -- status() hides a temp only on proven ownership -------------------------
 #
 # `status()` may hide a path on ONE ground: this process currently knows it owns
 # the temp. The name shape is not ownership evidence -- `<name>.<32 hex>.tmp` is
@@ -4199,7 +4198,7 @@ async def test_a_tokenless_retry_refuses_to_overwrite_an_external_edit(
     ``_assert_note_is_fresh`` is a no-op without a client token, and the note
     lock only serializes API writers -- an editor writing the file directly
     (Obsidian, ``git pull``, a script) never takes it. So a contended rename that
-    backs off and retries used to rename over whatever landed in the meantime and
+    backs off and retries could rename over whatever landed in the meantime and
     answer 200, destroying a newer edit with no conflict reported.
 
     The server therefore samples its OWN baseline before the first attempt and

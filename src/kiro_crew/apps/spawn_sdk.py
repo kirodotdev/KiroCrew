@@ -214,7 +214,7 @@ def build_spawn_impl(subagents: object) -> SpawnImpl:
 def build_done_probe(subagents: object) -> DoneProbe:
     """Adapt a live ``SubagentManager`` to :data:`DoneProbe`.
 
-    An id the manager no longer tracks reads as done: the reaper prunes
+    An id the manager does not track reads as done: the reaper prunes
     records, and "gone" must never hold a caller's serial lock open.
     """
 

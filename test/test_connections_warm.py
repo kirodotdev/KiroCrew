@@ -337,11 +337,10 @@ def test_the_spec_a_warm_plan_writes_only_mounts_aliased_servers(_slash_bearing_
     assert set(body["toolAliases"]) <= {f"@{alias}/shared_tool" for alias in body["mcpServers"]}
 
 
-# ── defect: alias semantics are #3260's, not the pre-#3260 first-server rule ──
+# ── defect: alias semantics rename EVERY claimant, not just later ones ──
 #
-# The draft asserted that the FIRST mounted server keeps the bare name and only later ones are
-# renamed. #3260 shipped rename-EVERY-claimant, slug-keyed: when two mounted servers claim a
-# tool, both are renamed and neither keeps the bare name.
+# Alias handling renames EVERY claimant, slug-keyed: when two mounted servers claim a
+# tool, both are renamed and neither keeps the bare name — the FIRST does not keep it.
 
 
 def test_every_claimant_of_a_collision_is_renamed_not_just_the_later_one():
@@ -1065,7 +1064,7 @@ def test_a_refusal_is_audited_rather_than_raised(monkeypatch: pytest.MonkeyPatch
 # pointed the planner at a file outside the agents dir, and that file's contents then
 # DECIDED the plan: a configured entry whose auth shape differs from the registry's vetoes
 # the provider (``_warm_mintable_entry``). No size cap, no sensitive-target refusal, no SEL
-# denial. #6736 migrated the other ``kirocrew.json`` readers; this one was added after.
+# denial. The other ``kirocrew.json`` readers were migrated; this one was added after them.
 
 
 @requires_symlinks
@@ -1384,7 +1383,7 @@ async def test_expiry_is_narrowed_to_the_one_generation_whose_verifier_died():
     assert _mints["c"]["state"] == "minting"
 
 
-# ── defect #6110: a batch timestamp is not a row identity ──
+# ── defect: a batch timestamp is not a row identity ──
 #
 # The fence separating one activation's rows from the next at the SAME slug was
 # ``entry["started"] == started``, a ``time.monotonic()`` reading taken once per
@@ -2483,7 +2482,7 @@ async def test_a_cancel_mid_sweep_leaves_the_unkilled_generations_parked(
     monkeypatch: pytest.MonkeyPatch,
 ):
     """`_sweep_retiring_locked` assigns the keep-list before it kills the drop-list, so a
-    cancellation partway through used to remove BOTH generations from `_retiring` while only
+    cancellation partway through would remove BOTH generations from `_retiring` while only
     one was actually killed -- `parked_count()` then reads zero and the drain exits, so
     nothing ever retries. A generation whose kill completed is gone; one whose kill was
     interrupted stays parked for a later sweep."""
@@ -2785,7 +2784,7 @@ async def test_a_cancel_during_the_stand_down_kill_re_parks_the_process(
     monkeypatch: pytest.MonkeyPatch,
 ):
     """`_park_or_kill_locked` clears `_runtime` and cancels the reaper BEFORE it awaits the
-    kill, so a cancellation inside that kill used to drop the only reference to a process
+    kill, so a cancellation inside that kill would drop the only reference to a process
     that is still running -- neither registered, nor parked, nor dead."""
     doomed = _Runtime(False)
 
@@ -2813,7 +2812,7 @@ async def test_a_cancel_during_the_hard_teardown_re_parks_what_is_left(
     monkeypatch: pytest.MonkeyPatch,
 ):
     """`_retire_locked` empties `_retiring` and clears `_runtime` up front, so a
-    cancellation partway through its kill loop used to leak every remaining process with no
+    cancellation partway through its kill loop would leak every remaining process with no
     reference left anywhere."""
     parked, current = _Runtime(False), _Runtime(False)
     killed: list[Any] = []

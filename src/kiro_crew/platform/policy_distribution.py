@@ -2501,7 +2501,7 @@ def _restore_cache(previous: Optional["CachedPolicy"], *, published_pair: Tuple[
     publish and this failure are separated by ``apply_ceiling``, so another process can
     publish in between — and rolling back over it would destroy a valid, newer ceiling
     nobody asked us to touch. When the digests disagree, the newer copy is left alone;
-    this refresh's document is no longer the one on disk, so there is nothing of ours to
+    this refresh's document is not the one on disk, so there is nothing of ours to
     undo.
 
     Called only from ``refresh_now``'s failure arm, where the new bytes are already on

@@ -606,13 +606,13 @@ class TestWorkspaceDirContainmentMessage:
             main()
 
 
-# ── #4767: CLI CRUD writes are locked deltas, not whole-document saves ──
+# ── CLI CRUD writes are locked deltas, not whole-document saves ──
 
 
 class TestCliCrudIsLockedDelta:
     """The CLI CRUD commands persist via ``update_config_locked`` deltas.
 
-    Round 7 of the #4767 review: the old load -> mutate dataclass ->
+    The old load -> mutate dataclass ->
     ``cfg.save()`` shape re-serialized the command's stale snapshot, so a
     change another process landed between the load and the save was silently
     erased. A delta on the document read inside the flock cannot lose it.
@@ -699,7 +699,7 @@ class TestCliCrudIsLockedDelta:
         ), "the CLI overwrote a workspace the racer created first"
 
 
-# ── #4767 round 8: in-lock default re-checks + staged copy_from install ──
+# ── in-lock default re-checks + staged copy_from install ──
 
 
 class TestCliRound8Hardening:

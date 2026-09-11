@@ -277,7 +277,7 @@ interface SidePanelProps {
   onSelectIssue?: (url: string) => void
   onReconcileIssue?: (url: string) => void
   onAddSourceToChat?: (text: string) => void
-  onSubmitComments?: (message: string) => void
+  onSubmitComments?: (message: string) => void | boolean | Promise<void | boolean>
   /** Gateway connection flag — forwarded to document tab bodies to gate
    *  their submit-comments-to-chat affordances while offline. */
   connected?: boolean
@@ -1197,7 +1197,7 @@ function FileTabBody({ tab, active, projectDir, scrollMemoryKey, onContentChange
   /** Right-click "Add to context" on a rail row. */
   onAddToContext?: (absPath: string, kind: 'file' | 'dir') => void
   onClose: () => void
-  onSubmitComments?: (m: string) => void
+  onSubmitComments?: (m: string) => void | boolean | Promise<void | boolean>
   connected?: boolean
   onRevealConsumed: () => void
 }) {
@@ -1271,7 +1271,7 @@ function TabBody({ tab, active, slot, projectDir, onClose, onContentChange, onDi
   onFileOpen?: (p: string, opts?: { diffMode?: boolean; replaceId?: string; canReplace?: () => boolean }) => void
   /** Right-click "Add to context" on a file-browser rail row. */
   onAddToContext?: (absPath: string, kind: 'file' | 'dir') => void
-  onSubmitComments?: (m: string) => void
+  onSubmitComments?: (m: string) => void | boolean | Promise<void | boolean>
   connected?: boolean
   onTerminalSendToChat?: (text: string) => void
   diffLineNumbers: boolean; setDiffLineNumbers: (fn: (v: boolean) => boolean) => void

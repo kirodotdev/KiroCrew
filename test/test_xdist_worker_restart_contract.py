@@ -5,8 +5,8 @@ method, and that method cannot fail a single test -- it terminates the whole
 xdist worker. Every per-test timeout on a Windows runner therefore surfaces as
 `node down: Not properly terminated` and pushes xdist into its node-replacement
 path, where the node is left in `assigned_work` but absent from
-`registered_collections` (#2803). That path either dies with INTERNALERROR or
-never completes the session at all, which is how #4227 burned the full
+`registered_collections`. That path either dies with INTERNALERROR or
+never completes the session at all, which once burned the full
 40-minute job cap without ever naming the test at fault.
 
 Measured on the pins this job installs (pytest 9.0.3, pytest-xdist 3.5.0,
@@ -97,7 +97,7 @@ def test_every_windows_xdist_invocation_refuses_worker_replacement() -> None:
 
 def test_the_flag_is_not_weakened_to_allow_a_replacement() -> None:
     # `--max-worker-restart=1` reads like a compromise and is not one: a single
-    # replacement is the case #4227 actually observed, so any nonzero value
+    # replacement is the case actually observed in the wild, so any nonzero value
     # re-enters the same path. Catch the plausible near-miss edit explicitly
     # rather than only the outright deletion.
     for job_name, command in _windows_xdist_invocations():

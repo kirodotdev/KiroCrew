@@ -307,7 +307,7 @@ def is_launched_instance(ssm_target: str) -> bool:
     cloud launch, per the launch job store — i.e. it is a *correlated* instance,
     not a hand-added SSM record that merely happens to use the same transport.
 
-    Used to protect a correlated instance's addressing fields
+    Protects a correlated instance's addressing fields
     (``connection_method``/``ssm_target``/``aws_profile``/``aws_region``) from
     being rewritten via the generic ``PATCH /api/instances/{id}`` endpoint:
     doing so would leave Stop/Start/Delete unable to resolve the real EC2 stack,

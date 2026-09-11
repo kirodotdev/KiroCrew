@@ -574,7 +574,7 @@ def _await_beacon(beacon: Path, timeout: float = 5.0) -> str:
 async def test_revoke_stops_the_backend_process_and_the_beacon(
     home: Path, tmp_path: Path, mock_sel
 ):
-    # REGRESSION: revoke used to be a METADATA write (``disable_app`` only). The
+    # REGRESSION: revoke must not be only a METADATA write (``disable_app`` only). The
     # enabled flag flipped and the endpoint reported success while the app's
     # backend process kept running with its app secret, its routes stayed proxied
     # and its crons stayed armed — i.e. third-party code the operator had just
@@ -1065,7 +1065,7 @@ async def test_teardown_deregisters_even_when_the_app_calls_itself_self_managed(
     _install(tmp_path, _APP, enabled=True)
     meta = _read_installed(_APP)
     assert meta is not None
-    # Forge the self-report the gate used to trust.
+    # Forge the self-report the gate must not blindly trust.
     meta.lifecycle = "app"
     _write_installed(_APP, meta)
     from kiro_crew.apps.manager import INSTALLED_META_FILENAME, app_dir
@@ -1551,7 +1551,7 @@ async def test_grant_is_withdrawn_if_the_app_is_uninstalled_mid_write(
 async def test_revoke_without_a_grant_leaves_an_enabled_app_running(
     home: Path, tmp_path: Path, mock_sel
 ):
-    # REGRESSION: the teardown used to fire on ANY revoke. Revoke is deliberately
+    # REGRESSION: the teardown must not fire on ANY revoke. Revoke is deliberately
     # NOT name-validated (the user must be able to delete junk config entries the
     # snapshot shows them), so an unconditional teardown turned this endpoint into
     # "disable any installed app" for a caller holding no grant at all.
@@ -1693,7 +1693,7 @@ def seeded_registry(monkeypatch: pytest.MonkeyPatch):
     )
     # "Never touches the network" needs the catalog pinned too: resolution
     # consults the official catalog BEFORE the seed row, with a fresh uncached
-    # HTTPS fetch (#4236) — and with a seed row present a failed lookup refuses
+    # HTTPS fetch — and with a seed row present a failed lookup refuses
     # rather than falling back to the seed.
     monkeypatch.setattr(
         "kiro_crew.apps.official_catalog.inventory_for_install",
@@ -2145,7 +2145,7 @@ async def test_live_detached_startup_hook_does_not_report_successful_revoke(
 @pytest.mark.asyncio
 async def test_blanket_off_reports_apps_it_could_not_stop(home: Path, tmp_path: Path, mock_sel):
     # REGRESSION: turning the blanket flag OFF sweeps every enabled third-party app
-    # that holds no grant. A failed teardown used to `continue` silently, so the
+    # that holds no grant. A failed teardown must not `continue` silently, or the
     # response carried only `stopped` — the operator could not tell that code they
     # had just un-trusted was STILL RUNNING. Same shape as the metadata-only revoke
     # this feature already had to fix, one layer up.
@@ -2316,7 +2316,7 @@ def test_uninstall_reports_an_overlay_owned_grant_it_cannot_drop(
 def test_an_overlay_grant_for_another_app_does_not_block_this_uninstall(
     home: Path, tmp_path: Path
 ):
-    # The overlay refusal used to fire on the mere PRESENCE of `apps_trusted`,
+    # The overlay refusal must not fire on the mere PRESENCE of `apps_trusted`,
     # regardless of which apps it named — so any operator who set it at all could
     # never uninstall ANY app. Scoped to a grant this app actually holds.
     from kiro_crew.apps import manager as appmanager
@@ -2335,7 +2335,7 @@ def test_an_overlay_grant_for_another_app_does_not_block_this_uninstall(
 def test_uninstall_drops_the_base_grant_even_when_an_overlay_replaces_the_list(
     home: Path, tmp_path: Path
 ):
-    # The removal used to decide from the MERGED config. A list merge REPLACES,
+    # The removal must not decide from the MERGED config. A list merge REPLACES,
     # so base ["<app>"] + overlay ["other"] merges to ["other"], the merged view
     # sees no grant for <app>, and nothing is removed — leaving the BASE entry
     # behind. It is inert only while that overlay key stands; edit or drop the
@@ -2743,7 +2743,7 @@ def test_uninstall_reports_a_grant_it_could_not_withdraw_after_the_delete(
 async def test_grant_preserves_base_settings_shadowed_by_the_overlay(
     home: Path, tmp_path: Path, mock_sel
 ):
-    # The mutation used to run KiroCrewConfig.load() -> cfg.save(), and save()
+    # The mutation must not run KiroCrewConfig.load() -> cfg.save(), because save()
     # strips every value config.local.json also defines so overlay settings do not
     # leak into the base file. Routing a trust write through it rewrote the WHOLE
     # base document minus all overlay-owned keys, so granting one app trust
@@ -2798,7 +2798,7 @@ async def test_grant_preserves_base_settings_shadowed_by_the_overlay(
 async def test_uninstall_route_refuses_before_running_anything_destructive(
     home: Path, tmp_path: Path, mock_sel
 ):
-    # The abort used to live inside uninstall_app, which the handler reaches only
+    # The abort must not live inside uninstall_app, which the handler reaches only
     # at Step 5 — AFTER cron deregistration, the app's non-idempotent onUninstall
     # script, the backend stop and dependency cleanup. The refusal therefore
     # stranded a half-removed app and re-ran onUninstall on every retry. It is now
@@ -2945,7 +2945,7 @@ def test_blanket_flag_is_not_editable_through_the_generic_config_patch():
     # /api/config/kirocrew, and that path performs NO teardown — so flipping it off
     # there withdrew trust on paper while every app it had admitted kept executing,
     # crons included, until a gateway restart. A dashboard card shipped against that
-    # endpoint (#1414), which is how the hole became reachable from the UI.
+    # endpoint, which is how the hole became reachable from the UI.
     #
     # The key is deliberately absent from the editable set so the ONLY writer is the
     # endpoint that runs the sweep, and the refusal names it rather than dead-ending

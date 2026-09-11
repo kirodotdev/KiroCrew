@@ -308,9 +308,9 @@ def split_blocks(
         if seg > 0:
             out[label] = out.get(label, 0) + seg
         # The characters after this block's closer and before the next block
-        # started. Naming them ``unclassified`` is the whole point: they used to be
-        # billed to whichever block happened to precede them, which reads as a
-        # confident measurement of something nobody measured.
+        # started. Naming them ``unclassified`` is the whole point: billing them to
+        # whichever block happens to precede them would read as a confident
+        # measurement of something nobody measured.
         if end < next_start:
             gap = next_start - end
             if user_start >= 0:

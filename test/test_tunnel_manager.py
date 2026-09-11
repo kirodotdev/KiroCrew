@@ -799,8 +799,8 @@ class TestTunnelProviderDelegation:
 
     @pytest.mark.asyncio
     async def test_snapshot_omitting_key_resets_stale_field(self):
-        """A later snapshot that omits a previously-set key (error/url) resets it
-        to default rather than retaining the stale value."""
+        """A later snapshot that omits a key an earlier one set (error/url) resets
+        it to default rather than retaining the stale value."""
         provider = _install_tunnel_provider(_FakeTunnelProvider())
         mgr = TunnelManager(port=5476)
 
@@ -922,9 +922,9 @@ def _cleanup_registration_order() -> list[str]:
 class TestTunnelShutdownWiring:
     """``TunnelManager.stop()`` MUST be reached from the gateway shutdown path.
 
-    Regression for a production-wiring gap: ``stop()`` existed but had ZERO
-    production callers, so a started tunnel outlived its gateway even on a clean
-    Ctrl+C — a companion provider's supervised child reparented to PID 1 and the
+    If ``stop()`` has no production caller, a started tunnel outlives its gateway
+    even on a clean Ctrl+C — a companion provider's supervised child reparents to
+    PID 1 and the
     next start collided on the tunnel name. These tests drive the real wiring
     helper (``dashboard.server._wire_tunnel_shutdown``) rather than the manager
     in isolation, so they fail if the hook is dropped again.

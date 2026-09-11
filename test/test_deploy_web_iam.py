@@ -331,7 +331,7 @@ def test_policy_reaper_passrole_scoped_to_lambda():
         cond.get("ArnLike", {}).get("iam:AssociatedResourceArn")
         == "arn:aws:lambda:*:*:function:kirocrew-deploy-reaper*"
     )
-    # PassRole must no longer be bundled in the general ReaperIAMRole statement.
+    # PassRole must not be bundled in the general ReaperIAMRole statement.
     reaper_iam = next(s for s in doc["Statement"] if s["Sid"] == "ReaperIAMRole")
     assert "iam:PassRole" not in reaper_iam["Action"]
 

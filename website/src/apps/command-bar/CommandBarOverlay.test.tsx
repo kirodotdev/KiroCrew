@@ -621,7 +621,7 @@ describe('CommandBarOverlay rows', () => {
     // `pendingInput` by REPLACING the slot's draft and persisting it, so inserting
     // here would silently destroy a half-written message the user had not sent.
     // Created WITHOUT activating, so nothing has focus until the claim is checked.
-    await waitFor(() => expect(dispatch).toHaveBeenCalledWith({ type: 'createSlot', arg: { activate: false } }))
+    await waitFor(() => expect(dispatch).toHaveBeenCalledWith({ type: 'createSlot', arg: expect.objectContaining({ activate: false }) }))
     await waitFor(() =>
       expect(dispatch).toHaveBeenCalledWith({
         type: 'switchSlot',
@@ -715,7 +715,7 @@ describe('CommandBarOverlay rows', () => {
     // The user walks away before the gateway answers.
     rerender(false)
     release({ key: 'slot-9' })
-    await waitFor(() => expect(dispatch).toHaveBeenCalledWith({ type: 'createSlot', arg: { activate: false } }))
+    await waitFor(() => expect(dispatch).toHaveBeenCalledWith({ type: 'createSlot', arg: expect.objectContaining({ activate: false }) }))
     // No activation, no seed, no navigation -- the abandoned create is allowed to leak
     // a slot, but it must not touch shared state.
     expect(dispatch).not.toHaveBeenCalledWith({ type: 'switchSlot', key: 'slot-9' })
@@ -738,7 +738,7 @@ describe('CommandBarOverlay rows', () => {
     await waitFor(() => expect(screen.getByLabelText('Working…')).toBeTruthy())
     unmount()
     release({ key: 'slot-9' })
-    await waitFor(() => expect(dispatch).toHaveBeenCalledWith({ type: 'createSlot', arg: { activate: false } }))
+    await waitFor(() => expect(dispatch).toHaveBeenCalledWith({ type: 'createSlot', arg: expect.objectContaining({ activate: false }) }))
     expect(dispatch).not.toHaveBeenCalledWith({ type: 'switchSlot', key: 'slot-9' })
     expect(dispatch).not.toHaveBeenCalledWith({ type: 'setPendingInput', text: 'why did the deploy stall' })
     expect(navigate).not.toHaveBeenCalled()
@@ -940,7 +940,7 @@ describe('CommandBarOverlay contributed commands', () => {
     mountWithApps([appWith([APPROVE_ALL])])
     enterCommand(/Approve all PRs/)
     expect(screen.queryAllByRole('option')).toHaveLength(0)
-    expect(dispatch).not.toHaveBeenCalledWith({ type: 'createSlot', arg: { activate: false } })
+    expect(dispatch).not.toHaveBeenCalledWith({ type: 'createSlot', arg: expect.objectContaining({ activate: false }) })
     expect(navigate).not.toHaveBeenCalled()
   })
 
@@ -948,7 +948,10 @@ describe('CommandBarOverlay contributed commands', () => {
     dispatch.mockReturnValue({ unwrap: () => Promise.resolve({ key: 'slot-new' }) })
     mountWithApps([appWith([STANDUP])])
     enterCommand(/Write my standup/)
-    expect(dispatch).toHaveBeenCalledWith({ type: 'createSlot', arg: { activate: false } })
+    expect(dispatch).toHaveBeenCalledWith({
+      type: 'createSlot',
+      arg: { activate: false, memory_mode: 'persistent' },
+    })
   })
 
   it("files the session it opened under the command's own folder", async () => {
@@ -1012,7 +1015,7 @@ describe('CommandBarOverlay contributed commands', () => {
     fireEvent.keyDown(input, { key: 'Enter' })
     // The app supplies the message, because only the app knows what shape it wanted.
     await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('Not a GitHub link.'))
-    expect(dispatch).not.toHaveBeenCalledWith({ type: 'createSlot', arg: { activate: false } })
+    expect(dispatch).not.toHaveBeenCalledWith({ type: 'createSlot', arg: expect.objectContaining({ activate: false }) })
     expect(onClose).not.toHaveBeenCalled()
     expect(input.value).toBe('https://gitlab.com/g/p/-/merge_requests/1')
   })
@@ -1047,7 +1050,7 @@ describe('CommandBarOverlay contributed commands', () => {
     await waitFor(() =>
       expect(screen.getByRole('alert').textContent).toContain('no longer available'),
     )
-    expect(dispatch).not.toHaveBeenCalledWith({ type: 'createSlot', arg: { activate: false } })
+    expect(dispatch).not.toHaveBeenCalledWith({ type: 'createSlot', arg: expect.objectContaining({ activate: false }) })
   })
 
   it('refuses to send a prompt that differs from the one it previewed', async () => {
@@ -1080,7 +1083,7 @@ describe('CommandBarOverlay contributed commands', () => {
 
     fireEvent.keyDown(screen.getByRole('combobox'), { key: 'Enter' })
     await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('changed'))
-    expect(dispatch).not.toHaveBeenCalledWith({ type: 'createSlot', arg: { activate: false } })
+    expect(dispatch).not.toHaveBeenCalledWith({ type: 'createSlot', arg: expect.objectContaining({ activate: false }) })
     // The refreshed preview shows the new text, so the next Enter is informed.
     expect(screen.getByText(/Delete every branch behind https/)).toBeTruthy()
   })
@@ -1221,7 +1224,7 @@ describe('CommandBarOverlay contributed commands', () => {
 
     fireEvent.keyDown(screen.getByRole('combobox'), { key: 'Enter' })
     await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('changed'))
-    expect(dispatch).not.toHaveBeenCalledWith({ type: 'createSlot', arg: { activate: false } })
+    expect(dispatch).not.toHaveBeenCalledWith({ type: 'createSlot', arg: expect.objectContaining({ activate: false }) })
   })
 
   it('a stale activation does not clear a live one\'s duplicate-run guard', async () => {
@@ -1292,7 +1295,7 @@ describe('CommandBarOverlay contributed commands', () => {
 
     fireEvent.keyDown(input, { key: 'Enter' })
     await waitFor(() => expect(screen.getByRole('alert')).toBeTruthy())
-    expect(dispatch).not.toHaveBeenCalledWith({ type: 'createSlot', arg: { activate: false } })
+    expect(dispatch).not.toHaveBeenCalledWith({ type: 'createSlot', arg: expect.objectContaining({ activate: false }) })
   })
 
   it('shows the resolved prompt before an auto-sending command fires', async () => {
@@ -1506,7 +1509,7 @@ describe('CommandBarOverlay contributed commands', () => {
     const input = enterCommand(/Approve all PRs/)
     fireEvent.change(input, { target: { value: LINK } })
     fireEvent.keyDown(input, { key: 'Enter' })
-    await waitFor(() => expect(dispatch).toHaveBeenCalledWith({ type: 'createSlot', arg: { activate: false } }))
+    await waitFor(() => expect(dispatch).toHaveBeenCalledWith({ type: 'createSlot', arg: expect.objectContaining({ activate: false }) }))
     await waitFor(() =>
       expect(dispatch).toHaveBeenCalledWith({
         type: 'switchSlot',

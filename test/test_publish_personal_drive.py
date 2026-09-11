@@ -503,13 +503,13 @@ def test_a_genuinely_missing_distribution_is_still_created(monkeypatch, payload)
 
 
 def test_a_throttled_list_distributions_raises_and_rebuilds_nothing(monkeypatch, payload):
-    """The regression for the 403 chain. When the tagging API cannot see the distribution
+    """The 403 chain. When the tagging API cannot see the distribution
     (the normal case outside us-east-1) discovery falls back to CloudFront's own tag API;
-    a throttle on list-distributions there used to be swallowed as {} -> the existing
-    drive read as absent -> _ensure_drive rebuilt it: a NEW distribution over the existing
-    bucket and the bucket policy repointed at it, so every URL already handed out answers
-    403. Now the throttle propagates and NOTHING is created or repointed, so the next call
-    (post-throttle) simply finds the real drive."""
+    a throttle on list-distributions there must NOT be swallowed as {}, which would read
+    the existing drive as absent -> _ensure_drive rebuilds it: a NEW distribution over the
+    existing bucket and the bucket policy repointed at it, so every URL already handed out
+    answers 403. The throttle must propagate so NOTHING is created or repointed, and the
+    next call (post-throttle) simply finds the real drive."""
     _stub_profiles(monkeypatch, ["alpha"])
     spy = _EngineSpy(
         cf_tags_visible=False,
@@ -1422,9 +1422,9 @@ def test_push_version_missing_object_says_republish(monkeypatch, payload):
 
 def test_a_withdrawal_never_builds_a_replacement_drive(monkeypatch, payload):
     """A discovery miss -- the drive's tag removed by hand, a transient tagging answer --
-    used to make unpublish BUILD a bucket, OAC and distribution, delete keys that were
-    never in it, and report success, while the original object stayed public and the
-    successful report took the local record with it."""
+    must NOT make unpublish BUILD a bucket, OAC and distribution, delete keys that were
+    never in it, and report success while the original object stays public and the
+    report takes the local record with it."""
     _stub_profiles(monkeypatch, ["alpha"])
     spy = _EngineSpy(drive=False)
     spy.install(monkeypatch)
@@ -1816,7 +1816,7 @@ def test_a_discovery_miss_is_not_confirmed_absence(monkeypatch):
     monkeypatch.setattr(provider, "_find_drive", lambda profile, region: None)
     with pytest.raises(pd.PublishError) as caught:
         provider._require_drive("prof", "us-west-2", require_serving=False)
-    # Imported from the DEFINING module: personal_drive no longer references the type at
+    # Imported from the DEFINING module: personal_drive does not reference the type at
     # all, which is itself the point -- it has nothing left that can prove absence.
     from kiro_crew.publish_provider import DriveNotFound
 
@@ -2266,7 +2266,7 @@ def test_a_repointed_profile_refuses_to_withdraw_from_the_wrong_account(monkeypa
     """The defect this binding exists to close, and it needs no race at all.
 
     A profile name is a local alias. Repoint it at another account, delete the artifact,
-    and the withdrawal used to resolve the NAME to the new account, delete an absent key
+    and the withdrawal must NOT resolve the NAME to the new account, delete an absent key
     there, report success, and let the record be cleared -- leaving the original copy
     public with the only handle able to remove it erased. A config edit plus an ordinary
     delete was enough; no concurrency, no failure, first try.
@@ -2429,7 +2429,7 @@ def test_serving_notice_returns_none_when_the_drive_cannot_be_found(monkeypatch,
     spy.install(monkeypatch)
     provider = pd.PersonalDriveProvider()
     res = _publish(provider, payload)
-    # Re-probe against an account whose drive is no longer discoverable.
+    # Re-probe against an account whose drive is not discoverable.
     gone = _EngineSpy(drive=False, cf_tags_visible=False, cf_own_tags=False)
     gone.install(monkeypatch)
     assert asyncio.run(provider.serving_notice(external_id=res.external_id)) is None
@@ -2440,7 +2440,7 @@ def test_reachable_for_follows_the_publications_own_account(monkeypatch, payload
 
     `available()` stays True the whole time -- an account IS registered -- which is
     exactly why the withdrawal paths cannot use it: they would attempt a call against
-    a account that no longer exists and report the failure as retryable.
+    a account that does not exist and report the failure as retryable.
     """
     _stub_profiles(monkeypatch, ["alpha", "work"])
     spy = _EngineSpy()
@@ -2641,9 +2641,9 @@ def test_serving_notice_never_writes_a_bucket_policy(monkeypatch, payload):
     """The re-probe is a READ, and "Check again" is reachable from a state where
     publishing was DENIED -- so this path must not mutate the account.
 
-    It used to resolve the drive through ``_require_drive``, which re-asserts the bucket
+    It must not resolve the drive through ``_require_drive``, which re-asserts the bucket
     policy whenever the distribution carries an ARN. That is an ``s3:PutBucketPolicy``
-    write, so routing a read through it let a caller who could not publish drive a policy
+    write, so routing a read through it lets a caller who could not publish drive a policy
     write from the notice path.
     """
     _stub_profiles(monkeypatch, ["alpha"])

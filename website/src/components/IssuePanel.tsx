@@ -20,6 +20,7 @@ import {
   MAX_PULL_REQUEST_SOURCES,
   type PullRequestLink,
 } from '../utils/pullRequestLinks'
+import { sourceTabQualifier } from '../utils/sourceProviderMeta'
 import GithubLogo from './icons/GithubLogo'
 import GitlabLogo from './icons/GitlabLogo'
 import JiraLogo from './icons/JiraLogo'
@@ -312,6 +313,15 @@ export default function IssuePanel({
 }) {
   const cappedIssues = issues.slice(0, MAX_PULL_REQUEST_SOURCES)
   const selected = cappedIssues.find(issue => issue.url === selectedUrl) || cappedIssues[0]
+  // Same ambiguity as the Changes panel's source strip: issue numbers are only
+  // unique per project, so a session naming group-a/svc#1 and group-b/svc#1
+  // renders two identical `#1` tabs. Qualify with the project when the strip
+  // spans more than one; Jira keeps its own `KEY-1` grammar (the qualifier is
+  // null for it by construction).
+  const tabQualifier = useMemo(
+    () => sourceTabQualifier(issues.slice(0, MAX_PULL_REQUEST_SOURCES)),
+    [issues],
+  )
   const [tab, setTab] = useState<IssueTab>('description')
   // A ref, not state: the flag is consumed inside queryFn and must not itself
   // trigger a render (which would re-run the effect chain around the query).
@@ -360,6 +370,7 @@ export default function IssuePanel({
     const raw = typeof err?.body === 'string' ? err.body : ''
     try { return (JSON.parse(raw) as { code?: string }).code || '' } catch { return '' }
   })()
+  const refreshFailure = i18nT('components.pullRequestPanel.could_not_refresh_showing_cached')
   const sourceUrl = safeExternalUrl(source?.url || '')
   const handleRefresh = () => {
     forceRefreshRef.current = true
@@ -395,7 +406,9 @@ export default function IssuePanel({
           aria-label={i18nT('components.issuePanel.issues')}
           className="shrink-0 border-b border-border px-2 py-2 flex items-center gap-1 overflow-x-auto"
         >
-          {cappedIssues.map(item => (
+          {cappedIssues.map(item => {
+            const qualifier = tabQualifier(item)
+            return (
             <Btn
               key={item.url}
               type="button"
@@ -410,9 +423,13 @@ export default function IssuePanel({
                 : item.provider === 'jira'
                 ? <JiraLogo size={13} className="shrink-0" />
                 : <GitlabLogo size={13} className="shrink-0" />}
+              {/* No CSS truncation: the qualifier is already shortened to its
+                  minimal unique trailing suffix; the full url is in the title. */}
+              {qualifier && <span>{qualifier}</span>}
               <span>{item.provider === 'jira' ? `${item.repo}-${item.number}` : `#${item.number}`}</span>
             </Btn>
-          ))}
+            )
+          })}
         </div>
       )}
 
@@ -495,15 +512,16 @@ export default function IssuePanel({
               but still the shared notice (askAgent on — read failure). */}
           <ErrorNotice
             variant="inline"
-            className="min-w-0 truncate text-[11px]"
-            message={i18nT('components.pullRequestPanel.could_not_refresh_showing_cached')}
+            className="min-w-0 text-[11px]"
+            messageClassName="line-clamp-1"
+            message={refreshFailure}
             askAgent
             testId="issue-panel-refresh-error"
           />
           {/* The login command is the one actionable fix, so it must survive a narrow
-              panel: it sits outside the truncating span and never clips. */}
+              panel: it sits outside the clamped message and never clips. */}
           {queryError.loginCommand && <code className="shrink-0 text-text" title={queryError.loginCommand}>{queryError.loginCommand}</code>}
-          <Btn type="button" onClick={handleRefresh} className="ml-auto inline-flex items-center gap-1 px-1.5 py-0.5 rounded border border-border bg-transparent text-[11px] text-muted hover:text-text hover:bg-bg-hover cursor-pointer"><RefreshCw className="lucide-inline" aria-hidden="true" />{i18nT('components.issuePanel.retry')}</Btn>
+          <Btn type="button" onClick={handleRefresh} className="ml-auto shrink-0 whitespace-nowrap inline-flex items-center gap-1 px-1.5 py-0.5 rounded border border-border bg-transparent text-[11px] text-muted hover:text-text hover:bg-bg-hover cursor-pointer"><RefreshCw className="lucide-inline" aria-hidden="true" />{i18nT('components.issuePanel.retry')}</Btn>
         </div>
       )}
       {source && (

@@ -507,7 +507,8 @@ function TerminalView({ sessionId, cwd, visible, onSendToChat }: { sessionId: st
       >
         <div ref={containerRef} className="w-full h-full overflow-hidden" />
         {/* Owns xterm's SINGLE `attachCustomKeyEventHandler` slot for this term
-            (it reserves Tab/Enter/arrows/Escape while its menu is open). A later
+            (it reserves Tab/arrows/Escape while its menu is open, and Enter only once
+            a row has been arrowed onto). A later
             feature that attaches its own handler here would silently replace it —
             extend the handler inside TerminalCompletion instead. */}
         <TerminalCompletion term={term} sessionId={sessionId} active={visible} />

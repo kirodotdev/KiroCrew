@@ -1,9 +1,9 @@
 """Regression guard for the electron-builder retry loop in
-``packaging/build-desktop.sh`` (#3088).
+``packaging/build-desktop.sh``.
 
 Background
 ----------
-``Build Desktop`` used to abort on the FIRST failure of any kind unless the
+``Build Desktop`` must not abort on the FIRST failure of any kind unless the
 electron-builder log matched the literal string ``ENOTEMPTY`` (the macOS
 ``.DS_Store`` temp-dir race, electron-builder#6890). Every other transient,
 per-execution failure — a dropped connection ("socket hang up") or a
@@ -13,7 +13,7 @@ electron zip itself has already downloaded) — fell straight through to
 ``exit 1`` with zero retries, even though the same commit reliably passed on
 a plain re-run.
 
-The same hole then reopened one layer up (#6795): every pattern in the
+The same hole then reopened one layer up: every pattern in the
 network class was a socket-level errno, so a fetch the CDN answered with an
 HTTP ``504`` matched none of them and aborted on attempt 1 with the
 three-attempt budget unspent. Retryable statuses (``5xx`` and ``429``) now
@@ -140,9 +140,9 @@ class TestTransientClassesRetry:
             # HTTP-level failures from the SAME `got` fetches. Every case above
             # is a socket-level errno; a CDN that answers with a 5xx/429
             # instead of dropping the connection is the same per-execution
-            # event one layer up, and used to fall through to a hard abort on
+            # event one layer up, and would fall through to a hard abort on
             # attempt 1 with the 3-attempt budget unspent. The first case is
-            # the verbatim line from PR #6795, Build Desktop (ubuntu-22.04).
+            # the verbatim line from Build Desktop (ubuntu-22.04).
             "⨯ Response code 504 (Gateway Time-out)  failedTask=build "
             "stackTrace=HTTPError: Response code 504 (Gateway Time-out)",
             "HTTPError: Response code 500 (Internal Server Error)",

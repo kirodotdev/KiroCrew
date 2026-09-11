@@ -126,7 +126,9 @@ class TestTheGuardItself:
     def test_our_own_basetemp_is_test_owned_even_under_a_guarded_root(self, monkeypatch) -> None:
         """A run whose TMPDIR is a Kiro Crew session scratch dir puts basetemp under
         ``~/.kiro``; a pin there must read as isolated, not as an escape."""
-        scratch = (pathlib.Path.home() / ".kiro" / "crew" / "scratch" / "runtime-x" / "pytest-0").resolve()
+        scratch = (
+            pathlib.Path.home() / ".kiro" / "crew" / "scratch" / "runtime-x" / "pytest-0"
+        ).resolve()
         monkeypatch.setattr(sys.modules[__name__], "_OWN_BASETEMP", scratch)
         assert not _inside_a_guarded_root(scratch / "i0" / "1-kirocrew-home")
         assert _inside_a_guarded_root(pathlib.Path.home() / ".kiro" / "crew")
@@ -362,9 +364,9 @@ class TestTheWorkspaceRootIsPinnedForEveryTestpath:
         """
         from kiro_crew.config.loader import workspace_root
 
-        assert workspace_root().resolve() == pathlib.Path(
-            os.environ["KIROCREW_WORKSPACE"]
-        ).resolve()
+        assert (
+            workspace_root().resolve() == pathlib.Path(os.environ["KIROCREW_WORKSPACE"]).resolve()
+        )
 
     def test_a_test_can_still_override_the_workspace_itself(
         self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
@@ -470,7 +472,7 @@ class TestTheAgentSpecHomeIsPinnedForEveryTestpath:
     existed, a suite run inside a throwaway clone rewrote the machine-wide
     ``kirocrew.json`` with that clone's venv and a per-test data home in ``env``, and
     every new session on the machine then failed ``internal_auth_mismatch`` once both
-    were deleted (#4912).
+    were deleted.
     """
 
     def test_the_spec_write_target_is_not_the_operators_real_home(self) -> None:
@@ -478,9 +480,9 @@ class TestTheAgentSpecHomeIsPinnedForEveryTestpath:
 
         target = agent.kiro_agents_dir_path().resolve()
 
-        assert not _inside_a_guarded_root(target), (
-            f"the agent-spec write target is a real home path: {target}"
-        )
+        assert not _inside_a_guarded_root(
+            target
+        ), f"the agent-spec write target is a real home path: {target}"
 
     def test_every_seam_in_the_tables_is_actually_pinned(self) -> None:
         """A table entry nobody patches is documentation, not isolation."""
@@ -593,9 +595,9 @@ class TestTheAgentSpecHomeIsPinnedForEveryTestpath:
 
         from kiro_crew import agent
 
-        assert agent._decline_shared_agent_home(audit=False) is None, (
-            "the floor's pinned target is being treated as the shared agent home"
-        )
+        assert (
+            agent._decline_shared_agent_home(audit=False) is None
+        ), "the floor's pinned target is being treated as the shared agent home"
 
     def test_the_ambient_resolver_has_exactly_one_caller(self) -> None:
         """``ambient_agents_dir`` is override-BLIND, so a second caller is a leak.
@@ -723,7 +725,7 @@ class TestTheKiroSessionsDirIsPinnedForEveryTestpath:
         assert not _inside_a_guarded_root(session_map.kiro_sessions_dir().resolve())
 
     def test_the_pin_is_installed_even_when_paths_was_not_imported_before_setup(
-        self, tmp_path, monkeypatch, tmp_path_factory
+        self, tmp_path, monkeypatch, tmp_path_factory, _floor_monkeypatch
     ) -> None:
         """The floor imports the leaf itself; it does not wait for a test to.
 
@@ -745,7 +747,7 @@ class TestTheKiroSessionsDirIsPinnedForEveryTestpath:
 
         body = _root._isolate_kiro_sessions_dir
         body = getattr(body, "__wrapped__", body)
-        body(lambda name: tmp_path / name, monkeypatch, tmp_path_factory)
+        body(lambda name: tmp_path / name, _floor_monkeypatch, tmp_path_factory)
 
         reimported = importlib.import_module("kiro_crew.config.paths")
         assert reimported is not original, "sys.modules eviction did not take"
@@ -874,10 +876,10 @@ class TestTheSharedKiroPathRatchet:
         # consumers import them by value.
         ("kiro_crew/service/macos.py", "PLIST_DIR"): "covered by _isolate_launchd_paths",
         ("kiro_crew/service/macos.py", "LOG_DIR"): "covered by _isolate_launchd_paths",
-        # The kiro-cli/amazon-q sqlite tuples that used to sit here as direct
-        # ``Path.home()`` bindings are now PROJECTIONS over the canonical table in
+        # The kiro-cli/amazon-q sqlite tuples here are not direct
+        # ``Path.home()`` bindings; they are PROJECTIONS over the canonical table in
         # ``kiro_crew/identity_stores.py`` (``sqlite_dbs(...)`` resolves the home
-        # inside the call), so they no longer match this tripwire's import-time
+        # inside the call), so they do not match this tripwire's import-time
         # shape and need no exclusion. Their anchor rule ("must name the REAL
         # home"; stub the READER, never move the anchor) is carried forward by
         # ``test_identity_stores.py::TestUsageTuplesAnchorTheRealHome``.
@@ -886,7 +888,10 @@ class TestTheSharedKiroPathRatchet:
         # since that is the directory the user is entitled to browse. Redirecting it
         # would make every containment test assert against a root that does not ship.
         # Nothing here writes: the module reads the value to bound path resolution.
-        ("kiro_crew/apps/builtins/file_explorer/server.py", "_HOME"): "security anchor: the browsing allow-list root",
+        (
+            "kiro_crew/apps/builtins/file_explorer/server.py",
+            "_HOME",
+        ): "security anchor: the browsing allow-list root",
     }
 
     @staticmethod
@@ -966,13 +971,15 @@ class TestTheSharedKiroPathRatchet:
         assert not unhandled, (
             "these module-level Path.home() bindings are neither pinned by the rootdir "
             "conftest's _SHARED_KIRO_PATHS nor excluded with a reason in _EXCLUDED:\n"
-            + "\n".join(f"    {mod}:{line} {attr}" for (mod, attr), line in sorted(unhandled.items()))
+            + "\n".join(
+                f"    {mod}:{line} {attr}" for (mod, attr), line in sorted(unhandled.items())
+            )
             + "\nA test that reaches one of these writes the operator's real home. Pin it, "
             "or exclude it and say why."
         )
 
     def test_the_exclusion_list_has_not_gone_stale(self) -> None:
-        """An exclusion for a binding that no longer exists hides the next one."""
+        """An exclusion for a binding that does not exist hides the next one."""
         bindings = self._home_bindings()
         stale = [key for key in self._EXCLUDED if key not in bindings]
 
@@ -986,7 +993,7 @@ class TestTheTempBaseIsRedirected:
     """``tempfile``'s base must be a per-run directory, not the shared temp root.
 
     The point is not tidiness. A bare ``mkdtemp()`` whose cleanup is missing or skipped
-    used to leave its directory in the platform temp root forever, and MEASURED on the
+    leaves its directory in the platform temp root forever, and MEASURED on the
     hosts this was written against, ``/tmp`` is a tmpfs with a hard 1,048,576-INODE cap
     that returns ENOSPC to unrelated processes while 90% of the BYTES are still free.
     """
@@ -1004,9 +1011,7 @@ class TestTheTempBaseIsRedirected:
         )
         assert base.is_dir()
 
-    def test_pytests_own_basetemp_is_not_inside_the_redirect(
-        self, tmp_path: pathlib.Path
-    ) -> None:
+    def test_pytests_own_basetemp_is_not_inside_the_redirect(self, tmp_path: pathlib.Path) -> None:
         """pytest resolves basetemp lazily from ``gettempdir()``, so ORDER decides this.
 
         If the redirect wins the race, pytest's whole basetemp lands inside the run's
@@ -1052,9 +1057,7 @@ class TestTheTempBaseIsRedirected:
         # the account segment sits between the two, and is non-empty
         assert len(prefix) > len(_root._TMP_ROOT_PREFIX) + len(str(os.getpid())) + 2
 
-    def test_the_root_is_created_atomically_and_owner_only(
-        self, tmp_path: pathlib.Path
-    ) -> None:
+    def test_the_root_is_created_atomically_and_owner_only(self, tmp_path: pathlib.Path) -> None:
         """A predictable name in a world-writable temp root is a hijack.
 
         Another local account can pre-create the exact pid-derived name as a SYMLINK to a
@@ -1073,9 +1076,7 @@ class TestTheTempBaseIsRedirected:
         if os.name != "nt":  # POSIX mode bits; Windows uses ACLs
             assert (made.stat().st_mode & 0o777) == 0o700
 
-    def test_two_roots_in_the_same_process_never_collide(
-        self, tmp_path: pathlib.Path
-    ) -> None:
+    def test_two_roots_in_the_same_process_never_collide(self, tmp_path: pathlib.Path) -> None:
         """Which also proves nothing pre-existing is ever adopted."""
         first = _root._create_tmp_root(tmp_path)
         second = _root._create_tmp_root(tmp_path)
@@ -1095,9 +1096,7 @@ class TestTheTempResidueReport:
         assert "addCleanup" in message
         assert _root._TMP_PER_TEST_ENV in message
 
-    def test_a_third_party_or_by_design_entry_is_not_residue(
-        self, tmp_path: pathlib.Path
-    ) -> None:
+    def test_a_third_party_or_by_design_entry_is_not_residue(self, tmp_path: pathlib.Path) -> None:
         """A guard that cries wolf gets deleted, and then it protects nothing.
 
         Redirecting `tempfile`'s base also redirects every CHILD's, so the browser and
@@ -1105,8 +1104,11 @@ class TestTheTempResidueReport:
         screenshot spool lands here rather than in the real temp root. None of that is a
         test forgetting to clean up.
         """
-        for name in ("kirocrew-computer-shots", "playwright-transform-cache-1001",
-                     ".org.chromium.Chromium.AHpK6x"):
+        for name in (
+            "kirocrew-computer-shots",
+            "playwright-transform-cache-1001",
+            ".org.chromium.Chromium.AHpK6x",
+        ):
             (tmp_path / name).mkdir()
 
         assert _root._tmp_residue(tmp_path, per_test=False) == []
@@ -1136,9 +1138,7 @@ class TestTheTempResidueReport:
 
         assert _root._tmp_residue(tmp_path, per_test=True) == ["test_guilty/tmpleaked"]
 
-    def test_an_unreadable_base_is_not_reported_as_residue(
-        self, tmp_path: pathlib.Path
-    ) -> None:
+    def test_an_unreadable_base_is_not_reported_as_residue(self, tmp_path: pathlib.Path) -> None:
         """A guard that reds the suite on an unanswerable question gets deleted, and
         then it protects nothing."""
         assert _root._tmp_residue(tmp_path / "does-not-exist", per_test=False) == []
@@ -1286,9 +1286,9 @@ def _autouse_floor_generator(name: str):
     marker = getattr(definition, "_fixture_function_marker", None) or getattr(
         definition, "_pytestfixturefunction", None
     )
-    assert marker is not None and marker.autouse, (
-        f"conftest.{name} is not an autouse fixture, so the floor it implements is unarmed"
-    )
+    assert (
+        marker is not None and marker.autouse
+    ), f"conftest.{name} is not an autouse fixture, so the floor it implements is unarmed"
     return getattr(definition, "__wrapped__", definition)
 
 
@@ -1341,7 +1341,7 @@ class TestInheritedShellEnvironmentIsScrubbed:
     On a RHEL-family host ``which2.sh`` puts ``BASH_FUNC_which%%`` in every login
     shell's environment, and ``name_grant``'s AMBIGUOUS_ENV refusal -- checked before
     every narrower code -- then rewrote what 79 unrelated assertions observed
-    (issue #8395). The scrub under test is ``conftest._scrub_inherited_preload_env``,
+    The scrub under test is ``conftest._scrub_inherited_preload_env``,
     driven directly (see ``_autouse_floor_generator``); the domain-level regression
     lives in ``test_name_grant.py::TestInheritedHostEnvironment``, but only this
     direct drive survives ``autouse=True`` being dropped or the restore half being
@@ -1857,9 +1857,7 @@ class TestTheWorkerBudgetIsMemoryBounded:
 
         assert budget._static_memory_bounded_capacity(12) == 12
 
-    def test_a_tiny_host_still_gets_one_worker(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_a_tiny_host_still_gets_one_worker(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Slow beats stalled: the floor is one worker, never zero."""
         import xdist_budget as budget
 
@@ -1969,7 +1967,7 @@ class TestTheWorkerBudgetIsMemoryBounded:
     ) -> None:
         """A platform none of the three branches claims returns 0 = unknown.
 
-        The branch that used to stand in for macOS and Windows. Those now have
+        The branch that stands in for the unknown host. macOS and Windows now have
         readings of their own, so this covers only the genuinely unknown host --
         and it must stay 0 so such a host keeps its parallelism instead of
         silently dropping to one worker.

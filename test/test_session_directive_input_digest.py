@@ -1,11 +1,11 @@
 """The out-of-band directive is claimed by the tool CALL's input, never by the RESULT.
 
 Background. A directive tool parks its validated payload on the gateway and the
-turn's consumer claims it. The consumer used to learn WHICH record to claim by
+turn's consumer claims it. WHICH record to claim does not come from
 reading the directive marker back out of the tool result text -- and that text is
 whatever the backend chose to put on the wire. KAS reshaped it four ways in as
-many weeks: the envelope re-serialised with every quote escaped (#8182), the
-result copied into both ``response`` and ``message`` (#8841), one of those
+many ways: the envelope re-serialised with every quote escaped, the
+result copied into both ``response`` and ``message``, one of those
 replaced by an offload reference above a threshold, and every string capped at
 30k chars with the tail-anchored marker falling off the end. Each was one more
 repair branch in the shared ACP parser, and the parser is shared by every
@@ -18,7 +18,7 @@ reads the result. These tests drive the REAL consumer (``chat_runner._run_chat``
 with the live KAS frame shapes captured from the gateway log, plus the two shapes
 not yet seen in the wild, and every one of them must arm with the marker
 unreadable or absent -- while the forgery and isolation guarantees the marker
-selector used to carry are re-pinned on the new key.
+selector carries are re-pinned on the new key.
 """
 
 from __future__ import annotations
@@ -75,12 +75,12 @@ def _tool_text() -> str:
 
 
 def _kas_escaped(text: str) -> str:
-    """#8182: the envelope re-serialised, every quote escaped."""
+    """The envelope re-serialised, every quote escaped."""
     return json.dumps({"stdout": text})
 
 
 def _kas_duplicated(text: str) -> str:
-    """#8841: the text copied into ``response`` AND ``message`` (kiro-agent bc5906adf)."""
+    """The text copied into ``response`` AND ``message``."""
     return json.dumps({"response": text, "imageBase64Urls": [], "message": text})
 
 
@@ -447,7 +447,7 @@ class TestTheToolSideOfTheKey:
 
 class TestEmptyArgumentDirectives:
     """``reset_conversation({})`` and friends: an explicit empty argument set is a
-    real input and must produce a digest. The ACP parser used to collapse ``{}`` to
+    real input and must produce a digest. The ACP parser must not collapse ``{}`` to
     None with an ``or`` chain, so no digest was recorded and the record sat parked."""
 
     def test_parser_preserves_an_explicit_empty_raw_input(self):
@@ -987,7 +987,7 @@ class TestKasWireTitleCarriesTheBackendPrefix:
 
 
 class TestDisplayStripKeepsAnEnvelopeReadable:
-    """``strip_marker`` is display-only, but it used to cut from the first sentinel
+    """``strip_marker`` is display-only, but cutting from the first sentinel
     to the END of the text. That is right for the tool's own shape (marker on the
     last line) and wrong for a KAS envelope, where the marker sits inside a JSON
     string and the cut left ``{"response":"Monitor loop requested...`` in the

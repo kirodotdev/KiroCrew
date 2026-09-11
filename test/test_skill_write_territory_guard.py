@@ -4,7 +4,7 @@
 the READ path (``~/.kiro/skills`` and ``<project>/.kiro/skills`` via
 ``_resolve_skill_root``), while ``skills.create/update/delete_skill`` would join the key
 onto a core root — so the same key names a different file on write than the reader was
-shown (issue #8244). The FEAT-002 guard refuses the mutating verbs (PUT/DELETE -> 405 with
+shown. The FEAT-002 guard refuses the mutating verbs (PUT/DELETE -> 405 with
 ``Allow: GET`` and code ``readonly_skill_prefix``; create -> 400 with code
 ``reserved_skill_prefix``) while leaving reads and non-prefixed writes untouched.
 

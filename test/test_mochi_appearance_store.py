@@ -51,9 +51,8 @@ def _payload(**over: object) -> dict[str, object]:
 
 class TestSave:
     def test_failed_overwrite_leaves_the_existing_pack_intact(self, tmp_path: Path) -> None:
-        """Every image is decoded BEFORE the old pack is touched. The overwrite
-        path used to rmtree first and decode after, so one malformed data URI
-        destroyed the pack it was replacing."""
+        """Every image is decoded BEFORE the old pack is touched, so one
+        malformed data URI cannot destroy the pack it is replacing."""
         pack_id = save_sprite_pack(tmp_path, _payload())
         pack = appearances_dir(tmp_path) / pack_id
 
@@ -172,10 +171,10 @@ class TestOverwrite:
     ) -> None:
         """The replacement is staged, so a failed save cannot destroy user data.
 
-        Decoding up front already stopped a malformed data URI from deleting the
-        pack it replaced, but the WRITES can still fail — a full disk halfway
-        through used to leave the old pack removed and the new one incomplete, and
-        a pack the user built by hand was simply gone.
+        Decoding up front stops a malformed data URI from deleting the pack it
+        replaces, but the WRITES can still fail — a full disk halfway through
+        would otherwise leave the old pack removed and the new one incomplete,
+        losing a pack the user built by hand.
         """
         pack_id = save_sprite_pack(tmp_path, _payload(name="Original"))
         pack = appearances_dir(tmp_path) / pack_id

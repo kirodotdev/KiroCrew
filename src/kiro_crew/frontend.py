@@ -406,7 +406,7 @@ def build_and_stage(
 #: Records WHICH ``website/`` source the currently staged bundle was built from.
 #: Written beside the staged dist on every successful build+stage, and read by
 #: Dev Fleet's backend-only-sync skip: the skip is only safe when this equals the
-#: source the sync will end up with. It is the fingerprint the #7132 skip needs
+#: source the sync will end up with. It is the fingerprint the skip needs
 #: to distinguish "the build is already current" from a STALE tree left when a
 #: prior frontend sync merged new source but its ``npm ci`` failed and the
 #: transaction restored the old node_modules -- a case where the subtree stops
@@ -730,10 +730,9 @@ def build_frontend_sync(
     # process would deadlock against itself (see _staging_lock). Hence the build
     # and stage happen inside here too, via the _locked variant.
     #
-    # The cost is real and deliberate: a peer now waits for an install (up to
+    # The cost is real and deliberate: a peer waits for an install (up to
     # _INSTALL_TIMEOUT) rather than only for a build. Two frontend builds on one
-    # checkout were already mutually destructive, so waiting is the correct
-    # outcome, not a regression.
+    # checkout are mutually destructive, so waiting is the correct outcome.
     #
     # RESIDUAL: this closes races between Kiro Crew's own Python flows. Dev Fleet's
     # Pull+Build takes this same lock for its build+stage child, but its `npm ci`
@@ -812,7 +811,7 @@ def build_frontend_sync(
                 # Reap FIRST, and note WHY that is not optional here: the install
                 # runs in its own session (so its whole tree can be signalled on
                 # timeout), which also means a terminal Ctrl-C does NOT reach it --
-                # SIGINT goes to the foreground process group, and npm is no longer
+                # SIGINT goes to the foreground process group, and npm is not
                 # in it. So npm survives the interrupt and would keep writing into
                 # the directory being restored.
                 _reap_tree(proc)
@@ -1011,8 +1010,8 @@ async def build_frontend_async(
         # Otherwise a cancellation here releases the flock while this thread is
         # still running `npm run build` (which rewrites website/dist) and staging
         # it, and a peer would publish a bundle vite is mid-rewrite -- the mixed
-        # bundle the lock exists to prevent. Before this PR the lock was taken
-        # INSIDE the worker, so a cancelled await could not release it early.
+        # bundle the lock exists to prevent. The lock is held OUTSIDE the worker, so
+        # a cancelled await can release it early unless the future is tracked.
         staged = await _offload(_build_and_stage)
     except asyncio.CancelledError:
         # Gateway shutdown during the install. Left alone this strands the tree:

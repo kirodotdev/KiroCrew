@@ -61,10 +61,11 @@ is this same file re-executed with :data:`_WORKER_FLAG`, which imports the
 product only in that mode.
 
 *The child is hermetic.* Every ``KIROCREW_*`` variable is stripped from the
-child's environment and ``KIROCREW_HOME`` is repointed at a throwaway
-directory, so the verdict depends on the checkout alone and the classifier's
-best-effort SEL audit writes land somewhere disposable instead of in the
-operator's real log. A differential whose result moved with the caller's
+child's environment, and both the OS home and ``KIROCREW_HOME`` are repointed
+at a throwaway directory. The verdict therefore depends on the checkout alone,
+the sensitive-path target set never probes the operator's real home, and the
+classifier's best-effort SEL audit writes land somewhere disposable instead of
+in the operator's real log. A differential whose result moved with the caller's
 environment would be unfalsifiable.
 
 The corpus
@@ -139,6 +140,16 @@ _WORKER_TIMEOUT = 600
 #: that matched, never the payload, but it can carry a diagnostic line and an
 #: operator note, and a job summary with 40 of those is unreadable.
 _REASON_CHARS = 300
+
+# Home-root overrides that do not carry the KIROCREW_ prefix scrubbed below.
+# This parent script cannot import the product it is comparing; the source test
+# pins the harness entries against agent_sdk.host_auth's declarations instead.
+_INHERITED_HOME_OVERRIDE_ENV_VARS = (
+    "KIRO_HOME",
+    "CODEX_HOME",
+    "CLAUDE_CONFIG_DIR",
+    "CLAUDE_HOME",
+)
 
 
 class DenyDiffError(Exception):
@@ -359,11 +370,22 @@ def _child_env(checkout: Path, home: Path) -> dict[str, str]:
 
     Every ``KIROCREW_*`` variable is dropped. The caller's sandbox and port
     variables leak into any child by default, and a classifier that read them would
-    make the verdict a function of who ran the gate. ``KIROCREW_HOME`` is then set
-    to *home* so the classifier's best-effort audit writes land in a throwaway
-    directory rather than the operator's real security log.
+    make the verdict a function of who ran the gate. The OS home and
+    ``KIROCREW_HOME`` are then set to *home* so the sensitive-path target set never
+    resolves the operator's real home and the classifier's best-effort audit writes
+    land in a throwaway directory rather than the operator's real security log.
     """
-    env = {k: v for k, v in os.environ.items() if not k.startswith("KIROCREW_")}
+    home.mkdir(parents=True, exist_ok=True)
+    env = {
+        k: v
+        for k, v in os.environ.items()
+        if not k.startswith("KIROCREW_") and k not in _INHERITED_HOME_OVERRIDE_ENV_VARS
+    }
+    # pathlib reads HOME on POSIX and USERPROFILE on Windows. Set both so a child
+    # materialized for either platform stays hermetic even when this helper is
+    # inspected or exercised from the other one.
+    env["HOME"] = str(home)
+    env["USERPROFILE"] = str(home)
     env["KIROCREW_HOME"] = str(home)
     env["PYTHONPATH"] = str(checkout / "src")
     # A .pyc for a tree deleted at the end of the run is pure cost, and writing

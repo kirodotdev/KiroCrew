@@ -992,7 +992,7 @@ class DiscordClient:
     ) -> bool:
         """Edit ONLY a message's components, leaving its content intact.
 
-        Used to retire an ``[OPTIONS:]`` button row after a choice is tapped
+        Retires an ``[OPTIONS:]`` button row after a choice is tapped
         without clobbering the answer text that carried it. Pass ``[]`` to
         remove the buttons.
         """

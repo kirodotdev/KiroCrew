@@ -66,7 +66,7 @@ GUARD_INTERVAL_MS = 5 * 60_000
 REMINDER_INTERVAL_MS = 60_000
 
 # Spawn lock auto-release (AGENT_SPAWN_TIMEOUT_MS in the original's shared
-# constants): a spawn older than this no longer blocks the next one.
+# constants): a spawn older than this does not block the next one.
 SPAWN_TIMEOUT_MS = 5 * 60_000
 
 # Consecutive failures before degraded mode.
@@ -202,11 +202,10 @@ class WatchlistService:
     async def _drain_queue(self) -> None:
         """Run queued writes one at a time, each on a worker thread.
 
-        `await to_thread(fn)`, not `fn()`: every one of these callables now takes
-        the cross-process watchlist lock, so it can block for as long as the MCP
-        server process holds it. Running that on the event loop froze chat and the
-        heartbeat for the duration — the lock made a previously-cheap synchronous
-        call genuinely blocking, so the drain had to move off the loop with it.
+        `await to_thread(fn)`, not `fn()`: every one of these callables takes the
+        cross-process watchlist lock, so it can block for as long as the MCP
+        server process holds it. Running that on the event loop freezes chat and
+        the heartbeat for the duration, so the drain stays off the loop.
 
         `self._writing` still serializes: only one write is in flight at a time,
         which is the invariant the archive/active write ORDER depends on.

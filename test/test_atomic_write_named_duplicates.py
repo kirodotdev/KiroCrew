@@ -28,7 +28,7 @@ was being written, so they are load-bearing in BOTH directions. ``mkstemp``
 creates its file owner-only, and neither ``_atomic_write_theme_json`` nor
 ``_write_plist_atomic`` chmod'd it afterwards, so both published at ``0o600``
 — while ``atomic_write`` with no *mode* applies the umask default. Migrating
-them without an explicit ``mode=0o600`` silently widened two previously
+them without an explicit ``mode=0o600`` silently widened two
 owner-only files to ``0o644``. ``write_live_program`` keeps its explicit
 ``0o700`` (drop it and launchd cannot exec the agent), and the Dev Fleet drop-in
 keeps the umask default its ``Path.write_text`` always produced. No site ever

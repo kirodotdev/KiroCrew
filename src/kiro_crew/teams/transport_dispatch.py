@@ -48,7 +48,7 @@ from kiro_crew.messaging.commands import (
     run_yolo_command,
     stop_running_turn,
 )
-from kiro_crew.messaging.conversation import ConversationState
+from kiro_crew.messaging.conversation import ConversationState, reserve_new_generation
 from kiro_crew.messaging.dispatch import (
     ChannelTurn,
     build_directive_consumer,
@@ -254,6 +254,7 @@ class TeamsDispatcher:
                     inbound.conversation_id,
                     inbound.service_url,
                     command_argument(text),
+                    native_key=self._session_key(email),
                 )
                 return
             if cmd == "new":
@@ -611,6 +612,7 @@ class TeamsDispatcher:
                 inbound.reply_to_id or inbound.activity_id,
                 payload["nonce"],
                 int(payload["index"]),
+                native_key=self._session_key(identity),
             )
             return
         # An option chip: resolve the label from what this turn actually offered,
@@ -740,7 +742,7 @@ class TeamsDispatcher:
                         texts.append(item[1])
                         attachments.extend(queued_files)
                     else:
-                        # Once one message no longer fits, defer it AND everything
+                        # Once one message does not fit, defer it AND everything
                         # behind it, so the queue keeps exact FIFO order.
                         defer_rest = True
                         remainder.append(item)
@@ -971,6 +973,12 @@ class TeamsDispatcher:
             self.sessions.clear_queue(session_key)
             await self._queue.finish_cancelled_locked(session_key, self._receipt_surface(inbound))
         self._conv.bump_gen(identity)
+        new_session_key = self._session_key(identity)
+        saved = await reserve_new_generation(
+            self.sessions,
+            new_session_key,
+            channel_type="Teams",
+        )
         # Retire the OLD generation's renderer here. A renderer kept alive for
         # outstanding chips is keyed by the pre-bump session key, and the next turn
         # assigns under the new one -- so nothing else ever pops this entry, and each
@@ -981,6 +989,8 @@ class TeamsDispatcher:
         message = "✅ Started a fresh conversation."
         if left_resumed is not None:
             message = "✅ Started a fresh conversation — left the resumed dashboard session."
+        if not saved:
+            message += "\n⚠️ The new conversation could not be saved for restart."
         await self._reply(inbound, message)
 
     # ── Helpers ────────────────────────────────────────────────────────────
@@ -1069,7 +1079,7 @@ class TeamsDispatcher:
         email = self._identity(inbound)
         pct = self.sessions.check_context_usage(session_key, provider)
         if pct >= self.cfg.teams.soft_threshold_pct:
-            # Capability gate (#8156): no forced compaction to run and the
+            # Capability gate: no forced compaction to run and the
             # soft nudge's /compact advice cannot work — the backend compacts
             # on its own as context fills.
             unsupported = compact_unsupported_backend(provider)
@@ -1120,7 +1130,7 @@ class TeamsDispatcher:
             if provider is None:
                 await self._reply(inbound, "ℹ️ There's no conversation to compact yet.")
                 return
-            # Capability gate (#8156, mirroring the dashboard's #7800 gate): a
+            # Capability gate, mirroring the dashboard's compact gate: a
             # backend that cannot serve a manual /compact treats the prompt as
             # ordinary text and never answers, so dispatching would strand the
             # unbounded wait below. Informational, never an error.

@@ -22,7 +22,7 @@ from kiro_crew.messaging.approval import (
     pending_for,
 )
 from kiro_crew.messaging.commands import compact_unsupported_backend
-from kiro_crew.messaging.conversation import ConversationState
+from kiro_crew.messaging.conversation import ConversationState, reserve_new_generation
 from kiro_crew.messaging.dispatch import (
     ChannelTurn,
     delivery_is_muted,
@@ -177,7 +177,15 @@ class WhatsAppDispatcher:
         scope = inbound.conversation_id
         if command == "new":
             self._conv.bump_gen(scope)
-            await self._say(scope, NEW_SESSION_TEXT)
+            saved = await reserve_new_generation(
+                self.sessions,
+                self._session_key(scope),
+                channel_type="WhatsApp",
+            )
+            message = NEW_SESSION_TEXT
+            if not saved:
+                message += "\n⚠️ The new conversation could not be saved for restart."
+            await self._say(scope, message)
         elif command == "compact":
             # Clear the nudge flag first, so the soft-threshold nudge can fire
             # again once the context refills after this compaction.
@@ -247,7 +255,7 @@ class WhatsAppDispatcher:
             if provider is None:
                 await self._say(scope, COMPACT_NOTHING_TEXT)
                 return
-            # Capability gate (#8156, mirroring the dashboard's #7800 gate): a
+            # Capability gate (mirroring the dashboard's gate): a
             # backend that cannot serve a manual /compact treats the prompt as
             # ordinary text and never answers, so dispatching would strand the
             # unbounded wait below. Informational, never an error.
@@ -523,7 +531,7 @@ class WhatsAppDispatcher:
         may_speak = not unprompted and not delivery_is_muted(self.sessions, session_key, "whatsapp")
         wa = self.cfg.whatsapp
         if pct >= wa.soft_threshold_pct:
-            # Capability gate (#8156): no forced compaction to run and the
+            # Capability gate: no forced compaction to run and the
             # soft nudge's /compact advice cannot work — the backend compacts
             # on its own as context fills.
             unsupported = compact_unsupported_backend(provider)

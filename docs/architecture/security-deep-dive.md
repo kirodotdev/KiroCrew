@@ -118,14 +118,23 @@ Two properties are load-bearing at the architecture level:
 
 - **Failure is refusal, not degradation.** With no sandbox backend available and
   a mode other than `off`, `wrap_argv` raises rather than spawning unconfined.
-  Running unconfined is an explicit opt-in (`agent.sandbox_allow_unsandboxed_exec`);
+  Running unconfined is permitted by an explicit opt-in
+  (`agent.sandbox_allow_unsandboxed_exec=true`) or, on a platform with no
+  installable backend, by that platform's default;
   a separate flag (`agent.sandbox_allow_no_isolation`) only demotes the warning's
   log level and does not permit execution. The opt-in's default is
-  **platform-independent** — a platform-derived default would grant unconfined
-  execution on every backend-less host with no operator having declared it — so
-  the discoverable path is instead a consent step in `kirocrew setup`, which
-  prompts (default no) when `detect_backend()` reports `"none"` and writes the
-  key only on an explicit yes.
+  **platform-dependent** — allow on Windows, where no user namespace, no
+  `sandbox-exec` and nothing installable can ever satisfy the check, and
+  fail-closed everywhere else, where a missing backend is broken or one AppArmor
+  profile away from working and the guidance names that profile. The cost is
+  stated rather than glossed: on Windows this removes a deny-by-default
+  authorization. A declared `false` outranks the platform default in both
+  directions, a governance `sandbox.min_level` floor outranks the declaration,
+  and every unconfined spawn is SEL-audited `unconfined` naming the permitting
+  party — the platform grant has no config file standing as its record.
+  `kirocrew setup` still asks, in the direction that matches the default: the
+  opt-IN where it is fail-closed, and the exposure stated plus the opt-OUT where
+  it is allow, writing nothing on a decline so the host stays undeclared.
 - **Windows Kiro delegation is not a global fail-open.** `is_kiro_cli=True` from a
   reviewed official-Kiro spawn site delegates directly to Kiro's built-in sandbox
   before backend probing. A Kiro-looking filename is insufficient on Windows.
@@ -178,6 +187,21 @@ access: it re-checks the resolved target and then opens the canonical path with
 `O_NOFOLLOW`, which closes the TOCTOU window where the final component is swapped
 for a symlink after the check.
 
+The text, byte and prefix readers also check the opened descriptor before consuming
+content. They require a regular file, a kernel-reported path matching the canonical
+name validated before opening, and a non-sensitive target. An unavailable path
+witness or an ancestor-directory swap refuses the read and closes the descriptor.
+The name comparison does not resolve the original path again. Benign links already
+resolved during validation and arbitrary authorized non-sensitive files remain
+readable; this does not replace the separate hardlink and root restrictions of
+the stricter `safe_read_file_bytes_nolink()` reader, which performs the same witness
+check even without a root argument. The identity-allowlist reader retains its
+opened-inode authorization. These readers, the media-copy reader, fixed-path
+internal sensitive reads and export descriptor admission request nonblocking
+POSIX opens so a FIFO cannot stall before the regular-file check. They do not
+promise a content snapshot against an external writer modifying the same inode
+in place.
+
 ### The keystone: the agent cannot read or rewrite its own ceiling
 
 The governance trust root (`security_policy.json`, `profiles/`,
@@ -193,6 +217,85 @@ than through the shared gate, so real functionality is unaffected.
 
 Each leaf is registered under every known data-home prefix, so a not-yet-migrated
 legacy home is fenced identically to the current `~/.kiro/crew`.
+
+### One crew's memory is fenced from another's; its OWN memory is not
+
+`memory_stores/` — the root holding one subdirectory per named memory store — is on
+the same read+write block. A named store is one crew's private memory silo, and
+crossing that boundary is both the primary harm (reading another crew's preferences
+and lessons) and a steering channel (rewriting them changes that crew's future
+turns). Same-UID file modes cannot draw the line, because the agent's file tools run
+as the owner of every store on disk.
+
+**The default store is deliberately outside the fence, and this asymmetry is a
+decision rather than an oversight.** `is_sensitive_path("~/.kiro/crew/memory.db")` is
+False; `is_sensitive_path("~/.kiro/crew/memory_stores/work/memory.db")` is True. The
+reason is that the default store is the agent's OWN memory — recalling it is the
+product working — and fencing it would change behaviour for every existing install,
+which the named-store split is required not to do. A later reader who finds the
+inconsistency uncomfortable should leave it: making it symmetric in the tightening
+direction breaks the default path, and in the loosening direction removes the whole
+control. The ratchet that makes either attempt go red is
+`test/test_memory_stores.py`, which asserts the default store's answers unchanged
+beside the fenced store's.
+
+The keystone-reader rule applies with full force here: a legitimate reader of a
+named store opens the path directly, and a reader that does not is what gets fixed —
+never the fence, since relaxing `is_sensitive_path` for one caller unfences the subtree
+for every tool caller.
+
+`MemoryStore`'s ordinary read path does plain reads and never enters the gate, so it
+opens a named store's markdown the way it already opens its own tree. So does
+`security.scan_memory`, which is the reason the rule matters rather than an exception to
+it: the injection audit has to read every declared silo — a silo's directive tier goes
+into that crew's prompt — and it does so by resolving `resolve_store_path` and opening
+the file, one store at a time, with every finding labelled by store. It opens the silo's
+`lessons.jsonl` the same way, and that tier is the one an audit cannot skip: a
+silo-bound crew's corrections land there exactly when the silo has no vector store, so
+scanning vector files alone would hand a clean verdict to an install whose only
+prompt-injected tier was never read.
+`learn.LessonStore` does enter it, refusing a sensitive `base_dir` — and its fallback is
+a WRITE target, so without a carve-out every crew's corrections append to the one global
+`lessons.jsonl`, misfiled rather than merely lost. `_is_owned_store_root` admits a DIRECT
+child of the stores root as a directory the class owns, and refuses `profiles/`, the
+stores root itself, and any nested path.
+
+One reader stays refused, deliberately: `MemoryStore._guarded_entry` reads through
+`hooks.safe_read_file_bytes_nolink`, whose resolved-path check is `is_sensitive_path`, so
+a named store answers with empty entries there. Nothing reaches it — its only callers are
+two `kirocrew memory` CLI verbs anchored on the default store — and `security.md` records
+it so a per-store export surface is a deliberate act rather than a surprise.
+
+**The dashboard now reads and writes a fenced silo, and what keeps an agent out of it is
+an identity check rather than the file gate.** The store-scoped `/api/memory/*` routes
+take an optional `?store=<name>`; the gateway opens that store directly, as a keystone
+reader. The control is that the parameter's PRESENCE takes the dashboard owner gate,
+which requires the dashboard-user claim (`request["app"] == ""`, so an App Kit token is
+out) plus a `request["user"]` that `token_auth_middleware` publishes on the
+cookie/query-token path alone and never on its `X-Internal-Secret` branch. So an agent,
+an MCP tool and a subagent — all of which authenticate as the installation and hold no
+user identity — cannot name a store at all, and are excluded because they have nothing to
+present rather than by a test for what they are. Omitting the parameter answers from the
+global store, including on `carve`; an unverified `X-Session-Key` never selects a silo. The full argument,
+including why an undeclared name is a 404 rather than a degrade onto the operator's own
+memory, is in [security](../system-specs/modules/security.md).
+
+**Losing ancestry does not grant host authority.** Private API identity uses
+gateway-owned process-start bindings, but a missing ancestor record cannot
+prove that a process was never private. For unbound Linux peers the gateway
+requires matching user and mount namespace identities; on macOS it requires a
+positive unsandboxed Seatbelt result. Both kernel restrictions survive
+reparenting. Unreadable or unsupported provenance fails closed. A descendant
+whose private binding cannot be recovered receives no member access and cannot
+downgrade to Global V1 or exchange the shared local secret for an owner token.
+The checks need no process-local ancestry cache to survive a gateway restart.
+
+Sandboxed V1 runtimes retain explicit trusted V1 process records; Linux peers
+must remain in the recorded runtime's namespaces. Those records preserve normal
+V1 MCP access without becoming member proofs or owner-bootstrap authority.
+Native Windows cannot launch private runtimes and keeps the existing V1 flow.
+On macOS a sandboxed app without a trusted runtime record must bootstrap through
+the host login-link CLI; failure to query Seatbelt never counts as unsandboxed.
 
 **Do not weaken this when editing the path or bash matchers.** Write and extract
 verbs must stay covered: a bash command that merely *names* a write-protected
@@ -277,6 +380,10 @@ an external service. The authoritative list is the `redaction_paths` control in
 test: every redactor call site in the package must be either a registered sink or
 on an explicit non-egress allowlist, so a new egress path cannot be added without
 someone deciding which bucket it belongs in.
+
+The memory recovery, record editor, and member recall/copy APIs each register
+their own output boundary. Their response fields pass through the shared
+credential and exfiltration-URL chain before reaching the dashboard or MCP caller.
 
 - `redact_credentials()` recognizes credential families in plaintext and
   base64-encoded form (it decodes base64-looking chunks and re-checks the decoded
@@ -525,3 +632,35 @@ fork bombs and memory balloons requires Linux with cgroup delegation; where it i
 unavailable (macOS, older Linux, no user session) it is a no-op with a loud
 warning and only the file-descriptor limit applies. See
 [`resource-protection.md`](resource-protection.md).
+
+**Launcher self-poisoning by the same user is accepted, not defended (CWE-345;
+tracked as CWE-778 by
+[#371](https://github.com/kirodotdev/KiroCrew/pull/371) /
+[#417](https://github.com/kirodotdev/KiroCrew/issues/417)).** The resolved
+`kiro-cli` launcher is executed in place with no signature, hash, ownership or
+install-source check — the only gate is `platform_compat.is_executable_file`
+(`kiro_cli.py`) — so an agent running as the invoking user can overwrite its own
+launcher and have those bytes executed on the next spawn. **Status: ACCEPTED.**
+The mechanism that would close it is *rejected by design*, not missing by
+oversight: see
+[`security.md` § Kiro prerequisite setup boundary](../system-specs/modules/security.md),
+which records that trust is "the CLI runs, and it has a valid login" regardless
+of install source, owner, or fixed path, because Kiro Crew is not the authority
+on where Kiro CLI lives and its own self-updater legitimately rewrites those
+bytes as the user — an owner / path / Developer-ID gate would strand real
+installs (toolbox, Homebrew, winget, a self-updated `/Applications` bundle) with
+no in-product recovery path. The same section records the sibling resolve-to-exec
+byte-binding copy as deliberately removed ("Do NOT reintroduce it") once Kiro CLI
+became a multi-call binary. The accepted tradeoff is therefore **install-model
+compatibility over a same-UID integrity check**: the attack presupposes local
+write access as the operator, which is outside this product's threat model (an
+attacker holding the operator's UID already owns the account) and is not
+defended against anywhere else — `~/.bashrc`, above, is the same class. Residual
+blast radius is bounded on the confined spawn paths (Linux namespace, macOS
+seatbelt) which run even a poisoned launcher inside Kiro Crew's own sandbox;
+only macOS internal-sandbox delegation exec's it directly. A multi-tenant or
+enterprise posture would need signing infrastructure, key management and an
+install-layout decision, and any such gate must default **off** — the
+`KIROCREW_PROVIDER_BIN_STRICT` precedent
+(`github_runner.py:validate_provider_executable`) records that requiring a
+root-owned copy made every stock package-manager install fail.

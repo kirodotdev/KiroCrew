@@ -168,7 +168,7 @@ def _parsed_core_source_files() -> List[Tuple[Path, ast.AST]]:
     resulting tree. Factored out so the (immutable, run-invariant) parse pass is
     paid once per test session — via ``parsed_core_files`` below — instead of once
     per scanner. A file that fails to parse is skipped here, matching the
-    defensive behavior both callers previously implemented individually.
+    defensive behavior both callers implement individually.
 
     Reads from ``test/source_corpus.py``'s shared, already-cached text of the
     whole tree instead of a private ``rglob`` + ``read_text``: this scanner's
@@ -470,7 +470,7 @@ class TestSeamCoverage:
         )
 
     def test_reserved_slots_are_real_fields(self, context_field_names) -> None:
-        """A reservation for a field that no longer exists is dead weight."""
+        """A reservation for a field that does not exist is dead weight."""
         unknown = sorted(set(RESERVED_SLOTS) - context_field_names)
         assert not unknown, f"RESERVED_SLOTS names non-existent field(s): {unknown}"
 

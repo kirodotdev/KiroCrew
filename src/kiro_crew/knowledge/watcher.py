@@ -393,29 +393,24 @@ class KnowledgeWatcher:
         await self._maybe_dedup_sweep()
 
     async def _merge_source_props(self, source_id: str, updates: dict) -> None:
-        """Read-merge-write the source's properties in ONE worker hop.
+        """Merge the named keys into the source's properties, in ONE worker hop.
 
         ``update_source`` replaces the whole properties blob, so persisting a
         dict snapshot taken earlier in the sweep would silently clobber
         whatever a concurrent writer (a manual sync, an ingest finalize)
         committed to the same source since the snapshot — and the window
-        spans a full ingest attempt. Reading the CURRENT row and applying
-        only the named keys inside the same worker hop keeps every other
-        field as the latest writer left it. ``store.db`` is a per-thread
-        connection, so the read and the write share the hop's own connection.
+        spans a full ingest attempt.
+
+        Reading the current row is not enough on its own: a read and a write on
+        an autocommit connection are two statements, so a writer that read the
+        older blob can still land last and erase these keys.
+        ``merge_source_properties`` does both under one ``BEGIN IMMEDIATE``, so
+        the database serializes this against the dashboard's pause/resume
+        handlers, which take the same path. A row deleted concurrently returns
+        None and nothing is stamped.
         """
-
-        def _apply() -> None:
-            row = self.store.db.execute(
-                "SELECT properties FROM sources WHERE id = ?", (source_id,)).fetchone()
-            if row is None:
-                # Source deleted concurrently; nothing to stamp.
-                return
-            props = self._parse_props(row["properties"])
-            props.update(updates)
-            self.store.update_source(source_id, properties=json.dumps(props))
-
-        await asyncio.to_thread(_apply)
+        await asyncio.to_thread(
+            self.store.merge_source_properties, source_id, set_keys=updates)
 
     async def _stamp_attempt(self, source_id: str) -> None:
         """Persist the attempt timestamp that rotates a served row to the back.

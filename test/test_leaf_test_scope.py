@@ -126,7 +126,7 @@ def test_shared_test_input_escalates(path: str) -> None:
 
 
 def test_every_named_shared_helper_still_exists() -> None:
-    """A rule pinned against a path that no longer exists protects nothing."""
+    """A rule pinned against a path that is absent protects nothing."""
     for name in ("conftest.py", "source_corpus.py", "spawn_test_helpers.py"):
         assert TEST_DIR.joinpath(name).is_file(), f"test/{name} vanished; update this gate"
 
@@ -213,7 +213,7 @@ def _release_the_scripts_corpus_after_module():
 def all_corpus_gates() -> list[str]:
     """``corpus_gates(REPO_ROOT)`` is a pure function of the immutable repo tree
     for the duration of this run — several tests below call it with the exact
-    same arguments and previously each re-ran the ~158-file scan independently.
+    same arguments, and re-running the ~158-file scan per test buys nothing.
     Computed once here; tests that instead need to observe a PATCHED
     ``mod.corpus_gates`` (the monkeypatch mutation guard) call through ``mod.``
     directly and do not use this fixture.

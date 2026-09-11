@@ -15,11 +15,16 @@ logger = logging.getLogger("kiro_crew.config.loader")
 
 
 # Top-level config.json keys that save() stamps itself rather than modelling as
-# a section. They are neither parsed into a field nor round-tripped through
+# a section, plus RETIRED keys older builds materialized into every saved
+# config. They are neither parsed into a field nor round-tripped through
 # to_dict(), so every consumer that classifies top-level keys — the
 # _extra_sections capture below and validation.py's unrecognized-key warning —
 # must exclude them, or Kiro Crew warns the user about a key it wrote itself.
-CONFIG_RESERVED_TOP_KEYS: frozenset = frozenset({"meta"})
+# A retired key is therefore silently ignored at load and dropped on the next
+# save, never warned about and never resurrected.
+#   * agent_template_pane — retired: the agent editor's Template pane renders
+#     unconditionally now, so a stale materialized ``false`` must not warn.
+CONFIG_RESERVED_TOP_KEYS: frozenset = frozenset({"meta", "agent_template_pane"})
 
 # Top-level config.json sections this core models AND round-trips through
 # to_dict(). Any other top-level key found at load() is captured into
@@ -202,7 +207,7 @@ def capture_extra_section_keys(data: dict, cfg: object) -> dict:
             per_record: dict = {}
             for name, entry in raw.items():
                 record = section_obj.get(name)
-                # A flat legacy entry (workspaces used to be plain strings) has
+                # A flat legacy entry (a workspace written as a plain string) has
                 # no nested keys to lose; a record the load did not build (it was
                 # not a dict, or was rejected) has nothing to compare against.
                 if not isinstance(entry, dict) or record is None or not is_dataclass(record):
@@ -435,7 +440,7 @@ def _coerced_section(data: dict, key: str, degraded: set[str]) -> dict:
     take the whole process down — but it must stop doing so SILENTLY. Every
     section read goes through here so the "was this value real, or invented by
     the parser" question has one answer for every consumer, instead of each
-    security gate growing its own shadow parser beside the loader (#4057).
+    security gate growing its own shadow parser beside the loader.
 
     An ABSENT section is not degraded: that is the genuine unconfigured state.
     """

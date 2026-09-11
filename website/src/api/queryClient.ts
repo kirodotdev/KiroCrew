@@ -68,3 +68,80 @@ export const queryClient = new QueryClient({
     },
   },
 })
+
+type DefaultMemoryMode = 'persistent' | 'incognito' | 'temporary'
+type DashboardConfigMemoryMode = { default_memory_mode?: unknown }
+
+const DEFAULT_MEMORY_MODES: ReadonlySet<DefaultMemoryMode> = new Set([
+  'persistent',
+  'incognito',
+  'temporary',
+])
+let pendingDefaultMemoryMode: { token: symbol; value: DefaultMemoryMode } | undefined
+let defaultMemoryModeGeneration = 0
+let defaultMemoryModeWriteTail: Promise<void> = Promise.resolve()
+
+function beginDefaultMemoryModeUpdate(value: DefaultMemoryMode): symbol {
+  const token = Symbol('default-memory-mode-update')
+  defaultMemoryModeGeneration += 1
+  pendingDefaultMemoryMode = { token, value }
+  return token
+}
+
+function finishDefaultMemoryModeUpdate(token: symbol): void {
+  if (pendingDefaultMemoryMode?.token === token) pendingDefaultMemoryMode = undefined
+}
+
+/** Queue mode PUTs in selection order, even across Settings unmount/remount. */
+export function serializeDefaultMemoryModeUpdate<T>(
+  value: DefaultMemoryMode,
+  write: () => Promise<T>,
+): Promise<T> {
+  const token = beginDefaultMemoryModeUpdate(value)
+  const run = defaultMemoryModeWriteTail.then(write)
+  defaultMemoryModeWriteTail = run.then(() => undefined, () => undefined)
+  return run.finally(() => finishDefaultMemoryModeUpdate(token))
+}
+
+function currentPendingDefaultMemoryMode(): DefaultMemoryMode | undefined {
+  return pendingDefaultMemoryMode?.value
+}
+
+function normalizeDefaultMemoryMode(value: unknown): DefaultMemoryMode {
+  // Older backends omit the field and retain the historical Persistent default.
+  if (value === undefined) return 'persistent'
+  return DEFAULT_MEMORY_MODES.has(value as DefaultMemoryMode)
+    ? value as DefaultMemoryMode
+    : 'temporary'
+}
+
+/**
+ * Resolve the mode for a new dashboard chat. A same-tab choice whose save is
+ * still in flight wins. Otherwise verify the server: React Query caches are
+ * process-local, so another tab or device can change this privacy boundary
+ * without invalidating the cache in the process creating the next chat.
+ * A response overlapping a mode write is stale by construction and is retried
+ * once; repeated churn fails closed to Temporary.
+ */
+export async function resolveDefaultMemoryMode(
+  load: () => Promise<DashboardConfigMemoryMode>,
+): Promise<DefaultMemoryMode> {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const generation = defaultMemoryModeGeneration
+    const pending = currentPendingDefaultMemoryMode()
+    if (pending) return pending
+    try {
+      const loaded = await load()
+      const latest = currentPendingDefaultMemoryMode()
+      if (latest) return latest
+      if (generation !== defaultMemoryModeGeneration) continue
+      return normalizeDefaultMemoryMode(loaded.default_memory_mode)
+    } catch {
+      const latest = currentPendingDefaultMemoryMode()
+      if (latest) return latest
+      if (generation !== defaultMemoryModeGeneration) continue
+      return 'temporary'
+    }
+  }
+  return 'temporary'
+}

@@ -3,7 +3,7 @@
 ``sys.executable`` is often a symlink into a managed install tree, and rebuilding
 that tree deletes and re-creates its entries, including the interpreter
 ``wrap_argv`` prepends to every sandboxed argv. A spawn landing in that ~1s
-window used to die with a bare ENOENT that the caller could not distinguish from
+window can die with a bare ENOENT that the caller could not distinguish from
 a broken install.
 
 These tests pin BOTH directions: the transient shape is retried, and every
@@ -84,7 +84,7 @@ class TestIsTransientInterpreterEnoent:
 
 
 class TestPopenLimitedToleratesAnAbsentInterpreter:
-    def test_retries_until_the_farm_comes_back(self):
+    def test_retries_until_the_farm_comes_back(self, caplog):
         sentinel = MagicMock(name="Popen")
         # Absent for the first two attempts, then the farm is whole again.
         attempts = [_enoent(sys.executable), _enoent(sys.executable), sentinel]
@@ -97,7 +97,7 @@ class TestPopenLimitedToleratesAnAbsentInterpreter:
 
         slept: list[float] = []
         with (
-            _prepared(),
+            _prepared([*_LAUNCHER_CMD, "--token", "sensitive-argv-value"]),
             patch.object(sandbox_mod.subprocess, "Popen", side_effect=fake_popen),
             patch.object(sandbox_mod.time, "sleep", side_effect=slept.append),
         ):
@@ -108,6 +108,10 @@ class TestPopenLimitedToleratesAnAbsentInterpreter:
         assert slept == list(_INTERPRETER_ENOENT_DELAYS[:2])
         # The caller still sees its OWN argv, not the launcher's.
         assert got.args == ["/bin/echo", "hi"]
+        warnings = [r for r in caplog.records if r.name == sandbox_mod.logger.name]
+        assert len(warnings) == 2
+        assert all(repr(sys.executable) in r.getMessage() for r in warnings)
+        assert "sensitive-argv-value" not in caplog.text
 
     def test_a_permanently_absent_interpreter_still_raises(self):
         """Negative control: exhausting the budget re-raises, unchanged."""
@@ -1011,7 +1015,7 @@ class TestTheStrictShellProbeNoLongerLatchesOnABlip:
 
         Emptying the delay budget makes the loop body never run, so the
         unguarded final attempt raises immediately -- which is exactly the
-        pre-fix shape. The wrong answer is cached, as it used to be.
+        pre-fix shape. The wrong answer is cached, which the retry budget prevents.
         """
         cron = importlib.import_module("kiro_crew.cron_script")
         shell = "/bin/dash"

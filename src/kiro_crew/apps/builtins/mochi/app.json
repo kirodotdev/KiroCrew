@@ -26,9 +26,6 @@
   "iconUrl": "/app-assets/mochi/icon.png",
   "defaultEnabled": false,
   "platform": {
-    "requiresDesktopApp": true
-  },
-  "platform": {
     "os": [
       "macos",
       "linux",

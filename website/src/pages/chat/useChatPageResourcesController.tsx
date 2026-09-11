@@ -13,6 +13,7 @@ import { api } from '../../api/client'
 import { useChatFileDrop } from '../../components/ChatDropOverlay'
 import { makeRelative } from '../../components/FilePickerMenu'
 import { PREVIEW_SNIP_EVENT } from '../../components/WebPreviewPanel'
+import { PREVIEW_ANNOTATE_EVENT, type PreviewAnnotateDetail } from '../../utils/browserAnnotations'
 import { useMessageSearch } from '../../hooks/useMessageSearch'
 import { usePanelTabDescriptors } from '../../hooks/panelTabRegistry'
 import { useAnyLiveAppTab, usePanelTabs } from '../../hooks/usePanelTabs'
@@ -26,7 +27,7 @@ import { i18nT } from '../../i18n/t'
 import type { AppDispatch } from '../../store'
 import { openActivityPanel } from '../../store/chatSlice'
 import type { ChatMessage } from '../../types'
-import { setDraft } from '../../utils/chatDrafts'
+import { mergeIntoDraft, setDraft } from '../../utils/chatDrafts'
 import { setFileDraft } from '../../utils/chatFileDrafts'
 import { classifyDrop } from '../../utils/dropClassify'
 import { spliceDirTokens, VIDEO_EXT } from '../../utils/fileTokens'
@@ -645,6 +646,31 @@ export function useChatPageResourcesController({
     } catch { setUploadError(i18nT('pages.chatPage.upload_failed_check_file_type_and_size_max_50_mb')) }
     setUploading(false)
   }, [activeSlotRef, setUploadError, setUploadHint, setUploading, setPendingFiles, fileDrafts, saveDrafts, setResizedInfo])
+
+  // The Browser panel's element annotations arrive as a DRAFT plus a marker
+  // screenshot. The text goes into the composer (never sent -- the user adds
+  // a sentence and sends), the PNG through the same attachments pipeline as a
+  // drop or a snip. Both are routed to the slot whose panel produced them:
+  // the panel is session-scoped, the composer is not, so an annotation set
+  // finished after switching sessions lands in that session's draft.
+  useEffect(() => {
+    const onAnnotate = (e: Event) => {
+      const d = (e as CustomEvent<PreviewAnnotateDetail>).detail
+      if (!d) return
+      const slot = d.slot || activeSlotRef.current || ''
+      if (d.draft) {
+        if (slot && slot !== activeSlotRef.current) {
+          setDraft(drafts.current, slot, mergeIntoDraft(drafts.current[slot], d.draft))
+          saveDrafts()
+        } else {
+          setInput(previous => mergeIntoDraft(previous, d.draft))
+        }
+      }
+      if (d.files?.length) void uploadFiles(d.files, slot || undefined)
+    }
+    window.addEventListener(PREVIEW_ANNOTATE_EVENT, onAnnotate)
+    return () => window.removeEventListener(PREVIEW_ANNOTATE_EVENT, onAnnotate)
+  }, [uploadFiles, activeSlotRef, drafts, saveDrafts, setInput])
 
   // Deliver an optimize result to the session that started it when the user
   // navigated away before the request settled. ChatInput only calls this for

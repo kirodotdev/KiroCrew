@@ -288,8 +288,8 @@ class TestPlacementRacesTheStore:
         """The unlocked existence check is not the decision point.
 
         api_chat_slot_folder validates against state._folders, then awaits. A
-        delete committing in that window used to leave the slot pointing at a
-        folder that no longer exists — persisted, with a 200 response.
+        delete committing in that window would leave the slot pointing at a
+        folder that does not exist — persisted, with a 200 response.
         """
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)

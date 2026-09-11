@@ -86,7 +86,7 @@ def _read_cursor() -> set[str]:
     data-loss bug (see ``aws_control/backend/backup._read_state_for_update`` and
     its precedents), because the rewrite publishes the empty base over state it
     never read. Here the write is a UNION — ``_write_cursor(cursor | newly)`` —
-    so an empty base drops previously recorded ids from the cursor while
+    so an empty base drops already-recorded ids from the cursor while
     deleting nothing the cursor points at: the next import re-checks the
     dropped ids and the store's case-insensitive 80-char-prefix dedupe
     (:meth:`write_episodic`'s text-hash check, strictly broader than exact

@@ -357,7 +357,7 @@ class TestMounting:
         """The caller appends the stub under the SAME name; two would collide.
 
         Either the raw entry shadows the stub and the session bypasses the broker,
-        or both register and every pooled backend runs twice (#927).
+        or both register and every pooled backend runs twice.
         """
         _write_spec(
             agents_dir,
@@ -470,6 +470,53 @@ class TestClientSeam:
         _write_spec(agents_dir, servers={"foo": {"command": "/bin/foo"}}, tools=["@foo"])
         client = self._seeded(tmp_path, agent="kirocrew", acp_backend=ACP_BACKEND_CLAUDE)
         assert "foo" in _by_name(client._session_mcp_servers())
+
+    @pytest.mark.parametrize("private", [False, True])
+    def test_private_claude_keeps_the_original_server_in_its_projection(
+        self,
+        tmp_path,
+        agents_dir,
+        private,
+    ):
+        from kiro_crew.mcp_gateway.rewriter import _WRAPPER_MARKER
+
+        _write_spec(
+            agents_dir,
+            servers={"foo": {"command": "/bin/foo", "args": ["serve"], "env": {"K": "V"}}},
+            tools=["@foo"],
+        )
+        overlay = tmp_path / "broker-overlay"
+        overlay.mkdir()
+        (overlay / "kirocrew.json").write_text(
+            json.dumps(
+                {
+                    "name": "kirocrew",
+                    "mcpServers": {
+                        "foo": {
+                            _WRAPPER_MARKER: True,
+                            "command": "broker-stub",
+                            "args": [],
+                            "env": {},
+                        }
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        client = self._seeded(
+            tmp_path,
+            agent="kirocrew",
+            acp_backend=ACP_BACKEND_CLAUDE,
+            private_memory=private,
+            mcp_gateway_overlay=overlay,
+        )
+        original = _by_name(client._session_mcp_servers()).get("foo")
+        assert (original is not None) is private
+        if private:
+            assert original["command"] == "/bin/foo"
+            assert original["args"] == ["serve"]
+            assert original["env"] == [{"name": "K", "value": "V"}]
+        assert bool(client._pooled_mcp_servers()) is (not private)
 
     def test_neither_gate_is_an_identity_check(self, tmp_path, agents_dir, monkeypatch):
         """Two gates decide the seam, and neither reads the harness's identity.
@@ -803,7 +850,7 @@ class TestLocalSettingsSeed:
         """The disclosed cost of not touching a file Crew did not author.
 
         ``bypassPermissions`` takes every tool call out of the host gate, and Crew
-        no longer strips it -- stripping meant reading and rewriting a path a
+        does not strip it -- stripping meant reading and rewriting a path a
         checked-out repository controls, which is what produced the snapshot and
         restore machinery. The call still reaches Crew's gate unless the user's
         own file pre-approves it, the same boundary the inherited-``~/.claude``

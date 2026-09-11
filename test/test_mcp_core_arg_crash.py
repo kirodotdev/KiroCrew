@@ -18,9 +18,9 @@ from __future__ import annotations
 from kiro_crew.mcp_core import _call_tool
 from kiro_crew.validation import MCP_CORE_SCHEMAS
 
-# Tools that validate their args internally and were previously absent from
-# MCP_CORE_SCHEMAS. Each entry: (tool_name, args_that_should_fail_validation).
-# A required arg is omitted, which raised the crash pre-fix.
+# Tools that validate their args internally and are gated by MCP_CORE_SCHEMAS.
+# Each entry: (tool_name, args_that_should_fail_validation). A required arg is
+# omitted, which must fail validation rather than crash.
 _PREVIOUSLY_UNGATED = [
     ("workflow_author", {}),
     ("workflow_run", {}),

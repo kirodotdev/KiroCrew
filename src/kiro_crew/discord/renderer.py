@@ -713,7 +713,7 @@ class DiscordRenderer(Renderer):
         # Protocol is recognized only in canonical output. A delivery transform
         # may create marker-shaped text, but that remains ordinary content.
         opts = self._take_canonical_options()
-        # This segment is terminal, so a trailing table can no longer grow.
+        # This segment is terminal, so a trailing table cannot grow.
         await self._convert_tables(final=True)
         await self._rotate_on_length()
         body_text, opts = apply_options_cap(self._segment_text(), opts, self.capabilities)
@@ -1098,7 +1098,7 @@ class DiscordRenderer(Renderer):
             return
         self._thinking_posted = True
         # Redact BEFORE the preview cut: trimming first can leave a fragment the
-        # credential matchers no longer recognise.
+        # credential matchers do not recognise.
         body = _redact_transformed(reasoning)
         if len(body) > _THINKING_PREVIEW_CHARS:
             body = body[:_THINKING_PREVIEW_CHARS].rstrip() + "…"

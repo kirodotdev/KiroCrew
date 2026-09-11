@@ -1,4 +1,4 @@
-"""The host-mutation floor guards itself (issue #1722).
+"""The host-mutation floor guards itself.
 
 Two jobs:
 
@@ -174,7 +174,7 @@ class TestRatchet:
         """A new service-control tool in production must be a conscious decision.
 
         Without this, someone adding an ``initctl`` or ``pkexec`` call site would
-        land a spawn the floor does not recognise, and the next #1722 would look
+        land a spawn the floor does not recognise, and the next such regression would look
         exactly like the first one.
         """
         accounted = (
@@ -471,10 +471,10 @@ class TestXdgRedirect:
         assert pathlib.Path(xdg).resolve() != (pathlib.Path.home() / ".config").resolve()
 
     def test_the_dropin_path_lands_outside_the_real_config_dir(self) -> None:
-        """The exact call that caused #1722, now provably harmless.
+        """The exact call that caused the incident, now provably harmless.
 
         ``_dropin_path()`` is unstubbed here on purpose -- that is the whole point.
-        A test that forgets to stub it must no longer be able to name the
+        A test that forgets to stub it must not be able to name the
         operator's real unit directory.
         """
         from kiro_crew.apps.builtins.dev_fleet import server as mod

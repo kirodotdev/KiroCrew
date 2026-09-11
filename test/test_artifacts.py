@@ -441,10 +441,10 @@ class TestList:
         assert {a.slug for a in results} == {"ok"}
 
     def test_list_skips_meta_with_bad_int_or_tags(self, store: ArtifactStore) -> None:
-        # Regression: _read_meta_file used to bubble ValueError (int("abc") on
-        # bad version field) and TypeError (list(non_iterable) on bad tags
-        # field) up through list(), crashing the whole library page on a
-        # single corrupted meta.json. Ensure those are now skipped+warned.
+        # _read_meta_file must skip a corrupted meta.json instead of bubbling a
+        # ValueError (int("abc") on a bad version field) or TypeError
+        # (list(non_iterable) on bad tags) up through list() and crashing the
+        # whole library page on a single bad file.
         store.create(name="ok", content="a")
 
         bad_version = store.root / "bad-version"
@@ -537,8 +537,8 @@ class TestSecurity:
     def test_snapshot_version_routes_through_read_gate(
         self, store: ArtifactStore, monkeypatch
     ) -> None:
-        # Regression: _snapshot_version() used to call src.read_text(encoding="utf-8") directly,
-        # bypassing the is_sensitive_path() gate enforced by self._read_text().
+        # _snapshot_version() reads through self._read_text(), not src.read_text()
+        # directly, so the is_sensitive_path() gate always applies.
         # If the gate ever started flagging artifact-internal paths (e.g. a
         # symlink expansion landing on a sensitive path), the snapshot read
         # must refuse rather than silently leak. Verify the gated helper is
@@ -565,11 +565,11 @@ class TestSecurity:
 
 
 class TestSharedLockAcrossInstances:
-    """#2492: two ``ArtifactStore`` instances pointed at the same root must
+    """Two ``ArtifactStore`` instances pointed at the same root must
     serialize against EACH OTHER, not just against themselves.
 
-    ``__init__`` used to hand out a fresh ``threading.Lock()`` per instance —
-    correct for a single long-lived store, but any code constructing its own
+    A fresh ``threading.Lock()`` per instance is correct for a single long-lived
+    store, but any code constructing its own
     ``ArtifactStore()`` against the shared default root (rather than going
     through :func:`get_default_store`) got an unserialized lock: a concurrent
     write from that second instance was never mutually exclusive with the
@@ -837,7 +837,7 @@ class TestSourcePath:
         assert results[0].name == "a"
 
 
-# ── Live-pointer behavior for file-backed artifacts (round 3) ──
+# ── Live-pointer behavior for file-backed artifacts ──
 
 
 class TestLivePointer:
@@ -926,7 +926,7 @@ class TestLivePointer:
 
 
 class TestExplicitSnapshotModel:
-    """round 5: saves don't bump version unless snapshot=True.
+    """Saves don't bump version unless snapshot=True.
 
     Versioning is now deliberate — like git commits. Saves silently update
     the live state. Snapshots create new numbered versions. This makes
@@ -997,7 +997,7 @@ class TestExplicitSnapshotModel:
 
 
 class TestLiveDirtyAndSnapshotAnytime:
-    """round 6: snapshot button works whenever live differs
+    """The snapshot button works whenever live differs
     from the latest version, not just when there are unsaved edits."""
 
     def test_live_dirty_false_immediately_after_create(self, store: ArtifactStore) -> None:
@@ -1083,7 +1083,7 @@ class TestLiveDirtyAndSnapshotAnytime:
 
 
 class TestSourcePathSecurityHardening:
-    """review-bot round 12 fixes: path traversal + symlink bypass + UTF-8
+    """Source-path hardening: path traversal, symlink bypass, and UTF-8
     truncation arithmetic."""
 
     def test_traversal_path_resolves_before_sensitive_check(
@@ -1154,7 +1154,7 @@ class TestSourcePathSecurityHardening:
         f.write_text("😀" * 30, encoding="utf-8")
         result = store._try_read_source_path(str(f))
         assert result is not None
-        # Round 13: bounded read caps the disk-IO at MAX_CONTENT_BYTES+1
+        # Bounded read caps the disk-IO at MAX_CONTENT_BYTES+1
         # bytes regardless of file size. The decoded string may contain
         # U+FFFD replacement chars at the truncation boundary so its
         # re-encoded byte length CAN exceed MAX_CONTENT_BYTES — that's
@@ -1165,8 +1165,7 @@ class TestSourcePathSecurityHardening:
 
 
 class TestRoundThirteenFixes:
-    """review-bot round 13 fixes: bounded read, event_type pre-validation,
-    live_dirty not persisted."""
+    """Bounded read, event_type pre-validation, and live_dirty not persisted."""
 
     def test_oversized_file_does_not_load_full_content_into_memory(
         self, store: ArtifactStore, tmp_path: Path, monkeypatch
@@ -1199,7 +1198,7 @@ class TestRoundThirteenFixes:
     def test_invalid_event_type_does_not_leave_orphaned_version_file(
         self, store: ArtifactStore
     ) -> None:
-        # Round 13: validation happens BEFORE version bump and snapshot
+        # Validation happens BEFORE version bump and snapshot
         # write. An invalid event_type must not leave a versions/v{N}.html
         # on disk.
         store.create(name="x", content="v1", slug="x")
@@ -1220,7 +1219,7 @@ class TestRoundThirteenFixes:
         assert loaded.version == 1
 
     def test_live_dirty_not_persisted_in_meta_json(self, store: ArtifactStore) -> None:
-        # Round 13: live_dirty is computed at GET time and must not be
+        # live_dirty is computed at GET time and must not be
         # written to meta.json. Persisting would create staleness bugs.
         store.create(name="x", content="v1", slug="x")
         # Trigger a GET that sets live_dirty, then write_meta via update
@@ -1554,7 +1553,7 @@ class TestBlankDocumentKind:
         store.create(name="Untitled", content="", slug="u")
         pinned = store.update("u", content="# prose", kind="text")
         assert (pinned.kind, pinned.kind_auto) == ("text", False)
-        # Now that it's pinned, JSON content no longer re-types it.
+        # Once pinned, JSON content does not re-type it.
         assert store.update("u", content='{"a": 1}').kind == "text"
 
     def test_snapshot_records_the_detected_kind_for_the_version(
@@ -2420,7 +2419,7 @@ class TestSourceRootBarrier:
         home_dst = Path.home() / "moved.md"
         home_dst.write_text("# moved", encoding="utf-8")
         art = home_store.relocate("spec", str(home_dst))
-        # The old project root no longer authorizes anything about the new path.
+        # The old project root does not authorize anything about the new path.
         assert art.source_path == str(home_dst)
         assert art.source_root == ""
 
@@ -2567,7 +2566,7 @@ class TestAllowedRootsSingleProducer:
         assert verifiable.resolve() in home_store.allowed_source_roots(str(verifiable))
 
     def test_data_home_path_accepted_by_read_and_write(self, home_store) -> None:
-        # The root the relocate handler used to omit. Read and write must agree.
+        # The data-home root the relocate handler must include. Read and write must agree.
         data_home = home_store._root.resolve().parent
         target = data_home / "note.md"
         target.write_text("in the data home", encoding="utf-8")

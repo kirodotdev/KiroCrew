@@ -47,12 +47,12 @@ def _populate(tmp_path):
     (nested / "leaf.py").write_text("z")
     # An empty directory: proof dirs are walked, not derived from file paths.
     (tmp_path / "widgetsempty").mkdir()
-    # A dot-prefixed dir IS offered as a candidate (issue #5677): it must not be
+    # A dot-prefixed dir IS offered as a candidate: it must not be
     # descended into, but the directory itself is a valid @-mention target.
     (tmp_path / ".widgetshidden").mkdir()
     # Skip-listed dirs stay excluded from both descent and results -- including
     # the dot-prefixed skip-listed ones (.git, .cache, .venv), which the shared
-    # _SKIP_DIRS names explicitly now that candidacy no longer filters on a dot.
+    # _SKIP_DIRS names explicitly, since candidacy does not filter on a dot.
     nm = tmp_path / "node_modules"
     nm.mkdir()
     (nm / "widgetsdep").mkdir()
@@ -119,7 +119,7 @@ class TestFileIndexDirs:
 
     @pytest.mark.asyncio
     async def test_index_offers_dot_dirs_but_not_skip_dirs(self, tmp_path):
-        """Dot-prefixed dirs ARE candidates (#5677); skip-listed dirs are not."""
+        """Dot-prefixed dirs ARE candidates; skip-listed dirs are not."""
         _populate(tmp_path)
         idx = FileIndex(str(tmp_path))
         await idx.start()
@@ -135,7 +135,7 @@ class TestFileIndexDirs:
     async def test_index_dot_skip_dirs_are_not_offered(self, tmp_path):
         """A dot-prefixed SKIP-listed dir (.git, .cache) is never a candidate.
 
-        Regression for #5677 review: candidacy no longer filters on a leading
+        Candidacy does not filter on a leading
         dot, so the shared _SKIP_DIRS must name .git/.cache/.venv explicitly --
         otherwise the indexed fast path would start offering them.
         """
@@ -269,7 +269,7 @@ class TestApiFileSearchDirs:
 
     @pytest.mark.asyncio
     async def test_walk_fallback_offers_dot_dirs_but_not_skip_dirs(self, tmp_path, mock_sel):
-        """The walk fallback offers dot-dirs (#5677) but never skip-listed dirs."""
+        """The walk fallback offers dot-dirs but never skip-listed dirs."""
         _populate(tmp_path)
         async with TestClient(TestServer(_make_app())) as client:
             resp = await client.get(
@@ -285,7 +285,7 @@ class TestApiFileSearchDirs:
         """The walk fallback never offers a dot-prefixed skip-listed dir.
 
         Same source of truth as the fast path (shared _SKIP_DIRS), so the two
-        paths of this endpoint agree on .git/.cache/.venv -- the #5677 review gap.
+        paths of this endpoint agree on .git/.cache/.venv.
         """
         _populate(tmp_path)
         async with TestClient(TestServer(_make_app())) as client:
@@ -357,7 +357,7 @@ class TestApiFileSearchDirs:
         lose it is to never collect it.
         """
         # max_collect is max_results * 10 = 150, so 400 matching directories
-        # would previously exhaust it before the file was reached.
+        # would exhaust it before the file was reached.
         for i in range(400):
             (tmp_path / f"zzz_widgets{i:03d}").mkdir()
         (tmp_path / "widgets.py").write_text("x")

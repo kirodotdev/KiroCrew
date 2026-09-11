@@ -88,8 +88,8 @@ def recurring_patterns() -> list[dict[str, Any]]:
             # someone to apply the wrong fix confidently.
             #
             # Delegated to the ledger's own predicate rather than restating
-            # "verified/high" — which is exactly what this line used to do, and it went
-            # stale the moment the bar gained a use-count floor and a miss ceiling. A
+            # "verified/high" here, which goes stale the moment the bar gains a use-count
+            # floor or a miss ceiling. A
             # digest that disagrees with the engine about what counts as proven tells a
             # responder to trust an entry the agent itself would not.
             "proven": ledger.entry_unlocks_fast_path(e),
@@ -136,7 +136,7 @@ def open_work() -> dict[str, Any]:
     incidents = store.open_incidents()
     waiting = [i for i in incidents if i.blocked_reason]
     # Escalated is a TERMINAL status, so it is deliberately absent from
-    # ``open_incidents`` — the app no longer owns that work. It still belongs in a
+    # ``open_incidents`` — the app does not own that work. It still belongs in a
     # handover though: "we passed this to another owner" is exactly the kind of thing
     # that gets lost at shift change, and the incoming responder may be the one who
     # has to chase it. Read from the index rather than the open set, and keep it out

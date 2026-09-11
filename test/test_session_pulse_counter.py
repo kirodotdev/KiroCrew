@@ -112,8 +112,7 @@ def test_negative_or_wrong_type_value_is_treated_as_zero(_isolated_home) -> None
 @pytest.mark.parametrize("raw", ["null", "5", '"x"', "[1, 2]", "true"])
 def test_valid_non_object_json_is_treated_as_zero_not_a_crash(_isolated_home, raw) -> None:
     # A valid JSON file that is not an object has no ``.get`` -- it must NOT
-    # raise (this runs inside session creation), just read as 0. Regression for
-    # the GPT blocking finding "valid non-object JSON crashes session creation".
+    # raise (this runs inside session creation), just read as 0.
     (_isolated_home / "session_pulse_sessions.json").write_text(raw, encoding="utf-8")
     assert spc.get_user_session_count() == 0
     # And the counter still recovers cleanly on the next increment.

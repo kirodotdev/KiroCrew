@@ -22,6 +22,7 @@ Routes (registered in dashboard/server.py):
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from typing import Any, Optional
 
@@ -57,6 +58,31 @@ def _redact_obj(obj):
     if isinstance(obj, dict):
         return {_redact_obj(k): _redact_obj(v) for k, v in obj.items()}
     return obj
+
+
+async def _json_response_off_loop(payload: Any, *, status: int = 200) -> web.Response:
+    """Redact + serialize ``payload`` on a worker thread, not the event loop.
+
+    ``_redact_obj`` runs two regex redactors over every string in the payload
+    and ``json.dumps`` walks it again. For the run and definition views the
+    payload scales with stored data (a run detail snapshot with its event
+    stream can be MBs; every saved definition carries its script source), so
+    doing that work inline stalls every other request on the single-threaded
+    loop.
+
+    The loop-side ``json.dumps`` below is the detachment boundary: it runs
+    synchronously on the event loop (no await, so no loop-driven mutation can
+    interleave) and produces an immutable string. The worker thread then
+    rebuilds its own structure from that string, so it only ever touches
+    objects it created — it can never observe, or race, live registry state.
+    """
+    unredacted = json.dumps(payload)
+
+    def _redact_and_serialize() -> str:
+        return json.dumps(_redact_obj(json.loads(unredacted)))
+
+    text = await asyncio.to_thread(_redact_and_serialize)
+    return web.Response(text=text, status=status, content_type="application/json")
 
 
 def _svc(request: web.Request):
@@ -151,7 +177,9 @@ async def api_workflow_definitions(request: web.Request) -> web.Response:
     except Exception:
         logger.exception("workflow definition list failed")
         return _error("could not read saved workflows", "workflow_definition_read_failed", 500)
-    return web.json_response(_redact_obj({"definitions": definitions}))
+    # Every saved definition carries its full script source, so this payload
+    # scales with the library — serialize it off-loop like the run views.
+    return await _json_response_off_loop({"definitions": definitions})
 
 
 async def api_workflow_definitions_create(request: web.Request) -> web.Response:
@@ -217,7 +245,7 @@ async def api_workflow_definition_get(request: web.Request) -> web.Response:
         return _error("could not read saved workflow", "workflow_definition_read_failed", 500)
     if definition is None:
         return _error("no such saved workflow", "workflow_definition_not_found", 404)
-    return web.json_response(_redact_obj({"definition": definition}))
+    return await _json_response_off_loop({"definition": definition})
 
 
 async def api_workflow_definition_update(request: web.Request) -> web.Response:
@@ -416,11 +444,15 @@ async def api_workflow_run_intent(request: web.Request) -> web.Response:
 
 
 async def api_workflow_runs(request: web.Request) -> web.Response:
-    """GET /api/workflows/runs — list runs (compact, newest first)."""
+    """GET /api/workflows/runs — list runs (compact, newest first).
+
+    Compact means no event bodies, no source, and no result payloads — the
+    detail endpoint (``GET /api/workflows/runs/{id}``) carries the result.
+    """
     svc = _svc(request)
     if svc is None:
         return web.json_response({"error": "workflows not available"}, status=503)
-    return web.json_response(_redact_obj({"runs": svc.list_runs()}))
+    return await _json_response_off_loop({"runs": svc.list_runs()})
 
 
 async def api_workflow_run_get(request: web.Request) -> web.Response:
@@ -432,7 +464,7 @@ async def api_workflow_run_get(request: web.Request) -> web.Response:
     snap = svc.result(run_id)
     if snap is None:
         return web.json_response({"error": "no such run"}, status=404)
-    return web.json_response(_redact_obj(snap))
+    return await _json_response_off_loop(snap)
 
 
 async def api_workflow_run_promote(request: web.Request) -> web.Response:

@@ -789,7 +789,7 @@ class TestRespawnExecutable:
         delete is gated on the new tree's own import check, so it still runs.
         The cached interpreter is then gone and the stable link cannot be
         trusted — the restart must take the import-verified legacy tree rather
-        than exec a path that no longer exists."""
+        than exec a path that does not exist."""
         import shutil
 
         home = self._nested_venv_home(monkeypatch, tmp_path)

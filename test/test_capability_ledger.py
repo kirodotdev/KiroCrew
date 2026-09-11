@@ -2,9 +2,9 @@
 
 ``TransportCapabilities`` drifted into being false documentation: flags were
 declared, docstrings described gates, and nothing read most of the fields.
-Measured 2026-08-02: 7 of 9 flags had ZERO read sites, five channel
-declarations were provably wrong against their own code, and one docstring
-promised a ``max_buttons`` degradation no renderer implements.
+7 of 9 flags have ZERO read sites, five channel
+declarations are provably wrong against their own code, and one docstring
+promises a ``max_buttons`` degradation no renderer implements.
 
 This module is the ratchet against that recurring. Two rules:
 
@@ -159,8 +159,8 @@ class TestCorrectedDeclarations:
         assert SLACK_CAPABILITIES.max_message_chars == SLACK_MSG_LIMIT
 
     def test_slack_has_exactly_one_declaration(self) -> None:
-        # renderer.py used to carry a second literal copy; two literals for
-        # one fact is how the 40000/3900 divergence survived.
+        # Two literal copies of one fact let a 40000/3900 divergence survive, so
+        # the limit must be declared exactly once.
         from kiro_crew.slack import renderer as slack_renderer
         from kiro_crew.slack import transport as slack_transport
 
@@ -280,7 +280,7 @@ class TestCorrectedDeclarations:
         # 10; discord declared 5 (per row) while shipping 25 total; telegram
         # declared 8 (a mislabeled per-row number) while enforcing nothing.
         # Declare what ships: slack/discord keep their shipped maxima, and
-        # telegram gets the same platform-practical 25 so previously-working
+        # telegram gets the same platform-practical 25 so existing
         # 9-25 choice keyboards keep working — only the genuinely unbounded
         # tail (the API-400 defect) degrades to text.
         from kiro_crew.discord.transport import DISCORD_CAPABILITIES

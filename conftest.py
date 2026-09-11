@@ -133,6 +133,125 @@ import pytest
 # through monkeypatch.
 os.environ.pop("KIROCREW_ACP_RECORD_FRAMES", None)
 
+# ── The data-home floor, installed at IMPORT time ────────────────────────────
+#
+# Every per-test redirect of ``KIROCREW_HOME`` is a value laid over whatever the
+# process started with, so the danger is never a wrong value -- it is the ABSENCE
+# of one. ``config.paths._valid_override_home`` reads the variable and, finding it
+# unset, falls through to ``_default_home()``: the operator's real ``~/.kiro/crew``.
+# Anything that can return the variable to "unset" mid-session therefore aims the
+# whole suite at live data, and a single ``monkeypatch.undo()`` on the shared
+# function-scoped instance does exactly that -- it reverts every patch on that
+# stack, including a redirect some fixture installed. One such undo truncated an
+# operator's real 36 MB ``memory.db`` to 29 bytes, with no backup.
+#
+# Setting the variable HERE, before pytest imports a fixture or a test module,
+# removes "unset" from the set of reachable states: an undo restores the value the
+# process started with, which is now this scratch directory rather than nothing.
+# That closes the entire class at the process level, so it holds no matter which
+# fixture owns a redirect, whether that fixture used a private ``MonkeyPatch``, or
+# what a future test does to the shared one.
+#
+# An operator's own ``KIROCREW_HOME`` is honoured untouched: someone running the
+# suite against a deliberately chosen home keeps it, and only the unset case --
+# the one that resolves to live data -- is given a floor.
+# ``mkdtemp``, never ``mkdir(exist_ok=True)`` on a pid-derived name -- the same rule
+# :func:`_create_tmp_root` states and for the same reason: a pid-derived name is
+# PREDICTABLE, so another local account can pre-create it as a SYMLINK to a directory
+# it controls, and ``exist_ok=True`` succeeds against a symlink-to-directory. This
+# directory becomes the data home the whole session falls back to, so every secret,
+# token and ``memory.db`` the suite fabricates would land where that account chose.
+# ``mkdtemp`` creates with O_EXCL at mode 0700 and fails rather than adopting.
+# These literals are also the session guard's source of truth below. They must
+# exist before choosing the import-time floor so even an inherited temp root
+# inside live memory cannot influence that choice.
+_REAL_DATA_HOMES = (
+    pathlib.Path.home() / ".kiro" / "crew",
+    pathlib.Path.home() / ".kirocrew",
+)
+
+
+def _create_host_home_floor() -> pathlib.Path:
+    """Create the import-time floor without consulting temp environment vars."""
+    if os.name == "nt":
+        candidates = (
+            pathlib.Path.home() / "AppData" / "Local" / "Temp",
+            pathlib.Path(os.environ.get("SystemRoot", r"C:\Windows")) / "Temp",
+            pathlib.Path(os.environ.get("ProgramData", r"C:\ProgramData")),
+        )
+    else:
+        candidates = (pathlib.Path("/tmp"), pathlib.Path("/var/tmp"), pathlib.Path("/usr/tmp"))
+    for candidate in candidates:
+        try:
+            base = candidate.resolve(strict=True)
+        except OSError:
+            continue
+        unsafe = False
+        for real in _REAL_DATA_HOMES:
+            try:
+                live = real.resolve()
+            except OSError:
+                live = real.absolute()
+            if base == live or live in base.parents or base in live.parents:
+                unsafe = True
+                break
+        if unsafe or not base.is_dir():
+            continue
+        try:
+            return pathlib.Path(tempfile.mkdtemp(dir=base, prefix="kirocrew-test-floor-"))
+        except OSError:
+            continue
+    raise RuntimeError("no writable system temp directory exists outside live Kiro Crew homes")
+
+
+_HOST_HOME_FLOOR: "pathlib.Path | None" = None
+if not os.environ.get("KIROCREW_HOME"):
+    _HOST_HOME_FLOOR = _create_host_home_floor()
+    os.environ["KIROCREW_HOME"] = str(_HOST_HOME_FLOOR)
+
+    @atexit.register
+    def _remove_host_home_floor() -> None:
+        """Remove the floor, so it does not accumulate or trip the residue reporter.
+
+        The suite's own temp-residue check reports anything that outlives a run, and
+        ``KIROCREW_TMP_RESIDUE_STRICT`` turns that report into a failure -- attributed
+        to whichever test happened to be last, not to this floor.
+        """
+        if _HOST_HOME_FLOOR is not None:
+            shutil.rmtree(_HOST_HOME_FLOOR, ignore_errors=True)
+
+
+def _refuse_a_real_data_home() -> None:
+    """Refuse to run at all if the session would resolve a real data home.
+
+    A second, independent barrier to the floor above, and the one that fails LOUD.
+    The floor prevents the accident; this catches the case where someone exports
+    ``KIROCREW_HOME`` to their real home by hand -- copying a command out of a
+    runbook, or reusing a shell that was pointed at live data -- which no amount of
+    per-test isolation can distinguish from a deliberate choice.
+
+    Called from ``pytest_configure`` rather than being a second hook of that name:
+    a module defines one, and a duplicate silently replaces the earlier definition
+    instead of running alongside it.
+    """
+    resolved = pathlib.Path(os.environ["KIROCREW_HOME"]).expanduser()
+    for real in _REAL_DATA_HOMES:
+        try:
+            here, live = resolved.resolve(), real.resolve()
+        except OSError:  # an unreadable component cannot be the live home
+            continue
+        # CONTAINMENT in both directions, not equality. A PARENT is the dangerous
+        # miss: ``~/.kiro`` is kiro-cli's own home and resolves the whole live tree
+        # underneath it, and ``~`` resolves everything. A CHILD is refused too, since
+        # the suite deletes directories it believes it created.
+        if here == live or live in here.parents or here in live.parents:
+            raise pytest.UsageError(
+                f"KIROCREW_HOME points at the live data home {real}. The suite writes, "
+                f"truncates and deletes under it, so running here destroys real memory, "
+                f"sessions and config. Unset KIROCREW_HOME or point it at a scratch dir."
+            )
+
+
 # ── Hypothesis example database (rootdir floor) ─────────────────────────────
 # ``test/conftest.py`` registers the "default"/"thorough" profiles but never sets
 # ``database=``, so hypothesis falls back to its own default: ``.hypothesis/examples``
@@ -811,17 +930,13 @@ def _scrub_inherited_preload_env(_floor_monkeypatch):
     79-failure pattern this fixture exists to remove, as a wall of wrong refusal
     codes instead of one clear error.
 
-    The removals are recorded on the test's shared ``monkeypatch`` instance rather
-    than hand-rolled, and that is load-bearing, not convenience. Same-scope autouse
-    fixtures are ordered so that OTHER monkeypatch users run first (alphabetically in
-    practice), so a hand-rolled save/restore here tears down BEFORE monkeypatch's
-    undo -- and for a test that ``monkeypatch.setenv``-overrides the SAME key the
-    host inherited (recorded "was absent", because this scrub had removed it), the
-    undo then deletes the inherited value the hand-rolled restore had just put back,
-    leaking the removal out of the test. On one shared undo stack the nesting is
-    correct BY CONSTRUCTION: the test's later record is undone first (its delete
-    tolerates the key already being gone), then this fixture's ``delenv`` record
-    restores the inherited value. ``test_name_grant.py::TestInheritedHostEnvironment``
+    The removals use the private host-floor stack. A shared ``monkeypatch.undo()``
+    cannot restore an inherited preload during the test. The public ``monkeypatch``
+    fixture depends on ``_floor_monkeypatch``, so its stack unwinds first at teardown:
+    an override of the SAME inherited key first reverts to "absent", and only then
+    does this fixture's ``delenv`` record restore the inherited value. Reversing
+    those steps would delete the restored host value and leak the scrub into the
+    next test. ``test_name_grant.py::TestInheritedHostEnvironment``
     pins exactly that same-key case, and
     ``test_host_isolation_floor.py::TestInheritedShellEnvironmentIsScrubbed`` drives
     one real cycle of this fixture directly.
@@ -1158,6 +1273,7 @@ def pytest_make_collect_report(collector):
 
 def pytest_configure(config: pytest.Config) -> None:
     """Record the working directory pytest started in, before any test can move it."""
+    _refuse_a_real_data_home()
     _pin_telemetry_off_for_the_process()
     _prefer_short_tmp_base()
     _redirect_hypothesis_database()
@@ -2342,6 +2458,18 @@ _HOME_PIN_ARMED = pytest.StashKey[bool]()
 @pytest.fixture(autouse=True)
 def _isolate_kirocrew_home(request, _isolation_dirs, _floor_monkeypatch):
     """Pin ``KIROCREW_HOME`` and ``KIROCREW_WORKSPACE`` to per-test tmp dirs, for EVERY testpath.
+
+    The pin is applied through a PRIVATE ``pytest.MonkeyPatch`` instance, not the
+    shared function-scoped ``monkeypatch`` fixture. The shared instance is one undo
+    stack for every fixture and helper the test touched, so a test helper that calls
+    ``monkeypatch.undo()`` to revert its own patch also reverts THIS pin -- and every
+    path the test resolves afterwards lands in the operator's live ``~/.kiro/crew``.
+    That is not hypothetical: a memory-store test did exactly that and then wrote
+    ``b"this is not a sqlite database"`` over an operator's real 36 MB ``memory.db``,
+    which had no backup. With its own instance the pin can only be undone by this
+    fixture's teardown. The public ``monkeypatch`` fixture depends on
+    ``_floor_monkeypatch``, so the test's overrides unwind before the floor and a
+    later shared undo cannot reinstall a stale per-test home.
 
     This lives at the rootdir rather than in ``test/conftest.py`` because the leak it
     closes is worst in the testpaths that conftest does not reach. The ~108 test

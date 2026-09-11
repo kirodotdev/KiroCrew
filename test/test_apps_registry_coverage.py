@@ -1172,7 +1172,7 @@ class TestCandidateResolution:
     ):
         # `_registry_app_candidates` consults the official catalog with a fresh
         # uncached HTTPS fetch, and DROPS every candidate when that lookup
-        # fails (#4236); pin "catalog reachable, app absent" so the assertion
+        # fails; pin "catalog reachable, app absent" so the assertion
         # exercises the bundled + external span deterministically.
         monkeypatch.setattr(
             "kiro_crew.apps.official_catalog.inventory_for_install",

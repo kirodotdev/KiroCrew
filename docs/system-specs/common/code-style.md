@@ -20,7 +20,8 @@ Paths below are relative to `src/kiro_crew/`.
 | Credential keys | `config/loader.py` | `CRED_*` env-var names plus the `_CREDENTIAL_KEYS` tuple. |
 | Dashboard port | `config/loader.py` | `_DEFAULT_PORT` (5476) and `DASHBOARD_PORT` (honors `KIROCREW_PORT`). `dashboard/origin.py` imports `_DEFAULT_PORT` rather than restating it. |
 | Hook results and event names | `hooks.py` | `HOOK_PASSTHROUGH` / `HOOK_REPLY` / `HOOK_MODIFY` / `HOOK_INJECT_CONTEXT`, the tool verdicts `TOOL_ALLOW` / `TOOL_AUTO_APPROVE` / `TOOL_DENY`, and `HOOK_EVENT_*` / `HOOK_EVENTS`. |
-| Memory paths and dir names | `memory.py` | `WORKSPACE_DIR_NAME`, `MEMORY_DIR_NAME`, `HISTORY_DIR_NAME`, `PREFERENCES_FILE`, `PROJECTS_FILE`. |
+| Memory paths and dir names | `memory.py` | `WORKSPACE_DIR_NAME`, `MEMORY_DIR_NAME`, `HISTORY_DIR_NAME`, `PREFERENCES_FILE`, `PROJECTS_FILE`, `INDEX_DB_FILE` (the FTS index *name* only — which directory a given store's index sits in is store policy, owned by `memory_stores.memory_index_path_for`). |
+| Named memory stores | `memory_stores.py` | `MEMORY_STORES_DIR_NAME`, `DEFAULT_MEMORY_STORE`, `MEMORY_DB_FILE` (the vector-store filename, which `vector_memory._DB_FILE` aliases rather than restating), `MEMORY_STORE_NAME_MAX`, `_STORE_NAME_RE`, `_WINDOWS_RESERVED_BASENAMES`. A stdlib-only LEAF module, so `security.py` can build its sensitive-path fence from `MEMORY_STORES_DIR_NAME` without a cycle. |
 | Lesson limits | `learn.py` | `_LESSONS_FILE`, `_MAX_LESSONS_IN_CONTEXT`, `_MAX_LESSONS_TOTAL` (prune oldest past the total). |
 | Cron limits | `cron.py` | `_CRONS_FILE`, `_STORE_VERSION`, `_MIN_INTERVAL_SECS`, `_JOB_TIMEOUT_SECS`, `_TIMER_POLL_SECS`, `_AUTO_PAUSE_THRESHOLD`, the reaper intervals, the skip-date horizon, the store file-lock timeouts, and the hourly/daily jitter caps. |
 | Session and transcript limits | `history.py` | `SESSIONS_DIR_NAME`, `ARCHIVE_RETENTION_DAYS`, the JSONL rotation pair `_SESSION_MAX_BYTES` (2 MB) / `_SESSION_KEEP_LINES`, the file-lock timeouts, and the search caps (`SEARCH_MIN_CHARS`, `_SEARCH_SCAN_WINDOW`, `_TITLE_BOOST`). |
@@ -86,21 +87,27 @@ using one of these phrases is fine. Present-tense purpose is not narration:
 "regression test pins this shape" passes, "regression for the truncated parse"
 does not.
 
-The ~7,600 markers the tree already carries are recorded per file in
-`comment-history-baseline.json`. A file not listed there must be clean, a listed
-file may not grow its count, and a count that drops must be lowered in the same
-PR — run `python3 scripts/check_comment_history.py --write-baseline`, which only
-ever lowers and prunes. It refuses when the baseline is absent, so deleting the
-file cannot amnesty the tree; restore it from git instead.
+The gate is diff-scoped, like the brand-name gate: it judges only the lines a
+change ADDS, measured against `COMMENT_HISTORY_BASE_REF` (the PR's base in CI).
+Added lines are complete for regression — a line only reaches `main` through a
+diff that added it — and they are the only lines a contributor can act on. There
+is no baseline file: a shared per-file count would make one JSON the merge-conflict
+hotspot of every cleanup PR. The legacy markers the tree still carries are not
+tracked; a marker can re-enter only on an added line, which is what the gate
+judges. Without the env the script prints whole-tree counts and does not enforce.
+
+```bash
+COMMENT_HISTORY_BASE_REF=origin/main python3 scripts/check_comment_history.py
+```
 
 ## The lint pitfalls
 
-The blocking gates are black (baselined), the subprocess-encoding gate (baselined), the comment-history gate (baselined), isort, flake8 and mypy. Run them before
+The blocking gates are black (baselined), the subprocess-encoding gate (baselined), the comment-history gate (diff-scoped), isort, flake8 and mypy. Run them before
 committing:
 
 ```bash
 python3 scripts/check_black_formatting.py && python3 scripts/check_subprocess_encoding.py
-python3 scripts/check_comment_history.py && isort src/kiro_crew test
+COMMENT_HISTORY_BASE_REF=origin/main python3 scripts/check_comment_history.py && isort src/kiro_crew test
 flake8 src/kiro_crew test && mypy src/kiro_crew
 python -m pytest
 ```

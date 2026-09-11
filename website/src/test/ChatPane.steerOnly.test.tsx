@@ -1,7 +1,8 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import type { ReactNode } from 'react'
 import { act, render, screen, fireEvent, waitFor } from '@testing-library/react'
 import type { RootState } from '../store'
+import { store as appStore } from '../store'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
 import { configureStore } from '@reduxjs/toolkit'
@@ -11,6 +12,7 @@ import chatReducer, { appendSlotMessage, selectSlotMessages, setActiveSlot, sseC
 import dashboardReducer from '../store/dashboardSlice'
 import notificationsReducer from '../store/notificationsSlice'
 import { __resetPaneDraftsForTests } from '../utils/chatPaneDrafts'
+import * as transport from '../chat-core/transport/sendTurn'
 
 /* Crew Members DM threads have no queue concept: a DM is a conversation with
  * ONE named member, and talking to a person has no "wait until they finish"
@@ -105,6 +107,7 @@ function makeStore(slotKey: string, running: boolean, subagentsOnly = false) {
 function renderPane(slotKey: string, opts: { running: boolean; busyMode?: BusyMode; subagentsOnly?: boolean }) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   const store = makeStore(slotKey, opts.running, opts.subagentsOnly)
+  vi.spyOn(appStore, 'getState').mockImplementation(store.getState)
   const ui = (key: string) => (
     <Provider store={store}>
       <QueryClientProvider client={qc}>
@@ -135,8 +138,50 @@ beforeEach(() => {
   // must not leak them into the next one.
   vi.mocked(api.chatSlotDetail).mockResolvedValue({ messages: [], running: true, has_more: false, total: 0 } as never)
 })
+afterEach(() => vi.restoreAllMocks())
 
 describe('ChatPane busyMode="steer-only" (Crew Members DM thread)', () => {
+  it.each([
+    { running: true, echo: 'ordinary', status: 'response-late' },
+    { running: true, echo: 'steer', status: 'response-late' },
+    { running: true, echo: 'ordinary', status: 'transport-error' },
+    { running: true, echo: 'steer', status: 'transport-error' },
+    { running: false, echo: 'ordinary', status: 'transport-error' },
+  ])('keeps a confirmed $echo delivery when the POST rejects (running=$running, $status)', async ({ running, echo, status }) => {
+    let rejectSend!: (error: unknown) => void
+    vi.mocked(api.sendChat).mockReturnValue(new Promise<Response>((_resolve, reject) => { rejectSend = reject }))
+    // Observe completion of the real transport and its already-registered
+    // receipt handler; a cleared composer alone also holds BEFORE a receipt.
+    const sendTurn = vi.spyOn(transport, 'sendTurn')
+    try {
+      const { store } = renderPane('member-delivery', { running, busyMode: 'steer-only' })
+      const box = await composer()
+      fireEvent.change(box, { target: { value: 'keep this delivered once' } })
+      fireEvent.keyDown(box, { key: 'Enter', code: 'Enter' })
+      await waitFor(() => expect(api.sendChat).toHaveBeenCalledTimes(1))
+      const [content, slot, , , meta] = vi.mocked(api.sendChat).mock.calls[0]
+      await act(async () => {
+        const message = {
+          role: 'user', content, cls: 'msg msg-u', ts: '2026-09-10T00:00:00Z',
+          meta: { ...meta, mid: 'm-delivered', ...(echo === 'steer' ? { steer: true } : {}) },
+        }
+        store.dispatch(echo === 'steer' ? appendSlotMessage({ slot: slot!, message }) : sseChatMessage({ slot: slot!, ...message }))
+        rejectSend(status === 'response-late' ? new DOMException('aborted', 'AbortError') : new TypeError('connection reset after acceptance'))
+        expect((await sendTurn.mock.results[0].value).status).toBe(status)
+      })
+      const rows = selectSlotMessages(store.getState(), 'member-delivery')
+      const users = rows.filter(m => m.role === 'user')
+      expect(users).toHaveLength(1)
+      expect(users[0].meta?.mid).toBe('m-delivered')
+      expect(users[0].meta?.optimistic).toBeUndefined()
+      expect(!!users[0].meta?.steer).toBe(echo === 'steer')
+      expect(box).toHaveValue('')
+      expect(rows.some(m => m.role === 'notice' || m.role === 'error')).toBe(false)
+    } finally {
+      sendTurn.mockRestore()
+    }
+  })
+
   it('busy member: plain send button, no split/queue affordance, and Enter steers into the running turn', async () => {
     const { store } = renderPane('member-oncall', { running: true, busyMode: 'steer-only' })
     const box = await composer()

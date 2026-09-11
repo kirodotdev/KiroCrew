@@ -585,35 +585,31 @@ describe('MarkdownPanel — live file watch', () => {
 })
 
 describe('MarkdownPanel — comment anchoring edge cases', () => {
-  /** Select `word` in the preview and raise the selection toolbar. */
-  async function selectInPreview(word: string) {
-    const para = await screen.findByText(/alpha beta gamma/)
-    const textNode = para.firstChild as Text
-    const start = textNode.data.indexOf(word)
+  it('anchors on the captured text when there is no preview to map the selection into', async () => {
+    // Diff mode with nothing to show renders the zero-diff notice in place of
+    // the markdown preview, so a selection there has no source position to
+    // resolve: the anchor is the text the toolbar captured, with no line.
+    vi.mocked(api.fileDiff).mockResolvedValue({ diff: '', original: 'same\n', status: 'clean' } as never)
+    mountPanel({ initialDiffMode: true, content: 'same\n', onSubmitComments: vi.fn() })
+    const notice = await screen.findByText('No changes in this file')
+    const textNode = notice.firstChild as Text
     const range = document.createRange()
-    range.setStart(textNode, start)
-    range.setEnd(textNode, start + word.length)
+    range.setStart(textNode, 0)
+    range.setEnd(textNode, textNode.data.length)
     const sel = window.getSelection()!
     sel.removeAllRanges()
     sel.addRange(range)
     fireEvent.mouseUp(document)
-    return screen.findByRole('button', { name: 'Comment' })
-  }
 
-  it('recovers the anchor from the toolbar text when the selection is already gone', async () => {
-    mountPanel({ onSubmitComments: vi.fn() })
-    const commentBtn = await selectInPreview('gamma')
-    // A click elsewhere can clear the live selection before the handler runs;
-    // the anchor then has to come from the text the toolbar captured.
-    window.getSelection()!.removeAllRanges()
-    fireEvent.click(commentBtn)
-    fireEvent.change(await screen.findByLabelText('Add a comment'), { target: { value: 'from the fallback' } })
+    const box = await screen.findByLabelText('Comment on the selected text')
+    // No preview root, so nothing was wrapped in a <mark>.
+    expect(document.querySelector('mark')).toBeNull()
+    fireEvent.change(box, { target: { value: 'from the fallback' } })
     fireEvent.click(screen.getByLabelText('Add comment'))
     await screen.findByText('from the fallback')
     const stored = JSON.parse(localStorage.getItem('mc-comment-drafts') || '{}')
-    expect(stored['/tmp/notes.md'][0]).toMatchObject({ anchor: 'gamma', line: 3, column: 12 })
-    // No live range existed, so nothing was wrapped in a <mark>.
-    expect(document.querySelector('mark')).toBeNull()
+    expect(stored['/tmp/notes.md'][0]).toMatchObject({ anchor: 'No changes in this file', text: 'from the fallback' })
+    expect(stored['/tmp/notes.md'][0].line).toBeUndefined()
   })
 
   it('marks every text node a cross-block selection touches', async () => {
@@ -627,9 +623,12 @@ describe('MarkdownPanel — comment anchoring edge cases', () => {
     sel.removeAllRanges()
     sel.addRange(range)
     fireEvent.mouseUp(document)
-    fireEvent.click(await screen.findByRole('button', { name: 'Comment' }))
-    await screen.findByLabelText('Add a comment')
+    await screen.findByLabelText('Comment on the selected text')
     // One <mark> per touched text node, not one for the whole selection.
     expect(document.querySelectorAll('mark').length).toBeGreaterThan(1)
   })
+  // Re-selecting while the box is open (highlight moves to the new selection)
+  // is pinned at the toolbar level in SelectionToolbar.composer.test.tsx:
+  // exercising it here would need happy-dom to update a live Range across
+  // `normalize()`, which it does not (browsers do, per spec).
 })

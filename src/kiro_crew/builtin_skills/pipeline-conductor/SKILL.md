@@ -1,6 +1,6 @@
 ---
 name: pipeline-conductor
-description: Operating procedure for the kirocrew-pipeline-conductor agent - run one issue/PR pipeline on one repository as a supervised fleet. Auto-pick items, preflight every candidate to one deterministic claim verdict, stand up one worker session per item in a dedicated folder, probe them each cycle with one script call, verify claimed greens independently, intervene when a worker loops or stalls, adjudicate blocked items under the override protocol, throttle admission on delivery capacity, enforce per-item credit budgets, track the conductor's own obligations in a status file, digest verified greens to the human, and clean up on merge. Use when a pipeline conductor session is being seeded, or when inspecting/debugging one.
+description: Use when a pipeline conductor session is being seeded, or when inspecting/debugging one. Operating procedure for the kirocrew-pipeline-conductor agent - run one issue/PR pipeline on one repository as a supervised fleet. Auto-pick items, preflight every candidate to one deterministic claim verdict, stand up one worker session per item in a dedicated folder, probe them each cycle with one script call, verify claimed greens independently, intervene when a worker loops or stalls, adjudicate blocked items under the override protocol, throttle admission on delivery capacity, enforce per-item credit budgets, track the conductor's own obligations in a status file, digest verified greens to the human, and clean up on merge.
 ---
 
 # Pipeline Conductor

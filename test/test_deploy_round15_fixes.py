@@ -1,4 +1,4 @@
-"""Tests for deploy Round 15 fixes.
+"""Tests for several deploy-path fixes.
 
 F1: deploy_artifact registered in MCP_CORE_SCHEMAS — invalid input rejected.
 F2: pending-confirm denial paths all emit SEL audit events.

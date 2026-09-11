@@ -1,6 +1,6 @@
 ---
 name: babysit
-description: Same-session monitoring loop for PRs, CI runs, tickets, and deployments using the monitor_start / monitor_update / autonudge_stop MCP tools. The loop re-injects your check instructions into THIS session on an idle interval — same context, same tools — and works from dashboard chat, Slack threads, and Discord DMs. Use when the user says "babysit", "monitor", "keep checking", "keep an eye on", "loop on this PR", "let me know when", or wants polling that outlives a wait+poll window. NOT for fresh-session work (use cron_add) or external-system callbacks (use register_hook).
+description: Use when the user says "babysit", "monitor", "keep checking", "keep an eye on", "loop on this PR", "let me know when", or wants polling that outlives a wait+poll window. Same-session monitoring loop for PRs, CI runs, tickets, and deployments using the monitor_start / monitor_update / autonudge_stop MCP tools. The loop re-injects your check instructions into THIS session on an idle interval — same context, same tools — and works from dashboard chat, Slack threads, and Discord DMs. NOT for fresh-session work (use cron_add) or external-system callbacks (use register_hook).
 tags: [skill, kirocrew, monitor, babysit, autonudge, loop]
 ---
 
@@ -64,6 +64,14 @@ act-on-wake instruction in `wake_instructions`. Inspect it with `monitor_inspect
 structured monitor per session, occupying the same slot as a `monitor_start`
 loop. Use `monitor_start` instead when you need to ACT most cycles, or when what
 you are watching is not a public GitHub PR.
+
+That retained record keeps occupying the slot, so arming a monitor for a
+DIFFERENT subject in the same session is refused (`the session's stopped
+automation is retained as evidence`). Only its owner can end it, by pressing
+**Clear stopped monitor** in the session-automation popover (**Clear stopped
+goal** in the legacy goal view). Read that refusal as a request to the user, not
+as a transient error to retry: nothing armed, so say so instead of reporting a
+monitor you do not have.
 
 ### `interval_secs` counts between the loop's own cycles
 

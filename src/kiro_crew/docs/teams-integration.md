@@ -171,7 +171,7 @@ Send `/help` in the chat for the current list. Today:
 | `/stop` (`/cancel`) | Stop the reply in progress and clear the queue |
 | `/yolo on\|off\|renew` | Auto-approve tools **everywhere** until it expires — see below |
 | `/link` / `/unlink` | Resume / stop mirroring dashboard replies into this chat |
-| `/sessions [search words]` | Continue a recent dashboard chat here (owner only) |
+| `/sessions [search words]` | Continue a recent dashboard or same-chat session here (owner only) |
 | `/dashboard [<N>h\|<N>m]` | Get a **dashboard login link** — see Security notes |
 | `/help` | Show the command list |
 
@@ -185,13 +185,16 @@ progress. A message sent mid-turn is never lost — if it cannot be folded in, i
 held and shown in a single "⏳ Queued (N)" receipt that is edited in place, then
 answered as one combined turn.
 
-### Continuing a dashboard conversation
+### Continuing an earlier conversation
 
-`/sessions` lists your recent dashboard chats as buttons; press one and it continues in
-this Teams chat, with the last few messages replayed so you can see where you left off.
-`/sessions <words>` searches them — over message content as well as titles, so a phrase
-you remember from the conversation finds it. `/unlink` (or `/new`) comes back to your own
-Teams conversation.
+`/sessions` lists your recent dashboard chats plus generations from this exact Teams
+identity bucket; native sessions for another identity, agent, conversation, or channel
+are excluded. Press one and it continues in this Teams chat, with the last few messages
+replayed so you can see where you left off. `/sessions <words>` searches them — over
+message content as well as titles, so a phrase you remember from the conversation finds
+it. `/unlink` comes back to your own Teams conversation. `/new` leaves the resumed
+session and durably records the fresh generation before replying; its first real turn
+adds it to `/sessions`.
 
 It is **owner-only**: a dashboard session is your whole working transcript, so the list
 is available only when `teams.allowed_emails` holds exactly one address. With more than

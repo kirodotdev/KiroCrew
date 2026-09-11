@@ -33,11 +33,11 @@ from __future__ import annotations
 # removes that class of misconfiguration rather than asking anyone to keep two
 # numbers in sync by hand.
 #
-# REGISTERED, not connected, which is what this used to count. A live count races
-# tunnel startup: a crew that finished connecting a moment after the dashboard
-# polled fell outside the cap and had its pane evicted. Exactly one crew looked
-# broken, and which one depended on connection order -- so it moved on every
-# restart and read as a random failure rather than as a cap.
+# REGISTERED, not connected. Counting connected (a live count) races
+# tunnel startup: a crew that finishes connecting a moment after the dashboard
+# polls falls outside the cap and has its pane evicted. Exactly one crew looks
+# broken, and which one depends on connection order -- so it moves on every
+# restart and reads as a random failure rather than as a cap.
 WARM_SET_CAP_AUTO: int = 0
 DEFAULT_WARM_SET_CAP: int = WARM_SET_CAP_AUTO
 

@@ -1,13 +1,12 @@
 import { useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
-import { Link2, BookOpen, Users, MessageSquareText, Webhook, LayoutTemplate, Compass, Workflow, Library } from 'lucide-react'
+import { Link2, BookOpen, Users, MessageSquareText, Webhook, Compass, Workflow, Library } from 'lucide-react'
 import SidePanelLayout from '../components/SidePanelLayout'
 import ErrorBoundary from '../components/ErrorBoundary'
 import RestartButton from '../components/RestartButton'
 import { PinSurfaceButton } from '../components/PinSurfaceButton'
 import { useProvider } from '../providers'
 import { useConnectionsUiEnabled } from '../hooks/useConnectionsUi'
-import AgentsPage from './AgentsPage'
 import KiroCrewAgentsPage from './KiroCrewAgentsPage'
 import HooksPage from './HooksPage'
 import ConnectionsPage from './connections/ConnectionsPage'
@@ -47,7 +46,6 @@ export default function CapabilitiesPage() {
     const groupAutomation = t('pages.capabilitiesPage.group_automation')
     return [
       { key: 'crews', label: t('pages.capabilitiesPage.crews_label'), icon: <Users size={16} />, description: t('pages.capabilitiesPage.crews_description'), group: groupAgent },
-      { key: 'templates', label: t('pages.capabilitiesPage.templates_label'), icon: <LayoutTemplate size={16} />, description: t('pages.capabilitiesPage.templates_description'), group: groupAgent },
       { key: 'skills', label: t('pages.capabilitiesPage.skills_label'), icon: <BookOpen size={16} />, description: t('pages.capabilitiesPage.skills_description'), group: groupAgent },
       // The label and description are deliberately unchanged. Substituting the
       // pre-gallery "MCP Servers" strings was tried and reverted: those keys were
@@ -78,7 +76,6 @@ export default function CapabilitiesPage() {
     <SidePanelLayout title={t('pages.capabilitiesPage.agent_capabilities')} tabs={tabs} rememberKey="capabilities" headerRight={<div className="flex items-center gap-2"><PinSurfaceButton defaultTab={tabs[0]?.key} /><RestartButton /></div>}>
       {tab => <>
         {tab === 'crews' && <KiroCrewAgentsPage embedded />}
-        {tab === 'templates' && <AgentsPage embedded />}
         {tab === 'mcp' && <ConnectionsPage servicesEnabled={connectionsUiEnabled} />}
         {tab === 'skills' && <SkillsTab />}
         {/* ErrorBoundary preserves the crash isolation the /knowledge route

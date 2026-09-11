@@ -11,7 +11,13 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from kiro_crew.dashboard.handlers import api_project_git_log, api_project_git_status
+from kiro_crew.dashboard.handlers import (
+    api_project_git_log,
+    api_project_git_status,
+    api_project_tree,
+)
+from kiro_crew.security import redact
+from kiro_crew.security.redaction import _PATH_SEGMENT_DISCRIMINATOR_SEP, _path_segment_label
 
 
 class _Slot:
@@ -29,6 +35,7 @@ def _make_app(*known: str) -> web.Application:
     app["state"] = _State(*known)
     app.router.add_get("/api/project/git/status", api_project_git_status)
     app.router.add_get("/api/project/git/log", api_project_git_log)
+    app.router.add_get("/api/project/tree", api_project_tree)
     return app
 
 
@@ -177,17 +184,19 @@ class TestGitStatus:
         assert {(e["status"], e["staged"]) for e in entries} == {("M", True), ("M", False)}
 
     @pytest.mark.asyncio
-    async def test_redaction_collision_files_are_deduplicated(self, repo, mock_sel):
+    async def test_redaction_collision_files_stay_distinct(self, repo, mock_sel):
         """Two distinct changed files that redact() collapses to one path must
-        not both appear in ``files``.
+        BOTH appear in ``files``, as two distinct redacted entries.
 
         Real collision: two untracked files whose only differing segment is a
         credential-shaped token (distinct AKIA... ids, each 4-letter prefix + 16
         uppercase alphanumerics) both flatten to
-        ``[REDACTED: credential]_model.txt``. Without server-side de-dup the two
-        entries would reach the dashboard tree and @pierre/trees'
-        ``appendPresortedPaths`` would throw ``Duplicate path`` on the adjacent
-        identical rows. First occurrence is kept.
+        ``[REDACTED: credential]_model.txt`` under the whole-string redact().
+        Each path is redacted with ``redact_path_segments`` so each member of
+        the collision carries an opaque label keyed per gateway process --
+        distinct between the two and stable across responses -- and neither
+        vanishes; the de-dup behind it still guards a true collision, and the
+        raw tokens never leak.
         """
         # Two DISTINCT keys are the point: the test proves two different
         # credential-shaped names collapse to ONE placeholder. key_a is the
@@ -205,13 +214,122 @@ class TestGitStatus:
             data = await resp.json()
         assert data["repo"] is True
         paths = [f["path"] for f in data["files"]]
-        # Both filenames collapsed to the same redacted placeholder...
-        assert "[REDACTED: credential]_model.txt" in paths
-        # ...but only one entry survives, and the raw tokens never leak.
-        assert paths.count("[REDACTED: credential]_model.txt") == 1
+        # Both files survive, each redacted and distinct from the other, each
+        # carrying exactly the keyed label of its own original segment...
+        sep = _PATH_SEGMENT_DISCRIMINATOR_SEP
+        redacted = [p for p in paths if p.startswith(f"[REDACTED: credential]_model.txt{sep}")]
+        assert sorted(redacted) == sorted(
+            f"[REDACTED: credential]_model.txt{sep}{_path_segment_label(f'{k}_model.txt')}"
+            for k in (key_a, key_b)
+        ), paths
         assert len(paths) == len(set(paths))
+        # ...and the raw tokens never leak.
         assert key_a not in "\n".join(paths)
         assert key_b not in "\n".join(paths)
+
+    @pytest.mark.asyncio
+    async def test_a_credential_shaped_project_prefix_is_redacted_whole(self, repo, mock_sel):
+        """When the project directory sits below the repo root and its own name
+        is credential-shaped, status paths carry that prefix. The prefix is
+        redacted the same way the tree root and ``repoRoot`` are (whole-string,
+        no label), so the dashboard's prefix strip matches; only the part
+        beneath it is labelled per segment."""
+        key = "AKIAIOSFODNN7EXAMPLE"
+        sub = repo / key
+        sub.mkdir()
+        (sub / "notes.txt").write_text("x\n")
+        (sub / f"{key}_model.txt").write_text("y\n")
+        async with TestClient(TestServer(_make_app(str(sub)))) as client:
+            resp = await client.get(f"/api/project/git/status?path={sub}")
+            data = await resp.json()
+        assert data["repo"] is True
+        paths = sorted(f["path"] for f in data["files"])
+        sep = _PATH_SEGMENT_DISCRIMINATOR_SEP
+        prefix = redact(key)
+        assert sep not in prefix
+        assert paths == sorted(
+            [
+                f"{prefix}/notes.txt",
+                f"{prefix}/[REDACTED: credential]_model.txt{sep}{_path_segment_label(f'{key}_model.txt')}",
+            ]
+        ), paths
+        assert key not in "\n".join(paths)
+
+    @pytest.mark.asyncio
+    async def test_a_token_straddling_the_prefix_join_falls_back_to_whole_path(
+        self, repo, mock_sel, monkeypatch
+    ):
+        """The prefix and the part beneath it are redacted separately, so a
+        token that straddles the joining slash is matched by neither half. The
+        joined result must be a fixed point of the redactor; when it is not, the
+        whole-path result wins, the same floor ``redact_path_segments`` applies
+        to its own assembly."""
+        from kiro_crew.dashboard.handlers import files as files_mod
+
+        sub = repo / "SEC"
+        sub.mkdir()
+        (sub / "RET").write_text("x\n")
+
+        def straddling_redactor(text: str) -> str:
+            # Neither half is sensitive on its own; only the joined shape is.
+            return text.replace("SEC/RET", "[REDACTED: straddle]")
+
+        monkeypatch.setattr(files_mod, "redact", straddling_redactor)
+        async with TestClient(TestServer(_make_app(str(sub)))) as client:
+            resp = await client.get(f"/api/project/git/status?path={sub}")
+            data = await resp.json()
+        paths = [f["path"] for f in data["files"]]
+        assert paths == ["[REDACTED: straddle]"], paths
+
+    @pytest.mark.asyncio
+    async def test_status_and_tree_label_the_same_path_identically(self, repo, mock_sel):
+        """The dashboard joins the git-status response with the tree response
+        by path (PierreWorkspaceTreeImpl), so one process must label a redacted
+        path the same way in both -- including when the tree lists a colliding
+        neighbour the status response does not carry."""
+        key_a = "AKIAIOSFODNN7EXAMPLE"
+        key_b = "AKIA" + "JKLMNOPQRSTUVWXY"
+        (repo / f"{key_a}_model.txt").write_text("one\n")
+        (repo / f"{key_b}_model.txt").write_text("two\n")
+        _git(repo, "add", f"{key_b}_model.txt")
+        _git(repo, "commit", "-qm", "track the neighbour")
+        async with TestClient(TestServer(_make_app(str(repo)))) as client:
+            resp = await client.get(f"/api/project/git/status?path={repo}")
+            status = await resp.json()
+            resp = await client.get(f"/api/project/tree?path={repo}")
+            tree = await resp.json()
+        status_paths = [f["path"] for f in status["files"]]
+        sep = _PATH_SEGMENT_DISCRIMINATOR_SEP
+        label_a = f"[REDACTED: credential]_model.txt{sep}{_path_segment_label(f'{key_a}_model.txt')}"
+        label_b = f"[REDACTED: credential]_model.txt{sep}{_path_segment_label(f'{key_b}_model.txt')}"
+        # Only key_a is changed, so status carries it alone...
+        assert status_paths == [label_a]
+        # ...while the tree carries both, and key_a's entry is byte-identical.
+        assert label_a in tree["paths"]
+        assert label_b in tree["paths"]
+        assert set(status_paths) <= set(tree["paths"])
+
+    @pytest.mark.asyncio
+    async def test_a_true_redaction_collision_is_still_deduplicated(
+        self, repo, mock_sel, monkeypatch
+    ):
+        """When the path helper (``redact_path_segments``) hands back the same
+        string for two paths, the de-dup keeps one entry per
+        (path, status, staged) so GitPanel never renders two rows under one key."""
+        from kiro_crew.dashboard.handlers import files as files_mod
+
+        monkeypatch.setattr(
+            files_mod,
+            "redact_path_segments",
+            lambda p, r=None: "[REDACTED: credential]_model.txt",
+        )
+        (repo / "one_model.txt").write_text("one\n")
+        (repo / "two_model.txt").write_text("two\n")
+        async with TestClient(TestServer(_make_app(str(repo)))) as client:
+            resp = await client.get(f"/api/project/git/status?path={repo}")
+            data = await resp.json()
+        paths = [f["path"] for f in data["files"]]
+        assert paths == ["[REDACTED: credential]_model.txt"]
 
     @pytest.mark.asyncio
     async def test_clean_repo_empty_files(self, repo, mock_sel):

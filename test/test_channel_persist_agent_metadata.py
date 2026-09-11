@@ -6,8 +6,8 @@ dashboard lists the session as the "default" agent forever, and Discord's
 ``_persisted_agent`` resume path reads back "" (falling back to the channel
 agent even when the session was created under an override).
 
-Pre-fix, every channel transport omitted ``agent=`` on its persist writes
-(#2890). The Slack path has its own end-to-end lock in
+Every channel transport must write ``agent=`` on its persist writes. The
+Slack path has its own end-to-end lock in
 ``test_slack_transport_dispatch.py``; this file locks the shared
 ``_persist_turn`` shape used by the other six channels, calling the unbound
 method with a minimal stand-in so no channel client needs to be constructed.

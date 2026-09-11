@@ -132,7 +132,7 @@ class TestCredentialRedaction:
 
 
 # ---------------------------------------------------------------------------
-# Issue #2550: stable span_hash per reviewer finding + marker-regex parity.
+# Stable span_hash per reviewer finding + marker-regex parity.
 # ---------------------------------------------------------------------------
 
 STATUS_SCRIPT = SCRIPT.with_name("pr_status.py")
@@ -378,7 +378,7 @@ class TestExtractFindings:
         module = _load_script()
         bindings = dict(_load_script().DEFAULT_MARKER_BINDINGS)
         comments = [
-            # Stale comment: findings for a diff that no longer exists.
+            # Stale comment: findings for a diff that does not exist.
             {
                 "user": {"type": "Bot"},
                 "body": (
@@ -416,7 +416,7 @@ class TestExtractFindings:
     def test_elided_current_head_stamp_still_yields_findings(self) -> None:
         """An elided stamp of THIS head stays fresh and blocking here.
 
-        ``sha_matches`` tolerates the emitter transcription artifact of PR 4107
+        ``sha_matches`` tolerates the emitter transcription artifact
         (a stamp that keeps the head's start and tail but drops its middle).
         ``pr_status.py``'s marker gate reports such a reviewer as fresh, so
         extraction must agree: a strict prefix match here would empty the
@@ -590,7 +590,7 @@ class TestDegradedRollup:
 
 
 # ---------------------------------------------------------------------------
-# Issue #4187: the one-lane / one-rationale-per-finding disposition rule is
+# The one-lane / one-rationale-per-finding disposition rule is
 # mechanical, not prose. A writer's disposition record claims the finding it
 # rules on by span= identity; the shared contract reports it here (non-gating)
 # and pr_status.py gates on the same computation.
@@ -865,7 +865,7 @@ class TestDispositionViolations:
         assert any("one rationale covers exactly one finding" in v for v in violations)
 
     def test_spanless_record_for_a_lane_with_findings_is_a_violation(self) -> None:
-        """The #3963 shape: a blanket comment with no finding identity at all.
+        """A blanket comment with no finding identity at all.
         Without this class the rule stays prose -- a record simply omits span=
         tokens and claims everything its rationale fits."""
         module = _load_script()
@@ -932,7 +932,7 @@ class TestDispositionViolations:
 
     def test_superseded_record_with_gone_stamps_is_not_relitigated(self) -> None:
         """Once the reviewer re-adjudicated on a new head (stamps rewritten in
-        place), a historical record whose claim can no longer be resolved is
+        place), a historical record whose claim cannot be resolved is
         left alone -- flagging it would permanently block legitimate history."""
         module = _load_script()
         span_gone = module.span_hash("gone.py", "gpt/BLOCKING")

@@ -260,6 +260,90 @@
       "reason": "Resolving a checkout's root is the first thing a worker does in a fresh worktree; a fence that refuses it makes every later path relative to nothing."
     },
     {
+      "kind": "shell",
+      "surface": "gh-read",
+      "command_or_flow": "gh issue list --label needs-triage --json number,title,labels",
+      "platform": "any",
+      "reason": "Read-only issue enumeration is what the triage and scanner crons run every cycle; refusing it blinds the intake end of the pipeline."
+    },
+    {
+      "kind": "shell",
+      "surface": "gh-read",
+      "command_or_flow": "gh pr diff 9332",
+      "platform": "any",
+      "reason": "Fetching a change as data is how a review lane reads it at all, and it is read-only; a rule that refuses it leaves a reviewer guessing from titles."
+    },
+    {
+      "kind": "shell",
+      "surface": "git-write",
+      "command_or_flow": "git worktree add --detach /tmp/probe origin/main",
+      "platform": "posix",
+      "reason": "A detached probe worktree is the sanctioned way to read a base ref without checking out over live work, and its own argv shape -- --detach into a temporary path -- is what a path fence is most likely to catch."
+    },
+    {
+      "kind": "shell",
+      "surface": "gates",
+      "command_or_flow": "npx eslint src/ --max-warnings 603",
+      "platform": "any",
+      "reason": "The frontend lint ratchet at CI's exact ceiling; a fence that refuses the runner makes the gate unrunnable locally while CI still enforces it."
+    },
+    {
+      "kind": "shell",
+      "surface": "self-health",
+      "command_or_flow": "kirocrew status",
+      "platform": "any",
+      "reason": "Reading the product's own health is the first step of every diagnosis, and it sits on the self-protection floor -- the rule most often tightened, so the row most often broken."
+    },
+    {
+      "kind": "shell",
+      "surface": "self-health",
+      "command_or_flow": "kirocrew cron list",
+      "platform": "any",
+      "reason": "Enumerating installed jobs is read-only and crosses the same self-protection surface, so it is a second shape on the rule that guards it."
+    },
+    {
+      "kind": "shell",
+      "surface": "fs-read",
+      "command_or_flow": "ls -la src/kiro_crew/security",
+      "platform": "posix",
+      "reason": "A read-only listing over the governance tree is a repeat false-positive source: the path is sensitive, the operation is not."
+    },
+    {
+      "kind": "shell",
+      "surface": "fs-read",
+      "command_or_flow": "Get-ChildItem -Path src -Recurse -Filter *.py",
+      "platform": "windows",
+      "reason": "The Windows spelling of the same read-only listing, so the fence is proven not to be POSIX-shaped on the host where its tokenizer differs."
+    },
+    {
+      "kind": "shell",
+      "surface": "gh-read",
+      "command_or_flow": "gh pr view 9332 --json state,mergeable,statusCheckRollup",
+      "platform": "any",
+      "reason": "The mergeability spelling of the status read, kept as its own row because a rule can catch one --json field list and not another."
+    },
+    {
+      "kind": "shell",
+      "surface": "git-read",
+      "command_or_flow": "git log --oneline -20",
+      "platform": "any",
+      "reason": "History read with no revision range: the bare form is a different argv shape from the range form, and a fence can refuse one while permitting the other."
+    },
+    {
+      "kind": "shell",
+      "surface": "git-publish",
+      "command_or_flow": "git push origin feat/example",
+      "platform": "any",
+      "reason": "A plain named feature-branch push, without -u: policy fences only protected branches, and the bare form is the shape an ordinary round uses after the first push."
+    },
+    {
+      "kind": "shell",
+      "surface": "git-publish",
+      "command_or_flow": "git push --force-with-lease=feat/example:0123456789abcdef0123456789abcdef01234567 origin feat/example",
+      "platform": "any",
+      "reason": "The short lease spelling, which names the branch rather than the full refs/heads/ path; both spellings are sanctioned, so both are shapes the fence must keep permitting."
+    },
+    {
       "kind": "flow",
       "surface": "monitoring",
       "command_or_flow": "monitor_start",

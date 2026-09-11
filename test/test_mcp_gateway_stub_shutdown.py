@@ -104,8 +104,8 @@ class TestHardExitEndToEnd:
     def _run(self, cwd: Path) -> tuple[int, str]:
         # stdin must stay OPEN and silent: subprocess.run(stdin=PIPE) closes it
         # immediately, readline() returns b"" at EOF, the thread exits, and the
-        # scenario no longer models the real stub. Holding the write end here
-        # is what parks the reader in the same state the real stub sits in.
+        # scenario stops modelling the real stub. Holding the write end here is
+        # what parks the reader in the same state the real stub sits in.
         proc = subprocess.Popen(
             [sys.executable, "-c", self._PROGRAM],
             stdin=subprocess.PIPE,

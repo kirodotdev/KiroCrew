@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -23,8 +24,78 @@ import pytest
 
 from kiro_crew.mcp_gateway import gatewayd as gw
 from kiro_crew.mcp_gateway import socketsec
+from kiro_crew.member_memory_auth import PROOF_META_KEY
 
 pytestmark = pytest.mark.xdist_group("mcp_gateway")
+
+
+@pytest.mark.asyncio
+async def test_member_proof_uses_kernel_peer_for_each_tool_listing_and_call(monkeypatch):
+    issued = []
+    loop_thread = threading.get_ident()
+
+    def issue(session, peer_pid):
+        assert threading.get_ident() != loop_thread
+        issued.append((session, peer_pid))
+        return f"issued-{len(issued)}"
+
+    monkeypatch.setattr(socketsec, "get_peer_pid", lambda _writer: 8001)
+    monkeypatch.setattr(gw, "protected_member_session_for_pid", lambda _pid: "dashboard:reviewer")
+    monkeypatch.setattr(gw, "issue_member_session_proof", issue)
+    register = _register("dashboard:reviewer")
+    register.update(ancestor_pids=[9999], memberMemoryProof="forged-register")
+    backend, audit = await _run(
+        [
+            register,
+            {**_CALL, "method": "tools/list"},
+            _CALL,
+            {**_CALL, "method": "resources/list"},
+            _CALL,
+        ],
+        monkeypatch,
+    )
+    assert issued == [("dashboard:reviewer", 8001)] * 3
+    assert [caller.member_memory_proof for caller in backend.callers] == [
+        "issued-1",
+        "issued-2",
+        "",
+        "issued-3",
+    ]
+    assert all(caller.session_key == "dashboard:reviewer" for caller in backend.callers)
+    assert "issued-" not in json.dumps(audit)
+    assert "issued-" not in repr(backend.callers)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("peer_pid", [None, 8001])
+async def test_forged_member_register_never_supplies_private_authority(monkeypatch, peer_pid):
+    issued = []
+
+    def refuse(session, pid):
+        issued.append((session, pid))
+        return ""
+
+    monkeypatch.setattr(socketsec, "get_peer_pid", lambda _writer: peer_pid)
+    monkeypatch.setattr(gw, "issue_member_session_proof", refuse)
+    register = _register("dashboard:victim")
+    register.update(ancestor_pids=[7777], memberMemoryProof="forged-register")
+    register["caller"] = {"session_key": "dashboard:victim", PROOF_META_KEY: "nested-forgery"}
+    backend, _audit = await _run([register, _CALL, _CALL], monkeypatch)
+    assert all(caller.member_memory_proof == "" for caller in backend.callers)
+    assert issued == ([] if peer_pid is None else [("dashboard:victim", 8001)] * 2)
+
+
+@pytest.mark.asyncio
+async def test_member_issuer_failure_refuses_authority_without_leaking_error(monkeypatch, caplog):
+    def fail(_session, _pid):
+        raise OSError("secret-proof-material")
+
+    monkeypatch.setattr(socketsec, "get_peer_pid", lambda _writer: 8001)
+    monkeypatch.setattr(gw, "issue_member_session_proof", fail)
+    backend, _audit = await _run([_register("dashboard:reviewer"), _CALL], monkeypatch)
+    assert backend.callers[0].member_memory_proof == ""
+    assert "member memory caller verification unavailable" in caplog.text
+    assert "secret-proof-material" not in caplog.text
 
 
 def _register(session_key: str) -> dict[str, Any]:
@@ -64,8 +135,11 @@ class _FakeReader:
 
 
 class _FakeWriter:
+    def __init__(self) -> None:
+        self.frames: list[dict[str, Any]] = []
+
     def write(self, _b: bytes) -> None:
-        pass
+        self.frames.extend(json.loads(line) for line in _b.decode().splitlines() if line)
 
     async def drain(self) -> None:
         pass
@@ -126,7 +200,10 @@ def _rekey_events(sel_calls: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 async def _run(
-    frames: list[dict[str, Any]], monkeypatch: pytest.MonkeyPatch
+    frames: list[dict[str, Any]],
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    writer: _FakeWriter | None = None,
 ) -> tuple[_FakeBackend, list[dict[str, Any]]]:
     monkeypatch.setattr(socketsec, "PEER_IDENTITY_SUPPORTED", True)
     monkeypatch.setattr(
@@ -153,12 +230,118 @@ async def _run(
 
     await asyncio.wait_for(
         gw._handle_connection(
-            _FakeReader(frames), _FakeWriter(), pool=_FakePool(),
-            resolver=object(), socket_path=Path("/tmp/rc.sock"), hot_keys=None,
+            _FakeReader(frames),
+            writer or _FakeWriter(),
+            pool=_FakePool(),
+            resolver=object(),
+            socket_path=Path("/tmp/rc.sock"),
+            hot_keys=None,
         ),
         timeout=5.0,
     )
     return fake_backend, sel_calls
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", ["tools/list", "tools/call"])
+@pytest.mark.parametrize(
+    "claimed,protected",
+    [
+        ("dashboard:global", "dashboard:member-reviewer"),
+        ("", "dashboard:member-reviewer"),
+        ("dashboard:member-reviewer", ""),
+        ("", ""),
+    ],
+)
+async def test_protected_peer_cannot_downgrade_to_v1_or_omit_its_caller(
+    monkeypatch, claimed, protected, method
+):
+    issued = []
+    loop_thread = threading.get_ident()
+
+    def resolve(peer_pid):
+        assert peer_pid == 8001
+        assert threading.get_ident() != loop_thread
+        return protected
+
+    monkeypatch.setattr(socketsec, "get_peer_pid", lambda _writer: 8001)
+    monkeypatch.setattr(gw, "_resolve_peer_identity", lambda _pid: ("", []))
+    monkeypatch.setattr(gw, "protected_member_session_for_pid", resolve)
+    monkeypatch.setattr(gw, "issue_member_session_proof", lambda *args: issued.append(args) or "")
+    writer = _FakeWriter()
+    backend, _audit = await _run(
+        [_register(claimed), {**_CALL, "method": method}], monkeypatch, writer=writer
+    )
+    assert backend.callers == []
+    assert issued == []
+    refusal = next(frame for frame in writer.frames if frame.get("id") == _CALL["id"])
+    assert refusal["error"]["message"] == (
+        "The caller does not match its protected runtime identity. Reopen the member conversation and retry."
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", ["tools/list", "tools/call"])
+@pytest.mark.parametrize("failure", ["blank", "exception"])
+async def test_a_protected_peer_never_continues_without_its_proof(monkeypatch, failure, method):
+    def issue(_session, _pid):
+        if failure == "exception":
+            raise OSError("private-key-material")
+        return ""
+
+    monkeypatch.setattr(socketsec, "get_peer_pid", lambda _writer: 8001)
+    monkeypatch.setattr(gw, "protected_member_session_for_pid", lambda _pid: "dashboard:reviewer")
+    monkeypatch.setattr(gw, "issue_member_session_proof", issue)
+    writer = _FakeWriter()
+    backend, _audit = await _run(
+        [_register("dashboard:reviewer"), {**_CALL, "method": method}], monkeypatch, writer=writer
+    )
+    assert backend.callers == []
+    assert "protected runtime proof is unavailable" in writer.frames[-1]["error"]["message"]
+    assert "private-key-material" not in json.dumps(writer.frames)
+
+
+@pytest.mark.asyncio
+async def test_a_binding_read_failure_cannot_be_treated_as_an_unowned_v1_caller(monkeypatch):
+    def unreadable(_pid):
+        raise OSError("protected-private-path")
+
+    monkeypatch.setattr(socketsec, "get_peer_pid", lambda _writer: 8001)
+    monkeypatch.setattr(gw, "protected_member_session_for_pid", unreadable)
+    writer = _FakeWriter()
+    backend, _audit = await _run([_register("dashboard:global"), _CALL], monkeypatch, writer=writer)
+    assert backend.callers == []
+    assert "Cannot verify the protected runtime identity" in writer.frames[-1]["error"]["message"]
+    assert "protected-private-path" not in json.dumps(writer.frames)
+
+
+@pytest.mark.asyncio
+async def test_protected_identity_is_rechecked_after_a_runtime_rekey(monkeypatch):
+    bindings = iter(["dashboard:reviewer", "dashboard:writer"])
+    monkeypatch.setattr(socketsec, "get_peer_pid", lambda _writer: 8001)
+    monkeypatch.setattr(gw, "protected_member_session_for_pid", lambda _pid: next(bindings))
+    monkeypatch.setattr(gw, "issue_member_session_proof", lambda _session, _pid: "current.proof")
+    writer = _FakeWriter()
+    backend, _audit = await _run(
+        [_register("dashboard:reviewer"), _CALL, {**_CALL, "id": 2}], monkeypatch, writer=writer
+    )
+    assert len(backend.callers) == 1
+    assert backend.callers[0].member_memory_proof == "current.proof"
+    assert writer.frames[-1]["id"] == 2
+    assert "does not match" in writer.frames[-1]["error"]["message"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", ["tools/list", "tools/call"])
+async def test_an_unowned_legacy_v1_caller_keeps_working_without_a_proof(monkeypatch, method):
+    monkeypatch.setattr(socketsec, "get_peer_pid", lambda _writer: 8001)
+    monkeypatch.setattr(gw, "protected_member_session_for_pid", lambda _pid: None)
+    monkeypatch.setattr(gw, "issue_member_session_proof", lambda _session, _pid: "")
+    backend, _audit = await _run(
+        [_register("dashboard:global"), {**_CALL, "method": method}], monkeypatch
+    )
+    assert backend.callers[0].session_key == "dashboard:global"
+    assert backend.callers[0].member_memory_proof == ""
 
 
 @pytest.mark.asyncio

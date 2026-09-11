@@ -285,6 +285,33 @@ describe('ChatMessageList', () => {
       expect(group.getAttribute('data-pending-perm-count')).toBe('0')
     })
 
+    it('a group of only RESOLVED permissions renders no pill at all (#9556)', () => {
+      // After a stop cancels a call, its permission card resolves and the
+      // group holds nothing else. Rendering it produced a "0 tool calls"
+      // pill over an empty expansion (permission rows render null), right
+      // under the turn summary's own count — two disagreeing counts for one
+      // stopped call. ChatPage's renderTurnItem already skips all-permission
+      // groups; this host must too once nothing in them is actionable.
+      const msgs: ChatMessage[] = [
+        msg('user', 'Run it'),
+        msg('permission', 'Allow?', { meta: { approval_id: 'a1', resolved: 'cancelled' } }),
+      ]
+      render(<ChatMessageList messages={msgs} running={false} />)
+      expect(screen.queryByTestId('collapsible-tool-group')).not.toBeInTheDocument()
+    })
+
+    it('a group with a PENDING permission still renders (approval UI lives there)', () => {
+      // Unlike ChatPage, this embed has no pinned ApprovalBar: the group IS
+      // the approval surface, so an unresolved permission must keep it.
+      const msgs: ChatMessage[] = [
+        msg('user', 'Run it'),
+        msg('permission', 'Allow?', { meta: { approval_id: 'a1' } }),
+      ]
+      render(<ChatMessageList messages={msgs} running={false} />)
+      const group = screen.getByTestId('collapsible-tool-group')
+      expect(group.getAttribute('data-has-permission')).toBe('true')
+    })
+
     it('passes one meta per pending perm so the count promise stays honest (#6404)', () => {
       // A pending perm with NO meta must still contribute a metas entry, so
       // permissionMetas.length === pendingPermCount and CollapsibleToolGroup can

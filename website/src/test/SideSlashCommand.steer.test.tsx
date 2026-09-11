@@ -202,6 +202,18 @@ describe('/side while a turn is running', () => {
     await waitFor(() => expect(mockSideTurn).toHaveBeenCalledWith(SLOT, 'what is this error about'))
   })
 
+  it('/btw <message> rides the same interception — side turn, not steer', async () => {
+    // The alias must stay in lockstep with /side in isInterceptedSlashCommand,
+    // or a running turn would swallow "/btw ..." as steer text.
+    const store = renderRunningChatPage()
+    const input = await screen.findByLabelText('Message input')
+    fireEvent.change(input, { target: { value: '/btw what is this error about' } })
+    await armRunning(store)
+    fireEvent.keyDown(input, { key: 'Enter' })
+    await waitFor(() => expect(mockSideTurn).toHaveBeenCalledWith(SLOT, 'what is this error about'))
+    expect(mockSendChat).not.toHaveBeenCalled()
+  })
+
   it('restores the composer text when the side turn is rejected', async () => {
     mockSideTurn.mockRejectedValueOnce(new Error('409: side turn already in flight'))
     const store = renderRunningChatPage()

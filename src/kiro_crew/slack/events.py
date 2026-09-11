@@ -67,7 +67,7 @@ from kiro_crew.slack.blocks import (
     dashboard_link_block,
     voice_config_modal,
 )
-from kiro_crew.slack.enterprise import validated_self_bot_id
+from kiro_crew.slack.enterprise import trusted_bot_admission
 from kiro_crew.slack.files import (
     VOICE_MEMO_FAILED,
     VOICE_MEMO_UNAVAILABLE,
@@ -977,41 +977,31 @@ async def init_socket_mode(orch: GatewayOrchestrator, seen: SeenCache) -> None:
             await _handle_message_deleted(orch, event)
             return
         # A bot-authored event is admitted ONLY on a positive match of its
-        # bot_id against the slack.trusted_bot_ids allowlist (deny-by-default:
-        # an empty/unset allowlist drops every bot-authored event). The
-        # admission is carried as from_trusted_bot so _route_message lets the
-        # bot_id stand in as sender_id and handle_message suppresses error
+        # bot_id against the slack.trusted_bot_ids allowlist. The rule itself
+        # (deny by default, own id never trusted, unverified self id fails
+        # closed) lives in ONE place — trusted_bot_admission — which the
+        # transport applies too, so one owner keeps both drop sites in step.
+        #
+        # The admission is carried as from_trusted_bot so _route_message lets
+        # the bot_id stand in as sender_id and handle_message suppresses error
         # replies (echo-loop guard). Successful-reply loops are bounded by the
         # per-thread turn cap in _route_message (slack.trusted_bot_turn_limit);
-        # richer cross-bot coordination is the agent
-        # layer's job (envelope protocol). The gateway's OWN bot id
-        # (cached from startup auth.test) is never trusted even when listed —
-        # admitting it would make every reply re-enter this handler as fresh
-        # input, a self-reply loop. When auth.test was unavailable the self
-        # id is UNKNOWN, and an unknown self identity admits nobody (fail
-        # closed): admitting on an empty cache would let a startup auth.test
-        # hiccup re-open the self-reply loop for a misconfigured allowlist.
-        # Same posture as enterprise validation: a configured restriction
-        # plus unverifiable identity fails closed. The trust decision runs
-        # BEFORE the generic subtype filter because a bot-authored message
-        # commonly carries subtype == "bot_message": the untrusted denial
-        # must be audited (not silently subtype-dropped), and a trusted
-        # bot's bot_message must pass the subtype gate below.
-        _self_bot_id = validated_self_bot_id()
-        _is_own_bot = bool(_bot_id) and _bot_id == _self_bot_id
-        _from_trusted_bot = (
-            bool(_bot_id)
-            and bool(_self_bot_id)
-            and not _is_own_bot
-            and _bot_id in orch._cfg.slack.trusted_bot_ids
+        # richer cross-bot coordination is the agent layer's job (envelope
+        # protocol).
+        #
+        # READ TIMING: this site passes the LIVE config, so an operator's
+        # allowlist edit takes effect on the next event without a restart. The
+        # transport deliberately freezes a snapshot instead; the predicate
+        # takes the set as an argument precisely so each site owns that choice.
+        #
+        # The trust decision runs BEFORE the generic subtype filter because a
+        # bot-authored message commonly carries subtype == "bot_message": the
+        # untrusted denial must be audited (not silently subtype-dropped), and
+        # a trusted bot's bot_message must pass the subtype gate below.
+        _from_trusted_bot, _deny_error = trusted_bot_admission(
+            _bot_id or "", orch._cfg.slack.trusted_bot_ids
         )
-        if _bot_id and not _from_trusted_bot:
-            if _is_own_bot and _bot_id in orch._cfg.slack.trusted_bot_ids:
-                _deny_error = "own_bot_id_never_trusted"
-            elif not _self_bot_id and _bot_id in orch._cfg.slack.trusted_bot_ids:
-                _deny_error = "trusted_bot_requires_verified_self_id"
-            else:
-                _deny_error = "untrusted_bot"
+        if _deny_error:
             sel().log_api_access(
                 caller=_bot_id,
                 operation="slack.message",

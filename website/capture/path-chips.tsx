@@ -45,7 +45,7 @@ const PROJECT = `${WORKSPACE}/Product Guide`
 const RELEASE_NOTES = `${PROJECT}/release-notes.md`
 const OVERVIEW = `${PROJECT}/src/overview.md`
 
-const DIRS = new Set([PROJECT, WORKSPACE])
+const DIRS = new Set([PROJECT, WORKSPACE, `${PROJECT}/src`])
 
 /** Unicode paths — issue #6483: none of these classified before PATH_SHAPE_RE
  *  gained `\p{L}\p{M}\p{N}` + the `u` flag, so the probe was never issued. The
@@ -67,7 +67,12 @@ const realFetch = globalThis.fetch.bind(globalThis)
 globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
   const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
   if (url.startsWith('/api/file-read')) {
-    const p = decodeURIComponent(new URLSearchParams(url.split('?')[1] || '').get('path') || '')
+    let p = decodeURIComponent(new URLSearchParams(url.split('?')[1] || '').get('path') || '')
+    // The real endpoint runs os.path.realpath, which drops a trailing separator
+    // before stat, so `/dir/` and `/dir` are the same file to the backend. Mirror
+    // that here so a trailing-slash directory chip classifies as the dir it names
+    // (issue #9409, directory-chip half).
+    if (p.length > 1 && (p.endsWith('/') || p.endsWith('\\'))) p = p.slice(0, -1)
     if (DIRS.has(p)) {
       return Promise.resolve(new Response(null, { status: 404, headers: { 'X-Path-Kind': 'dir' } }))
     }
@@ -124,6 +129,7 @@ const TRANSCRIPT = [
   '',
   'Shared resources live under `/Demo Workspace` and the readme is at',
   '`/Demo Workspace/Product Guide/README.md`.',
+  'The source lives under `/Demo Workspace/Product Guide/src/` (trailing slash).',
   'A path that is gone: `/Demo Workspace/deleted-notes.md`.',
 ].join('\n')
 

@@ -1,12 +1,12 @@
-"""``KiroCrewConfig.save()`` holds the sidecar advisory lock (#4767).
+"""``KiroCrewConfig.save()`` holds the sidecar advisory lock.
 
-``save()`` used to be an UNLOCKED whole-document replace: its rename could land
+An UNLOCKED whole-document ``save()`` replace lets its rename land
 inside an ``update_config_locked`` holder's read-modify-write (a CLI writer, a
 boot refresh, a second gateway), and whichever renamed second published a
 document that never saw the other's change — every field in the file exposed,
 not one.
 
-Simply adding the lock was tried and REVERTED once (#4371): ``save()`` is a
+Simply adding the lock was tried and REVERTED once: ``save()`` is a
 sync method reached from async handlers, so a contended POSIX ``flock`` inline
 on the event loop stalls the whole gateway, and the sidecar lifecycle left
 residue a Windows test caught. The fix that landed has two halves, and this
@@ -63,7 +63,7 @@ class TestSaveHoldsTheAdvisoryLock:
     _TIMEOUT = 30.0
 
     def test_save_waits_for_a_held_sidecar_lock(self, cfg_home):
-        """RED before #4767: save() sailed past a held ``<config>.lock``.
+        """save() must not sail past a held ``<config>.lock``.
 
         The holder here is the raw sidecar acquire — byte-for-byte what
         ``update_config_locked`` takes — so the assertion is exactly "save()
@@ -93,7 +93,7 @@ class TestSaveHoldsTheAdvisoryLock:
         assert "agent" in _read_config(cfg_home)
 
     def test_a_locked_writer_landing_inside_save_is_not_discarded(self, cfg_home, monkeypatch):
-        """RED before #4767: the interleave the issue describes, end to end.
+        """The interleave the issue describes, end to end.
 
         A ``save()`` is paused INSIDE its critical window (between building its
         document and its rename landing). An ``update_config_locked`` writer
@@ -164,7 +164,7 @@ class TestSaveHoldsTheAdvisoryLock:
 
 
 class TestSidecarLifecycle:
-    """The #4371 regression gate: the lock adds ONE shared sidecar, nothing else.
+    """The regression gate: the lock adds ONE shared sidecar, nothing else.
 
     On Windows a leftover extra file beside ``config.json`` is exactly what the
     orphan-lockfile test in that round caught. The sidecar itself is shared
@@ -228,7 +228,7 @@ def _on_running_loop() -> bool:
 class TestAsyncCallersOffload:
     @pytest.mark.asyncio
     async def test_log_level_put_persists_off_the_event_loop(self, monkeypatch):
-        """The #4371 revert reason, as a runtime probe on a converted handler:
+        """The revert reason, as a runtime probe on a converted handler:
         the persist -- a delta RMW through update_config_locked, whose flock
         wait blocks its thread -- must run in a worker, never inline on the
         loop, and must write only the key this endpoint owns."""
@@ -264,9 +264,9 @@ class TestNoInlineSaveOnTheEventLoop:
     """Structural ratchet over ``src/kiro_crew``: no coroutine calls
     ``KiroCrewConfig.save()`` inline.
 
-    ``save()`` holds the sidecar advisory ``flock`` (#4767); a contended
+    ``save()`` holds the sidecar advisory ``flock``; a contended
     acquire blocks its thread, so a coroutine that calls it inline blocks the
-    one event loop the gateway shares — the exact failure that reverted #4371.
+    one event loop the gateway shares — the exact failure that reverted the first attempt.
     The sanctioned shapes are ``await run_config_write(...)`` (preferred, holds
     the loop-side asyncio config lock too) and ``await asyncio.to_thread(...)``
     where a caller already holds that lock. In both, ``.save`` appears as a

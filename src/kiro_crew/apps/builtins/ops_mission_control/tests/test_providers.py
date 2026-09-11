@@ -926,10 +926,10 @@ class TestSuppressionIsAlwaysBounded(unittest.IsolatedAsyncioTestCase):
     """A suppression with no expiry hides a live fault until a human remembers it.
 
     This is the property that makes ``act`` a bounded bet rather than an
-    all-or-nothing one: a WRONG silence expires by itself. The shipped Datadog sink
-    used to POST ``/mute`` with ``body={}``, and Datadog reads a missing ``end`` as
-    "mute forever" — so the board showed the incident resolved while the metric stayed
-    bad, with no way back but a human noticing.
+    all-or-nothing one: a WRONG silence expires by itself. POSTing ``/mute`` with
+    ``body={}`` leaves Datadog reading the missing ``end`` as "mute forever" — the
+    board shows the incident resolved while the metric stays bad, with no way back
+    but a human noticing.
     """
 
     def test_a_requested_window_is_clamped_not_honoured_blindly(self):
@@ -1935,7 +1935,7 @@ class TestRunGhTimeoutReapsChild(unittest.IsolatedAsyncioTestCase):
 
     After ``wait_for`` cancels ``communicate()``, a killed child blocked
     writing into a full stderr pipe makes a bare ``wait()`` hang the polling
-    task forever (#5989) — the reap must be a SECOND ``communicate()``.
+    task forever — the reap must be a SECOND ``communicate()``.
     """
 
     async def test_timeout_reaps_child_via_communicate_not_wait(self):
@@ -2117,7 +2117,7 @@ class TestTheAppConfigIsNeverPublishedOverAFailedRead(unittest.TestCase):
         self.assertTrue(providers.provider_enabled("pagerduty"))
 
     def test_a_corrupt_config_refuses_the_merge_instead_of_replacing_it(self):
-        """Inverted deliberately: this used to assert repair-on-write.
+        """Refusal, not repair-on-write.
 
         A half-written or hand-broken config still names every provider the operator
         enabled. Replacing it discards that and leaves them re-entering settings they

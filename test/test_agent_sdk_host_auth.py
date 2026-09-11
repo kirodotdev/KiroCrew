@@ -710,9 +710,18 @@ def test_the_kiro_signed_out_message_is_unchanged() -> None:
         "then start a new chat."
     )
     assert host_auth.signed_out_message("") == expected
-    # KAS resolves every access token from kiro-cli's own store, so it is the same
-    # sign-in and must be the same sentence.
-    assert host_auth.signed_out_message("kas") == expected
+    # KAS may draw its access token from Crew's own vault (the dashboard's Kiro
+    # sign-in card) OR from kiro-cli's store, and the formatter cannot see which
+    # one a process had, so its sentence names both sign-ins rather than
+    # repeating kiro's. The kiro-cli remedy stays in it verbatim.
+    kas = host_auth.signed_out_message("kas")
+    assert kas != expected
+    assert "`kiro-cli login`" in kas
+    assert "Settings" in kas and "Kiro sign-in" in kas
+    assert "start a new chat" in kas
+    # The standing (unprobed) remedy names the same two paths, in plain prose.
+    remedy = host_auth.declaration_for("kas").sign_in_remedy
+    assert "Kiro sign-in" in remedy and "kiro-cli login" in remedy
 
 
 @pytest.mark.parametrize("blank", ["", "   ", "\n\t"])

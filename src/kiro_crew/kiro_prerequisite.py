@@ -107,8 +107,8 @@ _ACP_SUBCOMMAND = "acp"
 # read-only probes; sized to match the auto-update path's own 120s budget in
 # ``slack/gateway.py`` rather than the 10s probe ceiling.
 _UPDATE_TIMEOUT_SECS = 120
-# Compatibility shim, not live state. Nothing performs an operation any more, but a
-# dashboard loaded BEFORE this change reads ``status.operation.status``
+# Compatibility shim, not live state. Nothing performs an operation any more, but an
+# OLDER dashboard build reads ``status.operation.status``
 # unconditionally in its refetch-interval callback — the optional chain there
 # guards ``status``, not ``operation`` — and that callback runs for every user, not
 # only the first-run gate. A tab left open across a gateway upgrade would therefore
@@ -460,8 +460,8 @@ class PrerequisiteStatus:
     sandbox_detail: str = ""
     # Machine-readable host mechanism behind a Linux userns denial — one of the
     # sandbox ``REMEDY_*`` tokens, or "" when unknown. Without it the gate could
-    # only show the raw errno, which is the dead end reported in issue #1660: the
-    # probe knows the fix is an AppArmor profile and the user cannot tell.
+    # only show the raw errno, which is a dead end: the probe knows the fix is an
+    # AppArmor profile and the user cannot tell.
     sandbox_remedy: str = ""
     # The verification probe hit ``_PROBE_TIMEOUT_SECS`` instead of answering. A
     # THIRD condition, distinct from both a missing binary and a sandbox refusal:
@@ -471,8 +471,8 @@ class PrerequisiteStatus:
     # combination that does not merely fail to help, it actively rules out the true
     # cause and sends the operator to reinstall or re-login, neither of which can
     # work on a host whose CLI is installed, signed in, and serving turns the whole
-    # time (issue #4577: 4081 SEL ``probe_version`` events, every one
-    # ``outcome=failed error=timeout``, on exactly such a host).
+    # time (such a host records ``probe_version`` events in SEL with
+    # ``outcome=failed error=timeout`` and nothing else to go on).
     probe_timed_out: bool = False
     # Kiro Crew's own agent specs (~/.kiro/agents/kirocrew*.json). ``ready``
     # requires these on disk, not merely a viable binary and a good ``whoami``:
@@ -695,12 +695,12 @@ def snapshot_trusted_acp_executable(
     dispatching on ``argv[0]``, a wrapper reading a sibling registry, or a
     self-updating install whose payload lives beside it.
 
-    An earlier design copied the bytes into a private snapshot (sealed memfd on
-    Linux, verified copy on macOS) to close the resolve-to-exec window in which
-    the file could be swapped. That is deliberately **not** done anymore: it
+    Copying the bytes into a private snapshot (sealed memfd on Linux, verified
+    copy on macOS) would close the resolve-to-exec window in which the file could
+    be swapped. That is deliberately **not** done: it
     defends against an attacker who already has write access to the user's own
     machine — a threat the rest of the product does not defend against either —
-    and the cost was breaking every multi-call and multiplexer install outright.
+    and it breaks every multi-call and multiplexer install outright.
 
     Trust is "the CLI runs": install source, owner, and path do not gate launch,
     so a toolbox / Homebrew / self-updated Kiro CLI launches like any other.
@@ -1209,7 +1209,7 @@ def _ensure_auth_staging_parent(home: Path) -> Path:
     # staging root holds credential material, and moving an unexpected file to a
     # sibling name would leave its (possibly sensitive) contents readable outside
     # the sandbox-hidden staging prefix. unlink() acts on the symlink itself,
-    # never its target. (#561)
+    # never its target.
     if staging_parent.is_symlink() or (staging_parent.exists() and not staging_parent.is_dir()):
         try:
             staging_parent.unlink()
@@ -1587,8 +1587,8 @@ async def _prepare_sandboxed_spawn(
     """Prepare filesystem-heavy sandbox state on a worker thread.
 
     Delegates to the shared :func:`shielded_prepare_off_loop`, which owns the
-    shield-and-recover pattern (including the repeat-cancellation semantics of
-    #5841) for every async caller of the chokepoint.  The chokepoint call itself
+    shield-and-recover pattern (including its repeat-cancellation semantics)
+    for every async caller of the chokepoint.  The chokepoint call itself
     stays in this module so the ``mode``/``strip_python_env`` policy — and this
     module's own seam over ``sandboxed_spawn_argv`` — remain local.
     """
@@ -1665,11 +1665,11 @@ async def _run_process(
             # mutable package path would also let a same-UID agent replace code
             # immediately before an owner-triggered install.
             #
-            # It also carries the resource limits (``--rlimits=``) that used to
-            # ride on ``preexec_fn``. See resource_limit_supervisor_argv: a
+            # It also carries the resource limits (``--rlimits=``) rather than a
+            # ``preexec_fn``. See resource_limit_supervisor_argv: a
             # preexec_fn forces a plain fork() of this multi-threaded gateway and
-            # runs Python in the child before exec, which is how a child wedged
-            # in a futex and pinned the fds it had inherited. The supervisor
+            # runs Python in the child before exec, which can wedge that child
+            # in a futex with the fds it inherited pinned. The supervisor
             # applies the same setrlimits after exec, single-threaded, and the
             # exec'd child inherits them.
             spawn_argv = [

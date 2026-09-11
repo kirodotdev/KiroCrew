@@ -3098,7 +3098,7 @@ class TestEdgeCases:
 
         review_calls = 0
 
-        async def _review_once(r, s, sessions, agent, session_key=""):
+        async def _review_once(r, s, sessions, agent, session_key="", *, ctx=None):
             nonlocal review_calls
             review_calls += 1
             if review_calls == 1:
@@ -3189,7 +3189,7 @@ class TestEdgeCases:
         with patch.object(runner, "self_review", return_value=True):
             result = await runner.run(spec)
 
-        # Step 1 denied → run pauses (denial no longer skips)
+        # Step 1 denied → run pauses (denial does not skip)
         assert result.tasks[0].status == StepStatus.PENDING
         assert result.status == "paused"
 

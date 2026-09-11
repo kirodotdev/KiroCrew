@@ -174,7 +174,7 @@ class CycleResult:
         speak on exactly the signals an operator asked to stop hearing about.
 
         ``verifications`` counts only where the verdict is ``still_firing``. That verdict
-        means the app previously reported an action as applied and the alarm is still
+        means the app reported an action as applied and the alarm is still
         going — a claim it made that turned out not to be true, which is the single most
         newsworthy thing this cycle can discover. ``cleared`` is the expected outcome and
         announcing it would make the heartbeat congratulate itself, and ``unknown`` is
@@ -1044,10 +1044,10 @@ def investigation_brief(claimed: ClaimedIncident) -> str:
             lines.append(f"  • [{entry.confidence}/{entry.trust}] {entry.pattern}")
             lines.append(f"      fix: {entry.fix}")
 
-    # The no-credentials statement is UNCONDITIONAL, and deliberately so. It used to
-    # live only inside the ``if claimed.evidence`` branch below, which meant the one
-    # case that most needs it — no evidence gathered — was the one case that never got
-    # it. An agent handed an AWS incident and no explanation reasonably assumes it
+    # The no-credentials statement is UNCONDITIONAL, and deliberately so. Scoping it to
+    # the ``if claimed.evidence`` branch below would leave the one case that most needs
+    # it — no evidence gathered — as the one case that never gets it. An agent handed
+    # an AWS incident and no explanation reasonably assumes it
     # should go look itself, and then spends its whole turn re-running
     # ``aws … --profile …`` against a credential chain it cannot reach (observed on
     # INV-1/INV-2: repeated NoCredentials, no diagnosis). Saying it once, always, costs

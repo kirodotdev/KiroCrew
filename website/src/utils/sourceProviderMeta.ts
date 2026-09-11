@@ -25,7 +25,10 @@
  */
 import { i18nT } from '../i18n/t'
 import {
+  sourceProjectHost,
+  sourceProjectPath,
   sourceProviderDescriptor,
+  type PullRequestLink,
   type PullRequestProvider,
   type SourceProviderCapabilities,
   type SourceProviderIcon,
@@ -140,4 +143,96 @@ export function sourceProviderCapabilities(
   provider: PullRequestProvider,
 ): SourceProviderCapabilities {
   return sourceProviderMeta(provider).capabilities
+}
+
+/** Per-tab project qualifier for a source-switcher tab strip, or null when the
+ *  bare reference label is already unambiguous.
+ *
+ *  A GitLab MR IID is unique only within its project, so two projects that each
+ *  have `!1` render identical `MR !1` tabs. Given the strip's rendered sources,
+ *  this returns a lookup that yields each link's qualifying prefix:
+ *
+ *  - `null` for every link when all sources share one project (the common case,
+ *    where the concise bare label is correct), and always for a link whose
+ *    project cannot be recovered (Jira, a registered provider, an unparseable
+ *    url) — an ambiguous tab is never worse than today's.
+ *  - The project path (`group/project`) when the strip spans more than one
+ *    distinct project, with the host prepended (`gitlab.internal/group/project`)
+ *    when the SAME project path appears on more than one host — self-managed
+ *    GitLab makes the path alone collide, so the host is the remaining
+ *    discriminator.
+ *
+ *  Qualifiers are kept short by CONSTRUCTION, never by CSS truncation: an
+ *  end-elided label would hide exactly the segment that distinguishes two deep
+ *  subgroup paths sharing a prefix (`platform/services/ingest` vs `…/egress`
+ *  discriminate at the tail). A qualifier longer than two segments is shortened
+ *  to its minimal unique trailing suffix among the strip's qualifiers, marked
+ *  with a leading `…/`; two-segment paths (the familiar `owner/repo` form) stay
+ *  whole. Uniqueness is decided per strip, so the shortened forms can never
+ *  collide with each other.
+ *
+ *  Identity is keyed on host + path throughout, so two same-named projects on
+ *  different hosts count as distinct and engage qualification. The `MR`/`PR`
+ *  word stays with `refLabel` and the i18n catalog; the prefix is an
+ *  identifier, not prose, exactly like a provider `displayName`. */
+export function sourceTabQualifier(
+  sources: PullRequestLink[],
+): (link: PullRequestLink) => string | null {
+  const identities = new Set<string>()
+  const hostsByPath = new Map<string, Set<string>>()
+  for (const item of sources) {
+    const path = sourceProjectPath(item)
+    if (!path) continue
+    const host = sourceProjectHost(item) ?? ''
+    identities.add(`${host}/${path}`)
+    let hosts = hostsByPath.get(path)
+    if (!hosts) hostsByPath.set(path, (hosts = new Set()))
+    hosts.add(host)
+  }
+  if (identities.size <= 1) return () => null
+  const fullQualifier = (link: PullRequestLink): string[] | null => {
+    const path = sourceProjectPath(link)
+    if (!path) return null
+    const segments = path.split('/')
+    const hosts = hostsByPath.get(path)
+    if (hosts && hosts.size > 1) {
+      const host = sourceProjectHost(link)
+      return host ? [host, ...segments] : segments
+    }
+    return segments
+  }
+  // Collect the strip's distinct qualifiers once, then shorten each to its
+  // minimal unique trailing suffix (see the doc comment above).
+  const distinct = new Map<string, string[]>()
+  for (const item of sources) {
+    const segments = fullQualifier(item)
+    if (segments) distinct.set(segments.join('/'), segments)
+  }
+  const display = new Map<string, string>()
+  for (const [full, segments] of distinct) {
+    if (segments.length <= 2) {
+      display.set(full, full)
+      continue
+    }
+    let keep = 1
+    while (keep < segments.length) {
+      const suffix = segments.slice(-keep).join('/')
+      let clashes = false
+      for (const [otherFull, otherSegments] of distinct) {
+        if (otherFull === full) continue
+        if (otherSegments.slice(-keep).join('/') === suffix) {
+          clashes = true
+          break
+        }
+      }
+      if (!clashes) break
+      keep++
+    }
+    display.set(full, keep >= segments.length ? full : `…/${segments.slice(-keep).join('/')}`)
+  }
+  return link => {
+    const segments = fullQualifier(link)
+    if (!segments) return null
+    return display.get(segments.join('/')) ?? segments.join('/')
+  }
 }

@@ -24,7 +24,7 @@ BUILTIN_NAMES: list[str] = [
 _MIGRATED_BUILTINS: list[str] = [
     "deploy-web",
     "deploy_web",
-    # The auto-triage pipeline is no longer an app: it is one of Issue Radar's
+    # The auto-triage pipeline is not an app: it is one of Issue Radar's
     # dashboards. Dropping it from BUILTIN_NAMES stops it being REGISTERED, but an
     # install that already has it keeps the directory and its installed.json
     # entry -- leaving an App Store card for an app with no manifest behind it,

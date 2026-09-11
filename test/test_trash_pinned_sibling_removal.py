@@ -859,9 +859,9 @@ class TestTheCoarsePlatform:
 
     They go through the rename-verify-remove the explicit empty already uses on this
     platform: the batch is renamed aside inside the trash root, its identity is checked
-    THERE, and only the staged name is removed. Refusing outright was an earlier answer and
-    it was wrong, because this branch is the whole of Windows: it left a batch behind after
-    every restore and every rolled-back move, still listing sessions it no longer held.
+    THERE, and only the staged name is removed. Refusing outright would leave a batch
+    behind after every restore and every rolled-back move, still listing sessions it does
+    not hold, because this branch is the whole of Windows.
     The residual the rename accepts is the one this platform already accepts for an empty.
     """
 

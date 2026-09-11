@@ -429,7 +429,7 @@ def ops_mission_control_api(name: str, args: dict[str, Any]) -> str:
     # systems and prior LLM turns, so a credential or exfil URL quoted
     # into one would otherwise flow straight into this agent's context.
     # Redact BEFORE truncating: slicing first could cut a credential in
-    # half at the cap so the redaction pattern no longer matches, leaking
+    # half at the cap so the redaction pattern would not match, leaking
     # the surviving fragment.
     _omc_text = redact(json.dumps(_omc_resp, ensure_ascii=False, default=str))
     _omc_cap = 60_000

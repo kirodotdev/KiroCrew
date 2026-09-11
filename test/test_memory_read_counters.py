@@ -1,6 +1,6 @@
-"""Read-volume counters on ``VectorMemoryStore`` — the observable for #8971.
+"""Read-volume counters on ``VectorMemoryStore`` — the read-volume observable.
 
-#8971 reports that the semantic-side searches re-read every row per call. The
+The semantic-side searches re-read every row per call. The
 stand-down on that issue found the defect real and HTTP-reachable but
 UNASSERTABLE from outside the process: a SELECT moves neither ``data_version``
 nor the WAL, the observability endpoint reported context sizes rather than rows
@@ -10,7 +10,7 @@ volume of a query path instead of inferring it from a stopwatch.
 
 They do NOT assert the defect is fixed. ``test_a_second_identical_semantic_search_
 scans_the_population_again`` deliberately pins today's re-read as VISIBLE; when
-#8971 lands, that test is the one that flips, which is the point of having it.
+the fix lands, that test is the one that flips, which is the point of having it.
 
 No embedder is wired here (``embed_fn`` stays None), so the semantic path scores
 keyword-only and the episodic path takes its stdlib rung — both still perform the
@@ -87,11 +87,11 @@ class TestSemanticSurface:
     def test_a_second_identical_semantic_search_scans_the_population_again(
         self, tmp_path: Path
     ) -> None:
-        """The #8971 assertion, in the form a live pod can make.
+        """The read-volume assertion, in the form a live pod can make.
 
         Two identical searches with no write in between read the population
-        twice today. When #8971 lands (resident scoring columns under a
-        (generation, data_version) token, the #8956 shape), the second call
+        twice today. When the fix lands (resident scoring columns under a
+        (generation, data_version) token), the second call
         stops scanning and these numbers stay flat — so this test is the ratchet
         that has to be updated by the fix, not silently satisfied by it.
         """
@@ -116,7 +116,7 @@ class TestSemanticSurface:
     def test_unbounded_get_lessons_is_a_population_scan_but_a_limited_one_is_not(
         self, tmp_path: Path
     ) -> None:
-        """The other half of #8971: the ``_stored_similarity_scorer`` callers."""
+        """The other half: the ``_stored_similarity_scorer`` callers."""
         store = _store(tmp_path)
         store.write_lesson("always run the build before pushing")
         before = store.read_counters()
@@ -133,7 +133,7 @@ class TestEpisodicSurface:
     def test_an_episodic_search_credits_the_population_it_scans(self, tmp_path: Path) -> None:
         """Either episodic rung — resident build or per-call read — is credited.
 
-        The resident set (#8956) pays the population read once per invalidation
+        The resident set pays the population read once per invalidation
         and the per-call rung pays it once per search; both land on
         ``episodic_full_scans``, so the counter reads the same on a numpy install
         and a stock one, and the DIFFERENCE between them is exactly what the
@@ -209,7 +209,7 @@ class TestObservabilityEndpoint:
     async def test_a_queried_request_reports_its_own_semantic_scan(self, tmp_path: Path) -> None:
         """The counters are read LAST, so the request's own scan is included.
 
-        That ordering is what makes the endpoint usable as the #8971 probe: an
+        That ordering is what makes the endpoint usable as the read-volume probe: an
         agent calls it twice with the same ``q`` and compares the two objects.
         """
         store = _store(tmp_path, semantic=4)
@@ -222,6 +222,6 @@ class TestObservabilityEndpoint:
         assert first["semantic_full_scans"] >= 1
         assert first["semantic_rows_read"] >= 4
         # Identical second request, and the endpoint shows it paid for the
-        # population again — the observation #8971 needs and could not make.
+        # population again — the observation this endpoint makes possible.
         assert second["semantic_full_scans"] > first["semantic_full_scans"]
         assert second["semantic_rows_read"] - first["semantic_rows_read"] >= 4

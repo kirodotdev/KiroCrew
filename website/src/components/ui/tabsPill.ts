@@ -39,17 +39,17 @@
  * detaching from it.
  */
 export const TABS_TRACK_CLASS =
-  'flex w-fit max-w-full items-center gap-0.5 overflow-x-auto rounded-lg border border-border bg-bg-elevated p-0.5'
+  'isolate flex w-fit max-w-full items-center gap-0.5 overflow-x-auto rounded-lg border border-border bg-bg-elevated p-0.5'
 
 /**
  * One segment. No border in the base: the sliding indicator carries it, so a
  * selection never shifts the label by a pixel, and the box metrics stay identical
  * to `SegmentedControl`'s.
  *
- * `isolate` makes the segment its own stacking context so the indicator can sit
- * at `-z-10` — BEHIND the label, but still in front of the track, because a
- * stacking context paints negative-z children above its own background. That is
- * what lets the label render as a direct child: wrapping it in a positioned span
+ * The track owns one stacking context so every indicator at `-z-10` stays
+ * behind every label, even while sliding across a sibling segment. A separate
+ * context per segment would let a later sibling's moving background obscure
+ * an earlier label. This lets the label render as a direct child: a positioned span
  * instead would give every tab's text one shared source location, which the
  * i18n render scanner reads as several catalog keys glued into one unit.
  *
@@ -58,7 +58,7 @@ export const TABS_TRACK_CLASS =
  * track paints a box straddling the track's own border.
  */
 export const TABS_SEGMENT_CLASS = [
-  'focus-ring group/tab relative isolate flex cursor-pointer items-center gap-1.5 whitespace-nowrap',
+  'focus-ring group/tab relative flex cursor-pointer items-center gap-1.5 whitespace-nowrap',
   'rounded-md px-2.5 py-1.5 text-[12px] font-medium',
   'text-muted transition-colors hover:text-text',
 ].join(' ')
@@ -77,7 +77,7 @@ export const TABS_SEGMENT_DISABLED_ARIA_CLASS = [
 ].join(' ')
 
 /** The pill that slides between segments. Sits behind the label via `-z-10`
- *  inside the segment's own stacking context. */
+ *  inside the track's shared stacking context. */
 export const TABS_INDICATOR_CLASS = 'absolute inset-0 -z-10 rounded-md border border-border bg-card shadow-sm'
 
 /** Spring the indicator travels on. Matches `SegmentedControl`'s. */

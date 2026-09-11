@@ -39,6 +39,30 @@ def state(monkeypatch, tmp_path):
     )
 
 
+@pytest.mark.parametrize("phase", ["preparing", "global_failed", "member_failed"])
+def test_status_remains_available_during_scoped_memory_recovery(
+    state: DashboardState, tmp_path, phase: str
+) -> None:
+    from kiro_crew.learn import Lesson, LessonStore
+    from kiro_crew.memory_startup import MemoryStartup
+
+    state.lessons = LessonStore(base_dir=tmp_path / "status-lessons")
+    state.lessons.save(Lesson("2026-09-08", "Keep the accepted decision", "knowledge"))
+    assert state._count_lessons() == 1  # Warm the real JSONL cache before recovery.
+    startup = MemoryStartup.begin()
+    try:
+        if phase != "preparing":
+            failed_store = "default" if phase == "global_failed" else "member-alice"
+            startup.fail_store(failed_store, ValueError("staged recovery failed"))
+            assert startup.complete()
+        snapshot = state.status_snapshot()
+        assert snapshot["sessions"] == 0
+        assert snapshot["lessons"] == (1 if phase == "member_failed" else None)
+    finally:
+        startup.stop()
+        startup.release()
+
+
 class TestSubagentSubscribers:
     def test_subscribe_and_unsubscribe(self, state: DashboardState) -> None:
         ws = MagicMock()
@@ -279,7 +303,7 @@ class TestSlotsBroadcastCarriesFolders:
 
 
 class TestOwnerScopedBroadcast:
-    """Owner-only typed broadcast + its delivery count (PR #461)."""
+    """Owner-only typed broadcast + its delivery count."""
 
     @staticmethod
     def _ws(closed: bool = False) -> MagicMock:
@@ -306,8 +330,8 @@ class TestOwnerScopedBroadcast:
     async def test_awaited_delivery_counts_only_completed_sends(
         self, state: DashboardState
     ) -> None:
-        """Round 12 BLOCKING: a socket count is taken BEFORE any send runs, so a
-        peer that drops in that window was reported as delivered. Only a send
+        """A socket count taken BEFORE any send runs must not count a
+        peer that drops in that window as delivered. Only a send
         that completed counts."""
         good, broken = self._ws(), self._ws()
         broken.send_str = AsyncMock(side_effect=ConnectionResetError("peer gone"))
@@ -595,7 +619,7 @@ class TestSlotEffectiveAgent:
         """The degraded-defaults path must SHRINK the snapshot, not union into it.
 
         Leaving a stale alias published would have the resolver honor a name that
-        no longer loads, which is the false-negative twin of a false marker.
+        does not load, which is the false-negative twin of a false marker.
         """
         import dataclasses
 
@@ -869,7 +893,7 @@ def test_folder_breadcrumb_empty_or_unknown_id(state):
 
 
 def test_folder_breadcrumb_dangling_parent(state):
-    # parent_id points at a folder that no longer exists — walk stops gracefully.
+    # parent_id points at a folder that does not exist — walk stops gracefully.
     state._folders = [{"id": "b", "name": "Backend", "parent_id": "gone"}]
     assert state.folder_breadcrumb("b") == "Backend"
 
@@ -926,7 +950,7 @@ class TestOwnerSourceStatusTransport:
         state.push_slots_update()
 
         # SSE carries the BARE list: the SSE queue has NO per-app filtering, so
-        # status must never ride it (GPT #6789 — an app token on /api/stream
+        # status must never ride it (an app token on /api/stream
         # would otherwise receive credential-backed chip status). The enriched
         # list is carried separately in `_slots_list_ws` for the WS path only.
         sse_note = sse_queue.get_nowait()
@@ -946,7 +970,7 @@ class TestOwnerSourceStatusTransport:
         assert dash_messages[0]["data"][0]["source_links"][0]["ci"] == "passed"
         assert dash_messages[0]["data"][0]["source_links"][0]["state"] == "OPEN"
         # Owner: EXACTLY ONE frame (the enriched owner frame). `_send_ws_all`
-        # skips owner sockets for `slots` (PR #6795), so the generic frame no
+        # skips owner sockets for `slots`, so the generic frame no
         # longer backstops an owner; the owner frame is its only one and carries
         # full status.
         assert len(owner_messages) == 1
@@ -1072,11 +1096,11 @@ class TestOwnerSourceStatusTransport:
         # Real folder list (a MagicMock attr would coerce to [] via
         # _safe_folder_tree); lets the dashboard-user branch below assert the
         # connect-time frame carries the folder tree — the frame that fixes the
-        # first-paint flicker (#4127).
+        # first-paint flicker.
         state._folders = [{"id": "f1", "name": "Work", "order": 0}]
         # The snapshot is really dumped now (offender-note seam), so every
         # frame field must be JSON-serializable — a bare MagicMock return
-        # value no longer slips through a fake send_json unserialized.
+        # value does not slip through a fake send_json unserialized.
         state.folders_generation.return_value = 7
 
         class Request(dict):
@@ -1155,7 +1179,7 @@ class TestOwnerSourceStatusTransport:
             # test seeds no visibility, so the public gate fails closed), and the
             # connection MUST drive NEITHER refresh — both the status read and
             # the visibility probe run the operator's credentials, so only the
-            # owner's connection may trigger them (GPT round-13). A non-owner
+            # owner's connection may trigger them. A non-owner
             # renders the owner-populated caches read-only; it spawns no provider
             # work of its own.
             assert "ci" not in str(initial_slots)
@@ -1164,7 +1188,7 @@ class TestOwnerSourceStatusTransport:
             vis_refresh.assert_not_called()
             # The connect-time frame is what populates the sidebar on a cold
             # load, so a dashboard user MUST receive the folder tree here — this
-            # is the frame that fixes the #4127 flicker.
+            # is the frame that fixes the first-paint flicker.
             assert initial_frame["folders"] == [{"id": "f1", "name": "Work", "order": 0}]
         state.unregister_ws.assert_called_once_with(fake_ws)
 
@@ -1175,7 +1199,7 @@ class TestOwnerSourceStatusTransport:
         """A non-owner dashboard connection drives NEITHER a status refresh NOR
         a visibility probe, even when a confirmed-public repo is present — both
         run the operator's credentials, so only the owner's connection may
-        trigger them (GPT round-13). The non-owner renders the owner-populated
+        trigger them. The non-owner renders the owner-populated
         caches read-only."""
         from kiro_crew.dashboard import ws as dashboard_ws
         from kiro_crew.dashboard import ws_event_scope
@@ -1650,7 +1674,7 @@ class TestPeriodicCheckStatusRefresh:
         """A signed-in dashboard user who is NOT the owner renders PUBLIC-repo
         chip status READ-ONLY from the owner-populated caches, so it must NOT
         start the periodic driver — both the status and visibility refreshes run
-        the operator's credentials and are owner-only (GPT round-13)."""
+        the operator's credentials and are owner-only."""
         from kiro_crew.dashboard import ws as dashboard_ws
         from kiro_crew.dashboard.handlers import source_providers
 
@@ -1945,7 +1969,7 @@ class TestTurnBoundarySourceStatus:
     def test_turn_boundary_non_owner_drives_no_refresh(
         self, state: DashboardState, monkeypatch
     ) -> None:
-        """GPT #6789 round-13: at a turn boundary with ONLY a non-owner
+        """At a turn boundary with ONLY a non-owner
         dashboard-user window open (no owner window), NEITHER the credentialed
         status read NOR the visibility probe fires — both run the operator's
         credentials and are owner-only. A non-owner audience triggers nothing."""
@@ -2026,7 +2050,7 @@ class TestTurnBoundarySourceStatus:
     ) -> None:
         """The dashboard wiring must register the owner-scoped sink AND clean it up.
 
-        Regression for the production-wiring gap: the transport tests above call
+        This closes a production-wiring gap: the transport tests above call
         ``push_source_status`` / ``register_status_delta_sink`` directly, so they
         would stay green even if ``start_dashboard`` stopped wiring the sink or
         dropped its shutdown cleanup. This drives the real wiring helper: it must

@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 
 from kiro_crew.dashboard.side_prompts import (
     SIDE_BOUNDARY_PROMPT,
+    SIDE_BOUNDARY_PROMPT_NO_TOOLS,
     build_side_system_prompt,
 )
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
@@ -107,20 +108,24 @@ def build_side_message(
     question: str,
     *,
     is_first_turn: bool,
+    tools_available: bool = True,
 ) -> str:
     """First turn: full envelope (instructions + parent + side history + question).
     Subsequent turns: bare question (kiro-cli session retains framing).
+
+    ``tools_available`` picks the boundary prompt for the harness the turn runs
+    on: the read-only allowance (kiro-cli) or no tools at all (other backends).
     """
     question = question.strip()
     if not is_first_turn:
         return question
-    parts: list[str] = [build_side_system_prompt()]
+    parts: list[str] = [build_side_system_prompt(tools_available=tools_available)]
     parent_block = _format_parent_snapshot(slot)
     if parent_block:
         parts.append(parent_block)
     side_block = _format_side_history(slot)
     if side_block:
         parts.append(side_block)
-    parts.append(SIDE_BOUNDARY_PROMPT)
+    parts.append(SIDE_BOUNDARY_PROMPT if tools_available else SIDE_BOUNDARY_PROMPT_NO_TOOLS)
     parts.append(f"User: {question}")
     return "\n\n".join(parts)

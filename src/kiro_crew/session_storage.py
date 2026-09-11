@@ -1069,7 +1069,7 @@ def reclaim_block_reason(*, cached: bool = False) -> str:
                 # !r, not plain interpolation: the directory name is
                 # agent-influenced and passes no identifier gate, so a newline
                 # or ANSI payload in it would forge a second record the moment
-                # a caller logs this text (the #6281/#6371 forgery class).
+                # a caller logs this text (the log-forgery class).
                 listed = "; ".join(f"{name!r} — {why}" for name, why in refusals[:3])
                 return (
                     f"{len(refusals)} other instance(s) sharing this kiro-cli session "
@@ -1541,18 +1541,18 @@ def _unlisted_files(batch: Path) -> list[Path]:
     # os.fwalk where the platform has it: this guard must complete on trees
     # whose component paths exceed the platform PATH_MAX (1024 on macOS, where
     # a name-based walk dies with ENAMETOOLONG and permanently wedges the batch
-    # as ``unreadable_batch`` — #8724). fwalk traverses and stats via directory
+    # as ``unreadable_batch``). fwalk traverses and stats via directory
     # descriptors, so only the MANIFEST-RELATIVE strings below ever use the
     # textual path, and those are pure string operations with no length limit.
-    # This also matches #7011's descriptor discipline for the approval scan,
-    # chain-open, and removal passes; the guard was the one name-based walk left.
+    # This also matches the descriptor discipline of the approval scan,
+    # chain-open, and removal passes; the guard is otherwise the one name-based
+    # walk.
     #
     # CPython defines fwalk only where ``{open, stat} <= os.supports_dir_fd``
     # — on native Windows it does not exist, mirroring this module's
     # ``_FD_SAFE_DELETE`` coarse path. There the ORIGINAL name-based walk is
-    # kept: Windows never had the macOS 1024-byte wedge, so status quo is
-    # exactly right, and an unconditional fwalk would crash every Empty-Trash
-    # with an AttributeError no caller catches (fork-review finding).
+    # used: Windows has no macOS 1024-byte wedge, and an unconditional fwalk
+    # would crash every Empty-Trash with an AttributeError no caller catches.
     fwalk = getattr(os, "fwalk", None)
     if fwalk is not None:
         # Unlike os.walk, fwalk RAISES when the top itself cannot be statted or
@@ -1789,7 +1789,7 @@ def _remove_emptied_batch(batch: Path, what: str, *, expect: tuple[int, int] | N
 
     Both callers reach this having already established that the batch holds no file the
     manifest does not list - a fully restored batch, and one no session was staged into.
-    What is left is the removal, and it used to be ``shutil.rmtree(batch)``: a PATH, which
+    What is left is the removal, and ``shutil.rmtree(batch)`` would take a PATH, which
     the kernel re-resolves component by component. The trash root and the directories above
     it are writable by the same user, which in this product includes an agent, so one of
     them swapped to a symbolic link after the caller's own read is followed and the removal
@@ -1828,11 +1828,11 @@ def _remove_emptied_batch(batch: Path, what: str, *, expect: tuple[int, int] | N
         # platform, from the same owner: the batch is renamed aside inside the trash root,
         # its identity is checked THERE, and only the staged name is removed.
         #
-        # Refusing outright was the earlier answer here, on the reasoning that nobody asked
-        # for these two removals so the safer half of the trade came free. It does not: this
+        # Refusing outright looks like the safer half of the trade, on the reasoning that
+        # nobody asked for these two removals. It is not: this
         # branch is the whole of Windows, so refusing leaves a batch behind after EVERY
         # restore and every rolled-back move, still listing the sessions it no longer holds.
-        # Five pre-existing tests read that as a failure and so would a user. The residual
+        # Tests read that as a failure and so would a user. The residual
         # accepted instead is the one `empty_trash` already accepts here and documents - an
         # actor who can observe the staging name inside the window can redirect the removal
         # through an ancestor swapped afterwards - and it is bounded by an identity check
@@ -1959,14 +1959,14 @@ class _OversizedManifestRecord(Exception):
 def _manifest_records(handle: IO[str], batch: Path) -> Iterator[dict[str, Any]]:
     """Yield each JSON object record of an open manifest, header first.
 
-    Record boundaries match ``str.splitlines`` — the previous whole-file reader —
-    so a manifest split on any unicode line boundary parses exactly as it always
-    did: reads are accumulated in a carry-over buffer and re-split per chunk, so a
+    Record boundaries match ``str.splitlines``, so a manifest split on any unicode
+    line boundary parses identically:
+    reads are accumulated in a carry-over buffer and re-split per chunk, so a
     cap-sized read ending mid-record never invents or destroys a boundary. Blank
     and non-dict lines are skipped silently. A record that fails to parse is
     skipped and counted: a trailing partial line (a crash mid-append) is expected
     and logged at debug, while any other unparseable record — mid-file corruption —
-    gets one aggregated warning per read (#6292 item 3). Either way every complete
+    gets one aggregated warning per read. Either way every complete
     record before it describes real moved files that must stay restorable, so a
     parse failure never fails the batch wholesale.
 
@@ -2429,7 +2429,7 @@ def _move_to_trash_locked(
         # name!r, not plain interpolation: the directory name is agent-influenced
         # and passes no identifier gate, so a newline or ANSI payload in it would
         # forge a second record the moment a caller logs str(exc) (the
-        # #6281/#6371 forgery class).
+        # log-forgery class).
         raise SessionStorageError(
             f"{len(refusals)} instance(s) sharing this session store make reclaiming "
             f"unsafe ({name!r} — {why}); nothing was moved"
@@ -2512,7 +2512,7 @@ def _move_to_trash_locked(
                 # check below is the only other per-unit signal and it sees writes
                 # only, so a resume that merely READS an old transcript to rebuild
                 # history — recording the turn that follows under a newly mapped
-                # sid — leaves every mtime days old and slips past it (#7118). The
+                # sid — leaves every mtime days old and slips past it. The
                 # index is where that resume IS visible, so it has to be consulted
                 # at the same cadence.
                 #
@@ -3025,11 +3025,11 @@ class BatchIdentity:
 
     ``files`` and ``links`` are the same argument one level down, and they are recorded for
     the same reason rather than as symmetry for its own sake. The delete checks each staged
-    file's identity, but it used to check against a map built by its OWN scan - which is
-    self-consistent and authorises nothing. A listed file replaced between the approval and
-    the delete had its replacement's inode recorded, matched, and was unlinked: an
-    unapproved file, whose only copy it may be, destroyed on consent given for a different
-    one. Both are None on the coarse platform for the reason ``dirs`` is.
+    file's identity against the APPROVAL's map, never against a map built by its OWN scan -
+    which is self-consistent and authorises nothing. A listed file replaced between the
+    approval and the delete would have its replacement's inode recorded, matched, and
+    unlinked: an unapproved file, whose only copy it may be, destroyed on consent given for
+    a different one. Both are None on the coarse platform for the reason ``dirs`` is.
     """
 
     dev: int
@@ -3098,8 +3098,8 @@ def _manifest_rels(batch: Path, *, dir_fd: int | None = None) -> list[str]:
 #: Windows has neither, so it takes the coarse path below.
 #:
 #: The pinned-walk half is asked of :mod:`kiro_crew.pinned_fs` rather than restated here.
-#: That module exists because two closed PRs (#2446, #2447) tried to spell this mechanism
-#: per call site and neither converged, so a second spelling is the failure it was created
+#: That module exists because spelling this mechanism per call site does not converge, so
+#: a second spelling is the failure it exists
 #: to end. What is added on top is only what THIS path needs beyond walking a tree: the
 #: three mutating calls it makes relative to a descriptor.
 _FD_SAFE_DELETE = (
@@ -3125,11 +3125,11 @@ _dir_open_flags = pinned_fs.dir_flags
 _close_all = pinned_fs.close_all
 _drain = pinned_fs.drain_verified_chain
 
-#: The pinned traversal and the verified chain-open used to be spelled here. They are
+#: The pinned traversal and the verified chain-open live in :mod:`kiro_crew.pinned_fs`
+#: with the rest of the mechanism, because they are
 #: consumer-agnostic - "walk a tree without ever re-resolving a name" and "open a
 #: component only as the inode a scan recorded" say nothing about batches, manifests or
-#: approval - so they now live in :mod:`kiro_crew.pinned_fs` with the rest of the
-#: mechanism, and what stays in this module is the trash-specific part: which map
+#: approval. What stays in this module is the trash-specific part: which map
 #: authorises the delete, and what a refusal means to the user.
 _scan_tree = pinned_fs.scan_tree_pinned
 _open_chain = pinned_fs.open_verified_chain
@@ -3338,7 +3338,7 @@ def _unlink_debris(parent_fd: int, debris: str, expect_ino: int | None) -> None:
     The debris name lives in the trash root, and by the time this runs the batch removal has
     either succeeded or failed - so time has passed in a directory an actor may be able to
     write to. Unlinking by name alone would destroy whatever answers to it by then, which is
-    the same trusted-a-name mistake every other removal on this path was rewritten to avoid.
+    the same trusted-a-name mistake every other removal on this path avoids.
     Best effort: a name that no longer holds the manifest is left alone, not chased.
     """
     if expect_ino is None:
@@ -3673,8 +3673,8 @@ def _delete_listed_files(
             # The files and links get the same treatment, and for a sharper reason than
             # symmetry: the per-file identity check further down compares each name against
             # the scan taken HERE, which is self-consistent and authorises nothing. A listed
-            # file replaced during the handoff had its replacement's inode recorded, matched,
-            # and was unlinked - an unapproved file destroyed on consent given for a
+            # file replaced during the handoff would have its replacement's inode recorded,
+            # matched, and unlinked - an unapproved file destroyed on consent given for a
             # different one. Comparing the whole map against the approval refuses the batch
             # instead. A concurrent restore that removed staged files lands here too, and
             # refusing is right for the same reason it is right for directories: the
@@ -3760,7 +3760,6 @@ def _delete_listed_files(
                 # closes the interval between that scan and this unlink, and leaves only
                 # the two syscalls between the stat above and the unlink below, plus a file
                 # substituted before the scan under a name the manifest already lists.
-                # Stated as a residual in the PR rather than implied to be closed.
                 seen = present.get(parts)
                 if seen is None or (info.st_dev, info.st_ino) != (device, seen):
                     logger.warning("refusing a staged file that is not the one that was scanned")

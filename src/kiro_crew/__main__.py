@@ -3,8 +3,8 @@
 ``_ensure_ssl_certs()`` MUST run before ``from kiro_crew.cli import main``
 because importing ``cli`` can still reach ``aiohttp`` transitively (e.g. via
 ``cli_doctor`` → ``dashboard.crash_dump_store`` / ``dashboard.origin``).
-Issue #3504 deferred cli.py's heaviest aiohttp edges (``cli_server``,
-``dashboard.state``) to call time, which makes this ordering EASIER to hold —
+cli.py's heaviest aiohttp edges (``cli_server``, ``dashboard.state``) are
+deferred to call time, which makes this ordering EASIER to hold —
 but any module-scope import that reaches aiohttp, now or later, must still
 execute after ``_ensure_ssl_certs()``, so the prelude stays mandatory.
 

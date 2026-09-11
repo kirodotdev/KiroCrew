@@ -1555,7 +1555,7 @@ Host {host}
         silently discards the user's own. ``IgnoreUnknown`` is the one that
         bites: it is how a cross-platform config carries an option this ssh does
         not recognise, and losing it turns a working config into ``Bad
-        configuration option`` -- every tunnel then fails where it used to
+        configuration option`` -- every tunnel then fails where it would
         connect. Multiplexing is safe to pin because a supervised tunnel must
         never share a connection; that reasoning does not generalise.
 
@@ -1653,7 +1653,7 @@ class TestSshTunnelManager:
         assert mgr.get_token("cd-1") == "SECRET_TOK"
         inst = reg.get("cd-1")
         # local_port is ALLOCATED from the tunnel base, not mirrored onto
-        # remote_port (#1972).
+        # remote_port.
         assert inst.was_connected is True
         assert inst.local_port >= mgr._allocator.base_port
         assert inst.local_port != inst.remote_port
@@ -1877,7 +1877,7 @@ class TestSshTunnelManager:
         inst = reg.get("cd-1")
         assert inst.local_port == _UNALLOCATED_PORT  # port hint cleared
         assert inst.was_connected is False
-        # the cleared port is no longer counted as reserved
+        # the cleared port is not counted as reserved
         assert allocated not in mgr._reserved_ports()
 
     @pytest.mark.asyncio
@@ -2386,7 +2386,7 @@ class TestHandlers:
         """The served cap covers every REGISTERED crew, connected or not.
 
         This is the regression that produced "one random crew is broken". The cap
-        used to be the live connected count, so a crew whose tunnel came up just
+        must not be the live connected count: a crew whose tunnel came up just
         after this request was not counted, the cap arrived one short, and the
         viewport evicted a pane to honour it. Eviction unmounts the pane and
         cold-boots the remote SPA on the next click, which reads as a disconnect —
@@ -2861,7 +2861,7 @@ class TestHandlers:
         assert body["diagnosis"]["reason"] == "remote dashboard down"
 
     def test_add_defaults_remote_port_to_the_stock_gateway_port(self, tmp_path, monkeypatch):
-        """#1972: the ADD endpoint must not carry its own stale port default.
+        """The ADD endpoint must not carry its own stale port default.
 
         The registry default and the handler default were separate literals, so
         correcting the registry left the HTTP path (which is what the Add form
@@ -3584,7 +3584,7 @@ class TestHandlers:
     def test_update_locks_addressing_fields_for_correlated_cloud_instance(
         self, tmp_path, monkeypatch
     ):
-        # Regression test for #3387: PATCH must not let a non-dashboard caller
+        # PATCH must not let a non-dashboard caller
         # (CLI, script, agent) rewrite the fields Stop/Start/Delete use to
         # resolve an EC2 stack launched by Kiro Crew — doing so strands a running,
         # billing instance with no dashboard path to reach it.
@@ -3649,8 +3649,8 @@ class TestHandlers:
     def test_update_fails_closed_when_correlation_check_errors(self, tmp_path, monkeypatch):
         # If the launch job store can't be read, the correlation check must
         # NOT fall back to "not correlated" — that would let this addressing
-        # edit through and strand a launched, billing instance the same way
-        # #3387 did. The PATCH refuses the edit instead of persisting one it
+        # edit through and strand a launched, billing instance. The PATCH
+        # refuses the edit instead of persisting one it
         # could not verify was safe.
         from kiro_crew.dashboard import handlers_instances as handlers
 
@@ -3763,7 +3763,7 @@ class TestTokenMintGeneric:
         assert rc == 0 and err == ""
 
     def test_run_remote_kirocrew_honors_connect_timeout_secs(self, monkeypatch):
-        """#3579: the fail-fast 10s ConnectTimeout default must not silently
+        """The fail-fast 10s ConnectTimeout default must not silently
         override a caller-supplied budget -- a restart on a slow-proxy host
         needs the same connect budget the mint itself gets."""
         from kiro_crew.instances import token_mint as tm
@@ -3806,7 +3806,7 @@ class TestTokenMintGeneric:
         assert "[REDACTED: credential]" in err
 
     def test_run_remote_kirocrew_redacts_urls_before_credentials(self, monkeypatch):
-        """#9014: pin the ORDER of the redaction passes, not just the redaction.
+        """Pin the ORDER of the redaction passes, not just the redaction.
 
         The exfiltration-URL pass keys on the token-bearing URL shape, so
         running the credential pass first substitutes a placeholder into the
@@ -3838,7 +3838,7 @@ class TestTokenMintGeneric:
         assert "AKIAIOSFODNN7EXAMPLE" not in err
 
     def test_stdout_tail_url_pass_not_disarmed_by_token_prescrub(self, monkeypatch):
-        """#9014: the stdout-tail site has a second disarm path — its own
+        """The stdout-tail site has a second disarm path — its own
         ``_TOKEN_RE`` pre-scrub. Substituting ``token=<redacted>`` into a URL's
         query string before the exfiltration-URL pass destroys the token-bearing
         shape that pass keys on, so a suspicious destination would survive into
@@ -3870,7 +3870,7 @@ class TestTokenMintGeneric:
         """First ``communicate`` times out; the reap (a SECOND communicate)
         records itself and returns. ``wait`` must never be touched: on a
         killed child blocked writing into a full stderr pipe it hangs the
-        caller forever (#5989)."""
+        caller forever."""
 
         def __init__(self) -> None:
             self.pid = 4242
@@ -4034,7 +4034,7 @@ class TestDiagnostics:
         assert asyncio.run(diag._probe_remote_dashboard("cd-1", 7777)) is False
 
     def test_probes_honor_connect_timeout_secs(self, monkeypatch):
-        """#3579: the hardcoded ConnectTimeout=10 must not silently override a
+        """The hardcoded ConnectTimeout=10 must not silently override a
         caller-supplied budget -- a diagnosis on a slow-proxy host the user
         already tuned instances.connect_timeout_secs for must not be
         misreported as unreachable just because the probe never saw that
@@ -4491,7 +4491,7 @@ class TestSelfHealRefreshRestart:
         # remote_port defaults to 5476 → threaded so restart uses the marker resolver.
         # connect_timeout_secs comes from the configured mint budget (unset here,
         # so the ssh default from constants.DEFAULT_MINT_TIMEOUT_SECS), not the
-        # 10s ssh-exec fail-fast fallback -- this is the fix for #3579: a restart
+        # 10s ssh-exec fail-fast fallback -- a restart
         # on a slow-proxy host must reuse the same budget the mint itself gets.
         assert r["ok"] and calls["a"] == ("cd-1-alias", "restart", 5476, 30.0)
         # validation failure
@@ -4502,7 +4502,7 @@ class TestSelfHealRefreshRestart:
         assert not r["ok"]
 
     def test_diagnose_caps_connect_timeout_at_the_diagnostics_ceiling(self, tmp_path, monkeypatch):
-        """#3579: a user who raised instances.connect_timeout_secs for a
+        """A user who raised instances.connect_timeout_secs for a
         genuinely slow proxy still wants a diagnosis to resolve in well
         under a minute, not silently inherit the full tunable -- diagnose()
         must cap what it forwards, not pass the configured value straight
@@ -4619,7 +4619,7 @@ class TestSelfHealRefreshRestart:
 
 
 class TestInstancesStartupHooks:
-    """Regression for "Cannot modify frozen list".
+    """The startup hooks must register before aiohttp freezes its signal lists.
 
     The instances startup/cleanup hooks must be registered on the aiohttp app
     BEFORE ``runner.setup()`` freezes its signal lists. If registered after,
@@ -4738,7 +4738,7 @@ class TestPortMirror:
 
     @pytest.mark.asyncio
     async def test_two_instances_share_one_remote_port(self, tmp_path, monkeypatch):
-        """#1972: two stock installs both reporting the SAME remote port connect.
+        """Two stock installs both reporting the SAME remote port connect.
 
         This is the case mirroring made impossible — and the shipped defaults put
         every stock pair in it.
@@ -5463,14 +5463,14 @@ class TestSsmTunnelArgv:
 
     @pytest.fixture(autouse=True)
     def _bare_resolver(self, monkeypatch):
-        """Pin the shared aws-CLI resolver (#4770) to the bare name so the
+        """Pin the shared aws-CLI resolver to the bare name so the
         argv-shape assertions stay deterministic across hosts."""
         from kiro_crew.cloud import ssm
 
         monkeypatch.setattr(ssm, "resolve_aws_bin", lambda: "aws")
 
     def test_start_builds_argv_off_the_event_loop(self, monkeypatch):
-        """The SSM branch's argv build resolves the aws CLI (#4770), which
+        """The SSM branch's argv build resolves the aws CLI, which
         probes the filesystem — start() must run it in a worker thread, never
         on the gateway event loop (a stalled network mount on PATH would
         otherwise freeze every request)."""
@@ -5635,7 +5635,7 @@ class TestSsmTunnelProcessGroup:
         The argv head is resolved absolutely, but the aws CLI then looks the
         plugin up BY NAME on this child's own PATH — under a GUI-launched gateway
         the minimal launchd one — so the tunnel died inside a correctly resolved
-        ``aws`` (#5392). SSH keeps ``env=None`` (inherit): its binary lives in
+        ``aws``. SSH keeps ``env=None`` (inherit): its binary lives in
         the system bin dir and widening a tunnel child's PATH without a reason to
         is the opposite of what this fix argues for.
         """
@@ -5910,7 +5910,7 @@ class TestSsmTransportSelection:
 
     @pytest.mark.asyncio
     async def test_plugin_probe_runs_off_the_event_loop(self, tmp_path, monkeypatch):
-        """#5392: the prerequisite probe must not block the gateway event loop.
+        """The prerequisite probe must not block the gateway event loop.
 
         The probe resolves the plugin through the deploy engine's shared resolver
         — PATH scan, then the well-known install dirs, then executable-provenance
@@ -6088,7 +6088,7 @@ class TestSsmExitErrorClassification:
         assert "ssh auth failed" in t._exit_error(255)
 
 
-# ── #5235: hard-kill-orphaned forwarder reclaim (pid + exact-argv guard) ────
+# ── hard-kill-orphaned forwarder reclaim (pid + exact-argv guard) ────
 
 
 class TestForwarderPidHints:
@@ -6233,7 +6233,7 @@ class TestOrphanForwarderReclaim:
 
     * the leaked-forwarder case proves the child is terminated and its port
       released (identity confirmed via the real /proc//ps argv read);
-    * the #1972 regression cases prove a process this manager did not spawn is
+    * the reclaim-guard cases prove a process this manager did not spawn is
       NEVER signalled — whether its pid is recorded (pid recycled), unrecorded,
       or its port is not even occupied.
 
@@ -6389,7 +6389,7 @@ class TestOrphanForwarderReclaim:
             st = await mgr.connect("cd-1")
 
             assert st.state == TunnelState.CONNECTED
-            # (a) the old forwarder process is no longer alive…
+            # (a) the old forwarder process is not alive…
             assert proc.wait(timeout=10) is not None
             # …and its port is released.
             deadline = time.monotonic() + 5.0
@@ -6587,7 +6587,7 @@ class TestOrphanForwarderReclaim:
 
     @pytest.mark.asyncio
     async def test_recorded_pid_with_foreign_argv_is_never_signalled(self, tmp_path, monkeypatch):
-        """#1972 regression: the recorded pid was recycled onto a process this
+        """The recorded pid is recycled onto a process this
         manager did not spawn (its argv is not the forward command line). It
         must be left alone even with a matching start time and an open orphan
         gate."""
@@ -6624,8 +6624,7 @@ class TestOrphanForwarderReclaim:
     @pytest.mark.asyncio
     async def test_unrecorded_port_holder_is_never_signalled(self, tmp_path):
         """No recorded identity -> no candidate: the reclaim never scans the
-        process table for whoever holds the port (that scan is what #1972
-        removed)."""
+        process table for whoever holds the port."""
         from kiro_crew.instances.ssh_tunnel_manager import TunnelState
 
         proc, port, _argv = self._spawn_port_holder()
@@ -6756,7 +6755,7 @@ class TestOrphanForwarderReclaim:
         assert delivered == [pc.SIGTERM], "SIGKILL must be withheld on identity change"
 
     def test_sigkill_withheld_when_pid_vanishes_but_port_lingers(self, monkeypatch):
-        """Open-box guard test: a pid that no longer exists while the port is
+        """Open-box guard test: a pid that does not exist while the port is
         still held (SSM wrapper gone, plugin lingering — or a recycle inside a
         poll gap) is NOT a safe SIGKILL fall-through: getpgid on a recycled
         pid would resolve the REPLACEMENT process. No verified identity, no
@@ -6951,8 +6950,8 @@ class TestProxyRequest:
     async def test_401_after_a_successful_remint_is_still_typed(self, tmp_path, monkeypatch):
         """The re-mint succeeding does not make the SECOND 401 a normal reply.
 
-        Previously the retry guard was `status in (401, 403) and not reminted`,
-        so once a fresh credential had been minted a second rejection fell
+        A guard of `status in (401, 403) and not reminted` fails here:
+        once a fresh credential is minted a second rejection falls
         through to the caller as a bare peer 401 — the UI would read "the chat
         endpoint said no" instead of a credential failure, with no coded error.
         """

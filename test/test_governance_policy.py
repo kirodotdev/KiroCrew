@@ -18,6 +18,7 @@ import logging
 
 import pytest
 
+from kiro_crew.platform import governance
 from kiro_crew.platform.context import PlatformCompositionError
 from kiro_crew.platform.governance import (
     CAPABILITY,
@@ -1210,6 +1211,37 @@ class TestPolicySignatureStates:
             ceiling = load_security_policy()
             assert ceiling is not None
             assert ceiling.signature_state == SIGNATURE_UNVERIFIED
+
+    def test_a_lone_surrogate_signature_is_unverified_not_a_crash(self):
+        """``json.loads`` accepts ``"\\udc80"``; a strict ``encode`` would raise.
+
+        A UnicodeEncodeError is a ValueError, not a PlatformCompositionError, so it
+        would escape the loader and the host would degrade to ungoverned. The tier
+        ladder verifies a user-owned home file beneath the central document on every
+        load, so this is one byte in that file removing the fleet ceiling. It must
+        classify like every other malformed signature instead.
+        """
+        doc = json.loads(
+            '{"version": 1, "boot": {"fail_closed": true}, '
+            '"identity": {"issuer": "corp", "signature": "\\udc80"}}'
+        )
+        state, _detail = governance._policy_signature_state(doc, {"corp": "k"})
+        assert state == SIGNATURE_UNVERIFIED
+
+    def test_a_lone_surrogate_trust_key_is_unverified_not_a_crash(self):
+        """The other text the compare depends on: the key from the JSON trust root.
+
+        ``hmac_signature`` encodes the key before hashing; a strict encode raised on a
+        lone surrogate there, one call before the compare this class fixes.
+        """
+        doc = json.loads(
+            '{"version": 1, "boot": {"fail_closed": true}, '
+            '"identity": {"issuer": "corp", "signature": "abcd"}}'
+        )
+        trust_keys = json.loads('{"corp": "\\udc80"}')
+        assert len(trust_keys["corp"]) == 1  # a real lone surrogate, not the 6-char escape
+        state, _detail = governance._policy_signature_state(doc, trust_keys)
+        assert state == SIGNATURE_UNVERIFIED
 
     def test_non_ascii_signature_fails_closed_when_required(self, monkeypatch, tmp_path):
         """...and with the opt-in ON it must ABORT, not degrade to ungoverned."""

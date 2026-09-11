@@ -83,12 +83,19 @@ class TestGatewayUpdateCheckIsBackgrounded:
 
     def test_signal_handlers_installed_before_update_check(self) -> None:
         src = inspect.getsource(GatewayOrchestrator.run)
-        handlers_at = src.index("loop.add_signal_handler(sig, _on_signal)")
+        handlers_at = src.index("self._install_shutdown_signal_handlers()")
+        preparation_at = src.index("await self._wait_for_memory_preparation()")
         check_at = src.index("asyncio.create_task(self._check_for_updates())")
+        assert (
+            handlers_at < preparation_at
+        ), "SIGINT/SIGTERM handlers must be installed before waiting for memory preparation"
         assert handlers_at < check_at, (
             "SIGINT/SIGTERM handlers must be installed before the update check "
             "starts, or an early Ctrl-C is ignored"
         )
+        handlers_src = inspect.getsource(GatewayOrchestrator._install_shutdown_signal_handlers)
+        assert "for sig in (signal.SIGINT, signal.SIGTERM):" in handlers_src
+        assert "loop.add_signal_handler(sig, _on_signal)" in handlers_src
 
     def test_update_check_task_is_tracked_and_cancelled(self) -> None:
         run_src = inspect.getsource(GatewayOrchestrator.run)

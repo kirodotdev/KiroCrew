@@ -76,6 +76,10 @@
       {
         "value": "no-network-egress-from-a-poc",
         "reason": "A proof of concept that talks to the network can exfiltrate what it read and cannot be reproduced offline by a verifier."
+      },
+      {
+        "value": "introducing a code path, fix or evaluator usable on only one platform (Linux, macOS, Windows)",
+        "reason": "sandbox primitives differ per platform; a single-platform fix locks the others out"
       }
     ],
     "severity_scale": [
@@ -104,6 +108,10 @@
       {
         "value": "fixer-dispatch",
         "reason": "A fix PR changes the target on the strength of a finding; the human confirms the finding is real before code moves."
+      },
+      {
+        "value": "deactivating or approving a golden_paths row",
+        "reason": "Activation and deactivation are gated on the same terms, because a gate whose corpus a fixer can shrink is defeated by retiring the row its fix broke."
       }
     ],
     "report_schema": [

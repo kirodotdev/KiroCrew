@@ -1,4 +1,4 @@
-"""Issue #6078 Part B: the reason a hook failed must outlive the AppContext.
+"""The reason a hook failed must outlive the AppContext.
 
 ``register_app_routes`` records WHY it could not wire an app up
 (``ctx.health.mark_degraded``), but the context it writes to was dropped on the
@@ -162,7 +162,7 @@ class TestStartupPublishesHookHealth:
     async def test_routes_only_app_still_caches_shutdown(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """GPT round-10: a ROUTES-ONLY app (no on_startup) whose routes spawn
+        """A ROUTES-ONLY app (no on_startup) whose routes spawn
         background work, with a separate shutdown module, must still get its
         on_shutdown cached on healthy wiring -- otherwise a CLI uninstall deletes
         the files and the route-created work retains gateway privileges. Caching
@@ -251,7 +251,7 @@ class TestStartupPublishesHookHealth:
     async def test_degraded_boot_tears_down_startup_work_before_clearing(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """GPT round-8 [BLOCKING] F3: on the on_app_enable path (which the
+        """On the on_app_enable path (which the
         reconciler re-invokes every tick), a degraded wire-up (route import
         fails) that already ran a successful on_startup leaves detached startup
         work running. Clearing the loaded signature for retry WITHOUT tearing
@@ -305,7 +305,7 @@ class TestStartupPublishesHookHealth:
     async def test_degraded_enable_retains_signature_when_teardown_fails(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """GPT round-9: if the degraded-branch teardown does NOT confirm the
+        """If the degraded-branch teardown does NOT confirm the
         startup worker stopped, clearing the signature would let the reconciler
         re-run on_startup and stack another worker. So a failed teardown must
         RETAIN the loaded signature (record it) instead of clearing -- the

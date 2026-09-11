@@ -79,6 +79,8 @@ with no row here.
      - pre-session registry query (subagent session allocation)
    * - ``ACP_BACKENDS_MEMBER_DISPATCH``
      - driver-internal (whether a per-session tool set can be mounted)
+   * - ``ACP_BACKENDS_PRIVATE_MEMORY_MCP``
+     - pre-session registry query (whether private member tools run directly inside the member sandbox)
    * - ``ACP_BACKENDS_STEER``
      - pre-session registry query (whether ``_session/steer`` exists)
    * - ``ACP_BACKENDS_COMPACT``
@@ -112,6 +114,10 @@ with no row here.
    * - ``ACP_BACKENDS_HOST_AUTH_CALLBACK``
      - driver-internal (whether the reader loop may answer the engine's
        ``_kiro/auth/getAccessToken`` from Crew's own vault)
+   * - ``ACP_BACKENDS_SIDE_READONLY``
+     - pre-session registry query (whether a side-chat turn may execute
+       read-only tools under the derived ``<agent>--readonly`` spec; asked
+       about the configured backend id before the side session is created)
 
 The two non-set tables ``SessionCapabilities`` also translates are
 :func:`model_registry_namespace` (the model-id namespace) and
@@ -169,6 +175,13 @@ ACP_BACKENDS_KNOWN: FrozenSet[str] = frozenset(
 #: spec belongs here, and the next such harness should join the set rather than
 #: add a second branch at the call site (harness-parity H6).
 ACP_BACKENDS_SESSION_MCP_ARRAY: FrozenSet[str] = frozenset({ACP_BACKEND_CLAUDE})
+
+# Private member tools must execute inside the owned sandbox. A backend joins
+# only after its direct MCP launch path is verified; selectability grants none
+# of this authority. The public Codex adapter uses the shared broker instead.
+ACP_BACKENDS_PRIVATE_MEMORY_MCP: FrozenSet[str] = frozenset(
+    {ACP_BACKEND_KIRO, ACP_BACKEND_CLAUDE, ACP_BACKEND_KAS}
+)
 
 # ── The selectable registry ──
 
@@ -560,7 +573,17 @@ ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION = frozenset({ACP_BACKEND_CLAUDE, ACP_BACKE
 # Opt-in (harness-parity H6): a future adapter with the same spelling gap joins
 # here; one whose wire ids are already exact (kiro-cli serves its ids verbatim and
 # gets windows from the ``--list-models`` cache) never needs to.
-ACP_BACKENDS_ADVERTISED_MODEL_SELECTION = frozenset({ACP_BACKEND_CLAUDE})
+#
+# ``ACP_BACKEND_CODEX`` is a member for the OTHER half of what membership buys:
+# the capture. codex-acp advertises its model list only as a ``configOptions``
+# ``model`` select on ``session/new``, and that list is the ONLY source of ids
+# ``session/set_config_option("model", ...)`` accepts -- the static registry has no
+# codex namespace, and kiro-cli's ``--list-models`` catalog names models codex
+# refuses with a bare ``-32602``. Without membership the capture skipped the
+# select, the picker showed kiro's catalog, and a pick from it killed the session
+# at startup. Its spelling fold is a no-op (codex serves its ids verbatim), which
+# is fine: the cache it feeds is what the picker reads back.
+ACP_BACKENDS_ADVERTISED_MODEL_SELECTION = frozenset({ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX})
 
 # Backends that seed a per-session settings file — claude-agent-acp's
 # ``settings.local.json`` — to lock the model + permission surface. The file is
@@ -584,11 +607,20 @@ ACP_BACKENDS_SEED_LOCAL_SETTINGS = frozenset({ACP_BACKEND_CLAUDE})
 # every non-claude id the registry carries lives today. The literals are the
 # model_registry's own provider keys, spelled here rather than imported to keep
 # this load-path leaf free of a ``kiro_crew.model_registry`` dependency.
+#
+# ``ACP_BACKEND_CODEX`` gets its OWN key. The same key also selects the bucket of
+# the cross-session advertised-model cache (``model_registry.advertised_models``),
+# and codex's served ids (``gpt-5.4``, ``gpt-5.4-codex``, ...) are a different
+# vocabulary from the kiro ids that live under ``acp``. Sharing the bucket would
+# let a codex session overwrite what the picker offers for a kiro-family harness.
+# The static registry has no ``codex`` provider, so the translation into this
+# namespace is a passthrough -- which is exactly right for ids the backend itself
+# advertised.
 _MODEL_REGISTRY_NAMESPACE_BY_BACKEND: dict = {
     ACP_BACKEND_CLAUDE: "claude_code",
     ACP_BACKEND_KIRO: "acp",
     ACP_BACKEND_KAS: "acp",
-    ACP_BACKEND_CODEX: "acp",
+    ACP_BACKEND_CODEX: "codex",
 }
 
 
@@ -624,6 +656,20 @@ ACP_BACKENDS_KIRO_SLASH_COMMANDS = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS}
 # reads no agent file at all (``ACP_BACKENDS_SESSION_MCP_ARRAY``), and codex-acp
 # has not demonstrated the capability — neither inherits it.
 ACP_BACKENDS_MCP_CONFIG_HOT_RELOAD = frozenset({ACP_BACKEND_KIRO})
+
+# Backends on which a Side Chat turn may EXECUTE read-only tools under
+# ``ToolApprovalPolicy.READ_ONLY``. The allowance rests on a kiro-cli agent-spec
+# mechanism: the side session is bound to a derived ``<agent>--readonly`` spec
+# (``dashboard/side_readonly_spec``) whose emptied grants make every tool call
+# raise a permission request the host gate judges. Another harness has its own
+# pre-approval surface — claude-agent-acp's ``permissions.allow`` /
+# ``bypassPermissions``, KAS ``permissions`` rules read from its own store — that
+# neither the derived spec nor the gate can see, so a call it pre-approves would
+# run with no READ_ONLY decision and no SEL row. Off this set the side turn runs
+# ``REJECT_ALL``, the pre-allowance posture, and its footer says tools are
+# unavailable there. A harness joins by demonstrating that every tool call it
+# serves reaches ``session/request_permission`` under the derived spec.
+ACP_BACKENDS_SIDE_READONLY = frozenset({ACP_BACKEND_KIRO})
 
 # Backends whose model-side REFUSAL arrives with a structured reason, not just a
 # stop reason. When the Kiro service's content filter declines a turn, kiro-cli

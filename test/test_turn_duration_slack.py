@@ -5,12 +5,11 @@ background dispatch turn and passes it as ``elapsed_ms`` to
 ``persist_token_record_async``. The acp provider never assigns
 ``TurnUsage.duration_ms`` (it stays 0), so without this the row store recorded
 ``duration_ms=0`` for every real turn; the record builder now falls back to the
-caller's ``elapsed_ms`` when the provider reports nothing (issue #647 / #874
-follow-up).
+caller's ``elapsed_ms`` when the provider reports nothing.
 
 The two ``asyncio.wait_for`` timeout branches (slack heartbeat and the monitor
-auto-nudge) previously wrote NO row at all on timeout, silently dropping the
-spend the cancelled turn had already incurred. They now record it.
+auto-nudge) must record the row on timeout, not drop the spend the cancelled
+turn had already incurred.
 
 These tests drive the monitor path (``GatewayOrchestrator._fire_slack_nudge``)
 end to end because it is a directly-callable method. Its timeout branch has the
@@ -179,7 +178,7 @@ def test_monitor_turn_records_local_wall_clock(monkeypatch):
 
 def test_monitor_timeout_records_previously_dropped_row(monkeypatch):
     """Timeout path: the turn is cancelled by ``wait_for``, but the spend it had
-    already incurred is now recorded (previously the row was never written)."""
+    already incurred is still recorded."""
     client = _fake_client()
     orch = _build_orchestrator(client)
 
@@ -200,7 +199,7 @@ def test_monitor_timeout_records_previously_dropped_row(monkeypatch):
 
     assert result is False  # the timeout branch bails after recording
     rows = _monitor_rows()
-    assert len(rows) == 1  # previously ZERO rows were written on timeout
+    assert len(rows) == 1  # the timeout branch records exactly one row
     assert rows[0]["credits"] == pytest.approx(0.17)
     assert rows[0]["duration_ms"] == 500
 

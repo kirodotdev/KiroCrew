@@ -9,7 +9,7 @@ Phase 1 foundations for perpetual agents (RFC rev 3, items 2 and 3):
 - ``timeout`` (script/command subprocess bound) was accepted by MCP
   ``cron_update`` but silently dropped by ``_update_job_locked``; now consumed.
 - A transient backend error raised OUTSIDE the prompt stream (session acquire /
-  client creation) used to go straight to ``record_failure()``, marching a
+  client creation) would go straight to ``record_failure()``, marching a
   healthy job toward auto-pause on infrastructure weather (Phase 0, Finding 1).
   The callback now retries with backoff, mirroring the subagent path.
 """
@@ -367,7 +367,7 @@ class TestCronPostTokenResume:
 
     Closes the seam between the two existing retry layers: a transient error
     raised AFTER the prompt was dispatched AND after at least one token had
-    streamed used to fail the whole cycle (stream_and_collect stops retrying
+    streamed would fail the whole cycle (stream_and_collect stops retrying
     once tokens streamed; the whole-callback retry stops once the prompt is
     dispatched). The callback now re-prompts the SAME live session ONCE with a
     continuation instruction, preserving the partial instead of re-running the
@@ -611,7 +611,7 @@ class TestWakeBudgetSubprocessGuard:
     def test_rejected_update_leaves_other_fields_untouched(self, tmp_path: Path) -> None:
         """A rejected timeout_secs must not strand earlier mutations (name).
 
-        GPT round-2 finding: validation ran after name/message mutated, so a
+        Validation ran after name/message mutated, so a
         later save would persist the rejected partial update.
         """
         svc = CronService(base_dir=tmp_path)

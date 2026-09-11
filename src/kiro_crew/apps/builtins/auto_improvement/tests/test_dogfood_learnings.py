@@ -1660,8 +1660,7 @@ class TestCheckoutPrecedesProfileBuild:
         remote-tracking ref AND a local ref, so a False means the configured branch exists
         NOWHERE — starting an edit-and-push loop against whatever HEAD the clone holds would
         operate on the wrong revision. A scopeDiffBase makes it worse (mis-scoped fence) but
-        the base case is already unsafe. Tightened per the GPT review of this branch (was
-        best-effort: unscoped runs used to continue on the wrong HEAD)."""
+        the base case is already unsafe."""
         from kiro_crew.apps.builtins.auto_improvement.backend import clone_setup
         from kiro_crew.apps.builtins.auto_improvement.backend.runner import RunSupervisor
 
@@ -2248,7 +2247,7 @@ class TestTheStoredPushDestinationIsValidated:
         whose ``_host_is_blocked`` SSRF check does a LIVE ``socket.getaddrinfo`` resolve
         and fails CLOSED on any resolver error. On a transient runner DNS hiccup
         ``github.com`` read as blocked and a legitimate remote resolved to ``""``,
-        flaking the legitimate-remote cases in CI (#5229); the foreign-remote cases
+        flaking the legitimate-remote cases in CI; the foreign-remote cases
         short-circuit on the allowlist before DNS and cannot flake, but the pin covers
         the whole class so no case here ever reaches a resolver. These tests are about
         URL/identity validation, not address screening — the address decision has its
@@ -2317,9 +2316,10 @@ class TestTheStoredPushDestinationIsValidated:
 class TestTheAddressDecisionItself:
     """The SSRF screen the class above stubs out gets its own direct coverage.
 
-    ``TestTheStoredPushDestinationIsValidated`` pins ``getaddrinfo`` so it no longer
-    exercises ``_host_is_blocked`` incidentally (#5229) — which was the helper's ONLY
-    coverage in the repo. Losing the pinned-away coverage without an equivalent is how
+    ``TestTheStoredPushDestinationIsValidated`` pins ``getaddrinfo``, so it does not
+    exercise ``_host_is_blocked`` incidentally — and that incidental exercise is the
+    helper's ONLY other coverage in the repo. Losing the pinned-away coverage without an
+    equivalent is how
     a later edit to the screen (say, dropping the ``is_private`` predicate, or turning
     the fail-closed ``except`` into fail-open) would land silently. Same split as the
     ``public_dns`` precedent in ``test/test_meetings_providers.py``: the scheme tests
@@ -2360,9 +2360,9 @@ class TestTheAddressDecisionItself:
     def test_a_resolver_error_fails_closed(self, monkeypatch) -> None:
         """The contract the fixture above leans on: a DNS error means BLOCKED.
 
-        This is exactly the behaviour that made #5229 a test-hermeticity defect and
-        not a production one — pin it so the fail-closed ``except`` cannot quietly
-        become fail-open.
+        This is what makes a resolver hiccup a test-hermeticity problem and not a
+        production one — pin it so the fail-closed ``except`` cannot quietly become
+        fail-open.
         """
         self._pin(monkeypatch, OSError("resolver down"))
         assert clone_setup._host_is_blocked("github.com") is True
@@ -2554,18 +2554,12 @@ class TestFallbackAgentCannotSeeCredentials:
 class TestTheFallbackNeverBypassesAConfiguredProvider:
     """A configured provider whose agent registration fails must go OFFLINE, not subprocess.
 
-    `_build_runner` used to fall through: `SessionAgentRunner.available()` True but
-    `ensure_agent_registered()` False landed on `AgentRunner`, i.e. `claude -p` — bypassing
-    the provider's own permission gate even though a provider EXISTED. Measured before the
-    fix: that combination returned `AgentRunner`.
-
-    This is the substance of the review's long-standing "the fallback bypasses the ACP gate"
-    objection. Earlier rounds declined it as self-contradictory ("the fallback only runs when
-    no provider is configured") — that was true of the `available()` branch and NOT of the
-    registration-failure branch, which is a real hole. The fallback is only defensible when
-    there is genuinely no provider to route through, which is now what the code does.
-
-    Raised by the GPT review of this branch.
+    `_build_runner` must not fall through when `SessionAgentRunner.available()` is True but
+    `ensure_agent_registered()` is False: landing on `AgentRunner`, i.e. `claude -p`, bypasses
+    the provider's own permission gate even though a provider EXISTS. "The fallback only runs
+    when no provider is configured" holds for the `available()` branch and NOT for the
+    registration-failure branch, which is the hole this closes — the fallback is only
+    defensible when there is genuinely no provider to route through.
     """
 
     @staticmethod
@@ -3019,7 +3013,7 @@ class TestProvisionalCommitFailsClosed:
         ).stdout.strip()
 
         # Force ONLY the `git commit` to fail, letting real staging/reset run. A pre-commit
-        # hook can no longer do this: D-120 hardens every host-side git with
+        # hook cannot do this: D-120 hardens every host-side git with
         # `-c core.hooksPath=<devnull>` so a repo-controlled hook never executes host-side, and
         # making `.git/objects` read-only would also break the `git add` that must succeed
         # first. Wrapping the real `_git` and failing the `commit` subcommand is the
@@ -3084,7 +3078,7 @@ class TestProvisionalCommitFailsClosed:
         )
         # Fail ONLY `git commit`, letting the real `apply`/`add -A`/`reset --hard` run so the
         # staged-diff cleanup this test is about is genuinely exercised. A pre-commit hook can
-        # no longer force this: D-120 hardens host-side git with `-c core.hooksPath=<devnull>`,
+        # force this: D-120 hardens host-side git with `-c core.hooksPath=<devnull>`,
         # so a repo hook is inert. Wrapping `_git` to reject the `commit` subcommand is the
         # hook-independent equivalent.
         real_git = drv_mod._git
@@ -3208,10 +3202,9 @@ class TestWinnerIsInTheTreeBeforeDrafting:
         """`self.branch` is the CONFIG form (``origin/main``), and ``git checkout
         origin/main`` DETACHES HEAD onto the remote-tracking ref — so a commit made in one
         cycle is orphaned and the next cycle's checkout throws it away. Measured against a
-        bare repo: after a second checkout the prior winner was no longer an ancestor of
-        HEAD. The stage step now checks out ``normalize_branch(self.branch)`` (the local
-        branch ``runner`` already created), so cycle N+1 builds ON cycle N. Raised by the
-        GPT review of this branch.
+        bare repo: after a second checkout the prior winner is not an ancestor of HEAD.
+        The stage step checks out ``normalize_branch(self.branch)`` (the local branch
+        ``runner`` already created), so cycle N+1 builds ON cycle N.
         """
         import subprocess
 
@@ -3415,10 +3408,10 @@ class TestToolRequestsAreGated:
     def test_the_platform_governance_gate_is_consulted_before_approval(self) -> None:
         """The unattended runner's approval must route through the SAME `hooks.on_tool_call`
         chokepoint the dashboard/Slack paths use, so the enterprise ceiling, builtin denied
-        rules, and the shell gate's IMDS / env-credential tiers apply here too. It previously had
-        only an app-local gate and skipped the platform one — so an injected instruction in
-        outsider-writable PR-comment text could drive an auto-approved call the central gate
-        would deny. Raised by the Arbiter's long-term review of this branch."""
+        rules, and the shell gate's IMDS / env-credential tiers apply here too. An app-local
+        gate alone is not enough: skipping the platform one lets an injected instruction in
+        outsider-writable PR-comment text drive an auto-approved call the central gate would
+        deny."""
         from kiro_crew.apps.builtins.auto_improvement.spine.agent_runner import (
             _governance_denial,
         )
@@ -3647,10 +3640,7 @@ class TestToolRequestsAreGated:
         can only over-refuse — the safe direction for a denylist.
 
         `--exec-path` is deliberately excluded from that table because its value is OPTIONAL,
-        so listing it reintroduced the same swallow (`git --exec-path push`). Found by writing
-        this matrix rather than by the next review round.
-
-        Raised by the GPT review of this branch.
+        so listing it would reintroduce the same swallow (`git --exec-path push`).
         """
         from kiro_crew.apps.builtins.auto_improvement.spine.agent_runner import (
             shell_command_refusal,
@@ -4471,7 +4461,7 @@ class TestOneClickCommitWorksInAPushDisabledClone:
         # FORCE the interleaving instead of hoping the scheduler produces it. A plain
         # two-thread race reproduced the bug only ~1 run in 3 (measured with the lock
         # removed), which is too flaky to be a regression test. `A` parks *after* staging its
-        # diff — the exact window where B's `checkout -B` used to carry A's change into B's
+        # diff — the exact window where B's `checkout -B` can carry A's change into B's
         # commit.
         #
         # A's park ends when B has PROVED the clone lock is contended, not when B
@@ -5292,7 +5282,7 @@ class TestASuccessfulManualDraftLeavesNoCommitBehind:
         # The reset moved into `finally` (D-91), which is STRICTER than the original
         # success-arm placement this test was written against: it now also survives a raising
         # ledger append. Assert on the `finally`, since scanning up to an `else:` would look
-        # for a branch that no longer exists.
+        # for a branch that does not exist.
         success_arm = after_record[: after_record.index("return {")]
         assert "finally:" in success_arm, "the reset is no longer unconditional"
         assert "_rollback()" in success_arm, (
@@ -6544,15 +6534,11 @@ class TestDiscoveryHasNoShell:
             assert any(tool in ln for ln in grants), f"discovery lost {tool}"
 
     def test_the_prompt_does_not_advertise_a_shell_it_lacks(self) -> None:
-        """The prompt USED to offer "read-only Bash: `sed -n`, `grep`, `git grep`" — which was
-        the honest reason the tool was granted, and also the reason the grant was unsafe: that
-        instruction is GUIDANCE, and the grant permits writes regardless. (My first version of
-        this test asserted the prompt never mentioned a shell at all; it did, so the claim was
-        wrong and is corrected here.)
-
-        Now the prompt must not offer shell COMMANDS the agent cannot run — otherwise it burns
-        turns on refused calls. Saying "there is NO shell" is fine and desirable; naming
-        `sed`/`git grep` as available is not.
+        """The prompt must not offer shell COMMANDS the agent cannot run — otherwise it
+        burns turns on refused calls. Advertising "read-only Bash: `sed -n`, `grep`,
+        `git grep`" is both dishonest and unsafe: that instruction is GUIDANCE, and the
+        grant behind it permits writes regardless. Saying "there is NO shell" is fine and
+        desirable; naming `sed`/`git grep` as available is not.
         """
         import inspect
         import re
@@ -6790,7 +6776,7 @@ class TestTheGovernanceGateGetsBothDenyInputs:
 
     def test_the_two_config_builders_really_differ(self, tmp_path, monkeypatch) -> None:
         """The premise, measured rather than asserted — if these ever converge, the first test
-        above is testing a distinction that no longer exists."""
+        above is testing a distinction that does not exist."""
         import json
 
         monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
@@ -6913,12 +6899,11 @@ class TestSetupCannotRetargetARunThatStartedMeanwhile:
     section. A setup request that passes the status check and then blocks on `clone_lock` can
     have a run start while it waits; when it finally gets the lock it clones and persists a NEW
     target, and the active run's artifacts are stranded in the old workspace under a
-    `workspace_key` the dashboard no longer displays.
+    `workspace_key` the dashboard does not display.
 
-    D-77 made setup and run-startup mutually exclusive, which was necessary but not
-    sufficient: mutual exclusion decides WHO goes first, it does not re-validate the
-    precondition after waiting. The status must be re-checked INSIDE the lock, immediately
-    before the clone. Raised by the GPT review.
+    D-77's mutual exclusion between setup and run-startup is necessary but not sufficient:
+    mutual exclusion decides WHO goes first, it does not re-validate the precondition after
+    waiting. The status must be re-checked INSIDE the lock, immediately before the clone.
     """
 
     def test_the_status_is_rechecked_inside_the_lock(self) -> None:

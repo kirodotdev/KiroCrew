@@ -26,7 +26,7 @@ from kiro_crew.sandbox import _build_launcher_script
 
 # ``_build_launcher_script`` calls POSIX-only ``os.getuid``/``os.getgid`` (the
 # namespace launcher is Linux-only), so building it raises AttributeError on
-# Windows. Same skip as test_sandbox_argv.py. See #2041.
+# Windows. Same skip as test_sandbox_argv.py.
 _POSIX_ONLY = pytest.mark.skipif(
     sys.platform == "win32",
     reason="_build_launcher_script uses POSIX-only os.getuid (#2041)",

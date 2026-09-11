@@ -360,10 +360,8 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         "apps/builtins/auto_improvement/backend/clone_setup.py::_gh_prefers_ssh",
         "apps/builtins/auto_improvement/backend/clone_setup.py::_run",
         "apps/builtins/auto_improvement/backend/clone_setup.py::list_clone_branches",
-        # Renamed from ``setup_safe_clone`` when a thin public wrapper was added
-        # to convert IsolationProbeError into the (result, err) shape (#8151);
-        # the git-clone spawn itself is unchanged and its argv is built from
-        # validated owner/repo components, never raw user text.
+        # The git-clone spawn's argv is built from validated owner/repo
+        # components, never raw user text, so it is benign.
         "apps/builtins/auto_improvement/backend/clone_setup.py::_setup_safe_clone",
         # NOT subprocess spawns: the AST heuristic matches ``asyncio.run`` (attr
         # ``run`` on base ``asyncio``), used here only to drive the async
@@ -496,7 +494,7 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         "apps/builtins/auto_improvement/tests/test_dogfood_learnings.py"
         "::test_a_credential_in_the_committer_identity_refuses_to_publish",
         # NOT a subprocess spawn: the AST heuristic matches ``asyncio.run`` (attr ``run`` on
-        # base ``asyncio``), used to drive the async ``_approve`` coroutine so a REAL SEL
+        # base ``asyncio``) driving the async ``_approve`` coroutine so a REAL SEL
         # write can be read back off disk. No child process is created.
         "apps/builtins/auto_improvement/tests/test_dogfood_learnings.py"
         "::test_a_real_sel_write_produces_a_readable_event",
@@ -646,7 +644,7 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         "apps/builtins/code_review_sage/tests/test_backend_routes.py"
         "::test_the_lockdown_never_runs_on_the_event_loop",
         # Same construct and classification: these two drive ``_save_runs`` to prove
-        # the registry write no longer targets a predictable ``runs.json.tmp`` that a
+        # the registry write does not target a predictable ``runs.json.tmp`` that a
         # prompt-injected worker could pre-plant a symlink at. The pre-planted path is
         # built by the test itself, so nothing here is agent-influenced either.
         "apps/builtins/code_review_sage/tests/test_backend_routes.py"
@@ -912,7 +910,7 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # server.py::handle_run).
         "cli_commands.py::_cleanup_app_crons_from_scheduler",
         # NOT a subprocess spawn: the AST heuristic matches ``asyncio.run`` (attr
-        # ``run`` on base ``asyncio``), used to drive the async
+        # ``run`` on base ``asyncio``) driving the async
         # ``register_app_crons_with_service`` coroutine from the loop-less CLI
         # enable path — the exact enable-direction mirror of
         # ``_cleanup_app_crons_from_scheduler`` above. No child process is
@@ -920,7 +918,7 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         "cli_commands.py::_register_app_crons_to_scheduler",
         "cli_doctor.py::_doctor",
         # NOT a subprocess spawn: the AST heuristic matches ``asyncio.run`` (attr
-        # ``run`` on base ``asyncio``), used to drive the async Discord
+        # ``run`` on base ``asyncio``) driving the async Discord
         # privileged-intent probe from the loop-less doctor path. No child
         # process is created: the probe is one HTTPS GET to Discord's own
         # ``/oauth2/applications/@me`` with a bot token read from the operator's
@@ -929,7 +927,7 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         "cli_doctor.py::_discord_intent_grants",
         "cli_doctor.py::_doctor_mcp_tools",
         # The AST heuristic matches ``asyncio.run`` (attr ``run`` on base
-        # ``asyncio``), used to drive one async capability-manager read from the
+        # ``asyncio``) driving one async capability-manager read from the
         # loop-less doctor path so the Credentials section can report whether this
         # host mounts a credential-vending MCP server. Unlike the sibling
         # ``asyncio.run`` entries above this one is not purely a false positive:
@@ -975,7 +973,7 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # argv (subcommand and flag are module constants), 15s-capped, no shell,
         # no agent-influenced arguments, and no credential involved — it reads
         # help text to confirm this kiro-cli can select the KAS engine at all.
-        # Crew no longer mints a KAS token anywhere; the relay resolves tokens
+        # Crew mints no KAS token anywhere; the relay resolves tokens
         # from kiro-cli's own store (see ``acp/kas_transport.py``), so the former
         # ``chat _ get-kas-token`` spawn is gone rather than moved.
         "cli_doctor.py::_kas_relay_help",
@@ -1191,6 +1189,21 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         "mcp_gateway/gatewayd.py::main",
         "mcp_gateway/manager.py::_spawn_once",
         "mcp_gateway/stub.py::main",
+        # The Windows arm of the stub's degrade path. Same spawn as
+        # ``stub.py::main`` and the same argv: the target command and args the
+        # rewriter resolved out of the operator's own ``~/.kiro/agents/*.json``,
+        # plus the env from the 0600 sidecar it wrote beside them -- an MCP
+        # backend on the trusted side of the sandbox boundary, like every other
+        # ``mcp_gateway`` entry above. Nothing on this path is agent-supplied;
+        # the stub receives it all as its own argv from the overlay.
+        #
+        # It is a spawn only because Windows has no in-place exec: the POSIX
+        # sibling of this call is ``os.execvpe``, which is not a spawn at all and
+        # so needed no entry. Sandboxing it would be strictly wrong rather than
+        # merely pointless -- the child must inherit THIS process's stdio fds to
+        # keep serving kiro-cli's existing pipe, which is the whole fix, and a
+        # scrubbed env would drop the credentials the sidecar exists to restore.
+        "mcp_gateway/stub.py::_fallback_spawn_child",
         # The update seam's one read-only git chokepoint: `git config` (the
         # `updates.source` pin's remote, the repo-driver probe, and which remote a
         # branch tracks) and `git ls-remote --get-url`. Fixed list-argv (no
@@ -1233,6 +1246,9 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         "platform_compat.py::open_with_default_app",
         "platform_compat.py::_posix_process_parent_map",
         "platform_compat.py::find_port_listeners",
+        # Read-only kernel socket attribution: trusted absolute lsof binary,
+        # fixed flags and a validated numeric port, no shell/user command.
+        "platform_compat.py::_macos_tcp_peer_pid",
         "platform_compat.py::find_python_interpreter",
         "platform_compat.py::kill_pid",
         "platform_compat.py::kill_process_tree",
@@ -1336,10 +1352,9 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         "platform/update_provider.py::check",
         "platform/update_provider.py::apply",
         "slack/gateway.py::_check_missing_deps",
-        # The kiro-cli version probe, extracted from _init_services (issue
-        # #3051). Fixed argv ("kiro-cli --version"), no agent-influenced
-        # input; sandboxing the probe would be circular for the same reason
-        # as the other boot-time self-checks above.
+        # The kiro-cli version probe. Fixed argv ("kiro-cli --version"), no
+        # agent-influenced input; sandboxing the probe would be circular for the
+        # same reason as the other boot-time self-checks above.
         "slack/gateway.py::_warn_if_kiro_cli_outdated",
         "testing/harness.py::spawn_feature_gateway",
         # Apple on-device speech (macOS only). None of these takes an agent-authored
@@ -1463,7 +1478,7 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
 # First-party fixed-argv spawn sites: every call site in ``src/kiro_crew`` that
 # passes the ``first_party_fixed_argv`` keyword into the sandbox chokepoint
 # (``sandboxed_spawn_argv`` / ``wrap_argv``). The flag buys an UNCONFINED spawn
-# on a backend-less host (issue #1563 carve-out), so "first-party" must be a
+# on a backend-less host (the carve-out), so "first-party" must be a
 # reviewed property, not a copy-pasteable kwarg: a new site must be added here
 # WITH a justification proving the full argv is derived inside this package
 # with zero agent/repo/user-config influence. Keyed by
@@ -1887,13 +1902,13 @@ def test_bundled_skill_assets_are_not_imported():
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Gateway spawn timeout discipline — issue #4210
+# Gateway spawn timeout discipline
 #
-# `slack/gateway.py` spawns children on the boot and auto-update paths. PR
-# #4049 established the discipline for a spawn that can time out: own process
-# group (`start_new_session` on POSIX), tree-kill + bounded reap on
-# TimeoutError AND on CancelledError. These two ratchets make the discipline
-# structural: the NEXT spawn added to the file cannot silently regress to an
+# `slack/gateway.py` spawns children on the boot and auto-update paths. The
+# discipline for a spawn that can time out: own process group
+# (`start_new_session` on POSIX), tree-kill + bounded reap on TimeoutError AND
+# on CancelledError. These two ratchets make the discipline structural: the
+# NEXT spawn added to the file cannot silently regress to an
 # abandoned-child-on-timeout, because the audit below fails until it carries
 # the same treatment.
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1963,7 +1978,7 @@ def test_gateway_spawns_all_own_session():
     `proc.kill()` signals only the direct child; without
     ``start_new_session`` the process-group tree kill in the timeout/cancel
     arms has no group of its own to address, so grandchildren survive the
-    kill and keep running (issue #4210).
+    kill and keep running.
     """
     missing: list[str] = []
     spawns = 0
@@ -1994,7 +2009,7 @@ def test_gateway_proc_waits_all_kill_on_timeout_and_cancel():
     Without the arm, the child is ABANDONED on timeout — the exception
     propagates (or is swallowed) while the process keeps running with no
     supervisor, which on the auto-update path means a `git reset` or
-    `kiro-cli update` still mutating the installation (issue #4210).
+    `kiro-cli update` still mutating the installation.
     """
     offenders: list[str] = []
     audited = 0

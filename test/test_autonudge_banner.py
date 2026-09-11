@@ -122,7 +122,7 @@ async def _fire_full(loop: NudgeLoop, *, ledger: str = "") -> tuple[str, str, di
     spawned: list[asyncio.Task] = []
 
     def _spawn(_state, _slot, coro, **_kwargs):
-        # #5184 dispatches ``_run_chat`` inside a coroutine handed to
+        # The chat fire dispatches ``_run_chat`` inside a coroutine handed to
         # ``spawn_guarded_turn``; RUN it (mirroring the dashboard-fire tests)
         # so the prompt reaches the patched ``_run_chat`` rather than closing
         # the coroutine unrun.
@@ -248,7 +248,7 @@ class TestBannerDivergesTheRowFromThePrompt:
 
 
 class TestNonStringBannerCannotWedgeTheLoop:
-    """A truthy NON-STRING ``banner`` used to crash every dashboard fire.
+    """A truthy NON-STRING ``banner`` must not crash a dashboard fire.
 
     ``banner: str`` is a plain dataclass annotation, unenforced at runtime, and
     ``_load`` constructs a loop straight from parsed JSON with no coercion. So a

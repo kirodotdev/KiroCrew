@@ -1611,11 +1611,11 @@ class _DepsScopeUnavailable(GhCliError):
 
     A dedicated type rather than a message pattern: the route maps this to the
     ``deps_issue_scope_unavailable`` code and a plain :class:`GhCliError` to
-    ``deps_fetch_failed``. Both failures used to be told apart by which of two
-    ``try`` blocks caught them; now that one helper owns the whole build, the
-    distinction has to travel with the exception, and sniffing the message text
-    would silently reclassify every scope failure whose wording does not happen
-    to mention issues (``gh api ... failed`` mentions neither).
+    ``deps_fetch_failed``. One helper owns the whole build, so the distinction
+    has to travel with the exception rather than with which ``try`` block caught
+    it, and sniffing the message text would silently reclassify every scope
+    failure whose wording does not happen to mention issues
+    (``gh api ... failed`` mentions neither).
     """
 
 
@@ -2850,7 +2850,7 @@ async def _handle_labels_apply(request: web.Request) -> web.Response:
     # The cache was patched inside the locked step above. Pruning the Tagging queue
     # is a SEPARATE try: sharing one with the patch meant a failed patch skipped the
     # prune, leaving a successfully labelled issue sitting in the queue.
-    # The issue is no longer untagged, so its Tagging-queue proposal is spent —
+    # The issue is tagged, so its Tagging-queue proposal is spent —
     # drop it here too (not just on the bulk path) so accepting a suggestion from
     # the detail pane also clears it from the dashboard.
     if final_labels:
@@ -3885,9 +3885,9 @@ async def _handle_get_tagging(request: web.Request) -> web.Response:
     which the queue's reload needs: labels get added on GitHub itself, and a
     cache-first read would keep reporting those issues as untagged.
 
-    Returns the issues as ROWS, not just numbers. The frontend used to resolve
-    numbers against the shared issue list, which follows the user's open/closed
-    filter — so entering Tagging from a Closed filter showed an empty queue."""
+    Returns the issues as ROWS, not just numbers. Resolving numbers in the
+    frontend against the shared issue list would follow the user's open/closed
+    filter, so entering Tagging from a Closed filter would show an empty queue."""
     key = _key_from_request(request)
     owner, repo = key.owner, key.repo
     if not owner or not repo:
@@ -3960,7 +3960,7 @@ async def _handle_get_tagging(request: web.Request) -> web.Response:
 
     # Only report suggestions for issues that are STILL untagged: a label applied
     # elsewhere (GitHub, the detail pane) makes a cached proposal moot, and
-    # showing it would offer to re-label an issue that no longer needs it.
+    # showing it would offer to re-label an issue that does not need it.
     live = {str(n) for n in untagged}
     return web.json_response(
         {
@@ -4899,7 +4899,7 @@ async def _refuse_if_head_moved(
 
     The check neither provider will do for us on a review. GitLab's ``/approve`` takes a
     real ``sha`` precondition, but GitHub's ``commit_id`` only ATTRIBUTES the review to a
-    commit — it accepts one that is no longer the head, and whether the resulting stale
+    commit — it accepts one that is not the head, and whether the resulting stale
     approval still counts toward branch protection is a per-repo setting ("dismiss stale
     pull request approvals"). Where that is off, an unchecked approval satisfies
     protection on code nobody read. So the app reads the head itself, exactly as
@@ -5109,9 +5109,9 @@ async def _handle_pull_auto_merge(request: web.Request) -> web.Response:
 #                blocking discussions and required pipelines all satisfied
 #
 # `unstable` is deliberately EXCLUDED. It is usually described as "only non-required
-# checks are failing", and that reading is what an earlier revision allowed — but the
-# state does not actually distinguish a failing REQUIRED check from a failing optional
-# one, so it cannot be used to conclude the protections are satisfied. For an ordinary
+# checks are failing", but the state does not actually distinguish a failing REQUIRED
+# check from a failing optional one, so it cannot prove the protections are satisfied.
+# For an ordinary
 # user the provider would refuse anyway; for the admin this gate exists to protect
 # against, allowing it would land code over a red required check. A gate that cannot
 # tell must refuse: the PR is still one click from `auto_merge`, which lets the provider

@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import os
+import socket
 
 import pytest
 from cryptography.hazmat.primitives import padding
@@ -213,50 +214,187 @@ class TestAttachmentAdapter:
         assert att.size == 0
 
 
+class _FakeContent:
+    """Response body: *count* chunks of *size* bytes."""
+
+    def __init__(self, chunks=(b"",)):
+        self._chunks = chunks
+
+    async def iter_chunked(self, _n):
+        for chunk in self._chunks:
+            yield chunk
+
+
+class _FakeResp:
+    def __init__(self, status=200, chunks=(b"",)):
+        self.status = status
+        self.content = _FakeContent(chunks)
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
+
+
+class _FakeSession:
+    """Records every ``get`` so a test can prove which transport was used."""
+
+    def __init__(self, status=200, chunks=(b"",)):
+        self._status = status
+        self._chunks = chunks
+        self.calls: list[dict] = []
+
+    def get(self, url, **kw):
+        self.calls.append({"url": url, **kw})
+        return _FakeResp(self._status, self._chunks)
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
+
+    async def close(self):
+        return None
+
+
+class _Pinned:
+    """Captures what the non-proxied path builds instead of dialing anything.
+
+    ``aiohttp.TCPConnector`` and ``aiohttp.ClientSession`` are replaced as the
+    ``media`` module reaches them, so the test proves the connector's resolver is
+    a real :class:`link_unfurl.PinnedResolver` carrying the vetted address —
+    without a socket, and without asserting on source text.
+    """
+
+    def __init__(self, monkeypatch, *, status=200, chunks=(b"",), resolve="93.184.216.34"):
+        self.connector_kwargs: dict = {}
+        self.session_kwargs: dict = {}
+        self.session = _FakeSession(status, chunks)
+        monkeypatch.setattr(link_unfurl, "_default_resolve", lambda *_a: [resolve])
+
+        def fake_connector(**kw):
+            self.connector_kwargs = kw
+            return object()
+
+        def fake_session(**kw):
+            self.session_kwargs = kw
+            return self.session
+
+        monkeypatch.setattr(media_mod.aiohttp, "TCPConnector", fake_connector)
+        monkeypatch.setattr(media_mod.aiohttp, "ClientSession", fake_session)
+
+    @property
+    def resolver(self):
+        return self.connector_kwargs.get("resolver")
+
+
+def _public_resolver(monkeypatch, address="93.184.216.34"):
+    """Stub the vet's lookup. Kept a stub so no test here opens a socket."""
+    monkeypatch.setattr(link_unfurl, "_default_resolve", lambda *_a: [address])
+
+
 class TestDownloadCaps:
     def test_the_size_cap_is_enforced_while_reading(self, monkeypatch) -> None:
         # Enforced on BYTES READ, never on Content-Length: a header is
         # attacker-influenced, and a lying one would let an unbounded body through.
         #
         # The URL has to clear the SSRF vet before the cap is reachable at all, so
-        # the resolver is stubbed to a public address. Kept as a stub rather than a
-        # real lookup so this test still opens no socket.
-        monkeypatch.setattr(link_unfurl, "_default_resolve", lambda *_a: ["93.184.216.34"])
-
-        class FakeContent:
-            async def iter_chunked(self, _n):
-                for _ in range(100):
-                    yield b"x" * 1024
-
-        class FakeResp:
-            status = 200
-            content = FakeContent()
-
-            async def __aenter__(self):
-                return self
-
-            async def __aexit__(self, *a):
-                return False
-
-        class FakeSession:
-            def get(self, *a, **kw):
-                return FakeResp()
-
+        # the resolver is stubbed to a public address.
+        pinned = _Pinned(monkeypatch, chunks=[b"x" * 1024] * 100)
         with pytest.raises(WeComMediaError, match="exceeds"):
             asyncio.run(
                 media_mod.download_media(
-                    FakeSession(),
+                    _FakeSession(),
                     "https://cdn.example/big",
                     base64.b64encode(os.urandom(32)).decode(),
+                    max_bytes=4096,
+                )
+            )
+        assert pinned.session.calls, "the cap is enforced on the pinned read"
+
+    def test_the_cap_is_enforced_on_the_proxied_read_too(self, monkeypatch) -> None:
+        # Same rule on the other transport: the shared read helper is the only
+        # place the cap lives, so neither path may drift from it.
+        _public_resolver(monkeypatch)
+        session = _FakeSession(chunks=[b"x" * 1024] * 100)
+        with pytest.raises(WeComMediaError, match="exceeds"):
+            asyncio.run(
+                media_mod.download_media(
+                    session,
+                    "https://cdn.example/big",
+                    base64.b64encode(os.urandom(32)).decode(),
+                    proxy="http://proxy.example:3128",
                     max_bytes=4096,
                 )
             )
 
     def test_a_missing_url_is_refused_before_any_request(self) -> None:
         with pytest.raises(WeComMediaError, match="no url"):
-            asyncio.run(
-                __import__("kiro_crew.wecom.media", fromlist=["x"]).download_media(None, "", "k")
-            )
+            asyncio.run(media_mod.download_media(None, "", "k"))
+
+
+class TestDownloadIsPinnedToTheVettedAddress:
+    """The vet resolves the host; the fetch must go to THAT address.
+
+    Vetting a name and letting aiohttp look it up again at connect time leaves a
+    DNS-rebinding window: the vet's answer is public, the connector's — microseconds
+    later, from a server the attacker controls — is ``169.254.169.254``. The pin
+    removes the second lookup, so what was checked is what is dialed.
+    """
+
+    _KEY = staticmethod(lambda: base64.b64encode(os.urandom(32)).decode())
+
+    def _run(self, session, **kw):
+        return asyncio.run(
+            media_mod.download_media(session, "https://cdn.example/o", self._KEY(), **kw)
+        )
+
+    def test_no_proxy_pins_the_connector_and_leaves_the_caller_session_alone(
+        self, monkeypatch
+    ) -> None:
+        pinned = _Pinned(monkeypatch, resolve="93.184.216.34")
+        caller = _FakeSession()
+        with pytest.raises(WeComMediaError):
+            self._run(caller)  # the empty body fails to decrypt; the transport is the point
+
+        resolver = pinned.resolver
+        assert isinstance(resolver, link_unfurl.PinnedResolver)
+        answers = asyncio.run(resolver.resolve("cdn.example", 443))
+        assert [a["host"] for a in answers] == ["93.184.216.34"]
+        assert pinned.connector_kwargs["limit"] == 1
+        assert pinned.connector_kwargs["family"] is socket.AF_UNSPEC
+        assert pinned.session_kwargs["connector"] is not None
+        assert caller.calls == [], "the shared session must not carry the pinned fetch"
+        assert pinned.session.calls[0]["url"].startswith("https://cdn.example/o")
+        assert pinned.session.calls[0]["allow_redirects"] is False
+        assert "proxy" not in pinned.session.calls[0]
+
+    def test_the_pin_carries_the_resolved_address_not_the_name(self, monkeypatch) -> None:
+        # A name that resolves somewhere else entirely must still be dialed at the
+        # address the vet approved -- that is the whole property.
+        pinned = _Pinned(monkeypatch, resolve="8.8.8.8")
+        with pytest.raises(WeComMediaError):
+            self._run(_FakeSession())
+        answers = asyncio.run(pinned.resolver.resolve("cdn.example", 443))
+        assert answers[0]["host"] == "8.8.8.8"
+        assert answers[0]["hostname"] == "cdn.example", "SNI and Host keep the real name"
+
+    def test_a_proxy_keeps_the_caller_session_and_builds_no_connector(self, monkeypatch) -> None:
+        # Under a proxy aiohttp never resolves the host, so a pin would be
+        # unconsulted -- and split-horizon DNS means our answer may not even match
+        # the proxy's. The caller's shared session stays the transport.
+        pinned = _Pinned(monkeypatch)
+        caller = _FakeSession()
+        with pytest.raises(WeComMediaError):
+            self._run(caller, proxy="http://proxy.example:3128")
+
+        assert pinned.connector_kwargs == {}, "no connector is built for a proxied fetch"
+        assert pinned.session_kwargs == {}, "no second session is opened"
+        assert caller.calls[0]["proxy"] == "http://proxy.example:3128"
+        assert caller.calls[0]["allow_redirects"] is False
+        assert caller.calls[0]["url"].startswith("https://cdn.example/o")
 
 
 class TestMediaUrlVetting:
@@ -324,8 +462,21 @@ class TestMediaUrlVetting:
         """
         monkeypatch.setattr(link_unfurl, "_default_resolve", self._public)
         out = _vet_media_url("https://wework.qpic.cn/media/abc?sig=xyz")
-        assert out.startswith("https://wework.qpic.cn/media/abc")
-        assert "sig=xyz" in out, "the signature query must survive normalization"
+        assert out.url.startswith("https://wework.qpic.cn/media/abc")
+        assert "sig=xyz" in out.url, "the signature query must survive normalization"
+
+    def test_the_vet_hands_back_the_address_the_caller_must_dial(self, monkeypatch) -> None:
+        """Returning only the URL is what made the pin impossible.
+
+        The caller needs the resolved address, the wire host aiohttp will ask its
+        resolver with, and the port -- so the vet returns the whole record.
+        """
+        monkeypatch.setattr(link_unfurl, "_default_resolve", self._public)
+        out = _vet_media_url("https://wework.qpic.cn/media/abc")
+        assert isinstance(out, link_unfurl.VettedUrl)
+        assert out.ip == "93.184.216.34"
+        assert out.wire_host == "wework.qpic.cn"
+        assert out.port == 443
 
     def test_port_80_on_an_https_url_is_refused(self, monkeypatch) -> None:
         """The shared vet allows {80, 443} because it also serves plain-http
@@ -338,61 +489,45 @@ class TestMediaUrlVetting:
 class TestMediaDownloadRedirects:
     """A followed redirect is a hop the vet never saw."""
 
-    class _Resp:
-        def __init__(self, status):
-            self.status = status
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *a):
-            return False
-
-        class content:  # noqa: N801 - matches aiohttp's attribute shape
-            @staticmethod
-            async def iter_chunked(_n):
-                yield b""
-
-    class _Session:
-        def __init__(self, status):
-            self.status = status
-            self.kwargs = {}
-
-        def get(self, *_a, **kw):
-            self.kwargs = kw
-            return TestMediaDownloadRedirects._Resp(self.status)
-
-    def _run(self, session):
+    def _run(self, session, **kw):
         return asyncio.run(
             media_mod.download_media(
                 session,
                 "https://cdn.example/o",
                 base64.b64encode(os.urandom(32)).decode(),
+                **kw,
             )
         )
 
     def test_redirects_are_disabled_on_the_request(self, monkeypatch) -> None:
-        monkeypatch.setattr(link_unfurl, "_default_resolve", lambda *_a: ["93.184.216.34"])
-        session = self._Session(200)
+        pinned = _Pinned(monkeypatch)
         with pytest.raises(WeComMediaError):
-            self._run(session)  # empty body fails to decrypt; the kwarg is the point
-        assert session.kwargs.get("allow_redirects") is False
+            self._run(_FakeSession())  # empty body fails to decrypt; the kwarg is the point
+        assert pinned.session.calls[0]["allow_redirects"] is False
 
     @pytest.mark.parametrize("status", [301, 302, 303, 307, 308])
     def test_a_redirect_response_is_refused_rather_than_followed(self, monkeypatch, status) -> None:
-        monkeypatch.setattr(link_unfurl, "_default_resolve", lambda *_a: ["93.184.216.34"])
+        _Pinned(monkeypatch, status=status)
         with pytest.raises(WeComMediaError, match="redirected"):
-            self._run(self._Session(status))
+            self._run(_FakeSession())
+
+    @pytest.mark.parametrize("status", [301, 302, 303, 307, 308])
+    def test_a_proxied_redirect_response_is_refused_too(self, monkeypatch, status) -> None:
+        _public_resolver(monkeypatch)
+        with pytest.raises(WeComMediaError, match="redirected"):
+            self._run(_FakeSession(status), proxy="http://proxy.example:3128")
 
     def test_the_vet_runs_before_any_request(self, monkeypatch) -> None:
-        """An internal URL must never reach the session at all."""
-        session = self._Session(200)
+        """An internal URL must never reach any session at all."""
+        pinned = _Pinned(monkeypatch)
+        caller = _FakeSession()
         with pytest.raises(WeComMediaError):
             asyncio.run(
                 media_mod.download_media(
-                    session,
+                    caller,
                     "https://169.254.169.254/latest/meta-data/",
                     base64.b64encode(os.urandom(32)).decode(),
                 )
             )
-        assert session.kwargs == {}, "refused before the fetch, not after"
+        assert caller.calls == [], "refused before the fetch, not after"
+        assert pinned.connector_kwargs == {}, "no connector is built for a refused url"

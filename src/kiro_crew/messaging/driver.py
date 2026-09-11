@@ -95,9 +95,8 @@ _MAX_STEER_MARKER_CHARS = 16_384
 #: from ``constants`` rather than respelled: it answers "could this unterminated
 #: tail still become a marker?", which is the question the drain below has to ask
 #: before it holds text back. Sourcing the pattern from the one place the grammar
-#: is written keeps the two probes from drifting apart -- a divergence a reviewer
-#: flagged on #9117 and which ``test_the_two_spellings_of_the_grammar_agree``
-#: now pins.
+#: is written keeps the two probes from drifting apart -- a divergence
+#: ``test_the_two_spellings_of_the_grammar_agree`` pins.
 #:
 #: Recompiled with ``IGNORECASE`` because THIS module's recognizer carries it:
 #: ``constants``' copy is case-sensitive on purpose (it probes the exact
@@ -348,7 +347,7 @@ class TurnDriver:
         ignored exactly as before.
     closing_gate:
         Optional synchronous gate invoked immediately before the provider stream
-        starts. Callers use it to reject a lease that shutdown can no longer
+        starts. Callers use it to reject a lease that shutdown cannot
         drain, and may also reject a structured monitor whose conversation
         generation changed. It must not await: the gate, monitor acceptance, and
         the stream's synchronous turn registration are one event-loop span.

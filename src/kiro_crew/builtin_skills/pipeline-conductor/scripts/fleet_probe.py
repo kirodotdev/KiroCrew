@@ -241,7 +241,7 @@ def _count_own_rows(raw: bytes) -> int:
     return total
 
 
-#: Error shapes observed in real worker tails during the 2026-08-30 fleet run.
+#: Error shapes observed in real worker tails, not shapes invented here.
 DEFAULT_ERR_RES = (
     r"Bedrock is throttling",
     r"dispatch failure",
@@ -252,22 +252,21 @@ DEFAULT_ERR_RES = (
 #: and a bare full-suite vitest with no file arguments.
 #:
 #: "Nobody chose" is the honest statement of what this rule catches, and it is
-#: not the same as "too many". This comment used to say a bare pytest forks one
-#: worker per core because of the repo's ``-n auto`` addopts. That premise is
-#: wrong: ``setup.cfg`` documents that ``auto`` is bounded by the rootdir
-#: conftest's ``pytest_xdist_auto_num_workers`` hook, which sizes the pool by
-#: available memory and by what concurrent runs on the host already hold, and
-#: that "an explicit ``-n <N>`` bypasses the budget". So on THIS repo the
-#: explicit spelling is the one that can outgrow the host, and ``auto`` is the
-#: one that cannot.
+#: not the same as "too many". On THIS repo the explicit spelling is the one
+#: that can outgrow the host: ``setup.cfg`` documents that ``auto`` is bounded
+#: by the rootdir conftest's ``pytest_xdist_auto_num_workers`` hook, which sizes
+#: the pool by available memory and by what concurrent runs on the host already
+#: hold, and that "an explicit ``-n <N>`` bypasses the budget". So ``auto`` is the
+#: spelling that cannot outgrow it.
 #:
 #: The rule's sense is deliberately left as it stands, because changing which
 #: shapes it flags changes what the conductor stops mid-turn across a whole
 #: fleet, and that is not a comment's decision to make. What it costs is stated
 #: plainly instead: ``-n 4``, ``-n=4``, ``-n4``, ``-n0`` and
-#: ``--numprocesses=4`` all read as bounded, ``-n auto`` and a bare pytest do
-#: not. ``-n0`` is the repo's own documented override and is genuinely
-#: in-process, so the safest form a worker can run is also a passing one.
+#: ``--numprocesses=4`` all read as bounded, while ``-n auto`` and any pytest
+#: carrying no numeric ``-n`` -- including a targeted single-file run -- do not.
+#: ``-n0`` is the repo's own documented override and is genuinely in-process, so
+#: the safest form a worker can run is also a passing one.
 DEFAULT_BANNED_RES = (
     r"\bpytest\b(?!.*(?:-n|--numprocesses)\s*=?\s*\d)",
     r"\bvitest\b\s+run\s*$",
@@ -298,14 +297,14 @@ NOPROGRESS_TAG = "NOPROGRESS"
 #: Reports that END an assignment. A worker that files one and then writes an
 #: unprefixed line is finished, not wedged, and must not age into IDLE.
 #:
-#: ``GREEN`` is the one that matters most and was missing from the first version
-#: of this set, which is worth recording because it made the fix cover only its
-#: rare cases: ``GREEN`` is the literal exit condition in every worker's contract
-#: ("report GREEN and stop"), so the most common terminal state in the fleet aged
-#: into IDLE and the conductor nudged workers that had already delivered -- the
-#: exact harm this set exists to remove. ``PR`` is deliberately NOT here: opening
-#: a pull request is a milestone the work continues past, and a worker that has
-#: only reported ``PR`` still owes the conductor a green.
+#: ``GREEN`` is the member that matters most, and a set without it covers only
+#: the rare cases: ``GREEN`` is the literal exit condition in every worker's
+#: contract ("report GREEN and stop"), so omitting it ages the fleet's most
+#: common terminal state into IDLE and has the conductor nudge workers that
+#: already delivered -- the exact harm this set exists to remove. ``PR`` is
+#: deliberately NOT here: opening a pull request is a milestone the work
+#: continues past, and a worker that has only reported ``PR`` still owes the
+#: conductor a green.
 TERMINAL_TAGS = frozenset({"GREEN", "STANDDOWN", "PROPOSAL"})
 
 #: Reports that keep their meaning until the conductor ACTS on them.
@@ -1563,14 +1562,13 @@ def mark_handled(cfg: dict[str, Any], state_path: Path, key: str, tag: str, dige
     # ONE field records the last payload disposition, and it is written on EVERY
     # mark: set when this mark IS a payload, carried forward when it is not.
     #
-    # An earlier version wrote two fields for this -- `proto` for the terminal
-    # reading and `settled` for the suppression -- and gated the second on the
-    # condition tags alone. That left the same data loss reachable one door down:
-    # an `ERR` disposition on a session whose `BLOCKED` was answered overwrote the
-    # answer, and once a heartbeat stopped the error row being last, the answered
-    # ruling presented again. The rule is not "condition marks preserve payloads"
-    # but "a mark that is not itself a payload cannot erase one", so the carry is
-    # unconditional and the two fields collapse into this one.
+    # The carry is unconditional, and one field carries both readings, because
+    # the rule is not "condition marks preserve payloads" but "a mark that is not
+    # itself a payload cannot erase one". Gating the carry on the condition tags
+    # alone leaves the same data loss reachable one door down: an `ERR`
+    # disposition on a session whose `BLOCKED` was answered overwrites the
+    # answer, and once a heartbeat stops the error row being last, the answered
+    # ruling presents again.
     previous = handled.get(key)
     previous = previous if isinstance(previous, dict) else {}
     prior_tag, prior_digest = previous.get("tag"), previous.get("digest")

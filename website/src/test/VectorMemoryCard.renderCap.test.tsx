@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { api } from '../api/client'
 import { screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import VectorMemoryCard, { SEMANTIC_RENDER_CAP } from '../pages/overview/VectorMemoryCard'
@@ -89,4 +90,13 @@ describe('VectorMemoryCard — Semantic Memory render cap', () => {
     await waitFor(() => expect(screen.getByText('No matching entries')).toBeInTheDocument())
     expect(screen.queryByText(footerMatcher(/Showing/))).not.toBeInTheDocument()
   })
+})
+
+
+it('opens diagnostics with a bounded audit page without downloading the semantic database', async () => {
+  vi.clearAllMocks()
+  renderWithProviders(<VectorMemoryCard diagnosticsOnly />)
+  await waitFor(() => expect(api.vectorEvents).toHaveBeenCalledWith(50, 0))
+  expect(api.vectorSemantic).not.toHaveBeenCalled()
+  expect(screen.queryByPlaceholderText('Filter by key or value…')).not.toBeInTheDocument()
 })

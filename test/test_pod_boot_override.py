@@ -112,7 +112,7 @@ class TestDropInRendering:
         assert unit_mod.dropin_path(pod_plane, "wt").is_file()
         assert unit_mod.remove_dropin(pod_plane, "wt") is True
         # The directory goes too: an empty `<unit>@wt.service.d` is still a
-        # directory named after a pod that no longer exists.
+        # directory named after a pod that is gone.
         assert not unit_mod.dropin_dir(pod_plane, "wt").exists()
 
     def test_install_rewrites_a_stale_override(self, pod_plane: PodConfig) -> None:

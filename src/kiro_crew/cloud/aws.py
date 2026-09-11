@@ -183,7 +183,7 @@ def _build_argv(args: list[str], profile: str, region: str) -> list[str]:
     ``cloud.ec2``).
 
     The CLI is resolved absolutely through the deploy engine's shared resolver
-    so a GUI-launched gateway's minimal PATH still finds it (#4770).
+    so a GUI-launched gateway's minimal PATH still finds it.
     """
     cmd = [resolve_aws_bin(), *args]
     if profile:

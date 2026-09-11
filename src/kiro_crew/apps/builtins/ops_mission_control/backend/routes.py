@@ -191,17 +191,16 @@ def _audit(op: str, target: str, outcome: str, *, error: str = "") -> None:
 def _store_read_refusal(exc: Exception, *, code: str) -> web.Response:
     """Map a strict reader's refusal to a coded response.
 
-    The store and config readers now refuse rather than publishing a mutation over a
-    read they could not make, so every handler that mutates them can see two failures
-    that previously could not happen. They get DIFFERENT statuses because the operator's
+    The store and config readers refuse rather than publishing a mutation over a read
+    they could not make, so every handler that mutates them can see two distinct
+    failures. They get DIFFERENT statuses because the operator's
     next move differs: an unreadable file is transient, so 503 correctly says "retry",
     while a corrupt one needs a person to repair it, so 503 would send them at something
     that cannot succeed and 500 is the honest answer.
 
-    Centralized because four handlers need the identical pair, and three review lanes
-    independently flagged that translating it at some of them and not others is worse
-    than not translating it anywhere -- an operator cannot tell a route that reports the
-    condition from one that swallows it.
+    Centralized because four handlers need the identical pair, and translating it at
+    some of them and not others is worse than not translating it anywhere -- an
+    operator cannot tell a route that reports the condition from one that swallows it.
 
     ``JSONDecodeError`` MUST be matched before any ``ValueError`` arm at the call site.
     It is a `ValueError` subclass, so an existing arm for a domain error will otherwise
@@ -292,14 +291,14 @@ def _slot_state(request: web.Request, slot_key: str) -> dict[str, Any] | None:
         return None
 
     # `to_dict()` is the slot's PUBLIC serializer and it already derives `pending_approval`
-    # from the approval futures (state.py). This used to read `slot._approval_futures`
-    # directly — review flagged it, correctly: a private attribute is not a contract, so a
-    # core refactor that renamed it would silently turn "waiting on you" into "progressing"
-    # on this board, with nothing failing anywhere. Asking the owner is the fix.
+    # from the approval futures (state.py). Reading `slot._approval_futures` directly is
+    # wrong: a private attribute is not a contract, so a core refactor that renamed it
+    # would silently turn "waiting on you" into "progressing" on this board, with nothing
+    # failing anywhere. Asking the owner is the fix.
     #
     # Falls back to the public attribute if `to_dict` is absent or raises: this read paints
-    # the whole board, so it degrades rather than 500s. The fallback is deliberately NOT the
-    # old private reach-in — a narrower truth beats a fragile one.
+    # the whole board, so it degrades rather than 500s. The fallback is deliberately NOT a
+    # private reach-in — a narrower truth beats a fragile one.
     pending = bool(getattr(slot, "pending_approval", False))
     to_dict = getattr(slot, "to_dict", None)
     if callable(to_dict):
@@ -484,8 +483,8 @@ async def _handle_handover(request: web.Request) -> web.StreamResponse:
 
 #: Incidents returned by ``/incidents`` in one response. The board shows recent work; a
 #: responder scrolling to incident 900 is not a workflow this app has. Bounded because
-#: the endpoint used to serialize the ENTIRE index — fine at 3 incidents, a growing
-#: payload on every dashboard poll once a flapping alarm has minted hundreds.
+#: serializing the ENTIRE index is fine at 3 incidents and a growing payload on every
+#: dashboard poll once a flapping alarm has minted hundreds.
 MAX_INCIDENTS_RESPONSE = 200
 
 
@@ -755,10 +754,9 @@ async def _handle_claim(request: web.Request) -> web.StreamResponse:
 
     # Acknowledge the push spool here too. `dispatch.run_cycle` acks what IT claims, and this
     # route is the second place a claim becomes durable — so without this a hand-claimed
-    # webhook signal stayed spooled forever, and on a full (200-entry) spool the next signed
-    # delivery evicted the OLDEST unclaimed entry to make room for it: a real alert lost to a
-    # duplicate nobody needed. A direct consequence of moving consumption off `poll()`;
-    # `drain()` used to cover this path by accident. Found in review.
+    # webhook signal stays spooled forever, and on a full (200-entry) spool the next signed
+    # delivery evicts the OLDEST unclaimed entry to make room for it: a real alert lost to a
+    # duplicate nobody needed. `poll()` does not consume, so nothing else on this path acks.
     #
     # Cheap and unconditional: `ack` on an id that is not spooled removes nothing, so no
     # source check is needed and a future push provider gets the same treatment for free.
@@ -883,11 +881,11 @@ async def _handle_action(request: web.Request) -> web.StreamResponse:
     #
     # `authorize_action` gates on `incident.signal`, and `AutonomyRule.matches` keys on
     # `signal.source` — so a rule only ever grants authority over the provider that
-    # RAISED the signal. `sink_id` used to be honoured verbatim, which let a grant on one
-    # provider execute against another: a webhook signal carrying `dd_monitor_id`, a
-    # webhook-scoped act-rule, and `sink="datadog"` passed the webhook check and then
-    # silenced an unrelated Datadog monitor. The gate was correct; the code just did not
-    # act on the thing the gate had approved.
+    # RAISED the signal. Honouring `sink_id` verbatim would let a grant on one provider
+    # execute against another: a webhook signal carrying `dd_monitor_id`, a webhook-scoped
+    # act-rule, and `sink="datadog"` would pass the webhook check and then silence an
+    # unrelated Datadog monitor. The gate is correct, and the write has to land on the
+    # thing the gate approved.
     #
     # Rejected rather than silently ignored. A caller that names the wrong sink has a
     # wrong model of what it is authorized to do, and quietly redirecting the write to the
@@ -964,9 +962,10 @@ async def _handle_action(request: web.Request) -> web.StreamResponse:
             # Echoed so a caller can see the window actually applied, which may be
             # smaller than the one it asked for.
             "duration_secs": payload.get("duration_secs"),
-            # What a 2xx from the provider now DOES and does not mean, reported in the
-            # same response that used to imply "applied". ``pending`` says a recheck is
-            # scheduled; ``not_checkable`` says this app cannot observe this verb's
+            # What a 2xx from the provider DOES and does not mean, in the same response
+            # as the result — a 2xx alone never means "applied". ``pending`` says a
+            # recheck is scheduled; ``not_checkable`` says this app cannot observe this
+            # verb's
             # outcome; ``""`` says the call failed so nothing was scheduled.
             "verification": verification,
             "verify_after": verify_after,
@@ -1031,15 +1030,14 @@ def _schedule_verification(incident_id: str, action: str, duration_secs: Any) ->
         # ALREADY performed the real external write by the time this runs (`result.ok and
         # not result.simulated`), so raising turns a successful action into a 500 and invites
         # the operator to retry it -- in `act` mode that is a second real write against their
-        # production tooling. Found in review: Design Review caught that corruption was
-        # silently swallowed by the clause below (`JSONDecodeError` subclasses `ValueError`),
-        # and GPT 5.6 then caught that re-raising misreports a completed action. Neither
-        # remedy alone is right.
+        # production tooling. Swallowing it in the clause below (`JSONDecodeError`
+        # subclasses `ValueError`) hides it, and re-raising misreports a completed action.
+        # Neither remedy alone is right.
         #
         # So it is REPORTED rather than either swallowed or raised: its own clause, an
         # exception log, and a SEL audit entry recording that the action ran with no
-        # verification scheduled. That is the same choice #7788 made for a partial ceiling
-        # apply in this file -- the audit log is the durable reader, and unlike a new
+        # verification scheduled. That is the same choice a partial ceiling apply in this
+        # file makes -- the audit log is the durable reader, and unlike a new
         # `verification` value it needs no vocabulary the dashboard cannot render. The
         # persistence argument still holds (corruption never self-heals), which is why it is
         # audited as a failure rather than folded into the tolerant arm.
@@ -1432,10 +1430,10 @@ async def _handle_decide_proposal(request: web.Request) -> web.StreamResponse:
             {"error": "unknown incident", "code": "unknown_incident"}, status=404
         )
     except (json.JSONDecodeError, OSError) as exc:
-        # `decide_proposal` is a locked read-modify-write that now refuses rather than
-        # publishing over a failed read. Previously this could only answer a coded 404, so
-        # both new failures became a bare 500. The request is a human's approval of a
-        # production action, so "did my approval land?" must not be ambiguous.
+        # `decide_proposal` is a locked read-modify-write that refuses rather than
+        # publishing over a failed read, so its refusals need coded answers of their own
+        # instead of a bare 500. The request is a human's approval of a production action,
+        # so "did my approval land?" must not be ambiguous.
         logger.warning("ops-mission-control: proposal decision refused for %s", incident_id)
         _audit("incident_proposal_decide", incident_id, "failure", error="index unreadable")
         return _store_read_refusal(exc, code="dispatch_index")
@@ -1504,11 +1502,10 @@ async def _handle_signals(request: web.Request) -> web.StreamResponse:
     """Current provider state: what is firing, what is unclaimed, and what we could not read.
 
     ``firing`` is the list a caller should reason about, and it is filtered the same way
-    ``dispatch.run_cycle`` filters — previously this route returned every signal
-    regardless of state under the key ``signals``, while dispatch claimed only firing
-    ones. That was harmless while no adapter could emit ``ok``; once one can, an
-    already-cleared signal would appear in the very list the reconcile SOP reads as
-    "what is still firing", and in ``unclaimed`` as apparent work.
+    ``dispatch.run_cycle`` filters. Returning every signal regardless of state would put
+    an already-cleared one in the very list the reconcile SOP reads as "what is still
+    firing", and in ``unclaimed`` as apparent work — the two must agree on what firing
+    means.
 
     ``poll_health`` is the other half of that contract: absence from ``firing`` only
     means "it cleared" for a source whose poll actually SUCCEEDED. Resolving an incident
@@ -1864,11 +1861,10 @@ async def _handle_put_settings(request: web.Request) -> web.StreamResponse:
     # branch name are not credentials (auth is the operator's own git/ssh/gh
     # config), so they belong in plain app config like the Slack channel above.
     #
-    # These were previously settable ONLY by hand-editing ``data/config.json``:
-    # ``ledger_sync.set_settings`` existed and worked, but nothing outside the
-    # tests ever called it, so the app's headline team feature had no way in. An
-    # operator looking for "where do I point this at my team repo?" correctly
-    # found nothing.
+    # Settable here rather than only by hand-editing ``data/config.json``:
+    # ``ledger_sync.set_settings`` needs a caller, or the app's headline team
+    # feature has no way in and an operator looking for "where do I point this
+    # at my team repo?" finds nothing.
     wants_sync = (
         "ledger_sync_remote" in body
         or "ledger_sync_branch" in body
@@ -2175,9 +2171,9 @@ async def _handle_put_secret(request: web.Request) -> web.StreamResponse:
     try:
         await asyncio.to_thread(put_secret, provider_id, field_name, value)
     except json.JSONDecodeError as exc:
-        # The store's update reader now refuses a corrupt document rather than
-        # replacing it (#7805), so this handler can see a failure that previously
-        # could not happen. Same shared mapper as the settings writes, for the same
+        # The store's update reader refuses a corrupt document rather than
+        # replacing it, so this handler can see that refusal. Same shared mapper
+        # as the settings writes, for the same
         # reason: translating it at some handlers and not others is worse than not
         # translating it anywhere. 500-with-code rather than the OSError arm's 503:
         # corruption does not clear on retry, it needs a person to repair the file.
@@ -2237,7 +2233,7 @@ async def _handle_rotation(request: web.Request) -> web.StreamResponse:
 async def _handle_rotation_arm(request: web.Request) -> web.StreamResponse:
     """Arm/disarm this app's crons to match the tier map — server-side, not agent-driven.
 
-    The whole point is that the agent no longer decides WHICH crons to pause. It POSTs here;
+    The whole point is that the agent does not decide WHICH crons to pause. It POSTs here;
     ``rotation.apply_tiers`` computes the tier map and refuses to pause an always-tier job
     unconditionally. See that function for why prose in the SOP was not sufficient.
     """
@@ -2288,7 +2284,7 @@ async def _handle_ledger_contradictions(request: web.Request) -> web.StreamRespo
     """Entry pairs claiming different fixes for the same fingerprint.
 
     A read-only diagnostic for the hygiene SOP, which is told to "resolve contradictions"
-    and previously had to find them by eye across the whole ledger. Detection is
+    and cannot find them by eye across the whole ledger. Detection is
     deterministic and cheap; the resolution (split the two patterns so each names its own
     cause) needs the model, so this endpoint deliberately changes nothing.
     """
@@ -2633,11 +2629,11 @@ async def _read_capped(request: web.Request, cap: int) -> bytes | None:
 def _webhook_reject_status(detail: str) -> int:
     """Map a rejection reason to its HTTP status.
 
-    Everything used to return 401, including "malformed JSON" and "payload has no
-    title" — which are *authenticated* requests with a bad body. A sender debugging
-    a payload was told "Unauthorized" and would go re-check credentials that were
-    fine, while a real signature failure looked identical to a typo. Payload faults
-    are 400; only the trust checks are 401. Defaults to 401 for an unrecognized
+    "malformed JSON" and "payload has no title" are *authenticated* requests with a
+    bad body. Answering 401 for them tells a sender debugging a payload to go
+    re-check credentials that are fine, and makes a real signature failure look
+    identical to a typo. Payload faults are 400; only the trust checks are 401.
+    Defaults to 401 for an unrecognized
     reason, so a newly-added rejection is treated as auth-ish rather than
     accidentally advertised as "your request was fine".
     """

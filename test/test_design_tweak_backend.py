@@ -217,7 +217,7 @@ class TestValidTarget:
         """A bad PORT must be refused at the barrier, not at the first reader.
 
         `urlsplit` accepts `http://localhost:notaport` and resolves `.hostname`
-        happily — `.port` is a lazily-parsed property, so the ValueError used to
+        happily — `.port` is a lazily-parsed property, so the ValueError would
         surface far downstream. The URL got persisted onto the project and then
         every `/projects` poll raised while reading `.port`, turning one typo into
         a permanent 500 on project loading.
@@ -522,8 +522,8 @@ class TestStopStaticPreview:
 class TestWhatIsWrittenStaysReadable:
     """The write ceiling and the read ceiling must be the SAME number.
 
-    A record the writer accepts but the reader refuses is a draft the user can
-    no longer see: `_read_request` reports it absent, so `/queue` stops listing
+    A record the writer accepts but the reader refuses is a draft the user cannot
+    see: `_read_request` reports it absent, so `/queue` stops listing
     it and the queued work is effectively gone. Refusing the append that would
     have crossed the line is strictly better — the user keeps the draft and is
     told it is full. Each individual payload is under `MAX_BODY_BYTES`, so the
@@ -2614,8 +2614,8 @@ class TestPersistedDevUrlIsFrontedWithProxy:
     def test_proxy_failure_leaves_the_preview_unreachable(self, tmp_path, monkeypatch):
         """No preview beats a leaking one.
 
-        This previously asserted the opposite — that framing the bare dev server
-        was an acceptable degradation "without select-to-edit". It is not: the
+        Framing the bare dev server is not an acceptable degradation, even
+        "without select-to-edit": the
         proxy is also what strips the dashboard's `Cookie` header, and cookies
         ignore the port, so the bare dev server on the same host receives the
         session cookie. An empty `previewUrl` renders the unreachable state.
@@ -2640,8 +2640,8 @@ class TestPersistedDevUrlIsFrontedWithProxy:
         """The allow-list is re-asserted at the sink: this value is read off disk
         and would become a proxy UPSTREAM.
 
-        It is CLEARED, not handed back. This previously asserted "left exactly as
-        today (framed bare)", which is the credential leak: framing it directly
+        It is CLEARED, not handed back. Handing it back — "left exactly as
+        today (framed bare)" — is the credential leak: framing it directly
         bypasses the proxy that strips `Cookie`/`Authorization`, and cookies are
         host-scoped but port-agnostic, so the dashboard's own session cookie
         reached whatever the value named.
@@ -3308,7 +3308,7 @@ class TestDevProcCrossPlatform:
 class TestDeliveryAcknowledgement:
     """`/send` seals; the panel dispatches afterwards. Two steps need an ack.
 
-    A tab closed between the seal and the prompt reaching the agent used to leave
+    A tab closed between the seal and the prompt reaching the agent would leave
     the request sealed and undeliverable: the send bar only renders for a draft,
     so the batch was stranded with no retry. `deliveredAt` records that the
     dispatch actually happened, which is what lets the panel offer a resend for

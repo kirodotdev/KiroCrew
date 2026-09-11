@@ -1,4 +1,4 @@
-"""Tests for deploy Round 18 fixes.
+"""Tests for a batch of deploy fixes.
 
 F1: profiles GET redacts `default` and `available` names.
 F2: deploy snapshots strip .git before scan/upload (both scripts).

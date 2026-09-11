@@ -308,7 +308,7 @@ def _open_verified(target: str, root_real: str) -> int | None:
     were reached through is still the path that was verified.
     """
     try:
-        fd = platform_compat.open_file_no_reparse(target)
+        fd = platform_compat.open_file_no_reparse(target, nonblocking=True)
     except OSError:
         return None
     try:
@@ -358,7 +358,7 @@ def _add_from_fd(zf: zipfile.ZipFile, fd: int, arcname: str) -> None:
     ``ZipFile.write`` takes a NAME and opens it itself, which is the re-open
     :func:`_open_inside` exists to remove, so the entry is built by hand instead.
     Streaming rather than reading the file whole is deliberate: a workspace file
-    has no size bound here, and the export used to copy one of any size.
+    has no size bound here, and the export copies one of any size.
 
     The entry's timestamp and mode come from the same descriptor, so the metadata
     describes the bytes actually archived — not whatever the name pointed at when
@@ -369,8 +369,8 @@ def _add_from_fd(zf: zipfile.ZipFile, fd: int, arcname: str) -> None:
     its size when the header is written, so without this a file over
     ``zipfile.ZIP64_LIMIT`` raises ``RuntimeError`` part-way through and the export
     endpoint answers 500. A multi-GiB file under ``workspace/`` is ordinary — a
-    dataset, a model artifact — and it used to export fine, so leaving this off
-    would trade one defect for a regression.
+    dataset, a model artifact — and must export, so leaving this off would trade
+    one defect for another.
     """
     st = os.fstat(fd)
     info = zipfile.ZipInfo(arcname, date_time=time.localtime(st.st_mtime)[:6])
@@ -717,15 +717,15 @@ def apply_import_zip(zip_path: Path, mode: str = "merge") -> dict:
     # ancestor-swap resistance, not link resistance.
     staging_pinned = _staging_is_pinned(allow_unpinned=True, what=f"{mode} import")
 
-    # What this field may honestly say depends on the MODE, not only the platform. Review
-    # caught it reporting "pinned" for a merge whose core files and skills are still copied
-    # by name with `shutil` -- true of the platform, false of the operation, and this field
-    # exists to tell a reader what actually happened.
+    # What this field may honestly say depends on the MODE, not only the platform.
+    # Reporting "pinned" for a merge whose core files and skills are still copied by
+    # name with `shutil` is true of the platform, false of the operation, and this
+    # field exists to tell a reader what actually happened.
     #
     # replace delegates the whole apply to `_do_replace`, which is pinned throughout. merge
     # routes only its tree copy through the primitive; its core files (including the
-    # databases, deliberately out of scope -- see #5451) and its skills copy are by name. So
-    # merge on a pinnable platform is MIXED, and saying so is the point.
+    # databases, deliberately out of scope) and its skills copy are by name. So merge
+    # on a pinnable platform is MIXED, and saying so is the point.
     if not staging_pinned:
         staging_mode = "unpinned"
     elif mode == "replace":
@@ -833,9 +833,9 @@ def apply_import_zip(zip_path: Path, mode: str = "merge") -> dict:
                         summary["items"].append("crons (merged)")
                     else:
                         # A refused merge imported zero jobs. Appending
-                        # "crons (merged)" here regardless was issue #8217: the
-                        # dashboard rendered a success over a restore that
-                        # brought no job back. The refusal is named in the
+                        # "crons (merged)" here regardless would render a
+                        # success over a restore that brought no job back.
+                        # The refusal is named in the
                         # items and flagged machine-readably so the handler can
                         # log the import as partial rather than a flat ok.
                         summary["items"].append("crons (skipped: unreadable or invalid cron store)")

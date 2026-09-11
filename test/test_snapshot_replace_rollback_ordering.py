@@ -60,7 +60,7 @@ class TestReplaceSavesEveryTreeBeforeReplacingAny:
         # And the recovery is wired to the whole saved set, not to one tree.
         #
         # Checked by reading that call's ARGUMENTS for the whole-set names, not by matching a
-        # spelling of the whole call. This assertion used to pin
+        # spelling of the whole call. This assertion must not pin
         # `_restore_everything_from_rollback(backup, mc, targets, installed)` verbatim, which
         # is the exact mistake the comment above warns about -- threading the operator's
         # unpinned opt-in into recovery reflowed the call across lines and broke it, with

@@ -48,10 +48,10 @@ _EXTRA_PATH_DIRS = (
 # declared by bare name never launches and the session simply comes up short of
 # tools, which reads as a missing capability rather than a launch failure.
 #
-# So the list is extensible from two sides, merged in :func:`mcp_search_path`
-# (issue #5083). Fixing it at that one function is deliberate: it is the path all
-# three of those consumers resolve against, so one contributed directory reaches
-# all of them without any of them knowing it exists.
+# So the list is extensible from two sides, merged in :func:`mcp_search_path`.
+# Fixing it at that one function is deliberate: it is the path all three of those
+# consumers resolve against, so one contributed directory reaches all of them
+# without any of them knowing it exists.
 #
 # * ``mcp.extra_path_dirs`` in the config — an operator on one host.
 # * :func:`register_mcp_path_dirs` — a packaged/downstream build or an embedding
@@ -685,7 +685,7 @@ _SEARCH_PATH_REPORT_LIMIT = 40
 #: Appended to "MCP command not found" warnings. Naming the directories searched
 #: tells a reader the binary is installed somewhere uncovered; this tells them
 #: what to do about it, so the diagnosis and the remedy arrive together instead
-#: of the remedy living only in the source (issue #5083).
+#: of the remedy living only in the source.
 MCP_PATH_HINT = "if it is installed elsewhere, add that directory to mcp.extra_path_dirs"
 
 
@@ -825,7 +825,7 @@ def spec_env_path(env_path: str) -> str:
 
 
 def mcp_search_path(env_path: str) -> str:
-    """:func:`spec_env_path` plus the contributed MCP directories (issue #5083).
+    """:func:`spec_env_path` plus the contributed MCP directories.
 
     The path an MCP command is RESOLVED against -- the probe, the agent-config
     command resolver, and gatewayd's rewriter all use this one. Separate from

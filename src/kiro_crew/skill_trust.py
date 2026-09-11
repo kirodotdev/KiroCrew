@@ -645,10 +645,10 @@ def revoke_project_trust(project_dir: str | Path, *, session_key: str = "") -> b
         # safety_override.deactivate. Fail closed on escalation, fail open on
         # de-escalation.
         #
-        # Containing the failure is the part that was actually broken: the
-        # OSError from a critical audit used to escape to aiohttp as a 500, so the
-        # operator was told the revoke failed when it had durably succeeded -- and
-        # a retry returned removed=False, skipping the audit and losing the record
+        # Containing the failure is the load-bearing part: an OSError from a
+        # critical audit escaping to aiohttp as a 500 tells the operator the
+        # revoke failed when it has durably succeeded -- and a retry then returns
+        # removed=False, skipping the audit and losing the record
         # permanently. critical=True stays INSIDE the try because it flushes the
         # chain and writes synchronously, making the record more likely to land;
         # the except is what keeps it from reaching the caller. Outside the lock

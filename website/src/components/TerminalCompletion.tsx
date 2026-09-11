@@ -84,7 +84,7 @@ interface Suggestions {
   /** The command context these entries were computed for. Part of the staleness
    *  identity: the token alone does NOT identify a command-tier suggestion, since
    *  `gh pr c` and `git c` share the token `c`. Without this, editing the command
-   *  word while a menu is open lets Enter insert the OTHER tool's subcommand. */
+   *  word while a menu is open lets an accept insert the OTHER tool's subcommand. */
   argv: string[]
 }
 
@@ -148,6 +148,17 @@ export default function TerminalCompletion({ term, sessionId, active }: {
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
   /** When the last IME composition finished — see `IME_GRACE_MS`. */
   const imeEndAt = useRef(0)
+  /**
+   * Whether the user has moved the highlight (ArrowUp/ArrowDown) on the CURRENT
+   * listing. Enter accepts the highlighted row only after that; otherwise it
+   * reaches the shell and submits the line exactly as typed. The menu opens
+   * unbidden on almost every word, so an Enter that accepted the top row by
+   * default rewrote commands the user had already finished typing (`git status`
+   * became `git stash`), and every submit needed an Escape first. This is the
+   * convention every other completer the user has met follows (fish, zsh
+   * autosuggest, VS Code's terminal): Enter runs, Tab/arrows pick.
+   */
+  const navigated = useRef(false)
   // Key handling reads the live suggestion list; a ref keeps xterm's single
   // custom-key-handler slot from being re-attached on every state change.
   const stateRef = useRef<{ sug: Suggestions | null; selected: number }>({ sug: null, selected: 0 })
@@ -159,6 +170,7 @@ export default function TerminalCompletion({ term, sessionId, active }: {
     if (timer.current) { clearTimeout(timer.current); timer.current = null }
     setSug(null)
     setSelected(0)
+    navigated.current = false
   }, [])
 
   /* ── Prompt markers from shell integration ── */
@@ -352,6 +364,9 @@ export default function TerminalCompletion({ term, sessionId, active }: {
       argv: req.argv,
     })
     setSelected(0)
+    // A fresh listing resets the highlight, so a pick made on the previous one
+    // no longer stands: typing on after arrowing must leave Enter to the shell.
+    navigated.current = false
   }, [data, isError, req, close])
 
   /* ── Recompute on cursor movement ── */
@@ -496,9 +511,11 @@ export default function TerminalCompletion({ term, sessionId, active }: {
       const n = s.entries.length
       switch (e.key) {
         case 'ArrowDown':
+          navigated.current = true
           setSelected(i => (i + 1) % n)
           return claim(e)
         case 'ArrowUp':
+          navigated.current = true
           setSelected(i => (i - 1 + n) % n)
           return claim(e)
         case 'Escape':
@@ -506,7 +523,10 @@ export default function TerminalCompletion({ term, sessionId, active }: {
           close()
           return claim(e)
         case 'Enter':
-          if (stale(s)) { close(); return true }
+          // Enter is the shell's key unless the user has arrowed onto a row.
+          // The menu closes either way: the line is about to be submitted, so
+          // a listing left open would describe a command that no longer exists.
+          if (!navigated.current || stale(s)) { close(); return true }
           accept(s.entries[stateRef.current.selected], s)
           return claim(e)
         case 'Tab': {

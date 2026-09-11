@@ -103,7 +103,7 @@ class CancellationCoordinator(ManagerComponent):
                 # past max_concurrent. The respawned _run owns the slot from
                 # here (its finally decrements). The informational
                 # subagent_recovering emit happens after, where a cancellation
-                # can no longer leak the counter.
+                # cannot leak the counter.
                 self._manager._running_count += 1
                 # The interrupted run's finally already consumed this info's
                 # slot token to free its slot. The respawn occupies a FRESH slot,
@@ -156,7 +156,7 @@ class CancellationCoordinator(ManagerComponent):
                     )
             finally:
                 # Whether respawned, aborted, or cancelled: this pending
-                # recovery is no longer outstanding.
+                # recovery is not outstanding.
                 _reg = self._manager._tasks.get(recovery_key)
                 if _reg is asyncio.current_task():
                     self._manager._tasks.pop(recovery_key, None)
@@ -179,9 +179,9 @@ class CancellationCoordinator(ManagerComponent):
                 # `_reap_started`, not just `reaped`: `_force_reap` cancels this
                 # task BEFORE it sets `reaped` (which must stay false until the
                 # reaper owns the record — see `_reap_started`). Consulting only
-                # `reaped` made this arm win the race and persist a neutral user
-                # Stop as a FAILURE, with a failure stat and a "cancelled"
-                # tombstone the reaper could no longer correct.
+                # `reaped` would let this arm win the race and persist a neutral
+                # user Stop as a FAILURE, with a failure stat and a "cancelled"
+                # tombstone the reaper could not correct.
                 if not info.done and not info._reap_started and not info.reaped:
                     info.done = True
                     info.error = "cancelled"

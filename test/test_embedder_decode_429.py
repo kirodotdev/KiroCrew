@@ -1,6 +1,6 @@
-"""Regression: bytes_to_floats must not raise on corrupt/legacy blobs (#429).
+"""bytes_to_floats must not raise on corrupt/legacy blobs.
 
-A blob whose length isn't a multiple of 4 used to raise ``struct.error`` and
+A blob whose length isn't a multiple of 4 would raise ``struct.error`` and
 abort the whole dedup sweep; a legacy JSON-encoded embedding was mis-decoded as
 garbage floats. It now returns ``[]`` (skippable) / decodes JSON correctly.
 """
@@ -27,7 +27,7 @@ def test_short_binary_roundtrip() -> None:
 
 
 def test_non_multiple_of_four_returns_empty() -> None:
-    # 3 bytes: used to raise struct.error and abort the sweep.
+    # 3 bytes: would raise struct.error and abort the sweep.
     assert bytes_to_floats(b"\x01\x02\x03") == []
 
 

@@ -16,6 +16,7 @@ from kiro_crew.discord.client import DISCORD_CHUNK_LIMIT, DiscordInteraction
 from kiro_crew.discord.commands import parse_command, parse_command_argument
 from kiro_crew.discord.renderer import session_provenance_tag
 from kiro_crew.discord.transport_dispatch import DiscordDispatcher
+from kiro_crew.history import transcript_stem
 from kiro_crew.messaging import resume_expectation
 from kiro_crew.messaging import session_resume as session_resume_core
 from kiro_crew.messaging.link import UNBIND_REASON_UNSPECIFIED, ChannelLink
@@ -122,6 +123,7 @@ class _Sessions:
         self.begin_turns = 0
         self.flushed: list[dict] = []
         self.flush_error: Exception | None = None
+        self.reserve_error: Exception | None = None
         self.origin_links: dict[str, ChannelLink] = {}
         self.inbound_keys: set[str] = set()
         self.mirror_opt_outs: set[str] = set()
@@ -130,6 +132,8 @@ class _Sessions:
         self.unbind_reasons: list[str] = []
         self.last_key = ""
         self.targeted: list[tuple[str, str]] = []
+        self.channel_keys: set[str] = set()
+        self.reserved_generations: set[str] = set()
         self.provider = _Provider()
 
     def set_mirror_link(
@@ -209,8 +213,28 @@ class _Sessions:
             self.mirror_links.pop(key, None)
         return cleared
 
+    def reserve_generation(self, session_key: str) -> None:
+        if self.reserve_error is not None:
+            raise self.reserve_error
+        self.reserved_generations.add(session_key)
+        self.channel_keys.add(session_key)
+
     def max_generation(self, bucket: str) -> int:
-        return -1
+        prefix = f"{bucket}:gen"
+        return max(
+            (
+                int(key[len(prefix) :])
+                for key in self.reserved_generations
+                if key.startswith(prefix) and key[len(prefix) :].isdigit()
+            ),
+            default=-1,
+        )
+
+    def channel_key_for_stem(self, stem: str) -> str:
+        for key in self.channel_keys | set(self.mirror_links):
+            if transcript_stem(key) == stem:
+                return key
+        return ""
 
     def is_busy(self, key: str) -> bool:
         return False
@@ -225,6 +249,7 @@ class _Sessions:
     async def get_or_create(self, key: str, **kwargs: Any) -> tuple[Any, bool, bool]:
         self.last_key = key
         self.last_agent = kwargs.get("agent")
+        self.channel_keys.add(key)
         return self.provider, getattr(self, "is_new_result", False), True
 
     def begin_turn(self, key: str) -> None:
@@ -329,6 +354,23 @@ class _ConversationLog:
     ) -> None:
         self.messages.setdefault(key, []).append({"role": role, "content": content})
 
+    def update_metadata(self, key: str, fields: dict) -> None:
+        self.metadata.setdefault(key, {}).update(fields)
+        self.messages.setdefault(key, [])
+        stem = transcript_stem(key)
+        for row in self.rows:
+            if row.get("key") == stem:
+                row.update(fields)
+                break
+        else:
+            self.rows.insert(0, {"key": stem, **fields})
+
+    def update_metadata_if(self, key: str, fields: dict, guard: Any) -> bool:
+        if not guard(self.metadata.get(key, {})):
+            return False
+        self.update_metadata(key, fields)
+        return True
+
     def set_title(self, key: str, title: str) -> None:
         self.titles_set = getattr(self, "titles_set", [])
         self.titles_set.append((key, title))
@@ -370,8 +412,10 @@ def _config() -> Any:
 def _dispatcher(
     allowed: set[str],
     log: _ConversationLog | None,
+    *,
+    sessions: _Sessions | None = None,
 ) -> tuple[DiscordDispatcher, _Client, _Sessions]:
-    sessions = _Sessions()
+    sessions = sessions or _Sessions()
     dispatcher = DiscordDispatcher(
         sessions=sessions,  # type: ignore[arg-type]
         ctx_builder=_Context(),  # type: ignore[arg-type]
@@ -445,7 +489,7 @@ def _log_with_titles(*titles: str) -> _ConversationLog:
 async def test_sessions_finds_a_session_by_conversation_content() -> None:
     """The original bug: searching a phrase from the CONVERSATION, not the title.
 
-    The picker used to call ``list_sessions`` and filter on titles only, so a
+    A picker calling ``list_sessions`` and filtering on titles only means a
     query the user remembered from the discussion could never match. Routing
     through the shared ``search_sessions`` -- the same one the dashboard uses --
     makes message content searchable.
@@ -474,7 +518,7 @@ async def test_sessions_finds_a_session_by_conversation_content() -> None:
 async def test_sessions_cjk_query_reaches_title_fallback() -> None:
     """A spaceless CJK query must trigger the zero-hit TITLE fallback.
 
-    The fallback used to gate on a whitespace word count, which a spaceless
+    The fallback must not gate on a whitespace word count, which a spaceless
     CJK query (one "word") never satisfied — so when the shared search found
     nothing, the fallback silently demanded the literal title substring. The
     gate now derives from the same parse_search_query needles as the shared
@@ -550,7 +594,7 @@ async def test_sessions_keyword_filters_beyond_recent_limit() -> None:
 
     text, _ = client.sent[-1]
     assert _picker_labels(client) == ["1. Codex compaction investigation"]
-    assert "Dashboard session search" in text
+    assert "Session search" in text
     assert "for `codex`" in text
 
 
@@ -572,7 +616,7 @@ async def test_sessions_no_match_is_explicit() -> None:
 
     text, components = client.sent[-1]
     assert components is None
-    assert "No dashboard sessions matched `missing topic`" in text
+    assert "No sessions matched `missing topic`" in text
     assert "Try fewer words" in text
     assert "`!sessions`" in text
     assert len(dispatcher._session_pickers) == 0
@@ -586,7 +630,7 @@ async def test_empty_sessions_query_keeps_recent_order_and_discloses_cap() -> No
     await dispatcher.handle_message(_message("!sessions   "))
 
     assert _picker_labels(client) == [f"{index + 1}. Recent session {index}" for index in range(10)]
-    assert "Showing 10 of 12 most recent dashboard sessions" in client.sent[-1][0]
+    assert "Showing 10 of 12 most recent sessions" in client.sent[-1][0]
 
 
 @pytest.mark.asyncio
@@ -613,8 +657,10 @@ async def test_sessions_requires_exactly_one_allowed_user() -> None:
 
 
 @pytest.mark.asyncio
-async def test_sessions_lists_only_persistent_dashboard_sessions_and_redacts() -> None:
+async def test_sessions_lists_dashboard_and_same_dm_generations_only_and_redacts() -> None:
     secret = "ghp_" + "a" * 36
+    prior_key = "discord:kirocrew:direct:u1:gen4"
+    other_user_key = "discord:kirocrew:direct:u2:gen4"
     log = _ConversationLog(
         [
             {
@@ -628,24 +674,114 @@ async def test_sessions_lists_only_persistent_dashboard_sessions_and_redacts() -
                 "memory_mode": "persistent",
             },
             {
+                "key": transcript_stem(prior_key),
+                "title": "Earlier Discord generation",
+                "memory_mode": "persistent",
+            },
+            {
+                "key": transcript_stem(other_user_key),
+                "title": "Another user's Discord session",
+                "memory_mode": "persistent",
+            },
+            {
                 "key": "dashboard_private",
                 "title": "Incognito",
                 "memory_mode": "temporary",
             },
         ],
-        {"dashboard:chat-1": []},
+        {
+            "dashboard:chat-1": [],
+            "discord:kirocrew:direct:u1": [],
+            prior_key: [],
+            other_user_key: [],
+        },
     )
-    dispatcher, client, _ = _dispatcher({"u1"}, log)
+    dispatcher, client, sessions = _dispatcher({"u1"}, log)
+    sessions.channel_keys.update({dispatcher.current_session_key("u1"), prior_key, other_user_key})
 
     await dispatcher.handle_message(_message("!sessions"))
 
     text, components = client.sent[-1]
     buttons = [button for row in components for button in row["components"]]
-    assert "Recent dashboard sessions" in text
-    assert len(buttons) == 1
+    assert "Recent sessions" in text
+    labels = [button["label"] for button in buttons]
+    assert labels[0].startswith("1. Deploy with [REDACTED")
+    assert labels[1:] == [
+        "2. Current Discord session",
+        "3. Earlier Discord generation",
+    ]
     assert buttons[0]["custom_id"].startswith("s:")
     assert secret not in buttons[0]["label"]
     assert "REDACTED" in buttons[0]["label"]
+
+
+@pytest.mark.asyncio
+async def test_repeated_new_does_not_materialize_empty_history_rows() -> None:
+    log = _log()
+    dispatcher, _, sessions = _dispatcher({"u1"}, log)
+
+    await dispatcher.handle_message(_message("!new"))
+    first_key = dispatcher.current_session_key("u1")
+    await dispatcher.handle_message(_message("!new"))
+    second_key = dispatcher.current_session_key("u1")
+
+    assert first_key != second_key
+    assert not log.has_log(first_key)
+    assert not log.has_log(second_key)
+    assert {first_key, second_key} <= sessions.reserved_generations
+
+
+@pytest.mark.asyncio
+async def test_new_generation_survives_restart_before_its_first_turn() -> None:
+    log = _log()
+    dispatcher, _, sessions = _dispatcher({"u1"}, log)
+
+    await dispatcher.handle_message(_message("!new"))
+    new_key = dispatcher.current_session_key("u1")
+
+    restarted, _, _ = _dispatcher({"u1"}, log, sessions=sessions)
+    assert restarted.current_session_key("u1") == new_key
+
+
+@pytest.mark.asyncio
+async def test_new_reports_generation_floor_failure_without_rolling_back() -> None:
+    log = _log()
+    dispatcher, client, sessions = _dispatcher({"u1"}, log)
+    old_key = dispatcher.current_session_key("u1")
+    sessions.reserve_error = OSError("disk unavailable")
+
+    await dispatcher.handle_message(_message("!new"))
+
+    assert dispatcher.current_session_key("u1") != old_key
+    assert "could not be saved for restart" in client.sent[-1][0]
+
+
+@pytest.mark.asyncio
+async def test_native_generation_pick_replaces_only_same_dm_origin_mirrors() -> None:
+    prior_key = "discord:kirocrew:direct:u1:gen4"
+    log = _ConversationLog(
+        [
+            {
+                "key": transcript_stem(prior_key),
+                "title": "Earlier Discord generation",
+                "memory_mode": "persistent",
+            }
+        ],
+        {prior_key: []},
+    )
+    dispatcher, client, sessions = _dispatcher({"u1"}, log)
+    current_key = dispatcher.current_session_key("u1")
+    sessions.channel_keys.update({current_key, prior_key})
+    link = ChannelLink(channel_type="discord", channel_id="c1")
+    sessions.set_mirror_link(current_key, link)
+    sessions.set_mirror_link(prior_key, link)
+
+    await dispatcher.handle_message(_message("!sessions"))
+    custom_id, message_id = _picker_button(client)
+    await dispatcher.on_interaction(_interaction(custom_id, message_id))
+
+    assert sessions.find_mirror_sessions(link, inbound_only=True) == [prior_key]
+    assert current_key not in sessions.mirror_links
 
 
 @pytest.mark.asyncio
@@ -1081,7 +1217,7 @@ async def test_cold_resume_does_not_stamp_channel_or_retitle() -> None:
     """A cold resumed session must not get new-session bookkeeping.
 
     The picker lists *history*, so most picks are not live and `get_or_create`
-    returns is_new=True. Treating that as a new session used to (a) write
+    returns is_new=True. Treating that as a new session would (a) write
     `discord:<id>` into the dashboard session's legacy slack_channel_id — which
     survives `!unlink` and makes every later pick refuse with "already active on
     Slack" — and (b) overwrite the conversation's title with the Discord message.
@@ -1297,8 +1433,8 @@ async def test_option_press_routes_into_resumed_session() -> None:
     own reply (and carry its provenance tag), so the choice belongs to that
     session. Before the fix the press ran in the native DM session: the click
     answered a question nobody asked there, while the bound session kept waiting
-    for its answer (live incident 2026-08-30: a merge-approach choice for the
-    bound session green-lit the native session's parked debug plan instead).
+    for its answer (e.g. a merge-approach choice for the bound session would
+    green-light the native session's parked debug plan instead).
     """
     log = _log()
     dispatcher, client, sessions = _dispatcher({"u1"}, log)
@@ -1318,9 +1454,9 @@ async def test_untagged_press_is_refused_fail_closed() -> None:
 
     Discord replays old components indefinitely, so an untagged press can never
     prove which session it belongs to — and routing it by current binding is
-    exactly the cross-session injection this fix exists to stop (server review
-    round 1, span 405abadda748: the legacy pass-through never ages out, so it
-    was the same hole with a different door). Fail closed with a type-it-instead
+    exactly the cross-session injection this fix exists to stop (the legacy
+    pass-through never ages out, so it is the same hole with a different door).
+    Fail closed with a type-it-instead
     notice; no echo, no turn anywhere.
     """
     log = _log()
@@ -1365,7 +1501,7 @@ async def test_stale_tagged_press_after_rebind_is_refused() -> None:
     Discord replays old components indefinitely: A's reply keeps its live buttons
     after ``!unlink`` + ``!sessions`` rebinds the DM to B. Routing alone would send
     the press into B — injecting A's model-authored choice into an unrelated
-    transcript, the GPT round-1 blocker. The provenance tag makes the press valid
+    transcript. The provenance tag makes the press valid
     only while the conversation still targets the session that posted it.
     """
     log = _log_with_titles("Alpha plan", "Beta plan")
@@ -1401,7 +1537,7 @@ async def test_press_tagged_for_pre_new_conversation_is_refused() -> None:
     """``!new`` invalidates the previous conversation's buttons.
 
     The native key embeds the generation, so a press carrying the pre-``!new``
-    tag no longer matches — honest, since the conversation that asked the
+    tag does not match — honest, since the conversation that asked the
     question is over. Before the tag the press ran silently in the fresh
     generation, answering a question it never asked.
     """
@@ -1450,8 +1586,8 @@ async def test_valid_tagged_press_against_busy_target_is_refused_not_queued_or_s
     ``_handle_busy`` enqueues bare text (or steers it mid-turn), and the drain
     replays queued text WITHOUT the provenance tag — so a ``!new`` or idle
     rotation between enqueue and drain would execute the model-authored choice
-    in a conversation the tag never named (server review round 2, span
-    405abadda748). The busy path is therefore unreachable for any tagged press.
+    in a conversation the tag never named. The busy path is therefore
+    unreachable for any tagged press.
     """
     dispatcher, client, sessions = _dispatcher({"u1"}, _log())
     tag = session_provenance_tag(dispatcher.current_session_key("u1"))
@@ -1574,7 +1710,7 @@ async def test_choice_refuses_occupied_discord_conversation() -> None:
 
 @pytest.mark.asyncio
 async def test_choice_refusal_for_outbound_mirror_names_unlink() -> None:
-    # The outbound-only occupant used to get "Unlink the existing dashboard
+    # An outbound-only occupant would get "Unlink the existing dashboard
     # mirror first" — an instruction with no in-channel action. `!unlink` now
     # clears outbound mirrors by location, so the guidance is unified and must
     # name the command for BOTH occupant kinds.
@@ -1591,7 +1727,7 @@ async def test_choice_refusal_for_outbound_mirror_names_unlink() -> None:
     assert "dashboard:chat-1" not in sessions.mirror_links
     assert any("Run `!unlink` first" in text for _, text, _ in client.edits)
     # And the instruction is followable: the sweep frees the location, after
-    # which the conflict check no longer refuses.
+    # which the conflict check does not refuse.
     sessions.clear_mirror_links_at(ChannelLink(channel_type="discord", channel_id="c1"))
     conflict = dispatcher._session_resume._binder.binding_conflict(
         "dashboard:chat-1",
@@ -1899,10 +2035,10 @@ class TestBindingLostUnderTheConversation:
     async def test_releasing_an_unrecorded_binding_leaves_evidence_before_mutation(self) -> None:
         """A failed release records evidence first, then changes NOTHING -- live map too.
 
-        The in-memory clear happens before the flush, so a flush failure used to leave the
+        The in-memory clear happens before the flush, so a flush failure would leave the
         binding gone in this process while the command reported failure. Two things were
-        wrong with that pair: the very next message was refused with "Detached: no longer
-        linked" moments after being told the unlink did not happen, and the map on disk
+        wrong with that pair: the very next message was refused as detached moments
+        after being told the unlink did not happen, and the map on disk
         still held the binding, so a restart revived it and split one history in two -- the
         exact harm the sibling test names. The release now rolls the clear back, so the
         report, the live map and the persisted map all agree and the conversation carries

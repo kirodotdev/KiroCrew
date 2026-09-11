@@ -125,7 +125,7 @@ class TestEntitlementPredicate:
 
 
 class TestPinSpellingResolver:
-    """`resolve_pin_spelling` — the shared namespace fold (#8521).
+    """`resolve_pin_spelling` — the shared namespace fold.
 
     Display verdict (`_pinned_model_verdict`) and the wire withhold sites
     (`_apply_startup_model`, the runtime path in `providers.acp`) all resolve a

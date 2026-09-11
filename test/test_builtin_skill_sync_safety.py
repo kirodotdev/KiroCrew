@@ -1,4 +1,4 @@
-"""Builtin-skill sync safety invariants (issue #3433).
+"""Builtin-skill sync safety invariants.
 
 ``_ensure_builtin_skills`` may only destroy a destination directory it can
 PROVE it installed and that has not changed since: a full-tree fingerprint
@@ -267,7 +267,7 @@ class TestStaleCleanupGuard:
     def test_user_edited_stale_copy_is_left_alone(
         self, builtin_root: Path, base: Path
     ) -> None:
-        # A marker whose fingerprint no longer matches means the user edited
+        # A marker whose fingerprint does not match means the user edited
         # the copy after install: it is user data and stays at its own name.
         _make_skill(base, "learn", "old builtin")
         _record_builtin_provenance(base / "learn")
@@ -581,6 +581,21 @@ class TestFingerprint:
             return real_open(path, flags, *args, **kwargs)  # type: ignore[arg-type]
 
         monkeypatch.setattr(skills_mod.os, "open", _deny)
+
+        # The fingerprint reads through the hooks chokepoint, whose open is
+        # platform_compat.open_file_no_reparse -- CreateFileW on Windows, so a patch on
+        # os.open alone would leave the Windows shard reading the file happily and
+        # fingerprinting a tree this test needs to be unprovable. Deny at that seam too.
+        from kiro_crew import platform_compat as _pc
+
+        real_no_reparse = _pc.open_file_no_reparse
+
+        def _deny_no_reparse(path: object, *args: object, **kwargs: object) -> int:
+            if "hidden.txt" in str(path):
+                raise PermissionError("denied")
+            return real_no_reparse(path, *args, **kwargs)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(_pc, "open_file_no_reparse", _deny_no_reparse)
         assert _skill_tree_fingerprint(a) is None
 
 
@@ -1098,7 +1113,7 @@ class TestPermissionBitsInFingerprint:
         self, builtin_root: Path, base: Path
     ) -> None:
         # End to end: sync installs a builtin, the user chmods a subdirectory,
-        # then an update ships. The customized tree no longer matches the
+        # then an update ships. The customized tree does not match the
         # recorded fingerprint, so it must be quarantined, not deleted.
         _make_skill(builtin_root, "helper", "v1", {"scripts/tool.py": "# v1"})
         _ensure_builtin_skills(base)

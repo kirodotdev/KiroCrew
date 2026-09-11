@@ -91,13 +91,13 @@ def test_empty_histogram_still_carries_the_keys():
     assert s["total_count"] == 0
 
 
-# ─────────────────── the API surface that regressed ───────────────────
+# ─────────────────── the `other` API surface ───────────────────
 
 def test_other_histograms_disclose_a_mixed_window(tmp_path):
-    """REGRESSION: this is what the `other` surface used to omit entirely.
+    """The `other` surface must disclose a mixed-generation window, not omit it.
 
-    Fails on the pre-fix code, where the `other` list was built from stats()
-    plus only name/kind.
+    An `other` list built from stats() plus only name/kind cannot express the
+    mixture, so the window reads as single-generation.
     """
     shards = _shard(tmp_path, [{
         "name": _OTHER_METRIC,

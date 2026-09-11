@@ -78,11 +78,11 @@ class TestLlmRedaction(unittest.TestCase):
         # exfiltration link there and the report view renders it as a link. The
         # structural fields the app keys on are the ones held back.
         self.assertTrue(row["url"].startswith("[R]"), "url not redacted")
-        # `band` is redacted like every other worker-written string. It used to be
-        # the one exemption, on the argument that `bands[]` and `BAND_DOT[]` index
-        # on its exact value — but that made it the single field in a row that
-        # reached the dashboard verbatim, so a planted "red <credential>" leaked
-        # while the prose beside it was scrubbed. Keying is protected instead by
+        # `band` is redacted like every other worker-written string. Exempting it
+        # because `bands[]` and `BAND_DOT[]` index on its exact value would make it
+        # the single field in a row reaching the dashboard verbatim, so a planted
+        # "red <credential>" leaks while the prose beside it is scrubbed. Keying is
+        # protected instead by
         # admitting only the three known bands on the untrusted read path, and by
         # the fact that the REAL redactor leaves those three byte-identical (see
         # test_a_legitimate_band_survives_redaction_unchanged). Under this test's

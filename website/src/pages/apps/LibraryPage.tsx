@@ -49,10 +49,11 @@ export default function LibraryPage() {
   const navigate = useNavigate()
   // The reader's view control. Persisted in THIS origin's localStorage and
   // live-synced across tabs by `usePersistedBool`; it does NOT follow the reader
-  // to a new origin. Adding it to `DURABLE_PREF_KEYS` would let a warm profile's
-  // default flush over another origin's saved value, because a warm profile
-  // never hydrates — a gap in the ui-prefs sync mechanism, tracked in issue
-  // 9491, that the durable view toggles like `mc-diff-split` predate. Off by
+  // to a new origin. The growth-gap that once made adding keys to
+  // `DURABLE_PREF_KEYS` unsafe is closed (issue 9491's reconcile pass in
+  // lib/uiPrefs.ts), so keeping this origin-local is now purely a product
+  // decision -- a per-machine browsing-view toggle, not a preference the reader
+  // would expect to follow them. Off by
   // default so a fresh visit shows the apps the reader enabled, not the ~20
   // default-off builtins the wheel ships.
   const [showAll, setShowAll] = usePersistedBool('mc-apps-library-show-all', false)

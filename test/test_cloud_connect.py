@@ -501,7 +501,7 @@ class TestRegistryIntegration:
 
 
 class TestIsLaunchedInstance:
-    """Unit coverage for is_launched_instance() — the #3387 correlation check
+    """Unit coverage for is_launched_instance() — the correlation check
     handlers_instances.py uses to lock PATCH's addressing fields."""
 
     def _store(self, monkeypatch, tmp_path):
@@ -570,7 +570,7 @@ class TestIsLaunchedInstance:
     def test_vanished_job_file_is_skipped(self, monkeypatch, tmp_path):
         # The one benign case: a concurrent `cloud destroy` removing a job
         # between the glob and the read. An instance whose launch record is
-        # gone is no longer correlated to anything, so the scan continues to
+        # gone is not correlated to anything, so the scan continues to
         # the remaining jobs rather than refusing the edit.
         store = self._store(monkeypatch, tmp_path)
         gone = store.create(profile="dev", region="us-west-2", size_key="light")

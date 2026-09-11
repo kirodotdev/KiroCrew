@@ -3,11 +3,11 @@
 Several gateway surfaces ask "how far is this checkout from its upstream"
 before acting on the answer, and two of them gate actions that are hard to
 undo: the CLI's hard-reset recovery path, and the update-check verdict that
-the unattended auto-apply path reads. Each surface previously re-derived the
-same fragile details by hand — the three-dot range, ``--left-right``'s
-left-is-ahead semantics, the two-token split, the ``int()`` conversion, the
-subprocess timeout, and what an unreadable result means — so the copies
-agreeing was luck rather than structure. This module is the one owner of the
+the unattended auto-apply path reads. Re-deriving the same fragile details per
+surface — the three-dot range, ``--left-right``'s left-is-ahead semantics, the
+two-token split, the ``int()`` conversion, the subprocess timeout, and what an
+unreadable result means — makes the copies agree by luck rather than by
+structure. This module is the one owner of the
 COUNTING. Every caller keeps its own POLICY about what the counts mean,
 because the surfaces intentionally disagree: the update check offers only a
 fast-forward, the apply precondition refuses only true divergence, the CLI

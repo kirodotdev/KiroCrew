@@ -349,7 +349,7 @@ def test_rehydrate_slot_restores_persisted_tab_id_for_fork_chaining(tmp_path, mo
 def test_rehydrate_slot_uses_chained_read_with_500_message_window(tmp_path, monkeypatch):
     """Chained read + 500-message window on rehydrate.
 
-    ``_rehydrate_slot_from_history`` previously called
+    ``_rehydrate_slot_from_history`` must not call
     ``conversation_log.read_messages(history_key)`` (no chain, capped at 200
     in-memory). ``restore_recent_sessions`` uses
     ``read_messages_chained(key)`` (capped at 500). Because
@@ -528,12 +528,12 @@ def test_restore_open_slots_rollback_also_discards_restricted_keys(tmp_path, mon
 
 # ── Slot-key filename round-trip (duplicate sidebar sessions) ────────────────
 #
-# Display-style slot names (e.g. "Artifact: My Doc" from the artifact iterate
-# flow) used to survive as raw slot keys while their JSONL filename got the
-# lossy _safe_key() fold. After a restart, restore_open_slots rehydrated the
-# raw key from open_slots.json while restore_recent_sessions derived a SECOND
+# A display-style slot name (e.g. "Artifact: My Doc" from the artifact iterate
+# flow) must not survive as a raw slot key while its JSONL filename takes the
+# lossy _safe_key() fold. After a restart, restore_open_slots rehydrates the
+# raw key from open_slots.json while restore_recent_sessions derives a SECOND
 # slot from the filename stem — two identical sidebar sessions backed by one
-# transcript. get_or_create_slot now folds keys to the filename charset, and
+# transcript. get_or_create_slot folds keys to the filename charset, and
 # the restore paths apply the same fold so pre-fix snapshots self-heal.
 
 RAW_KEY = "Artifact: 2026 Example Benchmark Report - alice vs Bob Smith Org"
@@ -572,11 +572,11 @@ def test_restore_open_slots_dedupes_raw_and_folded_snapshot_twins(tmp_path, monk
 
 
 def test_restart_restore_paths_converge_on_one_slot(tmp_path, monkeypatch):
-    """End-to-end regression: open_slots replay + filename-stem walk = 1 slot.
+    """End-to-end: open_slots replay + filename-stem walk = 1 slot.
 
-    This is the exact user-visible bug: a raw display-style key in
-    open_slots.json plus the mtime-based restore_recent_sessions walk used to
-    produce two identical sidebar sessions after a gateway restart.
+    A raw display-style key in open_slots.json plus the mtime-based
+    restore_recent_sessions walk is what produces two identical sidebar sessions
+    after a gateway restart.
     """
     from kiro_crew.dashboard.chat_persistence import restore_recent_sessions
 
@@ -860,11 +860,11 @@ def test_restore_open_slots_async_matches_sync_result(tmp_path, monkeypatch):
 def test_rehydrate_does_not_scan_the_whole_session_dir(tmp_path, monkeypatch):
     """Rehydrating one tab must not call list_sessions().
 
-    list_sessions() stats + reads the first line of EVERY session file. It used to
-    run once per restored tab purely to look up one title (which it never actually
-    found — its keys are filename stems, ``dashboard_x``, while the lookup used the
-    canonical ``dashboard:x``), making restore O(tabs x all sessions). That was ~13s
-    of the stall on a real 77-tab home.
+    list_sessions() stats + reads the first line of EVERY session file. Running it
+    once per restored tab to look up one title (which it cannot find anyway — its
+    keys are filename stems, ``dashboard_x``, while the lookup uses the canonical
+    ``dashboard:x``) makes restore O(tabs x all sessions), which is ~13s of stall
+    on a real 77-tab home.
     """
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
     state = _make_state(tmp_path / "sessions")
@@ -960,16 +960,16 @@ def test_suspend_slots_push_no_push_means_no_broadcast(tmp_path, monkeypatch):
     assert seen.count("slots") == 0
 
 
-# ── #8745: a serialization failure in the slots flush must name its offender ──
+# ── a serialization failure in the slots flush must name its offender ────────
 #
 # The evidenced failure class behind a slots-broadcast 500 is a non-serializable
 # value in slot state: json.dumps raises deep in the flush, every slots read
 # path is equally broken, and the stock TypeError names neither the slot nor
 # the field. Worse, when the flush fails while a suspend block is unwinding
 # over the body's own exception, the flush's exception REPLACES the body's in
-# the caller's view (the original demoted to __context__) — exactly how #6522
-# was first misread as a broadcast bug. These pin the two diagnostics: the
-# offender note on BOTH coalescing branches, and the unwinding-over note.
+# the caller's view (the original demoted to __context__), which is how such a
+# failure reads as a broadcast bug. These pin the two diagnostics: the offender
+# note on BOTH coalescing branches, and the unwinding-over note.
 # Semantics stay untouched: same exception types, same propagation, same
 # chaining, no caught-and-swallowed anything.
 
@@ -1066,10 +1066,10 @@ def test_healthy_flush_is_unchanged_by_the_diagnostics(tmp_path, monkeypatch):
     assert seen.count("slots") == 1
 
 
-# ── #8745 follow-up: the REMAINING slots read paths carry the same offender note ──
+# ── every REMAINING slots read path carries the same offender note ───────────
 #
-# The broadcast got the diagnostic first; the sibling read paths serialize the
-# SAME projection and used to fail with the same bare TypeError: the
+# The sibling read paths serialize the SAME projection, so without the note they
+# fail with the same bare TypeError: the
 # dashboard-user WS frame (``_slots_ws_frame``, both its send sites), the WS
 # connect snapshot, and ``GET /api/chat/slots``. These pin the note on each
 # path, the ``path`` label that names which one raised, and the benign controls
@@ -1499,7 +1499,7 @@ def test_read_messages_retries_transient_sharing_violation(tmp_path, monkeypatch
 def test_read_messages_reraises_after_exhausting_retries(tmp_path, monkeypatch):
     """A PERSISTENT body-read failure must re-raise, not swallow to ``[]``.
 
-    GPT review (PR #2052): swallowing an exhausted read to ``[]`` is
+    Swallowing an exhausted read to ``[]`` is
     indistinguishable from a genuinely empty session, so
     ``_rehydrate_slot_from_history`` would register an EMPTY slot -- which
     ``restore_recent_sessions`` then dedupes by key and skips, stranding the tab
@@ -1529,7 +1529,7 @@ def test_read_messages_reraises_after_exhausting_retries(tmp_path, monkeypatch):
 def test_read_messages_missing_file_mid_read_returns_empty(tmp_path, monkeypatch):
     """A transcript deleted AFTER exists() (concurrent delete race) yields ``[]``.
 
-    GPT review (PR #2052): ``_read_messages`` re-raises a persistent OSError so
+    ``_read_messages`` re-raises a persistent OSError so
     restore can drop+retry the tab -- but ``FileNotFoundError`` is NOT a
     transient lock. Re-raising it would turn a benign concurrent
     ``delete_session`` into an HTTP 500 in a caller like ``api_session_detail``,
@@ -1567,7 +1567,7 @@ def test_persistent_body_read_failure_drops_tab_not_registers_empty(tmp_path, mo
     """End-to-end: a persistent body-read failure DROPS the tab, never registers
     it empty.
 
-    Pins the GPT #2052 fix at the restore layer: the other tabs restore, and the
+    Pinned at the restore layer: the other tabs restore, and the
     unreadable one is ABSENT from ``_slots`` (so the mtime-based
     ``restore_recent_sessions`` fallback -- and the next restart -- can still
     recover it) rather than being registered as a history-less slot that the
@@ -1603,13 +1603,13 @@ def test_persistent_body_read_failure_drops_tab_not_registers_empty(tmp_path, mo
 def test_persistent_metadata_failure_keeps_key_in_reopen_seed(tmp_path, monkeypatch):
     """A tab dropped by an unreadable read must survive in open_slots.json.
 
-    #1733 added a retry, so a ONE-shot sharing violation no longer costs a tab
+    A retry keeps a ONE-shot sharing violation from costing a tab
     (see ``test_a_transient_metadata_read_failure_does_not_drop_a_tab``). But
-    when the retry budget is exhausted the tab is still dropped, and the drop
-    was previously PERMANENT rather than deferred: this snapshot is taken from
-    live ``_slots``, the ``restoring_open_slots`` guard is released as soon as
-    the restore finishes, and the next 5s flush therefore rewrites the file
-    WITHOUT the dropped key. That erases the only seed a later restore could
+    when the retry budget is exhausted the tab is still dropped, and that drop
+    must be deferred rather than PERMANENT: this snapshot is taken from live
+    ``_slots``, the ``restoring_open_slots`` guard is released as soon as the
+    restore finishes, and the next 5s flush therefore rewrites the file WITHOUT
+    the dropped key. That erases the only seed a later restore could
     have recovered from -- and ``dashboard.restore_sessions`` defaults to
     ``False``, so the ``restore_recent_sessions`` fallback is not a safety net
     for an unfoldered tab.
@@ -1636,7 +1636,7 @@ def test_persistent_metadata_failure_keeps_key_in_reopen_seed(tmp_path, monkeypa
     assert keys[2] not in state2._slots, "the unreadable tab should not be registered"
     assert keys[2] in state2.unrestored_slot_keys
 
-    # The flush that previously erased it. Guard is already released by now.
+    # The flush must not erase it. Guard is already released by now.
     assert state2.restoring_open_slots is False
     state2._persist_open_slots()
     persisted = set(json.loads((tmp_path / "open_slots.json").read_text())["keys"])
@@ -1770,7 +1770,7 @@ def test_non_object_metadata_line_does_not_abort_the_whole_restore(
     assert persisted == {"chat-0-ok", "chat-2-ok"}
 
 
-# ── Startup must not READ on the event loop either (#895) ──
+# ── Startup must not READ on the event loop either ──
 #
 # The per-tab yield above bounded how long ONE tab could hold the loop, but the
 # per-tab WORK still ran on it: get_metadata_status plus a chained
@@ -1985,7 +1985,7 @@ def test_async_restore_does_not_carry_a_confidently_absent_tab(tmp_path, monkeyp
     """A readable-but-empty metadata read is a confident answer, not a retry.
 
     Companion to the test above: carrying every miss would resurrect keys for
-    sessions that genuinely no longer exist, forever.
+    sessions that are already gone, forever.
     """
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
     state = _make_state(tmp_path / "sessions")
@@ -2005,7 +2005,7 @@ def test_async_restore_rejects_a_path_separator_key(tmp_path, monkeypatch):
     """The path-traversal screen must survive the driver rewrite.
 
     ``open_slots.json`` is attacker-writable in the threat model the screen
-    exists for, and the async driver no longer shares the generator's body — so
+    exists for, and the async driver does not share the generator's body — so
     the screen is asserted on the driver that startup actually runs.
     """
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
@@ -2043,7 +2043,7 @@ def test_async_restore_leaves_a_carried_seed_alone_when_there_is_no_snapshot(
     assert state.restoring_open_slots is False
 
 
-# ── Deletion during the offloaded read (#895 round 3) ──
+# ── Deletion during the offloaded read ──
 #
 # ``ConversationLog.delete_session`` leaves NO tombstone — its own docstring
 # notes that once the delete releases the lock "a concurrent writer can recreate
@@ -2244,8 +2244,8 @@ def test_a_tab_closed_during_the_open_slot_read_is_not_restored(tmp_path, monkey
     """The open-tab driver needs the SAME tombstone re-check as its siblings.
 
     ``rehydrate_slot_from_history_async`` and the recent-sessions driver both
-    consult the close tombstone after their thread hop; this driver was the one
-    converted surface still missing it (GPT 5.6 review, round 3). The close pops
+    consult the close tombstone after their thread hop; this driver must too.
+    The close pops
     the slot and records the tombstone synchronously, but persists the ``closed``
     flag only after its own awaits — so the metadata read mid-flight still says
     open. Restoring from it re-creates a dismissed tab, and worse, the restored

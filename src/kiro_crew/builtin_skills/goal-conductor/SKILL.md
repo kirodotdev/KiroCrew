@@ -41,6 +41,7 @@ A candidate qualifies only if **all three** hold:
    work — CI runs the suite, and its verdict is the one that counts. If an item's
    completion genuinely cannot be stated as one of these, it is not assertable:
    say so and treat it as a needs-human item rather than inventing a condition.
+   A `pr_checks` condition names a NON-DRAFT pull request: while a pull request is a draft, a repository that gates readiness on draft state holds its checks incomplete, so the verdict stays `pending` for as long as the draft lasts and the item can never pass.
 3. **Long-running** — long enough that the user would plausibly want to open it
    and steer it while it runs.
 
@@ -131,6 +132,8 @@ For each item in the round:
    dispatch). That entry is the ONLY place the acceptance spec survives
    compaction; `next` carries the resumable intent.
 
+**A `pr_checks` seed says how the pull request is opened.** Tell the worker to open it non-draft — `gh pr create` without `--draft` — or to run `gh pr ready` before it reports done. A completion claim that arrives on a draft costs a whole verify cycle that can only answer `pending`.
+
 Send the seed BEFORE recording the ledger row as dispatched — a ledger row that
 says "running" for a session that never got its seed is the worse failure.
 
@@ -184,6 +187,10 @@ Each cycle:
    malformed spec indistinguishable from one that is merely early. Never fake
    the gap with a search-style command either — list commands exit 0 on empty
    results, so they cannot carry the verdict.
+
+   **A `human_approval` item is verified by asking, and the ask is fragile.** The evaluator answers `pending` for it forever, so slow patrol FIRST — `monitor_update` `interval_secs=1800`, or the largest interval the goal tolerates — and only then put the decision to the user with `ask_question`, which ends your turn. Restore the interval on the cycle that reads the answer.
+
+   If the user says the card is gone, re-issue it. A report that the card vanished is not an answer.
 3. For items still running, `session_read_message` with the `since` cursor you
    stored last cycle — this answers "is it moving / did it ask a question",
    never "did it succeed". Store the returned `next_since` back into that item's
@@ -354,6 +361,7 @@ watches, and that cost grows with the loop's own history.
   auto-approved for exactly this, so the load never prompts — then repeat the
   call. `chat_folder_create` is on the same server; `monitor_start` is served by
   `kirocrew-core`, so its id is `kirocrew-core::monitor_start`.
+- **A question card can be displaced by your own later turns.** `ask_question` posts a card into the dashboard transcript, and every patrol turn you take while it is outstanding can push it out of the user's view.
 - **A cron job may dispatch into the sessions it created**, so a fleet can be
   stood up and driven from a schedule instead of only from a live chat session.
   Session control is on by default: the agent config is the grant, so you do not
@@ -396,7 +404,7 @@ watches, and that cost grows with the loop's own history.
   target began a turn on your message; `started: false` means it queued. Neither
   says the work succeeded — acceptance is still the domain assertion's job.
 - **Some targets are out of bounds by design.** Incognito/temporary sessions,
-  app-scoped sessions, channel-linked or mirrored sessions, crew-mode sessions,
+  app-scoped sessions, channel-linked or mirrored sessions,
   and sessions in another workspace are all refused by the shared guard. Plan
   work items onto plain persistent dashboard sessions only.
 - **Shell is for the bundled scripts only, and the evaluator runs no command

@@ -112,8 +112,8 @@ def test_midline_authorization_header_is_redacted(tmp_path, monkeypatch):
     """A header embedded MID-LINE must be redacted, not just one at line start.
 
     Log lines and user notes routinely quote a header inside a sentence
-    ("request used Authorization: Basic <b64>"). The rule used to be anchored
-    with ``^``, so those credentials reached the bundle and the pre-filled
+    ("request used Authorization: Basic <b64>"). A rule anchored
+    with ``^`` would let those credentials reach the bundle and the pre-filled
     GitHub issue URL verbatim.
     """
     home = tmp_path / "home"
@@ -143,7 +143,7 @@ def test_archive_is_opened_in_binary_mode(tmp_path, monkeypatch):
     ``os.open`` defaults to TEXT mode on Windows and ``os.fdopen(fd, "wb")``
     cannot change the translation mode of an fd handed to it, so each 0x0A in
     the DEFLATE stream would be written as 0x0D 0x0A and the central-directory
-    offsets would no longer match. Asserted by capturing the real flags, so the
+    offsets would not match. Asserted by capturing the real flags, so the
     guard is verifiable on POSIX (where ``O_BINARY`` is absent and the expected
     contribution is 0) instead of only on a Windows runner.
     """
@@ -472,7 +472,7 @@ def test_prerelease_wheel_is_never_reported_as_stable(monkeypatch):
 def test_channel_never_returns_the_old_prerelease_name(monkeypatch):
     """``"prerelease"`` named a channel no feed, label, or doc uses.
 
-    An insider build used to report it, so its bug reports arrived tagged with
+    An insider build could report it, so its bug reports would arrive tagged with
     a lane nobody triages by. Every answer must be a key of the label map.
     """
     for version in ("0.1.4", "0.1.4-insider.1", "0.1.4-nightly.20260807t0615"):

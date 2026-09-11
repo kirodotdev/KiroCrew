@@ -46,7 +46,7 @@ function wrap(node: ReactNode) {
 
 const JOB = {
   id: 'j1', name: 'gh-autofix-dispatcher', message: 'go', enabled: true,
-  schedule: 'every 15m', last_status: 'ok', agent: 'kirocrew-autofix',
+  schedule: 'every 15m', last_status: 'ok', agent: 'shared-template', member_id: 'kirocrew-autofix',
   last_run_ts: Math.floor(Date.now() / 1000) - 240,
   next_run_ts: Math.floor(Date.now() / 1000) + 660,
 }
@@ -68,6 +68,7 @@ describe('CrewWakeSection', () => {
     expect(await screen.findByText('gh-autofix-dispatcher')).toBeTruthy()
     expect(screen.getByText('every 15m')).toBeTruthy()
     expect(screen.getAllByTestId('wake-row')).toHaveLength(1)
+    expect(screen.queryByText('Uses Global Memory V1')).toBeNull()
   })
 
   it('shows the empty state when nothing is bound to this crew', async () => {
@@ -77,8 +78,31 @@ describe('CrewWakeSection', () => {
     expect(screen.queryAllByTestId('wake-row')).toHaveLength(0)
   })
 
+  it('keeps a legacy schedule visible and identifies its Global V1 memory', async () => {
+    H.crons.mockResolvedValue({ jobs: [{ ...JOB, member_id: '', agent: 'kirocrew-autofix' }] })
+    wrap(<CrewWakeSection crew="kirocrew-autofix" isDefaultCrew={false} />)
+    expect(await screen.findByText('gh-autofix-dispatcher')).toBeTruthy()
+    expect(screen.getByText('Uses Global Memory V1')).toBeTruthy()
+  })
+
+  it('keeps legacy sequence attribution without granting private member identity', async () => {
+    H.crons.mockResolvedValue({ jobs: [{
+      ...JOB, member_id: '', agent: '', agent_sequence: ['ops-triage', 'kirocrew-autofix'],
+    }] })
+    wrap(<CrewWakeSection crew="ops-triage" isDefaultCrew={false} />)
+    expect(await screen.findByText('gh-autofix-dispatcher')).toBeTruthy()
+    expect(screen.getByText('Uses Global Memory V1')).toBeTruthy()
+  })
+
+  it('keeps an unnamed legacy schedule on a configured non-reserved default crew', async () => {
+    H.crons.mockResolvedValue({ jobs: [{ ...JOB, member_id: '', agent: '' }] })
+    wrap(<CrewWakeSection crew="my-assistant" isDefaultCrew />)
+    expect(await screen.findByText('gh-autofix-dispatcher')).toBeTruthy()
+    expect(screen.getByText('Uses Global Memory V1')).toBeTruthy()
+  })
+
   it("claims an agent-less cron for the default crew only", async () => {
-    H.crons.mockResolvedValue({ jobs: [{ ...JOB, id: 'j2', name: 'start a day', agent: '' }] })
+    H.crons.mockResolvedValue({ jobs: [{ ...JOB, id: 'j2', name: 'start a day', agent: '', member_id: '' }] })
     wrap(<CrewWakeSection crew="default" isDefaultCrew />)
     expect(await screen.findByText('start a day')).toBeTruthy()
 
@@ -148,7 +172,7 @@ describe('CrewWakeSection', () => {
 
   // `agent_sequence` wins over `agent` at run time, so the crews it names own the
   // job and an empty `agent` on it must not read as "the default crew".
-  it('attributes a sequence job to the crews it names, not to the default crew', async () => {
+  it('attributes a sequence job through its explicit member identity', async () => {
     const seq = { ...JOB, id: 'q1', name: 'nightly-chain', agent: '', agent_sequence: ['ops-triage', 'kirocrew-autofix'] }
     H.crons.mockResolvedValue({ jobs: [seq] })
     wrap(<CrewWakeSection crew="kirocrew-autofix" isDefaultCrew={false} />)
@@ -207,7 +231,7 @@ describe('CrewWakeSection', () => {
 describe('CrewWakeSection — inline schedule creation', () => {
   async function openForm(crew = 'kirocrew-autofix') {
     H.crons.mockResolvedValue({ jobs: [] })
-    wrap(<CrewWakeSection crew={crew} isDefaultCrew={false} />)
+    wrap(<CrewWakeSection crew={crew} agentTemplate="shared-template" isDefaultCrew={false} />)
     fireEvent.click(await screen.findByTestId('crew-wake-add'))
     return screen.getByTestId('crew-wake-create')
   }
@@ -226,14 +250,15 @@ describe('CrewWakeSection — inline schedule creation', () => {
     expect(chip.className).toContain('break-all')
   })
 
-  it('creates the job carrying this crew as its agent', async () => {
+  it('creates the job carrying member identity separately from its template', async () => {
     await openForm('kirocrew-autofix')
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'morning digest' } })
     fireEvent.change(screen.getByLabelText('Message'), { target: { value: 'summarize open work' } })
     fireEvent.click(screen.getByRole('button', { name: /Create/ }))
     await waitFor(() => expect(H.createCron).toHaveBeenCalledTimes(1))
     const body = H.createCron.mock.calls[0][0]
-    expect(body.agent).toBe('kirocrew-autofix')
+    expect(body.member_id).toBe('kirocrew-autofix')
+    expect(body.agent).toBe('shared-template')
     expect(body.name).toBe('morning digest')
     expect(body.message).toBe('summarize open work')
   })
@@ -267,7 +292,7 @@ describe('CrewWakeSection — draft accounting and the visible Create', () => {
     // The header button, not JobForm's own below-the-fold submit.
     fireEvent.click(screen.getByTestId('crew-wake-create-submit'))
     await waitFor(() => expect(H.createCron).toHaveBeenCalledTimes(1))
-    expect(H.createCron.mock.calls[0][0].agent).toBe('oncall')
+    expect(H.createCron.mock.calls[0][0].member_id).toBe('oncall')
   })
 
   it('reports TYPED work, not open-ness — and clears on close and unmount', async () => {

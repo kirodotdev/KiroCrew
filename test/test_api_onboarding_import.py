@@ -529,7 +529,7 @@ async def test_state_persists_import_onboarded(monkeypatch, tmp_path) -> None:
 
     def _fake_update_config_locked(*args, **kwargs):
         # The handler persists via a delta mutate through update_config_locked
-        # (#4767): apply it to an empty document and record what it wrote.
+        # Apply it to an empty document and record what it wrote.
         doc = kwargs["mutate"]({})
         saved.write_text(str(doc["dashboard"]["import_onboarded"]), encoding="utf-8")
         return doc
@@ -1041,7 +1041,7 @@ def test_handler_category_tables_match_the_backend() -> None:
     category is hidden" — it raises and the endpoint 500s, breaking the import
     wizard for EVERY source. Pin both tables so the omission fails loudly in CI.
 
-    The SOURCE tables are deliberately absent: the handler no longer keeps a copy
+    The SOURCE tables are deliberately absent: the handler does not keep a copy
     of the source list to drift from. It derives ids from the engine's registry,
     which is what makes an edition-registered source reachable at all.
     """
