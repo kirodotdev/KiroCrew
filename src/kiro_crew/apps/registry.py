@@ -2692,6 +2692,14 @@ def _credential_free_external_registry_entries(
     return [_credential_free_external_registry_value(entry) for entry in entries]
 
 
+def _external_registry_cache_identity(reg: Any) -> str:
+    """Key a configured registry cache by its full source coordinates."""
+    name = _public_registry_name(reg)
+    repo = _normalize_git_target(reg.repo)
+    branch = str(reg.branch or "")
+    return f"{name}|{repo}|{branch}"
+
+
 def _external_registry_cache_path_for_identity(name: str) -> Path:
 
     # Pure-safe names keep the historical byte-identical path (no hash suffix)
