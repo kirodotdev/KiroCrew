@@ -2,7 +2,16 @@ import { describe, expect, it } from 'vitest'
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
-const src = () => readFile(join(__dirname, '..', 'pages', 'ChatPage.tsx'), 'utf8')
+// The title cluster moved into the shared SessionTitleControl (also mounted in
+// every split-view pane header); the row and its trailing controls stay in
+// ChatPage. The contract spans both files.
+const src = async () => {
+  const [page, control] = await Promise.all([
+    readFile(join(__dirname, '..', 'pages', 'ChatPage.tsx'), 'utf8'),
+    readFile(join(__dirname, '..', 'pages', 'chat', 'SessionTitleControl.tsx'), 'utf8'),
+  ])
+  return page + '\n' + control
+}
 
 // A long session title pushed the trailing header controls off screen: measured at
 // 320px, the external-link button was clipped at the edge and the pin and
