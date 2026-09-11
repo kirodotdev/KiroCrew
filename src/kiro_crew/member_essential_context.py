@@ -24,7 +24,28 @@ class MemberEssentialContextError(ValueError):
 
 
 def _refuse_managed_source(path: Path) -> None:
-    """Resources cannot reopen Global V1 or a peer's managed member state."""
+    """Resources cannot reopen Global V1 or a peer's managed member state.
+
+    The ROOTS are compared in their realpath spelling; the CANDIDATE is only
+    ``abspath``-normalized. The asymmetry is deliberate on both sides.
+
+    Roots must resolve because ``abspath`` follows no link: a candidate that
+    arrived resolved -- as an expanded glob match does -- matches no root whose
+    spelling still carries a symlink, which skips this isolation entirely on a
+    host whose home is reached through one. A workspace root is configuration,
+    but configuration a dashboard caller can write (an absolute ``dir``), so it
+    is resolved through the same ``validate_file_path`` screen as everything
+    else here (:func:`_comparable_root`): a UNC-shaped root is compared
+    lexically instead of being resolved, because ``realpath`` on it would be
+    the outbound SMB probe.
+
+    The candidate must NOT resolve, because it can be an unvalidated caller path
+    and ``realpath`` on one is itself an outbound probe for a UNC target on
+    Windows -- the same reason ``validate_file_path`` screens UNC shapes BEFORE
+    resolving anything. Callers that hold a validated path pass it already
+    resolved, so those comparisons are exact; ``_read`` additionally re-checks the
+    validated path, so the pre-validation call never has to be the deciding one.
+    """
     cfg = KiroCrewConfig.load()
     roots = [config_dir(), Path.home() / ".kiro/crew", Path.home() / ".kirocrew"]
     workspaces = [config_dir() / "workspace"]
@@ -32,10 +53,10 @@ def _refuse_managed_source(path: Path) -> None:
     candidate = Path(os.path.abspath(path))
     in_workspace = False
     for workspace in workspaces:
-        workspace = Path(os.path.abspath(workspace))
+        workspace = _comparable_root(workspace)
         admin_overlap = False
         for admin in roots:
-            admin = Path(os.path.abspath(admin))
+            admin = _comparable_root(admin)
             if admin.is_relative_to(workspace):
                 admin_overlap = True
             elif workspace.is_relative_to(admin):
@@ -57,9 +78,7 @@ def _refuse_managed_source(path: Path) -> None:
                     f"Essential source {path}: managed memory/member state cannot be a project resource"
                 )
             in_workspace = True
-    if not in_workspace and any(
-        candidate.is_relative_to(Path(os.path.abspath(root))) for root in roots
-    ):
+    if not in_workspace and any(candidate.is_relative_to(_comparable_root(root)) for root in roots):
         raise MemberEssentialContextError(
             f"Essential source {path}: managed memory/member state cannot be a project resource"
         )
@@ -85,11 +104,51 @@ def member_for_store(store: str | None, claimed_member: str = "") -> tuple[str, 
     return owner, cfg.agents[owner].kiro_agent or "kirocrew"
 
 
+def _comparable_root(root: Path) -> Path:
+    """The spelling a root is compared against in :func:`_refuse_managed_source`.
+
+    Resolved through ``validate_file_path`` when that screen admits the root, so
+    a symlinked spelling matches resolved candidates. A root the screen refuses
+    (a UNC share not on the trusted list, a sensitive path) is never handed to
+    ``realpath`` -- on Windows that resolution is itself the network probe --
+    and keeps the lexical ``abspath`` comparison this check always had.
+    """
+    admitted = _admitted_root(root)
+    return admitted if admitted is not None else Path(os.path.abspath(root))
+
+
+def _admitted_root(root: Path) -> Path | None:
+    """Normalize a declared root to the spelling admitted paths are compared against.
+
+    ``validate_file_path`` returns a fully RESOLVED path, so a root that still
+    carries a symlink in its own spelling matches no document at all: on a host
+    whose ``$HOME`` is ``/home/<user>`` linking to ``/local/home/<user>``,
+    ``Path.home()`` IS the link, every admitted path resolves past it, and the
+    containment check below is false for every source. The ``project`` root is
+    already stored resolved by ``documents_for_member``; this gives a root taken
+    from ``Path.home()`` the same treatment instead of leaving the caller to
+    remember it.
+
+    Containment stays exact -- a document's real path must still sit inside the
+    real root -- and this says nothing about paths BELOW the root, which the
+    walk still refuses when they are, or sit under, a link. Only the declared
+    root's own spelling is normalized, and that root comes from configuration
+    rather than from scanned content.
+    """
+    admitted = validate_file_path(str(root))
+    return None if admitted is None else Path(admitted)
+
+
 def _read(path: Path, root: Path) -> str:
     try:
         _refuse_managed_source(path)
         admitted = validate_file_path(str(path))
-        if admitted is None or not Path(admitted).is_relative_to(root):
+        admitted_root = _admitted_root(root)
+        if (
+            admitted is None
+            or admitted_root is None
+            or not Path(admitted).is_relative_to(admitted_root)
+        ):
             raise ValueError("outside the admitted document root")
         _refuse_managed_source(Path(admitted))
         # Pin this admitted parent, not the whole home. A racing ancestor
@@ -114,9 +173,15 @@ def _matches(root: Path, pattern: str) -> list[Path]:
         raise MemberEssentialContextError(
             f"Essential source {root / pattern}: outside admitted root"
         )
+    # Walk the root in its admitted spelling: an unresolved root whose own path
+    # contains a symlink would otherwise be refused as a linked directory on its
+    # very first visit, before any document is considered.
+    admitted_root = _admitted_root(root)
+    if admitted_root is None:
+        raise MemberEssentialContextError(f"Essential source {root}: outside admitted root")
     if not any(c in pattern for c in "*?["):
-        return [root / pattern]
-    pending = [(root, 0)]
+        return [admitted_root / pattern]
+    pending = [(admitted_root, 0)]
     result: set[Path] = set()
     scanned = 0
     visited: set[tuple[Path, int]] = set()
@@ -126,7 +191,7 @@ def _matches(root: Path, pattern: str) -> list[Path]:
             continue
         visited.add((directory, offset))
         admitted = validate_file_path(str(directory))
-        if admitted is None or not Path(admitted).is_relative_to(root):
+        if admitted is None or not Path(admitted).is_relative_to(admitted_root):
             raise MemberEssentialContextError(
                 f"Essential source {directory}: outside admitted root"
             )

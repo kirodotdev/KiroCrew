@@ -16,11 +16,13 @@ from aiohttp.test_utils import make_mocked_request
 from body_stream_helpers import BodyStreamPayload
 from dashboard_owner_helpers import NoConfiguredOwner
 
+from conftest import requires_symlinks
 from kiro_crew.config.loader import (
     KiroCrewAgentConfig,
     KiroCrewConfig,
     WorkspaceConfig,
 )
+from kiro_crew.dashboard import chat_utils
 from kiro_crew.dashboard.handlers import (
     api_workspaces_create,
     api_workspaces_delete,
@@ -158,6 +160,197 @@ class TestCreateHandler:
         mock_sel().log_api_access.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_create_materializes_the_workspace_directory(self, tmp_path: Path) -> None:
+        """A registered workspace whose directory is absent is a latent outage.
+
+        The V2 private-memory layout resolves EVERY declared workspace strictly
+        and refuses to start ANY private member when one is missing, so a create
+        that writes only the config entry breaks members unrelated to it.
+        """
+        cfg = _cfg()
+        _seed_file(tmp_path, cfg)
+        with (
+            patch(_LOAD, return_value=cfg),
+            patch(_CFGDIR, return_value=tmp_path),
+            patch(_DATAHOME, return_value=tmp_path),
+            patch(_SEL),
+        ):
+            resp = await api_workspaces_create(_req({"name": "staging"}))
+        assert resp.status == 200
+        assert (tmp_path / "workspace-staging").is_dir(), "config entry without a directory"
+
+    @pytest.mark.asyncio
+    async def test_a_failed_write_leaves_the_created_directory_alone(self, tmp_path: Path) -> None:
+        """The plain-create directory is NOT rolled back, by design.
+
+        By the time a rollback could run, a concurrent create can already have
+        adopted that very directory through the EEXIST branch and registered it,
+        so deleting it would recreate the missing-directory entry this change
+        removes -- for a workspace that is not even this request's. An empty
+        directory left behind is inert and the next create adopts it.
+        """
+        cfg = _cfg()
+        _seed_file(tmp_path, cfg)
+
+        def _run_mutate_then_fail(_locked, *, mutate):
+            # Drive the mutate exactly as the real write does, so the mkdir runs,
+            # then fail the write itself to exercise the rollback path.
+            mutate({"workspaces": {"default": {"dir": "workspace"}}})
+            raise RuntimeError("atomic write failed")
+
+        with (
+            patch(_LOAD, return_value=cfg),
+            patch(_CFGDIR, return_value=tmp_path),
+            patch(_DATAHOME, return_value=tmp_path),
+            patch(_SEL),
+            patch(
+                "kiro_crew.dashboard.handlers.files.run_config_write",
+                new=_run_mutate_then_fail,
+            ),
+            pytest.raises(RuntimeError),
+        ):
+            await api_workspaces_create(_req({"name": "staging"}))
+        assert (tmp_path / "workspace-staging").is_dir(), (
+            "the failed write deleted a directory a concurrent create may already "
+            "have adopted and registered"
+        )
+
+    @requires_symlinks
+    @pytest.mark.asyncio
+    async def test_create_refuses_a_parent_swapped_for_a_symlink_after_validation(
+        self, tmp_path: Path
+    ) -> None:
+        """The directory is made through the PINNED parent, so a swapped parent is refused.
+
+        Validation judged ``<home>/nested/workspace-staging`` by name. If ``nested``
+        becomes a link before the mkdir, a by-name ``os.mkdir`` follows it and creates
+        -- and registers -- a directory wherever the link points. The pinned create
+        opens every parent component with ``O_NOFOLLOW`` and refuses instead, and
+        nothing is written to config. Mirrors the swap window with the real locked
+        write: the parent is replaced right before the mutate runs.
+        """
+        import kiro_crew.pinned_fs as pinned_fs
+
+        if not pinned_fs.supports_pinned_walk():
+            pytest.skip("platform cannot pin a parent by descriptor")
+        (tmp_path / "nested").mkdir()
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        cfg = _cfg()
+        _seed_file(tmp_path, cfg)
+        real_run_config_write = chat_utils.run_config_write
+
+        async def _swap_parent_then_write(fn, /, *args, **kwargs):
+            (tmp_path / "nested").rmdir()
+            (tmp_path / "nested").symlink_to(elsewhere, target_is_directory=True)
+            return await real_run_config_write(fn, *args, **kwargs)
+
+        with (
+            patch(_LOAD, return_value=cfg),
+            patch(_CFGDIR, return_value=tmp_path),
+            patch(_DATAHOME, return_value=tmp_path),
+            patch(_SEL),
+            patch(
+                "kiro_crew.dashboard.handlers.files.run_config_write",
+                new=_swap_parent_then_write,
+            ),
+        ):
+            resp = await api_workspaces_create(
+                _req({"name": "staging", "dir": "nested/workspace-staging"})
+            )
+        assert resp.status == 409
+        assert json.loads(resp.body)["code"] == "workspace_dir_uncreatable"
+        assert not (
+            elsewhere / "workspace-staging"
+        ).exists(), "the mkdir followed the swapped parent"
+        assert "staging" not in _read_doc(tmp_path)["workspaces"]
+
+    @requires_symlinks
+    @pytest.mark.asyncio
+    async def test_create_refuses_adoption_through_a_parent_swapped_for_a_symlink(
+        self, tmp_path: Path
+    ) -> None:
+        """An existing directory behind a swapped parent is not adopted by name."""
+        import kiro_crew.pinned_fs as pinned_fs
+
+        if not pinned_fs.supports_pinned_walk():
+            pytest.skip("platform cannot pin a parent by descriptor")
+        (tmp_path / "nested").mkdir()
+        elsewhere = tmp_path / "elsewhere"
+        redirected = elsewhere / "workspace-staging"
+        redirected.mkdir(parents=True)
+        (redirected / "keep.txt").write_text("redirected", encoding="utf-8")
+        cfg = _cfg()
+        _seed_file(tmp_path, cfg)
+        real_run_config_write = chat_utils.run_config_write
+
+        async def _swap_parent_then_write(fn, /, *args, **kwargs):
+            (tmp_path / "nested").rmdir()
+            (tmp_path / "nested").symlink_to(elsewhere, target_is_directory=True)
+            return await real_run_config_write(fn, *args, **kwargs)
+
+        with (
+            patch(_LOAD, return_value=cfg),
+            patch(_CFGDIR, return_value=tmp_path),
+            patch(_DATAHOME, return_value=tmp_path),
+            patch(_SEL),
+            patch(
+                "kiro_crew.dashboard.handlers.files.run_config_write",
+                new=_swap_parent_then_write,
+            ),
+        ):
+            resp = await api_workspaces_create(
+                _req({"name": "staging", "dir": "nested/workspace-staging"})
+            )
+        assert resp.status == 409
+        assert json.loads(resp.body)["code"] == "workspace_dir_uncreatable"
+        assert (redirected / "keep.txt").read_text(encoding="utf-8") == "redirected"
+        assert "staging" not in _read_doc(tmp_path)["workspaces"]
+
+    @pytest.mark.asyncio
+    async def test_create_refuses_a_path_that_exists_and_is_not_a_directory(
+        self, tmp_path: Path
+    ) -> None:
+        """A file cannot serve as a workspace, so it must not be registered as one.
+
+        The mkdir raises EEXIST for a file exactly as it does for a directory;
+        swallowing it would register the unusable entry this change prevents.
+        """
+        (tmp_path / "workspace-staging").write_text("not a directory", encoding="utf-8")
+        cfg = _cfg()
+        _seed_file(tmp_path, cfg)
+        with (
+            patch(_LOAD, return_value=cfg),
+            patch(_CFGDIR, return_value=tmp_path),
+            patch(_DATAHOME, return_value=tmp_path),
+            patch(_SEL),
+        ):
+            resp = await api_workspaces_create(_req({"name": "staging"}))
+        assert resp.status == 409
+        assert b"not a directory" in resp.body
+        assert "staging" not in _read_doc(tmp_path)["workspaces"]
+
+    @pytest.mark.asyncio
+    async def test_create_adopts_an_existing_directory_without_touching_it(
+        self, tmp_path: Path
+    ) -> None:
+        """Registering a folder the owner already keeps stays legal and lossless."""
+        existing = tmp_path / "workspace-staging"
+        existing.mkdir()
+        (existing / "keep.txt").write_text("mine", encoding="utf-8")
+        cfg = _cfg()
+        _seed_file(tmp_path, cfg)
+        with (
+            patch(_LOAD, return_value=cfg),
+            patch(_CFGDIR, return_value=tmp_path),
+            patch(_DATAHOME, return_value=tmp_path),
+            patch(_SEL),
+        ):
+            resp = await api_workspaces_create(_req({"name": "staging"}))
+        assert resp.status == 200
+        assert (existing / "keep.txt").read_text(encoding="utf-8") == "mine"
+
+    @pytest.mark.asyncio
     async def test_create_with_copy_from(self, tmp_path: Path) -> None:
         cfg = _cfg()
         _seed_file(tmp_path, cfg)
@@ -219,6 +412,9 @@ class TestUpdateHandler:
     async def test_update_dir_success(self, tmp_path: Path) -> None:
         cfg = _cfg()
         _seed_file(tmp_path, cfg)
+        # The destination must exist: an update REFUSES a dir that is not there,
+        # because a declared-but-missing workspace refuses every private member.
+        (tmp_path / "new-dir").mkdir()
         with (
             patch(_LOAD, return_value=cfg),
             patch(_CFGDIR, return_value=tmp_path),
@@ -231,6 +427,62 @@ class TestUpdateHandler:
         assert resp.status == 200
         assert _read_doc(tmp_path)["workspaces"]["default"]["dir"] == "new-dir"
         mock_sel().log_api_access.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_update_judges_the_screened_path_not_a_second_resolution(
+        self, tmp_path: Path
+    ) -> None:
+        """The locked mutate checks the ONE path screened before the lock.
+
+        Re-resolving the request string inside the lock would judge whatever a
+        parent swapped for a link points at now, not the directory that passed
+        is_sensitive_path and containment. Only OTHER entries resolve fresh.
+        """
+        from kiro_crew.dashboard.handlers import files as files_mod
+
+        cfg = _cfg()
+        _seed_file(tmp_path, cfg)
+        (tmp_path / "new-dir").mkdir()
+        real_resolve = files_mod._resolve_ws_dir
+        resolved_strings: list[str] = []
+
+        def recording(d: str) -> Path:
+            resolved_strings.append(d)
+            return real_resolve(d)
+
+        with (
+            patch(_LOAD, return_value=cfg),
+            patch(_CFGDIR, return_value=tmp_path),
+            patch(_DATAHOME, return_value=tmp_path),
+            patch(_SEL),
+            patch.object(files_mod, "_resolve_ws_dir", recording),
+        ):
+            resp = await api_workspaces_update(
+                _req({"dir": "new-dir"}, match_info={"name": "default"})
+            )
+        assert resp.status == 200
+        assert "new-dir" not in resolved_strings, resolved_strings
+
+    @pytest.mark.asyncio
+    async def test_update_refuses_a_dir_that_is_missing_or_not_a_directory(
+        self, tmp_path: Path
+    ) -> None:
+        """Rebinding to an unusable path arms a fleet-wide private-memory refusal."""
+        cfg = _cfg()
+        _seed_file(tmp_path, cfg)
+        (tmp_path / "a-file").write_text("not a directory", encoding="utf-8")
+        for target in ("never-created", "a-file"):
+            with (
+                patch(_LOAD, return_value=cfg),
+                patch(_CFGDIR, return_value=tmp_path),
+                patch(_DATAHOME, return_value=tmp_path),
+                patch(_SEL),
+            ):
+                resp = await api_workspaces_update(
+                    _req({"dir": target}, match_info={"name": "default"})
+                )
+            assert resp.status == 409, target
+            assert _read_doc(tmp_path)["workspaces"]["default"]["dir"] != target
 
     @pytest.mark.asyncio
     async def test_update_path_traversal_rejected(self, tmp_path: Path) -> None:
@@ -512,9 +764,17 @@ class TestDeltaMutatorHardening:
         assert doc["workspaces"]["staging"]["dir"] == "workspace-staging"
 
     @pytest.mark.asyncio
-    async def test_failed_config_write_rolls_back_the_installed_tree(self, tmp_path: Path) -> None:
-        """ENOSPC-class failure AFTER the staged tree is installed must not
-        leave an unregistered workspace directory behind."""
+    async def test_failed_config_write_leaves_the_installed_tree_in_place(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """ENOSPC-class failure AFTER the staged tree is installed leaves it, and says so.
+
+        The same rule as the plain-create directory: a concurrent create adopts an
+        existing destination (EEXIST is accepted) and registers it, so deleting the
+        tree here can leave THAT workspace declared with no directory -- the state
+        the private-memory layout refuses on. A copied tree nothing points at must
+        be named in the log, or it is indistinguishable from a leak.
+        """
         (tmp_path / "workspace").mkdir()
         (tmp_path / "workspace" / "notes.md").write_text("x", encoding="utf-8")
         cfg = _cfg()
@@ -528,13 +788,18 @@ class TestDeltaMutatorHardening:
                 side_effect=OSError("no space left on device"),
             ),
             patch(_SEL),
+            caplog.at_level("WARNING", logger="kiro_crew.dashboard.handlers.files"),
         ):
             with pytest.raises(OSError):
                 await api_workspaces_create(_req({"name": "copied", "copy_from": "default"}))
-        assert not (tmp_path / "workspace-copied").exists(), (
-            "the installed destination was not rolled back after the config "
-            "write failed -- an unregistered workspace directory remains"
+        assert (tmp_path / "workspace-copied" / "notes.md").is_file(), (
+            "the installed tree was deleted after the config write failed -- a "
+            "concurrent create may already have adopted and registered it"
         )
+        assert "copied" not in _read_doc(tmp_path)["workspaces"]
+        assert any(
+            str(tmp_path / "workspace-copied") in rec.getMessage() for rec in caplog.records
+        ), "the retained tree was not named in the log"
         leftovers = [p.name for p in tmp_path.iterdir() if ".staging-" in p.name]
         assert leftovers == [], f"staged copy not cleaned up: {leftovers}"
 

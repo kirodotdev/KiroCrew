@@ -1,7 +1,9 @@
 """V2 keeps actual essential sources complete through every provider lifecycle."""
 
 import json
+import os
 import threading
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -359,6 +361,64 @@ def test_literal_steering_prefix_does_not_enumerate_unrelated_project_root(env, 
     assert env.project / ".kiro/steering/always.md" in paths
 
 
+@requires_symlinks
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="Windows refuses a linked ANCESTOR by design (validate_file_path's "
+    "linked-ancestor gate), so a symlinked declared root is correctly rejected there; "
+    "the $HOME-symlink layout this admits is a POSIX arrangement.",
+)
+def test_matches_admits_a_declared_root_reached_through_a_symlink(env, tmp_path):
+    """A root whose own spelling contains a link must still admit its documents.
+
+    ``validate_file_path`` resolves, so an unresolved root matched nothing and was
+    additionally refused as a linked directory on its first visit. That is the
+    ordinary ``$HOME`` layout on hosts where ``/home/<user>`` links elsewhere,
+    where it refused EVERY essential source for every private member.
+    """
+    from kiro_crew import member_essential_context as essentials
+
+    linked_root = tmp_path / "linked-root"
+    linked_root.symlink_to(env.project, target_is_directory=True)
+    paths = essentials._matches(linked_root, ".kiro/steering/**/*.md")
+    assert any(path.name == "always.md" for path in paths)
+
+
+@requires_symlinks
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="Windows refuses a linked ANCESTOR by design (validate_file_path's "
+    "linked-ancestor gate), so a symlinked declared root is correctly rejected there; "
+    "the $HOME-symlink layout this admits is a POSIX arrangement.",
+)
+def test_read_admits_a_document_under_a_symlinked_root(env, tmp_path):
+    """The containment check compares real paths, so either spelling admits."""
+    from kiro_crew import member_essential_context as essentials
+
+    linked_root = tmp_path / "linked-root"
+    linked_root.symlink_to(env.project, target_is_directory=True)
+    assert "Project rules" in essentials._read(linked_root / "AGENTS.md", linked_root)
+
+
+@requires_symlinks
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="Windows refuses a linked ANCESTOR by design (validate_file_path's "
+    "linked-ancestor gate), so a symlinked declared root is correctly rejected there; "
+    "the $HOME-symlink layout this admits is a POSIX arrangement.",
+)
+def test_symlinked_root_still_refuses_a_document_outside_it(env, tmp_path):
+    """Normalizing the root's spelling must not widen what the root contains."""
+    from kiro_crew import member_essential_context as essentials
+
+    outside = tmp_path / "outside.md"
+    outside.write_text("OUTSIDE_SECRET", encoding="utf-8")
+    linked_root = tmp_path / "linked-root"
+    linked_root.symlink_to(env.project, target_is_directory=True)
+    with pytest.raises(MemberEssentialContextError, match="outside the admitted document root"):
+        essentials._read(outside, linked_root)
+
+
 def test_owner_cleared_empty_anchors_are_valid_but_missing_source_refuses(env):
     env.memory._preferences_file.write_text("", encoding="utf-8")
     env.memory._projects_file.write_text("", encoding="utf-8")
@@ -433,3 +493,39 @@ def test_linked_directory_is_refused_before_enumerating_outside_sources(env, tmp
         env.builder.build_message(
             "Continue", False, memory_store=env.store, project=str(env.project)
         )
+
+
+def test_refused_workspace_root_is_never_resolved(env, monkeypatch, tmp_path):
+    """A root ``validate_file_path`` refuses (a UNC share on Windows) is not probed.
+
+    ``realpath`` on such a root IS the outbound SMB probe, so the isolation
+    check must compare it lexically instead of resolving it.
+    """
+    from kiro_crew import member_essential_context as mec
+
+    refused = Path("//share-host/ws-share/workspace")
+    real_validate = mec.validate_file_path
+    monkeypatch.setattr(
+        mec,
+        "validate_file_path",
+        lambda raw: None if "share-host" in raw else real_validate(raw),
+    )
+    monkeypatch.setattr(
+        mec.KiroCrewConfig,
+        "load",
+        classmethod(lambda cls: SimpleNamespace(workspaces={"shared": None})),
+    )
+    monkeypatch.setattr(mec, "workspace_dir_for", lambda name: refused)
+    real_realpath = os.path.realpath
+    resolved: list[str] = []
+
+    def recording_realpath(p, *a, **k):
+        resolved.append(str(p))
+        return real_realpath(p, *a, **k)
+
+    monkeypatch.setattr(os.path, "realpath", recording_realpath)
+
+    mec._refuse_managed_source(tmp_path / "project" / "guide.md")
+
+    assert not any("share-host" in p for p in resolved), resolved
+    assert mec._comparable_root(refused) == Path(os.path.abspath(refused))

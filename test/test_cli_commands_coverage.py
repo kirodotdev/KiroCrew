@@ -152,31 +152,38 @@ class TestSmallHelpers:
 
 
 class TestWorkspaceDirGuard:
-    """``_ws_dir_resolves_inside_home`` must fail CLOSED, never raise."""
+    """``_ws_dir_resolves_inside_home`` must fail CLOSED, never raise.
+
+    An accepted dir comes back as the ONE resolved path the guard judged (the
+    caller materializes that object, never a second resolution); a refusal is None.
+    """
 
     def test_relative_name_inside_home_is_accepted(self, tmp_path: Path) -> None:
         with patch("kiro_crew.cli_commands.config_dir", return_value=tmp_path):
-            assert cc._ws_dir_resolves_inside_home("workspace-demo") is True
+            assert (
+                cc._ws_dir_resolves_inside_home("workspace-demo")
+                == (tmp_path / "workspace-demo").resolve()
+            )
 
     def test_home_root_itself_is_refused(self, tmp_path: Path) -> None:
         with patch("kiro_crew.cli_commands.config_dir", return_value=tmp_path):
-            assert cc._ws_dir_resolves_inside_home(".") is False
+            assert cc._ws_dir_resolves_inside_home(".") is None
 
     def test_escaping_path_is_refused(self, tmp_path: Path) -> None:
         with patch("kiro_crew.cli_commands.config_dir", return_value=tmp_path):
-            assert cc._ws_dir_resolves_inside_home("../elsewhere") is False
+            assert cc._ws_dir_resolves_inside_home("../elsewhere") is None
 
     def test_unknown_user_tilde_fails_closed(self, tmp_path: Path) -> None:
         """``expanduser`` raises RuntimeError here -- it must not escape."""
         with patch("kiro_crew.cli_commands.config_dir", return_value=tmp_path):
-            assert cc._ws_dir_resolves_inside_home("~nosuchuser1234/x") is False
+            assert cc._ws_dir_resolves_inside_home("~nosuchuser1234/x") is None
 
     def test_sensitive_target_is_refused(self, tmp_path: Path) -> None:
         with (
             patch("kiro_crew.cli_commands.config_dir", return_value=tmp_path),
             patch("kiro_crew.cli_commands.is_sensitive_path", return_value=True),
         ):
-            assert cc._ws_dir_resolves_inside_home("profiles") is False
+            assert cc._ws_dir_resolves_inside_home("profiles") is None
 
     def test_error_message_names_boundary_and_value(self, tmp_path: Path) -> None:
         with patch("kiro_crew.cli_commands.config_dir", return_value=tmp_path):
@@ -989,7 +996,13 @@ class TestWorkspaceCopyFrom:
         assert "already used by another workspace" in capsys.readouterr().err
 
     def test_copy_from_missing_source_dir_still_registers(self, tmp_path: Path) -> None:
-        """A source workspace with no directory on disk is a config-only copy."""
+        """A source workspace with no directory on disk registers a USABLE copy.
+
+        With no source tree to publish, the create falls through to the plain
+        branch, which materializes the destination. A registered ``dir`` that does
+        not exist is precisely the entry that makes the V2 private-memory layout
+        refuse every private member.
+        """
         cfg = self._base()
         cfg_path = _seed_doc_file(tmp_path, cfg)
         with (
@@ -1002,7 +1015,7 @@ class TestWorkspaceCopyFrom:
                 _ns(workspace_action="create", name="copy3", dir=None, copy_from="src")
             )
         assert "copy3" in _read_doc(cfg_path)["workspaces"]
-        assert not (tmp_path / "workspace-copy3").exists()
+        assert (tmp_path / "workspace-copy3").is_dir()
 
 
 # ── security subcommands ──

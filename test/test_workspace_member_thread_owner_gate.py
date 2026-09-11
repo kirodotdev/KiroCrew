@@ -155,7 +155,12 @@ class TestWorkspaceUpdateOwnerGate:
         assert stored["spare"]["dir"] == "workspace-spare"
 
     @pytest.mark.asyncio
-    async def test_owner_still_updates(self, cfg_env):
+    async def test_owner_still_updates(self, cfg_env, tmp_path):
+        # An update REFUSES a dir that is not there (a declared-but-missing
+        # workspace refuses every private member), so materialize the
+        # destination -- this test is about the owner gate, not that rule.
+        # Workspace dirs resolve under the patched data_home, which is tmp_path.
+        (tmp_path / "moved").mkdir()
         async with TestClient(TestServer(_workspace_app())) as client:
             resp = await client.put("/api/workspaces/spare", json={"dir": "moved"})
             assert resp.status == 200, await resp.text()

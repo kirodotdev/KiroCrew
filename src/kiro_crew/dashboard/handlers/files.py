@@ -40,9 +40,11 @@ from kiro_crew.config import loader as config_loader
 from kiro_crew.config.loader import (
     KiroCrewConfig,
     WorkspaceConfig,
+    WorkspaceDirUnusable,
     coerce_dict_section,
     config_dir,
     data_home,
+    materialize_workspace_dir,
     update_config_locked,
 )
 from kiro_crew.dashboard import part_stream, upload_destination
@@ -1742,8 +1744,11 @@ async def api_workspaces_create(request: web.Request) -> web.Response:
         # Recursively copy source workspace data to the new directory
         src_path = data_home() / cfg.workspaces[copy_from].dir
         dst_path = data_home() / ws_dir
+        # Resolved once each; both checks below judge these same objects.
+        src_resolved = src_path.resolve()
+        dst_resolved = dst_path.resolve()
         # Guard against path traversal
-        if not dst_path.resolve().is_relative_to(data_home().resolve()):
+        if not dst_resolved.is_relative_to(data_home().resolve()):
             _sel().log_api_access(
                 caller=request.get("user", "dashboard"),
                 operation="workspace.create",
@@ -1752,7 +1757,7 @@ async def api_workspaces_create(request: web.Request) -> web.Response:
                 resources=name,
             )
             return web.json_response({"error": "Invalid directory path"}, status=400)
-        if not src_path.resolve().is_relative_to(data_home().resolve()):
+        if not src_resolved.is_relative_to(data_home().resolve()):
             _sel().log_api_access(
                 caller=request.get("user", "dashboard"),
                 operation="workspace.create",
@@ -1763,7 +1768,7 @@ async def api_workspaces_create(request: web.Request) -> web.Response:
             return web.json_response({"error": "Invalid source directory path"}, status=400)
         # Reject config root itself to avoid copying .env / config.json
         cfg_root = data_home().resolve()
-        if src_path.resolve() == cfg_root or dst_path.resolve() == cfg_root:
+        if src_resolved == cfg_root or dst_resolved == cfg_root:
             _sel().log_api_access(
                 caller=request.get("user", "dashboard"),
                 operation="workspace.create",
@@ -1784,18 +1789,22 @@ async def api_workspaces_create(request: web.Request) -> web.Response:
     # is_relative_to + is_sensitive_path guards below reject traversals before
     # the value is stored in config. CodeQL's taint tracker does not model the
     # containment guard as a barrier.
-    final_path = (  # lgtm[py/path-injection]
-        Path(ws_dir).expanduser().resolve() if _abs else data_home() / ws_dir
-    )
+    # Resolved exactly ONCE. Every check below judges this object and the create
+    # below receives this same object: a second resolve after the checks would
+    # follow a parent swapped for a link in between, and the pinned create can
+    # only refuse a swap that happens AFTER the path it is handed was resolved.
+    validated_dir = (  # lgtm[py/path-injection]
+        Path(ws_dir).expanduser() if _abs else data_home() / ws_dir
+    ).resolve()
 
     # Check for directory collision with existing workspaces (resolve both sides)
     existing_resolved = {_resolve_ws_dir(ws.dir) for ws in cfg.workspaces.values()}
-    if _resolve_ws_dir(ws_dir) in existing_resolved:
+    if validated_dir in existing_resolved:
         return web.json_response(
             {"error": f"Directory '{ws_dir}' is already used by another workspace"},
             status=409,
         )
-    if is_sensitive_path(str(final_path.resolve())):
+    if is_sensitive_path(str(validated_dir)):
         _sel().log_api_access(
             caller=request.get("user", "dashboard"),
             operation="workspace.create",
@@ -1804,7 +1813,7 @@ async def api_workspaces_create(request: web.Request) -> web.Response:
             resources=name,
         )
         return web.json_response({"error": "Invalid directory path"}, status=400)
-    if not _abs and not final_path.resolve().is_relative_to(data_home().resolve()):
+    if not _abs and not validated_dir.is_relative_to(data_home().resolve()):
         _sel().log_api_access(
             caller=request.get("user", "dashboard"),
             operation="workspace.create",
@@ -1813,7 +1822,7 @@ async def api_workspaces_create(request: web.Request) -> web.Response:
             resources=name,
         )
         return web.json_response({"error": "Invalid directory path"}, status=400)
-    if final_path.resolve() == data_home().resolve():
+    if validated_dir == data_home().resolve():
         _sel().log_api_access(
             caller=request.get("user", "dashboard"),
             operation="workspace.create",
@@ -1881,7 +1890,7 @@ async def api_workspaces_create(request: web.Request) -> web.Response:
             for ws in workspaces.values()
             if isinstance(ws, dict)
         }
-        if _resolve_ws_dir(ws_dir) in raw_dirs:
+        if validated_dir in raw_dirs:
             raise _WorkspaceConflict(
                 409,
                 f"Directory '{ws_dir}' is already used by another workspace",
@@ -1917,6 +1926,17 @@ async def api_workspaces_create(request: web.Request) -> web.Response:
                     "workspace_dir_occupied",
                 ) from exc
             install_state["installed"] = True
+        # A create with no copy source still needs its directory to EXIST: the
+        # config entry alone is a latent fleet-wide outage for private members
+        # (see materialize_workspace_dir). Created through the pinned parent,
+        # adopting a directory already there; a non-directory or a missing parent
+        # is refused. Deliberately NOT rolled back when the config write fails --
+        # a concurrent create can already have adopted and registered it.
+        else:
+            try:
+                materialize_workspace_dir(validated_dir, display=ws_dir)
+            except WorkspaceDirUnusable as exc:
+                raise _WorkspaceConflict(409, str(exc), exc.code) from exc
         workspaces[name] = asdict(WorkspaceConfig(dir=ws_dir))
         return doc
 
@@ -1938,13 +1958,22 @@ async def api_workspaces_create(request: web.Request) -> web.Response:
         # Nothing to clean: the staged tree was consumed by the install.
         raise
     except BaseException:
-        # The worker itself failed (unreadable config, a failed atomic
-        # write): the workspace was NOT registered, so an installed tree is a
-        # phantom -- roll it back; an uninstalled staging tree is residue --
-        # drop it. Both off the loop. The rollback can only remove a tree
-        # this request created (see the install invariant above).
+        # The worker itself failed (unreadable config, a failed atomic write): the
+        # workspace was NOT registered. An installed tree is left in place, by the
+        # same rule as the plain-create directory: by the time this runs a
+        # concurrent create can have adopted the directory and registered it
+        # (EEXIST is accepted above), so deleting it is the unsafe option -- it
+        # would leave THAT workspace declared with no directory, the exact state
+        # the private-memory layout refuses on. A full copied tree with nothing
+        # pointing at it is indistinguishable from a leak, so say where it is.
+        # An uninstalled staging tree is residue nothing can have adopted; drop it
+        # off the loop.
         if install_state["installed"] and install_dst is not None:
-            await asyncio.to_thread(shutil.rmtree, install_dst, ignore_errors=True)
+            logger.warning(
+                "workspace create failed after its copied tree was installed; %s is "
+                "left in place and no workspace entry names it",
+                install_dst,
+            )
         elif staged_path is not None:
             await asyncio.to_thread(shutil.rmtree, staged_path, ignore_errors=True)
         raise
@@ -2038,17 +2067,35 @@ async def api_workspaces_update(request: web.Request) -> web.Response:
             # the workspace from this handler's older view would undo it.
             raise _WorkspaceConflict(404, f"Workspace '{name}' not found", "workspace_not_found")
         if "dir" in body:
-            new_resolved = _resolve_ws_dir(body["dir"])
+            # `resolved` is the ONE path screened above (is_sensitive_path,
+            # containment, config root); re-resolving the string here would let a
+            # parent swapped for a link between the screen and this check pass a
+            # different directory. Only the OTHER entries resolve fresh -- they are
+            # the state re-decided inside the lock.
             others = {
                 _resolve_ws_dir(str(w.get("dir", "")))
                 for n2, w in workspaces.items()
                 if n2 != name and isinstance(w, dict)
             }
-            if new_resolved in others:
+            if resolved in others:
                 raise _WorkspaceConflict(
                     409,
                     f"Directory '{body['dir']}' is already used by another workspace",
                     "workspace_dir_in_use",
+                )
+            # Same materialize-or-refuse invariant the create path holds: the V2
+            # private-memory layout resolves EVERY declared workspace strictly, so
+            # rebinding to a path that is not a directory arms a refusal for every
+            # private member, including members bound to other workspaces. An
+            # update names a destination the owner already chose, so it refuses
+            # rather than creating one -- creating is the create path's job, and
+            # this transaction has no rollback for a directory it made.
+            if not resolved.is_dir():
+                raise _WorkspaceConflict(
+                    409,
+                    f"Directory '{body['dir']}' does not exist or is not a directory; "
+                    "create it first",
+                    "workspace_dir_unusable",
                 )
             ws["dir"] = body["dir"]
             return doc

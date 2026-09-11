@@ -1216,6 +1216,14 @@ fails with its name instead of silently substituting a different persona.
 Template resources cannot import Global V1 memory or another member's state;
 the owner's preferences/projects use the separately validated private reader.
 Declared globs have bounded enumeration and do not follow linked directories.
+Containment is judged on resolved paths on both sides: a declared root (the
+project root, or the owner's home for a resource outside it) is normalized the
+same way an admitted document is, so a root reached through a symlink -- a
+symlinked `$HOME` -- admits its documents, while a document that is, or sits
+under, a link below the root is still refused. The managed-state isolation
+(`_refuse_managed_source`) compares its admin and workspace roots in the same
+resolved spelling, so it fires for resolved candidates on symlinked-home hosts
+exactly as it does elsewhere.
 
 These essentials are refreshed from the current source on every member turn.
 They have a separate 64,000-character envelope, including wrappers and identity;

@@ -35,7 +35,7 @@ from urllib.parse import urlsplit as _urlsplit  # noqa: F401 - compatibility fac
 # FROZEN pre-split alias snapshot (test_loader_reexports_historical_snapshot_by_identity),
 # so new resolution helpers are reached through the module, not re-exported.
 import kiro_crew.config.resolution as _resolution
-from kiro_crew import __version__, model_registry, platform_compat, windows_acl
+from kiro_crew import __version__, model_registry, pinned_fs, platform_compat, windows_acl
 from kiro_crew.agent_sdk.capabilities import MODEL_NAMESPACE_ACP, capabilities_for
 
 # Leaf module (stdlib + platform_compat only) — no import cycle with config.
@@ -1774,6 +1774,114 @@ def refresh_config_meta_stamp() -> bool:
         _invalidate_config_cache()
         _notify_live_watch()
     return wrote
+
+
+class WorkspaceDirUnusable(Exception):
+    """A workspace ``dir`` cannot be materialized as a directory.
+
+    ``code`` is the stable token both writers map onto their own error contract
+    (the dashboard's 409 body ``code``; the CLI's exit-1 message):
+    ``workspace_dir_not_a_directory`` when the path exists as something that is
+    not a directory, ``workspace_dir_uncreatable`` for everything else (a missing
+    parent, a parent swapped for a link, a permission error).
+    """
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+class _PinnedCreateRefusal(Exception):
+    """pinned_fs's refusal for the workspace create, mapped by the caller."""
+
+
+def materialize_workspace_dir(validated: Path, *, display: str) -> None:
+    """Make *validated* exist as a directory: adopt one that is there, create one that is not.
+
+    One writer-side rule shared by the dashboard handler and the CLI, because the
+    V2 private-memory layout resolves EVERY declared workspace with ``strict=True``
+    and refuses every private member while one declared directory is missing -- an
+    entry without a directory is a fleet-wide outage, not an inert row.
+
+    *validated* is the path AS THE CALLER'S VALIDATION RESOLVED IT (``Path.resolve()``
+    at validation time). This function never resolves it again: resolving here would
+    follow whatever a parent component points at by now, which is the exact swap the
+    pinned create exists to refuse (see :func:`pinned_fs.pin_parent`).
+
+    An existing DIRECTORY is adopted untouched (pointing a new workspace at a folder
+    the owner already keeps is the normal case for an absolute ``dir``). Anything
+    else that exists at the name is refused, as is a missing PARENT: only the final
+    component is ever created, so a mistyped nested ``dir`` fails here instead of
+    committing an entry that breaks an unrelated member later.
+
+    Adoption AND creation are judged through the PINNED parent where the platform
+    can pin: every parent component is opened with ``O_NOFOLLOW`` relative to the
+    previous one, and the final name is inspected or made relative to that
+    descriptor. A component swapped for a link after validation is therefore
+    refused rather than followed. That is the discipline every other write under a
+    validated path in this product keeps (:mod:`kiro_crew.pinned_fs`). Where nothing
+    can be pinned (Windows: no ``dir_fd``, no ``O_NOFOLLOW``), both checks are by
+    name, which is that module's documented limit, not a silent substitute.
+
+    Not a rollback site: the directory this makes is left in place when the
+    caller's config write later fails. It is reachable only through the entry
+    written in the same locked section, and a concurrent create can already have
+    adopted it, so deleting it is the unsafe option.
+    """
+    if pinned_fs.supports_pinned_walk():
+        try:
+            parent_fd = pinned_fs.pin_parent(
+                str(validated.parent),
+                what=f"workspace directory {display!r}",
+                refusal=_PinnedCreateRefusal,
+            )
+            try:
+                st = pinned_fs.stat_at(parent_fd, validated.name)
+                if st is None:
+                    try:
+                        os.mkdir(validated.name, dir_fd=parent_fd)
+                        return
+                    except FileExistsError:
+                        st = pinned_fs.stat_at(parent_fd, validated.name)
+                if st is not None and _stat.S_ISDIR(st.st_mode):
+                    return
+                raise WorkspaceDirUnusable(
+                    "workspace_dir_not_a_directory",
+                    f"'{display}' exists and is not a directory; "
+                    "choose another dir or remove it first",
+                )
+            finally:
+                os.close(parent_fd)
+        except _PinnedCreateRefusal as exc:
+            raise WorkspaceDirUnusable(
+                "workspace_dir_uncreatable", f"Directory '{display}' could not be created: {exc}"
+            ) from exc
+        except OSError as exc:
+            raise WorkspaceDirUnusable(
+                "workspace_dir_uncreatable",
+                f"Directory '{display}' could not be created: {exc.strerror or exc}",
+            ) from exc
+
+    if validated.is_dir():
+        return
+    try:
+        os.mkdir(validated)
+    except FileExistsError as exc:
+        # EEXIST is the filesystem itself saying something is at the name: a
+        # racer's directory is the state this create wanted, while a file, a
+        # socket, a dangling link or a symlink cannot serve as a workspace, and
+        # registering one writes back exactly the unusable entry this prevents.
+        if validated.is_dir() and not validated.is_symlink():
+            return
+        raise WorkspaceDirUnusable(
+            "workspace_dir_not_a_directory",
+            f"'{display}' exists and is not a directory; choose another dir or remove it first",
+        ) from exc
+    except OSError as exc:
+        raise WorkspaceDirUnusable(
+            "workspace_dir_uncreatable",
+            f"Directory '{display}' could not be created: {exc.strerror or exc}",
+        ) from exc
 
 
 def workspace_dir_for(workspace: str | None = None) -> Path:
