@@ -1558,6 +1558,69 @@ class TestProbeCache:
         assert status == "error"
         assert error == "timeout"
 
+    def test_failed_probe_after_success_keeps_prior_tools(self) -> None:
+        """A transient failure must not collapse a healthy server's tool list.
+
+        `status`/`error` DO overwrite -- a fresh "error" should flip
+        `mcp_gateway.shareability`'s `probe_ok` to False, which is the
+        correct fail-closed behavior. What must survive is the server's last
+        known-good shape, so a single timeout doesn't render as "0 tools".
+        """
+        good = McpServerInfo(
+            name="flaky-srv",
+            command="x",
+            status="ok",
+            tools=["a", "b"],
+            tool_annotations=[{"readOnlyHint": True}, {}],
+            capabilities={"tools": {}},
+            protocol_version="2025-03-26",
+        )
+        _cache_probe(good)
+
+        failed = McpServerInfo(name="flaky-srv", command="x", status="error", error="timeout")
+        _cache_probe(failed)
+
+        status, tools, error, _at, _mode = _get_cached("flaky-srv")
+        assert status == "error"
+        assert error == "timeout"
+        assert tools == ["a", "b"]  # preserved, not collapsed to []
+
+        meta = probe_metadata("flaky-srv")
+        assert meta is not None
+        assert meta.tool_annotations == [{"readOnlyHint": True}, {}]
+        assert meta.capabilities == {"tools": {}}
+        assert meta.protocol_version == "2025-03-26"
+        # Both preserved together, never one alone -- a caller reading tool
+        # metadata after this must see the same handshake's tools and
+        # annotations, not a mix of stale and fresh.
+        assert meta.tools == good.tools
+        assert meta.tool_annotations == good.tool_annotations
+        # The preserved shape keeps its original observation time, not the
+        # failed probe's -- "as of" claims about the tool list must point to
+        # when it was actually seen, not to the timeout that came later.
+        assert meta.probed_at_wall == good.probed_at
+
+    def test_first_ever_probe_failing_has_no_prior_to_preserve(self) -> None:
+        """A server that has never succeeded gets the failure's own (empty)
+        shape -- there is nothing stale to protect it from."""
+        server = McpServerInfo(name="never-worked", command="x", status="error", error="refused")
+        _cache_probe(server)
+        status, tools, error, _at, _mode = _get_cached("never-worked")
+        assert status == "error"
+        assert error == "refused"
+        assert tools == []
+
+    def test_needs_auth_also_preserves_prior_shape(self) -> None:
+        """needs_auth is a probe-side failure too (no token to present), not
+        a success -- it must preserve prior tools the same way "error" does."""
+        good = McpServerInfo(name="oauth-srv", command="x", status="ok", tools=["x", "y"])
+        _cache_probe(good)
+        challenged = McpServerInfo(name="oauth-srv", command="x", status="needs_auth", error="")
+        _cache_probe(challenged)
+        status, tools, _error, _at, _mode = _get_cached("oauth-srv")
+        assert status == "needs_auth"
+        assert tools == ["x", "y"]
+
     def test_cache_preserves_declared_probe_mode(self) -> None:
         """The in-process fallback's "declared" mode survives the cache round trip."""
         server = McpServerInfo(

@@ -439,20 +439,54 @@ def _cache_probe(server: McpServerInfo) -> None:
     built from the CURRENT config, so redacting only at serialization time
     would mask a rotated credential's NEW value while the cached error still
     carries the OLD one.
+
+    A failed probe (``server.status in {"error", "needs_auth"}``) still
+    overwrites ``status``/``error`` — a server that just failed to answer
+    IS currently failing, and ``mcp_gateway.shareability`` correctly reads a
+    fresh "error" as UNKNOWN via ``probe_ok``. What it must NOT overwrite is
+    the server's descriptive shape from its last successful handshake:
+    ``tools``, ``tool_annotations``, ``capabilities``, ``protocol_version``,
+    ``server_info``, and ``probed_at_wall``. Without this, a single transient
+    timeout on an otherwise-healthy server collapses its tool count to zero
+    for the probe that failed, discarding both lists together even though
+    each is only ever populated from that same successful handshake —
+    resetting one without the other would leave a caller reading tool
+    metadata that does not match the tools actually being reported. ``probed_at_wall`` travels with the preserved shape rather
+    than the failed probe's own timestamp, so an "as of" display next to
+    the preserved tools points to when they were actually observed, not to
+    the unrelated timeout that came later. A server that has never had a
+    successful probe has no prior shape to fall back to, so it gets the
+    failure's own (empty) shape — there is nothing stale to protect.
     """
     server.probed_at = time.time()
+    prior = _probe_cache.get(server.name)
+    probe_failed = server.status in ("error", "needs_auth")
+    if probe_failed and prior is not None:
+        tools = list(prior.tools)
+        tool_annotations = [dict(a) for a in prior.tool_annotations]
+        capabilities = dict(prior.capabilities) if isinstance(prior.capabilities, dict) else None
+        protocol_version = prior.protocol_version
+        server_info = dict(prior.server_info)
+        probed_at_wall = prior.probed_at_wall
+    else:
+        tools = list(server.tools)
+        tool_annotations = [dict(a) for a in server.tool_annotations]
+        capabilities = dict(server.capabilities) if isinstance(server.capabilities, dict) else None
+        protocol_version = server.protocol_version
+        server_info = dict(server.server_info)
+        probed_at_wall = server.probed_at
     _probe_cache[server.name] = _ProbeResult(
         status=server.status,
-        tools=list(server.tools),
+        tools=tools,
         error=redact_mcp_error(
             server.error, server.redaction_headers, server.resolved_header_values or ()
         ),
         probed_at=time.monotonic(),
-        capabilities=(dict(server.capabilities) if isinstance(server.capabilities, dict) else None),
-        protocol_version=server.protocol_version,
-        server_info=dict(server.server_info),
-        tool_annotations=[dict(a) for a in server.tool_annotations],
-        probed_at_wall=server.probed_at,
+        capabilities=capabilities,
+        protocol_version=protocol_version,
+        server_info=server_info,
+        tool_annotations=tool_annotations,
+        probed_at_wall=probed_at_wall,
         probe_mode=server.probe_mode,
         auth_challenge=server.auth_challenge,
         auth_grant_present=server.auth_grant_present,
