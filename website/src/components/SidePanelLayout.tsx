@@ -6,6 +6,9 @@ import { useRegisterNavigationLeaveGuard, usePublishNavigationStake } from './Na
 import { hasSubSelection, deleteSubSelection, COARSE_TOUCH_TARGET, SUBNAV_PUSH_STATE, toPathSegment, parsePathSegments } from './subNavParams'
 import { useIsMobile } from '../hooks/useIsMobile'
 import { useVisualViewport } from '../hooks/useVisualViewport'
+import { useBottomTerminalOpen, useTerminalPosition } from '../hooks/useBottomTerminal'
+import { useTerminalEnabled } from '../utils/terminalRegistry'
+import { useTerminalPoppedOut } from '../utils/terminalPopout'
 import { safeGetSessionItem, safeSetSessionItem } from '../utils/safeStorage'
 
 import { i18nT } from '../i18n/t'
@@ -161,6 +164,26 @@ export default function SidePanelLayout({ title, tabs, defaultTab, rememberKey, 
   const vv = useVisualViewport()
   const keyboardInset =
     typeof window === 'undefined' ? 0 : Math.max(0, window.innerHeight - vv.offsetTop - vv.height)
+  // The bottom-docked terminal is a THIRD bottom-of-viewport occupant, next to
+  // the safe area and the iOS keyboard handled above. Unlike those two it can
+  // fill most of a phone screen's height, so offsetting the capsule above it
+  // would strand the search in the middle of the viewport; while the terminal
+  // owns the bottom edge the capsule is suppressed instead, and returns the
+  // moment the terminal closes or docks to the right.
+  // terminalEnabled guards the persisted-open trap: the store's `open` flag
+  // survives in localStorage, but App renders the panel only while the
+  // terminal feature is enabled — without this term a persisted-open bottom
+  // terminal under dashboard.terminal.enabled=false would suppress the only
+  // mobile Settings search with nothing actually occupying the bottom edge.
+  const terminalEnabled = useTerminalEnabled()
+  const bottomTerminalOpen = useBottomTerminalOpen()
+  const terminalPosition = useTerminalPosition()
+  // A popped-out terminal renders TerminalDetachedBar as a full-width strip at
+  // the bottom of the viewport REGARDLESS of the stored dock position (see
+  // App's render of TerminalDetachedBar), so popout alone also owns the edge.
+  const terminalPoppedOut = useTerminalPoppedOut()
+  const terminalOwnsBottom =
+    terminalEnabled && (terminalPoppedOut || (bottomTerminalOpen && terminalPosition === 'bottom'))
   // Path segments under basePath: segment[0] = tab, segment[1] = a SubNav's
   // second-level selection (deeper segments reserved). Empty when the prop is
   // absent (query-param consumers) or the location is outside the base —
@@ -452,7 +475,7 @@ export default function SidePanelLayout({ title, tabs, defaultTab, rememberKey, 
             * invisible to it, and left-0/right-0 would sit under a landscape
             * notch). pointer-events split so the empty gutter around the
             * capsule stays scrollable. */}
-          {headerRight && headerRightDock === 'bottom-float' && (
+          {headerRight && headerRightDock === 'bottom-float' && !terminalOwnsBottom && (
             <div
               className="fixed bottom-safe-or-[14px] left-safe right-safe z-20 px-5 pointer-events-none"
               // Translate, not `bottom`: the safe-area class must stay the
