@@ -913,6 +913,18 @@ mounts or gates on it.
 | Figma | design | 3 | yes / yes | Dev seat is read-only outside drafts | hidden | Figma admits clients from its MCP Catalog waitlist |
 | Canva | design | 3 | yes / yes | none | hidden | Canva allow-lists the redirect URI per client |
 | Dropbox | file-storage | 3 | yes / yes | `/dash` search server (Dash plan) | hidden | Dropbox honours DCR only for its trusted-client list |
+| Miro | design | 2 | yes / yes | none — `boards:read` advertised but consent cannot drop `boards:write` | gated | manual launch-gate check |
+| Webflow | design | 2 | yes / yes | none (per-tool grant, each tool bundles read and write) | gated | manual launch-gate check |
+| Netlify | developer-tools | 2 | yes / yes | none — `read` scope is not enforced by the broker; call only `*-services-reader` | gated | manual launch-gate check |
+| Amplitude | data-analytics | 2 | yes / yes | request `mcp:read` only | gated | manual launch-gate check |
+| Mixpanel | data-analytics | 2 | yes / yes | none (analysis scopes only; role-limited) | gated | manual launch-gate check |
+| Cloudflare (Workers Bindings) | developer-tools | 2 | yes / yes | none — fixed `workers:write` + `d1:write`; `observability` host is the read-only sibling | gated | manual launch-gate check |
+| Hugging Face | developer-tools | 2 | yes / yes | request `read-mcp` only; installs `?login` so the server demands a grant | gated | manual launch-gate check; L1 must not read an anonymous 200 as a held grant |
+| Zapier | developer-tools | 2 | yes / yes | manual server configuration at mcp.zapier.com | gated | manual launch-gate check |
+| Square | payments-finance | 3 | yes / yes | tick `*_READ` permissions only at consent | hidden | Square admits MCP clients from an allowlist (developer-forum request) |
+| Postman | developer-tools | 2 | yes / yes | installs `/minimal` (no delete tools); no scope picker | gated | manual launch-gate check |
+| Neon | developer-tools | 2 | yes / yes | installs `?readonly=true` | gated | manual launch-gate check |
+| Prisma | developer-tools | 2 | yes / yes | none (only `workspace:admin`) | gated | manual launch-gate check |
 
 Tier is provider *categorization* (see the tiers note above), never mint
 latency: tier 3 means the vendor gates clients by allowlist or waitlist, so
@@ -922,11 +934,16 @@ banner allowlist stays registry-derived while the admission is pursued.
 
 ### How an entry gets in, and what each rung buys
 
-1. **Industry baseline.** The candidate is listed by both the ChatGPT and the
-   Claude connector directories, or fills a category the registry has none of.
-   The comparison lives in the research note
+1. **Industry baseline.** The candidate is listed by at least one of the two
+   connector directories, ChatGPT's or Claude's. Being listed by both, or
+   filling a category the registry has none of, is what orders the backlog,
+   not what admits an entry: a single-directory listing is a sufficient floor
+   because rungs 2–4 hold the entry launch-gated, so registering it changes
+   nothing a user sees until rung 5. The comparison lives in the research note
    `research/connectors-industry-baseline.md` in the operator workspace, not in
-   this tree; this section records only the outcome.
+   this tree; this section records only the outcome. Of the roster above,
+   Zapier, Postman, Neon, Prisma and Square are single-directory listings; the
+   rest are listed by both.
 2. **Public remote MCP with OAuth discovery.** The vendor hosts the server and
    publishes RFC 9728 protected-resource metadata naming an RFC 8414 issuer.
    Without that the L0 probe has nothing to assert and the entry cannot exist.

@@ -40,15 +40,32 @@ EXPECTED_LAUNCH_REGISTRY = {
     "paypal",
     "sentry",
     "supabase",
+    # Industry-baseline batch 2, same hold-back as batch 1 (launch-gated until
+    # the manual gate): seven are listed by both the ChatGPT and Claude
+    # connector directories (amplitude, cloudflare, huggingface, miro, mixpanel,
+    # netlify, webflow), five by one directory only (neon, postman, prisma,
+    # zapier, and square below). A single-directory listing is the admission
+    # floor for a gated entry -- see the spec's rung 1.
+    "amplitude",
+    "cloudflare",
+    "huggingface",
+    "miro",
+    "mixpanel",
+    "neon",
+    "netlify",
+    "postman",
+    "prisma",
+    "webflow",
+    "zapier",
 }
 # Tier 3: the vendor admits OAuth clients from an allowlist or waitlist, so no
 # amount of local verification can pass the gate until Kiro is admitted. They
 # are excluded from get_all_providers() as well as from the grid.
-VENDOR_APPROVAL_PENDING = {"canva", "dropbox", "figma"}
+VENDOR_APPROVAL_PENDING = {"canva", "dropbox", "figma", "square"}
 # Registered so the OAuth banner allowlist stays registry-derived, but held back
 # from the Connect grid: GitHub until the Kiro app is registered, Superhuman until
 # a logged-in check records its revoke surface and walks the consent flow, and
-# the batch-1 entries until each has a manual launch-gate check.
+# the industry-baseline entries until each has a manual launch-gate check.
 LAUNCH_GATED = {
     "github",
     "superhuman",
@@ -57,6 +74,17 @@ LAUNCH_GATED = {
     "paypal",
     "sentry",
     "supabase",
+    "amplitude",
+    "cloudflare",
+    "huggingface",
+    "miro",
+    "mixpanel",
+    "neon",
+    "netlify",
+    "postman",
+    "prisma",
+    "webflow",
+    "zapier",
 } | VENDOR_APPROVAL_PENDING
 
 
@@ -88,15 +116,25 @@ def test_every_registry_mcp_authorization_server_is_banner_allowlisted():
     builtin set, so every provider's advertised authorization server must have
     an entry there -- gated providers included, because the gate is what a
     hand-configured MCP server for the same provider hits today.
+
+    The registry stores the RFC 8414 issuer while the gate keys on the consent
+    URL the browser opens. For most providers those share a host; the two that
+    do not are mapped here, so the allowlist can carry only URLs a vendor
+    actually advertises rather than a synthetic pair per issuer host.
     """
     from urllib.parse import urlsplit
 
     from kiro_crew.security import _OAUTH_AUTHORIZATION_ENDPOINTS
 
+    consent_host_for_issuer_host = {
+        "api.figma.com": "www.figma.com",
+        "mcp.mixpanel.com": "mixpanel.com",
+    }
     allowlisted_hosts = {host for host, _path in _OAUTH_AUTHORIZATION_ENDPOINTS}
     for provider in get_all_registry_providers():
         issuer_host = urlsplit(provider["l0_expectations"]["authorization_server"]).hostname
-        assert issuer_host in allowlisted_hosts, provider["slug"]
+        consent_host = consent_host_for_issuer_host.get(issuer_host, issuer_host)
+        assert consent_host in allowlisted_hosts, provider["slug"]
 
 
 def test_linear_installs_its_read_only_endpoint():

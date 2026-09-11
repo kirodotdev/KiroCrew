@@ -261,6 +261,138 @@ LEGIT_OAUTH_URLS: list[tuple[str, str]] = [
         "&code_challenge_method=S256"
         "&state=" + ("Kp7mQ2xR" * 12),
     ),
+    # Industry-baseline batch 2 (Connections registry, launch-gated). Same
+    # provenance as batch 1: each endpoint is the issuer's advertised
+    # ``authorization_endpoint``, same kiro-cli-minted PKCE shape.
+    (
+        "miro-mcp",
+        "https://mcp.miro.com/authorize"
+        "?client_id=miro_mcp_0123456789abcdef"
+        "&response_type=code"
+        "&redirect_uri=http%3A%2F%2F127.0.0.1%3A33418%2Fcallback"
+        "&scope=boards%3Aread"
+        "&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+        "&code_challenge_method=S256"
+        "&state=" + ("a1B2c3D4" * 16),
+    ),
+    (
+        "webflow-mcp",
+        "https://mcp.webflow.com/oauth/authorize"
+        "?client_id=wf_mcp_0123456789abcdef"
+        "&response_type=code"
+        "&redirect_uri=http%3A%2F%2F127.0.0.1%3A33418%2Fcallback"
+        "&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+        "&code_challenge_method=S256"
+        "&state=" + ("Zx9yW8vU" * 12),
+    ),
+    (
+        "netlify-mcp",
+        "https://netlify-mcp.netlify.app/oauth-server/auth"
+        "?client_id=ntl_mcp_0123456789abcdef"
+        "&response_type=code"
+        "&redirect_uri=http%3A%2F%2F127.0.0.1%3A33418%2Fcallback"
+        "&scope=read"
+        "&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+        "&code_challenge_method=S256"
+        "&state=" + ("Kp7mQ2xR" * 12),
+    ),
+    (
+        "amplitude-mcp",
+        "https://mcp.amplitude.com/authorize"
+        "?client_id=amp_mcp_0123456789abcdef"
+        "&response_type=code"
+        "&redirect_uri=http%3A%2F%2F127.0.0.1%3A33418%2Fcallback"
+        "&scope=mcp%3Aread"
+        "&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+        "&code_challenge_method=S256"
+        "&state=" + ("a1B2c3D4" * 16),
+    ),
+    (
+        "mixpanel-mcp",
+        "https://mixpanel.com/oauth/authorize"
+        "?client_id=mp_mcp_0123456789abcdef"
+        "&response_type=code"
+        "&redirect_uri=http%3A%2F%2F127.0.0.1%3A33418%2Fcallback"
+        "&scope=projects%20analysis%20events%20insights%20data%3Aread"
+        "&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+        "&code_challenge_method=S256"
+        "&state=" + ("Zx9yW8vU" * 12),
+    ),
+    (
+        "cloudflare-bindings-mcp",
+        "https://bindings.mcp.cloudflare.com/oauth/authorize"
+        "?client_id=cf_mcp_0123456789abcdef"
+        "&response_type=code"
+        "&redirect_uri=http%3A%2F%2F127.0.0.1%3A33418%2Fcallback"
+        "&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+        "&code_challenge_method=S256"
+        "&state=" + ("Kp7mQ2xR" * 12),
+    ),
+    (
+        "huggingface-mcp",
+        "https://huggingface.co/oauth/authorize"
+        "?client_id=hf_mcp_0123456789abcdef"
+        "&response_type=code"
+        "&redirect_uri=http%3A%2F%2F127.0.0.1%3A33418%2Fcallback"
+        "&scope=read-mcp"
+        "&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+        "&code_challenge_method=S256"
+        "&state=" + ("a1B2c3D4" * 16),
+    ),
+    (
+        "zapier-mcp",
+        "https://mcp.zapier.com/oauth/authorize"
+        "?client_id=zap_mcp_0123456789abcdef"
+        "&response_type=code"
+        "&redirect_uri=http%3A%2F%2F127.0.0.1%3A33418%2Fcallback"
+        "&scope=openid%20profile%20email"
+        "&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+        "&code_challenge_method=S256"
+        "&state=" + ("Zx9yW8vU" * 12),
+    ),
+    (
+        "square-mcp",
+        "https://mcp.squareup.com/authorize"
+        "?client_id=sq_mcp_0123456789abcdef"
+        "&response_type=code"
+        "&redirect_uri=http%3A%2F%2F127.0.0.1%3A33418%2Fcallback"
+        "&scope=MERCHANT_PROFILE_READ"
+        "&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+        "&code_challenge_method=S256"
+        "&state=" + ("Kp7mQ2xR" * 12),
+    ),
+    (
+        "postman-mcp",
+        "https://mcp.postman.com/authorize"
+        "?client_id=pm_mcp_0123456789abcdef"
+        "&response_type=code"
+        "&redirect_uri=http%3A%2F%2F127.0.0.1%3A33418%2Fcallback"
+        "&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+        "&code_challenge_method=S256"
+        "&state=" + ("a1B2c3D4" * 16),
+    ),
+    (
+        "neon-mcp",
+        "https://mcp.neon.tech/api/authorize"
+        "?client_id=neon_mcp_0123456789abcdef"
+        "&response_type=code"
+        "&redirect_uri=http%3A%2F%2F127.0.0.1%3A33418%2Fcallback"
+        "&scope=read"
+        "&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+        "&code_challenge_method=S256"
+        "&state=" + ("Zx9yW8vU" * 12),
+    ),
+    (
+        "prisma-mcp",
+        "https://auth.prisma.io/authorize"
+        "?client_id=prisma_mcp_0123456789abcdef"
+        "&response_type=code"
+        "&redirect_uri=http%3A%2F%2F127.0.0.1%3A33418%2Fcallback"
+        "&scope=workspace%3Aadmin"
+        "&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+        "&code_challenge_method=S256"
+        "&state=" + ("Kp7mQ2xR" * 12),
+    ),
 ]
 
 # Consent URLs that the ACP banner-safety gate
