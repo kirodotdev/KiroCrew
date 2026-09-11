@@ -44,7 +44,9 @@ vi.mock('../../api/client', () => ({
  * so the + menu case below can assert the per-chat Terminal row is offered on
  * a member DM. */
 vi.mock('../chat/ActivityViewer', () => ({ default: () => null }))
-vi.mock('../chat/FilesHomePanel', () => ({ default: () => null }))
+vi.mock('../chat/FilesHomePanel', () => ({
+  default: ({ projectDir }: { projectDir: string }) => <div data-testid="files-home-stub">{projectDir}</div>,
+}))
 vi.mock('../chat/FolderPanel', () => ({ default: () => null }))
 vi.mock('../../components/DiffPanel', () => ({ default: () => null }))
 vi.mock('../../components/DetailPanel', () => ({ default: () => null }))
@@ -60,7 +62,7 @@ vi.mock('../../components/WebPreviewPanel', () => ({
 }))
 vi.mock('../../components/McpAppFrame', () => ({ default: () => null }))
 vi.mock('../../components/CliPanel', () => ({
-  default: () => null,
+  default: ({ cwd }: { cwd?: string }) => <div data-testid="terminal-stub">{cwd}</div>,
   disposeTerminalSession: vi.fn(),
   useDeleteTerminalSession: () => ({ mutate: vi.fn() }),
 }))
@@ -74,8 +76,8 @@ vi.mock('../../hooks/useDevMode', () => ({ useDevMode: () => false }))
  * contract is only "mount it with the thread's slot key", so a stub that
  * ECHOES the slot key is the strongest cheap assertion available. */
 vi.mock('../../components/ChatPane', () => ({
-  default: ({ slotKey, agentLocked, followContentWidth, busyMode }: { slotKey: string; agentLocked?: boolean; followContentWidth?: boolean; busyMode?: string }) => (
-    <div data-testid="chat-pane-stub" data-agent-locked={agentLocked ? '1' : '0'} data-follow-content-width={followContentWidth ? '1' : '0'} data-busy-mode={busyMode ?? 'split'}>
+  default: ({ slotKey, agentLocked, followContentWidth, busyMode, inlineHistory }: { slotKey: string; agentLocked?: boolean; followContentWidth?: boolean; busyMode?: string; inlineHistory?: boolean }) => (
+    <div data-testid="chat-pane-stub" data-agent-locked={agentLocked ? '1' : '0'} data-follow-content-width={followContentWidth ? '1' : '0'} data-busy-mode={busyMode ?? 'split'} data-inline-history={!!inlineHistory}>
       {slotKey}
     </div>
   ),
@@ -1335,10 +1337,108 @@ describe('MembersPage Crew summary — driving sessions', () => {
     expect(screen.queryByTestId('member-driving-toggle')).toBeNull()
   })
 
-  it('a row is a jump into that session', async () => {
+  it('a summary row opens the worker in place and returning to the member restores its DM', async () => {
     await openDrawer([worker('chat-1-w')])
     fireEvent.click(screen.getByTestId('member-driving-row'))
-    expect(navigateSpy).toHaveBeenCalledWith('/chat?sid=chat-1-w')
+    await waitFor(() => expect(currentUrl()).toBe('/members?member=oncall&sid=chat-1-w'))
+    expect(screen.getByTestId('chat-pane-stub')).toHaveTextContent('chat-1-w')
+    expect(screen.getByTestId('chat-pane-stub')).toHaveAttribute('data-busy-mode', 'split')
+    expect(screen.getByTestId('chat-pane-stub')).toHaveAttribute('data-inline-history', 'true')
+    expect(screen.getByTestId('member-session-row')).toHaveAttribute('aria-current', 'true')
+    expect(screen.getByTestId('member-thread-header')).toHaveTextContent('Worker chat-1-w')
+    expect(navigateSpy).not.toHaveBeenCalledWith(expect.stringMatching(/^\/chat/))
+    fireEvent.click(screen.getByTestId('member-session-back'))
+    await waitFor(() => expect(currentUrl()).toBe('/members?member=oncall'))
+    expect(screen.getByTestId('chat-pane-stub')).toHaveTextContent('member-oncall')
+    expect(screen.getByTestId('chat-pane-stub')).toHaveAttribute('data-busy-mode', 'steer-only')
+    expect(screen.getByTestId('chat-pane-stub')).toHaveAttribute('data-inline-history', 'false')
+  })
+
+  it('groups live sessions under their member and collapsing the list leaves the conversation open', async () => {
+    const { store } = await renderPage([
+      row({ bound: true, slot_key: 'member-oncall' }),
+      row({ name: 'research', slug: 'research', bound: true, slot_key: 'member-research' }),
+    ])
+    await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)
+    act(() => {
+      store.dispatch(sseSlots([
+        worker('chat-1-own'),
+        worker('chat-1-peer', { created_by: 'member-research' }),
+        worker('chat-1-unrelated', { created_by: '' }),
+      ] as never))
+    })
+    const memberItem = (name: string) => roster().getByText(name).closest('li')!
+    expect(within(memberItem('oncall')).getByTestId('member-session-row')).toHaveTextContent('chat-1-own')
+    expect(within(memberItem('research')).getByTestId('member-session-row')).toHaveTextContent('chat-1-peer')
+    expect(roster().queryByText('Worker chat-1-unrelated')).toBeNull()
+    fireEvent.click(within(memberItem('research')).getByTestId('member-session-row'))
+    await waitFor(() => expect(screen.getByTestId('chat-pane-stub')).toHaveTextContent('chat-1-peer'))
+    expect(currentUrl()).toBe('/members?member=research&sid=chat-1-peer')
+    const toggle = within(memberItem('research')).getByTestId('member-sessions-toggle')
+    fireEvent.click(toggle)
+    expect(toggle).toHaveAttribute('aria-expanded', 'false')
+    expect(document.getElementById(toggle.getAttribute('aria-controls')!)).toHaveAttribute('inert')
+    expect(screen.getByTestId('chat-pane-stub')).toHaveTextContent('chat-1-peer')
+    fireEvent.click(toggle)
+    expect(toggle).toHaveAttribute('aria-expanded', 'true')
+    expect(document.getElementById(toggle.getAttribute('aria-controls')!)).not.toHaveAttribute('inert')
+  })
+
+  it('restores a worker URL only after the member thread and a live slots snapshot confirm it', async () => {
+    const { store } = await renderPage([row()], 'kirocrew', {
+      route: '/members?member=oncall&sid=chat-1-w',
+    })
+    await waitFor(() => expect(api.memberThread).toHaveBeenCalledWith('oncall'))
+    expect(screen.queryByTestId('chat-pane-stub')).toBeNull()
+    expect(screen.queryByTestId('member-session-unavailable')).toBeNull()
+    act(() => { store.dispatch(sseSlots([worker('chat-1-w')] as never)) })
+    expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('chat-1-w')
+    expect(currentUrl()).toBe('/members?member=oncall&sid=chat-1-w')
+  })
+
+  it('does not mount a foreign worker from a URL, and a removed worker stops being mountable', async () => {
+    const { store } = await renderPage([row()], 'kirocrew', {
+      route: '/members?member=oncall&sid=chat-1-w',
+    })
+    act(() => {
+      store.dispatch(sseSlots([worker('chat-1-w', { created_by: 'member-research' })] as never))
+    })
+    await screen.findByTestId('member-session-unavailable', undefined, PANE_READY)
+    expect(screen.queryByTestId('chat-pane-stub')).toBeNull()
+    act(() => { store.dispatch(sseSlots([worker('chat-1-w')] as never)) })
+    expect(await screen.findByTestId('chat-pane-stub')).toHaveTextContent('chat-1-w')
+    act(() => { store.dispatch(sseSlots([])) })
+    await screen.findByTestId('member-session-unavailable')
+    expect(screen.queryByTestId('chat-pane-stub')).toBeNull()
+    fireEvent.click(screen.getByTestId('member-session-back'))
+    expect(await screen.findByTestId('chat-pane-stub')).toHaveTextContent('member-oncall')
+  })
+
+  it('marks only the displayed worker read while its member DM can remain unread', async () => {
+    const { store } = await openDrawer([worker('chat-1-a'), worker('chat-1-b')])
+    act(() => {
+      store.dispatch(markSlotUnread('chat-1-a'))
+      store.dispatch(markSlotUnread('chat-1-b'))
+    })
+    expect(roster().getAllByTestId('member-session-row')[1]).toHaveAttribute('data-status', 'unread')
+    fireEvent.click(roster().getAllByTestId('member-session-row')[0])
+    await waitFor(() => expect(store.getState().dashboard.unreadSlots).not.toContain('chat-1-a'))
+    act(() => { store.dispatch(markSlotUnread('member-oncall')) })
+    expect(store.getState().dashboard.unreadSlots).toEqual(expect.arrayContaining(['chat-1-b', 'member-oncall']))
+    expect(screen.getByTestId('member-unread-dot')).toBeInTheDocument()
+  })
+
+  it('roots Files and new Terminal tabs in the displayed worker project', async () => {
+    await openDrawer([worker('chat-1-w', { project: '/srv/worker' })])
+    fireEvent.click(screen.getByTestId('member-session-row'))
+    await waitFor(() => expect(screen.getByTestId('chat-pane-stub')).toHaveTextContent('chat-1-w'))
+    fireEvent.click(screen.getByRole('tab', { name: 'Files' }))
+    expect(await screen.findByTestId('files-home-stub')).toHaveTextContent('/srv/worker')
+    fireEvent.pointerDown(screen.getByRole('button', { name: 'Open side panel tab' }), {
+      button: 0, ctrlKey: false, pointerType: 'mouse',
+    })
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Terminal' }))
+    expect(await screen.findByTestId('terminal-stub')).toHaveTextContent('/srv/worker')
   })
 
   it('a slots frame never reorders the list; a change to the driven set re-sorts it', async () => {
@@ -2131,6 +2231,24 @@ describe('MembersPage default member, memory and URL', () => {
       await waitFor(() => expect(screen.queryByTestId('chat-pane-stub')).toBeNull())
       expect(currentUrl()).toBe('/members')
       expect(navigateSpy).not.toHaveBeenCalledWith(-1)
+    })
+
+    it('opens a worker from the roster and preserves the back step after returning to the member', async () => {
+      const { store } = await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
+      act(() => {
+        store.dispatch(sseSlots([{
+          key: 'chat-worker', title: 'Worker task', messages: 1, running: false, created_by: 'member-oncall',
+        }]))
+      })
+      fireEvent.click(await screen.findByTestId('member-session-row'))
+      expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('chat-worker')
+      expect(currentUrl()).toBe('/members?member=oncall&sid=chat-worker')
+      fireEvent.click(screen.getByTestId('member-session-back'))
+      await waitFor(() => expect(screen.getByTestId('chat-pane-stub')).toHaveTextContent('member-oncall'))
+      fireEvent.click(screen.getByTestId('member-back'))
+      await waitFor(() => expect(currentUrl()).toBe('/members'))
+      expect(navigateSpy).toHaveBeenCalledWith(-1)
+      expect(screen.queryByTestId('chat-pane-stub')).toBeNull()
     })
 
     it('the overlay fills the phone: the panel is handed the window width, not left to a 100% it cannot resolve (#9979)', async () => {
