@@ -56,6 +56,7 @@ class SpawnAdmissionCoordinator(ManagerComponent):
         include_lessons: bool = True,
         include_project: bool = True,
         memory_store: str = "",
+        work_item_id: str = "",
         _agent_prevalidated: bool = False,
         _from_queue: bool = False,
         _preassigned_id: str = "",
@@ -119,6 +120,8 @@ class SpawnAdmissionCoordinator(ManagerComponent):
         # concurrency gate keeps its identity across the round-trip instead of
         # being announced under one id and starting under another.
         agent_id: str = _preassigned_id or uuid.uuid4().hex[:8]
+        if work_item_id and not agent:
+            agent = "kirocrew-worker"
         # Submission accounting: count this member as
         # submitted BEFORE any rejection or queue/registration branching. A
         # member refused below (empty task, low memory, bad cwd, governance)
@@ -396,6 +399,7 @@ class SpawnAdmissionCoordinator(ManagerComponent):
                     # the concurrency gate runs against the GLOBAL memory instead
                     # of the crew it was handed to.
                     "memory_store": memory_store,
+                    "work_item_id": work_item_id,
                     "_agent_prevalidated": _agent_prevalidated,
                     "_preassigned_id": agent_id,
                 }
@@ -487,6 +491,7 @@ class SpawnAdmissionCoordinator(ManagerComponent):
             include_lessons=include_lessons,
             include_project=include_project,
             memory_store=memory_store or "",
+            work_item_id=work_item_id,
         )
         info._raw_task = task  # unredacted prompt for kiro-cli execution
         self._manager._agents[agent_id] = info

@@ -26,6 +26,7 @@ import { resolve } from "node:path";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, waitFor, fireEvent } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { i18next } from "../i18n";
 
 const DOC_URL = "/sandbox-doc/panel123/1700000000.mac";
 const PANEL_HTML = '<div id="kp-root"></div>';
@@ -50,11 +51,15 @@ vi.mock("../hooks/useTheme", () => ({
   useTheme: () => ({ theme: "dark", colorTheme: "default", themeVersion: 0 }),
 }));
 
-vi.mock("../lib/widgetSrcdoc", () => ({
-  THEME_VAR_NAMES: [] as string[],
-  readThemeVars: () => ({}) as Record<string, string>,
-  buildSrcdoc: (opts: { html: string }) => opts.html,
-}));
+vi.mock("../lib/widgetSrcdoc", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../lib/widgetSrcdoc")>();
+  return {
+    THEME_VAR_NAMES: [] as string[],
+    readThemeVars: () => ({}) as Record<string, string>,
+    buildSrcdoc: (opts: Parameters<typeof actual.buildSrcdoc>[0]) =>
+      opts.contextData ? actual.buildSrcdoc(opts) : opts.html,
+  };
+});
 
 const mintSpy = vi.fn();
 const panelSpy = vi.fn();
@@ -286,6 +291,40 @@ describe("crew webview containment", () => {
     expect(frame.getAttribute("src")).toBe(DOC_URL);
     expect(mintSpy).toHaveBeenCalledWith(PANEL_HTML);
     expect(globalThis.URL.createObjectURL).not.toHaveBeenCalled();
+  });
+
+  it("supplies task labels and server publication time inside the contained document", async () => {
+    const body = panelBody({ items: [] });
+    body.panel.template = "tasks";
+    panelSpy.mockResolvedValue(body);
+    await renderFrame();
+    const source = mintSpy.mock.calls.at(-1)![0];
+    const doc = new DOMParser().parseFromString(source, "text/html");
+    const context = JSON.parse(doc.getElementById("kirocrew-context")!.textContent!);
+    expect(context.publishedAt).toBe(body.panel.published_at);
+    expect(context.locale).toBe("en");
+    expect(context.labels.chat_hint).toBe(i18next.t("memberTaskPanel.chat_hint"));
+    expect(doc.querySelector("#kp-root")).not.toBeNull();
+  });
+
+  it("keeps translated markup inert in the task context island", async () => {
+    const key = "memberTaskPanel.chat_hint";
+    const original = i18next.t(key);
+    const hostile = '</script><img src=x onerror="alert(1)">';
+    i18next.addResource("en", "translation", key, hostile);
+    try {
+      const body = panelBody({ items: [] });
+      body.panel.template = "tasks";
+      panelSpy.mockResolvedValue(body);
+      await renderFrame();
+      const doc = new DOMParser().parseFromString(mintSpy.mock.calls.at(-1)![0], "text/html");
+      const context = JSON.parse(doc.getElementById("kirocrew-context")!.textContent!);
+      expect(context.labels.chat_hint).toBe(hostile);
+      expect(doc.querySelector("img")).toBeNull();
+      expect(doc.querySelectorAll('script[type="application/json"]')).toHaveLength(1);
+    } finally {
+      i18next.addResource("en", "translation", key, original);
+    }
   });
 
   it("reads the crew it was given, not a caller-supplied target", async () => {

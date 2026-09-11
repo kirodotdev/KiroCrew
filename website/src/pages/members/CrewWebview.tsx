@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, type CrewPanelData, type CrewPanelMeta } from "../../api/client";
 import { useDialogFocusTrap } from "../../hooks/useDialogFocusTrap";
 import { useQuery } from "@tanstack/react-query";
+import { useTranslation } from "react-i18next";
 import { Maximize2, Minimize2, RotateCw, ShieldCheck } from "lucide-react";
 import { Btn } from "../../components/ui";
 import ErrorNotice from "../../components/ErrorNotice";
@@ -227,6 +228,7 @@ export default function CrewWebview({
   slug: string;
   member: string;
 }) {
+  const { t, i18n } = useTranslation();
   const [expanded, setExpanded] = useState(false);
   /**
    * Whether the document has EVER been opened, which is what gates minting.
@@ -335,13 +337,53 @@ export default function CrewWebview({
 
   // Null until the first expand: `useSandboxDoc` mints when it receives a
   // document, so withholding it here is what makes the docked view free.
-  const srcdoc = useMemo(
-    () =>
-      html && everExpanded
-        ? buildSrcdoc({ html, themeVars, mode: theme })
-        : null,
-    [html, everExpanded, themeVars, theme],
-  );
+  const srcdoc = useMemo(() => {
+    if (!html || !everExpanded) return null;
+    if (meta?.template !== "tasks") {
+      return buildSrcdoc({ html, themeVars, mode: theme });
+    }
+    // Display context travels through the existing document builder, without a
+    // second parse or an action bridge into the sandbox.
+    return buildSrcdoc({
+      html,
+      themeVars,
+      mode: theme,
+      contextData: {
+        locale: i18n.resolvedLanguage || "en",
+        publishedAt: meta.published_at,
+        labels: {
+          title: t("memberTaskPanel.title"),
+          todo: t("memberTaskPanel.todo"),
+          progress: t("memberTaskPanel.progress"),
+          blocked: t("memberTaskPanel.blocked"),
+          review: t("memberTaskPanel.review"),
+          done: t("memberTaskPanel.done"),
+          closed: t("memberTaskPanel.closed"),
+          criteria: t("memberTaskPanel.criteria"),
+          decision: t("memberTaskPanel.decision"),
+          last_report: t("memberTaskPanel.last_report"),
+          stale: t("memberTaskPanel.stale"),
+          done_hint: t("memberTaskPanel.done_hint"),
+          closed_hint: t("memberTaskPanel.closed_hint"),
+          verdict_pass: t("memberTaskPanel.verdict_pass"),
+          verdict_fail: t("memberTaskPanel.verdict_fail"),
+          verdict_pending: t("memberTaskPanel.verdict_pending"),
+          verdict_refused: t("memberTaskPanel.verdict_refused"),
+          verdict_error: t("memberTaskPanel.verdict_error"),
+          chat_hint: t("memberTaskPanel.chat_hint"),
+          published: t("memberTaskPanel.published"),
+          snapshot_hint: t("memberTaskPanel.snapshot_hint"),
+          empty: t("memberTaskPanel.empty"),
+          unavailable: t("memberTaskPanel.unavailable"),
+          truncated: t("memberTaskPanel.truncated"),
+          untitled: t("memberTaskPanel.untitled"),
+          pull_request: t("memberTaskPanel.pull_request"),
+          evidence: t("memberTaskPanel.evidence"),
+          acceptance: t("memberTaskPanel.acceptance"),
+        },
+      },
+    });
+  }, [html, everExpanded, themeVars, theme, meta?.template, meta?.published_at, i18n.resolvedLanguage, t]);
   const { url, failed, pending, retry } = useSandboxDoc(srcdoc);
 
   const summary = useMemo(() => summarize(meta, slug), [meta, slug]);

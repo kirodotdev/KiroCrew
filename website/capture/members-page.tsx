@@ -23,6 +23,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
 
 import MembersPage from '../src/pages/members/MembersPage'
+import { ThemeProvider } from '../src/hooks/useTheme'
 import { initI18n } from '../src/i18n/all'
 import { store } from '../src/store'
 import { sseSlots } from '../src/store/dashboardSlice'
@@ -63,6 +64,7 @@ const nav = params.get('nav') === '1'
 // decide its busy affordance. Documents the steer-only composer.
 const busy = params.get('busy') === '1'
 document.documentElement.setAttribute('data-theme', theme === 'light' ? 'kiro-light' : 'kiro-dark')
+localStorage.setItem('mc-theme', theme === 'light' ? 'light' : 'dark')
 
 // Live presence rides the WS `slots` frames; seed the same shape so the
 // Radar dot renders "working" from the store, not from the roster snapshot.
@@ -143,21 +145,23 @@ async function main() {
   createRoot(document.getElementById('root')!).render(
     <Provider store={store}>
       <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={[route]}>
-          <div className="h-screen flex flex-col bg-bg text-text" data-capture-root>
-            <div className="flex-1 min-h-0">
-              {nav ? (
-                <Routes>
-                  <Route path="/elsewhere" element={<Elsewhere />} />
-                  <Route path="*" element={<MembersPage />} />
-                </Routes>
-              ) : (
-                <MembersPage />
-              )}
+        <ThemeProvider>
+          <MemoryRouter initialEntries={[route]}>
+            <div className="h-screen flex flex-col bg-bg text-text" data-capture-root>
+              <div className="flex-1 min-h-0">
+                {nav ? (
+                  <Routes>
+                    <Route path="/elsewhere" element={<Elsewhere />} />
+                    <Route path="*" element={<MembersPage />} />
+                  </Routes>
+                ) : (
+                  <MembersPage />
+                )}
+              </div>
+              {nav && <CaptionBar />}
             </div>
-            {nav && <CaptionBar />}
-          </div>
-        </MemoryRouter>
+          </MemoryRouter>
+        </ThemeProvider>
       </QueryClientProvider>
     </Provider>,
   )

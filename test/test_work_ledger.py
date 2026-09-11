@@ -1832,21 +1832,19 @@ def test_acquiring_a_lock_does_not_truncate_the_lock_file():
 # ── revertability ─────────────────────────────────────────────────────────
 
 
-#: The ONLY modules that may import the store. Phase 1 asserted the set was empty,
-#: which made that phase revertable by deleting two files; Phase 2 adds exactly ONE
-#: importer and the check becomes an allowlist rather than disappearing, because the
-#: intent it enforces outlived the empty set. One entry is the strong form of that
-#: intent: even ``mcp_work.py``, the server whose four tools this store exists for,
-#: does not import it — it reaches the store over the dashboard HTTP API like every
-#: other consumer, which is what keeps identity resolved server-side and lets the
-#: Crew page read the same rows. A second importer is therefore a design change —
-#: some module building paths or resolving identity for itself — and must argue for
-#: itself in review rather than arrive with a passing suite.
+#: HTTP routes resolve caller identity; the run manager binds its generated
+#: worker after all fallible preparation and before its first tool call.
+#: The manager owns both that preparation and the generated identity; an
+#: HTTP bind accepting a supplied worker key cannot establish that timing.
+#: Other consumers, including ``mcp_work``, reach the store over HTTP rather
+#: than constructing paths or choosing identity. Any additional store importer
+#: remains a design change that must argue for itself in review.
 _PERMITTED_STORE_IMPORTERS = frozenset(
     {
-        # The four tools' HTTP routes, and the ONLY module that touches the store
-        # directly: identity comes from X-Session-Key, never from the body.
+        # The four tools' HTTP routes resolve verified request identity.
         "dashboard/handlers/work_ledger.py",
+        # The gateway binds only its generated worker after all run preparation.
+        "subagent_manager/run.py",
     }
 )
 

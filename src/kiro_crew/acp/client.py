@@ -3775,7 +3775,7 @@ class AcpClient:
         return self._append_member_dispatch_server(out)
 
     def _append_member_dispatch_server(self, servers: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """Mount the dashboard session-control server into a member DM session.
+        """Mount session control, work tracking and panels into a member DM session.
 
         Session-level and additive: the on-disk agent spec is untouched, so every
         other session on the same agent keeps its ordinary tool set. The entry
@@ -3791,7 +3791,7 @@ class AcpClient:
         if self.backend not in ACP_BACKENDS_MEMBER_DISPATCH:
             return servers
         # circular import: members' module graph is heavy; resolved at call time.
-        from kiro_crew.members import is_member_session_key, member_dispatch_session_server
+        from kiro_crew.members import is_member_session_key, member_session_servers
 
         if not is_member_session_key(self._session_key):
             return servers
@@ -3803,15 +3803,16 @@ class AcpClient:
                 self._session_key,
             )
             return servers
-        entry = member_dispatch_session_server(session_key)
-        if entry is None:
+        entries = member_session_servers(session_key)
+        if not entries:
             logger.warning(
                 "member session %s: dashboard server unresolved — the DM thread "
                 "runs as plain chat this session",
                 self._session_key,
             )
             return servers
-        return [e for e in servers if e.get("name") != entry["name"]] + [entry]
+        names = {entry["name"] for entry in entries}
+        return [e for e in servers if e.get("name") not in names] + entries
 
     def _prepare_spawn_workspace(self) -> None:
         """Create the session's work dir, then snapshot its spec for the detector.

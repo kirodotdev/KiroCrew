@@ -37,6 +37,7 @@ sandbox posture at their defining modules.
 from __future__ import annotations
 
 __all__ = [
+    "agent_exposes_mcp_tools",
     "agent_spec_mcp_refs",
     "claude_adapter_cached_negative",
     "claude_adapter_install_command",
@@ -46,6 +47,76 @@ __all__ = [
     "resolve_pin_spelling",
     "run_kiro_native_commands",
 ]
+
+
+def agent_exposes_mcp_tools(
+    agent: str, server: str, tools: tuple[str, ...], *, work_dir: str, backend: str
+) -> bool:
+    """Check declared tools in the spec the runtime resolves, off the event loop.
+
+    This checks configuration, not server availability or tool approval. The
+    allocated backend selects its existing spec resolver and tool projection.
+    """
+    from fnmatch import fnmatchcase
+
+    from kiro_crew.acp.session_mcp import agent_spec_snapshot
+    from kiro_crew.agent_sdk.backends import (
+        ACP_BACKEND_CLAUDE,
+        ACP_BACKEND_CODEX,
+        ACP_BACKEND_KAS,
+        ACP_BACKEND_KIRO,
+    )
+    from kiro_crew.connections.tool_aliases import _parse_tool_refs
+
+    spec: dict | None
+    refs: object
+    if backend == ACP_BACKEND_KAS:
+        from kiro_crew.acp.kas_agents import (
+            KasAgentTranslationError,
+            _project_tools,
+            load_agent_spec,
+        )
+        from kiro_crew.agent import ensure_agent_materialized
+        from kiro_crew.config.paths import kiro_agents_dir
+
+        ensure_agent_materialized(agent)
+        try:
+            spec = load_agent_spec(kiro_agents_dir(), agent)
+        except KasAgentTranslationError:
+            return False
+        refs = _project_tools(spec, agent)
+        if refs == "*":
+            refs = ["*"]
+    elif backend in {ACP_BACKEND_KIRO, ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX}:
+        spec = agent_spec_snapshot(agent, work_dir=work_dir)
+        refs = spec.get("tools") if spec else None
+    else:
+        return False
+    if not spec or not isinstance(refs, list):
+        return False
+    excluded = spec.get("excludedTools")
+    if isinstance(excluded, list) and any(
+        isinstance(pattern, str)
+        and (
+            fnmatchcase(f"@{server}", pattern)
+            or any(fnmatchcase(f"@{server}/{tool}", pattern) for tool in tools)
+        )
+        for pattern in excluded
+    ):
+        return False
+    servers = spec.get("mcpServers")
+    entry = servers.get(server) if isinstance(servers, dict) else None
+    if not isinstance(entry, dict) or entry.get("disabled"):
+        return False
+    disabled = entry.get("disabledTools", [])
+    if not isinstance(disabled, list) or any(
+        not isinstance(pattern, str) or any(fnmatchcase(tool, pattern) for tool in tools)
+        for pattern in disabled
+    ):
+        return False
+    all_tools, exposed = _parse_tool_refs(refs)
+    granted = exposed.get(server, set())
+    return all_tools or granted is None or set(tools) <= granted
 
 
 def resolve_pin_spelling(model_id: str, advertised: object) -> str:

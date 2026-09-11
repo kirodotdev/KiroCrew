@@ -69,7 +69,9 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "the whole panel: include everything still true, not just the "
                 "delta. Use panel_templates first if you do not know which "
                 "template ids exist; the `default` template renders any object "
-                "without being told what the fields mean."
+                "without being told what the fields mean. The tasks template reads "
+                "conductor and item facts from your own work ledger; send only "
+                "an optional summary in data."
             ),
             "inputSchema": {
                 "type": "object",
@@ -199,10 +201,8 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             return redact(f"Error: {api_err}")
         published = d.get("panel") or {}
         template = published.get("template") or "default"
-        fields = len(data)
         return (
-            f"Published to your crew's webview using the `{template}` template "
-            f"({fields} top-level field{'' if fields == 1 else 's'}). "
+            f"Published to your crew's webview using the `{template}` template. "
             "It replaced the previous panel."
         )
 

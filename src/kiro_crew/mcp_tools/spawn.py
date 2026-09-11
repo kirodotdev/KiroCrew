@@ -217,6 +217,15 @@ def schemas() -> list[dict[str, Any]]:
                         "type": "string",
                         "description": "Single task description",
                     },
+                    "work_item_id": {
+                        "type": "string",
+                        "description": (
+                            "Optional item in this session's work ledger. Single-task only. "
+                            "The gateway binds the fresh worker before execution, inheriting "
+                            "the caller's memory and normal spawn approvals. Use the "
+                            "kirocrew-worker agent to read work_brief and publish work_report."
+                        ),
+                    },
                     "tasks": {
                         "type": "array",
                         "items": {"type": "string"},
@@ -557,6 +566,16 @@ def spawn_run(name: str, args: dict[str, Any]) -> str:
 
     # Read parent session key so completions inject back into this session.
     parent_session = mcp_core._resolve_session_key()
+    work_item_id = args.get("work_item_id") or ""
+    if work_item_id:
+        if len(task_list) != 1 or tasks:
+            return "Error: work_item_id requires one task, not a batch."
+        parent_session, error = mcp_core.require_strict_session_key(
+            "Error: task dispatch requires this session's verified identity.",
+            server="kirocrew-core",
+        )
+        if error:
+            return error
 
     # Fire-and-forget — gateway's SubagentManager queues excess tasks
     # and auto-spawns them as slots free up.
@@ -649,6 +668,8 @@ def spawn_run(name: str, args: dict[str, Any]) -> str:
             _reconcile_lost(refused_agents[a])
             continue
         body: dict[str, Any] = {"task": t, "agent": a, "parent_session": parent_session}
+        if work_item_id:
+            body["work_item_id"] = work_item_id
         if crew:
             body["crew"] = crew
         if batch_id:
@@ -672,7 +693,11 @@ def spawn_run(name: str, args: dict[str, Any]) -> str:
             body["include_project"] = False
         if approval_mode:
             body["approval_mode"] = approval_mode
-        d = mcp_core._post("/api/spawn", body)
+        d = (
+            mcp_core._post("/api/spawn", body, session_key=parent_session)
+            if work_item_id
+            else mcp_core._post("/api/spawn", body)
+        )
         if d.get("error"):
             error_line = f"{t[:60]}: {d['error']}"
             if d.get("transport_error"):

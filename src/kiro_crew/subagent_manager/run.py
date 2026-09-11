@@ -647,6 +647,21 @@ class RunEventCoordinator(ManagerComponent):
             info.parent_session_key,
             info.memory_store,
         )
+        if info.work_item_id:
+            from kiro_crew import session_ledger, work_ledger
+
+            # Refuse obsolete queue entries before allocating a provider, without
+            # reserving a binding that fallible preparation could strand.
+            if session_key != f"subagent:{info.id}":
+                raise ValueError("A new work item requires a fresh worker conversation.")
+            conductor = session_ledger.ledger_key(info.parent_session_key)
+            await asyncio.to_thread(
+                work_ledger.require_dispatchable_item,
+                conductor,
+                info.work_item_id,
+                worker_session_key=session_key,
+            )
+            info.agent = info.agent or "kirocrew-worker"
         # Queue waits and restarts can outlive a member/store configuration.
         # Revalidate before allocating any provider process for the run.
         if info.memory_store:
@@ -855,6 +870,27 @@ class RunEventCoordinator(ManagerComponent):
             )
         except Exception:
             logger.debug("Failed to capture live cleanup identity for %s", info.id, exc_info=True)
+
+        if info.work_item_id:
+            from kiro_crew.agent_sdk.capabilities import capabilities_of
+            from kiro_crew.agent_sdk.drivers.acp import agent_exposes_mcp_tools
+            from kiro_crew.mcp_work import SERVER_NAME, WORKER_TOOLS
+
+            # Allocation owns the effective directory and backend. Guessing
+            # either from the pool can inspect a spec this worker never uses.
+            exposes_reporting = await asyncio.to_thread(
+                agent_exposes_mcp_tools,
+                agent,
+                SERVER_NAME,
+                WORKER_TOOLS,
+                work_dir=client.cwd,
+                backend=capabilities_of(client).backend,
+            )
+            if not exposes_reporting:
+                raise ValueError(
+                    "work_reporting_unavailable: the selected agent must expose "
+                    "kirocrew-work/work_brief and kirocrew-work/work_report"
+                )
 
         # Fail CLOSED on a continuation that did not actually resume. Identity is
         # already captured so the abnormal tombstone can reclaim the fresh session.
@@ -1094,6 +1130,22 @@ class RunEventCoordinator(ManagerComponent):
             # session lives on the provider via TURN_FALLBACK_ATTR.
             _fb_state = FallbackState(configured_fallback_chain())
             msg = full_message
+            if info.work_item_id:
+                # Private memory, provider acquisition, context construction and
+                # state publication have succeeded. Publish the manager-generated
+                # worker binding immediately before its first prompt, so a failed
+                # preparation leaves the task available for a fresh dispatch.
+                binding = await asyncio.to_thread(work_ledger.read_binding, session_key)
+                if binding is None:
+                    await asyncio.to_thread(
+                        work_ledger.apply_conductor_action,
+                        conductor,
+                        "bind",
+                        item_id=info.work_item_id,
+                        worker_session_key=session_key,
+                    )
+                elif binding != (conductor, info.work_item_id):
+                    raise ValueError("The worker is already bound to another task.")
             while True:
                 try:
                     async for _ev in client.stream(msg):
@@ -1794,8 +1846,9 @@ class RunEventCoordinator(ManagerComponent):
         is ACP/kiro-backed (not CC); not a CC-specific spawn (model/allowed_tools/bare).
         """
         # The trusted run preparation has validated this immutable target.
-        # A global parent must never lend its process to a private Crew member.
-        if info.memory_store:
+        # A ledger worker needs its own process session key for strict MCP
+        # identity, including when neither caller nor worker has private memory.
+        if info.memory_store or info.work_item_id:
             return False
         try:
             cfg = KiroCrewConfig.load()

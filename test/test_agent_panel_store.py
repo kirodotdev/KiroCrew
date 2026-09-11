@@ -188,11 +188,17 @@ def test_a_credential_in_published_data_never_reaches_the_record():
     stored = agent_panel.read(CREW)
     assert stored is not None
     assert SECRET not in json.dumps(stored)
+    assert stored["data"]["note"].startswith("token ")
+    assert stored["data"]["note"].endswith(" leaked")
 
 
 def test_an_exfiltration_url_in_published_data_never_reaches_the_record():
-    _publish(data={"note": f"posting to {EXFIL}"})
-    assert EXFIL not in json.dumps(agent_panel.read(CREW))
+    _publish(data={"note": f"posting to {EXFIL} finished"})
+    stored = agent_panel.read(CREW)
+    assert stored is not None
+    assert EXFIL not in json.dumps(stored)
+    assert stored["data"]["note"].startswith("posting to ")
+    assert stored["data"]["note"].endswith(" finished")
 
 
 def test_the_title_is_redacted_too():
@@ -213,6 +219,39 @@ def test_redaction_reaches_nested_values_and_keys():
     blob = json.dumps(agent_panel.read(CREW))
     assert SECRET not in blob
     assert EXFIL not in blob
+
+
+@pytest.mark.parametrize(
+    "field_name",
+    ["SecretAccessKey", "aws_secret_access_key", "SessionToken", "aws_session_token"],
+)
+@pytest.mark.parametrize("as_list", [False, True])
+@pytest.mark.parametrize("suffix", ["", '"[quoted]\\trailing'])
+def test_named_credentials_are_redacted_without_losing_structure(field_name, as_list, suffix):
+    from kiro_crew.security import REDACTED_CREDENTIAL_TAG, redact_credentials
+
+    # Synthetic key whose lowercase run excludes it from the bare-token
+    # heuristic. The field name is the evidence that makes it a credential.
+    secret = "abcdef" + "G7H8J9K0L1M2N3P4Q5R6S7T8U9V0W1X2Y3"
+    assert len(secret) == 40
+    assert redact_credentials(secret)[0] == secret
+    value = [secret + suffix] if as_list else secret + suffix
+    _publish(data={"rows": [{"artifacts": {field_name: value, "tests": "passed"}, "ok": True}]})
+    stored = agent_panel.read(CREW)
+    expected = [REDACTED_CREDENTIAL_TAG] if as_list else REDACTED_CREDENTIAL_TAG
+    assert stored["data"] == {
+        "rows": [{"artifacts": {field_name: expected, "tests": "passed"}, "ok": True}]
+    }
+    assert secret not in agent_panel.panel_path(CREW).read_text(encoding="utf-8")
+    assert secret not in agent_panel.render_record(stored)
+
+
+def test_named_credential_context_is_sanitized_before_scanning():
+    from kiro_crew.security import REDACTED_CREDENTIAL_TAG
+
+    secret = "abcdef" + "G7H8J9K0L1M2N3P4Q5R6S7T8U9V0W1X2Y3"
+    _publish(data={"aws_secret_ac\u200bcess_key": secret[:10] + "\u200b" + secret[10:]})
+    assert agent_panel.read(CREW)["data"] == {"aws_secret_access_key": REDACTED_CREDENTIAL_TAG}
 
 
 def test_redaction_does_not_disturb_ordinary_values():

@@ -31,12 +31,13 @@ from aiohttp import web
 from kiro_crew import agent_panel
 from kiro_crew import members as members_mod
 from kiro_crew.config.loader import KiroCrewConfig
-from kiro_crew.dashboard.handlers._shared import _is_restricted_session
+from kiro_crew.dashboard.handlers._shared import _is_restricted_session, internal_memory_scope
 from kiro_crew.dashboard.handlers.cron import _recognize_session
 from kiro_crew.dashboard.handlers.members import (
     _deny_app_caller,
     _member_names_for_slug,
 )
+from kiro_crew.dashboard.handlers.work_ledger import read_own_ledger
 from kiro_crew.dashboard.state import DashboardState, _normalize_slot_key
 from kiro_crew.history import is_incognito_transcript
 from kiro_crew.members import MemberSlugError
@@ -109,6 +110,9 @@ async def _resolve_publishing_crew(
     denied = await _deny_app_caller(request, operation)
     if denied is not None:
         return None, denied
+    _, refusal = await internal_memory_scope(request, operation, claimed_session=sk)
+    if refusal is not None:
+        return None, refusal
     refusal = await _recognize_session(
         state, sk, operation, blocks_persisted_mode=is_incognito_transcript
     )
@@ -215,6 +219,30 @@ async def api_agent_panel_publish(request: web.Request) -> web.Response:
         except agent_panel.PanelError as exc:
             return web.json_response({"error": str(exc), "code": exc.code}, status=400)
 
+    data = dict(args.get("data") or {})
+    if template == "tasks":
+        snapshot, refusal = await read_own_ledger(request)
+        if refusal is not None:
+            return refusal
+        assert snapshot is not None
+        # Facts come from the verified caller's ledger, never a model-written
+        # copy or a body-supplied conductor. The summary remains agent-authored.
+        data = {"summary": data["summary"]} if "summary" in data else {}
+        data.update(
+            conductor=snapshot["conductor"],
+            items=[
+                {
+                    **{
+                        key: value
+                        for key, value in item.items()
+                        if key not in {"events", "worker_session_key"}
+                    },
+                    "has_worker": bool(item["worker_session_key"]),
+                }
+                for item in snapshot["items"]
+            ],
+        )
+
     # Whether the CURRENT owner of this slug is still a crew that exists. Passed as
     # a callback rather than resolved here, because the store must ask it inside its
     # own lock -- deciding out here would decide on a snapshot the lock has not
@@ -240,7 +268,7 @@ async def api_agent_panel_publish(request: web.Request) -> web.Response:
             agent_panel.publish,
             slug,
             template=template,
-            data=args.get("data") or {},
+            data=data,
             title=str(args.get("title") or ""),
             crew=crew_name,
             owner_is_live=_owner_is_live,

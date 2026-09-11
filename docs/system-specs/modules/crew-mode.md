@@ -238,6 +238,70 @@ name, and it resolves an empty crew too so the concrete template stays inside
 | `test/test_members.py`, `test/test_members_dm_thread.py` | Slug validation and containment, activity recording and dedupe, DM-binding canonicality, rules and briefing reads |
 | `test/test_chat_send_agent_model_default.py` | The crew model default a new session starts on |
 
+## Member task snapshots
+
+A member can publish the bundled `tasks` webview template in its Crew summary
+panel. The owner creates tasks, steers work and gives acceptance decisions in
+the existing member chat. Opening the dashboard shows a published ledger
+snapshot with To do, In progress, Blocked, Review, Done and Closed lanes.
+Worker `done` reaches Review; only an accepted item reaches Done. Rejected and
+abandoned items remain visible under Closed.
+
+For tracked tasks, the member's operating prompt replaces the former
+`session_create` dispatch procedure with `work_ledger_record` and scoped spawn.
+The member creates items with `work_ledger_record`, dispatches one with
+`spawn_run(work_item_id=..., agent="kirocrew-worker", task=...)`, and reads
+`work_ledger_read` for progress. The worker reports through its own verified
+binding. Private memory and ordinary spawn approval apply to this path.
+The member uses `spawn_steer` for new worker instructions. While workers run,
+it patrols with `spawn_list` and `work_ledger_read` on a same-session
+`monitor_start` loop with named items, an exit condition and a
+`max_runtime_secs` budget. The patrol compares elapsed time, activity and reports,
+steers stalled workers, escalates unresolved blockers in chat and republishes
+updates. `monitor_update` revises that patrol without replacing unrelated
+automation. `autonudge_stop` ends it when the tracked work finishes or only
+awaits the owner's decision.
+The member records decisions in the ledger and calls
+`panel_publish(template="tasks", data={summary?})`. The publish route reads the
+verified caller's own ledger and supplies `conductor` and `items`, overriding
+model-supplied copies. Only the optional summary survives from the request's
+data; other supplied fields are discarded. Missing ledgers and
+identity refusals leave the previous panel intact. Acceptance batches and event
+history stay out of this display copy. Worker session keys are replaced by
+`has_worker`, the assignment flag used by the template. The expanded card labels
+the acceptance verdict “Verification result”, separate from criteria and decisions.
+For every panel template, the existing publication scrubber scans decoded values with their field names,
+so named credentials in artifact fields are redacted before storage and display.
+It retains the object/list structure and existing collision, URL and depth checks.
+
+The template maps recorded fields to display lanes; it implements no transitions
+and writes no task state. The lane tests pin completion, acceptance and retry
+semantics. Binding must use the gateway-generated worker identity after all
+fallible preparation and before its first tool call. The run manager owns both
+that preparation and the identity at this point. The HTTP bind route accepts a
+supplied key for a live `session_create` slot with creator attribution; extending
+it to these subagent runs would also require a preparation/dispatch handshake
+to preserve retry safety. The manager binds directly within its existing
+lifecycle instead.
+
+The panel is a snapshot. Its publication time and refresh hint remain visible;
+the owner asks for an update in chat. Publishing replaces the snapshot and
+invalidates the panel query through the existing `panel_published` event.
+The template has no timer or ledger connection; the member patrol publishes
+fresh snapshots. The renderer caps cards at 32 and
+evidence entries at 20 per item, with a visible notice if it truncates input.
+A publish over the panel's 64 KiB limit fails; the member must explain this in
+chat rather than silently dropping tasks.
+
+Member DMs mount `kirocrew-work` and `kirocrew-panel` alongside the existing
+dashboard server on backends in `ACP_BACKENDS_MEMBER_DISPATCH`. All three carry
+the same session identity and private process envelope. Work and panel tools
+receive no new auto-approval grants. Other sessions and backend capability sets
+keep their existing assignments.
+Existing dashboard session controls remain available for owner-directed session
+work, bounded to sessions the member created. Changing the default tracked-task
+procedure does not remove those capabilities or their existing grants.
+
 ## Retired: Crew Mode
 
 Crew Mode was the `"crew"` chat-slot mode: one session whose messages became

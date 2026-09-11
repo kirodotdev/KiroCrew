@@ -62,6 +62,16 @@ adapted backend meets, KAS included, as a worked example. The transport itself (
 config isolation) is [acp-client.md](acp-client.md); this file owns the
 *interface*.
 
+`agent_sdk.drivers.acp.agent_exposes_mcp_tools` checks declared tool availability
+through the runtime's own spec resolver, using the allocated provider's backend
+and directory. KAS uses its user-level spec loader and tool projection, including
+scalar `"*"`; kiro-cli, Claude and Codex use the existing project-aware resolver.
+The resolved spec's `excludedTools` entries override exposure, including
+whole-server and wildcard exclusions; unrelated exclusions do not block reporting.
+Scoped ledger dispatch checks before binding, so an agent without reporting tools
+cannot acquire an item. It returns plain data and runs off the event loop; tool
+approval and live server availability remain runtime concerns.
+
 **Removed, and not to be re-added:** the Bedrock provider, the standalone
 provider, their config fields, and the multi-provider dispatch factory. A second
 `agent.provider` value would route around every harness-parity invariant, which

@@ -259,6 +259,16 @@ tag can carry an adversarial attribute sequence. This preserves the existing
 permissive empty/unquoted-value handling without normalizing placeholders or
 changing the separate sanitizer, executable-tag and multi-tag-block behavior.
 
+The bundled member `tasks` panel is a sandboxed document, not a React HTML sink.
+`CrewWebview` supplies its `memberTaskPanel` catalog, current locale and server
+publication timestamp through `buildSrcdoc`'s optional `contextData`. The builder
+puts this JSON in `#kirocrew-context` before body scripts in both DOM and SSR
+output. It escapes `<` before serialization so translated text cannot close the
+script element. The Tasks template sets its document language from this context. The template inserts ledger values through `textContent`;
+evidence remains text. It inherits the panel's `allow-scripts`-only sandbox
+and closed network policy. Task creation and steering use the existing member
+chat; the template grants no actions and shows the age of its snapshot.
+
 ## URL sanitization
 
 `react-markdown` strips protocols it does not know. `src/utils/urlTransform.ts`

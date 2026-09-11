@@ -650,6 +650,29 @@ Managed servers, registered by `agent._MANAGED_MCP_SERVERS` and installed into
 | `kirocrew-work` | `kirocrew mcp-work` (`mcp_work.py`) | `work_brief`, `work_report`, `work_ledger_read`, `work_ledger_record` |
 | `kirocrew-panel` | `kirocrew mcp-panel` (`mcp_panel.py`) | `panel_publish`, `panel_templates` |
 
+Member DMs on `ACP_BACKENDS_MEMBER_DISPATCH` mount the dashboard, work and panel
+servers with the same verified session envelope. Work and panel availability
+does not add auto-approval grants. `spawn_run(work_item_id=...)` accepts a single
+task and forwards only the strict injected caller identity; the gateway binds
+its generated worker to that caller's item before execution. The spawn module is
+registered in `REFLEXIVE_TOOL_MODULES` so the identity topology gate covers this
+session-scoped operation. Work routes accept
+bound subagents as well as dashboard sessions and verify private-memory process
+proof. The missing-identity message therefore refers to the worker's own injected
+identity rather than instructing a subagent to impersonate its parent.
+
+`panel_publish(template="tasks", data={summary?})` reads the verified caller's
+own ledger through the same reader as `work_ledger_read`. The gateway overrides
+`conductor` and `items` from the request and omits acceptance batches and event
+history. Only the optional summary survives from the supplied data;
+missing ledgers and identity
+refusals preserve the previous panel. Task actions stay in member chat. The existing
+panel size limit, sandbox and publication event apply. Private publishers must present their process proof
+before the route resolves their crew identity.
+Publication retains decoded field-name context when applying the shared
+credential scanner, so server-sourced artifacts receive named-credential
+redaction without rewriting the JSON structure.
+
 CLI commands and their MCP twins:
 
 | CLI command | MCP tool | Server |
