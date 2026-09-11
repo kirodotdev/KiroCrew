@@ -716,4 +716,16 @@ describe('SessionAutomationPopover', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Back to bounded monitor' }))
     expect(screen.getByRole('textbox', { name: 'Pull request URL' })).toBeInTheDocument()
   })
+
+  it('lays the trigger out as a centred flex row with a gap before the probe count', () => {
+    renderPopover(activeMonitor)
+    const count = screen.getByText(String(activeMonitor.usage.probes))
+    const trigger = count.closest('button')
+    expect(trigger).not.toBeNull()
+    // The radar glyph is inline (.lucide-inline), so without a flex row it sits
+    // on the line-box baseline instead of the button centre, and the probe
+    // count renders flush against it. jsdom cannot measure pixels, so lock in
+    // the layout contract that AutoNudgePopover's sibling trigger already uses.
+    expect(trigger).toHaveClass('flex', 'items-center', 'gap-1')
+  })
 })

@@ -1,0 +1,65 @@
+/**
+ * One structured monitor record, shaped like `GET /api/monitors/slot/{slot}`
+ * serves it. Shared by the capture harnesses that need an armed (or stopped)
+ * monitor fixture, so the field list lives in one place.
+ *
+ * `ids` names the identity the record belongs to; `over` overrides fields on
+ * the inner `monitor` object (an `outcome` override also flips `active` off,
+ * matching how the server represents a terminal record).
+ */
+export const monitorRecordFixture = ({ loopId, slotKey, pr, fireTs }, over = {}) => ({
+  id: loopId,
+  slot_key: slotKey,
+  message: 'structured monitor',
+  idle_secs: 420,
+  max_cycles: 8,
+  cycle_count: 3,
+  active: true,
+  last_fire_ts: fireTs,
+  next_due_ts: 0,
+  stopped_reason: '',
+  monitor: {
+    version: 1,
+    config_generation: 1,
+    kind: 'github_pull_request',
+    target: pr,
+    objective: 'review_ready',
+    cadence_secs: 420,
+    wake_instructions: 'Fix legitimate CI failures and review findings, then push. Never merge.',
+    budgets: {
+      max_runtime_secs: 14_400,
+      max_agent_turns: 8,
+      max_tokens: 250_000,
+      max_provider_errors: 3,
+    },
+    last_observation: null,
+    last_observation_status: 'pending',
+    last_observation_reason_code: 'checks_pending',
+    last_observed_at: fireTs,
+    last_fingerprint: 'abc',
+    last_wake_fingerprint: '',
+    wake_in_flight: false,
+    wake_delivery: null,
+    wake_count: 2,
+    completion_evidence_deadline: 0,
+    last_completion_fingerprint: '',
+    last_completion_disposition: null,
+    last_completed_at: fireTs,
+    token_usage_known: true,
+    agent_turns: 2,
+    input_tokens: 1200,
+    output_tokens: 300,
+    probe_count: 8,
+    provider_error_count: 0,
+    consecutive_provider_errors: 0,
+    last_probe_at: fireTs,
+    last_decision: 'no_change',
+    last_provider_error: null,
+    next_probe_at: 0,
+    outcome: null,
+    stopped_reason: '',
+    stopped_at: 0,
+    ...over,
+  },
+  ...(over.outcome ? { active: false } : {}),
+})

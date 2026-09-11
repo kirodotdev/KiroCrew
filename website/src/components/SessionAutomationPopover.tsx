@@ -392,7 +392,7 @@ export default function SessionAutomationPopover({
         <IconButton
           aria-label={triggerLabel}
           variant={monitor?.active || legacyLoop?.active ? 'active' : 'default'}
-          className="h-8 px-2 rounded-lg shrink-0"
+          className="h-8 px-2 rounded-lg shrink-0 flex items-center gap-1"
         >
           <MonitorRadar actionRunning={status === 'action_running'} />
           {monitor ? (
