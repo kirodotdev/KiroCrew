@@ -8,6 +8,12 @@ Owners: `kiro_crew.session_ledger`, `kiro_crew.mcp_tools.ledger`, and the dashbo
 
 ## 2. Storage, identity, and lifecycle
 
+The broker stub receives the gateway data home explicitly, including under a
+harness that filters inherited environment values. If a cold session's PID
+mapping is published after MCP initialization, the stub's recaller supplies the
+late identity. Routing core without this data-home propagation is insufficient
+on such a harness.
+
 Each recorded ledger lives below `<data_home>/ledger/` in a directory containing:
 
 ```
@@ -79,6 +85,13 @@ Writes use the bounded exclusive lock in `session_ledger._locked()`. Contention 
 `mcp_tools.__init__.DOMAIN_MODULES` registers `mcp_tools.ledger`. `session_ledger_read` has no arguments and returns the calling session's state and recent event tail. `session_ledger_record` accepts only optional state fields; `validation.SESSION_LEDGER_RECORD_SCHEMA` validates their types and lengths, while `session_ledger.record()` enforces the conditional phase/event rule.
 
 `mcp_tools.ledger._strict_session_key()` obtains a gateway-authored session identity before either tool calls the loopback routes. This is load-bearing because the lenient resolver can walk a subagent process tree to its parent; rejecting an unverified identity prevents a subagent from reading or overwriting the parent's ledger. `test_mcp_tools_refuse_without_strict_identity` and `test_mcp_tools_pass_the_verified_key_to_transport` enforce that boundary.
+
+The default MCP roster routes `kirocrew-core` through the broker, which provides
+per-call identity even when the harness drops identity environment variables.
+Backend sharing is independent and remains off. An installation that explicitly
+keeps core unrouted can still use a verified direct identity; without either
+channel, ledger tools refuse. Private V2 runtimes retain their confined direct
+MCP path.
 
 `dashboard.handlers.session_ledger._resolve_ledger_key()` derives storage identity from the recognized `X-Session-Key`, never the request body. The routes reject missing or unrecognized identities and restricted session modes, so a request can read or write only its own durable ledger. `api_session_ledger_record()` sends bounded-lock failures back as retryable service errors and validates that artifact maps contain only strings. `test_route_refuses_unrecognized_session`, `test_route_refuses_restricted_session`, and `test_route_rejects_non_string_artifacts` cover those boundaries.
 

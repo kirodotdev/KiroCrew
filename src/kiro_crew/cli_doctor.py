@@ -1550,22 +1550,31 @@ def _doctor_strict_identity(cfg: KiroCrewConfig) -> None:
     topology rather than the calling session.
 
     Reports only, and deliberately appends NO entry to doctor's ``issues``:
-    ``mcp_gateway.stub_servers`` is empty by default because routing starts a
-    broker plus a stub per server, so a hard issue here would make
-    ``kirocrew doctor`` exit 1 on every stock install — the same failure the
-    speech-to-text section is written to avoid. Parity with
+    operators may explicitly leave servers unrouted. Routing starts a broker
+    plus a stub per server, so an intentional opt-out is a note. Parity with
     :func:`_doctor_trust_root`, which also only prints.
 
-    Skipped where the env sources exist by construction: on Linux the sandbox
-    launcher exports ``KIROCREW_HOST_PID``, so routing is not what decides
-    whether strict identity resolves.
+    The platform-specific missing-channel report is skipped on Linux, where
+    the sandbox launcher can export ``KIROCREW_HOST_PID``. Empty-roster upgrade
+    guidance is shown on every platform because a harness may filter that hint.
     """
-    if _plat.system() not in ("Darwin", "Windows"):
-        return
     try:
         routed = set(cfg.mcp_gateway.stub_servers)
     except Exception:
         routed = set()
+    else:
+        if not routed:
+            print("  core routing: ⏹ empty routing list")
+            _print_wrapped(
+                "An empty mcp_gateway.stub_servers list is preserved on upgrade. "
+                "Older versions may have saved the old empty default during an "
+                "ordinary configuration save. If session-ledger tools are refused, "
+                "enable kirocrew-core routing in MCP Management and restart between "
+                "tasks. This starts a broker and one stub per core connection; "
+                "backend sharing remains a separate setting."
+            )
+    if _plat.system() not in ("Darwin", "Windows"):
+        return
     unrouted = [s for s in _STRICT_IDENTITY_SERVERS if s not in routed]
     if not unrouted:
         print("  strict identity: ✅ routed — the gateway injects a per-call caller")

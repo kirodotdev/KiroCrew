@@ -1,9 +1,8 @@
 """Migration from the deprecated ``poolable_servers`` to ``stub_servers``.
 
-This is the guarantee an existing install depends on across the upgrade that
-makes the stub opt-in: a machine that had pooled servers keeps its stubs, a
-fresh machine gets none, and an operator who deliberately cleared the list is
-not silently re-stubbed from the old key.
+Existing pooling choices retain their stubs, fresh installs route core for
+session identity, and an operator who deliberately cleared the list is not
+silently re-stubbed from the old key.
 
 The decisive property is that the choice is made on KEY PRESENCE, not on
 truthiness. ``stub_servers: []`` and "no ``stub_servers`` at all" are different
@@ -87,8 +86,8 @@ class TestResolver:
             {"enabled": True, "stub_servers": ["alpha-mcp"]}
         ) == ["alpha-mcp"]
 
-    def test_a_fresh_install_stubs_nothing(self) -> None:
-        assert _resolve_stub_servers({}) == []
+    def test_a_fresh_install_routes_only_core(self) -> None:
+        assert _resolve_stub_servers({}) == ["kirocrew-core"]
 
     def test_junk_entries_are_dropped_rather_than_carried(self) -> None:
         assert _resolve_stub_servers(
@@ -132,7 +131,7 @@ class TestThroughTheLoader:
         )
         assert cfg.mcp_gateway.stub_servers == []
 
-    def test_the_shipped_default_is_empty(self, tmp_path) -> None:
+    def test_the_shipped_default_routes_only_core(self, tmp_path) -> None:
         """No mcp_gateway section at all — the state of a fresh install."""
         cfg = _load_from_dict({}, tmp_path)
-        assert cfg.mcp_gateway.stub_servers == []
+        assert cfg.mcp_gateway.stub_servers == ["kirocrew-core"]

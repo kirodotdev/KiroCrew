@@ -11,9 +11,10 @@ Windows, neither of which can bind-mount.
 
 Only stub entries are injected. A non-poolable server is left entirely to the
 agent spec, so its ``env`` — which routinely holds tokens and API keys — never
-leaves the file it was declared in. Stub entries carry ``env: {}`` by
-construction (``rewriter._build_stub_entry``): the pooled backend is spawned by
-gatewayd, not by kiro-cli, so no credential is transmitted here either.
+leaves the file it was declared in. Stub entries carry only the gateway's
+``KIROCREW_HOME`` (``rewriter._build_stub_entry``), so identity retries use the
+right data home even when the harness filters its inherited environment. The
+backend is spawned by gatewayd, so no backend credential is transmitted here.
 
 Precedence caveat: same-name override is verified against the shipped binary
 (``test_mcp_gateway_session_inject.py`` pins it, including a live check when
@@ -43,9 +44,8 @@ _ACP_RESERVED = frozenset({"name", "env", _WRAPPER_MARKER, _WRAPPER_MARKER_LEGAC
 def _acp_env(raw: Any) -> list[dict[str, str]]:
     """Convert a kiro-agent-JSON ``env`` mapping to ACP's array-of-pairs form.
 
-    Stub entries always carry an empty mapping, so this normally returns ``[]``.
-    It is still a faithful conversion rather than a hardcoded empty list so a
-    future caller that injects a non-stub entry cannot silently drop its env.
+    Stub entries carry the gateway's data home. Preserve that explicit value
+    when the harness starts MCP children with a sanitized environment.
     """
     if not isinstance(raw, dict):
         return []
@@ -64,11 +64,11 @@ def _acp_server_entry(
 
     ``channel_id`` is APPENDED as ``--channel-id <value>`` rather than
     prepended: the overlay entry runs the interpreter, so ``args`` opens with
-    ``-m kiro_crew.mcp_gateway.stub`` and anything inserted ahead of that would
-    be eaten by the interpreter instead of the stub. argparse does not care
-    about order. The channel value is known here, at the one place that runs
-    per session, so the stub does not need to recover it by walking its
-    ancestors' ``/proc/<pid>/environ`` from a bash launcher.
+    interpreter flags and the package-bound bootstrap. Anything inserted
+    ahead of that would be eaten by the interpreter instead of the stub.
+    argparse does not care about order. The channel value is known here, at
+    the one place that runs per session, so the stub does not need to recover
+    it by walking its ancestors' ``/proc/<pid>/environ`` from a bash launcher.
     """
     command = entry.get("command")
     if not isinstance(command, str) or not command:
@@ -150,6 +150,8 @@ def pooled_session_servers(
     overlay_dir: str | Path | None,
     agent: str | None,
     channel_id: str | None = None,
+    *,
+    session_key: str = "",
 ) -> list[dict[str, Any]]:
     """Return ACP ``session/new`` entries for *agent*'s broker stubs.
 
@@ -166,6 +168,11 @@ def pooled_session_servers(
     rather than baked into the overlay because the overlay is written once at
     gateway startup and is session-agnostic, while this function runs per
     session. ``None`` simply leaves the flag off and the channel unreported.
+
+    A known ``session_key`` belongs to this session's stub environment only.
+    Shared-runtime children must supply it: their process ancestry identifies
+    the parent and cannot distinguish sibling sessions. It is never written
+    into the reusable overlay or sent as backend environment.
 
     Fail-soft by design: any unreadable or malformed overlay yields ``[]``, so a
     bad rewrite degrades to unpooled operation rather than breaking the spawn.
@@ -187,6 +194,10 @@ def pooled_session_servers(
             continue
         shaped = _acp_server_entry(str(name), entry, channel_id)
         if shaped is not None:
+            if session_key:
+                shaped["env"] = [
+                    pair for pair in shaped["env"] if pair["name"] != "KIROCREW_SESSION_KEY"
+                ] + [{"name": "KIROCREW_SESSION_KEY", "value": session_key}]
             out.append(shaped)
     return out
 

@@ -189,7 +189,13 @@ _REGISTER_TIMEOUT_SECS = 5.0
 #                    reachable, because the manager adopts anything answering
 #                    ``pong`` with no version handshake — so one that outlived a
 #                    package upgrade serves new stubs.
-REGISTERED_CAPABILITIES: tuple[str, ...] = ("ensure_backend", "bridge_ping", "poolable_ack")
+#   session_bound_ack — explicit session bindings survive runtime PID claims.
+REGISTERED_CAPABILITIES: tuple[str, ...] = (
+    "ensure_backend",
+    "bridge_ping",
+    "poolable_ack",
+    "session_bound_ack",
+)
 # Upper bound on a single control/handshake reply's ``drain()`` (pong, stats,
 # registered, rejected, ready, forward-error — everything sent via
 # ``_write_json_line``). ``_REGISTER_TIMEOUT_SECS`` only bounds the inbound
@@ -1695,7 +1701,9 @@ class _StubConn:
     ``caller`` starts as the register-time identity (often ``None`` for
     warm-pool stubs) and is replaced by ``recaller`` frames (stub-initiated,
     deny-by-default) or ``claim`` frames (gateway-initiated, replace-allowed).
-    Single event loop — no locking needed.
+    An explicitly session-bound registration retains its caller across runtime
+    claims; its PID index still supports runtime aborts. Single event loop — no
+    locking needed.
 
     ``pid_start_ids`` maps each indexed PID to its register-time process
     start token (``platform_compat.get_process_start_id``), the PID-recycle
@@ -1712,6 +1720,7 @@ class _StubConn:
         "caller",
         "pid_start_ids",
         "tenant_nonce",
+        "session_bound",
     )
 
     def __init__(
@@ -1722,11 +1731,15 @@ class _StubConn:
         caller: Optional[CallerContext],
         pid_start_ids: Optional[dict[int, Optional[str]]] = None,
         tenant_nonce: str = "",
+        session_bound: bool = False,
     ) -> None:
         self.stub_uuid = stub_uuid
         self.ancestor_pids = ancestor_pids
         self.pool_label = pool_label
         self.caller = caller
+        # Only an identified registration can freeze its caller. A key-less
+        # warm stub must remain eligible for its later claim.
+        self.session_bound = session_bound and caller is not None and bool(caller.session_key)
         self.pid_start_ids = pid_start_ids if pid_start_ids is not None else {}
         # Namespace separator for a connection whose session the gateway cannot
         # name, forwarded to the backend on every request. GATEWAY-minted
@@ -1742,7 +1755,7 @@ class _StubConn:
 #: frame; legacy single ``parent_pid`` accepted). Claim-push looks up this
 #: index to retarget every connection of a claimed runtime at once. Entries
 #: without usable PIDs (old stubs) are simply not indexed — they keep the
-#: recaller-poll fallback.
+#: request-time recaller fallback.
 _CONN_INDEX: dict[int, set[_StubConn]] = {}
 
 # --- Stub-connection liveness probe -----------------------------------------
@@ -2077,6 +2090,16 @@ async def _apply_claim(
         old_key = conn.caller.session_key if conn.caller is not None else ""
         if old_key == updated_caller.session_key:
             continue  # already correct — idempotent re-claim
+        if conn.session_bound:
+            skipped += 1
+            _audit_caller_claimed(
+                old_key,
+                updated_caller.session_key,
+                conn.pool_label,
+                "denied",
+                "explicit session binding cannot be replaced by a runtime PID claim",
+            )
+            continue
         # Reassign the owner BEFORE any eviction awaits — and reassign
         # EVERY eligible connection before the FIRST eviction awaits (the
         # second pass below): an eviction yields, and a sibling connection
@@ -2783,7 +2806,7 @@ async def _handle_connection(
     # Claim-push index: record the runtime process tree that owns this stub
     # so a ``claim`` frame naming ANY level of that tree re-targets every
     # connection of the claimed runtime. Best-effort — stubs that send no
-    # usable PIDs simply keep the recaller-poll fallback.
+    # usable PIDs simply keep the request-time recaller fallback.
     #
     # The stub's self-reported ``ancestor_pids`` can be namespace-local
     # (sandbox PID-namespace topology) and then never match a claim frame's
@@ -2817,6 +2840,7 @@ async def _handle_connection(
         caller,
         pid_start_ids,
         new_tenant_nonce(),
+        session_bound=register.get("session_bound") is True,
     )
     _conn_index_add(conn)
 

@@ -351,6 +351,11 @@ def _safe_dict(value: object) -> dict:
     return value if isinstance(value, dict) else {}
 
 
+def _default_stub_roster() -> list[str]:
+    """Give core tools per-call identity without enabling backend sharing."""
+    return ["kirocrew-core"]
+
+
 def _resolve_stub_roster(mcp_gateway_data: dict) -> list[str]:
     """The stub set as CONFIGURED, before the operator's own deviations.
 
@@ -376,13 +381,22 @@ def _resolve_stub_roster(mcp_gateway_data: dict) -> list[str]:
     hand such an install a daemon and a stub process per server on upgrade —
     inventing the very topology change this design exists to make optional. An
     operator whose gateway was off keeps nothing running and opts in per server.
+
+    With neither roster spelling configured, core is routed so strict session
+    tools work without relying on a harness inheriting identity environment
+    variables. An explicit empty roster, legacy routing choice, or per-server
+    override still wins over that default.
     """
     if "stub_servers" in mcp_gateway_data:
         source = mcp_gateway_data.get("stub_servers")
-    elif _safe_bool(mcp_gateway_data.get("enabled", False), False):
-        source = mcp_gateway_data.get("poolable_servers")
+    elif "poolable_servers" in mcp_gateway_data:
+        source = (
+            mcp_gateway_data.get("poolable_servers")
+            if _safe_bool(mcp_gateway_data.get("enabled", False), False)
+            else None
+        )
     else:
-        source = None
+        source = _default_stub_roster()
     return [s for s in _safe_list(source) if isinstance(s, str) and s]
 
 
@@ -4789,15 +4803,15 @@ class McpGatewayConfig:
         ),
     )
     stub_servers: list[str] = field(
-        default_factory=list,
+        default_factory=_default_stub_roster,
         metadata=_meta(
             "Routed Servers",
             "MCP server names given a stub. The stub interposes a "
             "stub, which is what makes server-authored UI (MCP Apps) and backend "
             "sharing possible for that server — so it is the one per-server "
-            "decision. Empty by default: an unstubbed server is launched by the "
-            "session itself, the same process topology as running without the "
-            "broker, and an empty list means no broker runs at all. Whether "
+            "decision. Defaults to kirocrew-core so session-bound core tools "
+            "receive verified caller identity on every call. Other servers are "
+            "launched directly. An explicit empty list means no broker runs. Whether "
             "stubbed servers SHARE one backend is the separate global switch "
             "(mcp_gateway.enabled). Managed from MCP Management.",
             restart=True,
@@ -4850,8 +4864,8 @@ class McpGatewayConfig:
     #: underscore keeps it out of the config schema/baseline machinery, which skips
     #: private fields (same convention as ``_degraded_sections``); consumers read
     #: the :attr:`stub_roster` property.
-    _stub_roster: list[str] = field(
-        default_factory=list,
+    _stub_roster: list[str] | None = field(
+        default=None,
         repr=False,
         compare=False,
     )
@@ -4859,7 +4873,7 @@ class McpGatewayConfig:
     @property
     def stub_roster(self) -> list[str]:
         """The stub roster as configured, before operator deviations."""
-        return self._stub_roster
+        return self.stub_servers if self._stub_roster is None else self._stub_roster
 
     pool_identity_env: list[str] = field(
         default_factory=list,

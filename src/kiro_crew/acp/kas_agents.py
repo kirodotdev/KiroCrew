@@ -18,8 +18,8 @@ Two properties of KAS's schema drive the mapping and are easy to get wrong:
 ``mcpServers`` IS projected, minus the names that arrive as session-level broker
 stubs. ``@server`` entries in ``tools`` do resolve wherever the server was
 declared, so carrying the servers twice would risk a double registration — but
-that only arises for a STUBBED server, and stubs are opt-in per server
-(``mcp_gateway.stub_servers``, empty by default). With nothing stubbed the
+that only arises for a STUBBED server. ``mcp_gateway.stub_servers`` defaults
+to core; operators can opt out or route additional servers. With nothing stubbed the
 session-level param is an empty array, so omitting the block leaves a KAS session
 holding ``tools: ["@kirocrew-core", ...]`` and no definition of what
 ``kirocrew-core`` is — refs naming nothing, and every Crew tool silently absent.

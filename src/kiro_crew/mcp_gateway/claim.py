@@ -21,8 +21,8 @@ identity — the claim frame originates from the gateway itself (same uid-gated
 0700 socket trust level as Register), so it is allowed to REPLACE a stale
 identity. That is what keeps the caller correct across warm-pool re-claims.
 
-The stub-side recaller poll is kept as a fallback for gatewayd-restart races,
-but claim-push is the primary, event-driven path.
+The stub checks for late identity before requests as a fallback for missing
+claims and gatewayd restarts. Claim-push owns changes to an existing identity.
 
 Import-light on purpose: imported from ``acp/client.py`` and
 ``acp/session_provider.py`` (hot paths) and must not pull in config loading.
@@ -146,7 +146,7 @@ async def send_claim(
     a claim task past the budget.
 
     Best-effort by design: a missing socket, dead gatewayd, or timeout logs
-    at warning and returns False — the stub-side recaller poll remains as the
+    at warning and returns False — the stub's request-time recaller remains the
     fallback repair path, and a claim retry happens naturally on the next
     rekey.
     """

@@ -908,6 +908,12 @@ Decision + lifecycle:
   — a companion runtime), calls `runtime.create_session()`, and wraps the handle
   in `AcpSessionProvider`. `SubagentInfo._session_sharing` / `_shared_provider`
   record the shared path.
+- The child passes its own session key into `create_session`. Injected broker
+  stubs receive that key per session; the reusable overlay and shared process
+  environment remain session-agnostic. A parent PID mapping cannot identify
+  a child or sibling, so ancestry must not choose the child's ledger target.
+  The stub marks its explicit binding at registration; delayed parent PID
+  claims cannot replace it. Runtime aborts still reach the child connection.
 - On any failure the code falls back transparently to the legacy
   per-process path (`get_or_create`).
 - Cleanup (`_run` finally + `_force_reap`) calls `_shared_provider.shutdown()` to

@@ -45,8 +45,8 @@ from typing import TYPE_CHECKING
 GATEWAY_SUPPORTED_PLATFORMS = ("linux", "darwin", "win32")
 
 #: Import path of the stub entrypoint, and therefore the substring that
-#: identifies a stub process by its cmdline (the rewriter emits
-#: ``<python> -m kiro_crew.mcp_gateway.stub …``).
+#: identifies a stub process by its cmdline. The rewriter passes this module
+#: name as its own argument to a bootstrap bound to the gateway's package tree.
 #:
 #: It lives here, above every submodule, because the producer (``rewriter``) and
 #: the cmdline-matching consumers (the Sessions surface's per-session and

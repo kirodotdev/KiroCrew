@@ -82,6 +82,9 @@ _AMBIENT_READ_ALLOWLIST = frozenset(
     {
         # Baked into every overlay ``command``; fingerprinted as "python".
         ("_build_stub_entry", "sys.executable"),
+        # Explicit stub environment; a home change must invalidate the overlay.
+        ("_build_stub_entry", "config-name:config_dir"),
+        ("_rewrite_inputs_fingerprint", "config-name:config_dir"),
         # The fingerprint builder reading its own declared inputs.
         ("_rewrite_inputs_fingerprint", "os.environ:PATH"),
         ("_rewrite_inputs_fingerprint", "os.environ:PATHEXT"),
@@ -413,6 +416,98 @@ def test_unchanged_inputs_skip_the_rewrite_and_return_identical_result(
     # result must be exactly what a full rewrite would have returned.
     assert warm == cold
     assert warm[1]  # non-trivial: target env actually carries entries
+
+
+def test_upgrade_replaces_cached_unsafe_stub_launch(
+    tmp_path: Path,
+    rewrite_counter: dict[str, int],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A pre-isolation overlay must not survive an otherwise unchanged boot."""
+    _mk_tree(tmp_path, n_agents=1, with_env=False)
+    build_entry = rewriter._build_stub_entry
+
+    def legacy_entry(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        entry = build_entry(*args, **kwargs)
+        module_index = entry["args"].index(rewriter.STUB_MODULE)
+        entry["args"] = ["-m", rewriter.STUB_MODULE, *entry["args"][module_index + 1 :]]
+        return entry
+
+    with monkeypatch.context() as legacy:
+        legacy.setattr(rewriter, "_FINGERPRINT_SCHEMA", 3)
+        legacy.setattr(rewriter, "_build_stub_entry", legacy_entry)
+        _rewrite(tmp_path)
+    overlay = tmp_path / "mcp-gateway" / "agents" / "agent-0.json"
+    assert json.loads(overlay.read_text())["mcpServers"]["srv"]["args"][0] == "-m"
+    assert rewrite_counter["n"] == 1
+
+    _rewrite(tmp_path)
+    assert rewrite_counter["n"] == 2
+    args = json.loads(overlay.read_text())["mcpServers"]["srv"]["args"]
+    assert args[:3] == ["-B", "-E", "-P"]
+    assert rewriter.STUB_MODULE in args
+
+
+@pytest.mark.parametrize("changed_input", ["package_root", "user_site"])
+def test_stub_code_location_and_site_policy_invalidate_overlay(
+    tmp_path: Path,
+    rewrite_counter: dict[str, int],
+    monkeypatch: pytest.MonkeyPatch,
+    changed_input: str,
+) -> None:
+    from types import SimpleNamespace
+
+    _mk_tree(tmp_path, n_agents=1, with_env=False)
+    _rewrite(tmp_path)
+    if changed_input == "package_root":
+        moved_root = tmp_path / "other source"
+        monkeypatch.setattr(
+            rewriter, "__file__", str(moved_root / "kiro_crew/mcp_gateway/rewriter.py")
+        )
+    else:
+        no_user_site = not bool(rewriter.sys.flags.no_user_site)
+        monkeypatch.setattr(
+            rewriter,
+            "sys",
+            SimpleNamespace(
+                executable=sys.executable, flags=SimpleNamespace(no_user_site=no_user_site)
+            ),
+        )
+    _rewrite(tmp_path)
+    assert rewrite_counter["n"] == 2
+    overlay = tmp_path / "mcp-gateway" / "agents" / "agent-0.json"
+    args = json.loads(overlay.read_text())["mcpServers"]["srv"]["args"]
+    if changed_input == "package_root":
+        assert str(moved_root) in args
+    else:
+        assert ("-s" in args) == no_user_site
+
+
+@pytest.mark.parametrize("legacy_without_home", [False, True])
+def test_crew_home_change_invalidates(
+    tmp_path: Path,
+    rewrite_counter: dict[str, int],
+    monkeypatch: pytest.MonkeyPatch,
+    legacy_without_home: bool,
+) -> None:
+    _mk_tree(tmp_path, n_agents=1)
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "crew-a"))
+    _rewrite(tmp_path)
+    assert rewrite_counter["n"] == 1
+    if legacy_without_home:
+        fingerprint = tmp_path / "mcp-gateway" / "agents" / rewriter._FINGERPRINT_NAME
+        stored = json.loads(fingerprint.read_text(encoding="utf-8"))
+        del stored["inputs"]["crew_home"]
+        fingerprint.write_text(json.dumps(stored), encoding="utf-8")
+        expected_home = tmp_path / "crew-a"
+    else:
+        expected_home = tmp_path / "crew-b"
+        monkeypatch.setenv("KIROCREW_HOME", str(expected_home))
+    _rewrite(tmp_path)
+    assert rewrite_counter["n"] == 2
+    overlay = tmp_path / "mcp-gateway" / "agents" / "agent-0.json"
+    entry = json.loads(overlay.read_text())["mcpServers"]["srv"]
+    assert entry["env"] == {"KIROCREW_HOME": str(expected_home)}
 
 
 def test_forward_declared_env_change_invalidates(

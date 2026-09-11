@@ -1061,6 +1061,77 @@ every call and keep authoritative state in the gateway.**
 
 ### Why: the shared-backend invariant
 
+Broker stubs launch through the gateway interpreter with `-B -E -P` and a small
+standard-library bootstrap. It adds only the package root derived from the
+running gateway's own module location, then runs `kiro_crew.mcp_gateway.stub`.
+The root and module name travel as separate arguments, not interpolated code.
+The session workspace and Python startup environment overrides cannot select
+the stub's code; source-only checkouts still use their own tree without relying
+on inherited `PYTHONPATH`. Normal installed dependencies remain available, and
+the gateway's no-user-site flag is preserved. Bytecode writes stay disabled,
+including in signed bundles whose Python environment flags are ignored by `-E`.
+The rewrite fingerprint includes the package root and user-site policy; its
+schema invalidates older cached launch commands so unchanged settings receive
+this protection after an upgrade.
+
+Broker stubs receive the gateway's `KIROCREW_HOME` explicitly through their
+session-injected environment. Harnesses may filter inherited environment values;
+the stub must still find the gateway's PID mappings when a cold session publishes
+its identity after MCP initialization. Until the connection has an identity, the
+stub checks for that published mapping before forwarding each MCP request. A
+successful check sends the existing `recaller` frame before the request on the
+same connection, so the first ledger call cannot overtake an available identity.
+This replaces background polling. The check runs off the event loop with a
+bounded wait; a slow pending check is reused by later requests. Missing or
+unreadable identity still receives the backend's strict refusal. Repair stops
+once sent. An unidentified reconnect resets the sent state while retaining any
+pending lookup; its completion cannot write to the old connection.
+An inherited lookup's empty result cannot describe the current request: identity
+may have appeared since that lookup started. The request makes one fresh check
+within the remaining timeout budget before forwarding without a caller.
+Backend-declared environment values, credentials and session keys are not copied
+into this environment. Warm-pool claims retain their gateway-driven claim
+notification.
+The overlay fingerprint includes `crew_home`; a changed home or a cached
+fingerprint without that input forces a rewrite through the existing input
+comparison.
+Shared-runtime subagents and TaskRunner sessions additionally receive their own
+gateway-known session key in the injected stub entry. Task allocation supplies
+the folded per-step key for planning, execution and review. This value is
+supplied per session, never copied from backend configuration or stored in the
+reusable overlay: the shared parent's PID cannot distinguish the child's calls
+from its own.
+The stub marks that explicit binding in its registration. The broker preserves
+it when a delayed parent PID claim arrives, while keeping the connection indexed
+for runtime aborts. Key-less and legacy registrations retain warm-pool rekeying.
+An explicitly bound stub requires the broker's `session_bound_ack` capability
+before forwarding MCP traffic. An adopted older daemon without that capability
+triggers the verified direct fallback at initial connection. A reconnect checks
+again before replaying initialization and refuses that generation if the
+capability is absent; initialization has already been consumed, so a direct
+fallback cannot restore that session. Start a new session to restore its tools.
+Before a preflight fallback hands off to the real backend, the stub removes
+`KIROCREW_SESSION_KEY` and `KIROCREW_HOST_PID` from both inherited and declared
+environment values. The exception is a verified package-derived managed
+invocation: discovery's existing argv-and-env predicate must accept it, including
+the wrapper's inherited data-home pin. That inherited pin is canonicalized to
+match the package's resolved home, including symlinked home components;
+backend-declared overrides still require exact equality. A resolution failure
+retains the raw pin and the verifier refuses direct authority if it cannot
+resolve the expected home. The server name alone grants nothing.
+The stub imports that discovery verifier only during fallback, keeping
+discovery's HTTP and policy dependencies off the ordinary stub launch path.
+This applies to both POSIX exec and the Windows child handoff, while preserving
+the backend's own declared credentials and PATH. Customized managed entries,
+unresolved installations and the unsafe `python -m` fallback receive no direct
+session authority; their identity-bound tools fail closed. A verified core
+fallback keeps the child's own session key, so it cannot revert to the parent's
+PID identity.
+If a call carries the broker's connection marker but no session identity, the
+strict-identity diagnostic reports an unidentified broker connection and directs
+the operator to data-home and claim delivery checks. A connection marker never
+authorizes the call.
+
 The managed servers are long-lived stdio subprocesses, and **one server process
 serves many sessions.** In the pooled topology a single warm backend is reused
 across sessions, and a sub-agent spawned via `spawn_run` runs inside the parent

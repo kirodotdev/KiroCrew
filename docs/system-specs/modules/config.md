@@ -1,5 +1,28 @@
 # Config Module
 
+## Default core MCP routing
+
+When neither `mcp_gateway.stub_servers` nor its legacy `poolable_servers`
+spelling is configured, the roster contains `kirocrew-core`. The broker stamps
+verified caller identity on each call, so core session tools such as
+`session_ledger_read` and `session_ledger_record` do not depend on the harness
+inheriting identity environment variables. This applies to both new installations
+and upgrades whose saved config has neither roster key. The sharing flag is
+unchanged: it defaults to off, while an explicit `mcp_gateway.enabled: true`
+also shares the newly routed core backend.
+
+An explicit roster, including `[]`, overrides this default. Legacy
+`poolable_servers` preserves its existing `enabled`-dependent migration, and
+`stub_overrides` preserves individual opt-outs. The loader carries the roster
+separately from the effective set so an unrelated save does not erase those
+choices. A directly constructed config uses its own `stub_servers` as the
+roster until a file supplies a separate one.
+
+This adds one broker per data home and one stub per core MCP connection.
+Third-party servers remain direct unless selected for routing. Private V2
+execution keeps its confined direct MCP path; see
+[acp-client.md](acp-client.md#private-member-mcp-routing).
+
 ## Overview
 
 Foreign-agent onboarding is gated independently by `dashboard.import_onboarded`,

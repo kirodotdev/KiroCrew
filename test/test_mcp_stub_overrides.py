@@ -17,6 +17,8 @@ import json
 import unittest.mock
 from pathlib import Path
 
+import pytest
+
 from kiro_crew.config.loader import (
     KiroCrewConfig,
     _resolve_stub_overrides,
@@ -38,6 +40,69 @@ def _load_from_dict(data: object, tmp_path: Path) -> KiroCrewConfig:
         return_value=cfg,
     ):
         return KiroCrewConfig.load()
+
+
+class TestFreshInstallCoreRouting:
+    """Core tools need a per-call identity even without inherited process env."""
+
+    @pytest.mark.parametrize("data", [{}, {"mcp_gateway": {}}])
+    def test_unconfigured_installs_route_core_without_sharing(self, data, tmp_path):
+        cfg = _load_from_dict(data, tmp_path)
+        assert cfg.mcp_gateway.stub_servers == ["kirocrew-core"]
+        assert cfg.mcp_gateway.enabled is False
+        saved = cfg.to_dict()["mcp_gateway"]
+        assert saved["stub_servers"] == ["kirocrew-core"]
+        assert _resolve_stub_servers(saved) == ["kirocrew-core"]
+
+    def test_setup_defaults_survive_serialization(self):
+        cfg = KiroCrewConfig()
+        assert cfg.mcp_gateway.stub_servers == ["kirocrew-core"]
+        assert cfg.to_dict()["mcp_gateway"]["stub_servers"] == ["kirocrew-core"]
+
+    @pytest.mark.parametrize("enabled", [False, True])
+    def test_rosterless_upgrade_preserves_the_explicit_sharing_choice(self, enabled, tmp_path):
+        cfg = _load_from_dict({"mcp_gateway": {"enabled": enabled}}, tmp_path)
+        assert cfg.mcp_gateway.stub_servers == ["kirocrew-core"]
+        assert cfg.mcp_gateway.enabled is enabled
+        saved = cfg.to_dict()["mcp_gateway"]
+        assert saved["enabled"] is enabled
+        assert _resolve_stub_servers(saved) == ["kirocrew-core"]
+        reloaded = _load_from_dict({"mcp_gateway": saved}, tmp_path)
+        assert reloaded.mcp_gateway.enabled is enabled
+        assert reloaded.mcp_gateway.stub_servers == ["kirocrew-core"]
+
+    @pytest.mark.parametrize(
+        "section",
+        [
+            {"stub_servers": []},
+            {"stub_servers": ["other-mcp"]},
+            {"stub_overrides": {"kirocrew-core": False}},
+            {"enabled": False, "poolable_servers": ["legacy-mcp"]},
+            {"enabled": False, "poolable_servers": []},
+        ],
+    )
+    def test_saved_routing_choices_are_not_overridden(self, section, tmp_path):
+        cfg = _load_from_dict({"mcp_gateway": section}, tmp_path)
+        assert "kirocrew-core" not in cfg.mcp_gateway.stub_servers
+        assert "kirocrew-core" not in _resolve_stub_servers(cfg.to_dict()["mcp_gateway"])
+
+    def test_typed_opt_out_survives_serialization(self):
+        cfg = KiroCrewConfig()
+        cfg.mcp_gateway.stub_servers = []
+        assert cfg.to_dict()["mcp_gateway"]["stub_servers"] == []
+
+    def test_malformed_roster_uses_the_validated_default(self, tmp_path):
+        cfg = _load_from_dict({"mcp_gateway": {"stub_servers": None}}, tmp_path)
+        assert cfg.mcp_gateway.stub_servers == ["kirocrew-core"]
+        assert cfg.mcp_gateway.enabled is False
+
+    def test_no_config_file_uses_the_same_default(self, tmp_path):
+        with unittest.mock.patch(
+            "kiro_crew.config.loader.config_path", return_value=tmp_path / "absent.json"
+        ):
+            cfg = KiroCrewConfig.load()
+        assert cfg.mcp_gateway.stub_servers == ["kirocrew-core"]
+        assert cfg.to_dict()["mcp_gateway"]["stub_servers"] == ["kirocrew-core"]
 
 
 class TestTheRosterIsFollowedWhenTheOperatorIsSilent:

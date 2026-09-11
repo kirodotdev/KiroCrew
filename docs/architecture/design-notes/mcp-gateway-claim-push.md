@@ -1,7 +1,8 @@
 # Claim-push: event-driven caller identity for pooled MCP stubs
 
-The claim push is the primary identity-repair path; the recaller poll remains as a
-fallback, so both designs below are live behaviour.
+Claim push handles warm-runtime ownership changes. A request-ordered recaller
+handles identity published after registration, including a cold session's first
+turn.
 
 ## Problem
 
@@ -92,12 +93,23 @@ Push (new): gateway rekey() ─────────────────�
 
 ## Fallback
 
-The recaller poll is retained for claim-frame loss and gatewayd restarts
-(a restart empties `_CONN_INDEX`; stubs reconnect and re-register, and a
-still-key-less register restarts the poll). Its 180 s deadline is replaced by
-unbounded polling with interval backoff (1.5 s → 30 s cap), so it can never
-permanently strand a connection while costing a long-idle pool stub one
-identity probe per 30 s.
+An unidentified stub checks for identity before forwarding each MCP request.
+When the mapping is available, it sends a `recaller` frame before that request
+on the same connection. The daemon processes these frames in order, so a first
+tool call cannot outrun a published identity while waiting for a polling timer.
+The lookup runs off the event loop with a bounded wait. A timed-out lookup is
+reused, rather than starting more work on every request. An empty result leaves
+the next request eligible to try again. A request inheriting a lookup that
+finishes empty or fails makes a fresh check within its remaining timeout budget:
+the older lookup may predate the published identity. Strict backend authorization
+remains in force. Once a repair is sent, that connection stops looking up identity.
+
+A daemon restart empties `_CONN_INDEX`. Stubs reconnect and re-register; an
+unidentified registration resets the sent state. An unfinished lookup survives
+reconnects to avoid accumulating blocked executor jobs. It never writes to a
+socket itself; only the current request pump sends its result. There is no
+polling deadline or idle background task. Gateway claims continue to handle
+changes to an already identified runtime's owning session.
 
 ## Interaction with transparent respawn
 
@@ -111,8 +123,8 @@ claim-path involvement.
 - `src/kiro_crew/mcp_gateway/claim.py` — frame builder + sender (stdlib-only)
 - `src/kiro_crew/mcp_gateway/gatewayd.py` — `_StubConn`, `_CONN_INDEX`,
   `_apply_claim`, claim first-frame dispatch, per-frame caller pickup
-- `src/kiro_crew/mcp_gateway/stub.py` — `ancestor_pids` on register; unbounded
-  backoff recaller
+- `src/kiro_crew/mcp_gateway/stub.py` — `ancestor_pids` on register;
+  request-ordered recaller
 - `src/kiro_crew/acp/client.py`, `src/kiro_crew/acp/session_provider.py` —
   `rekey()` claim hooks
 - `test/test_mcp_gateway_claim.py` — functional + unit coverage

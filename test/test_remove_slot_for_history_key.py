@@ -853,7 +853,9 @@ class TestAFailedRemovalDoesNotLeakIntoTheNextSave:
 
         reloaded = CronService(base_dir=tmp_path)
         assert reloaded.get_job(parent.id) is None
-        assert reloaded.get_job(malformed.id).session_key == ["not", "a", "string"]
+        survivor = reloaded.get_job(malformed.id)
+        assert survivor is not None
+        assert survivor.session_key == ""
 
     def test_a_failed_removal_is_not_persisted_by_an_unrelated_later_save(
         self, tmp_path, monkeypatch

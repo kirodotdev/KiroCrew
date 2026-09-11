@@ -85,14 +85,7 @@ _FINGERPRINT_NAME = ".rewrite-fingerprint"
 # of serving overlays produced by older logic. The package version is also in
 # the fingerprint, so a release bump invalidates regardless; this constant is
 # the explicit knob for in-development changes.
-# Deliberately NOT bumped for the retained legacy settings overlay: the
-# per-agent overlay bytes do not depend on it, the leftover overlay file is
-# retained and ignored (never consumed), and a stored ``settings_overlay``
-# output signature is not rejected — it keeps vouching for the leftover's ACL
-# relock — so an older fingerprint still validates correctly, and bumping would
-# gratuitously defeat the transient-keep gate (which compares stored vs current
-# inputs) on the first upgraded boot.
-_FINGERPRINT_SCHEMA = 3
+_FINGERPRINT_SCHEMA = 4
 
 
 @dataclass
@@ -169,6 +162,20 @@ _TARGET_ARGS_SEP = "|"
 #: Aliased from the package constant so the launch line and the cmdline
 #: fingerprint the Sessions surface counts stubs by cannot drift apart.
 _STUB_MODULE = STUB_MODULE
+
+
+# The package root is a separate argv value, never interpolated Python code.
+# Import the standard-library runner before adding the gateway's source tree.
+_STUB_BOOTSTRAP = (
+    "import runpy, sys; "
+    "sys.path.insert(0, sys.argv.pop(1)); "
+    "runpy.run_module(sys.argv.pop(1), run_name='__main__', alter_sys=True)"
+)
+
+
+def _stub_package_root() -> str:
+    """Use the running gateway's code, including a source-only installation."""
+    return str(Path(__file__).resolve().parents[2])
 
 
 def _resolve_target_command(
@@ -403,9 +410,9 @@ def _build_stub_entry(
     ENOENT or whose declared env is silently dropped.
 
     Preserves ``autoApprove`` on the wrapped entry so kiro-cli still honours
-    it at the UI layer. ``env`` is cleared on the wrapper — the stub passes
-    env separately through its flags so the gateway can hash the
-    post-substitution env into the PoolKey.
+    it at the UI layer. The wrapper carries only the gateway's data home.
+    Declared backend env travels separately through the sidecar so the gateway
+    can hash the post-substitution env into the PoolKey.
     """
     target_args: list[str] = [str(a) for a in original.get("args", []) or []]
     auto_approve: list[str] = list(original.get("autoApprove", []) or [])
@@ -548,18 +555,36 @@ def _build_stub_entry(
     wrapped.update({
         _WRAPPER_MARKER: True,
         "command": sys.executable,
-        # ``-m kiro_crew.mcp_gateway.stub`` leads; the stub's own flags follow.
+        # The session cwd and PYTHONPATH/PYTHONHOME must not select the stub's
+        # code. Pin the gateway's package root without inheriting PYTHONPATH;
+        # dependencies still resolve from normal installed site packages.
+        # Preserve an operator's no-user-site flag. -B also avoids writing
+        # bytecode into a signed bundle after -E ignores its Python env.
+        # Python >=3.12 is the package floor, so -P is available everywhere.
         # channel_id is NOT here: the overlay is written once at startup and is
         # session-agnostic, so it is appended per session by
         # ``session_servers.pooled_session_servers`` at ACP injection time,
         # where the value is in scope.
-        "args": ["-m", _STUB_MODULE, *stub_args],
+        "args": [
+            "-B",
+            "-E",
+            "-P",
+            *(["-s"] if sys.flags.no_user_site else []),
+            "-c",
+            _STUB_BOOTSTRAP,
+            _stub_package_root(),
+            _STUB_MODULE,
+            *stub_args,
+        ],
         # autoApprove must stay on the wrapper — kiro-cli reads it at the
         # permission-prompt UI layer, separately from the backend.
         "autoApprove": auto_approve,
-        # env cleared — the backend receives env via the gateway's spawn,
-        # not via kiro-cli's subprocess environment.
-        "env": {},
+        # KAS does not inherit Crew env into MCP children. The stub's late
+        # identity lookup must use the gateway's home even when its register
+        # precedes publication of the session PID mapping. Never copy the
+        # backend's editable env here: it can contain credentials or a
+        # different data home.
+        "env": {"KIROCREW_HOME": str(config_dir())},
     })
     return wrapped
 
@@ -1167,6 +1192,9 @@ def _rewrite_inputs_fingerprint(
       ``pooling_enabled`` — decide stub flags and which entries are shareable.
     * ``python`` — ``sys.executable`` is baked into every overlay ``command``,
       so a moved/upgraded interpreter must regenerate the overlays.
+    * ``stub_package_root`` / ``python_no_user_site`` — select the gateway's
+      own code and preserve its user-site policy in the stub bootstrap.
+    * ``crew_home`` — the gateway data home carried in the stub environment.
     * ``path_env`` / ``pathext`` / ``path_augment`` — feed the
       ``shutil.which`` resolution of bare command names (``path_augment`` is
       :func:`kiro_crew.env.mcp_search_path` over an empty spec PATH — the
@@ -1196,6 +1224,9 @@ def _rewrite_inputs_fingerprint(
         "schema": _FINGERPRINT_SCHEMA,
         "package": __version__,
         "python": sys.executable,
+        "stub_package_root": _stub_package_root(),
+        "python_no_user_site": bool(sys.flags.no_user_site),
+        "crew_home": str(config_dir()),
         "path_env": os.environ.get("PATH", ""),
         "pathext": os.environ.get("PATHEXT", ""),
         "path_augment": mcp_search_path(""),

@@ -45,6 +45,13 @@ existing facade/import/monkeypatch seam requires it. Individual adapters may be
 retired in follow-up changes after repository-wide callers and characterization
 tests have moved off the corresponding legacy seam.
 
+`open_task_session()` supplies the folded per-step session key when opening an
+ACP session on a task run's shared runtime. The runtime injects that key into
+each broker stub, so planning, execution and review sessions use their own core
+tool identity instead of the run parent's PID identity. Private-memory tasks
+retain the dedicated-provider path. The emitted MCP environment is covered by
+`test_shared_children_inject_their_own_stub_identity[task]`.
+
 ## Private member session ownership
 
 An ordinary dashboard chat that has already used private member memory keeps

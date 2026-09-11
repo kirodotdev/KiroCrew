@@ -266,6 +266,7 @@ class TestSessionSharingSpawn:
         sessions.get_subagent_runtime.assert_awaited_once_with("dashboard:slot1")
         runtime = await sessions.get_subagent_runtime("dashboard:slot1")
         runtime.create_session.assert_awaited_once()
+        assert runtime.create_session.call_args.kwargs["session_key"] == f"subagent:{info.id}"
         # get_or_create should NOT have been called
         sessions.get_or_create.assert_not_awaited()
 

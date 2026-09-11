@@ -1,17 +1,17 @@
-"""Routing through the gateway is opt-in, per server.
-
-The previous default gave every stdio server a stub, so an upgrade added a daemon
-plus one proxy process per (server, session) to installs that had asked for
-neither. These tests pin the replacement: nothing is rewritten unless the
-operator stubbed it, and sharing is a separate global decision over that set.
-"""
+"""Only rostered servers get a broker stub; sharing is a separate decision."""
 
 from __future__ import annotations
 
+import os
+import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
+from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.mcp_gateway.rewriter import _rewrite_single_spec
+from kiro_crew.mcp_gateway.session_servers import pooled_session_servers
 
 STUB_MARKER = "mcp_gateway.stub"
 
@@ -49,13 +49,8 @@ def _argv(entry: dict) -> str:
     return " ".join([str(entry.get("command", ""))] + [str(a) for a in entry.get("args") or []])
 
 
-def test_nothing_is_routed_by_default(tmp_path: Path) -> None:
-    """The shipped default costs nothing: no stub set, no stub, no daemon.
-
-    This is the whole point of the change, so it is asserted on the emitted
-    overlay rather than on a flag: every entry must come out byte-identical to
-    the source, which is what makes the session launch the server itself.
-    """
+def test_an_empty_roster_routes_nothing(tmp_path: Path) -> None:
+    """An explicit empty roster preserves direct launches."""
     spec = _spec()
     out, wrapped = _rewrite(spec, tmp_path)
 
@@ -63,6 +58,175 @@ def test_nothing_is_routed_by_default(tmp_path: Path) -> None:
     for name, entry in spec["mcpServers"].items():
         assert out["mcpServers"][name] == entry, name
         assert STUB_MARKER not in _argv(out["mcpServers"][name])
+
+
+def test_fresh_install_injects_only_core_and_does_not_share(tmp_path: Path, monkeypatch) -> None:
+    """The shipped roster must reach session/new, not just a settings flag."""
+    import json
+
+    crew_home = tmp_path / "crew"
+    monkeypatch.setenv("KIROCREW_HOME", str(crew_home))
+    cfg = KiroCrewConfig().mcp_gateway
+    spec = _spec()
+    spec["mcpServers"]["kirocrew-core"] = {
+        "command": sys.executable,
+        "args": ["-m", "kiro_crew", "mcp-core"],
+    }
+    out, wrapped = _rewrite(
+        spec, tmp_path, stub=frozenset(cfg.stub_servers), pooling_enabled=cfg.enabled
+    )
+    assert wrapped == 1
+    overlay = tmp_path / "overlay"
+    overlay.mkdir()
+    (overlay / "kirocrew.json").write_text(json.dumps(out), encoding="utf-8")
+    injected = pooled_session_servers(overlay, "kirocrew")
+    assert [entry["name"] for entry in injected] == ["kirocrew-core"]
+    assert "--poolable" not in injected[0]["args"]
+    assert injected[0]["env"] == [{"name": "KIROCREW_HOME", "value": str(crew_home)}]
+    for name in ("alpha-mcp", "beta-mcp"):
+        assert out["mcpServers"][name] == spec["mcpServers"][name]
+
+
+@pytest.mark.parametrize("python_override", ["none", "path", "home"])
+def test_stub_launch_ignores_workspace_python_modules(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, python_override: str
+) -> None:
+    """Launch the emitted stub in a project that would shadow its package."""
+    crew_home = tmp_path / "crew"
+    monkeypatch.setenv("KIROCREW_HOME", str(crew_home))
+    project = tmp_path / "project"
+    package = project / "kiro_crew"
+    package.mkdir(parents=True)
+    payload = "raise SystemExit('workspace Python code executed')\n"
+    (package / "__init__.py").write_text(payload, encoding="utf-8")
+    (project / "sitecustomize.py").write_text(payload, encoding="utf-8")
+    (project / "argparse.py").write_text(payload, encoding="utf-8")
+    out, _ = _rewrite(_spec(), tmp_path, stub=frozenset({"alpha-mcp"}))
+    entry = out["mcpServers"]["alpha-mcp"]
+    child_env = {k: v for k, v in os.environ.items() if not k.startswith(("PYTHON", "KIROCREW_"))}
+    child_env.update(HOME=str(tmp_path / "user"), USERPROFILE=str(tmp_path / "user"))
+    child_env.update(entry["env"])
+    if python_override == "path":
+        child_env["PYTHONPATH"] = str(project)
+    elif python_override == "home":
+        child_env["PYTHONHOME"] = str(project)
+    result = subprocess.run(
+        [entry["command"], "-B", *entry["args"], "--help"],
+        cwd=project,
+        env=child_env,
+        capture_output=True,
+        encoding="utf-8",
+        timeout=15,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "proxies kiro-cli stdio to the local gateway" in result.stdout
+    assert "--target-command" in result.stdout
+
+
+@pytest.mark.parametrize("no_user_site", [0, 1])
+def test_stub_loads_the_gateway_source_tree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, no_user_site: int
+) -> None:
+    """A source-only gateway must not launch another installed Crew copy."""
+    import json
+    from types import SimpleNamespace
+
+    from kiro_crew.mcp_gateway import rewriter
+
+    source_root = tmp_path / "gateway source's"
+    package = source_root / "kiro_crew"
+    gateway = package / "mcp_gateway"
+    gateway.mkdir(parents=True)
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (gateway / "__init__.py").write_text("", encoding="utf-8")
+    stub_file = gateway / "stub.py"
+    stub_file.write_text(
+        "import json, sys\n"
+        "print(json.dumps({'source': __file__, 'args': sys.argv[1:], "
+        "'no_user_site': sys.flags.no_user_site}))\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(rewriter, "__file__", str(gateway / "rewriter.py"))
+    monkeypatch.setattr(
+        rewriter,
+        "sys",
+        SimpleNamespace(
+            executable=sys.executable, flags=SimpleNamespace(no_user_site=no_user_site)
+        ),
+    )
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "crew"))
+    out, _ = _rewrite(_spec(), tmp_path, stub=frozenset({"alpha-mcp"}))
+    entry = out["mcpServers"]["alpha-mcp"]
+    child_env = {k: v for k, v in os.environ.items() if not k.startswith("PYTHON")}
+    child_env.update(HOME=str(tmp_path / "user"), USERPROFILE=str(tmp_path / "user"))
+    child_env.update(entry["env"])
+    child_env["PYTHONPATH"] = str(source_root)
+    result = subprocess.run(
+        [entry["command"], "-B", *entry["args"], "--help"],
+        cwd=tmp_path,
+        env=child_env,
+        capture_output=True,
+        encoding="utf-8",
+        timeout=15,
+        check=True,
+    )
+    assert result.stdout.startswith("{"), result.stdout
+    emitted = json.loads(result.stdout)
+    assert Path(emitted["source"]).resolve() == stub_file.resolve()
+    assert emitted["no_user_site"] == no_user_site
+    assert emitted["args"][:2] == ["--server", "alpha-mcp"]
+    assert emitted["args"][-1] == "--help"
+
+
+@pytest.mark.parametrize("session_key", ["", "subagent:child"])
+def test_stub_resolves_identity_with_a_sanitized_harness_env(
+    tmp_path: Path, monkeypatch, session_key: str
+) -> None:
+    """KAS starts the stub without inherited Crew env; PID lookup still works."""
+    import json
+
+    crew_home = tmp_path / "crew"
+    crew_home.mkdir()
+    monkeypatch.setenv("KIROCREW_HOME", str(crew_home))
+    spec = _spec()
+    # Declared server credentials belong to the backend, not the stub's ACP env.
+    spec["mcpServers"]["alpha-mcp"]["env"] = {
+        "API_TOKEN": "test-only-secret",
+        "KIROCREW_HOME": str(tmp_path / "wrong-home"),
+    }
+    out, _ = _rewrite(spec, tmp_path, stub=frozenset({"alpha-mcp"}))
+    overlay = tmp_path / "overlay"
+    overlay.mkdir()
+    (overlay / "kirocrew.json").write_text(json.dumps(out), encoding="utf-8")
+    injected = pooled_session_servers(overlay, "kirocrew", session_key=session_key)[0]
+
+    # Exercise the same lookup the recaller retries after a cold start.
+    key = "dashboard:member-ledger-test"
+    (crew_home / f"session_pid_{os.getpid()}.txt").write_text(key, encoding="utf-8")
+    child_env = {k: v for k, v in os.environ.items() if not k.startswith("KIROCREW_")}
+    child_env.update(HOME=str(tmp_path / "user"), USERPROFILE=str(tmp_path / "user"))
+    child_env.update({pair["name"]: pair["value"] for pair in injected["env"]})
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-B",
+            "-c",
+            "from kiro_crew.mcp_gateway.stub import _build_caller_block; "
+            "print(_build_caller_block(None)['session_key'])",
+        ],
+        cwd=tmp_path,
+        env=child_env,
+        capture_output=True,
+        encoding="utf-8",
+        timeout=15,
+        check=True,
+    )
+    assert result.stdout.strip() == (session_key or key)
+    expected_env = [{"name": "KIROCREW_HOME", "value": str(crew_home)}]
+    if session_key:
+        expected_env.append({"name": "KIROCREW_SESSION_KEY", "value": session_key})
+    assert injected["env"] == expected_env
 
 
 def test_only_the_routed_server_gets_a_stub(tmp_path: Path) -> None:

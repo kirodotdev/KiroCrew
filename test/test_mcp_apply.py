@@ -583,7 +583,7 @@ class TestSetStubNameGate:
         from kiro_crew.dashboard.handlers import mcp as mcp_mod
 
         cfg = tmp_path / "config.json"
-        cfg.write_text("{}")
+        cfg.write_text(json.dumps({"mcp_gateway": {"stub_servers": []}}))
         monkeypatch.setattr(loader_mod, "config_path", lambda: cfg)
         monkeypatch.setattr(mcp_mod, "_local_overlay_section", lambda: {})
 

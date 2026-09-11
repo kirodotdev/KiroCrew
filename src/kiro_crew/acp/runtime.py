@@ -3218,17 +3218,24 @@ class AcpRuntime:
         mcp_servers: list[dict[str, Any]] | None = None,
         crew_agent: str | None = None,
         member_session_key: str = "",
+        session_key: str = "",
     ) -> AcpSessionHandle:
         """Create a new ACP session on this runtime. Returns a session handle.
 
         ``crew_agent`` is the canonical Kiro Crew identity for THIS session;
         None falls back to the runtime's own (spawn-time or rekeyed) identity.
 
+        ``session_key`` binds injected broker stubs to a known session, so a
+        child sharing this runtime cannot inherit its parent's PID identity.
+
         ``member_session_key`` marks a crew member's DM session and carries its
         session key: the dashboard session-control server is mounted as a
         session-level entry (identity via ``KIROCREW_SESSION_KEY``), and the
         KAS wire agent's projection widens to grant its tools. Empty — every
         non-member session — leaves both paths byte-identical to before.
+
+        The keys are independent: ``session_key`` does not mount member tools,
+        and ``member_session_key`` is not a fallback for the broker-stub key.
         """
         if not self._initialized:
             raise AcpRuntimeError("Runtime not initialized — call spawn() first")
@@ -3241,7 +3248,10 @@ class AcpRuntime:
             # Resolve the overlay off the event loop: the lookup stats/reads
             # files, and blocking the loop stalls every other session's I/O.
             mcp_servers = await asyncio.to_thread(
-                pooled_session_servers, self._mcp_gateway_overlay, agent or self._agent
+                pooled_session_servers,
+                self._mcp_gateway_overlay,
+                agent or self._agent,
+                session_key=session_key,
             )
         if member_session_key:
             # circular import: members' module graph is heavy; resolved at call

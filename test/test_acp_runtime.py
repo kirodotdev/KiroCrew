@@ -4519,6 +4519,64 @@ class TestAcpRuntimeLoadSession:
         assert load_params["mcpServers"] == new_params["mcpServers"]
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("allocation", ["direct", "task"])
+    async def test_shared_children_inject_their_own_stub_identity(
+        self, tmp_path, monkeypatch, allocation
+    ):
+        from kiro_crew.config import KiroCrewConfig
+        from kiro_crew.mcp_gateway.rewriter import _WRAPPER_MARKER
+        from kiro_crew.session import SessionManager
+
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        overlay = tmp_path / "agents"
+        overlay.mkdir()
+        source = {
+            "mcpServers": {
+                "kirocrew-core": {
+                    _WRAPPER_MARKER: True,
+                    "command": "python",
+                    "args": ["-m", "kiro_crew.mcp_gateway.stub"],
+                    "env": {"KIROCREW_HOME": str(tmp_path)},
+                }
+            }
+        }
+        spec = overlay / "kirocrew.json"
+        spec.write_text(json.dumps(source), encoding="utf-8")
+        rt, _, _ = _make_runtime()
+        rt._mcp_gateway_overlay = str(overlay)
+        sent = []
+
+        async def send(method, params, timeout=None):
+            if method == METHOD_SESSION_NEW:
+                sent.append(params)
+                return {"sessionId": f"child-{len(sent)}"}
+            return {}
+
+        monkeypatch.setattr(rt, "_send_and_await", send)
+        if allocation == "task":
+            children = ("taskrunner:run:decompose", "taskrunner:run:task0")
+            manager = SessionManager(KiroCrewConfig())
+            monkeypatch.setattr(
+                manager, "_get_or_bootstrap_run_runtime", AsyncMock(return_value=rt)
+            )
+            try:
+                for key in children:
+                    await manager.open_task_session("taskrunner:run:runtime", key, agent="kirocrew")
+                    manager.release(key)
+            finally:
+                await manager.close_all()
+        else:
+            children = ("subagent:first", "subagent:second")
+            for key in children:
+                await rt.create_session(agent="kirocrew", session_key=key)
+
+        assert len(sent) == len(children)
+        for params, key in zip(sent, children):
+            env = {pair["name"]: pair["value"] for pair in params["mcpServers"][0]["env"]}
+            assert env == {"KIROCREW_HOME": str(tmp_path), "KIROCREW_SESSION_KEY": key}
+        assert json.loads(spec.read_text(encoding="utf-8")) == source
+
+    @pytest.mark.asyncio
     async def test_load_session_resolves_stubs_off_the_event_loop(self, monkeypatch):
         """The overlay lookup stats and reads files; like create_session it must
         run via asyncio.to_thread, not on the loop thread."""

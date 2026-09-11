@@ -101,7 +101,7 @@ class TestApply:
 
     def test_operator_turning_it_off_survives(self, cache) -> None:
         """End to end on the promise: seed, user removes it, restart, stays off."""
-        section: dict = {}
+        section: dict = {"stub_servers": []}
         plan = plan_seed(cache=cache, verdicts={"a": (True, False)}, current_stub=set())
         apply_seed(plan, section, cache)
         assert _resolve_stub_servers(section) == ["a"]
