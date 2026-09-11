@@ -1925,9 +1925,8 @@ class HistoryConsolidator:
                 )
 
     async def _call_llm(self, prompt: str) -> dict | None:
-        """Call LLM for consolidation via the persistent background session.
+        """Call LLM for consolidation via its dedicated persistent session.
 
-        Uses the shared background kiro-cli process (no spawn/teardown cost).
         Returns the parsed JSON dict, or ``None`` when the turn reached the
         provider but produced nothing usable (a failed or unparsable answer).
 
@@ -1949,20 +1948,26 @@ class HistoryConsolidator:
             self._logger.warning("LLM consolidation skipped — no session manager")
             raise _ConsolidationNotDispatched("no session manager")
 
-        # Timing instrumentation: measure both the wait to acquire the shared
-        # `_bg` session (queue contention behind other `_bg` consumers like
-        # chat_nav link-preview) and the LLM turn itself. Logged at DEBUG:
+        # Timing instrumentation measures both dedicated-session acquisition and
+        # the LLM turn. Logged at DEBUG:
         # silent in normal operation, surfaced only when log_level is raised
         # to investigate a consolidation stall.
         t_start = _time.monotonic()
         async with contextlib.AsyncExitStack() as stack:
             try:
+                from kiro_crew.session import CONSOLIDATE_KEY
+
                 client = await stack.enter_async_context(
-                    background_turn(self._sessions, task="consolidation", agent="kirocrew-lite")
+                    background_turn(
+                        self._sessions,
+                        task="consolidation",
+                        agent="kirocrew-lite",
+                        session_key=CONSOLIDATE_KEY,
+                    )
                 )
             except Exception as exc:
                 self._logger.warning(
-                    "Consolidation could not acquire the background session "
+                    "Consolidation could not acquire its dedicated session "
                     "after %.1fs — nothing was sent",
                     _time.monotonic() - t_start,
                     exc_info=True,

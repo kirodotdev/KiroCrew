@@ -98,6 +98,7 @@ def channel_namespace_of(key: str) -> str:
 #: Kept in sync with the prefixes ``SessionManager`` mints; anything absent here
 #: folds into ``"other"`` so an unrecognised key can never mint a metric series.
 _TELEMETRY_LOCAL_PREFIXES: tuple[tuple[str, str], ...] = (
+    ("_consolidate", "consolidation"),
     ("dashboard", "dashboard"),
     ("cron", "cron"),
     ("subagent", "subagent"),
@@ -169,7 +170,12 @@ def telemetry_channel_of(key: str | None) -> str:
     if ns:
         return ns
     for prefix, label in _TELEMETRY_LOCAL_PREFIXES:
-        if _in_namespace(key, prefix):
+        if (
+            _in_namespace(key, prefix)
+            # ``_consolidate`` is a private stateless prefix rather than a
+            # colon- or underscore-delimited namespace.
+            or (prefix.startswith("_") and key.startswith(prefix))
+        ):
             return label
     if _TELEMETRY_CHAT_SLOT_RE.match(key):
         return "dashboard"

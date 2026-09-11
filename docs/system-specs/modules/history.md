@@ -672,12 +672,15 @@ Do not reintroduce a `memory_mode` condition here without first changing what
 
 ## HistoryConsolidator (`history_consolidation.py`, re-exported by `history.py`)
 
-Background task that fires when unconsolidated count ≥ 10 messages. Uses the
-persistent background ACP session (kiro-cli long-running session, same as
-cron/heartbeat/lesson extraction) to extract:
+Background task that fires when unconsolidated count ≥ 10 messages. Uses its
+own persistent `_consolidate` ACP session to extract:
 - `history_entry` → appended to today's daily history file
 - `preferences_update` → overwrites `preferences.md` if changed
 - `projects_update` → overwrites `projects.md` if changed
+
+The separate session keeps a long consolidation turn from queueing behind
+short `_bg` tasks such as titles and metadata work. It remains stateless and
+is recycled by the same context policy as other persistent background sessions.
 
 The two `*_update` values replace the whole file, so each is gated by
 `_is_plausible_memory_file()` before writing: a value that does not start with

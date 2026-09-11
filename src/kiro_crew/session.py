@@ -461,6 +461,7 @@ POOL_DECISIONS: frozenset[str] = frozenset(
 _WORKFLOW_AUTHOR_PREFIX = "wf-author:"
 _WORKFLOW_POOL_PREFIX = "wf-pool:"
 _STATELESS_PREFIXES = (
+    "_consolidate",
     "cron:",
     _SUBAGENT_PREFIX,
     "taskrunner:",
@@ -480,11 +481,11 @@ _STATELESS_PREFIXES = (
     _WORKFLOW_POOL_PREFIX,
 )
 
-# Background session key — cron and lessons share this session.
-# Heartbeat uses a separate key (HEARTBEAT_KEY) so it can run a tooled
-# agent without forcing other background callers (chat-title, consolidator,
-# taskkeeper) to load the same MCP servers.
+# Background session key — cron and lightweight maintenance share this session.
+# Heartbeat and history consolidation each use a separate key so their longer,
+# specialized work cannot queue behind the shared background micro-jobs.
 BACKGROUND_KEY = "_bg"
+CONSOLIDATE_KEY = "_consolidate"
 # Concurrent cold starts allowed by ``_start_sem``. Named rather than inline so the
 # identity sweep can ask how many starts are in flight (see
 # ``_cold_starts_in_flight``): a provider inside ``start()`` has not published a PID
@@ -654,7 +655,7 @@ _BG_BLIND_RECYCLE_PROMPTS = 40  # unconditional backstop: recycle after 40 promp
 _AGENT_MODEL_CACHE_TTL = 30.0
 
 # Persistent session keys — never expired by idle cleanup
-_PERSISTENT_KEYS = frozenset({BACKGROUND_KEY, HEARTBEAT_KEY})
+_PERSISTENT_KEYS = frozenset({BACKGROUND_KEY, CONSOLIDATE_KEY, HEARTBEAT_KEY})
 
 # Sentinel model values that mean "let kiro-cli resolve from agent JSON".
 # When the global agent.model config is one of these, get_or_create() skips
@@ -1964,9 +1965,14 @@ class SessionManager:
         cache[agent] = (model, dir_mtime, now)
         return model
 
-    async def recycle_background(self) -> None:
-        """Delegate context-driven background-provider recycling."""
-        await self._background_runtime.recycle_background()
+    async def recycle_background(
+        self,
+        session_key: str | None = None,
+        *,
+        agent: str | None = None,
+    ) -> None:
+        """Recycle a persistent background-style provider when context is full."""
+        await self._background_runtime.recycle_background(session_key, agent=agent)
 
     async def recycle_heartbeat(self) -> None:
         """Delegate cycle-scoped heartbeat-provider recycling."""
