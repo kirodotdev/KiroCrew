@@ -10,6 +10,11 @@
 PY ?= python3
 VENV := .venv
 PIP := $(VENV)/bin/pip
+# Build the venv under a umask that masks group/other WRITE so bin/kirocrew is
+# born non-group-writable -- `kirocrew service install` refuses to attach its
+# AppArmor profile to a group/world-writable launcher (see cli.sh). Caller umask
+# OR 022: only ever ADDS write-mask bits, a stricter umask is preserved.
+TIGHT_UMASK := umask "$$(printf '%03o' "$$(( $$(umask) | 022 ))")"
 PYTEST := $(VENV)/bin/pytest
 
 all: test
@@ -62,8 +67,10 @@ backend:
 	    echo "         bash ensure-python.sh   # or: make backend PY=python3.12" >&2; \
 	    exit 1; \
 	  fi; \
-	  test -x $(VENV)/bin/python || "$$PY" -m venv $(VENV)
-	$(PIP) install --upgrade pip setuptools wheel
+	  if [ -d $(VENV) ] && [ -n "$$(find $(VENV) $(VENV)/bin -prune \( -perm -g+w -o -perm -o+w \) -print 2>/dev/null)" ]; then \
+	    echo "  → recreating $(VENV) (existing tree is group/world-writable)"; rm -rf $(VENV); fi; \
+	  test -x $(VENV)/bin/python || { $(TIGHT_UMASK) && "$$PY" -m venv $(VENV); }
+	$(TIGHT_UMASK) && $(PIP) install --upgrade pip setuptools wheel
 	# --prefer-binary: on hosts below the modern manylinux baseline (e.g. Amazon
 	# Linux 2, glibc 2.26) the newest release of a compiled dep may ship only a
 	# manylinux_2_28 wheel + an sdist. Without this flag pip picks the newest
@@ -71,10 +78,10 @@ backend:
 	# GCC / missing -dev headers). --prefer-binary makes pip take an older
 	# prebuilt wheel instead. No-op where the newest deps already have a usable
 	# wheel (macOS, AL2023).
-	KIROCREW_SKIP_FRONTEND=1 $(PIP) install --prefer-binary -e ".[dev]"
+	$(TIGHT_UMASK) && KIROCREW_SKIP_FRONTEND=1 $(PIP) install --prefer-binary -e ".[dev]"
 	# CI parity: also install the PEP 735 dev dependency-group (pins
 	# jsonschema so the config-validation guard tests actually run).
-	$(PIP) install --group dev
+	$(TIGHT_UMASK) && $(PIP) install --group dev
 	bash packaging/resign-macos-libs.sh $(VENV)/bin/python
 
 test: build

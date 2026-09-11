@@ -505,6 +505,63 @@ class TestBuildGuards2:
             wheel_engine.build_shadow_venv(tmp_path / "w.whl", target)
 
 
+class TestBuildUmask:
+    def test_build_runs_children_under_the_build_umask(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """venv creation, the pip refresh, and the wheel install all get the owner-only
+        build umask via subprocess's umask= (thread-safe, no preexec_fn), so bin/ is
+        born non-group-writable."""
+        seen: list[object] = []
+
+        def fake_subprocess_run(*a: object, **k: object):  # type: ignore[no-untyped-def]
+            seen.append(k.get("umask"))
+            return type("P", (), {"returncode": 0, "stdout": b"", "stderr": b""})()
+
+        monkeypatch.setattr(wheel_engine.subprocess, "run", fake_subprocess_run)
+        monkeypatch.setattr(wheel_engine, "_BUILD_UMASK", 0o077)
+
+        wheel_engine.build_shadow_venv(tmp_path / "w.whl", tmp_path / "crew-venv-1.0.0")
+
+        assert seen == [0o077, 0o077, 0o077]
+
+    def test_build_creates_owner_only_root(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """The shadow root is born 0o700 -- not group-writable even under umask 002."""
+        monkeypatch.setattr(wheel_engine, "_run", lambda *a, **k: None)
+        monkeypatch.setattr(
+            wheel_engine.subprocess, "run", lambda *a, **k: type("P", (), {"returncode": 0})()
+        )
+        shadow = tmp_path / "crew-venv-1.0.0"
+        saved = os.umask(0o002)
+        try:
+            wheel_engine.build_shadow_venv(tmp_path / "w.whl", shadow)
+        finally:
+            os.umask(saved)
+        assert shadow.stat().st_mode & 0o077 == 0, oct(shadow.stat().st_mode)
+
+    def test_real_venv_dirs_born_non_group_writable_under_build_umask(self, tmp_path: Path) -> None:
+        """End-to-end: a real venv built with umask=0o077 under a umask-002 shell has
+        a non-group/world-writable root and bin/. Those are the components the AppArmor
+        profile walks (the launcher path + its ancestor dirs); venv's own activation
+        scripts are siblings the profile never inspects, so they are not asserted."""
+        target = tmp_path / "v"
+        saved = os.umask(0o002)
+        try:
+            subprocess.run(
+                [sys.executable, "-m", "venv", str(target)],
+                check=True,
+                capture_output=True,
+                cwd=str(tmp_path),
+                umask=0o077,
+            )
+        finally:
+            os.umask(saved)
+        for path in (target, target / "bin"):
+            assert not path.stat().st_mode & 0o022, (path, oct(path.stat().st_mode))
+
+
 class TestManifestFetchOrchestration:
     def test_fetch_verified_manifest_wires_fetch_parse_verify(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -988,7 +1045,9 @@ class TestShadowBuildGuards:
         (tree / wheel_engine._SHADOW_SENTINEL).write_text("")
         calls: list[str] = []
         monkeypatch.setattr(
-            wheel_engine, "_run", lambda argv, timeout, step, cwd=None: calls.append(step)
+            wheel_engine,
+            "_run",
+            lambda argv, timeout, step, cwd=None: calls.append(step),
         )
         monkeypatch.setattr(
             wheel_engine.subprocess, "run", lambda *a, **k: type("P", (), {"returncode": 0})()

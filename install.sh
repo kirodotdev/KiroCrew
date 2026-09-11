@@ -470,6 +470,20 @@ fi
 # ── Python virtual environment & package ──
 info "Creating virtual environment…"
 _venv="$KIROCREW_APP_DIR/.venv"
+# Build the venv under a umask that masks group/other WRITE so bin/kirocrew
+# and its dirs are born non-group-writable -- `kirocrew service install`
+# refuses to attach its AppArmor profile to a group/world-writable launcher
+# (see the matching block in cli.sh for the full rationale). OR-ing with 022
+# only ADDS write-mask bits, so a stricter caller umask is preserved.
+_KC_PREV_UMASK="$(umask)"
+umask "$(printf '%03o' "$(( $(umask) | 022 ))")"
+# A reused venv keeps the perms it was born with: one built by an older installer
+# under a permissive umask still has a group/world-writable root or bin/, so the
+# AppArmor profile would keep refusing. Rebuild it under the tightened umask.
+if [ -d "$_venv" ] && [ -n "$(find "$_venv" "$_venv/bin" -prune \( -perm -g+w -o -perm -o+w \) -print 2>/dev/null)" ]; then
+    warn "Existing venv is group/world-writable — recreating it"
+    rm -rf "$_venv"
+fi
 # An existing venv is reusable only while its interpreter still satisfies the
 # package's requires-python. On an upgrade from a pre-3.12 install, reusing a
 # 3.10/3.11 venv makes the `pip install -e .` below refuse the package outright
@@ -524,6 +538,8 @@ else
     die "pip install failed. Check: $_venv/bin/pip --version"
 fi
 rm -f "$_pip_log"
+# Venv fully built and born non-group-writable; restore the caller's umask.
+umask "$_KC_PREV_UMASK"
 
 # Record install method so `kirocrew update` uses the right rebuild strategy
 echo "pip" > "$KIROCREW_APP_DIR/.install-method"

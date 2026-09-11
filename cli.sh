@@ -566,9 +566,25 @@ GOT="$($SHA_CMD "$WHL" | awk '{print $1}')"
 [ "$GOT" = "$SHA" ] || err "SHA-256 mismatch (expected $SHA, got $GOT) — refusing to install"
 echo "Verified SHA-256."
 
+# Build under a umask that masks group/other WRITE, so bin/kirocrew and its
+# dirs are born non-group-writable -- whether pipx or the managed venv builds
+# them. `kirocrew service install` refuses to attach its AppArmor
+# unprivileged-userns profile to a launcher whose file -- or any ancestor dir
+# -- is group- or world-writable, since another local user could plant an
+# executable at that path and inherit the grant. venv/pip/pipx honour the
+# process umask, so a permissive umask (002, common on shared dev hosts) would
+# otherwise yield a 0775 tree and the profile install would refuse, recurring
+# on every re-install. Tightening at BIRTH (not with a post-build chmod) leaves
+# no window in which a same-group user could modify the tree before it is
+# hardened and blessed. We OR the caller's umask with 022 so we only ever ADD
+# the write-mask bits -- a stricter umask (e.g. 077) is preserved, never
+# loosened. Each branch restores it once its tree is built.
+_KC_PREV_UMASK="$(umask)"
+umask "$(printf '%03o' "$(( $(umask) | 022 ))")"
 if command -v pipx >/dev/null 2>&1; then
   echo "Installing with pipx ..."
   pipx install --force --python "$PY" "$WHL" >/dev/null
+  umask "$_KC_PREV_UMASK"
   BIN="$(pipx environment --value PIPX_BIN_DIR 2>/dev/null || echo "$HOME/.local/bin")"
 else
   # The managed venv lives BESIDE the data home, never inside it. Nesting the
@@ -653,6 +669,9 @@ else
   if [ -n "$_VENV_BACKUP" ] && [ -d "$_VENV_BACKUP" ]; then
     rm -rf "$_VENV_BACKUP" 2>/dev/null || true
   fi
+  # Venv tree is fully built and born non-group-writable; restore the caller's
+  # umask so the launcher symlinks below follow it.
+  umask "$_KC_PREV_UMASK"
   # Keep the stable launch path (`${VENV}-current`) naming the tree that holds
   # the LAST-INSTALLED version. The gateway's shadow-venv updater
   # (kiro_crew/platform/wheel_engine.py) promotes this same symlink to a fresh

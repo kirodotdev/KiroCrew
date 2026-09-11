@@ -93,6 +93,20 @@ echo ""
 
 # ── 2. Python venv + package install (pip) ──
 _venv="$REPO_DIR/.venv"
+# Build the venv under a umask that masks group/other WRITE so bin/kirocrew
+# and its dirs are born non-group-writable -- `kirocrew service install`
+# refuses to attach its AppArmor profile to a group/world-writable launcher
+# (see the matching block in cli.sh for the full rationale). OR-ing with 022
+# only ADDS write-mask bits, so a stricter caller umask is preserved.
+_KC_PREV_UMASK="$(umask)"
+umask "$(printf '%03o' "$(( $(umask) | 022 ))")"
+# A reused venv keeps the perms it was born with: one built by an older installer
+# under a permissive umask still has a group/world-writable root or bin/, so the
+# AppArmor profile would keep refusing. Rebuild it under the tightened umask.
+if [ -d "$_venv" ] && [ -n "$(find "$_venv" "$_venv/bin" -prune \( -perm -g+w -o -perm -o+w \) -print 2>/dev/null)" ]; then
+    echo "  ↳ existing venv is group/world-writable — recreating it"
+    rm -rf "$_venv"
+fi
 # Same requires-python reuse rule as the other installers: an existing venv built
 # on a pre-3.12 interpreter cannot host the package, and the `pip install -e .`
 # below would be refused outright with "Requires-Python >=3.12", so rebuild it.
@@ -123,6 +137,7 @@ fi
 "$_venv/bin/python" -c "import aiohttp" 2>/dev/null \
     || die "Install succeeded but aiohttp not importable — dependencies missing"
 echo "✓ Python package installed"
+umask "$_KC_PREV_UMASK"
 echo ""
 
 # ── 3. Agent backend (claude-agent-acp) ──

@@ -641,8 +641,12 @@ def download_verified_wheel(payload: dict[str, str], dest_dir: Path) -> Path:
 
 
 def _run(argv: list[str], timeout: float, step: str, cwd: str | None = None) -> None:
+    # Every build child writes into the shadow tree, so all of them run under
+    # the owner-only build umask (see _BUILD_UMASK below).
     try:
-        proc = subprocess.run(argv, capture_output=True, timeout=timeout, cwd=cwd)
+        proc = subprocess.run(
+            argv, capture_output=True, timeout=timeout, cwd=cwd, umask=_BUILD_UMASK
+        )
     except subprocess.TimeoutExpired as exc:
         raise WheelUpdateError(f"{step} timed out after {timeout:.0f}s") from exc
     except OSError as exc:
@@ -652,6 +656,18 @@ def _run(argv: list[str], timeout: float, step: str, cwd: str | None = None) -> 
         raise WheelUpdateError(
             f"{step} exited {proc.returncode}" + (f": {detail[-2000:]}" if detail else "")
         )
+
+
+#: Owner-only umask for the venv/pip build children (POSIX; -1 = leave unchanged).
+#: ``kirocrew service install`` refuses to attach the AppArmor unprivileged-userns
+#: profile to a launcher that is group- or world-writable (service/apparmor.py), and
+#: ``python -m venv``/pip create ``bin/`` under the process umask — so a permissive
+#: umask (``002``, common on shared dev hosts) would otherwise birth the tree ``0775``
+#: and the profile install would refuse, recurring on every update. ``subprocess``
+#: applies ``umask`` in the child between fork and exec (thread-safe, unlike a
+#: ``preexec_fn`` in this threaded gateway), so bin/ and the launcher are born
+#: owner-only with no window and the profile attaches.
+_BUILD_UMASK = 0o077 if IS_POSIX else -1
 
 
 #: Ownership sentinel: written into a shadow directory the moment this engine
@@ -741,14 +757,23 @@ def build_shadow_venv(wheel_path: Path, shadow_dir: Path, stable_link: Path | No
     # Claim ownership BEFORE any build step: the sentinel is what a future
     # retry's reuse guard keys on, so it must exist from the first moment a
     # partial tree can. `python -m venv` tolerates a non-empty directory.
+    #
+    # The root is created OWNER-ONLY (mode=0o700). It is mkdir'd here in the gateway
+    # process under that process's own umask, so a permissive umask (002) would
+    # otherwise leave it group-writable. mkdir(mode=0o700) passes any umask unchanged
+    # (umask only masks group/other bits, and 0o700 sets none), so the root is born
+    # owner-only. Owner-only is safe: the service runs the launcher as this same
+    # user, and no other account needs to traverse the tree.
     try:
-        shadow_dir.mkdir(parents=True, exist_ok=True)
+        shadow_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
         (shadow_dir / _SHADOW_SENTINEL).write_text(
             "created by kiro_crew.platform.wheel_engine; removed after verification\n",
             encoding="utf-8",
         )
     except OSError as exc:
         raise WheelUpdateError(f"could not claim the shadow directory: {exc}") from exc
+    # _run applies the owner-only build umask (see _BUILD_UMASK), so bin/kirocrew
+    # and its dirs are born non-group-writable and the AppArmor profile can attach.
     _run(
         [sys.executable, "-m", "venv", str(shadow_dir)],
         _VENV_CREATE_TIMEOUT_SECS,
@@ -764,6 +789,7 @@ def build_shadow_venv(wheel_path: Path, shadow_dir: Path, stable_link: Path | No
             capture_output=True,
             timeout=_VENV_CREATE_TIMEOUT_SECS,
             cwd=str(shadow_dir),
+            umask=_BUILD_UMASK,
         )
     except (OSError, subprocess.SubprocessError):
         pass

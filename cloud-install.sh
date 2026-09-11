@@ -177,6 +177,20 @@ fi
 step 4 "KiroCrew client"
 info "Installing the KiroCrew client (pip, editable)…"
 _venv="$REPO_ROOT/.venv"
+# Build the venv under a umask that masks group/other WRITE so bin/kirocrew
+# and its dirs are born non-group-writable -- `kirocrew service install`
+# refuses to attach its AppArmor profile to a group/world-writable launcher
+# (see the matching block in cli.sh for the full rationale). OR-ing with 022
+# only ADDS write-mask bits, so a stricter caller umask is preserved.
+_KC_PREV_UMASK="$(umask)"
+umask "$(printf '%03o' "$(( $(umask) | 022 ))")"
+# A reused venv keeps the perms it was born with: one built by an older installer
+# under a permissive umask still has a group/world-writable root or bin/, so the
+# AppArmor profile would keep refusing. Rebuild it under the tightened umask.
+if [ -d "$_venv" ] && [ -n "$(find "$_venv" "$_venv/bin" -prune \( -perm -g+w -o -perm -o+w \) -print 2>/dev/null)" ]; then
+    warn "Existing venv is group/world-writable — recreating it"
+    rm -rf "$_venv"
+fi
 # Same requires-python reuse rule as install.sh and setup.sh: an existing venv
 # built on a pre-3.12 interpreter cannot host the package, and the pip install
 # below would be refused outright, so rebuild instead of reusing.
@@ -193,6 +207,7 @@ if [ "$WITH_VOICE" -eq 1 ]; then
     info "Including voice extras (.[voice])"
 fi
 KIROCREW_SKIP_FRONTEND=1 "$_venv/bin/pip" install -e "$_pip_target" -q && ok "Kiro Crew client installed" || { warn "pip install failed"; exit 1; }
+umask "$_KC_PREV_UMASK"
 mkdir -p "$HOME/.local/bin"
 ln -sf "$_venv/bin/kirocrew" "$HOME/.local/bin/kirocrew"
 KC="$_venv/bin/kirocrew"
