@@ -18,6 +18,19 @@ import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
  *  measures via ResizeObserver. */
 const TALL_CODE_BLOCK_PX = 480
 
+/** Fence tags whose content is prose, not source code. A markdown paragraph is
+ *  one long source line, so rendering it under `white-space: pre` turns every
+ *  paragraph into a horizontal scrub — these tags soft-wrap instead. The set
+ *  stays small and explicit: an unknown or missing tag is code and KEEPS the
+ *  horizontal scroll (that is the reported requirement, not an oversight). */
+const PROSE_LANGS = new Set(['markdown', 'md', 'text', 'txt', 'plaintext', 'plain'])
+const isProseLang = (lang?: string) => !!lang && PROSE_LANGS.has(lang.toLowerCase())
+
+/** Module constant so the options reference is stable across renders — Pierre
+ *  diffs options/files by reference first (same pattern as CMD_CODE_OPTIONS in
+ *  ToolDetails.tsx; the `file` object below is memoized for the same reason). */
+const PROSE_CODE_OPTIONS = { overflow: 'wrap' } as const
+
 /** The copy button, plus any caller-supplied actions (e.g. the pencil edit
  *  button), as one reusable row -- shared between the header and the footer
  *  duplicate so the two stay visually identical without a copy-pasted JSX
@@ -65,6 +78,7 @@ export const CodeBlock = memo(function CodeBlock(
   }
   const [contentRef, contentHeight] = useMeasuredHeight<HTMLDivElement>()
   const isTall = contentHeight > TALL_CODE_BLOCK_PX
+  const prose = isProseLang(lang)
   // Stable file identity per (code, lang): Pierre diffs options/files by
   // reference first, so a fresh object every render would force re-renders.
   const file = useMemo(() => ({ name: `snippet.${lang || 'txt'}`, contents: code }), [code, lang])
@@ -93,11 +107,14 @@ export const CodeBlock = memo(function CodeBlock(
       </div>
       {/* tabIndex=0 + role/label: a horizontally-scrollable region must be keyboard
           focusable so keyboard-only users can scroll it (axe scrollable-region-focusable).
-          The region role is a labelled landmark, so the tabIndex here is intentional. */}
+          The region role is a labelled landmark, so the tabIndex here is intentional.
+          A prose block no longer scrolls horizontally, but it keeps the focus stop:
+          conditioning tabIndex on the tag would move keyboard behavior with content
+          type, and a focusable non-scrolling region is harmless. */}
       {/* eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex */}
       <div ref={contentRef} className="pierre-surface scroll-fade" tabIndex={0} role="region" aria-label={lang ? `${lang} code` : 'code'}>
         {complete && highlighted ? (
-          <PierreCode file={file} langHint={lang} />
+          <PierreCode file={file} langHint={lang} options={prose ? PROSE_CODE_OPTIONS : undefined} />
         ) : (
           /* `pierre-plain` is what makes the swap a restyle instead of a reflow.
              The utilities here LOSE to `.msg-content pre` (two selectors beat one
@@ -108,8 +125,11 @@ export const CodeBlock = memo(function CodeBlock(
              every code block 12px taller than the Pierre surface it stands in
              for, so a row with three of them dropped 36px the moment its chunks
              resolved, moving a reader scrolling above it. This stand-in is the
-             real code text -- a queued block is readable, never a bare bar. */
-          <pre className="pierre-plain overflow-x-auto px-3 py-2 m-0"><code className="text-[13px] font-mono leading-5">{code}</code></pre>
+             real code text -- a queued block is readable, never a bare bar.
+             Prose tags wrap here too (mirrors PlainFilePairFallback's wraps
+             branch), so the stand-in and the highlighted surface agree on line
+             count and the swap stays a restyle in the prose case as well. */
+          <pre className={`pierre-plain ${prose ? 'whitespace-pre-wrap break-words' : 'overflow-x-auto'} px-3 py-2 m-0`}><code className="text-[13px] font-mono leading-5">{code}</code></pre>
         )}
         {!complete && <div className="px-3 pb-2 text-muted text-[12px] italic animate-pulse">{i18nT('components.codeBlock.generating')}</div>}
       </div>
