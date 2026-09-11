@@ -335,6 +335,21 @@ def _manifest_cache_dir() -> Path:
 
 _MANIFEST_CACHE_TTL = 86400  # 24 hours
 
+#: Subdirectory of :func:`_manifest_cache_dir` holding the source-keyed
+#: manifest files. Registry INDEX caches live at the dir root; keeping the
+#: manifest files in a subdirectory separates the two by something an external
+#: index cannot spell in an app name (``_safe_cache_stem`` returns plain names
+#: byte-identical, so a name-prefix convention would be imitable — an app
+#: literally named ``_registry_x`` must not be able to place its manifest
+#: outside the garbage collector's reach).
+_MANIFEST_SOURCE_SUBDIR = "by-source"
+
+#: How far past its TTL a cache file's mtime is pushed by
+#: :func:`_expire_cache_file`. The GC grace below is derived from this so
+#: expiry (which deliberately preserves the file) and reclamation (which
+#: deletes it) can never collide however this slack changes.
+_CACHE_EXPIRY_BACKDATE_SLACK = 3600
+
 # ---------------------------------------------------------------------------
 # Registry loading
 # ---------------------------------------------------------------------------
@@ -1279,16 +1294,77 @@ def _safe_cache_stem(name: str) -> str:
     return f"{slug}-{digest}"
 
 
-def _manifest_cache_path(name: str) -> Path:
-    # Sanitize the name so a hostile/traversal entry name from an external
-    # registry can never resolve outside the manifest cache dir (read, write,
-    # AND delete all go through here, so they stay mutually consistent).
-    return _manifest_cache_dir() / f"{_safe_cache_stem(name)}.json"
+def _manifest_source_coordinates(entry: dict[str, Any]) -> tuple[str, str, str, str]:
+    """The full source coordinates a cached manifest's identity is scoped to.
+
+    Returns ``(origin, ref, subdirectory, name)`` where *origin* is the
+    normalized, credential-free clone URL (:func:`_normalize_git_target`
+    strips userinfo, so a token in a configured URL never reaches a cache
+    file name or key material), *ref* is the effective ref — always the
+    configured branch, plus the pinned commit when the row carries one — and
+    *subdirectory*/*name* are the entry's remaining coordinates.
+
+    The branch is folded in even when a commit is present: the listing fetch
+    resolves non-catalog rows by BRANCH (their pins are data fidelity, not
+    authorization), so a ref that kept only the commit would hold the cache
+    path fixed across an operator's branch change — the exact reuse this
+    identity exists to rule out. The pin is folded in as well so a
+    republished pin is a miss rather than a stale hit.
+
+    Every value an external index controls degrades to a safe default when it
+    is not a string: the coordinates feed a cache KEY, so a malformed value
+    must produce a distinct-but-harmless identity, never a crash.
+    """
+    name = entry.get("name", "")
+    if not isinstance(name, str):
+        name = ""
+    git_url = _entry_git_url(entry)
+    origin = _normalize_git_target(git_url) if git_url else ""
+    commit = entry.get("commit")
+    branch = entry.get("branch", "main")
+    if not isinstance(branch, str) or not branch:
+        branch = "main"
+    ref = f"branch:{branch}"
+    if isinstance(commit, str) and commit:
+        ref = f"{ref}|commit:{commit}"
+    subdirectory = entry.get("subdirectory", "")
+    if not isinstance(subdirectory, str):
+        subdirectory = ""
+    return origin, ref, subdirectory, name
 
 
-def _read_manifest_cache(name: str) -> dict[str, Any] | None:
-    """Read cached app.json for a registry app. Returns None if missing or stale."""
-    path = _manifest_cache_path(name)
+def _manifest_cache_path(entry: dict[str, Any]) -> Path:
+    """Cache file for *entry*'s fetched ``app.json``, keyed on SOURCE IDENTITY.
+
+    The stem sanitizes the name so a hostile/traversal entry name from an
+    external registry can never resolve outside the manifest cache dir (read,
+    write, AND expiry all go through here, so they stay mutually consistent).
+    The digest folds the full source coordinates — normalized credential-free
+    origin, effective branch/pinned commit, repository subdirectory, and app
+    name — into the identity, so changing the configured branch is a cache
+    MISS by construction and two same-name apps from different repositories
+    can never share (or poison) each other's cached metadata. Name-keyed
+    caching could not establish provenance: a listing configured for branch
+    ``dev`` happily reused a manifest resolved earlier from ``main``.
+    """
+    origin, ref, subdirectory, name = _manifest_source_coordinates(entry)
+    # json.dumps gives each coordinate an escaped, delimited slot, so a value
+    # containing a would-be separator can never make two different coordinate
+    # tuples serialize to the same key material.
+    material = json.dumps([origin, ref, subdirectory, name])
+    digest = sha256(material.encode("utf-8")).hexdigest()[:16]
+    return _manifest_cache_dir() / _MANIFEST_SOURCE_SUBDIR / f"{_safe_cache_stem(name)}-{digest}.json"
+
+
+def _read_manifest_cache(entry: dict[str, Any]) -> dict[str, Any] | None:
+    """Read cached app.json for a registry entry's exact source coordinates.
+
+    Returns None if missing or stale — and, because the path is derived from
+    the entry's full source identity, also None whenever the branch, pinned
+    commit, repository, or subdirectory differ from what was cached, so a
+    failed fetch can never silently fall back to another source's manifest.
+    """
+    path = _manifest_cache_path(entry)
     if not path.is_file():
         return None
     try:
@@ -1300,16 +1376,63 @@ def _read_manifest_cache(name: str) -> dict[str, Any] | None:
         return None
 
 
-def _write_manifest_cache(name: str, data: dict[str, Any]) -> None:
-    """Write app.json to the manifest cache (atomic)."""
-    _manifest_cache_dir().mkdir(parents=True, exist_ok=True)
+#: Extra age beyond the largest TTL before a cache file is reclaimed. Derived
+#: from the expiry backdate slack so a file :func:`_expire_cache_file` just
+#: backdated (whose whole point is surviving its expiry) is never GC-eligible
+#: in the same breath, whatever value the slack takes.
+_MANIFEST_CACHE_GC_GRACE = _CACHE_EXPIRY_BACKDATE_SLACK + 2 * 86400
+
+
+def _gc_manifest_cache_dir() -> None:
+    """Best-effort reclamation of manifest cache files nothing can read anymore.
+
+    Coordinate-keyed cache files are orphaned whenever a row's branch, pin,
+    repository, or subdirectory changes: the new coordinates write a NEW file
+    and no reader ever derives the old path again. An untrusted index that
+    churns its coordinates every refresh would otherwise grow the cache dir
+    without bound. Reclaim is age-based and read-invisible: only files older
+    than every TTL plus a grace window are removed, and ``_read_manifest_cache``
+    already answers ``None`` for anything past ``_MANIFEST_CACHE_TTL`` (there
+    is no ``ignore_ttl`` read of a manifest file), so deleting them changes no
+    read result. Only the ``by-source/`` subdirectory is scanned: registry
+    index caches live at the cache-dir ROOT, so the boundary between "GC may
+    reclaim" and "GC never touches" is structural — an index cannot spell a
+    directory into an app name, where a name-prefix convention (skip
+    ``_registry_*``) would be imitable and hand a hostile index files the
+    sweep never reclaims. Runs on the write path because writes are the only
+    way the directory grows, which bounds it by construction.
+    """
+    cutoff = (
+        time.time()
+        - max(_MANIFEST_CACHE_TTL, _EXTERNAL_REGISTRY_CACHE_TTL)
+        - _MANIFEST_CACHE_GC_GRACE
+    )
+    try:
+        entries = list((_manifest_cache_dir() / _MANIFEST_SOURCE_SUBDIR).iterdir())
+    except OSError:
+        return
+    for path in entries:
+        if not path.name.endswith(".json"):
+            continue
+        try:
+            if path.stat().st_mtime < cutoff:
+                path.unlink()
+        except OSError:
+            continue
+
+
+def _write_manifest_cache(entry: dict[str, Any], data: dict[str, Any]) -> None:
+    """Write app.json to the manifest cache (atomic), keyed on source identity."""
+    path = _manifest_cache_path(entry)
+    path.parent.mkdir(parents=True, exist_ok=True)
     try:
         atomic_write(
-            _manifest_cache_path(name),
+            path,
             json.dumps(data, indent=2) + "\n",
         )
     except OSError as exc:
-        logger.warning("Failed to cache manifest for %s: %s", name, exc)
+        logger.warning("Failed to cache manifest for %s: %s", entry.get("name", ""), exc)
+    _gc_manifest_cache_dir()
 
 
 def _is_safe_registry_subdir(subdir: Any) -> bool:
@@ -2167,8 +2290,9 @@ async def _resolve_manifest(entry: dict[str, Any]) -> dict[str, Any]:
     if not git_url:
         return entry
 
-    # Try cache first
-    cached = await asyncio.to_thread(_read_manifest_cache, name)
+    # Try cache first — keyed on the entry's full source coordinates, so a
+    # row configured for another branch/repo/subdirectory can never answer.
+    cached = await asyncio.to_thread(_read_manifest_cache, entry)
     if cached:
         return _merge_manifest(entry, cached)
 
@@ -2186,10 +2310,13 @@ async def _resolve_manifest(entry: dict[str, Any]) -> dict[str, Any]:
         owner_designated=bool(owner_target),
     )
     if manifest:
-        await asyncio.to_thread(_write_manifest_cache, name, manifest)
+        await asyncio.to_thread(_write_manifest_cache, entry, manifest)
         return _merge_manifest(entry, manifest)
 
-    # No manifest available — return entry as-is (minimal info)
+    # No manifest available — return entry as-is (minimal info). The failed
+    # fetch attaches NOTHING: the source-scoped cache read above already
+    # missed, and there is deliberately no name-only fallback that could
+    # attach a manifest cached for another branch or repository.
     logger.info("Could not fetch app.json for %s — showing minimal info", name)
     return entry
 
@@ -3221,7 +3348,11 @@ def _expire_cache_file(path: Path) -> None:
         if cache_dir not in resolved.parents:
             logger.warning("Refusing to expire cache file outside cache dir: %s", path)
             return
-        past = time.time() - max(_MANIFEST_CACHE_TTL, _EXTERNAL_REGISTRY_CACHE_TTL) - 3600
+        past = (
+            time.time()
+            - max(_MANIFEST_CACHE_TTL, _EXTERNAL_REGISTRY_CACHE_TTL)
+            - _CACHE_EXPIRY_BACKDATE_SLACK
+        )
         os.utime(resolved, (past, past))
     except FileNotFoundError:
         pass
@@ -3282,13 +3413,19 @@ async def refresh_registries(repo: str | None = None) -> dict[str, Any]:
             continue
         # Expire per-app manifest caches so fresh display info is refetched
         # lazily on the next read (mtime expiry preserves the stale fallback).
-        manifest_names: set[str] = set()
+        # Both the prior and the fresh index rows contribute: the cache path is
+        # derived from each row's FULL source coordinates, so a row whose
+        # branch/repo changed in the new index expires the old coordinates'
+        # cache (via the prior row) as well as priming a miss for the new ones.
+        expire_paths: set[Path] = set()
         for e in (prior or []) + entries:
+            if not isinstance(e, dict):
+                continue
             entry_name = e.get("name")
             if isinstance(entry_name, str) and entry_name:
-                manifest_names.add(entry_name)
-        for entry_name in manifest_names:
-            await asyncio.to_thread(_expire_cache_file, _manifest_cache_path(entry_name))
+                expire_paths.add(_manifest_cache_path(e))
+        for cache_path in expire_paths:
+            await asyncio.to_thread(_expire_cache_file, cache_path)
         refreshed.append(display_name)
         results.append({"name": display_name, "ok": True})
 

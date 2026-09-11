@@ -1109,7 +1109,7 @@ class TestRefreshRegistries:
         _write_external_registry_cache(
             "acme", [{"name": "cool-app", "repo": "R", "branch": "main"}]
         )
-        manifest_path = _manifest_cache_path("cool-app")
+        manifest_path = _manifest_cache_path({"name": "cool-app", "repo": "R", "branch": "main"})
         manifest_path.parent.mkdir(parents=True, exist_ok=True)
         manifest_path.write_text('{"name": "cool-app"}', encoding="utf-8")
         index_path = _external_registry_cache_path("acme")
@@ -1362,8 +1362,22 @@ class TestRefreshRegistries:
 
         cache_root = _reg._manifest_cache_dir().resolve()
         for hostile in ("../../config", "../../../etc/passwd", "a/b/c", "..%2F..%2Fconfig"):
-            resolved = _manifest_cache_path(hostile).resolve()
+            resolved = _manifest_cache_path({"name": hostile}).resolve()
             assert cache_root in resolved.parents, f"{hostile!r} escaped to {resolved}"
+
+    def test_manifest_cache_identity_is_scoped_to_source_coordinates(self, cache_dir):
+        # main vs dev of the same repo, and same-name apps from two different
+        # repos, must each get a DISTINCT cache identity: a name-only key
+        # would let a dev listing reuse main's cached metadata.
+        base = {"name": "cool-app", "repo": "https://github.com/acme/apps", "branch": "main"}
+        dev = dict(base, branch="dev")
+        other_repo = dict(base, repo="https://github.com/rival/apps")
+        paths = {
+            _manifest_cache_path(base),
+            _manifest_cache_path(dev),
+            _manifest_cache_path(other_repo),
+        }
+        assert len(paths) == 3
 
     def test_safe_cache_stem_preserves_plain_names(self):
         # Plain names stay byte-identical (no hash suffix) so caches persist.

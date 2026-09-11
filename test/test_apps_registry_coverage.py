@@ -529,35 +529,94 @@ class TestEditionRegistryRows:
 
 
 class TestManifestCache:
+    _DEMO = {"name": "demo", "repo": "https://github.com/o/demo.git", "branch": "main"}
+
     def test_missing_cache_reads_none(self, cache_dir):
-        assert registry._read_manifest_cache("nope") is None
+        assert registry._read_manifest_cache({"name": "nope"}) is None
 
     def test_round_trip(self, cache_dir):
-        registry._write_manifest_cache("demo", {"name": "demo", "version": "1.0.0"})
-        assert registry._read_manifest_cache("demo") == {"name": "demo", "version": "1.0.0"}
+        registry._write_manifest_cache(self._DEMO, {"name": "demo", "version": "1.0.0"})
+        assert registry._read_manifest_cache(self._DEMO) == {"name": "demo", "version": "1.0.0"}
 
     def test_stale_cache_reads_none(self, cache_dir):
-        registry._write_manifest_cache("demo", {"name": "demo"})
-        path = registry._manifest_cache_path("demo")
+        registry._write_manifest_cache(self._DEMO, {"name": "demo"})
+        path = registry._manifest_cache_path(self._DEMO)
         past = time.time() - registry._MANIFEST_CACHE_TTL - 3600
         os.utime(path, (past, past))
-        assert registry._read_manifest_cache("demo") is None
+        assert registry._read_manifest_cache(self._DEMO) is None
 
     def test_corrupt_cache_reads_none(self, cache_dir):
-        registry._manifest_cache_path("demo").write_text("not json", encoding="utf-8")
-        assert registry._read_manifest_cache("demo") is None
+        path = registry._manifest_cache_path(self._DEMO)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("not json", encoding="utf-8")
+        assert registry._read_manifest_cache(self._DEMO) is None
 
     def test_write_failure_is_swallowed(self, cache_dir, monkeypatch):
         def _boom(path, data):
             raise OSError("disk full")
 
         monkeypatch.setattr(registry, "atomic_write", _boom)
-        registry._write_manifest_cache("demo", {"name": "demo"})  # must not raise
-        assert registry._read_manifest_cache("demo") is None
+        registry._write_manifest_cache(self._DEMO, {"name": "demo"})  # must not raise
+        assert registry._read_manifest_cache(self._DEMO) is None
 
     def test_traversing_name_is_confined_to_the_cache_dir(self, cache_dir):
-        path = registry._manifest_cache_path("../../escape")
-        assert cache_dir.resolve() == path.parent.resolve()
+        path = registry._manifest_cache_path({"name": "../../escape"})
+        assert path.parent == cache_dir / registry._MANIFEST_SOURCE_SUBDIR
+        assert cache_dir.resolve() in path.resolve().parents
+
+    def test_branch_change_is_a_cache_miss(self, cache_dir):
+        # The cache identity folds the effective branch in, so flipping the
+        # configured branch can never reuse metadata resolved from another one.
+        main_row = {"name": "demo", "repo": "https://github.com/o/demo.git", "branch": "main"}
+        dev_row = {"name": "demo", "repo": "https://github.com/o/demo.git", "branch": "dev"}
+        assert registry._manifest_cache_path(main_row) != registry._manifest_cache_path(dev_row)
+        registry._write_manifest_cache(main_row, {"name": "demo", "version": "1.0.0"})
+        assert registry._read_manifest_cache(dev_row) is None
+        assert registry._read_manifest_cache(main_row) is not None
+
+    def test_same_name_different_repos_do_not_share_cache(self, cache_dir):
+        one = {"name": "demo", "repo": "https://github.com/one/demo.git", "branch": "main"}
+        two = {"name": "demo", "repo": "https://github.com/two/demo.git", "branch": "main"}
+        assert registry._manifest_cache_path(one) != registry._manifest_cache_path(two)
+        registry._write_manifest_cache(one, {"name": "demo", "description": "repo one"})
+        assert registry._read_manifest_cache(two) is None
+
+    def test_subdirectory_and_commit_pin_scope_the_identity(self, cache_dir):
+        base = {"name": "demo", "repo": "https://github.com/o/demo.git", "branch": "main"}
+        subdir = dict(base, subdirectory="apps/demo")
+        pinned = dict(base, commit="a" * 40)
+        paths = {
+            registry._manifest_cache_path(base),
+            registry._manifest_cache_path(subdir),
+            registry._manifest_cache_path(pinned),
+        }
+        assert len(paths) == 3
+
+    def test_branch_change_is_a_miss_even_under_an_unchanged_pin(self, cache_dir):
+        # Non-catalog pins are data fidelity, not what the listing fetch
+        # resolves — the fetch follows the BRANCH. A ref that kept only the
+        # commit would hold the cache path fixed across an operator's branch
+        # change, serving another branch's metadata for every pinned row.
+        pin = "a" * 40
+        main_row = {
+            "name": "demo",
+            "repo": "https://github.com/o/demo.git",
+            "branch": "main",
+            "commit": pin,
+        }
+        dev_row = dict(main_row, branch="dev")
+        assert registry._manifest_cache_path(main_row) != registry._manifest_cache_path(dev_row)
+        registry._write_manifest_cache(main_row, {"name": "demo", "version": "1.0.0"})
+        assert registry._read_manifest_cache(dev_row) is None
+
+    def test_credential_in_url_never_reaches_the_cache_identity(self, cache_dir):
+        # Normalization strips userinfo, so the same repo with and without an
+        # embedded credential is ONE cache identity and the secret is not in
+        # the file name.
+        plain = {"name": "demo", "gitUrl": "https://git.example.com/o/demo.git"}
+        credentialed = {"name": "demo", "gitUrl": "https://user:secret@git.example.com/o/demo.git"}
+        assert registry._manifest_cache_path(plain) == registry._manifest_cache_path(credentialed)
+        assert "secret" not in registry._manifest_cache_path(credentialed).name
 
     def test_external_cache_write_failure_is_swallowed(self, cache_dir, monkeypatch):
         def _boom(path, data):
@@ -583,12 +642,14 @@ class TestSafeCacheStem:
 
 
 class TestExpireCacheFile:
+    _DEMO = {"name": "demo", "repo": "https://github.com/o/demo.git", "branch": "main"}
+
     def test_backdates_instead_of_unlinking(self, cache_dir):
-        registry._write_manifest_cache("demo", {"name": "demo"})
-        path = registry._manifest_cache_path("demo")
+        registry._write_manifest_cache(self._DEMO, {"name": "demo"})
+        path = registry._manifest_cache_path(self._DEMO)
         registry._expire_cache_file(path)
         assert path.is_file()  # data survives as stale fallback
-        assert registry._read_manifest_cache("demo") is None
+        assert registry._read_manifest_cache(self._DEMO) is None
 
     def test_missing_file_is_a_no_op(self, cache_dir):
         registry._expire_cache_file(cache_dir / "absent.json")
@@ -601,13 +662,79 @@ class TestExpireCacheFile:
         assert outside.stat().st_mtime == before
 
     def test_utime_failure_is_swallowed(self, cache_dir, monkeypatch):
-        registry._write_manifest_cache("demo", {"name": "demo"})
+        registry._write_manifest_cache(self._DEMO, {"name": "demo"})
 
         def _boom(path, times):
             raise OSError("read-only fs")
 
         monkeypatch.setattr(registry.os, "utime", _boom)
-        registry._expire_cache_file(registry._manifest_cache_path("demo"))
+        registry._expire_cache_file(registry._manifest_cache_path(self._DEMO))
+
+
+class TestManifestCacheGc:
+    _DEMO = {"name": "demo", "repo": "https://github.com/o/demo.git", "branch": "main"}
+
+    def _age(self, path, extra=0):
+        past = (
+            time.time()
+            - max(registry._MANIFEST_CACHE_TTL, registry._EXTERNAL_REGISTRY_CACHE_TTL)
+            - registry._MANIFEST_CACHE_GC_GRACE
+            - 3600
+            - extra
+        )
+        os.utime(path, (past, past))
+
+    def test_write_reclaims_orphans_past_every_ttl_plus_grace(self, cache_dir):
+        # A coordinate change orphans the old file (no reader derives its path
+        # again); once it is older than every TTL plus the grace window, the
+        # next write sweeps it, so churned coordinates cannot grow the dir
+        # without bound.
+        old_row = dict(self._DEMO, branch="dead-branch")
+        registry._write_manifest_cache(old_row, {"name": "demo"})
+        orphan = registry._manifest_cache_path(old_row)
+        self._age(orphan)
+        registry._write_manifest_cache(self._DEMO, {"name": "demo"})
+        assert not orphan.exists()
+        assert registry._manifest_cache_path(self._DEMO).is_file()
+
+    def test_fresh_and_recently_expired_files_survive(self, cache_dir):
+        registry._write_manifest_cache(self._DEMO, {"name": "demo"})
+        kept = registry._manifest_cache_path(self._DEMO)
+        # A file _expire_cache_file just backdated is expired but NOT yet
+        # GC-eligible: expiry preserves it on purpose.
+        registry._expire_cache_file(kept)
+        other = dict(self._DEMO, name="other")
+        registry._write_manifest_cache(other, {"name": "other"})
+        assert kept.is_file()
+
+    def test_registry_index_caches_are_never_swept(self, cache_dir):
+        index_file = cache_dir / "_registry_acme.json"
+        index_file.write_text("[]", encoding="utf-8")
+        self._age(index_file)
+        registry._write_manifest_cache(self._DEMO, {"name": "demo"})
+        assert index_file.is_file()
+
+    def test_a_registry_prefixed_app_name_cannot_escape_the_gc(self, cache_dir):
+        # _safe_cache_stem returns plain names byte-identical, so an external
+        # index can name an app `_registry_evil`. The GC boundary is the
+        # by-source subdirectory, not a name prefix, so such a file is
+        # reclaimed like any other manifest instead of accumulating forever.
+        evil = {"name": "_registry_evil", "repo": "https://github.com/o/x.git", "branch": "main"}
+        registry._write_manifest_cache(evil, {"name": "_registry_evil"})
+        orphan = registry._manifest_cache_path(evil)
+        assert orphan.parent.name == registry._MANIFEST_SOURCE_SUBDIR
+        self._age(orphan)
+        registry._write_manifest_cache(self._DEMO, {"name": "demo"})
+        assert not orphan.exists()
+
+    def test_gc_errors_are_swallowed(self, cache_dir, monkeypatch):
+        registry._write_manifest_cache(self._DEMO, {"name": "demo"})
+
+        def _boom(self_path):
+            raise OSError("no listdir for you")
+
+        monkeypatch.setattr(registry.Path, "iterdir", _boom)
+        registry._write_manifest_cache(self._DEMO, {"name": "demo"})  # must not raise
 
 
 # ---------------------------------------------------------------------------
@@ -863,7 +990,7 @@ class TestResolveManifest:
     @pytest.mark.asyncio
     async def test_cached_manifest_short_circuits_the_fetch(self, monkeypatch):
         monkeypatch.setattr(
-            registry, "_read_manifest_cache", lambda name: {"description": "cached"}
+            registry, "_read_manifest_cache", lambda entry: {"description": "cached"}
         )
 
         async def _never(*a, **k):
@@ -877,13 +1004,13 @@ class TestResolveManifest:
 
     @pytest.mark.asyncio
     async def test_fetched_manifest_is_cached_and_merged(self, monkeypatch):
-        monkeypatch.setattr(registry, "_read_manifest_cache", lambda name: None)
+        monkeypatch.setattr(registry, "_read_manifest_cache", lambda entry: None)
         monkeypatch.setattr(registry, "_is_owner_designated_repo", lambda entry: False)
         written: list[tuple[str, dict]] = []
         monkeypatch.setattr(
             registry,
             "_write_manifest_cache",
-            lambda name, data: written.append((name, data)),
+            lambda entry, data: written.append((entry["name"], data)),
         )
 
         async def _fetch(*a, **k):
@@ -898,7 +1025,7 @@ class TestResolveManifest:
 
     @pytest.mark.asyncio
     async def test_unavailable_manifest_leaves_a_minimal_row(self, monkeypatch):
-        monkeypatch.setattr(registry, "_read_manifest_cache", lambda name: None)
+        monkeypatch.setattr(registry, "_read_manifest_cache", lambda entry: None)
         monkeypatch.setattr(registry, "_is_owner_designated_repo", lambda entry: False)
 
         async def _fetch(*a, **k):
@@ -907,6 +1034,61 @@ class TestResolveManifest:
         monkeypatch.setattr(registry, "_fetch_app_manifest", _fetch)
         entry = {"name": "demo", "gitUrl": "https://github.com/o/demo.git"}
         assert await registry._resolve_manifest(entry) == entry
+
+    @pytest.mark.asyncio
+    async def test_failed_fetch_never_attaches_another_sources_manifest(
+        self, cache_dir, monkeypatch
+    ):
+        # A manifest cached for branch `main` must not be attached to the same
+        # app configured for branch `dev` when the dev fetch fails: the row
+        # comes back minimal, never wearing another branch's metadata.
+        main_row = {"name": "demo", "gitUrl": "https://github.com/o/demo.git", "branch": "main"}
+        registry._write_manifest_cache(main_row, {"description": "from main", "version": "9.9.9"})
+        monkeypatch.setattr(registry, "_owner_designated_repo_target", lambda entry: "")
+
+        async def _fetch(*a, **k):
+            return None
+
+        monkeypatch.setattr(registry, "_fetch_app_manifest", _fetch)
+        dev_row = {"name": "demo", "gitUrl": "https://github.com/o/demo.git", "branch": "dev"}
+        got = await registry._resolve_manifest(dict(dev_row))
+        assert "description" not in got
+        assert got.get("version") is None
+
+    @pytest.mark.asyncio
+    async def test_refresh_expiry_updates_available_version_for_not_installed_app(
+        self, cache_dir, monkeypatch
+    ):
+        # After the refresh path expires the coordinates' cache, the next
+        # listing resolve refetches and surfaces the NEW available version;
+        # install-status enrichment keeps the row not-installed.
+        row = {"name": "demo", "gitUrl": "https://github.com/o/demo.git", "branch": "main"}
+        registry._write_manifest_cache(row, {"version": "1.0.0"})
+        registry._expire_cache_file(registry._manifest_cache_path(row))
+        monkeypatch.setattr(registry, "_owner_designated_repo_target", lambda entry: "")
+
+        async def _fetch(*a, **k):
+            return {"version": "2.0.0"}
+
+        monkeypatch.setattr(registry, "_fetch_app_manifest", _fetch)
+        got = await registry._resolve_manifest(dict(row))
+        assert got["version"] == "2.0.0"
+        enriched = registry._enrich_with_install_status([got], installed_map={})
+        assert enriched[0]["installed"] is False
+        assert "installedVersion" not in enriched[0]
+
+    @pytest.mark.asyncio
+    async def test_installed_and_available_versions_stay_distinct(self, cache_dir, monkeypatch):
+        row = {"name": "demo", "gitUrl": "https://github.com/o/demo.git", "branch": "main"}
+        registry._write_manifest_cache(row, {"version": "2.0.0"})
+        got = await registry._resolve_manifest(dict(row))
+        assert got["version"] == "2.0.0"
+        enriched = registry._enrich_with_install_status(
+            [got], installed_map={"demo": {"version": "1.0.0", "enabled": True}}
+        )
+        assert enriched[0]["installedVersion"] == "1.0.0"
+        assert enriched[0]["version"] == "2.0.0"
+        assert enriched[0]["updateAvailable"] is True
 
 
 class TestMergeManifest:
