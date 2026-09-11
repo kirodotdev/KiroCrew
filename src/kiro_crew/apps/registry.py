@@ -3276,7 +3276,7 @@ async def refresh_registries(repo: str | None = None) -> dict[str, Any]:
     failed: list[str] = []
     results: list[dict[str, Any]] = []
     for reg in registries:
-        name = reg.name or reg.repo
+        name = _external_registry_cache_identity(reg)
         display_name = _public_registry_name(reg)
         # Read the (possibly stale) prior index up front so we know which
         # per-app manifest caches this registry contributed, even if the
