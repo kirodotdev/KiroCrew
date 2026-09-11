@@ -1745,13 +1745,25 @@ def _agent_values() -> set[str]:
     return {"", *KiroCrewConfig.load().agents}
 
 
-def _active_advertised_ids(request: web.Request) -> list[str] | None:
-    """Advertised model ids from the first active provider, or None if unknown.
+def _provider_backend(provider: object) -> str | None:
+    """Return an active provider's backend when its public shape exposes one."""
+    client = getattr(provider, "client", None)
+    backend = getattr(client, "backend", None)
+    if isinstance(backend, str):
+        return backend
+    backend = getattr(provider, "backend", None)
+    return backend if isinstance(backend, str) else None
+
+
+def _active_advertised_ids(request: web.Request, *, backend: str | None = None) -> list[str] | None:
+    """Advertised model ids for an active backend, or None if unknown.
 
     Uses the shared :func:`advertised_model_ids` shape parser so this
     validation sees exactly what the session-init withhold check sees. Returns
     ``None`` when no session has initialized / nothing was advertised, so callers
-    treat entitlement as UNKNOWN rather than denying on no evidence.
+    treat entitlement as UNKNOWN rather than denying on no evidence. When
+    *backend* is supplied, providers for other backends cannot supply evidence
+    about the target agent's entitlement.
     """
     from kiro_crew.acp.client import advertised_model_ids
 
@@ -1760,6 +1772,8 @@ def _active_advertised_ids(request: web.Request) -> list[str] | None:
     except (KeyError, AttributeError):
         return None
     for provider in providers:
+        if backend is not None and _provider_backend(provider) != backend:
+            continue
         getter = getattr(provider, "available_models", None)
         if not callable(getter):
             continue
@@ -1773,7 +1787,11 @@ def _active_advertised_ids(request: web.Request) -> list[str] | None:
 
 
 def _validate_role_model(
-    value: str, request: web.Request, provider: str | None = None
+    value: str,
+    request: web.Request,
+    provider: str | None = None,
+    *,
+    backend: str | None = None,
 ) -> str | None:
     """Reject a per-role model pin the account cannot use; ``None`` = allow.
 
@@ -1787,7 +1805,8 @@ def _validate_role_model(
 
     *provider* is forwarded to :func:`_model_rejected_reason` so a caller holding
     an already-loaded config does not pay a second synchronous config read; the
-    remaining work is in-memory. Omit it and the provider is resolved there.
+    remaining work is in-memory. *backend* scopes any live catalog to the harness
+    the edited agent will use. Omit either when that identity is unavailable.
     """
     if not value or value == "auto":
         return None
@@ -1797,7 +1816,11 @@ def _validate_role_model(
     reason = _model_rejected_reason(value, provider=provider)
     if reason:
         return reason
-    advertised = _active_advertised_ids(request)
+    advertised = (
+        _active_advertised_ids(request)
+        if backend is None
+        else _active_advertised_ids(request, backend=backend)
+    )
     if advertised is None:
         return None
     if model_is_unusable(value, advertised):
