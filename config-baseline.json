@@ -7844,6 +7844,107 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": "index"
+    },
+    {
+      "path": "a2a_agents",
+      "kind": "core",
+      "type": "array",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "A2A Agents",
+      "help": "Remote agents reachable over A2A, usable only as subagents. Each entry: {name, agent_card_url, auth}. A name that collides with a local agent is refused at spawn time (agent_name_collision).",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": []
+    },
+    {
+      "path": "a2a_agents.*",
+      "kind": "core",
+      "type": "object",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "*",
+      "help": "",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": null
+    },
+    {
+      "path": "a2a_agents.*.name",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Name",
+      "help": "Spawn handle for the remote agent (e.g. 'local-kiro'). A name that also names a local agent is refused at spawn time, when the local roster is in hand (agent_name_collision).",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
+    },
+    {
+      "path": "a2a_agents.*.agent_card_url",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Agent Card URL",
+      "help": "URL of the remote agent's A2A Agent Card (https://<host>/.well-known/agent-card.json). The message endpoint is read from the card; the provider fetches it on start().",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
+    },
+    {
+      "path": "a2a_agents.*.auth",
+      "kind": "core",
+      "type": "object",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Auth",
+      "help": "How this client authenticates to the remote agent. `scheme` is `none` (default) or `bearer`; with `bearer`, `token_env` names the environment variable holding the credential, read at request time and sent as `Authorization: Bearer` on the Agent Card fetch and every request. The name must be under the `KIROCREW_A2A_*` namespace: config cannot select any other environment variable (a bot token, a cloud credential) as a remote credential. A companion `<token_env>_ORIGIN` variable pins the one `scheme://host[:port]` the credential may be sent to; a card URL on any other origin is refused before any request, so config cannot redirect a credential either. The card's declared security requirements are checked after the fetch: a requirement this client cannot satisfy fails the start rather than sending unauthenticated requests. Editions may register further schemes.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": {
+        "scheme": "none",
+        "token_env": ""
+      }
+    },
+    {
+      "path": "a2a_agents.*.auth.scheme",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Scheme",
+      "help": "`none` or `bearer`. Additional schemes may be registered by an edition through the agent SDK's A2A driver.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": "none"
+    },
+    {
+      "path": "a2a_agents.*.auth.token_env",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Credential env var",
+      "help": "Name of the environment variable holding the bearer credential (the NAME, never the value). Required when scheme is `bearer`; read on each request so a rotated value is picked up without a restart.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
     }
   ]
 }

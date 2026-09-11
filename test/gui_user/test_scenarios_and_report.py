@@ -24,6 +24,12 @@ class TestShippedScenarios:
             "settings-theme-toggle",
             "sessions-new-chat",
             "members-dm-hello",
+            "subagents-remote-spawn",
+            "subagents-remote-continue",
+            "subagents-remote-not-primary",
+            "subagents-remote-steer",
+            "subagents-remote-mixed-batch",
+            "subagents-remote-connection-lost",
         }
 
     def test_pr_smoke_tier_is_the_cheap_pair(self) -> None:
@@ -34,7 +40,7 @@ class TestShippedScenarios:
 
     def test_nightly_includes_smoke(self) -> None:
         nightly = scenarios.select(scenarios.load_all(SCENARIOS_DIR), tier="nightly")
-        assert len(nightly) == 3
+        assert len(nightly) == 9  # 3 original + the 6 remote-subagent stories
 
     def test_explicit_name_selection(self) -> None:
         picked = scenarios.select(scenarios.load_all(SCENARIOS_DIR), names=["members-dm-hello"])
@@ -66,11 +72,19 @@ class TestShippedScenarios:
         groups = scenarios.by_feature(scenarios.load_all(SCENARIOS_DIR))
         assert {slug: [s.name for s in g] for slug, g in groups.items()} == {
             "chat": ["sessions-new-chat"],
+            "subagents": [
+                "subagents-remote-connection-lost",
+                "subagents-remote-continue",
+                "subagents-remote-mixed-batch",
+                "subagents-remote-not-primary",
+                "subagents-remote-spawn",
+                "subagents-remote-steer",
+            ],
             "members": ["members-dm-hello"],
             "settings": ["settings-theme-toggle"],
         }
         # FEATURES order, not alphabetical: chat is the product's primary surface.
-        assert list(groups) == ["chat", "members", "settings"]
+        assert list(groups) == ["chat", "subagents", "members", "settings"]
 
     def test_members_scenario_holds_across_the_crew_mode_retirement(self) -> None:
         """The Feature Previews card carries two titles across the Crew Mode retirement; the steps name both."""
@@ -416,7 +430,7 @@ class TestReport:
         md = report.render_features(catalog, _summary(), run_url="https://x/run")
         assert md.startswith("# GUI user-test feature catalog\n")
         assert (
-            f"_3 of {len(scenarios.FEATURES)} features covered · 3 scenarios (2 smoke / 1 nightly)._"
+            f"_4 of {len(scenarios.FEATURES)} features covered · 9 scenarios (2 smoke / 7 nightly)._"
             in md
         )
         assert (
@@ -444,7 +458,7 @@ class TestReport:
     def test_features_catalog_without_a_run(self) -> None:
         md = report.render_features(scenarios.load_all(SCENARIOS_DIR))
         assert "_No run attached" in md
-        assert md.count("▫️ not run") == 3 and "✅" not in md and "❌" not in md
+        assert md.count("▫️ not run") == 9 and "✅" not in md and "❌" not in md
 
     def test_neutralize_defangs_fences_mentions_and_control_chars(self) -> None:
         raw = "ok\n```\n@maintainer see <img src=x onerror=1>\x07\r~~~\n" + "z" * 50

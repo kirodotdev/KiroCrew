@@ -9,6 +9,8 @@
 #   GUI_SEED      KIROCREW_HOME fixture                       (default rich)
 #   GUI_MEMBERS   comma-separated crew member slugs to add    (default nova-sky)
 #   GUI_CHROME    browser binary override                     (auto-detected)
+#   GUI_A2A_PORT  loopback port for the packaged fake A2A      (default 8790)
+#                 remote agent, registered as `remote-demo`
 #
 # On success $GUI_OUT/target.env holds GUI_BASE_URL and GUI_DASHBOARD_TOKEN (the
 # gateway's one-time token, mode 0600) and $GUI_OUT/pids lists the process
@@ -23,6 +25,7 @@ GUI_DISPLAY="${GUI_DISPLAY:-:99}"
 GUI_SCREEN="${GUI_SCREEN:-1600x1000x24}"
 GUI_SEED="${GUI_SEED:-rich}"
 GUI_MEMBERS="${GUI_MEMBERS:-nova-sky}"
+GUI_A2A_PORT="${GUI_A2A_PORT:-8790}"
 
 case "$GUI_DISPLAY" in
   :0|:1|:0.*|:1.*|*:0|*:1)
@@ -53,7 +56,23 @@ IFS=',' read -r -a members <<< "$GUI_MEMBERS"
 for m in "${members[@]}"; do
   [ -n "$m" ] && member_args+=(--member "$m")
 done
-KIROCREW_HOME="$HOME_DIR" python3 "$(dirname "$0")/seed_home.py" --fixture "$GUI_SEED" "${member_args[@]}"
+A2A_CARD_URL="http://127.0.0.1:${GUI_A2A_PORT}/.well-known/agent-card.json"
+KIROCREW_HOME="$HOME_DIR" python3 "$(dirname "$0")/seed_home.py" --fixture "$GUI_SEED" "${member_args[@]}" \
+  --remote-agent "remote-demo=${A2A_CARD_URL}"
+
+# ---- 2b. fake remote agent (A2A) ------------------------------------------
+# The subagents-remote-* scenarios delegate to a REMOTE agent. The packaged fake
+# A2A server is that agent: loopback, deterministic, no auth (see
+# kiro_crew.testing.fake_a2a_server). It must be listening before the gateway
+# serves the first spawn, because A2AProvider fetches the Agent Card on start.
+setsid python3 -m kiro_crew.testing.fake_a2a_server --port "$GUI_A2A_PORT" \
+  > "$GUI_OUT/fake-a2a.log" 2>&1 &
+echo "$!" >> "$PIDS"
+for _ in $(seq 1 50); do
+  grep -q '^FAKE_A2A_READY:' "$GUI_OUT/fake-a2a.log" 2> /dev/null && break
+  sleep 0.2
+done
+grep -q '^FAKE_A2A_READY:' "$GUI_OUT/fake-a2a.log" || { echo "::error::fake A2A server did not come up on :$GUI_A2A_PORT" >&2; cat "$GUI_OUT/fake-a2a.log" >&2 || true; exit 1; }
 
 # ---- 3. gateway ------------------------------------------------------------
 # Same shape as kiro_crew.testing.harness.spawn_feature_gateway (the E2E job's
@@ -67,6 +86,7 @@ env \
   KIROCREW_HOME="$HOME_DIR" \
   KIRO_HOME="$HOME_DIR/kiro" \
   KIROCREW_FAKE_ACP_TEST_MODE=1 \
+  KIROCREW_FAKE_ACP_SPAWN_BRIDGE=1 \
   KIROCREW_KIRO_BIN="$FAKE_BACKEND" \
   KIROCREW_SKIP_MODEL_DOWNLOAD=1 \
   PYTHONUNBUFFERED=1 \

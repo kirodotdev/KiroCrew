@@ -127,7 +127,7 @@ it to the run's step summary, so "what does the product do, and is it healthy" i
 answered from any run page without opening the YAML.
 
 - `feature` is a slug from the closed registry `scenarios.FEATURES`, one per product
-  area, in report order: `chat`, `side-panel`, `terminal`, `sidebar`, `navigation`,
+  area, in report order: `chat`, `subagents`, `side-panel`, `terminal`, `sidebar`, `navigation`,
   `topbar`, `search`, `members`, `capabilities`, `connections`, `memory`, `knowledge`,
   `artifacts`, `files`, `browser-panel`, `apps`, `task-runner`, `worlds`, `dev-fleet`,
   `schedule`, `api`, `webhooks`, `channels`, `voice`, `notifications`, `computer-use`,

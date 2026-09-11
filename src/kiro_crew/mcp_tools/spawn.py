@@ -52,6 +52,22 @@ from kiro_crew.validation import (
 # self-correction for a few dozen characters, not a full agent listing.
 _MAX_ROSTER_NAMES = 8
 
+
+def _a2a_roster_names() -> frozenset[str]:
+    """A2A remote-agent names for the subagent-facing rosters.
+
+    Reuses ``subagent._a2a_agent_names`` (the single source shared with
+    ``_validate_agent``) so the advertised roster and the accepted set cannot
+    drift. Best-effort — never lets a config read break tool advertisement.
+    """
+    try:
+        from kiro_crew.subagent import _a2a_agent_names
+
+        return _a2a_agent_names()
+    except Exception:  # pragma: no cover - defensive
+        return frozenset()
+
+
 # Owner recorded on an audit record when the resolver named no session. An empty
 # owner is ambiguous by construction: a resolver whose every identity source
 # failed and a spawn with genuinely no owning session both produce ``""``, and
@@ -127,7 +143,12 @@ def _agent_roster_hint() -> str:
         # refusal roster's and a credential-shaped name is rewritten in place
         # rather than re-sorted into a different slot.
         shown, withheld = visible_agent_names(
-            sorted(a.name for a in mcp_core.list_agents() if a.name),
+            sorted(
+                set(a.name for a in mcp_core.list_agents() if a.name)
+                # A2A remote agents are spawnable subagents but invisible to
+                # list_agents(); include them in this subagent-facing roster.
+                | set(_a2a_roster_names())
+            ),
             limit=_MAX_ROSTER_NAMES,
         )
     except Exception:
@@ -921,7 +942,10 @@ def spawn_list(name: str, args: dict[str, Any]) -> str:
     # elsewhere because it is reached by omitting ``agent`` -- but it is still a
     # name the gateway accepts, so a full listing shows it.
     try:
-        names, _ = visible_agent_names((a.name or "" for a in mcp_core.list_agents()), exclude=())
+        names, _ = visible_agent_names(
+            list(a.name or "" for a in mcp_core.list_agents()) + list(_a2a_roster_names()),
+            exclude=(),
+        )
         if names:
             lines.append(f"\nAvailable agents: {', '.join(names)}")
     except Exception:

@@ -1787,6 +1787,16 @@ def provider_label(provider: Any) -> str:
     the kiro label, and the map then prunes its id for want of a kiro
     transcript.
     """
+    # A provider that declares its own identity on the ``LLMProvider`` contract
+    # (``provider_label``, e.g. the A2A provider's "a2a") is labelled by it. The
+    # ACP family leaves the attribute empty and is classified by backend below.
+    # Read through the ABC, not by duck-typing on arbitrary objects -- and, per
+    # the caveat above, accept only a real ``str``: a ``MagicMock(spec=...)``
+    # passes the isinstance check and answers a Mock for the attribute.
+    if isinstance(provider, LLMProvider):
+        declared = provider.provider_label
+        if isinstance(declared, str) and declared:
+            return declared
     if isinstance(provider, AcpSessionProvider):
         backend = provider.backend
     elif isinstance(provider, AcpProvider):

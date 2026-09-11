@@ -3453,6 +3453,110 @@ class ExternalRegistryConfig:
 
 
 @dataclass
+class A2aAuthConfig:
+    """Client-side authentication for one ``a2a_agents`` entry.
+
+    Mirrors how A2A clients authenticate in practice: the Agent Card declares
+    the server's security schemes, the credential is obtained out-of-band, and
+    the client sends it per scheme -- for HTTP bearer, OAuth2 and OIDC alike that
+    is one ``Authorization: Bearer`` header. ``none`` is honest only for a card
+    that declares no requirements; the provider refuses to start otherwise.
+    """
+
+    scheme: str = field(
+        default="none",
+        metadata=_meta(
+            "Scheme",
+            "`none` or `bearer`. Additional schemes may be registered by an edition "
+            "through the agent SDK's A2A driver.",
+        ),
+    )
+    token_env: str = field(
+        default="",
+        metadata=_meta(
+            "Credential env var",
+            "Name of the environment variable holding the bearer credential (the "
+            "NAME, never the value). Required when scheme is `bearer`; read on "
+            "each request so a rotated value is picked up without a restart.",
+        ),
+    )
+
+
+#: Schemes the public core implements. An edition extends the DRIVER's scheme
+#: table (``kiro_crew.agent_sdk.drivers.a2a``), not this tuple: the loader only
+#: needs to know the value is a lowercase identifier, the driver decides whether
+#: it can honour it and refuses the start otherwise.
+A2A_AUTH_SCHEME_NONE = "none"
+
+
+def _a2a_auth_from(raw: object) -> "A2aAuthConfig":
+    """Build :class:`A2aAuthConfig` from the config value, narrowing-only.
+
+    Accepts the object shape (``{"scheme": ..., "token_env": ...}``) only; a
+    missing or unreadable value is ``none``. Nothing here decides whether a
+    scheme is supported -- that is the driver's call at start(), where the Agent
+    Card's requirements are also known.
+    """
+    if isinstance(raw, dict):
+        scheme = str(raw.get("scheme") or A2A_AUTH_SCHEME_NONE).strip().lower()
+        token_env = str(raw.get("token_env") or "").strip()
+        return A2aAuthConfig(scheme=scheme or A2A_AUTH_SCHEME_NONE, token_env=token_env)
+    return A2aAuthConfig()
+
+
+@dataclass
+class A2aAgentConfig:
+    """A remote agent reachable over A2A, usable ONLY as a subagent.
+
+    Membership in the ``a2a_agents`` list IS the semantics: an entry here is a
+    REMOTE, SUBAGENT-ONLY agent. There is deliberately no ``kind``/``roles``
+    field — primary/dashboard/cron selection reads only ``~/.kiro/agents/`` and
+    the ``agents`` section, so an A2A entry is structurally invisible to it and
+    reachable only via ``spawn_run(agent=<name>)``. A conversation is carried by
+    an A2A ``contextId``; each spawn/continue turn is one A2A task in it. See
+    :class:`kiro_crew.providers.a2a.A2AProvider`.
+    """
+
+    name: str = field(
+        default="",
+        metadata=_meta(
+            "Name",
+            "Spawn handle for the remote agent (e.g. 'local-kiro'). A name that "
+            "also names a local agent is refused at spawn time, when the local "
+            "roster is in hand (agent_name_collision).",
+        ),
+    )
+    agent_card_url: str = field(
+        default="",
+        metadata=_meta(
+            "Agent Card URL",
+            "URL of the remote agent's A2A Agent Card "
+            "(https://<host>/.well-known/agent-card.json). The message endpoint "
+            "is read from the card; the provider fetches it on start().",
+        ),
+    )
+    auth: A2aAuthConfig = field(
+        default_factory=A2aAuthConfig,
+        metadata=_meta(
+            "Auth",
+            "How this client authenticates to the remote agent. `scheme` is `none` "
+            "(default) or `bearer`; with `bearer`, `token_env` names the environment "
+            "variable holding the credential, read at request time and sent as "
+            "`Authorization: Bearer` on the Agent Card fetch and every request. The "
+            "name must be under the `KIROCREW_A2A_*` namespace: config cannot select "
+            "any other environment variable (a bot token, a cloud credential) as a "
+            "remote credential. A companion `<token_env>_ORIGIN` variable pins the one "
+            "`scheme://host[:port]` the credential may be sent to; a card URL on any "
+            "other origin is refused before any request, so config cannot redirect a "
+            "credential either. The card's declared security requirements are checked "
+            "after the fetch: a requirement this client cannot satisfy fails the start "
+            "rather than sending unauthenticated requests. Editions may register "
+            "further schemes.",
+        ),
+    )
+
+
+@dataclass
 class SkillsConfig:
     max_triggered: int = field(
         default=0,

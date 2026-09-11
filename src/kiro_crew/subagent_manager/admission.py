@@ -8,15 +8,18 @@ from ._component import ManagerComponent
 
 if TYPE_CHECKING:
     from ..subagent import (
+        AGENT_NAME_COLLISION_CODE,
         KiroCrewConfig,
         SpawnApprovalUnreachable,
         Stats,
         SubagentInfo,
+        _a2a_agent_entry,
         _context_groups_field,
         _validate_agent,
         _vet_spawn_governance,
         asyncio,
         cached_admission_check,
+        card_origin,
         check_memory_available,
         create_agent_folder,
         logger,
@@ -298,7 +301,54 @@ class SpawnAdmissionCoordinator(ManagerComponent):
         # to named agents (capabilities.spawn.scopes.agents).  Resolved against
         # the PARENT surface so a per-app/per-surface profile contains what it
         # can spawn — even if the kiro side would allow it.
-        gov_spawn_err = _vet_spawn_governance(parent_session_key, agent, app=app)
+        #
+        # Local-vs-remote is classified ONCE, here, and that single resolution is
+        # what the remote-spawn gate, the collision refusal (_validate_agent) and
+        # the run path's A2A branch all consume (stashed on the record below as
+        # ``_a2a_entry``). Each of them re-reading the mtime-cached config was a
+        # time-of-check/time-of-use hole: config.json is agent-writable, and a
+        # spawn can wait in the approval prompt between admission and run, so an
+        # ``a2a_agents`` entry written in that window flipped a spawn vetted as
+        # LOCAL onto the remote route — task text off-box past a
+        # capabilities.remote_spawn deny that only ever saw the earlier snapshot.
+        a2a_entry = _a2a_agent_entry(agent) if agent else None
+        is_remote = a2a_entry is not None
+        remote_origin = card_origin(a2a_entry.agent_card_url) if a2a_entry is not None else ""
+        # A prevalidated spawn (app SpawnSDK) validated a LOCAL app agent off the
+        # loop and therefore skips _validate_agent below -- including its
+        # agent_name_collision refusal. If that name ALSO resolves to an
+        # ``a2a_agents`` entry, the auto-approved app task would route off-host
+        # under a validation that never considered a remote. Refuse, fail closed.
+        if _agent_prevalidated and is_remote:
+            reason = (
+                f"agent {agent!r} is a prevalidated app agent but also names an a2a_agents "
+                "entry; an app spawn never routes to a remote agent (agent_name_collision)"
+            )
+            logger.warning("Subagent spawn refused: %s", reason)
+            sel().log_tool_invocation(
+                session_key=parent_session_key or "",
+                source="subagent",
+                tool_name="spawn_run",
+                outcome="denied",
+                error=reason,
+                metadata={"agent": agent, "app": app, "task": _redacted_task[:120]},
+            )
+            return self._manager._announce_rejection(
+                SubagentInfo(
+                    id=agent_id,
+                    task=_redacted_task,
+                    agent="",
+                    parent_session_key=parent_session_key,
+                    done=True,
+                    error=reason,
+                    error_code=AGENT_NAME_COLLISION_CODE,
+                    batch_id=batch_id,
+                    batch_total=max(0, int(batch_total)),
+                )
+            )
+        gov_spawn_err = _vet_spawn_governance(
+            parent_session_key, agent, app=app, remote=is_remote, remote_origin=remote_origin
+        )
         if gov_spawn_err:
             logger.warning("Subagent spawn refused by governance: %s", gov_spawn_err)
             sel().log_tool_invocation(
@@ -450,7 +500,7 @@ class SpawnAdmissionCoordinator(ManagerComponent):
             effective_cwd = resolved_cwd or str(
                 getattr(self._manager._sessions, "_pool_cwd", "") or ""
             )
-            agent, err, err_code = _validate_agent(agent, effective_cwd)
+            agent, err, err_code = _validate_agent(agent, effective_cwd, remote=is_remote)
             if err:
                 info = SubagentInfo(
                     id=agent_id,
@@ -489,6 +539,9 @@ class SpawnAdmissionCoordinator(ManagerComponent):
             memory_store=memory_store or "",
         )
         info._raw_task = task  # unredacted prompt for kiro-cli execution
+        # The admitted routing decision travels WITH the record: the run path
+        # branches on this object, never on a fresh registry read (see above).
+        setattr(info, "_a2a_entry", a2a_entry)
         self._manager._agents[agent_id] = info
         self._manager._running_count += 1
         self._manager._last_spawn_ts = time.monotonic()  # stagger gate: one start per interval

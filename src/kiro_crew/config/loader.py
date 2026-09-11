@@ -377,6 +377,15 @@ from kiro_crew.stt.limits import MIN_SILENCE_MS as _STT_MIN_SILENCE_MS
 from kiro_crew.stt.limits import MIN_TIMEOUT_SECS as _STT_MIN_TIMEOUT_SECS
 from kiro_crew.stt.models import DEFAULT_MODEL as _STT_DEFAULT_MODEL
 
+# Annotation plumbing, not a re-export: ``KiroCrewConfig.a2a_agents`` is
+# annotated ``list[A2aAgentConfig]`` because two resolvers read that string --
+# ``typing.get_type_hints`` in THIS module's globals (config/schema.py) and the
+# schema test's eval in ``sections``' namespace -- and only a bare name resolves
+# in both. Bound by assignment so the frozen pre-split ``from ... sections
+# import`` block (test_config_module_boundaries) is not extended; new code
+# still reaches the section type as ``_sections.A2aAgentConfig``.
+A2aAgentConfig = _sections.A2aAgentConfig
+
 logger = logging.getLogger(__name__)
 
 # Credential keys loaded from .env / environment
@@ -2765,6 +2774,15 @@ class KiroCrewConfig:
             "External app registries (org-owned repos). " "Each entry: {name, repo, branch}.",
         ),
     )
+    a2a_agents: list[A2aAgentConfig] = field(
+        default_factory=list,
+        metadata=_meta(
+            "A2A Agents",
+            "Remote agents reachable over A2A, usable only as subagents. "
+            "Each entry: {name, agent_card_url, auth}. A name that collides with "
+            "a local agent is refused at spawn time (agent_name_collision).",
+        ),
+    )
     # Unknown top-level config.json sections captured verbatim at load() and
     # re-emitted by to_dict() so a section this core does not model (e.g. an
     # edition-contributed section written by a companion) is NOT silently
@@ -4225,6 +4243,15 @@ class KiroCrewConfig:
                 for r in (data.get("registries") or [])
                 if isinstance(r, dict) and r.get("repo")
             ],
+            a2a_agents=[
+                _sections.A2aAgentConfig(
+                    name=str(a.get("name", "")),
+                    agent_card_url=str(a.get("agent_card_url", "")),
+                    auth=_sections._a2a_auth_from(a.get("auth")),
+                )
+                for a in (data.get("a2a_agents") or [])
+                if isinstance(a, dict) and a.get("name") and a.get("agent_card_url")
+            ],
             mcp_gateway=McpGatewayConfig(
                 enabled=bool(mcp_gateway_data.get("enabled", False)),
                 # Absent -> True so installs that never configured this keep
@@ -4643,6 +4670,8 @@ class KiroCrewConfig:
         }
         # External registries (always serialized so save() round-trips the field)
         d["registries"] = [asdict(r) for r in self.registries]
+        # A2A remote agents (always serialized so save() round-trips the field)
+        d["a2a_agents"] = [asdict(a) for a in self.a2a_agents]
         # ``mcp_gateway.stub_servers`` is the ROSTER in the file but the EFFECTIVE
         # set on the dataclass, so a straight ``asdict`` round-trip would rewrite
         # the file without the servers the operator opted out of -- turning a
@@ -5057,6 +5086,35 @@ class KiroCrewConfig:
             os.environ.setdefault(k, v)
 
         return creds
+
+    def a2a_agent_names(self) -> frozenset[str]:
+        """Names of configured A2A remote agents (the subagent-only registry)."""
+        return frozenset(a.name for a in self.a2a_agents if a.name)
+
+    def a2a_agent_by_name(self, name: str) -> "_sections.A2aAgentConfig | None":
+        """The A2A registry entry for *name*, or None if not an A2A agent."""
+        for a in self.a2a_agents:
+            if a.name == name:
+                return a
+        return None
+
+    def validate_a2a_collisions(self, local_agent_names: "set[str] | frozenset[str]") -> None:
+        """Refuse an ``a2a_agents`` entry whose name shadows a local agent.
+
+        Membership in the A2A registry is what makes a name resolve to a REMOTE
+        subagent; if that same name also names a local agent, ``spawn_run`` could
+        not say which was meant, and primary selection (which reads only local
+        agents) would silently win. Fail closed at config load rather than let
+        the ambiguity reach a spawn. Raises :class:`ValueError` naming the
+        collisions.
+        """
+        collisions = sorted(self.a2a_agent_names() & set(local_agent_names))
+        if collisions:
+            raise ValueError(
+                "a2a_agents name(s) collide with local agents: "
+                + ", ".join(collisions)
+                + " — rename the A2A entry or the local agent."
+            )
 
     def create_provider_factory(self) -> Callable:
         """Return a factory that creates LLMProvider instances from config.

@@ -3,11 +3,11 @@
   "raw_record_count": 387,
   "counts": {
     "smoke": 42,
-    "nightly": 165,
+    "nightly": 171,
     "native-only": 12,
     "needs-secret": 27,
     "excluded": 22,
-    "total": 268
+    "total": 274
   },
   "priorities": {
     "P0": 10,
@@ -260,7 +260,8 @@
       "native-only": 0,
       "needs-secret": 0,
       "excluded": 0
-    }
+    },
+    "subagents": 6
   },
   "proposed_features": [],
   "features": [
@@ -964,6 +965,186 @@
       "priority": "P3",
       "merged_from": [
         "standalone-source-provider-review"
+      ],
+      "component": ""
+    },
+    {
+      "id": "subagents-remote-spawn",
+      "feature": "subagents",
+      "title": "Delegate to a remote agent",
+      "user_story": "As a user, I want to ask my agent something that it delegates to a remote agent, so that I see the remote worker stream and finish on the subagent board exactly like a local one.",
+      "start_url": "/chat",
+      "entry_path": "Rail → Sessions → composer → type a request the primary agent delegates → watch the Sub-agents board in the chat surface",
+      "preconditions": {
+        "seed": "sessions-a-few",
+        "members": [],
+        "feature_flags": [
+          "KIROCREW_FAKE_ACP_SPAWN_BRIDGE=1"
+        ],
+        "notes": "Test-mode only: boot.sh starts kiro_crew.testing.fake_a2a_server as a loopback sidecar and seeds it as `remote-demo` in `a2a_agents`; the fake ACP backend's [[SPAWN/CONTINUE/STEER/FOLLOWUP:remote-demo]] directives stand in for the real agent's decision to delegate. seed: rich start_url: /"
+      },
+      "runnable": "nightly",
+      "estimated_steps": 16,
+      "rationale": "Scenario `subagents-remote-spawn.yaml` under the `subagents` slug (RFC #10162 / PR #10171). Delegate a task to the remote agent and watch it complete on the subagent board",
+      "source": [
+        "test/gui_user/scenarios/subagents-remote-spawn.yaml",
+        "docs/system-specs/modules/a2a-subagents.md",
+        "src/kiro_crew/providers/a2a.py",
+        "src/kiro_crew/testing/fake_a2a_server.py"
+      ],
+      "priority": "P0",
+      "merged_from": [
+        "subagents-remote-spawn"
+      ],
+      "component": ""
+    },
+    {
+      "id": "subagents-remote-connection-lost",
+      "feature": "subagents",
+      "title": "Dropped remote connection shows as failed",
+      "user_story": "As a user, I want a remote subagent whose connection drops to show as failed together with the output it managed to produce, so that I never mistake a dead worker for a finished one.",
+      "start_url": "/chat",
+      "entry_path": "Rail → Sessions → composer → type a request the primary agent delegates → watch the Sub-agents board in the chat surface",
+      "preconditions": {
+        "seed": "sessions-a-few",
+        "members": [],
+        "feature_flags": [
+          "KIROCREW_FAKE_ACP_SPAWN_BRIDGE=1"
+        ],
+        "notes": "Test-mode only: boot.sh starts kiro_crew.testing.fake_a2a_server as a loopback sidecar and seeds it as `remote-demo` in `a2a_agents`; the fake ACP backend's [[SPAWN/CONTINUE/STEER/FOLLOWUP:remote-demo]] directives stand in for the real agent's decision to delegate. seed: rich start_url: /"
+      },
+      "runnable": "nightly",
+      "estimated_steps": 16,
+      "rationale": "Scenario `subagents-remote-connection-lost.yaml` under the `subagents` slug (RFC #10162 / PR #10171). Drop the remote connection mid-stream and confirm the run is marked failed, output kept",
+      "source": [
+        "test/gui_user/scenarios/subagents-remote-connection-lost.yaml",
+        "docs/system-specs/modules/a2a-subagents.md",
+        "src/kiro_crew/providers/a2a.py",
+        "src/kiro_crew/testing/fake_a2a_server.py"
+      ],
+      "priority": "P1",
+      "merged_from": [
+        "subagents-remote-connection-lost"
+      ],
+      "component": ""
+    },
+    {
+      "id": "subagents-remote-continue",
+      "feature": "subagents",
+      "title": "Continue a finished remote conversation",
+      "user_story": "As a user, I want to continue a finished remote subagent conversation and have it remember what we discussed, so that a long investigation can be picked up later without re-explaining.",
+      "start_url": "/chat",
+      "entry_path": "Rail → Sessions → composer → type a request the primary agent delegates → watch the Sub-agents board in the chat surface",
+      "preconditions": {
+        "seed": "sessions-a-few",
+        "members": [],
+        "feature_flags": [
+          "KIROCREW_FAKE_ACP_SPAWN_BRIDGE=1"
+        ],
+        "notes": "Test-mode only: boot.sh starts kiro_crew.testing.fake_a2a_server as a loopback sidecar and seeds it as `remote-demo` in `a2a_agents`; the fake ACP backend's [[SPAWN/CONTINUE/STEER/FOLLOWUP:remote-demo]] directives stand in for the real agent's decision to delegate. seed: rich start_url: /"
+      },
+      "runnable": "nightly",
+      "estimated_steps": 20,
+      "rationale": "Scenario `subagents-remote-continue.yaml` under the `subagents` slug (RFC #10162 / PR #10171). Tell the remote agent a codeword, finish, then ask it back in a new turn",
+      "source": [
+        "test/gui_user/scenarios/subagents-remote-continue.yaml",
+        "docs/system-specs/modules/a2a-subagents.md",
+        "src/kiro_crew/providers/a2a.py",
+        "src/kiro_crew/testing/fake_a2a_server.py"
+      ],
+      "priority": "P1",
+      "merged_from": [
+        "subagents-remote-continue"
+      ],
+      "component": ""
+    },
+    {
+      "id": "subagents-remote-not-primary",
+      "feature": "subagents",
+      "title": "Remote agents absent from the primary picker",
+      "user_story": "As a user, I want the agent picker for my chat to offer only local agents, so that I cannot accidentally run a whole session on a remote worker that is meant to be delegated to.",
+      "start_url": "/chat",
+      "entry_path": "Rail → Sessions → composer → type a request the primary agent delegates → watch the Sub-agents board in the chat surface",
+      "preconditions": {
+        "seed": "sessions-a-few",
+        "members": [],
+        "feature_flags": [
+          "KIROCREW_FAKE_ACP_SPAWN_BRIDGE=1"
+        ],
+        "notes": "Test-mode only: boot.sh starts kiro_crew.testing.fake_a2a_server as a loopback sidecar and seeds it as `remote-demo` in `a2a_agents`; the fake ACP backend's [[SPAWN/CONTINUE/STEER/FOLLOWUP:remote-demo]] directives stand in for the real agent's decision to delegate. seed: rich start_url: /"
+      },
+      "runnable": "nightly",
+      "estimated_steps": 12,
+      "rationale": "Scenario `subagents-remote-not-primary.yaml` under the `subagents` slug (RFC #10162 / PR #10171). Open the chat's agent switcher and confirm the remote agent is not offered",
+      "source": [
+        "test/gui_user/scenarios/subagents-remote-not-primary.yaml",
+        "docs/system-specs/modules/a2a-subagents.md",
+        "src/kiro_crew/providers/a2a.py",
+        "src/kiro_crew/testing/fake_a2a_server.py"
+      ],
+      "priority": "P1",
+      "merged_from": [
+        "subagents-remote-not-primary"
+      ],
+      "component": "AgentPicker"
+    },
+    {
+      "id": "subagents-remote-mixed-batch",
+      "feature": "subagents",
+      "title": "Local and remote workers in one batch",
+      "user_story": "As a user, I want one request to fan out to a local and a remote worker at once, so that I get both results in a single completion without having to choose a backend.",
+      "start_url": "/chat",
+      "entry_path": "Rail → Sessions → composer → type a request the primary agent delegates → watch the Sub-agents board in the chat surface",
+      "preconditions": {
+        "seed": "sessions-a-few",
+        "members": [],
+        "feature_flags": [
+          "KIROCREW_FAKE_ACP_SPAWN_BRIDGE=1"
+        ],
+        "notes": "Test-mode only: boot.sh starts kiro_crew.testing.fake_a2a_server as a loopback sidecar and seeds it as `remote-demo` in `a2a_agents`; the fake ACP backend's [[SPAWN/CONTINUE/STEER/FOLLOWUP:remote-demo]] directives stand in for the real agent's decision to delegate. seed: rich start_url: /"
+      },
+      "runnable": "nightly",
+      "estimated_steps": 16,
+      "rationale": "Scenario `subagents-remote-mixed-batch.yaml` under the `subagents` slug (RFC #10162 / PR #10171). Fan one message out to a local and a remote subagent and see both finish together",
+      "source": [
+        "test/gui_user/scenarios/subagents-remote-mixed-batch.yaml",
+        "docs/system-specs/modules/a2a-subagents.md",
+        "src/kiro_crew/providers/a2a.py",
+        "src/kiro_crew/testing/fake_a2a_server.py"
+      ],
+      "priority": "P2",
+      "merged_from": [
+        "subagents-remote-mixed-batch"
+      ],
+      "component": ""
+    },
+    {
+      "id": "subagents-remote-steer",
+      "feature": "subagents",
+      "title": "Steer a running remote subagent",
+      "user_story": "As a user, I want to send a follow-up to a running remote subagent and be told plainly when live interrupt is not available, so that I know which kinds of steering work with a remote agent.",
+      "start_url": "/chat",
+      "entry_path": "Rail → Sessions → composer → type a request the primary agent delegates → watch the Sub-agents board in the chat surface",
+      "preconditions": {
+        "seed": "sessions-a-few",
+        "members": [],
+        "feature_flags": [
+          "KIROCREW_FAKE_ACP_SPAWN_BRIDGE=1"
+        ],
+        "notes": "Test-mode only: boot.sh starts kiro_crew.testing.fake_a2a_server as a loopback sidecar and seeds it as `remote-demo` in `a2a_agents`; the fake ACP backend's [[SPAWN/CONTINUE/STEER/FOLLOWUP:remote-demo]] directives stand in for the real agent's decision to delegate. seed: rich start_url: /"
+      },
+      "runnable": "nightly",
+      "estimated_steps": 24,
+      "rationale": "Scenario `subagents-remote-steer.yaml` under the `subagents` slug (RFC #10162 / PR #10171). Interrupt a running remote run (refused, typed) then follow it up (delivered)",
+      "source": [
+        "test/gui_user/scenarios/subagents-remote-steer.yaml",
+        "docs/system-specs/modules/a2a-subagents.md",
+        "src/kiro_crew/providers/a2a.py",
+        "src/kiro_crew/testing/fake_a2a_server.py"
+      ],
+      "priority": "P2",
+      "merged_from": [
+        "subagents-remote-steer"
       ],
       "component": ""
     },

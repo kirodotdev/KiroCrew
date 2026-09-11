@@ -12,6 +12,7 @@ if TYPE_CHECKING:
         _CONVERSATION_TTL_SECS,
         _STEER_STARTUP_POLL_SECS,
         _STEER_STARTUP_WAIT_SECS,
+        A2A_PROVIDER_LABEL,
         CONTEXT_GROUP_LESSONS,
         CONTEXT_GROUP_MEMORY,
         CONTEXT_GROUP_PROJECT,
@@ -378,6 +379,16 @@ class ContinuationCoordinator(ManagerComponent):
                 ),
             )
         inc_memory, inc_lessons, inc_project = self._manager._inherited_context_groups(conv_id)
+        # An A2A continuation inherits the ORIGINAL run's agent when the caller
+        # did not name one: the A2A branch keys on the agent name to find the
+        # registry entry, so an empty agent would route the continuation down the
+        # ACP session/load path, which then honestly fails resume_failed. Gated
+        # on the RECORDED provider so a local continuation with agent="" keeps
+        # its base behaviour (the default agent), unchanged by this branch.
+        if not agent:
+            recorded = read_state(conv_id) or {}
+            if str(recorded.get("provider") or "") == A2A_PROVIDER_LABEL:
+                agent = str(recorded.get("agent") or "")
         # A continuation has to run WHERE THE RUN RAN. `spawn` resolves an empty
         # cwd to the pool project before it validates the agent name, so a run
         # spawned against a project-local agent (defined under that project's
@@ -491,10 +502,32 @@ class ContinuationCoordinator(ManagerComponent):
         def _resolve_provider() -> Any:
             if info._session_sharing and info._shared_provider is not None:  # type: ignore[union-attr]
                 return info._shared_provider  # type: ignore[union-attr]
+            # Direct-constructed providers (A2A remote agents) never register
+            # in the session manager — resolve them off the run info.
+            direct = getattr(info, "_direct_provider", None)
+            if direct is not None:
+                return direct
             session_key = info.conversation_key or f"subagent:{info.id}"  # type: ignore[union-attr]
             return self._manager._sessions.get_provider(session_key)
 
         provider: Any = _resolve_provider()
+        # A directly-constructed (A2A) provider that declares it cannot steer
+        # gets the typed rejection IMMEDIATELY — polling the startup-grace
+        # window cannot change a capability, and without this a remote run
+        # reported a misleading session_starting for its entire life. Scoped to
+        # the direct-provider branch: how a local backend outside
+        # ACP_BACKENDS_STEER answers a steer is that backend's contract, not
+        # this change's.
+        if (
+            provider is not None
+            and provider is getattr(info, "_direct_provider", None)
+            and not getattr(provider, "supports_steer", True)
+        ):
+            return False, (
+                "steer_unsupported: this run's backend does not support "
+                "mid-turn interrupt — use spawn_steer mode='follow_up' "
+                "(delivered after the current turn) or spawn_continue"
+            )
         if provider is None or not hasattr(provider, "steer"):
             # Bounded wait for session registration on a run that is still
             # alive. Re-checks done-ness each tick: a run finishing while we

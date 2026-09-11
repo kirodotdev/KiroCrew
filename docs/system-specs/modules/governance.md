@@ -2246,6 +2246,11 @@ default on; a deny makes the tool refuse outright, and it does NOT fall back to
 the `commands` scope, so denying browsing wholesale means denying both this
 capability AND the `playwright-cli` command),
 `capabilities.publish` (artifact publish chokepoint — see below),
+`capabilities.remote_spawn` (delegating a sub-agent task to a REMOTE agent over
+A2A — an egress surface, so opt-in like publish; evaluated at the spawn chokepoint
+in addition to `capabilities.spawn` when the target is an `a2a_agents` entry, with
+its own `agents` ruleset over registry entries and `origins` ruleset over their
+card-URL origins — see `modules/a2a-subagents.md`),
 `capabilities.agentcore` (opt-in agent workload identity + Gateway MCP —
 see below),
 `capabilities.theme_persona` / `capabilities.theme_install`,

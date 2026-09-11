@@ -1,0 +1,36 @@
+# Nightly: the steering boundary. A remote agent cannot be interrupted mid-turn
+# (that is a kiro-cli capability, not an A2A one), so an interrupt request must
+# be refused with a plain, typed message rather than hang or pretend. A
+# follow-up, by contrast, is delivered as the next turn of the same remote
+# conversation once the current one finishes.
+#
+# Test-mode mechanism: `[[SPAWN:remote-demo]]` with a `[[SLOW]]` task makes the
+# fake A2A server stream for about 90 seconds -- several tester actions -- so a
+# turn is provably in flight when the interrupt arrives.
+# `[[STEER:remote-demo]]` asks for a live interrupt of that run (spawn_steer,
+# mode=interrupt) and surfaces the tool's reply in the chat;
+# `[[FOLLOWUP:remote-demo]]` queues a follow-up (mode=follow_up).
+name: subagents-remote-steer
+tier: nightly
+feature: subagents
+user_story: >-
+  As a user, I want to send a follow-up to a running remote subagent and be
+  told plainly when live interrupt is not available, so that I know which
+  kinds of steering work with a remote agent.
+docs_url: docs/system-specs/modules/a2a-subagents.md
+summary: Interrupt a running remote run (refused, typed) then follow it up (delivered)
+preconditions:
+  seed: rich
+  start_url: /
+steps:
+  - You are on the chat page. Start a new chat from the sidebar.
+  - Type exactly "[[SPAWN:remote-demo]] [[SLOW]] Write twenty numbered facts about rivers." and send it with Enter. Do not wait for it to finish.
+  - Straight away, without waiting for it to finish, type exactly "[[STEER:remote-demo]] Stop and just say STEERED" and send it. Read the reply that appears in the chat.
+  - Then type exactly "[[FOLLOWUP:remote-demo]] Now reply with only the word STEERED-OK" and send it.
+  - Wait, ten seconds at a time, until the subagent indicator shows all runs finished (the slow run takes about a minute and a half). Then open the Subagents panel.
+expectations:
+  - The chat contains a reply to the interrupt attempt that says, in plain words, that live interrupt is not supported for this remote agent and that a follow-up or continue is the way to steer it. It is not an error stack trace and the page did not hang.
+  - The Subagents panel shows the original run completed (not failed, not cancelled).
+  - A later run for the same conversation shows output containing "STEERED-OK".
+max_steps: 24
+max_seconds: 780

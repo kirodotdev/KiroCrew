@@ -32,6 +32,7 @@ FEATURES_MD = HERE / "FEATURES.md"
 #: validation error, so a mis-filed feature is caught before it reaches a YAML.
 FEATURE_TITLES: dict[str, str] = {
     "chat": "Chat sessions",
+    "subagents": "Subagents & remote agents",
     "side-panel": "Side panel tabs",
     "terminal": "Terminal panel",
     "sidebar": "Sessions sidebar & folders",
