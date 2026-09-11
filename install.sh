@@ -379,12 +379,12 @@ if has node; then
 fi
 
 # ══════════════════════════════════════════════════════════════════════
-# Step 2: Agent Backend (claude-agent-acp)
+# Step 2: Optional alternate agent backend (claude-agent-acp)
 # ══════════════════════════════════════════════════════════════════════
-step "Agent Backend"
+step "Optional Agent Backend"
 
-# The default agent backend is the public ACP adapter, run via Node.
-# kiro-cli is optional and not installed here.
+# A fresh configuration defaults to Kiro CLI. Keep installing the public ACP
+# adapter as an available alternative, but do not misrepresent it as selected.
 if has claude-agent-acp; then
     ok "claude-agent-acp ($( which claude-agent-acp ))"
 elif has npm; then
@@ -399,7 +399,8 @@ else
     warn "npm not available — install the agent backend later:"
     detail "npm i -g $ACP_NPM_PKG"
 fi
-detail "kiro-cli is an optional alternative backend (https://kiro.dev/docs/cli/installation)"
+warn "The default Kiro agent requires Kiro CLI; this installer does not install or sign in to it."
+detail "Install it separately from https://kiro.dev/cli/ and run: kiro-cli login"
 
 # ══════════════════════════════════════════════════════════════════════
 # Step 3: Build
@@ -696,13 +697,17 @@ case "$(basename "${SHELL:-}")" in
     *) echo "       ${GREEN}Restart your terminal${RESET}" ;;
 esac
 echo ""
-echo "    ${CYAN}2.${RESET} Run the setup wizard:"
+echo "    ${CYAN}2.${RESET} Set up the default Kiro agent (skip if you selected another ACP backend):"
+echo "       ${GREEN}Install Kiro CLI from https://kiro.dev/cli/${RESET}"
+echo "       ${GREEN}kiro-cli login${RESET}"
+echo ""
+echo "    ${CYAN}3.${RESET} Run the setup wizard:"
 echo "       ${GREEN}kirocrew setup${RESET}"
 echo ""
-echo "    ${CYAN}3.${RESET} Start the dashboard:"
+echo "    ${CYAN}4.${RESET} Start the dashboard:"
 echo "       ${GREEN}kirocrew gateway${RESET}"
 echo ""
-echo "    ${CYAN}4.${RESET} Open ${CYAN}http://localhost:${KIROCREW_PORT}${RESET} in your browser"
+echo "    ${CYAN}5.${RESET} Open ${CYAN}http://localhost:${KIROCREW_PORT}${RESET} in your browser"
 echo ""
 # SSH tunnel tip for remote Linux users
 if [ "$(uname)" != "Darwin" ]; then

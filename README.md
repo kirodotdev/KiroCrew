@@ -48,9 +48,9 @@
 
 You choose how to run Kiro Crew: the desktop app with automatic updates, a
 one-line install on your machine or a remote host, the Docker image for
-always-on servers, or a build from source. Every path runs on `kiro-cli`
-underneath, so the first launch installs it if needed and guides Kiro
-device-code sign-in.
+always-on servers, or a build from source. The default agent runs on
+`kiro-cli`, which you install and sign in to separately. First launch checks
+that prerequisite and links to the official setup guide when it is missing.
 
 ### App downloads
 
