@@ -1984,14 +1984,15 @@ class HistoryConsolidator:
             procedure_md = _redact(new_skill.get("procedure_md", ""))
             # Extract + statically validate any generated scripts. Scripts are
             # redacted, then each is checked by the always-on static validator;
-            # only individually-clean scripts survive. A script-bearing
-            # candidate ALWAYS routes to approval (never auto-published).
+            # only individually-clean scripts survive. A candidate with a
+            # VALIDATED script always routes to approval (never auto-published);
+            # rejected scripts are dropped, leaving the candidate prose-only
+            # when no scripts survive.
             valid_scripts: list[dict] = []
-            scripts_supplied = False
+            rejected_scripts = 0
             if self._generate_scripts:
                 raw_scripts = new_skill.get("scripts")
                 if isinstance(raw_scripts, list) and raw_scripts:
-                    scripts_supplied = True
                     for s in raw_scripts:
                         if not isinstance(s, dict):
                             continue
@@ -2001,6 +2002,7 @@ class HistoryConsolidator:
                         if ok:
                             valid_scripts.append({"filename": fn, "content": body})
                         else:
+                            rejected_scripts += 1
                             self._logger.info(
                                 "Auto-skill script %r rejected by validator: %s",
                                 fn,
@@ -2083,12 +2085,12 @@ class HistoryConsolidator:
                         session_key=key,
                         created_at=AutoSkillProvenance.now_iso(),
                     )
-                    if self._approval_required or valid_scripts or scripts_supplied:
+                    if self._approval_required or valid_scripts:
                         # Stage for human review — nothing goes live unattended,
-                        # and any candidate that SUPPLIED scripts ALWAYS stages
-                        # (even if every script was rejected by the validator, so
-                        # a script-bearing candidate can never auto-publish as a
-                        # prose-only skill).
+                        # and any candidate with a surviving VALIDATED script
+                        # always stages. A candidate whose every script was
+                        # rejected by the validator is prose-only on disk, so
+                        # with approval_required=false it may auto-publish.
                         name = self._skills_loader.stage_skill_candidate(
                             slug,
                             description=description,
@@ -2127,12 +2129,16 @@ class HistoryConsolidator:
                         )
                         if name:
                             self._logger.info("Auto-created skill %s from session %s", name, key)
+                            # The rejected-script count keeps the audit record
+                            # informative on this path: an auto-published
+                            # candidate whose generation attempted scripts is
+                            # visible as such to operators.
                             _facade_sel().log_tool_invocation(
                                 session_key=key,
                                 tool_name="auto_skill_create",
                                 tool_kind="skills",
                                 outcome="invoked",
-                                metadata={"name": name},
+                                metadata={"name": name, "rejected_scripts": rejected_scripts},
                             )
                             # Bound the live auto-skill set after a live create
                             # (auto-approve path). Best-effort; never break
@@ -2145,9 +2151,42 @@ class HistoryConsolidator:
                                 )
                             except Exception:  # pragma: no cover - defensive
                                 self._logger.debug("Skill lifecycle pass failed", exc_info=True)
+                        elif staged_name := self._skills_loader.stage_skill_candidate(
+                            slug,
+                            description=description,
+                            triggers=triggers,
+                            procedure_md=procedure_md,
+                            provenance=provenance,
+                            scripts=None,
+                        ):
+                            # auto/<slug> is already claimed (or the create
+                            # lost a race). The candidate is distinct per the
+                            # dedupe verdict, and consolidation advances its
+                            # message offset regardless of outcome, so dropping
+                            # it would lose the learning for good. Publishing
+                            # it live under a synthetic sibling name unattended
+                            # would instead risk minting near-duplicates, so
+                            # the collision routes to the pending queue, whose
+                            # sibling-slug allocation is review-gated.
+                            self._logger.info(
+                                "Auto-publish slug collision for '%s'; staged as %s",
+                                slug,
+                                staged_name,
+                            )
+                            _facade_sel().log_tool_invocation(
+                                session_key=key,
+                                tool_name="auto_skill_create",
+                                tool_kind="skills",
+                                outcome="staged",
+                                metadata={
+                                    "name": staged_name,
+                                    "reason": "slug_collision",
+                                    "rejected_scripts": rejected_scripts,
+                                },
+                            )
                         else:
-                            # create_auto_skill returned None: invalid slug,
-                            # oversized procedure, or directory already exists.
+                            # Both create and the staging fallback declined:
+                            # invalid slug or oversized procedure.
                             # Audit the rejection so operators can see why.
                             self._logger.info(
                                 "Auto-skill creation rejected for slug '%s' (creation_failed)",
