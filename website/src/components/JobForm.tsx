@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Zap } from 'lucide-react'
 import { api } from '../api/client'
+import { ApiError } from '../api/apiError'
 import { Input, SendBtn } from './ui'
 import { SettingsToggle } from './settings'
 import AgentSelector, { type KiroCrewAgent } from './AgentSelector'
@@ -28,8 +29,14 @@ const CRON_DOW_TO_GRID: Record<number, number> = { 1: 1, 2: 2, 3: 3, 4: 4, 5: 5,
  * greyed-out control asks to be re-enabled; a value does not. Shrink-wrapped
  * so it cannot read as an editable input among the real ones, and the hint
  * says WHY it is fixed, replacing the picker's own hint line. */
-function LockedAgentValue({ name }: { name: string }) {
-  const hint = i18nT('components.jobForm.agent_pinned_hint')
+function LockedAgentValue({ name, member }: { name: string; member?: boolean }) {
+  // The hint names the thing the HOST calls it. A member surface says "member"
+  // throughout, so a hint saying "crew" there made one binding read as two — the
+  // blind reader could not tell whether member, crew and agent were one thing or
+  // three. Same sentence, the noun the reader already has.
+  const hint = i18nT(member
+    ? 'components.jobForm.member_pinned_hint'
+    : 'components.jobForm.agent_pinned_hint')
   return (
     <span className="flex flex-col items-start gap-1">
       <span className="text-[11px] text-muted/70">{hint}</span>
@@ -187,6 +194,13 @@ interface Props {
   lockedAgent?: string
   /** Durable member identity, distinct from its provider template. */
   memberId?: string
+  /** The host's own noun for the pinned identity: set it where the surface
+   *  says "member" throughout (the Crew Members drawer), so the pinned-value
+   *  hint speaks the reader's noun. Left unset, the hint keeps "crew" — the
+   *  crew editor's own word. Deliberately a HOST flag rather than derived
+   *  from `memberId`: every crew passes `memberId` for identity, so deriving
+   *  flipped the crew editor's wording to "member" for plain agents. */
+  memberNoun?: boolean
   providerAgent?: string
   onSaved: () => void
   /** Vertical layout for side panel, horizontal for inline create */
@@ -197,6 +211,24 @@ interface Props {
   submitRef?: React.MutableRefObject<(() => void) | null>
   /** Called when saving state changes */
   onSavingChange?: (saving: boolean) => void
+  /** A submit that FAILED, reported outward as well as rendered inline. The
+   *  inline error is invisible to a host that has already unmounted this form —
+   *  which is exactly the case worth reporting, since the user was told the save
+   *  might still land and would otherwise never learn what happened.
+   *
+   *  `confirmed` says whether the failure is a VERDICT or an unknown. The server
+   *  answering (any HTTP status) means it decided, so the schedule was not
+   *  created. A request that never got an answer — the connection dropped, the
+   *  tab went offline — proves nothing: the POST may well have been applied, and
+   *  a host that reports "wasn't created" there states as fact something it
+   *  cannot know. Validation refusals do not come through here at all: the form
+   *  is on screen for those, so its own message is the right surface.
+   *
+   *  `jobName` is the name the user typed, so a host reporting the failure away
+   *  from this form can say WHICH schedule it was — a member can have several
+   *  in flight. Always supplied: the name is validated non-empty before the
+   *  request is ever sent. */
+  onSubmitError?: (message: string, confirmed: boolean, jobName?: string) => void
   /** Called when the form's TOUCHED state changes: true once any field has
    *  diverged from its initial value, false when they all match again (or
    *  after a successful create resets them). Hosts that guard destruction
@@ -206,7 +238,7 @@ interface Props {
   onDirtyChange?: (dirty: boolean) => void
 }
 
-export default function JobForm({ job, prefill, agents, defaultAgent, rosterFailure, lockedAgent, memberId, providerAgent, onSaved, layout = 'horizontal', externalSubmit, submitRef, onSavingChange, onDirtyChange }: Props) {
+export default function JobForm({ job, prefill, agents, defaultAgent, rosterFailure, lockedAgent, memberId, memberNoun, providerAgent, onSaved, layout = 'horizontal', externalSubmit, submitRef, onSavingChange, onSubmitError, onDirtyChange }: Props) {
   // "" and undefined both mean unlocked, so render and submit share one truth.
   const boundMember = job?.member_id || memberId
   const privateMember = !!boundMember && boundMember !== 'default'
@@ -329,18 +361,56 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
     const f = { name, message: msg, agent: locked ?? agent, model, channel, approvalMode, silent, strictSchedule, hideInChat, minimalContext, jobKind, schedMode, intVal, intUnit, weekDays, weekTime, cronExpr }
     const body = buildBody(f, tz, setError, !!job, job ? undefined : prefill)
     if (!body) { setSaving(false); return }
-    if (boundMember && !isLlmless) {
+    if (privateMember && !isLlmless) {
+      // Keyed on `privateMember`, not on `boundMember`, and BOTH lines depend on
+      // it. The backend refuses `member_id: "default"` as a V1 identity, so the
+      // rule lives here rather than in each host — `CrewWakeSection.tsx` was
+      // spelling `crew === 'default' ? undefined : crew` to avoid it, and this
+      // diff removes that one site rather than adding a second copy of it.
+      // The `agent` override belongs to the same condition: for a real member,
+      // `agent` carries the provider TEMPLATE while `member_id` carries identity,
+      // but the default crew is not a member — overriding its `agent` from
+      // "default" to the template would break the attribution `wakesCrew` reads,
+      // and its schedule would vanish from the pane that created it.
       body.member_id = boundMember
       body.agent = providerAgent || job?.agent || ''
     }
     try {
+      // `confirmed` rides with the message rather than being inferred later: only
+      // here is it still known what the server said. A 4xx is a DECISION about
+      // this request, so the schedule was not created. A 5xx is not: a proxy or
+      // gateway error can be raised before the app ever saw the POST, or after it
+      // applied it and the response was lost. Anything without a status (a dropped
+      // connection, an offline tab) reached no verdict either.
       const res = job
         ? await api.updateCron(job.id, body)
-        : await api.createCron(body).catch((e: Error) => ({ error: e.message }))
-      if (res.error) { setError(res.error); setSaving(false); return }
+        : await api.createCron(body).catch((e: unknown) => ({
+          error: e instanceof Error ? e.message : String(e),
+          errorConfirmed: e instanceof ApiError && e.status >= 400 && e.status < 500,
+        }))
+      if (res.error) {
+        setError(res.error)
+        onSubmitError?.(res.error, 'errorConfirmed' in res ? !!res.errorConfirmed : true, f.name)
+        setSaving(false)
+        return
+      }
       if (!job) { setName(''); setMsg(''); setWeekDays([]); setIntVal(1); setChannel(''); setModel(''); setApprovalMode(''); setSilent(false); setStrictSchedule(false); setHideInChat(false); setMinimalContext(false) }
+      // Cleared BEFORE onSaved, so `onSavingChange` is symmetric: it reports
+      // false on EVERY outcome, not only on failure. An asymmetric version made
+      // the flag a host's problem to unlearn — a host that lifts it out of its
+      // own dialog (to refuse a dismissal mid-save, say) never heard about
+      // success, so one successful save left it stuck saving forever. Ordering
+      // matters: onSaved typically unmounts this form, so a clear after it
+      // would not run.
+      setSaving(false)
       onSaved()
-    } catch { setError(i18nT('components.jobForm.failed_to_save')); setSaving(false) }
+    } catch (e: unknown) {
+      const msg = i18nT('components.jobForm.failed_to_save')
+      // Reached only when the call threw past the inner handler. Same rule as
+      // above: a 4xx is the server deciding, a 5xx or a transport failure is not.
+      const decided = e instanceof ApiError && e.status >= 400 && e.status < 500
+      setError(msg); onSubmitError?.(msg, decided, f.name); setSaving(false)
+    }
   }
 
   const toggleDay = (d: number) => setWeekDays(prev => prev.includes(d) ? prev.filter(x => x !== d) : [...prev, d].sort())
@@ -401,7 +471,7 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
           <Input placeholder={i18nT('components.jobForm.job_name')} value={name} onChange={e => setName(e.target.value)} />
           <Input placeholder={i18nT('components.jobForm.message_task')} style={{ flex: 2 }} value={msg} onChange={e => setMsg(e.target.value)} />
           {locked
-            ? <LockedAgentValue name={locked} />
+            ? <LockedAgentValue name={locked} member={memberNoun} />
             : <AgentSelector agents={agents} defaultAgent={defaultAgent} value={agent} onChange={(name) => setAgent(name)} rosterFailure={rosterFailure} modal />}
           <SimpleSelect
             options={modelOptions.values}
@@ -468,7 +538,7 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
         <div className="flex flex-col gap-1">
           <span className="text-[12px] text-muted font-medium">{i18nT('components.jobForm.agent')}</span>
           {locked
-            ? <LockedAgentValue name={locked} />
+            ? <LockedAgentValue name={locked} member={memberNoun} />
             : (<>
               <span className="text-[11px] text-muted/70">{i18nT('components.jobForm.which_agent_handles_this_job_leave_default_for_t')}</span>
               <AgentSelector agents={agents} defaultAgent={defaultAgent} value={agent} onChange={(name) => setAgent(name)} rosterFailure={rosterFailure} modal />
