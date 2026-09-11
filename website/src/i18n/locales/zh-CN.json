@@ -5579,6 +5579,10 @@
       "clear_goal_question": "要永久删除这个目标吗？"
     },
     "bottomTerminalPanel": {
+      "close_all_tabs": "关闭所有标签页",
+      "close_other_tabs": "关闭其他标签页",
+      "close_tab": "关闭",
+      "close_tabs_to_right": "关闭右侧标签页",
       "close_terminal": "关闭终端",
       "focus_popout": "聚焦弹出窗口",
       "hide_terminal_panel": "隐藏终端面板",

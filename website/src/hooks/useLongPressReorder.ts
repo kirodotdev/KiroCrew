@@ -27,6 +27,14 @@ export interface LongPressReorderItemProps {
   style: React.CSSProperties
 }
 
+interface LongPressReorderOptions {
+  /**
+   * Some chips reserve touch hold for a context menu. Mouse and pen reordering
+   * stay available while a finger swipe remains native horizontal scrolling.
+   */
+  touchReorder?: boolean
+}
+
 /**
  * Make a `Reorder.Item` reorderable WITHOUT stealing the touch gesture that
  * scrolls the strip it lives in.
@@ -58,7 +66,9 @@ export interface LongPressReorderItemProps {
  * long press the reader gets no feedback until they move, and without a cue a
  * successful arm is indistinguishable from a failed one.
  */
-export function useLongPressReorder(): { itemProps: LongPressReorderItemProps; dragging: boolean } {
+export function useLongPressReorder(
+  { touchReorder = true }: LongPressReorderOptions = {},
+): { itemProps: LongPressReorderItemProps; dragging: boolean } {
   const dragControls = useDragControls()
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const cleanupRef = useRef<(() => void) | null>(null)
@@ -109,6 +119,7 @@ export function useLongPressReorder(): { itemProps: LongPressReorderItemProps; d
       dragControls.start(e)
       return
     }
+    if (!touchReorder) return
     const originX = e.clientX
     const originY = e.clientY
     // The native event outlives this handler (React stopped pooling in 17), and
@@ -134,7 +145,7 @@ export function useLongPressReorder(): { itemProps: LongPressReorderItemProps; d
       setDragging(true)
       dragControls.start(origin)
     }, LONG_PRESS_MS)
-  }, [clearPending, dragControls])
+  }, [clearPending, dragControls, touchReorder])
 
   return {
     itemProps: {

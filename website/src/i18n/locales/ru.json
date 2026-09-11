@@ -5858,6 +5858,10 @@
       "clear_goal_question": "Удалить эту цель безвозвратно?"
     },
     "bottomTerminalPanel": {
+      "close_all_tabs": "Закрыть все вкладки",
+      "close_other_tabs": "Закрыть другие вкладки",
+      "close_tab": "Закрыть",
+      "close_tabs_to_right": "Закрыть вкладки справа",
       "close_terminal": "Закрыть терминал",
       "focus_popout": "Перейти к отдельному окну",
       "hide_terminal_panel": "Скрыть панель терминала",

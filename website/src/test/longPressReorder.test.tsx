@@ -15,14 +15,14 @@ import { useLongPressReorder, LONG_PRESS_MS, LONG_PRESS_SLOP_PX } from '../hooks
 
 let captured: ReturnType<typeof useLongPressReorder> | null = null
 
-function Harness() {
-  const r = useLongPressReorder()
+function Harness({ touchReorder = true }: { touchReorder?: boolean }) {
+  const r = useLongPressReorder({ touchReorder })
   captured = r
   return <div data-testid="chip" data-dragging={r.dragging} onPointerDown={r.itemProps.onPointerDown} />
 }
 
-function mount() {
-  const utils = render(<Harness />)
+function mount(touchReorder = true) {
+  const utils = render(<Harness touchReorder={touchReorder} />)
   const chip = utils.getByTestId('chip')
   const start = vi.spyOn(captured!.itemProps.dragControls, 'start')
   return { ...utils, chip, start }
@@ -88,6 +88,16 @@ describe('useLongPressReorder', () => {
     act(() => { vi.advanceTimersByTime(1) })
     expect(start).toHaveBeenCalledTimes(1)
     expect(captured!.dragging).toBe(true)
+  })
+
+  it('can leave a touch hold to a context-menu trigger', () => {
+    vi.useFakeTimers()
+    const { chip, start } = mount(false)
+    fireEvent.pointerDown(chip, { pointerType: 'touch', clientX: 10, clientY: 10 })
+
+    act(() => { vi.advanceTimersByTime(LONG_PRESS_MS * 2) })
+    expect(start).not.toHaveBeenCalled()
+    expect(captured!.dragging).toBe(false)
   })
 
   it('cancels the pending arm once the finger travels — the swipe is a scroll', () => {

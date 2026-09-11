@@ -1804,6 +1804,12 @@ identity and selected knowledge copying.
 
 ### Frontend (React SPA)
 
+The workspace and terminal tab strips offer Close, Close other tabs, Close
+tabs to the right, and Close all tabs on right-click or touch hold. Bulk
+workspace closes exclude its fixed views and confirm before discarding unsaved
+file edits. Closing terminal tabs deletes their PTYs; hiding a panel keeps them
+alive. Touch swipes scroll these strips, while mouse dragging reorders tabs.
+
 `KiroPrerequisiteGate` wraps the main dashboard route (the independent
 `/worlds-popout` route is not gated). `DashboardBootstrap` mounts the proactive
 auth-cookie refresh scheduler outside this gate, so a stale access cookie can

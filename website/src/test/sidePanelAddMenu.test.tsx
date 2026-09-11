@@ -8,7 +8,7 @@
  * document-level mousedown listener this replaced.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent, act } from '@testing-library/react'
+import { render, screen, fireEvent, act, waitFor } from '@testing-library/react'
 import { Provider } from 'react-redux'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createTestStore } from './helpers'
@@ -39,10 +39,13 @@ vi.mock('../hooks/useIsMobile', () => ({ useIsMobile: () => false }))
 globalThis.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} } as never
 
 import SidePanel, { newMenuSections, NEW_MENU_LABEL_KEY } from '../pages/chat/SidePanel'
-import { usePanelTabs } from '../hooks/usePanelTabs'
+import { usePanelTabs, __resetPanelTabs } from '../hooks/usePanelTabs'
+
+let panelController: ReturnType<typeof usePanelTabs>
 
 function Harness() {
   const tabsCtl = usePanelTabs('slot-a')
+  panelController = tabsCtl
   return (
     <SidePanel
       tabsCtl={tabsCtl}
@@ -209,5 +212,58 @@ describe('newMenuSections', () => {
       ['summary', 'pins', 'issues', 'links', 'subagents', 'workflows', 'git'],
       ['side', 'browser', 'terminal'],
     ])
+  })
+})
+
+
+describe('workspace tab close menu', () => {
+  beforeEach(() => { localStorage.clear(); __resetPanelTabs() })
+  it('closes tabs to the right and preserves fixed views', async () => {
+    renderPanel()
+    act(() => {
+      panelController.openView('issues')
+      panelController.openView('browser')
+      panelController.openView('workflows')
+    })
+    fireEvent.contextMenu(screen.getByRole('tab', { name: /Browser/ }), { clientX: 50, clientY: 50 })
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Close tabs to the right' }))
+    await waitFor(() => expect(screen.queryByRole('tab', { name: /Workflows/ })).toBeNull())
+    expect(screen.getByRole('tab', { name: /Browser/ })).toBeTruthy()
+    expect(screen.getByRole('tab', { name: /Issues/ })).toBeTruthy()
+    expect(screen.getByRole('tab', { name: 'Files' })).toBeTruthy()
+  })
+
+  it('closes other tabs and keeps the requested tab and fixed views', async () => {
+    renderPanel()
+    act(() => {
+      panelController.openView('issues')
+      panelController.openView('browser')
+    })
+    fireEvent.contextMenu(screen.getByRole('tab', { name: /Issues/ }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Close other tabs' }))
+    await waitFor(() => expect(screen.queryByRole('tab', { name: /Browser/ })).toBeNull())
+    expect(screen.getByRole('tab', { name: /Issues/ })).toBeTruthy()
+    expect(screen.getByRole('tab', { name: 'Files' })).toBeTruthy()
+  })
+
+  it('asks before bulk close discards file edits, and cancel retains every tab', async () => {
+    renderPanel()
+    act(() => {
+      panelController.openFile('/tmp/draft.md', 'saved')
+      panelController.patchTab('file:/tmp/draft.md', { content: 'unsaved' })
+      panelController.openView('browser')
+    })
+    fireEvent.contextMenu(screen.getByRole('tab', { name: /Browser/ }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Close all tabs' }))
+    expect(await screen.findByText('Discard unsaved changes?')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(screen.getByRole('tab', { name: /draft.md/ })).toBeTruthy()
+    expect(screen.getByRole('tab', { name: /Browser/ })).toBeTruthy()
+    fireEvent.contextMenu(screen.getByRole('tab', { name: /Browser/ }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Close all tabs' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Discard changes' }))
+    await waitFor(() => expect(screen.queryByRole('tab', { name: /draft.md/ })).toBeNull())
+    expect(screen.queryByRole('tab', { name: /Browser/ })).toBeNull()
+    expect(screen.getByRole('tab', { name: 'Files' })).toBeTruthy()
   })
 })

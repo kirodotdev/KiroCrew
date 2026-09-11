@@ -5672,6 +5672,10 @@
       "clear_goal_question": "Dieses Ziel endgültig löschen?"
     },
     "bottomTerminalPanel": {
+      "close_all_tabs": "Alle Tabs schließen",
+      "close_other_tabs": "Andere Tabs schließen",
+      "close_tab": "Schließen",
+      "close_tabs_to_right": "Tabs rechts schließen",
       "close_terminal": "Terminal schließen",
       "focus_popout": "Ausgekoppeltes Fenster fokussieren",
       "hide_terminal_panel": "Terminal-Panel ausblenden",

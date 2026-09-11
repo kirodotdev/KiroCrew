@@ -5672,6 +5672,10 @@
       "clear_goal_question": "এই লক্ষ্যটি স্থায়ীভাবে সরাবেন?"
     },
     "bottomTerminalPanel": {
+      "close_all_tabs": "সব ট্যাব বন্ধ করুন",
+      "close_other_tabs": "অন্যান্য ট্যাব বন্ধ করুন",
+      "close_tab": "বন্ধ করুন",
+      "close_tabs_to_right": "ডান পাশের ট্যাবগুলো বন্ধ করুন",
       "close_terminal": "টার্মিনাল বন্ধ করুন",
       "focus_popout": "পপআউটে ফোকাস করুন",
       "hide_terminal_panel": "টার্মিনাল প্যানেল লুকান",

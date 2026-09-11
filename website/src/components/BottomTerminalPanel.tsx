@@ -6,6 +6,7 @@ import { TerminalSquare, Plus, X, ChevronDown, ChevronRight, PictureInPicture2, 
 import {
   DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem,
 } from './ui/dropdown-menu'
+import TabCloseMenu from './TabCloseMenu'
 import CliPanel, { disposeTerminalSession, useDeleteTerminalSession } from './CliPanel'
 import ErrorNotice from './ErrorNotice'
 import { useTerminalTitle, disposeTerminalConnection } from '../utils/terminalRegistry'
@@ -53,9 +54,8 @@ function TabChip({ tab, active, closing = false, onSelect, onClose }: {
         <TerminalTitle sessionId={tab.id} />
       </span>
       <div className="flex items-center gap-0.5 shrink-0">
-        {/* While the popout's last tab waits for its PTY DELETE to settle the
-            close control shows progress and stays inert, so the wait reads as
-            "closing" rather than a click that did nothing. */}
+        {/* While the popout's final batch waits for PTY DELETEs to settle, keep
+            the chips visible and inert so failures can still surface here. */}
         <button
           onClick={(e) => { e.stopPropagation(); if (!closing) onClose() }}
           disabled={closing}
@@ -73,25 +73,55 @@ function TabChip({ tab, active, closing = false, onSelect, onClose }: {
 /** One reorderable chip in the strip. A component rather than inline JSX inside
  *  the map: each chip owns its own long-press drag state, and a hook cannot be
  *  called from a loop. */
-function DraggableTermTab({ tab, active, closing, separator, onSelect, onClose }: {
-  tab: TermTab; active: boolean; closing: boolean; separator: boolean; onSelect: () => void; onClose: () => void
+function DraggableTermTab({
+  tab,
+  active,
+  closing,
+  separator,
+  closeOthersDisabled,
+  closeRightDisabled,
+  onSelect,
+  onClose,
+  onCloseOthers,
+  onCloseRight,
+  onCloseAll,
+}: {
+  tab: TermTab
+  active: boolean
+  closing: boolean
+  separator: boolean
+  closeOthersDisabled: boolean
+  closeRightDisabled: boolean
+  onSelect: () => void
+  onClose: () => void
+  onCloseOthers: () => void
+  onCloseRight: () => void
+  onCloseAll: () => void
 }) {
-  const { itemProps, dragging } = useLongPressReorder()
+  // A touch hold belongs to the context menu on terminal tabs. Precise pointers
+  // still drag immediately, and touch swipes keep scrolling the strip.
+  const { itemProps, dragging } = useLongPressReorder({ touchReorder: false })
   return (
-    <Reorder.Item
-      value={tab}
-      {...itemProps}
-      // The ring is the only feedback a press-and-hold gets before the finger
-      // moves; without it an armed drag looks identical to a missed one.
-      className={`relative shrink-0 list-none rounded-full ${dragging ? 'ring-1 ring-accent' : ''}`}
-      transition={{ type: 'spring', stiffness: 700, damping: 45 }}
-    >
-      {separator && (
-        <span aria-hidden="true" className="absolute -left-[4.5px] top-1/2 -translate-y-1/2 w-px h-4 bg-border" />
-      )}
-      <TabChip tab={tab} active={active} closing={closing} onSelect={onSelect} onClose={onClose} />
-    </Reorder.Item>
+    <TabCloseMenu disabled={closing} closeOthersDisabled={closeOthersDisabled} closeRightDisabled={closeRightDisabled}
+      onClose={onClose} onCloseOthers={onCloseOthers} onCloseRight={onCloseRight} onCloseAll={onCloseAll}>
+        <Reorder.Item
+          value={tab}
+          {...itemProps}
+          className={`relative shrink-0 list-none rounded-full ${dragging ? 'ring-1 ring-accent' : ''}`}
+          transition={{ type: 'spring', stiffness: 700, damping: 45 }}
+        >
+          {separator && (
+            <span aria-hidden="true" className="absolute -left-[4.5px] top-1/2 -translate-y-1/2 w-px h-4 bg-border" />
+          )}
+          <TabChip tab={tab} active={active} closing={closing} onSelect={onSelect} onClose={onClose} />
+        </Reorder.Item>
+    </TabCloseMenu>
   )
+}
+
+interface PendingPopoutClose {
+  targets: TermTab[]
+  finished: boolean
 }
 
 /**
@@ -129,38 +159,70 @@ export function TerminalTabsView({ variant }: { variant: 'dock' | 'popout' }) {
   // the always-mounted panel root renders (see BottomTerminalPanel below) —
   // closing the LAST tab unmounts this strip before a delayed rejection arrives.
   const del = useDeleteTerminalSession()
-  // The popout's last tab, while its DELETE is in flight (see closeTab).
-  const [closingId, setClosingId] = useState<string | null>(null)
+  const [closingIds, setClosingIds] = useState<ReadonlySet<string>>(() => new Set())
+  const mountedRef = useRef(true)
+  const pendingPopoutCloseRef = useRef<PendingPopoutClose | null>(null)
 
   // New tabs spawn in the selected session's project directory when one is
   // set; otherwise the backend's default cwd applies.
   const activeSlotProject = useAppSelector(selectActiveSlotProject)
 
-  /** Close a tab: kill its backend PTY (best-effort), tear down local WS +
-   *  xterm, then drop it from the store (which hides the panel if it was last).
+  const finishTargets = useCallback((targets: readonly TermTab[]) => {
+    for (const tab of targets) {
+      disposeTerminalSession(tab.id)
+      removeTab(tab.id)
+    }
+  }, [])
+
+  const finishPendingPopoutClose = useCallback(() => {
+    const pending = pendingPopoutCloseRef.current
+    if (!pending || pending.finished) return
+    pending.finished = true
+    finishTargets(pending.targets)
+    pendingPopoutCloseRef.current = null
+  }, [finishTargets])
+
+  useEffect(() => {
+    mountedRef.current = true
+    if (variant !== 'popout') {
+      return () => { mountedRef.current = false }
+    }
+    const finishOnUnload = () => finishPendingPopoutClose()
+    window.addEventListener('pagehide', finishOnUnload)
+    return () => {
+      mountedRef.current = false
+      window.removeEventListener('pagehide', finishOnUnload)
+      finishOnUnload()
+    }
+  }, [finishPendingPopoutClose, variant])
+
+  /** Close terminal tabs: kill backend PTYs (best-effort), tear down local WS +
+   *  xterm state, then drop them from the store.
    *
-   *  In the POPOUT the last tab is special: emptying `tabs` makes the frame
-   *  return itself to the main window, which tears this JS context down — so a
-   *  rejection that arrives after that point has no callback left to record it.
-   *  Let the DELETE settle first (the request itself is `keepalive`, so a hung
-   *  one is bounded by the browser and cannot leak the shell), showing the chip
-   *  as closing so the wait never reads as a dead click; the rejection then lands
-   *  in the cross-window close-failed flag while this window still exists, and
-   *  the main window's panel root renders it after the return. */
-  const closeTab = useCallback((id: string) => {
-    if (variant === 'popout' && tabs.length === 1) {
-      if (closingId) return // already on its way out
-      setClosingId(id)
-      void del.mutateAsync(id).catch(() => { /* recorded by the hook's onError */ }).finally(() => {
-        disposeTerminalSession(id)
-        removeTab(id)
+   *  In the popout, a batch that empties the tab list waits for every DELETE to
+   *  settle before removing tabs, so rejected deletes can still set the shared
+   *  close-failed flag while this window exists. If the user closes the popout
+   *  during that wait, the pagehide/unmount cleanup above removes the same tabs
+   *  synchronously so stale persisted tabs cannot reconnect later. */
+  const closeTabs = useCallback((ids: readonly string[]) => {
+    if (closingIds.size > 0) return
+    const requested = new Set(ids)
+    const targets = tabs.filter(tab => requested.has(tab.id))
+    if (targets.length === 0) return
+
+    if (variant === 'popout' && targets.length === tabs.length) {
+      pendingPopoutCloseRef.current = { targets, finished: false }
+      setClosingIds(new Set(targets.map(tab => tab.id)))
+      void Promise.allSettled(targets.map(tab => del.mutateAsync(tab.id))).then(() => {
+        finishPendingPopoutClose()
+        if (mountedRef.current) setClosingIds(new Set())
       })
       return
     }
-    del.mutate(id)
-    disposeTerminalSession(id)
-    removeTab(id)
-  }, [del, variant, tabs.length, closingId])
+
+    for (const tab of targets) del.mutate(tab.id)
+    finishTargets(targets)
+  }, [closingIds.size, del, finishPendingPopoutClose, finishTargets, tabs, variant])
 
   /** Detach the WHOLE panel into its own browser window. Order matters, twice
    *  over: `openPopout` must run synchronously in the click (window.open needs
@@ -181,9 +243,9 @@ export function TerminalTabsView({ variant }: { variant: 'dock' | 'popout' }) {
   return (
     <div className="flex flex-col h-full min-h-0">
       {/* The popout window has no BottomTerminalPanel root, so the strip hosts
-          the notice there for a non-last tab; the last tab's rejection is
-          settled before teardown (closeTab) and crosses to the main window
-          through the persisted store. In the dock the root renders it. */}
+          the notice while an emptying close-all batch settles; if the popout is
+          manually closed mid-wait, cleanup still clears persisted tabs. In the
+          dock the root renders it. */}
       {variant === 'popout' && <TerminalCloseErrorNotice />}
       {/* Tab strip — same aesthetics as the activity-bar strip; drag chips
           horizontally to reorder (framer Reorder). */}
@@ -200,16 +262,20 @@ export function TerminalTabsView({ variant }: { variant: 'dock' | 'popout' }) {
               key={t.id}
               tab={t}
               active={t.id === activeId}
-              closing={closingId === t.id}
+              closing={closingIds.has(t.id)}
               // Hairline between adjacent chips, suppressed on both edges of
               // the active tab (its pill already delineates it).
               separator={i > 0 && t.id !== activeId && tabs[i - 1].id !== activeId}
+              closeOthersDisabled={tabs.length === 1}
+              closeRightDisabled={i === tabs.length - 1}
               onSelect={() => setActiveTab(t.id)}
-              onClose={() => closeTab(t.id)}
+              onClose={() => closeTabs([t.id])}
+              onCloseOthers={() => closeTabs(tabs.filter(tab => tab.id !== t.id).map(tab => tab.id))}
+              onCloseRight={() => closeTabs(tabs.slice(i + 1).map(tab => tab.id))}
+              onCloseAll={() => closeTabs(tabs.map(tab => tab.id))}
             />
           ))}
         </Reorder.Group>
-        {/* + opens a new terminal tab instantly (no menu). */}
         <button
           className="flex items-center justify-center w-7 h-7 rounded-md text-muted hover:text-text hover:bg-bg-hover transition-colors bg-transparent border-none cursor-pointer shrink-0 disabled:opacity-40 disabled:cursor-not-allowed"
           onClick={() => addTab(activeSlotProject)}

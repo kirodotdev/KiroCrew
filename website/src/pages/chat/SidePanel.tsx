@@ -1,3 +1,5 @@
+import TabCloseMenu from '../../components/TabCloseMenu'
+import { useConfirm } from '../../components/ConfirmDialog'
 import { useState, useRef, useEffect, useCallback, useMemo, Fragment, type ReactNode } from 'react'
 import { useIsMobile } from '../../hooks/useIsMobile'
 import { useDevMode } from '../../hooks/useDevMode'
@@ -586,6 +588,20 @@ export default function SidePanel({
     }
     closeTab(id)
   }, [tabs, closeTab, deleteTerminalSession])
+  const { confirm, confirmDialog, confirmOpen } = useConfirm()
+  const currentSlotRef = useRef(slot)
+  currentSlotRef.current = slot
+  const handleCloseTabs = async (targets: PanelTab[]) => {
+    if (confirmOpen || targets.length === 0) return
+    if (targets.some(tab => tab.kind === 'file' && tab.content !== tab.savedContent)) {
+      if (!await confirm({
+        title: i18nT('components.markdownPanel.discard_unsaved_changes'),
+        confirmLabel: i18nT('components.markdownPanel.discard_changes_button'),
+      })) return
+    }
+    if (currentSlotRef.current !== slot) return
+    targets.forEach(tab => handleCloseTab(tab.id))
+  }
   // Move a terminal tab OUT of this chat into the app-wide bottom panel. Unlike
   // handleCloseTab this must NOT dispose the session — the PTY + xterm live in
   // Diff view preferences — persisted; 'mc-diff-split' is shared with the
@@ -696,7 +712,7 @@ export default function SidePanel({
         </div>
       ) : null}
       {/* Tab strip — the row scrolls by touch/wheel; a chip is reordered by
-          dragging it (press and hold first on touch, see useLongPressReorder).
+          dragging it with a mouse; touch hold opens the close menu.
           Browser-tab construction: the strip is an elevated band whose chips
           BOTTOM-ALIGN (items-end, pb-0) so the active chip's background runs
           straight into the panel body below — the strip/body seam is what the
@@ -778,7 +794,12 @@ export default function SidePanel({
               separator={i > 0 && t.id !== activeId && dynamicTabs[i - 1].id !== activeId}
               instantLayout={resizing}
               onSelect={() => setActive(t.id)}
-              onClose={() => handleCloseTab(t.id)}
+              onClose={() => handleCloseTabs([t])}
+              closeOthersDisabled={dynamicTabs.length === 1}
+              closeRightDisabled={i === dynamicTabs.length - 1}
+              onCloseOthers={() => handleCloseTabs(dynamicTabs.filter(tab => tab.id !== t.id))}
+              onCloseRight={() => handleCloseTabs(dynamicTabs.slice(i + 1))}
+              onCloseAll={() => handleCloseTabs(dynamicTabs)}
             />
           ))}
         </Reorder.Group>
@@ -890,6 +911,7 @@ export default function SidePanel({
           views mount only when active (cheap + query-driven). */}
       {/* Content area: left + top border (square corner) so the border wraps
           only the content, NOT the tab strip above (which stays borderless). */}
+      {confirmDialog}
       <div className="flex-1 min-h-0 relative">
         {/* The host's leading tab body. Mounted only while active, like the
             category views: it is a query-driven summary, not an editor whose
@@ -1382,21 +1404,28 @@ function TerminalTabTitle({ sessionId, fallback }: { sessionId: string; fallback
  *
  *  A component rather than inline JSX inside the map: each chip owns its own
  *  long-press drag state, and a hook cannot be called from a loop. */
-function DraggableTabItem({ tab, active, separator, instantLayout, onSelect, onClose}: {
+function DraggableTabItem({ tab, active, separator, instantLayout, onSelect, onClose, closeOthersDisabled, closeRightDisabled, onCloseOthers, onCloseRight, onCloseAll }: {
   tab: PanelTab
   active: boolean
   separator: boolean
   /** Skip the layout spring while the panel is being resized — see the caller. */
   instantLayout: boolean
   onSelect: () => void
-  onClose: () => void}) {
-  const { itemProps, dragging } = useLongPressReorder()
+  onClose: () => void
+  closeOthersDisabled: boolean
+  closeRightDisabled: boolean
+  onCloseOthers: () => void
+  onCloseRight: () => void
+  onCloseAll: () => void
+}) {
+  const { itemProps, dragging } = useLongPressReorder({ touchReorder: false })
   return (
+    <TabCloseMenu closeOthersDisabled={closeOthersDisabled} closeRightDisabled={closeRightDisabled}
+      onClose={onClose} onCloseOthers={onCloseOthers} onCloseRight={onCloseRight} onCloseAll={onCloseAll}>
     <Reorder.Item
       value={tab}
       {...itemProps}
-      // The ring is the only feedback a press-and-hold gets before the finger
-      // moves; without it an armed drag looks identical to a missed one.
+      // Distinguish the dragged tab from the selected tab.
       className={`relative shrink-0 list-none rounded-t-md rounded-b-none ${dragging ? 'ring-1 ring-accent' : ''}`}
       // Reorder.Item's layout prop can't be disabled (true | "position"
       // only) — instead make the layout correction instant while resizing so
@@ -1411,6 +1440,7 @@ function DraggableTabItem({ tab, active, separator, instantLayout, onSelect, onC
       )}
       <TabChip tab={tab} active={active} onSelect={onSelect} onClose={onClose} />
     </Reorder.Item>
+    </TabCloseMenu>
   )
 }
 
