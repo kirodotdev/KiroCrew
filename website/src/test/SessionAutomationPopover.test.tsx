@@ -170,6 +170,17 @@ describe('SessionAutomationPopover', () => {
     expect(screen.getByText(/Next cycle in/)).toBeInTheDocument()
   })
 
+  it('centres the radar glyph and its count in the composer trigger', () => {
+    // IconButton is a plain block button: without a flex row the inline glyph
+    // sits on the text baseline of the 32px box instead of at its centre.
+    renderPopover(activeMonitor, vi.fn(), true, '', vi.fn())
+
+    const trigger = screen.getByRole('button', { name: 'Monitor status: active' })
+    expect(trigger.className.split(/\s+/)).toEqual(
+      expect.arrayContaining(['h-8', 'flex', 'items-center', 'gap-1']),
+    )
+  })
+
   it('surfaces a failed cold snapshot while leaving the server-guarded legacy fallback enabled', () => {
     const client = new QueryClient({ defaultOptions: { mutations: { retry: false } } })
     render(

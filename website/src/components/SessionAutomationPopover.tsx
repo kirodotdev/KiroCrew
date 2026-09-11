@@ -392,7 +392,11 @@ export default function SessionAutomationPopover({
         <IconButton
           aria-label={triggerLabel}
           variant={monitor?.active || legacyLoop?.active ? 'active' : 'default'}
-          className="h-8 px-2 rounded-lg shrink-0"
+          /* IconButton is a plain block button, so without a flex row the
+             inline glyph sits on the text baseline of this 32px box rather
+             than at its centre, and the count would trail it without a gap.
+             Same row layout the legacy goal trigger has always used. */
+          className="h-8 px-2 rounded-lg shrink-0 flex items-center gap-1"
         >
           <MonitorRadar actionRunning={status === 'action_running'} />
           {monitor ? (
