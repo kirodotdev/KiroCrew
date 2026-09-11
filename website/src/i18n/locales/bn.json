@@ -6259,6 +6259,7 @@
     "followUpBar": {
       "click_to_add_to_input_double_click_to_select_and": "ইনপুটে যোগ করতে ক্লিক করো (নির্বাচন করে পাঠাতে ডাবল-ক্লিক করো)",
       "click_to_add_to_input_editable_before_sending": "ইনপুটে যোগ করতে ক্লিক করো (পাঠানোর আগে সম্পাদনা করা যায়)",
+      "tooltip_arrow_sends_now": "↑ এখনই পাঠায়",
       "click_to_add_to_selection": "নির্বাচনে যোগ করতে ক্লিক করো",
       "click_to_remove_from_input": "ইনপুট থেকে সরাতে ক্লিক করো",
       "click_to_remove_from_input_double_click_to_send": "ইনপুট থেকে সরাতে ক্লিক করো (পাঠাতে ডাবল-ক্লিক করো)",

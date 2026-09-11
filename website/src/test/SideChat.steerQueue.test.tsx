@@ -1,6 +1,6 @@
 import { StrictMode } from 'react'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { act, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import reducer, {
   sseSideResult, sseSideQueue, sideReleaseConsumed, sideOptimisticAppend, sideOptimisticRollback,
@@ -1209,8 +1209,10 @@ describe('chatSlice steer frame placement', () => {
     await user.type(composer, 'bar, bar')
     // Only the LAST one is treated as the pick, so the chip offers to take one back.
     // The tooltip leads with the chip's own label (it may be visually clamped), so
-    // assert the hint is present rather than that it is the whole attribute.
-    expect(chip.getAttribute('title')).toContain('Click to remove from input (double-click to send)')
+    // assert the hint is present rather than that it is the whole content.
+    fireEvent.focus(chip)
+    expect(screen.getByRole('tooltip').textContent).toContain('Click to remove from input (double-click to send)')
+    fireEvent.blur(chip)
 
     await user.click(chip)
     await waitFor(() => expect(composer).toHaveValue('bar'))
@@ -1340,20 +1342,26 @@ describe('chatSlice steer frame placement', () => {
 
     await user.click(chip)
     await waitFor(() => expect(composer).toHaveValue('Rebase first'))
-    await waitFor(() => expect(chip.getAttribute('title')).toContain('Click to remove from input (double-click to send)'))
+    fireEvent.focus(chip)
+    await waitFor(() => expect(screen.getByRole('tooltip').textContent).toContain('Click to remove from input (double-click to send)'))
+    fireEvent.blur(chip)
 
     // Typing past the option makes it part of the user's own sentence, so it stops being a block
     // this can take back out — and the chip must stop claiming otherwise.
     await user.type(composer, ' but only if CI is green')
     expect(composer).toHaveValue('Rebase first but only if CI is green')
-    expect(chip.getAttribute('title')).toContain('Click to add to input (double-click to select and send)')
+    fireEvent.focus(chip)
+    expect(screen.getByRole('tooltip').textContent).toContain('Click to add to input (double-click to select and send)')
+    fireEvent.blur(chip)
 
     // So the next click is a fresh pick: it appends rather than being swallowed.
     await user.click(chip)
     await waitFor(() => {
       expect(composer).toHaveValue('Rebase first but only if CI is green, Rebase first')
     })
-    expect(chip.getAttribute('title')).toContain('Click to remove from input (double-click to send)')
+    fireEvent.focus(chip)
+    expect(screen.getByRole('tooltip').textContent).toContain('Click to remove from input (double-click to send)')
+    fireEvent.blur(chip)
   })
 
   it('un-picking one option leaves another whose text contains it intact', async () => {

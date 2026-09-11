@@ -6457,6 +6457,7 @@
     "followUpBar": {
       "click_to_add_to_input_double_click_to_select_and": "Нажми, чтобы добавить в поле ввода (двойное нажатие — выбрать и отправить)",
       "click_to_add_to_input_editable_before_sending": "Нажми, чтобы добавить в поле ввода (можно изменить перед отправкой)",
+      "tooltip_arrow_sends_now": "↑ отправляет сразу",
       "click_to_add_to_selection": "Нажми, чтобы добавить к выбранному",
       "click_to_remove_from_input": "Нажми, чтобы убрать из поля ввода",
       "click_to_remove_from_input_double_click_to_send": "Нажми, чтобы убрать из поля ввода (двойное нажатие — отправить)",

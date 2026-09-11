@@ -6358,6 +6358,7 @@
     "followUpBar": {
       "click_to_add_to_input_double_click_to_select_and": "Clique pour ajouter à la saisie (double-clic pour sélectionner et envoyer)",
       "click_to_add_to_input_editable_before_sending": "Clique pour ajouter à la saisie (modifiable avant l’envoi)",
+      "tooltip_arrow_sends_now": "↑ envoie maintenant",
       "click_to_add_to_selection": "Clique pour ajouter à la sélection",
       "click_to_remove_from_input": "Clique pour retirer de la saisie",
       "click_to_remove_from_input_double_click_to_send": "Clique pour retirer de la saisie (double-clic pour envoyer)",

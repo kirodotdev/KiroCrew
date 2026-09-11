@@ -10,6 +10,7 @@ import { useScrollEdges } from '../hooks/useScrollEdges'
 import VoiceStatusBar from './VoiceStatusBar'
 import VoiceDictationPanel, { useDictationPanelUsable } from './VoiceDictationPanel'
 import { createPortal } from 'react-dom'
+import { InstantTip, useInstantTip } from './InstantTip'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useBranding } from '../hooks/useBranding'
 import { useAppSelector, useAppDispatch } from '../store'
@@ -689,16 +690,11 @@ interface ChatInputProps {
 }
 
 /** Accent pill under a downscaled attachment chip. Hover (or focus) shows a
- *  styled tooltip with the resize details, portal-rendered above the chip so
- *  the strip's overflow-x-auto can't clip it. */
+ *  styled tooltip with the resize details through the shared `InstantTip`
+ *  (portal-rendered above the chip so the strip's overflow-x-auto can't clip
+ *  it; see that module for the show/hide gesture semantics). */
 function ResizeBadge({ resize }: { resize: ResizeInfo }) {
-  const [tip, setTip] = useState<{ top: number; left: number } | null>(null)
-  const ref = useRef<HTMLButtonElement>(null)
-  const show = () => {
-    const r = ref.current?.getBoundingClientRect()
-    if (r) setTip({ top: r.top - 8, left: r.left })
-  }
-  const hide = () => setTip(null)
+  const { tip, tipHandlers, tipId } = useInstantTip()
   return (
     <>
       {/* In flow under the thumbnail, not overlaid on it. The tile is a fixed
@@ -712,22 +708,14 @@ function ResizeBadge({ resize }: { resize: ResizeInfo }) {
           chip grow instead of the pill wrapping. */}
       <button
         type="button"
-        ref={ref}
         aria-label={i18nT('components.chatInput.resized_to_fit_model_limits_2', { fromW: resize.fromW, fromH: resize.fromH, toW: resize.toW, toH: resize.toH })}
         className="px-1.5 py-[1px] rounded-full border-0 text-[10px] font-bold bg-accent text-accent-fg shadow-sm cursor-default whitespace-nowrap"
-        onMouseEnter={show} onMouseLeave={hide} onFocus={show} onBlur={hide}
+        {...tipHandlers}
       >{i18nT('components.chatInput.resized')}</button>
-      {tip && createPortal(
-        <div
-          role="tooltip"
-          className="fixed z-[9999] -translate-y-full rounded-lg border border-border-strong bg-bg-elevated px-2.5 py-1.5 text-[11px] leading-snug shadow-lg pointer-events-none whitespace-nowrap"
-          style={{ top: tip.top, left: tip.left }}
-        >
-          <div className="text-text">{i18nT('components.chatInput.resized_to_fit_model_limits')}</div>
-          <div className="text-muted">{resize.fromW}×{resize.fromH} → {resize.toW}×{resize.toH}</div>
-        </div>,
-        document.body,
-      )}
+      <InstantTip tip={tip} tipId={tipId} className="w-max max-w-[calc(100vw-1rem)]">
+        <div className="text-text">{i18nT('components.chatInput.resized_to_fit_model_limits')}</div>
+        <div className="text-muted">{resize.fromW}×{resize.fromH} → {resize.toW}×{resize.toH}</div>
+      </InstantTip>
     </>
   )
 }

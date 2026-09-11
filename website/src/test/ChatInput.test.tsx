@@ -1190,7 +1190,10 @@ describe('ChatInput', () => {
   describe('Quick Send', () => {
     it('passes quickSend to FollowUpBar when options present', () => {
       renderWithProviders(<ChatInput {...defaultProps} followUpOptions={['A', 'B']} followUpPicked={new Set()} onFollowUpSelect={vi.fn()} quickSend={true} />)
-      expect(screen.getAllByTitle(/Click to send instantly/).length).toBeGreaterThan(0)
+      // The instant-send hint now lives in the hover tooltip, not a title attribute.
+      fireEvent.focus(screen.getByRole('button', { name: 'A' }))
+      expect(screen.getByRole('tooltip').textContent).toMatch(/Click to send instantly/)
+      fireEvent.blur(screen.getByRole('button', { name: 'A' }))
     })
 
     it('fires onFollowUpSelect with MouseEvent on option click', () => {

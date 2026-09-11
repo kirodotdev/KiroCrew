@@ -49,10 +49,14 @@ describe('FollowUpBar', () => {
       expect(pickedBtn.className).toContain('border-accent')
       expect(pickedBtn.className).toContain('text-accent')
       expect(pickedBtn.className).toContain('bg-accent-subtle')
-      expect(pickedBtn.getAttribute('title')).toMatch(/remove/i)
+      fireEvent.focus(pickedBtn)
+      expect(screen.getByRole('tooltip').textContent).toMatch(/remove/i)
+      fireEvent.blur(pickedBtn)
       expect(unpickedBtn.className).toContain('text-muted')
       expect(unpickedBtn.className).toContain('bg-bg-elevated')
-      expect(unpickedBtn.getAttribute('title')).toMatch(/add to input/i)
+      fireEvent.focus(unpickedBtn)
+      expect(screen.getByRole('tooltip').textContent).toMatch(/add to input/i)
+      fireEvent.blur(unpickedBtn)
     })
 
     it('is stateless — chip style changes only when the picked prop changes', () => {
@@ -153,9 +157,29 @@ describe('FollowUpBar', () => {
       expect(onSend).toHaveBeenCalledWith(undefined, undefined)
     })
 
-    it('chip title hints at double-click capability', () => {
+    it('chip hover tooltip hints at double-click capability, shown instantly', () => {
       render(<FollowUpBar options={['Go']} picked={new Set()} onSelect={() => {}} onSend={() => {}} />)
-      expect(screen.getByRole('button', { name: 'Go' }).getAttribute('title')).toMatch(/double-click/i)
+      // No timer advance between the enter and the assertion: the tooltip must
+      // be synchronous — that is the point of replacing the native `title`,
+      // whose OS hover delay made clamped labels look like they had no
+      // recovery at all.
+      fireEvent.focus(screen.getByRole('button', { name: 'Go' }))
+      expect(screen.getByRole('tooltip').textContent).toMatch(/double-click/i)
+    })
+
+    it('names the ↑ send segment in the tooltip hint when the segment is visible', () => {
+      // The click/double-click sentence never mentioned the visible arrow, so a
+      // first-time reader could not tell "where the safe click ends and the
+      // send click begins" — the fragment exists exactly when the segment does.
+      render(<FollowUpBar options={['Go']} picked={new Set()} onSelect={() => {}} onSend={() => {}} />)
+      fireEvent.focus(screen.getByRole('button', { name: 'Go' }))
+      expect(screen.getByRole('tooltip').textContent).toContain('↑ sends now')
+    })
+
+    it('omits the ↑ fragment when there is no send segment (no onSend)', () => {
+      render(<FollowUpBar options={['Go']} picked={new Set()} onSelect={() => {}} />)
+      fireEvent.focus(screen.getByRole('button', { name: 'Go' }))
+      expect(screen.getByRole('tooltip').textContent).not.toContain('↑')
     })
   })
 
@@ -387,10 +411,15 @@ describe('FollowUpBar', () => {
 
     it('puts the full text in the tooltip for a clamped label, followed by the hint', () => {
       render(<FollowUpBar options={[LONG]} picked={new Set()} onSelect={() => {}} onSend={() => {}} />)
-      const title = screen.getByRole('button', { name: LONG }).getAttribute('title') ?? ''
+      fireEvent.focus(screen.getByRole('button', { name: LONG }))
+      const tipEl = screen.getByRole('tooltip')
+      const tip = tipEl.textContent ?? ''
       // Full label FIRST so the reader gets the unreadable part before the hint.
-      expect(title.startsWith(LONG)).toBe(true)
-      expect(title).toMatch(/double-click/i)
+      expect(tip.startsWith(LONG)).toBe(true)
+      expect(tip).toMatch(/double-click/i)
+      // The width cap is viewport-bounded (narrow-viewport-required): a 26rem
+      // bubble cannot fit a 320px screen, so the cap must yield to the viewport.
+      expect(tipEl.className).toContain('max-w-[min(26rem,calc(100vw-1rem))]')
     })
 
     // With the one-line clamp every chip is already the same height, so these
@@ -437,9 +466,10 @@ describe('FollowUpBar', () => {
         const { unmount } = render(
           <FollowUpBar options={[option]} picked={new Set()} onSelect={() => {}} onSend={() => {}} />,
         )
-        const title = screen.getByRole('button', { name: option }).getAttribute('title') ?? ''
-        expect(title.startsWith(option)).toBe(true)
-        expect(title).toMatch(/double-click/i)
+        fireEvent.focus(screen.getByRole('button', { name: option }))
+        const tip = screen.getByRole('tooltip').textContent ?? ''
+        expect(tip.startsWith(option)).toBe(true)
+        expect(tip).toMatch(/double-click/i)
         unmount()
       }
     })
