@@ -187,7 +187,10 @@ Set via `kirocrew config set agent.acp_backend kas`.
     "embedding_provider": "llama_cpp",
     "embedding_dim": 1024,
     "history_idle_hours": 3.0,
-    "history_max_days": 365
+    "history_max_days": 365,
+    "persistence_enabled": true,
+    "inject_memory": true,
+    "inject_lessons": true
   },
   "skills": {
     "max_triggered": 0
@@ -415,6 +418,9 @@ them, so there is no enable switch here: only knobs for *which* model runs.
 | `memory.decay_rates` | Per-tag episodic recency decay rates, per day (score factor `exp(-rate * days_old)`). Keys are memory tags (case-insensitive); the reserved `default` key replaces the built-in `0.03` for memories matching no configured tag. A memory carrying several configured tags uses the slowest (smallest) rate, so a broad tag can never age out a long-retention one. `0` never ages out of retrieval ranking; `1` falls out of retrieval within about a day. Ranking only: `episodic_max_count` cap eviction (lowest importance, then oldest) still applies regardless of decay rate. Values are clamped to `0..10`; non-numeric values are ignored with a logged warning. Example: `{"legal_precedents": 0.0, "trading_data": 1.0}` | `{}` |
 | `memory.history_idle_hours` | Hours of inactivity before history consolidation | `3.0` |
 | `memory.history_max_days` | Days of history to retain before pruning | `365` |
+| `memory.persistence_enabled` | Master switch for persistent memory. Off: no automatic memory writes anywhere — `learn_add` and `kirocrew learn add` refuse, history consolidation pauses entirely (no LLM turn spent), task-runner lesson extraction skips — and stored memory/lessons are not injected into new sessions. Within-conversation context is unaffected, and explicit dashboard edits/deletions (the right to forget) stay available | `true` |
+| `memory.inject_memory` | Inject the stored memory block (preferences, projects, recent history, semantic + episodic recall) into new-session context. Writes are unaffected | `true` |
+| `memory.inject_lessons` | Inject the learned-corrections and user-profile blocks into new-session context. Writes are unaffected | `true` |
 
 ### Skills
 

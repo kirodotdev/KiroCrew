@@ -2194,6 +2194,16 @@ def _learn(args: argparse.Namespace) -> None:
             rule = args.rule
             category = args.category
             negative = getattr(args, "negative", None)
+            # Global persistence master switch (memory.persistence_enabled,
+            # #9959): the CLI writes to the store directly (no HTTP), so it
+            # carries its own check mirroring the POST /api/lessons refusal.
+            if not cfg.memory.persistence_enabled:
+                print(
+                    "Lesson NOT saved: persistent memory is disabled "
+                    "(memory.persistence_enabled is false). Re-enable with: "
+                    "kirocrew config set memory.persistence_enabled true"
+                )
+                return
             # The reporting form, not the bool. Most falsy returns mean the lesson
             # is already stored exactly as submitted, so reading one as "the vector
             # store did not take it" and writing a second record into lessons.jsonl

@@ -81,6 +81,15 @@ is `ContextBuilder.build_session_context()`, which passes
 `caps.memory_history` (26,400 chars at the reference window, scaled per model
 window, see Context Builder below) whenever the `memory` group is in scope, so
 25,000 only applies to a direct programmatic call. Timestamps use local timezone.
+Whether a group is in scope is the intersection of the caller-passed
+`context_groups` (subagent narrowing) with the operator's config toggles —
+`memory.inject_memory` / `memory.inject_lessons`, with
+`memory.persistence_enabled` as the master switch — computed once inside
+`build_session_context()` so every surface (dashboard, channels, cron,
+heartbeat, task runner, eval, subagents) obeys the config without passing
+anything. The `[CONTEXT SCOPE]` withheld-groups block stays keyed to the
+caller-passed value only: "your parent withheld" describes per-spawn
+narrowing, not the operator's standing config choice.
 
 `read_recent_history` runs on every message turn (context build) and otherwise
 stats + reads up to 181 daily files synchronously. The assembled string is

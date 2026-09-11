@@ -1343,6 +1343,21 @@ async def api_memory_consolidate(request: web.Request) -> web.Response:
         return web.json_response({"error": "Memory writes are not allowed in this session mode."}, status=403)
     if not state.consolidator:
         return web.json_response({"error": "consolidator not available"}, status=503)
+    # Global persistence master switch (memory.persistence_enabled, #9959). The
+    # inner _consolidate gate would refuse anyway; refusing here tells the
+    # dashboard caller WHY instead of returning a generic refusal, and spends
+    # no transcript read on a request that cannot proceed.
+    from kiro_crew.config.loader import KiroCrewConfig
+
+    if not KiroCrewConfig.load().memory.persistence_enabled:
+        return web.json_response(
+            {
+                "error": "Consolidation is paused: persistent memory is disabled "
+                "(memory.persistence_enabled is false).",
+                "code": "persistence_disabled",
+            },
+            status=403,
+        )
     body, body_err = await read_bounded_json(request, max_bytes=None)
     if body_err is not None:
         return body_err

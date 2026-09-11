@@ -33,6 +33,8 @@ Detects user corrections (e.g. "use X instead of Y", "remember that X", "never u
 
 The `learn_add` MCP tool (backed by `POST /api/lessons`) is subject to session-scope checks in `dashboard/handlers/cron.py:api_lessons_create`:
 
+0. Before any write proceeds, the global persistence master switch is checked: `memory.persistence_enabled: false` refuses every create with HTTP 403 and an SEL `persistence_disabled` audit record, regardless of session mode. Enforced on the route so every transport that posts here (MCP tool, dashboard, direct HTTP) is covered by the one check; `GET /api/lessons` and `DELETE /api/lessons` are unaffected — reads and the right to forget survive the switch.
+
 1. `X-Session-Key` header is required; missing → HTTP 400 `missing X-Session-Key`.
 2. `dashboard:ui` (browser UI's static key) is always allowed.
 3. Otherwise the slot name (portion after the `:` prefix, or the whole key) must satisfy at least one of:

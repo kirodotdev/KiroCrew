@@ -1480,6 +1480,9 @@
         "semantic_keys": [],
         "history_idle_hours": 3.0,
         "history_max_days": 365,
+        "persistence_enabled": true,
+        "inject_memory": true,
+        "inject_lessons": true,
         "migrated": false
       }
     },
@@ -1736,6 +1739,48 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 365
+    },
+    {
+      "path": "memory.persistence_enabled",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Persistence Enabled",
+      "help": "Master switch for persistent memory. Off: no automatic memory writes (lessons, consolidation extraction, task-runner lessons) and no stored memory/lessons injected into new sessions; within-conversation context is unaffected. Explicit dashboard edits and deletions stay available.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": true
+    },
+    {
+      "path": "memory.inject_memory",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Inject Memory Context",
+      "help": "Inject the stored memory block (preferences, projects, recent history, semantic and episodic recall) into new-session context.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": true
+    },
+    {
+      "path": "memory.inject_lessons",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Inject Lessons Context",
+      "help": "Inject the learned-corrections and user-profile blocks into new-session context.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": true
     },
     {
       "path": "memory.migrated",

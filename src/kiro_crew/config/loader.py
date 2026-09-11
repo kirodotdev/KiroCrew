@@ -3319,6 +3319,11 @@ class KiroCrewConfig:
                 history_max_days=_safe_nonnegative_int(
                     memory_data.get("history_max_days", 365), 365
                 ),
+                persistence_enabled=_safe_bool(
+                    memory_data.get("persistence_enabled", True), True
+                ),
+                inject_memory=_safe_bool(memory_data.get("inject_memory", True), True),
+                inject_lessons=_safe_bool(memory_data.get("inject_lessons", True), True),
                 migrated=memory_data.get("migrated", False),
             ),
             knowledge=KnowledgeConfig(

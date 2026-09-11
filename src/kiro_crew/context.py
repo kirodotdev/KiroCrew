@@ -2713,6 +2713,27 @@ class ContextBuilder:
         # member capability gate below — one read per context build.
         _cfg = KiroCrewConfig.load()
 
+        # Config-driven injection toggles (memory.inject_memory /
+        # memory.inject_lessons, with memory.persistence_enabled as the master
+        # switch): a group the operator disabled is withheld on EVERY surface —
+        # dashboard, channels, cron, heartbeat, task runner, eval, subagents —
+        # by intersecting here, the one method all context builds pass through,
+        # rather than at the eleven call sites that would each have to remember
+        # to pass ``context_groups``. The caller-passed ``context_groups`` keeps
+        # driving the [CONTEXT SCOPE] block below: its "Your parent withheld"
+        # prose describes subagent narrowing, and a config withholding is the
+        # operator's standing choice, not the parent's per-spawn one, so it is
+        # deliberately silent there.
+        _cfg_withheld: set[str] = set()
+        if not (_cfg.memory.persistence_enabled and _cfg.memory.inject_memory):
+            _cfg_withheld.add(CONTEXT_GROUP_MEMORY)
+        if not (_cfg.memory.persistence_enabled and _cfg.memory.inject_lessons):
+            _cfg_withheld.add(CONTEXT_GROUP_LESSONS)
+        effective_groups: frozenset[str] | None = context_groups
+        if _cfg_withheld:
+            _base = SWITCHABLE_CONTEXT_GROUPS if context_groups is None else context_groups
+            effective_groups = frozenset(_base) - _cfg_withheld
+
         if mode == _member_mode and _member_backend_can_dispatch(_cfg):
             parts.append(
                 f"[CREW MEMBER OPERATING MODE]\n"
@@ -2777,7 +2798,7 @@ class ContextBuilder:
         # the sub-agent reads the scope as framing rather than discovering a gap.
         parts.append(_build_context_scope_section(context_groups))
 
-        if _group_included(context_groups, CONTEXT_GROUP_LESSONS):
+        if _group_included(effective_groups, CONTEXT_GROUP_LESSONS):
             profile_ctx = _build_user_profile_section(_cfg)
             if profile_ctx:
                 parts.append(profile_ctx)
@@ -2805,7 +2826,7 @@ class ContextBuilder:
         _mark("workspace")
 
         # Documentation pointer — kirocrew-only, lightweight reference
-        if not is_custom and _group_included(context_groups, CONTEXT_GROUP_PROJECT):
+        if not is_custom and _group_included(effective_groups, CONTEXT_GROUP_PROJECT):
             docs_ctx = _build_docs_section()
             if docs_ctx:
                 parts.append(docs_ctx)
@@ -2826,7 +2847,7 @@ class ContextBuilder:
         # (claude-agent-acp) does NOT read agent ``resources``, so only it needs
         # the explicit load. Injecting on the ACP/kiro backend would duplicate
         # what kiro-cli already loaded.
-        if not is_custom and is_cc and _group_included(context_groups, CONTEXT_GROUP_PROJECT):
+        if not is_custom and is_cc and _group_included(effective_groups, CONTEXT_GROUP_PROJECT):
             steering_ctx = _load_steering_resources()
             if steering_ctx:
                 if lazy_skills and len(steering_ctx) > caps.steering:
@@ -2940,7 +2961,7 @@ class ContextBuilder:
         # Temporary sessions skip all memory reads.
         mem_key = memory_store or workspace
         memory = self.get_memory_for(mem_key)
-        if not blocks_reads and _group_included(context_groups, CONTEXT_GROUP_MEMORY):
+        if not blocks_reads and _group_included(effective_groups, CONTEXT_GROUP_MEMORY):
             memory_ctx = memory.get_context(
                 prefs_cap=caps.prefs,
                 projects_cap=caps.projects,
@@ -3008,7 +3029,7 @@ class ContextBuilder:
         # the per-member memory work re-targets the write side onto them, so the
         # store is dormant here, not dead.
         lessons_ctx = ""
-        if not blocks_reads and _group_included(context_groups, CONTEXT_GROUP_LESSONS):
+        if not blocks_reads and _group_included(effective_groups, CONTEXT_GROUP_LESSONS):
             # The JSONL store answers when the vector store is absent OR not yet
             # populated, and stays silent once it holds lessons.
             #
@@ -3067,7 +3088,7 @@ class ContextBuilder:
             session_key
             and self.conversation_log
             and not blocks_reads
-            and _group_included(context_groups, CONTEXT_GROUP_MEMORY)
+            and _group_included(effective_groups, CONTEXT_GROUP_MEMORY)
         ):
             provenance = self.conversation_log.recent_with_provenance(
                 session_key, exclude_last_n=exclude_last_n

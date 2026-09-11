@@ -1723,6 +1723,13 @@ class TaskRunner:
     async def _extract_lesson(self, task: Task, run: Project | None = None) -> None:
         if not self._lesson_store:
             return
+        # Global persistence master switch (memory.persistence_enabled, #9959):
+        # skip BEFORE the LLM call, so a disabled system spends no turn
+        # distilling a lesson it is not allowed to store.
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        if not KiroCrewConfig.load().memory.persistence_enabled:
+            return
         try:
             prompt = (
                 "A task failed after multiple attempts.\n\n"

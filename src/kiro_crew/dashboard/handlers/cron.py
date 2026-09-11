@@ -2141,6 +2141,32 @@ async def api_lessons_create(request: web.Request) -> web.Response:
             {"error": "Memory writes are not allowed in this session mode."},
             status=403,
         )
+    # Global persistence master switch (memory.persistence_enabled, #9959).
+    # Enforced on the route rather than in the learn_add MCP handler so every
+    # transport that posts here (MCP tool, dashboard, direct HTTP) is covered
+    # by the one check. Reads and deletions stay available — the right to
+    # forget survives the switch.
+    from kiro_crew.config.loader import KiroCrewConfig
+
+    if not KiroCrewConfig.load().memory.persistence_enabled:
+        _sel().log_api_access(
+            caller=sk,
+            operation="learn_add",
+            outcome="denied",
+            source="dashboard",
+            resources="persistence_disabled",
+            error="Persistent memory is disabled (memory.persistence_enabled).",
+        )
+        return web.json_response(
+            {
+                "error": "Lesson was NOT saved: persistent memory is disabled "
+                "(memory.persistence_enabled is false). Re-enable it with "
+                "`kirocrew config set memory.persistence_enabled true` to save "
+                "lessons again.",
+                "code": "persistence_disabled",
+            },
+            status=403,
+        )
     # Validate body fields against the SAME schema the learn_add MCP tool uses
     # (LEARN_ADD_SCHEMA), so REST and tool paths share one source of truth:
     # rule must be a string (bounded to MAX_SHORT_STRING), category/scope are

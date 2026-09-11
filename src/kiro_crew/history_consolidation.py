@@ -87,6 +87,24 @@ class _ConsolidationNotDispatched(Exception):
     """A consolidation prompt never reached the provider."""
 
 
+def _persistence_disabled() -> bool:
+    """True when the operator turned persistent memory off.
+
+    ``memory.persistence_enabled`` is the global switch (#9959): consolidation
+    is the largest automatic writer (lessons, semantic, episodic, preferences,
+    projects, history, auto-skills all flow from one pass), so a disabled
+    system must not schedule it — pausing entirely rather than run-and-discard,
+    so no LLM turn is ever billed for output that would be thrown away.
+    Read through ``KiroCrewConfig.load()`` (fingerprint-cached, so per-turn
+    checks cost a stat) rather than a constructor flag, so flipping the key
+    takes effect without a gateway restart. Imported lazily to keep this
+    module's import graph light (same rationale as the facade seams above).
+    """
+    from kiro_crew.config.loader import KiroCrewConfig
+
+    return not KiroCrewConfig.load().memory.persistence_enabled
+
+
 def _fmt_message(message: dict) -> str:
     """Render one transcript message for a consolidation prompt."""
     tools = f" [tools: {', '.join(message['tools'])}]" if message.get("tools") else ""
@@ -534,6 +552,8 @@ class HistoryConsolidator:
     def maybe_consolidate(self, key: str) -> None:
         """Fire preferences/projects consolidation if message threshold exceeded."""
         self._last_activity[key] = _time.time()
+        if _persistence_disabled():
+            return
         if key in self._running:
             return
         total = len(self._log._read_messages(key))
@@ -571,6 +591,8 @@ class HistoryConsolidator:
 
     def check_idle_sessions(self) -> None:
         """Check all tracked sessions for idle-based history consolidation."""
+        if _persistence_disabled():
+            return
         now = _time.time()
         for key, last in list(self._last_activity.items()):
             if now - last < self._history_idle_secs:
@@ -624,6 +646,8 @@ class HistoryConsolidator:
         so sensitive sessions never produce skills regardless of entry point.
         """
         if key in self._running:
+            return
+        if _persistence_disabled():
             return
         total, unconsolidated = self._log.consolidation_counts(key)
         if unconsolidated < 1:
@@ -697,6 +721,16 @@ class HistoryConsolidator:
         Returns :data:`_CONSOLIDATION_REFUSED` when the retry-eligibility gate
         refuses the span; every other completion returns ``None``.
         """
+        # Persistence master switch, checked here as well as in the automatic
+        # entry points so the manual triggers (POST /api/memory/consolidate,
+        # ``kirocrew consolidate``) are covered too. The REFUSED sentinel gives
+        # the entry-point done-callbacks the right semantics for free: no pass
+        # ran, so offsets must not advance and throttles must not be set.
+        if _persistence_disabled():
+            self._logger.info(
+                "consolidation skipped for %s: memory.persistence_enabled is false", key
+            )
+            return _CONSOLIDATION_REFUSED
         # Capture the gateway loop so the thread-offloaded _process_auto_skills
         # can schedule the async dedupe judge back onto it.
         self._event_loop = asyncio.get_running_loop()

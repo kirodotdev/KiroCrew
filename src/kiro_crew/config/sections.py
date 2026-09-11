@@ -1772,6 +1772,33 @@ class MemoryConfig:
         default=365,
         metadata=_meta("History Max Days", "Maximum days of history to retain."),
     )
+    persistence_enabled: bool = field(
+        default=True,
+        metadata=_meta(
+            "Persistence Enabled",
+            "Master switch for persistent memory. Off: no automatic memory "
+            "writes (lessons, consolidation extraction, task-runner lessons) "
+            "and no stored memory/lessons injected into new sessions; "
+            "within-conversation context is unaffected. Explicit dashboard "
+            "edits and deletions stay available.",
+        ),
+    )
+    inject_memory: bool = field(
+        default=True,
+        metadata=_meta(
+            "Inject Memory Context",
+            "Inject the stored memory block (preferences, projects, recent "
+            "history, semantic and episodic recall) into new-session context.",
+        ),
+    )
+    inject_lessons: bool = field(
+        default=True,
+        metadata=_meta(
+            "Inject Lessons Context",
+            "Inject the learned-corrections and user-profile blocks into "
+            "new-session context.",
+        ),
+    )
     migrated: bool = field(
         default=False,
         metadata=_meta("Migrated", "Whether memory has been migrated to vector store."),

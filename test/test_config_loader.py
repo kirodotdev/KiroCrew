@@ -4338,6 +4338,43 @@ class TestKnowledgeAutoIngest:
             assert key in _EDITABLE_CONFIG, key
 
 
+class TestMemoryPersistenceAndInjectionToggles:
+    """``memory.persistence_enabled`` / ``inject_memory`` / ``inject_lessons``:
+    default on, override reads, junk falls back to the default (``_safe_bool``
+    accepts only real booleans)."""
+
+    def test_defaults_are_on(self) -> None:
+        mc = _load_from_dict({}).memory
+        assert (mc.persistence_enabled, mc.inject_memory, mc.inject_lessons) == (
+            True,
+            True,
+            True,
+        )
+
+    def test_an_empty_memory_section_leaves_every_toggle_on(self) -> None:
+        mc = _load_from_dict({"memory": {}}).memory
+        assert (mc.persistence_enabled, mc.inject_memory, mc.inject_lessons) == (
+            True,
+            True,
+            True,
+        )
+
+    @pytest.mark.parametrize(
+        "key", ["persistence_enabled", "inject_memory", "inject_lessons"]
+    )
+    def test_false_reads_false(self, key: str) -> None:
+        mc = _load_from_dict({"memory": {key: False}}).memory
+        assert getattr(mc, key) is False
+
+    @pytest.mark.parametrize(
+        "key", ["persistence_enabled", "inject_memory", "inject_lessons"]
+    )
+    @pytest.mark.parametrize("bad", ["false", 0, 1, None, [], {}])
+    def test_junk_falls_back_to_on(self, key: str, bad: object) -> None:
+        mc = _load_from_dict({"memory": {key: bad}}).memory
+        assert getattr(mc, key) is True
+
+
 class TestKnowledgePoolIdleTtl:
     """``knowledge.pool_idle_ttl_secs`` parsing: default, override, explicit 0,
     and rejection of negative / bool / typed-wrong values back to the default."""
