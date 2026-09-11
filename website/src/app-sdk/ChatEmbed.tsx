@@ -6,12 +6,19 @@
  *
  * State management: polling via useQuery refetchInterval.
  * Poll faster during streaming (1s), slower when idle (5s).
+ *
+ * The poll is BOUNDED (chat-core P5-e): it asks the slot-detail endpoint for
+ * the newest `EMBED_PAGE_LIMIT` rows, and the transcript's "load earlier" bar
+ * widens that window by a page per press, up to the handler's own ceiling. An
+ * unbounded poll re-read a whole 10 MB thread every second while it ran; the
+ * rows are virtualized too, so the DOM cost no longer grows with history
+ * either. Incremental (since-cursor) polling is the recorded follow-up.
  */
-import { useRef, useCallback, useEffect, useMemo, type ReactNode } from 'react'
+import { useRef, useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
 import { useQuery, useMutation } from '@tanstack/react-query'
 import { ArrowUp, Loader2 } from 'lucide-react'
-import ChatMessageList from './ChatMessageList'
-import { useChatScrollFollow } from './useChatScrollFollow'
+import ChatMessageList, { type VirtualTranscriptHandle } from './ChatMessageList'
+import ErrorNotice from '../components/ErrorNotice'
 import { JumpToBottomButton } from './ChatScrollChrome'
 import FollowUpBar from '../components/FollowUpBar'
 import { deriveFollowUpOptions } from './protocol'
@@ -71,35 +78,82 @@ interface ChatSlotData {
   messages?: ChatMessage[]
   running?: boolean
   title?: string
+  /** Older rows exist beyond the bounded page. */
+  has_more?: boolean
 }
+
+/** Rows per page of the bounded poll — the slot-detail handler's own default,
+ *  so an embed asks for exactly what an unqualified read would have returned
+ *  had it been bounded. Exported for tests. */
+export const EMBED_PAGE_LIMIT = 200
+/** The handler clamps `limit` here; a wider ask is silently this. */
+export const EMBED_PAGE_LIMIT_MAX = 500
 
 function ChatEmbed({ slotKey, agent, placeholder, frameless, startAtBottom, onSend, aboveComposer }: ChatEmbedProps) {
   const api = useAppApi()
-  const endRef = useRef<HTMLDivElement>(null)
   const lastHashRef = useRef('')
-  // startAtBottom mode delegates stick-to-bottom follow to the shared hook
-  // (same FollowController semantics as ChatPane and the main chat): RO-driven
-  // re-pin on growth AND collapse, released only by a genuine user scroll up.
-  // `enabled` is the explicit mode switch — refs stay attached in both modes,
-  // and a disabled hook is fully inert (no mount pin, no ResizeObserver), so a
-  // top-anchored embed is never yanked by a resize. Non-startAtBottom embeds
-  // keep their own contract below — a deliberate smooth scroll to each NEW
-  // MESSAGE regardless of position.
-  const follow = useChatScrollFollow({ resetKey: slotKey, enabled: !!startAtBottom })
-  const scrollerRef = follow.scrollerRef
+  // The transcript is ChatMessageList's virtualized mount: it owns the scroller
+  // and, in startAtBottom mode, the stick-to-bottom follow (the same
+  // FollowController semantics as ChatPane and the main chat — re-pin on growth
+  // AND collapse, released only by a genuine user scroll up). A top-anchored
+  // embed opens at the top and is never pinned; it keeps its own contract
+  // below — a deliberate smooth scroll to each NEW MESSAGE regardless of
+  // position.
+  const listRef = useRef<VirtualTranscriptHandle | null>(null)
+  const [isAtBottom, setIsAtBottom] = useState(true)
+  const scrollToBottom = useCallback(() => { listRef.current?.scrollToBottom() }, [])
 
-  const { data: slotData, refetch } = useQuery({
-    queryKey: ['app-sdk-embed', slotKey],
-    queryFn: () => api.get<ChatSlotData>('/api/chat/slots/' + encodeURIComponent(slotKey)),
+  // The bounded window: newest `limit` rows. "Load earlier" widens it by a
+  // page. The widening is remembered against the slot it was made for, so a
+  // new slot is back at one page on its very first read — no effect-timed
+  // reset that would let one wide read of the new slot slip out first.
+  const [widened, setWidened] = useState<{ slot: string; limit: number } | null>(null)
+  const limit = widened?.slot === slotKey ? widened.limit : EMBED_PAGE_LIMIT
+
+  const { data: slotData, refetch, isPlaceholderData, isError } = useQuery({
+    queryKey: ['app-sdk-embed', slotKey, limit],
+    queryFn: () => api.get<ChatSlotData>(
+      '/api/chat/slots/' + encodeURIComponent(slotKey) + '?limit=' + limit,
+    ),
+    // A wider page replaces the narrower one on arrival; until then the rows
+    // already on screen stay put instead of blinking through an empty list.
+    // Same slot only: a slot change must not paint the previous slot's rows
+    // under the new slot's header while its first read is in flight.
+    placeholderData: (prev, prevQuery) =>
+      prevQuery && (prevQuery.queryKey as unknown[])[1] === slotKey ? prev : undefined,
     refetchInterval: (query) => {
       const running = query.state.data?.running ?? false
       return running ? 1000 : 5000
     },
   })
 
-  const messages = slotData?.messages ?? EMPTY_MESSAGES
-  const running = slotData?.running ?? false
-  const title = slotData?.title ?? ''
+  // The last SETTLED page for this slot. A placeholder covers the in-flight
+  // window of a widen, but a REJECTED widen leaves the wider key with no data
+  // at all — and the transcript must not blank on a failed history fetch. The
+  // settled page stays on screen and the bar shows the failure with a retry.
+  const settledRef = useRef<{ slot: string; data: ChatSlotData } | null>(null)
+  if (slotData && !isPlaceholderData) settledRef.current = { slot: slotKey, data: slotData }
+  const settled = settledRef.current?.slot === slotKey ? settledRef.current.data : undefined
+  const shown = slotData ?? settled
+
+  const messages = shown?.messages ?? EMPTY_MESSAGES
+  const running = shown?.running ?? false
+  const title = shown?.title ?? ''
+  // The widen failed: the wider read errored and the rows on screen are still
+  // the narrower page. An ambient poll error on a settled page (nothing being
+  // widened) is not the bar's to report.
+  const widenFailed = isError && limit > EMBED_PAGE_LIMIT && slotData == null && settled != null
+  // No page at all and the read failed: the transcript is unavailable, which is
+  // not the same thing as an empty session — say so, with the retry.
+  const loadFailed = isError && shown == null
+  const widening = isPlaceholderData && !isError
+  const canWiden = ((shown?.has_more ?? false) && limit < EMBED_PAGE_LIMIT_MAX) || widenFailed
+  const widen = useCallback(() => setWidened((w) => {
+    const current = w?.slot === slotKey ? w.limit : EMBED_PAGE_LIMIT
+    return { slot: slotKey, limit: Math.min(current + EMBED_PAGE_LIMIT, EMBED_PAGE_LIMIT_MAX) }
+  }), [slotKey])
+  // Retry re-issues the read at the limit that failed rather than widening again.
+  const retryWiden = useCallback(() => { void refetch() }, [refetch])
 
   /** Derived from the same helper the main chat and side panel use, so "options only
    *  after the answer settles" and "a later user message clears them" behave identically
@@ -139,16 +193,20 @@ function ChatEmbed({ slotKey, agent, placeholder, frameless, startAtBottom, onSe
   const { draft, setDraft, picked, toggleOption, composition, submitOnEnter } =
     useComposerDraft({ followUpOptions })
 
-  // startAtBottom follow is owned by useChatScrollFollow (attached below).
+  // startAtBottom follow is owned by the virtualizer behind ChatMessageList.
   // Non-startAtBottom embeds keep the message-arrival smooth scroll: it fires
   // on NEW MESSAGES only (not on content growth) and deliberately scrolls
   // regardless of position — a top-anchored embed announcing each reply.
-  const msgHash = messages.length + ':' + (messages[messages.length - 1]?.content?.length || 0)
+  // Keyed on the TAIL row's identity, not the row count: a "load earlier"
+  // press prepends a page, which must not read as a new reply and yank the
+  // reader away from the history they just asked for.
+  const tail = messages[messages.length - 1]
+  const msgHash = `${(tail?.meta?.mid as string | undefined) ?? tail?.ts ?? ''}:${tail?.content?.length ?? 0}`
   useEffect(() => {
     if (startAtBottom) return
     if (msgHash === lastHashRef.current) return
     lastHashRef.current = msgHash
-    endRef.current?.scrollIntoView({ behavior: 'smooth' })
+    listRef.current?.scrollToBottom('smooth')
   }, [msgHash, startAtBottom])
 
   const sendMutation = useMutation({
@@ -251,22 +309,45 @@ function ChatEmbed({ slotKey, agent, placeholder, frameless, startAtBottom, onSe
         </div>
       )}
 
-      <div ref={scrollerRef} onScroll={follow.onScroll} className="flex-1 overflow-y-auto py-4 min-h-0">
-        <div ref={follow.contentRef}>
-        {messages.length === 0 && !running && (
-          <div className="text-center text-muted text-[13px] py-10">{i18nT('appSdk.chatEmbed.session_ready_type_a_message_to_start')}</div>
-        )}
-        {/* canTrust: this embed's approve routes through the slot approve
-            endpoint (above), which records standing trust — the one mount
-            allowed to offer the tier (#5434). */}
-        <ChatMessageList messages={messages} running={running} onApprove={approve} onApproveBatch={approveBatch} canTrust />
-        <div ref={endRef} />
-        </div>
-      </div>
+      {/* canTrust: this embed's approve routes through the slot approve
+          endpoint (above), which records standing trust — the one mount
+          allowed to offer the tier (#5434). */}
+      <ChatMessageList
+        ref={listRef}
+        messages={messages}
+        running={running}
+        onApprove={approve}
+        onApproveBatch={approveBatch}
+        canTrust
+        transcript={{
+          sessionId: `embed:${slotKey}`,
+          followOutput: !!startAtBottom,
+          initialPlacement: startAtBottom ? 'bottom' : 'top',
+          onAtBottomChange: setIsAtBottom,
+          scrollerStyle: { paddingTop: 16, paddingBottom: 16, minHeight: 0 },
+          // No hand-off: the embed's composer draft is unsaved local state that
+          // the hand-off's navigation to the main chat would discard.
+          earlier: { hasMore: canWiden, loading: widening, failed: widenFailed, onLoad: widenFailed ? retryWiden : widen, handOff: false },
+          aboveRows: loadFailed ? (
+            <div className="mx-4 my-3 flex items-start gap-2">
+              <ErrorNotice className="flex-1" testId="chat-embed-load-error" message={i18nT('components.chatPane.history_load_failed')} />
+              <button
+                type="button"
+                className="text-[12px] text-accent underline bg-transparent border-none cursor-pointer hover:text-accent-hover"
+                onClick={() => { void refetch() }}
+              >
+                {i18nT('components.chatPane.retry')}
+              </button>
+            </div>
+          ) : messages.length === 0 && !running ? (
+            <div className="text-center text-muted text-[13px] py-10">{i18nT('appSdk.chatEmbed.session_ready_type_a_message_to_start')}</div>
+          ) : undefined,
+        }}
+      />
 
       {startAtBottom && (
         <div className="relative">
-          <JumpToBottomButton visible={!follow.isAtBottom && messages.length > 0} onClick={follow.scrollToBottom} />
+          <JumpToBottomButton visible={!isAtBottom && messages.length > 0} onClick={scrollToBottom} />
         </div>
       )}
 

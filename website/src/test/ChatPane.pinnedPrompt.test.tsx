@@ -115,8 +115,11 @@ function setRect(el: Element, top: number, height: number) {
 
 /** Lay the pane out as if the reader had scrolled the second prompt (row 2)
  *  and its reply entirely behind the fold: rows 0-3 above the hand-off line
- *  (happy-dom's zero-rect fold sits at y=0), the next prompt (row 4) far below
- *  so it neither takes the pin nor pushes the banner. */
+ *  (happy-dom's zero-rect fold sits at y=0), the next prompt (row 4) a tall
+ *  row that starts just under the band — reaching the hand-off line, as the
+ *  first mounted row below the fold always does in a virtualized transcript
+ *  (a gap there would be unmounted spacer, and the hook drops the banner) —
+ *  yet far enough down that it neither takes the pin nor pushes the banner. */
 function layOut(container: HTMLElement) {
   const scroller = container.querySelector('.chat-container') as HTMLElement
   setRect(scroller, 0, 400)
@@ -127,8 +130,10 @@ function layOut(container: HTMLElement) {
     scrollTop: { configurable: true, get: () => scrollTop, set: (v: number) => { scrollTop = v } },
   })
   const rows = Array.from(container.querySelectorAll('[data-display-index]')) as HTMLElement[]
-  const tops = [-200, -150, -100, -40, 300]
-  rows.forEach((row, i) => setRect(row, tops[i] ?? 300 + i * 100, 40))
+  // Hand-off line = fold(0) + 2*ROW_PAD_Y(4) + DEFAULT_PINNED_CARD_H(46.75) = 54.75;
+  // no push while the next prompt's top is at least ROW_PAD_Y + card = 50.75.
+  const tops = [-200, -150, -100, -40, 52]
+  rows.forEach((row, i) => setRect(row, tops[i] ?? 300 + i * 100, i === 4 ? 400 : 40))
   return { scroller, rows, get scrollTop() { return scrollTop } }
 }
 
@@ -220,7 +225,22 @@ describe('ChatPane pinned prompt (chat-core P5-d)', () => {
 
   it('clicking the banner glides the scroller back to the pinned prompt', () => {
     const { container } = renderPane()
+    // This test reads scrollTop, so the virtualizer's own positioning has to
+    // be out of the way before the reader moves. Slot entry force-pins to the
+    // bottom twice — synchronously and again one frame later, re-arming
+    // follow — and that deferred frame is still queued here. Let it land on
+    // the mount-time geometry (bottom = 0), as it would within 16ms in a
+    // browser, instead of after the hand-set layout below, where it wrote
+    // 1800 over the reader's scroll and pinned the jump at the end.
+    flushFrames()
     const geom = layOut(container)
+    // The departure from the bottom must then be a genuine scroll-UP for the
+    // follow controller, which releases follow when scrollTop DROPS below the
+    // previous scroll event's: rest at the real bottom first, then wheel up.
+    geom.scroller.scrollTop = 1800
+    act(() => { geom.scroller.dispatchEvent(new Event('scroll')) })
+    geom.scroller.scrollTop = 200
+    act(() => { geom.scroller.dispatchEvent(new Event('wheel')) })
     act(() => { geom.scroller.dispatchEvent(new Event('scroll')) })
     flushFrames()
     // Re-lay row 2 where a jump can land it: at viewport y=300 with the

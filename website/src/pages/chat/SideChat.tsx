@@ -5,7 +5,6 @@ import { api } from '../../api/client'
 import { useAppSelector, useAppDispatch } from '../../store'
 import { sideClose, sideOptimisticAppend, sideOptimisticRollback, sseSideQueue, sideReleaseConsumed, queueEditBroadcastAt } from '../../store/chatSlice'
 import QueueStack from '../../components/QueueStack'
-import { useChatScrollFollow } from '../../app-sdk/useChatScrollFollow'
 import ChatMessageList from '../../app-sdk/ChatMessageList'
 import FollowUpBar from '../../components/FollowUpBar'
 import { deriveFollowUpOptions } from '../../app-sdk/protocol'
@@ -98,12 +97,9 @@ export default function SideChat({ slot }: { slot: string }) {
     const t = setTimeout(() => setLocalNotice(null), NOTICE_TTL_MS)
     return () => clearTimeout(t)
   }, [localNotice])
-  // Stick-to-bottom follow shared with ChatPane/ChatEmbed (FollowController
-  // semantics): the RO on the content wrapper re-pins on growth ANYWHERE in
-  // the transcript and on collapse shrink, and only a genuine user scroll up
-  // releases it.
-  const follow = useChatScrollFollow({ resetKey: slot })
-  const scrollRef = follow.scrollerRef
+  // The transcript is ChatMessageList's virtualized mount (chat-core P5-e):
+  // it owns the scroller and the stick-to-bottom follow, so a long side
+  // thread costs the DOM of its viewport, not of its history.
 
   const messages = reduxSide?.messages ?? EMPTY_SIDE_MESSAGES
   const isPending = reduxSide?.pending ?? false
@@ -532,8 +528,8 @@ export default function SideChat({ slot }: { slot: string }) {
     },
   })
 
-  // Scroll follow lives in useChatScrollFollow (wired on the scroller below);
-  // no tail-keyed effect — the hook's ResizeObserver sees every height change.
+  // Scroll follow lives in the virtualizer behind ChatMessageList; no
+  // tail-keyed effect — its measurement sees every height change.
 
   // Select-to-Ask seed: when the user clicks "Ask" in the selection toolbar,
   // the host opens this panel and `seedSideChatDraft` (chat-core) writes the
@@ -647,31 +643,33 @@ export default function SideChat({ slot }: { slot: string }) {
           </button>
         </div>
       )}
-      <div ref={scrollRef} onScroll={follow.onScroll} className="flex-1 overflow-y-auto px-3 py-2">
-        <div ref={follow.contentRef} className="space-y-2">
-        {messages.length === 0 ? (
-          <div className="flex flex-col items-center justify-center h-full text-muted gap-2 py-8">
-            {/* The icon is decoration and stays faint; the sentence is the only
-                place the UI states that this transcript is discarded, so it reads
-                at full muted contrast rather than inheriting the icon's /30. */}
-            <span className="text-[24px] text-muted/30"><MessageCircleQuestionMark className="lucide-inline" /></span>
-            <span className="text-[13px]">{i18nT('pages.chat.sideChat.ask_a_side_question_main_agent_keeps_working')}</span>
-          </div>
-        ) : (
-          <ChatMessageList messages={transcript} running={isBusy} />
-        )}
-        {isPending && lastMsg?.role === 'user' && (
-          <div className="flex items-center gap-1.5 px-2.5 py-2 text-muted">
-            <span className="flex gap-0.5">
-              <span className="w-1.5 h-1.5 rounded-full bg-current animate-pulse" style={{ animationDelay: '0ms' }} />
-              <span className="w-1.5 h-1.5 rounded-full bg-current animate-pulse" style={{ animationDelay: '150ms' }} />
-              <span className="w-1.5 h-1.5 rounded-full bg-current animate-pulse" style={{ animationDelay: '300ms' }} />
-            </span>
-            <span className="text-[12px] streaming-indicator">{i18nT('pages.chat.sideChat.thinking')}</span>
-          </div>
-        )}
-        </div>
-      </div>
+      <ChatMessageList
+        messages={transcript}
+        running={isBusy}
+        transcript={{
+          sessionId: `side:${slot}`,
+          scrollerStyle: { paddingLeft: 12, paddingRight: 12, paddingTop: 8, paddingBottom: 8 },
+          aboveRows: messages.length === 0 ? (
+            <div className="flex flex-col items-center justify-center h-full text-muted gap-2 py-8">
+              {/* The icon is decoration and stays faint; the sentence is the only
+                  place the UI states that this transcript is discarded, so it reads
+                  at full muted contrast rather than inheriting the icon's /30. */}
+              <span className="text-[24px] text-muted/30"><MessageCircleQuestionMark className="lucide-inline" /></span>
+              <span className="text-[13px]">{i18nT('pages.chat.sideChat.ask_a_side_question_main_agent_keeps_working')}</span>
+            </div>
+          ) : undefined,
+          belowRows: isPending && lastMsg?.role === 'user' ? (
+            <div className="flex items-center gap-1.5 px-2.5 py-2 text-muted">
+              <span className="flex gap-0.5">
+                <span className="w-1.5 h-1.5 rounded-full bg-current animate-pulse" style={{ animationDelay: '0ms' }} />
+                <span className="w-1.5 h-1.5 rounded-full bg-current animate-pulse" style={{ animationDelay: '150ms' }} />
+                <span className="w-1.5 h-1.5 rounded-full bg-current animate-pulse" style={{ animationDelay: '300ms' }} />
+              </span>
+              <span className="text-[12px] streaming-indicator">{i18nT('pages.chat.sideChat.thinking')}</span>
+            </div>
+          ) : undefined,
+        }}
+      />
       {displayError && (
         <div className="px-3 py-1 border-t border-border">
           {/* No hand-off: the side-chat composer draft (the failed question is

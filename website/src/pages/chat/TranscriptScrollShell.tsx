@@ -35,6 +35,7 @@ export default function TranscriptScrollShell({
   loadingOlder,
   spinnerNearTop,
   scrollerStyle,
+  headerSpacer = true,
   aboveRows,
   belowRows,
   children,
@@ -51,6 +52,11 @@ export default function TranscriptScrollShell({
   spinnerNearTop?: boolean
   /** Host-owned geometry merged onto the scroller (e.g. the fade-band clearance padding). */
   scrollerStyle?: React.CSSProperties
+  /** Reserve the main chat's overlay-header band (h-16) above the rows. On by
+   *  default — the page contract. A host whose scroller sits directly under
+   *  its own title bar (a split pane, the side panel, an embed) turns it off;
+   *  its padding travels through `scrollerStyle` instead. */
+  headerSpacer?: boolean
   /** Page content above the rows (the earlier-messages paging bar). */
   aboveRows?: React.ReactNode
   /** Page content below the rows (footer, survey, tail spacer). */
@@ -107,7 +113,7 @@ export default function TranscriptScrollShell({
       onScroll={onScroll}
     >
       {/* Header spacer */}
-      <div className="h-16" />
+      {headerSpacer && <div className="h-16" />}
       {aboveRows}
       {/* Top sentinel: drives upward window expansion via virtualizer's IO. */}
       <div ref={virt.topSentinelRef} aria-hidden style={{ height: 1 }} />

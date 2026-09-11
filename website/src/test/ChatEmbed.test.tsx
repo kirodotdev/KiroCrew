@@ -17,12 +17,15 @@ interface MockChatMessageListProps {
   running: boolean
   onApprove?: (approvalId: string, decision: string) => void
   canTrust?: boolean
+  /** The virtualized mount's slots: the embed's empty state renders above the rows. */
+  transcript?: { aboveRows?: React.ReactNode }
 }
 
 vi.mock('./ChatMessageList', () => ({
-  default: ({ messages, running, onApprove, canTrust }: MockChatMessageListProps) => (
+  default: ({ messages, running, onApprove, canTrust, transcript }: MockChatMessageListProps) => (
     <div data-testid="chat-message-list" data-count={messages.length} data-running={String(running)}
       data-can-approve={String(!!onApprove)} data-can-trust={String(!!canTrust)}>
+      {transcript?.aboveRows}
       {onApprove && (
         <>
           <button data-testid="mock-approve" onClick={() => onApprove('appr-1', 'approved')}>approve</button>
@@ -35,9 +38,10 @@ vi.mock('./ChatMessageList', () => ({
 
 // Mock ChatMessageList from the correct path (ChatEmbed imports from ./ChatMessageList)
 vi.mock('../app-sdk/ChatMessageList', () => ({
-  default: ({ messages, running, onApprove, canTrust }: MockChatMessageListProps) => (
+  default: ({ messages, running, onApprove, canTrust, transcript }: MockChatMessageListProps) => (
     <div data-testid="chat-message-list" data-count={messages.length} data-running={String(running)}
       data-can-approve={String(!!onApprove)} data-can-trust={String(!!canTrust)}>
+      {transcript?.aboveRows}
       {onApprove && (
         <>
           <button data-testid="mock-approve" onClick={() => onApprove('appr-1', 'approved')}>approve</button>
@@ -334,7 +338,8 @@ describe('ChatEmbed', () => {
         renderWithProviders(<ChatEmbed slotKey="test-slot" />)
       })
 
-      expect(mockGet).toHaveBeenCalledWith('/api/chat/slots/' + encodeURIComponent('test-slot'))
+      // Bounded to one page (P5-e): the newest EMBED_PAGE_LIMIT rows, never the whole slot.
+      expect(mockGet).toHaveBeenCalledWith('/api/chat/slots/' + encodeURIComponent('test-slot') + '?limit=200')
     })
 
     it('polls at 5000ms interval when idle', async () => {

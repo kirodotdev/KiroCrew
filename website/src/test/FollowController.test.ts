@@ -5,8 +5,6 @@
 //   - a user scroll-up is never overridden by a late widget load (race-proof)
 //   - our own programmatic pins are not mistaken for user scrolls
 import { describe, it, expect } from 'vitest'
-import { readFileSync } from 'node:fs'
-import { join } from 'node:path'
 import * as fc from 'fast-check'
 import {
   computeAtBottom,
@@ -604,24 +602,5 @@ describe('resolveUserScrollStick — a clamp only ever lowers scrollTop', () => 
       viewportGrowth: 50,
     })
     expect(armed).toBe(false)
-  })
-})
-
-describe('both consumers report the viewport signal', () => {
-  it('the app-sdk hook passes viewportGrowth from its own scroll-event baseline', () => {
-    // Review finding: this hook observes pane resizes and the soft keyboard — the
-    // exact causes of a viewport-growth clamp — yet omitted the signal, so it kept
-    // the original defect while the chat virtualizer was fixed. The baseline must
-    // be its own, advanced by the scroll handler: a ref the ResizeObserver could
-    // advance first would fold the growth away before the clamp is classified.
-    const src = readFileSync(join(__dirname, '..', 'app-sdk', 'useChatScrollFollow.ts'), 'utf8')
-    const call = src.slice(src.indexOf('resolveUserScrollStick({'))
-    const args = call.slice(0, call.indexOf('})'))
-    expect(args).toMatch(/viewportGrowth:/)
-    expect(args).toContain('lastScrollClientHRef.current')
-    // Advanced in the scroll handler, not in the observer.
-    expect(src).toMatch(/prevScrollTopRef\.current = geom\.scrollTop\s*\n\s*lastScrollClientHRef\.current = geom\.clientHeight/)
-    // Not reusing the write-tracking ref, whose meaning is different.
-    expect(args).not.toContain('lastWriteClientHRef')
   })
 })

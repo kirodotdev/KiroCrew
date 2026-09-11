@@ -67,3 +67,34 @@ export async function primeCrewPod(page, authed, crew, theme) {
     }
   }, [crew, theme])
 }
+
+/**
+ * Prime the Members page on a pod: dismiss the update banner, force theme /
+ * language, mark onboarding done, then open one member's DM by roster name.
+ * Shared so a Members capture does not re-inline the boot dance (jscpd flags the
+ * copy). Returns once the DM title row is visible.
+ */
+export async function openMembersDm(page, authed, BASE, member, { theme = 'dark', lang = 'en' } = {}) {
+  await page.goto(authed('/members'), { waitUntil: 'domcontentloaded' })
+  await page.locator('#main-content').waitFor({ state: 'visible', timeout: 20000 })
+  const skip = page.getByRole('button', { name: /Skip this version|跳过此版本/ })
+  if (await skip.waitFor({ state: 'visible', timeout: 2500 }).then(() => true, () => false)) {
+    await skip.click()
+    await skip.waitFor({ state: 'hidden', timeout: 10000 })
+  }
+  await page.evaluate(async ([th, lg]) => {
+    localStorage.setItem('mc-preview-crew', '1')
+    localStorage.setItem('mc-lang', lg)
+    localStorage.setItem('mc-theme', th)
+    await fetch('/api/config/theme', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode: th, language: lg, onboarded: true, import_onboarded: true, privacy_acked: true }),
+    })
+  }, [theme, lang])
+  await page.goto(`${BASE}/members`, { waitUntil: 'domcontentloaded' })
+  const row = page.locator('#main-content li button', { hasText: member }).first()
+  await row.waitFor({ state: 'visible', timeout: 20000 })
+  await row.click()
+  await page.getByTestId('member-title-row').waitFor({ state: 'visible', timeout: 10000 })
+}

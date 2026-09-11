@@ -13,12 +13,16 @@ import { i18nT } from '../../i18n/t'
  * during a chat switch -- this bar is unmounted then, because its own mount
  * condition is reset while the switch is in progress.
  */
-export default function EarlierMessagesBar({ loading, failed, onLoad, onFocusRelease }: {
+export default function EarlierMessagesBar({ loading, failed, onLoad, onFocusRelease, handOff = true }: {
   loading: boolean
   failed: boolean
   onLoad: () => void
   /** Called on unmount only while this control still holds focus. */
   onFocusRelease?: () => void
+  /** Offer the failure's ask-the-agent hand-off. On by default (the page's
+   *  contract); a host whose composer draft is unsaved local state that the
+   *  hand-off's navigation would discard (the app embed) turns it off. */
+  handOff?: boolean
 }) {
   const btnRef = useRef<HTMLButtonElement | null>(null)
   const releaseRef = useRef(onFocusRelease)
@@ -41,7 +45,7 @@ export default function EarlierMessagesBar({ loading, failed, onLoad, onFocusRel
           composer's draft is persisted per slot, and an in-chat hand-off opens a
           fresh slot without navigating away. */}
       {failed && (
-        <ErrorNotice variant="inline" message={i18nT('pages.chat.earlierMessagesBar.load_failed')} askAgent />
+        <ErrorNotice variant="inline" message={i18nT('pages.chat.earlierMessagesBar.load_failed')} askAgent={handOff} />
       )}
       <Btn
         ref={btnRef}
