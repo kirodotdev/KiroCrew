@@ -135,14 +135,101 @@
 // with the indent/trailing `[ \t]*`.
 // Mirrors the backend's MARKER_WRAPPERS + `(?(lwrap)...)` conditional
 // (constants.py).
-// `String#replace` is the only use that is safe on this shared const as-is: it resets `lastIndex`.
-// `String#matchAll` does NOT — it seeds its internal clone from `lastIndex`, so pass a fresh
-// `new RegExp(OPTION_MARKER_RE)` there. Never call `.exec`/`.test` on it: both leave the index
-// advanced, and the next reader silently scans from the wrong offset.
-export const OPTION_MARKER_RE =
-  /(?:^[ \t]*[`*_]{1,3}\[OPTION(S)?:((?:\[(?!OPTIONS?:)[^[\]\u3011\uFF3D\u3015\n]*[\]\u3011\uFF3D\u3015](?![ \t]*[|,]|[\]\u3011\uFF3D\u3015])|\[(?!OPTIONS?:)(?![^[\]\u3011\uFF3D\u3015|\n]*[\]\u3011\uFF3D\u3015](?:\([^\s()]*\))?[`*_]{0,3}[ \t]*$)|[\]\u3011\uFF3D\u3015](?=[ \t]*[|,]|[\]\u3011\uFF3D\u3015])|[^[\]\u3011\uFF3D\u3015\n])*)[\]\u3011\uFF3D\u3015](?:\([^\s()]*\))?[`*_]{0,3}|\[OPTION(S)?:((?:\[(?!OPTIONS?:)[^[\]\u3011\uFF3D\u3015\n]*[\]\u3011\uFF3D\u3015](?![ \t]*[|,]|[\]\u3011\uFF3D\u3015])|\[(?!OPTIONS?:)(?![^[\]\u3011\uFF3D\u3015|\n]*[\]\u3011\uFF3D\u3015](?:\([^\s()]*\))?[`*_]{0,3}[ \t]*$)|[\]\u3011\uFF3D\u3015](?=[ \t]*[|,]|[\]\u3011\uFF3D\u3015])|[^[\]\u3011\uFF3D\u3015\n])*)[\]\u3011\uFF3D\u3015](?:\([^\s()]*\))?)[ \t]*$/gim
+// MODULE-PRIVATE, and deliberately so: this pattern finds CANDIDATE markers, and a
+// candidate is not yet a marker. Whether its terminating closer is really its own
+// cannot be decided here — see `labelsHaveUnmatchedOpener` below — so handing the pattern
+// out would hand out a way to skip that decision. `findOptionMarkers`,
+// `findLastOptionMarker` and `stripOptionMarkers` are the API; they apply both halves
+// and clone the regex internally, which also retires the `lastIndex` hazard that used
+// to be every caller's problem.
+const OPTION_MARKER_RE =
+  /(?:^[ \t]*[`*_]{1,3}\[OPTION(S)?:((?:\[(?!OPTIONS?:)[^[\]\u3011\uFF3D\u3015\n]*[\]\u3011\uFF3D\u3015](?![ \t]*[|,]|[\]\u3011\uFF3D\u3015])|\[(?!OPTIONS?:)|[\]\u3011\uFF3D\u3015](?=[ \t]*[|,]|[\]\u3011\uFF3D\u3015])|[^[\]\u3011\uFF3D\u3015\n])*)[\]\u3011\uFF3D\u3015](?:\([^\s()]*\))?[`*_]{0,3}|\[OPTION(S)?:((?:\[(?!OPTIONS?:)[^[\]\u3011\uFF3D\u3015\n]*[\]\u3011\uFF3D\u3015](?![ \t]*[|,]|[\]\u3011\uFF3D\u3015])|\[(?!OPTIONS?:)|[\]\u3011\uFF3D\u3015](?=[ \t]*[|,]|[\]\u3011\uFF3D\u3015])|[^[\]\u3011\uFF3D\u3015\n])*)[\]\u3011\uFF3D\u3015](?:\([^\s()]*\))?)[ \t]*$/gim
 
-/** The closing brackets OPTION_MARKER_RE accepts — ASCII plus the CJK lookalikes.
+/** The pattern's source text, for the tests that pin its shape.
+ *
+ *  A string, not a regex, on purpose: a shape pin needs the characters, and handing
+ *  back something callable would reopen the bypass the pattern's privacy closes. */
+export const OPTION_MARKER_PATTERN_SOURCE = OPTION_MARKER_RE.source
+
+/** Whether `labels` leave an opener unclosed, so the terminator is not theirs.
+ *
+ * The pattern finds candidates; this decides which candidates are markers, and it is
+ * the whole reason the pattern is private. An unmatched opener means the closer the
+ * pattern took as the terminator is really that opener's partner — so the marker was
+ * never closed.
+ *
+ * What it prevents: `[OPTIONS: A | B then check arr[0]`, where the only closer
+ * belongs to `arr[0]`. The body ran on through the prose, that `]` became the
+ * terminator, and since the marker is removed by `replace` the line left the message
+ * and came back as the pill label `B then check arr[0`.
+ *
+ * The pattern cannot do it: balance is not a regular language at unbounded depth, so
+ * a lookahead sees one nesting level and `list[dict[str, int]]` defeats a one-level
+ * rule, `a[b[c[d]]]` a two-level one.
+ *
+ * The rule is TOTAL — no separator escape hatch. An earlier form accepted an
+ * unmatched opener when a `|` followed it; that hatch was defeated three times, most
+ * recently by a `|` INSIDE the unmatched bracket (`dict[str | int]`), and each time
+ * the shape it readmitted was structurally identical to the one it was meant to
+ * protect. THE COST is exactly one shape: `[OPTIONS: Fix [x logging | Skip]`, a label
+ * carrying an unclosed `[`, no longer parses — it renders as visible text, which is
+ * the direction every cost in this grammar fails in.
+ *
+ * An unmatched CLOSER is ignored: a label may legitimately carry one
+ * (`[OPTIONS: Alpha ] | Bravo ]]` is supported and tested).
+ *
+ * Mirrors `_marker_labels_have_unmatched_opener` in `constants.py`. */
+export function labelsHaveUnmatchedOpener(labels: string): boolean {
+  let depth = 0
+  for (const ch of labels) {
+    if (ch === '[') depth++
+    else if (']】］〕'.includes(ch) && depth > 0) depth--
+  }
+  return depth > 0
+}
+
+/** The labels of a candidate match. Groups 1/2 belong to the wrapped branch, 3/4 to
+ *  the bare one, and exactly one pair is defined per match. */
+function labelsOf(match: RegExpMatchArray): string {
+  return (match[2] ?? match[4]) ?? ''
+}
+
+/** Every marker in `content` whose terminator is its own, in order.
+ *
+ * Clones the pattern per call, so the g-flag `lastIndex` hazard cannot reach a
+ * caller. A refused candidate cannot hide an accepted one inside its span: the body
+ * refuses a nested `[OPTION(S):`, so no candidate ever contains another head. */
+export function findOptionMarkers(content: string): RegExpMatchArray[] {
+  const out: RegExpMatchArray[] = []
+  for (const m of content.matchAll(new RegExp(OPTION_MARKER_RE))) {
+    if (!labelsHaveUnmatchedOpener(labelsOf(m))) out.push(m)
+  }
+  return out
+}
+
+/** The LAST accepted marker, which is the one whose options a turn offers. */
+export function findLastOptionMarker(content: string): RegExpMatchArray | null {
+  const all = findOptionMarkers(content)
+  return all.length > 0 ? all[all.length - 1] : null
+}
+
+/** `content` with every accepted marker removed, refused candidates left in place.
+ *
+ * Refused text staying visible is the point: a candidate this declines is prose the
+ * user should still see, and deleting it is the defect the check exists to prevent. */
+export function stripOptionMarkers(content: string): string {
+  const parts: string[] = []
+  let cursor = 0
+  for (const m of findOptionMarkers(content)) {
+    const start = m.index ?? 0
+    parts.push(content.slice(cursor, start))
+    cursor = start + m[0].length
+  }
+  parts.push(content.slice(cursor))
+  return parts.join('')
+}
+
+/** The closing brackets the marker pattern accepts — ASCII plus the CJK lookalikes.
  *  Module-private and used with matchAll only (to take the LAST closer in the
  *  probed body), so the g-flag `lastIndex` hazard never applies. */
 const CLOSER_RE = /[\]\u3011\uFF3D\u3015]/g

@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { parseOptions } from '../app-sdk/protocol'
 // The pattern is in-tree only — the barrel deliberately withholds it from the app surface.
-import { OPTION_MARKER_RE } from '../app-sdk/protocol/optionMarker'
+import { stripOptionMarkers } from '../app-sdk/protocol/optionMarker'
 
 // #9284: a label may legitimately carry a closer (`[OPTIONS: Alpha ] | Bravo ]]` is
 // a supported, tested shape), so the body has to admit one — but admitting it
@@ -40,7 +40,7 @@ describe('OPTION_MARKER_RE label closers must be matched or continue the list (#
 
   it('and therefore deletes no prose', () => {
     for (const text of overreach) {
-      expect(text.replace(OPTION_MARKER_RE, ''), text).toBe(text)
+      expect(stripOptionMarkers(text), text).toBe(text)
     }
   })
 
@@ -78,11 +78,17 @@ describe('OPTION_MARKER_RE label closers must be matched or continue the list (#
     ])
   })
 
-  it('does not make the pair a REQUIREMENT — a stray opener still parses', () => {
-    expect(parseOptions('[OPTIONS: Fix [x logging | Skip]').options).toEqual([
-      'Fix [x logging',
-      'Skip',
-    ])
+  it('refuses a stray opener, which is the one shape balanced labels cost', () => {
+    // A stray `[` with no closer of its own used to be just a character in the label.
+    // It cannot be: the shape is indistinguishable from a marker the model never
+    // closed — in `[OPTIONS: A | B then check arr[0]` the only closer belongs to
+    // `arr[0]`, and the body would run through the prose to reach it. Both have one
+    // unmatched opener and a closer at the end anchor, so accepting either accepts
+    // both, and accepting the second deletes a line. The marker now renders as
+    // visible text; see `labelsHaveUnmatchedOpener` for the full argument.
+    const text = '[OPTIONS: Fix [x logging | Skip]'
+    expect(parseOptions(text).options).toEqual([])
+    expect(parseOptions(text).text).toBe(text)
   })
 
   // Every shape the union rule gives up, enumerated rather than summarised. They

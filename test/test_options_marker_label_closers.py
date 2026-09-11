@@ -135,13 +135,23 @@ class TestACloserMustBeMatchedOrContinueTheList:
             assert match is not None, text
             assert match.group("labels").startswith(" Fix "), text
 
-    def test_an_unmatched_opener_in_a_label_still_parses(self):
-        # The pair alternative must not become a REQUIREMENT: a stray ``[`` with no
-        # closer of its own is still just a character in the label, as it was
-        # before this rule.
-        match = OPTIONS_RE_LINE.search("[OPTIONS: Fix [x logging | Skip]")
-        assert match is not None
-        assert match.group("labels") == " Fix [x logging | Skip"
+    def test_an_unmatched_opener_in_a_label_is_refused(self):
+        """The one shape the balanced-labels rule costs.
+
+        A stray ``[`` with no closer of its own cannot be treated as ordinary label
+        text, because that shape is indistinguishable from a marker the model never
+        closed: in ``[OPTIONS: A | B then check arr[0]`` the only closer belongs to
+        ``arr[0]``, and the body would run through the prose to reach it. Both hold
+        one unmatched opener and a closer at the end anchor, so accepting either
+        accepts both -- and accepting the second deletes a line of prose.
+
+        So the marker now renders as visible text. Nothing is removed, which is the
+        direction every cost in this grammar fails in, and the full argument lives at
+        :func:`kiro_crew.constants._marker_labels_have_unmatched_opener`.
+        """
+        text = "[OPTIONS: Fix [x logging | Skip]"
+        assert OPTIONS_RE_LINE.search(text) is None
+        assert OPTIONS_RE_LINE.sub("", text) == text
 
 
 class TestAcceptedCosts:

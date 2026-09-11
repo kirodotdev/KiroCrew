@@ -1,13 +1,13 @@
 import { describe, it, expect } from 'vitest'
 import { stripPartialOptionMarker } from '../app-sdk/protocol'
 // The pattern is in-tree only — the barrel deliberately withholds it from the app surface.
-import { OPTION_MARKER_RE } from '../app-sdk/protocol/optionMarker'
+import { findLastOptionMarker, stripOptionMarkers } from '../app-sdk/protocol/optionMarker'
 
 /** What the reader sees for a given stream prefix: the finished-marker strip
  *  (OPTION_MARKER_RE, what parseOptions does) followed by the partial-marker
  *  strip. Mirrors AssistantMessage's streaming pipeline. */
 const visible = (prefix: string) =>
-  stripPartialOptionMarker(prefix.replace(OPTION_MARKER_RE, '').trim())
+  stripPartialOptionMarker(stripOptionMarkers(prefix).trim())
 
 // #9110: a model sometimes wraps the whole marker line in inline code or
 // emphasis — `` `[OPTIONS: A | B]` `` / `**[OPTIONS: A | B]**`. The wrapper
@@ -28,7 +28,7 @@ describe('OPTION_MARKER_RE with Markdown wrappers (#9110)', () => {
   it('parses the wrapped marker and keeps the labels clean', () => {
     for (const line of wrapped) {
       let last: RegExpMatchArray | null = null
-      for (const m of `Done.\n${line}`.matchAll(new RegExp(OPTION_MARKER_RE))) last = m
+      last = findLastOptionMarker(`Done.\n${line}`)
       expect(last, line).not.toBeNull()
       const labels = last![2].split('|').map(s => s.trim())
       expect(labels, line).toEqual(['Alpha', 'Beta'])
@@ -37,7 +37,7 @@ describe('OPTION_MARKER_RE with Markdown wrappers (#9110)', () => {
 
   it('strips the wrapper together with the marker', () => {
     for (const line of wrapped) {
-      expect(`Done.\n${line}`.replace(OPTION_MARKER_RE, '').trim(), line).toBe('Done.')
+      expect(stripOptionMarkers(`Done.\n${line}`).trim(), line).toBe('Done.')
     }
   })
 
@@ -57,7 +57,7 @@ describe('OPTION_MARKER_RE with Markdown wrappers (#9110)', () => {
       '[OPTIONS: Alpha | Beta]**', // trailing-only: nothing opened it, prose
     ]) {
       const text = `Done.\n${line}`
-      expect(text.replace(OPTION_MARKER_RE, ''), line).toBe(text)
+      expect(stripOptionMarkers(text), line).toBe(text)
     }
   })
 
@@ -66,28 +66,28 @@ describe('OPTION_MARKER_RE with Markdown wrappers (#9110)', () => {
     // the marker did not open that run, so nothing matches and the pair
     // survives intact.
     const text = '**Choose one\n[OPTIONS: Alpha | Beta]**'
-    expect(text.replace(OPTION_MARKER_RE, '')).toBe(text)
+    expect(stripOptionMarkers(text)).toBe(text)
   })
 
   it('never eats emphasis belonging to preceding prose', () => {
     // The leading wrapper is only legal at line start: here the `**` pair
     // closes real emphasis, and only the marker itself is stripped.
-    expect('**Choose one:** [OPTIONS: A | B]'.replace(OPTION_MARKER_RE, ''))
+    expect(stripOptionMarkers('**Choose one:** [OPTIONS: A | B]'))
       .toBe('**Choose one:** ')
   })
 
   it('still parses a mid-line BARE marker (the pre-widening grammar)', () => {
-    expect('Pick one [OPTIONS: A | B]'.replace(OPTION_MARKER_RE, '')).toBe('Pick one ')
+    expect(stripOptionMarkers('Pick one [OPTIONS: A | B]')).toBe('Pick one ')
   })
 
   it('branch group pairs: (1,2) anchored, (3,4) mid-line — exactly one defined', () => {
     let last: RegExpMatchArray | null = null
-    for (const m of '`[OPTION: Solo]`'.matchAll(new RegExp(OPTION_MARKER_RE))) last = m
+    last = findLastOptionMarker('`[OPTION: Solo]`')
     expect(last![1]).toBeUndefined() // singular [OPTION:], anchored branch
     expect(last![2].trim()).toBe('Solo')
     expect(last![4]).toBeUndefined()
     last = null
-    for (const m of 'Pick one [OPTIONS: Solo]'.matchAll(new RegExp(OPTION_MARKER_RE))) last = m
+    last = findLastOptionMarker('Pick one [OPTIONS: Solo]')
     expect(last![3]).toBe('S') // mid-line branch
     expect(last![4].trim()).toBe('Solo')
     expect(last![2]).toBeUndefined()

@@ -5,7 +5,7 @@ import { parseOptions } from '../app-sdk/protocol'
 // Imported from the defining module, not the `protocol` barrel, which deliberately
 // does not re-export a g-flagged regex. Only `.source` is read below — a string
 // copy — so the shared `lastIndex` this const's own docs warn about is untouched.
-import { OPTION_MARKER_RE } from '../app-sdk/protocol/optionMarker'
+import { OPTION_MARKER_PATTERN_SOURCE } from '../app-sdk/protocol/optionMarker'
 
 // Mock MarkdownRenderer to avoid complex markdown parsing in tests
 vi.mock('../components/MarkdownRenderer', () => ({
@@ -891,32 +891,26 @@ describe('parseOptions', () => {
   // reaching for, deterministically and in microseconds. The behavioural half — an
   // adversarial input still parses to no options — is asserted directly below.
   it('does not catastrophically backtrack on adversarial `[OPTIONS:` input', () => {
-    const src = OPTION_MARKER_RE.source
+    const src = OPTION_MARKER_PATTERN_SOURCE
     // The label body: tempered alternation, NOT a nested quantifier. Spelled with
     // `\uXXXX` escapes because that is how the SOURCE spells the closer class —
     // `.source` is the literal pattern text, so a literal `】` here would not match.
     const C = '\\]\\u3011\\uFF3D\\u3015'
     const CONT = `[ \\t]*[|,]|[${C}]`
-    // The bare-opener form carries a TERMINATOR GATE: it is refused when nothing but
-    // ordinary text lies between it and a closer at the end anchor, because that
-    // closer is then its own partner rather than the marker's — the shape in which an
-    // unterminated `[OPTIONS:` consumed the rest of its line. The gate's scan is
-    // TEMPERED (it stops at the first bracket or separator), which keeps the runs
-    // scanned from different openers disjoint and the whole pattern linear.
-    // The scan crosses `,` and stops only at `|`, a bracket, or a newline. A comma is
-    // the FALLBACK separator and inside brackets is ordinary punctuation
-    // (`dict[str, Any]`), so a scan that stopped there halted before the closer and
-    // let `[OPTIONS: A | B then inspect dict[str, int]` through.
-    const TIC = '(?:\\([^\\s()]*\\))?'
-    const GATE = `(?![^[${C}|\\n]*[${C}]${TIC}[\`*_]{0,3}[ \\t]*$)`
     // Four alternatives, mutually exclusive at every position. The two bracket
     // forms both begin at `[` but are each other's negation on what FOLLOWS the
     // closer, so no span of input ever has two parses — that disjointness is what
     // the linearity rests on, so it is pinned here character for character. BOTH
     // bracket forms carry `(?!OPTIONS?:)`: that is what keeps a nested head out of
     // a label, and dropping it from the pair form is a widening, not a tidy-up.
+    //
+    // Note what is NOT here: whether a candidate's terminating closer is really its
+    // own. That is bracket balance, which no pattern decides at unbounded depth, so
+    // `labelsHaveUnmatchedOpener` decides it and the pattern is module-private to stop the
+    // two being applied separately. Pinning the pattern's shape is still worth it:
+    // this is the half that has to stay linear.
     expect(src).toContain(
-      `(?:\\[(?!OPTIONS?:)[^[${C}\\n]*[${C}](?!${CONT})|\\[(?!OPTIONS?:)${GATE}|[${C}](?=${CONT})|[^[${C}\\n])*`,
+      `(?:\\[(?!OPTIONS?:)[^[${C}\\n]*[${C}](?!${CONT})|\\[(?!OPTIONS?:)|[${C}](?=${CONT})|[^[${C}\\n])*`,
     )
     // No `(x+)+` / `(x*)*` anywhere: that is the shape that backtracks
     // exponentially, and it is what the tempered body above replaced.

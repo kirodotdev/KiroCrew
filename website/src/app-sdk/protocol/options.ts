@@ -3,7 +3,7 @@ import { isSystemNoticeKind } from '../../lib/systemNotice'
 import { isStopEvent } from '../../lib/stopEvent'
 import { isRetryNotice } from '../../lib/retryNotice'
 import { isNoteRow } from '../../lib/noteContract'
-import { OPTION_MARKER_RE } from './optionMarker'
+import { findLastOptionMarker, stripOptionMarkers } from './optionMarker'
 
 // A plan is recognised by BOTH its header and at least one stage line, so ordinary
 // prose that happens to mention a plan is not mistaken for one.
@@ -23,13 +23,14 @@ export interface ParsedOptions {
 }
 
 export function parseOptions(content: string): ParsedOptions {
-  let last: RegExpMatchArray | null = null
-  // `matchAll` seeds its internal clone from this regex's `lastIndex`, so a stray `.test()` or
-  // `.exec()` anywhere would make the scan start mid-string and miss the marker. Clone per call:
-  // the cost is one regex construction, the alternative is a silent parse failure.
-  for (const m of content.matchAll(new RegExp(OPTION_MARKER_RE))) last = m
+  // `findLastOptionMarker` applies BOTH halves of the grammar: the pattern that finds
+  // candidates, and the check that a candidate's terminating closer is its own rather
+  // than an unmatched opener's partner. The pattern is module-private precisely so
+  // this cannot be done by halves. It also clones the regex per call, so the g-flag
+  // `lastIndex` hazard is no longer a caller's problem to remember.
+  const last = findLastOptionMarker(content)
   if (!last || last.index === undefined) return { text: content, options: [], multi: true, isPlan: false }
-  // OPTION_MARKER_RE is a two-branch alternation (line-anchored-with-wrappers
+  // The marker pattern is a two-branch alternation (line-anchored-with-wrappers
   // vs mid-line): groups 1/2 belong to the first branch, 3/4 to the second, and
   // exactly one pair is defined per match. `??` (not `||`) so an empty label
   // string from the matched branch is kept rather than falling through.
@@ -38,11 +39,12 @@ export function parseOptions(content: string): ParsedOptions {
   const sep = labels.includes('|') ? '|' : ','
   const options = labels.split(sep).map(o => o.trim()).filter(Boolean)
   const isPlan = PLAN_HEADER_RE.test(content) && STAGE_RE.test(content)
-  // Strip ALL markers from the displayed text (not just the last) so a stray earlier
-  // marker can't leak as raw "[OPTION: …]" syntax to the user; options still come from
-  // the LAST marker (computed above). OPTION_MARKER_RE is global, so replace removes
-  // every occurrence while preserving the prose around them.
-  const text = content.replace(OPTION_MARKER_RE, '').trim()
+  // Strip ALL accepted markers from the displayed text (not just the last) so a stray
+  // earlier marker can't leak as raw "[OPTION: …]" syntax to the user; options still
+  // come from the LAST marker (computed above). A REFUSED candidate is deliberately
+  // left in place — it is prose the user should still see, and removing it is the
+  // defect the check exists to prevent.
+  const text = stripOptionMarkers(content).trim()
   return { text, options, multi, isPlan }
 }
 

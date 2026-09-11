@@ -10,7 +10,7 @@ import { isWorkflowCompletionMessage } from './WorkflowCompletionCard'
 import { isSubagentCompletionMessage } from './subagentCompletion'
 import { isReasoningBurst } from './groupDisplayItems'
 import { isDiffToolMessage } from './toolDiff'
-import { OPTION_MARKER_RE } from '../../app-sdk/protocol/optionMarker'
+import { findOptionMarkers, stripOptionMarkers } from '../../app-sdk/protocol/optionMarker'
 import { hasKeepVisibleMarker } from '../../app-sdk/protocol/keepVisibleMarker'
 import { i18nT } from '../../i18n/t'
 
@@ -92,12 +92,11 @@ const isRenderable = (it: TurnItem) =>
  * hand-back would otherwise be buried in the collapse pane. Surfacing each one
  * inline fixes that.
  *
- * OPTION_MARKER_RE is g-flagged and optionsMarker.ts forbids .test()/.exec() on
- * it (the lastIndex hazard); probe it via .replace(), exactly like
- * substantiveLength() below.
+ * Asks the marker module rather than probing a regex: a candidate whose terminator
+ * belongs to an unmatched opener is NOT a marker, and only that module can tell.
  */
 function hasOptionsMarker(text: string): boolean {
-  return text.replace(OPTION_MARKER_RE, '') !== text
+  return findOptionMarkers(text).length > 0
 }
 const isHandBack = (it: TurnItem) =>
   it.kind === 'single' && isConclusion(it) && hasOptionsMarker(it.msg.content)
@@ -190,7 +189,7 @@ const EMPTY_ID_SET: ReadonlySet<string> = new Set()
 
 /** Strip OPTIONS/markdown formatting and return plain text content length */
 function substantiveLength(text: string): number {
-  return text.replace(OPTION_MARKER_RE, '').replace(/[#*_`>\-|]/g, '').trim().length
+  return stripOptionMarkers(text).replace(/[#*_`>\-|]/g, '').trim().length
 }
 
 /**
