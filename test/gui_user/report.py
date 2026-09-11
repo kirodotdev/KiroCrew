@@ -9,6 +9,11 @@ DSL (``scenarios.py``, pure YAML) for the feature titles and for the
 Every table is grouped by ``feature``: the nightly report reads as "which
 product areas are healthy", and each row carries the scenario's ``user_story``
 so a reader who has never opened the YAML knows what the user was trying to do.
+
+Below the verdict tables sits the "New-user friction" section (``friction.py``):
+what confused the tester persona, grouped the same way. It is rendered whenever
+the run carried the channel (``summary["friction_count"]`` is present), so a
+night with nothing confusing says so instead of going silent.
 """
 
 from __future__ import annotations
@@ -22,6 +27,7 @@ from typing import Any, Iterable, Optional
 if __package__ in (None, ""):  # ``python test/gui_user/report.py`` -- make ``gui_user`` importable
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from gui_user import friction  # noqa: E402
 from gui_user.scenarios import (  # noqa: E402
     FEATURES,
     Scenario,
@@ -191,9 +197,17 @@ def _final_text_blocks(summary: dict[str, Any]) -> list[str]:
 
 
 def render_markdown(
-    summary: dict[str, Any], *, artifact_url: Optional[str] = None, run_url: Optional[str] = None
+    summary: dict[str, Any],
+    *,
+    artifact_url: Optional[str] = None,
+    run_url: Optional[str] = None,
+    friction_entries: Optional[list[dict[str, Any]]] = None,
 ) -> str:
-    """``verdict.md`` body (no marker, no header badge line): one table per feature."""
+    """``verdict.md`` body (no marker, no header badge line): one table per feature.
+
+    ``friction_entries`` overrides the run's own entries with the ledger-aware
+    rows of ``friction.json`` (counts, last-seen dates, issue numbers).
+    """
     lines: list[str] = []
     for slug, group in group_by_feature(summary.get("scenarios", [])).items():
         if lines:
@@ -222,6 +236,9 @@ def render_markdown(
     blocks = _final_text_blocks(summary)
     if blocks:
         lines += [""] + blocks
+    if friction_entries is not None or "friction_count" in summary:
+        entries = friction_entries if friction_entries is not None else friction.collect(summary)
+        lines += ["", friction.render_section(entries, artifact_url=artifact_url).rstrip()]
     return "\n".join(lines) + "\n"
 
 
@@ -235,6 +252,17 @@ def render_console(summary: dict[str, Any]) -> str:
                 f"    {sc.get('status', ''):7} {sc.get('name'):28} steps={last.get('steps', 0)} "
                 f"t={last.get('seconds', 0)}s attempts={len(sc.get('attempts') or [])}"
             )
+    if "friction_count" in summary:
+        entries = friction.collect(summary)
+        by_sev = {s: sum(1 for e in entries if e["severity"] == s) for s in friction.SEVERITIES}
+        rows.append(
+            "  new-user friction: "
+            + (
+                " · ".join(f"{n} {s}" for s, n in by_sev.items() if n)
+                if entries
+                else "none reported"
+            )
+        )
     return "\n".join(
         [
             f"GUI user test: {overall(summary)}  (${float(summary.get('usd', 0)):.2f}, mode {summary.get('tool_mode')})"
@@ -293,7 +321,12 @@ def render_features(
 
 
 def render_comment(
-    summary: dict[str, Any], *, head_sha: str, artifact_url: Optional[str], run_url: Optional[str]
+    summary: dict[str, Any],
+    *,
+    head_sha: str,
+    artifact_url: Optional[str],
+    run_url: Optional[str],
+    friction_entries: Optional[list[dict[str, Any]]] = None,
 ) -> str:
     """Upserted PR comment. Advisory: the badge is information, not a gate."""
     verdict = overall(summary)
@@ -306,7 +339,12 @@ def render_comment(
                 f"_A model drove a real browser on Xvfb through the `{summary.get('tier')}` scenarios against a seeded "
                 f"gateway built from `{head_sha}`. Advisory — does not block merge. Updated in place on each run._",
                 "",
-                render_markdown(summary, artifact_url=artifact_url, run_url=run_url).rstrip(),
+                render_markdown(
+                    summary,
+                    artifact_url=artifact_url,
+                    run_url=run_url,
+                    friction_entries=friction_entries,
+                ).rstrip(),
                 "",
                 f"{REVIEWED_MARKER} {head_sha}",
             ]
@@ -316,7 +354,12 @@ def render_comment(
 
 
 def render_issue(
-    summary: dict[str, Any], *, sha: str, run_url: Optional[str], artifact_url: Optional[str]
+    summary: dict[str, Any],
+    *,
+    sha: str,
+    run_url: Optional[str],
+    artifact_url: Optional[str],
+    friction_entries: Optional[list[dict[str, Any]]] = None,
 ) -> tuple[str, str]:
     """(title, body) for the nightly failure issue."""
     verdict = overall(summary)
@@ -326,7 +369,12 @@ def render_issue(
         [
             f"The nightly agentic GUI user test finished **{verdict}** on `main` at `{sha}`.",
             "",
-            render_markdown(summary, artifact_url=artifact_url, run_url=run_url).rstrip(),
+            render_markdown(
+                summary,
+                artifact_url=artifact_url,
+                run_url=run_url,
+                friction_entries=friction_entries,
+            ).rstrip(),
             "",
             "Open the artifact for per-step screenshots and `steps.jsonl`; a scenario that fails two nights in a row "
             "with the same final report is a real regression, one that flips is a flake to file against the scenario.",
@@ -348,7 +396,25 @@ def main(argv: Optional[list[str]] = None) -> int:
     p.add_argument("--head-sha", default="")
     p.add_argument("--run-url", default="")
     p.add_argument("--artifact-url", default="")
+    p.add_argument(
+        "--friction",
+        type=Path,
+        help="friction.json from `friction.py merge` (ledger-aware rows replace the run's own)",
+    )
     args = p.parse_args(argv)
+
+    friction_entries: Optional[list[dict[str, Any]]] = None
+    if args.friction is not None:
+        try:
+            fdoc = json.loads(args.friction.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            print(f"could not read {args.friction}: {exc}", file=sys.stderr)
+            return 2
+        rows = fdoc.get("entries") if isinstance(fdoc, dict) else None
+        if not isinstance(rows, list):
+            print(f"{args.friction}: expected an object with an 'entries' list", file=sys.stderr)
+            return 2
+        friction_entries = [r for r in rows if isinstance(r, dict)]
 
     summary: Optional[dict[str, Any]] = None
     if args.summary is not None:
@@ -379,6 +445,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 head_sha=args.head_sha,
                 artifact_url=args.artifact_url or None,
                 run_url=args.run_url or None,
+                friction_entries=friction_entries,
             ),
             end="",
         )
@@ -388,6 +455,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             sha=args.head_sha,
             run_url=args.run_url or None,
             artifact_url=args.artifact_url or None,
+            friction_entries=friction_entries,
         )
         print(
             title if args.format == "issue-title" else body,
@@ -396,7 +464,10 @@ def main(argv: Optional[list[str]] = None) -> int:
     else:
         print(
             render_markdown(
-                summary, artifact_url=args.artifact_url or None, run_url=args.run_url or None
+                summary,
+                artifact_url=args.artifact_url or None,
+                run_url=args.run_url or None,
+                friction_entries=friction_entries,
             ),
             end="",
         )

@@ -59,7 +59,8 @@ on:
 
 permissions:
   contents: read
-  issues: write # nightly failure report
+  issues: write # nightly failure report + new-user friction issues
+  actions: read # download the previous run's friction ledger artifact
   id-token: write # AWS OIDC (configure-aws-credentials)
 
 concurrency:
@@ -260,6 +261,89 @@ jobs:
           python test/gui_user/report.py --format features --run-url "$RUN_URL" "${summary_args[@]}" \
             > "$GUI_OUT/results/features.md"
 
+      # New-user friction: what confused the tester persona, carried across
+      # nights. `merge` writes this run's friction.json (ledger-aware rows:
+      # counts, last seen, issue numbers) and the updated ledger. Every run
+      # READS the ledger so its report shows counts; only the scheduled run on
+      # the default branch WRITES it back (upload + issues below), so two runs
+      # on different refs -- a dispatch beside the nightly, two dispatches --
+      # can never race each other's entries and issue numbers into the
+      # canonical ledger. The per-ref concurrency group already serializes runs
+      # on one ref. `merge` also refuses to read a malformed ledger
+      # (friction.load_ledger), and this step's failure leaves the canonical
+      # artifact untouched either way.
+      #
+      # PROVENANCE. The ledger later drives issue writes with the repository
+      # token, so it is never looked up by artifact NAME across the repository:
+      # a fork pull request can upload an artifact called anything. `pick-ledger`
+      # (friction.py) lists the completed scheduled runs of THIS workflow file
+      # on the default branch, keeps only those whose head and base repository
+      # are this repository, and takes the ledger artifact from the newest such
+      # run that still holds one -- checking the artifact's own workflow_run
+      # block against that run and branch before it is downloaded. A RE-RUN of
+      # a scheduled night reads its own earlier attempt's ledger first (that
+      # attempt already filed issues; last night's ledger would file them
+      # again), which is also why the ledger upload below overwrites.
+      - name: Merge new-user friction into the ledger
+        id: friction
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          # github.event.repository is absent on schedule payloads; ref_name is the
+          # default branch on both automatic triggers (same fallback as pr-readiness.yml).
+          LEDGER_BRANCH: ${{ github.event.repository.default_branch || github.ref_name }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          SHA: ${{ github.sha }}
+        run: |
+          # -e as well: every command here either resolves, downloads, merges or
+          # re-renders the ledger, and a failure in any of them (the ledger write
+          # after friction.json, say) must fail the step so nothing downstream
+          # uploads or files against a night that was not persisted.
+          set -euo pipefail
+          mkdir -p "$GUI_OUT/results" "$RUNNER_TEMP/friction-prev"
+          summary="$GUI_OUT/results/summary.json"
+          date="$(date -u +%F)"
+          echo "date=$date" >> "$GITHUB_OUTPUT"
+          # A retrieval ERROR (API 5xx, download failure) is not a first night: it
+          # fails this step, so the scheduled run uploads nothing and the canonical
+          # ledger keeps its counts and issue numbers. Only a complete API answer
+          # with NO eligible scheduled run holding a ledger starts a fresh one.
+          [ -n "$LEDGER_BRANCH" ] || { echo "::error::default branch unknown; refusing to pick a ledger"; exit 1; }
+          if ! python test/gui_user/friction.py pick-ledger --repo "$REPO" \
+                 --branch "$LEDGER_BRANCH" --self-run "$RUN_ID" --out "$RUNNER_TEMP/friction-pick.json"; then
+            echo "::error::could not resolve the previous friction ledger; refusing to start a fresh one"
+            exit 1
+          fi
+          prev_run="$(jq -r '.run_id // empty' "$RUNNER_TEMP/friction-pick.json")"
+          ledger_args=()
+          if [ -n "$prev_run" ]; then
+            if ! gh run download "$prev_run" --repo "$REPO" -n gui-user-test-friction-ledger \
+                 -D "$RUNNER_TEMP/friction-prev"; then
+              echo "::error::could not download the friction ledger from run $prev_run"
+              exit 1
+            fi
+            [ -f "$RUNNER_TEMP/friction-prev/friction_ledger.json" ] || {
+              echo "::error::ledger artifact from run $prev_run holds no friction_ledger.json"; exit 1; }
+            ledger_args=(--ledger "$RUNNER_TEMP/friction-prev/friction_ledger.json")
+            echo "previous ledger from scheduled run $prev_run on $LEDGER_BRANCH"
+          else
+            echo "no scheduled run on $LEDGER_BRANCH holds a ledger artifact; starting one"
+          fi
+          if [ -f "$summary" ]; then
+            python test/gui_user/friction.py merge --summary "$summary" "${ledger_args[@]}" \
+              --out "$GUI_OUT/results/friction.json" --out-ledger "$GUI_OUT/results/friction_ledger.json" \
+              --date "$date" --run-url "$RUN_URL" --head-sha "$SHA"
+            # The harness wrote verdict.md before the ledger existed; re-render it
+            # with the ledger-aware rows so the uploaded verdict carries the
+            # recurrence counts (issue numbers are a nightly-only, later step).
+            python test/gui_user/report.py --summary "$summary" --run-url "$RUN_URL" \
+              --friction "$GUI_OUT/results/friction.json" > "$GUI_OUT/results/verdict.md"
+          elif [ -n "${ledger_args[1]:-}" ]; then
+            cp "${ledger_args[1]}" "$GUI_OUT/results/friction_ledger.json"
+          fi
+
       - name: Upload screenshots, steps and verdict
         id: artifact
         if: always()
@@ -273,6 +357,41 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
+      # Nightly only: one `ux(<feature>)` issue per non-cosmetic friction row
+      # without one (at most five a night; the rest wait in the summary), one
+      # "again on <date>" comment per recurrence that already has an issue.
+      # Cosmetic rows never leave the summary. Runs BEFORE the summary and the
+      # nightly report so both can show the numbers it opened; the artifact
+      # URL is stamped on tonight's rows first so the issue's screenshot link
+      # resolves. A night the harness did not run (no summary.json, so the
+      # merge step carried the ledger forward and wrote no friction.json) has
+      # nothing to file: nothing was tested, so no row is "tonight's", and the
+      # held-over rows wait for a night that produced evidence.
+      - name: File new-user friction issues
+        if: always() && github.event_name == 'schedule' && steps.friction.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          DATE: ${{ steps.friction.outputs.date }}
+          ARTIFACT_URL: ${{ steps.artifact.outputs.artifact-url }}
+        run: |
+          set -uo pipefail
+          ledger="$GUI_OUT/results/friction_ledger.json"
+          [ -f "$ledger" ] || { echo "no ledger tonight"; exit 0; }
+          [ -f "$GUI_OUT/results/friction.json" ] || {
+            echo "the harness did not run tonight (no friction.json); nothing to file"; exit 0; }
+          rc=0
+          python test/gui_user/friction.py issues --ledger "$ledger" --repo "$REPO" --date "$DATE" \
+            --artifact-url "$ARTIFACT_URL" --friction "$GUI_OUT/results/friction.json" || rc=$?
+          # friction.json was written before filing; rebuild it so the reports below
+          # carry the issue numbers (the artifact keeps the pre-filing snapshot).
+          # The ledger already holds every number that WAS filed, so the snapshot
+          # runs even after a partial failure -- and the step then reports that
+          # failure instead of letting the snapshot's exit code paint it green.
+          python test/gui_user/friction.py snapshot --ledger "$ledger" \
+            --out "$GUI_OUT/results/friction.json" --date "$DATE"
+          exit "$rc"
+
       - name: Summarize
         id: summary
         if: always()
@@ -282,12 +401,14 @@ jobs:
         run: |
           set -uo pipefail
           summary="$GUI_OUT/results/summary.json"
+          friction_args=()
+          [ -f "$GUI_OUT/results/friction.json" ] && friction_args=(--friction "$GUI_OUT/results/friction.json")
           if [ -f "$summary" ]; then
             verdict="$(python test/gui_user/report.py --summary "$summary" --format verdict)"
             {
               echo "## GUI user test — $verdict"
               echo
-              python test/gui_user/report.py --summary "$summary" --run-url "$RUN_URL" --artifact-url "$ARTIFACT_URL"
+              python test/gui_user/report.py --summary "$summary" --run-url "$RUN_URL" --artifact-url "$ARTIFACT_URL" "${friction_args[@]}"
             } >> "$GITHUB_STEP_SUMMARY"
           else
             verdict="ERROR"
@@ -321,10 +442,12 @@ jobs:
           summary="$GUI_OUT/results/summary.json"
           title_file="${RUNNER_TEMP}/gui-issue-title.txt"
           body_file="${RUNNER_TEMP}/gui-issue-body.md"
+          friction_args=()
+          [ -f "$GUI_OUT/results/friction.json" ] && friction_args=(--friction "$GUI_OUT/results/friction.json")
           if [ -f "$summary" ]; then
             python test/gui_user/report.py --summary "$summary" --format issue-title --head-sha "$SHA" > "$title_file"
             python test/gui_user/report.py --summary "$summary" --format issue-body --head-sha "$SHA" \
-              --run-url "$RUN_URL" --artifact-url "$ARTIFACT_URL" > "$body_file"
+              --run-url "$RUN_URL" --artifact-url "$ARTIFACT_URL" "${friction_args[@]}" > "$body_file"
           else
             echo "Nightly GUI user test ERROR: target did not boot" > "$title_file"
             printf 'The nightly agentic GUI user test produced no summary at `%s`: the target did not boot or the harness crashed.\n\nSee the [workflow run](%s).\n\nLane: `.github/workflows/gui-user-test.yml` · tracking: #9578\n' "$SHA" "$RUN_URL" > "$body_file"
@@ -339,6 +462,20 @@ jobs:
             gh issue create --repo "$REPO" --title "$(cat "$title_file")" --body-file "$body_file" \
               --label gui-test-report --label "area: tests" && echo "Opened a new report issue"
           fi
+
+      # Only the nightly on main is the ledger's writer (see the merge step).
+      - name: Upload the friction ledger
+        if: always() && github.event_name == 'schedule' && steps.friction.outcome == 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: gui-user-test-friction-ledger
+          path: ${{ env.GUI_OUT }}/results/friction_ledger.json
+          if-no-files-found: ignore
+          retention-days: 90
+          # A re-run of the same scheduled run already holds attempt 1's ledger
+          # under this name; without this the upload fails and the night's
+          # issue numbers are never persisted.
+          overwrite: true
 
       # The job's status IS the verdict: a dispatch or nightly run that did not
       # PASS is red, so a red means red and the nightly issue carries the why.

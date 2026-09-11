@@ -5,7 +5,11 @@ One process runs a list of scenarios (``scenarios.py``) against a dashboard that
 
     screenshot -> Bedrock Messages API -> action -> xdotool (x11.py) -> screenshot ...
 
-until the model answers with a ``VERDICT`` block or a gate trips. Gates, in
+until the model answers with a ``VERDICT`` block or a gate trips. Beside the
+verdict runs a second, independent channel: the tester persona
+(``scenarios.PERSONAS``) files ``report_friction`` entries whenever the app
+confused it (``friction.py``); they land in ``summary.json`` per attempt and
+never touch PASS/FAIL. Gates, in
 order of what they protect: ``max_steps`` / ``max_seconds`` per scenario (a
 looping model), ``--budget-usd`` per run (the bill), one retry per failed
 scenario (a flaky click). Everything the run did lands under ``--out``:
@@ -39,7 +43,7 @@ from typing import Any, Optional
 if __package__ in (None, ""):  # ``python test/gui_user/harness.py`` -- make ``gui_user`` importable
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from gui_user import report, x11  # noqa: E402
+from gui_user import friction, report, x11  # noqa: E402
 from gui_user.scenarios import Scenario, ScenarioError, load_all, select  # noqa: E402
 
 BEDROCK_ANTHROPIC_VERSION = "bedrock-2023-05-31"
@@ -73,6 +77,14 @@ EXPECTATIONS:
 - <expectation text, shortened> : MET or NOT MET -- one line of evidence from the last screenshot
 UI-ISSUES: none, or one line per visual defect you noticed on the way (overlap, clipped or unreadable text, misaligned elements, unexpected scrollbars, poor contrast, a stuck spinner)
 """
+
+
+def system_prompt(scenario: Scenario) -> str:
+    """The base prompt plus the scenario's persona block (none for ``persona: none``)."""
+    persona = scenario.persona_prompt
+    if not persona:
+        return SYSTEM_PROMPT
+    return SYSTEM_PROMPT.replace("\nHOW TO WORK:", f"\n{persona}\n\nHOW TO WORK:", 1)
 
 
 # --------------------------------------------------------------------------
@@ -328,6 +340,8 @@ class AttemptResult:
     final_text: str
     error: str = ""
     shots_dir: str = ""
+    #: ``friction.validate_entry`` records, in the order the tester filed them.
+    friction: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -400,14 +414,17 @@ class Runner:
     def spent(self) -> float:
         return self.usage.usd(self.price_in, self.price_out)
 
-    def _tools(self) -> list[dict[str, Any]]:
-        return native_tools(self.display.geo) if self.tool_mode == "native" else custom_tools()
+    def _tools(self, scenario: Scenario) -> list[dict[str, Any]]:
+        tools = native_tools(self.display.geo) if self.tool_mode == "native" else custom_tools()
+        if scenario.reports_friction:
+            tools = [*tools, friction.FRICTION_TOOL]
+        return tools
 
-    def _body(self, messages: list[dict[str, Any]]) -> dict[str, Any]:
+    def _body(self, scenario: Scenario, messages: list[dict[str, Any]]) -> dict[str, Any]:
         body: dict[str, Any] = {
             "max_tokens": MAX_TOKENS,
-            "system": SYSTEM_PROMPT,
-            "tools": self._tools(),
+            "system": system_prompt(scenario),
+            "tools": self._tools(scenario),
             "messages": messages,
         }
         if self.tool_mode == "native":
@@ -435,10 +452,14 @@ class Runner:
         final_text = ""
         status = "NO_VERDICT"
         error = ""
+        entries: list[dict[str, Any]] = []
+        rel_shots = str(shots.relative_to(self.out))
+        last_shot = ""
 
         try:
             self.navigate(scenario.start_url, log)
             png, path = self.display.screenshot("start")
+            last_shot = f"{rel_shots}/{path.name}"
             log.write("screenshot", label="start", file=path.name)
             messages: list[dict[str, Any]] = [
                 {
@@ -462,7 +483,7 @@ class Runner:
                     raise BudgetExceeded(f"run budget ${self.budget_usd:.2f} reached mid-scenario")
 
                 try:
-                    result = self.client.messages(self._body(messages))
+                    result = self.client.messages(self._body(scenario, messages))
                 except ComputerUseUnavailable as exc:
                     if self.tool_mode != "native":
                         raise
@@ -487,13 +508,37 @@ class Runner:
                     break
 
                 results: list[dict[str, Any]] = []
+                # Every tool_use in one response was decided from the SAME screen --
+                # the last screenshot the model was shown -- so a friction entry in
+                # a batch cites that screen and step, not the state after an
+                # action that happens to precede it in the batch.
+                seen_shot, seen_step = last_shot, steps
                 for tu in tool_uses:
                     action, params = decode_tool_use(tu)
+                    if action == friction.FRICTION_TOOL["name"]:
+                        # The friction channel: no screen action, no step counted,
+                        # never an error the model has to recover from.
+                        results.append(
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": tu.get("id"),
+                                "content": [
+                                    {
+                                        "type": "text",
+                                        "text": self._record_friction(
+                                            scenario, params, entries, seen_shot, seen_step, log
+                                        ),
+                                    }
+                                ],
+                            }
+                        )
+                        continue
                     steps += 1
                     try:
                         summary = self.display.perform(action, params)
                         self.display.settle()
                         png, path = self.display.screenshot(action)
+                        last_shot = f"{rel_shots}/{path.name}"
                         log.write(
                             "action", action=action, params=params, result=summary, file=path.name
                         )
@@ -540,8 +585,41 @@ class Runner:
             usd=round((delta_in * self.price_in + delta_out * self.price_out) / 1_000_000, 4),
             final_text=final_text,
             error=error,
-            shots_dir=str(shots.relative_to(self.out)),
+            shots_dir=rel_shots,
+            friction=entries,
         )
+
+    def _record_friction(
+        self,
+        scenario: Scenario,
+        params: dict[str, Any],
+        entries: list[dict[str, Any]],
+        screenshot: str,
+        step: int,
+        log: StepLog,
+    ) -> str:
+        """Validate and store one ``report_friction`` call; the returned text goes back to the model."""
+        if len(entries) >= friction.ATTEMPT_CAP:
+            log.write("friction_dropped", reason="attempt cap", params=params)
+            return "Friction log is full for this task; continue with the steps."
+        try:
+            entry = friction.validate_entry(
+                params,
+                feature=scenario.feature,
+                scenario=scenario.name,
+                screenshot=screenshot,
+                step=step,
+            )
+        except friction.FrictionError as exc:
+            log.write("friction_rejected", error=str(exc), params=params)
+            return f"Not recorded ({exc}). Continue with the steps."
+        if any(e["key"] == entry["key"] for e in entries):
+            log.write("friction_duplicate", key=entry["key"])
+            return "Already noted. Continue with the steps."
+        entries.append(entry)
+        log.write("friction", **entry)
+        print(f"[{scenario.name}] friction ({entry['severity']}): {entry['what_confused'][:80]}")
+        return "Noted. Continue with the steps."
 
     def run(self, scenarios: list[Scenario], *, retries: int) -> list[ScenarioResult]:
         results: list[ScenarioResult] = []
@@ -575,6 +653,16 @@ class Runner:
 
 class BudgetExceeded(RuntimeError):
     pass
+
+
+def friction_channel_ran(scenarios: list[Scenario], *, dry_run: bool) -> bool:
+    """Whether ``summary.json`` should carry ``friction_count``.
+
+    Only a real run of at least one friction-reporting persona counts: a dry run
+    or a ``persona: none`` selection never asked the tester, so its report must
+    not read "nothing confusing".
+    """
+    return not dry_run and any(sc.reports_friction for sc in scenarios)
 
 
 # --------------------------------------------------------------------------
@@ -693,6 +781,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         "budget_usd": args.budget_usd,
         "scenarios": [asdict(r) for r in results],
     }
+    if friction_channel_ran(scenarios, dry_run=args.dry_run):
+        summary["friction_count"] = len(friction.collect(summary))
     (args.out / "summary.json").write_text(
         json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8"
     )
