@@ -6400,7 +6400,7 @@
       "loopback_slow_hint": "오래 걸리나요? 로그인 페이지가 이 컴퓨터에 연결되지 않으면 코드로 전환하세요. 어떤 기기에서도 사용할 수 있습니다.",
       "loopback_fell_back": "로그인 결과가 이 컴퓨터로 직접 돌아오지 못해 대신 코드를 표시합니다.",
       "cancel_unsettled": "로그인을 취소할 수 없습니다. 로그인이 아직 진행 중이니 같은 항목을 다시 눌러 재시도하세요.",
-      "card_intro": "에이전트는 이 Kiro 계정으로 실행되며 kiro-cli 로그인에 의존하지 않습니다.",
+      "card_intro": "KAS (kiro-agent) 백엔드에서만 사용합니다. 해당 에이전트는 이 Kiro 계정으로 실행됩니다. Kiro CLI는 자체 kiro-cli 로그인을 계속 사용하므로 여기서 로그인해도 바뀌지 않습니다.",
       "previous_sign_in_not_removed": "로그인했지만 이전 로그인을 제거할 수 없음",
       "previous_sign_in_not_removed_body": "새 계정은 저장되었지만 전환하기 전의 계정이 여전히 남아 있고 우선 적용됩니다. 그 계정에서 로그아웃한 뒤 여기 표시된 로그인을 확인하세요."
     },
@@ -10434,6 +10434,25 @@
         },
         "crew_members": "크루 멤버",
         "crew_members_desc": "Crew Members 페이지: 보유한 모든 에이전트가 각자 스레드를 가지고 나열됩니다. 아직 만드는 중이라 켜기 전까지는 제공되지 않습니다."
+      },
+      "kiroSignInCard": {
+        "title": "Kiro 로그인",
+        "checking": "로그인 상태 확인 중…",
+        "signed_in_with": "{{provider}}(으)로 로그인됨",
+        "signed_in_body": "에이전트는 이 Kiro 계정으로 실행됩니다. 액세스 토큰은 자동으로 갱신됩니다.",
+        "access_token_expires": "액세스 토큰이 {{when}} 만료됩니다 ({{at}}).",
+        "expired_renews_on_next_use": "액세스 토큰이 만료되었으며 다음에 에이전트가 필요로 할 때 갱신됩니다.",
+        "expired_no_refresh": "액세스 토큰이 만료되었고 갱신에 사용할 자격 증명이 없습니다.",
+        "refresh_rejected": "Kiro가 이 로그인의 갱신을 거부했습니다.",
+        "sign_in_expired": "로그인이 만료됨",
+        "sign_in_expired_body": "{{provider}} 로그인이 더 이상 유효하지 않습니다. 다시 로그인할 때까지 에이전트는 로그인되지 않았다고 보고합니다. kiro-cli 로그인으로 자동 전환되지는 않습니다.",
+        "sign_in_again": "다시 로그인",
+        "switch_account": "계정 전환",
+        "sign_out": "로그아웃",
+        "takes_effect_next_process": "지금부터 시작되는 에이전트 프로세스에 적용됩니다. 실행 중인 세션은 다음 턴에서 적용됩니다.",
+        "could_not_sign_out": "로그아웃할 수 없음",
+        "keep_current_sign_in": "현재 로그인 유지",
+        "signed_in_body_no_refresh": "에이전트는 이 Kiro 계정으로 실행됩니다. 이 로그인에는 리프레시 토큰이 없어 자동으로 갱신되지 않습니다. 만료되기 전에 다시 로그인하세요."
       }
     },
     "developerPage": {
@@ -11791,6 +11810,7 @@
       "days_of_history": "일간 기록",
       "h_idle": "시간 유휴",
       "keeps": "· 보관",
+      "kiro_sign_in_moved": "Kiro 로그인이 개발자 > 에이전트 백엔드로 이동했습니다",
       "memory": "메모리",
       "memory_graph_and_store_internals_live_on_the_dev": "메모리 그래프와 저장소 내부 정보는 개발자 페이지에 있습니다",
       "messages": "메시지",
@@ -14004,26 +14024,6 @@
         "manage_webhooks": "Webhook 관리",
         "tokens_count_other": "액세스 토큰 {{count}}개",
         "could_not_read_webhook_status": "Webhook 상태를 읽을 수 없습니다 — 게이트웨이가 실행 중인지 확인하세요"
-      },
-      "kiroSignInCard": {
-        "title": "Kiro 로그인",
-        "registry_description": "에이전트가 사용하는 Kiro 계정에 로그인하거나 로그아웃합니다.",
-        "checking": "로그인 상태 확인 중…",
-        "signed_in_with": "{{provider}}(으)로 로그인됨",
-        "signed_in_body": "에이전트는 이 Kiro 계정으로 실행됩니다. 액세스 토큰은 자동으로 갱신됩니다.",
-        "access_token_expires": "액세스 토큰이 {{when}} 만료됩니다 ({{at}}).",
-        "expired_renews_on_next_use": "액세스 토큰이 만료되었으며 다음에 에이전트가 필요로 할 때 갱신됩니다.",
-        "expired_no_refresh": "액세스 토큰이 만료되었고 갱신에 사용할 자격 증명이 없습니다.",
-        "refresh_rejected": "Kiro가 이 로그인의 갱신을 거부했습니다.",
-        "sign_in_expired": "로그인이 만료됨",
-        "sign_in_expired_body": "{{provider}} 로그인이 더 이상 유효하지 않습니다. 다시 로그인할 때까지 에이전트는 로그인되지 않았다고 보고합니다. kiro-cli 로그인으로 자동 전환되지는 않습니다.",
-        "sign_in_again": "다시 로그인",
-        "switch_account": "계정 전환",
-        "sign_out": "로그아웃",
-        "takes_effect_next_process": "지금부터 시작되는 에이전트 프로세스에 적용됩니다. 실행 중인 세션은 다음 턴에서 적용됩니다.",
-        "could_not_sign_out": "로그아웃할 수 없음",
-        "keep_current_sign_in": "현재 로그인 유지",
-        "signed_in_body_no_refresh": "에이전트는 이 Kiro 계정으로 실행됩니다. 이 로그인에는 리프레시 토큰이 없어 자동으로 갱신되지 않습니다. 만료되기 전에 다시 로그인하세요."
       }
     },
     "settingsPage": {

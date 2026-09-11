@@ -6604,7 +6604,7 @@
       "loopback_slow_hint": "Ci vuole molto? Se la pagina di accesso non riesce a raggiungere questo computer, passa a un codice: funziona da qualsiasi dispositivo.",
       "loopback_fell_back": "L'accesso non è riuscito a tornare direttamente su questo computer, quindi ecco un codice.",
       "cancel_unsettled": "Impossibile annullare l’accesso. È ancora in corso: premi di nuovo la stessa opzione per riprovare.",
-      "card_intro": "Gli agenti vengono eseguiti con questo account Kiro, senza dipendere da un accesso kiro-cli.",
+      "card_intro": "Usato solo dal backend KAS (kiro-agent): i suoi agenti vengono eseguiti con questo account Kiro. Kiro CLI mantiene il proprio accesso kiro-cli, quindi accedere qui non lo modifica.",
       "previous_sign_in_not_removed": "Accesso effettuato, ma non è stato possibile rimuovere l’accesso precedente",
       "previous_sign_in_not_removed_body": "Il nuovo account è salvato, ma quello da cui stavi passando è ancora presente e ha la precedenza. Esci da quell’account, poi controlla l’accesso mostrato qui."
     },
@@ -10744,6 +10744,25 @@
         },
         "crew_members": "Membri della crew",
         "crew_members_desc": "La pagina Crew Members: tutti i tuoi agenti, ognuno con il proprio thread. Ancora in costruzione, quindi non viene offerta finché non attivi questo."
+      },
+      "kiroSignInCard": {
+        "title": "Accesso a Kiro",
+        "checking": "Verifica dell’accesso…",
+        "signed_in_with": "Accesso effettuato con {{provider}}",
+        "signed_in_body": "Gli agenti vengono eseguiti con questo account Kiro. Il token di accesso viene rinnovato automaticamente.",
+        "access_token_expires": "Il token di accesso scade {{when}} ({{at}}).",
+        "expired_renews_on_next_use": "Il token di accesso è scaduto e verrà rinnovato la prossima volta che un agente ne avrà bisogno.",
+        "expired_no_refresh": "Il token di accesso è scaduto e non c’è nulla con cui rinnovarlo.",
+        "refresh_rejected": "Kiro ha rifiutato di rinnovare questo accesso.",
+        "sign_in_expired": "Accesso scaduto",
+        "sign_in_expired_body": "L’accesso con {{provider}} non è più valido. Gli agenti segnaleranno di non aver effettuato l’accesso finché non accedi di nuovo: nessun ritorno automatico a un accesso kiro-cli.",
+        "sign_in_again": "Accedi di nuovo",
+        "switch_account": "Cambia account",
+        "sign_out": "Esci",
+        "takes_effect_next_process": "Si applica ai processi agente avviati da ora in avanti; le sessioni in corso lo adottano al turno successivo.",
+        "could_not_sign_out": "Impossibile uscire",
+        "keep_current_sign_in": "Mantieni l’accesso attuale",
+        "signed_in_body_no_refresh": "Gli agenti vengono eseguiti con questo account Kiro. Questo accesso non ha un token di aggiornamento e non può rinnovarsi da solo: accedi di nuovo prima che scada."
       }
     },
     "developerPage": {
@@ -12127,6 +12146,7 @@
       "days_of_history": "giorni di cronologia",
       "h_idle": "h di inattività",
       "keeps": "· mantiene",
+      "kiro_sign_in_moved": "L’accesso a Kiro è passato in Sviluppatore > Backend dell’agente",
       "memory": "Memoria",
       "memory_graph_and_store_internals_live_on_the_dev": "Il grafo della memoria e i dettagli interni degli archivi si trovano nella pagina Sviluppatore",
       "messages": "messaggi",
@@ -14360,26 +14380,6 @@
         "tokens_count_other": "{{count}} token di accesso",
         "tokens_count_many": "{{count}} token di accesso",
         "could_not_read_webhook_status": "Impossibile leggere lo stato del webhook — verifica che il gateway sia in esecuzione"
-      },
-      "kiroSignInCard": {
-        "title": "Accesso a Kiro",
-        "registry_description": "Accedi all’account Kiro con cui vengono eseguiti i tuoi agenti, oppure esci.",
-        "checking": "Verifica dell’accesso…",
-        "signed_in_with": "Accesso effettuato con {{provider}}",
-        "signed_in_body": "Gli agenti vengono eseguiti con questo account Kiro. Il token di accesso viene rinnovato automaticamente.",
-        "access_token_expires": "Il token di accesso scade {{when}} ({{at}}).",
-        "expired_renews_on_next_use": "Il token di accesso è scaduto e verrà rinnovato la prossima volta che un agente ne avrà bisogno.",
-        "expired_no_refresh": "Il token di accesso è scaduto e non c’è nulla con cui rinnovarlo.",
-        "refresh_rejected": "Kiro ha rifiutato di rinnovare questo accesso.",
-        "sign_in_expired": "Accesso scaduto",
-        "sign_in_expired_body": "L’accesso con {{provider}} non è più valido. Gli agenti segnaleranno di non aver effettuato l’accesso finché non accedi di nuovo: nessun ritorno automatico a un accesso kiro-cli.",
-        "sign_in_again": "Accedi di nuovo",
-        "switch_account": "Cambia account",
-        "sign_out": "Esci",
-        "takes_effect_next_process": "Si applica ai processi agente avviati da ora in avanti; le sessioni in corso lo adottano al turno successivo.",
-        "could_not_sign_out": "Impossibile uscire",
-        "keep_current_sign_in": "Mantieni l’accesso attuale",
-        "signed_in_body_no_refresh": "Gli agenti vengono eseguiti con questo account Kiro. Questo accesso non ha un token di aggiornamento e non può rinnovarsi da solo: accedi di nuovo prima che scada."
       }
     },
     "settingsPage": {

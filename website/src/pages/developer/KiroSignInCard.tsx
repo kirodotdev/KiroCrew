@@ -5,15 +5,9 @@ import { api, type KasLoginStatus } from '../../api/client'
 import { KasLoginEmbedded, providerLabelFromWire } from '../../components/KasLoginGate'
 import ErrorNotice from '../../components/ErrorNotice'
 import { Btn, Card, CardTitle } from '../../components/ui'
+import { KIRO_SIGN_IN_HIGHLIGHT_ANCHOR } from '../../hooks/useSettingHighlight'
 import { fmtDateTime, fmtRelative } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
-
-/** Registry id of this card (settingsManual.ts), the value a deep link's
- *  `?highlight=` carries. Exported so the chat error row that links here and
- *  the card cannot drift apart on the spelling. */
-export const KIRO_SIGN_IN_SETTING_ID = 'overview.kiro-sign-in'
-/** The Settings tab the card lives on. */
-export const KIRO_SIGN_IN_SETTINGS_TAB = 'overview'
 
 // Same cache key the embedded flow reads status under (KasLoginGate.QUERY_KEY):
 // a sign-out here must invalidate the flow's query, not a private copy of it.
@@ -57,13 +51,13 @@ function SignedInSummary({
   // engine refreshes itself, one that has already lapsed, or one the issuer
   // refused to renew. Never the token, never its length.
   const expiryLine = status.refresh_rejected
-    ? i18nT('pages.settings.kiroSignInCard.refresh_rejected')
+    ? i18nT('pages.developer.kiroSignInCard.refresh_rejected')
     : status.expired
       ? status.has_refresh_token
-        ? i18nT('pages.settings.kiroSignInCard.expired_renews_on_next_use')
-        : i18nT('pages.settings.kiroSignInCard.expired_no_refresh')
+        ? i18nT('pages.developer.kiroSignInCard.expired_renews_on_next_use')
+        : i18nT('pages.developer.kiroSignInCard.expired_no_refresh')
       : status.expires_at
-        ? i18nT('pages.settings.kiroSignInCard.access_token_expires', {
+        ? i18nT('pages.developer.kiroSignInCard.access_token_expires', {
             when: fmtRelative(status.expires_at),
             at: fmtDateTime(status.expires_at),
           })
@@ -82,17 +76,17 @@ function SignedInSummary({
         <div className="min-w-0 flex-1">
           <p className="text-sm font-medium text-text-strong" data-testid="kiro-sign-in-state">
             {lapsed
-              ? i18nT('pages.settings.kiroSignInCard.sign_in_expired')
-              : i18nT('pages.settings.kiroSignInCard.signed_in_with', { provider })}
+              ? i18nT('pages.developer.kiroSignInCard.sign_in_expired')
+              : i18nT('pages.developer.kiroSignInCard.signed_in_with', { provider })}
           </p>
           <p className="mt-0.5 text-[13px] leading-relaxed text-muted">
             {lapsed
-              ? i18nT('pages.settings.kiroSignInCard.sign_in_expired_body', { provider })
+              ? i18nT('pages.developer.kiroSignInCard.sign_in_expired_body', { provider })
               : status.has_refresh_token
-                ? i18nT('pages.settings.kiroSignInCard.signed_in_body')
+                ? i18nT('pages.developer.kiroSignInCard.signed_in_body')
                 : // A live token with nothing to renew it: say so instead of
                   // promising an automatic renewal that will not happen.
-                  i18nT('pages.settings.kiroSignInCard.signed_in_body_no_refresh')}
+                  i18nT('pages.developer.kiroSignInCard.signed_in_body_no_refresh')}
           </p>
           {expiryLine ? (
             <p className="mt-1 text-[12px] text-muted" data-testid="kiro-sign-in-expiry">
@@ -105,12 +99,12 @@ function SignedInSummary({
         {lapsed ? (
           <Btn type="button" primary onClick={onReauth} disabled={logout.isPending}>
             <RefreshCw className="lucide-inline" aria-hidden="true" />
-            {i18nT('pages.settings.kiroSignInCard.sign_in_again')}
+            {i18nT('pages.developer.kiroSignInCard.sign_in_again')}
           </Btn>
         ) : (
           <Btn type="button" onClick={onReauth} disabled={logout.isPending}>
             <RefreshCw className="lucide-inline" aria-hidden="true" />
-            {i18nT('pages.settings.kiroSignInCard.switch_account')}
+            {i18nT('pages.developer.kiroSignInCard.switch_account')}
           </Btn>
         )}
         <Btn
@@ -125,7 +119,7 @@ function SignedInSummary({
           ) : (
             <LogOut className="lucide-inline" aria-hidden="true" />
           )}
-          {i18nT('pages.settings.kiroSignInCard.sign_out')}
+          {i18nT('pages.developer.kiroSignInCard.sign_out')}
         </Btn>
       </div>
       {/* askAgent on: the card holds no draft (sign-out is a single press), and
@@ -134,7 +128,7 @@ function SignedInSummary({
       <ErrorNotice
         className="mt-3"
         askAgent
-        title={i18nT('pages.settings.kiroSignInCard.could_not_sign_out')}
+        title={i18nT('pages.developer.kiroSignInCard.could_not_sign_out')}
         message={logout.error?.message || null}
         testId="kiro-sign-in-logout-error"
       />
@@ -143,20 +137,24 @@ function SignedInSummary({
 }
 
 /**
- * Settings card for signing in to Kiro Crew's OWN Kiro identity -- the one the
- * gateway hands to agent processes (KAS relay) so they run as the user without
- * depending on `kiro-cli login`. Wraps the sign-in flow `KasLoginGate` carries
- * in its embedded chrome, and adds the two things a card needs that a gate does
- * not: a signed-in summary (provider, expiry, renewability -- never a token)
- * with sign-out, and an explicit "sign-in expired" state that asks the user to
- * sign in again instead of quietly falling back to kiro-cli's login.
+ * Developer > Agent Backend card for signing in to Kiro Crew's OWN Kiro identity
+ * -- the one the gateway hands to agent processes (KAS relay) so they run as the
+ * user without depending on `kiro-cli login`. Wraps the sign-in flow
+ * `KasLoginGate` carries in its embedded chrome, and adds the two things a card
+ * needs that a gate does not: a signed-in summary (provider, expiry,
+ * renewability -- never a token) with sign-out, and an explicit "sign-in
+ * expired" state that asks the user to sign in again instead of quietly falling
+ * back to kiro-cli's login.
  *
- * The `data-setting-label` on the wrapper is the deep-link anchor
- * (useSettingHighlight), matched against the manual registry entry
- * `overview.kiro-sign-in` in settingsManual.ts.
+ * Rendered by `AgentBackendTab` under the backend switch, and only while KAS is
+ * a backend that switch offers: the stored identity is consumed by the KAS
+ * relay alone, so on a build or policy that cannot select KAS there is nothing
+ * to sign in for. That is also why it is NOT on Settings > Overview (its former
+ * home) nor indexed into Settings search: KAS is a Developer Mode preview, and a
+ * sign-in chooser on the landing page read as a required step to every user.
  */
 export function KiroSignInCard() {
-  const title = i18nT('pages.settings.kiroSignInCard.title')
+  const title = i18nT('pages.developer.kiroSignInCard.title')
   // Set after a successful sign-out, so the "applies to agent processes started
   // from now on" note shows at the moment the change was made. Held HERE, above
   // the authenticated-only summary, because that summary unmounts the instant
@@ -175,21 +173,21 @@ export function KiroSignInCard() {
     if (authenticated) setSignedOutNote(false)
   }, [authenticated])
   return (
-    <Card data-setting-label={title} data-testid="kiro-sign-in-card">
+    <Card data-setting-key={KIRO_SIGN_IN_HIGHLIGHT_ANCHOR} data-testid="kiro-sign-in-card">
       <CardTitle>
         <KeyRound className="lucide-inline" aria-hidden="true" />
         {title}
       </CardTitle>
       {signedOutNote ? (
         <p className="mb-3 text-[12px] text-muted" role="status" data-testid="kiro-sign-in-takes-effect">
-          {i18nT('pages.settings.kiroSignInCard.takes_effect_next_process')}
+          {i18nT('pages.developer.kiroSignInCard.takes_effect_next_process')}
         </p>
       ) : null}
       <KasLoginEmbedded
         renderPending={() => (
           <p className="flex items-center gap-2 text-[13px] text-muted" data-testid="kiro-sign-in-pending">
             <Loader2 className="lucide-inline animate-spin" aria-hidden="true" />
-            {i18nT('pages.settings.kiroSignInCard.checking')}
+            {i18nT('pages.developer.kiroSignInCard.checking')}
           </p>
         )}
         renderAuthenticated={(status, { reauth }) => (
@@ -203,7 +201,7 @@ export function KiroSignInCard() {
             className="mt-3 cursor-pointer text-[13px] text-muted underline-offset-2 hover:text-text hover:underline focus-ring disabled:cursor-not-allowed disabled:opacity-40"
             data-testid="kiro-sign-in-keep-current"
           >
-            {i18nT('pages.settings.kiroSignInCard.keep_current_sign_in')}
+            {i18nT('pages.developer.kiroSignInCard.keep_current_sign_in')}
           </button>
         )}
       />

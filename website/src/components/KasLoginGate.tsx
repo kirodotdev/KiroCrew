@@ -128,7 +128,7 @@ export function providerLabelFromWire(stored: string | null | undefined): string
 /**
  * Which chrome the flow renders in. `gate` is the full-screen door (scrim +
  * panel + accent aside, a sibling of KiroPrerequisiteGate); `card` is the same
- * flow embedded inside a Settings card, where the card already supplies the
+ * flow embedded inside a dashboard card, where the card already supplies the
  * title and there is no room for a 3xl headline or an aside. The views below
  * read this instead of taking a prop each, so adding the embedded variant did
  * not fork six components.
@@ -170,7 +170,7 @@ function useChrome() {
 // (chooser vs device wait), so it is a required prop instead of a default.
 //
 // In card chrome the aside has nowhere to go (the card's own title carries the
-// context) and the scrim would cover the Settings page, so the view renders as
+// context) and the scrim would cover the page around it, so the view renders as
 // a plain region: same children, same aria-label, no door.
 function ViewShell({ aside, children }: { aside: ShellAsideCopy; children: ReactNode }) {
   const { card } = useChrome()
@@ -298,8 +298,9 @@ function Chooser({
     >
       {chrome.card ? (
         // The card's title already says "Kiro sign-in"; what the embedded
-        // chooser needs is the one sentence the gate's aside used to carry --
-        // why signing in here matters (agents run as this identity).
+        // chooser needs is one sentence saying WHICH backend the identity is
+        // for -- it sits under a switch that also lists Kiro CLI, whose own
+        // kiro-cli login this sign-in never touches.
         <p className="text-sm leading-relaxed text-muted" data-testid="kas-login-card-intro">
           {i18nT('components.kasLogin.card_intro')}
         </p>
@@ -704,9 +705,9 @@ export interface KasLoginFlowSlots {
  * authorization, and on a remote gateway — where the OAuth callback cannot
  * reach the user's browser — it switches to the device-code flow and shows the
  * code to approve. Not mounted at the app root: the flow's product entry point
- * is the embedded variant on the Settings page (`KasLoginEmbedded`, rendered by
- * `KiroSignInCard`); this full-screen form stays available for a future
- * app-root mount as a sibling of KiroPrerequisiteGate.
+ * is the embedded variant on the Developer page (`KasLoginEmbedded`, rendered by
+ * `KiroSignInCard` under the Agent Backend switch); this full-screen form stays
+ * available for a future app-root mount as a sibling of KiroPrerequisiteGate.
  */
 export default function KasLoginGate({ children }: { children?: ReactNode }) {
   return (
@@ -717,7 +718,7 @@ export default function KasLoginGate({ children }: { children?: ReactNode }) {
 }
 
 /**
- * The same flow embedded in a Settings card: no scrim, compact headings, and
+ * The same flow embedded in a dashboard card: no scrim, compact headings, and
  * instead of rendering the app when signed in it renders a token-free summary
  * of the identity (with sign-out and sign-in-again). `renderAuthenticated` is
  * required here because a card has no "app" to fall through to.

@@ -6400,7 +6400,7 @@
       "loopback_slow_hint": "等了很久？如果登录页无法连回这台电脑，请改用验证码——它在任何设备上都可用。",
       "loopback_fell_back": "登录结果无法直接回到这台电脑，所以改为使用验证码。",
       "cancel_unsettled": "无法取消登录。登录仍在进行中，请再次点击同一选项重试。",
-      "card_intro": "Agent 将以这个 Kiro 账号运行，不再依赖 kiro-cli 的登录。",
+      "card_intro": "仅供 KAS (kiro-agent) 后端使用：其 Agent 将以这个 Kiro 账号运行。Kiro CLI 仍沿用自己的 kiro-cli 登录，在此登录不会改变它。",
       "previous_sign_in_not_removed": "已登录，但无法移除之前的登录",
       "previous_sign_in_not_removed_body": "新账号已保存，但你切换前的那个账号仍然存在且优先生效。请先将其登出，再确认此处显示的登录。"
     },
@@ -10434,6 +10434,25 @@
         },
         "crew_members": "团队成员",
         "crew_members_desc": "团队成员（Crew Members）页面：列出你拥有的每个代理，各有自己的话题。仍在建设中，开启后才会提供。"
+      },
+      "kiroSignInCard": {
+        "title": "Kiro 登录",
+        "checking": "正在检查登录状态…",
+        "signed_in_with": "已通过 {{provider}} 登录",
+        "signed_in_body": "Agent 以这个 Kiro 账号运行。访问令牌会自动续期。",
+        "access_token_expires": "访问令牌 {{when}} 到期（{{at}}）。",
+        "expired_renews_on_next_use": "访问令牌已到期，下次有 agent 需要时会自动续期。",
+        "expired_no_refresh": "访问令牌已到期，且没有可用于续期的凭据。",
+        "refresh_rejected": "Kiro 拒绝为此登录续期。",
+        "sign_in_expired": "登录已失效",
+        "sign_in_expired_body": "{{provider}} 登录已不再有效。在你重新登录之前，agent 会报告未登录——不会自动退回到 kiro-cli 的登录。",
+        "sign_in_again": "重新登录",
+        "switch_account": "切换账号",
+        "sign_out": "登出",
+        "takes_effect_next_process": "对此后启动的 agent 进程生效；正在运行的会话会在下一轮对话时切换。",
+        "could_not_sign_out": "无法登出",
+        "keep_current_sign_in": "保留当前登录",
+        "signed_in_body_no_refresh": "Agent 以这个 Kiro 账号运行。此登录没有刷新令牌，无法自动续期——请在到期前重新登录。"
       }
     },
     "developerPage": {
@@ -11791,6 +11810,7 @@
       "days_of_history": "天历史",
       "h_idle": "小时空闲",
       "keeps": "· 保留",
+      "kiro_sign_in_moved": "Kiro 登录已移至“开发者 > 代理后端”",
       "memory": "记忆",
       "memory_graph_and_store_internals_live_on_the_dev": "记忆图谱和存储内部信息位于“开发者”页面",
       "messages": "条消息",
@@ -14004,26 +14024,6 @@
         "manage_webhooks": "管理 webhook",
         "tokens_count_other": "{{count}} 个访问令牌",
         "could_not_read_webhook_status": "无法读取 webhook 状态 — 检查网关是否正在运行"
-      },
-      "kiroSignInCard": {
-        "title": "Kiro 登录",
-        "registry_description": "登录 agent 所使用的 Kiro 账号，或从中登出。",
-        "checking": "正在检查登录状态…",
-        "signed_in_with": "已通过 {{provider}} 登录",
-        "signed_in_body": "Agent 以这个 Kiro 账号运行。访问令牌会自动续期。",
-        "access_token_expires": "访问令牌 {{when}} 到期（{{at}}）。",
-        "expired_renews_on_next_use": "访问令牌已到期，下次有 agent 需要时会自动续期。",
-        "expired_no_refresh": "访问令牌已到期，且没有可用于续期的凭据。",
-        "refresh_rejected": "Kiro 拒绝为此登录续期。",
-        "sign_in_expired": "登录已失效",
-        "sign_in_expired_body": "{{provider}} 登录已不再有效。在你重新登录之前，agent 会报告未登录——不会自动退回到 kiro-cli 的登录。",
-        "sign_in_again": "重新登录",
-        "switch_account": "切换账号",
-        "sign_out": "登出",
-        "takes_effect_next_process": "对此后启动的 agent 进程生效；正在运行的会话会在下一轮对话时切换。",
-        "could_not_sign_out": "无法登出",
-        "keep_current_sign_in": "保留当前登录",
-        "signed_in_body_no_refresh": "Agent 以这个 Kiro 账号运行。此登录没有刷新令牌，无法自动续期——请在到期前重新登录。"
       }
     },
     "settingsPage": {

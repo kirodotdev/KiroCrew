@@ -1034,13 +1034,6 @@
       "description": "External hook triggers"
     },
     {
-      "id": "overview.kiro-sign-in",
-      "label": "Kiro sign-in",
-      "tab": "overview",
-      "route": "/settings/overview?highlight=overview.kiro-sign-in",
-      "description": "Sign in to the Kiro account your agents run as, or sign out of it."
-    },
-    {
       "id": "privacy.record-metrics",
       "label": "Record metrics",
       "tab": "privacy",

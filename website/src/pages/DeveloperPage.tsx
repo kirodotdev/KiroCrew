@@ -6,6 +6,7 @@ import { ContentSkeleton } from '../components/ui'
 import { settingsPath } from '../components/settingsPath'
 import type { SettingsTarget } from '../components/settingsPath'
 import { SettingsLink } from '../components/SettingsLink'
+import { useSettingHighlight } from '../hooks/useSettingHighlight'
 import { FEATURE_PREVIEWS_HIGHLIGHT_ANCHOR } from './settings/FeaturePreviewsSection'
 import { LogViewer } from './LogsPage'
 import SystemPage from './SystemPage'
@@ -72,7 +73,17 @@ const FEATURE_PREVIEWS_TARGET: SettingsTarget = {
 export default function DeveloperPage() {
   const tabs = buildTabs()
   const navigate = useNavigate()
-  const { search } = useLocation()
+  const { pathname, search } = useLocation()
+
+  // `?highlight=key:<anchor>` lands a deep link ON its card rather than at the
+  // top of the pane: the chat's "Sign in to Kiro" error row sends the user to
+  // the Kiro sign-in card, which sits below the long backend-switch card on
+  // the Agent Backend tab (KIRO_SIGN_IN_PATH). Same hook Settings mounts; it
+  // waits for the card, which renders only after the tab's config query.
+  // Owned only while the URL is this page's own route: the legacy redirect
+  // below hands a Settings-bound highlight to SettingsPage, and this page
+  // must not consume it on the tick before that page mounts.
+  useSettingHighlight(pathname === '/developer')
 
   // Feature Previews moved to Settings > Developer. The old tab's URL survives
   // in bookmarks, docs and command-palette history, so a link that still names

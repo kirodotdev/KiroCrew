@@ -31,6 +31,14 @@ vi.mock('../components/settingRef/useConfigSchema', () => ({
   useConfigSchema: () => schemaMock(),
 }))
 
+// The card under the switch is a sentinel: its own behaviour (status query,
+// chooser, sign-out) is pinned in KiroSignInCard.test.tsx, and the real card
+// would need the kas-login API this file does not mock. Unlike the real card it
+// renders unconditionally, so its absence below can only be the tab's gate.
+vi.mock('../pages/developer/KiroSignInCard', () => ({
+  KiroSignInCard: () => <div data-testid="kiro-sign-in-card" />,
+}))
+
 import { AgentBackendTab } from '../pages/developer/AgentBackendTab'
 
 /** A schema map advertising exactly `values` for the backend field. */
@@ -746,5 +754,40 @@ describe('AgentBackendTab', () => {
     wrap()
     await waitFor(() => expect(button('Kiro CLI')).toBeEnabled())
     expect(screen.getByText(/decided when the gateway starts/)).toBeInTheDocument()
+  })
+
+  it('renders the Kiro sign-in card under the switch while KAS is on offer', async () => {
+    // The identity the card stores is consumed by the KAS relay alone, so the
+    // card lives beside the switch that selects KAS -- not on Settings >
+    // Overview, where a sign-in chooser read as a required step to every user.
+    // Offered, not selected: the shipped default is Kiro CLI, and the card must
+    // still be here so the user can sign in BEFORE switching.
+    wrap()
+    await waitFor(() => expect(button('KAS (kiro-agent)')).toBeEnabled())
+    expect(button('Kiro CLI')).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByTestId('kiro-sign-in-card')).toBeInTheDocument()
+  })
+
+  it('renders no sign-in card when this deployment cannot select KAS', async () => {
+    // A build or policy that hides the KAS option has nothing for the user to
+    // sign in for; a chooser here would be a sign-in to nothing. The gate reads
+    // the same `visible` set the rows render, so the switch and the card cannot
+    // disagree about whether KAS is offered.
+    schemaMock.mockReturnValue(schemaWith(['', 'claude']))
+    wrap()
+    await waitFor(() => expect(button('Claude Code')).toBeEnabled())
+    expect(screen.queryByRole('button', { name: 'KAS (kiro-agent)' })).toBeNull()
+    expect(screen.queryByTestId('kiro-sign-in-card')).toBeNull()
+  })
+
+  it('keeps the sign-in card while KAS is the saved backend, even if it reads as unselectable', async () => {
+    // `visible` always keeps the saved value so the control has a pressed chip;
+    // the card follows it, so an operator whose sessions still run as the Crew
+    // identity keeps the one place that can sign it out.
+    kirocrewConfigMock.mockResolvedValue({ agent: { acp_backend: 'kas' } })
+    schemaMock.mockReturnValue(schemaWith(['', 'claude']))
+    wrap()
+    await waitFor(() => expect(button('KAS (kiro-agent)')).toHaveAttribute('aria-pressed', 'true'))
+    expect(screen.getByTestId('kiro-sign-in-card')).toBeInTheDocument()
   })
 })

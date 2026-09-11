@@ -6400,7 +6400,7 @@
       "loopback_slow_hint": "時間がかかっていますか？サインインページがこのコンピューターに到達できない場合は、コードに切り替えてください。どの端末からでも使えます。",
       "loopback_fell_back": "サインインの結果がこのコンピューターに直接戻れなかったため、代わりにコードを表示しています。",
       "cancel_unsettled": "サインインをキャンセルできませんでした。サインインはまだ有効です。同じ項目をもう一度押して再試行してください。",
-      "card_intro": "エージェントはこの Kiro アカウントとして動作し、kiro-cli のログインには依存しません。",
+      "card_intro": "KAS (kiro-agent) バックエンドのみが使用します。そのエージェントはこの Kiro アカウントとして動作します。Kiro CLI は独自の kiro-cli ログインを使い続けるため、ここでサインインしても変わりません。",
       "previous_sign_in_not_removed": "サインインしましたが、以前のサインインを削除できませんでした",
       "previous_sign_in_not_removed_body": "新しいアカウントは保存されましたが、切り替え前のアカウントも残っており、そちらが優先されます。そのアカウントからサインアウトしてから、ここに表示されるサインインを確認してください。"
     },
@@ -10434,6 +10434,25 @@
         },
         "crew_members": "クルーメンバー",
         "crew_members_desc": "Crew Members ページ。あなたのすべてのエージェントが、それぞれ自分のスレッドを持って並びます。まだ開発中のため、オンにするまで表示されません。"
+      },
+      "kiroSignInCard": {
+        "title": "Kiro サインイン",
+        "checking": "サインイン状態を確認しています…",
+        "signed_in_with": "{{provider}} でサインイン済み",
+        "signed_in_body": "エージェントはこの Kiro アカウントとして動作します。アクセストークンは自動的に更新されます。",
+        "access_token_expires": "アクセストークンは {{when}} に期限切れになります（{{at}}）。",
+        "expired_renews_on_next_use": "アクセストークンは期限切れです。次にエージェントが必要としたときに更新されます。",
+        "expired_no_refresh": "アクセストークンは期限切れで、更新に使える資格情報がありません。",
+        "refresh_rejected": "Kiro がこのサインインの更新を拒否しました。",
+        "sign_in_expired": "サインインが失効しました",
+        "sign_in_expired_body": "{{provider}} のサインインは無効になりました。再度サインインするまで、エージェントは未サインインと報告します。kiro-cli のログインへ自動的に切り替わることはありません。",
+        "sign_in_again": "再度サインイン",
+        "switch_account": "アカウントを切り替え",
+        "sign_out": "サインアウト",
+        "takes_effect_next_process": "今後起動するエージェントプロセスに適用されます。実行中のセッションは次のターンで切り替わります。",
+        "could_not_sign_out": "サインアウトできませんでした",
+        "keep_current_sign_in": "現在のサインインを維持",
+        "signed_in_body_no_refresh": "エージェントはこの Kiro アカウントとして動作します。このサインインにはリフレッシュトークンがなく自動更新できません。期限切れになる前に再度サインインしてください。"
       }
     },
     "developerPage": {
@@ -11791,6 +11810,7 @@
       "days_of_history": "日分の履歴",
       "h_idle": "h 未使用",
       "keeps": "· 保持",
+      "kiro_sign_in_moved": "Kiro サインインは「デベロッパー > エージェントバックエンド」に移動しました",
       "memory": "メモリ",
       "memory_graph_and_store_internals_live_on_the_dev": "メモリグラフとストアの内部は開発者ページにあります",
       "messages": "メッセージ",
@@ -14004,26 +14024,6 @@
         "manage_webhooks": "Webhooks を管理",
         "tokens_count_other": "アクセストークン {{count}} 個",
         "could_not_read_webhook_status": "webhook の状態を取得できませんでした — ゲートウェイが起動していない可能性があります"
-      },
-      "kiroSignInCard": {
-        "title": "Kiro サインイン",
-        "registry_description": "エージェントが使用する Kiro アカウントにサインイン、またはサインアウトします。",
-        "checking": "サインイン状態を確認しています…",
-        "signed_in_with": "{{provider}} でサインイン済み",
-        "signed_in_body": "エージェントはこの Kiro アカウントとして動作します。アクセストークンは自動的に更新されます。",
-        "access_token_expires": "アクセストークンは {{when}} に期限切れになります（{{at}}）。",
-        "expired_renews_on_next_use": "アクセストークンは期限切れです。次にエージェントが必要としたときに更新されます。",
-        "expired_no_refresh": "アクセストークンは期限切れで、更新に使える資格情報がありません。",
-        "refresh_rejected": "Kiro がこのサインインの更新を拒否しました。",
-        "sign_in_expired": "サインインが失効しました",
-        "sign_in_expired_body": "{{provider}} のサインインは無効になりました。再度サインインするまで、エージェントは未サインインと報告します。kiro-cli のログインへ自動的に切り替わることはありません。",
-        "sign_in_again": "再度サインイン",
-        "switch_account": "アカウントを切り替え",
-        "sign_out": "サインアウト",
-        "takes_effect_next_process": "今後起動するエージェントプロセスに適用されます。実行中のセッションは次のターンで切り替わります。",
-        "could_not_sign_out": "サインアウトできませんでした",
-        "keep_current_sign_in": "現在のサインインを維持",
-        "signed_in_body_no_refresh": "エージェントはこの Kiro アカウントとして動作します。このサインインにはリフレッシュトークンがなく自動更新できません。期限切れになる前に再度サインインしてください。"
       }
     },
     "settingsPage": {

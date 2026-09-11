@@ -105,11 +105,6 @@ type PanelTarget = PanelTargetSingle | PanelTargetSingle[]
  *  dropped from search, so the gate cross-checks every panel file against it. */
 export const PANEL_TAB_MAP: Record<string, PanelTarget> = {
   'OverviewPanel.tsx': 'overview',
-  // Mounted by OverviewPage (the Overview tab). Renders no Settings* primitive,
-  // so the extractor yields nothing from it; the mapping exists so the manual
-  // entry `overview.kiro-sign-in` (settingsManual.ts) can anchor its
-  // data-setting-label to this file for the coverage gate.
-  'KiroSignInCard.tsx': 'overview',
   'ChatPanel.tsx': 'chat',
   'VoicePanel.tsx': 'voice',
   'DisplayPanel.tsx': 'display',

@@ -1,5 +1,5 @@
 import { lazy, Suspense, type ReactNode } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { ArrowLeft, ArrowRight, BarChart3, Brain, Clock } from 'lucide-react'
 import { useAppSelector } from '../store'
@@ -9,13 +9,13 @@ import type { WakaTimeStats } from '../api/client'
 import { Card, CardTitle, StatCard, Btn, ContentSkeleton } from '../components/ui'
 import { TunnelStatus } from '../components/TunnelStatus'
 import { TailnetMobileCard } from '../components/TailnetMobileCard'
-import { KiroSignInCard } from './settings/KiroSignInCard'
 import ErrorBoundary from '../components/ErrorBoundary'
 import ErrorNotice from '../components/ErrorNotice'
 import { useGuardedLeave } from '../components/NavigationLeaveGuard'
 import { getOverviewStatCards } from './overviewStatCards'
 import { getOverviewPanel } from './overviewPanel'
 import { isOverviewBuiltinSuppressed } from './overviewBuiltins'
+import { KIRO_SIGN_IN_BACKEND, KIRO_SIGN_IN_PATH } from './developer/kiroSignInLink'
 import { UsageTab, WakaTimeTab } from './overview'
 import { useProvider } from '../providers'
 import type { NormalizedUsage } from '../providers'
@@ -205,6 +205,36 @@ export const STAT_LABEL_KEY: Record<StatId, string> = {
   lessons: 'pages.overviewPage.stat_lessons',
 }
 
+/**
+ * Signpost to the Kiro sign-in card's home, Developer > Agent Backend
+ * (`KIRO_SIGN_IN_PATH`), shown only while KAS is the selected backend: those
+ * users read token expiry on this page by habit, and the card now sits beside
+ * the switch that picks KAS. Everyone else sees nothing -- the identity does not
+ * concern the Kiro CLI or Claude backends, so a pointer would be noise for them.
+ * Renders no element (not an empty wrapper) when hidden, so the layout above the
+ * guided cards keeps no stray gap.
+ */
+function KiroSignInMovedPointer() {
+  const cfgQ = useQuery<{ agent?: { acp_backend?: string } }>({
+    queryKey: ['kirocrewConfig'],
+    queryFn: () => api.kirocrewConfig(),
+  })
+  if (cfgQ.data?.agent?.acp_backend !== KIRO_SIGN_IN_BACKEND) return null
+  return (
+    <div className="mb-6">
+      <Link
+        to={KIRO_SIGN_IN_PATH}
+        className="text-[12px] leading-snug text-accent hover:underline"
+        data-testid="kiro-sign-in-moved"
+      >
+        {i18nT('pages.overviewPage.kiro_sign_in_moved')}
+        {' '}
+        <ArrowRight size={12} className="lucide-inline" />
+      </Link>
+    </div>
+  )
+}
+
 export default function OverviewPage() {
   const status = useAppSelector(s => s.dashboard.status)
   const connected = useAppSelector(s => s.dashboard.connected)
@@ -289,18 +319,6 @@ export default function OverviewPage() {
         })}
       </div>
 
-      {/* Kiro sign-in. First among the guided cards because it decides WHICH
-          identity every agent process runs as; a lapsed or missing sign-in is
-          the one Overview fact the rest of the dashboard cannot work around.
-          Same isolation and suppression contract as the tailnet card below. */}
-      {!isOverviewBuiltinSuppressed('kiro-sign-in') && (
-        <ErrorBoundary scope="overview-kiro-sign-in" fallback={null}>
-          <div className="mb-6">
-            <KiroSignInCard />
-          </div>
-        </ErrorBoundary>
-      )}
-
       {/* Mobile access. Above the summary cards and full width, because it is a
           guided sequence rather than a metric: it owns the one next action, and
           in its terminal state it renders a QR the operator scans off the screen.
@@ -312,6 +330,9 @@ export default function OverviewPage() {
           ErrorBoundary and the spacing wrapper so a suppressed build renders no
           element at all — leaving the `mb-6` div behind would keep a 24px gap
           where the card used to be. The core suppresses nothing. */}
+      <ErrorBoundary scope="overview-kiro-sign-in-moved" fallback={null}>
+        <KiroSignInMovedPointer />
+      </ErrorBoundary>
       {!isOverviewBuiltinSuppressed('tailnet-mobile') && (
         <ErrorBoundary scope="overview-tailnet-mobile" fallback={null}>
           <div className="mb-6">

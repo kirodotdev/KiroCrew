@@ -1,11 +1,13 @@
 import { fireEvent, screen, waitFor } from '@testing-library/react'
-import { renderWithProviders } from '../../test/helpers'
-import { KiroSignInCard, KIRO_SIGN_IN_SETTING_ID, KIRO_SIGN_IN_SETTINGS_TAB } from './KiroSignInCard'
-import { SETTINGS_MANUAL } from '../../components/commandPalette/settingsManual'
-import { api, type KasLoginStatus } from '../../api/client'
+import { renderWithProviders } from './helpers'
+import { KiroSignInCard } from '../pages/developer/KiroSignInCard'
+import { KIRO_SIGN_IN_PATH } from '../pages/developer/kiroSignInLink'
+import { KIRO_SIGN_IN_HIGHLIGHT_ANCHOR } from '../hooks/useSettingHighlight'
+import { SETTINGS_MANUAL } from '../components/commandPalette/settingsManual'
+import { api, type KasLoginStatus } from '../api/client'
 
-vi.mock('../../api/client', async importOriginal => {
-  const mod = await importOriginal<typeof import('../../api/client')>()
+vi.mock('../api/client', async importOriginal => {
+  const mod = await importOriginal<typeof import('../api/client')>()
   return {
     ...mod,
     api: {
@@ -60,26 +62,42 @@ describe('KiroSignInCard', () => {
     kasLoginBeginDevice.mockClear()
   })
 
-  it('is the deep-link target the registry and the chat error row agree on', () => {
-    const entry = SETTINGS_MANUAL.find(e => e.id === KIRO_SIGN_IN_SETTING_ID)
-    expect(entry).toBeTruthy()
-    expect(entry?.tab).toBe(KIRO_SIGN_IN_SETTINGS_TAB)
-    // The registry label key is the one the card renders as its title AND as
-    // its `data-setting-label` anchor, so useSettingHighlight finds the card.
-    expect(entry?.labelKey).toBe('pages.settings.kiroSignInCard.title')
+  it('deep-links to the Developer page on the Agent Backend tab, ringing the card, and is not a Settings search entry', () => {
+    // The chat error row navigates to KIRO_SIGN_IN_PATH; the route must open the
+    // Developer page on the tab that renders the card (pinned end to end in
+    // DeveloperPage.kiroSignIn.test.tsx) and carry the card's own anchor, so the
+    // reader lands ON the card below the long switch card rather than hunting.
+    expect(KIRO_SIGN_IN_HIGHLIGHT_ANCHOR).toBe('kiro-sign-in')
+    // The colon is percent-encoded so the route constant carries no prose-shaped
+    // quasi; URLSearchParams decodes it back to `key:kiro-sign-in` on read.
+    expect(KIRO_SIGN_IN_PATH).toBe('/developer?tab=agent-backend&highlight=key%3Akiro-sign-in')
+    expect(new URL(KIRO_SIGN_IN_PATH, 'http://x').searchParams.get('highlight')).toBe(`key:${KIRO_SIGN_IN_HIGHLIGHT_ANCHOR}`)
+    // KAS is a Developer Mode preview; indexing its sign-in into Settings search
+    // would advertise it as an ordinary preference and route to a Settings tab
+    // that no longer renders it.
+    expect(SETTINGS_MANUAL.some(e => e.labelKey === 'pages.developer.kiroSignInCard.title')).toBe(false)
+    expect(SETTINGS_MANUAL.some(e => e.id === 'overview.kiro-sign-in')).toBe(false)
   })
 
   it('shows a loader while the first status read is in flight', () => {
     kasLoginStatus.mockReturnValue(new Promise(() => {}))
     renderWithProviders(<KiroSignInCard />)
     expect(screen.getByTestId('kiro-sign-in-pending')).toBeInTheDocument()
-    expect(screen.getByTestId('kiro-sign-in-card')).toHaveAttribute('data-setting-label', 'Kiro sign-in')
+    const card = screen.getByTestId('kiro-sign-in-card')
+    expect(card).toHaveTextContent('Kiro sign-in')
+    // The anchor useSettingHighlight's direct lookup rings for KIRO_SIGN_IN_PATH.
+    expect(card).toHaveAttribute('data-setting-key', KIRO_SIGN_IN_HIGHLIGHT_ANCHOR)
   })
 
   it('signed out: renders the embedded chooser with the intro sentence, not a full-screen gate', async () => {
     kasLoginStatus.mockResolvedValue(SIGNED_OUT)
     renderWithProviders(<KiroSignInCard />)
-    expect(await screen.findByTestId('kas-login-card-intro')).toBeInTheDocument()
+    const intro = await screen.findByTestId('kas-login-card-intro')
+    // The card sits under a switch that also lists Kiro CLI, so the one sentence
+    // must name the backend this identity is for and say the other's login is
+    // untouched -- otherwise "this account" and the Kiro CLI option read alike.
+    expect(intro).toHaveTextContent('KAS (kiro-agent)')
+    expect(intro).toHaveTextContent('Kiro CLI keeps its own kiro-cli login')
     expect(screen.getByRole('button', { name: 'Continue with Google' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Continue with GitHub' })).toBeInTheDocument()
     // Embedded chrome: a region, no scrim/main and no page headline.

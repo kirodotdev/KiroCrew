@@ -9,7 +9,7 @@ import { useImeGuard } from '../hooks/useImeGuard'
 import { useRailWidth } from '../hooks/useRailWidth'
 import { SETTINGS_DEFAULT_MODEL_ID } from '../hooks/useSettingHighlight'
 import { settingsPath } from '../components/settingsPath'
-import { KIRO_SIGN_IN_SETTINGS_TAB, KIRO_SIGN_IN_SETTING_ID } from './settings/KiroSignInCard'
+import { KIRO_SIGN_IN_PATH } from './developer/kiroSignInLink'
 import { isTouchDevice } from '../utils/isTouchDevice'
 import { agentOrDefaultLabel } from '../utils/agentLabel'
 import { toApiDecision } from '../utils/approvalDecision'
@@ -3846,10 +3846,11 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     navigate(settingsPath({ tab: 'chat', highlight: SETTINGS_DEFAULT_MODEL_ID }))
   }, [navigate])
   // The Kiro sign-in card (an `auth_required` error row's fix) lives on the
-  // full dashboard's Settings > Overview; same surface rule as the Default
-  // Model link above.
+  // full dashboard's Developer > Agent Backend tab, under the switch that
+  // selects the KAS backend the row can only come from; same surface rule as
+  // the Default Model link above.
   const openKiroSignIn = useCallback(() => {
-    navigate(settingsPath({ tab: KIRO_SIGN_IN_SETTINGS_TAB, highlight: KIRO_SIGN_IN_SETTING_ID }))
+    navigate(KIRO_SIGN_IN_PATH)
   }, [navigate])
 
   const handleContinue = useCallback(() => {

@@ -6502,7 +6502,7 @@
       "loopback_slow_hint": "Dauert es lange? Wenn die Anmeldeseite diesen Computer nicht erreicht, wechsle zu einem Code — der funktioniert von jedem Gerät.",
       "loopback_fell_back": "Die Anmeldung konnte nicht direkt auf diesen Computer zurückkommen, deshalb gibt es stattdessen einen Code.",
       "cancel_unsettled": "Die Anmeldung konnte nicht abgebrochen werden. Sie läuft noch – wähle dieselbe Option erneut, um es noch einmal zu versuchen.",
-      "card_intro": "Agenten laufen unter diesem Kiro-Konto, unabhängig von einer kiro-cli-Anmeldung.",
+      "card_intro": "Wird nur vom KAS-Backend (kiro-agent) verwendet: Dessen Agenten laufen unter diesem Kiro-Konto. Kiro CLI behält seine eigene kiro-cli-Anmeldung; eine Anmeldung hier ändert daran nichts.",
       "previous_sign_in_not_removed": "Angemeldet, aber die vorherige Anmeldung konnte nicht entfernt werden",
       "previous_sign_in_not_removed_body": "Das neue Konto ist gespeichert, aber das Konto, von dem du gewechselt hast, ist noch da und hat Vorrang. Melde dich dort ab und prüfe dann die hier angezeigte Anmeldung."
     },
@@ -10589,6 +10589,25 @@
         },
         "crew_members": "Crew-Mitglieder",
         "crew_members_desc": "Die Seite Crew Members: alle deine Agenten, jeder mit eigenem Thread. Noch im Aufbau, daher erst verfügbar, wenn du das hier einschaltest."
+      },
+      "kiroSignInCard": {
+        "title": "Kiro-Anmeldung",
+        "checking": "Anmeldung wird geprüft…",
+        "signed_in_with": "Angemeldet mit {{provider}}",
+        "signed_in_body": "Agenten laufen unter diesem Kiro-Konto. Das Zugriffstoken wird automatisch erneuert.",
+        "access_token_expires": "Zugriffstoken läuft {{when}} ab ({{at}}).",
+        "expired_renews_on_next_use": "Das Zugriffstoken ist abgelaufen und wird erneuert, sobald ein Agent es das nächste Mal benötigt.",
+        "expired_no_refresh": "Das Zugriffstoken ist abgelaufen, und es gibt nichts, womit es erneuert werden könnte.",
+        "refresh_rejected": "Kiro hat die Erneuerung dieser Anmeldung abgelehnt.",
+        "sign_in_expired": "Anmeldung abgelaufen",
+        "sign_in_expired_body": "Die {{provider}}-Anmeldung ist nicht mehr gültig. Agenten melden „nicht angemeldet“, bis du dich erneut anmeldest – es gibt keinen automatischen Rückfall auf eine kiro-cli-Anmeldung.",
+        "sign_in_again": "Erneut anmelden",
+        "switch_account": "Konto wechseln",
+        "sign_out": "Abmelden",
+        "takes_effect_next_process": "Gilt für ab jetzt gestartete Agentenprozesse; laufende Sitzungen übernehmen es beim nächsten Zug.",
+        "could_not_sign_out": "Abmelden nicht möglich",
+        "keep_current_sign_in": "Aktuelle Anmeldung behalten",
+        "signed_in_body_no_refresh": "Agenten laufen unter diesem Kiro-Konto. Diese Anmeldung hat kein Refresh-Token und kann sich nicht selbst erneuern – melde dich vor dem Ablauf erneut an."
       }
     },
     "developerPage": {
@@ -11959,6 +11978,7 @@
       "days_of_history": "Tage Verlauf",
       "h_idle": "Std. inaktiv",
       "keeps": "· behält",
+      "kiro_sign_in_moved": "Die Kiro-Anmeldung ist jetzt unter Entwickler > Agent-Backend",
       "memory": "Erinnerung",
       "memory_graph_and_store_internals_live_on_the_dev": "Erinnerungsgraph und Speicherinterna finden Sie auf der Entwicklerseite",
       "messages": "Nachrichten",
@@ -14182,26 +14202,6 @@
         "tokens_count_one": "{{count}} Zugriffstoken",
         "tokens_count_other": "{{count}} Zugriffstoken",
         "could_not_read_webhook_status": "Webhook-Status konnte nicht gelesen werden — prüfe, ob das Gateway läuft"
-      },
-      "kiroSignInCard": {
-        "title": "Kiro-Anmeldung",
-        "registry_description": "Beim Kiro-Konto anmelden, unter dem die Agenten laufen, oder davon abmelden.",
-        "checking": "Anmeldung wird geprüft…",
-        "signed_in_with": "Angemeldet mit {{provider}}",
-        "signed_in_body": "Agenten laufen unter diesem Kiro-Konto. Das Zugriffstoken wird automatisch erneuert.",
-        "access_token_expires": "Zugriffstoken läuft {{when}} ab ({{at}}).",
-        "expired_renews_on_next_use": "Das Zugriffstoken ist abgelaufen und wird erneuert, sobald ein Agent es das nächste Mal benötigt.",
-        "expired_no_refresh": "Das Zugriffstoken ist abgelaufen, und es gibt nichts, womit es erneuert werden könnte.",
-        "refresh_rejected": "Kiro hat die Erneuerung dieser Anmeldung abgelehnt.",
-        "sign_in_expired": "Anmeldung abgelaufen",
-        "sign_in_expired_body": "Die {{provider}}-Anmeldung ist nicht mehr gültig. Agenten melden „nicht angemeldet“, bis du dich erneut anmeldest – es gibt keinen automatischen Rückfall auf eine kiro-cli-Anmeldung.",
-        "sign_in_again": "Erneut anmelden",
-        "switch_account": "Konto wechseln",
-        "sign_out": "Abmelden",
-        "takes_effect_next_process": "Gilt für ab jetzt gestartete Agentenprozesse; laufende Sitzungen übernehmen es beim nächsten Zug.",
-        "could_not_sign_out": "Abmelden nicht möglich",
-        "keep_current_sign_in": "Aktuelle Anmeldung behalten",
-        "signed_in_body_no_refresh": "Agenten laufen unter diesem Kiro-Konto. Diese Anmeldung hat kein Refresh-Token und kann sich nicht selbst erneuern – melde dich vor dem Ablauf erneut an."
       }
     },
     "settingsPage": {

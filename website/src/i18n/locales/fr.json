@@ -6604,7 +6604,7 @@
       "loopback_slow_hint": "C'est long ? Si la page de connexion n'arrive pas à joindre cet ordinateur, passe à un code : ça marche depuis n'importe quel appareil.",
       "loopback_fell_back": "La connexion n'a pas pu revenir directement sur cet ordinateur, voici donc un code à la place.",
       "cancel_unsettled": "Impossible d’annuler la connexion. Elle est toujours en cours : appuyez de nouveau sur la même option pour réessayer.",
-      "card_intro": "Les agents s’exécutent avec ce compte Kiro, sans dépendre d’une connexion kiro-cli.",
+      "card_intro": "Utilisé uniquement par le backend KAS (kiro-agent) : ses agents s'exécutent avec ce compte Kiro. Kiro CLI conserve sa propre connexion kiro-cli ; se connecter ici ne la modifie pas.",
       "previous_sign_in_not_removed": "Connecté, mais la connexion précédente n’a pas pu être supprimée",
       "previous_sign_in_not_removed_body": "Le nouveau compte est enregistré, mais celui que vous quittiez est toujours là et reste prioritaire. Déconnectez-vous de celui-ci, puis vérifiez la connexion affichée ici."
     },
@@ -10744,6 +10744,25 @@
         },
         "crew_members": "Membres de l’équipe",
         "crew_members_desc": "La page Crew Members : tous vos agents, chacun avec son propre fil. Encore en construction, donc non proposée tant que ceci n’est pas activé."
+      },
+      "kiroSignInCard": {
+        "title": "Connexion Kiro",
+        "checking": "Vérification de la connexion…",
+        "signed_in_with": "Connecté avec {{provider}}",
+        "signed_in_body": "Les agents s’exécutent avec ce compte Kiro. Le jeton d’accès est renouvelé automatiquement.",
+        "access_token_expires": "Le jeton d’accès expire {{when}} ({{at}}).",
+        "expired_renews_on_next_use": "Le jeton d’accès a expiré et sera renouvelé la prochaine fois qu’un agent en aura besoin.",
+        "expired_no_refresh": "Le jeton d’accès a expiré et rien ne permet de le renouveler.",
+        "refresh_rejected": "Kiro a refusé de renouveler cette connexion.",
+        "sign_in_expired": "Connexion expirée",
+        "sign_in_expired_body": "La connexion {{provider}} n’est plus valide. Les agents signaleront qu’ils ne sont pas connectés jusqu’à ce que vous vous reconnectiez — aucun repli automatique vers une connexion kiro-cli.",
+        "sign_in_again": "Se reconnecter",
+        "switch_account": "Changer de compte",
+        "sign_out": "Se déconnecter",
+        "takes_effect_next_process": "S’applique aux processus d’agent démarrés à partir de maintenant ; les sessions en cours l’adoptent à leur prochain tour.",
+        "could_not_sign_out": "Déconnexion impossible",
+        "keep_current_sign_in": "Conserver la connexion actuelle",
+        "signed_in_body_no_refresh": "Les agents s’exécutent avec ce compte Kiro. Cette connexion n’a pas de jeton de rafraîchissement et ne peut pas se renouveler seule — reconnectez-vous avant son expiration."
       }
     },
     "developerPage": {
@@ -12127,6 +12146,7 @@
       "days_of_history": "jours d'historique",
       "h_idle": "h d'inactivité",
       "keeps": "· conserve",
+      "kiro_sign_in_moved": "La connexion Kiro est passée dans Développeur > Backend de l’agent",
       "memory": "Mémoire",
       "memory_graph_and_store_internals_live_on_the_dev": "Le graphe de mémoire et les détails du stockage se trouvent sur la page Développeur",
       "messages": "messages",
@@ -14361,26 +14381,6 @@
         "tokens_count_other": "{{count}} jetons d'accès",
         "tokens_count_many": "{{count}} jetons d'accès",
         "could_not_read_webhook_status": "Impossible de lire l'état du webhook — vérifie que la passerelle est démarrée"
-      },
-      "kiroSignInCard": {
-        "title": "Connexion Kiro",
-        "registry_description": "Connectez-vous au compte Kiro utilisé par vos agents, ou déconnectez-vous.",
-        "checking": "Vérification de la connexion…",
-        "signed_in_with": "Connecté avec {{provider}}",
-        "signed_in_body": "Les agents s’exécutent avec ce compte Kiro. Le jeton d’accès est renouvelé automatiquement.",
-        "access_token_expires": "Le jeton d’accès expire {{when}} ({{at}}).",
-        "expired_renews_on_next_use": "Le jeton d’accès a expiré et sera renouvelé la prochaine fois qu’un agent en aura besoin.",
-        "expired_no_refresh": "Le jeton d’accès a expiré et rien ne permet de le renouveler.",
-        "refresh_rejected": "Kiro a refusé de renouveler cette connexion.",
-        "sign_in_expired": "Connexion expirée",
-        "sign_in_expired_body": "La connexion {{provider}} n’est plus valide. Les agents signaleront qu’ils ne sont pas connectés jusqu’à ce que vous vous reconnectiez — aucun repli automatique vers une connexion kiro-cli.",
-        "sign_in_again": "Se reconnecter",
-        "switch_account": "Changer de compte",
-        "sign_out": "Se déconnecter",
-        "takes_effect_next_process": "S’applique aux processus d’agent démarrés à partir de maintenant ; les sessions en cours l’adoptent à leur prochain tour.",
-        "could_not_sign_out": "Déconnexion impossible",
-        "keep_current_sign_in": "Conserver la connexion actuelle",
-        "signed_in_body_no_refresh": "Les agents s’exécutent avec ce compte Kiro. Cette connexion n’a pas de jeton de rafraîchissement et ne peut pas se renouveler seule — reconnectez-vous avant son expiration."
       }
     },
     "settingsPage": {

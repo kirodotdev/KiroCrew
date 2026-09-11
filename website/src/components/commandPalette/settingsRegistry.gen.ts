@@ -1578,15 +1578,6 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "description": "External hook triggers"
   },
   {
-    "id": "overview.kiro-sign-in",
-    "labelKey": "pages.settings.kiroSignInCard.title",
-    "tab": "overview",
-    "type": "buttonGroup",
-    "occurrence": 1,
-    "label": "Kiro sign-in",
-    "description": "Sign in to the Kiro account your agents run as, or sign out of it."
-  },
-  {
     "id": "privacy.record-metrics",
     "label": "Record metrics",
     "labelKey": "pages.settings.privacyPanel.recordMetricsLabel",

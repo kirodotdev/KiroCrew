@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest'
 import { screen, fireEvent } from '@testing-library/react'
 import { renderWithProviders, createTestStore } from './helpers'
 import OverviewPage from '../pages/OverviewPage'
+import { KIRO_SIGN_IN_BACKEND, KIRO_SIGN_IN_PATH } from '../pages/developer/kiroSignInLink'
 import type { RootState } from '../store'
 
 // Mock the two drill-in surfaces to isolate the mission-control shell.
@@ -20,6 +21,11 @@ vi.mock('../hooks/useUptime', () => ({
 vi.mock('../api/client', () => ({
   api: {
     memorySettings: vi.fn().mockResolvedValue({ history_idle_hours: 3, history_max_days: 90, migrated: false }),
+    // Present only to be asserted NEVER called: the landing page must not read
+    // the Kiro sign-in status, let alone render its chooser.
+    kasLoginStatus: vi.fn().mockResolvedValue({ authenticated: false }),
+    // The selected backend decides whether the sign-in signpost renders.
+    kirocrewConfig: vi.fn().mockResolvedValue({ agent: { acp_backend: '' } }),
   },
 }))
 
@@ -150,5 +156,37 @@ describe('OverviewPage — mission control', () => {
     })
     renderWithProviders(<OverviewPage />, { store: statusStore() })
     expect(screen.getByTestId('edition-panel')).toBeInTheDocument()
+  })
+
+  // The Kiro sign-in card serves the KAS backend only, a Developer Mode
+  // preview, so it lives under Developer > Agent Backend. On the landing page
+  // its provider chooser read as a required step to every user, first-run
+  // installs included. Asserted so it is not re-added: neither the card nor a
+  // read of its status belongs here.
+  it('hosts no Kiro sign-in card and never reads the sign-in status', async () => {
+    const { api } = await import('../api/client')
+    renderWithProviders(<OverviewPage />, { store: statusStore() })
+    expect(await screen.findByText('Memory')).toBeInTheDocument()
+    expect(screen.queryByTestId('kiro-sign-in-card')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Continue with/ })).not.toBeInTheDocument()
+    expect(api.kasLoginStatus).not.toHaveBeenCalled()
+  })
+
+  it('signposts the sign-in card only while KAS is the selected backend', async () => {
+    const { api } = await import('../api/client')
+    // Kiro CLI (the default, spelled as the empty string): no pointer, and no
+    // wrapper left behind where the card used to sit.
+    const first = renderWithProviders(<OverviewPage />, { store: statusStore() })
+    expect(await screen.findByText('Memory')).toBeInTheDocument()
+    expect(screen.queryByTestId('kiro-sign-in-moved')).not.toBeInTheDocument()
+    first.unmount()
+
+    vi.mocked(api.kirocrewConfig).mockResolvedValueOnce({ agent: { acp_backend: KIRO_SIGN_IN_BACKEND } })
+    renderWithProviders(<OverviewPage />, { store: statusStore() })
+    const pointer = await screen.findByTestId('kiro-sign-in-moved')
+    expect(pointer).toHaveTextContent('Kiro sign-in moved to Developer > Agent Backend')
+    // Same destination as the chat error row, so the two doors cannot drift.
+    expect(pointer).toHaveAttribute('href', KIRO_SIGN_IN_PATH)
+    expect(api.kasLoginStatus).not.toHaveBeenCalled()
   })
 })

@@ -6604,7 +6604,7 @@
       "loopback_slow_hint": "Está demorando? Se a página de login não conseguir alcançar este computador, mude para um código: funciona de qualquer dispositivo.",
       "loopback_fell_back": "O login não conseguiu voltar direto para este computador, então aqui está um código.",
       "cancel_unsettled": "Não foi possível cancelar o login. Ele ainda está ativo: pressione a mesma opção novamente para tentar de novo.",
-      "card_intro": "Os agentes são executados com esta conta Kiro, sem depender de um login do kiro-cli.",
+      "card_intro": "Usado apenas pelo backend KAS (kiro-agent): seus agentes são executados com esta conta Kiro. O Kiro CLI mantém o próprio login do kiro-cli, então entrar aqui não o altera.",
       "previous_sign_in_not_removed": "Conectado, mas não foi possível remover o login anterior",
       "previous_sign_in_not_removed_body": "A nova conta foi salva, mas a conta da qual você estava saindo ainda está lá e tem prioridade. Saia dela e depois confira o login mostrado aqui."
     },
@@ -10744,6 +10744,25 @@
         },
         "crew_members": "Membros da equipe",
         "crew_members_desc": "A página Crew Members: todos os seus agentes, cada um com o próprio tópico. Ainda em construção, por isso não é oferecida até você ligar isto."
+      },
+      "kiroSignInCard": {
+        "title": "Login do Kiro",
+        "checking": "Verificando o login…",
+        "signed_in_with": "Conectado com {{provider}}",
+        "signed_in_body": "Os agentes são executados com esta conta Kiro. O token de acesso é renovado automaticamente.",
+        "access_token_expires": "O token de acesso expira {{when}} ({{at}}).",
+        "expired_renews_on_next_use": "O token de acesso expirou e será renovado na próxima vez que um agente precisar dele.",
+        "expired_no_refresh": "O token de acesso expirou e não há nada com que renová-lo.",
+        "refresh_rejected": "O Kiro recusou renovar este login.",
+        "sign_in_expired": "Login expirado",
+        "sign_in_expired_body": "O login com {{provider}} não é mais válido. Os agentes informarão que não estão conectados até que você entre novamente — não há retorno automático para um login do kiro-cli.",
+        "sign_in_again": "Entrar novamente",
+        "switch_account": "Trocar de conta",
+        "sign_out": "Sair",
+        "takes_effect_next_process": "Vale para processos de agente iniciados a partir de agora; sessões em execução adotam a mudança no próximo turno.",
+        "could_not_sign_out": "Não foi possível sair",
+        "keep_current_sign_in": "Manter o login atual",
+        "signed_in_body_no_refresh": "Os agentes são executados com esta conta Kiro. Este login não tem token de atualização e não pode se renovar sozinho — entre novamente antes que expire."
       }
     },
     "developerPage": {
@@ -12127,6 +12146,7 @@
       "days_of_history": "dias de histórico",
       "h_idle": "h de inatividade",
       "keeps": "· mantém",
+      "kiro_sign_in_moved": "O login do Kiro foi movido para Desenvolvedor > Backend do agente",
       "memory": "Memória",
       "memory_graph_and_store_internals_live_on_the_dev": "O grafo de memória e os detalhes internos do armazenamento ficam na página Desenvolvedor",
       "messages": "mensagens",
@@ -14360,26 +14380,6 @@
         "tokens_count_other": "{{count}} tokens de acesso",
         "tokens_count_many": "{{count}} tokens de acesso",
         "could_not_read_webhook_status": "Não foi possível ler o status do webhook — verifique se o gateway está em execução"
-      },
-      "kiroSignInCard": {
-        "title": "Login do Kiro",
-        "registry_description": "Entre na conta Kiro com a qual seus agentes são executados, ou saia dela.",
-        "checking": "Verificando o login…",
-        "signed_in_with": "Conectado com {{provider}}",
-        "signed_in_body": "Os agentes são executados com esta conta Kiro. O token de acesso é renovado automaticamente.",
-        "access_token_expires": "O token de acesso expira {{when}} ({{at}}).",
-        "expired_renews_on_next_use": "O token de acesso expirou e será renovado na próxima vez que um agente precisar dele.",
-        "expired_no_refresh": "O token de acesso expirou e não há nada com que renová-lo.",
-        "refresh_rejected": "O Kiro recusou renovar este login.",
-        "sign_in_expired": "Login expirado",
-        "sign_in_expired_body": "O login com {{provider}} não é mais válido. Os agentes informarão que não estão conectados até que você entre novamente — não há retorno automático para um login do kiro-cli.",
-        "sign_in_again": "Entrar novamente",
-        "switch_account": "Trocar de conta",
-        "sign_out": "Sair",
-        "takes_effect_next_process": "Vale para processos de agente iniciados a partir de agora; sessões em execução adotam a mudança no próximo turno.",
-        "could_not_sign_out": "Não foi possível sair",
-        "keep_current_sign_in": "Manter o login atual",
-        "signed_in_body_no_refresh": "Os agentes são executados com esta conta Kiro. Este login não tem token de atualização e não pode se renovar sozinho — entre novamente antes que expire."
       }
     },
     "settingsPage": {

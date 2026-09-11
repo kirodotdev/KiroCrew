@@ -2567,8 +2567,9 @@ MODEL_UNENTITLED_KIND = "model_unentitled"
 #: produces (the agent process reported it is not signed in). Like
 #: MODEL_UNENTITLED_KIND, no recovery is queued -- a retry hits the same wall --
 #: and the frontend uses the kind to offer the fix that does end it: a deep link
-#: to the dashboard's Kiro sign-in card (Settings), where the user signs in to
-#: Kiro Crew's own identity again. The prose stays as the backend formatted it.
+#: to the dashboard's Kiro sign-in card (Developer > Agent Backend), where the
+#: user signs in to Kiro Crew's own identity again. The prose stays as the
+#: backend formatted it.
 AUTH_REQUIRED_KIND = "auth_required"
 
 #: Structural queue-entry kinds for system injections.  Classification by kind

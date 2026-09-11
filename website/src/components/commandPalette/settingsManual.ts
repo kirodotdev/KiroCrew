@@ -272,17 +272,4 @@ export const SETTINGS_MANUAL: ManualSettingEntry[] = [
     type: 'input',
     occurrence: 1,
   },
-  {
-    // Kiro sign-in card (Settings > Overview): provider chooser / device-code
-    // wait / signed-in summary with sign-out. A multi-state composite with no
-    // primitive shape; the chooser's provider buttons are the closest fit. The
-    // id is also the deep-link target the chat's "not signed in" error row
-    // navigates to (KIRO_SIGN_IN_SETTING_ID in KiroSignInCard.tsx).
-    id: 'overview.kiro-sign-in',
-    labelKey: 'pages.settings.kiroSignInCard.title',
-    descriptionKey: 'pages.settings.kiroSignInCard.registry_description',
-    tab: 'overview',
-    type: 'buttonGroup',
-    occurrence: 1,
-  },
 ]

@@ -6604,7 +6604,7 @@
       "loopback_slow_hint": "¿Tarda demasiado? Si la página de inicio de sesión no puede llegar a este equipo, cambia a un código: funciona desde cualquier dispositivo.",
       "loopback_fell_back": "El inicio de sesión no pudo volver directamente a este equipo, así que aquí tienes un código.",
       "cancel_unsettled": "No se pudo cancelar el inicio de sesión. Sigue activo: pulsa la misma opción otra vez para reintentar.",
-      "card_intro": "Los agentes se ejecutan con esta cuenta de Kiro, sin depender de un inicio de sesión de kiro-cli.",
+      "card_intro": "Solo lo usa el backend KAS (kiro-agent): sus agentes se ejecutan con esta cuenta de Kiro. Kiro CLI conserva su propio inicio de sesión de kiro-cli, así que iniciar sesión aquí no lo cambia.",
       "previous_sign_in_not_removed": "Sesión iniciada, pero no se pudo eliminar el inicio de sesión anterior",
       "previous_sign_in_not_removed_body": "La cuenta nueva está guardada, pero la cuenta de la que cambiaste sigue ahí y tiene prioridad. Cierra esa sesión y luego comprueba el inicio de sesión que se muestra aquí."
     },
@@ -10744,6 +10744,25 @@
         },
         "crew_members": "Miembros del equipo",
         "crew_members_desc": "La página Crew Members: todos tus agentes, cada uno con su propio hilo. Aún en construcción, así que no se ofrece hasta que actives esto."
+      },
+      "kiroSignInCard": {
+        "title": "Inicio de sesión en Kiro",
+        "checking": "Comprobando el inicio de sesión…",
+        "signed_in_with": "Sesión iniciada con {{provider}}",
+        "signed_in_body": "Los agentes se ejecutan con esta cuenta de Kiro. El token de acceso se renueva automáticamente.",
+        "access_token_expires": "El token de acceso caduca {{when}} ({{at}}).",
+        "expired_renews_on_next_use": "El token de acceso ha caducado y se renovará la próxima vez que un agente lo necesite.",
+        "expired_no_refresh": "El token de acceso ha caducado y no hay nada con qué renovarlo.",
+        "refresh_rejected": "Kiro rechazó renovar este inicio de sesión.",
+        "sign_in_expired": "Inicio de sesión caducado",
+        "sign_in_expired_body": "El inicio de sesión con {{provider}} ya no es válido. Los agentes informarán de que no han iniciado sesión hasta que vuelvas a hacerlo; no se recurre automáticamente a un inicio de sesión de kiro-cli.",
+        "sign_in_again": "Iniciar sesión de nuevo",
+        "switch_account": "Cambiar de cuenta",
+        "sign_out": "Cerrar sesión",
+        "takes_effect_next_process": "Se aplica a los procesos de agente que se inicien a partir de ahora; las sesiones en curso lo adoptan en su siguiente turno.",
+        "could_not_sign_out": "No se pudo cerrar la sesión",
+        "keep_current_sign_in": "Mantener el inicio de sesión actual",
+        "signed_in_body_no_refresh": "Los agentes se ejecutan con esta cuenta de Kiro. Este inicio de sesión no tiene token de actualización y no puede renovarse solo: vuelve a iniciar sesión antes de que caduque."
       }
     },
     "developerPage": {
@@ -12127,6 +12146,7 @@
       "days_of_history": "días de historial",
       "h_idle": "h de inactividad",
       "keeps": "· conserva",
+      "kiro_sign_in_moved": "El inicio de sesión de Kiro se movió a Desarrollador > Backend del agente",
       "memory": "Memoria",
       "memory_graph_and_store_internals_live_on_the_dev": "El grafo de memoria y los detalles internos del almacén están en la página Desarrollador",
       "messages": "mensajes",
@@ -14361,26 +14381,6 @@
         "tokens_count_other": "{{count}} tokens de acceso",
         "tokens_count_many": "{{count}} tokens de acceso",
         "could_not_read_webhook_status": "No se pudo leer el estado del webhook — comprueba que el gateway esté en ejecución"
-      },
-      "kiroSignInCard": {
-        "title": "Inicio de sesión en Kiro",
-        "registry_description": "Inicia sesión en la cuenta de Kiro con la que se ejecutan tus agentes, o cierra esa sesión.",
-        "checking": "Comprobando el inicio de sesión…",
-        "signed_in_with": "Sesión iniciada con {{provider}}",
-        "signed_in_body": "Los agentes se ejecutan con esta cuenta de Kiro. El token de acceso se renueva automáticamente.",
-        "access_token_expires": "El token de acceso caduca {{when}} ({{at}}).",
-        "expired_renews_on_next_use": "El token de acceso ha caducado y se renovará la próxima vez que un agente lo necesite.",
-        "expired_no_refresh": "El token de acceso ha caducado y no hay nada con qué renovarlo.",
-        "refresh_rejected": "Kiro rechazó renovar este inicio de sesión.",
-        "sign_in_expired": "Inicio de sesión caducado",
-        "sign_in_expired_body": "El inicio de sesión con {{provider}} ya no es válido. Los agentes informarán de que no han iniciado sesión hasta que vuelvas a hacerlo; no se recurre automáticamente a un inicio de sesión de kiro-cli.",
-        "sign_in_again": "Iniciar sesión de nuevo",
-        "switch_account": "Cambiar de cuenta",
-        "sign_out": "Cerrar sesión",
-        "takes_effect_next_process": "Se aplica a los procesos de agente que se inicien a partir de ahora; las sesiones en curso lo adoptan en su siguiente turno.",
-        "could_not_sign_out": "No se pudo cerrar la sesión",
-        "keep_current_sign_in": "Mantener el inicio de sesión actual",
-        "signed_in_body_no_refresh": "Los agentes se ejecutan con esta cuenta de Kiro. Este inicio de sesión no tiene token de actualización y no puede renovarse solo: vuelve a iniciar sesión antes de que caduque."
       }
     },
     "settingsPage": {
