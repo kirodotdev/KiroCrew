@@ -1596,6 +1596,23 @@ def _http_error_body(exc: urllib.error.HTTPError) -> dict:
             "the instance you meant) and retry; the gateway's security event log "
             "records both credential fingerprints for the mismatch."
         )
+    elif code == "caller_record_missing":
+        message = (
+            "this session's cron or subagent record no longer exists; start a new "
+            "session before retrying the tool."
+        )
+    elif code == "unix_peer_unverified":
+        message = (
+            "the gateway could not verify this Unix-socket caller as the same local "
+            "user. Restart the gateway and start a new session; if the error persists, "
+            "make sure the client and gateway run as the same OS user."
+        )
+    elif code == "peer_session_mismatch":
+        message = (
+            "this Unix-socket caller is bound to a different session than the "
+            "X-Session-Key it declared. Restart the affected session, or start a new "
+            "one, before retrying the tool."
+        )
     out: dict = {"error": message}
     if counted:
         out["counted"] = True

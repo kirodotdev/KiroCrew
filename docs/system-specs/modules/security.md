@@ -1562,6 +1562,20 @@ the destination's ordinary security checks and to the effective
 - `token_auth_middleware(local_only)` — single boolean controls all auth behavior
 - **Secure cookie flag via `origin.is_https_request()`**: the `mc_token_<port>` cookie (and the refresh cookie) set `Secure` only when the request is HTTPS — `is_https_request(request)` returns True for a direct HTTPS request, or when `X-Forwarded-Proto: https` is present **and the immediate peer is loopback** (a TLS-terminating tunnel/proxy forwarding into the loopback-bound gateway). Plain-HTTP localhost must NOT set `Secure` or the browser refuses to send the cookie back
 
+**Internal MCP authentication denial codes** — an internal tool can receive the same
+`403 Forbidden` body for several different failures. `token_auth.py` therefore labels
+the actionable internal paths without changing what they deny: `unix_peer_unverified`
+means the Unix-socket peer could not be confirmed as the gateway user;
+`peer_session_mismatch` means the verified peer belongs to a different session than
+its declared `X-Session-Key`; `caller_record_missing` means the current cron or
+subagent registry record no longer exists. `mcp_core._http_error_body` maps those
+codes to the matching recovery step: restart the gateway and recreate the session,
+restart or replace the mismatched session, or start a new session, respectively. The
+existing `internal_auth_mismatch` mapping remains the wrong-instance diagnostic.
+Unknown codes and uncoded `Forbidden` responses keep the backend wording, so a real
+permission denial is never relabelled as an identity failure. Every branch keeps its
+existing HTTP status, deny decision, ordering, and SEL audit.
+
 **Per-session logout (CWE-613)** (`token_auth.py`): the access cookie is a self-contained HMAC-signed token, so clearing it client-side (`Set-Cookie max_age=0`) does not stop a saved copy replaying until its `session_exp` (up to 20h). `RevokedNonceStore` is a persisted denylist of explicitly-revoked access-cookie nonces (`token_revoked_nonces.json`, mode `0600`, survives gateway restart; each entry stores the token's own `session_exp` as an eviction floor so the file cannot grow unbounded). `POST /api/auth/logout` → `revoke_access_cookie()` validates the token, then records its nonce; `validate_token` (cookie path) is **deny-by-default** — a token whose nonce is revoked, or that carries no nonce at all, is rejected. Link-click token exchange also mints a SEPARATE session cookie (fresh nonce, `register_nonce=False`) rather than reusing the one-time URL/link token as the long-lived cookie, and denylists the consumed link nonce so a captured link copy cannot be replayed as `mc_token_<port>` (the query-param LINK path does not consult the denylist, so legitimate re-navigation of the same link URL within the 5-minute window still re-exchanges for a fresh session cookie).
 
 **Structured monitor API authorization** (`dashboard/handlers/autonudge.py`):

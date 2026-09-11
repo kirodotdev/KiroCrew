@@ -253,6 +253,10 @@ async def test_unix_peer_mismatch_denied_with_sel(monkeypatch: pytest.MonkeyPatc
     )
     resp = await mw(req, _ok_handler)
     assert resp.status == 403
+    assert json.loads(resp.body) == {
+        "error": "Forbidden",
+        "code": "peer_session_mismatch",
+    }
     mismatches = [c for c in calls if c.get("operation") == "dashboard.peer-identity-mismatch"]
     assert len(mismatches) == 1
     assert mismatches[0]["outcome"] == "denied"
@@ -318,6 +322,10 @@ async def test_unix_peer_uid_mismatch_denied(monkeypatch: pytest.MonkeyPatch) ->
     )
     resp = await mw(req, _ok_handler)
     assert resp.status == 403
+    assert json.loads(resp.body) == {
+        "error": "Forbidden",
+        "code": "unix_peer_unverified",
+    }
     assert any(c.get("outcome") == "denied" for c in calls)
 
 
@@ -336,6 +344,10 @@ async def test_unix_peer_uid_unverifiable_denied(monkeypatch: pytest.MonkeyPatch
     )
     resp = await mw(req, _ok_handler)
     assert resp.status == 403
+    assert json.loads(resp.body) == {
+        "error": "Forbidden",
+        "code": "unix_peer_unverified",
+    }
     assert any("unverifiable" in c.get("error", "") for c in calls)
 
 

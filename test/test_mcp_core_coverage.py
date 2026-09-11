@@ -187,6 +187,31 @@ class TestHttpErrorBody:
         err = _http_error(400, json.dumps({"error": f"bad key {secret}"}).encode())
         assert secret not in _http_error_body(err)["error"]
 
+    @pytest.mark.parametrize(
+        ("code", "expected"),
+        [
+            ("caller_record_missing", "cron or subagent record no longer exists"),
+            ("unix_peer_unverified", "could not verify this Unix-socket caller"),
+            ("peer_session_mismatch", "bound to a different session"),
+        ],
+    )
+    def test_internal_auth_denial_codes_are_actionable(self, code: str, expected: str):
+        err = _http_error(403, json.dumps({"error": "Forbidden", "code": code}).encode())
+        out = _http_error_body(err)
+        assert expected in out["error"]
+        assert out["error"] != "Forbidden"
+        assert out["code"] == code
+
+    def test_unrelated_error_code_keeps_the_backend_message(self):
+        err = _http_error(
+            403,
+            b'{"error": "Forbidden", "code": "unrelated_auth_denial"}',
+        )
+        assert _http_error_body(err) == {
+            "error": "Forbidden",
+            "code": "unrelated_auth_denial",
+        }
+
 
 @pytest.mark.parametrize("verb", ["_get", "_patch", "_put", "_delete"])
 class TestVerbHelpers:

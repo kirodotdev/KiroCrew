@@ -22,6 +22,7 @@ below:
 
 from __future__ import annotations
 
+import json
 from unittest.mock import MagicMock
 
 import pytest
@@ -500,6 +501,10 @@ class TestADelegatedCallerWhoseRecordIsGoneIsRefused:
             "a cron whose job was deleted mid-run kept the dashboard user's "
             "reach; the deleted record was the only proof of its owner"
         )
+        assert json.loads(resp.body) == {
+            "error": "Forbidden",
+            "code": "caller_record_missing",
+        }
 
     @pytest.mark.asyncio
     async def test_a_subagent_missing_from_the_registry_is_refused(self) -> None:
@@ -507,6 +512,10 @@ class TestADelegatedCallerWhoseRecordIsGoneIsRefused:
         req, _ = _request("subagent:gone", {}, subagents={})
         resp = await mw(req, _ok)
         assert resp.status == 403
+        assert json.loads(resp.body) == {
+            "error": "Forbidden",
+            "code": "caller_record_missing",
+        }
 
     @pytest.mark.asyncio
     async def test_a_live_record_is_admitted(self) -> None:

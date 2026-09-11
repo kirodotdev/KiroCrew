@@ -1685,7 +1685,7 @@ async def _verify_unix_peer(
             error=_reason,
         )
         _log_auth(request, "internal", "denied", _reason)
-        return _deny(request, "Forbidden")
+        return _deny(request, "Forbidden", "unix_peer_unverified")
     peer_pid = get_peer_pid(sock)
     if peer_pid is None:
         return None
@@ -1720,7 +1720,7 @@ async def _verify_unix_peer(
             "denied",
             f"peer identity mismatch (peer_pid={peer_pid})",
         )
-        return _deny(request, "Forbidden")
+        return _deny(request, "Forbidden", "peer_session_mismatch")
     # Positive kernel attestation. Debug-level on purpose — this fires on
     # every internal call from a claimed session; the SEL trail records the
     # deny arm, which is the permission decision that changes anything.
