@@ -395,7 +395,7 @@ def _registry_identity_key(name_or_repo: str) -> str:
 
 def _public_registry_name(reg: Any) -> str:
     """Credential-free identity stamped on rows and returned to callers."""
-    return _strip_git_target_userinfo(reg.name or reg.repo)
+    return _strip_git_target_userinfo(_external_registry_cache_identity(reg))
 
 
 def _is_supported_registry_transport(repo: str) -> bool:
@@ -516,7 +516,7 @@ def _pinned_registries() -> list[Any]:
     # winner would hide it behind intermittently wrong app listings.
     counts: dict[str, int] = {}
     for reg in pinned:
-        key = _registry_identity_key(reg.name or reg.repo)
+        key = _registry_identity_key(_external_registry_cache_identity(reg))
         counts[key] = counts.get(key, 0) + 1
     duplicated = {key for key, n in counts.items() if n > 1}
     if duplicated:
@@ -528,7 +528,7 @@ def _pinned_registries() -> list[Any]:
                 key,
             )
         pinned = [
-            reg for reg in pinned if _registry_identity_key(reg.name or reg.repo) not in duplicated
+            reg for reg in pinned if _registry_identity_key(_external_registry_cache_identity(reg)) not in duplicated
         ]
     return pinned
 
@@ -583,11 +583,11 @@ def _effective_registries() -> list[Any]:
     if not pinned:
         return configured
 
-    pinned_by_key = {_registry_identity_key(reg.name or reg.repo): reg for reg in pinned}
+    pinned_by_key = {_registry_identity_key(_external_registry_cache_identity(reg)): reg for reg in pinned}
     contested: set[str] = set()
     kept_configured = []
     for reg in configured:
-        key = _registry_identity_key(reg.name or reg.repo)
+        key = _registry_identity_key(_external_registry_cache_identity(reg))
         rival = pinned_by_key.get(key)
         if rival is None:
             kept_configured.append(reg)
@@ -607,7 +607,7 @@ def _effective_registries() -> list[Any]:
         # Same repo AND same branch: the pinned row supersedes it, nothing is lost.
 
     return [
-        reg for reg in pinned if _registry_identity_key(reg.name or reg.repo) not in contested
+        reg for reg in pinned if _registry_identity_key(_external_registry_cache_identity(reg)) not in contested
     ] + kept_configured
 
 
@@ -641,12 +641,12 @@ def _registry_trust_tier(registry_name: str) -> str:
         # would keep granting `owner` for a registry whose apps are not being
         # listed at all. So the row must survive the merge and be one the build
         # pinned — config rows are read as `index` regardless.
-        pinned_keys = {_registry_identity_key(reg.name or reg.repo) for reg in _pinned_registries()}
+        pinned_keys = {_registry_identity_key(_external_registry_cache_identity(reg)) for reg in _pinned_registries()}
         wanted = _registry_identity_key(registry_name)
         if wanted not in pinned_keys:
             return _TRUST_INDEX
         for reg in _effective_registries():
-            if _registry_identity_key(reg.name or reg.repo) == wanted:
+            if _registry_identity_key(_external_registry_cache_identity(reg)) == wanted:
                 tier = getattr(reg, "trust", _TRUST_INDEX)
                 if isinstance(tier, str) and tier in _REGISTRY_TRUST_TIERS:
                     return tier
@@ -4019,7 +4019,7 @@ def _external_registry_app_by_repo(repo: str) -> dict[str, Any] | None:
     blob-proxy worker. Fails open to ``None``."""
     try:
         for reg in _effective_registries():
-            cached = _read_external_registry_cache(reg.name or reg.repo, ignore_ttl=True)
+            cached = _read_external_registry_cache(_external_registry_cache_identity(reg), ignore_ttl=True)
             for entry in cached or []:
                 if (
                     isinstance(entry, dict)
@@ -4068,7 +4068,7 @@ def _external_registry_repos() -> set[str]:
     repos: set[str] = set()
     try:
         for reg in _effective_registries():
-            cached = _read_external_registry_cache(reg.name or reg.repo, ignore_ttl=True)
+            cached = _read_external_registry_cache(_external_registry_cache_identity(reg), ignore_ttl=True)
             for entry in cached or []:
                 if (
                     isinstance(entry, dict)
