@@ -189,6 +189,275 @@ class TestRosterRowKeySet:
             tmp.unlink(missing_ok=True)
 
     @pytest.mark.asyncio
+    async def test_project_path_query_scopes_discovery_with_no_slot(self, monkeypatch) -> None:
+        """``?project_path=<dir>`` drives project-agent discovery even when the
+        session has NO active project.
+
+        This is the folder create/settings modal's case: there is no chat slot
+        yet, so ``active_project_dir`` answers ``None``, and the ONLY signal of
+        which directory to scan is the query param. Regression guard for the
+        bug where the folder modal's agent picker never listed project agents
+        because the handler read only the slot's project.
+        """
+        seen: dict[str, str] = {}
+
+        def _fake_resolve(raw: str) -> tuple[str, bool]:
+            # Stand in for the realpath/sensitivity/isdir core so the test needs
+            # no real directory: echo the raw path back as a valid, non-sensitive
+            # directory.
+            return raw, False
+
+        def _fake_names(project_dir, **kw):
+            seen["dir"] = str(project_dir)
+            return frozenset({"project-only-agent"})
+
+        # No slot -> no active project. The query param is the only source.
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.agents.active_project_dir",
+            lambda state, key: None,
+        )
+        # ?project_path= is owner-only; this caller is the owner.
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.source_providers.is_owner_dashboard_request",
+            lambda request: True,
+        )
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.agents._resolve_roster_project_path",
+            _fake_resolve,
+        )
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.agents.project_agent_names",
+            _fake_names,
+        )
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            json.dump(_seed_config_with_every_field_set(), f)
+            tmp = Path(f.name)
+        try:
+            with unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=tmp):
+                app = _make_app()
+                app["state"] = types.SimpleNamespace(conversation_log=None)
+                async with TestClient(TestServer(app)) as client:
+                    resp = await client.get("/api/agents?project_path=/draft/folder/dir")
+                    assert resp.status == 200
+                    rows = {a["name"]: a for a in (await resp.json())["agents"]}
+
+            # The query-param directory reached discovery, not the (None) slot.
+            assert seen.get("dir") == "/draft/folder/dir"
+            assert "project-only-agent" in rows
+            assert rows["project-only-agent"]["scope"] == "project"
+        finally:
+            tmp.unlink(missing_ok=True)
+
+    @pytest.mark.asyncio
+    async def test_sensitive_project_path_is_denied_and_scans_nothing(self, monkeypatch) -> None:
+        """A sensitive ``?project_path=`` is refused: no scan, no project rows,
+        and the global roster still ships (the whole response never fails).
+        """
+        scanned: list[str] = []
+
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.agents.active_project_dir",
+            lambda state, key: None,
+        )
+        # Owner caller — reaches the sensitivity gate (a non-owner would be
+        # refused earlier by the owner gate; that is a separate test).
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.source_providers.is_owner_dashboard_request",
+            lambda request: True,
+        )
+        # Denied: resolved path empty, denied flag true.
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.agents._resolve_roster_project_path",
+            lambda raw: ("", True),
+        )
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.agents.project_agent_names",
+            lambda project_dir, **kw: scanned.append(str(project_dir)) or frozenset(),
+        )
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            json.dump(_seed_config_with_every_field_set(), f)
+            tmp = Path(f.name)
+        try:
+            with unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=tmp):
+                app = _make_app()
+                app["state"] = types.SimpleNamespace(conversation_log=None)
+                async with TestClient(TestServer(app)) as client:
+                    resp = await client.get("/api/agents?project_path=/home/u/.aws")
+                    assert resp.status == 200
+                    rows = {a["name"]: a for a in (await resp.json())["agents"]}
+
+            # No scan happened, no project rows, but the global roster survived.
+            assert scanned == []
+            assert all(r["scope"] == "global" for r in rows.values())
+            assert "roster-probe" in rows
+        finally:
+            tmp.unlink(missing_ok=True)
+
+    @pytest.mark.asyncio
+    async def test_project_path_is_ignored_for_a_non_owner_caller(self, monkeypatch) -> None:
+        """``?project_path=`` is owner-only. A non-owner caller's param is
+        ignored — the scan is NEVER pointed at the caller-supplied directory,
+        so a non-owner cannot enumerate agent names under an arbitrary path.
+        Falls back to the slot-derived project exactly as before the param.
+        """
+        scanned: list[str] = []
+        events: list[dict] = []
+
+        class _FakeSel:
+            def log_api_access(self, **kw):
+                events.append(kw)
+
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.agents._sel", lambda: _FakeSel())
+        # NOT the owner -> the query param must be ignored.
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.source_providers.is_owner_dashboard_request",
+            lambda request: False,
+        )
+        # Slot-derived project is None, so with the param ignored there is no
+        # scan at all.
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.agents.active_project_dir",
+            lambda state, key: None,
+        )
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.agents.project_agent_names",
+            lambda project_dir, **kw: scanned.append(str(project_dir)) or frozenset({"leaked"}),
+        )
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            json.dump(_seed_config_with_every_field_set(), f)
+            tmp = Path(f.name)
+        try:
+            with unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=tmp):
+                app = _make_app()
+                app["state"] = types.SimpleNamespace(conversation_log=None)
+                async with TestClient(TestServer(app)) as client:
+                    resp = await client.get("/api/agents?project_path=/some/other/dir")
+                    assert resp.status == 200
+                    rows = {a["name"]: a for a in (await resp.json())["agents"]}
+
+            # The caller-supplied dir was NEVER scanned, and no project row leaked.
+            assert scanned == []
+            assert "leaked" not in rows
+            assert all(r["scope"] == "global" for r in rows.values())
+            # F1: the non-owner attempt to point the scan at an arbitrary dir is
+            # itself audited as a denied event, not silently ignored.
+            audits = [e for e in events if e.get("operation") == "api_kirocrew_agents"]
+            assert audits, "non-owner project_path attempt emitted no SEL event"
+            assert audits[0]["outcome"] == "denied"
+        finally:
+            tmp.unlink(missing_ok=True)
+
+    @pytest.mark.asyncio
+    async def test_owner_directed_scan_is_sel_audited(self, monkeypatch) -> None:
+        """An owner directing the roster scan at an arbitrary ``?project_path=``
+        directory is a security-relevant action, so the honored (non-denied)
+        scan emits a SEL audit event with ``outcome="allowed"`` — not only the
+        denied path. Without it the audit trail would record refusals but never
+        the scans that succeeded.
+        """
+        events: list[dict] = []
+
+        class _FakeSel:
+            def log_api_access(self, **kw):
+                events.append(kw)
+
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.agents._sel", lambda: _FakeSel())
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.source_providers.is_owner_dashboard_request",
+            lambda request: True,
+        )
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.agents.active_project_dir",
+            lambda state, key: None,
+        )
+        # A valid, non-sensitive directory (denied=False) -> the honored branch.
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.agents._resolve_roster_project_path",
+            lambda raw: (raw, False),
+        )
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.agents.project_agent_names",
+            lambda project_dir, **kw: frozenset(),
+        )
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            json.dump(_seed_config_with_every_field_set(), f)
+            tmp = Path(f.name)
+        try:
+            with unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=tmp):
+                app = _make_app()
+                app["state"] = types.SimpleNamespace(conversation_log=None)
+                async with TestClient(TestServer(app)) as client:
+                    resp = await client.get("/api/agents?project_path=/draft/dir")
+                    assert resp.status == 200
+
+            audits = [e for e in events if e.get("operation") == "api_kirocrew_agents"]
+            assert audits, "the honored owner scan emitted no SEL audit event"
+            assert audits[0]["outcome"] == "allowed"
+            assert audits[0]["source"] == "dashboard"
+        finally:
+            tmp.unlink(missing_ok=True)
+
+    @pytest.mark.asyncio
+    async def test_owner_empty_path_is_not_allowed_audited_and_no_slot_fallback(
+        self, monkeypatch
+    ) -> None:
+        """An owner ``?project_path=`` that resolves EMPTY (a typo / nonexistent
+        dir: ``("", False)`` — not denied, just no directory) must NOT record an
+        ``allowed`` audit event (no scan ran), and must NOT fall back to the
+        active chat slot's project (which would present an unrelated project's
+        agents as this folder's roster). Global rows only.
+        """
+        events: list[dict] = []
+        slot_scanned: list[str] = []
+
+        class _FakeSel:
+            def log_api_access(self, **kw):
+                events.append(kw)
+
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.agents._sel", lambda: _FakeSel())
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.source_providers.is_owner_dashboard_request",
+            lambda request: True,
+        )
+        # A slot project EXISTS — the test proves it is NOT used when the owner
+        # supplied a (honored) path that happened to resolve empty.
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.agents.active_project_dir",
+            lambda state, key: "/slot/project",
+        )
+        # Nonexistent path: honored (not denied) but resolves to "".
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.agents._resolve_roster_project_path",
+            lambda raw: ("", False),
+        )
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.agents.project_agent_names",
+            lambda project_dir, **kw: slot_scanned.append(str(project_dir))
+            or frozenset({"slot-agent"}),
+        )
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            json.dump(_seed_config_with_every_field_set(), f)
+            tmp = Path(f.name)
+        try:
+            with unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=tmp):
+                app = _make_app()
+                app["state"] = types.SimpleNamespace(conversation_log=None)
+                async with TestClient(TestServer(app)) as client:
+                    resp = await client.get("/api/agents?project_path=/does/not/exist")
+                    assert resp.status == 200
+                    rows = {a["name"]: a for a in (await resp.json())["agents"]}
+
+            # No scan of the slot project, and its agent never leaks in.
+            assert slot_scanned == []
+            assert "slot-agent" not in rows
+            assert all(r["scope"] == "global" for r in rows.values())
+            # No "allowed" event for a scan that never ran.
+            audits = [e for e in events if e.get("operation") == "api_kirocrew_agents"]
+            assert not any(e["outcome"] == "allowed" for e in audits)
+        finally:
+            tmp.unlink(missing_ok=True)
+
+    @pytest.mark.asyncio
     async def test_app_token_caller_gets_the_same_keys_with_scrubbed_values(self) -> None:
         """End to end: the caller class is resolved from the request, not passed in.
 

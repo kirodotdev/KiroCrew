@@ -1,13 +1,35 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent, waitFor, within } from '@testing-library/react'
+import { render as rtlRender, screen, fireEvent, waitFor, within } from '@testing-library/react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import FolderConfigModal from '../components/FolderConfigModal'
+import { api } from '../api/client'
 import { ChatFolder } from '../types'
+
+// The modal now fetches the project-scoped roster via react-query (useQuery),
+// so every render needs a QueryClient in context. Wrap RTL's render so the
+// existing call sites (and their `rerender`) get a provider transparently; a
+// fresh client per render keeps tests isolated, and retries are off so a
+// rejected queryFn surfaces immediately instead of being retried.
+function render(ui: React.ReactElement, options?: Parameters<typeof rtlRender>[1]) {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  const Wrapper = ({ children }: { children: React.ReactNode }) => (
+    <QueryClientProvider client={client}>{children}</QueryClientProvider>
+  )
+  // `wrapper` is re-applied by RTL's own rerender, so a plain rerender(next)
+  // keeps the provider without double-wrapping (double-wrapping remounts the
+  // subtree and re-runs mount effects — e.g. the tag seed).
+  return rtlRender(ui, { wrapper: Wrapper, ...options })
+}
 
 vi.mock('../api/client', () => ({
   api: {
     // ProjectPicker fetches these on open; the modal itself never calls them.
     recentProjects: vi.fn().mockResolvedValue({ dirs: [] }),
     browseDirs: vi.fn().mockResolvedValue({ path: '/', parent: '', dirs: [] }),
+    // Fetched by the modal ONLY when a project directory is set, to scope the
+    // agent dropdown to that directory's project agents. Default: empty roster
+    // (the no-dir tests never reach this call).
+    kirocrewAgents: vi.fn().mockResolvedValue({ agents: [], default_agent: '' }),
   },
 }))
 
@@ -71,7 +93,15 @@ async function pickAgent(label: string | RegExp) {
 }
 
 describe('FolderConfigModal', () => {
-  beforeEach(() => vi.clearAllMocks())
+  beforeEach(() => {
+    vi.clearAllMocks()
+    // A test that sets a persistent roster (mockResolvedValue / mockImplementation
+    // on kirocrewAgents) would otherwise leak it into the next test. Re-assert
+    // the default empty roster each time; this overrides a leaked implementation
+    // without mockReset()'ing the other api.* factory mocks the suite relies on.
+    ;(api.kirocrewAgents as unknown as ReturnType<typeof vi.fn>)
+      .mockResolvedValue({ agents: [], default_agent: '' })
+  })
 
   it('offers no parent-folder input — the destination is fixed by the entry point', () => {
     open({ parentId: '' })
@@ -142,23 +172,27 @@ describe('FolderConfigModal', () => {
 
 
 
-  it('keeps an uninstalled agent selectable so Save cannot wipe it', async () => {
-    // Found by looking at the built UI: a folder set to an agent that is not in
-    // installedAgents had no matching option, so the picker displayed "None"
-    // and Save wrote default_agent:'' — silently destroying the folder's config.
-    // Happens in production whenever an agent is uninstalled or renamed.
+  it('flags an uninstalled agent and blocks Save until it is changed', async () => {
+    // A folder saved with an agent that is not in the roster (uninstalled or
+    // renamed since save) is a VALIDATION ERROR at save time: the orphan stays
+    // selectable and flagged so the user sees why, but Save is blocked until
+    // they pick a valid agent (or clear to inherit). The form's contract is that
+    // it only ever persists a valid agent; run-time resolution handles a saved
+    // agent that later disappears by falling back to the global default.
     const f = folder('f1', { name: 'Payments', default_agent: 'retired-agent' })
     const { onSubmit } = open({ mode: 'edit', folder: f, folders: [f] })
     expect(agentTrigger()).toHaveTextContent(/retired-agent.*not installed/i)
-    // ...and it is a real row in the popup, flagged, so the user can see why it
-    // is not running. Ordered right after the inherit/None row, where its
-    // <option> used to sit.
+    // It is a real, flagged row in the popup, right after the inherit/None row.
     expect(await openAgents()).toEqual(['None', 'retired-agent (not installed)', 'kirocrew', 'kirocrew-dev'])
-    // Escape dismisses the popup alone; the modal beneath must survive it.
-    fireEvent.keyDown(document, { key: 'Escape' })
-    await waitFor(() => expect(screen.queryByRole('option')).toBeNull())
+    // Save is BLOCKED while the orphan is selected.
+    expect((screen.getByTestId('folder-config-submit') as HTMLButtonElement).disabled).toBe(true)
+    // Picking a valid agent clears the error and re-enables Save.
+    fireEvent.click(await screen.findByRole('option', { name: 'kirocrew-dev' }))
+    await waitFor(() =>
+      expect((screen.getByTestId('folder-config-submit') as HTMLButtonElement).disabled).toBe(false),
+    )
     fireEvent.click(screen.getByTestId('folder-config-submit'))
-    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ defaultAgent: 'retired-agent' }))
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ defaultAgent: 'kirocrew-dev' }))
   })
 
   it('does not flag an installed agent as uninstalled', async () => {
@@ -242,8 +276,10 @@ describe('FolderConfigModal', () => {
       )
       fireEvent.change(screen.getByTestId('folder-config-name'), { target: { value: 'Payments' } })
       fireEvent.change(screen.getByTestId('folder-config-project-dir'), { target: { value: 'relative/path' } })
+      // Changing the dir holds Save until the new dir's roster settles (so a
+      // stale-scope pick cannot be saved); wait it out, then submit.
+      await waitFor(() => expect(screen.getByTestId('folder-config-submit')).toBeEnabled())
       fireEvent.click(screen.getByTestId('folder-config-submit'))
-
       await waitFor(() => expect(onSubmit).toHaveBeenCalled())
       // Never auto-closes on failure...
       expect(onClose).not.toHaveBeenCalled()
@@ -426,12 +462,18 @@ describe('FolderConfigModal', () => {
 
     it('reports each field the user actually edited', async () => {
       const onSubmit = vi.fn().mockResolvedValue(undefined)
+      // /repo/new's roster includes the global agents (the backend unions global
+      // + project rows), so the picked global agent kirocrew-dev stays valid.
+      ;(api.kirocrewAgents as unknown as ReturnType<typeof vi.fn>)
+        .mockResolvedValue({ agents: [{ name: 'kirocrew' }, { name: 'kirocrew-dev' }], default_agent: '' })
       render(
         <FolderConfigModal open={true} mode="edit" folder={seedFolder} folders={[seedFolder]}
           installedAgents={AGENTS} onClose={vi.fn()} onSubmit={onSubmit} />
       )
       fireEvent.change(screen.getByTestId('folder-config-project-dir'), { target: { value: '/repo/new' } })
       await pickAgent('kirocrew-dev')
+      // The dir change holds Save until the new dir's roster settles.
+      await waitFor(() => expect(screen.getByTestId('folder-config-submit')).toBeEnabled())
       fireEvent.click(screen.getByTestId('folder-config-submit'))
       await waitFor(() => expect(onSubmit).toHaveBeenCalled())
       const t = onSubmit.mock.calls[0][0].touched
@@ -779,6 +821,245 @@ describe('FolderConfigModal', () => {
       fireEvent.keyDown(window, { key: 'Escape' })
       // Order-insensitive set equality means Escape still dismisses cleanly.
       expect(onClose).toHaveBeenCalled()
+    })
+  })
+
+  /* The bug this whole change exists for: when a project directory is set, the
+   * agent dropdown must offer that directory's project agents, not just the
+   * global `installedAgents` prop (which is the ACTIVE SLOT's roster and has
+   * nothing to do with the folder being configured). */
+  describe('project-scoped agent roster', () => {
+    const mockAgents = api.kirocrewAgents as unknown as ReturnType<typeof vi.fn>
+
+    it('does not fetch a project roster when no directory is set', async () => {
+      open()
+      // Nothing to scope to; the dropdown uses the installedAgents prop.
+      await waitFor(() => {})
+      expect(mockAgents).not.toHaveBeenCalled()
+      expect(await openAgents()).toEqual(
+        expect.arrayContaining(['kirocrew', 'kirocrew-dev']),
+      )
+    })
+
+    it('fetches the roster for the typed project dir and lists its agents', async () => {
+      mockAgents.mockResolvedValue({
+        agents: [{ name: 'repo-dev' }, { name: 'repo-reviewer' }],
+        default_agent: '',
+      })
+      open()
+      fireEvent.change(screen.getByTestId('folder-config-project-dir'), {
+        target: { value: '/repo/pay' },
+      })
+      // Debounced fetch, keyed on the typed dir, with NO session key.
+      await waitFor(() =>
+        expect(mockAgents).toHaveBeenCalledWith(undefined, '/repo/pay'),
+      )
+      // The option only renders after the debounced query resolves; findAllByRole
+      // inside openAgents waits for it.
+      const labels = await openAgents()
+      expect(labels).toEqual(expect.arrayContaining(['repo-dev', 'repo-reviewer']))
+    })
+
+    it('scopes to an inherited ancestor dir when the draft dir is empty', async () => {
+      mockAgents.mockResolvedValue({ agents: [{ name: 'inherited-agent' }], default_agent: '' })
+      // Subfolder create: parent pins a project dir, child inherits it.
+      open({
+        parentId: 'p1',
+        folders: [folder('p1', { name: 'Parent', project_dir: '/repo/parent' })],
+      })
+      await waitFor(() =>
+        expect(mockAgents).toHaveBeenCalledWith(undefined, '/repo/parent'),
+      )
+      // Open the picker and wait for the inherited dir's agent to populate it.
+      fireEvent.click(agentTrigger())
+      expect(await screen.findByRole('option', { name: 'inherited-agent' })).toBeInTheDocument()
+    })
+
+    it('falls back to the global roster when the project fetch fails', async () => {
+      mockAgents.mockRejectedValue(new Error('scan failed'))
+      open()
+      fireEvent.change(screen.getByTestId('folder-config-project-dir'), {
+        target: { value: '/repo/pay' },
+      })
+      await waitFor(() => expect(mockAgents).toHaveBeenCalled())
+      // A failed scan must not blank the picker — the global prop roster stays.
+      expect(await openAgents()).toEqual(
+        expect.arrayContaining(['kirocrew', 'kirocrew-dev']),
+      )
+    })
+
+    it('flags and blocks Save when the dir changes and the agent is gone', async () => {
+      // Dir A has repo-dev; dir B does not.
+      mockAgents.mockImplementation((_sk?: string, dir?: string) =>
+        Promise.resolve({
+          agents: dir === '/repo/a' ? [{ name: 'repo-dev' }] : [{ name: 'other-agent' }],
+          default_agent: '',
+        }),
+      )
+      const { onSubmit } = open()
+      // Scope to A; wait for A's roster to list repo-dev, then pick it.
+      fireEvent.change(screen.getByTestId('folder-config-project-dir'), { target: { value: '/repo/a' } })
+      await waitFor(() => expect(mockAgents).toHaveBeenCalledWith(undefined, '/repo/a'))
+      await pickAgent('repo-dev')
+      await waitFor(() => expect(agentTrigger()).toHaveTextContent('repo-dev'))
+      fireEvent.change(screen.getByTestId('folder-config-name'), { target: { value: 'X' } })
+      // Re-scope to B, whose roster lacks repo-dev. The pick is NOT silently
+      // cleared — it stays, flagged "(not installed)", and Save is blocked.
+      fireEvent.change(screen.getByTestId('folder-config-project-dir'), { target: { value: '/repo/b' } })
+      await waitFor(() => expect(mockAgents).toHaveBeenCalledWith(undefined, '/repo/b'))
+      await waitFor(() => expect(agentTrigger()).toHaveTextContent(/repo-dev.*not installed/i))
+      expect((screen.getByTestId('folder-config-submit') as HTMLButtonElement).disabled).toBe(true)
+      // Choosing a valid agent for the new scope clears the error and saves it.
+      await pickAgent('other-agent')
+      await waitFor(() =>
+        expect((screen.getByTestId('folder-config-submit') as HTMLButtonElement).disabled).toBe(false),
+      )
+      fireEvent.click(screen.getByTestId('folder-config-submit'))
+      expect(onSubmit.mock.calls[0][0].defaultAgent).toBe('other-agent')
+    })
+
+    it('does not dead-end Save when a re-scoped roster scan errors', async () => {
+      // GPT span=FolderConfigModal.tsx:275 / Opus: a terminal scan error
+      // (retry:false) must NOT hold Save disabled forever. On error the roster
+      // falls back to the global prop and the orphan flag is suppressed, so
+      // there is no stale pick to guard — Save stays usable.
+      mockAgents.mockImplementation((_sk?: string, dir?: string) =>
+        dir === '/repo/ok'
+          ? Promise.resolve({ agents: [{ name: 'repo-dev' }], default_agent: '' })
+          : Promise.reject(new Error('scan 500')),
+      )
+      const { onSubmit } = open()
+      fireEvent.change(screen.getByTestId('folder-config-name'), { target: { value: 'X' } })
+      // Re-scope to a dir whose scan ERRORS.
+      fireEvent.change(screen.getByTestId('folder-config-project-dir'), { target: { value: '/repo/err' } })
+      await waitFor(() => expect(mockAgents).toHaveBeenCalledWith(undefined, '/repo/err'))
+      // Save must recover to enabled (no agent selected, global fallback) — not
+      // stay dead-ended on the terminal error.
+      await waitFor(() =>
+        expect((screen.getByTestId('folder-config-submit') as HTMLButtonElement).disabled).toBe(false),
+      )
+      fireEvent.click(screen.getByTestId('folder-config-submit'))
+      await waitFor(() => expect(onSubmit).toHaveBeenCalled())
+    })
+
+    it('blocks Save while the re-scoped roster is still loading', async () => {
+      // GPT span=FolderConfigModal.tsx:262: while a re-scope is loading, the
+      // orphan flag is suppressed (to avoid falsely flagging a valid project
+      // agent), so Save must be blocked until the scan settles — otherwise a
+      // pick not in the new scope could be saved inside the debounce+scan window
+      // (the backend does no agent-vs-scope check; this is the only guard).
+      let resolveB: (v: { agents: { name: string }[]; default_agent: string }) => void = () => {}
+      mockAgents.mockImplementation((_sk?: string, dir?: string) => {
+        if (dir === '/repo/a') return Promise.resolve({ agents: [{ name: 'repo-dev' }], default_agent: '' })
+        // Dir B's scan hangs until we release it — simulating the loading window.
+        return new Promise(res => { resolveB = res })
+      })
+      open()
+      fireEvent.change(screen.getByTestId('folder-config-name'), { target: { value: 'X' } })
+      fireEvent.change(screen.getByTestId('folder-config-project-dir'), { target: { value: '/repo/a' } })
+      await waitFor(() => expect(mockAgents).toHaveBeenCalledWith(undefined, '/repo/a'))
+      await pickAgent('repo-dev')
+      await waitFor(() => expect(agentTrigger()).toHaveTextContent('repo-dev'))
+      // Re-scope to B; its scan is in flight, so the orphan flag is suppressed —
+      // Save must still be BLOCKED (the scan is pending), not enabled.
+      fireEvent.change(screen.getByTestId('folder-config-project-dir'), { target: { value: '/repo/b' } })
+      await waitFor(() => expect(mockAgents).toHaveBeenCalledWith(undefined, '/repo/b'))
+      await waitFor(() =>
+        expect((screen.getByTestId('folder-config-submit') as HTMLButtonElement).disabled).toBe(true),
+      )
+      // Once B's scan resolves WITHOUT repo-dev, it becomes a visible orphan and
+      // Save stays blocked (now on the orphan, not the scan).
+      resolveB({ agents: [{ name: 'other-agent' }], default_agent: '' })
+      await waitFor(() => expect(agentTrigger()).toHaveTextContent(/repo-dev.*not installed/i))
+      expect((screen.getByTestId('folder-config-submit') as HTMLButtonElement).disabled).toBe(true)
+    })
+
+    it('flags and blocks Save when the dir is cleared and the agent is gone', async () => {
+      mockAgents.mockResolvedValue({ agents: [{ name: 'repo-dev' }], default_agent: '' })
+      open() // global prop roster is AGENTS (kirocrew, kirocrew-dev) — no repo-dev
+      fireEvent.change(screen.getByTestId('folder-config-project-dir'), { target: { value: '/repo/a' } })
+      await waitFor(() => expect(mockAgents).toHaveBeenCalledWith(undefined, '/repo/a'))
+      await pickAgent('repo-dev')
+      await waitFor(() => expect(agentTrigger()).toHaveTextContent('repo-dev'))
+      fireEvent.change(screen.getByTestId('folder-config-name'), { target: { value: 'X' } })
+      // Clear the dir → falls back to the global roster, which lacks repo-dev.
+      // The pick is NOT silently cleared: it stays, flagged, and Save is blocked.
+      fireEvent.change(screen.getByTestId('folder-config-project-dir'), { target: { value: '' } })
+      await waitFor(() => expect(agentTrigger()).toHaveTextContent(/repo-dev.*not installed/i))
+      expect((screen.getByTestId('folder-config-submit') as HTMLButtonElement).disabled).toBe(true)
+    })
+
+    it('keeps the selection when the re-scoped project still has that agent', async () => {
+      // Both dirs expose repo-dev — a re-scope that still contains the pick must
+      // NOT reset it.
+      mockAgents.mockResolvedValue({ agents: [{ name: 'repo-dev' }], default_agent: '' })
+      open()
+      fireEvent.change(screen.getByTestId('folder-config-project-dir'), { target: { value: '/repo/a' } })
+      await waitFor(() => expect(mockAgents).toHaveBeenCalledWith(undefined, '/repo/a'))
+      await pickAgent('repo-dev')
+      await waitFor(() => expect(agentTrigger()).toHaveTextContent('repo-dev'))
+      fireEvent.change(screen.getByTestId('folder-config-project-dir'), { target: { value: '/repo/b' } })
+      await waitFor(() => expect(mockAgents).toHaveBeenCalledWith(undefined, '/repo/b'))
+      // repo-dev is in B too, so it stays. Give the re-scope reconcile a tick,
+      // then assert it did NOT clear the pick.
+      await new Promise(r => setTimeout(r, 50))
+      expect(agentTrigger()).toHaveTextContent('repo-dev')
+    })
+
+    it('flags and blocks Save on an INHERITED re-scope (parent dir changes)', async () => {
+      // The effective project dir can change without the user touching the
+      // draft's own projectDir — an ANCESTOR folder's project_dir changes and
+      // this folder inherits it. When the new inherited scope lacks the picked
+      // agent it is flagged "(not installed)" and Save is blocked, so a save
+      // cannot persist a pick the new scope does not contain.
+      mockAgents.mockImplementation((_sk?: string, dir?: string) =>
+        Promise.resolve({
+          agents: dir === '/repo/parent-a' ? [{ name: 'repo-dev' }] : [],
+          default_agent: '',
+        }),
+      )
+      // Child inherits parent A's dir; draft's own projectDir stays empty.
+      const parentA = folder('p1', { name: 'Parent', project_dir: '/repo/parent-a' })
+      const { onSubmit, rerender } = open({
+        parentId: 'p1',
+        folders: [parentA],
+      })
+      await waitFor(() =>
+        expect(mockAgents).toHaveBeenCalledWith(undefined, '/repo/parent-a'),
+      )
+      // Pick the inherited dir's project agent.
+      await pickAgent('repo-dev')
+      await waitFor(() => expect(agentTrigger()).toHaveTextContent('repo-dev'))
+      fireEvent.change(screen.getByTestId('folder-config-name'), { target: { value: 'Sub' } })
+
+      // The parent's dir changes to one with NO project agents — the child's
+      // effective (inherited) dir changes though its own field never did.
+      rerender(
+        <FolderConfigModal
+          open={true} mode="create" parentId="p1"
+          folders={[folder('p1', { name: 'Parent', project_dir: '/repo/parent-b' })]}
+          installedAgents={AGENTS} onClose={vi.fn()} onSubmit={onSubmit} onRetryTags={vi.fn()}
+        />
+      )
+      // repo-dev is now orphaned under the inherited scope: flagged, Save blocked.
+      await waitFor(() => expect(agentTrigger()).toHaveTextContent(/repo-dev.*not installed/i))
+      expect((screen.getByTestId('folder-config-submit') as HTMLButtonElement).disabled).toBe(true)
+      expect(onSubmit).not.toHaveBeenCalled()
+    })
+
+    it('preserves a saved orphan agent on open (edit mode), not treated as a re-scope', async () => {
+      // Edit a folder whose saved default_agent is NOT in the project roster and
+      // NOT global — opening must keep it (orphan round-trip), never clear it.
+      mockAgents.mockResolvedValue({ agents: [{ name: 'repo-dev' }], default_agent: '' })
+      const f = folder('f1', { name: 'Payments', project_dir: '/repo/a', default_agent: 'ghost-agent' })
+      render(
+        <FolderConfigModal open={true} mode="edit" folder={f} folders={[f]}
+          installedAgents={AGENTS} onClose={vi.fn()} onSubmit={vi.fn().mockResolvedValue(undefined)}
+          onRetryTags={vi.fn()} />
+      )
+      await waitFor(() => expect(mockAgents).toHaveBeenCalledWith(undefined, '/repo/a'))
+      // The saved orphan is still selected (round-trips), flagged not-installed.
+      await waitFor(() => expect(agentTrigger()).toHaveTextContent('ghost-agent'))
     })
   })
 })

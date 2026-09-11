@@ -3034,10 +3034,12 @@ export const api = {
   // slots sit on different projects, so project-scoped agents silently
   // vanish from the picker. Surfaces with no slot context (Channels,
   // Schedule) pass nothing and keep the global-only view.
-  kirocrewAgents: (sessionKey?: string) =>
-    fetch('/api/agents', {
+  kirocrewAgents: (sessionKey?: string, projectPath?: string) => {
+    const qs = projectPath ? '?project_path=' + encodeURIComponent(projectPath) : ''
+    return fetch('/api/agents' + qs, {
       headers: sessionKey ? { 'X-Session-Key': sessionKey } : { ..._sk },
-    }).then(j),
+    }).then(j)
+  },
   /** The model a new session on this KiroCrew agent would run on. Empty
    *  `agent` resolves the configured default agent. */
   agentResolvedModel: (agent: string) =>
