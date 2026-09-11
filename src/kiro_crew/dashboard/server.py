@@ -1579,6 +1579,8 @@ def _register_mcp_routes(app: web.Application) -> None:
         api_autonudge_list,
         api_autonudge_start,
         api_autonudge_update,
+        api_goal_draft_get,
+        api_goal_draft_put,
         api_monitor_clear,
         api_monitor_create,
         api_monitor_restart,
@@ -1591,6 +1593,8 @@ def _register_mcp_routes(app: web.Application) -> None:
 
     app.router.add_get("/api/autonudge", api_autonudge_list)
     app.router.add_get("/api/autonudge/session-monitor", api_session_monitor_get)
+    app.router.add_get("/api/autonudge/draft/slot/{slot_key}", api_goal_draft_get)
+    app.router.add_put("/api/autonudge/draft/slot/{slot_key}", api_goal_draft_put)
     app.router.add_post("/api/autonudge", api_autonudge_start)
     app.router.add_get("/api/autonudge/slot/{slot_key}", api_autonudge_get)
     app.router.add_patch("/api/autonudge/{loop_id}", api_autonudge_update)

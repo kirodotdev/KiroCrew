@@ -6,7 +6,14 @@ import { Btn } from './ui'
 import ErrorNotice from './ErrorNotice'
 import { cronJobsQuery } from '../api/cronJobsQuery'
 import { runBelongsToSlot } from '../apps/workflows/runModel'
-import { loadGoalDraft, saveGoalDraft, type GoalDraft } from '../utils/goalDrafts'
+import {
+  loadGoalDraftSnapshot,
+  loadRemoteGoalDraft,
+  saveGoalDraft,
+  saveRemoteGoalDraft,
+  type GoalDraft,
+  type GoalDraftSnapshot,
+} from '../utils/goalDrafts'
 import { DRAFT_SAVE_DEBOUNCE_MS } from '../utils/draftConstants'
 
 import { i18nT } from '../i18n/t'
@@ -108,27 +115,49 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
   const parseCycles = (s: string) => parseInt(s, 10) || 0
 
   // Only a genuine user edit should persist a draft. Seeding from the live loop
-  // or restoring a remembered draft on open must NOT re-write the store (doing
-  // so would reset the slot's TTL / LRU position on a mere view, and could
-  // mirror a live loop's config into the user-draft store). `hasEdited` gates
-  // the persist so it fires on real onChange edits only.
+  // or reconciling another device's draft must NOT create a fresh edit time.
   const hasEdited = useRef(false)
-  // Latest field values, kept current every render so the close-flush below
-  // (which runs from a stable handler) can read them.
-  const latest = useRef({ slotKey, message, idleInput, maxCyclesInput, loop })
-  latest.current = { slotKey, message, idleInput, maxCyclesInput, loop }
+  const syncGeneration = useRef(0)
+  // Latest field values, kept current every render so async reconciliation and
+  // the close-flush can prove they still refer to the same open editor.
+  const latest = useRef({ slotKey, message, idleInput, maxCyclesInput, loop, open })
+  latest.current = { slotKey, message, idleInput, maxCyclesInput, loop, open }
+
+  function applyDraft(draft: GoalDraft | null) {
+    setMessage(draft ? draft.message : DEFAULT_MSG)
+    setIdleInput(String(draft ? draft.idleSecs : 60))
+    setMaxCyclesInput(String(draft ? draft.maxCycles : 0))
+  }
 
   // Compute the draft to persist for the current field state, or null to drop
   // the slot: the blank / pristine-default case stores nothing so an emptied or
-  // untouched popover never pins the template. (Only reached when no loop is
-  // running — a live loop is authoritative and its config is never mirrored
-  // into the user-draft store; persistence is skipped entirely while a loop is
-  // present.)
+  // untouched popover never pins the template.
   function draftToPersist(s: typeof latest.current): GoalDraft | null {
     const idleSecs = parseIdle(s.idleInput)
     const maxCycles = parseCycles(s.maxCyclesInput)
     const isPristineDefault = s.message === DEFAULT_MSG && idleSecs === 60 && maxCycles === 0
     return isPristineDefault ? null : { message: s.message, idleSecs, maxCycles }
+  }
+
+  function cacheCanonical(targetSlot: string, snapshot: GoalDraftSnapshot) {
+    const current = loadGoalDraftSnapshot(targetSlot)
+    if (snapshot.updatedAt >= current.updatedAt) {
+      saveGoalDraft(targetSlot, snapshot.draft, snapshot.updatedAt)
+    }
+  }
+
+  function persistDraft(targetSlot: string, snapshot: GoalDraftSnapshot, keepalive = false) {
+    void saveRemoteGoalDraft(targetSlot, snapshot, { keepalive })
+      .then(canonical => cacheCanonical(targetSlot, canonical))
+      .catch(() => {
+        // Offline/local-only remains a supported fallback. A later open retries
+        // migration from the timestamped local copy.
+      })
+  }
+
+  function persistCurrentDraft(s: typeof latest.current, keepalive = false) {
+    const snapshot = saveGoalDraft(s.slotKey, draftToPersist(s))
+    persistDraft(s.slotKey, snapshot, keepalive)
   }
 
   /* A pending confirmation belongs to the record the reader was LOOKING at. The
@@ -146,52 +175,76 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
   }, [loop?.id, loop?.active, loop?.message])
 
   // Seed/restore fields on each open (rising edge). A live loop is the
-  // authoritative source; otherwise the last per-slot draft is restored.
-  // One read seeds all three fields. Runs in an effect (not render) so the
-  // render itself performs no storage read/write.
+  // authoritative source. Otherwise show the local fallback immediately, then
+  // reconcile with the shared server copy. Existing local-only installs migrate
+  // by timestamp: the newer browser copy is uploaded, while an older mobile copy
+  // cannot overwrite a newer desktop value. A response never replaces text the
+  // user started editing while the request was in flight.
   useEffect(() => {
-    if (!open) return
+    if (!open) {
+      syncGeneration.current += 1
+      return
+    }
+    const generation = ++syncGeneration.current
     hasEdited.current = false
     setError('')
-    // A pending confirmation must not survive a close: reopening later would
-    // put a primed erase under the next press.
     setConfirmClear(false)
     if (loop) {
-      // `||` (not `??`) is deliberate: a loop with idle_secs/max_cycles of 0
-      // or an empty message shows the 60 / 0 / default template.
       setMessage(loop.message || DEFAULT_MSG)
       setIdleInput(String(loop.idle_secs || 60))
       setMaxCyclesInput(String(loop.max_cycles || 0))
-    } else {
-      const remembered = loadGoalDraft(slotKey)
-      setMessage(remembered ? remembered.message : DEFAULT_MSG)
-      setIdleInput(String(remembered ? remembered.idleSecs : 60))
-      setMaxCyclesInput(String(remembered ? remembered.maxCycles : 0))
+      return
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- open-edge seed only; loop/slotKey are read fresh each open
+
+    const local = loadGoalDraftSnapshot(slotKey)
+    applyDraft(local.draft)
+    void (async () => {
+      try {
+        const remote = await loadRemoteGoalDraft(slotKey)
+        const canonical = local.updatedAt > remote.updatedAt
+          ? await saveRemoteGoalDraft(slotKey, local)
+          : remote
+        if (
+          syncGeneration.current !== generation
+          || !latest.current.open
+          || latest.current.slotKey !== slotKey
+          || latest.current.loop
+          || hasEdited.current
+        ) return
+        saveGoalDraft(slotKey, canonical.draft, canonical.updatedAt)
+        applyDraft(canonical.draft)
+      } catch {
+        // The local fallback stays rendered; the next open retries the server.
+      }
+    })()
+    return () => {
+      if (syncGeneration.current === generation) syncGeneration.current += 1
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- open-edge seed only; refs guard the async continuation against slot/loop/edit changes
   }, [open])
 
-  // Flush a pending debounced edit synchronously when the popover closes OR
-  // unmounts while open, so edits within the last DRAFT_SAVE_DEBOUNCE_MS
-  // window aren't lost. Effect cleanup covers both paths.
+  // Flush a pending debounced edit synchronously into local storage when the
+  // popover closes or unmounts, then use a keepalive request for the shared copy.
   useEffect(() => {
     if (!open) return
     return () => {
       if (!hasEdited.current || latest.current.loop) return
-      saveGoalDraft(latest.current.slotKey, draftToPersist(latest.current))
+      persistCurrentDraft(latest.current, true)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- stable cleanup reading the latest ref
   }, [open])
 
-  // Persist edits per slot, debounced with the same DRAFT_SAVE_DEBOUNCE_MS as
-  // chat drafts so a long goal doesn't drive a synchronous localStorage write on
-  // every keystroke. Skips until the user actually edits a field (so opening the
-  // popover or the open-restore setState above never writes).
+  // Persist genuine edits per slot, debounced with the same interval as chat
+  // drafts. Local storage remains the immediate/offline commit; the server write
+  // makes the same latest draft visible to every dashboard client.
   useEffect(() => {
     if (!open || !hasEdited.current || loop) return
-    const timer = setTimeout(() => saveGoalDraft(slotKey, draftToPersist(latest.current)), DRAFT_SAVE_DEBOUNCE_MS)
+    const timer = setTimeout(
+      () => persistCurrentDraft(latest.current),
+      DRAFT_SAVE_DEBOUNCE_MS,
+    )
     return () => clearTimeout(timer)
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- `draftToPersist` is a pure transform of the ref snapshot it is handed, redeclared each render, so its identity carries no information the deps above miss. Depending on it would restart the debounce timer on every unrelated re-render — the coalescing this effect exists for.
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- pure ref snapshot; function identity must not restart the debounce
   }, [open, slotKey, message, idleInput, maxCyclesInput, loop])
 
   async function save() {
@@ -209,6 +262,8 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
         : await fetch('/api/autonudge', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body })
       const data = await resp.json()
       if (!resp.ok) throw new Error(data.error || `HTTP ${resp.status}`)
+      const snapshot = saveGoalDraft(slotKey, { message, idleSecs: idle_secs, maxCycles: max_cycles })
+      persistDraft(slotKey, snapshot)
       onChange(data.loop)
       onOpenChange(false)
     } catch (e: unknown) {
@@ -235,6 +290,14 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
         const data = await resp.json().catch(() => ({}))
         throw new Error(data.error || `HTTP ${resp.status}`)
       }
+      const snapshot = intent === 'clear'
+        ? saveGoalDraft(slotKey, null)
+        : saveGoalDraft(slotKey, {
+            message,
+            idleSecs: parseIdle(idleInput),
+            maxCycles: parseCycles(maxCyclesInput),
+          })
+      persistDraft(slotKey, snapshot)
       onChange(null)
       onOpenChange(false)
     } catch (e: unknown) {

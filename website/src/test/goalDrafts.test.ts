@@ -4,7 +4,10 @@ import {
   GOAL_DRAFT_MAX_ENTRIES,
   GOAL_DRAFT_TTL_MS,
   loadGoalDraft,
+  loadGoalDraftSnapshot,
+  loadRemoteGoalDraft,
   saveGoalDraft,
+  saveRemoteGoalDraft,
   __resetForTests,
 } from '../utils/goalDrafts'
 import { safeSetItem } from '../utils/safeStorage'
@@ -19,6 +22,48 @@ describe('goalDrafts', () => {
     saveGoalDraft('chat-1-100', draft('finish the migration', 120, 5))
     // New "page load" / popover re-mount reads it straight back.
     expect(loadGoalDraft('chat-1-100')).toEqual(draft('finish the migration', 120, 5))
+  })
+
+  it('preserves an explicit server timestamp in the local fallback', () => {
+    const stamp = Date.now() - 1_000
+    saveGoalDraft('chat-1-100', draft('server goal', 90, 4), stamp)
+    expect(loadGoalDraftSnapshot('chat-1-100')).toEqual({
+      draft: draft('server goal', 90, 4),
+      updatedAt: stamp,
+    })
+  })
+
+  it('translates the canonical server wire format in both directions', async () => {
+    const stamp = Date.now()
+    const fetchMock = vi.fn((_url: string, init?: RequestInit) => {
+      if (init?.method === 'PUT') {
+        const sent = JSON.parse(String(init.body))
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ draft: sent.draft, updated_at: sent.updated_at }),
+        })
+      }
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({
+          draft: { message: 'remote goal', idle_secs: 120, max_cycles: 7 },
+          updated_at: stamp,
+        }),
+      })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    try {
+      expect(await loadRemoteGoalDraft('chat/1')).toEqual({
+        draft: draft('remote goal', 120, 7),
+        updatedAt: stamp,
+      })
+      const snapshot = { draft: draft('local goal', 45, 2), updatedAt: stamp + 1 }
+      expect(await saveRemoteGoalDraft('chat/1', snapshot)).toEqual(snapshot)
+      expect(fetchMock.mock.calls[0][0]).toBe('/api/autonudge/draft/slot/chat%2F1')
+      expect(fetchMock.mock.calls[1][0]).toBe('/api/autonudge/draft/slot/chat%2F1')
+    } finally {
+      vi.unstubAllGlobals()
+    }
   })
 
   it('returns null for an unknown slot', () => {

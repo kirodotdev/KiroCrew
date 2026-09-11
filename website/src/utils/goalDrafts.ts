@@ -65,15 +65,84 @@ export function loadGoalDraft(slot: string): GoalDraft | null {
   return store.load()[slot] ?? null
 }
 
+export interface GoalDraftSnapshot {
+  draft: GoalDraft | null
+  /** Browser edit time in epoch milliseconds; zero means no local record. */
+  updatedAt: number
+}
+
+/** Read the local fallback and the TTL sidecar timestamp that orders first sync. */
+export function loadGoalDraftSnapshot(slot: string): GoalDraftSnapshot {
+  const draft = loadGoalDraft(slot)
+  return { draft, updatedAt: draft ? (store.updatedAt(slot) ?? 0) : 0 }
+}
+
 /** Remember (or clear) the goal draft for `slot`. Pass `null` — or a draft with
  *  a blank message — to drop the slot; the caller uses this to avoid pinning the
- *  pristine default template. */
-export function saveGoalDraft(slot: string, draft: GoalDraft | null): void {
+ *  pristine default template. A supplied timestamp preserves the server's
+ *  conflict ordering when a newer remote value refreshes this local cache. */
+export function saveGoalDraft(
+  slot: string,
+  draft: GoalDraft | null,
+  updatedAt: number = Date.now(),
+): GoalDraftSnapshot {
   const drafts = store.load()
   // A blank message sanitizes to null, which makes `set` delete the slot — so a
   // null/empty draft is the uniform "forget this slot" path.
-  store.set(drafts, slot, draft ?? { message: '', idleSecs: 0, maxCycles: 0 })
+  store.set(drafts, slot, draft ?? { message: '', idleSecs: 0, maxCycles: 0 }, updatedAt)
   store.save(drafts)
+  const saved = drafts[slot] ?? null
+  return { draft: saved, updatedAt: saved ? (store.updatedAt(slot) ?? updatedAt) : updatedAt }
+}
+
+function parseRemoteSnapshot(value: unknown): GoalDraftSnapshot {
+  if (!value || typeof value !== 'object') throw new Error('Invalid goal draft response')
+  const row = value as Record<string, unknown>
+  if (typeof row.updated_at !== 'number' || !Number.isFinite(row.updated_at)) {
+    throw new Error('Invalid goal draft timestamp')
+  }
+  if (row.draft === null) return { draft: null, updatedAt: row.updated_at }
+  if (!row.draft || typeof row.draft !== 'object') throw new Error('Invalid goal draft response')
+  const wire = row.draft as Record<string, unknown>
+  const draft = sanitizeGoalDraft({
+    message: wire.message,
+    idleSecs: wire.idle_secs,
+    maxCycles: wire.max_cycles,
+  })
+  if (!draft) throw new Error('Invalid goal draft response')
+  return { draft, updatedAt: row.updated_at }
+}
+
+/** Read the canonical cross-device draft. The local store remains the offline fallback. */
+export async function loadRemoteGoalDraft(slot: string): Promise<GoalDraftSnapshot> {
+  const response = await fetch(`/api/autonudge/draft/slot/${encodeURIComponent(slot)}`)
+  const body = await response.json().catch(() => ({}))
+  if (!response.ok) throw new Error(body.error || `HTTP ${response.status}`)
+  return parseRemoteSnapshot(body)
+}
+
+/** Last-write-wins write of a browser edit or clear tombstone. */
+export async function saveRemoteGoalDraft(
+  slot: string,
+  snapshot: GoalDraftSnapshot,
+  options: { keepalive?: boolean } = {},
+): Promise<GoalDraftSnapshot> {
+  const response = await fetch(`/api/autonudge/draft/slot/${encodeURIComponent(slot)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    keepalive: options.keepalive,
+    body: JSON.stringify({
+      updated_at: snapshot.updatedAt,
+      draft: snapshot.draft ? {
+        message: snapshot.draft.message,
+        idle_secs: snapshot.draft.idleSecs,
+        max_cycles: snapshot.draft.maxCycles,
+      } : null,
+    }),
+  })
+  const body = await response.json().catch(() => ({}))
+  if (!response.ok) throw new Error(body.error || `HTTP ${response.status}`)
+  return parseRemoteSnapshot(body)
 }
 
 /** @internal test-only: reset module state between tests. `undefined` in the

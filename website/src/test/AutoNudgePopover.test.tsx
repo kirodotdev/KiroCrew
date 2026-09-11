@@ -101,6 +101,85 @@ describe('AutoNudgePopover goal persistence', () => {
     expect(goalBox().value).toBe('active loop goal')
   })
 
+
+  it('hydrates a newer desktop draft from the server over stale mobile local storage', async () => {
+    const now = Date.now()
+    saveGoalDraft(SLOT, { message: 'stale mobile goal', idleSecs: 60, maxCycles: 0 }, now - 5_000)
+    vi.stubGlobal('fetch', vi.fn((url: string) => Promise.resolve({
+      ok: true,
+      json: () => Promise.resolve(
+        String(url).startsWith('/api/autonudge/draft/')
+          ? {
+              draft: { message: 'latest desktop goal', idle_secs: 90, max_cycles: 4 },
+              updated_at: now,
+            }
+          : { jobs: [] },
+      ),
+    })) as unknown as typeof fetch)
+
+    renderPopover(null)
+    await waitFor(() => expect(goalBox().value).toBe('latest desktop goal'))
+    expect(loadGoalDraft(SLOT)).toEqual({
+      message: 'latest desktop goal', idleSecs: 90, maxCycles: 4,
+    })
+  })
+
+  it('migrates a newer local draft without letting the stale server copy win', async () => {
+    const now = Date.now()
+    saveGoalDraft(SLOT, { message: 'latest desktop goal', idleSecs: 120, maxCycles: 6 }, now)
+    const fetchMock = vi.fn((url: string, init?: RequestInit) => {
+      if (String(url).startsWith('/api/crons')) {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ jobs: [] }) })
+      }
+      if (init?.method === 'PUT') {
+        const sent = JSON.parse(String(init.body))
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ draft: sent.draft, updated_at: sent.updated_at }),
+        })
+      }
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({
+          draft: { message: 'stale mobile goal', idle_secs: 60, max_cycles: 0 },
+          updated_at: now - 5_000,
+        }),
+      })
+    })
+    vi.stubGlobal('fetch', fetchMock as unknown as typeof fetch)
+
+    renderPopover(null)
+    await waitFor(() => expect(fetchMock.mock.calls.some(call => call[1]?.method === 'PUT')).toBe(true))
+    const put = fetchMock.mock.calls.find(call => call[1]?.method === 'PUT')!
+    expect(JSON.parse(String(put[1]?.body)).draft.message).toBe('latest desktop goal')
+    expect(goalBox().value).toBe('latest desktop goal')
+  })
+
+  it('never lets a late server response overwrite text typed after open', async () => {
+    const now = Date.now()
+    let resolveDraft!: (value: { ok: boolean; json: () => Promise<unknown> }) => void
+    vi.stubGlobal('fetch', vi.fn((url: string) => {
+      if (String(url).startsWith('/api/crons')) {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ jobs: [] }) })
+      }
+      return new Promise(resolve => { resolveDraft = resolve })
+    }) as unknown as typeof fetch)
+
+    renderPopover(null)
+    fireEvent.change(goalBox(), { target: { value: 'typing on mobile now' } })
+    await act(async () => {
+      resolveDraft({
+        ok: true,
+        json: () => Promise.resolve({
+          draft: { message: 'desktop response arrived late', idle_secs: 60, max_cycles: 0 },
+          updated_at: now + 1_000,
+        }),
+      })
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(goalBox().value).toBe('typing on mobile now')
+  })
   it('opening with a live loop never writes the loop config into the draft store', () => {
     vi.useFakeTimers()
     // No stored draft. Open with a live loop, let any timer fire, then close.
