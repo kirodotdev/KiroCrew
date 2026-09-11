@@ -1596,6 +1596,30 @@ def _http_error_body(exc: urllib.error.HTTPError) -> dict:
             "the instance you meant) and retry; the gateway's security event log "
             "records both credential fingerprints for the mismatch."
         )
+    elif code == "caller_record_missing":
+        # The sibling case, and the one that reads most misleadingly of all: the
+        # credential was fine and the caller WAS identified, but the identity it
+        # presented names a record the gateway can no longer find. Session keys in
+        # the ``cron:<id>`` and ``subagent:<id>`` namespaces are checked against
+        # their registries by ``token_auth._internal_caller_record_missing``, which
+        # fails CLOSED -- so a deleted cron job, a reaped subagent run, an id-less
+        # key, or a registry that merely could not be read all deny here. Left
+        # unmapped, every one of those surfaced as a bare "Forbidden", which reads
+        # as a permission decision about the tool's subject and hides the fact that
+        # the SESSION is orphaned. Mapped in the same decoder and keyed on the CODE
+        # for the same reasons as the branch above.
+        message = (
+            "this session is no longer backed by a record the gateway can find. "
+            "Its session key names a cron job or subagent run that is not in the "
+            "registry -- most often because the cron job was deleted (or renamed) "
+            "or the subagent run was reaped while a session linked to it stayed "
+            "open, and the check fails closed, so an unreadable registry denies "
+            "the same way. The credential and the caller identity are both fine; "
+            "nothing the tool was asked to do was refused on its merits. Continue "
+            "in a session that is not linked to the removed record -- a new "
+            "dashboard tab or thread -- since this one cannot be revived by "
+            "retrying. The gateway's security event log records the denial."
+        )
     out: dict = {"error": message}
     if counted:
         out["counted"] = True
