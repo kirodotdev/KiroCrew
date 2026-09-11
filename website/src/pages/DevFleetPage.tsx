@@ -21,7 +21,7 @@ import { setPendingInput } from '../store/chatSlice'
 import {
   Server, RefreshCw, Play, Square, ExternalLink, ChevronRight, Trash2,
   LoaderCircle, Check, Video, X,
-  Ellipsis, RotateCw, FileText, GitCommit, Rocket, Info, AlertTriangle, ShieldAlert,
+  Ellipsis, RotateCw, FileText, GitCommit, Rocket, Undo2, Info, AlertTriangle, ShieldAlert,
 } from 'lucide-react'
 import * as api from './devFleetApi'
 import { ApiError } from '../api/client'
@@ -693,7 +693,8 @@ interface Worktree {
   // Per-pod system resources (running pods on Linux only); absent otherwise.
   pod_resources?: PodResources | null
 }
-interface FleetData { worktrees: Worktree[]; error?: string; needs_setup?: boolean; main_repo?: string; main_repo_inferred?: boolean; base_branch?: string; sync_run_id?: string; build_pending?: boolean; gateway_service_active?: boolean; gateway_service_reason?: string | null; pods_available?: boolean; pods_unavailable_reason?: string | null; serving_install_reason?: string | null; staged_target?: string | null; staged_cancel_available?: boolean; manual_restart?: string; fleet_totals?: FleetTotals }
+interface UndoTarget { name: string; path: string }
+interface FleetData { worktrees: Worktree[]; error?: string; needs_setup?: boolean; main_repo?: string; main_repo_inferred?: boolean; base_branch?: string; sync_run_id?: string; build_pending?: boolean; gateway_service_active?: boolean; gateway_service_reason?: string | null; pods_available?: boolean; pods_unavailable_reason?: string | null; serving_install_reason?: string | null; staged_target?: string | null; staged_cancel_available?: boolean; undo_target?: UndoTarget | null; manual_restart?: string; fleet_totals?: FleetTotals }
 // `lastIsCause` distinguishes the two things `last` can hold. A gateway-composed
 // diagnosis is decision-critical prose ending in the action to take, so it must
 // not render in the muted 11.5px monospace the raw log tail uses.
@@ -917,6 +918,10 @@ export default function DevFleetPage() {
   // so they cannot be selected or copied and a long message vanishes mid-read —
   // keep the text on the page until it is dealt with.
   const [gatewayError, setGatewayError] = useState<string | null>(null)
+  // Dismissal is scoped to one current→previous pair. A later Make Live changes
+  // the key and automatically reveals the new banner without persisting UI-only
+  // state into the keystone live-target pointer.
+  const [dismissedUndoKey, setDismissedUndoKey] = useState<string | null>(null)
   const [podLogs, setPodLogs] = useState<Record<string, string>>({})
   const [podLogsLoading, setPodLogsLoading] = useState<Record<string, boolean>>({})
   const rebaseTimersRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({})
@@ -1598,15 +1603,16 @@ export default function DevFleetPage() {
     }
   }
 
-  async function makeLive(w: Worktree) {
+  async function makeLive(w: Worktree | UndoTarget, opts?: { undo?: boolean }) {
+    const undoing = opts?.undo === true
     // Only the already-live row is blocked. Main is a valid target when it is
     // NOT live (after a cutover to a feature worktree, this is the way back).
     // The live row is a valid target too while a cutover is staged onto another
     // worktree: re-confirming the running checkout as the live target is how
     // the stage is cancelled (the backend re-pins the pointer; nothing
     // restarts), and it is the only cancel the dashboard can offer.
-    const cancellingStage = !!w.is_live && !!stagedWorktree
-    if (w.is_live && !cancellingStage) return
+    const cancellingStage = !undoing && !!('is_live' in w && w.is_live) && !!stagedWorktree
+    if ('is_live' in w && w.is_live && !cancellingStage) return
     if (!w.path) { notify(i18nT('pages.devFleetPage.cannot_resolve_worktree_path_for_name', { name: w.name }), { type: 'error' }); return }
     // The dialog must not promise an automatic restart on a host where Dev Fleet
     // cannot drive the service: there the cutover only STAGES, and the operator
@@ -1614,17 +1620,25 @@ export default function DevFleetPage() {
     // so the copy cannot drift from what actually happens.
     const canRestart = fleet?.gateway_service_active === true
     const ok = await askConfirm(
-      cancellingStage
-        ? i18nT('pages.devFleetPage.cancel_staged_cutover_2')
-        : i18nT('pages.devFleetPage.make_name_live', { name: w.name }),
-      cancellingStage
-        ? i18nT('pages.devFleetPage.keeps_name_the_live_target_and_discards_the_stag', { name: w.name, staged: stagedWorktree?.name ?? '' })
-        : canRestart
-          ? i18nT('pages.devFleetPage.swaps_the_code_behind_the_live_dashboard_to_this')
-          : i18nT('pages.devFleetPage.stages_the_code_behind_the_live_dashboard_manual', { cmd: fleet?.manual_restart || 'kirocrew restart' }),
-      cancellingStage
-        ? { confirmLabel: i18nT('pages.devFleetPage.cancel_staged_cutover'), cancelLabel: i18nT('pages.devFleetPage.keep_cutover') }
-        : { confirmLabel: i18nT('pages.devFleetPage.make_live') })
+      undoing
+        ? i18nT('pages.devFleetPage.undo_to_name', { name: w.name })
+        : cancellingStage
+          ? i18nT('pages.devFleetPage.cancel_staged_cutover_2')
+          : i18nT('pages.devFleetPage.make_name_live', { name: w.name }),
+      undoing
+        ? canRestart
+          ? i18nT('pages.devFleetPage.switches_the_live_dashboard_back_to_name_and_restarts', { name: w.name })
+          : i18nT('pages.devFleetPage.stages_name_as_the_live_target_to_finish_the_undo', { name: w.name, cmd: fleet?.manual_restart || 'kirocrew restart' })
+        : cancellingStage
+          ? i18nT('pages.devFleetPage.keeps_name_the_live_target_and_discards_the_stag', { name: w.name, staged: stagedWorktree?.name ?? '' })
+          : canRestart
+            ? i18nT('pages.devFleetPage.swaps_the_code_behind_the_live_dashboard_to_this')
+            : i18nT('pages.devFleetPage.stages_the_code_behind_the_live_dashboard_manual', { cmd: fleet?.manual_restart || 'kirocrew restart' }),
+      undoing
+        ? { confirmLabel: i18nT('pages.devFleetPage.undo_to_name', { name: w.name }) }
+        : cancellingStage
+          ? { confirmLabel: i18nT('pages.devFleetPage.cancel_staged_cutover'), cancelLabel: i18nT('pages.devFleetPage.keep_cutover') }
+          : { confirmLabel: i18nT('pages.devFleetPage.make_live') })
     if (!ok) return
     setFlag(w.name + ':makelive', true)
     try {
@@ -1636,12 +1650,16 @@ export default function DevFleetPage() {
         // refuses (stage_changed) if another tab re-staged between the dialog
         // and this POST, instead of silently discarding a stage never seen.
         ? { path: w.path, expected_staged: stagedWorktree.path }
-        : { path: w.path })
+        : undoing
+          ? { path: w.path, undo: true }
+          : { path: w.path })
       if (!r?.ok) {
         // Same treatment as a failed restart: this branch surfaces
         // restart_detached's message, which names a remedy the operator has to
         // act on — useless in a 7s toast.
-        const msg = r?.error || i18nT('pages.devFleetPage.make_live_failed')
+        const msg = r?.error || i18nT(undoing
+          ? 'pages.devFleetPage.undo_make_live_failed'
+          : 'pages.devFleetPage.make_live_failed')
         notify(msg, { type: 'error' }); setGatewayError(msg); setFlag(w.name + ':makelive', false); return
       }
       // Stage cancelled: the pointer is re-pinned at the running checkout and
@@ -1674,7 +1692,10 @@ export default function DevFleetPage() {
       await awaitGatewayBack(r.start_id ?? null)
       setFlag(w.name + ':makelive', false)
     } catch (e: unknown) {
-      const msg = `${i18nT('pages.devFleetPage.make_live_failed')}: ${(e as Error)?.message || String(e)}`
+      const operation = i18nT(undoing
+        ? 'pages.devFleetPage.undo_make_live_failed'
+        : 'pages.devFleetPage.make_live_failed')
+      const msg = `${operation}: ${(e as Error)?.message || String(e)}`
       notify(msg, { type: 'error' }); setGatewayError(msg); setRestarting(false); setFlag(w.name + ':makelive', false)
     }
   }
@@ -1693,6 +1714,12 @@ export default function DevFleetPage() {
   const wts = fleet?.worktrees || []
   const running = wts.filter((w) => w.running).length
   const needsProv = wts.filter((w) => !w.is_main && !w.has_dist).length
+  const undoTarget = fleet?.undo_target?.path ? fleet.undo_target : null
+  const undoCurrent = undoTarget ? wts.find((w) => w.is_live && w.path) || null : null
+  const undoKey = undoCurrent && undoTarget
+    ? JSON.stringify([undoCurrent.path, undoTarget.path])
+    : null
+  const showUndoBanner = !!undoKey && dismissedUndoKey !== undoKey
   const error = fleetError ? (fleetError as Error).message : fleet?.error || null
   // Whether pods can run on this host. Default TRUE when the field is absent so
   // a dashboard talking to an older dev-fleet backend keeps its pod controls.
@@ -2357,6 +2384,33 @@ export default function DevFleetPage() {
                 <Info size={13} className="lucide-inline shrink-0" />
                 <span>{i18nT('pages.devFleetPage.the_primary_checkout_this_fleet_is_discovered_fr')}:</span>
                 <code className="min-w-0 break-all rounded bg-bg-elevated px-1.5 py-0.5 text-text-strong select-text">{fleet.main_repo}</code>
+              </div>
+            )}
+            {showUndoBanner && undoTarget && undoCurrent && (
+              <div
+                role="status"
+                aria-live="polite"
+                data-testid="make-live-undo-banner"
+                className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3 rounded-md border border-ok/40 bg-ok-subtle px-3 py-2.5 mt-3 text-[12.5px] leading-relaxed text-text-strong"
+              >
+                <div className="flex min-w-0 flex-1 items-center gap-2">
+                  <Undo2 className="lucide-inline h-4 w-4 shrink-0 text-ok" aria-hidden />
+                  <span className="min-w-0 break-words">
+                    {i18nT('pages.devFleetPage.live_checkout_changed_to_name', { name: undoCurrent.name })}
+                  </span>
+                </div>
+                <div className="flex items-center gap-2 self-end sm:self-auto">
+                  <Btn onClick={() => makeLive(undoTarget, { undo: true })} disabled={gatewayMutating}>
+                    {iconLabel(<Undo2 className="lucide-inline h-3.5 w-3.5" aria-hidden />, i18nT('pages.devFleetPage.undo_to_name', { name: undoTarget.name }))}
+                  </Btn>
+                  <Clickable
+                    aria-label={i18nT('pages.devFleetPage.dismiss')}
+                    onClick={() => setDismissedUndoKey(undoKey)}
+                    className="inline-flex h-8 w-8 items-center justify-center rounded-md text-muted hover:bg-bg-hover hover:text-text"
+                  >
+                    <X className="lucide-inline h-4 w-4" aria-hidden />
+                  </Clickable>
+                </div>
               </div>
             )}
             {/* Restart / make-live failures. The message can be a pair of

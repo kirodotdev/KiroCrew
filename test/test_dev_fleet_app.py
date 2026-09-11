@@ -3852,9 +3852,15 @@ async def test_make_live_real_cutover_writes_pointer(monkeypatch, tmp_path):
     the pointer at all.
     """
     wt = _mk_make_live_wt(tmp_path, venv=True, dist=True)
+    previous = _mk_make_live_wt(tmp_path / "previous", venv=True, dist=True)
     ptr_dir = tmp_path / "ptr"
     dropin = tmp_path / "dropins" / "make-live.conf"
-    _stub_make_live(monkeypatch, wt, pointer_dir=ptr_dir)
+    _stub_make_live(
+        monkeypatch,
+        wt,
+        live=str(previous.resolve()),
+        pointer_dir=ptr_dir,
+    )
     monkeypatch.setattr(live_mod, "_dropin_path", lambda: dropin)
     monkeypatch.setattr(live_mod, "_LIVE_WORKTREE", "sentinel", raising=False)
     monkeypatch.setattr(live_mod, "_LIVE_CHECK_AT", 123.0, raising=False)
@@ -3874,6 +3880,7 @@ async def test_make_live_real_cutover_writes_pointer(monkeypatch, tmp_path):
     import json as _json
     data = _json.loads(ptr_file.read_text())
     assert Path(data["checkout"]).resolve() == wt.resolve()
+    assert Path(data["previous_checkout"]).resolve() == previous.resolve()
     # Service definition restaged at the SAME target, then re-read.
     assert dropin.is_file()
     assert str(wt) in dropin.read_text(encoding="utf-8")
@@ -3885,6 +3892,87 @@ async def test_make_live_real_cutover_writes_pointer(monkeypatch, tmp_path):
     # Live-worktree cache invalidated so the next poll re-resolves.
     assert mod._LIVE_WORKTREE is None
     assert mod._LIVE_CHECK_AT == 0.0
+
+
+@pytest.mark.asyncio
+@_POSIX_ONLY
+async def test_make_live_omits_unusable_previous_checkout(monkeypatch, tmp_path):
+    """An unprovisioned running checkout is not a safe Undo destination, but
+    it must not make the primary cutover unavailable."""
+    target = _mk_make_live_wt(tmp_path / "target", venv=True, dist=True)
+    previous = tmp_path / "unprovisioned-current"
+    previous.mkdir()
+    ptr_dir = tmp_path / "ptr"
+    _stub_make_live(
+        monkeypatch,
+        target,
+        live=str(previous.resolve()),
+        pointer_dir=ptr_dir,
+    )
+
+    res = await mod._make_live(str(target))
+
+    assert res["ok"] is True
+    data = json.loads((ptr_dir / "live_target.json").read_text())
+    assert Path(data["checkout"]).resolve() == target.resolve()
+    assert "previous_checkout" not in data
+
+
+@pytest.mark.asyncio
+@_POSIX_ONLY
+async def test_undo_make_live_clears_one_level_history(monkeypatch, tmp_path):
+    """Undo reuses the cutover transaction but consumes, rather than flips,
+    the previous checkout so the inverse does not become an implicit redo."""
+    current = _mk_make_live_wt(tmp_path / "current", venv=True, dist=True)
+    previous = _mk_make_live_wt(tmp_path / "previous", venv=True, dist=True)
+    ptr_dir = tmp_path / "ptr"
+    _stub_make_live(
+        monkeypatch,
+        previous,
+        live=str(current.resolve()),
+        unit_status="no_user_unit",
+        pointer_dir=ptr_dir,
+    )
+    live_mod.live_target.write_target(
+        current,
+        previous_checkout=previous,
+    )
+
+    res = await mod._make_live(str(previous), undo=True)
+
+    assert res["ok"] is True
+    assert res["staged_only"] is True
+    data = json.loads((ptr_dir / "live_target.json").read_text())
+    assert Path(data["checkout"]).resolve() == previous.resolve()
+    assert "previous_checkout" not in data
+
+
+@pytest.mark.asyncio
+@_POSIX_ONLY
+async def test_undo_make_live_refuses_stale_banner_target(monkeypatch, tmp_path):
+    """A banner rendered for an older cutover cannot reverse a newer one."""
+    current = _mk_make_live_wt(tmp_path / "current", venv=True, dist=True)
+    previous = _mk_make_live_wt(tmp_path / "previous", venv=True, dist=True)
+    stale = _mk_make_live_wt(tmp_path / "stale", venv=True, dist=True)
+    ptr_dir = tmp_path / "ptr"
+    _stub_make_live(
+        monkeypatch,
+        stale,
+        live=str(current.resolve()),
+        unit_status="no_user_unit",
+        pointer_dir=ptr_dir,
+    )
+    live_mod.live_target.write_target(
+        current,
+        previous_checkout=previous,
+    )
+    before = (ptr_dir / "live_target.json").read_text()
+
+    res = await mod._make_live(str(stale), undo=True)
+
+    assert res["ok"] is False
+    assert res["code"] == "undo_changed"
+    assert (ptr_dir / "live_target.json").read_text() == before
 
 
 @pytest.mark.asyncio
@@ -3962,11 +4050,11 @@ async def test_make_live_write_failure_does_not_latch(monkeypatch, tmp_path):
     original_write = live_mod.live_target.write_target
     call_count = {"n": 0}
 
-    def fail_first_write(checkout):
+    def fail_first_write(checkout, *, previous_checkout=None):
         call_count["n"] += 1
         if call_count["n"] == 1:
             raise OSError("disk full")
-        return original_write(checkout)
+        return original_write(checkout, previous_checkout=previous_checkout)
 
     monkeypatch.setattr(live_mod.live_target, "write_target", fail_first_write)
 
@@ -4648,8 +4736,11 @@ async def test_make_live_concurrent_second_call_busy(monkeypatch, tmp_path):
     # unlocked lock and let the second call through.
     original_write_target = live_mod.live_target.write_target
 
-    def signalling_write(checkout):
-        result = original_write_target(checkout)
+    def signalling_write(checkout, *, previous_checkout=None):
+        result = original_write_target(
+            checkout,
+            previous_checkout=previous_checkout,
+        )
         entered.set()
         return result
 
@@ -4883,8 +4974,11 @@ async def test_cutover_unwind_runs_off_the_event_loop(monkeypatch, tmp_path):
     _stub_make_live(monkeypatch, wt, pointer_dir=ptr_dir, unit_status="no_user_unit")
 
     # Force the cutover write to fail so the unwind path runs.
-    monkeypatch.setattr(live_mod.live_target, "write_target",
-                        lambda _c: (_ for _ in ()).throw(OSError(28, "No space")))
+    monkeypatch.setattr(
+        live_mod.live_target,
+        "write_target",
+        lambda _c, **_kw: (_ for _ in ()).throw(OSError(28, "No space")),
+    )
     loop_thread = threading.get_ident()
     restore_threads: list = []
     monkeypatch.setattr(

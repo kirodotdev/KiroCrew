@@ -958,6 +958,53 @@ describe('DevFleetPage make live', () => {
     fireEvent.click(within(dialog).getByRole('button', { name: /Make live/i }))
   }
 
+  it('shows the completed-cutover Undo banner and posts an explicit undo', async () => {
+    const bodies: string[] = []
+    installFetch(
+      {
+        ...fleetOf(
+          { ...MAIN_ROW, path: '/w/main', is_live: false },
+          readyRow({ name: 'wt-live', path: '/w/wt-live', is_live: true }),
+        ),
+        gateway_service_active: false,
+        manual_restart: 'kirocrew restart',
+        undo_target: { name: 'main', path: '/w/main' },
+      },
+      (u, opts) => {
+        if (u.includes('/make-live') && isPost(opts)) {
+          bodies.push(String(opts?.body))
+          return res({ ok: true, staged_only: true, notice: 'Undo staged.' })
+        }
+        return null
+      },
+    )
+    renderPage()
+    const banner = await screen.findByTestId('make-live-undo-banner')
+    expect(banner).toHaveTextContent('The dashboard is now using “wt-live”.')
+    fireEvent.click(within(banner).getByRole('button', { name: 'Switch back to main' }))
+    const dialog = await screen.findByRole('dialog')
+    expect(within(dialog).getByText(/The dashboard will keep using its current version/)).toBeInTheDocument()
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Switch back to main' }))
+
+    await waitFor(() => expect(bodies).toHaveLength(1))
+    expect(JSON.parse(bodies[0])).toEqual({ path: '/w/main', undo: true })
+    expect(screen.queryByText('Restarting — reconnecting…')).toBeNull()
+  }, 15000)
+
+  it('dismisses only the current cutover Undo banner', async () => {
+    installFetch({
+      ...fleetOf(
+        { ...MAIN_ROW, path: '/w/main', is_live: false },
+        readyRow({ name: 'wt-live', path: '/w/wt-live', is_live: true }),
+      ),
+      undo_target: { name: 'main', path: '/w/main' },
+    })
+    renderPage()
+    const banner = await screen.findByTestId('make-live-undo-banner')
+    fireEvent.click(within(banner).getByLabelText('Dismiss'))
+    await waitFor(() => expect(screen.queryByTestId('make-live-undo-banner')).toBeNull())
+  })
+
   it('offers Cancel cutover on the live main row while a cutover is staged, and cancels without a restart handshake', async () => {
     // A staged cutover is cancelled by re-confirming the LIVE checkout as the
     // live target — the backend re-pins the pointer and nothing restarts, so

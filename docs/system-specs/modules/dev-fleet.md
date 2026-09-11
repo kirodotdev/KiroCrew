@@ -573,6 +573,23 @@ scheduling the restart and hands it to the frontend:
   `POST …/make-live` cutover also returns the pre-restart `start_id` and the UI
   recovers on an identity change.
 
+### Completed-cutover Undo banner
+
+After the reloaded fleet proves the pointer target is the checkout actually
+running, `undo_target` exposes the validated, still-discovered
+`previous_checkout`. The page renders a persistent success banner naming the
+current checkout and a **Switch back to `<previous>`** button. The inverse action opens a confirmation
+that names the destination and accurately distinguishes an automatic restart
+from a staged/manual one, then posts `{path, undo: true}` through the same Make
+Live transaction and restart handshake.
+
+The banner is deliberately absent while a pointer is staged but not running:
+**Cancel staged cutover** is the inverse in that state, while Undo is the inverse
+of a completed cutover. Dismissing the banner hides only its current
+`current→previous` pair; a later Make Live produces a different pair and becomes
+visible. A successful Undo consumes `previous_checkout`, so the reloaded page has
+no accidental redo banner.
+
 ### Restarting UI state
 
 While the handshake runs, the frontend holds an explicit **"Restarting —
@@ -859,8 +876,19 @@ Location: `config_dir() / "live_target.json"` (inside the active data home,
 typically `~/.kiro/crew/live_target.json`). Contents:
 
 ```json
-{"checkout": "/absolute/path/to/worktree"}
+{
+  "checkout": "/absolute/path/to/worktree",
+  "previous_checkout": "/absolute/path/to/previous-worktree"
+}
 ```
+
+`previous_checkout` is optional and records exactly one completed cutover for the
+post-restart **Undo** banner. Both fields validate as executable Kiro Crew
+checkouts before they are written or acted on. Ordinary Make Live replaces the history with the checkout currently
+running when that checkout validates; otherwise the cutover succeeds without an
+Undo destination. Undo consumes the stored history (the rewritten pointer omits `previous_checkout`) rather than turning the inverse into an
+implicit redo. Legacy pointers containing only `checkout` remain valid and
+simply expose no Undo action.
 
 Written atomically (temp file + `os.replace`) with mode `0o600`. The file is
 **keystone-fenced** (in `_CREW_SECRET_LEAVES`) so agent tools can neither read
@@ -878,17 +906,25 @@ Reading the definition first would report that stale checkout as live.
 
 ### Request / Response
 
-Request body: `{path, dry_run?}` — `path` is a worktree path (validated against
-the discovered set, never an arbitrary path); `dry_run` (bool, default false)
-returns the plan without writing the pointer.
+Request body: `{path, dry_run?, undo?}` — `path` is a worktree path
+(validated against the discovered set, never an arbitrary path); `dry_run` (bool,
+default false) returns the plan without writing the pointer. `undo` (bool,
+default false) requires `path` to equal the pointer's validated
+`previous_checkout`; that binding is checked again under the Make Live lock, so
+a stale banner cannot reverse a newer cutover. `undo` and `expected_staged` are
+mutually exclusive.
 
 - **dry_run success:** `{ok: true, dry_run: true, plan: {mechanism, pointer_path,
-  exec, restart, target, [manual_restart]}}`
+  exec, restart, target, [manual_restart], [action]}}` (`action` is
+  `"undo_make_live"` for an Undo preview)
 - **cutover success (automatic restart):** `{ok: true, cutover: true, target,
   plan, start_id}`
 - **cutover success (staged only):** `{ok: true, cutover: true, staged_only: true,
   target, plan, manual_restart, notice}` — the pointer is written and correct;
   the operator finishes the cutover by restarting the gateway themselves.
+- **Undo success:** the same automatic/staged result shapes; the target becomes
+  the prior checkout and `previous_checkout` is consumed before the restart is
+  scheduled.
 - **refusal:** `{ok: false, code, error}` — `code` is one of the values below.
 
 The handler additionally returns HTTP 400 for a missing/non-string `path` or a
@@ -913,6 +949,8 @@ The `plan` object describes the cutover mechanism:
 | `pod` | called from inside a pod — a throwaway test instance must never repoint the live gateway |
 | `pod_indeterminate` | pod status could not be resolved (config home unresolvable) — **fail-closed**, never treated as "not a pod" |
 | `already_live` | the target is already the live gateway |
+| `undo_changed` | the requested Undo path no longer equals the pointer's validated previous checkout (stale banner or newer cutover); refresh before retrying |
+| `undo_not_ready` | the requested inverse is still the running checkout, so the original cutover is only staged; use Cancel staged cutover instead |
 | `missing_venv` | the worktree has no `.venv/bin/kirocrew` (Provision it first) |
 | `venv_not_executable` | the worktree's `.venv/bin/kirocrew` exists but is **not executable** (`chmod +x` it or re-Provision) — a non-executable binary would stop the live gateway but could not start the replacement, leaving no gateway running |
 | `missing_dist` | the worktree has no built `src/kiro_crew/static/dist/index.html` (Pull+Build first) — a cutover without a built dist serves a broken dashboard |

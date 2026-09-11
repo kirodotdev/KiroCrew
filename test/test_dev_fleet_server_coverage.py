@@ -8,6 +8,7 @@ Everything is injected: no real git, no real subprocess, no network, and no
 writes outside ``tmp_path``. Where the module reads its config home the
 loader's ``config_dir`` is patched, so nothing touches the real one.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -142,6 +143,7 @@ def test_load_dev_fleet_cfg_ignores_unusable_files(monkeypatch, tmp_path):
 
 def test_load_dev_fleet_cfg_config_dir_failure_is_empty(monkeypatch):
     """A config home that cannot be resolved yields {} rather than an error."""
+
     def _boom():
         raise RuntimeError("no home")
 
@@ -2219,7 +2221,7 @@ async def test_make_live_handler_forwards_dry_run(monkeypatch):
 
     resp = await http_api.api_dev_fleet_make_live(_json_request({"path": "/w", "dry_run": True}))
     assert resp.status == 200
-    make_live.assert_awaited_once_with("/w", True, expected_staged=None)
+    make_live.assert_awaited_once_with("/w", True, expected_staged=None, undo=False)
     assert sink.events[0]["resources"] == "/w"
 
 
@@ -2823,8 +2825,9 @@ def test_dir_size_bytes_does_not_follow_a_directory_link():
                 return True
             return real_is_link_or_junction(path)
 
-        with mock.patch.object(os.DirEntry, "is_dir", fake_is_dir), mock.patch.object(
-            fleet_state_mod, "is_link_or_junction", fake_is_link_or_junction
+        with (
+            mock.patch.object(os.DirEntry, "is_dir", fake_is_dir),
+            mock.patch.object(fleet_state_mod, "is_link_or_junction", fake_is_link_or_junction),
         ):
             size = fleet_state_mod._dir_size_bytes(str(root))
 
