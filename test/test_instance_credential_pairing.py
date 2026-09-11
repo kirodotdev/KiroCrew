@@ -351,6 +351,50 @@ class TestEveryToolGetsTheExplanation:
         assert "wrong Kiro Crew instance" in out
         assert out.strip() != "Error: Forbidden"
 
+    def test_caller_record_missing_is_rewritten_for_every_caller(self) -> None:
+        # An orphaned session -- its cron job deleted, or its subagent run reaped
+        # -- denies with this code while the credential and the caller identity
+        # are both intact. Unmapped it read as a bare "Forbidden", which points at
+        # a permission problem the caller does not have.
+        out = self._body(b'{"error": "Forbidden", "code": "caller_record_missing"}')
+        assert "no longer backed by a record" in out["error"]
+        assert out["error"] != "Forbidden"
+
+    def test_caller_record_missing_is_not_confused_with_the_desync(self) -> None:
+        # The two 403 codes share a body and must not borrow each other's cause:
+        # one is a credential problem, the other is a missing registry record.
+        orphan = self._body(b'{"error": "Forbidden", "code": "caller_record_missing"}')
+        desync = self._body(b'{"error": "Forbidden", "code": "internal_auth_mismatch"}')
+        assert "wrong Kiro Crew instance" not in orphan["error"]
+        assert "no longer backed by a record" not in desync["error"]
+
+    def test_a_plain_forbidden_is_not_given_the_orphan_explanation(self) -> None:
+        out = self._body(b'{"error": "Forbidden"}')
+        assert "no longer backed by a record" not in out["error"]
+        assert out["error"] == "Forbidden"
+
+    def test_caller_record_missing_keeps_its_machine_readable_code(self) -> None:
+        # Callers dispatch on the code, so rewriting the prose must not drop it.
+        out = self._body(b'{"error": "Forbidden", "code": "caller_record_missing"}')
+        assert out["code"] == "caller_record_missing"
+
+    def test_learn_add_surfaces_the_orphan_explanation(self) -> None:
+        from kiro_crew.mcp_tools import learn
+
+        rewritten = self._body(
+            b'{"error": "Forbidden", "code": "caller_record_missing"}'
+        )
+        with mock.patch.object(
+            learn.mcp_core, "_post", return_value=rewritten
+        ), mock.patch.object(
+            learn.mcp_core, "_vet_memory_writes_governance", return_value=""
+        ), mock.patch.object(
+            learn.mcp_core, "_resolve_session_key", return_value="cron:47311b25"
+        ):
+            out = learn.learn_add("learn_add", {"rule": "always check the port"})
+        assert "no longer backed by a record" in out
+        assert out.strip() != "Error: Forbidden"
+
 
 class TestTheSharedHelperOwnsThePairing:
     """The invariant lives at one chokepoint, and the dial target is never inferred.
