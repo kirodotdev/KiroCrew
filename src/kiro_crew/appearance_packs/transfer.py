@@ -27,6 +27,7 @@ import urllib.parse
 import urllib.request
 from typing import Any
 
+from kiro_crew.appearance_packs.sounds import SOUND_STATES, SOUND_SUFFIXES, read_sound
 from kiro_crew.appearance_packs.store import (
     DEFAULT_PACK,
     MAX_FILE_BYTES,
@@ -49,8 +50,10 @@ MAX_DOWNLOAD_BYTES = 12 * 1024 * 1024
 #: How long any single PetDex request may take.
 FETCH_TIMEOUT_SECS = 20
 
-#: Files a bundle may contain. A pack is art plus a manifest; nothing here needs to
-#: accept arbitrary extensions, so the allowlist is the check.
+#: ART a bundle may contain. A pack is art plus a manifest; nothing here needs to
+#: accept arbitrary extensions, so the allowlist is the check. Audio rides in the
+#: same bundle but is checked separately (``SOUND_SUFFIXES``): a pack must contain
+#: art to be worth installing, and this is the tuple that decides whether it does.
 ALLOWED_SUFFIXES = (".json", ".svg", ".png", ".webp", ".gif")
 
 # ── PetDex ──────────────────────────────────────────────────────────────────
@@ -140,7 +143,8 @@ def _get(url: str, *, as_json: bool) -> Any:
     Read in chunks and abort past the cap rather than trusting Content-Length.
     """
     request = urllib.request.Request(  # noqa: S310 — scheme and host pinned above
-        url, headers={"User-Agent": "KiroCrew-CrewCompanion"}  # brand-ok: wire identifier, not prose
+        url,
+        headers={"User-Agent": "KiroCrew-CrewCompanion"},  # brand-ok: wire identifier, not prose
     )
     # Through _OPENER, never the module-level urlopen: the default opener follows
     # redirects without re-validating them.
@@ -226,13 +230,54 @@ def fetch_petdex_pet(raw_input: Any) -> dict[str, Any]:
 # ── export / import ─────────────────────────────────────────────────────────
 
 
+#: How many times ``export_bundle`` re-reads a pack whose revision changed
+#: under it before giving up. A save is one directory swap, so a second read
+#: normally lands on the new revision and finishes; three attempts cover a
+#: burst of saves without letting a caller spin against a writer that never
+#: stops.
+_EXPORT_SNAPSHOT_ATTEMPTS = 3
+
+
 def export_bundle(appearances: Any, pack_id: str) -> dict[str, Any] | None:
-    """Build a portable bundle for one pack.
+    """Build a portable bundle for one pack, from ONE revision of it.
 
     A plain JSON envelope rather than an archive: the gallery already round-trips a
     manifest plus named file contents, and JSON keeps the format inspectable by the
     person moving it between machines.
+
+    The bundle is composed from several store reads -- ``pack_detail`` for the art,
+    ``pack_sound_payload`` for the cues -- and the store holds no lock across them,
+    so a ``save_pack`` landing between two reads would hand this function art from
+    one revision and cues from another. That bundle imports cleanly and looks
+    complete, and export -> delete -> import would then install a pack the user
+    never had. So the pack's revision (:meth:`AppearanceStore.pack_revision`, the
+    identity of the swapped-in directory) is recorded before the first read and
+    compared after the last: a mismatch discards the bundle and reads again, and a
+    pack that keeps changing for every attempt is refused rather than exported as
+    a mix. Refusing is the same answer a declared-but-unreadable cue gets, for the
+    same reason -- a bundle that reports success must be the pack as it was.
     """
+    for _ in range(_EXPORT_SNAPSHOT_ATTEMPTS):
+        before = appearances.pack_revision(pack_id)
+        if before is None:
+            # Not on disk: absent, built-in, or mid-swap. `_export_one_revision`
+            # answers None for every one of these too; this only saves the read.
+            return None
+        bundle = _export_one_revision(appearances, pack_id)
+        if bundle is None:
+            return None
+        if appearances.pack_revision(pack_id) == before:
+            return bundle
+    logger.warning(
+        "appearance-packs: refusing to export %s -- the pack changed under every read",
+        pack_id,
+    )
+    return None
+
+
+def _export_one_revision(appearances: Any, pack_id: str) -> dict[str, Any] | None:
+    """One pass of the export. Coherent only if the pack did not change during it,
+    which the caller checks through :meth:`AppearanceStore.pack_revision`."""
     detail = appearances.pack_detail(pack_id)
     if not detail:
         return None
@@ -309,19 +354,93 @@ def export_bundle(appearances: Any, pack_id: str) -> dict[str, Any] | None:
     ):
         files[source_name] = source_image
 
+    # Carry the SOUND cues too. `pack_detail` reports them as presence only, so
+    # the bundle has to read the store's own shape (section plus file contents):
+    # a bundle built from the detail payload alone would export a pack that looks
+    # complete and plays nothing, and export -> delete -> import would destroy the
+    # cues the same way it once destroyed the sprite sheet.
+    manifest: dict[str, Any] = {
+        "meta": meta,
+        "states": manifest_maps["states"],
+        "moods": manifest_maps["moods"],
+        "random": manifest_maps["random"],
+        "sprite": detail.get("sprite") or {},
+    }
+    carried = appearances.pack_sound_payload(pack_id)
+    if carried is None:
+        # The manifest NAMES a cue this read could not load -- a locked file, a
+        # transient IO error. Exporting the readable ones would put that moment
+        # in the bundle for good: the user exports, deletes the pack, imports,
+        # and the cue is gone with a bundle that reported success. Refuse the
+        # whole export instead, the same all-or-nothing rule `save_pack` applies
+        # to an overwrite, so a retry after the condition clears loses nothing.
+        # The store answers carry and refusal from ONE read of each file, so a
+        # failure cannot slip between two passes.
+        logger.warning(
+            "appearance-packs: refusing to export %s while a declared sound cue " "cannot be read",
+            pack_id,
+        )
+        return None
+    sound_states, sound_files = carried
+    if sound_states:
+        manifest["sounds"] = sound_states
+        # Art wins a name collision: a cue is a reaction, and a pack that lost a
+        # frame to one would stop drawing.
+        files = {**sound_files, **files}
+
     return {
         "kind": "crew-companion-pack",
         "version": 1,
         "id": ident,
-        "manifest": {
-            "meta": meta,
-            "states": manifest_maps["states"],
-            "moods": manifest_maps["moods"],
-            "random": manifest_maps["random"],
-            "sprite": detail.get("sprite") or {},
-        },
+        "manifest": manifest,
         "files": files,
     }
+
+
+def _sound_problem(name: str, content: str) -> str:
+    """Why a carried audio file will not play as a pack cue, or ``""``.
+
+    The judgement is ``sounds.read_sound``, the one predicate the reader and the
+    route also answer through -- this only puts its reason in a sentence. A
+    second decode here is what would drift from the reader. Each failure names
+    itself rather than collapsing into one "not audio": "too long a sound" and
+    "not an mp3" are different mistakes with different fixes, and this string is
+    what the import response carries to the person who picked the file.
+    """
+    _body, reason = read_sound(content)
+    return f"That bundle's {name} {reason}" if reason else ""
+
+
+def _sound_reference_problem(manifest: Any, carried: dict[str, str]) -> str:
+    """Why a manifest's ``sounds`` section names a cue the routes cannot serve.
+
+    The mirror of the art side's reference check, and it exists for the same
+    reason: the carried-file loop judges the files a bundle SHIPS, never the ones
+    its manifest POINTS AT, so a bundle naming ``sounds.done`` while carrying no
+    such file installed happily and then answered 404 on the cue -- a 200 that
+    said it worked. Only the reference direction is checked here; whether the
+    bytes play was settled when the file was carried.
+    """
+    section = manifest.get("sounds")
+    if section is None:
+        return ""
+    if not isinstance(section, dict):
+        return "That bundle's sounds section is not a map of states to files"
+    for state in SOUND_STATES:
+        name = section.get(state)
+        if name is None:
+            continue
+        if (
+            not isinstance(name, str)
+            or _safe_filename(name) != name
+            or not name.lower().endswith(SOUND_SUFFIXES)
+        ):
+            return (
+                f"That bundle names sounds.{state} = {name!r}, which is not a usable sound filename"
+            )
+        if name not in carried:
+            return f"That bundle names sounds.{state} = {name!r} but does not carry it"
+    return ""
 
 
 def import_bundle(appearances: Any, payload: Any) -> dict[str, Any]:
@@ -351,18 +470,45 @@ def import_bundle(appearances: Any, payload: Any) -> dict[str, Any]:
         return {"ok": False, "error": "That bundle is missing its manifest or art"}
 
     clean: dict[str, str] = {}
+    art = 0
+    warnings: list[str] = []
     for name, content in files.items():
         safe = _safe_filename(name)
         if safe is None or not isinstance(content, str):
             return {"ok": False, "error": "That bundle contains an unsupported file"}
-        if not safe.lower().endswith(ALLOWED_SUFFIXES):
+        lower = safe.lower()
+        if lower.endswith(SOUND_SUFFIXES):
+            # A cue that will not play is INSTALLED and NAMED, not refused. Two
+            # reasons, and they point the same way. A pack already on disk may
+            # hold such a file -- the reader drops it with a warning -- so a bundle
+            # exported from that pack must re-import to the same pack, or export
+            # -> delete -> import destroys what the user had. And this response is
+            # the ONE place a human is present to read the problem: the store's
+            # read path can only log it, and an overwrite cannot say anything.
+            # Structural problems (an unusable name, a referenced file that is not
+            # carried) still refuse below: those make a pack the routes cannot
+            # serve, which is a different class from a file that is merely silent.
+            problem = _sound_problem(safe, content)
+            if problem:
+                warnings.append(problem)
+        elif lower.endswith(ALLOWED_SUFFIXES):
+            art += 1
+        else:
             return {"ok": False, "error": f"Unsupported file in bundle: {safe}"}
         if len(content.encode("utf-8")) > MAX_FILE_BYTES:
             return {"ok": False, "error": f"File too large in bundle: {safe}"}
         clean[safe] = content
 
-    if not clean:
+    # ART, not "any file": widening the allowlist to audio made a sound-only
+    # bundle pass a `not clean` check, and such a pack installs with nothing to
+    # draw -- a face that is silent art is a pack, a face that is art-less sound
+    # is a blank.
+    if not art:
         return {"ok": False, "error": "That bundle has no art in it"}
+
+    problem = _sound_reference_problem(manifest, clean)
+    if problem:
+        return {"ok": False, "error": problem}
 
     # Refuse rather than clobber: the user may not realise the id collides.
     # `pack_exists`, not the listing: list_packs skips a pack whose manifest is
@@ -385,7 +531,10 @@ def import_bundle(appearances: Any, payload: Any) -> dict[str, Any]:
 
     if not appearances.save_pack(ident, manifest, clean):
         return {"ok": False, "error": "Could not save that pack"}
-    return {"ok": True, "id": ident}
+    result: dict[str, Any] = {"ok": True, "id": ident}
+    if warnings:
+        result["warnings"] = warnings
+    return result
 
 
 def save_sprite_pack(

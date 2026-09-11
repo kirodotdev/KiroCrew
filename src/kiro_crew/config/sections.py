@@ -499,24 +499,38 @@ _AVATAR_FILE_PIN_RE = _re.compile(r"^[0-9a-f]{16}\.(?:png|jpg|webp)$")
 #: on one of these exactly; any other key is dropped, so a version-skewed or
 #: typo'd state name cannot smuggle an unbounded key set into config.json.
 _AVATAR_STATES = ("working", "done", "error")
-#: The only trait axes a per-state expression may move. The identity axes
-#: (brows/accessory/prop/tile/blush/flip) are deliberately excluded: a crew
-#: must stay recognisable as itself while its expression changes.
-_AVATAR_EXPRESSION_AXES = ("eyes", "mouth")
+#: Built-in reaction motions a GHOST may play, per state. The vocabulary is
+#: pinned here rather than left open like a trait value because a motion is a
+#: named animation the frontend implements: an unknown name has no rendering to
+#: resolve to, so it carries nothing and is dropped. ``"none"`` is a real value
+#: (explicit stillness), distinct from an absent state, so one state can opt out
+#: of a motion the others use. ``working`` has no entry -- the ghost's working
+#: animation is its idle breathing, and a reaction fires on a transition.
+_AVATAR_MOTIONS: dict[str, tuple[str, ...]] = {
+    "done": ("none", "bounce", "nod", "sparkle"),
+    "error": ("none", "shake", "cross-eyes", "droop"),
+}
 #: Preset cue names a per-state sound may select. `"none"` is a real value
 #: (explicit silence), distinct from an absent state (the default, also
 #: silent) -- so a crew can opt one state out of a fleet-wide cue.
 _AVATAR_SOUNDS = ("none", "chime", "ding", "blip", "pop", "pulse")
 
 
-def _safe_expressions(value: object) -> dict:
-    """Return validated per-state expression overrides, or ``{}``.
+#: The only trait axes a per-state ghost expression may move. The identity axes
+#: (brows/accessory/prop/tile/blush/flip) are excluded: a crew must stay
+#: recognisable as itself while its expression changes.
+_AVATAR_EXPRESSION_AXES = ("eyes", "mouth")
 
-    Same forgiveness as the trait coercer: junk is dropped silently rather
-    than refused, because config.json is hand-editable and a malformed
-    expression must never cost the crew its otherwise-valid avatar. A state
-    whose axes all drop out is omitted, so the record never stores an empty
-    per-state dict.
+
+def _safe_expressions(value: object) -> dict:
+    """Return validated per-state ghost eyes/mouth picks, or ``{}``.
+
+    The key ``motions`` supersedes, kept round-tripping for exactly as long as the
+    shipped renderer still draws it: the frontend writes and paints a ghost's
+    per-state eyes/mouth today, so a validator that dropped the key would erase a
+    visible choice on an unrelated save with no way back. The sibling frontend
+    change that removes the picker is where this retires. Same forgiveness as the
+    trait coercer -- junk is dropped, never refused.
     """
     if not isinstance(value, dict):
         return {}
@@ -528,13 +542,31 @@ def _safe_expressions(value: object) -> dict:
         axes = {}
         for axis in _AVATAR_EXPRESSION_AXES:
             v = raw.get(axis)
-            # An empty string is "absent", which is what omitting the axis
-            # already means -- storing it would be a second spelling of the
-            # same state.
             if isinstance(v, str) and v:
                 axes[axis] = v[:_AVATAR_TRAIT_MAX_LEN]
         if axes:
             out[state] = axes
+    return out
+
+
+def _safe_motions(value: object) -> dict:
+    """Return validated per-state ghost motions, or ``{}``.
+
+    Same forgiveness as the trait coercer: junk is dropped silently rather than
+    refused, because config.json is hand-editable and a malformed motion must
+    never cost the crew its otherwise-valid avatar. Only the states
+    :data:`_AVATAR_MOTIONS` names carry a motion, and only a value from that
+    state's own tuple survives -- ``{"done": "shake"}`` is dropped, because
+    ``shake`` is the error vocabulary and a bounce-on-error is a different
+    reaction than the author wrote.
+    """
+    if not isinstance(value, dict):
+        return {}
+    out: dict[str, str] = {}
+    for state, allowed in _AVATAR_MOTIONS.items():
+        v = value.get(state)
+        if isinstance(v, str) and v in allowed:
+            out[state] = v
     return out
 
 
@@ -558,25 +590,33 @@ def _safe_sounds(value: object) -> dict:
 def _safe_avatar(value: object) -> dict:
     """Return a validated per-crew avatar override, or ``{}`` on junk.
 
-    Accepted shapes:
+    Each tier owns its own source of motion and sound, so what a record may
+    carry depends on its ``kind``:
 
-    - ``{"kind": "ghost", "traits": {...}}`` — pins the ghost face
-      trait-by-trait instead of deriving it from the crew name. ``traits`` may
-      be absent (or empty) when the override carries only ``expressions`` /
-      ``sounds``: that spelling means "name-derived face, plus these
-      per-state overrides", and the record omits the key entirely rather than
-      storing ``{}``.
-    - ``{"kind": "image"}`` (optional int ``v``, optional ``file``) — the crew
-      wears an uploaded picture, served from ``GET /api/agents/{name}/avatar``.
-      The file itself lives under the data home's agent-fenced
-      ``run/avatars/`` dir; the config
-      field only marks the choice. ``v`` is the upload's cache-busting stamp
-      (file mtime, nanoseconds): the frontend appends it as ``?v=`` so a
-      replaced picture is re-fetched without waiting out the browser cache.
-      ``file`` pins the exact committed file — a ``<digest>.<ext>`` suffix
-      under the crew's stem. Every install lands at a digest-named path, so a
-      replacement never overwrites the committed file before the config save
-      commits it, and serving resolves only the pinned file.
+    - ``{"kind": "ghost", "traits"?: {...}, "motions"?: {...}, "sounds"?: {...},
+      "expressions"?: {...}}`` — the built-in face. ``traits`` pins it trait-by-trait instead of deriving
+      it from the crew name, and may be absent (or empty) when the override
+      carries only reactions: that spelling means "name-derived face, plus these
+      per-state reactions", and the record omits the key entirely rather than
+      storing ``{}``. ``motions`` picks a built-in reaction animation per state
+      from :data:`_AVATAR_MOTIONS`; ``sounds`` picks a synthesized preset cue per
+      state from :data:`_AVATAR_SOUNDS`; ``expressions`` (a per-state eyes/mouth
+      pick, which ``motions`` supersedes) still round-trips because the shipped
+      renderer still draws it -- see :func:`_safe_expressions`.
+    - ``{"kind": "image"}`` (optional int ``v``, optional ``file``, optional
+      ``sounds``) — the crew wears an uploaded picture, served from
+      ``GET /api/agents/{name}/avatar``. A picture has no animation to play, so it
+      carries no ``motions``; it does still carry a cue, because the shipped
+      renderer plays a crew's cue whatever face it wears, and dropping the key
+      here would silence a crew on an unrelated save with no way to restore it.
+      The file itself lives under the data home's agent-fenced ``run/avatars/``
+      dir; the config field only marks the choice. ``v`` is the upload's cache-busting stamp (file
+      mtime, nanoseconds): the frontend appends it as ``?v=`` so a replaced
+      picture is re-fetched without waiting out the browser cache. ``file`` pins
+      the exact committed file — a ``<digest>.<ext>`` suffix under the crew's
+      stem. Every install lands at a digest-named path, so a replacement never
+      overwrites the committed file before the config save commits it, and
+      serving resolves only the pinned file.
     - ``{"kind": "pack", "id": "<pack id>"}`` — the crew wears an appearance
       pack from the crew library (``GET /api/appearances``). ``id`` is
       validated by :func:`kiro_crew.appearance_packs.safe_pack_id`, the same
@@ -585,42 +625,50 @@ def _safe_avatar(value: object) -> dict:
       ``{}``: an unrenderable pack reference is worse than the default face.
       Whether the pack still EXISTS is deliberately not checked — config load
       must not touch the disk — so a dangling id renders as the name-derived
-      ghost on the client.
+      ghost on the client. A pack carries its own per-state art
+      (``GET /api/appearances/{id}/slot/{slot}``) and its own per-state audio
+      (``GET /api/appearances/{id}/sound/{state}``), so it needs no ``motions``
+      here. It keeps accepting ``sounds`` for now, for the same reason the picture
+      tier does: the shipped renderer plays a crew-record cue on every tier, so
+      retiring the key before that renderer stops reading it would take away a
+      sound the user chose. Once the pack's own audio is what plays, the crew
+      record has no cue to hold and the key retires with that change.
+
+    ``<state>`` is one of ``working``, ``done``, ``error``. A key is omitted
+    from the record when validation leaves it empty, so a stored avatar never
+    carries ``{}`` for one, and a key illegal on this tier is DROPPED rather
+    than refused — the same forgiveness every other field here has, because a
+    hand-written or version-skewed record must not cost the crew its face. Two
+    keys are deliberately NOT retired that way even though ``motions`` supersedes
+    one of them: ``sounds`` is audible on every tier today, and a ghost's
+    ``expressions`` is drawn today, and a value a user can see or hear is not
+    dropped ahead of the renderer that shows it. ``expressions`` round-trips on
+    picture and pack too, even though neither has a face to move: the shipped
+    builder still SUBMITS it there, and a crew that switches from ghost to
+    picture and back would otherwise lose the picks in between. Only ``motions``
+    is tier-gated, because nothing has ever written it outside the ghost.
 
     Empty means "no override" — the frontend keeps rendering the name-seeded
     face. config.json is hand-editable (and agent-writable), so junk collapses
     to ``{}`` rather than crashing the load.
-
-    All three kinds may also carry two optional per-state keys, validated and
-    round-tripped through the endpoints and config persistence (a string axis is
-    normalized by the same 32-char truncation a trait gets, so a longer value
-    comes back shortened rather than verbatim):
-
-    - ``expressions: {"<state>": {"eyes"?: str, "mouth"?: str}}`` — the face
-      moves those two axes while the agent is in that state. Only ``eyes`` and
-      ``mouth`` are accepted, so the identity axes stay put and the crew
-      remains recognisable as itself. Legal on ``kind: "image"`` too — stored,
-      and ignored by the picture renderer.
-    - ``sounds: {"<state>": "none"|"chime"|"ding"|"blip"|"pop"|"pulse"}`` — a
-      shipped cue preset per state. ``"none"`` is explicit silence, kept
-      distinct from an absent state so one state can opt out of a cue the
-      others use.
-
-    ``<state>`` is one of ``working``, ``done``, ``error``. Either key is
-    omitted from the record when validation leaves it empty, so a stored
-    avatar never carries ``{}`` for one.
 
     Trait *values* are deliberately not checked against the frontend's trait
     vocabulary: the renderer resolves an unknown option to "absent"
     (``EYES[k] ?? ''``), and keeping the vocabulary in one place (the style
     module) means a new hat needs no backend release. ``tile`` is the one
     exception — it is interpolated into SVG markup, so it is pinned to a hex
-    color by the same validator session_color uses.
+    color by the same validator session_color uses. A motion or cue name is
+    pinned, because unlike a trait it names an animation or a synthesizer
+    preset rather than an option a renderer can resolve to nothing.
     """
     if not isinstance(value, dict):
         return {}
-    expressions = _safe_expressions(value.get("expressions"))
+    # Legal on every tier: the shipped renderer reads a crew-record cue
+    # kind-agnostically, so this is the one reaction key that is not the ghost's
+    # alone. `motions` IS ghost-only -- a picture has no face to move and a pack
+    # animates from its own files.
     sounds = _safe_sounds(value.get("sounds"))
+    expressions = _safe_expressions(value.get("expressions"))
     if value.get("kind") == "image":
         out: dict[str, object] = {"kind": "image"}
         v = value.get("v")
@@ -643,10 +691,6 @@ def _safe_avatar(value: object) -> dict:
             return {}
         pack: dict[str, object] = {"kind": "pack", "id": ident}
         if expressions:
-            # Accepted for symmetry with the other two kinds and round-tripped
-            # faithfully, but a pack renderer IGNORES it: the art is the pack's
-            # own files, not a trait-composed ghost, so there is no eyes/mouth
-            # axis to move. `sounds` behaves exactly as it does elsewhere.
             pack["expressions"] = expressions
         if sounds:
             pack["sounds"] = sounds
@@ -676,6 +720,9 @@ def _safe_avatar(value: object) -> dict:
     ghost: dict[str, object] = {"kind": "ghost"}
     if traits:
         ghost["traits"] = traits
+    motions = _safe_motions(value.get("motions"))
+    if motions:
+        ghost["motions"] = motions
     if expressions:
         ghost["expressions"] = expressions
     if sounds:

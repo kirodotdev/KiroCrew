@@ -1697,11 +1697,16 @@ and it is deliberately NOT re-exported from `loader.py` — the loader's
   storing a featureless third state, and a ghost override left with nothing but
   `kind` collapses to `{}` (the one canonical "reset" spelling). `traits` is
   therefore optional: `{"kind": "ghost", "sounds": {...}}` is valid and means
-  "name-derived face, plus these per-state overrides".
+  "name-derived face, plus these per-state reactions". The ghost is the ONE tier
+  that carries `motions` and `sounds` (below).
 - `{"kind": "image", "v": <int>, "file": "<16-hex>.<png|jpg|webp>"}` — the crew
   wears an uploaded picture served from `GET /api/agents/{name}/avatar`; the
   file itself lives under `<data home>/run/avatars/` and the record only marks
-  the choice. `v` (a positive real int; `True` is rejected) is the cache-busting
+  the choice. A picture has no face to move, so it carries no `motions`; it does
+  still carry `sounds`, because the shipped renderer plays a crew-record cue
+  whatever face it draws (`CrewStateAvatar.tsx` reads `soundsFrom(avatar)`
+  kind-agnostically). Retiring the key here ahead of that renderer would silence a
+  crew on an unrelated save with no way to restore the sound. `v` (a positive real int; `True` is rejected) is the cache-busting
   mtime stamp the frontend appends as `?v=`; `file` pins the exact committed,
   content-addressed variant and must match `^[0-9a-f]{16}\.(png|jpg|webp)$`.
   Wire-only keys (`promote`, `token`) never reach the record.
@@ -1716,49 +1721,87 @@ and it is deliberately NOT re-exported from `loader.py` — the loader's
   still EXISTS is deliberately not checked — config load must not touch the disk,
   and a pack deleted out of band would otherwise make the whole config unloadable
   instead of making one face fall back — so a dangling id renders as the
-  name-derived ghost on the client. **A pack survives a faceless save.** The
+  name-derived ghost on the client. A pack carries its own per-state art
+  (`GET /api/appearances/{id}/slot/{slot}`) and its own per-state audio
+  (`GET /api/appearances/{id}/sound/{state}`), so it needs no `motions` on the
+  record. It keeps accepting `sounds` for the same reason the picture tier does --
+  that key is audible today on every tier -- and retires it in the change that
+  makes the pack's own audio what plays. **A pack survives a faceless save.** The
   shipped crew editor rebuilds the override from a closed ghost/picture shape,
   so for a pack-wearing crew it renders the name-derived face and any unrelated
   save (a model change, a colour) submits `{}` — or `{"kind": "ghost", ...}`
-  carrying only `expressions`/`sounds` — which read as reset would silently
-  clear a pack set through the API. `PUT /api/agents/{name}` therefore keeps
-  the current pack id when the record is a pack and the save names no face
-  (`handlers/agents._carry_pack_through_faceless_save`), and the save's
-  reactions ride onto the kept pack. It is narrow: ghost and picture keep
+  carrying only the ghost tier's own reactions — which read as reset would
+  silently clear a pack set through the API. `PUT /api/agents/{name}` therefore
+  keeps the current pack id when the record is a pack and the save names no face
+  (`handlers/agents._carry_pack_through_faceless_save`), and rides the save's
+  `expressions` and `sounds` onto the kept pack: both are legal on every tier, a
+  faceless save is the one way the shipped editor can change them on a pack crew,
+  and a pack's own cue answers a different route (`/sound/{state}`) than a
+  crew-record cue does, so the two do not collide. Only `motions` is left
+  behind, because it is the ghost's alone. It is narrow: ghost and picture keep
   their reset semantics; `avatar: null` (which the editor never sends) is
   still an explicit reset that takes the pack off; a real face — a ghost with
   traits, a picture, another pack — replaces it. The carve-out exists until the
   picker can display a pack, at which point the editor round-trips it itself.
+  **A ghost's `motions` survive a save that does not name them** for the same
+  reason (`handlers/agents._carry_motions_through_motionless_save`): the shipped
+  editor rebuilds a ghost draft from the axes it can draw and submits exactly
+  those, so a `motions` pick set through the API would be erased by the next
+  unrelated save with no click that meant it. The rule is the tri-state
+  `save_pack` gives a pack's cues — a payload with NO `motions` key leaves the
+  stored ones alone, a payload naming the key (`{}` included) replaces them —
+  and it applies only when the stored record and the validated save are both
+  ghosts: a tier change is a real face replacing the old one and `motions` is the
+  ghost's alone, and a reset (`null`, `{}`, the all-empty collapse) means reset.
+  It retires with the frontend change that submits `motions` itself.
 
-**Per-state overrides (`expressions`, `sounds`).** All three kinds may carry two
-optional keys, keyed on the agent lifecycle state (`working`, `done`, `error`
-exactly; any other key is dropped, so a version-skewed caller cannot grow the
-key set):
+**Per-state reactions (`motions`, `sounds`).** Where a reaction may be stored
+follows from which tier can play it, and the two keys differ. `motions` is the
+GHOST's alone: it names a built-in animation of a trait-composed face, so a
+picture has nothing to move and a pack animates from its own files. `sounds` is
+legal on EVERY tier, because the shipped renderer reads a crew-record cue
+kind-agnostically — so this is the one reaction key that is not the ghost's. Both
+are keyed on the agent lifecycle state (`working`, `done`, `error` exactly; any other
+key is dropped, so a version-skewed caller cannot grow the key set):
 
-- `expressions: {"<state>": {"eyes"?: str, "mouth"?: str}}` — only those two
-  axes, under the same 32-char truncation as a trait, with an empty string
-  dropped (it already means "absent"). The identity axes
-  (`brows`/`accessory`/`prop`/`tile`/`blush`/`flip`) are deliberately not
-  accepted per state: a crew must stay recognisable as itself while its
-  expression changes. Legal on `kind: "image"` too — stored, and ignored by the
-  picture renderer.
-- `sounds: {"<state>": "none"|"chime"|"ding"|"blip"|"pop"|"pulse"}` — a shipped
-  cue preset. Unlike a trait value this IS pinned to a vocabulary, because the
-  name selects a shipped asset rather than an option the renderer can resolve to
-  absent. `"none"` is kept as explicit silence, distinct from an absent state
-  (also silent), so one state can opt out of a cue the others use. No per-crew
-  audio upload exists.
+- `motions: {"done"?: "none"|"bounce"|"nod"|"sparkle", "error"?: "none"|"shake"|"cross-eyes"|"droop"}`
+  — a built-in reaction animation the frontend implements. Each state has its OWN
+  vocabulary (`_AVATAR_MOTIONS`) and a value from the other state's list is
+  dropped: `{"done": "shake"}` would play a failure animation on success, which is
+  not what its author wrote. There is no `working` entry — the ghost's working
+  animation is its idle breathing, and a reaction fires on a transition. `"none"`
+  is kept as explicit stillness, distinct from an absent state, so one state can
+  opt out of a motion the others use.
+- `sounds: {"<state>": "none"|"chime"|"ding"|"blip"|"pop"|"pulse"}` — a
+  synthesized cue preset. Unlike a trait value this IS pinned to a vocabulary,
+  because the name selects a shipped preset rather than an option the renderer can
+  resolve to absent. `"none"` is explicit silence, distinct from an absent state
+  (also silent). No per-crew audio upload exists: a crew that needs its own audio
+  wears a pack, which carries its own.
 
 Either key is omitted from the record when validation leaves it empty, so a
-stored avatar never carries `{}` for one. Junk (`expressions: "x"`,
-`sounds: {"working": 5}`, a list) is stripped silently and never refused: the
-same forgiveness traits get, so a malformed per-state value costs that value and
-never the crew's whole avatar. The roster masks the `eyes`/`mouth` values like
-any other user-authored string (`_roster_avatar`) and leaves the preset-pinned
-`sounds` intact, for the same reason it leaves `file` intact.
+stored avatar never carries `{}` for one, and a key illegal on this tier is
+DROPPED rather than refused — `{"kind": "image", "motions": {...}}` loads as a
+bare picture. No stored cue is lost by that rule: `sounds` stays legal wherever it
+already worked, so an existing picture- or pack-wearing crew keeps the sound its
+owner chose. Junk (`motions: "x"`, `sounds: {"working": 5}`, a list) is stripped
+silently and never refused: the same forgiveness traits get, so a malformed
+reaction costs that reaction and never the crew's whole avatar. `expressions`
+(a per-state `eyes`/`mouth` pick, which `motions` supersedes) round-trips on
+EVERY tier — `{"<state>": {"eyes"?: str, "mouth"?: str}}`, only those two
+axes, 32-char truncation, empty strings dropped — because the shipped renderer
+still draws it on a ghost and the shipped builder still SUBMITS it on a picture
+or a pack, so stripping it there would erase a pick a ghost → picture → ghost
+round-trip then cannot restore; a value a user can see is not dropped ahead of
+the renderer that shows it, and the frontend change that removes the picker is
+where it retires. `sounds` stays for the same reason on every tier, and only
+`motions` is tier-gated. The roster leaves all three keys intact rather than masking them
+(`_roster_avatar`), for the same reason it leaves `file` intact — a value pinned
+to a closed vocabulary is not user-authored text, and masking it would break the
+reaction while destroying nothing an attacker could have put there.
 
 Anything else — a non-dict, an unknown `kind`, a ghost override carrying no
-trait, expression or sound that survives validation — collapses to `{}` on load (config.json is hand-editable and
+trait, motion or sound that survives validation — collapses to `{}` on load (config.json is hand-editable and
 agent-writable, so junk must never crash the load), while the endpoints answer a
 non-empty raw value the coercer collapses with 400 `invalid_avatar` — except a
 well-formed ghost override whose traits all coerce to absent, which is the

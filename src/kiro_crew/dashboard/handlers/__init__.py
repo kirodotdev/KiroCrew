@@ -97,6 +97,7 @@ from kiro_crew.dashboard.handlers.appearances import (  # noqa: E402, F401
     api_appearance_delete,
     api_appearance_detail,
     api_appearance_slot,
+    api_appearance_sound,
     api_appearances_import,
     api_appearances_list,
     api_appearances_petdex_fetch,

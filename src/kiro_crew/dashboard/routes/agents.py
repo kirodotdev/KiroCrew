@@ -72,3 +72,4 @@ def register(app: web.Application) -> None:
     app.router.add_get("/api/appearances/{id}", handlers.api_appearance_detail)
     app.router.add_delete("/api/appearances/{id}", handlers.api_appearance_delete)
     app.router.add_get("/api/appearances/{id}/slot/{slot}", handlers.api_appearance_slot)
+    app.router.add_get("/api/appearances/{id}/sound/{state}", handlers.api_appearance_sound)

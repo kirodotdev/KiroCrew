@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import Any
 
 from kiro_crew.appearance_packs.ids import DEFAULT_PACK, safe_pack_id
+from kiro_crew.appearance_packs.sounds import SOUND_STATES, SOUND_SUFFIXES, sound_body
 from kiro_crew.constants import WINDOWS_DEVICE_STEMS
 from kiro_crew.platform_compat import chmod_safe, is_link_or_junction
 
@@ -141,9 +142,7 @@ class AppearanceStore:
             if self._colour_path.exists():
                 raw = json.loads(self._colour_path.read_text("utf-8"))
                 if isinstance(raw, dict):
-                    self._colour_maps = {
-                        k: v for k, v in raw.items() if isinstance(v, dict)
-                    }
+                    self._colour_maps = {k: v for k, v in raw.items() if isinstance(v, dict)}
         except (OSError, ValueError) as exc:
             # A corrupt colour file costs the user their recolouring, not their art,
             # so carrying on with defaults beats refusing to start.
@@ -223,6 +222,10 @@ class AppearanceStore:
                 # The built-in ghost's art is bundled with the frontend, so the
                 # renderer already has it and needs no content here.
                 "animations": {},
+                # Present and empty, not absent: the client branches on this map
+                # to decide whether to play anything, and a missing key would
+                # make the built-in read as "not yet known" rather than "silent".
+                "sounds": {},
                 "colorMap": self.colour_map(DEFAULT_PACK),
             }
 
@@ -300,6 +303,11 @@ class AppearanceStore:
             "animations": animations,
             "randomNames": random_names,
             "categories": categories,
+            # PRESENCE only. The client needs to know what exists in order to
+            # decide whether to play anything at all; inlining the audio would
+            # put hundreds of KB into the payload the roster fetches to draw a
+            # face, per crew, per state change.
+            "sounds": self.pack_sounds(ident),
             "sprite": sprite,
             "colorMap": self.colour_map(ident),
         }
@@ -351,9 +359,7 @@ class AppearanceStore:
         # Only string→string pairs; anything else would break the SVG rewrite that
         # consumes this on the renderer side.
         clean = {
-            str(k): str(v)
-            for k, v in colours.items()
-            if isinstance(k, str) and isinstance(v, str)
+            str(k): str(v) for k, v in colours.items() if isinstance(k, str) and isinstance(v, str)
         }
         prev = self._colour_maps.get(ident)
         self._colour_maps[ident] = clean
@@ -428,6 +434,36 @@ class AppearanceStore:
             logger.warning("appearance-packs: pack manifest has no meta: %s", ident)
             return False
 
+        # An OVERWRITE that names no sounds keeps the ones already on disk.
+        # The gallery editor works by reading `pack_detail` and saving the whole
+        # pack back, and `pack_detail` reports cues as PRESENCE only (the audio
+        # is fetched per state, never inlined) -- so the editor's save carries no
+        # sound files and no `sounds` map, and re-saving a pack would silently
+        # delete its cues. A caller that wants to REMOVE a cue must say so with
+        # an explicit `"sounds": {}` (or a map that omits the state); an absent
+        # key means "leave them as they are".
+        if "sounds" not in manifest:
+            carried = self.pack_sound_payload(ident)
+            if carried is None:
+                # The on-disk manifest names a cue this read could not load (a
+                # locked file, a transient IO error). Carrying only the readable
+                # ones forward would make that moment permanent: the overwrite
+                # replaces the pack, and the cue it could not read is gone for
+                # good. Refuse the whole save instead -- the same all-or-nothing
+                # rule the art files below follow -- so a retry after the
+                # condition clears loses nothing. One read decides both the
+                # carry and the refusal, so they cannot disagree.
+                logger.warning(
+                    "appearance-packs: refusing to overwrite %s while a declared "
+                    "sound cue cannot be read",
+                    ident,
+                )
+                return False
+            kept_states, kept_files = carried
+            if kept_states:
+                manifest = {**manifest, "sounds": kept_states}
+                files = {**{n: c for n, c in kept_files.items() if n not in files}, **files}
+
         staging = self._root / f".tmp-{ident}-{os.getpid()}"
         target = self._root / ident
         # Serialize and size-check the manifest BEFORE creating staging or
@@ -467,9 +503,7 @@ class AppearanceStore:
                     # write silently replaced the first while the import
                     # reported success. Same all-or-nothing rule as above: a
                     # save that would lose one file's art refuses entirely.
-                    logger.warning(
-                        "appearance-packs: case-colliding pack filename: %r", name
-                    )
+                    logger.warning("appearance-packs: case-colliding pack filename: %r", name)
                     shutil.rmtree(staging, ignore_errors=True)
                     return False
                 seen_casefolded.add(safe.casefold())
@@ -503,7 +537,7 @@ class AppearanceStore:
             try:
                 os.replace(staging, target)
             except OSError:
-                if backup is not None:      # put the original back, then report
+                if backup is not None:  # put the original back, then report
                     os.replace(backup, target)
                 raise
             if backup is not None:
@@ -517,6 +551,178 @@ class AppearanceStore:
             except OSError:
                 pass
             return False
+
+    # ── sounds ──────────────────────────────────────────────────────────────
+
+    def _pack_sound_entries(self, pack_id: str) -> dict[str, tuple[str, str, bytes, str]]:
+        """Every USABLE cue in a pack: state -> (filename, base64, bytes, mime).
+
+        One reader behind all three public shapes, so presence can never disagree
+        with what the byte route serves. Every rejection is a warning and a skip,
+        never an exception: a pack is third-party content, and one hand-edited
+        sound entry must not cost the pack its art.
+        """
+        ident = _safe_id(pack_id)
+        if ident is None or ident == DEFAULT_PACK:
+            # The built-in ships inside the frontend and has no pack directory,
+            # so it has nowhere to keep a sound file.
+            return {}
+        pack_dir = self._root / ident
+        manifest = self._read_manifest(pack_dir)
+        if manifest is None:
+            return {}
+        section = manifest.get("sounds")
+        if not isinstance(section, dict):
+            return {}
+        out: dict[str, tuple[str, str, bytes, str]] = {}
+        for state in SOUND_STATES:
+            filename = section.get(state)
+            if filename is None:
+                continue
+            safe = _safe_filename(filename)
+            if safe is None or not safe.lower().endswith(SOUND_SUFFIXES):
+                logger.warning(
+                    "appearance-packs: dropping unusable %s sound in pack %s", state, ident
+                )
+                continue
+            # Through the ordinary pack-file read, so a cue gets the same link
+            # refusal, containment re-check and size ceiling every other pack
+            # file gets.
+            text = self._read_pack_file(pack_dir, safe)
+            body = sound_body(text)
+            if body is None:
+                logger.warning(
+                    "appearance-packs: %s sound in pack %s is unreadable, too large, "
+                    "or not audio",
+                    state,
+                    ident,
+                )
+                continue
+            out[state] = (safe, text or "", body[0], body[1])
+        return out
+
+    def pack_sounds(self, pack_id: str) -> dict[str, bool]:
+        """Which states this pack has a usable cue for. Presence only."""
+        return {state: True for state in self._pack_sound_entries(pack_id)}
+
+    def pack_sound(self, pack_id: str, state: Any) -> tuple[bytes, str] | None:
+        """One state's audio as raw bytes plus the type to serve it as."""
+        if not isinstance(state, str):
+            return None
+        entry = self._pack_sound_entries(pack_id).get(state)
+        if entry is None:
+            return None
+        return entry[2], entry[3]
+
+    def pack_sound_payload(self, pack_id: str) -> tuple[dict[str, str], dict[str, str]] | None:
+        """Every declared cue that READS, in STORE shape -- or ``None`` when one that
+        is on disk cannot be read.
+
+        ``(state -> name, name -> text)`` is what ``save_pack`` carries forward when
+        an overwrite names no ``sounds`` and what ``export_bundle`` puts in a bundle.
+        ``None`` is the refusal both of them honour: a cue the manifest names, whose
+        file is present, and whose read still failed -- a lock, an IO error, a
+        refused link. Carrying only the readable ones forward would make that
+        moment permanent (the overwrite replaces the pack; the export is what a
+        later import restores from), and a retry after the condition clears loses
+        nothing, so the whole operation waits.
+
+        ONE traversal decides both answers. They were once two methods -- the
+        refuse set and the carry payload -- each opening the manifest and each
+        reading every cue file for itself, and a read that failed only on the
+        SECOND pass produced a carry with a cue missing and a refuse set that did
+        not mention it: the save went through and the cue was gone. Reading each
+        file exactly once cannot disagree with itself.
+
+        Keyed on READABILITY, not on playability, and the difference is data loss:
+        the reader DROPS a cue whose bytes are not audio, so a carry keyed on what
+        plays would omit that file and an ordinary art edit would delete it -- a
+        cue the user was never told was wrong, gone with a save that reported
+        success. A file that is there is the user's; whether it plays is the
+        reader's business at read time and the importer's at the boundary, never
+        the overwrite's.
+
+        The four things that can go wrong with a declared cue, and what each gets:
+
+        * **an unusable name** (``../evil.wav``, ``cue.exe``) -- junk the read path
+          drops; dropped here too, because refusing would lock the user out of a
+          pack they cannot edit from any surface.
+        * **no such file** -- same: dropped on read, so refusing here is permanent.
+        * **bad content** (not audio, or over the cue cap) -- CARRIED verbatim; see
+          the readability rule above.
+        * **present, and the read itself failed** -- the only branch a retry can
+          clear, and the only one where a save would erase a cue that is really
+          still there. This is the ``None``. An ``OSError`` from the stat counts as
+          present, which is the conservative half of an ambiguous case.
+        """
+        ident = _safe_id(pack_id)
+        if ident is None or ident == DEFAULT_PACK:
+            return {}, {}
+        pack_dir = self._root / ident
+        manifest = self._read_manifest(pack_dir)
+        section = manifest.get("sounds") if isinstance(manifest, dict) else None
+        if not isinstance(section, dict):
+            return {}, {}
+        states: dict[str, str] = {}
+        files: dict[str, str] = {}
+        for state in SOUND_STATES:
+            safe = _safe_filename(section.get(state))
+            if safe is None or not safe.lower().endswith(SOUND_SUFFIXES):
+                continue
+            try:
+                present = (pack_dir / safe).is_file()
+            except OSError:
+                return None
+            if not present:
+                continue
+            text = self._read_pack_file(pack_dir, safe)
+            if text is None:
+                return None
+            states[state] = safe
+            files[safe] = text
+        return states, files
+
+    def pack_revision(self, pack_id: str) -> tuple[int, ...] | None:
+        """Identity of the pack directory currently answering ``pack_id``.
+
+        Every mutation of a pack is a whole-directory swap (``save_pack`` stages
+        beside the target and ``os.replace``s it in; ``delete_pack`` removes it),
+        so the directory a reader is looking at is a REVISION, and two reads see
+        the same revision exactly when the directory is the same one. That is
+        what this reports: the device and inode of the pack directory and of its
+        manifest, plus their mtimes -- a fresh staging directory is a fresh inode,
+        so a swap between two calls changes the answer even when the new revision
+        carries byte-identical files.
+
+        The reason it exists is that the store holds no lock across a read.
+        ``pack_detail`` and ``pack_sound_payload`` each open the manifest for
+        themselves, so a caller composing art from one and cues from the other --
+        ``export_bundle`` -- can be handed two revisions in one bundle when a
+        save lands between them. A caller that records this before its first
+        read and compares after its last one knows whether it read one revision
+        or two, without the store growing a lock around every read for the sake
+        of one multi-read caller.
+
+        ``None`` when the pack is not on disk (absent, mid-swap, built-in, or a
+        malformed id), which callers treat as "nothing to read".
+        """
+        ident = _safe_id(pack_id)
+        if ident is None or ident == DEFAULT_PACK:
+            return None
+        pack_dir = self._root / ident
+        try:
+            dir_stat = os.stat(pack_dir)
+            manifest_stat = os.stat(pack_dir / "manifest.json")
+        except OSError:
+            return None
+        return (
+            dir_stat.st_dev,
+            dir_stat.st_ino,
+            dir_stat.st_mtime_ns,
+            manifest_stat.st_ino,
+            manifest_stat.st_mtime_ns,
+            manifest_stat.st_size,
+        )
 
     # ── internals ───────────────────────────────────────────────────────────
 
@@ -538,9 +744,7 @@ class AppearanceStore:
             # manifest.json would read ANY JSON file on disk and surface its
             # fields (names, paths) through the gallery listing.
             if is_link_or_junction(path):
-                logger.warning(
-                    "appearance-packs: refusing linked manifest in %s", pack_dir.name
-                )
+                logger.warning("appearance-packs: refusing linked manifest in %s", pack_dir.name)
                 return None
             if not path.is_file() or path.stat().st_size > MAX_FILE_BYTES:
                 return None

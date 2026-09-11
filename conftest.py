@@ -1973,6 +1973,33 @@ def pytest_runtest_setup(item):
 # ── tracked Windows gaps apply to every testpath ──────────────────────
 
 
+#: Ceiling on a test node id. pytest exports the running item's node id as the
+#: ``PYTEST_CURRENT_TEST`` environment variable on every setup/call/teardown, and
+#: Windows caps one environment variable at 32767 characters -- ``os.environ``
+#: raises ``ValueError`` above that, so the item ERRORS at setup on Windows while
+#: passing everywhere else. A parametrized case whose value is a large payload (a
+#: 700 KB base64 audio blob, once) is how that happens; every report line for the
+#: item then carries the blob too, and the Windows shard ran to its 40-minute cap
+#: with its log dropped. The margin below the OS limit leaves room for pytest's
+#: `` (setup)`` suffix and an xdist group tag. Collection fails with the offending
+#: id named, which is the message the shard log never got to show.
+MAX_NODEID_CHARS = 30000
+
+
+def _refuse_oversized_nodeids(items) -> None:
+    oversized = [item for item in items if len(item.nodeid) > MAX_NODEID_CHARS]
+    if not oversized:
+        return
+    worst = max(oversized, key=lambda item: len(item.nodeid))
+    raise pytest.UsageError(
+        f"{len(oversized)} test node id(s) exceed {MAX_NODEID_CHARS} characters "
+        f"(longest: {len(worst.nodeid)}, {worst.nodeid[:160]!r}...). Windows caps an "
+        "environment variable at 32767 characters and pytest exports the node id as "
+        "PYTEST_CURRENT_TEST, so these error at setup there. Give the parametrize "
+        "an explicit ids= list instead of letting the payload become the id."
+    )
+
+
 def pytest_collection_modifyitems(config, items):
     """Apply exact capability skips, then Windows' tracked known-gap skips.
 
@@ -1998,6 +2025,7 @@ def pytest_collection_modifyitems(config, items):
     always spelled with ``/`` even on Windows, so the in-package entries need no
     translation.
     """
+    _refuse_oversized_nodeids(items)
     if not _ROOT_HAS_REAL_SYMLINKS:
         listfile = _REPO_ROOT / "test" / "requires-real-symlinks.txt"
         try:

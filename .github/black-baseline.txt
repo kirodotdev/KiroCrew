@@ -12,8 +12,6 @@ src/kiro_crew/acp/kas_wire.py
 src/kiro_crew/acp/liveness.py
 src/kiro_crew/acp/session_handle.py
 src/kiro_crew/acp/worker_pool.py
-src/kiro_crew/appearance_packs/store.py
-src/kiro_crew/appearance_packs/transfer.py
 src/kiro_crew/apps/__init__.py
 src/kiro_crew/apps/app_storage.py
 src/kiro_crew/apps/backend.py

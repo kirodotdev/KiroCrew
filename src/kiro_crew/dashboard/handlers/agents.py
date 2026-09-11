@@ -3647,10 +3647,11 @@ def _roster_avatar(value: object) -> dict:
 
     **A shape allowlist, with masking confined to the leaves that can carry user
     text.** ``_safe_avatar`` is the config's own validator, so only
-    ``{"kind": "ghost", "traits": {...}}``, ``{"kind": "image", "v": ...,
-    "file": "<digest>.<ext>"}`` and ``{"kind": "pack", "id": "<pack id>"}`` survive
-    and junk collapses to ``{}``. Within that,
-    ONLY ``traits`` values are masked:
+    ``{"kind": "ghost", "traits": {...}, "motions": {...}, "sounds": {...},
+    "expressions": {...}}``,
+    ``{"kind": "image", "v": ..., "file": "<digest>.<ext>", "sounds": {...}}`` and
+    ``{"kind": "pack", "id": "<pack id>", "sounds": {...}}`` survive and junk
+    collapses to ``{}``. Within that, ONLY ``traits`` values are masked:
 
     - ``kind`` and ``v`` are structural. Mask ``kind`` and the dashboard can no
       longer tell a ghost from an uploaded picture.
@@ -3659,13 +3660,14 @@ def _roster_avatar(value: object) -> dict:
       one: the pin REFUSES a bad value where masking would destroy a good one, and
       a masked ``file`` makes the per-crew avatar endpoint resolve nothing --
       silently breaking the image.
-    - ``traits`` values, and the ``eyes``/``mouth`` values of each
+    - ``traits`` values, and the ``eyes``/``mouth`` values of each ghost
       ``expressions`` state, are the only user-authored strings here, so they go
       through ``_roster_mask`` like any other roster string. The renderer resolves
       an unrecognized trait to absent (``EYES[k] ?? ''``), so a masked trait
       degrades that axis rather than breaking the face.
-    - ``sounds`` values are constrained by ``_safe_sounds`` to a shipped preset
-      name, so they are pinned rather than masked -- the same reason ``file`` is.
+    - ``motions`` and ``sounds`` values are constrained by ``_safe_motions`` and
+      ``_safe_sounds`` to a shipped animation or preset name, so they are pinned
+      rather than masked -- the same reason ``file`` is.
     - ``id`` (on ``kind: "pack"``) is pinned by
       ``appearance_packs.safe_pack_id`` to letters, digits, dash and underscore,
       so it is not arbitrary text either — and masking it would make the pack
@@ -4535,7 +4537,7 @@ async def api_kirocrew_agents_create(request: web.Request) -> web.Response:
     if _raw_avatar not in (None, {}) and not avatar and not _is_ghost_shaped(_raw_avatar):
         return web.json_response(
             {
-                "error": "avatar must be {'kind': 'ghost', 'traits': {...}}, {'kind': 'image'}, {'kind': 'pack', 'id': ...}, or empty",
+                "error": "avatar must be {'kind': 'ghost', 'traits'/'motions'/'sounds': {...}}, {'kind': 'image'}, {'kind': 'pack', 'id': ...}, or empty",
                 "code": "invalid_avatar",
             },
             status=400,
@@ -4950,12 +4952,13 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
             if _raw_av not in (None, {}) and not _av and not _is_ghost_shaped(_raw_av):
                 return web.json_response(
                     {
-                        "error": "avatar must be {'kind': 'ghost', 'traits': {...}}, {'kind': 'image'}, {'kind': 'pack', 'id': ...}, or empty",
+                        "error": "avatar must be {'kind': 'ghost', 'traits'/'motions'/'sounds': {...}}, {'kind': 'image'}, {'kind': 'pack', 'id': ...}, or empty",
                         "code": "invalid_avatar",
                     },
                     status=400,
                 )
             _av = _carry_pack_through_faceless_save(agent.avatar, _raw_av, _av)
+            _av = _carry_motions_through_motionless_save(agent.avatar, _raw_av, _av)
             if _av.get("kind") == "image":
                 # THE commit point for pictures, under this same config lock.
                 # `promote` is a wire-only directive (never persisted — the
@@ -5018,10 +5021,11 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
                         status=400,
                     )
                 # Rebuilt, not mutated, so the record carries exactly the
-                # committed stamp and pin. The per-state keys are validated
-                # input rather than commit output, so they have to be carried
-                # across explicitly -- otherwise saving a sound on a crew that
-                # wears a picture reports success and stores nothing.
+                # committed stamp and pin. The cue is validated INPUT rather than
+                # commit output, so it has to be carried across explicitly --
+                # otherwise saving a sound on a crew that wears a picture reports
+                # success and stores nothing. `motions` is not carried: the
+                # validator drops it on this tier, so there is never one here.
                 _av = {
                     "kind": "image",
                     "v": stamp,
@@ -5230,9 +5234,11 @@ def _carry_pack_through_faceless_save(stored: dict, raw: object, validated: dict
     submits ``{}`` or a faceless ``{"kind": "ghost", "sounds": ...}``. Taken at
     face value that is "reset", and the pack the user chose through the API is
     gone with no click that meant it. Until the picker can show a pack, a save
-    that names no face therefore keeps the pack it found, and the reactions the
-    save DID carry ride onto it -- so editing a sound on a pack-wearing crew
-    stores the sound and keeps the pack.
+    that names no face therefore keeps the pack it found, and the cue the save
+    DID carry rides onto it -- so editing a sound on a pack-wearing crew stores
+    the sound and keeps the pack. ``motions`` never rides along: the validator
+    drops it on this tier, so a faceless ghost save carries none by the time this
+    is reached.
 
     Deliberately narrow:
 
@@ -5247,10 +5253,43 @@ def _carry_pack_through_faceless_save(stored: dict, raw: object, validated: dict
         return validated
     kind = validated.get("kind")
     if kind is None or (kind == "ghost" and "traits" not in validated):
-        kept = {"kind": "pack", "id": stored["id"]}
+        kept: dict = {"kind": "pack", "id": stored["id"]}
         kept.update({k: v for k, v in validated.items() if k in ("expressions", "sounds")})
         return kept
     return validated
+
+
+def _carry_motions_through_motionless_save(stored: dict, raw: object, validated: dict) -> dict:
+    """Keep a ghost's stored ``motions`` when a ghost save says nothing about them.
+
+    ``motions`` is the one reaction key the shipped crew editor does not know:
+    it rebuilds a ghost draft from the axes it can draw (``traits``,
+    ``expressions``, ``sounds``) and submits exactly those, so a ghost that was
+    given motions through the API would lose them on the next unrelated save --
+    a model change, a colour -- with no click that meant it. The same shape as
+    :func:`_carry_pack_through_faceless_save`, and for the same reason: a save
+    from a client that cannot see a value is not a decision about it.
+
+    The rule is the tri-state ``save_pack`` already applies to a pack's cues.
+    A payload with NO ``motions`` key leaves the stored ones alone; a payload
+    that names the key -- ``{}`` included -- is the caller's statement and
+    replaces them. So a client that knows the key can still clear it, and one
+    that does not cannot destroy it.
+
+    Deliberately narrow: only when the stored record AND the validated save are
+    both ghosts. A tier change (picture, pack) is a real face replacing the old
+    one and ``motions`` is the ghost's alone; a reset (``None``, ``{}``, or the
+    validator's all-empty collapse) means reset. Both keep their existing
+    semantics untouched.
+    """
+    if stored.get("kind") != "ghost" or validated.get("kind") != "ghost":
+        return validated
+    kept = stored.get("motions")
+    if not isinstance(kept, dict) or not kept:
+        return validated
+    if not isinstance(raw, dict) or "motions" in raw:
+        return validated
+    return {**validated, "motions": kept}
 
 
 def _is_ghost_shaped(value: object) -> bool:
