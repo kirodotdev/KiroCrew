@@ -27,6 +27,7 @@ from kiro_crew.dashboard.chat_title import (
     _looks_like_prose,
     _message_attachment_paths,
     _title_text,
+    _validate_title_reply,
 )
 from kiro_crew.dashboard.state import DashboardState, _ChatSlot
 
@@ -890,3 +891,122 @@ class TestSlotTitleRouteRefusalCodes:
             body = await resp.json()
             assert body["error"] == "title required"
             assert body["code"] == "title_required"
+
+
+# --- Non-title replies must yield no title ----------------------------------
+# Three reply shapes the validator must reject: SKIP followed by a reason
+# (multi-line and one-line), KEEP on the initial titling path, and a short
+# Korean refusal. Korean strings are written as \u escapes to keep the source
+# ASCII; the runtime values are the Hangul sentences.
+
+# "haedang lingkeue jeopgeunhal su eopseumnida" -- "I cannot access that link"
+_KO_REFUSAL_SHORT = "\ud574\ub2f9 \ub9c1\ud06c\uc5d0 \uc811\uadfc\ud560 \uc218 \uc5c6\uc2b5\ub2c8\ub2e4"
+# "joesonghajiman ... eopseumnida" -- "Sorry, I cannot open the external link,
+# so I cannot tell what the conversation is about"
+_KO_REFUSAL_LONG = (
+    "\uc8c4\uc1a1\ud558\uc9c0\ub9cc \uc678\ubd80 \ub9c1\ud06c\ub97c \uc5f4 \uc218 "
+    "\uc5c6\uc5b4\uc11c \ub300\ud654\uc758 \uc8fc\uc81c\ub97c \ud30c\uc545\ud560 "
+    "\uc218 \uc5c6\uc2b5\ub2c8\ub2e4"
+)
+# "joesonghajiman lingkeuleul yeol su eopseoyo" -- the same apology refusal in
+# the informal-polite register ("-yo" ending).
+_KO_REFUSAL_INFORMAL = (
+    "\uc8c4\uc1a1\ud558\uc9c0\ub9cc \ub9c1\ud06c\ub97c \uc5f4 \uc218 \uc5c6\uc5b4\uc694"
+)
+# "joesonghajiman lingkeuleul yeol su eopseum" -- apology opener with a
+# plain-form ending, pinning the opener branch independently of the endings.
+_KO_REFUSAL_OPENER_ONLY = (
+    "\uc8c4\uc1a1\ud558\uc9c0\ub9cc \ub9c1\ud06c\ub97c \uc5f4 \uc218 \uc5c6\uc74c"
+)
+# "lingkeuleul yeol su eopseoyo" -- informal-polite refusal with no apology,
+# pinning the "-yo" ending branch independently of the opener.
+_KO_REFUSAL_YO_ONLY = "\ub9c1\ud06c\ub97c \uc5f4 \uc218 \uc5c6\uc5b4\uc694"
+# "peuraibeosi paeneol beogeu sujeong" -- "PrivacyPanel bug fix", a legitimate
+# short Korean title (noun phrase: no sentence-final conjugation, no apology).
+_KO_REAL_TITLE = "\ud504\ub77c\uc774\ubc84\uc2dc \ud328\ub110 \ubc84\uadf8 \uc218\uc815"
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        # Multi-line: a reply reduces to its first line, so the
+        # verdict-plus-reason shape collapses to the bare control word.
+        "SKIP\n\nThe conversation is incomplete and does not establish a clear topic.",
+        "SKIP\nToo vague to name.",
+        # One-line: verdict plus reason on a single line, in any casing --
+        # a lowercased echo carrying a reason is still a verdict.
+        "SKIP - the topic is not clear yet",
+        "SKIP (too vague)",
+        "SKIP: greetings only",
+        "skip - too vague to name",
+        "Skip: greetings only",
+        "keep - the title still fits",
+        # Exact-match forms that must keep working.
+        "SKIP",
+        "skip",
+        "SKIP.",
+    ],
+)
+def test_skip_with_reason_yields_no_title(reply):
+    assert _validate_title_reply(reply) == ""
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        # The module's own refresh prompt teaches KEEP, so an initial reply
+        # of KEEP is a confused model, not a session named "KEEP".
+        "KEEP",
+        "keep",
+        "KEEP\n\nThe current title still fits the conversation.",
+        "KEEP - the title still fits",
+    ],
+)
+def test_keep_is_a_control_word_on_the_initial_path(reply):
+    assert _validate_title_reply(reply) == ""
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        _KO_REFUSAL_SHORT,
+        _KO_REFUSAL_LONG,
+        _KO_REFUSAL_INFORMAL,
+        _KO_REFUSAL_OPENER_ONLY,
+        _KO_REFUSAL_YO_ONLY,
+    ],
+)
+def test_korean_refusal_yields_no_title(reply):
+    # Hangul is spaced, so the word ceiling never fires on a SHORT refusal,
+    # and the English-only openers never match one. The sentence shape
+    # (final "-nida"/"-yo" conjugation, "joesong" apology opener) must; the
+    # opener-only and ending-only fixtures pin each branch independently.
+    assert _looks_like_prose(reply)
+    assert _validate_title_reply(reply) == ""
+
+
+@pytest.mark.parametrize(
+    "reply,expected",
+    [
+        # Real titles that OPEN with a control word must survive: a plain
+        # following word or an identifier joiner separates a title from a
+        # verdict-plus-reason, and the prompt tells the model to keep
+        # identifiers verbatim.
+        ("Keep alive timer bug", "Keep alive timer bug"),
+        ("Skip list benchmark", "Skip list benchmark"),
+        ("SKIPPED frames in reveal", "SKIPPED frames in reveal"),
+        ("SKIP and KEEP handling", "SKIP and KEEP handling"),
+        ("SKIP_TESTS env var flag", "SKIP_TESTS env var flag"),
+        ("KEEP-ALIVE header bug", "KEEP-ALIVE header bug"),
+        ("SKIP.md parser fix", "SKIP.md parser fix"),
+        # A title followed by an unasked-for explanation keeps its first line,
+        # mirroring messaging/auto_title.clean_title.
+        ("Fix login bug\n\nThis names the session's main topic.", "Fix login bug"),
+        # A reply opening with a blank line keeps its title.
+        ("\nFix login bug", "Fix login bug"),
+        # A legitimate short Korean title is not a refusal.
+        (_KO_REAL_TITLE, _KO_REAL_TITLE),
+    ],
+)
+def test_legitimate_titles_survive_the_new_checks(reply, expected):
+    assert _validate_title_reply(reply) == expected

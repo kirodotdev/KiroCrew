@@ -213,7 +213,9 @@ _TITLE_MAX_WORDS = 12
 #: is a single whitespace token, so ``_TITLE_MAX_WORDS`` can never fire for it —
 #: it needs the character ceiling below instead. Hangul and Cyrillic are
 #: deliberately absent: Korean and Russian do space their words, so the word
-#: ceiling already covers them.
+#: ceiling bounds a long sentence in them. A SHORT Korean refusal clears that
+#: ceiling, so it is caught by sentence shape instead -- see
+#: ``_TITLE_KO_SENTENCE_ENDINGS``.
 _UNSPACED_SCRIPT_RANGES = (
     (0x0E00, 0x0E7F),  # Thai
     (0x3040, 0x30FF),  # Hiragana + Katakana
@@ -279,6 +281,31 @@ _TITLE_PROSE_OPENERS = (
     "note:",
 )
 
+#: Korean refusal/prose shape. Hangul spaces its words, so the word ceiling
+#: bounds a long Korean sentence -- but a refusal is SHORT (five words in the
+#: observed case), and ``_TITLE_PROSE_OPENERS`` is English-only, so a short
+#: Korean refusal clears every other check. Korean
+#: is SOV: the verb that marks a sentence as a sentence comes LAST, so prefix
+#: openers cannot catch it -- match the sentence-final conjugation instead.
+#: The polite declarative endings close the sentence forms a titling model
+#: actually emits: "-nida" (U+B2C8 U+B2E4, the hamnida/seumnida/imnida
+#: family) and the informal-polite "-eoyo"/"-ayo"/"-haeyo" (U+C5B4/U+C544/
+#: U+D574 + U+C694). A noun-phrase title carries none of them; a plain-form
+#: (banmal) refusal stays a documented false negative. The one useful prefix
+#: is "joesong" (U+C8C4 U+C1A1, "sorry"), the apology opener. Both signals
+#: trade deliberately toward rejection: a sentence-form Korean title ("the
+#: login does not work") loses to the fallback name, which is the cheaper
+#: failure -- a fallback name is still the user's own words, a refusal stored
+#: as the name is the bug. Escapes keep the source ASCII; the runtime values
+#: are the Hangul strings.
+_TITLE_KO_PROSE_OPENERS = ("\uc8c4\uc1a1",)
+_TITLE_KO_SENTENCE_ENDINGS = (
+    "\ub2c8\ub2e4",
+    "\uc5b4\uc694",
+    "\uc544\uc694",
+    "\ud574\uc694",
+)
+
 
 def _unspaced_script_chars(s: str) -> int:
     """Count characters belonging to a script written without word spaces."""
@@ -297,7 +324,7 @@ def _looks_like_prose(title: str) -> bool:
     shape of a generation, so the reply is also validated here and treated as
     SKIP when it fails, which routes to the existing fallback title.
 
-    Four signals, each independently sufficient:
+    Five signals, each independently sufficient:
 
     - a refusal/narration opener (see ``_TITLE_PROSE_OPENERS``);
     - more words than any real title carries;
@@ -308,6 +335,11 @@ def _looks_like_prose(title: str) -> bool:
       must be followed by whitespace so "Node.js upgrade plan" and "Ship v1.2 to
       prod" stay valid; the full-width forms must not, because the scripts that
       use them do not space after punctuation.
+    - Korean sentence shape (see ``_TITLE_KO_SENTENCE_ENDINGS``). Hangul spaces
+      its words, but a refusal is short enough to clear the word ceiling, and a
+      prefix opener cannot catch an SOV language whose refusal verb comes last
+      -- so the sentence-final polite conjugation is matched instead, a grammar
+      fact rather than a phrase list.
 
     Known false negative: a SHORT refusal in an unspaced script with no
     terminator ("无法访问该链接") clears every ceiling and lands as the title.
@@ -320,6 +352,10 @@ def _looks_like_prose(title: str) -> bool:
         return False
     lowered = stripped.lower()
     if lowered.startswith(_TITLE_PROSE_OPENERS):
+        return True
+    if stripped.startswith(_TITLE_KO_PROSE_OPENERS):
+        return True
+    if stripped.endswith(_TITLE_KO_SENTENCE_ENDINGS):
         return True
     if len(stripped.split()) > _TITLE_MAX_WORDS:
         return True
@@ -743,9 +779,19 @@ async def _rephrase_plan_lite(
 
 
 def _clean_title(s: str) -> str:
-    """Normalize a (partial or final) LLM title: trim whitespace and wrapping
-    quotes/period, in their ASCII and full-width/CJK forms alike."""
-    return s.strip().strip(_TITLE_WRAP_CHARS).strip()
+    """Normalize a (partial or final) LLM title: keep the first line only,
+    then trim whitespace and wrapping quotes/period, in their ASCII and
+    full-width/CJK forms alike.
+
+    The first-line reduction mirrors the rule ``messaging/auto_title
+    .clean_title`` states as "Keeps the first line only": it collapses
+    ``SKIP\\n\\n<reason>`` back to the bare control word, and keeps a title the
+    model followed with an unasked-for explanation. One deliberate ordering
+    difference from the sibling: leading whitespace is stripped BEFORE the
+    split, so a reply opening with a blank line keeps its title rather than
+    reducing to the blank line.
+    """
+    return s.strip().split("\n", 1)[0].strip().strip(_TITLE_WRAP_CHARS).strip()
 
 
 def _title_reveal_prefixes(title: str) -> list[str]:
@@ -807,18 +853,66 @@ async def _reveal_title(
         await asyncio.sleep(_TITLE_REVEAL_STEP_SECS)
 
 
-def _validate_title_reply(text: str, *, control_words: tuple[str, ...] = ("SKIP",)) -> str:
+#: Characters that read as a verdict-reason separator right after a control
+#: word ("SKIP: too vague", "SKIP (too vague)"). Deliberately NOT every
+#: non-alphanumeric: "-" and "." separate only when spaced away from the next
+#: word, so identifier titles the prompt tells the model to keep verbatim
+#: ("KEEP-ALIVE header bug", "SKIP.md parser fix") survive, and "_" never
+#: separates ("SKIP_TESTS env var flag").
+_TITLE_VERDICT_TRAILERS = ":,;!?("
+
+
+def _is_verdict_reply(title: str, control_words: tuple[str, ...]) -> bool:
+    """True when *title* is a control word, alone or followed by a reason.
+
+    The word is matched case-insensitively on every shape: the words are
+    taught as literal ASCII, but a lowercased echo is still a verdict, with
+    or without a reason attached ("skip", "Skip: greetings only", "keep - the
+    title still fits"). What separates a verdict-plus-reason from a real
+    title OPENING with the word is the separator: punctuation (or a spaced
+    dash / spaced period) means verdict, while a plain following word or an
+    identifier joiner means title ("SKIP and KEEP handling", "Keep alive
+    timer bug", "SKIPPED frames in reveal", "KEEP-ALIVE header bug").
+    """
+    upper = title.upper()
+    if upper in control_words:
+        return True
+    for word in control_words:
+        if not upper.startswith(word):
+            continue
+        rest = title[len(word) :]
+        head = rest.lstrip()
+        spaced = len(head) != len(rest)
+        if not head:
+            return True
+        char = head[0]
+        if char in _TITLE_VERDICT_TRAILERS:
+            return True
+        if char == "-" and (spaced or len(head) < 2 or head[1].isspace()):
+            return True
+        if char == "." and (len(head) < 2 or head[1].isspace()):
+            return True
+    return False
+
+
+def _validate_title_reply(
+    text: str, *, control_words: tuple[str, ...] = ("SKIP", "KEEP")
+) -> str:
     """Clean, redact and shape-check an LLM title reply; ``""`` means no title.
 
     Shared by the initial titling and the refresh so the two paths cannot drift:
     both redact BEFORE anything else touches the reply (a refusal can quote the
     user's own message back — including a credential or exfiltration URL pasted
     into it) and both discard prose-shaped replies rather than persisting a
-    sentence as the session name. ``control_words`` are the caller's no-title
-    sentinels (SKIP for the initial prompt, SKIP/KEEP for the refresh).
+    sentence as the session name. ``control_words`` are the no-title sentinels.
+    BOTH taught words are defaults: the module's own prompts teach the model
+    SKIP and KEEP, so a reply of either word means "no title" on every path
+    -- an initial reply of KEEP is a confused model, not a session named
+    ``KEEP``. See ``_is_verdict_reply`` for how a verdict-plus-reason line is
+    told apart from a real title that opens with the word.
     """
     title = _clean_title(text)
-    if not title or title.upper() in control_words:
+    if not title or _is_verdict_reply(title, control_words):
         return ""
     title, _ = redact_exfiltration_urls(title)
     title, _ = redact_credentials(title)
@@ -878,7 +972,7 @@ async def _generate_refreshed_title(
         return ""
     logger.debug("Title refresh prompt (%d chars)", len(prompt))
     text = await run_bg_oneliner(state.sessions, prompt, model=_TITLE_MODEL)
-    title = _validate_title_reply(text, control_words=("SKIP", "KEEP"))
+    title = _validate_title_reply(text)
     if not title:
         logger.info("Title refresh returned KEEP/SKIP/empty — keeping current title")
         return ""

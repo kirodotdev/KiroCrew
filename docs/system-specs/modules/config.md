@@ -2141,7 +2141,18 @@ Two consequences fall out of naming in a non-latin script:
   free, and the full-width terminators `。！？` are matched without the ASCII
   rule's trailing-whitespace requirement (those scripts do not space after
   punctuation). A short refusal with no terminator remains a documented false
-  negative.
+  negative for those unspaced scripts. Korean is spaced, so the word ceiling
+  bounds its long sentences, but a SHORT Korean refusal clears every other
+  check -- and Korean puts the refusal verb last, so English-style prefix
+  openers cannot catch it. `_looks_like_prose` therefore also matches Korean
+  sentence shape: the sentence-final polite conjugations
+  (`_TITLE_KO_SENTENCE_ENDINGS`, the formal "-nida" family and the
+  informal-polite "-yo" family) plus the apology opener
+  (`_TITLE_KO_PROSE_OPENERS`), which a title as a noun phrase never carries. A
+  plain-form (banmal) Korean refusal remains a documented false negative, and
+  a sentence-form Korean title loses to the fallback name -- the deliberate
+  direction of the trade, since a fallback name is still the user's own words
+  while a stored refusal is the bug.
 - **The reveal animation needs characters.** The sidebar types a new title in one
   word at a time; a single-token title skipped the animation entirely, so
   `_title_reveal_prefixes` steps unspaced scripts two characters at a time
@@ -2149,6 +2160,14 @@ Two consequences fall out of naming in a non-latin script:
 
 `_clean_title` strips the full-width and CJK quote/period forms (`「」`, `“”`,
 `。`) alongside the ASCII ones, since that is what a zh/ja reply wraps a name in.
+It also keeps the reply's first line only -- the rule
+`messaging/auto_title.clean_title` states as "Keeps the first line only" -- so a
+`SKIP` verdict followed by a reason collapses back to the bare control word.
+`_validate_title_reply` treats BOTH taught control words (`SKIP`, `KEEP`) as
+no-title sentinels on every path, matched case-insensitively, alone or with a
+punctuation-separated reason on one line (`_is_verdict_reply`) -- while a real
+title that merely opens with the word ("SKIP and KEEP handling", "KEEP-ALIVE
+header bug") survives.
 
 ### Foreign-agent import onboarding state
 
