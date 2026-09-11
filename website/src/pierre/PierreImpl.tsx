@@ -344,11 +344,13 @@ export function PierreCodeImpl({ file, options, className, langHint, scrollClass
   )
 }
 
-export function PierrePatchImpl({ patch, options, className, renderHeaderMetadata }: {
+export function PierrePatchImpl({ patch, options, className, renderHeaderMetadata, renderHeaderPrefix, renderHeaderFilenameSuffix }: {
   patch: string
   options?: PierreDiffOptions
   className?: string
   renderHeaderMetadata?: () => React.ReactNode
+  renderHeaderPrefix?: () => React.ReactNode
+  renderHeaderFilenameSuffix?: () => React.ReactNode
 }) {
   const dark = useIsDark()
   const surfaceId = useId()
@@ -404,14 +406,15 @@ export function PierrePatchImpl({ patch, options, className, renderHeaderMetadat
           options={resolved}
           disableWorkerPool={poolBroken}
           renderHeaderMetadata={i === 0 && renderHeaderMetadata ? renderHeaderMetadata : undefined}
+          renderHeaderPrefix={i === 0 ? renderHeaderPrefix : undefined}
+          renderHeaderFilenameSuffix={i === 0 ? renderHeaderFilenameSuffix : undefined}
         />
       ))}
     </PierreShell>
   )
 }
 
-export function PierreFilePairImpl({ oldFile, newFile, options, className, renderHeaderMetadata, renderHeaderPrefix, renderHeaderFilenameSuffix }: {
-  oldFile: FileContents | null
+export function PierreFilePairImpl({ oldFile, newFile, options, className, renderHeaderMetadata, renderHeaderPrefix, renderHeaderFilenameSuffix }: {  oldFile: FileContents | null
   newFile: FileContents | null
   options?: PierreDiffOptions
   className?: string

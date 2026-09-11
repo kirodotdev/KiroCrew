@@ -429,8 +429,12 @@ Pierre chunk loads, because Pierre constructs the raw diff synchronously before
 its worker pool or row virtualizer participates. Inputs outside the budget keep
 both complete files, header controls, native selection, wrapping, and theme
 styling in a bounded plain side-by-side or sequential surface. A translated
-status identifies the simplified view; it omits syntax colour, hunk interleaving,
-and line-level diff controls. The content limit is measured in JavaScript UTF-16
+status identifies the simplified view; it omits syntax colour and hunk
+interleaving by default, and a "Show line-by-line diff" control in a strip
+between the header and the scroller opts one pair into the real diff: the
+computation runs in a Web Worker (`src/pierre/diffOffThread.ts`), so the
+renderer never blocks, and the result renders through the hunk-based patch
+path with unchanged ranges folded. The content limit is measured in JavaScript UTF-16
 code units rather than encoded bytes so the guard stays allocation-free while an
 editor changes. Editable live diffs use the same
 predicate and degrade to the ordinary editable file surface rather than becoming

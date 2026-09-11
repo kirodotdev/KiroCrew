@@ -2,6 +2,8 @@ import { useId, useLayoutEffect, useMemo, useRef, type CSSProperties, type React
 import type { FileContents } from '@pierre/diffs'
 import type { PierreDiffOptions } from './config'
 import { changedLineSpan } from '../utils/diffLineCounts'
+import { Btn } from '../components/ui'
+import ErrorNotice from '../components/ErrorNotice'
 import { i18nT } from '../i18n/t'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 
@@ -47,6 +49,12 @@ interface PlainFilePairFallbackProps {
   renderHeaderMetadata?: () => ReactNode
   renderHeaderPrefix?: () => ReactNode
   renderHeaderFilenameSuffix?: () => ReactNode
+  onShowLineByLineDiff?: () => void
+  /** Off-thread compute status for the opt-in. `computing` swaps the button
+   *  for a progress label + Cancel; `error` re-offers the button with a short
+   *  failure notice. */
+  lineByLineState?: 'idle' | 'computing' | 'error'
+  onCancelLineByLineDiff?: () => void
 }
 
 /**
@@ -63,6 +71,9 @@ export function PlainFilePairFallback({
   renderHeaderMetadata,
   renderHeaderPrefix,
   renderHeaderFilenameSuffix,
+  onShowLineByLineDiff,
+  lineByLineState = 'idle',
+  onCancelLineByLineDiff,
 }: PlainFilePairFallbackProps) {
   useLanguageGeneration()
   const titleId = useId()
@@ -110,6 +121,31 @@ export function PlainFilePairFallback({
     newFile == null ? null : { file: newFile, lines: newLines, marker: '+', key: 'new' as const, start: span?.newStart, end: span?.newEnd },
   ].filter((side): side is { file: FileContents; lines: string[]; marker: string; key: 'old' | 'new'; start: number | undefined; end: number | undefined } => side != null)
   const split = options?.diffStyle === 'split' && sides.length === 2
+  const showLineByLineDiffControl = !collapsed && onShowLineByLineDiff ? (
+    lineByLineState === 'computing' ? (
+      <span className="flex shrink-0 items-center gap-2">
+        <span aria-live="polite">{i18nT('components.fileChangeChips.computing_line_by_line_diff')}</span>
+        {onCancelLineByLineDiff && (
+          <Btn type="button" className="shrink-0" onClick={onCancelLineByLineDiff}>{i18nT('components.fileChangeChips.cancel_line_by_line_diff')}</Btn>
+        )}
+      </span>
+    ) : (
+      <span className="flex shrink-0 items-center gap-2">
+        {lineByLineState === 'error' && (
+          /* No hand-off: this shared fallback also renders dirty working-tree
+             diffs (MarkdownPanel routes the current, possibly unsaved buffer
+             through PierreFilePair), and the Ask Agent navigation has no dirty
+             guard — it would silently discard that buffer. The retry button
+             next to this notice is the recovery path. */
+          <ErrorNotice
+            message={i18nT('components.fileChangeChips.line_by_line_diff_failed')}
+            variant="inline"
+          />
+        )}
+        <Btn type="button" className="shrink-0" onClick={onShowLineByLineDiff}>{i18nT('components.fileChangeChips.show_line_by_line_diff')}</Btn>
+      </span>
+    )
+  ) : null
 
   return (
     <div
@@ -132,6 +168,20 @@ export function PlainFilePairFallback({
           {renderHeaderMetadata && <div className="shrink-0">{renderHeaderMetadata()}</div>}
         </div>
       )}
+      {/* Opt-in control lives in its own strip BETWEEN the header and the
+          scroller, never inside either: the header already carries the
+          caller's prefix and metadata actions (a third one crowds the
+          truncating filename at narrow widths), and inside the bounded
+          scroller the strip would scroll out of view — or start hidden
+          entirely once the fallback opens scrolled to the first change. The
+          no-header branch also shows the simplified label here, since it has
+          no header to carry it. */}
+      {!collapsed && (!showHeader || showLineByLineDiffControl) && (
+        <div className="flex items-center justify-between gap-2 border-b border-border bg-bg px-3 py-1 text-[11px] text-muted">
+          {!showHeader ? <span>{filePairLabel}</span> : <span />}
+          {showLineByLineDiffControl}
+        </div>
+      )}
       {!collapsed && (
         <div
           ref={contentRef}
@@ -139,11 +189,6 @@ export function PlainFilePairFallback({
           style={contentStyle}
           className={`${split ? 'grid-cols-1 md:grid-cols-2' : 'grid-cols-1'} relative grid min-w-0 overflow-auto`}
         >
-          {!showHeader && (
-            <div className={`${split ? 'md:col-span-2' : ''} border-b border-border bg-bg px-3 py-1 text-[11px] text-muted`}>
-              {filePairLabel}
-            </div>
-          )}
           {sides.map(({ file, lines, marker, key, start, end }, index) => {
             const headingId = `${titleId}-${key}`
             const regionLines = start != null && end != null && end > start
