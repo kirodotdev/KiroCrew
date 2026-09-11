@@ -284,6 +284,29 @@ class TestValidation:
             )
             assert m.validate() == []
             assert m.crons[0].enabled is expected
+
+    @pytest.mark.parametrize("selector", ["command", "script"])
+    def test_cron_execution_selector_non_string_is_rejected(self, selector):
+        m = AppManifest.from_dict(
+            _valid_manifest(
+                crons=[{"name": "j1", "every": 300, "message": "go", selector: 7}]
+            )
+        )
+
+        assert m.crons[0].command == ""
+        assert m.crons[0].script == ""
+        errors = m.validate()
+        assert any(selector in error and "wrong JSON type" in error for error in errors)
+
+    @pytest.mark.parametrize("selector", ["command", "script"])
+    def test_cron_null_execution_selector_remains_absent(self, selector):
+        m = AppManifest.from_dict(
+            _valid_manifest(
+                crons=[{"name": "j1", "every": 300, "message": "go", selector: None}]
+            )
+        )
+
+        assert not any(selector in error for error in m.validate())
         # Absent key: default enabled, no error.
         m = AppManifest.from_dict(
             _valid_manifest(crons=[{"name": "j1", "every": 300, "message": "go"}])

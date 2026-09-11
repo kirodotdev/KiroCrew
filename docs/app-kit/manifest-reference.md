@@ -116,8 +116,8 @@ installed against:
 | `message` | string | Prompt sent to the agent on each run |
 | `agent` | string | Agent to run (optional, uses default if omitted) |
 | `agent_sequence` | string[] | Ordered agents to run |
-| `command` | string | Shell command executed without a model call; mutually exclusive with `script` |
-| `script` | string | Synchronous Python callable (`file.py:function`) executed without a model call; mutually exclusive with `command` |
+| `command` | string | Shell command executed without a model call; mutually exclusive with `script`. A present non-string value is rejected rather than treated as absent |
+| `script` | string | Synchronous Python callable (`file.py:function`) executed without a model call; mutually exclusive with `command`. A present non-string value is rejected rather than treated as absent |
 | `env` | object | String environment variables passed to the job |
 | `persistent_session` | boolean | Default `true`; retain one agent session across runs |
 | `silent` | boolean | Default `false`; suppress automatic result delivery |
