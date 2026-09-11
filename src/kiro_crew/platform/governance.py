@@ -1797,6 +1797,15 @@ class PolicyDistribution:
                 raise PlatformCompositionError(
                     f"distribution.source is not a parseable URL: {exc}"
                 ) from exc
+            try:
+                source.encode("utf-8")
+            except UnicodeEncodeError as exc:
+                # JSON can represent an unpaired surrogate even though UTF-8 cannot. The
+                # cache identity hashes this text during boot, so reject it as configuration
+                # here instead of leaking a UnicodeEncodeError from the distribution engine.
+                raise PlatformCompositionError(
+                    "distribution.source is not valid UTF-8 text"
+                ) from exc
             # ``.port`` is a LAZILY parsed property, so the ``urlsplit`` guard above does not
             # cover it: it raises for a non-numeric or out-of-range port. A policy is
             # configuration, so that is a composition error naming the key, not a traceback.

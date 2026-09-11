@@ -3213,6 +3213,16 @@ class TestMalformedInputIsRefusedNotCrashedOn:
             governance.PolicyDistribution.from_dict({"source": source})
         assert "distribution.source" in str(caught.value)
 
+    def test_a_declared_source_must_be_valid_utf8_text(self):
+        """A lone JSON surrogate must fail at composition, before cache provenance hashes it."""
+        policy = json.loads(r'{"source": "https://h/p\udc80"}')
+
+        with pytest.raises(
+            PlatformCompositionError,
+            match="distribution.source is not valid UTF-8 text",
+        ):
+            governance.PolicyDistribution.from_dict(policy)
+
     def test_the_sanitiser_survives_a_malformed_source(self):
         """This one matters most: a sanitiser that crashes on a malformed source takes the
         error REPORT down with it, so the operator sees a traceback about URL parsing instead
