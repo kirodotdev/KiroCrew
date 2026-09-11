@@ -65,6 +65,58 @@ beforeEach(() => {
   brandingEnv.directLocal = true
 })
 
+const unreachableRoot = async () => {
+  const { ApiError: RealApiError } = await import('../api/apiError')
+  return new RealApiError(404, 'nope', JSON.stringify({ code: 'unknown_project_dir' }))
+}
+
+describe('FilesHomePanel tree cause split', () => {
+  it('stops promising a tree to pick from while the rail reports the failure', async () => {
+    H.api.projectTree.mockRejectedValue(
+      Object.assign(new Error('deadline'), { name: 'TimeoutError' }))
+    const { qc } = mount()
+    await waitFor(() =>
+      expect(qc.getQueryState(['project-tree', DIR])?.status).toBe('error'))
+
+    expect(await screen.findByTestId('tree')).toBeInTheDocument()
+    expect(screen.queryByText('Select a file from the tree to open it in a new tab')).toBeNull()
+    expect(screen.queryByText('No project directory is set for this chat')).toBeNull()
+  })
+
+  it('keeps the rail mounted on a codeless failure, which a Refresh can still answer', async () => {
+    H.api.projectTree.mockRejectedValue(new Error('boom'))
+    const { qc } = mount()
+    await waitFor(() =>
+      expect(qc.getQueryState(['project-tree', DIR])?.status).toBe('error'))
+
+    // The rail mounts and carries the notice itself, so the panel does not also state it.
+    expect(await screen.findByTestId('tree')).toBeInTheDocument()
+    expect(screen.queryByText('Select a file from the tree to open it in a new tab')).toBeNull()
+  })
+
+  it('keeps the rail mounted on a timeout, where a Refresh can still clear it', async () => {
+    H.api.projectTree.mockRejectedValue(
+      Object.assign(new Error('deadline'), { name: 'TimeoutError' }))
+    const { qc } = mount()
+    await waitFor(() =>
+      expect(qc.getQueryState(['project-tree', DIR])?.status).toBe('error'))
+
+    expect(await screen.findByTestId('tree')).toBeInTheDocument()
+    expect(screen.queryByText('Unable to load the file tree')).not.toBeInTheDocument()
+  })
+
+  it('hides the rail when the root itself is unreachable, which Refresh cannot fix', async () => {
+    const { ApiError: RealApiError } = await import('../api/apiError')
+    H.api.projectTree.mockRejectedValue(new RealApiError(
+      404, 'nope', JSON.stringify({ code: 'unknown_project_dir' })))
+    const { qc } = mount()
+    await waitFor(() =>
+      expect(qc.getQueryState(['project-tree', DIR])?.status).toBe('error'))
+
+    expect(screen.queryByTestId('tree')).not.toBeInTheDocument()
+  })
+})
+
 describe('FilesHomePanel header', () => {
   it('titles the tab and names the project by its last path segment', () => {
     mount()
@@ -91,7 +143,7 @@ describe('FilesHomePanel header', () => {
   })
 
   it('invalidates both project queries from the refresh button', async () => {
-    H.api.projectTree.mockRejectedValue(new Error('not a directory'))
+    H.api.projectTree.mockRejectedValue(await unreachableRoot())
     const { qc } = mount()
     // The retry sits with the error message rather than as a header icon, so the
     // remedy is next to the words describing the problem. Query it fresh at click
@@ -144,8 +196,10 @@ describe('FilesHomePanel tree availability', () => {
     // sends the user to fix something that is already correct. The endpoint
     // refuses for reasons the user cannot see (allow-list refusal, backend
     // hiccup), and retrying is the only remedy they have.
-    H.api.projectTree.mockRejectedValue(new Error('not a directory'))
-    mount()
+    H.api.projectTree.mockRejectedValue(await unreachableRoot())
+    const { qc } = mount()
+    await waitFor(() =>
+      expect(qc.getQueryState(['project-tree', DIR])?.status).toBe('error'))
 
     expect(await screen.findByText("Couldn't load the file tree")).toBeInTheDocument()
     expect(screen.queryByText('No project directory is set for this chat')).toBeNull()
@@ -157,7 +211,7 @@ describe('FilesHomePanel tree availability', () => {
   it('still leaves exactly one Refresh control in the errored view', async () => {
     // The header icon yields to the error state's labelled button; two controls
     // with the same accessible name in one view is the collision this avoids.
-    H.api.projectTree.mockRejectedValue(new Error('not a directory'))
+    H.api.projectTree.mockRejectedValue(await unreachableRoot())
     mount()
     await screen.findByText("Couldn't load the file tree")
     expect(screen.getAllByRole('button', { name: 'Refresh' })).toHaveLength(1)

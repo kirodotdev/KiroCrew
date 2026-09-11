@@ -6291,7 +6291,20 @@
       "searching_enter_held": "Ricerca in corso… — Invio non invia ancora; premi Esc, poi Invio invia il messaggio",
       "type_2_chars_to_search_files_ctrl_enter_held": "Digita almeno 2 caratteri per cercare file e cartelle… — Ctrl+Invio non invia ancora; premi Esc, poi Ctrl+Invio invia il messaggio",
       "type_2_chars_to_search_files_enter_held": "Digita almeno 2 caratteri per cercare file e cartelle… — Invio non invia ancora; premi Esc, poi Invio invia il messaggio",
-      "search_failed": "Impossibile cercare i file. Riprova."
+      "search_failed_ctrl_enter_sends": "Ricerca file non riuscita — Ctrl+Invio invia il messaggio",
+      "search_timed_out_ctrl_enter_sends": "Ricerca file scaduta — Ctrl+Invio invia il messaggio",
+      "search_failed_enter_sends": "Ricerca file non riuscita — Invio invia il messaggio",
+      "search_timed_out_enter_sends": "Ricerca file scaduta — Invio invia il messaggio",
+      "stale_rows_notice": "{{cause}} — vengono mostrati gli ultimi valori letti.",
+      "search_denied_enter_sends": "Accesso negato alla cartella del progetto — Invio invia il messaggio",
+      "search_denied_ctrl_enter_sends": "Accesso negato alla cartella del progetto — Ctrl+Invio invia il messaggio",
+      "search_root_missing_enter_sends": "Cartella del progetto non trovata — Invio invia il messaggio",
+      "search_root_missing_ctrl_enter_sends": "Cartella del progetto non trovata — Ctrl+Invio invia il messaggio",
+      "search_timed_out": "Ricerca file scaduta",
+      "search_failed": "Ricerca file non riuscita",
+      "search_denied": "Accesso negato alla cartella del progetto",
+      "search_root_missing": "Cartella del progetto non trovata",
+      "retry": "Riprova"
     },
     "fileRenderers": {
       "download": "Scarica",
@@ -7101,7 +7114,10 @@
       "search_recent_projects": "Cerca tra i progetti recenti",
       "search_recent_projects_2": "Cerca tra i progetti recenti…",
       "select": "Seleziona",
-      "subdirectories": "Sottodirectory"
+      "subdirectories": "Sottodirectory",
+      "recent_unavailable": "Progetti recenti non disponibili",
+      "retry": "Riprova",
+      "loading_recent": "Caricamento…"
     },
     "publicPublishAckModal": {
       "acknowledge_publish": "Ho capito, pubblica pubblicamente",
@@ -8108,7 +8124,8 @@
       "project_directory_path": "Percorso della directory del progetto",
       "select": "Seleziona",
       "workspace_name": "Nome del workspace",
-      "workspace_name_2": "workspace-name"
+      "workspace_name_2": "workspace-name",
+      "retry": "Riprova"
     },
     "settingRef": {
       "envVarAriaLabel": "Variabile d'ambiente {{key}}",
@@ -9561,7 +9578,11 @@
         "search_files": "Cerca file",
         "searching": "Ricerca…",
         "showing_first_matches": "Mostrando le prime {{shown}} corrispondenze",
-        "unable_to_list_folder": "Impossibile elencare la cartella"
+        "unable_to_list_folder": "Impossibile elencare la cartella",
+        "search_timed_out": "Ricerca scaduta",
+        "listing_timed_out": "Elenco della cartella scaduto",
+        "search_denied": "Accesso negato a questa cartella",
+        "search_root_missing": "Cartella non trovata"
       },
       "knowledgePicker": {
         "cancel": "Annulla",

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useRef } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 import { Folder, RotateCw, ExternalLink, ChevronDown, ChevronUp, Search, X } from 'lucide-react'
@@ -8,14 +8,31 @@ import ErrorNotice from '../../components/ErrorNotice'
 import { useBranding } from '../../hooks/useBranding'
 import { useGatewayPlatform } from '../../hooks/useGatewayPlatform'
 import { api } from '../../api/client'
+import { isDeadlineError } from '../../api/queryClient'
 import { fileIcon, colorForExt } from '../../utils/fileIcons'
 import { useFileMenuItems, visibleFileMenuItems, FolderRowActions } from '../../apps/fileMenuContributions'
+import { findReport } from '../../utils/errorReport'
+import { errMessage } from '../../utils/thunkError'
+import { searchErrorCause, type SearchErrorCause } from '../../lib/searchErrorCause'
 import { PierreWorkspaceTree } from '../../pierre/tree'
 import { useTreeState } from './FileBrowserRail'
 
 /** Last path segment, trailing slashes ignored. */
 function basename(p: string): string {
   return p.replace(/\/+$/, '').split('/').pop() || p
+}
+
+/**
+ * This surface's copy for each cause the shared classifier can report. Its nouns name THIS
+ * folder rather than the project because the panel searches the folder tab's own cwd, while
+ * `FilePickerMenu` searches the chat's project root -- the wording split is intentional.
+ */
+
+const SEARCH_FAILURE_KEYS: Record<SearchErrorCause, string> = {
+  timed_out: 'pages.chat.folderPanel.search_timed_out',
+  failed: 'pages.chat.folderPanel.search_failed',
+  denied: 'pages.chat.folderPanel.search_denied',
+  root_missing: 'pages.chat.folderPanel.search_root_missing',
 }
 
 /**
@@ -185,9 +202,9 @@ export default function FolderPanel({ path, projectDir, onClose, onFileOpen, onA
   const [contribError, setContribError] = useState<string | null>(null)
   useEffect(() => { setContribError(null) }, [cwd])
 
-  const { data, isLoading, isError, error, refetch, isFetching } = useQuery({
+  const { data, isLoading, isError, error: listErr, refetch, isFetching } = useQuery({
     queryKey: ['browse-files', cwd],
-    queryFn: () => api.browseFiles(cwd),
+    queryFn: ({ signal }) => api.browseFiles(cwd, signal),
     retry: false,
     staleTime: 5_000,
   })
@@ -227,9 +244,33 @@ export default function FolderPanel({ path, projectDir, onClose, onFileOpen, onA
   // and no plumbing into the tree. `refetchQueries` (not `invalidateQueries`) so
   // the spinner tracks a real round trip.
   const qc = useQueryClient()
+  const searchRef = useRef<HTMLInputElement>(null)
   const [refreshingTree, setRefreshingTree] = useState(false)
   const refresh = async () => {
-    if (!treeMode) { await refetch(); return }
+    if (!treeMode) {
+      // Refresh is the obvious retry beside a failed search, so it has to refetch the
+      // search as well as the listing behind it. A prefix key matches the active one.
+      const wasSearchFailing = isSearchError
+      try {
+        await Promise.all([
+          refetch(),
+          qc.refetchQueries({ queryKey: ['folder-file-search', cwd] }),
+          ...(treeState === 'recoverable'
+            ? [qc.refetchQueries({ queryKey: ['project-tree', projectDir] })]
+            : []),
+        ])
+      } finally {
+        // Settles whether or not the search recovered — and a still-failing SIBLING key must not
+        // withhold focus — so the ACTIVE query's state alone decides.
+        if (wasSearchFailing) {
+          const stillFailing = qc.getQueryState(
+            ['folder-file-search', cwd, debouncedQuery, searchLimit],
+          )?.status === 'error'
+          if (!stillFailing) searchRef.current?.focus()
+        }
+      }
+      return
+    }
     setRefreshingTree(true)
     try {
       await Promise.all([
@@ -241,7 +282,6 @@ export default function FolderPanel({ path, projectDir, onClose, onFileOpen, onA
     }
   }
   const refreshBusy = treeMode ? refreshingTree : isFetching
-
   const dirs = data?.dirs ?? []
   const files = data?.files ?? []
   const isEmpty = dirs.length === 0 && files.length === 0
@@ -252,6 +292,9 @@ export default function FolderPanel({ path, projectDir, onClose, onFileOpen, onA
   // Defensive `kind` filter: the server already honours `kinds=files`, but a
   // gateway older than that parameter ignores it and would fold directories into
   // a list whose header promises files.
+
+  // Kept on error: a refetch that failed on the same key still holds its last rows, and the
+  // notice above them says the search did not land -- better than forcing a retype.
   const matches = (searchData?.results ?? []).filter(r => r.kind !== 'dir')
   const searchRoot = searchData?.root || cwd
   // While a wider page is in flight, `matches` are placeholder rows from the
@@ -324,6 +367,7 @@ export default function FolderPanel({ path, projectDir, onClose, onFileOpen, onA
       <div className="flex items-center gap-1.5 mx-2 mt-1.5 px-2 h-[28px] shrink-0 rounded-md bg-bg border border-border focus-within:border-accent">
         <Search size={12} className="shrink-0 text-muted" />
         <input
+          ref={searchRef}
           value={query}
           onChange={e => setQuery(e.target.value)}
           onKeyDown={e => { if (e.key === 'Escape') { e.preventDefault(); setQuery('') } }}
@@ -394,14 +438,19 @@ export default function FolderPanel({ path, projectDir, onClose, onFileOpen, onA
               // Read failure; the only editable field is the transient search
               // box, not a durable draft → hand-off on.
               <div className="px-2 py-2">
-                <ErrorNotice variant="inline" message={(searchError as Error)?.message || t('pages.chat.folderPanel.search_failed')} askAgent />
+                <ErrorNotice
+                  variant="inline"
+                  message={t(SEARCH_FAILURE_KEYS[searchErrorCause(searchError)])}
+                  report={findReport(errMessage(searchError))}
+                  askAgent
+                />
               </div>
             )}
             {!isSearchError && isSearching && matches.length === 0 && (
-              <div className="px-2 py-2 text-[12px] text-muted">{t('pages.chat.folderPanel.searching')}</div>
+              <div role="status" className="px-2 py-2 text-[12px] text-muted">{t('pages.chat.folderPanel.searching')}</div>
             )}
             {!isSearchError && !isSearching && matches.length === 0 && (
-              <div className="px-2 py-2 text-[12px] text-muted">{t('pages.chat.folderPanel.no_files_match')}</div>
+              <div role="status" className="px-2 py-2 text-[12px] text-muted">{t('pages.chat.folderPanel.no_files_match')}</div>
             )}
             {matches.map(m => {
               const Icon = fileIcon(m.path)
@@ -461,11 +510,29 @@ export default function FolderPanel({ path, projectDir, onClose, onFileOpen, onA
                 onActivate={() => navigate(parent)}
               />
             )}
+            {atProjectRoot && treeState === 'recoverable' && (
+              // The tree timed out, so this tab fell back to a one-level listing -- name the
+              // TREE, or the notice reads as a claim about the listing that just loaded.
+              <div className="px-2 py-2 flex items-center gap-2">
+                <ErrorNotice
+                  variant="inline"
+                  message={t('pages.chat.filesHome.tree_error')}
+                  askAgent
+                />
+              </div>
+            )}
             {isLoading && <div className="px-2 py-2 text-[12px] text-muted">{t('pages.chat.folderPanel.loading')}</div>}
             {isError && (
               // List failure in a side panel with nothing unsaved → hand-off on.
-              <div className="px-2 py-2">
-                <ErrorNotice variant="inline" message={(error as Error)?.message || t('pages.chat.folderPanel.unable_to_list_folder')} askAgent />
+              <div className="px-2 py-2 flex items-center gap-2">
+                <ErrorNotice
+                  variant="inline"
+                  message={t(isDeadlineError(listErr)
+                    ? 'pages.chat.folderPanel.listing_timed_out'
+                    : 'pages.chat.folderPanel.unable_to_list_folder')}
+                  report={findReport(errMessage(listErr))}
+                  askAgent
+                />
               </div>
             )}
             {!isLoading && !isError && isEmpty && (

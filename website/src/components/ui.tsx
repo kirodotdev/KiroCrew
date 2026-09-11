@@ -80,6 +80,10 @@ export const Btn = React.forwardRef<HTMLButtonElement, React.ButtonHTMLAttribute
   )
 )
 
+/** Sizing for the compact Retry that sits beside a failure notice. A `Btn` className, not a
+ *  second button style: `twMerge` lets these win over the defaults. */
+export const SMALL_BTN = 'shrink-0 text-[11px] px-1.5 py-0.5 rounded'
+
 export function SendBtn({ children, onClick, disabled, style, className, ...rest }: { children: React.ReactNode } & Omit<React.ComponentPropsWithoutRef<'button'>, 'children' | 'dangerouslySetInnerHTML'>) {
   return (
     <button

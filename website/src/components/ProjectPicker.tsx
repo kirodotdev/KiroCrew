@@ -1,9 +1,13 @@
+import { Btn, SMALL_BTN } from './ui'
 import { useState, useEffect, useRef, useCallback, RefObject } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import { useImeGuard } from '../hooks/useImeGuard'
 import { createPortal } from 'react-dom'
-import { FolderOpen, ChevronRight, ChevronLeft, Clock, Search } from 'lucide-react'
+import { FolderOpen, ChevronRight, ChevronLeft, Clock, Search, RefreshCw } from 'lucide-react'
 import { api } from '../api/client'
+import { useBrowseDirs } from './useBrowseDirs'
 import { useListKeyboardNav } from '../hooks/useListKeyboardNav'
+import ErrorNotice from './ErrorNotice'
 
 import { i18nT } from '../i18n/t'
 interface Props {
@@ -21,14 +25,28 @@ export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRec
   const [browsePath, setBrowsePath] = useState('')
   const [browseParent, setBrowseParent] = useState('')
   const [browseDirs, setBrowseDirs] = useState<{ name: string; path: string }[]>([])
-  const [recentDirs, setRecentDirs] = useState<string[]>([])
   const [recentQuery, setRecentQuery] = useState('')
   const [browseSel, setBrowseSel] = useState(0)
+  // Which Retry is mid-read. Held here, not taken from the query: a refetch of an errored
+  // query never reaches a committed render as `isFetching`, so that flag cannot say so.
+  const [retrying, setRetrying] = useState<null | 'recent' | 'listing'>(null)
   const btnRef = anchorRef
   const dropRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const recentSearchRef = useRef<HTMLInputElement>(null)
   const browseItemRefs = useRef<(HTMLElement | null)[]>([])
+  const recentRetryRef = useRef<HTMLButtonElement | null>(null)
+  const recentTabRef = useRef<HTMLButtonElement | null>(null)
+  const listRetryRef = useRef<HTMLButtonElement | null>(null)
+  // Only a RECOVERY unmounts the button, so a repeated failure must hand focus back once the
+  // re-enabling render commits. Keyed by which Retry was pressed: both can be on screen.
+  const refocusRetry = useRef<null | 'recent' | 'listing'>(null)
+  useEffect(() => {
+    if (retrying || !refocusRetry.current) return
+    const target = refocusRetry.current === 'recent' ? recentRetryRef : listRetryRef
+    refocusRetry.current = null
+    target.current?.focus()
+  }, [retrying])
   const anchorRectRef = useRef<DOMRect | null>(anchorRect ?? null)
   anchorRectRef.current = anchorRect ?? null
   const getAnchorRect = useCallback((): DOMRect | null => {
@@ -38,38 +56,65 @@ export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRec
     return anchorRectRef.current
   }, [btnRef])
 
-  const browse = useCallback((path?: string, preserveInput = false) => {
-    api.browseDirs(path).then(d => {
-      setBrowsePath(d.path); setBrowseParent(d.parent); setBrowseDirs(d.dirs); setBrowseSel(0)
-      // Append the path delimiter after a browse/drill so the user can start
-      // typing the next segment immediately (#1196). Derive the separator from
-      // the returned path so a native Windows path (C:\Users\me) stays all-`\`
-      // instead of rendering the mixed C:\Users\me/ . A path already ending in
-      // its separator (e.g. a drive/filesystem root) is left as-is; the trailing
-      // separator is a no-op for the auto-drill effect below (which keys on `/`).
-      if (!preserveInput) {
-        // `\` is a separator ONLY on a Windows-shaped path (drive-letter `C:...`
-        // or UNC `\\...`); on POSIX it is a legal filename character, so always
-        // append `/` there (GPT 5.6: never treat a trailing `\` as a separator on
-        // a POSIX path). A path already ending in its separator is left as-is.
-        const isWin = /^[A-Za-z]:/.test(d.path) || d.path.startsWith('\\\\')
-        const sep = isWin ? '\\' : '/'
-        setInput(d.path.endsWith(sep) ? d.path : d.path + sep)
-      }
-      // Keep the combobox input focused so arrow/Enter nav continues after a drill.
-      requestAnimationFrame(() => inputRef.current?.focus())
-    }).catch(() => {})
-  }, [])
+  const { listError, browse, retry } = useBrowseDirs(open, (d, preserveInput) => {
+    setBrowsePath(d.path); setBrowseParent(d.parent); setBrowseDirs(d.dirs); setBrowseSel(0)
+    // A trailing separator lets the user type the next segment immediately (#1196),
+    // and `\` counts as one ONLY on a Windows-shaped path -- on POSIX it is a filename.
+    if (!preserveInput) {
+      const isWin = /^[A-Za-z]:/.test(d.path) || d.path.startsWith('\\\\')
+      const sep = isWin ? '\\' : '/'
+      setInput(d.path.endsWith(sep) ? d.path : d.path + sep)
+    }
+    // Keep the combobox input focused so arrow/Enter nav continues after a drill.
+    requestAnimationFrame(() => inputRef.current?.focus())
+  })
+
+  const {
+    data: recentData,
+    isError: recentError,
+    isPending: recentPending,
+    refetch: refetchRecent,
+  } = useQuery({
+    queryKey: ['recent-projects'],
+    queryFn: () => api.recentProjects(),
+    // Open-gated, so the observer lives exactly while the rows are on screen; the rows
+    // below are DERIVED from it rather than copied into state.
+    enabled: open,
+    // `staleTime: 0` because the list changes as projects are opened -- and the shared
+    // client leaves focus refetching ON for that, so an alt-tab would re-read it.
+    staleTime: 0,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+    retry: false,
+  })
+  const recentDirs = recentData?.dirs ?? []
 
   useEffect(() => {
     if (!open) return
     setRecentQuery('')
-    api.recentProjects().then(d => {
-      setRecentDirs(d.dirs || [])
-      setTab(d.dirs?.length ? 'recent' : 'browse')
-    }).catch(() => setTab('browse'))
     browse()
   }, [open, browse])
+
+  // Landing is decided once per open, and a tab click counts as that decision: the read
+  // settles after the dropdown paints, so a late arrival would move the user off her tab.
+  const landedRef = useRef(false)
+  // State, not a ref: the auto-landing may already have put us on the tab the user then
+  // picks, so setTab is a no-op there and only this re-renders the notice away.
+  const [picked, setPicked] = useState(false)
+  if (!open) landedRef.current = false
+  useEffect(() => { if (!open) setPicked(false) }, [open])
+  const chooseTab = useCallback((next: 'recent' | 'browse') => {
+    landedRef.current = true
+    setPicked(true)
+    setTab(next)
+  }, [])
+  useEffect(() => {
+    if (!open || landedRef.current) return
+    // Landing on Browse is the fallback, not the report: without this the deadline reads
+    // as "you have no recent projects", which is a claim about the user's data.
+    if (recentError) { landedRef.current = true; setTab('browse'); return }
+    if (recentData) { landedRef.current = true; setTab(recentData.dirs?.length ? 'recent' : 'browse') }
+  }, [open, recentData, recentError])
 
   useEffect(() => {
     if (!open) return
@@ -115,6 +160,20 @@ export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRec
     count: filteredRecent.length,
     onChoose: i => { const d = filteredRecent[i]; if (d) select(d) },
     onClose: () => onOpenChange(false),
+    // A failed recents read leaves the list empty, and the swallow below would spend Tab on
+    // nothing -- so it hands off to the Retry the notice mounts in the list's place.
+    onTabToControl: () => {
+      const btn = recentRetryRef.current
+      if (!btn || btn.disabled) return false
+      btn.focus()
+      return true
+    },
+    onEnterToControl: () => {
+      const btn = recentRetryRef.current
+      if (!btn || btn.disabled || document.activeElement !== btn) return false
+      btn.click()
+      return true
+    },
   })
 
   // Reset the Recent highlight whenever the filtered list changes.
@@ -151,7 +210,18 @@ export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRec
   if (!open || !anchorR) return null
 
   const q = input.toLowerCase()
-  const filteredBrowse = q && q !== browsePath.toLowerCase() ? browseDirs.filter(d => d.name.toLowerCase().includes(q.split('/').pop() || '') || d.path.toLowerCase().includes(q)) : browseDirs
+
+  // Cleared, unlike the twins that re-read the SAME directory: a failed drill-down here would
+  // leave the previous directory's rows sitting under the new path's header.
+  // Held while its retry is in flight: `refetch` on a key that never succeeded clears the error,
+  // so gating on the error alone unmounts the notice, its button and the cleared rows mid-read.
+  const listBusy = listError !== false || retrying === 'listing'
+  const visibleDirs = listBusy ? [] : browseDirs
+  // Re-asking a refusal returns the same answer, so its Retry would spin and fail
+  // identically -- the @-menu withholds it on the same rule.
+  const listRecoverable = listError === 'timed_out' || listError === 'failed'
+    || retrying === 'listing'
+  const filteredBrowse = q && q !== browsePath.toLowerCase() ? visibleDirs.filter(d => d.name.toLowerCase().includes(q.split('/').pop() || '') || d.path.toLowerCase().includes(q)) : visibleDirs
 
   // Keyboard isolation for the popover, matching the boundary `Modal` carries on
   // its own panel (see Modal.tsx's ModalDialog). It is needed SEPARATELY here
@@ -211,13 +281,59 @@ export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRec
     })()}>
       {/* Tabs */}
       <div className="flex border-b border-border">
-        <button className={`flex-1 px-3 py-2 text-[12px] font-medium flex items-center justify-center gap-1.5 transition-colors ${tab === 'recent' ? 'text-accent border-b-2 border-accent' : 'text-muted hover:text-text'}`} onMouseDown={e => { e.preventDefault(); setTab('recent') }}>
+        <button ref={recentTabRef} className={`flex-1 px-3 py-2 text-[12px] font-medium flex items-center justify-center gap-1.5 transition-colors ${tab === 'recent' ? 'text-accent border-b-2 border-accent' : 'text-muted hover:text-text'}`} onMouseDown={e => { e.preventDefault(); chooseTab('recent') }}>
           <Clock size={12} /> {i18nT('components.projectPicker.recent')}
         </button>
-        <button className={`flex-1 px-3 py-2 text-[12px] font-medium flex items-center justify-center gap-1.5 transition-colors ${tab === 'browse' ? 'text-accent border-b-2 border-accent' : 'text-muted hover:text-text'}`} onMouseDown={e => { e.preventDefault(); setTab('browse') }}>
+        <button className={`flex-1 px-3 py-2 text-[12px] font-medium flex items-center justify-center gap-1.5 transition-colors ${tab === 'browse' ? 'text-accent border-b-2 border-accent' : 'text-muted hover:text-text'}`} onMouseDown={e => { e.preventDefault(); chooseTab('browse') }}>
           <FolderOpen size={12} /> {i18nT('components.projectPicker.browse')}
         </button>
       </div>
+
+      {/* Held while its retry is in flight: `refetch` clears the error, so gating on the error
+          alone unmounts the notice and its button the instant the user clicks Retry. Scoped to
+          the tab it describes, or it sits atop Browse -- which the error itself switches to. */}
+      {(tab === 'recent' || !picked) && (recentError || retrying === 'recent') && (
+        <div className="px-3 py-2 border-b border-border flex items-center gap-2">
+          {/* No hand-off: the path typed into this picker's combobox is unsaved. */}
+          <ErrorNotice variant="inline" message={i18nT('components.projectPicker.recent_unavailable')} />
+          <Btn
+            type="button"
+            ref={recentRetryRef}
+            // preventDefault on mousedown only, so the pointer does not blur the input; the
+            // work stays on click, which is also what Enter on the focused button fires.
+            onMouseDown={e => e.preventDefault()}
+            onClick={() => {
+              setRetrying('recent')
+              // Success unmounts this button, so focus lands on the first target that EXISTS: the
+              // recents search mounts only with rows, and `inputRef` only on Browse.
+              void refetchRecent().then(
+                r => ({ ok: !r.isError, rows: r.data?.dirs?.length ?? 0 }),
+                () => ({ ok: false, rows: 0 }),
+              ).then(({ ok, rows }) => {
+                setRetrying(null)
+                if (ok) {
+                  // The failed read landed an un-picked user on Browse, so recovering silently
+                  // leaves her rows on a tab she never chose. Empty still belongs on Browse.
+                  if (!picked && rows > 0) setTab('recent')
+                  const target = recentSearchRef.current ?? inputRef.current ?? recentTabRef.current
+                  target?.focus()
+                } else refocusRetry.current = 'recent'
+              })
+            }}
+            disabled={retrying === 'recent'}
+            aria-busy={retrying === 'recent'}
+            aria-label={`${i18nT('components.projectPicker.retry')}: `
+              + i18nT('components.projectPicker.recent_unavailable')}
+            className={SMALL_BTN}
+          >
+            <RefreshCw
+              size={10}
+              className={retrying === 'recent' ? 'animate-spin inline-block mr-1' : 'invisible inline-block mr-1'}
+            />
+            {i18nT('components.projectPicker.retry')}
+          </Btn>
+        </div>
+      )}
 
       {tab === 'recent' ? (
         <>
@@ -240,7 +356,13 @@ export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRec
             </div>
           )}
           <div id="pp-recent-list" role="listbox" aria-label={i18nT('components.projectPicker.recent_projects')} className="overflow-y-auto flex-1 min-h-0">
-            {recentDirs.length === 0 ? (
+            {/* An unreachable list is not an empty one: while the fetch has failed the
+                notice above already says so, and "No recent projects" would assert the
+                account has none — a second, contradictory claim about data that never
+                arrived. Say it once, in the notice. */}
+            {recentError ? null : recentPending ? (
+              <div role="status" className="px-3 py-6 text-[12px] text-muted text-center">{i18nT('components.projectPicker.loading_recent')}</div>
+            ) : recentDirs.length === 0 ? (
               <div className="px-3 py-6 text-[12px] text-muted text-center">{i18nT('components.projectPicker.no_recent_projects')}</div>
             ) : filteredRecent.length === 0 ? (
               <div className="px-3 py-6 text-[12px] text-muted text-center">{i18nT('components.projectPicker.no_matching_projects')}</div>
@@ -300,7 +422,17 @@ export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRec
                 else if (e.key === 'ArrowLeft' && e.currentTarget.selectionStart === 0 && e.currentTarget.selectionEnd === 0 && browseParent && browseParent !== browsePath) {
                   e.preventDefault(); browse(browseParent)                            // caret at start -> go to parent
                 }
-                else if (e.key === 'Escape' || e.key === 'Tab') {
+                else if (e.key === 'Tab') {
+                  // Split from Escape because Tab also has somewhere to go: either failure
+                  // notice's Retry, which this field otherwise owns the only key to.
+                  if (!ime.claimKey(e)) return
+                  e.preventDefault()
+                  const retryBtn = [listRetryRef.current, recentRetryRef.current]
+                    .find(btn => btn && !btn.disabled)
+                  if (retryBtn) { retryBtn.focus(); return }
+                  onOpenChange(false); btnRef?.current?.focus()
+                }
+                else if (e.key === 'Escape') {
                   // This input is a composable free-text path field. An Escape
                   // or Tab the IME owns is cancelling or cycling the candidate
                   // list, not leaving the picker — acting on it would close the
@@ -310,7 +442,8 @@ export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRec
                   // whole decline: native consumption per the latch contract,
                   // and the synthetic propagation stop React ancestors read.
                   if (!ime.claimKey(e)) return
-                  e.preventDefault(); onOpenChange(false); btnRef?.current?.focus()
+                  e.preventDefault()
+                  onOpenChange(false); btnRef?.current?.focus()
                 }
               }}
               className="flex-1 bg-bg-elevated border border-border rounded px-2 py-1.5 text-[13px] font-mono text-text placeholder:text-muted focus:outline-none focus-visible:border-accent"
@@ -318,7 +451,42 @@ export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRec
             <button disabled={!input.trim() && !browsePath} onMouseDown={e => { e.preventDefault(); select(input.trim() || browsePath) }} className="px-2 py-1 text-[11px] bg-accent/20 text-accent rounded hover:bg-accent/30 disabled:opacity-40 disabled:cursor-not-allowed shrink-0">{i18nT('components.projectPicker.select')}</button>
           </div>
           <div id="pp-browse-list" role="listbox" aria-label={i18nT('components.projectPicker.subdirectories')} className="overflow-y-auto flex-1 min-h-0">
-            {filteredBrowse.length === 0 && <div className="px-3 py-4 text-[12px] text-muted text-center">{i18nT('components.projectPicker.no_subdirectories')}</div>}
+            {/* No hand-off: the path typed into this picker's combobox is unsaved, so a
+                navigation would discard the partial path the user is mid-way through. */}
+            {listBusy && (
+              <div className="px-3 py-4 flex items-center gap-2">
+                <ErrorNotice variant="inline" message={i18nT(listError === 'timed_out'
+                  ? 'pages.chat.folderPanel.listing_timed_out'
+                  : 'pages.chat.folderPanel.unable_to_list_folder')} />
+                {listRecoverable && <Btn
+                  type="button"
+                  ref={listRetryRef}
+                  onMouseDown={e => e.preventDefault()}
+                  onClick={() => {
+                    setRetrying('listing')
+                    void retry().then(ok => {
+                      setRetrying(null)
+                      if (ok) inputRef.current?.focus()
+                      else refocusRetry.current = 'listing'
+                    })
+                  }}
+                  disabled={retrying === 'listing'}
+                  aria-busy={retrying === 'listing'}
+                  aria-label={`${i18nT('components.projectPicker.retry')}: `
+                    + i18nT(listError === 'timed_out'
+                      ? 'pages.chat.folderPanel.listing_timed_out'
+                      : 'pages.chat.folderPanel.unable_to_list_folder')}
+                  className={SMALL_BTN}
+                >
+                  <RefreshCw
+                    size={10}
+                    className={retrying === 'listing' ? 'animate-spin inline-block mr-1' : 'invisible inline-block mr-1'}
+                  />
+                  {i18nT('components.projectPicker.retry')}
+                </Btn>}
+              </div>
+            )}
+            {!listBusy && filteredBrowse.length === 0 && <div className="px-3 py-4 text-[12px] text-muted text-center">{i18nT('components.projectPicker.no_subdirectories')}</div>}
             {filteredBrowse.map((d, i) => (
               <button
                 key={d.path}

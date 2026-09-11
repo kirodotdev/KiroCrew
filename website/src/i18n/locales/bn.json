@@ -6192,7 +6192,20 @@
       "searching_enter_held": "খোঁজা হচ্ছে… — Enter এখনই বার্তা পাঠাবে না; Esc চাপুন, তারপর Enter বার্তা পাঠাবে",
       "type_2_chars_to_search_files_ctrl_enter_held": "ফাইল ও ফোল্ডার খুঁজতে 2+ অক্ষর টাইপ করুন… — Ctrl+Enter এখনই বার্তা পাঠাবে না; Esc চাপুন, তারপর Ctrl+Enter বার্তা পাঠাবে",
       "type_2_chars_to_search_files_enter_held": "ফাইল ও ফোল্ডার খুঁজতে 2+ অক্ষর টাইপ করুন… — Enter এখনই বার্তা পাঠাবে না; Esc চাপুন, তারপর Enter বার্তা পাঠাবে",
-      "search_failed": "ফাইল খোঁজা যায়নি। আবার চেষ্টা করুন।"
+      "search_failed_ctrl_enter_sends": "ফাইল অনুসন্ধান ব্যর্থ হয়েছে — Ctrl+Enter বার্তা পাঠাবে",
+      "search_timed_out_ctrl_enter_sends": "ফাইল অনুসন্ধানের সময় শেষ — Ctrl+Enter বার্তা পাঠাবে",
+      "search_failed_enter_sends": "ফাইল অনুসন্ধান ব্যর্থ হয়েছে — Enter বার্তা পাঠাবে",
+      "search_timed_out_enter_sends": "ফাইল অনুসন্ধানের সময় শেষ — Enter বার্তা পাঠাবে",
+      "stale_rows_notice": "{{cause}} — শেষ পড়া মানগুলি দেখানো হচ্ছে।",
+      "search_denied_enter_sends": "প্রজেক্ট ফোল্ডারে অ্যাক্সেস নেই — Enter বার্তা পাঠাবে",
+      "search_denied_ctrl_enter_sends": "প্রজেক্ট ফোল্ডারে অ্যাক্সেস নেই — Ctrl+Enter বার্তা পাঠাবে",
+      "search_root_missing_enter_sends": "প্রজেক্ট ফোল্ডার পাওয়া যায়নি — Enter বার্তা পাঠাবে",
+      "search_root_missing_ctrl_enter_sends": "প্রজেক্ট ফোল্ডার পাওয়া যায়নি — Ctrl+Enter বার্তা পাঠাবে",
+      "search_timed_out": "ফাইল অনুসন্ধানের সময় শেষ",
+      "search_failed": "ফাইল অনুসন্ধান ব্যর্থ হয়েছে",
+      "search_denied": "প্রজেক্ট ফোল্ডারে অ্যাক্সেস নেই",
+      "search_root_missing": "প্রজেক্ট ফোল্ডার পাওয়া যায়নি",
+      "retry": "আবার চেষ্টা করুন"
     },
     "fileRenderers": {
       "download": "ডাউনলোড",
@@ -6997,7 +7010,10 @@
       "search_recent_projects": "সাম্প্রতিক প্রকল্প খুঁজুন",
       "search_recent_projects_2": "সাম্প্রতিক প্রকল্প খুঁজুন…",
       "select": "নির্বাচন করুন",
-      "subdirectories": "সাবডিরেক্টরি"
+      "subdirectories": "সাবডিরেক্টরি",
+      "recent_unavailable": "সাম্প্রতিক প্রকল্প অনুপলব্ধ",
+      "retry": "আবার চেষ্টা করুন",
+      "loading_recent": "লোড হচ্ছে…"
     },
     "publicPublishAckModal": {
       "acknowledge_publish": "আমি বুঝেছি, প্রকাশ্যে প্রকাশ করুন",
@@ -7995,7 +8011,8 @@
       "project_directory_path": "প্রজেক্ট ডিরেক্টরির পাথ",
       "select": "নির্বাচন করুন",
       "workspace_name": "ওয়ার্কস্পেসের নাম",
-      "workspace_name_2": "workspace-name"
+      "workspace_name_2": "workspace-name",
+      "retry": "আবার চেষ্টা করুন"
     },
     "settingRef": {
       "envVarAriaLabel": "পরিবেশ পরিবর্তনশীল {{key}}",
@@ -9428,7 +9445,11 @@
         "search_files": "ফাইল খুঁজুন",
         "searching": "খোঁজা হচ্ছে…",
         "showing_first_matches": "প্রথম {{shown}}টি মিল দেখানো হচ্ছে",
-        "unable_to_list_folder": "ফোল্ডারের তালিকা করা যায়নি"
+        "unable_to_list_folder": "ফোল্ডারের তালিকা করা যায়নি",
+        "search_timed_out": "অনুসন্ধানের সময় শেষ",
+        "listing_timed_out": "ফোল্ডার তালিকার সময় শেষ",
+        "search_denied": "এই ফোল্ডারে অ্যাক্সেস নেই",
+        "search_root_missing": "ফোল্ডার পাওয়া যায়নি"
       },
       "knowledgePicker": {
         "cancel": "বাতিল",

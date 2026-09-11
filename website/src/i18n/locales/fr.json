@@ -6291,7 +6291,20 @@
       "searching_enter_held": "Recherche… — Enter n’envoie pas encore ; appuyez sur Esc, puis Enter envoie le message",
       "type_2_chars_to_search_files_ctrl_enter_held": "Saisissez 2 caractères ou plus pour rechercher des fichiers et dossiers… — Ctrl+Enter n’envoie pas encore ; appuyez sur Esc, puis Ctrl+Enter envoie le message",
       "type_2_chars_to_search_files_enter_held": "Saisissez 2 caractères ou plus pour rechercher des fichiers et dossiers… — Enter n’envoie pas encore ; appuyez sur Esc, puis Enter envoie le message",
-      "search_failed": "Impossible de rechercher les fichiers. Réessayez."
+      "search_failed_ctrl_enter_sends": "La recherche de fichiers a échoué — Ctrl+Enter envoie le message",
+      "search_timed_out_ctrl_enter_sends": "Délai de recherche de fichiers dépassé — Ctrl+Enter envoie le message",
+      "search_failed_enter_sends": "La recherche de fichiers a échoué — Enter envoie le message",
+      "search_timed_out_enter_sends": "Délai de recherche de fichiers dépassé — Enter envoie le message",
+      "stale_rows_notice": "{{cause}} — affichage des dernières valeurs lues.",
+      "search_denied_enter_sends": "Accès refusé au dossier du projet — Enter envoie le message",
+      "search_denied_ctrl_enter_sends": "Accès refusé au dossier du projet — Ctrl+Enter envoie le message",
+      "search_root_missing_enter_sends": "Dossier du projet introuvable — Enter envoie le message",
+      "search_root_missing_ctrl_enter_sends": "Dossier du projet introuvable — Ctrl+Enter envoie le message",
+      "search_timed_out": "Délai de recherche de fichiers dépassé",
+      "search_failed": "La recherche de fichiers a échoué",
+      "search_denied": "Accès refusé au dossier du projet",
+      "search_root_missing": "Dossier du projet introuvable",
+      "retry": "Réessayer"
     },
     "fileRenderers": {
       "download": "Télécharger",
@@ -7101,7 +7114,10 @@
       "search_recent_projects": "Rechercher dans les projets récents",
       "search_recent_projects_2": "Rechercher dans les projets récents…",
       "select": "Sélectionner",
-      "subdirectories": "Sous-dossiers"
+      "subdirectories": "Sous-dossiers",
+      "recent_unavailable": "Projets récents indisponibles",
+      "retry": "Réessayer",
+      "loading_recent": "Chargement…"
     },
     "publicPublishAckModal": {
       "acknowledge_publish": "J'ai compris, publier publiquement",
@@ -8108,7 +8124,8 @@
       "project_directory_path": "Chemin du répertoire du projet",
       "select": "Sélectionner",
       "workspace_name": "Nom de l'espace de travail",
-      "workspace_name_2": "workspace-name"
+      "workspace_name_2": "workspace-name",
+      "retry": "Réessayer"
     },
     "settingRef": {
       "envVarAriaLabel": "Variable d'environnement {{key}}",
@@ -9561,7 +9578,11 @@
         "search_files": "Rechercher des fichiers",
         "searching": "Recherche…",
         "showing_first_matches": "Affichage des {{shown}} premières correspondances",
-        "unable_to_list_folder": "Impossible de lister le dossier"
+        "unable_to_list_folder": "Impossible de lister le dossier",
+        "search_timed_out": "Délai de recherche dépassé",
+        "listing_timed_out": "Délai de listage du dossier dépassé",
+        "search_denied": "Accès refusé à ce dossier",
+        "search_root_missing": "Dossier introuvable"
       },
       "knowledgePicker": {
         "cancel": "Annuler",
