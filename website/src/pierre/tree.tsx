@@ -35,12 +35,15 @@ export function TreeSkeleton() {
   )
 }
 
-export function PierreWorkspaceTree({ projectDir, onFileOpen, onAddToContext, searchQuery, mode, selectedPath }: {
+export function PierreWorkspaceTree({ projectDir, onFileOpen, onAddToContext, onUploadRequest, searchQuery, mode, selectedPath }: {
   projectDir: string
   onFileOpen?: (absPath: string) => void
   /** Right-click "Add to context" on a row — forwards the ABSOLUTE path and
    *  whether it is a file or a directory to the host composer. */
   onAddToContext?: (absPath: string, kind: 'file' | 'dir') => void
+  /** Right-click "Upload files…" on a directory row — forwards the ABSOLUTE
+   *  directory path so the host can open the OS file picker for it. */
+  onUploadRequest?: (absDirPath: string) => void
   /** Forwarded into the tree's search session (null clears it). */
   searchQuery?: string | null
   /** 'all' (default) = full workspace; 'changed' = only working-tree changes. */
@@ -50,7 +53,7 @@ export function PierreWorkspaceTree({ projectDir, onFileOpen, onAddToContext, se
 }) {
   return (
     <Suspense fallback={<TreeSkeleton />}>
-      <TreeImpl key={mode ?? 'all'} projectDir={projectDir} onFileOpen={onFileOpen} onAddToContext={onAddToContext} searchQuery={searchQuery} mode={mode} selectedPath={selectedPath} />
+      <TreeImpl key={mode ?? 'all'} projectDir={projectDir} onFileOpen={onFileOpen} onAddToContext={onAddToContext} onUploadRequest={onUploadRequest} searchQuery={searchQuery} mode={mode} selectedPath={selectedPath} />
     </Suspense>
   )
 }

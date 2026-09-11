@@ -10003,11 +10003,17 @@
         "changed": "Modifiés",
         "close_search": "Fermer la recherche",
         "ctx_add_to_chat": "Ajouter à la conversation",
+        "ctx_upload_files": "Importer des fichiers…",
+        "drop_to_upload": "Déposez des fichiers ici pour les importer",
         "filter_placeholder": "Filtrer les fichiers…",
         "git_status_failed": "Impossible de lire l’état git",
+        "overwrite_action": "Remplacer",
+        "overwrite_body": "Un fichier nommé « {{name}} » existe déjà dans ce dossier. Voulez-vous le remplacer ?",
+        "overwrite_title": "Remplacer le fichier existant ?",
         "refresh": "Actualiser",
         "resize": "Redimensionner l'explorateur",
-        "tree_mode": "Mode liste de fichiers"
+        "tree_mode": "Mode liste de fichiers",
+        "upload_failed": "Impossible d'importer {{name}}"
       },
       "filesHome": {
         "no_project_dir": "Aucun répertoire de projet n'est défini pour cette discussion",

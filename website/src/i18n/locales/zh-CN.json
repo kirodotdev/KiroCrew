@@ -9717,11 +9717,17 @@
         "changed": "已更改",
         "close_search": "关闭搜索",
         "ctx_add_to_chat": "添加到聊天",
+        "ctx_upload_files": "上传文件…",
+        "drop_to_upload": "拖放文件到此处上传",
         "filter_placeholder": "筛选文件…",
         "git_status_failed": "无法读取 Git 状态",
+        "overwrite_action": "替换",
+        "overwrite_body": "此文件夹中已存在名为“{{name}}”的文件。要替换它吗？",
+        "overwrite_title": "替换现有文件？",
         "refresh": "刷新",
         "resize": "调整文件浏览器大小",
-        "tree_mode": "文件列表模式"
+        "tree_mode": "文件列表模式",
+        "upload_failed": "无法上传 {{name}}"
       },
       "filesHome": {
         "no_project_dir": "此聊天未设置项目目录",

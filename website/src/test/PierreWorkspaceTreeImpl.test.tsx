@@ -576,6 +576,107 @@ describe('PierreWorkspaceTreeImpl — row context menu', () => {
   })
 })
 
+describe('PierreWorkspaceTreeImpl — row context menu "Upload files…"', () => {
+  const openMenu = (item: MenuItem) => {
+    const close = vi.fn()
+    const context: MenuContext = {
+      anchorElement: document.createElement('div'),
+      anchorRect: document.createElement('div').getBoundingClientRect(),
+      close,
+      restoreFocus: vi.fn(),
+    }
+    const node = treeMock.fileTreeProps.at(-1)!.renderContextMenu!(item, context)
+    return { close, ...render(<>{node}</>) }
+  }
+
+  it('wires renderContextMenu when only onUploadRequest is present (no onAddToContext at all)', async () => {
+    const { update } = renderTree()
+    await waitForTree()
+    expect(treeMock.fileTreeProps.at(-1)!.renderContextMenu).toBeUndefined()
+
+    update({ onUploadRequest: vi.fn() })
+    expect(typeof treeMock.fileTreeProps.at(-1)!.renderContextMenu).toBe('function')
+  })
+
+  it('offers Upload files… on a directory row, wired to the absolute directory path', async () => {
+    const onUploadRequest = vi.fn()
+    renderTree({ onUploadRequest })
+    await waitForTree()
+
+    const { close } = openMenu({ kind: 'directory', name: 'a', path: 'src/a' })
+
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Upload files…' }))
+    expect(onUploadRequest).toHaveBeenCalledWith(`${ROOT}/src/a`)
+    expect(close).toHaveBeenCalledTimes(1)
+  })
+
+  it('never offers Upload files… on a file row, even when the handler is wired', async () => {
+    const onUploadRequest = vi.fn()
+    renderTree({ onUploadRequest })
+    await waitForTree()
+
+    openMenu({ kind: 'file', name: 'b.ts', path: 'src/a/b.ts' })
+
+    expect(screen.queryByRole('menuitem', { name: 'Upload files…' })).not.toBeInTheDocument()
+  })
+
+  it('renders nothing for a file row when only onUploadRequest is wired (no menu to open)', async () => {
+    const onUploadRequest = vi.fn()
+    renderTree({ onUploadRequest })
+    await waitForTree()
+
+    openMenu({ kind: 'file', name: 'b.ts', path: 'src/a/b.ts' })
+
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument()
+  })
+
+  it('offers both actions on a directory row, Add to chat first, activating independently', async () => {
+    const onAddToContext = vi.fn()
+    const onUploadRequest = vi.fn()
+    renderTree({ onAddToContext, onUploadRequest })
+    await waitForTree()
+
+    openMenu({ kind: 'directory', name: 'a', path: 'src/a' })
+
+    const items = screen.getAllByRole('menuitem')
+    expect(items.map(i => i.textContent)).toEqual(['Add to chat', 'Upload files…'])
+
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Upload files…' }))
+    expect(onUploadRequest).toHaveBeenCalledWith(`${ROOT}/src/a`)
+    expect(onAddToContext).not.toHaveBeenCalled()
+  })
+
+  it('focuses Add to chat first when both actions are present on a directory row', async () => {
+    renderTree({ onAddToContext: vi.fn(), onUploadRequest: vi.fn() })
+    await waitForTree()
+
+    openMenu({ kind: 'directory', name: 'a', path: 'src/a' })
+
+    expect(screen.getByRole('menuitem', { name: 'Add to chat' })).toHaveFocus()
+  })
+
+  it('focuses Upload files… when it is the only action on a directory row', async () => {
+    renderTree({ onUploadRequest: vi.fn() })
+    await waitForTree()
+
+    openMenu({ kind: 'directory', name: 'a', path: 'src/a' })
+
+    expect(screen.getByRole('menuitem', { name: 'Upload files…' })).toHaveFocus()
+  })
+
+  it('activates Upload files… from the keyboard', async () => {
+    const onUploadRequest = vi.fn()
+    renderTree({ onUploadRequest })
+    await waitForTree()
+
+    openMenu({ kind: 'directory', name: 'a', path: 'src/a' })
+    const menuitem = screen.getByRole('menuitem', { name: 'Upload files…' })
+
+    fireEvent.keyDown(menuitem, { key: 'Enter' })
+    expect(onUploadRequest).toHaveBeenCalledWith(`${ROOT}/src/a`)
+  })
+})
+
 describe('PierreWorkspaceTreeImpl — row context menu keyboard contract (#6231)', () => {
   // The DEGENERATE case of the shared `role="menu"` contract: this menu hosts
   // exactly ONE menuitem, so every focus-move assertion is vacuously true —

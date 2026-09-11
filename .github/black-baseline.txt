@@ -1,12 +1,11 @@
-# Files that are not black-clean yet. The gate requires every OTHER file to be
-# clean, so this list can only shrink.
 #
-# Do NOT add a path here to make a red gate green: a new offender means the file
-# needs `black --target-version py310 <path>`, not an exemption. The refresh
-# command below only deletes lines, so it cannot add one for you.
-#
-# Refresh (after formatting something listed here):
 #   python3 scripts/check_black_formatting.py --update-baseline
+# Do NOT add a path here to make a red gate green: a new offender means the file
+# Files that are not black-clean yet. The gate requires every OTHER file to be
+# Refresh (after formatting something listed here):
+# clean, so this list can only shrink.
+# command below only deletes lines, so it cannot add one for you.
+# needs `black --target-version py310 <path>`, not an exemption. The refresh
 src/kiro_crew/_process_group_supervisor.py
 src/kiro_crew/acp/kas_wire.py
 src/kiro_crew/acp/liveness.py

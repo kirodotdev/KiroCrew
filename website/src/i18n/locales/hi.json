@@ -9860,11 +9860,17 @@
         "changed": "बदली गई",
         "close_search": "खोज बंद करें",
         "ctx_add_to_chat": "चैट में जोड़ें",
+        "ctx_upload_files": "फ़ाइलें अपलोड करें…",
+        "drop_to_upload": "अपलोड करने के लिए फ़ाइलें यहां छोड़ें",
         "filter_placeholder": "फ़ाइलें फ़िल्टर करें…",
         "git_status_failed": "Git स्थिति पढ़ी नहीं जा सकी",
+        "overwrite_action": "बदलें",
+        "overwrite_body": "इस फ़ोल्डर में “{{name}}” नाम की फ़ाइल पहले से मौजूद है। इसे बदलें?",
+        "overwrite_title": "मौजूदा फ़ाइल बदलें?",
         "refresh": "रीफ़्रेश करें",
         "resize": "फ़ाइल ब्राउज़र का आकार बदलें",
-        "tree_mode": "फ़ाइल सूची मोड"
+        "tree_mode": "फ़ाइल सूची मोड",
+        "upload_failed": "{{name}} अपलोड नहीं हो सकी"
       },
       "filesHome": {
         "no_project_dir": "इस चैट के लिए कोई प्रोजेक्ट डायरेक्टरी सेट नहीं है",

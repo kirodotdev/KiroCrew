@@ -9717,11 +9717,17 @@
         "changed": "変更あり",
         "close_search": "検索を閉じる",
         "ctx_add_to_chat": "チャットに追加",
+        "ctx_upload_files": "ファイルをアップロード…",
+        "drop_to_upload": "アップロードするにはファイルをここにドロップしてください",
         "filter_placeholder": "ファイルを絞り込む…",
         "git_status_failed": "Git の状態を読み取れませんでした",
+        "overwrite_action": "置き換える",
+        "overwrite_body": "このフォルダーには「{{name}}」という名前のファイルが既に存在します。置き換えますか？",
+        "overwrite_title": "既存のファイルを置き換えますか？",
         "refresh": "更新",
         "resize": "ファイルブラウザーのサイズを変更",
-        "tree_mode": "ファイル一覧モード"
+        "tree_mode": "ファイル一覧モード",
+        "upload_failed": "{{name}} をアップロードできませんでした"
       },
       "filesHome": {
         "no_project_dir": "このチャットにはプロジェクトディレクトリが設定されていません",

@@ -152,6 +152,7 @@ from kiro_crew.dashboard.handlers.files import (  # noqa: E402, F401
     api_browse_files,
     api_channel_upload_file,
     api_dashboard_config,
+    api_directory_upload,
     api_file_diff,
     api_file_download,
     api_file_office_preview,

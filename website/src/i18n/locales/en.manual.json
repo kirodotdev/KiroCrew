@@ -3736,11 +3736,17 @@
         "changed": "Changed",
         "close_search": "Close search",
         "ctx_add_to_chat": "Add to chat",
+        "ctx_upload_files": "Upload files…",
+        "drop_to_upload": "Drop files here to upload",
         "filter_placeholder": "Filter files…",
         "git_status_failed": "Couldn't read the git status",
+        "overwrite_action": "Replace",
+        "overwrite_body": "A file named “{{name}}” already exists in this folder. Replace it?",
+        "overwrite_title": "Replace existing file?",
         "refresh": "Refresh",
         "resize": "Resize file browser",
-        "tree_mode": "File list mode"
+        "tree_mode": "File list mode",
+        "upload_failed": "Couldn't upload {{name}}"
       },
       "filesHome": {
         "no_project_dir": "No project directory is set for this chat",

@@ -10003,11 +10003,17 @@
         "changed": "Alterados",
         "close_search": "Fechar pesquisa",
         "ctx_add_to_chat": "Adicionar à conversa",
+        "ctx_upload_files": "Enviar arquivos…",
+        "drop_to_upload": "Solte os arquivos aqui para enviá-los",
         "filter_placeholder": "Filtrar arquivos…",
         "git_status_failed": "Não foi possível ler o status do git",
+        "overwrite_action": "Substituir",
+        "overwrite_body": "Já existe um arquivo chamado “{{name}}” nesta pasta. Substituir?",
+        "overwrite_title": "Substituir arquivo existente?",
         "refresh": "Atualizar",
         "resize": "Redimensionar o navegador de arquivos",
-        "tree_mode": "Modo de lista de arquivos"
+        "tree_mode": "Modo de lista de arquivos",
+        "upload_failed": "Não foi possível enviar {{name}}"
       },
       "filesHome": {
         "no_project_dir": "Nenhum diretório de projeto definido para este chat",

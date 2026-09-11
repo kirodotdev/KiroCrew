@@ -9717,11 +9717,17 @@
         "changed": "변경됨",
         "close_search": "검색 닫기",
         "ctx_add_to_chat": "채팅에 추가",
+        "ctx_upload_files": "파일 업로드…",
+        "drop_to_upload": "업로드하려면 파일을 여기로 끌어다 놓으세요",
         "filter_placeholder": "파일 필터링…",
         "git_status_failed": "Git 상태를 읽을 수 없습니다",
+        "overwrite_action": "바꾸기",
+        "overwrite_body": "이 폴더에 ‘{{name}}’이라는 파일이 이미 있습니다. 바꾸시겠습니까?",
+        "overwrite_title": "기존 파일을 바꾸시겠습니까?",
         "refresh": "새로 고침",
         "resize": "파일 브라우저 크기 조절",
-        "tree_mode": "파일 목록 모드"
+        "tree_mode": "파일 목록 모드",
+        "upload_failed": "{{name}} 업로드에 실패했습니다"
       },
       "filesHome": {
         "no_project_dir": "이 채팅에는 프로젝트 디렉터리가 설정되어 있지 않습니다",

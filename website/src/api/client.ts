@@ -3721,6 +3721,37 @@ export const api = {
     prepared.forEach((p, i) => { if (p.info && paths[i]) resizedByPath[paths[i]] = p.info })
     return { ...(body as { paths: string[]; error?: string }), resized, resizedByPath }
   },
+  /**
+   * Upload one OS file into an existing workspace directory (Files panel
+   * drag-and-drop / "Upload files…" row menu, issue #9666).
+   *
+   * Sibling of `uploadFiles` above: that one always lands in the fixed
+   * chat-attachment scratch directory; this one targets whatever directory
+   * the caller resolved (a drop target row, or the tree root). One request
+   * per file — the caller loops for multiple files — so a name collision can
+   * be resolved per file rather than for a whole batch at once. Returns a
+   * discriminated result rather than throwing, so a `name_collision` (409)
+   * reads as data the caller can act on (prompt to replace) instead of an
+   * exception to catch.
+   */
+  uploadToDirectory: async (
+    dir: string, file: File, opts?: { overwrite?: boolean },
+  ): Promise<
+    { ok: true; path: string; name: string } | { ok: false; status: number; code?: string; error: string }
+  > => {
+    const fd = new FormData()
+    fd.append('file', file)
+    const q = new URLSearchParams({ dir })
+    if (opts?.overwrite) q.set('overwrite', '1')
+    const res = await fetch(`/api/directory-upload?${q}`, { method: 'POST', body: fd })
+    checkSessionExpired(res)
+    let body: { path?: string; name?: string; error?: string; code?: string }
+    try { body = await res.json() } catch { body = {} }
+    if (!res.ok) {
+      return { ok: false, status: res.status, code: body.code, error: body.error || res.statusText }
+    }
+    return { ok: true, path: body.path ?? '', name: body.name ?? file.name }
+  },
   screenshot: () => post('/api/screenshot').then(j) as Promise<{ path: string }>,
   // Custom Themes
   themes: () => fetch('/api/themes').then(j),

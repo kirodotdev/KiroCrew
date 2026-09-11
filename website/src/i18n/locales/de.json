@@ -9860,11 +9860,17 @@
         "changed": "Geändert",
         "close_search": "Suche schließen",
         "ctx_add_to_chat": "Zum Chat hinzufügen",
+        "ctx_upload_files": "Dateien hochladen…",
+        "drop_to_upload": "Dateien hier ablegen, um sie hochzuladen",
         "filter_placeholder": "Dateien filtern…",
         "git_status_failed": "Git-Status konnte nicht gelesen werden",
+        "overwrite_action": "Ersetzen",
+        "overwrite_body": "Eine Datei mit dem Namen „{{name}}“ existiert bereits in diesem Ordner. Ersetzen?",
+        "overwrite_title": "Vorhandene Datei ersetzen?",
         "refresh": "Aktualisieren",
         "resize": "Dateibrowser-Größe ändern",
-        "tree_mode": "Dateilisten-Modus"
+        "tree_mode": "Dateilisten-Modus",
+        "upload_failed": "Hochladen von {{name}} fehlgeschlagen"
       },
       "filesHome": {
         "no_project_dir": "Für diesen Chat ist kein Projektverzeichnis festgelegt",

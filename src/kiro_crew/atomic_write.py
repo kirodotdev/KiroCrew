@@ -38,6 +38,24 @@ _XATTR_UNSUPPORTED_ERRNOS = frozenset(
     if e is not None
 )
 
+#: Errnos that mean "this filesystem does not support hard links" rather than
+#: a transient or permission failure.  FAT/exFAT report ``EPERM``, many
+#: SMB/CIFS mounts report ``ENOTSUP``/``EOPNOTSUPP``, and FUSE layers
+#: occasionally surface ``ENOSYS``.  The ``create_only`` publish falls back
+#: to :func:`platform_compat.rename_noreplace` when it hits one of these --
+#: still one atomic only-if-absent syscall, never a claim-then-replace
+#: two-step -- and FAILS outright where even that primitive is unavailable,
+#: rather than complete the publish with a rename that could silently
+#: replace a concurrent writer's own file.
+_LINK_UNSUPPORTED_ERRNOS = frozenset(
+    code
+    for code in (
+        getattr(errno, name, None)
+        for name in ("EPERM", "ENOTSUP", "EOPNOTSUPP", "ENOSYS", "EACCES")
+    )
+    if code is not None
+)
+
 #: Attributes an inode-replacing write reproduces on the replacement, and the
 #: ONLY ones -- losing any of these leaves the new file protected less than the
 #: one it replaced, which is what the carry exists to prevent.
@@ -838,6 +856,7 @@ def atomic_write(
     restrict_on_error: RestrictErrorPolicy = "raise",
     preserve_access_control_from: int | None = None,
     parent_dir_fd: int | None = None,
+    create_only: bool = False,
 ) -> None:
     """Write *content* to *path* atomically via unique temp file + rename.
 
@@ -934,6 +953,30 @@ def atomic_write(
     from *path*; only the directory it is resolved through is pinned. It is also
     REFUSED alongside *restrict_to_owner*, whose lockdown is applied to the staged
     file by name and so cannot address a descriptor-relative temp.
+
+    *create_only* publishes via ``os.link`` instead of a rename, so the publish
+    step ITSELF is the only-if-absent check: a rename would silently REPLACE
+    whatever is already at *path*, which is exactly the outcome a create-only
+    caller cannot allow two concurrent callers to race into (both see the name
+    as free, the second publish would otherwise destroy the first's file with
+    no evidence anything went wrong). ``os.link`` instead fails atomically with
+    ``FileExistsError`` the instant something else has already claimed the
+    name, which propagates to the caller exactly like any other publish
+    failure -- the temp is reclaimed and *path* is left exactly as the winning
+    writer left it. Where hard links are unsupported (FAT/exFAT, many SMB/CIFS
+    and FUSE mounts), the fallback is :func:`platform_compat.rename_noreplace`
+    -- still ONE atomic only-if-absent syscall, never a claim-then-replace
+    two-step, which would only narrow the race rather than remove it: a
+    claim proves the name was free at claim time, and a concurrent writer's
+    own publish landing in the window before the unconditional replace that
+    follows would be clobbered by it. Where even that primitive is
+    unavailable, this raises :class:`NotImplementedError` rather than
+    complete the publish with a rename that could silently destroy someone
+    else's file -- refusing is the safe direction when the only-if-absent
+    property cannot be confirmed. Mutually exclusive with
+    *preserve_access_control_from*: a fresh create has no existing inode to
+    carry access control from, so asking for both is a caller-confusion
+    error, not a request this can honour by picking one.
     """
     binary = isinstance(content, bytes)
     if binary and newline is not None:
@@ -972,6 +1015,18 @@ def atomic_write(
             "(pinned_parent_replace_supported() is False on this platform); pass "
             "None to take the by-name floor instead of an unpinned write"
         )
+    # create_only with parent_dir_fd when os.link is missing from
+    # os.supports_dir_fd: the primary publish path is descriptor-relative
+    # linkat, but the fallback (O_CREAT|O_EXCL claim + renameat) only needs
+    # open and rename -- capabilities that pinned_parent_replace_supported()
+    # already probes and the validation above already requires.  So a missing
+    # linkat degrades gracefully at publish time rather than refusing the call.
+    if create_only and preserve_access_control_from is not None:
+        # A create has no existing inode to carry access control FROM -- these
+        # two are the caller's own "which branch am I in" signal, and asking
+        # for both at once means the call site is confused about that, not
+        # that there is a sensible way to honour both.
+        raise ValueError("create_only has no existing file to preserve_access_control_from")
     # restrict_to_owner wins: fchmod must not widen the file back to the umask
     # default after the lockdown has been applied.
     effective_mode = 0o600 if restrict_to_owner else mode
@@ -1037,7 +1092,92 @@ def atomic_write(
         # cannot double-close if this close is itself what fails.
         fd, open_fd = -1, fd
         os.close(open_fd)
-        if pin is None:
+        if create_only:
+            # os.link, not rename: a link fails atomically with FileExistsError
+            # when *path* already names something, where a rename would just as
+            # atomically REPLACE it -- the one behavior a create-only caller
+            # must never get. This is what actually closes a same-name race
+            # between two concurrent creates: classifying "nothing here yet"
+            # ahead of time and then publishing unconditionally leaves a window
+            # where both callers saw nothing and the second publish silently
+            # destroys the first's file. Making the publish ITSELF the
+            # exists-check removes that window -- exactly one linker can ever
+            # win the name, and the loser's FileExistsError propagates to the
+            # `except BaseException` below, which reclaims the temp the same
+            # way any other publish failure does.
+            #
+            # Fallback: FAT/exFAT, SMB/CIFS, and some FUSE mounts reject
+            # os.link outright with EPERM/ENOTSUP/EOPNOTSUPP. When that
+            # happens, fall back to an O_CREAT|O_EXCL claim on the
+            # destination name: EXCL gives the same atomic only-if-absent
+            # semantics (exactly one creator wins; the loser gets
+            # FileExistsError), then a rename publishes the full payload.
+            # The claim-fd is closed and unlinked whether the rename
+            # succeeds or not, so no descriptor leaks.
+            try:
+                if pin is None:
+                    os.link(tmp, path)
+                    os.unlink(tmp)
+                else:
+                    os.link(os.path.basename(tmp), path.name, src_dir_fd=pin, dst_dir_fd=pin)
+                    os.unlink(os.path.basename(tmp), dir_fd=pin)
+            except OSError as link_err:
+                if link_err.errno not in _LINK_UNSUPPORTED_ERRNOS:
+                    raise
+                # Hard links unavailable. This does NOT fall back to an
+                # O_CREAT|O_EXCL "claim" followed by a separate replacing
+                # rename/replace_with_retry -- that two-step reopens exactly
+                # the race create_only exists to close: the claim only
+                # proves the name was free at CLAIM time, and a concurrent
+                # writer whose own publish lands in the window between the
+                # claim and the unconditional replace that follows it gets
+                # silently clobbered by that replace, with nothing to say a
+                # second file was ever there. The claim narrows the window;
+                # it does not remove it.
+                #
+                # The one remaining option that removes the window rather
+                # than narrowing it is platform_compat.rename_noreplace
+                # (renameat2/RENAME_NOREPLACE on Linux, renameatx_np/
+                # RENAME_EXCL on macOS): ONE syscall that is ITSELF the
+                # exists-check, exactly like os.link above, just without
+                # needing a link. Where that primitive is also unavailable
+                # (pre-5.3 kernels, glibc < 2.28, Windows, and the same
+                # network/FUSE mounts that already refused the link), this
+                # FAILS rather than fall back further -- an unconditional
+                # replace here would be exactly the silent-overwrite hazard
+                # this whole branch exists to avoid, so "cannot confirm the
+                # name is free" has to mean refuse, not proceed anyway.
+                _own_parent_fd: int | None = None
+                _publish_dir_fd = pin
+                try:
+                    if _publish_dir_fd is None:
+                        if not hasattr(os, "O_DIRECTORY"):
+                            raise NotImplementedError(
+                                "create_only: hard links are unsupported on this "
+                                "filesystem and this platform has no directory "
+                                "descriptor to publish a no-replace rename "
+                                "through -- refusing rather than risk a silent "
+                                "overwrite"
+                            ) from link_err
+                        _own_parent_fd = os.open(str(path.parent), os.O_DIRECTORY)
+                        _publish_dir_fd = _own_parent_fd
+                    if not platform_compat.RENAME_NOREPLACE_AVAILABLE:
+                        raise NotImplementedError(
+                            "create_only: hard links are unsupported on this "
+                            "filesystem and no atomic no-replace rename is "
+                            "available on this platform either -- refusing "
+                            "rather than risk a silent overwrite"
+                        ) from link_err
+                    platform_compat.rename_noreplace(
+                        os.path.basename(tmp),
+                        path.name,
+                        src_dir_fd=_publish_dir_fd,
+                        dst_dir_fd=_publish_dir_fd,
+                    )
+                finally:
+                    if _own_parent_fd is not None:
+                        os.close(_own_parent_fd)
+        elif pin is None:
             replace_with_retry(tmp, path)
         else:
             # renameat, both ends relative to the pinned parent: neither the temp

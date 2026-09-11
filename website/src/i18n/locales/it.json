@@ -10003,11 +10003,17 @@
         "changed": "Modificati",
         "close_search": "Chiudi ricerca",
         "ctx_add_to_chat": "Aggiungi alla chat",
+        "ctx_upload_files": "Carica file…",
+        "drop_to_upload": "Rilascia qui i file per caricarli",
         "filter_placeholder": "Filtra file…",
         "git_status_failed": "Impossibile leggere lo stato di git",
+        "overwrite_action": "Sostituisci",
+        "overwrite_body": "Un file denominato «{{name}}» esiste già in questa cartella. Sostituirlo?",
+        "overwrite_title": "Sostituire il file esistente?",
         "refresh": "Aggiorna",
         "resize": "Ridimensiona il browser dei file",
-        "tree_mode": "Modalità elenco file"
+        "tree_mode": "Modalità elenco file",
+        "upload_failed": "Impossibile caricare {{name}}"
       },
       "filesHome": {
         "no_project_dir": "Nessuna directory di progetto impostata per questa chat",
