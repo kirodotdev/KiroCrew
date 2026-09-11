@@ -1,22 +1,23 @@
 ---
 title: A2A Remote Subagents — remote agents as first-class subagents over A2A
-status: in-progress
+status: draft
 author: jonmcox-aws
 created: 2026-09-11
 last-audited: 2026-09-11
 audited-at: 707b8aef2
-doc-pr: TBD
-implementation-prs: []
+doc-pr: 10162
+implementation-prs: [10171]
 tracking-issues: [10161]
 supersedes: []
 superseded-by: []
 ---
 # RFC: A2A Remote Subagents
 
-- Status: in-progress. A reference implementation exists on a branch against
-  `efb9fc4ba` (public core 0.7.0): 10 commits, 11 files, +1,155/−4, 15 tests.
-  Nothing is on main. The branch is evidence for this proposal, not a request
-  to merge it as-is.
+- Status: draft. A reference implementation is open as
+  [#10171](https://github.com/kirodotdev/KiroCrew/pull/10171) alongside this
+  document. Nothing is on main. The PR is evidence for this proposal, not a
+  request to merge it before this RFC is accepted; its security section is
+  being revised against that implementation (see Open questions).
 - Author: jonmcox-aws
 - Related: [rfc-resumable-subagent-sessions.md](rfc-resumable-subagent-sessions.md)
   (continuable conversations are the substrate this builds on),
@@ -28,7 +29,7 @@ superseded-by: []
 
 Let a session's primary agent delegate to a **remote agent** as an ordinary
 subagent. The remote agent speaks [A2A](https://a2a-protocol.org) (Agent2Agent
-v1.0); KiroCrew consumes it through a new `A2AProvider` plugged into the same
+v1.0); Kiro Crew consumes it through a new `A2AProvider` plugged into the same
 provider-creation seam every subagent run already passes through. Remote agents
 live in their own registry (`a2a_agents` in config) and **membership in that
 registry is the whole semantics**: spawnable via `spawn_run` /
@@ -39,6 +40,13 @@ The user-visible change is small: a name in `a2a_agents` appears on the
 subagent board like any local worker, streams, completes, and can be continued
 days later. The one visible difference is that live mid-turn interrupt returns
 the existing typed `steer_unsupported`.
+
+A remote agent is an operator-configured **trust boundary**, not another local
+process: only the redacted task text and a fixed delegation preamble cross it
+(never memory, lessons, steering, the skills index or the system prompt), and
+off-box delegation is a distinct, policy-deniable capability
+(`capabilities.remote_spawn`) under the admin ceiling. *Security
+considerations* states the boundary against the implementation.
 
 ## Motivation
 
@@ -63,7 +71,7 @@ the existing typed `steer_unsupported`.
   `subagent.py::_validate_agent` (refuses names not in `list_agents()`), the
   `visible_agent_names` roster hint, the provider factory, and the
   session-sharing / lifecycle decisions in `run.py` made before a provider
-  exists. None of them has an app hook. **This cannot be a KiroCrew app.**
+  exists. None of them has an app hook. **This cannot be a Kiro Crew app.**
 - `agent.provider` is fixed to `acp` and
   [oss-fork-boundaries](../system-specs/oss-fork-boundaries.md) lists "Other
   providers" under *Never re-add*.
@@ -74,11 +82,11 @@ the existing typed `steer_unsupported`.
    (skills, runbooks, memory), every user must pull it locally. The fleet of
    local copies drifts; the engineer paged at 2am runs last month's playbook.
 2. **No team-level agent.** A centrally operated agent — one deployment, one
-   memory, one place to measure quality — has no way into a KiroCrew session.
-   Users leave KiroCrew for that agent's own UI, or rebuild locally.
+   memory, one place to measure quality — has no way into a Kiro Crew session.
+   Users leave Kiro Crew for that agent's own UI, or rebuild locally.
 3. **Standard exists, unused.** A2A is the open protocol for agent-to-agent
    delegation (Linux Foundation; server support in Amazon Bedrock AgentCore
-   Runtime since Nov 2025; 150+ organizations). KiroCrew has no client.
+   Runtime since Nov 2025; 150+ organizations). Kiro Crew has no client.
 
 ### Why not an MCP wrapper
 
@@ -87,7 +95,7 @@ the call is synchronous inside a tool turn, it does not stream to the board,
 it is not a conversation the user can continue, it cannot be batched with
 local workers in one `spawn_run`, and it is invisible to the subagent
 lifecycle (tombstones, TTL, `spawn_status`). The point is that a remote agent
-is a *teammate*, and teammates in KiroCrew are subagents.
+is a *teammate*, and teammates in Kiro Crew are subagents.
 
 ## Goals
 
@@ -115,7 +123,7 @@ is a *teammate*, and teammates in KiroCrew are subagents.
   best-effort *request*, and is used only on the reap/timeout path.
 - Push notifications (`capabilities.pushNotifications`). Streaming covers the
   need; polling `GetTask` is the fallback for a card without streaming.
-- An A2A **server** in KiroCrew (exposing KiroCrew's own agents to others).
+- An A2A **server** in Kiro Crew (exposing Kiro Crew's own agents to others).
   Interesting, separate RFC.
 - Any UI beyond what the board already renders for a subagent.
 
@@ -128,9 +136,9 @@ cannot receive new messages. Continuation happens at the *conversation*
 level: the server groups related tasks under a shared `contextId`, and a
 follow-up is a **new task in that context** carrying `referenceTaskIds`.
 
-KiroCrew therefore maps:
+Kiro Crew therefore maps:
 
-| KiroCrew | A2A |
+| Kiro Crew | A2A |
 |---|---|
 | subagent conversation (the thing `spawn_continue` targets) | `contextId` |
 | one turn of that conversation | one task (`taskId`) |
@@ -141,7 +149,7 @@ KiroCrew therefore maps:
 The provider keeps two pieces of state: `context_id` (durable, persisted to
 the run's `state.json` after the first turn) and the current `task_id`
 (in-flight turn; the `referenceTaskIds` anchor for the next). Task boundaries
-are invisible to the user. KiroCrew's existing one-in-flight-turn-per-
+are invisible to the user. Kiro Crew's existing one-in-flight-turn-per-
 conversation serialization is exactly the client-side discipline the A2A spec
 asks for.
 
@@ -151,22 +159,28 @@ asks for.
 "a2a_agents": [
   { "name": "investigator",
     "agent_card_url": "https://<host>/.well-known/agent-card.json",
-    "auth": { "type": "bearer", "token_env": "INVESTIGATOR_TOKEN" } }
+    "auth": { "scheme": "bearer", "token_env": "INVESTIGATOR_TOKEN" } }
 ]
 ```
 
-- Loader (`config/sections.py`, `config/loader.py`) validates the shape and
-  refuses a name that collides with a local agent. On collision the subagent
-  path fails closed.
+- Loader (`config/sections.py`, `config/loader.py`) validates the shape.
+  `auth` is a typed object (`A2aAuthConfig`): `scheme` is `none` or `bearer`,
+  and `token_env` NAMES the environment variable holding the credential — the
+  credential value is never in config. Only the object spelling is accepted.
+- A name that also names a local agent is refused **at spawn time**, with the
+  typed code `agent_name_collision`, in `_validate_agent` — the one place the
+  local roster is in hand. The subagent path fails closed; nothing is refused
+  at config load.
 - Membership is the semantics. There is no `kind` and no `role`: every local
   agent can be primary or subagent; every remote agent can only be a
   subagent. The primary picker reads `~/.kiro/agents/` only, so remote agents
   are structurally absent from it without any filtering code.
-- `auth.type` is resolved through the provider registry
-  (`current_context().providers`). Core ships `none` and `bearer`; an
-  edition registers its own schemes through the same seam the public core
-  already exposes for edition-supplied providers, so nothing
-  organisation-specific enters core.
+- `auth.scheme` resolves through a scheme table in the SDK driver
+  (`agent_sdk/drivers/a2a.py`), outside the ACP layer. Core ships `none` and
+  `bearer`; an edition registers its own schemes (SigV4, an SSO token) against
+  that table, so nothing organisation-specific enters core. Whether that table
+  should instead hang off the platform-context seam (`current_context()`) is
+  open question 6.
 
 ### `A2AProvider` (`providers/a2a.py`)
 
@@ -177,9 +191,11 @@ including `contextId` + `referenceTaskIds` when continuing; consume SSE:
 
 - first `Task` frame → adopt `taskId` and (on first turn) `contextId`;
 - `TaskArtifactUpdateEvent` → `EVENT_TEXT_CHUNK` per delta;
-- terminal `TaskStatusUpdateEvent` → `EVENT_COMPLETE`. A `FAILED` state
-  surfaces the server's status message as a final text chunk so the parent
-  sees why.
+- terminal `TaskStatusUpdateEvent` in `COMPLETED` → `EVENT_COMPLETE`. A
+  `FAILED` or `REJECTED` terminal state, a JSON-RPC error, or an
+  `AUTH_REQUIRED` state **raises** `A2AStreamError` carrying the server's
+  status message, so the run is recorded as failed with the remote's reason
+  and its partial output — never as a success (see *Failure discipline*).
 
 **Failure discipline.** A stream that raises mid-turn, or ends without a
 terminal state, **raises `A2AStreamError`** (structural `transient=False`, so
@@ -196,15 +212,21 @@ unmeasurable worker (`None`).
 
 ### Seams touched in core
 
+Sizes are added lines on the reference branch at `bd9e83aac`.
+
 | # | File | Change | Size |
 |---|---|---|---|
-| 1 | `config/sections.py`, `config/loader.py` | `a2a_agents` section, accessors, collision validation | ~90 |
-| 2 | `providers/a2a.py` | `A2AProvider`, `A2AStreamError`, SSE mapping | ~400 |
-| 3 | `subagent_manager/run.py` | branch at the provider seam; exclude from session sharing; re-persist adopted `contextId` post-turn; stash provider on `info` for steer | ~110 |
-| 4 | `subagent.py::_validate_agent` + roster hint | union remote names (subagent context only) | ~75 |
-| 5 | `subagent_manager/continuation.py` | rebuild provider from stored label + `contextId`; inherit recorded agent when caller passes none; resolve direct providers on steer and return `steer_unsupported` | ~25 |
-| 6 | `mcp_tools/spawn.py`, `acp/types.py` | provider label routing, `PROVIDER_LABEL_A2A` | ~30 |
-| 7 | `test/test_a2a_provider.py` | 15 tests: SSE mapping, collision, validate-agent union, sharing exclusion, truncation raises, mid-stream error non-transient | ~360 |
+| 1 | `config/sections.py`, `config/loader.py` | `a2a_agents` section, `A2aAuthConfig`, accessors, `validate_a2a_collisions` | ~160 |
+| 2 | `providers/a2a.py`, `providers/base.py` | `A2AProvider`, `A2AStreamError`, SSE mapping, origin pin, TLS-only credentials, card security-requirement check, cancel; `provider_label` on the ABC | ~640 |
+| 3 | `agent_sdk/drivers/a2a.py` | scheme table (`none`, `bearer`), `register_auth_scheme`, provider construction | ~140 |
+| 4 | `subagent.py` | `_a2a_agent_entry`, `_validate_agent(remote=)` with collision refusal, `_vet_spawn_governance(remote=)` remote gate, `build_remote_task_message` (the egress boundary), roster union | ~200 |
+| 5 | `subagent_manager/admission.py` | classify local-vs-remote **once** and stash the entry on the run record; both gates consume that decision | ~20 |
+| 6 | `subagent_manager/run.py`, `terminal.py` | branch on the stashed entry at the provider seam; remote message builder instead of `build_message`; exclude from session sharing; persist `contextId` post-turn and on every release; CancelTask + shutdown on stop/reap | ~220 |
+| 7 | `subagent_manager/continuation.py` | rebuild provider from stored label + `contextId`; inherit recorded agent; `steer_unsupported` for direct providers | ~25 |
+| 8 | `platform/governance.py` | `capabilities.remote_spawn` catalog row (opt-in, `agents` ruleset) | ~15 |
+| 9 | `mcp_tools/spawn.py`, `acp/types.py` | provider label routing, `PROVIDER_LABEL_A2A` | ~30 |
+| 10 | `testing/fake_a2a_server.py`, `testing/fake_acp_backend.py` | loopback A2A fixture (fault switches, `--require-bearer-env`); opt-in delegation directives in the fake ACP backend | ~650 |
+| 11 | tests | `test_a2a_provider.py` (43), `test_fake_a2a_server.py` (15), `test_fake_acp_delegation.py` (15), `TestRemoteSpawnGate` (7), headless E2E (2) | ~1,650 |
 
 Placement decision: the branch is at the `get_or_create` **call site** in
 `run.py`, keeping the ACP provider factory pure. The alternative (branch in
@@ -237,34 +259,145 @@ one-paragraph companion change and I will include it.
 
 ### Security considerations
 
-- The agent card URL is operator configuration, not user input; it is read
-  from `config.json` like any other endpoint. Cards are fetched over HTTPS
-  and never followed to a third host.
-- Credentials never enter core: `auth.type` resolves through the edition
-  seam; core's `none`/bearer schemes read tokens from config, never from the
-  prompt or the remote agent.
-- The remote agent runs under its own approvals and identity. KiroCrew does
-  not forward tool-permission prompts to it and does not grant it any local
-  capability. Prompt text and task output are the only data crossing the
-  wire, which is the same boundary as any subagent's transcript.
-- Contexts are bound to the authenticated principal on the *server*; whether
-  a deployment forwards per-user identity or calls as one gateway principal
-  is an auth-scheme decision, made in the edition adapter.
+A remote agent is an **operator-configured trust boundary**, not another local
+process. A local subagent runs on the same host, under the same user, inside the
+same sandbox and approval flow as the primary agent; a remote agent runs under
+someone else's identity on someone else's infrastructure, and everything sent
+to it is gone. Forwarding task text there is therefore not equivalent to a
+model-provider request, and this section states exactly what crosses that
+boundary, what does not, and how an enterprise forbids or scopes it. Every
+claim below names the code that enforces it in #10171.
+
+**What leaves the host.** The message a remote agent receives is built by
+`subagent.build_remote_task_message`, never by `ContextBuilder.build_message`:
+
+- **Sent:** the task text, redacted for credentials and exfiltration URLs
+  (`security.redact_credentials`, `redact_exfiltration_urls`), plus a short
+  fixed delegation preamble, as a single A2A text part. On a post-cancel
+  resume, the same one-line interruption notice a local worker gets.
+- **Not sent:** the system prompt, memory (preferences, projects, history,
+  semantic and episodic recall), lessons, project steering, the skills index,
+  session context, tool schemas. The `include_memory` / `include_lessons` /
+  `include_project` spawn flags do not apply to a remote run and there is no
+  opt-in: the local sub-agent envelope stays local. Widening this (for example
+  letting an operator share selected memory with a trusted remote) is a
+  separate RFC, deliberately — it is a two-way door that this one does not
+  open.
+- **Inbound:** only text parts of artifacts and status messages are rendered;
+  file and data parts are ignored, and no URL carried in a response is ever
+  dereferenced. The result is subject to the same inbound redaction and memory
+  ingestion as any subagent result.
+
+**Governance: remote spawn is its own, deniable capability.** Off-box
+delegation sits under the admin ceiling as a distinct catalog row,
+`capabilities.remote_spawn` (`platform/governance.py::SCOPE_CATALOG`), opt-in
+like the other external-side-effect rows (`publish`, `messaging`) and carrying
+its own `agents` ruleset over registry entries. The layering is:
+
+- `capabilities.spawn` off → no sub-agents at all, local or remote;
+- `capabilities.remote_spawn` named in a POLICY without `enabled: true`, or
+  `enabled: false` → local sub-agents work, every remote spawn is refused with
+  a reason that names the agent and the capability;
+- `remote_spawn.scopes.agents` → only the listed registry entries may be
+  targeted.
+
+Both gates run at the spawn chokepoint (`subagent._vet_spawn_governance`). The
+local-vs-remote classification is made **once**, at admission
+(`admission.spawn_impl` → `_a2a_agent_entry`), and that single resolution is
+what the governance vet, the collision refusal and the run path's branch all
+consume — the entry travels on the run record. `config.json` is
+agent-writable and a spawn can wait in the approval prompt between admission
+and run, so re-reading the registry at each step would let an `a2a_agents`
+entry written in that window re-route a spawn vetted as local off-box.
+Continuations go through the same admission and inherit the same rule.
+`TestRemoteSpawnGate` pins deny-remote-while-allowing-local, opt-in-when-named,
+the agents scope, and that the gate judges the admitted decision.
+
+**Authentication and transport.** The client authenticates the way the A2A
+reference clients do (spec §7.3): the Agent Card declares the server's
+`securitySchemes` and `securityRequirements`, the credential is obtained
+out-of-band, and the client sends it per scheme. HTTP bearer, OAuth2 and OIDC
+all resolve to one `Authorization: Bearer` header, which is what `bearer`
+sends — on the card fetch and on every message — and is the mode AgentCore
+Runtime exposes for JWT-authenticated A2A servers. The provider then:
+
+- refuses to start when the card requires a scheme this client is not
+  configured for — an unauthenticated "try anyway" request is never sent, so a
+  `none` entry against an authenticated card fails at spawn time with a
+  reason, not later with a 401;
+- sends credentials only over TLS: with any scheme other than `none`, an
+  `agent_card_url` that is not `https://` refuses to start before any socket
+  is opened (`http://` to a loopback host is the one exception, for the test
+  fixture);
+- pins the message endpoint named in the card to the card URL's origin
+  (scheme, host, port) and refuses redirects on every request, so an
+  operator-configured host cannot hand the conversation — or the header — to a
+  third host;
+- reads the credential from the named environment variable per request, so a
+  rotated value is picked up and the value is never stored in config or on the
+  provider;
+- never answers `TASK_STATE_AUTH_REQUIRED`: a remote agent asking this client
+  for a credential mid-task ends the run as failed.
+
+Identity granularity — per-user tokens versus one gateway principal — is a
+scheme decision made where the scheme is registered, not in core.
+
+**What A2A allows that this design does not use.** The protocol is wider than
+prompt-in / artifact-out in both directions, and each unused channel is a
+deliberate exclusion rather than an omission: file and data parts (both
+directions), protocol extensions, push-notification webhooks (a remote would
+otherwise be handed a URL to call back on), and credential fulfilment for
+`AUTH_REQUIRED`. Adding any of them is a change to this section.
+
+**Run lifecycle.** A user stop or a reap issues `CancelTask` before closing the
+connection, so the remote does not keep working on a task nobody is reading. A
+failed or dropped stream is recorded as a failed run with the remote's reason
+and partial output — never as a silent success — and the conversation handle
+is persisted on every terminal path so a failed turn stays resumable rather
+than being reported gone. The wall-clock timeout is the bound on a remote run;
+the turn budget counts permission events, which a remote never emits.
+
+**Residual risks, stated plainly.**
+
+- The remote agent sees the task text. An operator who registers a remote is
+  trusting it with whatever users delegate to it, redaction notwithstanding.
+- Conversation memory across `spawn_continue` is the *server's* policy (the
+  spec says a server MAY retain context); this client reports `resume_failed`
+  when the card no longer resolves, but cannot detect a server that silently
+  forgot.
+- `config.json` being agent-writable means the registry is as trustworthy as
+  the host's own config; the governance ceiling, not the registry, is the
+  control an enterprise relies on.
+- Bearer-via-environment is the public core's only credential source; an
+  environment that leaks to sub-processes leaks the token. A `command`-style
+  credential provider is a candidate for a later change.
 
 ## Testing
 
 Three layers, matching what the repo already runs.
 
-**Unit tests** (`test/test_a2a_provider.py`, 15 on the branch): SSE event mapping,
-registry collision, `_validate_agent` union, session-sharing exclusion, truncated
-stream raises, mid-stream connection error is non-transient.
+**Unit tests** (`test/test_a2a_provider.py`, 43 on the branch): SSE event
+mapping, registry accessors and round-trip, `_validate_agent` union and the
+admitted-decision contract, session-sharing exclusion, `contextId` persistence
+on every terminal path, truncated / failed / `AUTH_REQUIRED` streams raise,
+cancel spelling, egress boundary (origin pin, scheme downgrade, no redirects,
+task-text-only message, outbound redaction), auth schemes (bearer from env,
+rotation, unset or unknown refused, card-requirement checks) and credential
+transport (TLS-only, loopback exemption, session closed on a failed start).
+`TestRemoteSpawnGate` (7, in `test_governance_chokepoints.py`) pins the
+governance layering.
 
 **Test-mode fixture.** `kiro_crew.testing` gains `fake_a2a_server`, the A2A twin
-of `fake_acp_backend`: a loopback a2a-sdk server with a card, streaming, per-
-`contextId` state retention, and fault switches (`--drop-mid-stream`, `--never-
-terminal`). `kirocrew gateway --test-mode --seed rich` registers it as
-`a2a_agents[0]` under the name `remote-demo`, so every lane below runs with no
-network and no credentials.
+of `fake_acp_backend`: a loopback A2A server with a card, streaming, per-
+`contextId` state retention, fault modes triggered by directives in the task
+text (`[[SLOW]]`, `[[DROP]]`, `[[NEVER_TERMINAL]]`, `[[FAIL]]`, `[[ERROR]]`),
+and a `--require-bearer-env NAME` switch that makes every request need
+`Authorization: Bearer <value of NAME>`. `test/test_fake_a2a_server.py`
+(15) runs the **real `A2AProvider`** against it, including bearer on the wire:
+admitted with the right credential, 401 on the card fetch without it, a wrong
+credential never retried unauthenticated. `kirocrew gateway --test-mode --seed
+rich` registers the fixture as `a2a_agents[0]` under the name `remote-demo`, so
+every lane below runs with no network and no credentials.
 
 **Agentic "real user" scenarios** (`test/gui_user/scenarios/`, per
 [`docs/build/gui-user-test.md`](../build/gui-user-test.md)). Adds one feature slug
@@ -273,17 +406,17 @@ user stories:
 
 | Scenario | `user_story` |
 |---|---|
-| `subagents-remote-spawn` (smoke) | As a user, I want to ask my agent something that it delegates to a remote agent, so that I see the remote worker stream and finish on the subagent board exactly like a local one. |
-| `subagents-remote-continue` (smoke) | As a user, I want to continue a finished remote subagent conversation and have it remember what we discussed, so that a long investigation can be picked up later without re-explaining. |
-| `subagents-remote-not-primary` (smoke) | As a user, I want the primary-agent picker to offer only local agents, so that I cannot accidentally run a whole session on a remote worker. |
-| `subagents-remote-steer` (nightly) | As a user, I want to send a follow-up to a running remote subagent and be told plainly when live interrupt is not available, so that I know which steering works. |
+| `subagents-remote-spawn` (nightly) | As a user, I want to ask my agent something that it delegates to a remote agent, so that I see the remote worker stream and finish on the subagent board exactly like a local one. |
+| `subagents-remote-continue` (nightly) | As a user, I want to continue a finished remote subagent conversation and have it remember what we discussed, so that a long investigation can be picked up later without re-explaining. |
+| `subagents-remote-not-primary` (nightly) | As a user, I want the agent picker for my chat to offer only local agents, so that I cannot accidentally run a whole session on a remote worker that is meant to be delegated to. |
+| `subagents-remote-steer` (nightly) | As a user, I want to send a follow-up to a running remote subagent and be told plainly when live interrupt is not available, so that I know which kinds of steering work with a remote agent. |
 | `subagents-remote-mixed-batch` (nightly) | As a user, I want one request to fan out to a local and a remote worker at once, so that I get both results in a single completion without choosing a backend. |
 | `subagents-remote-connection-lost` (nightly) | As a user, I want a remote subagent whose connection drops to show as failed with the output it managed to produce, so that I never mistake a dead worker for a finished one. |
 
 Steps are written as briefings to a human tester, not click paths (the board's
 labels are mid-transition), and expectations are true/false facts on the final
-screen. The `connection-lost` scenario uses the fixture's `--drop-mid-stream`
-switch, which is the CI form of the shim-kill test that found bugs #4 and #5.
+screen. The `connection-lost` scenario uses the fixture's `[[DROP]]`
+directive, which is the CI form of the shim-kill test that found bugs #4 and #5.
 
 ## Migration plan
 
@@ -294,26 +427,35 @@ per phase: the implementation is offered as **one PR** alongside this document
 maintainers prefer smaller units.
 
 - **Phase 0 — RFC (this document).** Direction decision; agree the
-  registry-membership-is-semantics rule and the call-site placement.
-- **Phase 1 — Registry + gates.** `a2a_agents` section, collision validation,
-  `_validate_agent` and roster union. Behaviour change: none until a remote
-  agent is configured.
-- **Phase 2 — `A2AProvider` + branch.** Provider, `run.py` branch, session-
-  sharing exclusion, contextId persistence, failure discipline, unit tests, and
-  the `fake_a2a_server` test-mode fixture. `spawn_run` of a remote agent works
-  end to end.
+  registry-membership-is-semantics rule, the trust boundary in *Security
+  considerations*, and the call-site placement.
+- **Phase 1 — Registry + gates.** `a2a_agents` section with the typed `auth`
+  object, spawn-time collision refusal, `_validate_agent` and roster union, the
+  `capabilities.remote_spawn` catalog row and its gate, single admission-time
+  classification. Behaviour change: none until a remote agent is configured.
+- **Phase 2 — `A2AProvider` + branch.** Provider (origin pin, TLS-only
+  credentials, card security-requirement check, cancel), `run.py` branch,
+  `build_remote_task_message` as the egress boundary, session-sharing
+  exclusion, `contextId` persistence on every terminal path, failure
+  discipline, teardown, unit tests, and the `fake_a2a_server` fixture.
+  `spawn_run` of a remote agent works end to end.
 - **Phase 3 — Continuation + steer.** `continuation.py` changes; `spawn_continue`
   and both steer modes behave as specified.
-- **Phase 4 — Agentic scenarios + docs.** The `subagents` feature slug and the six
+- **Phase 4 — Agentic scenarios + docs.** The `subagents` feature slug, the six
   `test/gui_user` scenarios above (first real run lands on the nightly after
-  merge, per #9578); `docs/system-specs/modules/subagent.md` and
-  `providers.md` gain the remote-agent contract; `subagents.md` gains the user
-  section; a note in `oss-fork-boundaries.md` if maintainers want one.
+  merge, per #9578), the headless E2E, and
+  `docs/system-specs/modules/a2a-subagents.md` as the module contract, with the
+  `governance.md` chokepoint row; a note in `oss-fork-boundaries.md` if
+  maintainers want one.
 
-The reference branch already carries Phases 1–3 (minus the `fake_a2a_server`
-fixture) as commits in this order, so a split, if requested, is a rebase rather
-than a rewrite. Phase 4 lands after the design is accepted, since the scenarios
-and docs describe the agreed behaviour.
+The reference branch (#10171) carries all four phases as one squashed commit, so
+a split, if requested, is a rebase rather than a rewrite. Deferred to later,
+separate changes, each its own RFC or issue: sharing selected memory or lessons
+with a trusted remote (a widening of the boundary in *Security
+considerations*); a `command`-style credential provider for rotating tokens;
+the per-request session header some hosted A2A runtimes require; and
+surfacing `TASK_STATE_WORKING` as activity so the idle-stall badge does not fire
+on a silent remote.
 
 ## Evidence
 
@@ -342,13 +484,35 @@ unable to resolve a directly-constructed provider (perpetual
 (first fix reported through `EVENT_COMPLETE`, which is billing-only). The
 last one is why *Failure discipline* above is specified as a raise.
 
+The deterministic `fake_a2a_server` fixture then found two more on its first
+run — both invisible to the kiro-cli shim because the shim happened to stream
+its output as status messages and never cancelled: artifact text (the
+protocol's actual result channel) was accumulated and reported only on the
+billing-only completion event, so a spec-following server produced an empty
+success; and `TASK_STATE_CANCELED` (the v1.0 spelling the reference SDK
+emits) was not recognised as terminal, so a real cancel read as a lost
+connection. Seven defects in total, none reachable by unit tests written from
+the implementation's own assumptions — which is the argument for the fixture
+and the agentic scenarios being part of the change rather than a follow-up.
+
 ## Open questions
 
 1. Should `oss-fork-boundaries.md` gain an explicit "remote A2A agents,
-   subagent-only" clause, or is the RFC itself the record?
+   subagent-only" clause, or is the RFC itself the record? The Design Review
+   suggested making the clause part of acceptance; I am happy to include the
+   one-paragraph companion change in #10171 if maintainers want it there.
 2. Should the roster hint show remote agents with a marker (e.g. `investigator
    (remote)`) so the primary agent can prefer local workers for
    filesystem-adjacent tasks?
 3. Card caching: per run (current) vs a short TTL shared across runs.
-4. Where a `FAILED` terminal state should surface: as a final text chunk (current)
-   vs a distinct error tombstone cause.
+4. *Resolved in #10171:* a `FAILED` or `REJECTED` terminal state raises, so the
+   run is recorded as failed with the remote's reason and partial output rather
+   than completing with an error chunk.
+5. *Resolved in #10171 and folded into Security considerations:* the trust
+   boundary, what egresses, and `capabilities.remote_spawn` as a distinct,
+   policy-deniable capability with single admission-time classification.
+6. Where the edition auth-scheme extension point should live: the SDK driver's
+   scheme table (`agent_sdk/drivers/a2a.py::register_auth_scheme`, current) or
+   the platform-context seam (`current_context()`), which is the repo's
+   documented mechanism for edition-supplied providers. Either is a small
+   mechanical move; the public core ships the same two schemes regardless.
