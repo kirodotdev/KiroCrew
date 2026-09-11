@@ -1,10 +1,10 @@
 """Malformed-entry preservation across the sibling JSON stores in state.py.
 
-Regression coverage for #5792: ``load_*`` drops rows the active list cannot
+The ``load_*`` functions drop rows the active list cannot
 use but must keep them verbatim in an ``_unparsed_*`` list so the next
 ``save_*`` round-trips them back to disk, rather than the previous behaviour
 where a dropped row's bytes were erased on the next write. Mirrors the
-cron-folder contract landed in #5768 across ``chat_pins``, ``tags`` and
+cron-folder contract shared across ``chat_pins``, ``tags`` and
 ``tag_boards`` — the ``tags`` case is the worst because its save runs DURING
 load (seed / back-fill), so a hand-edited typo was wiped at boot with no user
 action.
@@ -320,7 +320,7 @@ class TestTagBoardsPreservation:
 
 
 # --------------------------------------------------------------------------- #
-# Shared helpers (#6326) — the partition/append mechanics all four stores share
+# Shared helpers — the partition/append mechanics all four stores share
 # --------------------------------------------------------------------------- #
 class TestPartitionPreserving:
     """Direct coverage of the extracted ``_partition_preserving`` helper.

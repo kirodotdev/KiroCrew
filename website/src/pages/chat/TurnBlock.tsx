@@ -118,28 +118,29 @@ const isKeepVisible = (it: TurnItem) =>
   it.kind === 'single' && isConclusion(it) && hasKeepVisibleMarker(it.msg.content)
 
 /**
- * A crew-mode answer: a forwarded topic result, a meta render, or a question
- * back to the user. Crew Mode breaks this component's central assumption —
- * that the LAST assistant message of a turn is the conclusion and the earlier
- * ones are reasoning. There, each forward is the FINAL answer for a different
- * topic, so collapsing all but the last hides answers the user asked for.
- * Keyed on the persisted marker class rather than the live-only `kind`, so it
- * still holds after a reload.
+ * READ-ONLY COMPAT for transcripts written by the retired Crew Mode: a
+ * forwarded topic result, a meta render, or a question back to the user. That
+ * mode broke this component's central assumption — that the LAST assistant
+ * message of a turn is the conclusion and the earlier ones are reasoning —
+ * because each forward was the FINAL answer for a different topic, so
+ * collapsing all but the last hides answers the user asked for. Nothing writes
+ * these rows any more (the dispatcher is gone), but the sessions it wrote are
+ * still the user's record, so the persisted marker keeps rendering them open.
+ * Keyed on the persisted `meta.crew_reply` (the durable signal — the periodic
+ * slot flush keeps `meta` for every role but `cls` only for role === 'system'),
+ * with the older `crew-reply` class as a fallback for rows written before the
+ * marker moved.
  */
 const isCrewReply = (it: TurnItem) =>
   it.kind === 'single' && isConclusion(it) &&
-  // `meta.crew_reply` is the durable signal: the periodic slot flush keeps `meta`
-  // for every role but keeps `cls` only for role === 'system', so a class-only
-  // marker was dropped on the main persistence path. The class check stays as a
-  // fallback for rows written before the marker moved, and for the live frame.
   (it.msg.meta?.crew_reply === true || /(^|\s)crew-reply(\s|$)/.test(it.msg.cls || ''))
 
 /** A renderable assistant message (widget/image), a mid-turn hand-back
- *  ([OPTIONS:] marker), a keep-visible-marked deliverable (#7948), a crew-mode
- *  answer, a role that must surface inline (mcp_oauth, error), a workflow_run /
- *  spawn_run / workflow-completion / sub-agent-completion card, or an MCP
- *  App-bearing tool call (interactive iframe anchored to the row). All
- *  bypass the collapse pane. */
+ *  ([OPTIONS:] marker), a keep-visible-marked deliverable (#7948), a legacy
+ *  crew-mode answer, a role that must surface inline (mcp_oauth, error), a
+ *  workflow_run / spawn_run / workflow-completion / sub-agent-completion card,
+ *  or an MCP App-bearing tool call (interactive iframe anchored to the row).
+ *  All bypass the collapse pane. */
 const isVisibleInline = (it: TurnItem, appToolCallIds: ReadonlySet<string>) =>
   isRenderable(it) || isHandBack(it) || isKeepVisible(it) || isAlwaysVisible(it) || isCrewReply(it) ||
   isWorkflowRunItem(it) || isSpawnRunItem(it) ||
@@ -433,7 +434,17 @@ function TurnBlock({ turn, renderItem, collapseAll = false, appToolCallIds = EMP
   }
 
   // Default: only collapse tool calls
-  const toolCount = items.filter(it => isTool(it, appToolCallIds)).length
+  //
+  // The toggle's count is DISTINCT calls, not tool ROWS: a stopped or
+  // auto-approved call produces TWO rows (the visible 🔧 request pill plus a
+  // hidden ✅/🚫 completion), and counting rows told the reader "2 tool calls"
+  // for one call, right above a group pill counting calls. Counting the
+  // VISIBLE request rows — `isHiddenTool` is the classifier the neighboring
+  // countCollapsedSteps already applies — gives one count per call on modern
+  // and legacy (id-less) transcripts alike, because every call has exactly
+  // one 🔧 row. The FOLD is unchanged — every tool row still collapses; only
+  // the claim about how many calls it hides moved.
+  const toolCount = items.filter(it => isTool(it, appToolCallIds) && !isHiddenTool(it)).length
   if (!turn.complete || toolCount === 0) {
     return <>{items.map((it, i) => renderItem(it, i))}</>
   }

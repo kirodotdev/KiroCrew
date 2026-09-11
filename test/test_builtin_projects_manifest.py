@@ -1,9 +1,9 @@
 """Task Runner ("projects") ships as a file-based builtin manifest.
 
-Task Runner used to be a hardcoded ``_BUILTIN_APPS`` entry while every other
-builtin owned an ``apps/builtins/<name>/app.json``. These tests pin the move:
+Task Runner owns an ``apps/builtins/<name>/app.json`` like every other builtin,
+not a hardcoded ``_BUILTIN_APPS`` entry. These tests pin:
 the manifest must exist, be discovered, keep the identity/App-Store presentation
-the hardcoded entry had, and no longer be duplicated in the Python list.
+a hardcoded entry provides, and not be duplicated in the Python list.
 """
 from __future__ import annotations
 

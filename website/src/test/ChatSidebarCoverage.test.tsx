@@ -593,6 +593,24 @@ describe('ChatSidebar — Older Sessions pane', () => {
     expect(screen.queryByText('Fresh history')).toBeNull()
   })
 
+  it('carries the main session search into Older Sessions and keeps following it', async () => {
+    renderSidebar({ history: HISTORY })
+    const sessionSearch = screen.getByPlaceholderText('Search sessions…')
+
+    fireEvent.change(sessionSearch, { target: { value: 'Week' } })
+    openHistory()
+
+    const historySearch = screen.getByPlaceholderText('Search older sessions…')
+    expect(historySearch).toHaveValue('Week')
+    expect(screen.getByText('Week history')).toBeTruthy()
+    expect(screen.queryByText('Fresh history')).toBeNull()
+
+    fireEvent.change(screen.getByPlaceholderText('Search sessions…'), { target: { value: 'Fresh' } })
+    await waitFor(() => expect(screen.getByPlaceholderText('Search older sessions…')).toHaveValue('Fresh'))
+    expect(screen.getByText('Fresh history')).toBeTruthy()
+    expect(screen.queryByText('Week history')).toBeNull()
+  })
+
   it('groups backend search results by folder and collapses a group', async () => {
     mocks.sessionsSearch.mockResolvedValue({
       sessions: [

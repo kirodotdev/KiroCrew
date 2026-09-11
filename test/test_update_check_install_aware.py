@@ -85,7 +85,7 @@ def _wheel_install(monkeypatch, tmp_path):
     """Default every test in this module to a WHEEL install on the insider lane.
 
     A git checkout is opt-in per test (``_git_install``), because the interesting
-    new behaviour is the layout that used to be skipped entirely.
+    layout is the one skipped entirely without that checkout.
     """
     monkeypatch.delenv("KIROCREW_PROJECT_DIR", raising=False)
     monkeypatch.delenv("KIROCREW_CDN_BASE", raising=False)
@@ -221,7 +221,7 @@ class TestWheelInstallCheck:
         `derive_capability` composes the installer command from the channel at
         DERIVATION time; the feed check reads the channel again to build the URL. A
         switch (the endpoint, or `cli.sh` writing the file directly) landing between
-        the two used to publish the new lane's name beside the OLD lane's command —
+        the two can publish the new lane's name beside the OLD lane's command —
         and the command is the half the user acts on, so copy-pasting it would move
         the install straight back.
         """
@@ -1088,7 +1088,7 @@ class TestCheckIsRateLimitedEvenOnFailure:
     def test_overlapping_checks_are_single_flight(self, monkeypatch):
         # /api/status fires this as a background task on every poll until the
         # interval clock is stamped, and the clock is only stamped when a check
-        # FINISHES — so concurrent polls used to stack one CDN fetch each, every
+        # FINISHES — so concurrent polls would stack one CDN fetch each, every
         # one holding a session for the full timeout.
         calls = {"n": 0}
 

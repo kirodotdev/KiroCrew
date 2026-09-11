@@ -402,7 +402,9 @@ Probes run from `POST /api/mcp/probe`:
   debugging a server that was fine. `server.error` therefore leads with the
   machine-readable `mcp_probe_sandbox_unavailable:` prefix (mirroring the `code`
   field on dashboard JSON error bodies), states that the server itself may be fine,
-  and names the `agent.sandbox_allow_unsandboxed_exec` remedy. Because the cause is
+  and names the `agent.sandbox_allow_unsandboxed_exec` remedy (on Windows this
+  refusal means the key is declared `false` or a governance floor is pinned, since
+  the platform default permits the spawn). Because the cause is
   the HOST, it recurs identically for every server on every discovery cycle, so the
   remedy paragraph warns once per server name
   (`_warn_probe_sandbox_unavailable_once`) and demotes repeats to DEBUG.
@@ -665,6 +667,27 @@ CLI commands and their MCP twins:
 | `kirocrew learn remove` | `learn_remove` | `kirocrew-core` |
 | `kirocrew run TASK.md` | `task_run` | `kirocrew-core` |
 | `kirocrew computer apps` | `computer_list_apps` | `kirocrew-computer` |
+| `kirocrew knowledge dedup` | `knowledge_dedup` | `kirocrew-core` |
+| `kirocrew knowledge stats` | `knowledge_list_sources` | `kirocrew-core` |
+
+The last row is the one place a twin does not share its command's name, and it is
+a placement decision rather than an oversight. A tool in `kirocrew-core` costs
+context in every request of every session for as long as the session lives, so a
+fifth knowledge tool would be advertised forever to answer a question
+`knowledge_list_sources` was already 90% of: it opens the same store, over the
+same active-items rule, to serve the same "what is in this library" purpose. The
+aggregate is a strict superset of what its own query already computed, so it
+lands as a leading totals line on that tool instead, and the CLI verb and the
+tool render ONE `aggregate_stats()` call.
+
+The rule the MCP-first section states is that the model must get a structured
+tool rather than a bash-shaped CLI command — the model has one. Two conditions
+have to hold for that reading to be honest, and both are checked in
+`test_knowledge_stats.py`: the tool must actually surface the numbers (its
+descriptor advertises them, so deferral still selects it), and the capability
+must not be one an agent should be granted SEPARATELY, which would make it a
+`kirocrew-dashboard`-shaped opt-in server instead. It is not: anyone who may list
+sources already reads this data from that store, so the counts add no reach.
 
 `kirocrew-core` tools with no CLI twin, grouped by concern (authoritative list:
 `kiro_crew.mcp_tools.build_tool_list()`, which is what `mcp_core._list_tools`
@@ -673,9 +696,14 @@ answers `tools/list` from):
 - **Subagents:** `spawn_status`, `spawn_continue`, `spawn_steer`,
   `spawn_release`, `spawn_sub_agents`, `wait`
 - **Messaging and notification:** `send_message`, `send_notification`,
-  `delete_message`, `file_send`, `read_slack_profile`. `send_message` is the
-  agent's only proactive egress, and it names its destination rather than
-  inferring one: `session="slack"` / `channel` / `user` / `thread_ts` are the
+  `delete_message`, `update_message`, `file_send`, `read_slack_profile`.
+  `send_message` is the agent's only proactive egress to a NEW destination —
+  `update_message` rewrites a Slack message the bot itself already posted, on the
+  same gate ladder (strict identity, channel-agent containment,
+  `capabilities.messaging` and the `channels` scope for `"slack"`), because an
+  edit publishes new text to an audience rather than retracting what it has.
+  `send_message` names its destination rather than inferring one:
+  `session="slack"` / `channel` / `user` / `thread_ts` are the
   Slack fields, and `channel_type` is the non-Slack one — the transport of the
   conversation the calling session already belongs to. Exactly one of the two
   families may appear per call. The routing ladder and the fail-closed contract
@@ -696,6 +724,21 @@ answers `tools/list` from):
   `ask_question`, `suggest_followup`, `monitor_start`, `monitor_watch`,
   `monitor_update`, `monitor_stop`, `autonudge_stop`, `set_project`,
   `reset_conversation`
+- **Memory recall (V1 and V2):** `memory_recall` resolves authenticated session identity
+  once through `require_strict_session_key` and passes that same identity to the gateway.
+  Missing identity returns the shared gate's refusal and installation diagnosis.
+  It accepts a task query,
+  never a store selector. The gateway resolves the caller's bound V1 or private V2 memory
+  and returns bounded context with evidence; unavailable identity or memory
+  refuses the call. Evidence contains selected snippets and stable references,
+  not full source rows. A shared final serializer enforces the 3,000-character
+  context limit and 16 KiB memory-result budget after redaction, including
+  nested JSON escaping and TextContent overhead with a 1 KiB reserve for normal
+  RPC framing/IDs. Arbitrarily large caller-supplied IDs are outside that bound.
+  Prompt construction does not perform embedding search;
+  the tool is called when earlier facts or experiences are needed. Owner-selected copying is a dashboard action, not an MCP
+  capability. The full contract is in
+  [memory](../system-specs/modules/memory-skills-hooks.md#member-memory-experience-and-lifecycle).
 - **Structured monitor read:** `monitor_inspect` (strict authenticated session
   identity only; no ancestor fallback)
 - **Crew routing:** `select_crew`
@@ -707,9 +750,10 @@ answers `tools/list` from):
   `artifact_folder_rename`, `artifact_folder_move`, `artifact_folder_delete`,
   `artifact_get_comments`, `artifact_post_comment`, `artifact_reply_comment`,
   `artifact_delete_comment`, `artifact_mark_review`, `deploy_artifact`
-- **Knowledge and skills:** `local_knowledge_search`, `knowledge_dedup`,
-  `knowledge_list_sources`, `skill_discover`, `skill_search`, `skill_fetch`,
-  `browse_outline`, `browse_search`
+- **Knowledge and skills:** `local_knowledge_search`, `knowledge_add_document`,
+  `skill_discover`, `skill_search`, `skill_fetch`,
+  `browse_outline`, `browse_search`. (`knowledge_dedup` and
+  `knowledge_list_sources` have CLI twins — see the table above.)
 - **Workflows and hooks:** `workflow_author`, `workflow_list`,
   `workflow_cancel`, `workflow_rerun_subtree`, `register_hook`
 - **Diagnostics:** `resource_status`, `issue_radar_record_investigation`,
@@ -729,6 +773,14 @@ answers `tools/list` from):
   component this repo does not pin, a source whose text carries serialized frames
   is REFUSED whole and visibly, so a kiro-cli that starts logging payloads
   surfaces as a refusal instead of a silent widening
+
+  Once private memory boundaries exist, `kiro_cli_logs` requires a strict caller
+  identity whose canonical memory scope is Global V1 before opening these shared
+  host logs. Private, missing, invalid, or unreadable identities receive a stable
+  refusal and a `denied_memory_scope` audit attempt; audit failure cannot permit
+  a read. Redaction does not establish which member owns ordinary log prose.
+  Pure V1 installations retain the existing diagnostics contract, and this MCP
+  admission guard does not change user-requested diagnostic bundles.
 - **App bridges (credentialed):** `ops_mission_control_api` — the MCP server
   process holds the gateway's internal secret and forwards only a frozen
   (method, path) allowlist of Ops Mission Control routes; the agent never
@@ -958,6 +1010,24 @@ model launder one per-call gate decision into many, so do NOT add
 
 ## MCP tools MUST be stateless
 
+Private member runtimes keep the data home read-only even when MCP backend
+sharing is disabled. The direct `kirocrew-cron` server uses the private runtime
+marker only to select `POST /api/crons/tools`; it never falls back to opening
+`crons.json` or `.crons.lock` in the sandbox. The endpoint requires authenticated
+internal transport, verified process or delegated-proof identity matching the
+session header, and agreement between the protected process store and the
+session's validated private member binding. A marker, shared secret or session
+header alone grants no member authority.
+
+The host runs the same argument validation, cron ownership, governance and
+deterministic-job checks as the regular MCP tool dispatcher, in a worker with a
+request-scoped `CallerContext` that is restored even on failure. Private agent
+jobs remain usable through add/list/update/pause/resume/remove; private command
+and script jobs retain their explicit refusal. Transport failures never trigger
+a file-write fallback or an automatic mutation retry; an uncertain response asks
+the caller to inspect `cron_list` before retrying. Global V1 direct runtimes retain
+their existing local cron dispatch.
+
 **A new `kirocrew-core` or `kirocrew-cron` tool MUST NOT keep per-caller or
 per-session state in the MCP-server process. Resolve the caller's identity on
 every call and keep authoritative state in the gateway.**
@@ -992,6 +1062,51 @@ parent's tree. `mcp_core.py` offers two resolvers:
   the wrong conversation.
 - `_resolve_session_key()` (lenient, still walks ancestors) is only for read-only
   and telemetry callers where misattribution is harmless.
+
+`register_hook` also resolves through `require_strict_session_key`. Legacy
+Global hooks can still be registered without a conversation; private hooks
+require the gateway-authenticated caller and its protected member binding before
+any private identity is written to the hook session.
+
+Private Memory V2 requires **member authority**, independent of the shared
+internal secret or a claimed session header. Private ACP clients use direct MCP
+servers inside the member sandbox. They discard the shared broker overlay and
+socket before creating or resuming sessions, so reload and tool mirroring cannot
+restore pooled stubs. The sandbox withholds shared broker endpoints and their
+aliases. An older broker must not act as a host proxy for a private member.
+Global V1 retains its existing pooled MCP path.
+
+For calls that reach the current broker, gatewayd captures the accepted
+stub socket's kernel peer PID after a positive owner check, then offloads
+`issue_member_session_proof` immediately before each `tools/call` and `tools/list`. The issuer
+checks the protected published runtime binding and actual process ancestry;
+the Register payload's `ancestor_pids` never grants this authority. Gatewayd
+strips the client's caller block and injects a fresh optional `memberMemoryProof`
+inside its own caller metadata. `CallerContext.member_memory_proof` is omitted
+from diagnostic representations and never populated from environment fallback.
+The shared MCP server forwards only the current invocation's proof in
+`X-Member-Session-Proof`, including the managed-tool policy lookup. A listing
+received while another tool runs uses the listing's own caller and proof.
+Signed proof protocol version 2 remains valid for the originating process
+incarnation, so long `wait` and `spawn` calls retain their own callback authority.
+Every use revalidates the signature, live PID/start identity, protected session
+and store, durable session binding, and current Linux user/mount namespaces or
+macOS inherited sandbox state. An unavailable check refuses authorization.
+Legacy proof protocol version 1 keeps its original 60-second expiry. These are
+transport protocol versions, independent of Memory V1 and Memory V2.
+No proof is cached on a connection or replayed with backend recovery.
+Before forwarding either tool method, gatewayd also
+resolves the protected peer when the caller block is absent: a missing or forged
+session, corrupt binding, or failed proof for a protected runtime refuses that
+invocation outright. Omitting the proof must never downgrade the member into a
+global V1 caller inside the shared backend. Only a genuinely absent protected
+binding retains the legacy unowned V1 behavior.
+For an unpooled MCP process, `CallerContext.from_env()` likewise resolves the
+readonly protected ancestry before any cached legacy identity or environment
+value. It does not cache private results, so rekeys remain visible. A corrupt
+protected record returns an unresolved identity without trying legacy sidecars.
+The caller, recaller and backend-forwarding suites pin forgery removal,
+offloaded per-call issuance and concurrent caller isolation.
 
 An unresolved key is not automatically a refusal. `mcp_computer.py` forwards a
 namespace-only key (`unresolved:<shim pid>`, plus the gateway's per-connection

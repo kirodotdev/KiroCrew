@@ -149,14 +149,13 @@ def save_weixin_account(home: str, *, account_id: str, token: str, base_url: str
     applies :func:`platform_compat.restrict_to_owner` to the temp file BEFORE any
     content byte reaches it — a bare ``chmod(0o600)`` is a no-op against Windows
     ACLs, and locking down only after the write left the token readable under the
-    directory's inherited DACL for the whole write window (issue #5285).
+    directory's inherited DACL for the whole write window.
     ``restrict_on_error="warn"`` keeps this site's existing policy: a lockdown
     failure must not cost the credential write, but it must be visible. That
     policy covers the lockdown only — the linked-parent refusal implied by
     ``restrict_to_owner=True`` raises unconditionally, which is the right
     behavior for a credential writer: a pre-planted link under
-    ``<home>/weixin/accounts`` (a directory this code creates) is hostile
-    (#4381).
+    ``<home>/weixin/accounts`` (a directory this code creates) is hostile.
     """
     path = _account_dir(home) / f"{account_id}.json"
     payload = {

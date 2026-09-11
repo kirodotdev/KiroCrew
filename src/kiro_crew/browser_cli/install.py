@@ -682,7 +682,7 @@ def _step(
     if ok and failure_signal is not None and failure_signal(f"{err}\n{out}"):
         ok = False
     # Redact BEFORE truncating: a credential straddling the truncation
-    # boundary no longer matches its regex (e.g. the trailing ``@`` in a
+    # boundary does not match its regex (e.g. the trailing ``@`` in a
     # ``://user:pass@host`` URL is past the cap), so truncating first can
     # leak partial secrets. The npm-specific patterns use bounded
     # repetition (``{0,40}``) and the shared credential regex is a fixed

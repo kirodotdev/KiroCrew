@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Wire-level fake for messaging-channel vendor APIs.
 
-Channel tests have historically faked the *client* (``FakeClient`` standing in
-for ``WeixinClient`` / ``WeComClient`` / ...), which means the client's own
-payload construction, header/signature building, and protocol-error parsing are
-never exercised by the turn tests -- exactly the layer where the iLink QR bug
-lived (``qrcode_img_content`` is a scannable URL, not image bytes; fixtures were
-green while production was broken).
+Channel tests that fake the *client* (``FakeClient`` standing in for
+``WeixinClient`` / ``WeComClient`` / ...) never exercise the client's own
+payload construction, header/signature building, and protocol-error parsing --
+exactly the layer where the iLink QR bug lives (``qrcode_img_content`` is a
+scannable URL, not image bytes; a client-level fake stays green while production
+is broken).
 
 This module fakes ONE level down: the ``aiohttp`` session. Everything above the
 socket runs for real -- client, transport, dispatcher, the shared

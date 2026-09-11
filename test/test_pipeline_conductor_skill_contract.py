@@ -125,7 +125,7 @@ class TestAgentPromptNamesEveryScript:
 
 
 class TestClaimPreflightIsDocumented:
-    """Dispatch step 3 used to restate a coverage predicate in prose. Prose
+    """Dispatch step 3 must not restate a coverage predicate in prose. Prose
     cannot be tested, which is how it stayed blind to merged PRs, to prose
     self-claims, and to code that does not exist on the base yet."""
 
@@ -179,7 +179,7 @@ class TestClaimPreflightIsDocumented:
         assert "never treat this as permission" in preflight
 
     def test_a_prose_closure_request_requires_author_authorization(self):
-        """Anyone can comment on a public item. The verdict no longer writes --
+        """Anyone can comment on a public item. The verdict does not write --
         it is REVIEW, not CLOSE -- but it still withholds the item from dispatch,
         so without an authorization condition an untrusted commenter could park
         live work by typing one sentence."""

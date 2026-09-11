@@ -607,9 +607,9 @@ class TestFileWatch:
 
     @pytest.mark.asyncio
     async def test_symlink_swapped_after_validation_aborts_stream(self, tmp_path, mock_sel):
-        """The watcher re-resolves the path on every change and bails if the
-        realpath moved, so a post-validation symlink swap cannot be used to
-        stream a different file's contents."""
+        """The watcher re-resolves the path on every change and bails when the
+        realpath moves, so a post-validation symlink swap cannot stream a
+        different file's contents."""
         f = tmp_path / "swapped.md"
         f.write_text("content\n", encoding="utf-8", newline="\n")
         target = str(f)
@@ -1255,12 +1255,21 @@ class TestDashboardConfigPut:
             assert resp.status == 400
             assert "verbosity" in (await resp.json())["error"]
 
+            resp = await client.put(
+                "/api/dashboard/config", json={"default_memory_mode": "forgetful"}
+            )
+            assert resp.status == 400
+            body = await resp.json()
+            assert "default_memory_mode" in body["error"]
+            assert body["code"] == "invalid_default_memory_mode"
+
     @pytest.mark.asyncio
     async def test_full_valid_put_round_trips_through_get(self, config_client_app):
         payload = {
             "restore_sessions": True,
             "restore_window_minutes": 30,
             "merge_queued_messages": True,
+            "default_memory_mode": "temporary",
             "widget_density": "less",
             "verbosity": "ultra",
             "quick_send": True,

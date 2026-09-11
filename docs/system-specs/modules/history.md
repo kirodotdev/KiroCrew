@@ -4,6 +4,37 @@
 
 Persistent conversation history with provenance tracking and LLM-driven consolidation. Conversations survive session expiry and gateway restarts.
 
+Consolidation resolves its destination through the same strict recorded memory
+binding as interactive turns, before starting an extraction provider. A named
+member store must be declared, readable and prepared; malformed or unavailable
+identity aborts the pass without writing to Global Memory V1. Sessions with no
+memory binding retain the V1 consolidation path.
+
+Owned V2 consolidation never publishes or refines shared auto-skills and does
+not run the global skill lifecycle. Member experience remains in that member's
+store; the existing V1 auto-skill behavior is unchanged.
+
+The extraction pass freezes its original transcript and rechecks it after the
+model returns, before writing memory. A generation change, edit/deletion or new
+user turn leaves that pass pending; an appended assistant acknowledgment can
+remain for the next pass. Revision checks additionally prevent a stale proposal
+from overwriting a newer fact. V2 preference/project Markdown is read-only to
+the consolidator even when the global legacy migration flag is false; new facts
+and corrections use structured records. The full policy is owned by
+[memory-skills-hooks](memory-skills-hooks.md#consolidation-historypy-historyconsolidator).
+
+Metadata readability is part of this contract: invalid JSON or invalid text
+encoding in an existing transcript returns an unreadable status. Identity-aware
+consumers refuse the operation; the legacy `get_metadata()` projection still
+returns an empty dictionary for callers that only display history.
+
+Bulk clear excludes transcripts whose metadata cannot be read, including Global
+V1 transcripts. Their owner and pinned state cannot safely be inferred. An owner
+can still delete an exact session through the sidebar's individual Delete action
+(`DELETE /api/sessions/{key}`); that explicit deletion does not require metadata
+parsing and leaves other sessions untouched. This is the recovery path for a
+damaged transcript, without weakening the identity checks on scoped bulk clear.
+
 ### Composition and source ownership
 
 `kiro_crew.history` remains the compatibility facade and defines the real
@@ -217,6 +248,38 @@ no longer destroy older turns.
   `dashboard.tail_fork_enabled`; if the gate is off, a `direction="tail"`
   request falls back to a normal head-fork instead of erroring. The source
   slot's history file is untouched, so the head stays archived in the parent.
+- **Fork inherits `memory_mode`, and never loosens it**: an incognito or
+  temporary session forks like a persistent one, and the child is born with the
+  parent's mode -- passed to `get_or_create_slot` at creation so the child's
+  `dashboard:` key is registered restricted in the same step, never stamped on
+  afterwards. There is no `slot_not_persistent` refusal: one would buy no
+  privacy, for the reason the titling section below gives -- the parent's full
+  transcript is already in its session JSONL, and a fork copies transcript
+  while engaging neither guarantee the modes make (`is_restricted`,
+  `blocks_reads`). What a fork must not do is
+  produce a *persistent* child from a restricted parent -- that would hand
+  no-write content to consolidation -- so the request body carries no
+  `memory_mode` and the parent's value is the only source. A temporary child
+  still receives its copied turns: `build_session_context` assembles the
+  thread-history block before any `blocks_reads` gate. The response and the
+  `chat.slot_fork` audit event both report the inherited mode. The inherited
+  value is validated against `VALID_MEMORY_MODES` before the child is
+  allocated: rehydration copies the transcript header's `memory_mode` onto the
+  slot as written, so a hand-edited or partially written header can leave a
+  value outside the allowlist on a live parent, and passing it through would
+  raise out of the slot constructor as a 500. The fork instead answers 409
+  `fork_source_memory_mode_invalid` (SEL `denied`), and no child exists.
+- **Private-member fork identity**: a V2 fork also inherits the parent's
+  protected memory assignment before the child receives copied history. The
+  parent assignment must match the currently configured member and store;
+  missing, damaged or mismatched evidence refuses. Transcript metadata cannot
+  authorize that inheritance. Persistent, incognito and temporary forks keep
+  their existing mode guarantees, and Global or named V1 history is never
+  relabeled as private V2 by forking it.
+  Cancellation waits for an in-flight binding publication before removing the
+  empty child. Any published assignment remains attached to that unique key,
+  including after a later save failure, so partial private history cannot become
+  unprotected. This can leave an unused protected identity record.
 - **Concurrency**: `_flush_dirty_slots` runs the save in an executor thread while
   `_run_chat` mutates `slot.messages` on the event loop. `slot._lock` is an
   asyncio lock (unusable from the thread), so the save instead takes a
@@ -734,7 +797,28 @@ Possible `state` values:
 The stop event is inserted at soft-start time with `state: "stopping"` and
 updated in place (same `id`) when the outcome resolves. The updated message
 is re-broadcast via `_on_message` so the frontend `StopEventCard` transitions
-from `stopping` → `stopped`/`stop_failed_reset`.
+from `stopping` → `stopped`/`stop_failed_reset`. A press that finds an
+orphaned card from a prior attempt **in the same turn** (no turn-opening row —
+`user`/`nudge`/`subagent`, mirroring `TURN_OPENER_ROLES` in
+`groupDisplayItems.ts` — after it) RE-ARMS that row in place (same `id`, back to `stopping`) instead of
+resolving it and appending a fresh row — the pane upserts stop cards by
+`meta.id`, so a resolve-plus-append put two chips on screen for one press
+(`_open_stop_event_card` in `chat_handlers.py`, shared by `/stop` and
+`/interrupt`). A cross-turn orphan is settled where it lies and the press's
+card is appended fresh, so the chip lands in the turn the user stopped.
+Because reuse makes card ids non-unique across presses, per-attempt identity
+for the resolver callbacks is carried by the monotonic
+`slot._stop_generation`, not by the card id.
+
+Stop rows are presentation, not conversation: the tail-preview reader
+(`TranscriptReadProjection.last_message_info`, which feeds the Crew Members
+roster subtitle and the session-list preview) skips rows matched by
+`is_stop_event_row` so a transcript ending on a stop never previews the raw
+JSON payload. The skip moves only the preview TEXT: the returned epoch reads
+the newest skipped STOP row (a stop is activity), falling back to the
+previewed row's own timestamp — every other non-previewable row (a quiet
+zero-width-space reply, an empty content row) leaves the timestamp travelling
+with the previewed row, so roster recency ordering is unaffected.
 
 After a cancelled turn, `context.build_cancelled_turn_preamble` reads the
 cancelled user prompt and partial assistant output from this log and

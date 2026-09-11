@@ -491,7 +491,7 @@ def ensure_instance_boundary(profile: str = "", region: str = "") -> str:
     the first ``create-policy``
     is still a first-write race for *availability* — an attacker could seed a
     boundary that then fails our content check, blocking launches (a DoS, not an
-    escalation: a mismatched boundary is refused, never used to under-cap a role).
+    escalation: a mismatched boundary is refused, and can never under-cap a role).
     Operators who want to eliminate even that pre-create the boundary as an admin
     (``kirocrew cloud iam-boundary``) and drop the ``iam:CreatePolicy`` grant.
     """

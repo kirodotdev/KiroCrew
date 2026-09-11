@@ -11,6 +11,7 @@ import {
   SOUND_PRESETS, type SoundPreset, type SoundCategory,
   loadSoundSettings, saveSoundSettings, playPreset,
 } from '../../hooks/useNotificationSound'
+import { loadChatCompleteNotify, saveChatCompleteNotify } from '../../hooks/chatCompleteNotify'
 
 import { i18nT } from '../../i18n/t'
 const PRESET_OPTIONS: SoundPreset[] = ['none', ...SOUND_PRESETS]
@@ -241,6 +242,7 @@ function ChannelsSection() {
 
 export function NotificationsPanel() {
   const [settings, setSettings] = useState(() => loadSoundSettings())
+  const [notifyChatComplete, setNotifyChatComplete] = useState(() => loadChatCompleteNotify())
 
   const update = (partial: Partial<typeof settings>) => {
     const next = { ...settings, ...partial }
@@ -269,8 +271,23 @@ export function NotificationsPanel() {
           relative to element mount, so the static cards would wait
           sources.length steps on nothing while the fetch is still in flight. */}
       <ChannelsSection />
-      <SettingsSection title={i18nT('pages.settings.notificationsPanel.sound')}>
+      <SettingsSection title={i18nT('pages.settings.notificationsPanel.desktop_alerts')}>
         <SettingsCard>
+          {/* Writing through `saveChatCompleteNotify` rather than `safeSetItem`
+              is what makes the toggle work at all: enabling it is the user
+              gesture the OS permission prompt needs, and nothing else on this
+              page would ever ask for it. */}
+          <SettingsToggle
+            label={i18nT('pages.settings.notificationsPanel.notify_when_a_background_chat_finishes')}
+            description={i18nT('pages.settings.notificationsPanel.notify_when_a_background_chat_finishes_description')}
+            checked={notifyChatComplete}
+            onChange={v => { setNotifyChatComplete(v); saveChatCompleteNotify(v) }}
+          />
+        </SettingsCard>
+      </SettingsSection>
+
+      <SettingsSection title={i18nT('pages.settings.notificationsPanel.sound')}>
+        <SettingsCard index={1}>
           <SettingsToggle
             label={i18nT('pages.settings.notificationsPanel.play_sound_on_new_notifications')}
             checked={settings.enabled}
@@ -318,7 +335,7 @@ export function NotificationsPanel() {
       </SettingsSection>
 
       <SettingsSection title={i18nT('pages.settings.notificationsPanel.per_category_sounds')}>
-        <SettingsCard index={1}>
+        <SettingsCard index={2}>
           {CATEGORY_ROWS.map(cat => {
             const hasOverride = cat !== 'all' && settings.perCategory[cat] !== undefined
             const effective: SoundPreset = cat === 'all'

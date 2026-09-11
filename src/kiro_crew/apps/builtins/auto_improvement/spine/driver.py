@@ -480,15 +480,15 @@ class Driver:
             # The probe could not RUN — its sandbox launcher died before git
             # executed, which says nothing about the clone. Do NOT retire:
             # retiring renames away a clone whose remotes were never read,
-            # destroying good state over an unrelated sandbox failure (#8151).
-            # The tightened signature match in `_launcher_failure_detail` is
+            # destroying good state over an unrelated sandbox failure.
+            # The tight signature match in `_launcher_failure_detail` is
             # what keeps this branch unreachable for ambiguous or
-            # repository-influenced errors — those still return False below
-            # and retire as before. Re-raise after recording: swallowing here
-            # let `driver.run()` return normally, so the supervisor recorded
-            # STATUS_DONE for a run aborted by a safety-probe failure (raised
-            # by the GPT review of this branch); the run-loop's catch-all
-            # records STATUS_ERROR with this message instead.
+            # repository-influenced errors — those return False below and
+            # retire. Re-raise after recording: swallowing here would let
+            # `driver.run()` return normally, so the supervisor would record
+            # STATUS_DONE for a run aborted by a safety-probe failure; the
+            # run-loop's catch-all records STATUS_ERROR with this message
+            # instead.
             self._stop = True
             self._probe_failure = exc
             self.log.error("isolation probe could not run after %s: %s", stage, exc)
@@ -595,8 +595,8 @@ class Driver:
         self.log.info("preflight: proving the ruler before Phase 2 (03_metric §0/§11)…")
         boot = self.boot_callable if self._explicit_boot else self._resolve_measurement_boot()
         # Duck-wire a stop_check onto the ruler so a clean-stop request can interrupt
-        # the ~30-boot calibration loop between reps (previously a Stop click had to
-        # wait out the entire preflight — the "stuck in phase2_perf" symptom). The
+        # the ~30-boot calibration loop between reps (without it a Stop click waits out
+        # the entire preflight — the "stuck in phase2_perf" symptom). The
         # ruler treats it as optional; partial samples surface as CalibrationError.
         try:
             self.profile.ruler.stop_check = lambda: self._stop  # type: ignore[attr-defined]
@@ -754,7 +754,7 @@ class Driver:
             )
             # The cycle index rotates agent-discovery's focus ordering WITHIN each value tier
             # so a per-cycle read budget samples a different slice of the FULL changed-file
-            # surface each cycle (operator directive 2026-06-18: do not limit the search space
+            # surface each cycle (operator directive: do not limit the search space
             # — rotate coverage across all files instead of capping to the same top-N).
             self.profile._discovery_rotate = cycle  # type: ignore[attr-defined]
         except Exception:  # noqa: BLE001 — skip-list is a cost optimization, never fatal
@@ -1831,7 +1831,7 @@ class Driver:
         ``base_ref...HEAD`` in the clone, via this driver's agent runner. The agent emits a
         final ``REVIEW: clean`` / ``REVIEW: <N> open`` / ``REVIEW: unavailable`` line.
 
-        AUTHORIZATION (operator directive 2026-06-15): the push is allowed when the fix has
+        AUTHORIZATION (operator directive): the push is allowed when the fix has
         a clean POSITIVE signal — a clean review verdict OR (when the review is INCONCLUSIVE)
         a clean full build/test (``_build_test_pre_push_clean``). CONCRETE review open
         findings still BLOCK (a green build does not excuse a real review finding).
@@ -1904,9 +1904,9 @@ class Driver:
             # otherwise provably safe — fall back to a clean POSITIVE build/test signal
             # (a fresh full `bb release` / pytest suite green on the committed fix). The push
             # is authorized iff the review is clean OR the build/test is clean; it stays
-            # fail-closed only when BOTH are inconclusive (06_*.md F6/F10; operator directive
-            # 2026-06-15: "clean prepush_review + bb release or other clean autotest should allow
-            # push to the remote").
+            # fail-closed only when BOTH are inconclusive (06_*.md F6/F10; operator
+            # directive: "clean prepush_review + bb release or other clean autotest
+            # should allow push to the remote").
             reason = (
                 "prepush_review unavailable"
                 if "unavailable" in low
@@ -2730,7 +2730,7 @@ class Driver:
         # landed, a clone-sync moved HEAD, or the agent touched an artifact like uv.lock
         # that already exists here). A plain ``git apply`` fails outright on any context
         # mismatch or "already exists in working directory" — the observed committed=0
-        # cause (2026-06-17: "bug fix diff did not apply: error: uv.lock: already exists").
+        # cause ("bug fix diff did not apply: error: uv.lock: already exists").
         # --3way falls back to a blob-level 3-way merge, which reconciles drift and
         # absorbs an already-present file instead of aborting. We retry plain-apply first
         # (cheapest, no index churn) and only fall back to 3-way so behavior is unchanged

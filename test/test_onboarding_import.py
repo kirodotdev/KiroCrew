@@ -519,7 +519,7 @@ class TestGeminiSource:
 
         ``Path.exists()`` re-raises ENAMETOOLONG (pathlib only treats
         ENOENT/ENOTDIR/EBADF/ELOOP as "absent"), so a foreign-supplied path with a
-        component over NAME_MAX used to escape as an OSError and surface as HTTP
+        component over NAME_MAX escapes as an OSError and surfaces as HTTP
         500 from the scan endpoint — for every source, not just this one. The
         trigger is per-COMPONENT (255), so this fixture stays far below the 4096
         total ceiling to prove a total-length guard alone is insufficient.
@@ -1044,9 +1044,8 @@ class TestPreview:
             "schedules": 1,
             "settings": 1,
         }
-        # Hermes workspaces used to be recovered from the session database's
-        # ``cwd`` column; with transcripts out of scope only ``projects.db`` and
-        # explicit config contribute workspaces, and this fixture has neither.
+        # With transcripts out of scope, Hermes workspaces come only from
+        # ``projects.db`` and explicit config, and this fixture has neither.
         assert _categories(plan, "hermes") == {
             "mcp_servers": 1,
             "skills": 1,
@@ -1218,7 +1217,7 @@ class TestPreview:
 
         plan = api.preview_import(home=tmp_path / "home", env={})
 
-        # The agent session database is no longer probed at all (transcripts are
+        # The agent session database is not probed at all (transcripts are
         # out of scope), so only the schedule database is diagnosed here. The
         # monkeypatched ``sqlite3.connect`` still guards the real invariant: an
         # unsupported database must be classified from its filesystem metadata
@@ -2131,7 +2130,7 @@ class TestPreview:
         plan = api.preview_import(home=home, env={})
 
         # Root CLAUDE.md, rules/global.md, and the workspace CLAUDE.md all become
-        # directives — no longer reported as an unsupported category.
+        # directives — not reported as an unsupported category.
         assert _categories(plan, "claude_code")["instructions"] == 3
         assert not any(
             item["category_id"] == "instructions" and item["reason"] == "unsupported_category"
@@ -4389,8 +4388,8 @@ class TestConservativeParsingRegressions:
     def test_large_clean_memory_is_imported_not_flagged_as_credential(self, tmp_path: Path) -> None:
         # A secret-free memory file larger than the sanitizer's text cap must be
         # imported (truncated + chunked), not dropped and mislabeled
-        # credential_bearing_memory: the size-cap truncation alone previously
-        # tripped the redaction guard even with no credentials present.
+        # credential_bearing_memory: the size-cap truncation alone must not
+        # trip the redaction guard when no credentials are present.
         api = _api()
         anchor = tmp_path / "memory"
         anchor.mkdir()
@@ -5040,7 +5039,7 @@ class TestConflictStrategies:
 
 
 class TestReviewFindings:
-    """Regressions for the three blocking findings from AI review on #715."""
+    """Import guards: a lesson is not evicted near capacity, and related edge cases."""
 
     def test_import_never_evicts_a_lesson_when_the_store_is_near_capacity(
         self, tmp_path: Path

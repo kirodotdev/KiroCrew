@@ -42,7 +42,12 @@ export default function PersonalShopperPage() {
     setCreating(true)
     setCreateError(null)
     try {
-      await dispatch(createSlot({ agent: ADVISOR_AGENT })).unwrap()
+      // App-owned workstreams choose their memory contract explicitly; a
+      // general chat preference must not silently alter their behavior.
+      await dispatch(createSlot({
+        agent: ADVISOR_AGENT,
+        memory_mode: 'persistent',
+      })).unwrap()
       navigate('/chat')
     } catch (e) {
       // Without this the rejection was unhandled and the button just cleared its

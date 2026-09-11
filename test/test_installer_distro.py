@@ -151,7 +151,7 @@ def _run_cli_with_fake_env(
 def test_cli_fails_over_from_a_wedged_interpreter_candidate(tmp_path: Path) -> None:
     """A version-manager shim that never answers must not wedge the install.
 
-    python3.12 is probed FIRST, so a shim that hangs there used to hold
+    python3.12 is probed FIRST, so a shim that hangs there would hold
     _resolve_python forever and leak a spinning orphan per invocation. The probe
     is bounded, so resolution has to reach the usable python3 below it.
     """
@@ -442,8 +442,8 @@ def test_cli_restores_the_previous_venv_when_the_wheel_install_fails(
     """A venv rebuild is transactional: the working venv is MOVED ASIDE before
     the fresh build, and a wheel-install failure puts it back. Without this,
     a default migration that relinks the venv to a different interpreter
-    series and then loses the network at the pip step leaves a venv that can
-    no longer import its old site-packages -- the previous install is
+    series and then loses the network at the pip step leaves a venv that
+    cannot import its old site-packages -- the previous install is
     destroyed by a run that delivered nothing."""
     ver = f"{sys.version_info[0]}.{sys.version_info[1]}"
     venv_dir = tmp_path / "crew-venv"

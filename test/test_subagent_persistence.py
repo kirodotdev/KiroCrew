@@ -823,7 +823,7 @@ class TestSpawnCreatesFolder:
             # earlier version awaited first and then asserted "no folder", which is a
             # wall-clock race — it passed only when info2's promotion had not finished yet,
             # and failed on a slow (Windows) runner where it had. Asserted against info2's
-            # real id, which no longer carries a `q<n>` sentinel name to filter on.
+            # real id, which does not carry a `q<n>` sentinel name to filter on.
             assert info2 is not None
             assert info2.queued is True
             folders = list(agent_root.iterdir()) if agent_root.exists() else []
@@ -1493,7 +1493,7 @@ class TestOrphanNotification:
     async def test_slack_dm_fallback_called(self, agent_root):
         """When injection returns False, the message is returned for the caller's digest.
 
-        _notify_orphan no longer DMs per orphan — undelivered messages are
+        _notify_orphan does not DM per orphan — undelivered messages are
         handed back so _reconcile_orphans can batch them into ONE digest DM
         (a restart with N in-flight agents must never produce N pings).
         """
@@ -1550,7 +1550,7 @@ class TestOrphanNotification:
         assert injected_msg is not None
         assert injected_msg.startswith("[REDACTED]")
         # has_result=True → interrupted, with the header's only explanation as
-        # the structured note (#1792). The card reads this, not the prose.
+        # the structured note. The card reads this, not the prose.
         assert injected_meta is not None
         assert injected_meta["kind"] == "single"
         assert injected_meta["outcome"] == "interrupted"

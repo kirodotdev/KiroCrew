@@ -1,4 +1,4 @@
-"""A red pytest job must annotate the TESTS that failed (issue #7296).
+"""A red pytest job must annotate the TESTS that failed.
 
 Annotations are what a check run shows: the PR page renders them, a fork
 contributor who cannot re-run a job has nothing else, and a triage report copies
@@ -7,7 +7,7 @@ problem matcher ``actions/setup-python`` registers by default -- a two-line
 pattern (a traceback frame, then ``raise SomeError('msg')``) applied to the whole
 log, including the part where pytest prints its WARNINGS summary.
 
-MEASURED on the six Backend Tests jobs cited in #7296: that pattern matched a
+MEASURED on six Backend Tests jobs: that pattern matched a
 warning traceback every time and a pytest failure not once. All six reds carried
 only ``Event loop is closed`` at line 545 -- ``asyncio/base_events.py`` inside
 ``_check_closed``, reached from a ``PytestUnraisableExceptionWarning`` about a
@@ -18,7 +18,7 @@ flake on that evidence.
 
 So these tests pin the two halves of the answer: the rootdir conftest turns each
 failing report into an annotation that names the test, and every workflow job
-that runs pytest has the matcher that used to lie turned off.
+that runs pytest has the mismatching default matcher turned off.
 """
 
 from __future__ import annotations
@@ -199,7 +199,7 @@ class TestTheAnnotationSurvivesTheRunnersParser:
     def test_a_parametrized_id_with_a_comma_is_escaped_in_the_title(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """A real id from the #7296 logs carried spaces, quotes and separators."""
+        """A real parametrized id carries spaces, quotes and separators."""
         nodeid = 'test/test_data_home_not_relocatable.py::test_alias[cd ~; mv "a,b" /tmp/x]'
         reporter = _emit({"failed": [_report(nodeid)]}, monkeypatch)
         # The command's own leading "::" is not a separator, so drop the prefix
@@ -340,7 +340,7 @@ class TestTheMatcherThatLiedIsOffWhereverPytestRuns:
         }, set(self._pytest_jobs())
 
     def test_every_pytest_job_removes_the_python_matcher_before_pytest_runs(self) -> None:
-        """Its pattern matches a traceback, and a warning can print one (#7296).
+        """Its pattern matches a traceback, and a warning can print one.
 
         Ordering matters and is asserted, not assumed: ``::remove-matcher`` takes
         effect for the rest of the job from the point it is echoed, so a

@@ -1,6 +1,6 @@
 """Every MCP stdio server must NAME ITSELF on loopback gateway requests.
 
-#3503: the gateway's folder-audit path used to infer ``source=mcp`` from the
+The gateway's folder-audit path must not infer ``source=mcp`` from the
 mere presence of ``X-Internal-Secret`` — correct only while exactly one
 internal caller existed. The fix has two halves, and this file pins the
 sending half: ``run_mcp_stdio_loop`` declares the server's component name
@@ -55,7 +55,7 @@ def captured(monkeypatch: pytest.MonkeyPatch) -> _CapturedRequest:
     monkeypatch.setattr(mcp_core, "_api_urlopen", _fake_urlopen)
     monkeypatch.setattr(mcp_core, "_internal_secret", lambda: "sekrit")
     monkeypatch.setattr(mcp_core, "_resolve_session_key", lambda: "")
-    # One attempt resolves its (base, socket_path) pair once (#4106 item 1), so
+    # One attempt resolves its (base, socket_path) pair once, so
     # the base is scripted at that seam; the empty socket keeps this TCP-only.
     monkeypatch.setattr(mcp_core, "_resolve_api_target", lambda: ("http://127.0.0.1:1", ""))
     monkeypatch.setattr(mcp_core, "_api_base", lambda: "http://127.0.0.1:1")

@@ -207,7 +207,11 @@ export default function VoiceDictationPanel({ sampleRef, value, partial, deviceL
     >
       <Strands sampleRef={sampleRef} />
       <div className="absolute inset-0 z-[3] flex flex-col justify-between px-[18px] py-3.5 pointer-events-none">
-        <div className="flex items-center gap-2 text-[11.5px] font-medium text-danger">
+        {/* `flex-wrap`: in a narrow composer (a split pane, a Crew Members DM at
+            ~300px) the keyboard hint no longer competes with the device picker
+            for one row — the hint drops to its own line whole, and the picker
+            keeps enough width to read its provider name instead of "Fa…". */}
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11.5px] font-medium text-danger">
           <span className="relative flex h-2 w-2 shrink-0" aria-hidden="true">
             <span className="absolute inline-flex h-full w-full rounded-full bg-danger opacity-60 animate-ping" />
             <span className="relative inline-flex h-2 w-2 rounded-full bg-danger" />
@@ -219,10 +223,11 @@ export default function VoiceDictationPanel({ sampleRef, value, partial, deviceL
               panel's deliberate difference from VoiceStatusBar (an extra row at
               17px over a live shader is noise, and the panel's job is the
               transcript) — by the time the panel is up the label has resolved,
-              so the picker is reachable in practice. `max-w-[40%]` keeps a long
-              device name from pushing the keyboard hint out of the row. */}
+              so the picker is reachable in practice. No width cap: the hint
+              wraps to its own line when the row is short (a pane), so the label
+              may take the row and truncates only when it alone overflows it. */}
           {deviceLabel && (
-            <span className="pointer-events-auto max-w-[40%] min-w-0 flex items-center">
+            <span className="pointer-events-auto max-w-full min-w-0 flex items-center">
               <MicSourceMenu
                 deviceLabel={deviceLabel}
                 activeDeviceId={deviceId}
@@ -233,8 +238,13 @@ export default function VoiceDictationPanel({ sampleRef, value, partial, deviceL
               />
             </span>
           )}
+          {/* Same shadow floor as the transcript below: at pane width this line
+              wraps down into the shader's brightest band, and a crest would
+              otherwise wash it out. Body text tone, not muted: this is the only
+              instruction for cancelling or finishing a recording, and in light
+              theme the muted token over the glow read as blank. */}
           {!gestureDriven && (
-            <span className="ml-auto text-muted font-normal font-mono text-[11px]">
+            <span className="ml-auto whitespace-nowrap text-text font-normal font-mono text-[11px] [text-shadow:0_1px_12px_var(--bg),0_0_3px_var(--bg)]">
               {streaming
                 ? i18nT('components.voiceDictationPanel.esc_to_cancel_enter_to_send')
                 : i18nT('components.voiceDictationPanel.esc_to_cancel_click_mic_to_finish')}

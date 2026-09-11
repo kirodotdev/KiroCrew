@@ -371,8 +371,8 @@ class LLMProvider(ABC):
 
         The manual entry points gate on this so an unsupported backend gets an
         immediate, user-visible refusal instead of a prompt whose
-        compaction-status wait strands until ``COMPACT_WAIT_TIMEOUT_SECS``
-        (#7800). Default ``None`` — a provider that has not positively named an
+        compaction-status wait strands until ``COMPACT_WAIT_TIMEOUT_SECS``.
+        Default ``None`` — a provider that has not positively named an
         unsupported backend passes through, because it handles ``/compact`` on
         its own terms. Declared here with a safe default rather than probed off
         the instance (harness-parity H14); the ACP implementations answer from

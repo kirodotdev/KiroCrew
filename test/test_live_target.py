@@ -296,11 +296,10 @@ class TestWriteTarget:
         exist in a file that has not been locked down yet.
 
         atomic_write(restrict_to_owner=True) locks the TEMP file down before
-        any content reaches it (the previous post-rename lockdown left the
-        pointer inheriting the directory ACL on Windows for the write window,
-        issue #5285). Asserted by measuring the file's SIZE at lockdown time —
-        zero means no payload byte existed yet. A post-write stat passes on
-        the buggy ordering too, so it would not be a regression test.
+        any content reaches it. Asserted by measuring the file's SIZE at
+        lockdown time — zero means no payload byte existed yet. A post-write
+        stat passes even when lockdown follows the write, so measuring at
+        lockdown time is what makes this assertion meaningful.
         """
         from kiro_crew import platform_compat
 

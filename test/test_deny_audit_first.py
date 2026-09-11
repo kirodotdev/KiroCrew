@@ -7,7 +7,7 @@ until the turn deadline cancels the coroutine. When the SEL write is sequenced
 AFTER that await, cancellation destroys the audit record: the permission
 decision was made, acted on locally, and never audited.
 
-The invariant these tests pin (issue #8621): **the SEL audit write must
+The invariant these tests pin: **the SEL audit write must
 precede any wire I/O for that decision** — record the decision first, then
 attempt delivery. The steer is wire I/O too, so the audit precedes it as well.
 

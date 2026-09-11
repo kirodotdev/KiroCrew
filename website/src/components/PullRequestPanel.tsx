@@ -32,7 +32,7 @@ import {
   MAX_PULL_REQUEST_SOURCES,
   type PullRequestLink,
 } from '../utils/pullRequestLinks'
-import { sourceProviderMeta } from '../utils/sourceProviderMeta'
+import { sourceProviderMeta, sourceTabQualifier } from '../utils/sourceProviderMeta'
 import CopyBranchButton from './CopyBranchButton'
 import { PierrePatch } from '../pierre'
 import GithubLogo from './icons/GithubLogo'
@@ -842,6 +842,17 @@ export default function PullRequestPanel({
 }) {
   const cappedSources = sources.slice(0, MAX_PULL_REQUEST_SOURCES)
   const selected = cappedSources.find(source => source.url === selectedUrl) || cappedSources[0]
+  // A GitLab MR IID is unique only within its project, so tabs read as bare
+  // `MR !1` and two projects sharing an IID become indistinguishable. When the
+  // rendered tabs span more than one distinct project, qualify each tab label
+  // with its project; a single-project panel keeps the concise form. Identity
+  // is host-aware (self-managed GitLab can carry the same group/project path as
+  // gitlab.com), and sources whose project cannot be recovered (Jira, an
+  // unparseable url) never force qualification on their own.
+  const tabQualifier = useMemo(
+    () => sourceTabQualifier(sources.slice(0, MAX_PULL_REQUEST_SOURCES)),
+    [sources],
+  )
   const [tab, setTab] = useState<SourceTab>('changes')
   const [checkPollState, setCheckPollState] = useState({ url: '', failures: 0 })
   const checkPollStateRef = useRef({ url: '', failures: 0 })
@@ -1095,6 +1106,7 @@ export default function PullRequestPanel({
       <div role="tablist" aria-label={i18nT('components.pullRequestPanel.pull_requests')} className="shrink-0 border-b border-border px-2 py-2 flex items-center gap-1 overflow-x-auto">
         {cappedSources.map(item => {
           const itemMeta = sourceProviderMeta(item.provider)
+          const qualifier = tabQualifier(item)
           return (
           <Btn
             key={item.url}
@@ -1115,6 +1127,12 @@ export default function PullRequestPanel({
                   // `1em`, which is 12px in this tab strip, so the neutral glyph
                   // rendered a pixel smaller than every branded one beside it.
                   : <GitPullRequest size={13} className="lucide-inline shrink-0" />}
+            {/* No CSS truncation here: sourceTabQualifier shortens deep paths
+                to their minimal unique trailing suffix, so the discriminating
+                segment is always visible. The full url stays on the Btn's
+                title. The reference (`MR !1`) is the part that must stay
+                legible. */}
+            {qualifier && <span>{qualifier}</span>}
             <span>{itemMeta.refLabel(item.number)}</span>
             <SourceTabState status={statusByUrl[item.url]} />
           </Btn>

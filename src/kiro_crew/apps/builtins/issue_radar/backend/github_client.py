@@ -778,7 +778,7 @@ def list_pr_timeline(
 # ── dependency edges (blocked-by / blocking graph) ───────────────────────────
 #
 # Two sources feed the graph, tagged by provenance:
-#   • NATIVE — GitHub's issue-dependencies API (GA 2025-08-21). One call per open
+#   • NATIVE — GitHub's issue-dependencies API. One call per open
 #     issue reads its blocked_by set; a blocker of issue N is an edge
 #     ``{blocked: N, blocker: B}``. The endpoint is young, so a repo/token/GHES
 #     that has not enabled it answers 404/410 — handled as ZERO native edges for
@@ -2095,7 +2095,7 @@ def submit_pr_review(
 
     **``commit_id`` is ATTRIBUTION, not a rejecting precondition** — unlike the
     ``sha`` parameter on :func:`merge_pull_request`, which GitHub really does check
-    and 409s. GitHub accepts a review naming a commit that is no longer the head; it
+    and 409s. GitHub accepts a review naming a commit that is not the head; it
     just records the review against that commit, and whether the stale approval still
     counts toward branch protection depends on the repo's
     "dismiss stale pull request approvals" setting. So the pin makes the verdict
@@ -2526,10 +2526,11 @@ _CREW_CLAIM_FIELD_RE = github_normalization.CREW_CLAIM_FIELD_RE
 #
 # Deliberately stricter than ``_parse_gh_timestamp`` / ``datetime.fromisoformat``,
 # which also accept a space separator and an absent or offset timezone. Those forms
-# are hazardous here rather than merely lax: ``2026-08-08 20:44:12`` parses to a
-# NAIVE datetime, and comparing that against the aware ``now`` a freshness check
-# uses raises TypeError — so a malformed stamp would crash the claim reader instead
-# of reading as stale. Refusing it up front makes "unparseable" mean "not fresh",
+# are hazardous here rather than merely lax: a space-separated, zoneless stamp
+# parses to a NAIVE datetime, and comparing that against the aware ``now`` a
+# freshness check uses raises TypeError — so a malformed stamp crashes the claim
+# reader instead of reading as stale. Refusing it up front makes "unparseable"
+# mean "not fresh",
 # which is the safe direction: a claim that cannot prove it is alive must not be
 # treated as alive.
 _CREW_CLAIM_ISO_Z_RE = github_normalization.CREW_CLAIM_ISO_Z_RE

@@ -155,7 +155,10 @@ afterEach(() => {
 })
 
 describe('useChatPageTranscriptEarlyController pinned prompt coverage', () => {
-  it('derives a machine prompt from live geometry and throttles scroll recomputes', () => {
+  it('skips a machine opener behind the fold, pins the user prompt above it, and throttles scroll recomputes', () => {
+    // The nudge at index 2 is the row that has scrolled behind the band, but a
+    // machine opener is never a pin candidate: the walk continues up to the
+    // user's own prompt at index 0 (utils/pinnedPrompt isPrompt).
     const { result, scrollerRef } = renderEarly()
     const geometry = mountGeometry(5)
     const items: DisplayItem[] = [
@@ -176,9 +179,9 @@ describe('useChatPageTranscriptEarlyController pinned prompt coverage', () => {
     })
 
     expect(result.current.pinned).toMatchObject({
-      idx: 2,
-      raw: '[auto-nudge cycle 2]\ninspect the latest logs',
-      full: 'inspect the latest logs',
+      idx: 0,
+      raw: 'first prompt',
+      full: 'first prompt',
       push: 0,
       bannerH: 70,
     })
@@ -189,7 +192,7 @@ describe('useChatPageTranscriptEarlyController pinned prompt coverage', () => {
     })
     expect(frames).toHaveLength(1)
     flushFrame(16)
-    expect(result.current.pinned?.idx).toBe(2)
+    expect(result.current.pinned?.idx).toBe(0)
   })
 
   it('glides a near pinned jump and sends a far one through the mounted-row poll', () => {

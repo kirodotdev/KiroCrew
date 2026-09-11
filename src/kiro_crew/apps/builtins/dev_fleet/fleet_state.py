@@ -214,7 +214,7 @@ async def _pr_status_cached(branch: str, head_oid: str | None = None) -> dict | 
             # Invalidate a MERGED entry when the caller supplies a head OID
             # that differs from the one recorded at cache-write time.  A changed
             # head means the branch was reused for new work; the old MERGED
-            # verdict no longer describes the current commits.
+            # verdict does not describe the current commits.
             cached_head = ent.get("cached_head")
             if head_oid and cached_head != head_oid:
                 # Head changed (or entry was written without a head OID) —
@@ -525,7 +525,7 @@ def _fleet_forget(name: str) -> None:
     ``_fleet_cached`` is stale-while-revalidate: once past the TTL it serves the
     PREVIOUS snapshot and only schedules a rebuild behind it. Without this hook a
     just-removed worktree keeps rendering for the length of a full rebuild, so
-    the UI shows rows that no longer exist and refreshing does not help. Evicting
+    the UI shows rows for worktrees that are gone and refreshing does not help. Evicting
     the row makes the very next response truthful at zero rebuild latency, and
     zeroing the timestamp schedules the rebuild that refreshes the rest.
     """
@@ -823,16 +823,16 @@ def _pod_resources_sync(cfg: Any, running_names: list[str]) -> dict[str, dict]:
             # sync probe. Absent until then, never a fabricated 0.
             "home_bytes": None,
         }
-    # Drop CPU samples for pods no longer running so a stopped-then-restarted
+    # Drop CPU samples for pods that are not running so a stopped-then-restarted
     # pod starts fresh (null on its first new observation) and the dict cannot
     # grow without bound across a long-lived gateway.
     for stale in set(_POD_CPU_SAMPLES) - set(units):
         _POD_CPU_SAMPLES.pop(stale, None)
-    # Same for the home-size cache, which was previously left to expire on its
-    # TTL. A worktree evicted mid-TTL kept a cached size that went on being
-    # summed into the fleet total, so the header reported disk for a pod that no
-    # longer existed -- and the dict grew unbounded besides. Dropping it here
-    # ties both to the same liveness signal.
+    # Same for the home-size cache. Letting it expire on its own TTL instead
+    # leaves a worktree evicted mid-TTL holding a cached size that keeps being
+    # summed into the fleet total, so the header reports disk for a pod that is
+    # gone -- and the dict grows unbounded besides. Dropping it here ties both
+    # to the same liveness signal.
     for stale in set(_POD_HOME_SIZE_CACHE) - set(units):
         _POD_HOME_SIZE_CACHE.pop(stale, None)
     return out
@@ -1092,7 +1092,7 @@ async def _build_fleet() -> dict:
         # ``static/dist`` directory present) and is therefore knowable on EVERY
         # platform — report it even where pods cannot run, so the Fleet view
         # still tells the truth about which worktrees are built. That includes
-        # the MAIN checkout (#8058): during a cutover the panel is exactly the
+        # the MAIN checkout: during a cutover the panel is exactly the
         # surface a human checks, and reporting main as unprovisioned reads as
         # "the cutover failed". The ``not is_main`` restriction belongs to the
         # POD-state check below (pods never run on main), not to these probes.
@@ -1302,10 +1302,10 @@ async def _build_fleet() -> dict:
         # controls stay clickable and keep succeeding, so nothing else on screen
         # would ever reveal that the managed code is not the running code.
         "serving_install_reason": await _serving_install_reason(worktrees),
-        # Whether pods can run on THIS host, and if not, why. Previously
-        # _POD_ERROR was computed and then never read by anything, so a
-        # non-Linux user saw pod controls that silently failed with no
-        # explanation. The UI uses these to disable those controls and say why.
+        # Whether pods can run on THIS host, and if not, why. _POD_ERROR has to
+        # reach the UI: without it a non-Linux user sees pod controls that
+        # silently fail with no explanation. The UI uses these to disable those
+        # controls and say why.
         "pods_available": runtime._POD_AVAILABLE,
         "fleet_totals": fleet_totals,
         "pods_unavailable_reason": runtime._POD_ERROR or None,

@@ -42,6 +42,28 @@ def _make_app(store, pipeline=None):
     return app
 
 
+async def _await_sync_status(store, source_id: str, want: str) -> str:
+    """Wait until the sync task has stamped *want* on the row; return what it last saw.
+
+    The task claims 'syncing' off the loop and stamps its outcome off the loop, so
+    reaching a terminal state costs two worker-thread hops. A fixed sleep races that
+    on a loaded runner. Waiting for a NAMED status rather than "anything terminal"
+    is deliberate: 'pending' is both the row's initial value AND the terminal
+    outcome of a budget deferral, so a generic wait cannot tell "not started yet"
+    from "deferred". Returning the last-seen status keeps the caller's assertion
+    message truthful when the wait times out.
+    """
+    status = None
+    for _ in range(200):
+        row = store.db.execute(
+            "SELECT sync_status FROM sources WHERE id = ?", (source_id,)).fetchone()
+        status = row["sync_status"] if row else None
+        if status == want:
+            return status
+        await asyncio.sleep(0.01)
+    return status
+
+
 class TestSyncLocalFile:
     @pytest.mark.asyncio
     async def test_sync_reingests_via_ingest_file_not_agent_fetch(self, store, tmp_path, monkeypatch):
@@ -63,14 +85,13 @@ class TestSyncLocalFile:
             assert resp.status == 200
             data = await resp.json()
             assert data["status"] == "syncing"
-            await asyncio.sleep(0.1)  # let the background task run
+            status = await _await_sync_status(store, sid, "synced")
 
         pipeline.ingest_file.assert_called_once()
         _, kwargs = pipeline.ingest_file.call_args
         assert kwargs.get("source_id") == sid
         fetch_spy.assert_not_called()
-        row = store.db.execute("SELECT sync_status FROM sources WHERE id = ?", (sid,)).fetchone()
-        assert row["sync_status"] == "synced"
+        assert status == "synced"
 
     @pytest.mark.asyncio
     async def test_sync_already_syncing_returns_409(self, store, tmp_path):
@@ -106,6 +127,5 @@ class TestSyncLocalFile:
         async with TestClient(TestServer(_make_app(store, pipeline=pipeline))) as client:
             resp = await client.post(f"/api/knowledge/sources/{sid}/sync")
             assert resp.status == 200
-            await asyncio.sleep(0.1)
-        row = store.db.execute("SELECT sync_status FROM sources WHERE id = ?", (sid,)).fetchone()
-        assert row["sync_status"] == "error"
+            status = await _await_sync_status(store, sid, "error")
+        assert status == "error"

@@ -193,7 +193,7 @@ _SRC = pathlib.Path(__file__).resolve().parents[1] / "src" / "kiro_crew"
 #: deliberately absent: their dispatchers carry extra pre-turn work between the
 #: busy check and rotation (album buffering, forum routing, service-URL binding,
 #: mid-turn override parsing, attachment handling, media ingestion), and in
-#: several cases the busy path is no longer a plain ``on_busy(session_key)``.
+#: several cases the busy path is not a plain ``on_busy(session_key)``.
 #: Listing them here would assert a migration that has not happened.
 _PRE_TURN_CHANNELS = ("webex", "imessage", "feishu")
 
@@ -272,7 +272,7 @@ class TestPreTurnRatchet:
         """The reverse direction: an exempt entry asserts the channel still
         hand-rolls its pre-turn sequence. Once any module in the channel's
         package calls the shared helper, the entry is stale, and with nothing
-        forcing removal the set would silently accrete entries that no longer
+        forcing removal the set would silently accrete entries that do not
         describe anything. The channels host their pre-turn logic in different
         modules (weixin and wecom drive it from ``handle_message``, slack's
         busy check lives in its gateway), so the scan covers the whole package

@@ -136,6 +136,14 @@ KIND_FINAL = "final"
 KIND_ERROR = "error"
 
 STAGE_DOWNLOADING = "downloading"
+#: The model is on disk but not yet resident, so this session must load it (and
+#: re-hash it against its pin) before the first ``ready``. Emitted to the client
+#: BEFORE that load starts, because the load is otherwise silent: a present-model
+#: first session sends no ``status`` (nothing is downloading) and no other frame
+#: until ``ready``, so a cold load that outruns the client's pre-``ready`` budget is
+#: indistinguishable from a hung microphone. This frame, and the log line beside
+#: it, are the only signal that the load is under way.
+STAGE_PREPARING = "preparing"
 STAGE_READY = "ready"
 
 
@@ -262,6 +270,34 @@ class LocalSession:
         """
         model = models.resolve(self._model_name)
         return None if models.is_present(model) else model
+
+    def pending_load(self) -> bool:
+        """Whether :meth:`prepare` will block loading the model into memory.
+
+        True when the weights are on disk but the shared recogniser holds no
+        resident context for this session's model, language and thread count, so
+        ``prepare`` must re-hash the file against its pin (up to 1.6 GB) and build a
+        native context before it can answer. That work is silent to the client:
+        :meth:`pending_download` is ``None`` here, so no ``status`` frame goes out,
+        and nothing else does until ``ready``. On a slow host a first-session load
+        outruns the client's pre-``ready`` buffer and the mic releases with the
+        server still loading and nothing sent either way — the hung-mic report this
+        answers. Asked BEFORE :meth:`prepare` so the transport can announce the load.
+
+        Advisory, like :meth:`pending_download`: a concurrent session can change the
+        resident model between this check and the load. A false negative only skips
+        an announce; a false positive only sends one preparing frame the client
+        already tolerates. Neither affects correctness — ``prepare`` still loads.
+        """
+        model = models.resolve(self._model_name)
+        if not models.is_present(model):
+            return False
+        key = engine_mod.LoadedKey(
+            str(models.model_path(model)),
+            self._language,
+            engine_mod.thread_count(),
+        )
+        return self._engine.loaded_key != key
 
     async def prepare(self) -> list[SttEvent]:
         """Make the recogniser ready, fetching the model if this is a first run.

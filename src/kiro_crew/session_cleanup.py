@@ -285,7 +285,7 @@ class SessionCleanup:
                     mcp_killed,
                 )
         except Exception:
-            # This sweep historically treats failures as a silent best-effort
+            # This sweep treats failures as a silent best-effort
             # miss.  The watchdog must not promote the severity.
             pass
 

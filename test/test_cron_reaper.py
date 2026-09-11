@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -436,7 +437,7 @@ class TestCronReaper:
 
     @pytest.mark.asyncio
     async def test_reaper_falls_back_for_deleted_job(self, tmp_path: object) -> None:
-        """Reaper uses default deadline when job is no longer in self._jobs."""
+        """Reaper uses the default deadline when the job is absent from self._jobs."""
         svc = CronService(base_dir=None, on_job=AsyncMock())
         svc._history = CronHistoryStore(base_dir=tmp_path)
         svc._sessions = _mock_sessions()
@@ -453,3 +454,135 @@ class TestCronReaper:
                 await svc._reaper_loop()
 
         assert "ghost1" in svc._reaped_jobs
+
+
+def _one_sweep() -> Any:
+    """Patch ``asyncio.sleep`` so ``_reaper_loop`` runs one sweep then unwinds."""
+    return patch("asyncio.sleep", AsyncMock(side_effect=[None, asyncio.CancelledError]))
+
+
+class TestReaperMonotonicDeadline:
+    """The backstop must measure elapsed runtime on the same clock as ``wait_for``.
+
+    ``_execute_with_timeout`` arms ``asyncio.wait_for``, whose deadline runs on
+    the event loop's monotonic clock. If the reaper decides on the wall clock the
+    two deadlines disagree whenever the wall clock jumps (host suspend, NTP step)
+    and the backstop pre-empts a run the primary path considers healthy.
+    """
+
+    @pytest.mark.asyncio
+    async def test_reaper_ignores_wallclock_jump_from_host_sleep(self) -> None:
+        """A wall-clock start older than the deadline is not reaped while the
+        monotonic runtime is still short (the host slept mid-run)."""
+        svc = CronService(base_dir=None, on_job=AsyncMock())
+        svc._sessions = _mock_sessions()
+
+        job = _make_job("slept1")
+        svc._jobs = [job]
+        # Wall clock says the job has been running past its deadline only
+        # because the host was suspended; it has actually executed for 60s.
+        svc._job_start_times["slept1"] = time.time() - _JOB_TIMEOUT_SECS - 600
+        svc._job_start_monotonic["slept1"] = time.monotonic() - 60
+        svc._running_tasks["slept1"] = MagicMock(done=MagicMock(return_value=False))
+
+        with patch.object(svc, "_force_reap", new_callable=AsyncMock) as mock_reap, _one_sweep():
+            with pytest.raises(asyncio.CancelledError):
+                await svc._reaper_loop()
+
+        mock_reap.assert_not_awaited()
+        assert "slept1" not in svc._reaped_jobs
+
+    @pytest.mark.asyncio
+    async def test_reaper_still_kills_genuine_overrun_on_monotonic_clock(self) -> None:
+        """A job whose monotonic runtime exceeds the deadline is still reaped."""
+        svc = CronService(base_dir=None, on_job=AsyncMock())
+        svc._sessions = _mock_sessions()
+
+        job = _make_job("over1")
+        svc._jobs = [job]
+        svc._job_start_times["over1"] = time.time() - _JOB_TIMEOUT_SECS - 60
+        svc._job_start_monotonic["over1"] = time.monotonic() - _JOB_TIMEOUT_SECS - 60
+        svc._running_tasks["over1"] = MagicMock(done=MagicMock(return_value=False))
+
+        with patch.object(svc, "_force_reap", new_callable=AsyncMock) as mock_reap, _one_sweep():
+            with pytest.raises(asyncio.CancelledError):
+                await svc._reaper_loop()
+
+        mock_reap.assert_awaited_once()
+        assert mock_reap.call_args[0][0] == "over1"
+
+    @pytest.mark.asyncio
+    async def test_run_job_isolated_stamps_and_clears_monotonic_start(self) -> None:
+        """_run_job_isolated keeps the monotonic map in lockstep with the epoch map."""
+        svc = CronService(base_dir=None, on_job=AsyncMock())
+        job = _make_job("mono1")
+        svc._executing.add("mono1")
+
+        seen: list[bool] = []
+
+        async def capture(j: CronJob) -> None:
+            seen.append("mono1" in svc._job_start_monotonic)
+
+        with patch.object(svc, "_merge_job_result"):
+            with patch.object(svc, "_execute_with_timeout", side_effect=capture):
+                await svc._run_job_isolated(job)
+
+        assert seen == [True]  # was tracked during execution
+        assert "mono1" not in svc._job_start_monotonic  # cleaned up after
+
+    @pytest.mark.asyncio
+    async def test_force_reap_clears_monotonic_start(self, tmp_path: object) -> None:
+        """_force_reap pops the monotonic stamp so a reap never repeats."""
+        svc = CronService(base_dir=None, on_job=AsyncMock())
+        svc._history = CronHistoryStore(base_dir=tmp_path)
+        svc._sessions = _mock_sessions()
+
+        job = _make_job("reap1")
+        svc._jobs = [job]
+        svc._job_start_times["reap1"] = time.time() - _JOB_TIMEOUT_SECS - 60
+        svc._job_start_monotonic["reap1"] = time.monotonic() - _JOB_TIMEOUT_SECS - 60
+        svc._running_tasks["reap1"] = MagicMock(done=MagicMock(return_value=False))
+
+        with patch("kiro_crew.sel.sel"), patch.object(svc, "_save"):
+            await svc._force_reap("reap1", _JOB_TIMEOUT_SECS + 60)
+
+        assert "reap1" not in svc._job_start_monotonic
+
+    @pytest.mark.asyncio
+    async def test_reaper_done_task_cleanup_clears_monotonic_start(self) -> None:
+        """The done-task cleanup branch pops both maps, not just the epoch one."""
+        svc = CronService(base_dir=None, on_job=AsyncMock())
+        svc._sessions = _mock_sessions()
+
+        svc._job_start_times["done2"] = time.time() - _JOB_TIMEOUT_SECS - 60
+        svc._job_start_monotonic["done2"] = time.monotonic() - _JOB_TIMEOUT_SECS - 60
+        svc._running_tasks["done2"] = MagicMock(done=MagicMock(return_value=True))
+
+        with patch("kiro_crew.sel.sel"), _one_sweep():
+            with pytest.raises(asyncio.CancelledError):
+                await svc._reaper_loop()
+
+        assert "done2" not in svc._job_start_times
+        assert "done2" not in svc._job_start_monotonic
+
+    @pytest.mark.asyncio
+    async def test_reaper_falls_back_to_wallclock_without_monotonic_stamp(
+        self, tmp_path: object
+    ) -> None:
+        """An entry with no monotonic stamp (a run in flight across an upgrade)
+        still reaps, on the wall-clock elapsed."""
+        svc = CronService(base_dir=None, on_job=AsyncMock())
+        svc._history = CronHistoryStore(base_dir=tmp_path)
+        svc._sessions = _mock_sessions()
+
+        job = _make_job("legacy1")
+        svc._jobs = [job]
+        svc._job_start_times["legacy1"] = time.time() - _JOB_TIMEOUT_SECS - 60
+        svc._running_tasks["legacy1"] = MagicMock(done=MagicMock(return_value=False))
+        assert "legacy1" not in svc._job_start_monotonic
+
+        with patch("kiro_crew.sel.sel"), patch.object(svc, "_save"), _one_sweep():
+            with pytest.raises(asyncio.CancelledError):
+                await svc._reaper_loop()
+
+        assert "legacy1" in svc._reaped_jobs

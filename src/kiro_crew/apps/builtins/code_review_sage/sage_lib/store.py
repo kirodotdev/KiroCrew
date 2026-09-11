@@ -448,10 +448,10 @@ def data_dir(root: Path | None = None) -> Path:
 
 # --- Per-run scratch ---------------------------------------------------------
 # Every review run owns a private subtree, ``data/runs/<run-id>/``, holding its
-# result records and its report. Runs used to share one ``data/results`` dir and
-# one ``data/reports`` index, which forced the backend to serialize whole runs
-# (an overlapping run would clear the records the other was still writing) and
-# left only the newest report readable. Per-run isolation is what lets several
+# result records and its report. Sharing one ``data/results`` dir and one
+# ``data/reports`` index across runs forces the backend to serialize whole runs
+# (an overlapping run clears the records the other is still writing) and leaves
+# only the newest report readable. Per-run isolation is what lets several
 # reviews run at once AND keeps each finished report retrievable by run id.
 #
 # What stays GLOBAL (deliberately, do not move under a run): ``config.json``,
@@ -526,7 +526,7 @@ def remove_run_dir(run_id: str, root: Path | None = None) -> bool:
 
 
 def list_run_ids(root: Path | None = None) -> list[str]:
-    """Run ids that currently have an on-disk subtree (used to reap orphans)."""
+    """Run ids that currently have an on-disk subtree (the input for orphan reaping)."""
     rr = runs_root(root)
     if not rr.is_dir():
         return []

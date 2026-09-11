@@ -95,8 +95,8 @@ def test_extra_mcp_servers_empty_standalone() -> None:
 
 # ── AgentRuntime.run_first_run_setup (newly wired) ──
 #
-# The gateway boot path used to call ``agent.run_first_run_setup()`` directly,
-# bypassing the ``agent_runtime`` seam entirely. It now routes through
+# The gateway boot path must not call ``agent.run_first_run_setup()`` directly
+# and bypass the ``agent_runtime`` seam; it routes through
 # ``current_context().agent_runtime.run_first_run_setup()``. These two tests are
 # the behavior-preserving proof: the Default adapter must invoke the SAME
 # underlying function with the same (no) arguments, so a standalone install gets

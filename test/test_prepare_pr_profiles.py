@@ -263,7 +263,7 @@ def test_charter_budgets_match_the_ci_workflows():
     )
 
     # The GPT lane's budget lives with the contract that applies it -- the
-    # shared review-core prompt (#5852) -- not in the workflow that splices it.
+    # shared review-core prompt -- not in the workflow that splices it.
     gpt_contract = (
         REPO_ROOT / ".github" / "review-prompts" / "gpt-review-core.md"
     ).read_text(encoding="utf-8")
@@ -346,6 +346,12 @@ def test_ci_blocking_scans_are_covered_by_the_floor():
     # future blocking CI check disappear from later prepare-pr passes.
     floor = "\n".join(data["gates"])
 
+    # CI-only capability gate: "Require real FAISS edit invalidation regressions"
+    # installs an optional native accelerator in an isolated Linux venv and
+    # requires all four versioned cases to pass. The local scoped-test gate
+    # retains those tests with their declared capability skips; prepare-pr does
+    # not provision optional native runtimes, just as it does not grant Linux
+    # namespaces or supply the Darwin kernel. Its absence is not FAISS evidence.
     exempt_scripts = {
         # Chooses WHICH tests to run for the changed surface; not itself a gate.
         "scripts/ci-surface-tests.py",
@@ -363,6 +369,10 @@ def test_ci_blocking_scans_are_covered_by_the_floor():
         # Invoked BY packaging/build-desktop.sh to write the beacon provenance
         # module, never standalone. Gating on it would gate on the build script.
         "scripts/stamp-distribution.sh",
+        # Optional synthetic Qwen measurement, not a blocking score gate. The
+        # bounded CI step records unavailable evidence on failure; local
+        # prepare-pr must not download a model or claim a calibration score.
+        "scripts/ci-member-memory-benchmark.py",
     }
 
     invoked = set(re.findall(r"\bscripts/[A-Za-z0-9_.-]+\.(?:py|sh)", run_text))
@@ -727,7 +737,7 @@ def test_symlinked_config_is_refused(tmp_path):
 # TreeReader interface parity
 # --------------------------------------------------------------------------
 def test_tree_reader_worktree_and_pinned_parity(tmp_path):
-    """#6236: WorktreeReader and PinnedTreeReader share the TreeReader contract."""
+    """WorktreeReader and PinnedTreeReader share the TreeReader contract."""
     subprocess.run(["git", "init", "-q", "-b", "main"], cwd=tmp_path, check=True)
     subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=tmp_path, check=True)
     subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp_path, check=True)

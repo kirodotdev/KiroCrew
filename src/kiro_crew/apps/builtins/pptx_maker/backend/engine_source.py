@@ -57,7 +57,7 @@ logger = logging.getLogger("kirocrew.app.pptx-maker")
 
 # ── the pin ─────────────────────────────────────────────────────────────────
 
-#: The public engine repository. Only ever used to build the archive URL.
+#: The public engine repository. Its only role is building the archive URL.
 ENGINE_REPO = "https://github.com/aws-samples/sample-spec-driven-presentation-maker"
 
 #: The upstream release the pinned tree corresponds to. DISPLAY ONLY — it is
@@ -274,8 +274,8 @@ def download_archive(staging: Path) -> tuple[bool, str]:
                     digest.update(chunk)
                     downloaded += len(chunk)
     # `http.client.HTTPException` is in the tuple deliberately: `InvalidURL` derives
-    # from it, NOT from `OSError`/`URLError`/`ValueError`, so a malformed mirror URL
-    # used to pass straight through this handler and be reported by an outer catch-all.
+    # from it, NOT from `OSError`/`URLError`/`ValueError`, so without it a malformed
+    # mirror URL passes straight through this handler to an outer catch-all.
     except (
         urllib.error.URLError,
         http.client.HTTPException,

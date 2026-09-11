@@ -557,7 +557,7 @@ class TestCommentLifecycleEvents:
             text="anchored",
             anchor={"quote": "some body text", "start_offset": 9, "end_offset": 23},
         )
-        # Rewrite content so the anchor no longer matches → rescan orphans it.
+        # Rewrite content so the anchor stops matching → rescan orphans it.
         store.update("doc", content="# Hello\n\ncompletely different")
         resp = await h.api_artifact_comments(_req(match={"slug": "doc"}))
         cmt = _j(resp)["comments"][0]

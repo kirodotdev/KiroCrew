@@ -216,7 +216,7 @@ def _snapshot_recording(
     step's ceiling judged the original name, and a swap could have replaced it
     with something the memory ceiling exists to refuse. Returns the snapshot
     path, or None when the source was refused (swapped for a link, ancestor
-    directory swapped for a link, no longer a regular file, vanished before the
+    directory swapped for a link, not a regular file, vanished before the
     copy) or grew past the ceiling. BLOCKING.
     """
     # Windows first: ``O_NOFOLLOW`` does not exist there, so the pinned open

@@ -534,12 +534,12 @@ def seed(fixture_name: str, *, replace: bool = False) -> None:
     elif dst.exists() and pinned_fs.is_reparse_point(dst):
         # Empty-but-existing symlink: ``shutil.copytree(src, dst)`` would
         # raise ``FileExistsError`` with a raw message because the symlink
-        # itself exists as a path. Previously this fell through to the
-        # ``OSError`` branch in ``seed_cmd`` and landed as EXIT_IO_ERROR
-        # with ``reason=FileExistsError`` in the audit — technically
-        # correct but the user got a cryptic error. Refuse explicitly with
-        # a symlink-empty guardrail so the same symlink-is-dangerous message
-        # pattern applies whether the link target is empty or populated.
+        # itself exists as a path. Falling through to the ``OSError`` branch
+        # in ``seed_cmd`` lands as EXIT_IO_ERROR with
+        # ``reason=FileExistsError`` in the audit — technically correct but
+        # cryptic. Refuse explicitly with a symlink-empty guardrail so the
+        # same symlink-is-dangerous message pattern applies whether the link
+        # target is empty or populated.
         raise SeedError(
             f"refusing to seed into a symlinked or junctioned "
             f"$KIROCREW_HOME: {dst}. Point it at a real directory.",

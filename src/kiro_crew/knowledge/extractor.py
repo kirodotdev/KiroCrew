@@ -103,9 +103,8 @@ class EntityExtractor:
 
         Delegates to the shared ``llm_helpers._extract_json_of_type`` scanner
         (a bare JSON reply, a fenced block, and JSON wrapped in prose are all
-        the same to it), so a stray brace in surrounding prose no longer
-        corrupts the span the way the old greedy first-``{``-to-last-``}``
-        regex did. Returns the empty result on any parse failure, on a
+        the same to it), so a stray brace in surrounding prose does not
+        corrupt the span. Returns the empty result on any parse failure, on a
         non-dict reply, or when two DIFFERENT payload-shaped dicts make the
         choice ambiguous (the shared contract refuses to guess).
         """

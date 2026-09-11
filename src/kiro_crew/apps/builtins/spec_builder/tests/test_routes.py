@@ -130,7 +130,7 @@ def _live_state_snapshot() -> dict[str, int]:
     is always un-redirected), but it must NOT happen at import time -- a
     module-level ``routes._state_dir()`` freezes whichever ``KIROCREW_HOME``
     is active at collection, defeating pod isolation and the per-test home
-    isolation (the issue #874 class the lazy-paths ratchet enforces).
+    isolation (the class of leak the lazy-paths ratchet enforces against).
     """
     global _REAL_STATE_DIR
     if _REAL_STATE_DIR is None:
@@ -566,7 +566,7 @@ async def test_settings_rejects_sensitive_base_path(tmp_path, monkeypatch):
         assert resp.status == 400
 
 
-# ── GPT round-1 HIGHs (#518) ─────────────────────────────────────────────────
+# ── symlink containment, state normalization, create pre-checks ──────────────
 #
 # One test group per finding, so a regression names the finding it re-opens.
 
@@ -698,7 +698,7 @@ def test_contained_accepts_the_worktree_itself(tmp_path):
     assert routes._contained(spec_dir, worktree) is True
 
 
-# ── GPT round-3 findings (#518) ───────────────────────────────────────────────
+# ── browse scan offloading and symlink skipping ──────────────────────────────
 
 
 # (1) planning-phase auto-approval never expired
@@ -752,7 +752,7 @@ def test_security_helper_is_imported_at_module_scope():
     assert callable(routes.is_sensitive_path)
 
 
-# ── GPT round-4 findings (#518) ───────────────────────────────────────────────
+# ── descriptor-pinned spec reads; this app grants no worker trust ────────────
 
 
 # (1) spec reads must be descriptor-pinned, not check-then-read
@@ -803,15 +803,13 @@ def test_spec_read_is_size_capped():
 
 
 def test_app_never_grants_worker_trust():
-    """The load-bearing invariant of round 4.
+    """The load-bearing invariant: this app never stamps worker trust.
 
-    This app used to stamp ``slot._trust = True`` on create/message/execute
-    because a permission prompt was invisible in the embedded chat. That premise
-    is gone — the embed now renders working Approve/Trust/Reject controls — and a
-    backend grant could not be bounded honestly: the wall-clock TTL was enforced
-    on the UI's status poll, so closing the page stopped all enforcement while
-    the grant survived. The decision belongs to the user, via core's own trust
-    mechanism, where it is auditable as their choice.
+    The embed renders working Approve/Trust/Reject controls, so the permission
+    prompt is visible where the user is, and a backend grant cannot be bounded
+    honestly: a wall-clock TTL enforced on the UI's status poll stops enforcing the
+    moment the page closes, while the grant survives. The decision belongs to the
+    user, via core's own trust mechanism, where it is auditable as their choice.
     """
 
     src = routes_source()
@@ -851,7 +849,7 @@ async def test_halt_execution_leaves_user_trust_alone(tmp_path):
     assert slot._trust is True  # user's choice preserved
 
 
-# ── GPT round-5 findings (#518) ───────────────────────────────────────────────
+# ── handlers offload filesystem work; delete tears down the slot ─────────────
 
 
 # (1) polled handlers must not do filesystem work on the event loop
@@ -2132,7 +2130,7 @@ def test_prepare_handoff_refuses_a_tasks_file_with_no_open_task(tmp_path):
     assert routes._prepare_handoff(spec_dir)[0] is True
 
 
-# ── GPT round-7 findings (#518) ──────────────────────────────────────────────
+# ── index transactions serialize; phases derive off the loop ─────────────────
 
 
 @pytest.mark.asyncio
@@ -2229,7 +2227,7 @@ def test_gateway_helpers_are_imported_at_module_scope():
         assert hasattr(routes, name), f"{name} is not bound at module scope"
 
 
-# ── GPT round-8 findings (#518) ──────────────────────────────────────────────
+# ── atomic state writes and git auditing ─────────────────────────────────────
 
 
 def test_state_files_are_written_atomically(tmp_path, monkeypatch):
@@ -2366,7 +2364,7 @@ async def test_detail_payload_reports_live_running_state(tmp_path, monkeypatch):
     assert body["duplicate_supported"] is False
 
 
-# ── GPT round-9 findings (#518) ──────────────────────────────────────────────
+# ── sentinel isolation; the index is arbitrated before the slot ──────────────
 
 
 def test_symlinked_spec_dir_cannot_touch_another_specs_sentinel(tmp_path):
@@ -2426,7 +2424,7 @@ def test_create_arbitrates_the_index_before_touching_the_shared_slot():
     assert "_ensure_worker_slot(" in src[arbitration:]
 
 
-# ── GPT round-10 findings (#518) ─────────────────────────────────────────────
+# ── handoff authorization, pause, and stop ───────────────────────────────────
 
 
 @pytest.mark.asyncio
@@ -2591,7 +2589,7 @@ def test_stop_handler_halts_the_running_turn():
     assert "_halt_active_turn(" in inspect.getsource(routes._halt_execution)
 
 
-# ── GPT round-11 findings (#518) ─────────────────────────────────────────────
+# ── path validation off the loop; the slot-scoping chokepoint ────────────────
 
 
 def test_no_handler_validates_paths_on_the_event_loop():
@@ -2708,7 +2706,7 @@ def test_every_slot_acquisition_goes_through_the_scoping_chokepoint():
         ), f"{handler.__name__} does not scope the slot it uses"
 
 
-# ── GPT round-12 findings (#518) ─────────────────────────────────────────────
+# ── index reads stay off the event loop ──────────────────────────────────────
 
 
 def test_no_handler_reads_the_index_on_the_event_loop():
@@ -2799,7 +2797,7 @@ async def test_aload_index_returns_the_persisted_index(tmp_path, monkeypatch):
     assert await routes._aload_index() == routes._load_index()
 
 
-# ── GPT round-13 findings (#518) ─────────────────────────────────────────────
+# ── recents and settings IO off the loop; missing git degrades ───────────────
 
 
 def test_recents_and_settings_io_stay_off_the_event_loop():
@@ -2867,7 +2865,7 @@ async def test_git_reports_unavailable_when_the_sandbox_refuses(tmp_path, monkey
     assert "unavailable" in err
 
 
-# ── GPT round-14 findings (#518) ─────────────────────────────────────────────
+# ── repo info and handoff validate through the chokepoint ────────────────────
 
 
 def test_repo_info_validates_through_the_chokepoint_off_loop():
@@ -2932,7 +2930,7 @@ def test_handoff_refuses_a_symlinked_tasks_file(tmp_path):
     assert routes._prepare_handoff(spec_dir)[0] is True
 
 
-# ── GPT round-15 findings (#518) ─────────────────────────────────────────────
+# ── persisted transcripts are read off the loop and redacted ─────────────────
 
 
 @pytest.mark.asyncio
@@ -2986,7 +2984,7 @@ async def test_persisted_transcript_is_served_and_redacted():
     assert "AKIAIOSFODNN7EXAMPLE" not in json.dumps(out), "credential not redacted"
 
 
-# ── GPT round-16 findings (#518) ─────────────────────────────────────────────
+# ── redaction fails closed ───────────────────────────────────────────────────
 
 
 def test_redaction_fails_closed_without_the_security_module(monkeypatch):
@@ -3010,7 +3008,7 @@ def test_redaction_fails_closed_without_the_security_module(monkeypatch):
     assert routes._redact("") == ""
 
 
-# ── GPT round-17 findings (#518) ─────────────────────────────────────────────
+# ── slot ownership and default-model stamping ────────────────────────────────
 
 
 @pytest.mark.asyncio
@@ -3047,12 +3045,11 @@ async def test_foreign_slot_is_not_silently_re_owned(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_only_our_own_slot_is_adopted_and_a_missing_one_is_created(monkeypatch):
-    """Round 22 tightened this: an UNSCOPED slot under our key is somebody else's
-    conversation (a main-chat session that happens to be named
-    `spec-builder-<x>`), and adopting it rewrote its ownership, repointed its
-    project and pulled its transcript into this app. Only a slot already owned by
-    this app is adopted; a MISSING slot is still created and scoped, which is what
-    keeps the discovered-spec fix working."""
+    """An UNSCOPED slot under our key is somebody else's conversation (a main-chat
+    session that happens to be named `spec-builder-<x>`), and adopting it would
+    rewrite its ownership, repoint its project and pull its transcript into this
+    app. Only a slot already owned by this app is adopted; a MISSING slot is still
+    created and scoped, which is what keeps a discovered spec usable."""
     # The indexed working_dir now goes through _safe_dir; these fixtures use
     # synthetic paths, so accept them (the validation itself is covered
     # separately by test_indexed_working_dir_is_revalidated).
@@ -3285,7 +3282,7 @@ def test_dispatching_handlers_refuse_a_foreign_slot():
         assert "status=409" in src[claim:], f"{handler.__name__} does not report the conflict"
 
 
-# ── GPT round-18 findings (#518) ─────────────────────────────────────────────
+# ── no async function touches the filesystem inline ──────────────────────────
 
 
 def test_no_async_function_touches_the_filesystem_inline():
@@ -3350,7 +3347,7 @@ async def _async_value(v):
     return v
 
 
-# ── GPT round-19 findings (#518) ─────────────────────────────────────────────
+# ── spec_dir revalidation and identity pinning ───────────────────────────────
 
 
 def test_resolved_spec_dir_is_revalidated_for_sensitivity(tmp_path, monkeypatch):
@@ -3386,9 +3383,9 @@ def test_ordinary_destination_is_still_created(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_detail_refuses_when_the_spec_is_recreated_mid_request(tmp_path, monkeypatch):
-    """The reported race, refined by round 20: the detail handler read the index,
-    awaited the document collection, then used that PRE-AWAIT snapshot. A spec
-    deleted and recreated elsewhere under the SAME NAME is a different spec, so
+    """The detail handler reads the index, awaits the document collection, and must
+    not then trust that PRE-AWAIT snapshot. A spec deleted and recreated elsewhere
+    under the SAME NAME is a different spec, so
     continuing would pair documents read from the old directory with the new
     metadata and point the new worker at the old project. The request must refuse
     and let the client retry."""
@@ -3509,14 +3506,13 @@ def test_identity_pinned_sites_pass_expect_spec_dir():
     assert 'spec_dir", "")) != str(spec_dir)' in detail_src
 
 
-# ── GPT round-21 findings (#518) ─────────────────────────────────────────────
+# ── abort cleanup spares replacements; status is served reconciled ───────────
 
 
 @pytest.mark.asyncio
 async def test_abort_cleanup_spares_a_replacement_slot():
-    """The reported defect, introduced by round 20's abort path: both cleanups look
-    the slot up BY NAME, so unwinding a refused handoff destroyed the slot of the
-    same-name spec that had replaced ours."""
+    """Both cleanups look the slot up BY NAME, so unwinding a refused handoff must
+    not destroy the slot of a same-name spec that has replaced ours."""
 
     class _Slot:
         def __init__(self, tag):
@@ -3660,7 +3656,7 @@ def test_status_is_served_reconciled_not_raw():
         assert 'meta.get("status", "planning")' not in src
 
 
-# ── GPT round-22 findings (#518) ─────────────────────────────────────────────
+# ── handoff confirms identity before acquiring the slot ──────────────────────
 
 
 @pytest.mark.asyncio
@@ -3725,7 +3721,7 @@ def test_handoff_checks_identity_before_slot_acquisition():
     assert check < acquire, "handoff acquires the slot before confirming identity"
 
 
-# ── GPT round-23 findings (#518) ─────────────────────────────────────────────
+# ── name-only operations are identity-pinned ─────────────────────────────────
 
 
 @pytest.mark.asyncio
@@ -3850,7 +3846,7 @@ def test_name_only_operations_are_identity_pinned():
         assert src.index(cap) < src.index(acts_on), f"{handler.__name__} captures too late"
 
 
-# ── GPT round-24 findings (#518) ─────────────────────────────────────────────
+# ── sandbox setup and loop removal stay off the event loop ───────────────────
 
 
 def test_sandbox_setup_is_offloaded():
@@ -3921,7 +3917,7 @@ async def test_nudge_loop_removal_keeps_the_fsync_off_the_loop(tmp_path, monkeyp
     assert writes == []
 
 
-# ── GPT round-25 findings (#518) ─────────────────────────────────────────────
+# ── foreign-slot refusal; the seed prompt is self-contained ──────────────────
 
 
 @pytest.mark.asyncio
@@ -3987,8 +3983,8 @@ def test_seed_prompt_is_self_contained_and_type_aware():
     bug = routes._seed_prompt("bug", "thing", spec_dir, "/w", "")
     assert "root cause" in bug.lower()
 
-    # The state-file contract must be stated inline (it used to be "as the
-    # skill's 'Structured state' section specifies").
+    # The state-file contract must be stated inline, not deferred to the skill's
+    # 'Structured state' section.
     for token in ('"decisions"', '"blocking"', '"context"', ".spec-state.json"):
         assert token in quick, f"seed no longer states {token}"
     # ...and stay plumbing, never a chat topic or a deliverable.
@@ -4000,7 +3996,7 @@ def test_seed_prompt_is_self_contained_and_type_aware():
     )
 
 
-# ── GPT round-26 findings (#518) ─────────────────────────────────────────────
+# ── cancelled persistence cannot be overtaken ────────────────────────────────
 
 
 @pytest.mark.asyncio
@@ -4045,7 +4041,7 @@ async def test_cancelled_persistence_cannot_be_overtaken(tmp_path):
     assert remover.cancelled() or remover.done()
 
 
-# ── GPT round-27 findings (#518) ─────────────────────────────────────────────
+# ── handoff unwinds when the index commit raises ─────────────────────────────
 
 
 @pytest.mark.asyncio
@@ -4140,7 +4136,7 @@ async def test_handoff_unwinds_when_the_index_commit_raises(tmp_path, monkeypatc
     assert routes._load_index()["boom"].get("status") != "executing"
 
 
-# ── GPT round-28 findings (#518) ─────────────────────────────────────────────
+# ── every ownership check is exact ───────────────────────────────────────────
 
 
 @pytest.mark.asyncio
@@ -4206,7 +4202,7 @@ def test_every_ownership_check_is_exact():
         assert "not in (None" not in stripped, f"lax ownership check: {stripped}"
 
 
-# ── GPT round-30 findings (#518) ─────────────────────────────────────────────
+# ── delete ordering and handoff-unwind gating ────────────────────────────────
 
 
 @pytest.mark.asyncio
@@ -4368,7 +4364,7 @@ def test_handoff_unwind_is_gated_on_having_created_the_slot():
     ), "unwind tears down a slot it may not have created"
 
 
-# ── GPT round-31 findings (#518) ─────────────────────────────────────────────
+# ── transcript ownership; registration touches no filesystem ─────────────────
 
 
 @pytest.mark.asyncio
@@ -4420,7 +4416,7 @@ def test_route_registration_touches_no_filesystem():
 
 def test_registration_works_with_an_uncreatable_state_dir(tmp_path, monkeypatch):
     """Non-vacuous: registration must succeed even when STATE_DIR cannot be made,
-    which is what proves it no longer touches it."""
+    which is what proves it does not touch it."""
     monkeypatch.setattr(routes, "_STATE_DIR", tmp_path / "nope" / "deeper")
 
     def _explode(*_a, **_k):
@@ -4432,7 +4428,7 @@ def test_registration_works_with_an_uncreatable_state_dir(tmp_path, monkeypatch)
     assert any("/api/apps/spec-builder" in str(r.resource) for r in app.router.routes())
 
 
-# ── GPT round-32 findings (#518) ─────────────────────────────────────────────
+# ── the indexed working dir is revalidated, off the loop ─────────────────────
 
 
 @pytest.mark.asyncio
@@ -4491,15 +4487,14 @@ def test_working_dir_validation_is_offloaded():
     assert "slot.project = wd" not in src, "the raw indexed value is still assigned"
 
 
-# ── GPT round-33 findings (#518) ─────────────────────────────────────────────
+# ── create refuses, and unwinds, when the spec is replaced ───────────────────
 
 
 @pytest.mark.asyncio
 async def test_create_refuses_when_the_spec_is_replaced_during_slot_setup(tmp_path, monkeypatch):
-    """The window round 32 opened: making the working-dir chokepoint async means slot
-    setup now AWAITS, so a delete-and-recreate can land between the index insert and
-    the dispatch. The seed prompt names OUR spec_dir, so dispatching would drive the
-    replacement spec's agent with our plan."""
+    """The working-dir chokepoint is async, so slot setup AWAITS and a delete-and-recreate
+    can land between the index insert and the dispatch. The seed prompt names OUR
+    spec_dir, so dispatching would drive the replacement spec's agent with our plan."""
     client = _make_client(monkeypatch, tmp_path)
     wd = Path(os.path.realpath(tmp_path)) / "wd"
     wd.mkdir()
@@ -4562,7 +4557,7 @@ def test_create_unwind_is_identity_pinned():
     assert recheck < src.index("_dispatch_turn("), "create dispatches before rechecking identity"
 
 
-# ── GPT round-34 findings (#518) ─────────────────────────────────────────────
+# ── persisted shapes are validated; identity comes from the client ───────────
 
 
 def test_persisted_shapes_are_validated(tmp_path, monkeypatch):
@@ -4655,7 +4650,7 @@ async def test_message_identity_comes_from_the_client(tmp_path, monkeypatch):
     assert dispatched == []
 
 
-# ── GPT round-35 findings (#518) ─────────────────────────────────────────────
+# ── discovery validates each root; controls reject a stale identity ──────────
 
 
 def test_discovery_validates_each_indexed_root(tmp_path, monkeypatch):
@@ -4858,7 +4853,7 @@ def test_transcript_restore_runs_before_slot_creation():
     ), "the empty slot is created before the transcript is restored"
 
 
-# ── GPT round-37 findings + scrub/CodeQL fallout (#518) ──────────────────────
+# ── settings shapes, slot-name grammar, and the browse skip list ─────────────
 
 
 def test_settings_reader_normalizes_a_non_string_base_path(tmp_path, monkeypatch):
@@ -4941,7 +4936,7 @@ def test_browse_skip_list_carries_no_hidden_paths():
     ), "the hidden-entry skip that makes the dotted names redundant is gone"
 
 
-# ── GPT round-38 findings (#518) ──────────────────────────────────────────────
+# ── the body is parsed first; sentinel clear is directory-pinned ─────────────
 
 
 @pytest.mark.asyncio
@@ -5037,7 +5032,7 @@ def test_slack_ts_regex_is_bounded():
     assert not link_mod.is_legacy_slack_key("dashboard:spec-builder-x")
 
 
-# ── GPT round-39 findings (#518) ───────────────────────────────────────────────
+# ── failures are reported, never swallowed ───────────────────────────────────
 
 
 def test_index_entries_missing_identity_fields_are_dropped(tmp_path, monkeypatch):
@@ -5144,15 +5139,15 @@ def test_loop_removal_does_not_swallow_failures():
     assert "status=503" in delete_src and "_remove_nudge_loop" in delete_src
 
 
-# ── GPT round-40 findings (#518) ───────────────────────────────────────────────
+# ── create never inherits a deleted spec's conversation ──────────────────────
 
 
 @pytest.mark.asyncio
 async def test_create_does_not_inherit_a_deleted_specs_conversation(tmp_path, monkeypatch):
-    """The reported leak: round 36 restored transcripts with adopt_closed=True at
-    the chokepoint, and a delete leaves the archived conversation on disk under a
-    key derived from the NAME -- so creating a new spec with a previously used
-    name handed the fresh agent the deleted spec's chat."""
+    """Transcript restore at the chokepoint passes adopt_closed=True, and a delete
+    leaves the archived conversation on disk under a key derived from the NAME -- so
+    creating a new spec with an already-used name would hand the fresh agent the
+    deleted spec's chat."""
     _redirect_state(monkeypatch, tmp_path)
     seen: list[bool] = []
 
@@ -5242,7 +5237,7 @@ async def test_delete_restores_the_spec_when_archiving_fails(tmp_path, monkeypat
     assert state.get_slot(routes._slot_key("keepme")) is slot
 
 
-# ── GPT round-41 findings (#518) ───────────────────────────────────────────────
+# ── tombstones, and slot keys that are per-creation ──────────────────────────
 
 
 def test_deleted_specs_are_not_rediscovered(tmp_path, monkeypatch):
@@ -5338,15 +5333,15 @@ def test_slot_key_resolution_has_a_single_source():
     assert "_SLOT_KEYS = {" in src
 
 
-# ── GPT round-42 findings (#518) ───────────────────────────────────────────────
+# ── a minted slot key survives the commit; git needs its audit ───────────────
 
 
 def test_a_freshly_minted_slot_key_survives_the_commit(tmp_path, monkeypatch):
-    """The reported break in round 41's own fix: create minted a unique key, then
-    committed through _mutate_index -- whose internal RE-READ rebuilt the resolver
-    map from the pre-insert snapshot and discarded it. Everything afterwards (seed
-    turn, embedded chat, teardown) fell back to the legacy name-derived key while
-    the index held the unique one, splitting one spec across two slots."""
+    """Create mints a unique key, then commits through _mutate_index -- whose internal
+    RE-READ rebuilds the resolver map, and that rebuild must follow the WRITE. Rebuilt
+    from the pre-insert snapshot it discards the minted key, and everything afterwards
+    (seed turn, embedded chat, teardown) falls back to the legacy name-derived key
+    while the index holds the unique one, splitting one spec across two slots."""
     _redirect_state(monkeypatch, tmp_path)
     minted = routes._new_slot_key("fresh")
 
@@ -5440,18 +5435,15 @@ async def test_git_refuses_to_run_when_the_invocation_cannot_be_audited(tmp_path
     assert src.count('_audit_tool("error"') >= 1
 
 
-# ── GPT round-43 findings (#518) ───────────────────────────────────────────────
-
-
-# ── GPT round-44 finding (#518) ────────────────────────────────────────────────
+# ── sentinel writes are pinned to the verified directory ─────────────────────
 
 
 def test_sentinel_write_is_pinned_to_the_verified_directory(tmp_path, monkeypatch):
-    """The reported traversal, and the half of round 38 I left open: the sentinel
-    CLEAR was pinned to a directory descriptor but the WRITE still worked through
-    paths. An agent that swaps its verified directory for a symlink between the
-    check and the open redirects both the temp create and the rename, so ANOTHER
-    active spec receives the STOP file and halts."""
+    """Pinning the sentinel CLEAR to a directory descriptor is only half the fence: a
+    WRITE that works through paths keeps the traversal open. An agent that swaps its
+    verified directory for a symlink between the check and the open redirects both the
+    temp create and the rename, so ANOTHER active spec receives the STOP file and
+    halts."""
     real = Path(os.path.realpath(tmp_path))
     mine = real / "wd" / ".kiro" / "specs" / "mine"
     mine.mkdir(parents=True)
@@ -5507,7 +5499,7 @@ def test_both_sentinel_helpers_pin_the_directory():
         assert op in probe, f"{op} is not covered by the pin capability probe"
 
 
-# ── GPT round-45 findings (#518) ───────────────────────────────────────────────
+# ── the state guard covers every path the app writes ─────────────────────────
 
 
 def test_redirect_state_covers_every_path_the_app_writes():
@@ -5530,8 +5522,8 @@ def test_redirect_state_covers_every_path_the_app_writes():
 
 
 def test_state_guard_watches_the_whole_directory():
-    """The guard used to assert one known filename, which is why the second leak
-    got through. It now compares the directory listing."""
+    """The guard compares the whole directory listing: asserting one known filename
+    lets a write to any other file through."""
     src = inspect.getsource(_never_touch_the_real_state)
     assert "_live_state_snapshot()" in src
     assert "_REAL_STATE_DIR" in inspect.getsource(_live_state_snapshot)
@@ -5540,8 +5532,8 @@ def test_state_guard_watches_the_whole_directory():
 def test_state_guard_compares_the_real_dir_not_the_redirect():
     """The captured dir must survive the autouse redirect active right now.
 
-    _REAL_STATE_DIR is captured on first use rather than at import (banned by
-    issue #874). The property that makes the guard work is that it holds the
+    _REAL_STATE_DIR is captured on first use rather than at import (which the
+    lazy-paths ratchet bans). The property that makes the guard work is that it holds the
     un-redirected dir even while routes._STATE_DIR points at a tmp dir -- the
     guard re-reads it AFTER its yield, with the redirect still applied. If the
     memoization were ever dropped so it re-resolved live, before == after would
@@ -5555,7 +5547,7 @@ def test_state_guard_compares_the_real_dir_not_the_redirect():
     )
 
 
-# ── GPT round-46 findings (#518) ───────────────────────────────────────────────
+# ── slot_key is the deciding identity; handoff refuses early ─────────────────
 
 
 def test_slot_key_is_the_deciding_identity(tmp_path, monkeypatch):
@@ -5709,7 +5701,7 @@ def test_handoff_refuses_before_any_side_effect():
     assert guard < src.index("_dispatch_turn("), "the turn is dispatched before the refusal"
 
 
-# ── GPT round-47 findings (#518) ───────────────────────────────────────────────
+# ── mutations pin the creation; failures revert armed state ──────────────────
 
 
 @pytest.mark.asyncio
@@ -5924,7 +5916,7 @@ async def test_deletion_during_authorization_removes_the_armed_loop(tmp_path, mo
     assert slot.key not in slots, "the worker slot was left behind"
 
 
-# ── GPT round-48 findings (#518) ───────────────────────────────────────────────
+# ── the arming window survives polling ───────────────────────────────────────
 
 
 @pytest.mark.asyncio
@@ -5966,7 +5958,7 @@ async def test_polling_does_not_reconcile_away_the_arming_window(tmp_path, monke
 
 def test_handoff_stamps_and_clears_the_arming_marker():
     """Source guard: the marker is set by the pre-arm commit and cleared once the
-    loop exists, so the exemption lasts for the arming window and no longer."""
+    loop exists, so the exemption lasts for the arming window and not past it."""
     # The stamp is part of the atomic claim; the clear is in the handler, after the
     # loop exists.
     assert 'meta["exec_arming_at"] = now' in inspect.getsource(
@@ -5979,7 +5971,7 @@ def test_handoff_stamps_and_clears_the_arming_marker():
     assert claim < arm < clear, "the marker does not bracket the arm"
 
 
-# ── GPT round-49 findings (#518) ───────────────────────────────────────────────
+# ── claims serialize; delete tombstones before it drops the entry ────────────
 
 
 @pytest.mark.asyncio
@@ -6127,7 +6119,7 @@ def test_delete_orders_the_tombstone_before_the_pop():
     assert src.count("_forget_deleted") >= 2, "a non-deleting arm leaves the tombstone behind"
 
 
-# ── GPT round-50 findings (#518) ───────────────────────────────────────────────
+# ── tombstone writes hold the lock; errors carry a code ──────────────────────
 
 
 def test_concurrent_tombstone_writes_do_not_lose_deletions(tmp_path, monkeypatch):
@@ -6217,7 +6209,7 @@ def test_every_error_response_carries_a_machine_readable_code():
     assert not bad, f"codes must be lower_snake identifiers: {bad}"
 
 
-# ── GPT round-51 findings (#518) ───────────────────────────────────────────────
+# ── a create abort spares a replacement spec ─────────────────────────────────
 
 
 @pytest.mark.asyncio
@@ -6310,7 +6302,7 @@ def test_create_identity_checks_pin_the_creation():
     ), "the post-slot-setup check compares the directory alone"
 
 
-# ── GPT round-52 findings (#518) ───────────────────────────────────────────────
+# ── index-derived strings are redacted on egress ─────────────────────────────
 
 
 @pytest.mark.asyncio
@@ -6324,7 +6316,7 @@ async def test_index_derived_strings_are_redacted_on_egress(tmp_path, monkeypatc
     spec_dir = tmp_path / "wd" / ".kiro" / "specs" / "leaky"
     spec_dir.mkdir(parents=True)
     # Scrub only path-shaped values: a stub that also rewrote the NAME would make
-    # _usable_name drop the entry at load (round 57), testing nothing about egress.
+    # _usable_name drop the entry at load, testing nothing about egress.
     monkeypatch.setattr(
         routes, "_redact", lambda text: "[SCRUBBED]" if text and "/" in str(text) else text
     )
@@ -6391,7 +6383,7 @@ async def test_malformed_timestamps_do_not_break_the_listing(tmp_path, monkeypat
     assert names[0] == "missing" and names[1] == "numeric", names
 
 
-# ── GPT round-53 findings (#518) ───────────────────────────────────────────────
+# ── sentinel helpers fail closed without directory pinning ───────────────────
 
 
 def test_sentinel_helpers_fail_closed_without_directory_pinning(tmp_path, monkeypatch):
@@ -6468,16 +6460,16 @@ async def test_halt_still_stops_the_run_without_a_sentinel(tmp_path, monkeypatch
     assert halted == ["quiet"], "the in-flight turn was not cancelled"
 
 
-# ── GPT round-54 findings (#518) ───────────────────────────────────────────────
+# ── git refuses when its invocation cannot be audited ────────────────────────
 
 
 @pytest.mark.asyncio
 async def test_git_refuses_when_only_the_durable_audit_write_fails(tmp_path, monkeypatch):
-    """The reported gap in round 42's gate: the default log path ENQUEUES the event
-    and a background writer flushes it, so `_audit_tool` returning True proved only
-    that the enqueue did not raise -- the record could still be dropped when the log
-    was unwritable, and git ran unaudited. The invocation event is now written with
-    `critical=True`, which raises on a filesystem failure.
+    """The default log path ENQUEUES the event and a background writer flushes it, so
+    `_audit_tool` returning True proves only that the enqueue did not raise -- the
+    record can still be dropped when the log is unwritable, leaving git unaudited. The
+    invocation event is written with `critical=True`, which raises on a filesystem
+    failure.
 
     The stub models exactly that asymmetry: a queued (non-critical) call succeeds, a
     critical one raises. A gate that never asked for durability would pass."""
@@ -6526,7 +6518,7 @@ def test_audit_helper_defaults_to_queued():
     assert sig.parameters["critical"].default is False
 
 
-# ── GPT round-55 findings (#518) ───────────────────────────────────────────────
+# ── slot-key ownership, and timestamps validated on egress ───────────────────
 
 
 def test_a_spec_cannot_claim_another_specs_slot_key(tmp_path, monkeypatch):
@@ -6572,9 +6564,9 @@ def test_slot_key_ownership_rules():
 
 @pytest.mark.asyncio
 async def test_timestamps_are_validated_on_egress(tmp_path, monkeypatch):
-    """The reported leak: round 52 redacted the index's STRING fields but left
-    created_at/updated_at as whatever the agent-writable index held, so a credential
-    parked in a timestamp reached the dashboard verbatim."""
+    """Redacting the index's STRING fields is not enough on its own:
+    created_at/updated_at are whatever the agent-writable index holds, so a credential
+    parked in a timestamp would reach the dashboard verbatim."""
     client = _make_client(monkeypatch, tmp_path)
     base = tmp_path / "wd" / ".kiro" / "specs"
     (base / "stamped").mkdir(parents=True)
@@ -6605,17 +6597,17 @@ async def test_timestamps_are_validated_on_egress(tmp_path, monkeypatch):
     assert routes._numeric("1700000000") == 1700000000.0
 
 
-# ── GPT round-56 findings (#518) ───────────────────────────────────────────────
+# ── a failed archive restores the name; a reserved name holds ────────────────
 
 
 @pytest.mark.asyncio
 async def test_failed_archive_restores_the_original_name_and_key(tmp_path, monkeypatch):
-    """The reported severance: round 43 popped the entry and, if the name had been
-    taken while archival ran, restored it as `<name>-2`. Round 55 then bound slot keys
-    to their entry's own name, so the renamed entry could no longer own its
-    per-creation key -- `_slot_key` fell back to the name-derived form and the original
-    conversation became unreachable. The name is now RESERVED for the whole teardown,
-    so a failure puts the spec back exactly as it was."""
+    """A teardown that pops the entry and restores it as `<name>-2` when the name was
+    taken mid-archival severs the conversation: slot keys are bound to their entry's own
+    name, so a renamed entry cannot own its per-creation key -- `_slot_key` falls back
+    to the name-derived form and the original conversation is unreachable. The name is
+    RESERVED for the whole teardown, so a failure puts the spec back exactly as it
+    was."""
     client = _make_client(monkeypatch, tmp_path)
     spec_dir = tmp_path / "wd" / ".kiro" / "specs" / "keeper"
     spec_dir.mkdir(parents=True)
@@ -6740,14 +6732,14 @@ async def test_removal_failure_keeps_the_spec_hidden_for_a_retry(tmp_path, monke
     assert restarted.get(routes._DELETING), "restart exposed the torn-down spec"
 
 
-# ── GPT round-57 findings (#518) ───────────────────────────────────────────────
+# ── unusable index keys are dropped; status is allowlisted ───────────────────
 
 
 def test_index_keys_that_cannot_be_served_are_dropped_at_load(tmp_path, monkeypatch):
     """The reported egress path: a spec NAME is an index key, index.json is
     agent-writable, and `GET /specs` returns the key as `"name"` -- so a credential
     parked in the key reached the dashboard verbatim. Such an entry is dropped at load
-    rather than scrubbed: a scrubbed name would no longer match the directory the
+    rather than scrubbed: a scrubbed name would not match the directory the
     entry points at."""
     _redirect_state(monkeypatch, tmp_path)
     # A real AWS-key shape satisfies the name grammar, which is why the grammar alone
@@ -6829,7 +6821,7 @@ async def test_list_serves_only_allowlisted_statuses(tmp_path, monkeypatch):
     assert [s["status"] for s in body["specs"]] == ["planning"], body["specs"]
 
 
-# ── GPT round-58 findings (#518) ───────────────────────────────────────────────
+# ── non-finite timestamps; git is killed on every exceptional exit ───────────
 
 
 @pytest.mark.asyncio
@@ -7011,7 +7003,7 @@ def test_git_kills_the_process_on_every_exceptional_exit():
         )
 
 
-# ── GPT round-59 findings (#518) ───────────────────────────────────────────────
+# ── an index entry without a working dir is refused a slot ───────────────────
 
 
 def _slot_stub():
@@ -7110,7 +7102,7 @@ def test_slot_scoping_never_gates_its_working_dir_check_on_presence():
     )
 
 
-# ── GPT round-60 findings (#518) ───────────────────────────────────────────────
+# ── a delete reservation blocks dispatch ─────────────────────────────────────
 
 
 @pytest.mark.asyncio
@@ -7270,15 +7262,15 @@ async def test_failed_loop_removal_releases_both_tombstone_and_reservation(tmp_p
     assert await routes._touch_spec("keeper", expect_spec_dir=sd) is not None
 
 
-# ── GPT round-62 findings (#518) ───────────────────────────────────────────────
+# ── the pre-dispatch re-pin uses the captured entry ──────────────────────────
 
 
 @pytest.mark.asyncio
 async def test_predispatch_repin_uses_captured_key_when_client_sends_none(tmp_path, monkeypatch):
-    """The reported hole in round 60's re-pin: slot_key is OPTIONAL on the wire, so a
-    client that sends none left the pre-dispatch check with no creation pin. A delete
-    plus a same-path recreate then passed it -- spec_dir still matched -- and the
-    stale slot wrote into the REPLACEMENT's files.
+    """slot_key is OPTIONAL on the wire, so a client that sends none must not leave the
+    pre-dispatch check with no creation pin. A delete plus a same-path recreate passes a
+    spec_dir-only check -- spec_dir still matches -- and the stale slot then writes into
+    the REPLACEMENT's files.
 
     Simulates the window by swapping the index for a same-name, same-path spec with a
     NEW slot_key while _ensure_worker_slot is awaiting, then asserts the turn is
@@ -7319,7 +7311,7 @@ async def test_predispatch_repin_uses_captured_key_when_client_sends_none(tmp_pa
     await client.start_server()
     try:
         client.app["state"] = state
-        # NO slot_key in the body -- the older-client shape the pin used to trust.
+        # NO slot_key in the body -- the older-client shape the pin must not trust.
         resp = await client.post(f"{_BASE}/specs/s/message", json={"text": "edit files"})
         body = await resp.json()
     finally:
@@ -7350,7 +7342,7 @@ def test_predispatch_repin_pins_both_halves_from_the_captured_entry():
     )
 
 
-# ── Pause / Delete must not relaunch queued work (round 66) ──────────────────
+# ── Pause / Delete must not relaunch queued work ─────────────────────────────
 
 
 # The spec name these two use. Deliberately not a name any other test creates:
@@ -7509,7 +7501,7 @@ def test_run_chat_still_relaunches_from_these_three_fields():
     assert re.search(r"except asyncio\.CancelledError:", src)
 
 
-# ── A stale create-unwind must not delete a replacement's worktree (round 67) ─
+# ── A stale create-unwind must not delete a replacement's worktree ───────────
 
 
 def _removal_probe(monkeypatch):
@@ -7617,7 +7609,7 @@ def test_only_the_post_insert_unwind_needs_the_gate():
     assert "was_ours" not in early, "an early rollback should not need the gate"
 
 
-# ── Slot identity must survive both awaits in _ensure_worker_slot (round 68) ──
+# ── Slot identity must survive both awaits in _ensure_worker_slot ────────────
 
 _IDENTITY_SPEC = "identity-probe"
 
@@ -7813,9 +7805,9 @@ def test_handoff_captures_its_identity_before_the_await_and_pins_on_both():
     """Source guard on the ORDER and the ARGUMENTS.
 
     The capture must precede the _prepare_handoff await, and the reread must
-    compare BOTH spec_dir and the captured slot_key. The slot_key check that
-    already existed validates only the CLIENT's claim, so a request carrying no
-    claim previously had no identity check at all.
+    compare BOTH spec_dir and the captured slot_key. A slot_key check validates only
+    the CLIENT's claim, so on its own it leaves a request carrying no claim with no
+    identity check at all.
     """
     src = inspect.getsource(routes._handle_handoff)
     capture = src.index('started_slot_key = str(meta.get("slot_key", ""))')
@@ -8402,8 +8394,8 @@ def test_duplicate_doc_create_retries_short_writes(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_approve_records_the_version_and_the_user(tmp_path, monkeypatch):
-    """Approval used to be nothing but a chat message: the server never knew a
-    phase had been signed off, by whom, or against which text."""
+    """Approval is recorded, not merely said in chat: the server must know that a
+    phase was signed off, by whom, and against which text."""
     client = _make_client(monkeypatch, tmp_path)
     _seed_spec(tmp_path, files={"requirements.md": "# reviewed"})
     digest = routes._sha256_text("# reviewed")
@@ -9159,8 +9151,8 @@ async def test_title_relabels_without_touching_the_identity(tmp_path, monkeypatc
 @pytest.mark.asyncio
 async def test_archive_marks_the_spec_without_deleting_it(tmp_path, monkeypatch):
     """The non-destructive counterpart to delete: documents, transcript and index
-    entry all stay. Delete used to be the only way out of the rail, so tidying up
-    and destroying the work were the same action."""
+    entry all stay. Without it the only way out of the rail is delete, which makes
+    tidying up and destroying the work the same action."""
     client = _make_client(monkeypatch, tmp_path)
     spec_dir, _ = _seed_spec(tmp_path, files={"requirements.md": "# keep me"})
 
@@ -11853,8 +11845,8 @@ async def test_the_ledger_key_matches_the_id_the_detail_read_serves(tmp_path, mo
     """The overlay matches the ledger KEY against the id from the state file, so
     the two must be normalized identically.
 
-    An id carrying whitespace (or longer than a tighter cap) used to be stripped
-    on the wire but not in the state projection. The mismatch is silent in the
+    Stripping an id that carries whitespace (or exceeds a tighter cap) on the wire
+    but not in the state projection leaves a mismatch. It is silent in the
     worst way: the answer IS recorded, no card is ever locked, and the decision
     stays re-answerable forever."""
     client = _make_client(monkeypatch, tmp_path)
@@ -11988,9 +11980,9 @@ async def test_the_card_shows_the_option_not_the_whole_prompt(tmp_path, monkeypa
 async def test_a_delete_that_lands_after_the_repin_strands_no_claim(tmp_path, monkeypatch):
     """The window the in-claim reservation check does NOT cover, closed by ordering.
 
-    A DELETE reserving after the pre-dispatch re-pin used to reach a claim that had
-    already committed: the dispatch was refused, and when the delete rolled back the
-    spec came back with a decision locked to an answer the agent never received.
+    A DELETE reserving after the pre-dispatch re-pin would otherwise reach a claim that
+    has already committed: the dispatch is refused, and when the delete rolls back the
+    spec returns with a decision locked to an answer the agent never received.
     With the claim as the last await, the same delete makes the CLAIM refuse, so
     nothing is recorded and the user can answer again."""
     client = _make_client(monkeypatch, tmp_path)
@@ -12487,10 +12479,9 @@ def test_every_turn_start_takes_the_turn_lock():
 
 @pytest.mark.asyncio
 async def test_deleting_a_spec_retains_its_turn_lock(tmp_path, monkeypatch):
-    """This test asserted the OPPOSITE until round 24, as housekeeping: a deleted
-    spec's lock was dropped rather than accumulating for the process lifetime.
+    """A deleted spec's turn lock is RETAINED, not dropped as housekeeping.
 
-    That was unsafe at any reference count. A handler that called `_turn_lock()`
+    Eviction is unsafe at any reference count. A handler that called `_turn_lock()`
     before the eviction is already waiting on the OLD object, so the next arrival is
     handed a brand-new lock and the two serialize against nothing -- concurrent turns
     over the same documents, which is the hole the directory-keyed lock exists to
@@ -12848,7 +12839,7 @@ async def test_a_delete_whose_cleanup_fails_still_deletes(tmp_path, monkeypatch)
 @pytest.mark.asyncio
 async def test_a_delete_clears_the_record_after_the_index_entry(tmp_path, monkeypatch):
     """...and on the happy path the entry IS cleared, so the ledger does not accumulate
-    answers for specs that no longer exist."""
+    answers for specs that have been deleted."""
     client = _make_client(monkeypatch, tmp_path)
     spec_dir, slot_key = _decision_spec(tmp_path)
     assert (
@@ -12928,10 +12919,10 @@ def test_a_recorded_answer_round_trips_non_ascii(tmp_path, monkeypatch):
 async def test_an_alias_name_for_the_same_folder_cannot_re_answer(tmp_path, monkeypatch):
     """A name is a label the agent can mint more of; the directory is the spec.
 
-    Adding a second index entry pointing at the SAME spec directory used to give the
-    alias its own empty record, so its cards rendered answerable and a click dispatched
-    a conflicting answer over the same documents. Keyed on the directory, both names
-    resolve to one record.
+    A record keyed on the NAME gives a second index entry pointing at the SAME spec
+    directory its own empty record, so its cards render answerable and a click
+    dispatches a conflicting answer over the same documents. Keyed on the directory,
+    both names resolve to one record.
     """
     client = _make_client(monkeypatch, tmp_path)
     spec_dir, slot_key = _decision_spec(tmp_path)
@@ -13244,14 +13235,14 @@ async def test_a_renamed_spec_keeps_its_recorded_answers(tmp_path, monkeypatch):
 
 
 def test_a_symlinked_spelling_cannot_record_a_second_answer(tmp_path, monkeypatch):
-    """Until round 28 this asserted the KEY collapsed a symlinked spelling.
+    """The KEY does not collapse a symlinked spelling; the WRITE end refuses it.
 
-    It did, via resolve() -- and that bought a worse hole, because the spec directory
-    belongs to the agent: swapping the directory for a symlink moved the key while the
-    index identity still matched, so a settled record went missing and the card
-    re-opened. A key derived from mutable filesystem state is a key the agent can move.
+    Collapsing it via resolve() buys a worse hole, because the spec directory belongs
+    to the agent: swapping the directory for a symlink moves the key while the index
+    identity still matches, so a settled record goes missing and the card re-opens. A
+    key derived from mutable filesystem state is a key the agent can move.
 
-    The alias-by-spelling guarantee therefore moved to the WRITE end. The key is now
+    The alias-by-spelling guarantee therefore lives at the WRITE end. The key is
     lexical (two spellings ARE two keys), and `_claim_decision_locked` refuses a
     spec_dir that does not verify as itself -- so the aliased spelling cannot record
     anything, which is what the collapse existed to prevent.
@@ -13262,7 +13253,7 @@ def test_a_symlinked_spelling_cannot_record_a_second_answer(tmp_path, monkeypatc
     link = tmp_path / "link-spec"
     link.symlink_to(real, target_is_directory=True)
 
-    # Lexical now, so the spellings no longer share a key...
+    # Lexical, so the spellings do not share a key...
     assert routes._decision_key(str(link)) != routes._decision_key(str(real))
     # ...and that is safe because the aliased spelling is refused at the write gate.
     assert (
@@ -15458,12 +15449,10 @@ async def test_an_alias_mid_turn_blocks_a_handoff(tmp_path, monkeypatch):
     """...and a handoff, which starts an autonomous build -- the most expensive way to
     end up with two agents in one spec directory.
 
-    Until round 27 this asserted that the refusal RELEASES the loop it had already
-    armed, because arming happened before the turn lock: a bare 409 left an active
-    timer that later dispatched the very build the refusal denied. Round 27 moved
-    arming inside the lock and AFTER this check, so no loop is armed on this path at
-    all. The assertion is therefore stronger now -- authorization is never reached,
-    so there is nothing to leak and no release to get right.
+    Arming lives inside the turn lock and AFTER this check, so no loop is armed on
+    this path at all: authorization is never reached, which leaves nothing to leak and
+    no release to get right. Arming ahead of the lock instead leaves a bare 409 holding
+    an active timer that dispatches the very build the refusal denied.
     """
     client = _make_client(monkeypatch, tmp_path)
     spec_dir, _slot_key = _decision_spec(tmp_path, state={"phase": "tasks"})
@@ -15564,7 +15553,7 @@ async def test_a_completed_alias_turn_during_authorization_blocks_a_handoff(tmp_
 async def test_handoff_refuses_when_its_own_slot_starts_during_authorization(tmp_path, monkeypatch):
     """Authorization awaits while channel traffic can start the same slot.
 
-    The pre-arm snapshot is no longer authoritative after that await. Dispatching the
+    The pre-arm snapshot is not authoritative after that await. Dispatching the
     build would queue it behind the new turn, and Pause deliberately clears that queue,
     despite this endpoint reporting that execution started.
     """
@@ -15654,10 +15643,10 @@ async def test_handoff_refuses_when_its_own_slot_starts_during_the_final_repin(
 def test_the_busy_refusal_cannot_leak_an_armed_loop():
     """Source guard: the busy check must precede the arm.
 
-    Round 18 fixed a leaked timer by releasing it in the refusal; round 27 removed
-    the leak instead by arming after the check. Ordering is the property worth
-    pinning -- a future edit that moves arming back above the check reintroduces a
-    hazard that only shows up as a build firing minutes after a 409.
+    Arming after the check removes the leak outright, where releasing the timer inside
+    the refusal only patches it. Ordering is the property worth pinning -- an edit that
+    moves arming above the check reintroduces a hazard that only shows up as a build
+    firing minutes after a 409.
     """
     src = inspect.getsource(routes._handle_handoff)
     lock = src.index("async with _turn_lock(handoff_dir_key):")
@@ -15799,12 +15788,11 @@ def test_the_busy_check_reads_no_filesystem():
     """Source guard: `_busy_alias` runs ON the event loop, so it must ask the nudge
     registry by SLOT KEY and derive nothing itself.
 
-    Round 19 justified this with a claim that was wrong: `_slot_key` reads the
-    module-global `_SLOT_KEYS`, not the index, so calling it is not a filesystem hop.
-    The guard stands for the reason that survived round 21 -- key derivation belongs
-    in ONE off-loop place (`_alias_slots_locked`), because that is what makes every
-    alias key ownership-validated instead of trusted raw from an agent-writable file.
-    Re-deriving per call here would also invite an unvalidated shortcut back in.
+    Not because `_slot_key` is itself a filesystem hop -- it reads the module-global
+    `_SLOT_KEYS`, not the index. The reason is that key derivation belongs in ONE
+    off-loop place (`_alias_slots_locked`), because that is what makes every alias key
+    ownership-validated instead of trusted raw from an agent-writable file. Re-deriving
+    per call here would also invite an unvalidated shortcut back in.
     """
     src = inspect.getsource(routes._busy_alias)
     assert "_exec_loop_active_for_slot(" in src, "the busy check ignores an armed loop"
@@ -16072,17 +16060,17 @@ async def test_create_refuses_when_a_stale_record_survives_the_clear(tmp_path, m
 
 @pytest.mark.asyncio
 async def test_create_refuses_when_the_ledger_is_unreadable(tmp_path, monkeypatch):
-    """This test asserted the OPPOSITE until round 26.
+    """Create refuses rather than proceeding when the ledger clear cannot be read.
 
-    Round 21 let a create proceed when the clear failed only because the store was
-    unusable, reasoning that nothing can read a stale answer out of a store nothing
-    can read. That is wrong, and the error is worth keeping visible: unreadability
-    is a property of ONE READ, not of the store. A transient failure -- a partial
-    write, a momentary IO error -- leaves the old record intact on disk, so the
-    probe returned empty, the create proceeded, and the record became readable
-    again afterwards and overlaid its answers onto the brand-new spec.
+    Letting a create proceed because the store was unusable rests on the reasoning
+    that nothing can read a stale answer out of a store nothing can read. That is
+    wrong, and the error is worth keeping visible: unreadability is a property of ONE
+    READ, not of the store. A transient failure -- a partial write, a momentary IO
+    error -- leaves the old record intact on disk, so the probe returns empty, the
+    create proceeds, and the record becomes readable again afterwards and overlays its
+    answers onto the brand-new spec.
 
-    So the refusal is back on the clear's own result, which is the only signal that
+    So the refusal rests on the clear's own result, which is the only signal that
     actually reports whether the ledger is clean. The cost is that a corrupt
     decisions store blocks new spec creation -- loud, and the correct direction to
     fail for a trust root.
@@ -16150,11 +16138,11 @@ def _two_names_one_dir(tmp_path, *, alias_key):
 
 @pytest.mark.asyncio
 async def test_an_alias_with_no_slot_key_is_still_seen(tmp_path, monkeypatch):
-    """Deleting the field used to drop the alias from the scan entirely.
+    """An alias whose ``slot_key`` field is deleted is still seen by the scan.
 
-    The old code skipped an entry with no key, so an agent could delete its own
-    ``slot_key`` and become invisible to every busy check -- then both names ran a
-    turn over the same documents.
+    Skipping an entry with no key lets an agent delete its own ``slot_key`` and become
+    invisible to every busy check -- then both names run a turn over the same
+    documents.
     """
     _redirect_state(monkeypatch, tmp_path)
     spec_dir = _two_names_one_dir(tmp_path, alias_key="")
@@ -16208,10 +16196,10 @@ async def test_an_invalid_identity_cannot_claim_the_own_slot_exemption(tmp_path,
 
 @pytest.mark.asyncio
 async def test_an_alias_that_copies_our_key_is_still_seen(tmp_path, monkeypatch):
-    """Copying the caller's key used to make the alias read as "our own slot".
+    """Copying the caller's key must not make the alias read as "our own slot".
 
     Own-slot exclusion exists so a same-session message can queue rather than be
-    refused. Keyed on a field the agent writes, it became a way to borrow the
+    refused. Keyed on a field the agent writes, it would be a way to borrow that
     exemption -- ownership validation rejects a key that does not encode the
     alias's own name, so the copy cannot be claimed.
     """
@@ -16262,13 +16250,13 @@ async def test_our_own_name_is_still_excluded(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_stop_waits_for_an_in_flight_decision_answer(tmp_path, monkeypatch):
-    """The race: Stop used to cancel a turn a decision answer was mid-dispatch.
+    """The race: Stop must not cancel a turn a decision answer is mid-dispatch.
 
     The answer path records the answer and dispatches it while holding the
-    directory turn lock. Stop took no lock, so it could land BETWEEN those two
-    steps -- the turn it cancelled was the one carrying the answer, and because the
-    record is never rewritten the card stayed locked to an answer the agent never
-    received. Stop now takes the same lock, so it cannot observe that midpoint.
+    directory turn lock. A lockless Stop lands BETWEEN those two steps -- the turn
+    it cancels is the one carrying the answer, and because the record is never
+    rewritten the card stays locked to an answer the agent never received. Stop
+    takes the same lock, so it cannot observe that midpoint.
 
     Timing is deliberate: the halt sets an Event, and the assertion is that it does
     not fire within a REAL timeout while the lock is held. An earlier version of
@@ -16343,9 +16331,9 @@ def test_stop_rechecks_the_spec_after_waiting_for_the_lock():
 async def test_stop_refuses_a_spec_recreated_at_the_same_path(tmp_path, monkeypatch):
     """The directory cannot detect a delete + recreate; the slot key can.
 
-    Round 23 rechecked the canonical directory after waiting for the lock, but a
+    Rechecking the canonical directory after waiting for the lock is not enough: a
     recreate at the SAME path resolves to the same directory -- so the recheck
-    passed and Stop cancelled the replacement's run. Slot keys are minted per
+    passes and Stop cancels the replacement's run. Slot keys are minted per
     creation, so the replacement necessarily carries a different one.
     """
     client = _make_client(monkeypatch, tmp_path)
@@ -16453,12 +16441,11 @@ async def test_create_waits_for_the_directory_turn_lock(tmp_path, monkeypatch):
 
 
 def test_every_handler_that_starts_work_holds_the_turn_lock():
-    """The invariant, widened after round 27 found the axis it was missing.
+    """The invariant covers every way a handler can cause work to start.
 
-    Round 25 stated this as "every handler that mutates the index holds the lock",
-    which is why a handler that ARMED A TIMER outside the lock was found by a
-    reviewer instead of by this test: the timer dispatched on its own while the
-    handler still waited for the lock. Causing work to start has three shapes, not
+    Stated as "every handler that mutates the index holds the lock", it misses a
+    handler that ARMS A TIMER outside the lock: the timer dispatches on its own while
+    the handler still waits for the lock. Causing work to start has three shapes, not
     one -- register/remove an index entry, arm a nudge loop, or dispatch a turn --
     and all three must be serialized on the directory.
 
@@ -16496,9 +16483,9 @@ def _effect_calls_outside_turn_lock(fn) -> list[str]:
     _turn_lock(...)` block.
 
     On the AST rather than on text, because "is the lock present in this function"
-    is the question that let round 28 through: create held the lock around its index
-    insert and dispatched its seed ~190 lines after the block closed. Containment is
-    the property; presence is not.
+    is the wrong question: create can hold the lock around its index insert and
+    dispatch its seed ~190 lines after the block closed. Containment is the property;
+    presence is not.
     """
     tree = ast.parse(textwrap.dedent(inspect.getsource(fn)))
 
@@ -16535,13 +16522,12 @@ def _effect_calls_outside_turn_lock(fn) -> list[str]:
 
 
 def test_every_serialized_effect_is_inside_the_lock_not_merely_near_it():
-    """The invariant, made positional after round 28.
+    """The invariant is positional: per-path and presence-anywhere are both weaker.
 
-    Rounds 23-27 each fixed one handler that started work outside the directory turn
-    lock, and each time the guard I wrote was weaker than the rule it stood for:
-    first per-path, then presence-anywhere-in-the-handler. This checks CONTAINMENT on
-    the AST, for every handler and every effect, which is the form that would have
-    caught create dispatching its seed after the block closed.
+    A guard that checks one path, or only that the lock appears somewhere in the
+    handler, is weaker than the rule it stands for. This checks CONTAINMENT on
+    the AST, for every handler and every effect, which is the form that catches
+    create dispatching its seed after the block closed.
     """
     offenders: dict[str, list[str]] = {}
     checked: list[str] = []
@@ -16583,10 +16569,10 @@ def test_every_serialized_effect_is_inside_the_lock_not_merely_near_it():
 async def test_create_dispatches_its_seed_before_anything_else_can_run(tmp_path, monkeypatch):
     """A registered spec whose seed has not been dispatched must accept nothing else.
 
-    The lock used to close at the index insert, so a list poll could expose the spec
-    while create was still awaiting slot setup; a concurrent message then took the
-    lock and started the FIRST turn, leaving the seed queued second and the persisted
-    conversation beginning with something other than the prompt that defines the spec.
+    A lock closing at the index insert lets a list poll expose the spec while create
+    is still awaiting slot setup; a concurrent message then takes the lock and starts
+    the FIRST turn, leaving the seed queued second and the persisted conversation
+    beginning with something other than the prompt that defines the spec.
     """
     project = tmp_path / "proj"
     project.mkdir()
@@ -16848,11 +16834,10 @@ async def test_a_decision_absent_from_state_is_refused(tmp_path, monkeypatch):
 async def test_two_spellings_of_one_directory_share_the_turn_lock(monkeypatch):
     """A raw path and a normalized key must resolve to the SAME lock object.
 
-    Round 28 made the ledger key lexical via `normcase`, which lowercases on Windows.
-    Call sites passing a raw path then hashed to a different dictionary entry than
-    those passing `_decision_key(...)` -- two locks for one directory, so two turns
-    could run on the same documents. That is the exact hole the directory-keyed lock
-    exists to close, reintroduced by the fix for a different one.
+    The ledger key is lexical via `normcase`, which lowercases on Windows. A call site
+    passing a raw path would hash to a different dictionary entry than one passing
+    `_decision_key(...)` -- two locks for one directory, so two turns could run on the
+    same documents, which is the exact hole the directory-keyed lock exists to close.
 
     `normcase` is the identity on Linux, so this simulates Windows explicitly. Without
     the patch the assertion holds trivially and proves nothing.

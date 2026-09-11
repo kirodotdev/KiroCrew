@@ -2,7 +2,7 @@ import { safeSetItem } from '../utils/safeStorage'
 import { useState, useEffect, useCallback, useRef, useMemo, Fragment } from 'react'
 import { useImeGuard } from '../hooks/useImeGuard'
 import Clickable from '../components/Clickable'
-import { List, CalendarDays, CalendarClock, Plus, ClipboardList, ChevronRight, Globe, History, Trash2, FolderPlus, MoreHorizontal, Pencil, Folder, LayoutGrid, GitPullRequestArrow, Download, KeyRound } from 'lucide-react'
+import { List, CalendarDays, CalendarClock, Plus, ClipboardList, ChevronRight, Globe, History, Trash2, FolderPlus, MoreHorizontal, Pencil, Folder, LayoutGrid, GitPullRequestArrow, Download, KeyRound, Info, X } from 'lucide-react'
 import { api } from '../api/client'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useArmedDelete } from '../hooks/useArmedDelete'
@@ -27,7 +27,8 @@ import { useSortableTable } from '../hooks/useSortableTable'
 import { SortableTableHead } from '../components/SortableHeader'
 import ExecutionsView from '../components/ExecutionsView'
 import { sanitizeLlmOutput } from '../utils/sanitize'
-import { SCHEDULE_PRESETS, type CronPrefill, type SchedulePreset } from '../utils/schedulePresets'
+import { SCHEDULE_PRESETS, templateUpdate, presetCanonicalPrompt, type CronPrefill, type SchedulePreset } from '../utils/schedulePresets'
+import { contentHash } from '../lib/contentHash'
 import { groupJobsByFolder, loadCollapsedFolders, saveCollapsedFolders } from '../utils/cronFolders'
 import type { CronFolder } from '../utils/cronFolders'
 import CronFolderHeader from '../components/CronFolderHeader'
@@ -508,7 +509,7 @@ export default function SchedulePage() {
   // Open the create panel blank (from "Create your first job" / "Add Job").
   const openBlankCreate = useCallback(() => { setSelected(null); setDetailOpen(false); setPrefill(null); setCreating(true) }, [])
   // Open the create panel seeded from a pre-canned schedule card.
-  const openPreset = useCallback((p: SchedulePreset) => { setSelected(null); setDetailOpen(false); setPrefill(p.prefill); setPrefillWrites(!!p.writes); setPrefillNonce(n => n + 1); setCreating(true) }, [])
+  const openPreset = useCallback((p: SchedulePreset) => { setSelected(null); setDetailOpen(false); setPrefill({ ...p.prefill, sourcePreset: p.id, sourceTemplatePrompt: presetCanonicalPrompt(p.id) }); setPrefillWrites(!!p.writes); setPrefillNonce(n => n + 1); setCreating(true) }, [])
   // Open the detail dialog on a job (row click / calendar entry click).
   const openDetail = useCallback((job: CronJob) => { setCreating(false); setPrefill(null); setSelected(job); setDetailOpen(true) }, [])
   // Dismiss the dialog. `selected` survives on purpose — see its declaration.
@@ -1416,6 +1417,55 @@ export function JobSecretsPanel({ job, onSaved }: { job: CronJob; onSaved: () =>
  * keeps `selected` alive across dismissal so the calendar highlight and the
  * Executions filter survive.
  */
+/**
+ * "This template changed since you saved" hint on a saved job's detail panel.
+ *
+ * Attribution: `templateUpdate` compares the job's SAVED template snapshot
+ * against the template's current prompt, so this fires only when the TEMPLATE
+ * moved -- never when the user edited their own copy (see schedulePresets).
+ *
+ * Dismissible: an un-clearable notice becomes wallpaper. The dismissal is
+ * persisted against the value we compared (job id + the current template
+ * prompt), so clearing it silences THIS change but the hint returns if the
+ * template moves AGAIN -- a later prompt yields a different key. localStorage
+ * access is guarded (private mode throws); a storage failure just means the
+ * notice is not remembered as dismissed, never a crash.
+ */
+function TemplateUpdatedNotice({ job }: { job: CronJob }) {
+  const update = templateUpdate(job)
+  // Key the dismissal on the CANONICAL prompt -- the same locale-stable
+  // operand detection uses -- so dismissing then switching language does not
+  // resurrect the notice, and a genuine later template change (new canonical
+  // prompt -> new key) re-shows it.
+  const key = update
+    ? `kc-tpl-upd-dismissed:${job.id}:${contentHash(presetCanonicalPrompt(job.source_preset || ''))}`
+    : ''
+  const [dismissed, setDismissed] = useState(() => {
+    if (!key) return false
+    try { return localStorage.getItem(key) === '1' } catch { return false }
+  })
+  if (!update || dismissed) return null
+  const dismiss = () => {
+    try { localStorage.setItem(key, '1') } catch { /* private mode: just hide for this view */ }
+    setDismissed(true)
+  }
+  return (
+    <div className="flex items-start gap-2 px-3 py-2 rounded-lg bg-accent-subtle text-[12.5px] text-muted" role="note" data-testid="schedule-template-updated-notice">
+      <Info size={14} className="shrink-0 mt-0.5" aria-hidden="true" />
+      <span className="flex-1">{i18nT('pages.schedulePage.template_updated_notice', { name: update.title })}</span>
+      <Btn
+        onClick={dismiss}
+        aria-label={i18nT('pages.schedulePage.template_updated_dismiss')}
+        title={i18nT('pages.schedulePage.template_updated_dismiss_hint')}
+        data-testid="schedule-template-updated-dismiss"
+        className="shrink-0 -mr-1 -mt-0.5 border-0 px-1 py-0.5 text-muted hover:bg-accent-hover hover:text-text"
+      >
+        <X size={13} aria-hidden="true" />
+      </Btn>
+    </div>
+  )
+}
+
 function JobDetailDialog({ job, prefill, prefillWrites, agents, defaultAgent, rosterFailure, onClose, onSaved }: {
   job?: CronJob; prefill?: CronPrefill; prefillWrites?: boolean; agents: KiroCrewAgent[]; defaultAgent: string; rosterFailure?: { reloading: boolean; onReload: () => void }; onClose: () => void; onSaved: () => void
 }) {
@@ -1462,6 +1512,7 @@ function JobDetailDialog({ job, prefill, prefillWrites, agents, defaultAgent, ro
           <JobLogsView jobId={job.id} isRunning={job.is_running} runningSince={job.running_since} cancelError={panelError} onCancel={async () => { setPanelError(null); try { await api.cancelCron(job.id); onSaved() } catch (e: unknown) { setPanelError(e instanceof Error ? e.message : i18nT('pages.schedulePage.failed')) } }} />
         ) : (
           <>
+            {job && <TemplateUpdatedNotice job={job} />}
             {prefillWrites && (
               <div className="flex items-start gap-2 px-3 py-2 rounded-lg bg-warn-subtle text-[12.5px] text-warn-fg" role="note" data-testid="schedule-writes-notice">
                 <GitPullRequestArrow size={14} className="shrink-0 mt-0.5" aria-hidden="true" />

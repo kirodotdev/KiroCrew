@@ -60,9 +60,9 @@ class TestCollidingClock:
             log.append("t", "user", "c")
         ts = [m["ts"] for m in log.read_messages("t")]
         # The simulator still hands every call one instant (test_now_is_frozen
-        # proves that in isolation). ``append`` no longer lets it reach the file:
+        # proves that in isolation). ``append`` does not let it reach the file:
         # it stamps each row strictly after the one before, so the coarse-clock
-        # collision Windows hits can no longer collapse a turn onto one stamp.
+        # collision Windows hits cannot collapse a turn onto one stamp.
         assert len(set(ts)) == 3
         keys = [transcript_sort_key(t) for t in ts]
         assert keys == sorted(keys)

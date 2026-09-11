@@ -40,7 +40,7 @@ def _raise_on_slots(payload):
     """A ``_broadcast`` double that fails the way the evidenced defect does.
 
     The exception TYPE is incidental — ``json.dumps`` on a non-serializable slot
-    value is the shape #6522 hit — so these tests pin the ordering instead: any
+    value is one such shape — so these tests pin the ordering instead: any
     raise out of the flush must not unwind past the durable write.
     """
     if payload.get("_type") == "slots":
@@ -315,7 +315,7 @@ class TestCreateAppIsolation:
 
 
 class TestFolderTagInheritance:
-    """Folder tags copied onto NEW chats filed into the folder (issue #5419).
+    """Folder tags copied onto NEW chats filed into the folder.
 
     Creation-only: re-opening an existing session inside the folder must not
     re-stamp tags, and moving an existing session into a tagged folder via the
@@ -431,7 +431,7 @@ class TestFolderTagInheritance:
 
     @pytest.mark.asyncio
     async def test_stale_folder_tag_id_is_not_copied_onto_the_slot(self, tmp_path):
-        """A folder id that no longer exists in the vocabulary is dropped, not stamped."""
+        """A folder id absent from the vocabulary is dropped, not stamped."""
         state = _make_state(tmp_path)
         state._folders[0]["tags"] = ["gone", "t1"]
         # Only t1 is a live tag; "gone" was deleted from the vocabulary.
@@ -505,7 +505,7 @@ class TestDurableWriteOrdering:
 
         # The failure still reaches the caller: this is an ordering fix, not a
         # swallow. Whether an already-committed create should answer 500 at all
-        # is the half of #6532 that was declined, and folding it in here would
+        # is a separate, declined question, and folding it in here would
         # resurrect it.
         assert resp.status == 500
         # But the acknowledged mutation is on disk. Outside the suspension, the

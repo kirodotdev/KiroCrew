@@ -104,7 +104,7 @@ def _zip_of(members: dict[str, bytes]) -> bytes:
     The name is assigned after ``ZipInfo.__init__`` on purpose. That constructor
     rewrites ``\\`` to ``/`` whenever ``os.sep`` is ``\\``, so a plain
     ``writestr("a\\b", …)`` silently becomes ``a/b`` on Windows — the archive
-    under test would no longer contain the member the test means to plant, and a
+    under test would not contain the member the test means to plant, and a
     backslash-traversal test would pass by not testing anything.
     """
     buf = io.BytesIO()
@@ -336,7 +336,7 @@ class TestUrlResolution:
         redacted = tectonic.redact_url("https://user:secret@mirror.example/t.tar.gz?sig=abc123")
         assert "secret" not in redacted
         assert "abc123" not in redacted
-        # HOST-ONLY. The path used to be kept, and a mirror can carry its credential
+        # HOST-ONLY. The path is dropped, and a mirror can carry its credential
         # there just as easily as in userinfo or the query.
         assert redacted == "https://mirror.example"
 
@@ -853,8 +853,7 @@ class TestBackgroundProvisioning:
             thread.join(timeout=10)
         state = tectonic.provision_state()
         assert state["state"] == tectonic.STATE_ERROR
-        # The exception's TYPE, not its message. This assertion used to read
-        # `"boom" in ...` — it was pinning the message text, which is exactly the
+        # The exception's TYPE, not its message. Pinning the message text is the
         # leak: this catch-all is where `http.client.InvalidURL` lands (it is an
         # `HTTPException`, so no handler below it matches), and its message embeds
         # the offending URL verbatim. A credentialed mirror override therefore put
@@ -996,9 +995,9 @@ class TestErrorMessagesNeverCarryMirrorCredentials:
         self, monkeypatch: pytest.MonkeyPatch, data_root: Path
     ) -> None:
         """`http.client.InvalidURL` derives from `HTTPException` — NOT from `OSError`,
-        `URLError` or `ValueError` — so it used to pass through the download handler
-        and every intermediate `except OSError` to reach the outer catch-all, and be
-        reported as an unexplained "provisioning crashed"."""
+        `URLError` or `ValueError` — so it slips past the download handler and every
+        intermediate `except OSError` to the outer catch-all; this pins that it is
+        handled, not reported as an unexplained "provisioning crashed"."""
         import http.client
 
         asset = next(iter(tectonic._ASSETS.values()))

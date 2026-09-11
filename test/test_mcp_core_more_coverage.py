@@ -1,4 +1,4 @@
-"""Coverage tests for previously-untested ``kiro_crew.mcp_core`` surfaces.
+"""Coverage tests for ``kiro_crew.mcp_core`` surfaces.
 
 Focus areas, all confirmed uncovered before this file existed:
 
@@ -345,6 +345,25 @@ class TestVetChannelGovernance:
                 assert _vet_channel_governance("dashboard:chat-1-9", "slack") is None
         assert degraded.call_args.args == ("send_message:slack",)
         assert degraded.call_args.kwargs["scope"] == "channels"
+
+    def test_the_caller_names_itself_in_both_audit_records(self) -> None:
+        """The gate is shared, so the trail must name the real caller, not the default."""
+        rec = _RecordingSel()
+        decision = SimpleNamespace(permitted=False, rule="channels", layer="policy", reason="off")
+        with patch(f"{_GOV}.governance_permits", return_value=decision):
+            with patch("kiro_crew.sel.sel", lambda: rec):
+                _vet_channel_governance("dashboard:chat-1-9", "slack", tool_name="update_message")
+        assert rec.governance[0]["tool_name"] == "update_message:slack"
+
+        with patch(f"{_GOV}.governance_permits", side_effect=RuntimeError("no context")):
+            with patch(f"{_GOV}.audit_governance_degraded") as degraded:
+                assert (
+                    _vet_channel_governance(
+                        "dashboard:chat-1-9", "slack", tool_name="update_message"
+                    )
+                    is None
+                )
+        assert degraded.call_args.args == ("update_message:slack",)
 
     def test_a_failing_degrade_audit_does_not_escape(self) -> None:
         with patch(f"{_GOV}.governance_permits", side_effect=RuntimeError("no context")):
@@ -763,10 +782,9 @@ class TestLearnAddTool:
         # model it could restrict a correction when the save changed nothing.
         #
         # A stale client still holding that schema is REFUSED, not silently
-        # converted. This test previously pinned the opposite ("ignored rather than
-        # honoured"), which was wrong in the dangerous direction: forcing the
-        # payload to global takes a correction meant for one workspace and applies
-        # it in every session, which is worse than the inert tier it replaced.
+        # converted: forcing the payload to global takes a correction meant for
+        # one workspace and applies it in every session, which is worse than the
+        # inert tier it replaced.
         with patch.object(mcp_core, "_resolve_session_key", return_value="dashboard:c"):
             with self._allowed():
                 with patch.object(mcp_core, "_post", return_value={"ok": True}) as p:

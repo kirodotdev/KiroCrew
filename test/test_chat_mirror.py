@@ -213,8 +213,8 @@ class TestMirrorLink:
     async def test_governance_narrowing_mid_delivery_fails_closed(self, tmp_path, monkeypatch):
         # Permit the initial link + the announcement, then deny once the
         # historical context-delivery loop starts. The endpoint must fail closed:
-        # return 403 and NOT persist the mirror link (regression for a denial
-        # that only broke the loop and still persisted + returned 200).
+        # return 403 and NOT persist the mirror link: a denial mid-delivery must
+        # fail closed, not persist the link and return 200.
         transport = _fake_transport("telegram")
 
         def _permits(*args, **kwargs):

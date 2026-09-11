@@ -136,7 +136,7 @@ class LiveChoices:
     Lives OUTSIDE the renderer, and that is the whole point. An options card is
     sent at the very END of a turn, so the press necessarily arrives after the
     turn — and therefore after any per-turn object — has been torn down. A
-    renderer-owned map answers every press with "no longer current", which is a
+    renderer-owned map answers every press with "not current", which is a
     card that is inert 100% of the time.
 
     Entries expire by REPLACEMENT (the conversation renders a newer card) or by

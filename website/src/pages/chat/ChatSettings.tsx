@@ -10,6 +10,8 @@ export type ContentWidth = 'compact' | 'comfortable' | 'full'
 /** Send-key mode: enter (Enter sends), ctrl-enter (Ctrl+Enter sends), enter-ctrl-newline (Enter sends, Ctrl+Enter = newline) */
 export type SendMode = 'enter' | 'ctrl-enter' | 'enter-ctrl-newline'
 
+export type MemoryMode = 'persistent' | 'incognito' | 'temporary'
+
 export const CONTENT_WIDTH: Record<ContentWidth, { messages: string; input: string }> = {
   compact: { messages: '800px', input: '816px' },
   comfortable: { messages: '84%', input: '85%' },
@@ -106,6 +108,7 @@ export interface DashboardConfig {
   restore_sessions: boolean
   restore_window_minutes: number
   merge_queued_messages: boolean
+  default_memory_mode: MemoryMode
   widget_density: 'more' | 'less'
   use_builtin_browser: boolean
   verbosity: 'default' | 'concise' | 'ultra' | 'answer_only'

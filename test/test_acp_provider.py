@@ -672,7 +672,7 @@ class TestEffortControl:
         provider._client.set_config_option = AsyncMock(side_effect=RuntimeError("rejected"))
         with pytest.raises(RuntimeError):
             await provider.change_effort("xhigh")
-        # Override rolled back (was previously unset).
+        # Override rolled back to unset.
         assert "claude-opus-4.7" not in provider._effort_per_model
 
     @pytest.mark.asyncio

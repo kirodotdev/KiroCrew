@@ -4,7 +4,7 @@
 ``await request.json()`` returns them happily -- and the ``.get()`` that every
 one of these handlers performs next then raises ``AttributeError`` from OUTSIDE
 the ``try`` that wrapped the parse. The result was a 500 for what is really
-malformed client input (issue #5587).
+malformed client input.
 
 This is enumerate-the-invariant coverage rather than one test per handler: the
 table below is the list of handlers converted to
@@ -145,7 +145,6 @@ _BOUNDED_CONTROL_FIELDS = (
     "body is a fixed set of control fields (an identifier, a flag, a number, a "
     "short name), so the shared 64 KB ceiling is right and is applied"
 )
-
 _CAP_REASONS = {
     _UNBOUNDED_USER_CONTENT,
     _CONTROL_FIELDS_CAP_PENDING,
@@ -219,6 +218,15 @@ _CAP_REGISTER: dict[str, tuple[str, str]] = {
         "None",
         _CONTROL_FIELDS_CAP_PENDING,
     ),
+    # Member memory control routes retain the shared bound. Corrections and
+    # selected record batches use their explicit limits for user-authored text.
+    "handlers/memory_admin.py::api_memory_retired_restore": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    "handlers/memory_admin.py::api_memory_restore_cancel": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    "handlers/memory_admin.py::api_memory_backup": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    "handlers/memory_admin.py::api_memory_restore": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    "handlers/memory_edit.py::_bulk": ("512 * 1024", _BOUNDED_EXPLICIT),
+    "handlers/memory_edit.py::api_memory_records_refresh": ("512 * 1024", _BOUNDED_EXPLICIT),
+    "handlers/memory_member.py::api_memory_seed": ("16384", _BOUNDED_EXPLICIT),
     # knowledge.py -- the 9 sites that moved off the deleted duplicate helper.
     "handlers/knowledge.py::update_item": ("None", _UNBOUNDED_USER_CONTENT),
     "handlers/knowledge.py::add_source": ("None", _UNBOUNDED_USER_CONTENT),
@@ -314,6 +322,7 @@ _CAP_REGISTER: dict[str, tuple[str, str]] = {
     # default in multibyte UTF-8 -- so they take a per-route ceiling sized to
     # the field bound; everything else is ids and flags.
     "handlers/cron.py::api_crons_create": ("_MAX_CRON_BODY_BYTES", _BOUNDED_EXPLICIT),
+    "handlers/cron.py::api_cron_tools": ("_MAX_CRON_BODY_BYTES", _BOUNDED_EXPLICIT),
     "handlers/cron.py::api_cron_batch_delete": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "handlers/cron.py::api_cron_update": ("_MAX_CRON_BODY_BYTES", _BOUNDED_EXPLICIT),
     "handlers/cron.py::api_cron_enable": ("<default>", _BOUNDED_CONTROL_FIELDS),
@@ -362,7 +371,7 @@ _DASHBOARD_DIR = Path(shared.__file__).resolve().parent.parent
 #: ``max_bytes=None`` from landing; this is what stops the recorded debt from
 #: quietly becoming permanent, because otherwise the sweep could finish with
 #: every one of these endpoints still unbounded and nothing would fail. The
-#: 64 KB bound is the helper's original safety property (issue #490), so
+#: 64 KB bound is the helper's original safety property, so
 #: "recorded" is not the same as "handled".
 _CAP_PENDING_CEILING = 13
 

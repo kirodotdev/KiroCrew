@@ -108,7 +108,7 @@ _STANDALONE_THEME_VARS: dict[str, str] = {
 
 # Monotonically increasing revision counter for the wrap_widget_html envelope.
 # Bump this whenever the wrapper's CSP, scripts, or structural HTML changes so
-# that already-published widgets are detected as stale and re-pushed (#3373).
+# that already-published widgets are detected as stale and re-pushed.
 WRAPPER_REVISION: int = 2
 
 # CSP for the published standalone widget document (wrap_widget_html).
@@ -323,8 +323,8 @@ def _redact_untrusted(text: str, source: str) -> str:  # noqa: ARG001
     it reaches an external surface (a publish provider). Per the
     security-controls rule.
 
-    Redaction is UNCONDITIONAL — the ``source`` label is no longer trusted as a
-    bypass (kept for call-site readability). ``source`` is set once at create
+    Redaction is UNCONDITIONAL — the ``source`` label is not a bypass (kept for
+    call-site readability). ``source`` is set once at create
     and is NOT re-derived when an agent later ``update``\\s the artifact's
     content, so a ``manual`` artifact can hold agent/LLM-authored bytes by the
     time it is published; exempting it would let that content reach a provider
@@ -648,7 +648,7 @@ async def push_version(art: Artifact, *, force: bool = False) -> None:
     # stored bytes (e.g. the provider's HTML auto-injection) won't match a
     # locally-computed hash anyway.
     # Also re-push when the wrapper envelope has changed (CSP, CDN scripts) even
-    # if the artifact content version hasn't moved (#3373).
+    # if the artifact content version hasn't moved.
     wrapper_stale = (
         fresh.kind == "widget"
         and WRAPPER_REVISION > (pub.wrapper_revision or 0)
@@ -1070,7 +1070,7 @@ async def delete_for_artifact(art: Artifact) -> DeleteWithdrawal:
     Unlike ``unpublish`` this does NOT touch the local store (the artifact is the
     caller's to delete) and NEVER raises -- provider resolution, the availability
     probe, and the withdrawal call are all inside the guard, so a caller that
-    cannot act on an exception gets a value instead. But it no longer *swallows*
+    cannot act on an exception gets a value instead. But it does not *swallow*
     the distinction: the caller uses the returned outcome to decide whether the
     local delete may proceed.
 
@@ -1294,7 +1294,7 @@ async def upstream_status(slug: str) -> dict[str, object]:
         upstream_ahead = bool(baseline) and bool(remote_hash) and remote_hash != baseline
         local_ahead_live = (
             art.version > pub.last_synced_kirocrew_version
-            # Wrapper envelope changed since last push — widget needs re-render (#3373).
+            # Wrapper envelope changed since last push — widget needs re-render.
             or (art.kind == "widget" and WRAPPER_REVISION > (pub.wrapper_revision or 0))
         )
         base.update(
@@ -1312,7 +1312,7 @@ async def upstream_status(slug: str) -> dict[str, object]:
         and art.publication is not None
         and (
             art.version > art.publication.last_synced_kirocrew_version
-            # Wrapper envelope changed since last push — widget needs re-render (#3373).
+            # Wrapper envelope changed since last push — widget needs re-render.
             or (art.kind == "widget" and WRAPPER_REVISION > (art.publication.wrapper_revision or 0))
         )
     )

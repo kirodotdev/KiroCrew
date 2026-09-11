@@ -4,10 +4,14 @@ import type {
   ChatSlot,
   IssueSource,
   McpApplyChange,
+  MemoryBackup,
+  MemoryCarveEntry,
+  MemoryStoreSummary,
   PullRequestCheck,
   PullRequestSource,
   PullRequestStatusBatch,
   PublishProviderDescriptor,
+  RetiredMemory,
   SessionDoc,
   SessionInventoryDetail,
   SessionInventoryList,
@@ -20,6 +24,7 @@ import type {
   WorkflowRunSummary,
 } from '../types'
 import type { RemoteCrewCapabilities } from '../hooks/useRemoteCapabilities'
+import type { MemoryRecord, MemoryRecordRef, MemoryRecordQuery, MemoryRecordSelection, MemoryEditOperation, MemoryEditPreview, MemoryRecordRevision } from '../types/memoryEditing'
 import type { AutoNudgeListResponse } from '../components/autoNudgeLoop'
 import { ApiError, friendlyErrText } from './apiError'
 import { SESSION_CONTROL_STATUS_PATH_RE } from '../lib/sessionControlStatusPath'
@@ -46,7 +51,7 @@ export const SKILLS_TIMEOUT_MS = 15_000
 export const SLASH_COMMANDS_TIMEOUT_MS = 15_000
 import { installApiTransport } from './apiTransport'
 import type { SessionSummary } from '../types/sessionSummary'
-import { queryClient } from './queryClient'
+import { queryClient, resolveDefaultMemoryMode } from './queryClient'
 import { getStoredConsent } from '../utils/themeConsent'
 import { recordError, parseErrorCode, requestPath } from '../utils/errorReport'
 import { i18nT } from '../i18n/t'
@@ -1994,9 +1999,9 @@ export interface KiroCreditUsage {
 
 export interface KasLoginStatus {
   authenticated: boolean
-  /** Provider of the active sign-in (e.g. 'google', 'github', 'builder_id'), null when signed out. */
+  /** Provider of the active sign-in as the token records it ('Google', 'Github', 'BuilderId', 'Enterprise'), '' when signed out. */
   provider: string | null
-  /** Human-readable account identity (email / profile ARN), null when signed out. */
+  /** Which vault slot the sign-in occupies ('social' | 'builder_id' | 'identity_center' | 'external_idp'); the value `kasLoginLogout` takes. '' when signed out. */
   identity: string | null
   /**
    * How a sign-in can return to this gateway. 'loopback' means the browser and
@@ -2005,6 +2010,26 @@ export interface KasLoginStatus {
    * approves a short code in their own browser (no callback required).
    */
   transport: 'loopback' | 'device'
+  /** ISO-8601 UTC instant the stored access token stops working; null when signed out. */
+  expires_at: string | null
+  /** True when the access token is at or inside the engine's refresh margin. */
+  expired: boolean
+  /** True when a refresh token is stored to renew the access token with. */
+  has_refresh_token: boolean
+  /**
+   * True when the issuer refused the last refresh: the sign-in looks renewable
+   * but is not, and only signing in again fixes it. Cleared by any new
+   * credential landing in the slot.
+   */
+  refresh_rejected: boolean
+  /**
+   * The spawn-time verdict: can this identity still answer an agent's
+   * credential request without a sign-in? Same predicate `kirocrew doctor`
+   * prints. Independent of `refresh_rejected` on purpose: a rejected refresh
+   * is reported to the user, never used to hand the agent back to kiro-cli's
+   * login behind their back.
+   */
+  usable: boolean
 }
 
 export interface KasLoginDeviceSession {
@@ -2020,9 +2045,17 @@ export interface KasLoginDeviceSession {
 
 export interface KasLoginPollResult {
   status: 'pending' | 'authorized' | 'expired' | 'error'
-  /** Machine-readable failure code — error responses carry one too. */
+  /**
+   * Machine-readable failure code — error responses carry one too. On an
+   * `authorized` answer it can be `previous_identity_not_removed`: the new
+   * credential landed but the slot named by `replaces` could not be deleted,
+   * so the previous account still takes precedence until it is signed out.
+   */
   code?: string
   error?: string
+  /** On `authorized` after a begin with `replaces`: every other stored slot the
+   *  switch removed so the new account is the one the store resolves to. */
+  replaced?: string[]
 }
 
 /**
@@ -2216,6 +2249,8 @@ export interface MemberRosterRow {
   kiro_agent?: string
   workspace?: string
   memory_store?: string
+  memory_version?: number
+  memory_owner?: string
   model?: string
   /** Crew origin, NORMALIZED by the server to exactly 'kirocrew' (created in
    *  the crew manager), 'builtin', or 'package' (agent-sync-installed; the
@@ -2252,10 +2287,14 @@ export type WakaTimeStats = {
 }
 
 /** One feature-intro clip, as GET /api/feature-videos/next reports it.
- *  `src`/`poster` are SAME-ORIGIN relative paths under
- *  `/app-assets/feature-videos/` — the backend names the asset it shipped, so
- *  the modal never composes a URL and cannot be pointed at a third-party host
- *  by a config value. */
+ *
+ *  `src` and `poster` are whole URLs the BACKEND authored, and the only correct
+ *  use of them is to play them verbatim. A clip cached on disk is named by a
+ *  same-origin path under `/feature-videos/<release>/`; a clip still on the CDN
+ *  is named by an absolute `https://` URL. Which of the two it is is stated in
+ *  `source`, so the client never has to guess from the string and never composes
+ *  a URL of its own — that is what keeps a config value from pointing the player
+ *  at a third-party host. */
 export interface FeatureVideo {
   id: string
   /** Which dashboard feature the clip introduces — the per-feature key the
@@ -2272,6 +2311,17 @@ export interface FeatureVideo {
    *  Resolve it with `tipDocHref` from `utils/docsLink`, which validates the
    *  filename shape and returns the public docs URL. */
   doc?: string
+  /** Where the bytes are RIGHT NOW: `'local'` means the release folder on this
+   *  machine has the file, `'remote'` means the player will stream it from the
+   *  CDN. It changes what the clip costs to open, not what it is -- so it drives
+   *  `preload` and the streaming hint, and nothing else.
+   *
+   *  Optional because a gateway that predates the remote catalog sends no such
+   *  field, and an absent answer means the clip is the local kind it has always
+   *  been. The release a clip belongs to is NOT here: the settings panel reads
+   *  that from `FeatureVideoStatus`, and a second copy on the clip had no
+   *  reader. */
+  source?: 'local' | 'remote'
 }
 
 /** GET /api/feature-videos/next.
@@ -2284,6 +2334,148 @@ export interface FeatureVideo {
 export interface FeatureVideoNext {
   video: FeatureVideo | null
   enabled: boolean
+  /** May this install pull clip bytes over the network at all? Reported beside
+   *  the clip because it is what makes a `'remote'` offer playable: with
+   *  downloads off there is no route to the bytes, so the modal treats a remote
+   *  clip as unshowable rather than opening a player that cannot fill.
+   *  Optional on the wire so a gateway that predates it reads as OFF -- the
+   *  fail-closed direction. */
+  download_enabled?: boolean
+}
+
+/** GET /api/feature-videos/probe.
+ *
+ *  Server-side reachability for one clip, by id. It replaces a client-side HEAD,
+ *  which could only ever work for a same-origin path: a CDN URL answers a
+ *  cross-origin HEAD without CORS headers, so the browser reports a network
+ *  failure and an entirely healthy clip reads as missing. The server has no such
+ *  restriction, and it is also the side that knows whether the file is in the
+ *  release folder. */
+export interface FeatureVideoProbe {
+  ok: boolean
+}
+
+/** GET /api/feature-videos/status — the cache readout the settings panel shows. */
+export interface FeatureVideoStatus {
+  /** Operator kill switch for the feature as a whole. */
+  enabled: boolean
+  /** May clip bytes be pulled over the network. False hides the manual control:
+   *  a button whose only outcome is a refusal is worse than no button.
+   *
+   *  Optional, and that is the FEATURE DETECT. This route already exists on a
+   *  gateway that predates the cache, where it answers 200 with a different
+   *  payload (`{enabled, state: {<id>: ...}}`) and none of the fields below. An
+   *  absent `download_enabled` therefore means "this gateway has no cache to
+   *  report", which the panel renders as no row at all -- reading it as `false`
+   *  would make the row assert a download policy that does not exist. */
+  download_enabled?: boolean
+  /** Which versioned release folder the counts below describe. */
+  release: string
+  /** Clips of that release present on disk. */
+  cached: number
+  /** Clips of that release in the catalog. */
+  total: number
+  /** The clip being fetched right now, or null when nothing is in flight. */
+  downloading: string | null
+}
+
+/**
+ * The saved filename a `Content-Disposition` asks for, or `fallback`.
+ *
+ * Prefers the RFC 5987 `filename*=UTF-8''<percent-encoded>` form, because that is
+ * what the dashboard's own download handlers emit so a non-Latin name survives an
+ * ASCII header. The bare `filename=` form is still read for anything that sends
+ * it. Exported so the precedence can be unit-tested without a DOM.
+ *
+ * A malformed percent sequence falls through to the next candidate rather than
+ * throwing: `decodeURIComponent` raises on bad input, and a broken header must not
+ * take the download with it.
+ */
+export function filenameFromDisposition(disposition: string, fallback: string): string {
+  const star = /filename\*=(?:UTF-8'')?([^;]+)/i.exec(disposition)
+  if (star) {
+    try {
+      const decoded = decodeURIComponent(star[1].trim())
+      if (decoded) return decoded
+    } catch {
+      // fall through to the bare form
+    }
+  }
+  const plain = /filename="?([^";]+)"?/.exec(disposition)
+  return (plain && plain[1].trim()) || fallback
+}
+
+/**
+ * The optional `store=` parameter on memory content routes.
+ * Embedding configuration is installation-wide; legacy Markdown migration
+ * accepts only Global V1, and automatic episode promotion refuses private V2.
+ *
+ * Returns the EMPTY string when the caller named no store, and that absence is
+ * load-bearing: the gateway reads a missing parameter as "the global
+ * store" and applies the owner gate plus the unknown-name 404 only to
+ * a parameter that is actually present. Sending `store=` for an unnamed store
+ * would therefore turn a request that works for anyone into an owner-only one.
+ *
+ * `sep` is `'&'` for a URL that already carries a query string.
+ *
+ * The two separators are spelled out rather than interpolated from `sep` so that
+ * each literal reaching the i18n linter carries its own leading `?`/`&`. That is
+ * what `eslint.i18n.config.js` matches URL-query fragments on
+ * (`^[?&][a-z_]+=$`); interpolating the separator leaves the linter a bare
+ * `store=`, which reads as a user-facing string it should be asking about.
+ * Written here rather than by widening that pattern, since a pattern that admits
+ * a leading-separator-less fragment stops catching real strings elsewhere.
+ */
+const memoryStoreQuery = (store?: string, sep: '?' | '&' = '?'): string => {
+  if (!store) return ''
+  const value = encodeURIComponent(store)
+  return sep === '?' ? `?store=${value}` : `&store=${value}`
+}
+
+/** What one `GET /api/memory/carve` read asks for. */
+export interface MemoryCarveQuery {
+  store?: string
+  /** A `memory_schema.GROUPABLE_COLUMNS` axis. Set it to ask for counts instead
+   *  of rows; the response then carries `counts` rather than `entries`. */
+  countBy?: string
+  /** One `memory_schema.ALL_KINDS` row type, or `''` for every kind. */
+  kind?: string
+  /** Facet name -> exact value, ANDed together. A value of `''` is MEANINGFUL —
+   *  it selects the rows no writer attributed on that axis — so the mapping is
+   *  transmitted key by key rather than filtered on truthiness. */
+  facets?: Record<string, string>
+  limit?: number
+  offset?: number
+}
+
+/** Either shape `GET /api/memory/carve` answers with, discriminated by which
+ *  field is present: `counts` when the read named a `count_by` axis, `entries`
+ *  otherwise. */
+export interface MemoryCarveResult {
+  /** The store the gateway resolved, `''` for the global one. */
+  store?: string
+  entries?: MemoryCarveEntry[]
+  counts?: Record<string, number>
+}
+
+/**
+ * Query string for a `/api/memory/*` route, from the parameters a caller set.
+ *
+ * `facets` is handled apart from the scalars because an EMPTY facet value is
+ * meaningful: `?crew=` selects the rows no writer attributed on that axis, which
+ * is a different question from omitting `crew` altogether. So facets reach the
+ * wire verbatim while an unset scalar is dropped.
+ */
+const memoryQuery = (q: MemoryCarveQuery): string => {
+  const p = new URLSearchParams()
+  if (q.store) p.set('store', q.store)
+  if (q.countBy) p.set('count_by', q.countBy)
+  if (q.kind) p.set('kind', q.kind)
+  for (const [name, value] of Object.entries(q.facets ?? {})) p.set(name, value)
+  if (q.limit !== undefined) p.set('limit', String(q.limit))
+  if (q.offset !== undefined) p.set('offset', String(q.offset))
+  const s = p.toString()
+  return s ? `?${s}` : ''
 }
 
 export const api = {
@@ -2412,7 +2604,15 @@ export const api = {
   // CSRF/audit reasons as the spec repair above. Error responses carry a
   // machine-readable `code` field alongside the human message.
   kasLoginStatus: () => get('/api/kas-login').then(j) as Promise<KasLoginStatus>,
-  kasLoginBeginDevice: (provider: string, extra?: { start_url?: string; region?: string }) =>
+  // `replaces` names the vault slot (`KasLoginStatus.identity`) a signed-in
+  // user is switching away from; the gateway removes it only once THIS login's
+  // credential has landed, so a failed switch leaves the old account intact
+  // and a successful one cannot leave it shadowing the new account (the store
+  // resolves by slot priority, not recency).
+  kasLoginBeginDevice: (
+    provider: string,
+    extra?: { start_url?: string; region?: string; replaces?: string },
+  ) =>
     post('/api/kas-login/device', { provider, ...(extra ?? {}) }).then(
       j,
     ) as Promise<KasLoginDeviceSession>,
@@ -2421,13 +2621,20 @@ export const api = {
   // Loopback begin answers 409 `loopback_unavailable` when this install shape
   // cannot receive the callback (or every allowlisted port is busy); the gate
   // treats that as "start the device flow instead", not as a failure.
-  kasLoginBeginLoopback: (provider: string) =>
-    post('/api/kas-login/loopback', { provider }).then(j) as Promise<KasLoginLoopbackSession>,
+  kasLoginBeginLoopback: (provider: string, extra?: { replaces?: string }) =>
+    post('/api/kas-login/loopback', { provider, ...(extra ?? {}) }).then(
+      j,
+    ) as Promise<KasLoginLoopbackSession>,
   // Idempotent: releases a loopback listener's port early on every start-over path.
   kasLoginCancel: (login_id: string) =>
     post('/api/kas-login/cancel', { login_id }).then(j) as Promise<{ ok: boolean }>,
+  // Signs out of Crew's Kiro identity: deletes the named slot
+  // (`KasLoginStatus.identity`, the one the card shows) AND every other stored
+  // slot, so no lower-priority account can quietly take over, then recycles
+  // running agent processes. Answers `{ok}`; the card re-reads status
+  // afterwards, which is the single authority on state.
   kasLoginLogout: (identity: string) =>
-    post('/api/kas-login/logout', { identity }).then(j) as Promise<KasLoginStatus>,
+    post('/api/kas-login/logout', { identity }).then(j) as Promise<{ ok: boolean }>,
   onboardingImportScan: () =>
     get('/api/onboarding/import/scan').then(j) as Promise<AgentImportScanResponse>,
   onboardingImportApply: (body: AgentImportApplyRequest) =>
@@ -2542,6 +2749,41 @@ export const api = {
     }>,
   // Copies a session to another instance. The local session is left untouched:
   // the peer allocates its own key, so this is a copy and never a move.
+  /** Download one session as a single gzipped file.
+   *
+   *  Fetches rather than navigating, so a refusal (an incognito session, an
+   *  empty one) raises here and the menu row can report it, instead of replacing
+   *  the dashboard with a raw JSON error body. The saved filename comes from the
+   *  endpoint's own Content-Disposition, whose slug is built from the REDACTED
+   *  title — the frontend must not reconstruct a name from `slot.title`, which
+   *  is the unredacted copy. */
+  exportSession: async (slot: string) => {
+    const r = await get('/api/chat/slots/' + encodeURIComponent(slot) + '/export')
+    if (!r.ok) {
+      let message = `HTTP ${r.status}`
+      try {
+        const body = await r.json()
+        if (body?.error) message = body.error
+      } catch {
+        // A non-JSON error body is not worth a second failure mode; the status
+        // line above is still a usable message.
+      }
+      throw new ApiError(r.status, message)
+    }
+    const blob = await r.blob()
+    const filename = filenameFromDisposition(
+      r.headers.get('Content-Disposition') || '',
+      `${slot}.kcsession.json.gz`,
+    )
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = filename
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    URL.revokeObjectURL(url)
+  },
   sendSessionToInstance: (id: string, slot: string) =>
     post('/api/instances/' + encodeURIComponent(id) + '/send-session', { slot }).then(j) as Promise<{
       ok: boolean
@@ -2596,23 +2838,100 @@ export const api = {
   cloudDestroy: (tag: string, coords?: CloudCoords) =>
     del('/api/cloud/' + encodeURIComponent(tag) + cloudQuery(coords)).then(j) as Promise<{ ok?: boolean; unregistered?: boolean; source_removed?: boolean }>,
   // Memory
-  memoryPreferences: () => fetch('/api/memory/preferences').then(j),
-  saveMemoryPreferences: (content: string) => put('/api/memory/preferences', { content }),
-  memoryProjects: () => fetch('/api/memory/projects').then(j),
-  saveMemoryProjects: (content: string) => put('/api/memory/projects', { content }),
-  memoryHistory: () => fetch('/api/memory/history').then(j),
-  saveMemoryHistory: (content: string) => put('/api/memory/history', { content }),
+  //
+  // `store` is optional on every route here and threads through to
+  // `?store=<name>`. Omitted, the gateway serves the caller's own binding, which
+  // is what these calls did before the parameter existed; named, the request is
+  // owner-gated and an undeclared name answers 404 `unknown_memory_store`. See
+  // `memoryStoreQuery`. `/api/memory/settings` is deliberately NOT in the set:
+  // the consolidation cadence is one install-wide setting, not a per-store one.
+  memoryPreferences: (store?: string) => fetch('/api/memory/preferences' + memoryStoreQuery(store)).then(j) as Promise<{ content?: string; content_redacted?: boolean }>,
+  saveMemoryPreferences: (content: string, store?: string) => put('/api/memory/preferences' + memoryStoreQuery(store), { content }),
+  memoryProjects: (store?: string) => fetch('/api/memory/projects' + memoryStoreQuery(store)).then(j) as Promise<{ content?: string; content_redacted?: boolean }>,
+  saveMemoryProjects: (content: string, store?: string) => put('/api/memory/projects' + memoryStoreQuery(store), { content }),
+  memoryHistory: (store?: string) => fetch('/api/memory/history' + memoryStoreQuery(store)).then(j) as Promise<{ content?: string; content_redacted?: boolean }>,
+  saveMemoryHistory: (content: string, store?: string) => put('/api/memory/history' + memoryStoreQuery(store), { content }),
   memorySettings: () => fetch('/api/memory/settings').then(j),
   saveMemorySettings: (s: {history_idle_hours?: number; history_max_days?: number}) => put('/api/memory/settings', s),
+  /** Every declared store with its lineage, row counts and backup state.
+   *
+   *  Owner-gated unconditionally — it enumerates every silo — and takes no
+   *  `store` of its own. Order is the gateway's (`default` first, then sorted);
+   *  do not re-sort it in a caller. */
+  /** Every declared store, plus `active`: the one this caller already reads with
+   *  no `store=` on the wire. The picker needs `active` to leave the parameter off
+   *  for that store, since sending it would take the owner gate for a read that
+   *  needs none. */
+  memoryStores: () =>
+    fetch('/api/memory/stores').then(j) as Promise<{
+      stores: MemoryStoreSummary[]
+      active: string
+    }>,
+  memoryRetired: (store?: string, limit?: number, offset = 0) =>
+    fetch('/api/memory/retired' + memoryQuery({ store, limit, ...(offset ? { offset } : {}) })).then(j) as Promise<{ retired: RetiredMemory[] }>,
+  memoryRestoreRetired: (id: string, store?: string) =>
+    post('/api/memory/retired/restore', { id, ...(store ? { store } : {}) }).then(j) as Promise<{ ok: boolean }>,
+  memoryBackups: (store?: string) =>
+    fetch('/api/memory/backups' + memoryStoreQuery(store)).then(j) as Promise<{
+      backups: MemoryBackup[]; pending?: boolean; restart_required?: boolean
+      pending_restore?: { backup_name: string; staged_at: string } | null
+      activation_failed?: boolean
+      restore_error?: string
+      recovery?: { journal: string; staged_copies: string[]; previous_copies: string[]; instruction: string }
+    }>,
+  memoryBackupNow: (store?: string) =>
+    post('/api/memory/backup', store ? { store } : {}).then(j) as Promise<{
+      backed_up: number; skipped: number; pruned: number; failed: number
+    }>,
+  /** Put one backup back in place. `name` is the handle `memoryBackups` returned,
+   *  never a path — the gateway resolves it inside the store's own backup
+   *  directory. `superseded` names the file the restore moved aside. */
+  memoryRestoreBackup: (name: string, store?: string) =>
+    post('/api/memory/restore', { name, ...(store ? { store } : {}) }).then(j) as Promise<{
+      ok: boolean; superseded?: string; pending?: boolean; restart_required?: boolean
+    }>,
+  cancelMemberMemoryRestore: (store: string) =>
+    post('/api/memory/restore/cancel', { store }).then(j) as Promise<{
+      ok: boolean; cancelled: boolean; pending: false; restart_required: boolean; pending_restore: null
+      activation_failed?: boolean; restore_error?: string
+    }>,
+  /** One carve read: `counts` when `countBy` is set, `entries` otherwise. Answers
+   *  409 `facets_unsupported` on the v1 lineage, whose rows have no facet
+   *  columns — a refusal a caller must render as such, never as no rows. */
+  memoryCarve: (q: MemoryCarveQuery = {}) =>
+    fetch('/api/memory/carve' + memoryQuery(q)).then(j) as Promise<MemoryCarveResult>,
+  memoryRecall: (query: string, store: string) =>
+    fetch('/api/memory/recall?q=' + encodeURIComponent(query) + memoryStoreQuery(store, '&')).then(j),
+  memoryRecords: (store: string, query: MemoryRecordQuery, offset = 0, limit = 50) =>
+    fetch('/api/memory/records?' + new URLSearchParams({ store: store || 'default', q: query.q, kind: query.kind, offset: String(offset), limit: String(limit) })).then(j) as Promise<{ entries: MemoryRecord[]; total: number; has_more: boolean }>,
+  memoryEditPreview: (store: string, selection: MemoryRecordSelection, operation: MemoryEditOperation) =>
+    post('/api/memory/bulk/preview', { store: store || 'default', selection, operation }).then(j) as Promise<MemoryEditPreview>,
+  memoryEditPreviewPage: (store: string, previewId: string, offset: number) =>
+    post('/api/memory/bulk/preview', { store: store || 'default', preview_id: previewId, offset }).then(j) as Promise<MemoryEditPreview>,
+  memoryRecordsRefresh: (store: string, items: MemoryRecordRef[]) =>
+    post('/api/memory/records/refresh', { store: store || 'default', items }).then(j) as Promise<{ entries: MemoryRecord[]; missing: MemoryRecordRef[] }>,
+  memoryQuerySelectionRefresh: (store: string, selection: Extract<MemoryRecordSelection, { query: MemoryRecordQuery }>) =>
+    post('/api/memory/records/refresh', { store: store || 'default', selection }).then(j) as Promise<{ matched_count: number }>,
+  memoryRecordHistory: (store: string, record: MemoryRecordRef, limit = 25, offset = 0) =>
+    fetch('/api/memory/records/history?' + new URLSearchParams({ store: store || 'default', kind: record.kind, id: record.id, limit: String(limit), ...(offset ? { offset: String(offset) } : {}) })).then(j) as Promise<{ entries: MemoryRecordRevision[]; has_more: boolean; current_revision: number }>,
+  memoryEditApply: (store: string, previewId: string) =>
+    post('/api/memory/bulk/apply', { store: store || 'default', preview_id: previewId }).then(j) as Promise<{ ok: true; changed_count: number }>,
+  memberMemoryPage: (store: string, kind: 'semantic' | 'episodic', offset: number, query = '') =>
+    fetch('/api/memory/' + kind + '?store=' + encodeURIComponent(store) + '&limit=100&offset=' + offset + (query ? '&q=' + encodeURIComponent(query) : '')).then(j),
+  memorySeed: (sourceStore: string, store: string, items: { kind: 'fact' | 'directive' | 'episode'; id: string }[]) =>
+    post('/api/memory/seed', { source_store: sourceStore, store, items }).then(j) as Promise<{
+      partial?: boolean
+      results: { outcome: 'imported' | 'existing' | 'rejected' | 'unconfirmed' | 'not_attempted'; id?: string; reason?: string }[]
+    }>,
   // Vector memory
-  vectorSemantic: () => fetch('/api/memory/semantic').then(j),
-  vectorSemanticWrite: (key: string, value: string) => put('/api/memory/semantic', { key, value, source: 'user_explicit' }).then(j),
-  vectorSemanticDelete: (key: string) => del('/api/memory/semantic/' + encodeURIComponent(key)),
-  vectorEpisodic: (limit = 50, offset = 0, tags?: string) => fetch('/api/memory/episodic?limit=' + limit + '&offset=' + offset + (tags ? '&tags=' + encodeURIComponent(tags) : '')).then(j),
-  vectorEpisodicSearch: (q: string, tags?: string) => fetch('/api/memory/episodic/search?q=' + encodeURIComponent(q) + (tags ? '&tags=' + encodeURIComponent(tags) : '')).then(j),
-  vectorEpisodicDelete: (id: string) => del('/api/memory/episodic/' + encodeURIComponent(id)),
-  vectorStats: () => fetch('/api/memory/stats').then(j),
-  vectorEvents: (limit = 50, offset = 0) => fetch('/api/memory/events?limit=' + limit + '&offset=' + offset).then(j),
+  vectorSemantic: (store?: string) => fetch('/api/memory/semantic' + memoryStoreQuery(store)).then(j),
+  vectorSemanticWrite: (key: string, value: unknown, store?: string) => put('/api/memory/semantic' + memoryStoreQuery(store), { key, value, source: 'user_explicit' }).then(j),
+  vectorSemanticDelete: (key: string, store?: string) => del('/api/memory/semantic/' + encodeURIComponent(key) + memoryStoreQuery(store)),
+  vectorEpisodic: (limit = 50, offset = 0, tags?: string, store?: string) => fetch('/api/memory/episodic?limit=' + limit + '&offset=' + offset + (tags ? '&tags=' + encodeURIComponent(tags) : '') + memoryStoreQuery(store, '&')).then(j),
+  vectorEpisodicSearch: (q: string, tags?: string, store?: string) => fetch('/api/memory/episodic/search?q=' + encodeURIComponent(q) + (tags ? '&tags=' + encodeURIComponent(tags) : '') + memoryStoreQuery(store, '&')).then(j),
+  vectorEpisodicDelete: (id: string, store?: string) => del('/api/memory/episodic/' + encodeURIComponent(id) + memoryStoreQuery(store)),
+  vectorStats: (store?: string) => fetch('/api/memory/stats' + memoryStoreQuery(store)).then(j),
+  vectorEvents: (limit = 50, offset = 0, store?: string) => fetch('/api/memory/events?limit=' + limit + '&offset=' + offset + memoryStoreQuery(store, '&')).then(j),
   vectorEmbeddingStatus: () => fetch('/api/memory/embedding-status').then(j),
   vectorEnableEmbeddings: () => post('/api/memory/enable-embeddings').then(j),
   vectorValidateEmbedModel: (path: string) =>
@@ -2633,7 +2952,6 @@ export const api = {
        *  restart, but against a config that may not match the sources. */
       mcp_sync_ok: boolean
     }>,
-  sessionsContext: () => fetch('/api/sessions/context').then(j),
   sessionsMemory: () => fetch('/api/sessions/memory').then(j) as Promise<{
     sessions: {
       key: string; title: string; slot_key: string; untitled: boolean
@@ -2662,7 +2980,13 @@ export const api = {
   agentsInstalled: () => fetch('/api/agents/installed').then(j),
   agentDetail: (name: string) => fetch('/api/agents/detail/' + encodeURIComponent(name)).then(j),
   agentPatch: (name: string, body: object) => fetch('/api/agents/detail/' + encodeURIComponent(name), { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(j),
-  agentDelete: (name: string) => fetch('/api/agents/detail/' + encodeURIComponent(name), { method: 'DELETE' }).then(j),
+  agentFork: (name: string, crew: string) => fetch('/api/agents/detail/' + encodeURIComponent(name) + '/fork', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ crew }) }).then(j),
+  agentPublish: (name: string, crew: string, newName: string) => fetch('/api/agents/detail/' + encodeURIComponent(name) + '/publish', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ crew, name: newName }) }).then(j),
+  // Rebind the crew to `name`'s origin AND delete the private copy in one atomic
+  // server call, so a reset can no longer end half-done (rebound but copy kept, or
+  // vice versa). May reject with origin_missing / stale_binding / not_a_private_copy
+  // / ambiguous_template_name / rebind_failed.
+  agentReset: (name: string, crew: string) => fetch('/api/agents/detail/' + encodeURIComponent(name) + '/reset', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ crew }) }).then(j),
   // KiroCrew agents
   // sessionKey identifies the CHAT SLOT whose project scope applies. The
   // server resolves project-local agents through
@@ -3208,6 +3532,13 @@ export const api = {
     patch('/api/monitors/' + encodeURIComponent(id), body).then(j) as Promise<MonitorResponse>,
   monitorStop: (id: string): Promise<MonitorResponse> =>
     post('/api/monitors/' + encodeURIComponent(id) + '/stop').then(j) as Promise<MonitorResponse>,
+  /** Remove an already-STOPPED monitor's record. `monitorStop` retains its
+   *  outcome for inspection, and a retained stop refuses a re-arm, so this is
+   *  the only way the session's slot is freed to watch a different subject --
+   *  `monitorRestart` revives the same one. Irreversible; the response carries
+   *  `monitor: null`, which is how every read here spells "nothing armed". */
+  monitorClear: (id: string): Promise<MonitorResponse> =>
+    post('/api/monitors/' + encodeURIComponent(id) + '/clear').then(j) as Promise<MonitorResponse>,
   monitorRestart: (id: string): Promise<MonitorResponse> =>
     post('/api/monitors/' + encodeURIComponent(id) + '/restart').then(j) as Promise<MonitorResponse>,
   /** Every pull request / issue link a session carries — the unbudgeted read
@@ -3227,7 +3558,23 @@ export const api = {
    *  over there. The backend opens the peer's slot first, so a peer that is
    *  disconnected or on a different version fails the create rather than yielding
    *  a session that cannot send. */
-  createChatSlot: (name?: string, agent?: string, model?: string, mode?: string, memory_mode?: string, title?: string, clean_mode?: boolean, artifact?: string, folder_id?: string, instance_id?: string) => post('/api/chat/slots', { ...(name ? { name } : {}), ...(agent ? { agent } : {}), ...(model ? { model } : {}), ...(mode ? { mode } : {}), ...(memory_mode ? { memory_mode } : {}), ...(title ? { title } : {}), ...(clean_mode !== undefined ? { clean_mode } : {}), ...(artifact ? { artifact } : {}), ...(folder_id ? { folder_id } : {}), ...(instance_id ? { instance_id } : {}) }).then(j) as Promise<ChatSlot>,
+  createChatSlot: async (name?: string, agent?: string, model?: string, mode?: string, memory_mode?: string, title?: string, clean_mode?: boolean, artifact?: string, folder_id?: string, instance_id?: string) => {
+    const resolvedMemoryMode = memory_mode ?? await resolveDefaultMemoryMode(
+      () => fetch('/api/dashboard/config').then(j),
+    )
+    return post('/api/chat/slots', {
+      ...(name ? { name } : {}),
+      ...(agent ? { agent } : {}),
+      ...(model ? { model } : {}),
+      ...(mode ? { mode } : {}),
+      memory_mode: resolvedMemoryMode,
+      ...(title ? { title } : {}),
+      ...(clean_mode !== undefined ? { clean_mode } : {}),
+      ...(artifact ? { artifact } : {}),
+      ...(folder_id ? { folder_id } : {}),
+      ...(instance_id ? { instance_id } : {}),
+    }).then(j) as Promise<ChatSlot>
+  },
   /** Inject silent background context into a slot — consumed on the next user
    * message. Used by the artifact companion chat to name the bound artifact so
    * the user's first message needs no slug boilerplate. */
@@ -3394,7 +3741,6 @@ export const api = {
   spawnDelete: (id: string) => del('/api/spawn/' + encodeURIComponent(id)).then(j),
   spawnStopAll: (slot: string) => post('/api/spawn/stop-all', { slot }).then(j),
   spawnRetry: (id: string) => post('/api/spawn/' + encodeURIComponent(id) + '/retry', {}).then(j),
-  spawnClear: () => del('/api/spawn').then(j),
   approvals: (): Promise<{ id: string; source?: string; tool?: string; tool_input?: string; tool_call_id?: string; slot?: string; ts?: number }[]> => fetch('/api/approvals').then(j),
   resolveApproval: (id: string, action: 'approve' | 'reject' | 'reject_once') => post('/api/approvals/' + encodeURIComponent(id) + '/' + action, {}).then(j),
   /** Question cards still awaiting an answer, for rehydration after a reload or
@@ -3610,6 +3956,34 @@ export const api = {
    *  close, and the backend never offers that video again after either. */
   featureVideoFeedback: (id: string, status: 'seen' | 'dismissed', sessionKey?: string) =>
     post('/api/feature-videos/feedback', { id, status }, sessionKey).then(j) as Promise<{ ok: true }>,
+  /** Is this clip's file actually reachable? Asked of the SERVER, because the
+   *  client cannot ask it: a remote clip lives on another origin, where a HEAD
+   *  from the page is refused for want of CORS headers and a healthy clip is
+   *  indistinguishable from a missing one. */
+  featureVideoProbe: (id: string, sessionKey?: string) =>
+    get('/api/feature-videos/probe?id=' + encodeURIComponent(id), sessionKey)
+      .then(j) as Promise<FeatureVideoProbe>,
+  /** Cache readout for the settings panel.
+   *
+   *  `sessionKey` MUST carry the active slot's key, for the same reason the two
+   *  routes above do and with a sharper edge: this route's read gate is
+   *  `_blocks_reads_session`, which returns "not restricted" for a MISSING key
+   *  and for the shared `dashboard:ui` placeholder alike. A request that omits it
+   *  is therefore served the permanent engagement history even from a temporary
+   *  session, whose whole contract is that reads are withheld -- and react-query
+   *  would cache it. Naming the real slot is what makes the server's own gate
+   *  reachable. */
+  featureVideoStatus: (sessionKey?: string) =>
+    get('/api/feature-videos/status', sessionKey).then(j) as Promise<FeatureVideoStatus>,
+  /** Start fetching every clip of the current release now, rather than waiting
+   *  for the background pass. Returns as soon as the work is QUEUED -- the
+   *  progress is read back from `featureVideoStatus`.
+   *
+   *  Carries the session key for the same reason: it is the write half of the
+   *  same feature behind the same gate, and a pair where only one side names the
+   *  session is the shape that leaves the other side open. */
+  featureVideoFetchAll: (sessionKey?: string) =>
+    post('/api/feature-videos/fetch-all', undefined, sessionKey).then(j) as Promise<{ ok: true }>,
   updateDashboardConfig: (body: object) => put('/api/dashboard/config', body).then(j),
   createTheme: (body: object) => post('/api/themes', body).then(j),
   installTheme: (source: { type: 'local'; path: string } | { type: 'github'; url: string }) =>

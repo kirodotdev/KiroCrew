@@ -1,6 +1,6 @@
 """SessionMap's deferred snapshot flush: off-loop writes that lose nothing.
 
-Issue #2405. On the event loop a mutation marks the map dirty and a debounced
+On the event loop a mutation marks the map dirty and a debounced
 flush task hands an ALREADY SERIALIZED snapshot to a worker thread; ``_data``
 never crosses the thread boundary and ``_MAP_LOCK`` is never held across the
 await (ratcheted in ``test_session_map_locking.py``). Off the loop, writes stay

@@ -156,7 +156,7 @@ def test_account_credentials_lockdown_precedes_content(tmp_path, monkeypatch):
     On Windows the POSIX mode bits are a no-op, so the owner-only DACL from
     ``restrict_to_owner`` is the only protection; applying it after the write
     left the bot credential readable under the parent directory's inherited ACL
-    for the whole write window (issue #5285). Asserted by measuring the file's
+    for the whole write window. Asserted by measuring the file's
     SIZE at the moment the lockdown is applied — zero means no payload byte
     existed yet. A post-write stat passes on the buggy ordering too, so it
     would not be a regression test.

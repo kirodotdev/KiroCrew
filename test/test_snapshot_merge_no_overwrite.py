@@ -1,11 +1,11 @@
 """A merge never overwrites, never follows a link into the destination, and a URL is
 escaped before printing.
 
-Retargeted for M1: `_copy_tree_no_overwrite` no longer stages a `.partial` file and
-publishes it with `os.link` -- that design was proven exploitable and removed (see
-`pinned_fs.copy_file_pinned`'s docstring). It now writes each file straight to its final
-name with `O_CREAT|O_EXCL|O_NOFOLLOW`, so the properties below are asserted against that
-primitive's observable behaviour rather than the deleted staging mechanism.
+`_copy_tree_no_overwrite` writes each file straight to its final name with
+`O_CREAT|O_EXCL|O_NOFOLLOW` -- it does not stage a `.partial` file and publish it with
+`os.link` (that staging design is exploitable; see `pinned_fs.copy_file_pinned`'s
+docstring). The properties below are asserted against that primitive's observable
+behaviour.
 """
 
 from __future__ import annotations

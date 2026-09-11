@@ -48,7 +48,7 @@ class TestPayloadValidation:
             p.validate()
 
     def test_boolean_ttl_rejected(self):
-        # GPT 5.6 round 11 (MEDIUM): bool is an int subclass -- validation
+        # bool is an int subclass -- validation
         # accepted "ttl": true while the sweeper deliberately excludes bools,
         # so the note would 200 yet never expire. Reject at the contract.
         p = NotificationPayload(
@@ -79,7 +79,7 @@ class TestPayloadValidation:
         ],
     )
     def test_action_non_string_or_empty_fields_rejected(self, bad_action):
-        # GPT 5.6 HIGH on PR #399: a truthy non-string id/label passed the
+        # A truthy non-string id/label passed the
         # old truthiness check, persisted, and rendered as a React child --
         # crashing the notification surface for every client.
         p = NotificationPayload(
@@ -127,7 +127,7 @@ class TestPayloadValidation:
         ],
     )
     def test_action_url_rejected_at_trust_root(self, bad_url):
-        # Persistence is the trust root (Arbiter finding on PR #399): an
+        # Persistence is the trust root: an
         # unsafe actions[].url must never be stored, so every future
         # consumer (native notifications, MCP tools)
         # inherits the guarantee without re-implementing the filter.
@@ -153,7 +153,7 @@ class TestPayloadValidation:
             p.validate()
 
     def test_action_count_capped(self):
-        # GPT 5.6 MEDIUM on PR #399: the 64 KB request limit alone would
+        # The 64 KB request limit alone would
         # admit thousands of actions -- every one renders as a button on
         # every surface, so the count is capped at validation.
         actions = [{"id": f"a{i}", "label": f"L{i}"} for i in range(5)]

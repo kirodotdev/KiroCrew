@@ -88,7 +88,7 @@ async def _run_script_callback(gw, job, script_result=None, vet_reason=None, sid
     ``vet_reason`` feeds the fire-time governance gate (None = job may run);
     patching vet_job_at_fire_time also stands in for the script-path
     resolution it performs, which the removed gateway-level
-    resolve_script_path call used to cover.
+    resolve_script_path call also covered.
 
     Pass ``side_effect`` to make the mocked call raise instead of returning.
     """
@@ -640,7 +640,7 @@ class TestFireTimeGatesScriptAndMessage:
     @pytest.mark.asyncio
     async def test_script_fire_time_capability_deny_blocks_execution(self):
         # capabilities.cron disabled AFTER the script job was scheduled must
-        # deny the run at fire time — previously only the path was re-resolved.
+        # deny the run at fire time, not merely re-resolve the path.
         gw = _make_gw()
         job = _make_script_job()
         result, mock_run, _, mock_sel = await self._run_script_real_vet(
@@ -727,8 +727,8 @@ class TestFireTimeGatesScriptAndMessage:
 
     @pytest.mark.asyncio
     async def test_message_fire_time_capability_deny_blocks_dispatch(self):
-        # Message (LLM) jobs previously had NO fire-time capabilities.cron
-        # check at all: disabling the capability after scheduling had no
+        # Message (LLM) jobs need a fire-time capabilities.cron
+        # check: without it, disabling the capability after scheduling has no
         # effect. The gate must block the session dispatch entirely.
         gw = _make_gw()
         job = CronJob(
@@ -1229,7 +1229,7 @@ class TestThrottleFallbackCronWiring:
         assert _annotate_model_fallback("text", provider) == "text"
 
     def test_gateway_annotator_is_the_shared_body(self):
-        """DRIFT PIN (#5447 item 4): the gateway name must BE the shared
+        """DRIFT PIN: the gateway name must BE the shared
         helper next to TURN_FALLBACK_ATTR — not a re-spelled copy."""
         from kiro_crew.llm_helpers import annotate_model_fallback
         from kiro_crew.slack.gateway import _annotate_model_fallback
@@ -1238,7 +1238,7 @@ class TestThrottleFallbackCronWiring:
 
     @pytest.mark.asyncio
     async def test_chain_exhaustion_story_reaches_the_failure_alert(self):
-        """#5447 item 1: a cron turn failing after the chain exhausted must
+        """A cron turn failing after the chain exhausted must
         alert with the WHOLE walk (the story the walk attached to the
         exception), not just the last candidate's error — on BOTH the
         dashboard notify and the Slack DM legs, and even when the backend
@@ -1406,7 +1406,7 @@ class TestExecutePreservesCallbackStatus:
 
 
 class TestCronUsageRow:
-    """Issue #647: every model-spending cron turn appends exactly one usage row
+    """Every model-spending cron turn appends exactly one usage row
     tagged surface='cron'; the zero-token script/command modes append none."""
 
     @pytest.mark.asyncio
@@ -1562,7 +1562,7 @@ async def _run_script_callback_behind_a_busy_worker(gw, job, script_result, hold
     front would let the gate run first and the script would then find a free
     worker and never queue.
 
-    The gate itself no longer touches this pool: it runs on the dedicated
+    The gate itself does not touch this pool: it runs on the dedicated
     ``mc-crongate`` pool with a bound of its own, so starving the cron pool
     cannot starve the gate. That independence is the point -- it is why this
     fixture can saturate the cron pool without perturbing the gate under test.

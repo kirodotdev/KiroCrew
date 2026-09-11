@@ -50,7 +50,11 @@ def is_session_trusted(session_key: str) -> bool:
     return bool(session_key) and session_key in _trusted_sessions
 
 
-def add_trusted_session(session_key: str, sessions: "SessionManager | Any | None" = None) -> None:
+def add_trusted_session(
+    session_key: str,
+    sessions: "SessionManager | Any | None" = None,
+    strict: bool = False,
+) -> None:
     """Grant per-session Trust for *session_key*.
 
     Two halves, and both are load-bearing. The in-memory grant is what
@@ -61,6 +65,14 @@ def add_trusted_session(session_key: str, sessions: "SessionManager | Any | None
 
     The manager is remembered so :func:`clear_trusted_sessions` can undo the second
     half too.
+
+    ``strict=True`` makes a failing policy write undo the in-memory half and
+    re-raise instead of logging. It is for a caller that reports the grant back to
+    the person who asked for it and must not label a PARTIAL grant as a grant: an
+    interactive Trust button whose policy write failed would otherwise say
+    "Trusted" while every spawned subagent still stops to ask. The default stays
+    best-effort, because a caller with nobody to tell is better off with the half
+    it got than with none.
     """
     if not session_key:
         return
@@ -70,6 +82,11 @@ def add_trusted_session(session_key: str, sessions: "SessionManager | Any | None
     try:
         sessions.set_approval_policy(session_key, "auto")
     except Exception:
+        if strict:
+            # Roll the first half back so the refusal the caller reports is true:
+            # a key left in the mapping is a live grant no matter what it says.
+            _trusted_sessions.pop(session_key, None)
+            raise
         # The SURFACE, not the key: a session key carries the peer's platform id, and
         # naming the channel is what makes this line actionable anyway. Same shape
         # `session.py` and `task_executor.py` use for a session's surface.

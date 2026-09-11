@@ -194,6 +194,129 @@ def edit_target_candidates(raw_params: Mapping | None, diff_path: str = "") -> T
     return candidates
 
 
+#: Argument names under which a NON-shell tool carries a document BODY: the
+#: text a file write creates, the two halves of a string replacement, the new
+#: text of an insert. A body is prose or source, never a command line or an
+#: address, so it is the one field shape the tool_input deny scan in
+#: ``llm_helpers._resolve_permission`` skips for a tool whose provenance the
+#: client established as non-shell (see ``command_shaped_strings``). Every
+#: spelling names a producer: the kiro-cli file tool's ``create`` /
+#: ``strReplace`` / ``insert`` arguments (``fileText`` / ``oldStr`` /
+#: ``newStr``, plus ``content`` and ``text`` -- the three content keys
+#: ``acp._dispatch._EDIT_CONTENT_KEYS`` reads a created file's body from), the
+#: ACP diff block (``oldText`` / ``newText``), and the Anthropic text-editor
+#: tool shape (``file_text`` / ``old_str`` / ``new_str``) the kiro-cli backend
+#: can present a file edit through. A tool whose frames carry no
+#: ``_meta.kiro.toolName`` (the claude-agent-acp backend) never reaches the
+#: exemption, so its field names are deliberately not listed. Additive only: a
+#: key NOT listed here is scanned.
+DOCUMENT_BODY_KEYS: frozenset[str] = frozenset(
+    {
+        "content",
+        "fileText",
+        "file_text",
+        "text",
+        "newStr",
+        "oldStr",
+        "new_str",
+        "old_str",
+        "newText",
+        "oldText",
+    }
+)
+
+
+#: Built-in tools whose job is to write a document, by the canonical tool name
+#: the client cached from the tool_call frame: the kiro-cli file tool under
+#: both of its names (``fs_write``, and ``write``). The claude-agent-acp
+#: Write / Edit family is not listed: its frames carry no
+#: ``_meta.kiro.toolName``, so the client never caches a name for them and a
+#: row here would match nothing. A tool's OPERATION word (``create``,
+#: ``strReplace``, ``insert`` under the kiro-cli tool's ``command`` argument,
+#: ``str_replace`` under the text-editor tool's) and the ACP semantic kind
+#: (``edit``) are not tool names and are not listed: a name here has to be one
+#: the client caches from ``_meta.kiro.toolName``, or the row matches nothing.
+#: Only a tool on this list has its :data:`DOCUMENT_BODY_KEYS` skipped by the
+#: deny scan. An MCP tool is never on it, whatever it names its fields: a
+#: server-side tool can execute the text it calls ``content``, so the client
+#: cannot know from the shape that the field is inert. Additive only; a name
+#: not listed here keeps the full scan.
+DOCUMENT_WRITING_TOOLS: frozenset[str] = frozenset(
+    {
+        "fs_write",
+        "write",
+    }
+)
+
+
+def is_document_writing_tool(tool_name: str | None, mcp_server_name: str | None) -> bool:
+    """True only for a BUILT-IN tool named in :data:`DOCUMENT_WRITING_TOOLS`.
+
+    *mcp_server_name* non-empty means the identity cache resolved an MCP
+    server for the call; such a tool is never a document writer here, even if
+    its name collides with a built-in's, because its fields execute server-side.
+    """
+    if mcp_server_name:
+        return False
+    return bool(tool_name) and tool_name in DOCUMENT_WRITING_TOOLS
+
+
+class ScanStrings(list):
+    """The strings a non-shell tool's params offer to the deny scan, plus
+    whether collection had to stop early.
+
+    Same contract as :class:`TargetPaths`: ``truncated`` is True when the walk
+    hit ``_TARGET_PATH_MAX_NODES``, so the list may be INCOMPLETE and a security
+    consumer must deny the call as unverifiable rather than scan the part it
+    has.
+    """
+
+    truncated: bool = False
+
+
+def command_shaped_strings(raw_params: Mapping | None) -> ScanStrings:
+    """Every non-empty string in *raw_params* that could be a command or an
+    address -- everything EXCEPT a string sitting directly under one of
+    :data:`DOCUMENT_BODY_KEYS`.
+
+    This is the field-shape half of the tool_input deny scan's scoping. The
+    other half is provenance and belongs to the caller: only a tool the client
+    classified as non-shell from the tool_call frame, with params from that
+    same frame, may have its document bodies skipped; a shell tool keeps the
+    full scan over every string, because for it ``command`` IS what executes.
+    Within that scope the walk is a denylist, not an allowlist: a ``command``
+    subcommand word (``"create"``), every path spelling, a URL, a query, an
+    unknown key -- all still reach the scan, so the only strings that stop
+    being read as shell command lines are the ones the schema names as a body.
+    Only a STRING directly under a body key is skipped; a mapping or list under
+    one is still walked, so a path nested inside a structured ``content`` is
+    not hidden by the key above it. Bounded by ``_TARGET_PATH_MAX_NODES``, and
+    the cap fails CLOSED through ``truncated``.
+    """
+    found = ScanStrings()
+    if not isinstance(raw_params, Mapping):
+        return found
+    nodes = 0
+    stack: list[object] = [raw_params]
+    while stack:
+        if nodes >= _TARGET_PATH_MAX_NODES:
+            found.truncated = True
+            return found
+        node = stack.pop()
+        nodes += 1
+        if isinstance(node, str):
+            if node:
+                found.append(node)
+        elif isinstance(node, Mapping):
+            for key, value in reversed(list(node.items())):
+                if isinstance(value, str) and key in DOCUMENT_BODY_KEYS:
+                    continue
+                stack.append(value)
+        elif isinstance(node, (list, tuple)):
+            stack.extend(reversed(node))
+    return found
+
+
 def _collect_path_strings(value: object, found: TargetPaths, seen: set[str]) -> None:
     """Collect *value* (or its items, for a sequence) as candidate paths.
 

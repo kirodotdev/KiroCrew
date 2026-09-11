@@ -1,9 +1,9 @@
-"""Hardened-reader migration for the two remaining raw agent-spec reads (#6726).
+"""Hardened-reader migration for the two remaining raw agent-spec reads.
 
 ``agent_discovery.agent_skill_globs`` and ``dashboard.handlers.hooks.api_kiro_hooks``
 both read files from the user-writable, tool-shared kiro agents directory. Both
 now route through ``agent_discovery._read_agent_spec`` — the single hardened
-reader (#5423) — instead of hand-rolling a subset of its screens.
+reader — instead of hand-rolling a subset of its screens.
 
 Differentially RED against the pre-change code:
 
@@ -94,8 +94,8 @@ class TestAgentSkillGlobsHardenedRead:
     ) -> None:
         """An over-cap spec is refused, so the agent falls back to ``[]``.
 
-        Documented consequence of the migration (#6726): the old code had no
-        size cap and would have parsed this spec and returned its globs; the
+        The size cap makes this differential: without it the spec would parse
+        and return its globs; the
         hardened reader refuses it and ``[]`` means "no explicit mapping", so
         the effect depends on the caller. The skills LISTING
         (``prompts.py``) drops its agent filter — scope WIDENS to the legacy
@@ -227,7 +227,7 @@ class TestApiKiroHooksHardenedRead:
         self, kiro_dir: Path, defaults: Path
     ) -> None:
         """Non-UTF-8 bytes are refused deterministically instead of decoded with
-        the platform default (previously an unhandled 500 on UTF-8 platforms)."""
+        the platform default, which would be an unhandled 500 on UTF-8 platforms."""
         (kiro_dir / "kirocrew.json").write_bytes(b'\xff\xfe{"hooks": {}}')
         status, payload = await _get_hooks(kiro_dir, defaults)
         assert status == 200

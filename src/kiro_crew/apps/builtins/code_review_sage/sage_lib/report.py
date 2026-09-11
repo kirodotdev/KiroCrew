@@ -124,20 +124,19 @@ def _redact_deep_map(d: dict, skip: frozenset[str] = frozenset(), *,
 def _redact_finding(f: dict) -> dict:
     """Scrub every model-written string in a finding, at any depth.
 
-    Enumerating the prose fields missed `file`, which the reviewer also writes and
+    Enumerating the prose fields misses `file`, which the reviewer also writes and
     which reaches report.json and the dashboard. Redacting every string value
-    instead of a named subset closed the set of KEYS; `_redact_deep` then closed
-    the set of VALUES, so a nested dict or list can no longer carry an injected
-    secret through.
+    instead of a named subset closes the set of KEYS; `_redact_deep` closes the
+    set of VALUES, so a nested dict or list cannot carry an injected secret
+    through.
 
-    There is NO skip set. `line` used to be exempt "because it is numeric", but
-    nothing enforced that: the boundary validator accepts any scalar, so a
-    reviewer writing a credential into `line` as a string sailed past the
-    exemption and reached the dashboard unredacted. `validate_result` now requires
-    `line` to be a real number, which makes the exemption unnecessary — a number
-    is not a string, so `_redact_deep` leaves it alone anyway. An exemption whose
-    premise is not enforced is just a hole, so the premise is enforced and the
-    exemption is gone.
+    There is NO skip set. Exempting `line` "because it is numeric" needs that
+    premise enforced: a boundary validator accepting any scalar lets a reviewer
+    write a credential into `line` as a string and sail past the exemption to the
+    dashboard unredacted. `validate_result` requires `line` to be a real number,
+    which makes an exemption unnecessary — a number is not a string, so
+    `_redact_deep` leaves it alone anyway. An exemption whose premise is not
+    enforced is just a hole, so the premise is enforced and there is no exemption.
     A finding's KEY NAMES are model-written too -- the boundary validator requires
     the fields it needs but does not forbid extras, so a worker can name a field
     anything, including a credential. `redact_keys=True` scrubs this level's names;
@@ -226,18 +225,18 @@ def classify(record: dict, config: dict | None = None) -> dict:
 # and `band_override` is already constrained to them, so this is a vocabulary for
 # screening the UNTRUSTED read path, not a constraint on our own output.
 #
-# It replaces a redaction exemption. `band` used to be the one row field skipped by
-# `_redact_row`, on the argument that `bands[row["band"]]` here and
-# `BAND_DOT[row.band]` in ReportView index on its exact value. The concern was real
-# but the protection was wrong: redaction is shape-based, so red/yellow/green come
-# back byte-identical and the indexing was never at risk — while the exemption made
-# `band` the single field in the row that reached the dashboard verbatim, so a
-# planted "red <credential>" leaked where the prose beside it was scrubbed.
+# It stands in for a redaction exemption, which no row field gets. Exempting
+# `band` from `_redact_row` because `bands[row["band"]]` here and
+# `BAND_DOT[row.band]` in ReportView index on its exact value is unnecessary:
+# redaction is shape-based, so red/yellow/green come back byte-identical and the
+# indexing is never at risk — while an exemption makes `band` the single field in
+# the row that reaches the dashboard verbatim, so a planted "red <credential>"
+# leaks where the prose beside it is scrubbed.
 #
-# An earlier version of that set also exempted `change_id`, `platform`,
-# `gate_verdict`, `blast` and `design_risk` on the claim that they are "validated
-# against fixed vocabularies". That was wrong for the same reason: `validate_result`
-# enforces a vocabulary for `gate_verdict` alone. Nothing in a row is exempt now.
+# The same holds for `change_id`, `platform`, `gate_verdict`, `blast` and
+# `design_risk`: "validated against fixed vocabularies" is not true of them —
+# `validate_result` enforces a vocabulary for `gate_verdict` alone. Nothing in a
+# row is exempt.
 _VALID_BANDS = frozenset({"red", "yellow", "green"})
 
 
@@ -650,7 +649,7 @@ def write_outputs(report: dict, html_body: str, root: Path | None = None,
     # Full report for the in-app report view (all bands + findings).
     full_path = rd / "report.json"
     _atomic_write(full_path, json.dumps(report, indent=2))
-    # Preserve a previously-set artifact slug when regenerating without one, so
+    # Preserve an already-recorded artifact slug when regenerating without one, so
     # "Open full report" keeps working across re-reviews (the driver calls
     # generate() with slug=None on every run).
     if slug is None:
@@ -817,10 +816,10 @@ def read_within_reports(path: Path, root: Path | None = None,
 
     The counterpart to `_atomic_write`, and for the same reason: the reports dir
     is reachable by the review worker, so any of these names can be a planted
-    symlink. Round 21 stopped the WRITES from following a plant, which left the
-    reads — a link at `focus-report.html` or `index.json` pointing at a
-    credential file was still followed, and its contents flowed onward into a
-    dashboard artifact or a rendered report. `hooks.safe_read_file_bytes_nolink`
+    symlink. The WRITES not following a plant is not enough on its own: an
+    unguarded read of a link at `focus-report.html` or `index.json` pointing at a
+    credential file follows it, and its contents flow onward into a dashboard
+    artifact or a rendered report. `hooks.safe_read_file_bytes_nolink`
     opens with O_NOFOLLOW and validates the inode it actually read, and pinning
     `within_root` to the reports dir also rejects a path that escapes it.
     Returns None when the file is missing, planted, or not valid UTF-8; every

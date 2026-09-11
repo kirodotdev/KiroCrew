@@ -145,8 +145,8 @@ class WorkflowRunStore:
                 # mapped-drive path costs an unbounded SMB round-trip. The
                 # payload is already passed through ``_redact`` above, so
                 # what a wider Windows DACL could expose is the redacted
-                # run record, not credentials. Tracked in #6359.
-                os.chmod(path, 0o600)  # lockdown-ok: #5228 -- unbounded SMB round-trip on the loop
+                # run record, not credentials.
+                os.chmod(path, 0o600)  # lockdown-ok: unbounded SMB round-trip on the loop
             except OSError:
                 pass
         except Exception:  # noqa: BLE001 - persistence must never break a run

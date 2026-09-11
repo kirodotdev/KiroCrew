@@ -45,6 +45,9 @@ REFRESH_MARGIN_SECS = 180
 # Identity kinds, in the order KAS/kiro-cli resolve them when several are stored.
 # External IdP wins, then Builder ID, then social (auth/mod.rs UnifiedBearerResolver).
 _PRIORITY = ("external_idp", "builder_id", "identity_center", "social")
+#: The identity kinds the store accepts, for callers that validate a caller-supplied
+#: kind before handing it to the store (the same tuple, public name).
+KNOWN_IDENTITIES: tuple[str, ...] = _PRIORITY
 
 
 class SocialProvider(enum.Enum):
@@ -82,6 +85,19 @@ class KasToken:
         """True when the token is at or inside KAS's refresh buffer."""
         now = datetime.now(timezone.utc)
         return (now.timestamp() + margin_secs) >= self.expires_at.timestamp()
+
+    def is_usable(self) -> bool:
+        """Can this stored identity still produce an access token without a sign-in?
+
+        Either the access token is outside the engine's refresh margin, or a
+        refresh token is present to renew it. The ONE predicate the spawn-time
+        owner decision (:mod:`kiro_crew.auth.bridge`), ``kirocrew doctor`` and the
+        dashboard's sign-in card all read, so they cannot disagree about whether a
+        stored identity is live. What it cannot know without a network call is
+        whether the issuer still accepts the refresh token; that verdict is
+        recorded separately (:meth:`TokenStore.refresh_rejected`).
+        """
+        return (not self.is_expired()) or bool(self.refresh_token)
 
     def to_json(self) -> str:
         d = asdict(self)
@@ -206,6 +222,13 @@ class TokenStore:
                 self._vault.set_sync(name, token.to_json())
             except (OSError, ValueError, TypeError, AttributeError) as err:
                 raise TokenStoreError(f"could not persist KAS token {token.identity}") from err
+            # A credential that just landed supersedes any refusal recorded
+            # against the one it replaces: a sign-in (or a refresh that
+            # succeeded after all) must clear the "sign-in expired" verdict the
+            # dashboard shows, or the card would keep saying so about a live
+            # account. Cleared inside the same lock as the write, so a peer
+            # cannot observe the new token beside the old verdict.
+            self._clear_refresh_rejected_unlocked(token.identity)
 
         if hold_refresh_lock:
             self._with_refresh_lock(token.identity, _write)
@@ -276,8 +299,67 @@ class TokenStore:
                 self._vault.delete_sync(name)
             except (OSError, ValueError, TypeError, AttributeError) as err:
                 raise TokenStoreError(f"could not delete KAS token {identity}") from err
+            # Nothing stored means nothing to have been refused; a stale marker
+            # would otherwise resurface against the NEXT sign-in into this slot
+            # before its own first refresh.
+            self._clear_refresh_rejected_unlocked(identity)
 
         self._with_refresh_lock(identity, _remove)
+
+    # ---- refresh-rejected marker ---------------------------------------------
+    #
+    # Whether the issuer still honours a stored refresh token cannot be read off
+    # the token; it is learned the first time a refresh is attempted and refused.
+    # That verdict is recorded here as a plain, token-free sidecar file next to
+    # the vault -- a timestamp, never a value -- so the dashboard can say
+    # "sign-in expired, sign in again" instead of showing a live-looking account
+    # whose every callback fails. It is a REPORT, not a decision: the spawn-time
+    # owner choice does not read it (a lapsed Crew identity is surfaced to the
+    # user, never silently handed back to kiro-cli's login), and any new
+    # credential landing in the slot clears it.
+
+    def _refresh_rejected_path(self, identity: str) -> Path:
+        self._entry(identity)
+        return self._kas_dir / f"refresh-rejected-{identity}"
+
+    def _clear_refresh_rejected_unlocked(self, identity: str) -> None:
+        try:
+            self._refresh_rejected_path(identity).unlink(missing_ok=True)
+        except OSError:
+            # The credential write/delete itself succeeded; a marker that could
+            # not be removed is a stale diagnostic, not a failed operation.
+            logger.debug("could not clear refresh-rejected marker for %s", identity, exc_info=True)
+
+    def mark_refresh_rejected(self, identity: str) -> None:
+        """Record that the issuer refused this identity's refresh token.
+
+        Called by the refresher from inside the identity's refresh lock, so it needs
+        no lock of its own. Best-effort: a marker that cannot be written costs the
+        dashboard its explicit "expired" wording, not the refusal itself, which the
+        caller still raises. Never raises.
+        """
+        try:
+            path = self._refresh_rejected_path(identity)  # ValueError for an unknown kind
+            self._assert_unlinked()
+            make_owner_only_dir(self._kas_dir)
+            path.write_text(datetime.now(timezone.utc).isoformat(), encoding="utf-8")
+        except (OSError, TokenStoreError, ValueError):
+            logger.debug("could not record refresh-rejected marker for %s", identity, exc_info=True)
+
+    def refresh_rejected(self, identity: str) -> datetime | None:
+        """When the issuer last refused this identity's refresh token, or ``None``.
+
+        ``None`` also for an unreadable or malformed marker: the marker is a hint
+        for the dashboard, and a hint that cannot be read is simply absent.
+        """
+        try:
+            raw = self._refresh_rejected_path(identity).read_text(encoding="utf-8").strip()
+        except (OSError, ValueError):
+            return None
+        try:
+            return _parse_dt(raw)
+        except ValueError:
+            return None
 
     def resolve(self) -> KasToken | None:
         """Return the highest-priority stored token (External > Builder > Social).

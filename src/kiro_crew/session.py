@@ -34,8 +34,8 @@ dispatch:
 * **KAS:** nothing is dispatched. KAS treats the ``/compact`` prompt as
   ordinary text and never answers it with a compaction status, so the
   gate declines (``compact_unsupported``) before the compaction task is
-  scheduled: an ungated dispatch stranded the wait for the full budget
-  while holding the semaphore and then recycled the session (#7812). KAS
+  scheduled: an ungated dispatch strands the wait for the full budget
+  while holding the semaphore and then recycles the session. KAS
   summarizes on its own initiative, the same way ``cc_managed`` leaves
   Claude-Code sessions to compact themselves.
 
@@ -449,6 +449,7 @@ POOL_DECISIONS: frozenset[str] = frozenset(
         "miss_empty",
         "bypass_resume",
         "bypass_stateless",
+        "bypass_private_memory",
         "bypass_cwd",
         "bypass_effort",
         "bypass_env",
@@ -591,8 +592,8 @@ _COMPACT_MIN_EFFECT_PCT_POINTS = 5.0
 # re-crosses the trigger threshold, and on the task runner the next prompt
 # itself may no longer fit. Such a session is reset — with its native resume
 # sid cleared, so the overflowed conversation is not reloaded — instead of
-# limping through compact/cooldown cycles. Promoted from the task runner's
-# post-compaction verification so every compaction caller gets it (#4686).
+# limping through compact/cooldown cycles. Every compaction caller gets this,
+# not just the task runner's post-compaction verification.
 # The escalation rides the verdict settle (not a raw re-read after compact())
 # because only a settled reading has passed the measurability rules — a raw
 # re-read can be unknown (kiro zeroes + flags stats) or stale (a backend that
@@ -645,7 +646,7 @@ def _opt_out_key(key: str) -> str:
 
 # Background session recycle thresholds (more aggressive than chat compaction)
 _BG_RECYCLE_PCT = 70.0  # recycle at 70% — well before overflow
-_BG_BLIND_RECYCLE_PROMPTS = 40  # recycle after 40 prompts if no metadata
+_BG_BLIND_RECYCLE_PROMPTS = 40  # unconditional backstop: recycle after 40 prompts
 
 # TTL (seconds) for the per-agent model resolution cache. Bounds how long a
 # stale resolution — especially the "auto" miss for an agent whose JSON is
@@ -781,7 +782,7 @@ def _provider_has_unfinished_turn(provider: LLMProvider) -> bool:
     already been ``session/cancel``'d but whose native turn-done ack has not yet
     arrived reports ``has_active_turn() is False`` yet still holds kiro-cli's
     native-session lock open; killing the process now reproduces the
-    empty-response-after-restart bug (#200). Reporting it as "unfinished" keeps
+    empty-response-after-restart bug. Reporting it as "unfinished" keeps
     it in the drain set so the ack is waited on before teardown.
 
     Same defensive guard as :func:`_provider_has_active_turn`: providers that
@@ -1637,9 +1638,9 @@ class SessionManager:
     def _sync_autocompact_pct(self) -> None:
         """Adopt a newly published compaction threshold, if one arrived.
 
-        The threshold is captured on ``_cfg`` when the gateway starts, so a
-        config write used to reach disk and stop there. Every successful
-        ``KiroCrewConfig.load`` now publishes it, and prompt assembly loads
+        The threshold is captured on ``_cfg`` when the gateway starts, so on its
+        own a config write would reach disk and stop there. Every successful
+        ``KiroCrewConfig.load`` publishes it, and prompt assembly loads
         config once per turn, so a write from ANY writer -- the dashboard PATCH
         handler or ``kirocrew config set`` -- is in force by the next context
         reading without a restart.
@@ -1864,8 +1865,9 @@ class SessionManager:
           session's subagents (alive for the parent's whole lifetime).
         - ``self._bg_runtime`` — the background runtime backing ``get_bg_session``
           (kirocrew-lite title-gen / memory consolidation), plus any
-          ``_draining_bg_runtimes`` displaced by a backend switch while their
-          handles finish — killing one mid-drain is exactly what parking avoids.
+          ``_draining_bg_runtimes`` displaced by a backend switch or by
+          staleness while their handles finish — killing one mid-drain is
+          exactly what parking avoids.
 
         All are shielded from the sweep by unioning their live PIDs into the
         active set here (mirrors ``_pool_pids``/``_in_flight_pids``). Only alive
@@ -1903,10 +1905,6 @@ class SessionManager:
     def _append_companion_runtime_rows(self, rows: list[dict[str, object]]) -> None:
         """Append background and subagent runtime process rows."""
         self._allocation_boundary()._append_companion_runtime_rows(rows)
-
-    def context_info(self) -> list[dict[str, object]]:
-        """Return the dashboard-facing live context snapshot."""
-        return self._allocation_boundary().context_info()
 
     @staticmethod
     def _resolve_agent_model(agent: str) -> str:
@@ -2535,6 +2533,10 @@ class SessionManager:
 
     def find_key_by_sid(self, sid: str) -> str | None:
         return self._session_map.find_key_by_sid(sid)
+
+    def reserve_generation(self, session_key: str) -> None:
+        """Persist a generation floor before its first provider turn."""
+        self._session_map.reserve_generation(session_key)
 
     def max_generation(self, bucket: str) -> int:
         """Highest persisted DM generation for a session bucket (see SessionMap)."""

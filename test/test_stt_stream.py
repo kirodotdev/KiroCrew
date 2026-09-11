@@ -1307,6 +1307,7 @@ class _FakeLocalSession:
         self,
         *,
         pending=None,
+        pending_load=False,
         prepare_events=(),
         feed_events=(),
         final_text="",
@@ -1323,6 +1324,10 @@ class _FakeLocalSession:
         self.finished = False
         self.cancelled = False
         self._pending = pending
+        #: Whether ``prepare()`` will block loading the model, so the transport
+        #: announces the load with a ``preparing`` status frame first. Defaults off
+        #: so the ordinary "model already resident" path stays a plain ``ready``.
+        self._pending_load = pending_load
         self._prepare_events = list(prepare_events)
         self._feed_events = [list(batch) for batch in feed_events]
         self._final_text = final_text
@@ -1346,6 +1351,9 @@ class _FakeLocalSession:
 
     def pending_download(self):
         return self._pending
+
+    def pending_load(self) -> bool:
+        return self._pending_load
 
     async def prepare(self) -> list:
         self.prepare_calls += 1
@@ -1748,7 +1756,7 @@ class TestLocalStreamingSession:
         """The teardown decode is the LAST thing a session does, so its failure must
         make it out ahead of the close.
 
-        A dropped empty final and a failed decode used to look identical from here:
+        A dropped empty final and a failed decode can look identical from here:
         the socket closed with no frame at all, and the client cleared the partial it
         was showing. The frame carries the code because the browser renders localised
         text; the audit records ``error`` because a session that died must not be
@@ -1863,6 +1871,44 @@ class TestLocalStreamingSession:
         announce the end of a transfer that never happened.
         """
         self._install(monkeypatch, _FakeLocalSession(pending=None))
+        async with TestClient(TestServer(_make_app())) as client:
+            ws = await client.ws_connect("/api/ws/stt")
+            assert (await ws.receive_json())["type"] == "ready"
+            await ws.send_str('{"type":"stop"}')
+            await ws.close()
+
+    @pytest.mark.asyncio
+    async def test_a_preparing_status_frame_precedes_ready_when_the_model_must_load(
+        self, monkeypatch
+    ):
+        """A present-but-not-resident model gets a ``preparing`` frame before ``ready``.
+
+        Loading the model into memory is otherwise silent on this path:
+        ``pending_download`` is None so no download ``status`` goes out, and nothing
+        else does until ``ready`` after the load finishes. On a slow host that load
+        outruns the client's pre-``ready`` buffer and the mic releases with the socket
+        having sent nothing either way — the hung-mic report. The ``preparing`` frame
+        is the signal that the load is under way, so it must arrive BEFORE ``ready``.
+        """
+        self._install(monkeypatch, _FakeLocalSession(pending=None, pending_load=True))
+        async with TestClient(TestServer(_make_app())) as client:
+            ws = await client.ws_connect("/api/ws/stt")
+            first = await ws.receive_json()
+            assert first["type"] == "status"
+            assert first["stage"] == stt.STAGE_PREPARING
+            assert (await ws.receive_json())["type"] == "ready"
+            await ws.send_str('{"type":"stop"}')
+            await ws.close()
+
+    @pytest.mark.asyncio
+    async def test_no_preparing_frame_when_the_model_is_already_resident(self, monkeypatch):
+        """A resident model loads nothing, so it goes straight to ``ready``.
+
+        ``pending_load`` is False when the shared engine already holds this model, so
+        the announce is skipped: sending ``preparing`` there would flash a load
+        indicator for a session that never loads.
+        """
+        self._install(monkeypatch, _FakeLocalSession(pending=None, pending_load=False))
         async with TestClient(TestServer(_make_app())) as client:
             ws = await client.ws_connect("/api/ws/stt")
             assert (await ws.receive_json())["type"] == "ready"

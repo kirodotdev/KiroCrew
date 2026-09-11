@@ -142,8 +142,17 @@ def hmac_signature(secret: str, payload: bytes) -> str:
     against a publisher/issuer public key pinned in the policy; the shape (the
     trust root holds the key, the signed document holds only the signature) is
     unchanged, which is why both call sites route through one helper.
+
+    ``surrogatepass``: the key is text parsed from a JSON trust root, and
+    ``json.loads`` accepts a lone surrogate that a strict encode raises on.  A
+    UnicodeEncodeError here is a ValueError, not a refusal, so it would escape the
+    signature check of every caller.  ``surrogatepass`` only prevents that crash:
+    the key still produces an ordinary HMAC, which verifies exactly when the signer
+    used the same key bytes and reads as UNVERIFIED otherwise.
     """
-    return hmac.new(secret.encode("utf-8"), payload, hashlib.sha256).hexdigest()
+    return hmac.new(
+        secret.encode("utf-8", errors="surrogatepass"), payload, hashlib.sha256
+    ).hexdigest()
 
 
 def _normalize_name(name: str) -> str:

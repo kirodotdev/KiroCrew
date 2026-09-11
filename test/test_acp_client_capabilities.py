@@ -51,8 +51,7 @@ def test_both_acp_transports_send_client_info_name() -> None:
     `clientInfo.name` (agent/acp/acp_agent.rs: `if let Some(info) =
     request.client_info`). A flat top-level `clientName` key is ignored, which
     leaves the session unnamed in telemetry (bucketed as "(none)" instead of
-    "kirocrew"). AcpRuntime previously sent the flat key; this locks in the
-    nested form on BOTH transports. Asserted on source because neither params
+    "kirocrew"). AcpRuntime sends the nested form on BOTH transports. Asserted on source because neither params
     dict is reachable without spawning a real agent subprocess.
     """
     for rel in ("src/kiro_crew/acp/client.py", "src/kiro_crew/acp/runtime.py"):

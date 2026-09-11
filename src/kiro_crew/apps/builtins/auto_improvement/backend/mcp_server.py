@@ -323,12 +323,11 @@ def handle(request: dict[str, Any]) -> dict[str, Any] | None:
             return _error(req_id, _INVALID_PARAMS, f"invalid arguments: {_redact_error(str(exc))}")
         fn = entry[0]
         # Audit the DISPATCH before running the handler, so the record of "this tool was
-        # invoked" cannot be lost by whatever the handler does. Previously only the
-        # outcome was audited, all of it after `fn(args)` returned — so a handler that
-        # died hard (a killed process, an interpreter-level failure, anything that does
-        # not surface as an exception here) executed with no audit trail at all. The
-        # outcome events below still fire; this one makes the invocation itself
-        # unconditional. Raised by the GPT review of this branch.
+        # invoked" cannot be lost by whatever the handler does. Auditing only the outcome,
+        # after `fn(args)` returns, leaves a handler that dies hard (a killed process, an
+        # interpreter-level failure, anything that does not surface as an exception here)
+        # with no audit trail at all. The outcome events below still fire; this one makes
+        # the invocation itself unconditional.
         # AUDIT-OR-DENY. `critical=True` writes synchronously and re-raises on a
         # filesystem failure, so a call that cannot be recorded is REFUSED instead of
         # served untraced. No human is in this loop and the result goes to an LLM, so this
@@ -367,12 +366,11 @@ def handle(request: dict[str, Any]) -> dict[str, Any] | None:
         # finding's signature/hypothesis/note come from the model's own prose) and it is
         # handed to an LLM. This is the same class of text `routes._redact_for_display`
         # scans for the browser and `runner._redact_activity` scans for the feed; the MCP
-        # surface was the remaining reader. Measured before fixing: a credential in a
-        # ledger note came back verbatim in `list_findings`. Raised by review of this
-        # branch.
+        # surface is a reader of the same text, so without this pass a credential in a
+        # ledger note comes back verbatim in `list_findings`.
         #
         # Order matters — truncating first could split a credential across the cut and
-        # leave a fragment the scanner no longer recognizes.
+        # leave a fragment the scanner does not recognize.
         text = _redact_result(json.dumps(payload, default=str))[:_MAX_RESULT_CHARS]
         return _result(req_id, {"content": [{"type": "text", "text": text}]})
     return _error(req_id, _METHOD_NOT_FOUND, f"unknown method: {method}")

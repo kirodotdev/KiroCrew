@@ -21,7 +21,7 @@ Matrix pinned here:
 * governance floor + flag + NON-first-party spawn -> raises, and the refusal
   names the policy rather than the flag the operator already set: the floor
   outranks ``sandbox_allow_unsandboxed_exec`` because ``config.json`` is not
-  policy (issue #3162);
+  policy;
 * no floor + flag                               -> unchanged passthrough (the
   population that relies on the opt-in keeps working byte-for-byte);
 * ``sandbox_allow_unsandboxed_exec=true``       -> identical with or without
@@ -213,7 +213,7 @@ class TestGovernanceFloorOverridesTheOptIn:
     having no effect at all on the broad config opt-in, so pinning a floor
     weakened the constrained path and left the unconstrained one alone. These
     pin the corrected direction: on a governed host the config flag grants
-    nothing, because ``config.json`` is not policy (issue #3162).
+    nothing, because ``config.json`` is not policy.
     """
 
     @pytest.fixture

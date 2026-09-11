@@ -337,7 +337,7 @@ def test_dump_age_seconds(dumps_dir: Path) -> None:
 def test_dump_age_never_negative_with_future_mtime(dumps_dir: Path) -> None:
     """A dump whose mtime rounds marginally AHEAD of ``time.time()`` (sub-microsecond
     float jitter on a just-written file, or higher-resolution FS timestamps) must
-    report age 0.0 — never a negative. Regression for `assert 0 <= age` failing
+    report age 0.0 — never a negative, even when `assert 0 <= age` would fail
     with a tiny negative delta (~-2e-7)."""
     import time
 
@@ -525,11 +525,11 @@ def test_watchdog_rearm_failure_restores_discoverable_soft_dump(
             wd.stop()
 
 
-# ── fd stability (regression for #1571) ──
+# ── fd stability ──
 
 
 def test_dump_file_fd_survives_repeated_arm_cancel(dumps_dir: Path) -> None:
-    """Regression test for #1571: the raw fd must remain valid across cancel/re-arm.
+    """The raw fd must remain valid across cancel/re-arm.
 
     The bug: faulthandler's C timer captures the fd at arm time and writes to it
     when the timer fires.  If the fd is invalidated between arm and fire (e.g.
@@ -579,7 +579,7 @@ def test_dump_file_fileno_is_stable(dumps_dir: Path) -> None:
 
 
 def test_dump_file_fd_survives_dropping_last_python_reference(dumps_dir: Path) -> None:
-    """The fd outlives every Python reference to the object that owns it (#1571).
+    """The fd outlives every Python reference to the object that owns it.
 
     This is the property that separates the raw-fd ``DumpFile`` from a buffered
     ``open()``: faulthandler's C timer keeps only the integer fd, so if the last
@@ -709,7 +709,7 @@ def test_dump_replay_lines_wedged_thread_survives_truncation(dumps_dir: Path) ->
     Regression: real dumps carry 200+ lines of idle thread-pool workers before
     the main thread; top-down replay hit the 120-line/8KB caps and the journal
     showed only ``Queue.get`` workers plus ``[truncated]`` — omitting the one
-    stack that explains the stall (observed on the 2026-08-09 stall dumps).
+    stack that explains the stall.
     """
     from kiro_crew.dashboard.crash_dump_store import dump_replay_lines
 
@@ -999,7 +999,7 @@ def test_rotate_never_victimizes_a_live_owners_dump(dumps_dir: Path) -> None:
 
 
 def test_rotate_never_victimizes_foreign_domain_dumps(dumps_dir: Path) -> None:
-    # GPT round: a foreign-domain owner (another host/namespace sharing the
+    # A foreign-domain owner (another host/namespace sharing the
     # data home) may be a LIVE gateway whose faulthandler holds this file's
     # fd — and that cannot be checked from here. Rotation must never unlink
     # its path (evidence would land on an unreachable inode); the owner's own
@@ -1028,10 +1028,10 @@ def test_rotate_never_victimizes_foreign_domain_dumps(dumps_dir: Path) -> None:
 
 
 def test_owner_alive_detects_pid_reuse_via_start_id(dumps_dir: Path) -> None:
-    # GPT round: a live PID is not proof of a live OWNER — the kernel can
+    # A live PID is not proof of a live OWNER — the kernel can
     # recycle the recorded PID for an unrelated process. A header that
     # recorded a start ID differing from the live process's start ID means
-    # the owner is dead; its file must be protectable no longer.
+    # the owner is dead; its file must not be protected.
     if crash_dump_store._pid_start_id(os.getpid()) is None:
         pytest.skip("no procfs start-id probe on this platform")
     # Use a REAL live process (the parent) so the start-id probe returns a

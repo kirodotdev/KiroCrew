@@ -31,7 +31,7 @@ from installer_test_helpers import run_bounded
 
 #: The Node version the bootstrap fixtures build tarballs for. Asserted equal to
 #: both scripts' own default, so a bump cannot leave these tests exercising a
-#: version the installer no longer ships.
+#: version the installer does not ship.
 TESTED_NODE_VERSION = "22.23.2"
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -1767,7 +1767,7 @@ def test_an_interrupted_rebootstrap_restores_the_previous_node(
     """SIGINT during promotion is the realistic interruption -- a user pressing
     Ctrl-C -- and it lands in the window where the old tree has been moved aside and
     the new one is not yet in place. The EXIT handler puts it back, so the wrapper
-    never ends up pinned to a Node that is no longer there.
+    never ends up pinned to a Node that is not there.
 
     Driven by making the tarball enormous enough that `tar` is still unpacking when
     the signal arrives, rather than by asserting on the script's text.
@@ -2248,7 +2248,7 @@ def test_windows_node_staging_is_on_the_prefix_volume() -> None:
 def test_the_bootstrapped_node_version_agrees_across_both_scripts() -> None:
     """Three copies of this version exist (both scripts and this suite's
     fixtures) with nothing tying them together, so a bump in one place would
-    leave the tests green while no longer exercising the shipped value."""
+    leave the tests green while not exercising the shipped value."""
     sh_version = re.search(r'^NODE_VERSION="([0-9.]+)"', INSTALLER_SH.read_text(), re.MULTILINE)
     ps_version = re.search(
         r'^\s*\[string\]\$NodeVersion = "([0-9.]+)"',

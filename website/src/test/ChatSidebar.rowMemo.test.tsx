@@ -91,7 +91,7 @@ Object.defineProperty(window, 'matchMedia', {
   })),
 })
 
-import ChatSidebar, { sessionRowRenderProbe } from '../pages/ChatSidebar'
+import ChatSidebar, { sessionRowRenderProbe, SIDEBAR_DISPLACEMENT_WINDOW } from '../pages/ChatSidebar'
 import { setSlotStatusDetail } from '../store/chatSlice'
 
 const slot = (key: string, over: Record<string, unknown> = {}) => ({
@@ -180,6 +180,43 @@ function renderSidebarParts() {
   return { store, sidebarBelowProviders, wrap }
 }
 
+/** Like renderSidebarParts, but the row set is the caller's and the returned
+ *  element takes the CURRENT slot array, so a harness can insert a row below
+ *  the providers (the production shape for a slots-frame arrival). */
+function renderSidebarWithSlots(slots: ReturnType<typeof slot>[]) {
+  const store = createTestStore({
+    dashboard: {
+      status: {}, connected: true, slots, approvalMode: 'normal',
+      channelTrusted: false, refreshTrigger: 0, unreadSlots: [], updateProgress: null,
+      slotsLoaded: true,
+      subagentRunning: {}, subagentDetails: {}, subagentText: {},
+      sessionDefaultColor: null, sessionColorsMode: 'tint', sessionColorsPalette: 'horizon', sessionColorsIntensity: 'clear',
+    } as unknown as RootState['dashboard'],
+    chat: {
+      activeSlot: null, slotStatusDetail: {}, subagents: {}, slotActivity: {},
+      subagentQueued: {}, goalLoops: {}, workflowRuns: {},
+    } as unknown as RootState['chat'],
+  })
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
+  qc.setQueryData(['chat-folders'], [])
+  const sidebarWithSlots = (rows: ReturnType<typeof slot>[]) => (
+    <ChatSidebar
+      slots={rows} activeSlot={null} unreadSlots={EMPTY_UNREAD}
+      history={EMPTY_HISTORY} historyHasMore={false} defaultAgent="" installedAgents={EMPTY_AGENTS}
+    />
+  )
+  const wrap = (children: React.ReactElement) => (
+    <QueryClientProvider client={qc}>
+      <Provider store={store}>
+        <ThemeProvider>
+          <MemoryRouter>{children}</MemoryRouter>
+        </ThemeProvider>
+      </Provider>
+    </QueryClientProvider>
+  )
+  return { store, sidebarWithSlots, wrap }
+}
+
 const counts: Record<string, number> = {}
 beforeEach(() => {
   localStorage.clear()
@@ -241,6 +278,42 @@ describe('chat sidebar — session row memo boundary', () => {
     act(() => { setters[setters.length - 1](true) })
 
     expect(counts).toEqual({})
+  })
+
+  // A top insertion shifts every row's paint ordinal by one. Unclamped, that
+  // voids all N memo boundaries for one visible change; the clamp bounds the
+  // re-render set to the window plus the new row, so the cost of New Chat stops
+  // scaling with the session count. Rows past the window keep their (shared)
+  // stamp and bail out — they snap rather than slide, by design.
+  it('a top insertion re-renders only the rows inside the displacement window', () => {
+    const N = SIDEBAR_DISPLACEMENT_WINDOW + 40
+    const initial = Array.from({ length: N }, (_, i) => slot(`r-${String(i).padStart(3, '0')}`))
+    const setters: Array<(v: typeof initial) => void> = []
+    function Harness({ sidebar }: { sidebar: (s: typeof initial) => React.ReactElement }) {
+      const [rows, setRows] = React.useState(initial)
+      setters.push(setRows)
+      return sidebar(rows)
+    }
+    const { sidebarWithSlots, wrap } = renderSidebarWithSlots(initial)
+    render(wrap(<Harness sidebar={sidebarWithSlots} />))
+    expect(Object.keys(counts)).toHaveLength(N)
+    for (const k of Object.keys(counts)) delete counts[k]
+
+    act(() => { setters[setters.length - 1]([slot('r-new'), ...initial]) })
+
+    const rerendered = Object.keys(counts).sort()
+    // The new row mounts…
+    expect(rerendered).toContain('r-new')
+    // …the displaced rows that took ordinals 1..WINDOW re-render (their stamp
+    // moved)…
+    for (let i = 0; i < SIDEBAR_DISPLACEMENT_WINDOW; i++) {
+      expect(counts[`r-${String(i).padStart(3, '0')}`]).toBeGreaterThan(0)
+    }
+    // …and every row that was already at or past the window bails out.
+    for (let i = SIDEBAR_DISPLACEMENT_WINDOW; i < N; i++) {
+      expect(counts[`r-${String(i).padStart(3, '0')}`]).toBeUndefined()
+    }
+    expect(rerendered).toHaveLength(SIDEBAR_DISPLACEMENT_WINDOW + 1)
   })
 })
 

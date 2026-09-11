@@ -107,10 +107,19 @@ class HeadingAwareChunker:
         return chunks
 
     def chunk_code(self, text: str, language: str | None = None) -> list[dict]:
-        """Split code by function/class boundaries."""
+        """Split code by function/class boundaries.
+
+        The keyword set is language-generic, not per-``language``: one regex serves
+        every extension in ``ingestion.CODE_EXTS``, so a keyword added for one
+        language also becomes a boundary for the others that spell it the same way
+        (``interface`` in Kotlin/C# is equally a boundary in ``.ts``/``.java``).
+        Anything the regex misses is not dropped -- the block merely falls into the
+        preceding block and is split on word count.
+        """
         lines = text.split("\n")
         boundaries = re.compile(
-            r"^\s*(?:def |class |function |fn |func |pub fn |public |private |protected )"
+            r"^\s*(?:def |class |function |fn |fun |func |pub fn |object |interface |"
+            r"internal |public |private |protected )"
         )
         blocks: list[tuple[int, list[str]]] = []
         current_start = 1

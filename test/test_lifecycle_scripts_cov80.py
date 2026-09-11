@@ -155,7 +155,7 @@ async def test_timeout_kills_the_process_tree(admit, monkeypatch, tmp_path) -> N
     assert proc.killed is True
     # The critical pin: every post-kill wait drains pipes via communicate();
     # a bare wait() on a killed child blocked writing into a full pipe would
-    # hang the caller forever (#5989). Calls: the site's own wait, the TERM
+    # hang the caller forever. Calls: the site's own wait, the TERM
     # grace, and the escalation reap.
     assert proc.communicate_calls == 3
     assert proc.waited is False

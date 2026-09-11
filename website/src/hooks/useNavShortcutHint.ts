@@ -125,6 +125,21 @@ function subscribeShortcutsEnabled(onChange: () => void): () => void {
   return () => window.removeEventListener(SHORTCUTS_ENABLED_EVENT, onChange)
 }
 
+/**
+ * Live view of the global shortcuts on/off toggle, shared by every surface
+ * that ADVERTISES a chord (the rail hints here, the top-bar history arrows'
+ * `aria-keyshortcuts` and tooltips). One subscription per consumer over the
+ * same event the live keydown handler honours, so an advertisement can never
+ * outlive the binding it names.
+ */
+export function useShortcutsEnabled(): boolean {
+  return useSyncExternalStore(
+    subscribeShortcutsEnabled,
+    getShortcutsEnabled,
+    getShortcutsEnabled,
+  )
+}
+
 
 export interface NavShortcutHint {
   /** Display chord for the eye, platform-formatted by `formatShortcut()`. */
@@ -142,11 +157,7 @@ export interface NavShortcutHint {
  * keypress that does nothing.
  */
 export function useNavShortcutHint(route: string): NavShortcutHint | null {
-  const enabled = useSyncExternalStore(
-    subscribeShortcutsEnabled,
-    getShortcutsEnabled,
-    getShortcutsEnabled,
-  )
+  const enabled = useShortcutsEnabled()
   if (!enabled) return null
   const def = navShortcutDef(route)
   if (!def) return null

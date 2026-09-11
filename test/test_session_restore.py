@@ -881,8 +881,8 @@ class TestRehydrateSlotFromHistory:
         canonicalizes the stored model per-provider via
         ``model_registry.canonicalize_for_provider`` (so a raw provider id like
         ``claude-opus-4.7`` maps back to the canonical dropdown key for CC). On
-        a kiro provider it is a no-op; previously this test read the ambient
-        on-disk config and so passed or failed depending on the dev machine.
+        a kiro provider it is a no-op; this test must not read the ambient
+        on-disk config, or it passes or fails depending on the dev machine.
         """
         from kiro_crew.config.loader import KiroCrewConfig
 
@@ -1137,7 +1137,7 @@ class TestPartialRehydrateRollsBack:
 
     ``_rehydrate_slot_from_history`` registers the slot via ``get_or_create_slot`` before
     any of its fallible work (title redaction, model canonicalization, the message
-    replay). A failure after that used to leave a half-populated slot in
+    replay). A failure after that must not leave a half-populated slot in
     ``state._slots`` -- and every rehydrate entry point short-circuits on
     ``slot_name in state._slots``, so the next caller received the partial slot as
     a complete restore with ``_disk_older_count`` still 0, after which a save
@@ -1228,8 +1228,8 @@ class TestPartialRehydrateRollsBack:
 
     def test_the_rollback_lives_in_the_callee_not_the_caller(self):
         """Source guard: the rollback belongs at the creation site so EVERY caller
-        gets it. restore_open_slots used to carry its own copy, which protected
-        only itself -- the async twin had none. Asserts on the code, not comments."""
+        gets it. restore_open_slots must not carry its own copy, which would protect
+        only itself -- leaving the async twin with none. Asserts on the code, not comments."""
         import inspect
 
         from kiro_crew.dashboard import chat_persistence
@@ -1246,7 +1246,7 @@ class TestPartialRehydrateRollsBack:
         )
 
 
-# ── restore_recent_sessions_async: the reads must leave the loop (#895) ──
+# ── restore_recent_sessions_async: the reads must leave the loop ──
 #
 # This driver is the slower of the two startup restores: it calls list_sessions()
 # (a glob + stat + first-line read of EVERY session file) and then per selected
@@ -1262,7 +1262,7 @@ class TestPartialRehydrateRollsBack:
 class TestAsyncRestoreRecentSessionsOffLoop:
     @pytest.mark.asyncio
     async def test_matches_the_sync_driver(self, tmp_path, monkeypatch):
-        """Parity guard: the two drivers no longer share a generator body."""
+        """Parity guard: the two drivers do not share a generator body."""
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         from kiro_crew.dashboard.chat_persistence import restore_recent_sessions_async
 
@@ -1430,7 +1430,7 @@ class TestAsyncRestoreRecentSessionsOffLoop:
         """Post-hop re-check: the pre-hop ``_slots`` answer is seconds stale.
 
         Offloading the reads opened a window that did not exist before — the
-        check and the apply used to run atomically on the loop. If a resume, a
+        check and the apply cease to be atomic once the reads move off the loop. If a resume, a
         nudge or the user opening the tab publishes the slot while its transcript
         loads, ``_apply_recent_session`` -> ``get_or_create_slot`` returns that
         LIVE slot and the replay appends the on-disk messages a second time, then
@@ -1606,9 +1606,8 @@ class TestAsyncRestoreRecentSessionsOffLoop:
         ``list_sessions()`` is a snapshot taken one thread hop earlier, so a
         session deleted in that gap still appears in the list while its metadata
         reads back ``{}``. An empty dict sails past every filter (folder, pin,
-        closed, cutoff all read falsy) and used to reach ``get_or_create_slot`` —
+        closed, cutoff all read falsy) and must not reach ``get_or_create_slot`` —
         registering a phantom slot whose flush RECREATES the deleted transcript.
-        Raised as blocking by GPT 5.6 review, round 3.
         """
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         from kiro_crew.dashboard.chat_persistence import restore_recent_sessions_async

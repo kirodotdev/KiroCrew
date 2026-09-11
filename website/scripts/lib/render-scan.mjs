@@ -423,6 +423,9 @@ export function scanDocument(opts) {
     if (node.nodeType === 3) return true
     if (node.nodeType !== 1) return false
     if (!visible(node)) return false
+    // An explicit control group is its own UI unit. Its children are still visited
+    // and graded below, including untranslated labels or split prose inside it.
+    if (/^(?:group|tablist|radiogroup|toolbar)$/.test(node.getAttribute('role') || '')) return false
     const d = getComputedStyle(node).display
     if (d === 'contents') return true
     return d.startsWith('inline') || inlineTags.has(node.tagName)

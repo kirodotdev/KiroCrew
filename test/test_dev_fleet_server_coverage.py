@@ -1098,7 +1098,7 @@ async def test_disk_fresh_result_served_without_rescan(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_disk_six_sequential_polls_run_one_aggregation(monkeypatch):
-    """Regression for #8787: an open dashboard polling /disk must not re-scan.
+    """An open dashboard polling /disk must not re-scan.
 
     Six sequential endpoint reads on main ran three full aggregations because
     the done branch reset the state machine to idle on every snapshot. With
@@ -1351,7 +1351,7 @@ async def test_rebase_locked_refuses_dirty_worktree(monkeypatch):
     monkeypatch.setattr(runtime, "_run_cmd", AsyncMock(return_value=(0, "scratch.log\0", "")))
     res = await worktree_ops._rebase_locked({"path": "/r"})
     assert res["ok"] is False
-    # The message no longer equals the bare legacy string: it now appends a
+    # The message does not equal the bare legacy string: it appends a
     # dirt-detail tail. The legacy prefix is preserved for clients keying on it.
     assert res["error"].startswith("worktree has uncommitted changes")
     assert "uncommitted changes" in res["error"]
@@ -1966,7 +1966,7 @@ async def test_json_body_empty_request_is_empty_dict():
 @pytest.mark.asyncio
 async def test_json_body_unknown_charset_is_400_not_500():
     # An unknown ``charset=`` codec makes aiohttp's decode step raise LookupError,
-    # not JSONDecodeError. The catch was ValueError-only, so this used to escape as
+    # not JSONDecodeError. A ValueError-only catch would let this escape as
     # a 500; it is a client-input mistake and must answer 400. Guards the widened
     # (LookupError, RecursionError, ValueError) catch against a regression.
     body, err = await http_api._json_body(
@@ -3302,7 +3302,7 @@ async def test_prune_run_handler_guards_protected_worktree_in_discard_paths(monk
 @pytest.mark.asyncio
 async def test_prune_run_discard_only_name_reaches_remove_and_skips_recheck(monkeypatch):
     """A name present ONLY in discard_untracked_paths is now RE-CHECKED via
-    _prunable (force's blanket bypass is no longer inherited), but a refusal
+    _prunable (force's blanket bypass is not inherited), but a refusal
     whose code is in _DISCARD_OVERRIDABLE_CODES is overridden, so it still
     reaches _worktree_remove with the caller's consented path list."""
     prunable_calls: list[str] = []
@@ -3357,7 +3357,7 @@ async def test_prune_run_discard_only_name_reaches_remove_and_skips_recheck(monk
 
 @pytest.mark.asyncio
 async def test_discard_rel_paths_scoped_to_approved_paths(monkeypatch):
-    """CHANGE 1: the discard is no longer a blanket sweep. `_discard_untracked_files`
+    """The discard is not a blanket sweep. `_discard_untracked_files`
     is handed EXACTLY the enumerated untracked paths, and a path that was never
     enumerated (never approved) is never handed to it."""
     discarded: list[tuple] = []
@@ -3575,7 +3575,7 @@ async def test_discard_refused_when_submitted_omits_a_file_now_on_disk():
 
 @pytest.mark.asyncio
 async def test_discard_refused_when_submitted_names_a_file_no_longer_there():
-    """CONSENT MISMATCH (reverse): the caller names a file that is no longer on
+    """CONSENT MISMATCH (reverse): the caller names a file that is not on
     disk. The submitted set differs from the fresh set, so the discard is
     refused with the same message; nothing is cleaned or removed."""
     cleaned = {"ran": False}
@@ -3594,7 +3594,7 @@ async def test_discard_refused_when_submitted_names_a_file_no_longer_there():
 
     async def run_cmd(cmd, timeout=None, **kw):
         if "ls-files" in cmd:
-            # only note.txt survives; gone.txt the caller listed is no longer here
+            # only note.txt survives; gone.txt the caller listed is not here
             return (0, "note.txt\0", "")
         if "worktree" in cmd and "remove" in cmd:
             ran_remove["v"] = True  # pragma: no cover - must not run
@@ -4032,7 +4032,7 @@ def test_discard_untracked_files_refuses_escapes_and_deletes_nothing(tmp_path):
 
 @requires_fd_safe_discard
 def test_discard_untracked_files_missing_path_is_idempotent(tmp_path):
-    """A path that no longer exists returns None (idempotent) so a retry after a
+    """A path that does not exist returns None (idempotent) so a retry after a
     partially-completed discard is not an error."""
     _need_unsymlinked_tmp(tmp_path)
     assert not (tmp_path / "gone.txt").exists()

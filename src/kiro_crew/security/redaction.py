@@ -20,9 +20,14 @@ gate is a separate predicate so a refusal can name which one fired.
 from __future__ import annotations
 
 import base64
+import hashlib
+import hmac
 import math
+import posixpath
 import re
+import secrets
 from collections import Counter
+from collections.abc import Callable
 
 from kiro_crew.credential_patterns import AWS_KEY_ID, JWT_MULTI_SEGMENT
 
@@ -1028,3 +1033,116 @@ def redact_local_paths(text: str) -> tuple[str, list[str]]:
         return _LOCAL_PATH_PLACEHOLDER
 
     return _LOCAL_PATH_RE.sub(_sub, text), notes
+
+
+#: A random key generated once per gateway process and held only in memory: it
+#: is never persisted, logged or exposed. It keys the per-segment label below.
+_PATH_LABEL_KEY = secrets.token_bytes(32)
+
+#: Joins a redacted path segment to the label :func:`redact_path_segments`
+#: appends. Outside the credential alphabet, so the label can never be glued
+#: onto a neighbouring run and read as part of one; and not a path separator, so
+#: the segment count is kept.
+_PATH_SEGMENT_DISCRIMINATOR_SEP = "~"
+
+
+def _path_segment_label(segment: str) -> str:
+    """The opaque, process-stable label for a redacted path *segment*.
+
+    ``HMAC-SHA256(_PATH_LABEL_KEY, segment)``, truncated to 12 hex digits (48
+    bits). Equal segments carry equal labels for the life of this process, and
+    that equality is the point: the dashboard joins the project-tree response
+    with the git-status response by path, so the same original must label the
+    same way in both. Distinct segments carry distinct labels except with
+    negligible probability (48 bits over the handful of collisions one tree can
+    hold). The digest is KEYED: without the key nothing about the segment can be
+    checked against the label, so a low-entropy secret behind a redaction tag is
+    not exposed to an offline dictionary guess the way an unkeyed hash prefix
+    would be. The key is fresh per gateway process, so the label changes across
+    a restart; both responses of one join come from one process, so the join
+    holds.
+    """
+    return hmac.new(
+        _PATH_LABEL_KEY, segment.encode("utf-8", "surrogatepass"), hashlib.sha256
+    ).hexdigest()[:12]
+
+
+def redact_path_segments(path: str, redactor: Callable[[str], str] | None = None) -> str:
+    """Redact a ``/``-separated *path* segment by segment, labelling each
+    redacted segment so distinct originals stay distinct.
+
+    The whole-string redactors replace a matched token wherever it sits, so a
+    path whose filename is credential-shaped (``AKIA…_model.txt``) keeps its
+    directory prefix and its non-secret tail but not the token. Here each segment
+    is redacted on its own, so a credential-shaped segment is replaced by the tag
+    while every clean segment around it is kept verbatim. Every segment the
+    redactor changes is then suffixed with :data:`_PATH_SEGMENT_DISCRIMINATOR_SEP`
+    and :func:`_path_segment_label` of its ORIGINAL bytes -- not only on a
+    collision, because a single call cannot know what else the listing holds.
+
+    The label is the one shape that meets all five properties the listings need
+    at once:
+
+    1. Distinct inputs stay distinct: two different credential-shaped segments
+       collapse to the same tag but carry different labels, so a de-duplicating
+       listing keeps both.
+    2. No byte of the secret is in the output: the tag replaces the token whole
+       and the label is a digest, not a substring.
+    3. No UNKEYED digest of the secret: the label is an HMAC under a per-process
+       random key, so a reader cannot enumerate low-entropy candidates offline
+       and match them against the label.
+    4. No dependence on listing position or order: the label is a function of
+       the segment alone, so a sorted listing does not correlate the label with
+       the secret's lexicographic rank, and the same path labels the same way
+       whatever else is listed with it.
+    5. Stable across responses within one gateway process: the dashboard joins
+       the tree response with the git-status response by path, and a
+       per-response label breaks that join when only one of two colliding paths
+       appears in the status response. A keyed label is the same in every
+       response this process serves.
+
+    The key is regenerated when the gateway restarts, so labels differ across
+    restarts; both responses of one join come from the same process, so that
+    is fine.
+
+    *redactor* is the whole-string redactor to apply -- callers on an egress
+    surface pass the context-aware ``redact`` shim so a loaded companion's extra
+    patterns apply; the default is the credential pass alone. Whatever it is,
+    this function never emits LESS redaction than it would: the segment-wise
+    result is returned only when redacting each segment on its own removes
+    EXACTLY the bytes the whole-string pass removes (their unlabelled joins are
+    equal) and the labelled result is itself a fixed point of the redactor;
+    otherwise the whole-string result is returned unchanged. Equality with the
+    whole-string pass is the load-bearing check: a token that spans a separator
+    (a ``key=value`` whose value carries a ``/``) is matched by the whole pass
+    but only up to the separator by the segment pass, and the leftover tail is
+    not a match on its own, so a fixed-point check alone would let it through.
+    A path the redactor leaves alone is returned as is. Splits on
+    :data:`posixpath.sep` only, on every host: the project listings this serves
+    emit POSIX-relative paths, not native ones.
+    """
+    _redact: Callable[[str], str] = redactor or (lambda s: redact_credentials(s)[0])
+    whole = _redact(path)
+    if whole == path:
+        return path
+    segments = path.split(posixpath.sep)
+    outs = [_redact(segment) for segment in segments]
+    # Floor 1: segment-wise redaction must reproduce the whole-string result
+    # byte for byte before any label is added. Anything the whole pass removed
+    # that a single segment did not is a tail the caller must not see.
+    if posixpath.sep.join(outs) != whole:
+        return whole
+    labelled = [
+        (
+            out
+            if out == segment
+            else f"{out}{_PATH_SEGMENT_DISCRIMINATOR_SEP}{_path_segment_label(segment)}"
+        )
+        for segment, out in zip(segments, outs)
+    ]
+    candidate = posixpath.sep.join(labelled)
+    # Floor 2: the labelled result must itself be a fixed point of the redactor
+    # (a shape that only matches in context, or one the labels complete).
+    if _redact(candidate) != candidate:
+        return whole
+    return candidate

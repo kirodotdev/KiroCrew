@@ -144,7 +144,7 @@ separators; the floor re-joins them for the running platform.
 | `host_logout_retires_children` | `True` — a logout there invalidates a running child | `True` — excluding it would let a KAS session keep serving turns on the previous account's credentials | `False` — a live CC child must survive `kiro-cli logout` | `False` — a `kiro-cli logout` says nothing about whether a running codex child is still authenticated, and retiring its child on that signal would end a live turn for no reason |
 | `sign_in_remedy` | run `kiro-cli login`, then start a new chat | the same string verbatim — it is kiro-cli's store the relay reads | run `claude` and complete its sign-in, then start a new chat | two branches: complete Codex's own sign-in, or name a model provider in `~/.codex/config.toml` (`CODEX_HOME` moves that folder). Neither is checked here — the adapter reads them |
 | `AgentInteractiveLogin` | not implemented — sign-in happens in the operator's own terminal | not implemented — same | not implemented — the harness brings its own | not implemented — the harness brings its own |
-| Entitlement discovery, model side | account API | account API | runtime, from the advertised model set at session init; the registry is filtered down to it (`dashboard/handlers/agents.py`) | runtime, from the model set advertised at `session/new` / `session/load`, but in-memory for that session only — no account API, no registry filter, no cross-session persist (excluded from `ACP_BACKENDS_ADVERTISED_MODEL_SELECTION`) (`acp/client.py`) |
+| Entitlement discovery, model side | account API | account API | runtime, from the advertised model set at session init; the registry is filtered down to it (`dashboard/handlers/agents.py`) | runtime, from the model set advertised at `session/new` / `session/load`. Captured there and persisted to the cross-session provider-model cache under the `codex` namespace, which `GET /api/models` reads back, so a cold dashboard still offers the real list. No account API. No registry filter either — the registry carries no codex provider, so there is nothing to narrow: the picker IS the advertised list plus `auto` (`acp/client.py`, `dashboard/handlers/agents.py`) |
 | Readiness probe | `--version` then `whoami`, inside the OS sandbox (`kiro_prerequisite.py`) | same | binary resolution only, but for **both** components and through the spawn's own resolvers, so the answer cannot disagree with what a spawn does (`agent_sdk/backend_install.py`, `agent_sdk/drivers/acp.py`) | one component, adapter resolution only and through the spawn's own resolver: `codex-acp`, reported `installed` / `missing` with the install command, plus `restart_required` when this process cached a negative (`agent_sdk/backend_install.py`). No auth check |
 
 Installed and signed-in are separate questions with separate remedies, which is
@@ -216,6 +216,24 @@ credentials occupy. An unknown provider defaults to *not* self-sandboxing.
 | Loader strictness | an `mcpServers` entry without a command makes kiro-cli reject the whole agent file, surfacing as "Mode not found" at session time while `agent list`/`validate` still pass (`apps/bridges.py`) | — | frontmatter-scoped | whole-session: `-32602` on an unadvertised transport fails `session/new` outright, not just the offending entry (`acp/client.py`) |
 | Auto-approve bypass | `allowedTools` is the one path that never reaches `hooks.on_tool_call` (`apps/bridges.py`) | KAS `rules` array | see §7 | **none reaches the harness** — no `--agent`, no spec, no session MCP array, and not in `ACP_BACKENDS_SEED_LOCAL_SETTINGS`; `allowedTools` is consumed Crew-side by the gate only. Routing is `SESSION_CONFIG`, so `read-only` is applied through `session/set_config_option` before the first prompt and the session is refused otherwise. The residual that does NOT close: ACP v1 cannot require a prompt for a passive READ, so the sensitive-path block never sees this harness's reads, and §4's OS-boundary mask is the compensating control (`acp_backends.py`) |
 | Tool-name grammar | `@server/tool` split on `/`, so slash-bearing keys are slugged or expose zero tools (`mcp_utils.py`) | — | `mcp__server`; `fs_read`→`Read`, `execute_bash`→`Bash`; `use_aws` has no equivalent and is dropped (companion) | unexercised — no MCP server is ever injected, so no grammar is reached |
+
+**Detected rather than declared, on every provider `AcpClient` composes for:**
+`agent_sdk/mcp_refs.py` compares the spec's `@server` tool refs against the FINAL
+`mcpServers` array, and `acp/mcp_ref_guard.py` logs one structured warning plus a
+row on the session's MCP report (`unresolved_refs`) at the one point that array is
+composed, when a ref names nothing the session receives — the §5 failure this
+bucket keeps describing, made visible instead of re-diagnosed. Satisfaction is per
+backend: kiro-cli reads the spec itself via `--agent`, so its refs resolve against
+the spec's own `mcpServers`, while a harness that reads no agent file is satisfied
+only by the wire array (a broker stub counts on either, since it arrives under the
+name it wraps). It never alters the array and never fails the session, and it adds
+no `await` to any construction path — the snapshot rides in the `mkdir` hop
+`_spawn` already had (H13). `kirocrew doctor` runs the same resolver per selectable
+backend through `agent_sdk.drivers.acp.agent_spec_mcp_refs`, which reads the mirror
+seam — so a backend projecting outside `providers/mirrors/` (KAS) reads as
+unprojected there. KAS is also the one backend the RUNTIME detector does not reach:
+it composes its array on `AcpRuntime`, not at `AcpClient`'s call sites, so its refs
+are checked statically only.
 
 **A provider must declare:** its injection channel and precedence rule, its
 server shape, its env-expansion semantics, its loader strictness, which field (if

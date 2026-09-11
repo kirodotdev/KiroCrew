@@ -1,7 +1,7 @@
 """Repairing a stale adopted daemon, not just reporting it.
 
 ``test_mcp_gateway_target_map_drift`` pins the DETECTION half: an adopted
-survivor whose baked target map no longer covers the configured stub set is
+survivor whose baked target map does not cover the configured stub set is
 found and warned about, and an unknown target at the pre-flight degrades to a
 per-session exec instead of dying. What that leaves is the cost the warning
 itself names -- pooling and the strict session key stay lost for every drifted
@@ -596,7 +596,7 @@ class TestAdoptedDriftRecheck:
         monkeypatch.setattr(manager, "_repair_or_adopt", AsyncMock(return_value=mgr._SPAWN))
         # Raise from the real producer step, not from _spawn_and_confirm itself:
         # the guard lives inside that method, so mocking it to raise would pin a
-        # guard that no longer exists there and would miss a regression at its
+        # guard that does not exist there and would miss a regression at its
         # other call site.
         monkeypatch.setattr(
             manager,

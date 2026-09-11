@@ -8,11 +8,9 @@ with no explicit ``encoding=`` decodes the child's output with
 UTF-8, so the bug is invisible where most development happens. On Windows it is
 the legacy ANSI code page -- cp1252, cp936, cp949, depending on the system
 locale -- so any non-ASCII byte the child prints comes back as mojibake or, with
-strict decoding, a ``UnicodeDecodeError``. Issue #3219 was this exact class
-surfacing in the dashboard's file diffs; #3669 fixed the two confirmed sites
-inline. This module is the prevention half (#5249): one shared definition of
-"decode this child as UTF-8" so new call sites cannot re-forget the encoding,
-enforced by ``scripts/check_subprocess_encoding.py`` in CI.
+strict decoding, a ``UnicodeDecodeError``. This module is the prevention half: one
+shared definition of "decode this child as UTF-8" so new call sites cannot
+re-forget the encoding, enforced by ``scripts/check_subprocess_encoding.py`` in CI.
 
 ## When pinning UTF-8 is CORRECT -- and when it is not
 
@@ -43,7 +41,7 @@ Two reasons, both structural:
   with caller-controlled argv would be a new unaudited primitive -- exactly
   what that audit exists to prevent. A mapping spawns nothing.
 
-``errors="replace"`` matches the shape #3669 established: a malformed byte in
+``errors="replace"`` is the deliberate shape: a malformed byte in
 one path or commit message must degrade to U+FFFD in that spot, not throw away
 the whole diff or crash the caller. The one place that policy is WRONG is a
 payload that must round-trip byte-exactly back into a child (a captured diff
@@ -59,7 +57,7 @@ from typing import Any, Mapping
 # Splat into any subprocess.run / subprocess.Popen / subprocess.check_output
 # call (or a kwargs-forwarding wrapper such as sandbox.run_limited) in place of
 # ``text=True``. Passing ``encoding`` alone already implies text mode;
-# ``text=True`` stays in the mapping so a call site that previously asserted
+# ``text=True`` stays in the mapping so a call site that asserts
 # ``text is True`` in a spy keeps seeing it.
 UTF8_TEXT: Mapping[str, Any] = MappingProxyType(
     {"text": True, "encoding": "utf-8", "errors": "replace"}

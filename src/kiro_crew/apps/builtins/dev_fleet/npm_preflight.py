@@ -36,7 +36,7 @@ retrieval at all: against a lockfile pinning a tarball that 404s, measured,
 while the same command without ``--dry-run`` exits 1 on the missing tarball. A
 dry run would therefore pass exactly the case this module exists to catch, so
 the probe has to fetch. That install is cheap next to the emptied
-``node_modules`` it prevents -- and it is no longer paid on every sync:
+``node_modules`` it prevents -- and it is not paid on every sync:
 :func:`_install_already_proven` skips it when the incoming ref touches nothing
 under ``website/`` and a populated tree is already there to answer for it.
 
@@ -296,7 +296,7 @@ def _install_already_proven(git: str, repo: str, ref: str) -> str | None:
       ``.npmrc`` was not enough, and the gap is worth stating because it is
       subtle: with those three identical but frontend SOURCE changed, a skipped
       probe lets the merge land, and a failing ``npm ci`` afterwards leaves the
-      checkout with new source and the previously-built bundle. Requiring the
+      checkout with new source and a bundle built from the old source. Requiring the
       entire subtree to be identical makes that unreachable -- with no frontend
       change there is no new bundle to be missing, so a failed sync leaves the
       frontend byte-for-byte as it was.
@@ -314,12 +314,11 @@ def _install_already_proven(git: str, repo: str, ref: str) -> str | None:
       dead-registry residual does: the skip decides only whether this sync PAYS
       for a rehearsal, so a refusal lands one step later instead of never, and
       the transaction keeps the checkout consistent either way. The evidence test
-      tracked in #7132 should cover this scenario and not only the interrupted
-      one.
+      should cover this scenario and not only the interrupted one.
 
     What makes skipping SAFE rather than merely cheap is where a failure lands.
     The probe exists because ``npm ci`` deletes ``node_modules`` first, so a
-    refusal after the merge used to leave new source beside an emptied tree.
+    refusal after the merge would leave new source beside an emptied tree.
     Under this condition that outcome is not reachable: the runner's transaction
     moves the tree aside and puts it back on any non-zero step, the lockfile did
     not change, and neither did the source the bundle was built from.
@@ -443,7 +442,7 @@ def _frontend_build_already_current(git: str, npm: str, repo: str, ref: str) -> 
     partial-``node_modules`` gap), and that the staged bundle was built from the
     source the sync will end up with (the fingerprint below).
 
-    The extra proof closes the concrete hole (#7132): a prior FRONTEND sync can
+    The extra proof closes a concrete hole: a prior FRONTEND sync can
     merge new ``website/`` source and then have its ``npm ci`` fail, at which
     point the runner's transaction restores the OLD ``node_modules``. From then
     on the subtree stops changing, so ``_install_already_proven`` would skip --
@@ -465,13 +464,13 @@ def _frontend_build_already_current(git: str, npm: str, repo: str, ref: str) -> 
     # to be clean INCLUDING untracked files before skipping, mirroring the
     # stamp-time guard in frontend._write_build_source_fingerprint: the two
     # together mean a skip implies the tree that produced the bundle and the tree
-    # now on disk are the same, tracked and untracked alike (#7132).
+    # now on disk are the same, tracked and untracked alike.
     if not _frontend_worktree_clean(git, repo):
         return None
     # The install-proven check only requires node_modules to be NON-EMPTY. A
     # partial tree (an interrupted install) passes that, so verify completeness
     # against the lockfile before skipping the real npm ci -- otherwise the sync
-    # could succeed on incomplete dependencies (#7132).
+    # could succeed on incomplete dependencies.
     if not _frontend_tree_complete(npm, repo):
         return None
     fingerprint_path = Path(repo).joinpath(*_STATIC_DIST) / _BUILD_SOURCE_FINGERPRINT
@@ -608,7 +607,7 @@ def main(argv: list[str] | None = None) -> int:
     # outside, and a worktree-run step exiting 48 is demoted to a plain failure.
     # This is the same window the probe uses (after fetch pinned --ref, before
     # merge), which is the only point where "does the incoming ref touch the
-    # frontend?" has a correct answer (#7132).
+    # frontend?" has a correct answer.
     ap.add_argument("--emit-frontend-skip", action="store_true")
     # --subdir and --timeout were CLI flags no caller passed. The subdir is now
     # _FRONTEND_SUBDIR and the timeout is probe()'s own default, so the surface

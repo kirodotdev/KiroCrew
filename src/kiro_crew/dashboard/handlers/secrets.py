@@ -8,7 +8,17 @@ import re
 
 from aiohttp import web
 
-from kiro_crew.config.loader import config_dir
+from kiro_crew.config.loader import (
+    CRED_JIRA_API_TOKEN,
+    CRED_WAKATIME_API_KEY,
+    MANAGED_VAULT_FIXED_CONSUMERS,
+    KiroCrewConfig,
+    config_dir,
+    jira_global_token_applicable,
+    jira_host_token_name,
+    normalize_jira_host,
+)
+from kiro_crew.config.resolution import DEGRADED_WHOLE_CONFIG
 from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
 from kiro_crew.secrets import SecretVault
 
@@ -28,6 +38,93 @@ def _sel():
     import kiro_crew.dashboard.handlers as _pkg
 
     return _pkg.sel()
+
+
+_MANAGED_KIND_JIRA_HOST_TOKEN = "jira_host_token"
+
+
+def _managed_secret_config() -> tuple[list[str], bool, bool, bool]:
+    """Return managed-consumer config without making vault listing fail."""
+    try:
+        config = KiroCrewConfig.load()
+    except Exception:
+        # Secret names remain available when unrelated config is broken, while
+        # the response carries a non-fatal hint so the UI does not misrepresent
+        # "config unreadable" as "no managed integrations enabled".
+        logger.debug("Could not load managed-secret configuration", exc_info=True)
+        return ([], False, False, True)
+    entries = config.dashboard.jira_auth
+    hosts = [normalized for entry in entries if (normalized := normalize_jira_host(entry.host))]
+    degraded: frozenset[str] = getattr(config, "degraded_sections", frozenset())
+    managed_config_error = bool(degraded & {DEGRADED_WHOLE_CONFIG, "dashboard", "wakatime"})
+    return (
+        hosts,
+        jira_global_token_applicable(entries),
+        bool(config.wakatime.enabled),
+        managed_config_error,
+    )
+
+
+def _managed_secret_catalog(
+    names: list[str],
+    jira_hosts: list[str],
+    jira_global_applicable: bool,
+    wakatime_enabled: bool,
+) -> list[dict[str, str]]:
+    """Describe managed vault names the current integration config can consume.
+
+    One configured host may use the global token. Multiple hosts must use their
+    per-host names. A single host's per-host name is also listed when already
+    stored, because the runtime gives it precedence over the global fallback.
+    Values and configured state are not duplicated here: callers already receive
+    the complete ``names`` membership list in the same response.
+    """
+    name_set = set(names)
+    catalog: list[dict[str, str]] = []
+    if wakatime_enabled:
+        catalog.append(
+            {
+                "name": CRED_WAKATIME_API_KEY,
+                "kind": MANAGED_VAULT_FIXED_CONSUMERS[CRED_WAKATIME_API_KEY],
+            }
+        )
+    if jira_global_applicable and jira_hosts:
+        per_host_name = jira_host_token_name(jira_hosts[0])
+        if per_host_name not in name_set:
+            catalog.append(
+                {
+                    "name": CRED_JIRA_API_TOKEN,
+                    "kind": MANAGED_VAULT_FIXED_CONSUMERS[CRED_JIRA_API_TOKEN],
+                }
+            )
+
+    for host in sorted(set(jira_hosts)):
+        name = jira_host_token_name(host)
+        if not jira_global_applicable or name in name_set:
+            catalog.append(
+                {
+                    "name": name,
+                    "kind": _MANAGED_KIND_JIRA_HOST_TOKEN,
+                    "host": host,
+                }
+            )
+    return catalog
+
+
+def _unused_stored_secrets(
+    names: list[str], jira_hosts: list[str], jira_global_applicable: bool, wakatime_enabled: bool
+) -> list[dict[str, str]]:
+    """Classify stored integration names that runtime configuration will not use."""
+    name_set = set(names)
+    unused: list[dict[str, str]] = []
+    if CRED_WAKATIME_API_KEY in name_set and not wakatime_enabled:
+        unused.append({"name": CRED_WAKATIME_API_KEY, "reason": "wakatime_disabled"})
+    if CRED_JIRA_API_TOKEN in name_set and jira_hosts:
+        if not jira_global_applicable:
+            unused.append({"name": CRED_JIRA_API_TOKEN, "reason": "jira_multi_host"})
+        elif jira_host_token_name(jira_hosts[0]) in name_set:
+            unused.append({"name": CRED_JIRA_API_TOKEN, "reason": "jira_host_precedence"})
+    return unused
 
 
 async def _owner_only(request: web.Request, operation: str) -> web.Response | None:
@@ -105,8 +202,33 @@ async def api_secrets_list(request: web.Request) -> web.Response:
     # duration of that read, stalling every other request. `SecretVault.set` and
     # `.delete` already offload internally via `asyncio.to_thread`; this is the
     # one read path that does not, so it is wrapped here.
-    names = await asyncio.to_thread(vault.list_names)
-    return web.json_response({"names": sorted(names)})
+    names = sorted(await asyncio.to_thread(vault.list_names))
+    (
+        jira_hosts,
+        jira_global_applicable,
+        wakatime_enabled,
+        managed_config_error,
+    ) = await asyncio.to_thread(_managed_secret_config)
+    payload: dict[str, object] = {
+        "names": names,
+        "managed": _managed_secret_catalog(
+            names,
+            jira_hosts,
+            jira_global_applicable,
+            wakatime_enabled,
+        ),
+    }
+    unused = _unused_stored_secrets(
+        names,
+        jira_hosts,
+        jira_global_applicable,
+        wakatime_enabled,
+    )
+    if unused:
+        payload["unused"] = unused
+    if managed_config_error:
+        payload["managed_error"] = True
+    return web.json_response(payload)
 
 
 async def api_secrets_set(request: web.Request) -> web.Response:

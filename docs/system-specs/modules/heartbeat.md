@@ -46,7 +46,7 @@ Progress: 3/5 files processed. HEARTBEAT_KEEP
 - `_should_keep(result)` checks for the sentinel (case-insensitive)
 - `None` return (legacy) treated as complete (removed)
 - Sentinel stripped from display text before posting
-- Deliver tags (`<!-- deliver:channel_id -->`) preserved on retention
+- Deliver tags (`<!-- deliver:slack:<channel_id> -->`) preserved on retention
 
 ## Concurrency
 
@@ -165,9 +165,28 @@ Tasks can specify a delivery target via HTML comment tags:
 
 | Mode | Syntax | Behavior |
 |------|--------|----------|
-| Slack DM (default) | _(no tag)_ | Posts result to owner's Slack DM |
-| Dashboard slot | `<!-- deliver:prompt:dashboard:<slot> -->` | Injects result into a specific dashboard chat slot (e.g., `chat-0`, `chat-3`) |
-| Channel | `<!-- deliver:<channel_id> -->` | Posts to a specific Slack channel |
+| Default | _(no tag)_ | Routed per `heartbeat.default_deliver`: `slack` (default) = owner's Slack DM + dashboard bell; `dashboard` = new dashboard slot + bell only |
+| Dashboard prompt | `<!-- deliver:prompt:dashboard:<slot> -->` | Injects result as a *user* prompt into a specific dashboard chat slot (e.g., `chat-0`, `chat-3`), triggering an agent turn |
+| Dashboard slot | `<!-- deliver:dashboard:<slot> -->` | Appends result to a specific dashboard chat slot + bell (no agent turn) |
+| Dashboard | `<!-- deliver:dashboard -->` | Appends result to a new dashboard chat slot + bell |
+| Slack DM | `<!-- deliver:slack -->` | Posts result to owner's Slack DM only (no bell) |
+| Channel | `<!-- deliver:slack:<channel_id> -->` | Posts result as a new message in that Slack channel + bell, if the channel is allowed (see below). A report long enough to split posts its first part top-level and threads the rest under it |
+| Thread | `<!-- deliver:slack:<channel_id>:<thread_ts> -->` | Replies in that Slack thread + bell, if the channel is allowed (see below) |
+| Silent | `<!-- deliver:silent -->` | Logs only |
+
+A `slack:` tag with an empty channel id (`<!-- deliver:slack: -->`) falls back to the
+owner's DM: posting to channel `""` would raise inside the swallowed Slack error
+handler and lose the report.
+
+The deliver tag is agent-writable — `config/prompt.md` tells the agent to append
+HEARTBEAT.md entries itself, and HEARTBEAT.md is not a fenced path — so the channel
+id on a `slack:<channel_id>` tag is untrusted input. Both channel forms therefore
+require the id to be a well-formed Slack channel id (`validation.CHANNEL_ID_RE`, so
+a `U…` member id is refused rather than resolved to an IM) AND to be either in
+`slack.tracking_channels` or the owner's own DM channel — the same allowlist
+`api_send_message` states in its 403, because an unattended post reaches a NEW
+audience. A refused target is SEL-logged `heartbeat_channel_deliver` /
+`outcome=denied` and falls back to the owner DM, so the report is never lost.
 
 ### Dashboard Delivery (`prompt:dashboard:<slot>`)
 

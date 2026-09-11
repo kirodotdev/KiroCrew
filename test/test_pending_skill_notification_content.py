@@ -5,7 +5,7 @@
 user-facing (feed row, detail panel, action buttons), so the shape is pinned
 here: the review deep-link must target the exact candidate, and the
 auto-approve shortcut must land on the ``skills.approval_required`` setting —
-surfacing the opt-out at the moment of friction (issue #3927).
+surfacing the opt-out at the moment of friction.
 """
 
 from __future__ import annotations

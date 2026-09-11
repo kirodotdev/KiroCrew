@@ -1,5 +1,4 @@
-"""FU-6 regression (pod field-test 2026-07-20): teardown tombstone must not
-leave a live-looking card.
+"""A teardown tombstone must not leave a live-looking card.
 
 mark_webapp_expired() must clear lifecycle.expires_at (no phantom countdown
 next to the Expired badge) and deploy_target.public_url (no dead public link).

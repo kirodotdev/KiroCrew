@@ -539,7 +539,7 @@ class TestMountPinnedSourceNames:
         unprovable", which holds back EVERY directory candidate. One unreaped
         child (routine on any host) therefore disabled directory reclamation
         permanently and host-wide, until the runtime tmpfs was out of inodes
-        and ``systemd-run --scope`` could no longer start a spawn.
+        and ``systemd-run --scope`` could not start a spawn.
         """
         proc = tmp_path / "proc"
         self._write_mountinfo(
@@ -884,7 +884,7 @@ class TestMountPinnedSourceNames:
         It must NOT stop reading: this uid's own processes stay visible under
         hidepid, and every sandbox descendant is one. An early return would
         hand the directory gate an empty pinned set with nothing to reason
-        from. Caught by GPT 5.6 review of PR #8559.
+        from.
         """
         proc = tmp_path / "proc"
         d = proc / "106"
@@ -919,7 +919,7 @@ class TestMountPinnedSourceNames:
     def test_a_sibling_thread_in_another_namespace_pins(self, tmp_path: Path):
         """A thread can ``unshare(CLONE_FS)`` + ``setns`` into a sandbox's
         namespace while its leader stays outside; leaders-only reading would
-        miss its binds. Raised by GPT review of PR #8559."""
+        miss its binds."""
         proc = tmp_path / "proc"
         self._proc_task(proc, 1, mountinfo="")
         line = "100 99 0:40 /kirocrew_sb_777_home /root/home rw - tmpfs tmpfs rw\n"
@@ -1009,8 +1009,7 @@ class TestMountPinnedSourceNames:
     def test_filtered_procfs_clears_coverage(self, tmp_path: Path):
         """``hidepid`` hides root's tasks along with pid 1, and root can hold
         any namespace (``nsenter``), so coverage falls with the host-wide flag
-        rather than licensing removal on this uid's tasks alone. Raised by
-        GPT review of PR #8559."""
+        rather than licensing removal on this uid's tasks alone."""
         proc = tmp_path / "proc"
         self._proc_task(proc, 106, mountinfo="")
         self._proc_task(proc, 107, mountinfo="")
@@ -1076,8 +1075,7 @@ class TestMountPinnedSourceNames:
     ):
         """A holder inside a nested user namespace stats as the overflow uid.
         When that uid cannot be learned (sysctl unreadable), a departing task of
-        ANY other uid may have been such a holder, so coverage fails closed.
-        Raised by GPT review of PR #8559."""
+        ANY other uid may have been such a holder, so coverage fails closed."""
         monkeypatch.setattr("kiro_crew.sandbox._PIN_SCAN_MAX_PASSES", 1)
         monkeypatch.setattr("kiro_crew.sandbox._overflow_uid", lambda: None)
         proc = tmp_path / "proc"
@@ -1130,9 +1128,9 @@ class TestMountPinnedSourceNames:
 
 @requires_posix_modes
 class TestLegacyResidueSweep:
-    """The pre-#6268 ``tmp*`` residue is reclaimed once, behind every fence.
+    """The legacy ``tmp*`` residue is reclaimed once, behind every fence.
 
-    An install that upgraded past #6268 inherited a pile the keyed sweep cannot
+    An install carrying that legacy layout inherited a pile the keyed sweep cannot
     reason about (no pid in the name), so shipping only the reclaim fix leaves
     such a host at its inode ceiling and every spawn still failing. These names
     cannot be PROVEN to be ours, so each test below pins one fence that keeps a
@@ -1192,7 +1190,7 @@ class TestLegacyResidueSweep:
         assert not empty.exists()
         # The old build's mkstemp FILE sources are left alone: an unlinked file
         # another program still holds open loses what it writes next, and no
-        # fence can tell such a file from ours. Raised by GPT review of #8559.
+        # fence can tell such a file from ours.
         assert plain.exists()
         # Second call is a no-op: no current build creates the shape, so a
         # completed pass is final and must not re-walk the tmpfs forever.
@@ -1203,7 +1201,7 @@ class TestLegacyResidueSweep:
     ):
         """The stamp is create-only and O_NOFOLLOW: a dangling link at the
         marker path fails the stamp (the pass repeats) instead of making the
-        gateway write at the link's target. Raised by GPT review of #8559."""
+        gateway write at the link's target."""
         from kiro_crew.sandbox import _LEGACY_RESIDUE_MARKER, config_dir
 
         self._fence(monkeypatch, tmp_path)
@@ -1222,8 +1220,7 @@ class TestLegacyResidueSweep:
     ):
         """The same two claims as the keyed dir gate: ``/run/user/$UID`` is
         reachable by this uid and root alone, so every-possible-holder-read is
-        enough when another user's task keeps the host-wide flag down. Raised
-        by First Principles review of #8559."""
+        enough when another user's task keeps the host-wide flag down."""
         self._fence(monkeypatch, tmp_path, complete=False, covered=True)
         empty = self._legacy_dir(tmp_path)
 
@@ -1234,8 +1231,7 @@ class TestLegacyResidueSweep:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):
         """A host upgrading within a day of its last old-build spawn must not
-        retire the pass on the cohort that is merely too young yet. Raised by
-        Design review of #8559."""
+        retire the pass on the cohort that is merely too young yet."""
         self._fence(monkeypatch, tmp_path)
         old = self._legacy_dir(tmp_path)
         young = self._legacy_dir(tmp_path, "tmpyoung001", old=False)
@@ -1393,7 +1389,7 @@ class TestLegacyResidueSweep:
         program's ``tempfile`` scratch looks like, and one it may still write
         into — so below the threshold nothing is touched. There is also no
         pile to heal, so the one-shot pass retires rather than re-walking the
-        tmpfs on every sweep. Caught by GPT 5.6 review of PR #8559.
+        tmpfs on every sweep.
         """
         self._fence(monkeypatch, tmp_path)
         monkeypatch.setattr("kiro_crew.sandbox._LEGACY_PILE_THRESHOLD", 4)
@@ -1671,14 +1667,15 @@ class TestLauncherStagingSitesArePrefixed:
             assert prefix_kw.value.id == "_src_prefix"
 
     @pytest.mark.parametrize("level", ["strict", "cc", "standard"])
-    def test_every_tempfile_call_in_the_launcher_carries_a_known_prefix(self, level: str):
+    def test_every_tempfile_call_has_a_known_staging_or_journal_role(self, level: str):
         """Closed over ALL tempfile.mkdtemp/mkstemp calls, however spelled.
 
         The staging-site assertion above keys on ``dir=_tmpfs_src``, which a
         future positional ``mkdtemp(_tmpfs_src)`` or ``dir=_tmpfs_src or
         None`` would evade — silently re-opening the unprefixed-orphan class.
-        Every temp creation in the launcher must carry either the pid-bearing
-        ``_src_prefix`` or the probe's own literal prefix.
+        Mount staging must carry the pid-bearing ``_src_prefix`` or the probe's
+        literal prefix. The parent also publishes one atomic namespace journal
+        inside the protected binding directory, outside the staging roots.
         """
         tree = ast.parse(_build_launcher_script(level))
         calls = [
@@ -1690,8 +1687,52 @@ class TestLauncherStagingSitesArePrefixed:
             and node.func.value.id == "tempfile"
             and node.func.attr in ("mkdtemp", "mkstemp")
         ]
-        assert len(calls) == 4  # three staging sites + the tmpfs probe
+        assert len(calls) == 5  # three staging sites, tmpfs probe, parent journal
+        journals = [
+            call
+            for call in calls
+            if any(
+                keyword.arg == "dir"
+                and isinstance(keyword.value, ast.Name)
+                and keyword.value.id == "_namespace_dir"
+                for keyword in call.keywords
+            )
+        ]
+        assert len(journals) == 1
+        journal = journals[0]
+        assert journal.func.attr == "mkstemp"
+        assert not journal.args
+        assert {keyword.arg for keyword in journal.keywords} == {"dir", "suffix"}
+        suffix = next(keyword.value for keyword in journal.keywords if keyword.arg == "suffix")
+        assert isinstance(suffix, ast.Constant) and suffix.value == ".tmp"
+        # The journal is written by the trusted parent, never a new unprefixed
+        # staging call in the child that owns the mounts.
+        parent = next(
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.If)
+            and isinstance(node.test, ast.Compare)
+            and isinstance(node.test.left, ast.Name)
+            and node.test.left.id == "pid"
+            and len(node.test.ops) == 1
+            and isinstance(node.test.ops[0], ast.Gt)
+        )
+        assert journal in {node for statement in parent.body for node in ast.walk(statement)}
+        directory = next(
+            node.value
+            for statement in parent.body
+            for node in ast.walk(statement)
+            if isinstance(node, ast.Assign)
+            and any(
+                isinstance(target, ast.Name) and target.id == "_namespace_dir"
+                for target in node.targets
+            )
+        )
+        assert isinstance(directory, ast.Constant)
+        assert Path(directory.value).parts[-2:] == ("member-memory-bindings", "pids")
         for call in calls:
+            if call is journal:
+                continue
             prefix_kw = next((k for k in call.keywords if k.arg == "prefix"), None)
             assert prefix_kw is not None, ast.dump(call)
             ok_name = isinstance(prefix_kw.value, ast.Name) and prefix_kw.value.id == "_src_prefix"

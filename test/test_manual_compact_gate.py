@@ -1,4 +1,4 @@
-"""Manual ``/compact`` is gated on backend capability (#7800).
+"""Manual ``/compact`` is gated on backend capability.
 
 The defect these pin: KAS never answers the ``/compact`` prompt with a
 compaction status — its ``summarization_*`` frames (mapped to compaction status
@@ -14,8 +14,6 @@ the ``LLMProvider`` ABC with a safe default (harness-parity H14) and answered
 by the ACP implementations from set membership (H6), and the dashboard refuses
 the command up front — before dispatching the prompt — when a provider
 positively names an unsupported backend.
-
-Diagnosis credit: awsdataarchitect (issue #7800).
 """
 
 from __future__ import annotations

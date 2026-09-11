@@ -1,6 +1,6 @@
 """The pod grant-store corridor through the re-anchored os-home mask.
 
-Round 10 re-anchored the whole sensitive-dir tier under a pod child's remapped
+The whole sensitive-dir tier is re-anchored under a pod child's remapped
 home. On Linux ``is_kiro_cli`` does not skip Crew's launcher (``delegate_to_kiro``
 is darwin/win32 only), so that mask reaches the pod's kiro-cli child -- and it
 covered ``.aws``, which is the pod's OWN grant store: the child reads the seeded

@@ -1005,7 +1005,7 @@ class TestValidateMcpToolArguments:
                      "max nesting depth")
 
 
-# ── MCP Apps arg-validation hardening (PR #339 round 7) ──
+# ── MCP Apps arg-validation hardening ──
 
 def test_boolean_false_subschema_rejects():
     with pytest.raises(ValidationError):

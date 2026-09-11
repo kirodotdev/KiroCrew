@@ -107,7 +107,7 @@ async def test_connection_error_retried():
 
 @pytest.mark.asyncio
 async def test_aiohttp_client_error_retried():
-    # GPT 5.6 PR #422 round 21: AsyncWebClient rides on aiohttp, whose
+    # AsyncWebClient rides on aiohttp, whose
     # connector/DNS failures are aiohttp.ClientError subclasses, NOT
     # ConnectionError -- they must be retryable or a transient blip
     # abandons the DM after one attempt.

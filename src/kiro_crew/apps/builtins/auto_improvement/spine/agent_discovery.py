@@ -36,7 +36,7 @@ When the run is diff-scoped (``scopeDiffBase`` set — e.g. dogfooding the app o
 feature branch), the agent is handed the CHANGED-FILE LIST plus each file's DEPENDENTS
 (callers), NOT a unified diff, and told to READ the files itself (it has Read/Grep/Glob).
 
-WHY NOT A DIFF (operator directive 2026-06-15 — "agent should not receive diff … it should
+WHY NOT A DIFF (operator directive — "agent should not receive diff … it should
 receive file list from diff and all dependencies which are using new functionality"): a
 branch that introduces a whole new subsystem produces a huge diff dominated by new-file
 boilerplate (``__init__`` headers, config) that, truncated to fit context, never reaches
@@ -139,9 +139,9 @@ def changed_py_files(clone: Path, base_ref: str) -> list[str]:
     huge diff dominated by new-file boilerplate (``__init__`` headers, config) that, once
     truncated to fit context, never reaches the logic-bearing modules — so the agent reads
     setup.cfg and finds nothing. Handing it the file list and letting it READ the actual
-    modules (and their callers) is what surfaces real defects (operator directive
-    2026-06-15: "agent should not receive diff — it should receive file list from diff and
-    all dependencies which are using new functionality")."""
+    modules (and their callers) is what surfaces real defects (operator directive:
+    "agent should not receive diff — it should receive file list from diff and all
+    dependencies which are using new functionality")."""
     if not base_ref:
         return []
     out = _git(["diff", "--name-only", f"{base_ref}...HEAD"], clone, timeout=120.0)
@@ -180,14 +180,14 @@ def allowlisted_py_files(clone: Path, globs: list[str]) -> list[str]:
 def prioritize_focus(files: list[str], *, cap: int | None = None, rotate: int = 0) -> list[str]:
     """ORDER changed files by testable-logic VALUE — high-value logic modules (spine engine,
     gate, ledger, parsing, calibration…) first, boilerplate/wiring (__init__, config, routes,
-    app/server) last — and return ALL of them (operator directive 2026-06-18: "do NOT limit
-    the search space; if anything, randomize before any cut — I do not like cutting").
+    app/server) last — and return ALL of them (operator directive: "do NOT limit the
+    search space; if anything, randomize before any cut — I do not like cutting").
 
-    The earlier ``cap=12`` permanently BLINDED discovery to ~69 of 81 changed files: within
-    the high-value tier, paths sort alphabetically, so ``profiles/*`` + ``harness/*`` filled
-    all 12 slots and the engine (``spine/driver.py``, ``backend/cr_watchers.py``, ``gate.py``,
-    ``keeper.py``, …) was dropped EVERY cycle → "mined out" was an artifact of the cap, not an
-    absence of bugs. So: no truncation by default (``cap=None`` returns the full ordered list).
+    A small ``cap`` BLINDS discovery to most of the changed files: within the high-value
+    tier, paths sort alphabetically, so ``profiles/*`` + ``harness/*`` fill every slot and
+    the engine (``spine/driver.py``, ``backend/cr_watchers.py``, ``gate.py``, ``keeper.py``,
+    …) is dropped EVERY cycle → "mined out" becomes an artifact of the cap, not an absence
+    of bugs. So: no truncation by default (``cap=None`` returns the full ordered list).
 
     Within each value tier, ``rotate`` (e.g. the cycle index) deterministically ROTATES the
     order so a per-cycle read budget lands on a DIFFERENT slice of the tier each cycle —
@@ -325,7 +325,7 @@ def _has_json_array(text: str) -> bool:
     Position/form decides, not value shape: scalar prose fragments (``[12]``),
     instruction-echo (``Use [] when none``), and object-wrapped replies all read
     as unanswered, so the tool-side forcing re-emit fires and demands the bare
-    array (GPT review rounds 1-3, #4974)."""
+    array."""
     if not text:
         return False
     if _whole_reply_array(text) is not None:
@@ -389,10 +389,10 @@ def _normalize_surface(
 
 # How many files form THIS cycle's PRIORITY SLICE — the bounded set the agent is told to
 # actually read this cycle so it converges within the turn budget. The FULL changed-file list
-# stays VISIBLE below it (operator 2026-06-18: do not limit the search space) — nothing is
+# stays VISIBLE below it (operator directive: do not limit the search space) — nothing is
 # hidden; the slice just rotates each cycle (upstream rotate=), so over the loop's cycles the
-# read budget sweeps the ENTIRE surface. This replaces the old hard cap=12 that PERMANENTLY
-# dropped 69 files: here all 82 are listed, only the per-cycle *reading focus* is bounded.
+# read budget sweeps the ENTIRE surface. A hard cap would instead drop most of the surface
+# permanently: every changed file is listed, only the per-cycle *reading focus* is bounded.
 DEFAULT_PRIORITY_SLICE = 12
 
 
@@ -440,9 +440,9 @@ def _build_prompt(
 ) -> str:
     """The discovery prompt. Read-only investigation; STRICT JSON-array output.
 
-    KEY DESIGN (operator directive 2026-06-15): the agent is NOT handed a unified diff — a
-    raw diff pollutes context (new-subsystem branches are dominated by boilerplate that
-    truncates before the logic) and led to discovered=0. Instead it gets the CHANGED-FILE
+    KEY DESIGN (operator directive): the agent is NOT handed a unified diff — a raw diff
+    pollutes context (new-subsystem branches are dominated by boilerplate that truncates
+    before the logic) and yields discovered=0. Instead it gets the CHANGED-FILE
     LIST plus each file's DEPENDENTS (callers), and is told to READ the files itself (it has
     Read/Grep/Glob) — open the changed modules AND their callers, and judge whether the code
     is correct and whether it honors the contract its callers rely on. This is how a human
@@ -555,7 +555,7 @@ def _diag_log(log_dir: Path | None, payload: dict) -> None:
     """Append one JSON diagnostic record to ``<log_dir>/agent_discovery.log`` (best-effort,
     never raises). This is the durable visibility into WHY discovery returned what it did —
     the full prompt, the raw agent reply, every dropped surface + its reason, and the final
-    count. Without it, a ``discovered=0`` is opaque (operator directive 2026-06-15:
+    count. Without it, a ``discovered=0`` is opaque (operator directive:
     "make sure sufficient logs are produced for further diagnostics")."""
     if log_dir is None:
         return
@@ -588,8 +588,8 @@ def discover_surfaces_via_agent(
 
     ``rotate`` (e.g. the cycle index) rotates the focus ordering WITHIN each value tier so a
     per-cycle read budget samples a different slice of the FULL changed-file surface each
-    cycle — coverage rotates across all files over the loop's cycles (operator directive
-    2026-06-18: do not limit the search space; rotate rather than cut).
+    cycle — coverage rotates across all files over the loop's cycles (operator directive:
+    do not limit the search space; rotate rather than cut).
 
     Same return shape as ``build_gate.discover_defect_surfaces`` so the caller treats both
     sources identically: ``{target, rule, message, file, line, symbol, hypothesis}``.
@@ -626,7 +626,7 @@ def discover_surfaces_via_agent(
         return []
     scoped = bool(scope_base)
     # FOCUS LIST instead of a diff body: the changed product files + their callers. The agent
-    # READS the files itself (operator directive 2026-06-15). If a scope was requested but
+    # READS the files itself (operator directive). If a scope was requested but
     # produced no changed files (blank base / git failure / empty change set), fall back to a
     # whole-tree read so the agent still has something to do — mirrors how _diff_scope degrades
     # to unscoped rather than narrowing to zero.
@@ -645,8 +645,8 @@ def discover_surfaces_via_agent(
             allowlist_focus = True
     # ORDER the FULL set high-value-logic-first, then ROTATE within each tier by the cycle
     # index so the read budget samples a different slice each cycle (operator directive
-    # 2026-06-18: do NOT limit the search space — the old cap=12 permanently hid the engine
-    # modules behind alphabetically-earlier profiles/ files). NO truncation: the agent sees
+    # do NOT limit the search space — a cap hides the engine modules behind
+    # alphabetically-earlier profiles/ files). NO truncation: the agent sees
     # every focus file (rendered compactly as a priority slice + the rest).
     changed = prioritize_focus(all_changed, rotate=rotate)
     dependents = dependents_of(Path(clone), changed) if changed else {}
@@ -672,25 +672,24 @@ def discover_surfaces_via_agent(
         res = run(
             prompt,
             cwd=str(clone),
-            # NO shell. The comment here used to read "read-only investigation" while granting
-            # `Bash`, which is write-capable — and this agent runs in the SHARED clone, the
+            # NO shell: `Bash` is write-capable, and this agent runs in the SHARED clone, the
             # tree the loop later stages and commits from. Discovery's whole job is to READ
             # the target repository's source, which is untrusted content, so an injection
-            # there could have edited that tree and a later `git add -A` would publish an edit
-            # no measurement gated. `allowed_tools` also AUTO-APPROVES, so such a call never
+            # there could edit that tree and a later `git add -A` would publish an edit no
+            # measurement gated. `allowed_tools` also AUTO-APPROVES, so such a call never
             # reaches the platform governance chokepoint. Read/Grep/Glob cover everything the
-            # prompt actually asks for. Raised by the GPT review.
+            # prompt actually asks for.
             allowed_tools=["Read", "Grep", "Glob"],
-            # HARD turn cap — the convergence lever (validated 2026-06-16). A thinking/opus
-            # agent has NO terminal commitment, so the cap must MATCH the reading surface: the
-            # full 82-file list with a 12-turn cap was exhausted by reading before the agent
-            # emitted → runner_error=max_turns, raw_items=0 EVERY cycle. The fix keeps the FULL
-            # list VISIBLE (operator 2026-06-18: do not limit the search space) but bounds the
-            # per-cycle READING to a rotated PRIORITY SLICE (~12 files, _render_focus_list), so
-            # the agent only needs to investigate the slice — which fits a modest turn budget.
-            # 16 turns: ~12-slice + a few emit/think turns, with margin over the old 12. The
-            # runner returns accumulated text on the limit so a late JSON array survives;
-            # tool-side forcing drops Read/Grep on the final turns as the backstop.
+            # HARD turn cap — the convergence lever. A thinking/opus agent has NO terminal
+            # commitment, so the cap must MATCH the reading surface: an 80+-file list under a
+            # 12-turn cap is exhausted by reading before the agent emits → runner_error=
+            # max_turns, raw_items=0 every cycle. The FULL list stays VISIBLE (operator
+            # directive: do not limit the search space) while the per-cycle READING is bounded
+            # to a rotated PRIORITY SLICE (~12 files, _render_focus_list), so the agent only
+            # needs to investigate the slice — which fits a modest turn budget. 16 turns:
+            # ~12-slice + a few emit/think turns, with margin. The runner returns accumulated
+            # text on the limit so a late JSON array survives; tool-side forcing drops
+            # Read/Grep on the final turns as the backstop.
             max_turns=16,
             timeout_s=timeout_s,
         )
@@ -711,14 +710,14 @@ def discover_surfaces_via_agent(
     ok = getattr(res, "ok", None)
     err = getattr(res, "error", "") or ""
     raw_items = _extract_json_array(text)
-    # TOOL-SIDE FORCING FALLBACK (validated 2026-06-16 — the most robust convergence fix):
+    # TOOL-SIDE FORCING FALLBACK (the most robust convergence lever):
     # if the investigation pass produced NO parseable JSON (the agent over-investigated and
     # got cut off mid-reading — runner not-ok, or ok but no array), make ONE more call with
     # NO tools, handing back the agent's own reasoning and demanding ONLY the JSON array.
     # With no Read/Grep available, the only possible action is to answer — converting a
     # "read until timeout" run into the findings it already reasoned about. This is the
-    # harness forcing function the subagent comparison identified: prompt wording alone
-    # doesn't beat a thinking agent's investigation momentum; removing the tools does.
+    # harness forcing function: prompt wording alone does not beat a thinking agent's
+    # investigation momentum; removing the tools does.
     forced = False
     # Trigger the re-emit ONLY when the agent produced NO json array at all (over-investigated
     # and got cut off) — NOT when it answered with a valid empty array `[]` (a legitimate

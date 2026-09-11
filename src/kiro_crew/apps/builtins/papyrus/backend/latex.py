@@ -562,10 +562,10 @@ def _symlinked_artifacts(project: Path) -> tuple[list[str], bool]:
     the question the compiler actually poses is "is the file I am about to open a link?",
     and **the document chooses that filename**. ``\\openout\\ch=chapter1`` writes
     ``chapter1.tex``; ``\\jobname`` can be redirected; ``.bbl``/``.idx`` tool chains write
-    names no suffix list predicts. Enumerating names loses that race by construction, so
-    each round closed one instance and left the class open.
+    names no suffix list predicts. Enumerating names loses that race by construction:
+    closing one instance leaves the class open.
 
-    Refusing on ANY link inverts it: the guard no longer has to predict what the compiler
+    Refusing on ANY link inverts it: the guard does not have to predict what the compiler
     will write, because nothing beneath the project is a link at all. That is also the
     stance ``store.list_files`` already takes ("a link is not a file the editor should
     follow — and following one is how a tree walk escapes containment"), so a symlinked
@@ -743,11 +743,11 @@ async def compile_project(project: Path, main_file: str) -> CompileResult:
                 timeout=BIBTEX_TIMEOUT_SEC,
                 operation="bibtex",
             )
-            # A bibtex failure is REPORTED, not swallowed. Its result used to be
-            # discarded, so a missing `.bst` or an unparseable `.bib` produced no `.bbl`,
-            # the two later pdflatex passes still exited 0, and the compile was reported
-            # SUCCESSFUL while the PDF carried `[?]` for every citation and an empty
-            # bibliography. The user saw a green compile and a silently wrong paper.
+            # A bibtex failure is REPORTED, not swallowed. Discarding its result means a
+            # missing `.bst` or an unparseable `.bib` produces no `.bbl`, the two later
+            # pdflatex passes still exit 0, and the compile is reported SUCCESSFUL while
+            # the PDF carries `[?]` for every citation and an empty bibliography — a
+            # green compile on a silently wrong paper.
             #
             # The bar is deliberately NOT "any non-zero exit". bibtex exits 1 for
             # WARNINGS, which are routine on a healthy document (an undefined cross
@@ -785,12 +785,11 @@ async def compile_project(project: Path, main_file: str) -> CompileResult:
     # `None` when the emitted name is not contained (a symlinked `main.pdf` in a
     # cloned repo), which is reported as a failed compile rather than served.
     #
-    # OFF the loop. `pdf_path` used to be pure path arithmetic, so calling it inline was
-    # free — adding the containment check gave it a `Path.resolve()` and a
-    # sensitive-path probe, i.e. real syscalls, and on a project under a stalled network
-    # mount (`KIROCREW_HOME` on NFS/SMB) those block for as long as the mount takes to
-    # answer. The `is_file()` beside it was already offloaded for exactly this reason;
-    # the security fix quietly put a second syscall in front of it.
+    # OFF the loop. `pdf_path` is not pure path arithmetic: the containment check gives
+    # it a `Path.resolve()` and a sensitive-path probe, i.e. real syscalls, and on a
+    # project under a stalled network mount (`KIROCREW_HOME` on NFS/SMB) those block for
+    # as long as the mount takes to answer. The `is_file()` beside it is offloaded for
+    # exactly this reason.
     pdf = await asyncio.to_thread(store.pdf_path, project, main_file)
     ok = code == 0 and pdf is not None and await asyncio.to_thread(pdf.is_file)
     return CompileResult(

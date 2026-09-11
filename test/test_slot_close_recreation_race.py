@@ -1,6 +1,6 @@
 """Close-vs-recreate race on the shared dashboard slot-close teardown.
 
-The defect these pin (issue #7191): both ``api_chat_slot_delete`` and
+The defect these pin: both ``api_chat_slot_delete`` and
 ``api_chat_slots_cleanup`` pop ``name`` out of ``state._slots`` and then run a
 sequence of AWAITS — cancel the task, ``save_slot_off_loop(..., closed=True)``,
 ``state.sessions.remove(_history_key_for(name))``. A concurrent same-key
@@ -224,7 +224,7 @@ def test_shares_transcript_needs_a_replacement_and_the_same_file(tmp_path) -> No
     state._slots[NAME] = original
     assert handlers._replacement_shares_transcript(state, NAME, original) is False
 
-    # Two unbound slots on one key resolve one transcript: this is #7191's own case.
+    # Two unbound slots on one key resolve one transcript: the case these tests pin.
     state._slots.pop(NAME)
     unbound = state.get_or_create_slot(NAME)
     assert unbound is not original
@@ -273,7 +273,7 @@ async def test_delete_recreate_during_save_preserves_replacement(tmp_path, monke
     ``get_or_create_slot(NAME)`` mints a replacement. After the close returns the
     replacement must still own the key, and ``sessions.remove`` must NOT have been
     called for its key (the second identity re-check, before the remove, must see
-    the key is no longer ours and skip the destructive teardown). Without the
+    the key is not ours and skip the destructive teardown). Without the
     guard the close would run ``sessions.remove`` and tear down the session the
     replacement now uses.
     """
@@ -317,7 +317,7 @@ async def test_delete_recreate_during_task_cancel_hits_first_guard(tmp_path, mon
     minted while the close is parked in ``asyncio.wait_for(asyncio.shield(
     slot.task), 2.0)`` — BEFORE ``save_slot_off_loop`` is reached — so the first
     ``_slot_still_ours`` check (immediately after the cancel block) sees the key
-    is no longer ours and takes the early ``return {"ok": True}``. That means the
+    is not ours and takes the early ``return {"ok": True}``. That means the
     closed=True save is NEVER attempted for the original and ``sessions.remove``
     is NEVER called: the replacement keeps its slot, its (unclosed) history, and
     its session. Reverting ONLY the first guard would let the close fall through
@@ -1129,7 +1129,7 @@ async def test_delete_handover_persists_the_tail_and_keeps_the_replacement(tmp_p
     resp = await close
 
     assert resp.status == 200
-    # Half one: #7191 stays fixed.
+    # Half one: the fix holds.
     assert state._slots.get(NAME) is replacement, "the replacement was clobbered by the close"
     assert state.sessions.remove.await_count == 0, "the replacement's session was torn down"
     # Half two: nothing the original held was dropped on the way out.
@@ -2085,7 +2085,7 @@ async def test_delete_divergent_transcript_still_archives_the_original(tmp_path)
         "PERSISTED-1",
         "TAIL-2",
     ], "archiving the original's own transcript dropped its tail"
-    # ...and the key-scoped steps still yielded: #7191 stays fixed.
+    # ...and the key-scoped steps still yielded: the fix holds.
     assert state._slots.get(NAME) is replacement, "the replacement was clobbered by the close"
     assert state.sessions.remove.await_count == 0, "the replacement's session was torn down"
     assert _disk_contents(state) == [], "rows landed on a transcript this slot never used"

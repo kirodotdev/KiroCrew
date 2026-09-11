@@ -437,11 +437,81 @@ locally; it does not restore it into live gateway state.
 `test_aws_control_app.py::TestRound22Hardening.test_restore_refuses_a_symlinked_destination`
 pins the staged restore safety boundary.
 
+### Several installs, one drive
+
+Drive discovery is by tag, so every install pointed at the account finds the same
+bucket and writes to it. This is supported rather than refused, and the archive
+keys carry the distinction: `backup/snapshots/<install>/...` and
+`backup/sessions/<install>/...`, where `<install>` is a random 32-hex id held at
+the top level of the app's own `backup.json` and minted on first use by
+`backup.install_identity`. It is deliberately NOT `beacon.install_id()`, which is
+the telemetry egress identity and is only materialised under telemetry consent;
+minting it from the backup path would create a telemetry identity on a host that
+opted out. An unwritable state file degrades to a process-local id rather than
+refusing the backup, because refusing would stop a backup that works today.
+
+The nested prefix is what lets one delimited listing answer two questions at
+once: `storage.list_section` on `snapshots/` returns every install id present as a
+folder and every pre-namespace archive as a file, so attribution and "another
+install writes here" arrive together. A second call reads this install's own
+prefix. Enumerating the OTHER installs' prefixes is opt-in
+(`list_remote_backups(include_others=True)`, capped at
+`backup.MAX_OTHER_INSTALLS`) because it costs a list call and a label read per
+install; it exists because a replacement machine owns no archives, so a view
+limited to its own prefix would show it nothing on the one occasion the bucket
+holds the only surviving copy.
+
+An install also publishes a human-readable label beside its own archives at
+`<kind>/<install>/_label.json`, written from the upload path and under BOTH kind
+prefixes on every backup, so a rename followed by a backup of one kind cannot
+leave the other prefix serving the old name. Each S3 write carries its OWN
+`_authorize_upload` immediately before it, with no other network call in between:
+whichever of the two writes ran second would otherwise be running on a decision
+taken before the first one's transfer, and since the archive upload can last
+minutes, ordering the pair differently only moves which write is exposed. The gate
+therefore lives inside `_publish_label` rather than at its call site, so the
+authorization cannot be separated from the write it guards. The label is **display only**. The id
+in the key is the identity S3 itself recorded and no writer can restate;
+`backup.classify_key` and every decision that follows read that and nothing else.
+A label read from the bucket is foreign-authored text, so it is control-stripped,
+run through the same egress redactors `storage.list_section` applies to object
+names, and length-bounded by `backup.sanitize_label`; the transfer is
+range-bounded through `storage.get_object_head_bytes`, since the object's size is
+another install's choice. The dashboard renders a foreign label in quotation marks
+beside the owning id so the self-asserted part is visibly self-asserted.
+`test_aws_control_backup.py::TestLabelIsDisplayOnly.test_a_published_label_cannot_make_a_foreign_archive_restorable`
+pins that the gate never reads it.
+
+`backup.restore_download` refuses every archive it cannot PROVE is this install's
+own -- a co-tenant's, one under this install's own prefix with no matching entry in
+the upload record, and one predating install ids -- unless the caller passes
+`foreign_ok`. `routes._handle_backup_restore` answers `409 foreign_install_archive`
+carrying both the refused origin and the owning id, because the three cases need
+different words. The rule is uniform on purpose: an earlier revision refused only
+the foreign case and left the other two to a confirmation dialog, which put a
+safety property in one client, so any caller that did not open the dashboard
+restored a planted archive with no override. `ORIGIN_SELF` is the only origin that
+needs none, and it is the one the local upload record can vouch for.
+
+The override is mandatory rather than optional: restoring onto a replacement
+machine means nothing in the bucket is provably this install's, which is what
+disaster recovery is, so a hard wall would block the one case the backup exists
+for. `POST /install/label` renames this install and reaches no AWS service.
+
+A shared drive is not shared state. Each backup is an opaque point-in-time
+archive, and a restore only downloads it: the operator applies it themselves with
+the gateway stopped. The panel copy says exactly that, because "share memory
+between my laptop and my cloud desktop" is the request that leads people here.
+
 The nightly toggle records whether an account is eligible for a scheduled
 snapshot. `aws_control.hooks._run_once` resolves an account and drive, checks
 S3 consent, runs only due backups, and SEL-audits invocation, success, and
 failure. It skips unavailable accounts or absent drives rather than creating
-resources itself.
+resources itself. When `hooks._note_shared_drive` sees another install's prefix it
+logs and SEL-audits the observation and then PROCEEDS. It does not take ownership
+of the schedule: with the keys namespaced there is nothing left to collide, and a
+single-owner schedule would leave one machine silently un-backed-up, which is
+discovered at restore time and is worse than the state it replaced.
 
 ## Dashboard surface
 
@@ -499,7 +569,8 @@ profiles, reconnect guidance, drive status/list/download/preview/search, costs,
 library, backup status, share metadata, and rendered IAM policy. Its mutations
 are profile registration and unregistration; drive bootstrap, upload, delete,
 move, folder create/delete, and share; share-ledger removal; library push and
-library removal; backup run, nightly toggle, and staged restore.
+library removal; backup run, nightly toggle, and staged restore; and renaming
+this install (local, display only -- see "Several installs, one drive").
 
 Drive bootstrap is the only API-level preview-plus-confirm flow. Upload, move,
 profile registration, library push, library removal, share creation, and backup

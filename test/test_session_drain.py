@@ -1,9 +1,9 @@
 """Tests for the shutdown/restart drain of in-flight prompts.
 
 Covers SessionManager.drain_active_turns() and its wiring into close_all() —
-the fix for the empty-response-after-Make-Live incident (#200), where a slot
-killed mid-prompt left its kiro-cli native-session lock held so the next
-gateway's session/load hit "active in another process".
+a slot killed mid-prompt must not leave its kiro-cli native-session lock held,
+which would make the next gateway's session/load hit "active in another
+process".
 """
 
 from __future__ import annotations
@@ -328,7 +328,7 @@ async def test_close_all_drain_plus_kill_fit_tight_deadline(cfg):
 
 
 @pytest.mark.asyncio
-async def test_close_all_propagates_outer_cancel_to_keep_deadline_honest(cfg):
+async def test_close_all_propagates_outer_cancel_to_keep_deadline_honest(cfg, monkeypatch):
     """Codex HIGH2 — close_all must NOT swallow a cancel from an outer deadline.
     Slack wraps close_all in wait_for(..., 5s); the cap is enforced by
     cancelling close_all. If close_all ate that cancel, wait_for would block
@@ -342,18 +342,29 @@ async def test_close_all_propagates_outer_cancel_to_keep_deadline_honest(cfg):
     p = _FakeProvider(active=True, cancel_mode="block")  # drain never acks -> hangs
     _inject(mgr, "s1", p)
 
-    t0 = time.monotonic()
-    with pytest.raises(asyncio.TimeoutError):
-        # drain_timeout=5.0 (internal cap 6s) >> the 0.3s outer deadline; the
-        # cancel fires mid-drain and MUST propagate so the deadline is enforced.
-        await asyncio.wait_for(mgr.close_all(drain_timeout=5.0), timeout=0.3)
-    elapsed = time.monotonic() - t0
+    entered = asyncio.Event()
+    original_cancel = p.cancel
 
-    assert p.cancel_calls  # drain was attempted before the cancel
-    assert elapsed < 1.0  # the 0.3s deadline was honored, not ~6s
-    # The cancel propagated instead of being swallowed: close_all did not run the
-    # in-line kill to completion on this path (that is the reaper's job).
-    assert p.shutdown_called is False
+    async def observed_cancel(*, wait_ack_timeout: float = 0.0):
+        entered.set()
+        return await original_cancel(wait_ack_timeout=wait_ack_timeout)
+
+    monkeypatch.setattr(p, "cancel", observed_cancel)
+    task = asyncio.create_task(mgr.close_all(drain_timeout=5.0))
+    try:
+        # Establish mid-drain cancellation explicitly: an absolute deadline
+        # can otherwise expire before the provider gets scheduled on a busy host.
+        await asyncio.wait_for(entered.wait(), timeout=5.0)
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(task, timeout=0)
+
+        assert p.cancel_calls == [5.0]
+        # Swallowing cancellation would complete the fake's inline shutdown and
+        # return normally from wait_for instead of raising TimeoutError.
+        assert p.shutdown_called is False
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
 
 
 @pytest.mark.asyncio

@@ -11,17 +11,15 @@ downstream through the descriptor you already hold. A descriptor cannot be
 re-pointed, so a component that is open is fixed; a component reached by name is
 not.
 
-Why this module exists rather than a check at each call site: two closed pull
-requests (#2446, #2447) tried to add snapshot components while hardening staging in
-the same change. Each review round named one more validated-by-name path use --
-source root, each ancestor, each file, the destination tree, the pre-restore backup
-pass -- and neither converged. The mechanism belongs in one place with one set of
-invariants, and callers become thin consumers of it.
+Why this module exists rather than a check at each call site: the
+validated-by-name path uses are many and easy to miss one at a time -- source root,
+each ancestor, each file, the destination tree, the pre-restore backup pass. The
+mechanism belongs in one place with one set of invariants, and callers become thin
+consumers of it.
 
-The mechanical half of this was first written for the benchmark harness in
-``kiro_crew.eval.bench.safepath``, which now imports it from here. Its invariants
-survived several rounds of review there and are preserved verbatim; the docstrings
-explaining WHY each flag is load-bearing came with them.
+``kiro_crew.eval.bench.safepath`` imports the mechanical half from here, so the
+benchmark harness and the product share one set of invariants. The docstrings
+explaining WHY each flag is load-bearing live with them.
 
 Two things this module deliberately does NOT do:
 
@@ -126,12 +124,12 @@ def fatal_skip_reporter(what: str, *, refusal: type[Exception] = PinnedPathRefus
     the live copy is gone AND the replacement was never written, so the operation
     "succeeds" having destroyed data.
 
-    That distinction cost three separate review findings on this change (a backup pass
-    whose skips preceded an ``rmtree``, a restore source skipped after the live file was
-    moved aside, and a destination subtree that could not be opened). They were three
-    instances of one rule, so the rule is now a parameter a caller passes rather than a
-    condition each site re-implements: archive paths keep the recording reporter, mutating
-    paths pass this one, and which kind a call site is becomes visible at the call site.
+    The distinction is easy to lose one site at a time -- a backup pass whose skips
+    precede an ``rmtree``, a restore source skipped after the live file was moved aside,
+    a destination subtree that cannot be opened -- so the rule is a parameter a caller
+    passes rather than a condition each site re-implements: archive paths keep the
+    recording reporter, mutating paths pass this one, and which kind a call site is
+    becomes visible at the call site.
     """
 
     def _refuse(reason: str, path: str) -> None:
@@ -210,8 +208,7 @@ def pin_parent(
 
     *resolved_parent* must be resolved by the CALLER, once, before this runs.
     Resolving it here would re-follow whatever an ancestor points at by now, which
-    is the exact mistake that made an earlier version of this defensible-looking and
-    useless.
+    is the exact mistake that makes this check defensible-looking and useless.
 
     The descriptor is returned OPEN and the caller must close it. Handing it back
     rather than doing one open inside is what lets a durable write create its
@@ -284,8 +281,8 @@ def open_dir_pinned(
 ) -> int:
     """Open a DIRECTORY with its whole ancestor chain pinned, final component included.
 
-    This is the one the preserved staging branches did not have, and its absence is
-    the finding that closed #2446: ``os.open(str(src), O_DIRECTORY | O_NOFOLLOW)``
+    Its absence is what makes a root-only check unsound:
+    ``os.open(str(src), O_DIRECTORY | O_NOFOLLOW)``
     refuses a link at the root's own name but reaches that name by walking every
     ancestor BY NAME, so swapping a validated ancestor for a link to a credential
     directory redirects the whole traversal and the ``O_NOFOLLOW`` on the final
@@ -505,8 +502,8 @@ def copy_file_pinned(
     never re-opened by name; on Windows, which has no ``dir_fd`` support, that is
     the only pinned source form available. A
     destination reached by name is an ancestor swap away from landing the bytes
-    somewhere else entirely -- that was a real gap in the first version of this
-    module, caught in review, and it is why the by-name destination is now the
+    somewhere else entirely -- a real gap in a by-name-only design, and it is why
+    the by-name destination is now the
     exception rather than the only form.
 
     The destination is created with ``O_EXCL``, so anything already at that name is a
@@ -985,19 +982,18 @@ def create_and_open_dir_pinned(
     consistent. Merge callers leave it false, because meeting an existing directory is
     what merging IS.
 
-    This used to also report whether our own `mkdir` was what created the directory, so
-    that the archive's mode and timestamps could be stamped on in that case only. That
-    flag is gone, and the reasoning that justified it was wrong in an instructive way.
+    It does NOT report whether our own `mkdir` created the directory, which would be
+    the natural way to stamp the archive's mode and timestamps on only in that case.
+    Such a flag cannot be trusted.
 
-    It was correct that sampling `dst.exists()` beforehand is a name-based check with a
-    window after it. What it missed is that `mkdir` succeeding does not close the window
-    either: the descriptor comes from a SEPARATE `open`, so a directory replaced between
-    the two leaves the flag true while describing an object the caller no longer holds --
-    and the archive's metadata then lands on somebody else's directory. Review found
-    that. Nothing repairs it: a stat taken after the `mkdir` observes the replacement
-    just as happily, POSIX has no atomic create-and-open for a directory, and under a
-    same-user threat model no mode trick helps. So the metadata is simply not applied to
-    directories, and the flag has no remaining purpose.
+    Sampling `dst.exists()` beforehand is a name-based check with a window after it, and
+    `mkdir` succeeding does not close that window either: the descriptor comes from a
+    SEPARATE `open`, so a directory replaced between the two leaves the flag true while
+    describing an object the caller does not hold -- and the archive's metadata then
+    lands on somebody else's directory. Nothing repairs it: a stat taken after the
+    `mkdir` observes the replacement just as happily, POSIX has no atomic
+    create-and-open for a directory, and under a same-user threat model no mode trick
+    helps. So the metadata is simply not applied to directories.
 
     ``Path(p).mkdir(parents=True)`` creates every missing component by name, so a link
     already sitting at an ancestor is followed and the directories are created inside
@@ -1174,12 +1170,12 @@ def stage_tree_pinned(
                         # mode. That rule was applied to files and not carried to
                         # directories.
                         #
-                        # The archive's directory mode and mtime are NOT applied. They used
-                        # to be, gated on `created` from the `mkdir`, and review showed the
-                        # gate cannot be trusted: the descriptor comes from a separate
-                        # `open`, so a directory replaced between the two leaves
-                        # `created=True` describing an object we no longer hold, and the
-                        # archive's metadata then lands on somebody else's directory.
+                        # The archive's directory mode and mtime are NOT applied.
+                        # Gating them on `created` from the `mkdir` cannot be trusted:
+                        # the descriptor comes from a separate `open`, so a directory
+                        # replaced between the two leaves `created=True` describing an
+                        # object we do not hold, and the archive's metadata then
+                        # lands on somebody else's directory.
                         #
                         # There is no sound repair. An identity check cannot help -- a
                         # stat taken after the mkdir observes the REPLACEMENT just as
@@ -1310,11 +1306,10 @@ def _open_child_dir(parent_fd: int, entry: str, by_name: str, on_skip: SkipRepor
 #
 # Everything below owns ONE mechanism: removing something reached through a pinned
 # descriptor, where the removal itself must not address a name that could have been
-# swapped since it was checked. It lives here rather than at its call sites because it
-# was previously spelled once per site -- the interior directories of a trash batch, the
-# batch directory, and the coarse fallback -- and a fourth consumer is what finally shows
-# which parts are consumer-agnostic. That per-site respelling is the failure this module's
-# own docstring names, from #2446 and #2447.
+# swapped since it was checked. It lives here rather than at its call sites because
+# spelling it once per site -- the interior directories of a trash batch, the batch
+# directory, the coarse fallback -- is exactly the per-site respelling this module's own
+# docstring names as the failure to avoid.
 #
 # The policy stays with the caller. Nothing here logs, and nothing here decides whether a
 # refusal aborts or is reported and skipped: each function returns what happened and the

@@ -12,6 +12,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from kiro_crew.dashboard.handlers import api_project_tree
+from kiro_crew.security.redaction import _PATH_SEGMENT_DISCRIMINATOR_SEP, _path_segment_label
 
 
 class _Slot:
@@ -185,16 +186,19 @@ class TestProjectTree:
         assert sorted(data["paths"]) == ["docs/readme.md", "top.txt"]
 
     @pytest.mark.asyncio
-    async def test_redaction_collision_paths_are_deduplicated(self, repo, mock_sel):
+    async def test_redaction_collision_paths_stay_distinct(self, repo, mock_sel):
         """Two genuinely-different paths that redact() collapses to one string
-        must not appear twice in the listing.
+        must BOTH appear in the listing, as two distinct redacted entries.
 
         Uses a real ls-files collision: two files whose only differing segment is
         a credential-shaped token (distinct AKIA... ids, each 4-letter prefix +
         16 uppercase alphanumerics) both flatten to
-        ``[REDACTED: credential]_model.txt``. Without server-side de-dup the
-        dashboard tree hands @pierre/trees two adjacent identical entries and its
-        ``appendPresortedPaths`` throws ``Duplicate path``.
+        ``[REDACTED: credential]_model.txt`` under the whole-string redact().
+        Each path is redacted with ``redact_path_segments`` so each member of
+        the collision carries an opaque label keyed per gateway process --
+        distinct between the two and stable across responses -- and neither
+        vanishes; the de-dup behind it still guards a true collision, and the
+        raw tokens never leak.
         """
         # Two DISTINCT keys are the point: the test proves two different
         # credential-shaped names collapse to ONE placeholder. key_a is the
@@ -211,17 +215,72 @@ class TestProjectTree:
             resp = await client.get(f"/api/project/tree?path={repo}")
             data = await resp.json()
         paths = data["paths"]
-        # Both filenames collapsed to the same redacted placeholder...
-        assert "[REDACTED: credential]_model.txt" in paths
-        # ...but it appears exactly once (first occurrence kept), and the raw
-        # credential-shaped tokens never leak.
-        assert paths.count("[REDACTED: credential]_model.txt") == 1
+        # Both files survive, each redacted and distinct from the other, each
+        # carrying exactly the keyed label of its own original segment...
+        sep = _PATH_SEGMENT_DISCRIMINATOR_SEP
+        redacted = [p for p in paths if p.startswith(f"[REDACTED: credential]_model.txt{sep}")]
+        assert sorted(redacted) == sorted(
+            f"[REDACTED: credential]_model.txt{sep}{_path_segment_label(f'{k}_model.txt')}"
+            for k in (key_a, key_b)
+        ), paths
         assert len(paths) == len(set(paths))
+        # ...and the raw credential-shaped tokens never leak.
         assert key_a not in "\n".join(paths)
         assert key_b not in "\n".join(paths)
         # Non-colliding entries survive unchanged.
         assert "a.txt" in paths
         assert "src/mod.py" in paths
+
+    @pytest.mark.asyncio
+    async def test_a_redacted_path_labels_identically_across_responses(self, repo, mock_sel):
+        """The dashboard joins the tree response with the git-status response
+        by path, so a redacted path must carry the same label in every response
+        this process serves -- here, two tree responses, one of which lists a
+        colliding neighbour and one of which does not."""
+        key_a = "AKIAIOSFODNN7EXAMPLE"
+        key_b = "AKIA" + "JKLMNOPQRSTUVWXY"
+        (repo / f"{key_a}_model.txt").write_text("one\n")
+        async with TestClient(TestServer(_make_app(str(repo)))) as client:
+            resp = await client.get(f"/api/project/tree?path={repo}")
+            alone = await resp.json()
+            (repo / f"{key_b}_model.txt").write_text("two\n")
+            resp = await client.get(f"/api/project/tree?path={repo}")
+            with_neighbour = await resp.json()
+        sep = _PATH_SEGMENT_DISCRIMINATOR_SEP
+        label_a = (
+            f"[REDACTED: credential]_model.txt{sep}{_path_segment_label(f'{key_a}_model.txt')}"
+        )
+        assert label_a in alone["paths"]
+        assert label_a in with_neighbour["paths"]
+        assert (
+            len([p for p in with_neighbour["paths"] if p.startswith("[REDACTED: credential]")]) == 2
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_true_redaction_collision_is_still_deduplicated(
+        self, repo, mock_sel, monkeypatch
+    ):
+        """When the path helper (``redact_path_segments``) hands back the same
+        string for two paths, the de-dup keeps first occurrence so
+        @pierre/trees never sees adjacent identical entries."""
+        from kiro_crew.dashboard.handlers import files as files_mod
+
+        monkeypatch.setattr(
+            files_mod,
+            "redact_path_segments",
+            lambda p, r=None: (
+                "[REDACTED: credential]_model.txt" if p.endswith("_model.txt") else p
+            ),
+        )
+        (repo / "one_model.txt").write_text("one\n")
+        (repo / "two_model.txt").write_text("two\n")
+        async with TestClient(TestServer(_make_app(str(repo)))) as client:
+            resp = await client.get(f"/api/project/tree?path={repo}")
+            data = await resp.json()
+        paths = data["paths"]
+        assert paths.count("[REDACTED: credential]_model.txt") == 1
+        assert len(paths) == len(set(paths))
+        assert "a.txt" in paths
 
     @pytest.mark.asyncio
     async def test_walk_caps_entries_and_flags_truncation(self, tmp_path, mock_sel, monkeypatch):

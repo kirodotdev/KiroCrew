@@ -285,7 +285,7 @@ class TestLinkedThreadIntercept:
         def queue_append(content, *, meta=None, directive_user_origin):
             assert directive_user_origin is True
             # The linked-thread enqueue stamps the admission-time containment
-            # snapshot (#5911) so the drain can re-assert it at delivery.
+            # snapshot so the drain can re-assert it at delivery.
             from kiro_crew.dashboard.session_control import QUEUED_CONTAINMENT_META_KEY
 
             assert isinstance(meta, dict) and QUEUED_CONTAINMENT_META_KEY in meta

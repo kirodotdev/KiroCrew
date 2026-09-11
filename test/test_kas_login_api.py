@@ -17,7 +17,12 @@ import aiohttp
 import pytest
 
 from kiro_crew.auth.login.portal import PortalAuthError, wait_for_callback
-from kiro_crew.auth.service import KasLoginService, LoopbackUnavailableError, UnknownLoginError
+from kiro_crew.auth.service import (
+    KasLoginService,
+    LoopbackUnavailableError,
+    UnknownIdentityError,
+    UnknownLoginError,
+)
 from kiro_crew.dashboard.handlers import kas_login
 from kiro_crew.dashboard.handlers.kas_login import (
     api_kas_login_begin_device,
@@ -70,10 +75,22 @@ class _StubService(KasLoginService):
 
     async def status(self):
         self.calls.append("status")
-        return {"authenticated": False, "provider": "", "identity": "", "transport": "device"}
+        return {
+            "authenticated": False,
+            "provider": "",
+            "identity": "",
+            "transport": "device",
+            "expires_at": None,
+            "expired": False,
+            "has_refresh_token": False,
+            "refresh_rejected": False,
+            "usable": False,
+        }
 
-    async def begin_device(self, provider_str, *, start_url="", region=""):
-        self.calls.append(("begin", provider_str))
+    async def begin_device(self, provider_str, *, start_url="", region="", replaces=""):
+        self.calls.append(("begin", provider_str, replaces))
+        if replaces and replaces not in ("social", "builder_id", "identity_center", "external_idp"):
+            raise UnknownIdentityError(replaces)
         if provider_str == "facebook":
             raise ValueError(provider_str)
         return {
@@ -94,8 +111,8 @@ class _StubService(KasLoginService):
         if identity != "social":
             raise ValueError(identity)
 
-    async def begin_loopback(self, provider_str):
-        self.calls.append(("loopback", provider_str))
+    async def begin_loopback(self, provider_str, *, replaces=""):
+        self.calls.append(("loopback", provider_str, replaces))
         if provider_str == "facebook":
             raise ValueError(provider_str)
         if provider_str == "github":
@@ -148,13 +165,40 @@ async def test_all_handlers_503_with_code_when_service_unavailable(monkeypatch):
 async def test_status_ok():
     resp = await api_kas_login_status(_FakeRequest(_StubService()))
     assert resp.status == 200
-    assert _body(resp)["transport"] == "device"
+    body = _body(resp)
+    assert body["transport"] == "device"
+    # The usability fields the sign-in card renders are passed through as the
+    # service answers them -- the handler adds nothing and hides nothing.
+    for key in ("expires_at", "expired", "has_refresh_token", "refresh_rejected", "usable"):
+        assert key in body
 
 
 async def test_begin_device_ok():
     resp = await api_kas_login_begin_device(_FakeRequest(_StubService(), {"provider": "google"}))
     assert resp.status == 200
     assert _body(resp)["login_id"] == "lid-1"
+
+
+async def test_begin_passes_replaces_through_and_rejects_an_unknown_slot():
+    """An account switch names the slot it replaces; the handler forwards it as-is
+    on both transports and answers a coded 400 (not `invalid_provider`) when the
+    slot is not one the store has."""
+    svc = _StubService()
+    resp = await api_kas_login_begin_device(
+        _FakeRequest(svc, {"provider": "google", "replaces": "identity_center"})
+    )
+    assert resp.status == 200
+    assert svc.calls[-1] == ("begin", "google", "identity_center")
+    resp = await api_kas_login_begin_loopback(
+        _FakeRequest(svc, {"provider": "google", "replaces": "builder_id"})
+    )
+    assert resp.status == 200
+    assert svc.calls[-1] == ("loopback", "google", "builder_id")
+    resp = await api_kas_login_begin_device(
+        _FakeRequest(svc, {"provider": "google", "replaces": "../etc"})
+    )
+    assert resp.status == 400
+    assert _body(resp)["code"] == "invalid_identity"
 
 
 async def test_begin_device_missing_and_unknown_provider():
@@ -279,7 +323,7 @@ async def test_begin_and_poll_return_502_on_transport_error():
     import aiohttp
 
     class _OfflineService(_StubService):
-        async def begin_device(self, provider_str, *, start_url="", region=""):
+        async def begin_device(self, provider_str, *, start_url="", region="", replaces=""):
             raise aiohttp.ClientError("connection refused")
 
         async def poll_device(self, login_id):
@@ -292,6 +336,22 @@ async def test_begin_and_poll_return_502_on_transport_error():
     resp = await api_kas_login_poll(_FakeRequest(_OfflineService(), {"login_id": "lid-1"}))
     assert resp.status == 502
     assert _body(resp)["code"] == "auth_service_unreachable"
+
+
+async def test_begin_answers_409_when_a_sign_out_landed_mid_begin():
+    from kiro_crew.auth.service import SignedOutDuringLoginError
+
+    class _SignedOutService(_StubService):
+        async def begin_device(self, provider_str, *, start_url="", region="", replaces=""):
+            raise SignedOutDuringLoginError()
+
+        async def begin_loopback(self, provider_str, *, replaces=""):
+            raise SignedOutDuringLoginError()
+
+    for handler in (api_kas_login_begin_device, api_kas_login_begin_loopback):
+        resp = await handler(_FakeRequest(_SignedOutService(), {"provider": "google"}))
+        assert resp.status == 409
+        assert _body(resp)["code"] == "signed_out_during_login"
 
 
 async def test_status_store_failure_returns_coded_500():
@@ -317,7 +377,7 @@ async def test_begin_loopback_ok_returns_portal_url_and_port():
     assert body["login_id"] == "lid-lb"
     assert body["auth_url"].startswith("https://")
     assert body["port"] == 8337
-    assert svc.calls == [("loopback", "google")]
+    assert svc.calls == [("loopback", "google", "")]
 
 
 async def test_begin_loopback_missing_unknown_and_malformed_provider_are_400():

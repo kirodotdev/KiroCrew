@@ -437,8 +437,8 @@ def test_a_malformed_stored_value_does_not_crash_the_save(tmp_path: Path, monkey
     """`null` stored where a list or an int belongs must still be repairable.
 
     `dict.get(key, default)` substitutes the default only for an ABSENT key, so a
-    hand-edited `null` returns None and used to reach `list(None)` / `int(None)`
-    — a 500 from the exact request that would have fixed the file.
+    hand-edited `null` returns None, and handing that to `list(None)` /
+    `int(None)` raises — a 500 from the exact request that would fix the file.
     """
     import kiro_crew.dashboard.handlers.messaging as mod
 
@@ -621,7 +621,7 @@ def test_rollback_keeps_a_concurrent_edit_it_does_not_own(tmp_path: Path, monkey
     handler proceeds to the failing .env write and the rollback. `loader` is
     patched module-wide, so a leaked background writer from a sibling test in the
     same worker process can also reach `_interleave`; a call-count heuristic let
-    such a caller suppress the injection entirely (issue #7944), and an unlocked
+    such a caller suppress the injection entirely, and an unlocked
     read-modify-write could lose it. Hence the once-gate under a lock and the
     injection going through the real locked primitive.
     """

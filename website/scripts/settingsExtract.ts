@@ -27,6 +27,7 @@
 import * as fs from 'fs'
 import * as path from 'path'
 import { SETTINGS_MANUAL } from '../src/components/commandPalette/settingsManual'
+import { settingsRoute } from '../src/components/commandPalette/settingsRoute'
 import type { ManualSettingEntry, SettingEntry, SettingPrimitiveType } from '../src/components/commandPalette/settingsTypes'
 
 export type { SettingEntry, SettingPrimitiveType }
@@ -104,6 +105,11 @@ type PanelTarget = PanelTargetSingle | PanelTargetSingle[]
  *  dropped from search, so the gate cross-checks every panel file against it. */
 export const PANEL_TAB_MAP: Record<string, PanelTarget> = {
   'OverviewPanel.tsx': 'overview',
+  // Mounted by OverviewPage (the Overview tab). Renders no Settings* primitive,
+  // so the extractor yields nothing from it; the mapping exists so the manual
+  // entry `overview.kiro-sign-in` (settingsManual.ts) can anchor its
+  // data-setting-label to this file for the coverage gate.
+  'KiroSignInCard.tsx': 'overview',
   'ChatPanel.tsx': 'chat',
   'VoicePanel.tsx': 'voice',
   'DisplayPanel.tsx': 'display',
@@ -111,6 +117,7 @@ export const PANEL_TAB_MAP: Record<string, PanelTarget> = {
   'ComputerUsePanel.tsx': 'computer-use',
   'InstancesPanel.tsx': 'instances',
   'SecurityPanel.tsx': 'security',
+  'SecretsPanel.tsx': 'secrets',
   'NotificationsPanel.tsx': 'notifications',
   'ShortcutsPanel.tsx': 'shortcuts',
   // Added upstream (auto-skill generation) without a mapping here, so its two
@@ -462,6 +469,88 @@ export function mergeManualEntries(generated: SettingEntry[], manual: ManualSett
     if (!generatedIds.has(m.id)) merged.push(m)
   }
   return merged
+}
+
+/** `?highlight=` value prefix that resolves a control by its schema config key
+ *  instead of its English label — see `useSettingHighlight`. */
+const HIGHLIGHT_KEY_PREFIX = 'key:'
+
+/** Banner for the generated agent registry. JSON carries no comments, so the
+ *  "do not edit" and the pointer to the scheme doc have to be a field. */
+const AGENT_REGISTRY_COMMENT =
+  'AUTO-GENERATED from the dashboard settings panels by '
+  + 'website/scripts/gen-settings-registry.mjs — DO NOT EDIT. '
+  + 'How to use a route: settings-deeplink.md (same directory).'
+
+/**
+ * One settings control as the AGENT sees it — enough to name a control and to
+ * open it, and nothing more.
+ *
+ * `labelKey` / `labelSuffix` / `type` / `occurrence` / `params` are all
+ * deliberately absent: they exist so the FRONTEND can re-resolve a label or
+ * assemble a URL, and every one of them is a way for a reader that is not the
+ * dashboard to build a subtly wrong link. The prebuilt `route` is what replaces
+ * them.
+ */
+export interface AgentSettingEntry {
+  /** Registry id, `<tab>.<kebab-label>` — the identity used in `?highlight=`. */
+  id: string
+  /** English label as the panel renders it. */
+  label: string
+  /** Settings tab key, for naming the destination in prose ("Display → …"). */
+  tab: string
+  /** Prebuilt in-app link `/settings/<tab>[/<sub>]?…&highlight=…`, usable verbatim. */
+  route: string
+  /** In-panel help text, when the control has any. */
+  description?: string
+  /** Schema key this control writes, when it maps to exactly one. */
+  configKey?: string
+}
+
+/**
+ * Project the UI registry onto the agent-facing subset, with a prebuilt route.
+ *
+ * The route is built by `settingsRoute`, the same adapter the command palette
+ * uses, rather than assembled here from `tab` + `id`: a third of the entries
+ * carry `params` whose second-level key must become a PATH SEGMENT, and a
+ * reader that concatenated `/settings/<tab>?highlight=<id>` would land on a tab
+ * with no pane selected and no control to flash. Shipping the finished link
+ * means the agent never assembles one.
+ *
+ * `key:<configKey>` wins over the id form wherever a config key exists: the id
+ * form resolves this registry's ENGLISH label against the rendered DOM, so it
+ * cannot match a translated dashboard, while the `key:` form is a direct
+ * `data-setting-key` lookup. Same rule `test_tips.py` enforces for the curated
+ * tips' anchors.
+ */
+export function buildAgentRegistry(entries: SettingEntry[]): AgentSettingEntry[] {
+  return entries.map(entry => ({
+    id: entry.id,
+    label: entry.label,
+    tab: entry.tab,
+    // The highlight source is the ONLY thing overridden — path segments and the
+    // remaining query params stay `settingsRoute`'s business, so the two link
+    // forms cannot drift on where a sub-selection lives.
+    route: settingsRoute(
+      entry.configKey ? { ...entry, id: `${HIGHLIGHT_KEY_PREFIX}${entry.configKey}` } : entry,
+    ),
+    ...(entry.description ? { description: entry.description } : {}),
+    ...(entry.configKey ? { configKey: entry.configKey } : {}),
+  }))
+}
+
+/**
+ * Serialize the agent-facing registry bundled into the Python docs package
+ * (`src/kiro_crew/docs/settings-registry.generated.json`).
+ *
+ * Emitted from the SAME extraction pass as `settingsRegistry.gen.ts` so the
+ * agent's enumeration cannot describe a different set of controls than the
+ * dashboard renders; the vitest guard byte-matches this output against the
+ * committed file.
+ */
+export function generateAgentRegistryJson(entries: SettingEntry[]): string {
+  const payload = { $comment: AGENT_REGISTRY_COMMENT, settings: buildAgentRegistry(entries) }
+  return `${JSON.stringify(payload, null, 2)}\n`
 }
 
 /**

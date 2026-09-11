@@ -209,7 +209,7 @@ class TestRunnerWiring:
                 "content": f"{HOOK_CONTINUATION_RECOVERY_PREFIX}\nRead the log first.",
                 "kind": SYNTHETIC_RECOVERY_KIND,
                 "payload": "",
-                # Admission stamp (#5911): recovery requeues record the containment
+                # Admission stamp: recovery requeues record the containment
                 # that held at requeue so the drain can re-validate the retry.
                 "meta": slot._queue[0]["meta"],
             }

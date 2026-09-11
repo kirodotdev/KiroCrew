@@ -111,7 +111,7 @@ def _build_repo_with_diverged_feature(repo: Path) -> None:
 def _repo_template(tmp_path_factory: pytest.TempPathFactory) -> Path:
     """Build the diverged-feature repo once per session; ``repo`` copies it per test.
 
-    Six git subprocesses (~2-3s) were previously paid on every one of the 23
+    Six git subprocesses (~2-3s) would otherwise be paid on every one of the 23
     tests in this module. Session scope is safe here because the template is
     never handed to a test, only copied from via ``shutil.copytree`` -- so a
     test that adds a commit, merges, or moves a branch cannot reach another's

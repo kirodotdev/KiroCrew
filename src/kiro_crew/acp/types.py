@@ -732,14 +732,18 @@ class AcpEvent:
         stays empty and every such child permission request is low-fidelity —
         yet the ``_meta.kiro`` server/tool identity from that same frame DID
         reach the caches and is non-model-authored. This property isolates that
-        verified-identity half so UNCONDITIONAL grant paths — ones whose approve
-        decision consumes no agent-authored event data (session trust-all,
-        global YOLO, ``parent_policy=auto``, per-source auto-approve) — can
-        honor the grant, while every content-matching path (trusted patterns,
-        trust-reads, title-keyed ``auto_approve_tools``) stays gated on the
-        composite ``child_low_fidelity``: for those the agent-authored title or
-        inline params ARE the matched input, and a forged title must never
-        satisfy them.
+        verified-identity half so two kinds of grant can honor it: UNCONDITIONAL
+        grant paths — ones whose approve decision consumes no agent-authored
+        event data (session trust-all, global YOLO, ``parent_policy=auto``,
+        per-source auto-approve) — and IDENTITY-KEYED matching paths, whose
+        matched input is this same verified identity and nothing else (the
+        TrustDropdown's non-shell grant via ``approval_command``, the hook
+        gate's app-own-server grant, and an ``auto_approve_tools`` pattern
+        matched against ``@server/tool`` — the hook reports these with
+        ``ToolHookResult.identity_grant``). Every matching path whose input the
+        agent CAN author — the title, the payload's ``kind``, inline params,
+        trust-reads over a command — stays gated on the composite
+        ``child_low_fidelity``: a forged title must never satisfy them.
 
         Requirements, each fail-closed on its cache: a child origin
         (``sub_session_id``), no RESOLVED shell classification to the contrary
@@ -785,12 +789,15 @@ class AcpEvent:
         verified (``child_mcp_identity_trusted``) — for the latter only the
         ARGUMENTS remain unverified, which the grant never reads (the same
         blindness the interactive card has; the identity split changes WHO
-        approves, not what any gate can scan). Content-MATCHING paths —
-        trusted patterns, trust-reads, title-keyed ``auto_approve_tools``, the
-        'reads' classification — must stay gated on the composite
-        ``child_low_fidelity`` instead: the agent-authored title or inline
-        params ARE their matched input, and a forged title must never satisfy
-        them. Non-child events are always eligible (never low-fidelity).
+        approves, not what any gate can scan). Matching paths whose input the
+        agent can author — the title, the payload's ``kind``, inline params,
+        trust-reads over a command, the 'reads' classification — must stay
+        gated on the composite ``child_low_fidelity`` instead: a forged title
+        must never satisfy them. A matching path keyed on the verified identity
+        alone (see ``child_mcp_identity_trusted``) may read this property too:
+        the dashboard's TrustDropdown match gates on it, because its key is that
+        identity and the admission condition is this same boolean. Non-child
+        events are always eligible (never low-fidelity).
         """
         return not self.child_low_fidelity or self.child_mcp_identity_trusted
 

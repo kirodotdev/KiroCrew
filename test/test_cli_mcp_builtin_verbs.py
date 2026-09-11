@@ -1,4 +1,4 @@
-"""Tests for the gated ``mcp-<builtin>`` CLI verbs (#5901).
+"""Tests for the gated ``mcp-<builtin>`` CLI verbs.
 
 ``_BUILTIN_NAMES`` is shared between HTTP route registration (every builtin)
 and MCP-verb registration (only builtins that ship an ``mcp_server`` module).
@@ -119,7 +119,7 @@ class TestDispatch:
         assert calls == ["mochi"]
 
     def test_moduleless_dispatch_exits_with_clean_message(self, monkeypatch, tmp_path, capsys):
-        """End-to-end pin of the #5901 contract: if a module-less verb ever
+        """End-to-end pin of the contract: if a module-less verb ever
         reaches dispatch (predicate stubbed True so the parser registers it),
         the shared helper refuses with a one-line stderr message and exit 1 —
         never a raw ModuleNotFoundError traceback.

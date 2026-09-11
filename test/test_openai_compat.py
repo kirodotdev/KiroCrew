@@ -917,8 +917,8 @@ class TestAgentMismatchFix:
         The turn runs on a peer and streams over the dashboard WebSocket; this
         endpoint's collector reads only local rows, so reaching the local dispatch
         chokepoint would append the prompt, emit a WS-only ``chat_done``, and leave
-        this HTTP caller waiting forever on a turn the peer never received
-        (GPT #7693). The refusal must fire BEFORE the prompt is appended.
+        this HTTP caller waiting forever on a turn the peer never received.
+        The refusal must fire BEFORE the prompt is appended.
         """
         slot = _make_slot()
         slot.agent = "vanellope"

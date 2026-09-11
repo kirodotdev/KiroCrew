@@ -1,4 +1,4 @@
-"""Tests for Markdown-wrapped ``[OPTIONS:]`` markers (#9110).
+"""Tests for Markdown-wrapped ``[OPTIONS:]`` markers.
 
 A model sometimes wraps the whole marker line in inline code or emphasis --
 ``` `[OPTIONS: A | B]` ``` or ``**[OPTIONS: A | B]**``. The wrapper character
@@ -107,9 +107,9 @@ class TestScopeStaysTight:
         assert [s.strip() for s in match.group("labels").split("|")] == ["Alpha", "Beta"]
 
     def test_multiline_emphasis_closer_is_not_consumed(self):
-        # GPT round 4: emphasis opened on a PRIOR line, closed abutting the
-        # marker's closer. The trailing run was not opened by the marker, so
-        # the marker must not match at all -- the emphasis pair survives.
+        # Emphasis opened on a PRIOR line, closed abutting the marker's closer:
+        # the trailing run was not opened by the marker, so the marker must not
+        # match at all -- the emphasis pair survives.
         text = "**Choose one\n[OPTIONS: Alpha | Beta]**"
         assert OPTIONS_RE_LINE.search(text) is None
         assert OPTIONS_RE_TRAILER.search(text) is None
@@ -124,7 +124,7 @@ class TestScopeStaysTight:
 
     def test_labels_group_contract(self):
         # The ``lwrap`` conditional group precedes ``labels``, so positional
-        # ``group(1)`` no longer means the labels: every consumer reads
+        # ``group(1)`` is not the labels: every consumer reads
         # ``group("labels")`` and iterates with ``finditer``.
         for pattern in (OPTIONS_RE_LINE, OPTIONS_RE_TRAILER):
             match = pattern.search("`[OPTIONS: A | B]`")
@@ -163,9 +163,9 @@ class TestStreamingSplitAgrees:
         assert suffix == "[OPTIONS: A"
 
     def test_hide_partial_cut_takes_a_line_leading_wrapper_along(self):
-        # GPT round-3 finding on 5b593b50a: the streaming trim cut a partial
-        # marker at its ``[`` and published the stray leading wrapper for the
-        # frame. The cut now applies the same line-leading rule as the grammar.
+        # The streaming trim can cut a partial marker at its ``[``; it must not
+        # publish the stray leading wrapper for the frame, so the cut applies
+        # the same line-leading rule as the grammar.
         visible, choices = split_options_trailer("body\n**[OPTIONS: A", hide_partial=True)
         assert visible == "body"
         assert choices == []

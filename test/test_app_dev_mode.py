@@ -66,7 +66,7 @@ def _setup_env(tmp_path, monkeypatch):
     kiro_agents.mkdir()
     import kiro_crew.apps.bridges as bridges_mod
     monkeypatch.setattr(bridges_mod, "KIRO_AGENTS_DIR", kiro_agents)
-    # Operator-process baseline for the runtime human-vs-agent check (#6907):
+    # Operator-process baseline for the runtime human-vs-agent check:
     # the TEST process may itself run inside an agent sandbox (developer
     # machines, agent-driven CI), which would otherwise make every
     # confirmed-grant test refuse. Tests that exercise the agent-side refusal
@@ -185,11 +185,10 @@ def test_concurrent_toggles_do_not_clobber_sentinel(tmp_path, monkeypatch):
 def test_set_dev_mode_writes_metadata_under_lock(tmp_path, monkeypatch):
     """set_dev_mode re-reads + writes installed.json INSIDE the sentinel lock.
 
-    Regression guard for the GPT 5.6 MEDIUM / Long-Term Impact BLOCK item: the
-    installed.json write used to run before ``with _sentinel_lock():`` so two
-    concurrent toggles could interleave (write-meta A, write-meta B, sentinel B,
-    sentinel A), leaving installed.json ``dev: true`` while the sentinel excludes
-    the app. Moving the read → mutate → write inside the lock also means a
+    The installed.json write runs inside ``with _sentinel_lock():`` so two
+    concurrent toggles cannot interleave (write-meta A, write-meta B, sentinel B,
+    sentinel A) and leave installed.json ``dev: true`` while the sentinel excludes
+    the app. Keeping the read → mutate → write inside the lock also means a
     metadata change that races in while we wait for the lock is preserved,
     because meta is re-read under the lock rather than reusing the stale copy
     read during validation.
@@ -726,8 +725,8 @@ def test_reconcile_sentinel_drops_stale_entry(tmp_path, monkeypatch):
 def test_reconcile_scans_inside_lock_preserves_racing_toggle(tmp_path, monkeypatch):
     """Reconcile runs its installed.json scan INSIDE the sentinel lock.
 
-    Regression guard for the GPT 5.6 HIGH: the authoritative scan used to run
-    BEFORE ``with _sentinel_lock():``. A concurrent ``set_dev_mode`` toggle
+    The authoritative scan runs INSIDE ``with _sentinel_lock():``. A scan before
+    the lock strands the reconcile: a concurrent ``set_dev_mode`` toggle
     (which holds the lock) could land between the scan and the lock acquisition
     — the toggle writes installed.json ``dev: true`` and adds the app to the
     sentinel, then reconcile takes the lock with its STALE scan (missing that
@@ -773,7 +772,7 @@ def test_reconcile_scans_inside_lock_preserves_racing_toggle(tmp_path, monkeypat
 
 
 # ---------------------------------------------------------------------------
-# Operator grant record (#6809) — the authorization half the reconcile never
+# Operator grant record — the authorization half the reconcile never
 # writes. These lock in that a forged installed.json `dev: true` gains WATCHING
 # at most across a restart, never `dev_mode_granted_root`.
 # ---------------------------------------------------------------------------
@@ -801,7 +800,7 @@ def test_set_dev_mode_writes_and_revokes_the_grant(tmp_path, monkeypatch):
 
 
 def test_reconcile_never_launders_a_forged_dev_flag_into_a_grant(tmp_path, monkeypatch):
-    """The #6809 GPT-review vector, closed at the root.
+    """A forged ``dev: true`` flag is closed at the root.
 
     An app writes ``dev: true`` to its OWN ``installed.json`` (app-writable)
     and waits for a gateway restart. The startup reconcile rebuilds the WATCH
@@ -948,7 +947,7 @@ def test_a_refused_reenable_preserves_prior_dev_state(tmp_path, monkeypatch):
     to a sensitive root; the operator re-toggles enable and is refused. The
     refusal must be a pure no-op on the prior state: metadata still says
     dev, the sentinel still carries the name (watching continues), and the
-    OLD grant — bound to the previously-approved root — is untouched. The
+    prior grant — bound to the approved root — is untouched. The
     earlier shape wrote metadata/sentinel first and "rolled back" by
     unconditionally disabling, silently tearing down working dev mode.
     """
@@ -1031,7 +1030,7 @@ def _repoint_ui_outside(tmp_path, dirname="external-src"):
 def test_enable_out_of_install_root_requires_confirmation(tmp_path, monkeypatch):
     """The remaining self-grant surface, closed.
 
-    An out-of-install (non-sensitive) root used to be granted unaided. Now the
+    An out-of-install (non-sensitive) root is not granted unaided: the
     toggle fails closed without the explicit host-boundary confirmation — the
     refusal names the CLI command — and, like every validate-before-write
     refusal, leaves no state behind. With the confirmation it binds the grant
@@ -1200,7 +1199,7 @@ async def test_dev_endpoint_never_confirms_out_of_install_roots(tmp_path, monkey
 
 
 # ---------------------------------------------------------------------------
-# Runtime human-vs-agent check on the confirmation flag (#6907)
+# Runtime human-vs-agent check on the confirmation flag
 # ---------------------------------------------------------------------------
 
 

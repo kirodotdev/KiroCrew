@@ -1,7 +1,7 @@
 """Regression tests for the 'Run now' cron handler (api_cron_run).
 
 Starting an immediate run must not overwrite the reference to an
-already-running task: doing so orphans the prior task (it can no longer be
+already-running task: doing so orphans the prior task (it cannot be
 tracked/cancelled/joined) and allows overlapping duplicate runs. The handler
 must reject with 409 when a run is already in flight.
 """
@@ -92,7 +92,7 @@ class TestApiCronRun:
         async with TestClient(TestServer(_make_app(state))) as client:
             resp = await client.post("/api/crons/j1/run")
             assert resp.status == 409
-        # The previously-running task reference must be preserved untouched.
+        # The already-running task reference must be preserved untouched.
         assert state.crons._running_tasks["j1"] is prior
         state.crons.run_job.assert_not_awaited()
 
@@ -119,9 +119,8 @@ class TestApiCronRun:
     async def test_concurrent_runs_still_yield_one_200_and_one_409(self) -> None:
         """The added await must not weaken the check-and-set guard.
 
-        Resolving the job is now asynchronous, so two concurrent requests can
-        both get past the lookup — where previously the handler ran straight
-        through to the guard without suspending. Only one may still start a run,
+        Resolving the job is asynchronous, so two concurrent requests can
+        both suspend at the lookup and reach the guard. Only one may still start a run,
         because the guard and the `_running_tasks` assignment are not separated
         by an await.
         """

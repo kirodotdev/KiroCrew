@@ -329,6 +329,47 @@ def schemas() -> list[dict[str, Any]]:
             },
         },
         {
+            "name": "update_message",
+            "description": (
+                "Edit a message previously sent by this bot, in place. Only works "
+                "on messages authored by the Kiro Crew bot itself (Slack API "
+                "constraint). Use for a rolling status message — progress, a live "
+                "checklist, a result that supersedes an earlier one — instead of "
+                "posting a follow-up that buries the original. Either text or "
+                "blocks is required, and what you pass REPLACES the message: an "
+                "edit carrying only blocks drops the old text, and one carrying "
+                "only text drops the old blocks."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "channel": {
+                        "type": "string",
+                        "description": "Channel ID where the message was posted.",
+                    },
+                    "ts": {
+                        "type": "string",
+                        "description": "Timestamp of the message to edit (from send_message response).",
+                    },
+                    "text": {
+                        "type": "string",
+                        "description": (
+                            "Replacement message text. Required unless blocks is "
+                            "given; pass it alongside blocks as the notification "
+                            "fallback."
+                        ),
+                    },
+                    "blocks": {
+                        "type": "array",
+                        "maxItems": 50,
+                        "items": {"type": "object"},
+                        "description": "Replacement Block Kit blocks (max 50).",
+                    },
+                },
+                "required": ["channel", "ts"],
+            },
+        },
+        {
             "name": "read_slack_profile",
             "description": (
                 "Read a Slack user's profile. Returns display name, title, "
@@ -702,6 +743,89 @@ def delete_message(name: str, args: dict[str, Any]) -> str:
     return "Message deleted."
 
 
+def update_message(name: str, args: dict[str, Any]) -> str:
+    """Edit one of the bot's own Slack messages in place.
+
+    Gated like ``send_message``'s Slack leg, NOT like ``delete_message``. Deleting
+    retracts content the audience already has; an edit PUBLISHES new agent-authored
+    text to that same audience, which is the exfil surface every outbound gate
+    exists for. Without them a session whose ``capabilities.messaging`` was turned
+    off, or a channel agent confined to channel posts, could still push arbitrary
+    text into Slack by editing a message it posted earlier — the gate would hold on
+    ``send_message`` and leak here.
+
+    Shape is validated before identity so a malformed call is refused without a
+    governance-profile evaluation, and every return path lands on the SEL trail.
+    """
+    channel = args.get("channel", "")
+    msg_ts = args.get("ts", "")
+    text = args.get("text") or ""
+    blocks = args.get("blocks")
+
+    def _audit(outcome: str, session_key: str = "") -> None:
+        mcp_core.sel().log_tool_invocation(
+            session_key=session_key or mcp_core._resolve_session_key(),
+            source="mcp",
+            tool_name="update_message",
+            outcome=outcome,
+        )
+
+    if not CHANNEL_ID_RE.match(channel):
+        _audit("error")
+        return "Error: invalid channel ID format."
+    if not _SLACK_TS_RE.match(msg_ts):
+        _audit("error")
+        return "Error: invalid message timestamp format."
+    if not text and not blocks:
+        # chat.update needs replacement content: an edit carrying neither is at
+        # best a no-op and at worst blanks the message, so refuse it here.
+        _audit("error")
+        return "Error: text or blocks required."
+    # Strict identity, for the reason send_message's channel legs need it: the
+    # lenient resolver walks process ancestors, so an unattributable subagent
+    # would be gated (and audited) as its PARENT — and the channel-agent
+    # containment check below is keyed on exactly that identity.
+    caller, strict_err = mcp_core.require_strict_session_key(
+        "Error: cannot verify caller identity for an update_message edit "
+        "(no gateway-injected session key or HMAC-verified pid). "
+        "Refusing to publish text that cannot be attributed to a caller."
+    )
+    if not caller:
+        _audit("denied")
+        return strict_err
+    # Channel agents communicate exclusively through channel posts. kirocrew-core
+    # is auto-approved, so no permission event reaches channel.py's guard and the
+    # boundary has to hold here at MCP dispatch. This helper writes its own
+    # ``rejected_blocked_tool`` SEL record, so no _audit() call beside it.
+    chan_deny = mcp_core._deny_channel_agent_messaging(caller, "update_message")
+    if chan_deny:
+        return chan_deny
+    gov_msg = mcp_core._vet_messaging_governance(caller, tool_name="update_message")
+    if gov_msg:
+        _audit("denied", caller)
+        return f"Error: {gov_msg}"
+    # The per-transport ``channels`` allowlist as well: an edit leaves over Slack
+    # and only Slack, so a policy that permits messaging but not Slack must refuse
+    # it exactly as it refuses a Slack send.
+    gov_chan = mcp_core._vet_channel_governance(caller, "slack", tool_name="update_message")
+    if gov_chan:
+        _audit("denied", caller)
+        return f"Error: {gov_chan}"
+    payload: dict[str, Any] = {"channel": channel, "ts": msg_ts}
+    if text:
+        payload["text"] = text
+    if blocks:
+        payload["blocks"] = blocks
+    # Send the key the gate returned, never a re-resolved one: re-resolving would
+    # check one identity and write as another.
+    resp = mcp_core._post("/api/update-message", payload, session_key=caller)
+    if resp.get("error"):
+        _audit("error", caller)
+        return f"Failed: {resp['error']}"
+    _audit("success", caller)
+    return "Message updated."
+
+
 def read_slack_profile(name: str, args: dict[str, Any]) -> str:
     user_id = args["user"]
     resp = mcp_core._post("/api/slack-profile", {"user": user_id})
@@ -1019,6 +1143,7 @@ HANDLERS: dict[str, Callable[[str, dict[str, Any]], str]] = {
     "send_message": send_message,
     "send_notification": send_notification,
     "delete_message": delete_message,
+    "update_message": update_message,
     "read_slack_profile": read_slack_profile,
     "file_send": file_send,
 }

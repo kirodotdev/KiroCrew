@@ -937,7 +937,19 @@ class TranscriptReadProjection:
         key: str,
         sanitize: Callable[[str], str] | None = None,
     ) -> tuple[str, float]:
-        """Return the newest message preview and that row's epoch timestamp."""
+        """Return the newest message preview and the thread's recency epoch.
+
+        The two can come from different rows: the preview text is the newest
+        CONVERSATIONAL row, while the epoch reads a newer skipped stop row
+        when one exists (a stop is activity — see the comment on
+        ``newest_epoch`` below). Every other skip keeps the timestamp with
+        the previewed row.
+        """
+        # Function-local: dashboard.state imports kiro_crew.history at module
+        # scope, which lands back here, so a top-level import would be a
+        # cycle. By preview time the dashboard module is long since loaded.
+        from kiro_crew.dashboard.state import is_stop_event_row
+
         path = self._log._path(key)
         try:
             size = path.stat().st_size
@@ -947,6 +959,28 @@ class TranscriptReadProjection:
             self._log._PREVIEW_TAIL_BYTES,
             self._log._PREVIEW_TAIL_BYTES * 16,
         )
+
+        def _row_epoch(row: dict) -> float:
+            timestamp = row.get("ts")
+            if isinstance(timestamp, str) and timestamp:
+                try:
+                    return datetime.fromisoformat(
+                        timestamp.strip().replace("Z", "+00:00")
+                    ).timestamp()
+                except ValueError:
+                    pass
+            return 0.0
+
+        # Recency carried over from a SKIPPED STOP row only. The stop-row skip
+        # below moves the preview TEXT to an earlier row, but a stop IS
+        # activity — callers order by this epoch (members.py: "Order by the
+        # newest MESSAGE"), and returning the previewed row's timestamp would
+        # sink a just-stopped thread below genuinely older ones. Scoped to
+        # stop rows deliberately: every OTHER non-previewable row (a
+        # zero-width-space-only quiet monitor reply, an empty content row)
+        # keeps the long-standing contract that the timestamp travels with
+        # the row the preview came from (test_preview_text.py pins it).
+        newest_epoch = 0.0
         for window in windows:
             try:
                 with open(path, "rb") as handle:
@@ -968,6 +1002,17 @@ class TranscriptReadProjection:
                     continue
                 if data.get("_type") == "metadata":
                     continue
+                # A Stop press's card is a `system` row whose content IS the
+                # JSON stop payload (see the is_stop_event_row docstring), so
+                # surfacing it hands `{"kind": "stop_event", …}` to every
+                # preview caller — the Crew Members roster subtitle and the
+                # session-list preview both render it verbatim otherwise.
+                # Reuse the shared predicate rather than a fresh kind check:
+                # its docstring documents why matching one carrier is the trap.
+                if is_stop_event_row(data):
+                    if not newest_epoch:
+                        newest_epoch = _row_epoch(data)
+                    continue
                 text = self._log._content_text(data.get("content"))
                 if not text:
                     continue
@@ -980,19 +1025,10 @@ class TranscriptReadProjection:
                     preview = sanitize(preview)
                 if len(preview) > self._log._PREVIEW_MAX_CHARS:
                     preview = preview[: self._log._PREVIEW_MAX_CHARS].rstrip() + "…"
-                timestamp = data.get("ts")
-                epoch = 0.0
-                if isinstance(timestamp, str) and timestamp:
-                    try:
-                        epoch = datetime.fromisoformat(
-                            timestamp.strip().replace("Z", "+00:00")
-                        ).timestamp()
-                    except ValueError:
-                        pass
-                return preview, epoch
+                return preview, newest_epoch or _row_epoch(data)
             if size <= window:
                 break
-        return "", 0.0
+        return "", newest_epoch
 
     @staticmethod
     def _content_text(content: object) -> str:
@@ -1049,7 +1085,7 @@ class TranscriptReadProjection:
                     return cached[2], True
                 with open(path, encoding="utf-8") as handle:
                     first = handle.readline().strip()
-            except OSError:
+            except (OSError, UnicodeError):
                 if attempt + 1 < attempts:
                     self._log._pause_for_transient_retry()
                     continue
@@ -1069,7 +1105,10 @@ class TranscriptReadProjection:
                     data if isinstance(data, dict) and data.get("_type") == "metadata" else {}
                 )
             except json.JSONDecodeError:
-                metadata = {}
+                # A damaged first line cannot establish whether this was a
+                # member session. Keep get_metadata's legacy empty-dict view,
+                # but tell identity-sensitive readers to refuse the operation.
+                return {}, False
             self._log._publish_if_current(
                 self._log._meta_cache,
                 key,
@@ -1144,6 +1183,43 @@ class SessionMetadataProjection:
                         return None
                 path = self._log._path(key)
                 existed = path.exists()
+                # The search index holds a copy of this session's message text, so
+                # it goes FIRST. Removing it before the transcript means a failure
+                # here has destroyed nothing yet and the delete can abort cleanly;
+                # the reverse order would leave the text readable in the index
+                # after the transcript was already gone. drop() reports failure
+                # rather than swallowing it for exactly this reason.
+                #
+                # EVERY spelling of the key is dropped, not the caller's one. Rows
+                # are written under ``list_sessions``' key, which is the file's
+                # ``stem``; a caller holding the logical form (``dashboard:mochi``)
+                # names a row that does not exist, and an empty match is a
+                # successful drop -- so the transcript would be unlinked while its
+                # indexed text stayed readable. ``_cache_key_identities`` is the
+                # existing owner of "every spelling of this transcript", used by
+                # cache invalidation for the same reason.
+                search_index = self._log._catalog_projection.search_index
+                identities = set(self._log._cache_key_identities(key)) | {key, path.stem}
+                if existed and search_index.available and not search_index.drop(identities):
+                    _HISTORY_LOGGER.warning(
+                        "delete_session: could not remove the search index row, "
+                        "not deleting key=%s",
+                        key,
+                    )
+                    return False
+                # An index that exists on disk but cannot be opened is the one case
+                # that must fail CLOSED: a copy of this session's text may be in it
+                # and nothing here can remove it, so reporting the delete as done
+                # would be a claim we cannot support. Removing the index file
+                # unblocks it, which is why the path is named in the log.
+                if existed and not search_index.available and search_index.store_exists():
+                    _HISTORY_LOGGER.warning(
+                        "delete_session: search index present but unreadable, so a "
+                        "copy of this session's text may remain; not deleting "
+                        "key=%s (remove the index to proceed)",
+                        key,
+                    )
+                    return False
                 try:
                     path.unlink(missing_ok=True)
                 except OSError:

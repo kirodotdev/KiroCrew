@@ -19,6 +19,39 @@ scratch, by someone who did not know the first had happened. Then a fourth backe
 Nothing in any of those files said "this is a projection of the agent spec, and
 every backend needs one." That sentence is what this folder is.
 
+## Runtime guard
+
+A mirror is the fix for one backend. `agent_sdk/mcp_refs.py` is the detector, so a
+fourth occurrence cannot be silent. At the one point where the
+`session/new` / `session/load` `mcpServers` array is final — spec projection plus
+the gateway's broker stubs — `acp/mcp_ref_guard.py` compares the spec's `@server`
+refs against what the session is actually about to receive, and logs ONE structured
+warning naming the backend, the agent, the unresolved refs and whether the shared
+gateway is on. It also records them on the session's MCP report
+(`unresolved_refs`), beside the buckets saying what a configured server reported —
+a different claim, because a server nothing configured has no row there to be
+missing from.
+
+Its runtime reach is `AcpClient`'s composition — kiro-cli, claude, codex. **KAS
+composes its array on `AcpRuntime` and never reaches that call site**, so a KAS
+session's refs are checked only by `kirocrew doctor`; wiring the second transport is
+a separate change, and claiming "every backend" here would be the same unexamined
+claim this folder exists to stop.
+
+The resolver sits in the SDK rather than in the ACP layer because the question is
+not an ACP question: spec in, wire array in, backend id in, refs out. That is what
+lets `kirocrew doctor` evaluate the same function per selectable backend, before a
+session exists, without taking an ACP edge (`agent_spec_mcp_refs` in
+`agent_sdk/drivers/acp.py` supplies it the spec and each backend's projection).
+
+It never changes the array and never fails the session: a ref naming nothing is a
+configuration fact, and the complaint about this defect class was that it was
+invisible, not that it was tolerated. Two rules keep it from crying wolf — kiro-cli
+reads the spec itself via `--agent`, so its refs resolve against the spec's own
+`mcpServers` rather than the (deliberately empty) wire array; and `@builtin` and
+bare tool names are not server refs. Until codex has a mirror, the warning fires
+for every codex session that references a server, which is the guard being right.
+
 ## What a mirror must do
 
 Implement `AgentConfigMirror` (`base.py`) in a file named after the backend, and
@@ -72,6 +105,10 @@ Beside the mirror, not inside it, when it is substantial:
 - `acp/session_mcp.py` — Claude Code's spec-entry to array-element translation,
   the `tools` allowlist and the registry filter.
 - `acp/kas_permissions.py` — KAS's `allowedTools` to `permissions` mapping.
+- `agent_sdk/mcp_refs.py` — the provider-agnostic unresolved-ref resolver above,
+  and the one reader of the `tools` ref vocabulary that `session_mcp` mounts
+  through. `acp/mcp_ref_guard.py` is its one-line-of-log half, at the session
+  call sites.
 
 A mirror declares and routes; a helper translates.
 
@@ -82,4 +119,4 @@ A mirror declares and routes; a helper translates.
 | `claude` | `claude_code.py` | both faces; `hooks` is its one open `no-channel` |
 | `` (kiro-cli) | `NO_MIRROR` | reads the spec itself via `--agent`; only a small `cli.json` overlay, whose home is still an open decision |
 | `kas` | `NO_MIRROR`, pending | has the most complete projection of any backend, not yet moved here |
-| `codex` | `NO_MIRROR` | known but not selectable, so no session to configure yet |
+| `codex` | `NO_MIRROR` | selectable on a plain build and serving sessions today; the projection is unwritten, so the runtime guard above warns on every codex session whose spec references a server |

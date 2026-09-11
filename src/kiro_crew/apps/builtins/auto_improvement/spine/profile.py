@@ -257,8 +257,8 @@ class BugRunner(Protocol):
     def run_suite(self, *, src: Path) -> tuple[bool, list[str]]:
         """STAYGREEN: run the full suite (or the documented smoke subset — a
         Target-Profile choice, §8) against ``src``. Returns ``(all_green, failing)``
-        where ``failing`` lists any previously-passing test now failing (exact pytest
-        nodeids when available, so the gate can re-check them on base).
+        where ``failing`` lists every failing test (exact pytest nodeids when
+        available, so the gate can re-check them on base).
 
         OPTIONAL companion (NOT part of this structural protocol so a minimal runner
         still satisfies ``isinstance``): ``run_named_tests(*, src, test_ids) -> set[str]``

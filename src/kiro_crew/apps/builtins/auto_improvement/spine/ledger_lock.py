@@ -16,7 +16,7 @@ of those paths hold DIFFERENT locks, their read → decide → append sequences
 interleave: a ``forget`` that read a ``QUEUED`` placeholder can append ``purged``
 AFTER a concurrent path appended the real ``filed(<pr-url>)`` row, so ``purged``
 wins, the pull request is hidden, and the loop drafts a second PR for a change
-already up for review (#6716). One lock shared by all three writers makes each
+already up for review. One lock shared by all three writers makes each
 sequence atomic against the others and removes the interleaving.
 
 WHY A DEDICATED LEAF MODULE, not a lock defined in ``spine.ledger`` or

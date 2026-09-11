@@ -451,7 +451,7 @@ class TestRunScriptHook:
             return list(argv), wrapper_env, None
 
         proc = MagicMock()
-        # Main's capped-output path (#5442) drains proc.stdout/proc.stderr via
+        # Main's capped-output path drains proc.stdout/proc.stderr via
         # _read_capped_stream(reader.read(n)) rather than proc.communicate, and
         # feeds proc.stdin then awaits proc.wait(). Model those so the funnel's
         # env assertions below run against a process that completes cleanly.

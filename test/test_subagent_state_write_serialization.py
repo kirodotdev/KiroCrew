@@ -414,7 +414,7 @@ def _mock_ctx_builder_for_run():
 
 
 class TestOnLoopKeepWriteAgainstACancelledRunsWorker:
-    """#6298: the on-loop retention ``keep`` write must not be rolled back.
+    """The on-loop retention ``keep`` write must not be rolled back.
 
     ``_promote_conversation`` / ``release_conversation`` write ``keep`` from the
     event loop, where ``update_state`` deliberately takes no lock -- so a
@@ -422,8 +422,8 @@ class TestOnLoopKeepWriteAgainstACancelledRunsWorker:
     only through the ``_conversation_busy`` gate, which refuses while a run is in
     flight, so the one writer that can still be concurrent is a DETACHED worker:
     one whose ``to_thread`` await was cancelled while the write was in flight.
-    Draining every off-loop writer on cancellation (#6308) removes that
-    population, which closes this interleave too -- a pool writer can no longer
+    Draining every off-loop writer on cancellation removes that
+    population, which closes this interleave too -- a pool writer cannot
     outlive the run it belongs to.
     """
 

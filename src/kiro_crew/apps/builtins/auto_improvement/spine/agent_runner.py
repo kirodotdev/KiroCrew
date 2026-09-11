@@ -303,10 +303,9 @@ _COMMAND_WRAPPERS: dict[str, int] = {
     "script": 0,
     # SHELL BUILTIN wrappers. These are not on PATH, so they only appear inside a shell —
     # but a nested `sh -c "..."` argument is re-analyzed from the top by this same table, so
-    # omitting them left a hole. Measured before adding them: bare `git push` was REFUSED
-    # while `command git push` and `exec git push` were both ALLOWED. `command` was raised by
-    # the GPT review of this branch; `exec` and `builtin` are the same class and were found
-    # by testing the neighbours rather than waiting for the next review round.
+    # omitting them leaves a hole: bare `git push` is REFUSED while `command git push` and
+    # `exec git push` would both be ALLOWED. `exec` and `builtin` are the same class as
+    # `command`, so all three are listed.
     "command": 0,
     "exec": 0,
     "builtin": 0,
@@ -419,9 +418,9 @@ def _refusal(text: str, *, depth: int) -> str:
                 opt = wrapped[0]
                 # A short option without `=` is assumed to take a value (`nice -n 5`); a long
                 # option takes one only if it is a KNOWN value-taking wrapper option
-                # (`env --unset FOO`). Long options were previously all treated as valueless,
-                # which let `env --unset FOO curl …` leave `FOO` as the command and pass the
-                # `curl` behind it — the bypass this branch now closes. An inline `--opt=value`
+                # (`env --unset FOO`). Treating every long option as valueless would let
+                # `env --unset FOO curl …` leave `FOO` as the command and pass the `curl`
+                # behind it — the bypass this table closes. An inline `--opt=value`
                 # carries its own value, so it consumes nothing extra.
                 if "=" in opt:
                     takes_value = 0
@@ -541,6 +540,9 @@ def _governance_denial(ev: object, *, session_key: str, agent: str) -> str:
             # command meant is_shell=False, so the request was treated as a non-shell tool and
             # skipped the branch written for it.
             is_shell=bool(getattr(ev, "is_shell", False)) or bool(command),
+            mcp_server_name=getattr(ev, "mcp_server_name", "") or "",
+            mcp_tool_name=getattr(ev, "tool_name", "") or "",
+            mcp_identity_trusted=bool(getattr(ev, "mcp_identity_trusted", False)),
         )
         if getattr(result, "action", "") == TOOL_DENY:
             return (getattr(result, "reason", "") or "denied by governance policy").strip()
@@ -694,10 +696,9 @@ class AgentRunner:
         This agent runs with ``--dangerously-skip-permissions``, so its Bash tool is
         unattended: the worktree stays VISIBLE (there would be nothing to edit otherwise)
         while the operator's credential directories are hidden and the environment is
-        scrubbed. Review of this branch asked for the fallback to be DELETED; sandboxing
-        addresses the same concern — a malicious repository prompt can no longer reach
-        credentials outside the worktree — without removing the only path that works when
-        no in-process provider is configured.
+        scrubbed. Sandboxing is what makes keeping this fallback safe — a malicious
+        repository prompt cannot reach credentials outside the worktree — so the only
+        path that works when no in-process provider is configured stays available.
         """
         root = str(Path(cwd).resolve()) if cwd else None
         # STRICT mode, not the default "standard": "standard" deliberately leaves ~/.aws
@@ -856,7 +857,7 @@ class AgentRunner:
             )
 
         # `sandboxed_spawn_argv` may write a launcher script the caller owns; its contract
-        # is that the caller unlinks it once the child no longer needs it. The streaming
+        # is that the caller unlinks it once the child is done with it. The streaming
         # path has many exits, so this is a finally rather than a call per return.
         try:
             if streaming:
@@ -1195,7 +1196,7 @@ class SessionAgentRunner:
             # construction raised", and without this line it can never say WHAT raised.
             # The realistic cause is the acp → client → session → config.loader circular
             # import the loader documents, which resolves only when ``acp`` is imported
-            # first, and it was previously invisible in every log.
+            # first.
             logger.warning(
                 "SessionAgentRunner.available(): provider factory could not be built, "
                 "reporting the agent runner as unavailable",
@@ -1386,10 +1387,10 @@ class SessionAgentRunner:
             announced_tool_detail: dict[str, str] = {}
             deadline = t0 + timeout_s
             full_prompt = (append_system + "\n\n" + prompt) if append_system else prompt
-            # HARD WALL-CLOCK WATCHDOG (operator directive 2026-06-15): the old `async for`
-            # only checked the deadline BETWEEN events, so a long in-turn await (the agent
-            # thinking/reading for minutes inside one stream step) could blow past timeout_s
-            # unbounded — the runaway 10-min discovery run. We instead drive the stream as an
+            # HARD WALL-CLOCK WATCHDOG (operator directive): a plain `async for` only checks
+            # the deadline BETWEEN events, so a long in-turn await (the agent
+            # thinking/reading for minutes inside one stream step) can blow past timeout_s
+            # unbounded — a runaway multi-minute discovery run. Drive the stream as an
             # explicit async iterator and bound EACH event fetch with asyncio.wait_for on the
             # REMAINING budget. A stall is force-cancelled and we return the accumulated text
             # (so any findings already streamed survive). Falls back to the plain async-for if
@@ -1458,14 +1459,12 @@ class SessionAgentRunner:
                     # and never forwarded here, so every request was granted whatever it
                     # asked for. That matters most for a WATCHER: it reads PR comments
                     # through `gh`, so a malicious comment could ask for a shell and get it,
-                    # against an authenticated GitHub session. Raised by review of this
-                    # branch. Deny-by-default only when a caller supplied a list — an
-                    # absent list keeps the previous behavior for callers that never set one.
+                    # against an authenticated GitHub session. Deny-by-default applies only
+                    # when a caller supplied a list — an absent list imposes no allowlist.
                     # FIRST gate: the platform governance chokepoint (`hooks.on_tool_call`)
                     # — the enterprise ceiling, builtin denied rules, and sensitive-path
                     # (~/.aws/~/.ssh) blocks that the dashboard/Slack paths honor. This
-                    # unattended runner previously skipped it and relied only on the
-                    # app-local checks below. Raised by the Arbiter's review of this branch.
+                    # unattended runner must not rely only on the app-local checks below.
                     gov = _governance_denial(ev, session_key=session_key, agent=self.agent_name)
                     if gov:
                         logger.warning("refusing tool %r — governance: %s", tool, gov)
@@ -1516,8 +1515,8 @@ class SessionAgentRunner:
                     # ENFORCE max_turns on the ACP/session path. Unlike the subprocess runner
                     # (which passes --max-turns to claude), the streaming provider has no turn
                     # limit of its own — so a thinking agent with no terminal commitment reads
-                    # tools until the wall-clock (the discovered=0 over-investigation, validated
-                    # 2026-06-16). Counting tool calls and stopping at the cap is the real
+                    # tools until the wall-clock (the discovered=0 over-investigation).
+                    # Counting tool calls and stopping at the cap is the real
                     # convergence lever: it ends the stream and returns the accumulated text
                     # (a late JSON answer survives). max_turns<=0 disables the cap.
                     tool_calls += 1
@@ -1635,7 +1634,7 @@ class SessionAgentRunner:
             # allowlist/denylist check AND the `critical=True` audit-or-deny write. The
             # unattended loop is exactly the caller that must not buy a blanket exemption
             # with its first approval; re-deciding per call is the whole point of routing
-            # through here. Raised by the GPT review of this branch.
+            # through here.
             await provider.approve_tool(rid)
         except Exception:  # noqa: BLE001
             pass
@@ -1644,13 +1643,12 @@ class SessionAgentRunner:
 def _repro_test_dir(worktree: Path) -> str:
     """The directory this repo actually keeps tests in — ``tests`` or ``test``.
 
-    The prompt used to hard-code ``test/``, but a repo using ``tests/`` (plural) then got
-    a reproducing test written into a directory that does not exist, so T2 could never
-    collect it and EVERY candidate failed ``test_invalid`` regardless of fix quality.
-    Found by running docs/system-specs/modules/auto-improvement.md against Zedmor/chess_test, which uses ``tests/``.
+    Hard-coding ``test/`` in the prompt breaks a repo that keeps its tests in ``tests/``
+    (plural): the reproducing test lands in a directory that does not exist, so T2 cannot
+    collect it and EVERY candidate fails ``test_invalid`` regardless of fix quality.
 
-    The edit fence already permits both (``_ADDABLE_TEST_GLOBS``), so only the
-    instruction was wrong. Prefers an EXISTING directory; falls back to ``test``.
+    The edit fence permits both (``_ADDABLE_TEST_GLOBS``), so the directory only has to be
+    named correctly here. Prefers an EXISTING directory; falls back to ``test``.
     """
     counts = {
         name: len(list((Path(worktree) / name).glob("test_*.py")))

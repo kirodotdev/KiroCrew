@@ -5,7 +5,7 @@ Image layers are append-only. ``COPY dist/*.whl /tmp/wheels/`` commits the
 instruction can only stack a whiteout on top -- the bytes stay in the layer
 stack, so every ``docker pull`` fetches the wheel and then discards it, next
 to the already-installed copy of the same code. Measured on the published
-artifact (#5778): 48,047,081 compressed bytes, 5.7% of
+artifact: 48,047,081 compressed bytes, 5.7% of
 ``ghcr.io/kirodotdev/kirocrew:latest``; layer 6 contained exactly ``tmp/``,
 ``tmp/wheels/`` and the wheel, layer 7 exactly the ``tmp/.wh.wheels``
 whiteout -- the proof the delete happened a layer too late.

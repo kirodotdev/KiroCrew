@@ -175,7 +175,7 @@ def test_gated_sites_carry_a_written_justification() -> None:
 
 
 def test_app_backend_pid_alive_uses_the_shim() -> None:
-    """Regression pin for a site that was previously a raw probe.
+    """Regression pin for a site that would otherwise be a raw probe.
 
     ``apps/backend.py::_pid_alive`` is called from the stale-reap escalation
     loop, which is otherwise fully shim-routed

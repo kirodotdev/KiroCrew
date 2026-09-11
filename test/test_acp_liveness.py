@@ -205,7 +205,7 @@ def test_no_matching_child_is_unknown(tmp_path):
     assert "no matching" in evidence
 
 
-# ── The never-matched fork: absent child vs unrecognized live child (#4840) ──
+# ── The never-matched fork: absent child vs unrecognized live child ──
 
 # Dating a process against its dispatch needs the platform tick rate, which does
 # not exist off Linux (Windows has no os.sysconf, and no /proc for the oracle to
@@ -265,7 +265,7 @@ def test_tick_rate_lookup_survives_a_platform_without_sysconf(monkeypatch):
 
 @_needs_tick_rate
 def test_absent_shell_child_is_tagged_when_every_descendant_predates_dispatch(tmp_path):
-    """#4840: the sub-second command whose result frame was lost.
+    """The sub-second command whose result frame was lost.
 
     The oracle's first look happens at check_after_secs, by which time an ``ls |
     grep | wc`` child is long gone — it is never observed alive, so the
@@ -784,7 +784,7 @@ def test_model_wait_flat_with_established_socket_is_unknown_tagged(tmp_path):
     assert evidence.startswith(EVIDENCE_ESTABLISHED_FLAT)
 
 
-# ── Portable model-wait fallback (no procfs) — issue #8520 ───────────────────
+# ── Portable model-wait fallback (no procfs) ───────────────────
 #
 # macOS and Windows have no ``/proc``, so the tree walk reads NO counter at all
 # and the verdict was "unknown: no readable counters" — which the AcpClient's

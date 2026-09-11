@@ -6,6 +6,15 @@ The ACP layer spans **five** modules: the legacy per-session client (`acp/client
 
 ## Backend Selection
 
+The trusted `private_memory` constructor flag is preserved from provider creation
+through client/runtime spawn and recovery. Only private member processes pass it
+to the sandbox; the default `False` keeps existing V1 spawn arguments. The OS
+wrapper enforces the actual resolved mode and member-only Global V1 file masks,
+including denial of internal-sandbox delegation or unconfined fallback. Private
+MCP session discovery reads protected real-process ancestry before mutable
+environment or legacy flat PID sidecars, so a stable private root view need not
+expose new global files in order for later MCP callbacks to identify themselves.
+
 `AcpClient(acp_backend=...)` selects which subprocess to launch:
 
 - `""` (default): `kiro-cli acp --agent <name>` (resolved by `_resolve_kiro_bin`). Per-session kiro settings are layered in via the workspace overlay `<work_dir>/.kiro/settings/cli.json` (written by `AcpProvider`, not the client): reasoning **effort** (`chat.modelDefaults`) and **MCP Tool Search** (`toolSearch.enabled` + activation thresholds from `agent.tool_search_min_pct` / `tool_search_min_tokens`, gated by `agent.tool_search`, default on) — see providers.md.
@@ -49,7 +58,16 @@ not a preference:
   dispatching on `argv[0]` (`~/.toolbox/bin/kiro-cli` → `toolbox-exec`), a
   wrapper reading a sibling registry, or a self-updating install whose real
   payload lives beside it. The launch path is therefore the path the caller
-  resolved, **not** its realpath.
+  resolved, **not** its realpath. One exception, a pod child only: its remapped
+  `$HOME` puts the sibling nowhere, so `apply_pod_bundle_spawn` resolves a
+  symlinked `argv[0]` **onto a verified `<name>.app/Contents/MacOS/` target only** —
+  same basename, executable, with a `<basename>-` sibling beside it. Verifying the
+  whole layout, not just that the link resolves, is what keeps the exception off
+  the `argv[0]`-dispatching multiplexer above and off any wrapper that finds its
+  resources through the path it was invoked by. Crew's launcher still takes the
+  sandbox, though not for the bundle swap's reason: no shim is in this chain, and
+  delegating would skip Crew's seatbelt for an internal sandbox whose behaviour
+  under the pod's remapped `$HOME` Crew cannot verify.
 
 **Removed: the resolve-to-exec integrity snapshot.** An earlier design copied the
 resolved bytes into a private location and executed that instead — a sealed
@@ -100,6 +118,13 @@ verified. The transport signal instead feeds the identity-only lane: the
 `_meta.kiro` identity caches (below) carry it to the permission event, where
 `AcpEvent.child_mcp_identity_trusted` and the CLI consumer's
 `_unverifiable_shell` escape consume it without ever minting a classification.
+The same identity is what an identity-keyed grant matches for such a child —
+the hook gate's `auto_approve_tools` pattern (matched against
+`@server/tool` rendered from the identity, never the title, for an
+MCP-identified call) and app-own-server grant, reported as
+`ToolHookResult.identity_grant`, and the TrustDropdown's `approval_command`
+key — so the user's narrow allowance covers the child's call to that tool
+without a session-wide trust grant (`security.md` § Child-fidelity split).
 A miss keeps reading as an absent classification, and a frame reporting
 `kind: "execute"` caches `True` whatever its `_meta` says — the transport
 identity never waives a shell check.
@@ -492,7 +517,7 @@ kiro can return a `-32603` error that is an *advisory* that it substituted a dif
 
 `_track_usage_update()` tracks context window usage from `usage_update` session events, reconciling the frame via the shared `parse_usage_update()` (flat `update.used`/`update.size` primary, nested `update.usage.*` fallback) so `AcpClient` and `AcpRuntime` read the same shape regardless of which kiro emits. A `KNOWN_SESSION_UPDATES` frozenset in `acp/types.py` suppresses false "unhandled session update" logs for plumbing-only update kinds (`plan`, `available_commands_update`, `current_mode_update`, `config_option_update`, `session_info_update`, `user_message_chunk`, `tool_call_update`). Only genuinely unknown kinds are logged. On the **KAS backend**, three of these are not plumbing-only: `current_mode_update`, `config_option_update`, and `session_info_update` are consumed as display signals. KAS folds signals that kiro-cli sends as separate top-level `_kiro.dev/*` methods (agent switch, per-turn metadata, compaction status) into these `session/update` discriminants, so a KAS-gated branch in `AcpSessionHandle._handle_update` maps `current_mode_update` → agent-switch echo, `config_option_update` → effort-option state, and the `session_info_update` `_meta.kiro` union (`context_usage` → context meter, `turn_completion` → per-turn credits, `summarization_*` → compaction status). kiro-cli never emits these discriminants, so the branch is gated to KAS only and the kiro path is untouched.
 
-**Context-window backfill.** kiro 2.10+ metadata may carry only a context-usage *percentage* (no absolute token counts). `_backfill_context_window(pct)` derives the window and used-token counts from the central `model_registry.model_window(self._resolved_model_id or self._model)` authority (gated on `has_known_window` so an unknown model is never backfilled with a guessed window) and the percentage, so the dashboard token text still renders when only a percentage arrives. `_resolved_model_id` is recorded from `models.currentModelId` (the model kiro actually served, which may differ from the requested one).
+**Context-window backfill.** kiro 2.10+ metadata may carry only a context-usage *percentage* (no absolute token counts). `_backfill_context_window(pct)` derives the window and used-token counts from the central `model_registry.model_window(self._resolved_model_id or self._model)` authority (gated on `has_known_window` so an unknown model is never backfilled with a guessed window) and the percentage, so the dashboard token text still renders when only a percentage arrives. `_resolved_model_id` begins as `models.currentModelId`, then becomes a successfully dispatched non-default startup override or explicit switch, whether it uses `session/set_model` or `session/set_config_option`; a policy-substitution advisory on the latter records the model actually served for that request only. Automatic and unusable routes retain the backend-reported default.
 
 **Per-turn kiro billing credits.** `_track_metadata()` parses each `_kiro.dev/metadata` notification via the shared `parse_metadata()`, capturing `meteringUsage` entries with `unit=="credit"` (kiro bills in credits; token fields are 0 for the acp provider) into `AcpPromptStats.credits`, accumulated across the turn and surfaced on `EVENT_COMPLETE`.
 
@@ -568,6 +593,30 @@ Subprocess lifecycle:
   OS sandbox posture ACP already uses, with the KiroCrew data home hidden.
 - 10MB stdout buffer for large JSON-RPC lines
 - stderr drained in background (`_drain_stderr`) to prevent pipe deadlock. Each line bumps `_last_activity` (liveness for `is_responsive`), is appended to the bounded 20-entry `_stderr_lines` diagnostic ring buffer, and is forwarded as a redacted `WARNING`. **Exception — suppression filter:** lines matching a marker in the module-level `_SUPPRESSED_STDERR_MARKERS` tuple (currently `thinking_tokens`) are dropped — no `WARNING`, not appended to the ring buffer — but **still** bump `_last_activity`. This handles the claude-agent-acp "Unexpected case: {...thinking_tokens...}" stderr noise. **Mechanism** (confirmed by reading the vendored adapter's `dist/acp-agent.js`): claude-code emits a `system` message with subtype `thinking_tokens`, but the adapter's `switch (message.subtype)` enumerates only ~18 known subtypes (`init`, `status`, `compact_boundary`, `memory_recall`, `api_retry`, …) and routes anything else to `default: unreachable(message)`, which writes `logger.error("Unexpected case: " + JSON.stringify(message))` to stderr — one line per token delta, measured at ~10 lines/sec during active thinking (one per 2–4 thinking tokens). The payload is only `estimated_tokens`/`_delta`/`uuid`/`session_id`, so dropping it loses no response content. This is a forward-compat gap in the vendored adapter, **not** new behavior in a specific claude-code build — the `thinking_tokens` event is present in both `2.1.165.357` and `2.1.168.358` (verified by string-matching both bundled `claude` binaries), so it predates the `.168` update that drew attention to it. The cleaner long-term fix is upstream (add a `thinking_tokens` case to the adapter or bump the vendored version); this filter is the version-agnostic stopgap that also absorbs the next unenumerated subtype's flood. (Note `thinking_tokens` is by far the dominant subtype hitting `unreachable` — ~14k occurrences vs. a handful of rare `permission_denied` across retained logs — which is why the marker tuple stays narrow rather than suppressing all "Unexpected case" lines.) Two concrete reasons to drop rather than downgrade the level: (1) **log hygiene** — `gateway.log` uses `RotatingFileHandler(maxBytes=2MB, backupCount=3)` (`cli.py`), so a sustained burst rolls genuine diagnostics out of the retained 8MB window; (2) **event-loop load** — the file handler is a plain *synchronous* handler and `_drain_stderr` runs on the gateway event loop, so each forwarded line costs a synchronous file write + two regex redaction passes on the same loop that streams responses (small per session, compounding across concurrent thinking sessions). Keeping liveness prevents the idle watchdog from killing an actively-thinking turn; skipping the ring buffer stops a burst from evicting the last real errors. A throttled `DEBUG` summary (≥ `_SUPPRESSED_STDERR_SUMMARY_INTERVAL_SECS` apart, plus a flush at EOF) keeps the suppression observable. Match substrings are kept narrow so a genuine error is never silently swallowed. This is a log-volume / event-loop-load reduction — **not** a fix for any turn-stall or "agent not responding" symptom (no such causal link was established).
+
+### Private member MCP routing
+
+Private V2 clients and runtimes discard the shared MCP broker overlay and socket
+before session creation. Tool mirroring, reload, resume and runtime recreation
+use direct MCP servers confined to that member's sandbox. Original agent server
+definitions remain available to direct-MCP-capable backends. V1 retains its
+existing broker routing.
+
+The original trusted broker endpoint remains available only for sandbox
+validation. Private execution cannot reach that endpoint or its aliases. A
+configured endpoint outside the reserved broker namespaces refuses private
+startup rather than hiding an arbitrary project directory.
+
+The current public Codex ACP backend has no direct MCP projection. Private V2
+execution with that backend therefore refuses before allocation and names the
+remedy: choose a member backend that supports direct MCP. Ordinary V1 Codex
+sessions retain their existing behavior.
+
+The public provider factory uses `agent.member_acp_backend` for member private
+chat and the configured default backend for Crew work and private background
+consolidation. Each effective backend must support direct MCP. Selecting a
+supported member-chat backend alone does not change a Codex default used by
+background work.
 
 ### Cold-start admission and startup telemetry
 

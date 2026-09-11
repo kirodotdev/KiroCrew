@@ -1897,7 +1897,7 @@ def _start_app_backend_body(app_name: str, manifest) -> AppProcess | None:
         _platform_extra["KIROCREW_PROFILE"] = os.environ["KIROCREW_PROFILE"]
     for _policy_env in ("KIROCREW_SECURITY_POLICY", "KIROCREW_ADMISSION_POLICY"):
         # Forward the governance trust-root path overrides alongside the profile.
-        # These are the fleet operator's highest-priority policy sources
+        # These are the operator's local policy sources
         # (governance.load_security_policy / admission), and minimal_env() strips
         # them. Now that the backend boots the platform context itself, dropping
         # them would make the child resolve its ceiling from the on-disk /
@@ -2915,7 +2915,7 @@ def _health_check_loop(ap: AppProcess, health_path: str) -> AppProcess | None:
     probed. Deriving both from the record leaves nothing to disagree.
 
     Returns the record if this call promoted it to healthy, else None (never answered, or
-    no longer the tracked entry).
+    not the tracked entry).
     """
     app_name = ap.app_name
     port = ap.port
@@ -3009,7 +3009,7 @@ def _watch_backend_health(ap: AppProcess, health_path: str) -> None:
             )
             with _lock:
                 if _processes.get(ap.app_name) is not ap:
-                    return  # no longer tracked — nothing left to watch
+                    return  # not the tracked record — nothing left to watch
 
 
 def _watch_backend_health_sweeps(ap: AppProcess, health_path: str) -> None:
@@ -3031,9 +3031,9 @@ def _watch_backend_health_sweeps(ap: AppProcess, health_path: str) -> None:
     and stays REVERSIBLE — the watch keeps running and re-promotes on the next success,
     which is what lets an app that wedged briefly heal without operator action.
 
-    Exits when the record is no longer the tracked one for its app: ``stop_app_backend``
+    Exits when the record stops being the tracked one for its app: ``stop_app_backend``
     pops it and a restart replaces it, so this needs no separate teardown — the same
-    "no longer tracked" guard the startup poll already uses.
+    "not the tracked record" guard the startup poll uses.
     """
     consecutive_failures = 0
     while True:
@@ -3220,7 +3220,7 @@ def _set_backend_health(ap: AppProcess, *, healthy: bool) -> bool:
     """
     with _health_reconcile_lock:
         # IDENTITY FIRST. The undo below deregisters by app NAME, so running it for a
-        # record that is no longer the tracked one would delete the SUCCESSOR's
+        # record that is not the tracked one would delete the SUCCESSOR's
         # resources — and an unreadable enabled state is exactly the case that would
         # send a retired watcher down that path.
         with _lock:
@@ -3370,7 +3370,7 @@ def _pidfile_path() -> Path:
 def _proc_start_time(pid: int) -> str | None:
     """Stable per-process start time, or None if unavailable.
 
-    PID-reuse guard: a recorded pid whose live start_time no longer matches has
+    PID-reuse guard: a recorded pid whose live start_time does not match has
     been recycled to an unrelated process and MUST NOT be killed. The value must
     be stable across gateway restarts (the reap compares a string recorded by a
     prior generation against one read now), so it cannot use ``hash()`` — that

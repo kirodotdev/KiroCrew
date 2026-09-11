@@ -51,8 +51,8 @@ PROTECTED_BRANCH_NAMES = frozenset(
     }
 )
 
-# Release/integration line prefixes — ``release/*``, ``releases/*``, ``hotfix/*``, etc.
-# These are conventionally protected integration lines, never a personal feature branch.
+# Release/integration line prefixes. These are conventionally protected integration
+# lines, never a personal feature branch.
 PROTECTED_BRANCH_PREFIXES = (
     "release/",
     "releases/",
@@ -226,9 +226,9 @@ def scan_content_for_secrets(text: str) -> tuple[bool, str]:
 
 
 #: Credential-shaped env names to drop before untrusted code runs. Matched by NAME, never
-#: by value. ONE definition: this used to be copied into both the gate and the agent
-#: spawn, and a duplicated security decision is how the empty-allowlist inversion survived
-#: in one copy after being fixed in the other.
+#: by value. ONE definition shared by the gate and the agent spawn: a duplicated security
+#: decision can be fixed in one copy and left inverted in the other, which is how the
+#: empty-allowlist inversion survives.
 #:
 #: Needed because the shared `kiro_crew.sandbox` scrub does not cover every family —
 #: measured on the author's host, `GITHUB_TOKEN` survives `scrub_env` (its list has

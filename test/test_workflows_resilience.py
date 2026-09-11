@@ -69,7 +69,7 @@ def _hang_on(marker: str):
 
 
 async def test_ceiling_returns_completed_agent_results() -> None:
-    """The regression: a timeout used to return agent_results={} and lose the lot."""
+    """A timeout must not return agent_results={} and lose the lot."""
     res = await _runner(agent_fn=_hang_on("never-returns"), timeout_secs=0.2).run(
         SCRIPT_TWO_THEN_HANG, run_id="wf_ceiling", now=NOW
     )
@@ -230,8 +230,8 @@ async def runner_bg(registry: RunRegistry, script: str, run_id: str) -> str:
 
 
 async def test_terminal_merge_never_erases_checkpoints() -> None:
-    """``_drive`` used to assign ``handle.agent_results = agent_results or {}``,
-    so any terminal path handing back an empty map wiped the checkpoints."""
+    """``_drive`` must not assign ``handle.agent_results = agent_results or {}``,
+    so any terminal path handing back an empty map would wipe the checkpoints."""
     registry = RunRegistry()
     registry.record_agent_result("missing-run", 0, result="x")  # no-op, must not raise
 

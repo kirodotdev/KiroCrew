@@ -45,6 +45,7 @@ import signal
 import sys
 import time
 import traceback
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable, Collection, Iterator, NoReturn, Optional
 
@@ -97,6 +98,10 @@ from kiro_crew.mcp_gateway.secret_uri import resolve_secret_uris
 from kiro_crew.mcp_gateway.shutdown_budget import DRAIN_SECS, POOL_SHUTDOWN_SECS
 from kiro_crew.mcp_gateway.spill import cleanup_old_spill_files
 from kiro_crew.mcp_gateway.stub import fallback_counts as stub_fallback_counts
+from kiro_crew.member_memory_auth import (
+    issue_member_session_proof,
+    protected_member_session_for_pid,
+)
 from kiro_crew.metrics.provider import get_recorder
 from kiro_crew.peer_resolve import resolve_peer_identity
 from kiro_crew.platform_compat import IS_WINDOWS
@@ -2716,9 +2721,12 @@ async def _handle_connection(
     # index host pids) without the kernel positively attesting the peer uid.
     resolved_session_key = ""
     peer_host_pids: list[int] = []
+    # Capture independently of the claimed session. A nonempty register key is
+    # not evidence of member authority, and its ancestor_pids are untrusted.
+    peer_pid = socketsec.get_peer_pid(writer)
+    peer_uid_ok = socketsec.check_peer_is_self(writer)
+    member_peer_pid = peer_pid if peer_uid_ok is socketsec.PeerCredResult.MATCH else None
     if caller is None or not caller.session_key:
-        peer_pid = socketsec.get_peer_pid(writer)
-        peer_uid_ok = socketsec.check_peer_is_self(writer)
         if peer_pid is None or peer_uid_ok is not socketsec.PeerCredResult.MATCH:
             _audit_peer_identity_denied(
                 reason=(
@@ -3218,9 +3226,19 @@ async def _handle_connection(
                 captured_init = dict(msg)
 
             try:
-                await backend.forward_from_stub(
-                    stub_uuid, msg, caller=caller, tenant_nonce=conn.tenant_nonce
+                call_caller = await _caller_with_member_proof(
+                    caller, member_peer_pid, msg.get("method")
                 )
+                await backend.forward_from_stub(
+                    stub_uuid, msg, caller=call_caller, tenant_nonce=conn.tenant_nonce
+                )
+            except _MemberCallerRefused as exc:
+                # An incorrect/missing claimed session must not turn a member
+                # invocation into an unowned V1 tool call. Keep the connection
+                # available for a subsequent trusted claim repair, but execute
+                # none of this invocation in the shared backend.
+                await _write_json_line(writer, _jsonrpc_error(msg, str(exc)))
+                continue
             except BackendGone as exc:
                 # Transparent respawn: a shared backend dying must NOT brick
                 # this stub's transport (which would make kiro-cli mark the
@@ -3869,6 +3887,51 @@ async def _drain_inbox_to_stub(
                 return
     except asyncio.CancelledError:
         raise
+
+
+class _MemberCallerRefused(RuntimeError):
+    """Protected peer identity cannot safely authorize this tool invocation."""
+
+
+async def _caller_with_member_proof(
+    caller: Optional[CallerContext], peer_pid: Optional[int], method: Any
+) -> Optional[CallerContext]:
+    """Delegate private-memory authority for this call, never for a connection.
+
+    Resolve the protected peer even when the client supplies no caller. Omitting
+    a key or claiming a global session must not downgrade a protected member to
+    V1 in a shared backend whose own process cannot identify the original peer.
+    No proof is kept on the connection or replayed during backend recovery.
+    """
+    proof = ""
+    if method in ("tools/call", "tools/list") and peer_pid is not None:
+        try:
+            protected = await asyncio.get_running_loop().run_in_executor(
+                subprocess_executor(), protected_member_session_for_pid, peer_pid
+            )
+        except Exception:
+            raise _MemberCallerRefused(
+                "Cannot verify the protected runtime identity. Reopen the member conversation and retry."
+            ) from None
+        if protected is not None and (
+            not protected or caller is None or caller.session_key != protected
+        ):
+            raise _MemberCallerRefused(
+                "The caller does not match its protected runtime identity. Reopen the member conversation and retry."
+            )
+        if caller is not None and caller.session_key:
+            try:
+                proof = await asyncio.get_running_loop().run_in_executor(
+                    subprocess_executor(), issue_member_session_proof, caller.session_key, peer_pid
+                )
+            except Exception:
+                # Neither diagnostics nor tool results may expose token material.
+                logger.warning("member memory caller verification unavailable")
+            if protected is not None and not proof:
+                raise _MemberCallerRefused(
+                    "The protected runtime proof is unavailable. Reopen the member conversation and retry."
+                )
+    return replace(caller, member_memory_proof=proof) if caller is not None else None
 
 
 def _caller_from_register(register: dict[str, Any]) -> Optional[CallerContext]:

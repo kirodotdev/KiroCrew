@@ -77,7 +77,7 @@ _TAG_SPEC = FieldSpec(name="tag", type=str, max_len=51, pattern=_TAG_RE)
 _REGION_RE = re.compile(r"^[a-z]{2}-[a-z]+-\d+$")
 _REGION_SPEC = FieldSpec(name="region", type=str, max_len=32, pattern=_REGION_RE)
 # The profile charset ('+' admitted for IAM Identity Center derived names,
-# leading '-' excluded so a value is never option-shaped, \Z anchor — #6055)
+# leading '-' excluded so a value is never option-shaped, \Z anchor)
 # is deploy/profiles.py's PROFILE_SPEC, aliased rather than re-spelled here
 # (same idiom as deploy/handlers.py; cloud/ already depends on deploy via the
 # shared aws-bin resolver in cloud/aws.py).

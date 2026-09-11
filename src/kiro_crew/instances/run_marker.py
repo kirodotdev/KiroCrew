@@ -458,7 +458,7 @@ def write_marker(port: int) -> None:
     unique ``mkstemp`` (``O_EXCL``, mode ``0600``) temp then ``os.replace``.
     Using the shared helper — rather than a predictable ``<name>.tmp`` — closes a
     same-user symlink-TOCTOU: a pre-planted ``gateway-<port>.bin.tmp`` symlink
-    can no longer redirect the write to truncate another file. Never raises — a
+    cannot redirect the write to truncate another file. Never raises — a
     failed write just leaves mint on the candidate search and discovery on the
     default port.
     """
@@ -549,7 +549,7 @@ def clear_marker(port: int) -> None:
     and leaving it beside a pid file a later gateway rewrites is exactly the
     stale-token pairing the freshness check exists to refuse.
 
-    The credential goes too: it names a generation that no longer owns the port,
+    The credential goes too: it names a generation that does not own the port,
     so leaving it behind would let a client authenticate with a value the next
     owner never had. A crash still leaves all four (nothing runs), which is why
     every consumer verifies ownership rather than trusting presence.

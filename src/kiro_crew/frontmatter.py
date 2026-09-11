@@ -1,7 +1,7 @@
 """Single home for hand-rolled SKILL.md frontmatter parsing.
 
-Four backend callers parse ``key: value`` frontmatter from markdown, and each
-historically carried its own copy of the scanner. The copies drifted: they
+Four backend callers parse ``key: value`` frontmatter from markdown, and their
+grammars differ: they
 disagree on whether the opening fence may carry trailing text or leading
 whitespace, whether an indented ``key: value`` line is a field or prose,
 whether surrounding quotes are stripped from values, which of two duplicate
@@ -55,8 +55,7 @@ are read correctly only because of it:
 
 So the two accepted-input surfaces CROSS rather than nest, and swapping this
 scanner for a YAML parse is not a strict improvement: measured over the 56
-fenced repo-tracked SKILL.md files it would break those two outright. The
-quoting and unescaping rows of #7097 are tracked separately in #7063.
+fenced repo-tracked SKILL.md files it would break those two outright.
 """
 
 from __future__ import annotations
@@ -67,12 +66,11 @@ from typing import Literal
 
 # Any valid YAML block-scalar HEADER, matched everywhere one is recognized.
 #
-# There used to be a second recognizer beside this one -- a frozenset of the six
-# BARE indicators (``>``, ``|``, ``>-``, ``|-``, ``>+``, ``|+``) -- and the module
-# disagreed with itself about what a block scalar is: the read path tested set
-# membership, the write path matched this regex, and the onboarding activation gate
-# imported the set. Widening one recognizer and not the others is what turned that
-# gate fail-OPEN (see ``_column0_activation_declared``). One matcher now, so a
+# THE only recognizer. A second one beside it -- a frozenset of the six BARE
+# indicators (``>``, ``|``, ``>-``, ``|-``, ``>+``, ``|+``), say -- lets the module
+# disagree with itself about what a block scalar is, and widening one recognizer and
+# not the others is what turns the onboarding activation gate fail-OPEN (see
+# ``_column0_activation_declared``). One matcher, so a
 # change to the grammar reaches every caller at once.
 #
 # The two halves of the alternation are YAML's two orderings of the optional
@@ -265,10 +263,10 @@ def fold_block_scalar(
     result: ``-`` (strip) drops every trailing break, ``+`` (keep) preserves all
     of them, and the default (clip) keeps exactly one. A LEADING break is
     content under all three -- no chomping mode removes it -- so it is preserved
-    too. The previous ``.strip()`` did both, which is what made agreement with a
+    too. A ``.strip()`` would do both, which would make agreement with a
     YAML parser depend on a block's content rather than on its header, and
-    therefore what forced the skill editor to simulate this function and compare
-    instead of reading the header. See #7097.
+    therefore force the skill editor to simulate this function and compare
+    instead of reading the header.
 
     Note that EVERY line the frontmatter fence hands over is newline-terminated in
     the document: the fence's closing ``---`` sits on its own line, so the newline

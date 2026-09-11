@@ -284,6 +284,20 @@
 /* ── Design tokens ── */
 /* Shared across all themes */
 :root {
+  /* Top safe-area inset, consumed by the tailwind.config.js safe-area plugin
+     (p-safe / top-safe / top-safe-offset-* / top-safe-or-*). 0 by default: in
+     any in-browser context the UA's own chrome sits between the status bar /
+     display cutout and the page, so a non-zero top env() there is spurious —
+     Android WebView browsers (e.g. corporate wrappers) report the cutout
+     height even with their URL bar on screen, which painted a dead band above
+     the app header. Only when the app IS the window (installed PWA) does the
+     viewport really extend under the cutout, and display-mode is exactly that
+     signal — the @media block after this rule re-enables env() there.
+     Bottom/left/right stay bare env() in the plugin — those insets are real
+     in-browser. Declared INSIDE this first :root block deliberately:
+     src/i18n/scriptFonts.test.ts reads the file's first :root body for the
+     script-fallback tokens, so a separate leading block would shadow it. */
+  --safe-area-top: 0px;
   /* Single source of truth for the script fallbacks. Every declaration of
      --font-body / --mono — here, in the theme blocks below, and the ones built in
      hooks/useTheme.tsx and hooks/useZoom.ts — references these by name instead of
@@ -307,6 +321,12 @@
   --font-body:var(--theme-font-sans, var(--script-fallbacks),'Space Grotesk',-apple-system,BlinkMacSystemFont,sans-serif);
   --mono:var(--theme-font-mono, var(--script-fallbacks-mono),'JetBrains Mono',ui-monospace,SFMono-Regular,monospace);
   --radius-sm:6px;--radius-md:8px;--radius-lg:12px;--radius-xl:16px;
+}
+/* The standalone/fullscreen half of the --safe-area-top gate declared above:
+   only when the app is the window does the top env() inset describe a region
+   this viewport actually occupies. */
+@media (display-mode: standalone), (display-mode: fullscreen) {
+  :root { --safe-area-top: env(safe-area-inset-top, 0px); }
 }
 html:lang(zh-CN) {
   /* Isolated Simplified aliases for Chinese UI. Not :lang(zh): that also
@@ -1543,9 +1563,10 @@ button:hover .app-icon{--ico-a:var(--accent);--ico-b:var(--text)}
 [data-theme="kiro-light"] .nav-active,[data-theme="kiro-light"] .session-row.session-active,[data-theme="kiro-light"] .list-selected{background:#d8d2e0;color:#723acc;border-color:#c4bcd0}
 [data-theme="kiro-light"] .nav-active .text-accent{color:#723acc}
 /* Kiro light: the canvas is white and the app shell steps back. --bg is #ffffff so the chat
-   transcript and every page read as the primary surface; the nav rail and sessions list take
-   --panel (#fafafa) instead of the elevated white they use elsewhere, which is the only thing
-   separating them from the canvas — a white card on a white page has no edge but its border.
+   transcript and every page read as the primary surface; the nav rail and the list cards (the
+   sessions list and the Crew Members roster, both built from components/listShell) take --panel
+   (#fafafa) instead of the elevated white they use elsewhere, which is the only thing separating
+   them from the canvas — a white card on a white page has no edge but its border.
    The user bubble is a borderless bg-card fill, so on a white canvas it needs a tint or it
    disappears entirely; --bg-hover (#f0f0f0) keeps it in the same grey family as the shell. The
    edit-mode box that replaces a bubble in place carries the same hook, so editing does not flip
@@ -1955,6 +1976,14 @@ file-tree-container{
    and a display:none row measures as zero-width chips at offset zero -- read as
    "on screen", which would silently swallow their unread. */
 @container (max-width:152px){ .tb-left .tb-drop-crew-name{display:none} }
+/* The route-history arrows drop before either chip rung fires: they are the one
+   redundant control in the group (⌘/Ctrl+←/→, the mouse buttons and browser
+   chrome all reach the same history), while the crew chips are the identity of
+   the tab. Two 28px buttons = 56px on top of the 139px chip cluster the 152px
+   rung protects, so this rung fires 56px above it. Under a plain browser
+   dashboard with no remote instances the group holds only the arrows and never
+   comes near the rung. */
+@container (max-width:208px){ .tb-left .tb-drop-navhistory{display:none} }
 /* Terminal rung for the identity group, the counterpart of the capsule's
    dot-only one: below this the active-crew chip goes too and the group keeps just
    the nav button and the dropdown -- which still names the crew on screen, with a

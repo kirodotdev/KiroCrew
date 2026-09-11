@@ -140,8 +140,8 @@ def test_is_active_false_when_label_absent(cfg, monkeypatch):
 
 
 def test_is_active_refuses_to_guess_on_an_operational_error(cfg, monkeypatch):
-    """Review blocker round 4: a non-absent launchctl failure must not read as
-    "not running" — down/removal guards would fail open and delete live state."""
+    """A non-absent launchctl failure must not read as "not running" —
+    down/removal guards would then fail open and delete live state."""
     monkeypatch.setattr(
         launchd, "launchctl", lambda *a, **k: _cp(returncode=5, stderr="Input/output error")
     )
@@ -299,9 +299,9 @@ def test_stop_removes_the_per_pod_plist_once_unloaded(cfg, monkeypatch):
 
 
 def test_stop_does_not_treat_a_generic_print_failure_as_unloaded(cfg, monkeypatch):
-    """Review blocker round 2: an OPERATIONAL print failure (rc!=0 without the
-    absent-service message) proves nothing about the label. Confirming the
-    unload on it would let teardown proceed against a possibly-live pod."""
+    """An OPERATIONAL print failure (rc!=0 without the absent-service message)
+    proves nothing about the label. Confirming the unload on it would let
+    teardown proceed against a possibly-live pod."""
     monkeypatch.setattr(launchd, "launchctl", lambda *a, **k: _cp(returncode=5, stderr="Input/output error"))
     monkeypatch.setattr(launchd.time, "sleep", lambda _s: None)
     dst = launchd.write_plist(cfg, "smoke")
@@ -368,9 +368,9 @@ def test_stop_pod_succeeds_when_the_home_is_gone(cfg, monkeypatch):
 
 
 def test_reap_sweep_aborts_when_a_new_pod_claims_the_name(cfg, monkeypatch):
-    """Blocking review finding round 3: down and up are independent endpoints
-    with no per-name lock, so the grace sweep must stand down the moment a NEW
-    pod claims the name — otherwise its live HOME lands under our rmtree."""
+    """Down and up are independent endpoints with no per-name lock, so the grace
+    sweep must stand down the moment a NEW pod claims the name — otherwise its
+    live HOME lands under our rmtree."""
     monkeypatch.setattr(rt, "IS_MACOS", True)
     monkeypatch.setattr(rt.launchd, "stop", lambda c, n: _cp(returncode=0))
     monkeypatch.setattr(rt.time, "sleep", lambda _s: None)
@@ -385,8 +385,8 @@ def test_reap_sweep_aborts_when_a_new_pod_claims_the_name(cfg, monkeypatch):
 
 
 def test_down_preserves_the_new_pods_checkout_pin_when_reclaimed(cfg, monkeypatch, capsys):
-    """Review blocker round 3 (part 2): after a reclaimed teardown, `down` must
-    NOT delete the per-pod env file — it pins the NEW pod's checkout."""
+    """After a reclaimed teardown, `down` must NOT delete the per-pod env file —
+    it pins the NEW pod's checkout."""
     import argparse
 
     from kiro_crew.pod import cli as pod_cli
@@ -415,17 +415,17 @@ def test_install_backend_writes_nothing_on_macos(cfg, monkeypatch):
 
 
 def test_active_names_refuses_to_guess_on_an_operational_error(cfg, monkeypatch):
-    """Review blocker round 4 (same class as is_active): an empty set on a failed
-    domain print would tell pod ls / Dev Fleet that live pods are absent."""
+    """An empty set on a failed domain print would tell pod ls / Dev Fleet that
+    live pods are absent."""
     monkeypatch.setattr(launchd, "launchctl", lambda *a, **k: _cp(returncode=1, stderr="boom"))
     with pytest.raises(launchd.LaunchdError):
         launchd.active_names(cfg)
 
 
 def test_start_and_stop_hold_the_per_name_mutex(cfg, monkeypatch):
-    """Review blocker round 4: start (plist write + bootstrap) and the whole
-    stop (bootout + sweep) must serialize per name, or a down/up race deletes
-    the replacement pod's plist and HOME."""
+    """Start (plist write + bootstrap) and the whole stop (bootout + sweep) must
+    serialize per name, or a down/up race deletes the replacement pod's plist
+    and HOME."""
     import contextlib as _ctx
 
     held: list[str] = []
@@ -472,9 +472,9 @@ def test_pod_mutex_is_reentrant_within_a_thread(cfg):
 
 
 def test_down_fails_on_macos_when_stop_cannot_confirm_even_if_not_active(cfg, monkeypatch):
-    """Review blocker round 4: a loaded-but-dead agent has no pid (was_up False)
-    but its unload still needs confirming — a swallowed nonzero stop deleted the
-    checkout pin while leaving service, plist and HOME behind."""
+    """A loaded-but-dead agent has no pid (was_up False) but its unload still
+    needs confirming — a swallowed nonzero stop would delete the checkout pin
+    while leaving service, plist and HOME behind."""
     import argparse
 
     from kiro_crew.pod import cli as pod_cli
@@ -495,8 +495,8 @@ def test_down_fails_on_macos_when_stop_cannot_confirm_even_if_not_active(cfg, mo
 
 
 def test_up_pins_the_checkout_inside_the_name_mutex(cfg, monkeypatch, tmp_path):
-    """Review blocker round 4: the pin must move atomically with the start —
-    pinned outside the lock, a concurrent down's sweep deleted the fresh pin."""
+    """The pin must move atomically with the start — pinned outside the lock, a
+    concurrent down's sweep would delete the fresh pin."""
     import argparse
     import contextlib as _ctx
 

@@ -17,7 +17,7 @@ tested claim rather than a remembered one:
 
 The failure both guards exist to catch is silent. A missing re-export surfaces
 as an unrelated test's ``AttributeError`` several commits after the move that
-dropped it, and an unmirrored patch surfaces as a test that no longer exercises
+dropped it, and an unmirrored patch surfaces as a test that stops exercising
 what its name says.
 """
 

@@ -729,7 +729,7 @@ def test_malformed_host_issue_numbers_stay_unconfirmed() -> None:
 
 
 def test_bare_reference_without_a_verb_is_reported() -> None:
-    """The exact shape that merged in #2433/#2439 and closed nothing.
+    """A bare reference with no closing verb is reported and closes nothing.
 
     Reported, not blocked -- the author decides.
     """
@@ -749,7 +749,7 @@ def test_verb_present_but_host_resolved_nothing_is_reported_distinctly() -> None
     assert "no closing keyword" not in reason
 
 
-# --- explicit closing-trailer grammar (#3450) --------------------------------
+# --- explicit closing-trailer grammar ----------------------------------------
 #
 # A trailer must occupy the WHOLE visible line, and the accepted targets are
 # same-repo `#123`, qualified `owner/repo#123`, and a full issue URL. Each
@@ -760,7 +760,7 @@ def test_verb_present_but_host_resolved_nothing_is_reported_distinctly() -> None
 
 
 def test_prose_mentioning_a_past_close_is_not_a_trailer() -> None:
-    """The gap that motivated #3450.
+    """Prose mentioning a past close is not a trailer.
 
     ``Fixed #123 in an earlier release`` is a sentence, not a declaration. It
     must be reported as the missing-verb (bare-reference) case, never as
@@ -923,22 +923,21 @@ def test_same_number_in_different_repositories_stays_unconfirmed() -> None:
     assert reason is not None
     # One unqualified `Fixes #7` covers ONE closure, so the second repository's
     # #7 -- named only in prose, never in a trailer -- is reported as undeclared.
-    # This used to read "the same number resolved in multiple repositories",
-    # which said the shape was ambiguous; naming the unaccounted-for closure is
-    # both narrower and true.
+    # Naming the unaccounted-for closure is both narrower and true than calling
+    # the shape ambiguous.
     assert "no explicit closing trailer" in reason
     assert "#7" in reason
 
 
 def test_two_qualified_trailers_for_one_number_do_not_trigger_a_notice() -> None:
-    """The false positive the "same number twice" notice used to produce.
+    """Two qualified trailers for one number must not trigger a duplicate notice.
 
-    Once matching became repository-aware this body was fully accounted for --
+    Repository-aware matching accounts for this body fully --
     `Fixes #7` declares this repository's #7 and `Fixes other/repo#7` declares
-    the other one, and the host resolved exactly those two -- yet a
-    duplicate-number branch still fired. An advisory that fires on a correct body
-    is how authors learn to ignore advisories, so the branch is gone: genuine
-    ambiguity is already covered by the undeclared-closure case.
+    the other one, and the host resolves exactly those two. An advisory that
+    fires on a correct body is how authors learn to ignore advisories, so it
+    does not fire here: genuine ambiguity is covered by the undeclared-closure
+    case.
     """
     module = _load_script()
     body = "Fixes #7\nFixes other/repo#7"
@@ -1143,7 +1142,7 @@ def test_a_code_indented_trailer_is_never_a_declaration() -> None:
     that closes itself (see the sibling test). The bound replaces the state: a
     trailer at four or more columns is not a declaration, full stop.
 
-    The cost is this body no longer being credited, which prints an advisory
+    The cost is this body not being credited, which prints an advisory
     notice on an odd shape. The benefit is that no block type can smuggle an
     EXAMPLE through as a declaration, which silently suppresses a real warning.
     """
@@ -1286,11 +1285,11 @@ def test_opt_out_phrasing_carries_no_closing_keyword() -> None:
     """The opt-out line itself must never read as a close-on-merge trigger.
 
     GitHub closes an issue on merge when the body matches
-    ``(close[sd]?|fix(e[sd])?|resolve[sd]?)\\s*:?\\s+#<n>``. The retired
-    phrasing ``no issue closed: <why>`` put the keyword ``closed`` directly
+    ``(close[sd]?|fix(e[sd])?|resolve[sd]?)\\s*:?\\s+#<n>``. A phrasing like
+    ``no issue closed: <why>`` puts the keyword ``closed`` directly
     before the colon, so a ``<why>`` opening with an issue number
-    (``no issue closed: #1234 tracks the follow-up``) produced
-    ``closed: #1234`` — auto-closing the very issue the line disclaims.
+    (``no issue closed: #<n> tracks the follow-up``) yields
+    ``closed: #<n>`` — auto-closing the very issue the line disclaims.
     Lock in both properties: the canonical phrasing matches the opt-out
     regex, and no closing keyword survives anywhere in it.
     """
@@ -1397,7 +1396,7 @@ def test_resolved_issue_link_reports_the_number_and_no_notice(capsys) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Issue #2550: reviewer-marker freshness + blocking markers + head-run
+# Reviewer-marker freshness + blocking markers + head-run
 # assertion move from babysit prose into the script.
 # ---------------------------------------------------------------------------
 
@@ -1449,7 +1448,7 @@ def test_stale_reviewer_stamp_blocks_a_would_be_clean_pr() -> None:
 # A realistic head: the all-`f` fixture cannot exercise elision, because any
 # splice of it is also a prefix of it.
 _MIXED_HEAD = "db7c4361f0a92be5147c3d8e6b0af215934cde78"
-# The shape the Design lane actually emitted on PR 4107: the head's first 14
+# The shape the Design lane emits: the head's first 14
 # characters spliced to its last 11, middle dropped, 25 characters total.
 _ELIDED = _MIXED_HEAD[:14] + _MIXED_HEAD[-11:]
 
@@ -1469,7 +1468,7 @@ class TestShaMatches:
         assert not module.sha_matches(_MIXED_HEAD[:6], _MIXED_HEAD)
 
     def test_elided_middle_matches_the_head_it_mangles(self) -> None:
-        """PR 4107's exact failure: 25 characters, prefix+suffix of this head."""
+        """The elided form is 25 characters: prefix+suffix of this head."""
         module = _load_script()
         assert len(_ELIDED) == 25
         assert not _MIXED_HEAD.startswith(_ELIDED)  # the old test rejected it
@@ -2035,7 +2034,7 @@ def test_degraded_rollup_reason_is_distinct_from_a_genuine_no_checks_pr(capsys) 
 
 
 # ---------------------------------------------------------------------------
-# Issue #4187: the disposition gate -- one lane, one rationale per finding.
+# The disposition gate -- one lane, one rationale per finding.
 # The computation is pinned byte-identical to pr_findings.py's copy by
 # test_prepare_pr_findings.py; these tests cover the GATING half.
 # ---------------------------------------------------------------------------
@@ -2104,8 +2103,8 @@ def test_per_finding_same_lane_disposition_stays_clean(capsys) -> None:
 
 
 def test_spanless_disposition_for_a_lane_with_findings_blocks(capsys) -> None:
-    """The observed #3963 shape: a blanket ruling naming no finding identity
-    while its lane has findings on the current head."""
+    """A blanket ruling naming no finding identity while its lane has findings
+    on the current head."""
     module = _load_script()
     bot_comment, _span = _gpt_finding_comment(module)
     disposition = _disposition("alice", "gpt", "> out of scope for this fix")
@@ -2230,7 +2229,7 @@ def test_prior_head_record_still_blocks_after_the_fix_push(capsys) -> None:
     """The ordinary flow: the writer stamps head=<prior-reviewed-sha> and then
     pushes, so the PR head has moved by the time the gate polls. The record
     must be validated against the head it judged -- skipping it as history is
-    exactly how the blanket ruling shipped green on #3963."""
+    exactly how a blanket ruling ships green."""
     module = _load_script()
     prior = "f" * 40
     current = "e" * 40
@@ -2267,7 +2266,7 @@ def test_prior_head_record_still_blocks_after_the_fix_push(capsys) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Issue #6658: the disposition rule is enforced server-side, in pr-readiness.yml,
+# The disposition rule is enforced server-side, in pr-readiness.yml,
 # by calling THIS script's --disposition-gate mode -- so the rule keeps one
 # definition instead of gaining a workflow-side copy of the grammar. These pin
 # the JSON contract that workflow step parses.
@@ -2429,7 +2428,7 @@ def test_disposition_gate_flattens_newlines_out_of_each_violation(capsys) -> Non
 
 
 # ---------------------------------------------------------------------------
-# GPT round 2 on #7014: an INDETERMINATE writer lookup must not read as "not a
+# An INDETERMINATE writer lookup must not read as "not a
 # writer". The adjudication ledger makes the identical lookup at review time, so
 # it can have admitted a record whose later verification here fails transiently
 # -- dropping it would leave the record's downgrade power intact while the

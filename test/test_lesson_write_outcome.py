@@ -1,11 +1,12 @@
 """What a lesson write reports, and the four surfaces that read it.
 
-``write_lesson`` used to return a bare ``bool``, and its ``False`` meant several
-unrelated things at once: validation refused the value, a dedup rule claimed the write,
-the submit was a no-op, or a bare re-submit deliberately kept a stored NOT-clause. The
-first group means "your lesson did not land"; the second means "your lesson is fine,
-there was nothing to do". These tests pin the outcome each path now reports, that the
-result's TRUTH VALUE still answers the old bool's predicate (so the callers that only
+A bare ``bool`` return cannot carry this: one ``False`` would mean several
+unrelated things at once -- validation refused the value, a dedup rule claimed the
+write, the submit was a no-op, or a bare re-submit deliberately kept a stored
+NOT-clause. The first group means "your lesson did not land"; the second means
+"your lesson is fine, there was nothing to do". These tests pin the outcome each
+path reports, that the result's TRUTH VALUE answers the plain bool predicate (so
+the callers that only
 branch on success are unaffected -- see ``TestWriteLessonTruthValueIsTheOldBool``), and
 that the three surfaces a human or a model reads -- the CLI, the ``/api/lessons``
 response and the ``learn_add`` tool result -- stop saying "Saved" for a write that
@@ -19,6 +20,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from body_stream_helpers import attach_body
 
+from kiro_crew.history import ConversationLog
 from kiro_crew.vector_memory import (
     LessonWriteOutcome,
     LessonWriteResult,
@@ -207,7 +209,7 @@ class TestWriteLessonTruthValueIsTheOldBool:
 
 
 class TestCliLearnAddReportsTheOutcome:
-    """``kirocrew learn add`` no longer writes a second record on a decline.
+    """``kirocrew learn add`` writes no second record on a decline.
 
     It read every falsy return as "the vector store did not take it" and wrote into
     ``lessons.jsonl``. For a no-op that duplicated a lesson already stored correctly;
@@ -355,11 +357,12 @@ class TestCliLearnAddReportsTheOutcome:
 
 @pytest.mark.asyncio
 class TestLessonsRouteReportsTheOutcome:
-    """The response used to be ``{"ok": true}`` on every success path."""
+    """The response names the outcome, not a bare ``{"ok": true}`` on every path."""
 
     def _request(self):
         request = MagicMock()
         state = MagicMock()
+        state.conversation_log = ConversationLog()
         state._background_tasks = set()
         request.app = {"state": state}
         request.headers = {"X-Session-Key": "dashboard:ui"}
@@ -547,13 +550,13 @@ class TestASupersedingWriteNamesWhatItRemoved:
     From the issue: teach "never force push to a shared branch", then teach "when a
     release is in progress, never force push to a shared branch, and tell the release
     manager first". The second rule's text CONTAINS the first, so the substring rule
-    tombstones the general lesson -- and the call returned a plain ``inserted`` with
-    ``reason=None``. The user was told the save succeeded and there was no longer any
-    rule against force pushing outside a release.
+    tombstones the general lesson. Reporting a plain ``inserted`` with ``reason=None``
+    tells the user the save succeeded while leaving no rule at all against force
+    pushing outside a release.
 
     Deleting is deliberate (``write_lesson``'s docstring: "longer wins" / "newer
-    replaces older"), and these tests do NOT assert it stopped. They assert the write
-    now NAMES the rule it destroyed, which is the only recoverable trace: the row is
+    replaces older"), and these tests do NOT assert it stops. They assert the write
+    NAMES the rule it destroyed, which is the only recoverable trace: the row is
     tombstoned, so it is gone from ``get_lessons``, ``learn_list`` and the injected
     lessons block.
 
@@ -595,7 +598,7 @@ class TestASupersedingWriteNamesWhatItRemoved:
             # Still an insert, still truthy -- the submitted lesson did land.
             assert result.outcome is LessonWriteOutcome.INSERTED
             assert bool(result) is True
-            # ...and the call no longer hides what that cost.
+            # ...and the call discloses what that cost.
             assert result.superseded == (self.GENERAL,)
         finally:
             store.close()

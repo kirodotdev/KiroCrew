@@ -645,7 +645,7 @@ class TestDiscoverInstallHumanOnly:
 
 @pytest.mark.asyncio
 class TestDiscoverInstallLogSanitization:
-    """Regression for CWE-117 log forging in the install handler's error logs.
+    """CWE-117 log forging must not be possible in the install handler's error logs.
 
     Both the timeout path and the failure path log a provider-influenced
     ``skill_id`` (and, on failure, the scrubbed exception text). These must be

@@ -1,10 +1,10 @@
-"""Re-export shim: the ACP backend registry now lives behind the agent-SDK boundary.
+"""Re-export shim: the ACP backend registry lives behind the agent-SDK boundary.
 
-The definitions moved to :mod:`kiro_crew.agent_sdk.backends` in RFC PR 3, which
+The definitions live in :mod:`kiro_crew.agent_sdk.backends`, which
 consolidates the capability mechanism inside ``kiro_crew.agent_sdk``. Read that
-module for what each name means and why; this file exists so the move needed no
-edit at any of the ~30 existing ``from kiro_crew.acp_backends import ...`` call
-sites, and so a future one keeps working.
+module for what each name means and why; this file exists so the ~30 existing
+``from kiro_crew.acp_backends import ...`` call sites keep working, and so a
+future one does too.
 
 **Re-export, never a copy.** ``register_selectable_backend`` and
 ``apply_selectable_denials`` mutate module state that lives in
@@ -18,7 +18,7 @@ importing from here is correct. What it must not become is the path a NEW consum
 finds first, so ``test_agent_sdk_capabilities`` pins that the file stays a shim with
 no definitions of its own.
 
-Importing this module now executes ``agent_sdk/__init__``, and that chain stays
+Importing this module executes ``agent_sdk/__init__``, and that chain stays
 import-light on purpose — no ``kiro_crew.config``, ``kiro_crew.platform`` or
 ``kiro_crew.acp`` at module scope — because ``config.loader`` reaches
 ``resolve_selected_backend`` from inside ``KiroCrewConfig.load()`` and a config
@@ -48,9 +48,11 @@ from kiro_crew.agent_sdk.backends import (  # noqa: F401 - re-exported for exist
     ACP_BACKENDS_MEMBER_DISPATCH,
     ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION,
     ACP_BACKENDS_POD_HOME_REMAP,
+    ACP_BACKENDS_PRIVATE_MEMORY_MCP,
     ACP_BACKENDS_SEED_LOCAL_SETTINGS,
     ACP_BACKENDS_SESSION_MCP_ARRAY,
     ACP_BACKENDS_SESSION_SHARING,
+    ACP_BACKENDS_SIDE_READONLY,
     ACP_BACKENDS_STEER,
     ACP_BACKENDS_STRUCTURED_REFUSAL,
     BASELINE_SELECTABLE_BACKENDS,
@@ -91,9 +93,11 @@ __all__ = [
     "ACP_BACKENDS_MEMBER_DISPATCH",
     "ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION",
     "ACP_BACKENDS_POD_HOME_REMAP",
+    "ACP_BACKENDS_PRIVATE_MEMORY_MCP",
     "ACP_BACKENDS_SEED_LOCAL_SETTINGS",
     "ACP_BACKENDS_SESSION_MCP_ARRAY",
     "ACP_BACKENDS_SESSION_SHARING",
+    "ACP_BACKENDS_SIDE_READONLY",
     "ACP_BACKENDS_STEER",
     "ACP_BACKENDS_STRUCTURED_REFUSAL",
     "ACP_BACKEND_CLAUDE",

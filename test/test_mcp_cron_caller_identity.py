@@ -1,14 +1,14 @@
 """``kirocrew-cron`` resolves the calling session from the injected caller block.
 
-The server used to read identity from its own process environment. On a pooled
-backend one process serves many sessions, so process environment can only ever
-name one of them -- and gatewayd forwards no session-identifying variable to a
-shared backend at all, so what it actually read there was EMPTY. Every
-session-scoped path then took the empty branch, and those branches disagreed with
-each other: the per-job ownership gate allowed, ``cron_list`` skipped its filter,
-``cron_add`` stored an ownerless row, and only ``cron_remove_all`` refused. Two of
-those are fail-open, which made the ownership gate dead code for exactly the
-callers it exists to separate.
+Identity must come from the injected caller block, not the process environment.
+On a pooled backend one process serves many sessions, so process environment can
+only ever name one of them -- and gatewayd forwards no session-identifying
+variable to a shared backend at all, so reading it there yields EMPTY. A
+session-scoped path that took that empty branch would make the branches disagree:
+the per-job ownership gate would allow, ``cron_list`` would skip its filter,
+``cron_add`` would store an ownerless row, and only ``cron_remove_all`` would
+refuse. Two of those are fail-open, which would make the ownership gate dead code
+for exactly the callers it exists to separate.
 
 What these tests pin, in the order the fix depends on them:
 
@@ -18,7 +18,7 @@ What these tests pin, in the order the fix depends on them:
    environment that happened to agree.
 2. With no block, the environment still resolves, so a non-gateway launch is not
    regressed.
-3. The forgeable source is no longer consulted for an authorization decision.
+3. The forgeable source is not consulted for an authorization decision.
 4. One rule for an unidentifiable caller: writes refuse, and its read scope is
    empty rather than waved through.
 5. A row with no recorded owner is outside every session's scope, for reading and
@@ -214,7 +214,7 @@ def test_a_forged_cli_flag_does_not_widen_the_list(monkeypatch) -> None:
 
 
 def test_a_forged_cli_flag_does_not_sweep_every_sessions_jobs(monkeypatch) -> None:
-    """The destructive one. A forged flag used to delete the whole store."""
+    """The destructive one. A forged flag must not delete the whole store."""
     _as_session("dashboard:alice")
     alice = f"alice-{uuid.uuid4().hex[:8]}"
     _add_job(alice)
@@ -525,7 +525,7 @@ def test_remove_all_never_sweeps_an_ownerless_row() -> None:
 
 
 def test_a_scoped_empty_list_does_not_read_as_an_empty_registry() -> None:
-    """The distinction the whole of #6447 is about.
+    """The distinction this whole file is about.
 
     Bob owns nothing, Alice owns a job. Bob's answer must not be the string a
     caller gets when the registry is genuinely empty, because that reads as

@@ -153,7 +153,8 @@ capability-gated on `supports_proactive_send` and governance-gated fail-closed.
 ### Tool approvals
 
 A tool-approval prompt on a linked session is mirrored into the thread with
-Approve / Reject buttons (`post_linked_approval`), because a Slack-only user
+Approve / Reject buttons — Approve / Trust / Reject in a DM whose card is
+grantable, see below — (`post_linked_approval`), because a Slack-only user
 would otherwise never see it and the turn would park for the whole
 `agent.tool_approval_timeout_secs` window (600s by default) holding
 the slot lock. The click resolves the dashboard slot's approval future, so there
@@ -165,8 +166,34 @@ cancel path) the future is resolved as `rejected` and the user is told, so they
 retry rather than wait. A cancelled turn never obtained consent, so `rejected` is
 the correct reading.
 
-`is_dm=False` is passed deliberately: trust for a linked slot is a dashboard-side
-mode and is not wired through this path, so only Approve and Reject are offered.
+Trust is offered on this path only when the mirror target is a DM (`channel`
+starts with `D` — Trust escalates the whole session, so a group channel gets
+Approve / Reject, the same blast-radius rule as the native path) **and** the
+dashboard's pending card carries the server's durable-grant proof
+(`trust_grantable`, which `chat_runner` stamps only on unredacted, fully
+derivable calls precisely so an alternate approval surface cannot offer a durable
+grant off a pending card). `post_linked_approval` re-derives that proof from the
+owning slot's card rather than trusting its caller, records the verdict on the
+`_LinkedApproval` entry, and the click acts on that recorded verdict rather than
+on the `action_id` the Slack payload carries.
+
+A Trust click writes all three halves the grant needs — `slot._trust`, which
+`chat_runner._slot_is_trusted` re-reads per event, plus the two the shared
+`messaging.session_trust.add_trusted_session` owns: `approval_policy="auto"`, which a
+spawned subagent inherits, and the in-memory grant mapping that the channel
+`TurnDriver`'s `auto_approve_session` predicate reads — all keyed by the slot's
+effective session key. Policy alone would be erased by the next
+`_persistable_session_policy` write; `_trust` alone would never reach subagents; and
+without the shared mapping a Slack-typed follow-up on a CHANNEL-BORN session's own
+thread would re-prompt for every tool, because that thread is deliberately absent
+from `_slack_to_slot` and so is driven by `slack/transport_dispatch` rather than by
+the dashboard chat runner. The grant is taken in `strict` mode, so a failing policy
+write undoes the mapping half and raises rather than reporting a partial grant as
+"Trusted".
+It fails closed: no proof, no `SessionManager`, no live owning slot, or any raise
+grants nothing, resolves the request as Reject, and returns the Rejected label,
+never a mislabelled "Trusted". Every outcome emits a `slack.interactive.trust_linked`
+SEL event.
 
 ## Unlinking
 

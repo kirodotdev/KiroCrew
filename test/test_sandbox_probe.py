@@ -313,7 +313,7 @@ class TestProbeSplitSequence:
         """EPIPE on the release write means the child died — never cache that.
 
         Classifying it permanent would poison the backend cache and fail every
-        later spawn until restart, which is the incident-2026-07-18 shape.
+        later spawn until restart.
         """
         read_fd, _unused = pipe_fds
         dead_r, dead_w = os.pipe()
@@ -467,7 +467,7 @@ class TestProbeSplitSequence:
         ``2 + threads`` (``.`` and ``..``). Reading it that way keeps the child off
         ``os.listdir``, which allocates a list and a string per task -- and the fd
         sweep is precomputed pre-fork for exactly that reason: another thread may have
-        held the allocator lock at fork time and no longer exists to release it.
+        held the allocator lock at fork time and does not exist in the child to release it.
         """
         expected = len(os.listdir("/proc/self/task"))
 
@@ -629,10 +629,10 @@ def _fd_open(fd: int) -> bool:
 class TestProbeChildFdSweep:
     """The probe child must drop inherited descriptors before its first unshare.
 
-    Regression cover for #3150: ``fork()`` copies every open descriptor — the
+    ``fork()`` copies every open descriptor — the
     ``gateway.lock`` flock fd and the dashboard listen socket included — and the
     probe child never execs, so ``O_CLOEXEC`` never fires. A child orphaned by
-    its parent's death (gateway OOM-killed between fork and reap) used to keep
+    its parent's death (gateway OOM-killed between fork and reap) would keep
     the lock fd open and pin the data home.
 
     The range-arithmetic tests are platform-neutral; only the two tests that
@@ -931,7 +931,7 @@ print(before, after, spawned)
         ``_PROBE_STEP_MULTITHREADED`` collapse instead of the kernel's verdict --
         an unknown reading, so it is skipped, not compared (see
         docs/system-specs/common/testing-conventions.md; the collapse itself is
-        issue #4219's open decision).
+        an open decision).
 
         Two guards, because the hook-started thread is SHORT-LIVED and each fork
         races it independently: the `_forked_child_thread_count` pre-check is

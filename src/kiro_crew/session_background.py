@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator, Callable, Mapping, MutableMapping, Set
+from collections.abc import AsyncIterator, Callable, MutableMapping, Set
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol
 
@@ -47,15 +47,10 @@ class _BackgroundRuntime(Protocol):
 
     pid: int | None
     acp_backend: str
-    _session_queues: Mapping[str, object]
 
     def is_alive(self) -> bool: ...
 
-    def has_active_sessions(self) -> bool: ...
-
     def has_active_or_initializing_sessions(self) -> bool: ...
-
-    def _stale_by_age(self) -> bool: ...
 
     async def _is_stale(self) -> str | None: ...
 
@@ -321,8 +316,8 @@ class BackgroundSessionRuntime:
                 remaining.append(runtime)
                 continue
             try:
-                await runtime.kill(expected=True)  # drained backend-switch teardown
-                logger.info("Reaped a drained _bg runtime spawned under the previous backend")
+                await runtime.kill(expected=True)  # drained displacement teardown
+                logger.info("Reaped a drained displaced _bg runtime (PID %s)", runtime.pid)
             except Exception:
                 logger.warning("Failed to reap a drained _bg runtime; will retry", exc_info=True)
                 remaining.append(runtime)
@@ -336,8 +331,28 @@ class BackgroundSessionRuntime:
     ) -> None:
         """Displace a cached runtime after a configured backend switch.
 
+        Caller MUST hold ``_bg_runtime_lock``. Names the backend-switch cause for
+        :meth:`_detach_bg_runtime_locked`, which owns the policy; kept as its own
+        entry point because the facade and its callers pass the two backends
+        positionally.
+        """
+        await self._detach_bg_runtime_locked(
+            runtime,
+            f"backend switched from {cached_backend!r} to {configured_backend!r}",
+        )
+
+    async def _detach_bg_runtime_locked(
+        self,
+        runtime: _BackgroundRuntime,
+        cause: str,
+    ) -> None:
+        """Free the ``_bg`` slot, killing or parking ``runtime`` per its load.
+
         Caller MUST hold ``_bg_runtime_lock``. An idle runtime is killed; a busy
-        one, or one whose kill failed, is parked until its handles drain.
+        one, or one whose kill failed, is parked on ``_draining_bg_runtimes``
+        until its handles drain. ``cause`` is the operator-facing attribution and
+        is logged with every outcome: a staleness recycle and a backend flap have
+        different remedies, so the two must never read alike.
         """
         logger = self._deps.logger
         try:
@@ -346,34 +361,31 @@ class BackgroundSessionRuntime:
             busy = True
         if busy:
             logger.info(
-                "Parking the _bg runtime (PID %s, backend %r) to drain after a "
-                "switch to backend %r",
+                "Parking the _bg runtime (PID %s) to drain — %s",
                 runtime.pid,
-                cached_backend,
-                configured_backend,
+                cause,
             )
             self._draining_bg_runtimes.append(runtime)
             if len(self._draining_bg_runtimes) > 1:
                 # Each entry is a live agent process shielded from the orphan
-                # sweep; more than one parked at a time means backend flapping
-                # is outpacing the drain, which should be visible, not silent.
+                # sweep; more than one parked at a time means displacement is
+                # outpacing the drain, which should be visible, not silent.
                 logger.warning(
-                    "%d _bg runtimes are parked draining after backend switches",
+                    "%d _bg runtimes are parked draining (most recent: %s)",
                     len(self._draining_bg_runtimes),
+                    cause,
                 )
         else:
             logger.info(
-                "Recycling the _bg runtime (PID %s) spawned under backend %r; "
-                "configured backend is now %r",
+                "Recycling the idle _bg runtime (PID %s) — %s",
                 runtime.pid,
-                cached_backend,
-                configured_backend,
+                cause,
             )
             try:
-                await runtime.kill(expected=True)  # deliberate backend-switch teardown
+                await runtime.kill(expected=True)  # deliberate displacement teardown
             except Exception:
                 logger.warning(
-                    "Backend-switch kill failed; parking the runtime for the reaper",
+                    "Displacement kill failed; parking the runtime for the reaper",
                     exc_info=True,
                 )
                 self._draining_bg_runtimes.append(runtime)
@@ -470,24 +482,21 @@ class BackgroundSessionRuntime:
                             cached_backend,
                             configured_backend_raw,
                         )
-                    elif not runtime.has_active_sessions():
-                        reason = await runtime._is_stale()
-                        if reason:
-                            logger.info(
-                                "get_bg_session: recycling stale _bg runtime "
-                                "(PID %s, reason=%s)",
-                                runtime.pid,
-                                reason,
+                    else:
+                        # Age AND RSS are probed whether or not co-tenant
+                        # handles are live: a multiplexed runtime that never
+                        # reaches a zero-session window would otherwise never
+                        # be bounded at all, which is how this process was
+                        # observed growing to multi-GB RSS over a day of
+                        # uptime. Displacing a busy runtime does not interrupt
+                        # it — it is parked to drain, and only new callers are
+                        # moved to the replacement.
+                        stale_reason = await runtime._is_stale()
+                        if stale_reason:
+                            await self._detach_bg_runtime_locked(
+                                runtime,
+                                f"stale by {stale_reason}",
                             )
-                            await runtime.kill(expected=True)  # deliberate staleness recycle
-                            self._bg_runtime = None
-                    elif runtime._stale_by_age():
-                        logger.info(
-                            "get_bg_session: _bg runtime (PID %s) stale by age "
-                            "but has %d active session(s); deferring recycle",
-                            runtime.pid,
-                            len(runtime._session_queues),
-                        )
 
                 if runtime_capable and (
                     self._bg_runtime is None or not self._bg_runtime.is_alive()
@@ -560,22 +569,21 @@ class BackgroundSessionRuntime:
             session.prompt_count += 1
 
             pct = provider.context_usage_pct()
-            needs_recycle = pct >= self._deps.bg_recycle_pct
             post_compaction = pct == 0.0 and self._deps.context_pct_is_unknown(provider)
-            if not needs_recycle and post_compaction:
-                needs_recycle = True
-            elif not needs_recycle and pct == 0.0:
-                needs_recycle = session.prompt_count >= self._deps.bg_blind_recycle_prompts
-
-            if not needs_recycle:
-                return
-
-            if pct > 0:
+            if pct >= self._deps.bg_recycle_pct:
                 reason = f"context at {pct:.0f}%"
             elif post_compaction:
                 reason = "compacted in place (context size unknown)"
+            elif session.prompt_count >= self._deps.bg_blind_recycle_prompts:
+                # The prompt backstop is deliberately NOT gated on pct == 0.0.
+                # Background turns are tiny text prompts that never approach the
+                # percentage threshold, so keying the backstop on "the backend
+                # reports nothing" retired it permanently the moment any real
+                # percentage was read — leaving this provider with no lifetime
+                # bound at all for the rest of the gateway's uptime.
+                reason = f"blind ({session.prompt_count} prompts, context at {pct:.0f}%)"
             else:
-                reason = f"blind ({session.prompt_count} prompts)"
+                return
             logger.info("Recycling background session — %s", reason)
 
             if not self._owner._provider_factory:

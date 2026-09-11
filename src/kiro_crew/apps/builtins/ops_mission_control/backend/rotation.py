@@ -55,11 +55,10 @@ TIER_PRIMARY = "primary"
 #: Cron names per tier, as the SCHEDULER knows them.
 #:
 #: These MUST match what app registration actually creates. A manifest cron named
-#: ``dispatch`` is registered namespaced as ``ops-mission-control/dispatch`` — so the
-#: bare ``omc-*`` names this table used to carry matched no job at all, and every
-#: pause/resume the rotation tier emitted silently targeted nothing. The whole tier
-#: mechanism was inert. Found by exercising the rotation-check SOP against the real
-#: scheduler; pinned by ``test_tier_cron_names_match_the_manifest``.
+#: ``dispatch`` is registered namespaced as ``ops-mission-control/dispatch`` — a bare
+#: ``omc-*`` name here matches no job at all, and every pause/resume the rotation
+#: tier emits then silently targets nothing, leaving the whole tier mechanism inert.
+#: Pinned by ``test_tier_cron_names_match_the_manifest``.
 _CRON_PREFIX = "ops-mission-control"
 
 TIER_CRONS: dict[str, tuple[str, ...]] = {
@@ -339,14 +338,14 @@ def resolve_mode(signal: Signal) -> str:
     With no matching rule the app mode applies. A matching rule can only NARROW
     it, so a rule cannot escalate an instance the operator pinned to ``observe``.
 
-    When SEVERAL rules match, the TIGHTEST one wins. This used to take the most
-    permissive (``max``), which broke the one thing rules are for: adding a narrow
-    ``observe`` rule to carve an exception out of a broad ``act`` grant did nothing,
-    because the broad grant still won and the write was authorized. Carving out the
-    exception is the whole reason to write the second rule, so the narrower rule has
-    to be the one that decides. ``min`` also matches the algebra the rest of the
-    module already uses -- ``effective_mode`` is ``min``, the governance ceiling is
-    ``min`` -- so overlap now resolves the same direction everywhere. Found in review.
+    When SEVERAL rules match, the TIGHTEST one wins. Taking the most permissive
+    (``max``) would break the one thing rules are for: adding a narrow ``observe``
+    rule to carve an exception out of a broad ``act`` grant would do nothing, because
+    the broad grant would still win and the write would be authorized. Carving out
+    the exception is the whole reason to write the second rule, so the narrower rule
+    has to be the one that decides. ``min`` also matches the algebra the rest of the
+    module uses -- ``effective_mode`` is ``min``, the governance ceiling is ``min``
+    -- so overlap resolves the same direction everywhere.
     """
     base = app_mode()
     matching = [r for r in load_rules() if r.matches(signal)]
@@ -417,12 +416,10 @@ def _definitely_off_shift() -> bool:
                 # PagerDuty with no `schedule_ids`, a missing secret (the request raises and
                 # lands in the `except` below). Genuine indeterminacy still permits the action
                 # — that is the documented design, so a broken rotation cannot lock an operator
-                # out — but the agent can no longer MANUFACTURE indeterminacy from config.
+                # out — but the agent cannot MANUFACTURE indeterminacy from config.
                 #
-                # Fourth instance of one class this round: a security refusal must not depend
-                # on an input the constrained party can write. The other three were the
-                # rotation login, strict gating, and `config_fields` still advertising the
-                # login to the generic provider-config route.
+                # One instance of a general class: a security refusal must not depend on an
+                # input the constrained party can write.
                 status = _shift_sync(src)
             except Exception:  # noqa: BLE001 — one bad source must not decide the vote
                 logger.warning(
@@ -660,8 +657,8 @@ def is_primary() -> bool:
         return bool(me) and me.lower() == leader.lower()
     # The STRICT read, not `get`: this flag defaults to True, so the lenient read
     # turns an unreadable or corrupt policy file into granted prune authority --
-    # the corrupt file becoming the key that unlocks destroying shared knowledge
-    # (#7805). Refuse for the same reason the no-login case above answers False:
+    # the corrupt file becoming the key that unlocks destroying shared knowledge.
+    # Refuse for the same reason the no-login case above answers False:
     # a skipped hygiene pass is recoverable, a wrong prune is not.
     try:
         flag = policy_store.read_authority(policy_store.PRIMARY_KEY, True)
@@ -734,14 +731,12 @@ def tier_states(shift: ShiftStatus) -> dict[str, bool]:
     **``on_shift`` alone decides.** ``unknown`` is an explanation for the UI, never an
     arming input.
 
-    This used to read ``shift.on_shift or shift.unknown``, which silently defeated strict
-    gating for exactly the case it was written for: a schedule that cannot say whether this
-    operator is on call returns ``on_shift=False, unknown=True``, and the ``or`` re-armed
-    it anyway. Verified before fixing — an instance with no resolvable login reported
-    ``on_shift=False`` and ``dispatch armed=True``, so every teammate would still pick up
-    the same alarm.
+    Reading ``shift.on_shift or shift.unknown`` here would silently defeat strict gating
+    for exactly the case it exists for: a schedule that cannot say whether this operator
+    is on call returns ``on_shift=False, unknown=True``, and the ``or`` re-arms it
+    anyway, so every teammate picks up the same alarm.
 
-    The fail-open intent is still available and now lives where it belongs: each
+    The fail-open intent lives where it belongs instead: each
     ``RotationSource`` decides what "cannot tell" means for it. A rotation *API* returns
     ``on_shift=True, unknown=True`` (a network fault must not disable response); the
     committed schedule returns ``on_shift=False, unknown=True`` under ``strict_gating``.
@@ -772,19 +767,19 @@ async def apply_tiers(shift: ShiftStatus, cron_service: Any) -> dict[str, Any]:
 
     Why this exists rather than the agent issuing ``cron_pause``/``cron_resume``:
 
-    tier arming used to be entirely the ``rotation-check`` agent's job, and the ONLY thing
-    stopping it pausing ``rotation-check`` itself — the sole always-tier job, and so the only
-    job that can ever re-arm a gated instance — was one sentence of SOP prose telling it not
-    to. A single misfollowed turn silently ends incident response until a human notices,
-    which is precisely the quiet-versus-broken conflation this app refuses everywhere else
+    left to the ``rotation-check`` agent, the ONLY thing stopping it pausing
+    ``rotation-check`` itself — the sole always-tier job, and so the only job that can ever
+    re-arm a gated instance — is one sentence of SOP prose telling it not to. A single
+    misfollowed turn silently ends incident response until a human notices, which is
+    precisely the quiet-versus-broken conflation this app refuses everywhere else
     ("a source that failed is shown as failed, never as quiet"). Prose is not an enforcement
-    mechanism. Found in design review.
+    mechanism.
 
     So the whole arming decision moves here, into deterministic code the model does not
     mediate: the caller is a route, the tier map is computed from the shift, and
     ``protected_cron_names()`` is skipped unconditionally — this function cannot pause an
     always-tier job even if the tier map somehow said to. The agent's remaining role is to
-    POST, which is why the SOP no longer needs it to hold ``cron_pause`` at all.
+    POST, which is why the SOP does not need it to hold ``cron_pause`` at all.
 
     ``cron_service`` is duck-typed (``list_jobs_async`` + ``raise_if_store_unreadable``
     + ``enable_job_async``) so tests pass a fake. Returns a summary of what changed, so
@@ -926,10 +921,11 @@ def describe(shift: ShiftStatus) -> dict[str, Any]:
         "sweep": sweep_windows(),
         # The two FENCED rotation identities, so Settings can render and edit them.
         #
-        # They have to be reported here rather than through `GET /providers`: both moved off
-        # `config_fields` onto the keystone floor (they are inputs to the off-shift refusal, and
-        # provider config is agent-writable), so the provider catalog no longer carries them and
-        # the generic field renderer cannot see them. Reporting the VALUE is fine — an identity
+        # They have to be reported here rather than through `GET /providers`: both live on the
+        # keystone floor rather than in `config_fields` (they are inputs to the off-shift
+        # refusal, and provider config is agent-writable), so the provider catalog does not
+        # carry them and the generic field renderer cannot see them. Reporting the VALUE is
+        # fine — an identity
         # is not a credential, `roster.me` already publishes the resolved login, and an operator
         # who cannot see which identity is stored cannot tell a wrong one from an unset one.
         "identities": {

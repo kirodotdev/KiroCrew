@@ -584,7 +584,7 @@ def _resident_roster_is_asked_for(resident: _WarmSpecPlan, wanted: _WarmSpecPlan
 def _warm_spec_plan(providers: list[Provider]) -> _WarmSpecPlan:
     """Build (but do not write) the warm process's spec set."""
     agents_dir = _agent.kiro_agents_dir_path()
-    # Through the hardened reader (#6736's migration): the agents dir is user-writable and
+    # Through the hardened reader: the agents dir is user-writable and
     # shared with other tools, so a symlink planted at this path pointed a raw ``_load_json``
     # at a file outside it -- followed, parsed, uncapped and unaudited -- and the contents
     # then DECIDED the plan, because a configured entry vetoes its provider below. A refusal
@@ -1914,10 +1914,10 @@ async def _expire_shared_mints(reason: str, *, generation: int | None = None) ->
     """Flip live shared mints stale. Called when a process is gone.
 
     ``generation`` is the only narrowing there is, and every caller passes it: the rows a
-    dead process can no longer redeem are exactly the ones it minted. A pass narrowed by
-    the CALLER's own row tokens instead used to exist here; it read as "spare my retry" but
-    meant "expire every other generation", which withdrew a parked generation's redeemable
-    URL. Withdrawal follows the verifier, so it follows the generation.
+    dead process cannot redeem are exactly the ones it minted. Narrowing by the
+    CALLER's own row tokens instead reads as "spare my retry" but means "expire every
+    other generation", which withdraws a parked generation's redeemable URL.
+    Withdrawal follows the verifier, so it follows the generation.
     """
     flipped: list[str] = []
     async with _mints_lock:
@@ -2244,10 +2244,10 @@ def _mint_is_adopted(entry: MintState | None) -> bool:
 async def _adopt_shared_row(slug: str, mcp_url: str) -> str | None:
     """Take ownership of ``slug``'s UNCLAIMED premint. Returns its new row token, or None.
 
-    THE handoff, and the reason the premint has a consumer at all. Connect used to call
-    ``reserve_mint_row`` unconditionally, which pops WHATEVER row is at the slug -- so
-    ``start_oauth_mint`` disposed the very URL the warm table had minted for that click
-    and the cold spawn it then paid was the only thing the user ever saw. ``None`` means
+    THE handoff, and the reason the premint has a consumer at all. Without it Connect
+    would call ``reserve_mint_row`` unconditionally, which pops WHATEVER row is at the
+    slug -- so ``start_oauth_mint`` disposes the very URL the warm table minted for that
+    click, and the cold spawn it then pays is the only thing the user sees. ``None`` means
     no row was adoptable at this instant; the public flow may recover a late frame from the
     existing live session before it falls through to the dedicated cold path.
 
@@ -2269,7 +2269,7 @@ async def _adopt_shared_row(slug: str, mcp_url: str) -> str | None:
     adopting tab against the premint's own rollback and against a sibling tab, but
     every write in :func:`~kiro_crew.connections.mint._mint_watcher` is guarded on the
     token it was started with -- so rotating alone would leave the row watched by a
-    task that can no longer touch it: nothing would flip it to ``granted``, nothing
+    task that cannot touch it: nothing would flip it to ``granted``, nothing
     would expire it, and it would hold the shared process resident for good. Re-arming
     is therefore part of the same synchronous run, not a follow-up.
 
@@ -2327,10 +2327,10 @@ async def _claim_shared_mints(slugs: list[str]) -> tuple[dict[str, str], list[Mi
     same reasoning for the cold engine).
 
     ATOMIC BY CONSTRUCTION: the loop contains NO await, so the caller either gets every
-    claim or none. It used to await ``_dispose_mint`` on each replaced row, which suspends
+    claim or none. Awaiting ``_dispose_mint`` on each replaced row would suspend
     on a client teardown and again on the shielded spec removal in that function's
     ``finally`` -- and the claim is taken BEFORE ``warm_mint_all`` enters the try that rolls
-    it back, so a cancellation there left earlier slugs installed as ``minting`` with no
+    it back, so a cancellation there would leave earlier slugs installed as ``minting`` with no
     caller holding their tokens. Nothing withdraws such a row (``expire_dead_mints`` judges
     ``waiting`` only) and it keeps ``_shared_mints_pending`` true, so the process is never
     retired either. The replaced rows come back for the caller to dispose INSIDE that try

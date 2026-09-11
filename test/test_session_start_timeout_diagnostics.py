@@ -1,6 +1,6 @@
 """Session-start timeout diagnostics: name the MCP server that never reported.
 
-A session/new or session/load that blows its budget used to report only the
+A session/new or session/load that blows its budget would otherwise report only the
 budget. The runtime already holds both halves of the answer at that moment --
 the roster it sent in ``mcpServers`` and the registration frames the reader loop
 staged -- so these tests pin that the timeout carries them.

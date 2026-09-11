@@ -61,6 +61,9 @@ from kiro_crew.dashboard.handlers.agents import (  # noqa: E402, F401
     _installed_agent_config,
     api_agent_config,
     api_agent_detail,
+    api_agent_fork,
+    api_agent_publish,
+    api_agent_reset,
     api_agents_installed,
     api_capability_agents_install,
     api_capability_agents_list,
@@ -127,6 +130,7 @@ from kiro_crew.dashboard.handlers.cron import (  # noqa: E402, F401
     api_cron_script_source,
     api_cron_secret_grant,
     api_cron_to_chat,
+    api_cron_tools,
     api_cron_update,
     api_crons,
     api_crons_create,
@@ -245,6 +249,7 @@ from kiro_crew.dashboard.handlers.memory import (  # noqa: E402, F401
     _get_vector_store,
     _redact_memory_field,
     _set_migrated,
+    api_memory_carve,
     api_memory_consolidate,
     api_memory_context_preview,
     api_memory_disable_embeddings,
@@ -268,6 +273,28 @@ from kiro_crew.dashboard.handlers.memory import (  # noqa: E402, F401
     api_memory_semantic_write,
     api_memory_settings,
     api_memory_stats,
+)
+
+# ── Memory store administration (handlers/memory_admin.py) ──
+from kiro_crew.dashboard.handlers.memory_admin import (  # noqa: E402, F401
+    api_memory_backup,
+    api_memory_backups,
+    api_memory_restore,
+    api_memory_restore_cancel,
+    api_memory_retired,
+    api_memory_retired_restore,
+    api_memory_stores,
+)
+from kiro_crew.dashboard.handlers.memory_edit import (  # noqa: E402, F401
+    api_memory_bulk_apply,
+    api_memory_bulk_preview,
+    api_memory_record_history,
+    api_memory_records,
+    api_memory_records_refresh,
+)
+from kiro_crew.dashboard.handlers.memory_member import (  # noqa: E402, F401
+    api_memory_recall,
+    api_memory_seed,
 )
 
 # ── Messaging (extracted to handlers/messaging.py) ──
@@ -308,7 +335,6 @@ from kiro_crew.dashboard.handlers.messaging import (  # noqa: E402, F401
     api_slack_profile,
     api_slack_reactions,
     api_spawn,
-    api_spawn_clear,
     api_spawn_continue,
     api_spawn_delete,
     api_spawn_list,
@@ -324,6 +350,7 @@ from kiro_crew.dashboard.handlers.messaging import (  # noqa: E402, F401
     api_teams_config_save,
     api_telegram_config_get,
     api_telegram_config_save,
+    api_update_message,
     api_webex_config_get,
     api_webex_config_save,
     api_wecom_config_get,
@@ -395,7 +422,6 @@ from kiro_crew.dashboard.handlers.sessions import (  # noqa: E402, F401
     api_sessions,
     api_sessions_clear,
     api_sessions_clearable_count,
-    api_sessions_context,
     api_sessions_health,
     api_sessions_memory,
     api_sessions_restart,

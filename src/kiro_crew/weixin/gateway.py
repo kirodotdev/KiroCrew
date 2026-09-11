@@ -43,10 +43,9 @@ async def maybe_start_weixin(orch: "GatewayOrchestrator") -> "WeixinClient | Non
         return None
     # NOTE: ``_weixin_enabled`` already folds in token+account_id (see
     # GatewayOrchestrator), so both are guaranteed non-empty past the guard.
-    # The old factory-level "enabled but not credentialed" INFO log here was
-    # unreachable for the same reason (removed in #5412; the reachable
-    # equivalent for WeCom lives in ``_start_channel_transports``, and
-    # generalizing it to all channels is #5418).
+    # A factory-level "enabled but not credentialed" INFO log here would be
+    # unreachable for the same reason; the reachable equivalent for WeCom lives
+    # in ``_start_channel_transports``, generalized to all channels there.
     token = getattr(orch, "_weixin_token", "")
     account_id = getattr(orch, "_weixin_account_id", "")
 

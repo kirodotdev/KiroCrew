@@ -66,8 +66,9 @@ with no app identity to check.
   repo-controlled and the filter probe passes `--includes`: a hostile checkout
   could otherwise point it at `~/.aws/credentials` and have git read that file as
   config. Nothing here needs a credential — the base ref comes from local refs
-  and no remote is contacted, and a host with no sandbox backend — and no explicit
-  `agent.sandbox_allow_unsandboxed_exec` opt-in — gets a **503 telling the user to
+  and no remote is contacted, and a host that refuses the spawn — no sandbox
+  backend, and either a declared `agent.sandbox_allow_unsandboxed_exec=false` or
+  a platform whose default is fail-closed — gets a **503 telling the user to
   create the worktree manually** rather than an unisolated spawn. The same 503
   covers a host that passes the backend probe but denies `unshare(NEWNS)` at exec
   time (GitHub Actions runners do this): the launcher reports the refusal from the

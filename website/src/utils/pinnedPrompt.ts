@@ -1,6 +1,6 @@
 import type { DisplayItem } from '../pages/chat/types'
 import type { ChatMessage } from '../types'
-import { TURN_OPENER_ROLES } from '../pages/chat/groupDisplayItems'
+import { isSubagentCompletionMessage } from '../pages/chat/subagentCompletion'
 import { mdImageDestToPath } from './fileTokens'
 import { type PasteBlock, expandAll } from './pasteTokens'
 
@@ -61,21 +61,27 @@ export function pinHandoffY(foldY: number, collapsedCardH: number): number {
 }
 
 /**
- * Rows that can take the pin: the ones that OPEN a turn.
+ * Rows that can take the pin: what the HUMAN typed.
  *
- * Derived from `TURN_OPENER_ROLES` rather than restated, because the two lists
- * disagreeing is the defect this exists to prevent. A nudge and a subagent
- * completion are machine-injected, but each IS the thing that started the turn
- * being read, and a session made almost entirely of them (a babysit loop, a
- * workflow fan-out) otherwise offers no pinnable row cycle after cycle — the walk
- * upward skips every one and lands on the human's last typed message, dozens of
- * turns and tens of thousands of pixels away.
+ * Deliberately NARROWER than `TURN_OPENER_ROLES`. A nudge and a subagent
+ * completion open turns too (the grouping keeps treating them that way), but they
+ * are machine-injected: a banner that quotes "Auto-nudge · cycle 36" over the
+ * transcript tells the reader nothing they asked, and in a babysit loop it
+ * re-pins on EVERY cycle, so scrolling through the session shows a fresh machine
+ * row taking the band every few screens. The banner exists to answer "what did I
+ * ask that this is a reply to", and only a row the user authored can answer it —
+ * so the walk upward skips every machine opener and lands on the last typed
+ * prompt, however many cycles ago that was. The distance is the honest answer:
+ * nothing closer was the user's.
  *
- * A STEER is the exception in the other direction. It carries role `user`, so
- * the role test alone admits it, but `meta.steer` (set by the `steer_push` echo)
- * marks it as injected INTO a turn already running: its row lays out between the
- * opener and that turn's reply, so admitting it hands the pin to the
- * interruption for the rest of the turn.
+ * Two `user`-role rows are still excluded because the role alone over-admits:
+ *
+ * - A STEER (`meta.steer`, set by the `steer_push` echo) is injected INTO a turn
+ *   already running; its row lays out between the opener and that turn's reply,
+ *   so admitting it hands the pin to the interruption for the rest of the turn.
+ * - A subagent completion in OLDER scrollback was persisted under role `user`
+ *   (before the `subagent` role existed). The same completion-event parser the
+ *   transcript card uses recognises it, so it is excluded by SHAPE, not by role.
  */
 function isSteer(msg: ChatMessage): boolean {
   return !!(msg.meta as { steer?: boolean } | undefined)?.steer
@@ -83,7 +89,8 @@ function isSteer(msg: ChatMessage): boolean {
 
 function isPrompt(item: DisplayItem | undefined): boolean {
   if (!item || item.kind !== 'single') return false
-  return TURN_OPENER_ROLES.has(item.msg.role) && !isSteer(item.msg)
+  const { msg } = item
+  return msg.role === 'user' && !isSteer(msg) && !isSubagentCompletionMessage(msg)
 }
 
 /**
@@ -133,19 +140,17 @@ export function findNextPromptIdx(items: DisplayItem[], afterIdx: number): numbe
  * puts a non-prompt row (or the top of the list) on the line instead, so the
  * previous turn's banner survives and the chain continues.
  *
- * The walk deliberately consumes MACHINE turn openers too (nudge and subagent
- * rows — `isPrompt` derives from `TURN_OPENER_ROLES`), not only consecutive
- * user rows. The mechanism-backed case is a
- * fan-out whose completions drain back to back: each is a turn opener and none
- * of them carries a reply of its own, so they lay out as one run of consecutive
- * opener rows. Consecutive
- * nudge rows arise only when nudged turns persist no reply (an errored or
- * cancelled cycle — a normal cycle interposes its tool/assistant rows). In
- * both shapes each row is pinnable, and each belongs to the same contextual
- * block as the row directly above the run: jumping to any member lands at the
- * block's top, where the exchange reads in order — stopping mid-run would
- * drop the reader between two machine rows with the context that explains
- * them still hidden above.
+ * The walk consumes only rows `isPrompt` admits — consecutive USER prompts (a
+ * double-send, a prompt typed while the previous one was still queued). Machine
+ * openers (nudge and subagent rows) are not prompts here, so a run of them above
+ * the target is an ordinary non-prompt gap and the walk stops at the target: the
+ * previous user prompt's banner then survives the landing exactly as it would
+ * over any other reply row. The walk used to consume machine runs so a jump
+ * never landed "between two machine rows with the context that explains them
+ * still hidden above"; that concern went away with the rows themselves — a
+ * nudge is now a one-line self-labelled system row and a subagent completion a
+ * self-labelled headline card, so a landing beside either reads on its own, and
+ * the banner above it names the user prompt the whole block answers.
  *
  * Walking up lengthens the jump. The virtualizer's near/far decision
  * (`mountIndex` in useVirtualChat) compares the anchor's jump window against
@@ -472,10 +477,6 @@ export interface PinnedPromptInput {
   /** Stored (collapsed) prompt content — the identity the derivation keys on. */
   raw: string
   pastes: PasteBlock[]
-  /** Compact label a machine-authored row shows instead of its payload. */
-  machineLabel: string | null
-  /** Body such a row reveals when expanded, when it differs from `raw`. */
-  machineBody?: string
   push: number
   bannerH: number
 }
@@ -497,22 +498,20 @@ export function nextPinnedPromptState(
   prev: PinnedPromptState | null,
   input: PinnedPromptInput,
 ): PinnedPromptState {
-  const { idx, ts, raw, pastes, machineLabel, machineBody, push, bannerH } = input
+  const { idx, ts, raw, pastes, push, bannerH } = input
   const sameMsg = prev !== null && prev.idx === idx && prev.raw === raw && prev.ts === ts
   if (sameMsg && prev.push === push && prev.bannerH === bannerH) return prev
   if (sameMsg) return { ...prev, push, bannerH }
-  const derived = machineLabel === null ? derivePinnedPromptText(raw, pastes) : null
-  const text = machineLabel ?? derived?.text ?? ''
-  const full = machineBody ?? derived?.body ?? raw
+  const { text, body: full, images } = derivePinnedPromptText(raw, pastes)
   return {
     idx,
     ts,
     text,
     raw,
     full,
-    images: derived?.images ?? [],
-    // By COMPARISON, not by being machine-authored: a short multiline paste never
-    // clamps, so this flag is the only thing that can reach its body.
+    images,
+    // By COMPARISON: a short multiline paste never clamps, so this flag is the
+    // only thing that can reach its body.
     bodyBeyondPreview: full !== text,
     push,
     bannerH,

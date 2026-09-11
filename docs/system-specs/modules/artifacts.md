@@ -972,8 +972,40 @@ not enforce uniqueness.
 source_path dedup-bump paths), content-carrying PATCH (Save / Snapshot /
 MCP update / revert — metadata-only PATCHes do NOT emit), delete
 (`deleted: true`), relocate, and pull-latest (when the pull actually landed a
-new snapshot). Fire-and-forget; react-query's 30s staleness window remains
-the safety net.
+new snapshot). Fire-and-forget.
+
+**Live refresh — file-backed artifacts** — the funnel above only covers
+mutations that pass through a handler, so an agent (or any other tool) writing
+a file-backed artifact's `source_path` directly emitted nothing, and the open
+surface kept rendering pre-edit content. The frontend closes that gap with
+`useArtifactLiveReload(slug, source_path)`, mounted on `ArtifactDetailPage`
+(hence also `/popout/artifact/:slug`) and on the side-panel `ArtifactPanel`:
+
+- It subscribes to the existing `GET /api/file-watch` SSE for `source_path` as
+  a **change signal only** — the frame's `content` is discarded and the
+  artifact is refetched through `GET /api/artifacts/{slug}` instead, so
+  redaction, the live/snapshot fallback and the `live_dirty` recompute all keep
+  running on the one serving path. This also sidesteps the 512KB cap on what
+  the watch stream can *deliver* — the separate cap on what it can *detect*
+  still applies, see the known limits below.
+- 400ms debounce, then `invalidateQueries(['artifact', slug])` — an active
+  refetch, not a staleness mark, because the shared QueryClient runs
+  `staleTime: Infinity` and freshness is push-driven.
+- **Never refetches while an edit buffer is open** (`isArtifactEditing(slug)`),
+  matching the `artifact_update` WS handler: moving the editor's baseline under
+  a stale buffer makes the next Save silently overwrite the incoming update.
+  Nothing else is refreshed on that branch — an external write produces no
+  artifact event and no comment — and the detail page already refetches when
+  editing ends.
+- Inert for artifacts with no `source_path`, and inert after an SSE failure
+  (`useFileWatch` closes the stream rather than reconnecting), which degrades to
+  the previous manual-reload behavior.
+
+Known limits, both inherited from the endpoint: `api_file_watch` only emits when
+the redacted **first 512,000 bytes** change, so a rewrite touching only bytes
+past that cap produces no signal and no reload; and each mounted surface (every
+popout is its own window) opens its own EventSource against an HTTP/1.1 gateway,
+so nothing is watched unless the artifact is actually file-backed.
 
 **Panel (frontend)** — the comments sidebar and the chat panel are mutually
 exclusive flex siblings of the artifact body, icon-toggled from the toolbar

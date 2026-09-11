@@ -1,4 +1,4 @@
-"""Regression: package-prefixed agents are matched by overlay `name` (#925).
+"""Package-prefixed agents are matched by overlay `name`.
 
 Package-installed agents are written under a package-qualified filename while
 the session requests them by bare name, so a filename-only lookup silently
@@ -41,7 +41,7 @@ def test_empty_dir_returns_none(tmp_path: Path) -> None:
 
 
 def test_glob_metacharacter_agent_fails_soft(tmp_path: Path) -> None:
-    """An agent name with glob metacharacters must not raise (issue #925).
+    """An agent name with glob metacharacters must not raise.
 
     ``Path.glob('**.json')`` raises ``ValueError``; the lookup runs on the
     session-creation path, so it must fail soft to ``None`` (unpooled) rather

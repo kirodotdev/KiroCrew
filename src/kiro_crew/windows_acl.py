@@ -44,7 +44,7 @@ import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 # ``from ctypes import wintypes`` RAISES on Linux, so importing it unguarded
 # would make this module unimportable off Windows -- and with it every test of
@@ -98,6 +98,8 @@ __all__ = [
     "WELL_KNOWN_TRUSTED_SIDS",
     "Writer",
     "apply_owner_only",
+    "owner_only_dacl_matches",
+    "owner_only_dacl_matches_parsed",
     "describe",
     "volume_is_local",
 ]
@@ -259,6 +261,17 @@ def _install_prototypes(advapi32: _DLL, kernel32: _DLL) -> None:  # pragma: no c
     advapi32.GetNamedSecurityInfoW.restype = W.DWORD
     advapi32.GetAce.argtypes = [C.POINTER(_ACL), W.DWORD, C.POINTER(C.c_void_p)]
     advapi32.GetAce.restype = W.BOOL
+    # Read side of the PROTECTED bit. The SECURITY_INFORMATION flag that SETS it
+    # (_PROTECTED_DACL_SECURITY_INFORMATION) is not readable back; the state lives
+    # in the descriptor's control word, which only this call exposes. Needed so
+    # owner_only_dacl_matches can tell a protected DACL from an identical-looking
+    # inherited one.
+    advapi32.GetSecurityDescriptorControl.argtypes = [
+        C.c_void_p,
+        C.POINTER(W.WORD),
+        C.POINTER(W.DWORD),
+    ]
+    advapi32.GetSecurityDescriptorControl.restype = W.BOOL
     advapi32.ConvertSidToStringSidW.argtypes = [C.c_void_p, C.POINTER(W.LPWSTR)]
     advapi32.ConvertSidToStringSidW.restype = W.BOOL
     advapi32.LookupAccountSidW.argtypes = [
@@ -529,6 +542,10 @@ _DACL_SECURITY_INFORMATION = 0x00000004
 # would be MERGED with whatever the parent grants, which leaves exactly the
 # exposure the lockdown exists to close.
 _PROTECTED_DACL_SECURITY_INFORMATION = 0x80000000
+# The same state as seen from the READ side: the control-word bit that
+# _PROTECTED_DACL_SECURITY_INFORMATION sets. Distinct value, same meaning, and the
+# only way to observe that inheritance is already stripped.
+_SE_DACL_PROTECTED = 0x1000
 
 
 class AclWriteFailed(RuntimeError):
@@ -539,6 +556,161 @@ class AclWriteFailed(RuntimeError):
     raises, so a failed lockdown reaches the same warn-or-refuse handler on both
     platforms rather than passing silently.
     """
+
+
+def owner_only_dacl_matches_parsed(
+    *,
+    control: int,
+    aces: Sequence[tuple[int, int, int, str]],
+    inherit: bool,
+    sids: tuple[str, ...],
+) -> bool:
+    """Decide the match from ALREADY-PARSED descriptor values. Platform-independent.
+
+    Split out from the ``advapi32`` plumbing deliberately: every rule that decides
+    whether a DACL counts as "already owner-only" lives here, so each one is
+    exercised on every test shard rather than only on a Windows host. The caller
+    keeps the parts that genuinely need Win32 -- opening the descriptor, walking
+    the ACE array, turning a SID pointer into a string.
+
+    Each entry of *aces* is ``(ace_type, ace_flags, mask, sid_string)`` in ACL
+    order. *control* is the security descriptor's control word.
+
+    Every rule answers False, never raises: this is the conservative half of a
+    security check, so an unrecognised shape must read as "not yet applied".
+    """
+    if not sids:
+        return False
+    if not control & _SE_DACL_PROTECTED:
+        # Inheritance is not stripped, so applying
+        # PROTECTED_DACL_SECURITY_INFORMATION would still change something.
+        return False
+    if len(aces) != len(sids):
+        return False
+    expected_flags = (_OBJECT_INHERIT_ACE | _CONTAINER_INHERIT_ACE) if inherit else 0
+    for ace_type, ace_flags, mask, sid in aces:
+        if ace_type != ACCESS_ALLOWED_ACE_TYPE:
+            return False
+        if ace_flags != expected_flags:
+            return False
+        if mask != _FILE_ALL_ACCESS:
+            return False
+        if not sid:
+            return False
+    # Order-insensitive: the kernel may normalise ACE order, and the grant SET is
+    # what the policy is about. A duplicate would change the count, already checked.
+    return {sid for _t, _f, _m, sid in aces} == set(sids)
+
+
+def owner_only_dacl_matches(
+    path: str | os.PathLike,
+    *,
+    inherit: bool,
+    sids: tuple[str, ...],
+) -> bool:
+    """Is *path*'s DACL ALREADY exactly what :func:`apply_owner_only` would write?
+
+    Exists because the write is not free the way its cost looks. A single
+    ``SetNamedSecurityInfoW`` that carries inheritable grants makes Windows
+    propagate the ACE to every descendant object, so applying an owner-only DACL
+    to a directory costs O(descendants) -- measured at **0.238 ms per descendant**
+    on a local NTFS volume, i.e. 86 ms on a 337-object tree and **2.94 s on a
+    12358-object one**. A caller that re-applies an unchanged DACL on every boot
+    pays that in full for no change, and ``vector_memory.init()`` applies it to
+    the whole data home on every gateway start.
+
+    Reading the descriptor is O(1) -- it inspects THIS object only -- so probing
+    first turns an unconditional O(descendants) write into an O(1) check on every
+    boot after the first.
+
+    Conservative by construction: this returns ``True`` only when the descriptor
+    is an exact match, and ANY doubt answers ``False`` so the caller writes. A
+    read failure, a NULL DACL, an unprotected DACL, an unexpected ACE count, an
+    ACE that is not ``ACCESS_ALLOWED``, a mask that is not ``FILE_ALL_ACCESS``,
+    inheritance flags that differ, or a SID set that differs all mean "write".
+    The failure direction matters more than the speed: a wrong ``True`` silently
+    skips a security control, a wrong ``False`` only costs a redundant write.
+
+    SCOPE, stated plainly because it bounds the guarantee: this verifies the DACL
+    of *path* itself, not of its descendants -- verifying those is the
+    O(descendants) walk this avoids. A child created inside is still covered,
+    because Windows applies the parent's inheritable ACEs at creation time. Two
+    states therefore read as matching while a descendant does not: a propagation
+    interrupted part way through, and a child moved in on the same NTFS volume,
+    since a move preserves the child's ACL instead of inheriting the
+    destination's. Skipping the write also stops rewriting such a child's
+    INHERITED entries, which the propagation does do; an EXPLICIT grant on the
+    child survives it either way. Repairing either needs the walk, so it is a
+    non-goal for a caller on the boot path.
+    """
+    if not sids:
+        # apply_owner_only refuses this; never report a no-grant DACL as matching.
+        return False
+    try:
+        return _owner_only_dacl_matches(path, inherit=inherit, sids=sids)
+    except Exception:
+        # Includes the off-Windows / missing-advapi32 case: there is no descriptor
+        # to compare, so the answer must be "write", never "already correct".
+        return False
+
+
+def _owner_only_dacl_matches(
+    path: str | os.PathLike,
+    *,
+    inherit: bool,
+    sids: tuple[str, ...],
+) -> bool:
+    """Descriptor comparison for :func:`owner_only_dacl_matches`. May raise."""
+    advapi32, kernel32 = _load()
+
+    dacl = C.POINTER(_ACL)()
+    descriptor = C.c_void_p()
+    control = W.WORD()
+    revision = W.DWORD()
+    rc = advapi32.GetNamedSecurityInfoW(
+        os.fspath(path),
+        _SE_FILE_OBJECT,
+        _DACL_SECURITY_INFORMATION,
+        None,
+        None,
+        C.byref(dacl),
+        None,
+        C.byref(descriptor),
+    )
+    if rc != 0:
+        return False
+    try:
+        if not dacl:
+            # NULL DACL grants everyone full control -- the opposite of a match.
+            return False
+        if not advapi32.GetSecurityDescriptorControl(
+            descriptor, C.byref(control), C.byref(revision)
+        ):
+            return False
+        parsed: list[tuple[int, int, int, str]] = []
+        for index in range(int(dacl.contents.AceCount)):
+            ace_pointer = C.c_void_p()
+            if not advapi32.GetAce(dacl, index, C.byref(ace_pointer)):
+                return False
+            ace = C.cast(ace_pointer, C.POINTER(_ACCESS_ACE)).contents
+            base = ace_pointer.value
+            if base is None:  # pragma: no cover - GetAce contract
+                return False
+            sid_pointer = C.c_void_p(base + _ACCESS_ACE.SidStart.offset)
+            parsed.append(
+                (
+                    int(ace.Header.AceType),
+                    int(ace.Header.AceFlags),
+                    int(ace.Mask),
+                    _sid_to_string(advapi32, kernel32, sid_pointer),
+                )
+            )
+        return owner_only_dacl_matches_parsed(
+            control=int(control.value), aces=parsed, inherit=inherit, sids=sids
+        )
+    finally:
+        if descriptor:
+            kernel32.LocalFree(descriptor)
 
 
 def apply_owner_only(
@@ -562,12 +734,11 @@ def apply_owner_only(
     An empty *sids* is refused -- an ACL with no ACEs is not "owner-only", it
     denies everyone including the owner, and writing one would brick the file.
 
-    *require_local_volume* used to live here. It does not any more: a caller that
-    cannot afford an unbounded SMB round-trip has to know that BEFORE it starts
-    the write, so the decision belongs at the call site via
-    :func:`volume_is_local`, ahead of any other filesystem work. Asking here
-    would have been too late -- the caller would already have paid for whatever
-    it did to reach this call.
+    *require_local_volume* deliberately does NOT live here: a caller that cannot
+    afford an unbounded SMB round-trip has to know that BEFORE it starts the
+    write, so the decision belongs at the call site via :func:`volume_is_local`,
+    ahead of any other filesystem work. Asking here would be too late -- the
+    caller would already have paid for whatever it did to reach this call.
 
     Raises :class:`AclWriteFailed` on any failure, having written nothing: the
     descriptor is only handed to the kernel once fully built, so a failure part

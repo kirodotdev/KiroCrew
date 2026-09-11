@@ -116,7 +116,7 @@ SUBAGENT_TIMEOUT_MAX = 86400
 # body is unambiguous (linear) while still capturing an inner ``[`` inside an
 # option ("Fix [x] logging", "a[1]"). A CLOSER is admitted CONDITIONALLY, not
 # freely: only where an earlier ``[`` in the same label matches it or the label
-# list continues after it (#9284 — see :data:`_MARKER_LABEL_CONTINUES` for why
+# list continues after it (see :data:`_MARKER_LABEL_CONTINUES` for why
 # an unconditional ``]`` made the body run past the marker and delete prose).
 # This parser runs over untrusted LLM/relayed text before Slack, the dashboard,
 # Discord, Telegram, and WeCom render it.
@@ -158,7 +158,7 @@ SUBAGENT_TIMEOUT_MAX = 86400
 #: completeness is decided by the trailer regex, not by whether some closer
 #: character happens to appear in the tail.
 #:
-#: ReDoS profile is unchanged from the previous literal ``\]``. The class shares
+#: ReDoS profile is the same as a bare literal ``\]``. The class shares
 #: no character with the trailing ``[ \t]*`` / ``\s*``, and the body excludes it
 #: from its negated class and readmits it in exactly TWO places, both of which a
 #: widening of this constant has to be re-audited against: as the final atom of
@@ -170,7 +170,7 @@ SUBAGENT_TIMEOUT_MAX = 86400
 MARKER_CLOSERS = "]\u3011\uff3d\u3015"
 _MARKER_CLOSE_CLASS = "[" + re.escape(MARKER_CLOSERS) + "]"
 
-#: Markdown WRAPPER characters tolerated around a complete marker line (#9110).
+#: Markdown WRAPPER characters tolerated around a complete marker line.
 #: A model sometimes wraps the whole marker in inline code or emphasis --
 #: ``\`[OPTIONS: A | B]\``` or ``**[OPTIONS: A | B]**``. The wrapper character
 #: lands AFTER the closer, breaks the end anchor, and the marker leaks into the
@@ -201,7 +201,7 @@ MARKER_WRAPPERS = "`*_"
 _MARKER_WRAP_CLASS = "[" + re.escape(MARKER_WRAPPERS) + "]"
 
 #: A closer may stay INSIDE a label only where it CONTINUES the label list
-#: (#9284). A label may legitimately carry a closer -- ``[OPTIONS: Alpha ] |
+#: A label may legitimately carry a closer -- ``[OPTIONS: Alpha ] |
 #: Bravo ]]`` is a supported shape -- so the body has to admit one. Admitting it
 #: UNCONDITIONALLY (the old ``[^[\n]``, which includes ``]``) made the body run to
 #: the LAST closer in range instead of the first plausible one, so an ordinary
@@ -351,7 +351,7 @@ OPTIONS_RE_TRAILER = re.compile(
 # Agent control tags ride in HTML comments, which the dashboard's markdown
 # pipeline renders as nothing (rehype-raw emits comment nodes the react
 # renderer skips). Three families exist in ``src/``:
-#   * ``<!-- keep-visible -->``       — collapse-all exemption (#7948)
+#   * ``<!-- keep-visible -->``       — collapse-all exemption
 #   * ``<!-- deliver:<route> -->``    — heartbeat routing
 #   * ``<!-- plan_task_id:<id> -->``  — task-planner Apply-to-Tasks anchor
 #
@@ -482,7 +482,7 @@ def strip_control_comments(text: str) -> str:
 #: that body, and the one place the "spelled once" rule in
 #: :data:`_MARKER_BODY_LINE` does not apply. It has to be: a prefix of a legal
 #: body need not itself be a legal body. ``[OPTIONS: A ]`` mid-stream holds a
-#: closer that satisfies neither half of the #9284 rule YET, and becomes legal
+#: closer that satisfies neither half of the closer rule YET, and becomes legal
 #: the moment ``| B]`` arrives, so a probe spelled as the real body would call
 #: that tail dead and publish the marker as raw text. Widening this to the
 #: grammar is what ``test_options_marker_closers.py``'s
@@ -618,9 +618,9 @@ SUBAGENT_BATCH_COMPLETION_PREFIX = "[Subagent batch completion event]"
 # structured header facts (outcome, tallies, chunk index, agent id) the
 # dashboard card reads. Mirrors ``META_KEY`` in
 # website/src/pages/chat/subagentCompletion.ts — the two are one wire contract.
-# Stamping the facts here means a reword of the header PROSE below can no longer
+# Stamping the facts here means a reword of the header PROSE below cannot
 # silently break card rendering: the card reads this meta and the prose regexes
-# demote to a legacy-scrollback fallback (issue #1792).
+# demote to a legacy-scrollback fallback.
 SUBAGENT_COMPLETION_META_KEY = "subagentCompletion"
 
 
@@ -642,14 +642,14 @@ WINDOWS_DEVICE_STEMS = frozenset(
     | {f"lpt{n}" for n in range(1, 10)}
 )
 
-# AWS named-profile name shape — the SINGLE SOURCE OF TRUTH (#6063). The
-# charset lived as seven hand-copied compiled patterns, and the copies
-# reintroduced the missing-'+' defect twice (#6042, #6055). Every in-package
-# validator now derives from these; the two standalone artifact-deploy scripts
+# AWS named-profile name shape — the SINGLE SOURCE OF TRUTH. Hand-copying the
+# charset into separate compiled patterns reintroduced the missing-'+' defect
+# twice, so every in-package
+# validator derives from these; the two standalone artifact-deploy scripts
 # (which cannot import the package) embed AWS_PROFILE_NAME_PATTERN verbatim
 # under a byte-equality drift guard in test/test_aws_profile_charset.py.
 #
-# Semantics (settled by #6051/#6055):
+# Semantics:
 # * '+' admitted — IAM Identity Center derives "<account>+<permission-set>"
 #   profile names.
 # * The first char excludes '-' so a stored name is never option-shaped when it
@@ -719,7 +719,7 @@ CHANNEL_SESSION_NAMESPACES: tuple[str, ...] = (
 #: and its channel ``session`` values. Derived ONCE here rather than subtracted at
 #: each reader: the same subtraction was spelled in three places, which is the
 #: drift shape that made a Webex owner DM unreachable while the gateway leg behind
-#: it already worked (#6514), one level up.
+#: it already worked, one level up.
 #:
 #: Two members of the roster cannot be a send target:
 #:

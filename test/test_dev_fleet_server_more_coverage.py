@@ -210,7 +210,7 @@ async def test_run_cmd_timeout_kills_tree_and_reports(monkeypatch, tmp_path):
     assert killed == [proc.pid]
     # The reap drains pipes via communicate() after kill(); a bare wait() on
     # a killed child blocked writing into a full pipe would hang the caller
-    # forever (#5989). With timeout=0 the site's own communicate() is
+    # forever. With timeout=0 the site's own communicate() is
     # cancelled before it ever runs, so the single recorded call IS the reap.
     # The missing cleanup file was tolerated.
     assert (proc.kills, proc.communicates, proc.waits) == (1, 1, 0)
@@ -1220,7 +1220,7 @@ async def test_gateway_service_active_false_when_foreground_confined(monkeypatch
     assert await live._gateway_service_active() is False
 
 
-# --- stale sync lock race (issue #4906) ---
+# --- stale sync lock race ---
 
 
 @pytest.mark.asyncio

@@ -141,7 +141,7 @@ class TestGetSessionRssMb:
             assert session_pid.get_session_rss_mb(100) == _mib_of_pages(10)
 
     def test_sub_mib_per_pid_not_truncated_away(self) -> None:
-        # Regression for the per-PID MiB-truncation bug: two sibling processes
+        # Two sibling processes
         # each just over half a MiB. A per-PID ``// MiB`` truncates each to 0
         # (the old behaviour reported 0 for the tree); summing pages first and
         # truncating once yields >= 1 MiB.
@@ -173,7 +173,7 @@ class TestGetSessionRssMb:
 
 
 class TestProcParsingPrimitives:
-    """Exercise the REAL /proc parsing (previously fully mocked) against a fake
+    """Exercise the REAL /proc parsing against a fake
     /proc tree under tmp_path via the proc_root seam."""
 
     def test_read_rss_pages_parses_statm_resident_field(self, tmp_path) -> None:

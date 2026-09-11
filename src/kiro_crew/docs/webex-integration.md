@@ -80,7 +80,7 @@ and `/sessions` there lists the space's history rather than yours.
 
 | Command | What it does |
 |---|---|
-| `/new` | Start a fresh conversation (new session) |
+| `/new` | Start a fresh, restart-safe conversation; its first turn adds it to `/sessions` |
 | `/compact` | Compress the conversation context |
 | `/model` | List the models this account can use, and pick one |
 | `/sessions` | List this conversation's earlier sessions |

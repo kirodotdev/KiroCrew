@@ -119,7 +119,7 @@ class TestLauncherInvariants:
 
 
 class TestReviewFindings:
-    """Regressions for findings raised in review of this skill.
+    """Guards the findings raised in review of this skill.
 
     Each test names the concrete attack or accident it prevents, so a future
     simplification cannot quietly reopen it.

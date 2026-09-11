@@ -213,9 +213,36 @@ const REL_PREFIX_RE = /^\.{1,2}[/\\]/
  * rules would otherwise readmit it: the extension rule matches
  * `\\host\share\x.txt`, and the leading-`/` rule matches `//host/share/x`.
  * See `UNC_PREFIX_RE` for why that shape must never reach the probe.
+ *
+ * A directory written with a trailing separator (`/home/user/notes/`,
+ * `C:\Users\me\`) is classified by retrying on the slash-stripped form when the
+ * literal string fails: `PATH_SHAPE_RE` requires the string to END in a name
+ * character, so a trailing `/` otherwise fails the shape and the directory chip
+ * renders dead -- the directory-chip half of issue #9409. This widens NOTHING.
+ * The retry runs the SAME rules on the string minus one trailing separator, so a
+ * trailing slash rescues only a string whose slash-less form is already a
+ * candidate: `owner/repo/`, `text/plain/` and `2026/08/02/` stay rejected because
+ * `owner/repo` etc. are. The literal form is tried first so a bare drive root
+ * (`C:\`, whose slash-stripped `C:` is not a valid shape) keeps classifying, and
+ * the UNC refusal runs on the ORIGINAL string so `//host/share/` cannot slip
+ * through the strip.
  */
 export function isPathCandidate(s: string): boolean {
   if (UNC_PREFIX_RE.test(s)) return false
+  if (classifyPathShape(s)) return true
+  // Retry once on the slash-stripped form so a trailing separator does not
+  // disqualify an otherwise-valid directory. Guarded to len > 1 so `/` and `\`
+  // are not reduced to the empty string.
+  if (s.length > 1 && (s.endsWith('/') || s.endsWith('\\'))) {
+    return classifyPathShape(s.slice(0, -1))
+  }
+  return false
+}
+
+/** Shape + positive-signal test for a UNC-screened candidate. See
+ *  `isPathCandidate`, which owns the UNC refusal and the trailing-separator
+ *  retry. */
+function classifyPathShape(s: string): boolean {
   if (!PATH_SHAPE_RE.test(s) && !WIN_DRIVE_PATH_SHAPE_RE.test(s)) return false
   if (s.startsWith('/') || s.startsWith('~') || REL_PREFIX_RE.test(s)) return true
   // Rootedness is the positive signal, exactly as a leading `/` is on POSIX, so

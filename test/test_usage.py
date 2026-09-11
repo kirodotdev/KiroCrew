@@ -61,7 +61,7 @@ class TestParseSessions:
             "avg_tools_per_session": 0,
             # An empty history is COMPLETE data, not incomplete: nothing was
             # dropped, so the did-not-load total is a present zero rather than
-            # an absent key (#6733). Omitting it would make "complete" and
+            # an absent key. Omitting it would make "complete" and
             # "unknown" indistinguishable on the wire -- the adapter's
             # ``s.refused_transcripts ?? 0`` would synthesise the promise of
             # completeness the payload never made.
@@ -137,14 +137,13 @@ class TestParseSessions:
             assert r["total_sessions"] == 0
 
     def test_refused_transcripts_are_reported_not_swallowed(self, tmp_path, caplog):
-        """#6733: a refused transcript is skipped, and the skip must be visible.
+        """A refused transcript is skipped, and the skip must be visible.
         Before this, a home whose every transcript the path validator refused
         rendered as a legitimate "zero sessions" with nothing to say why.
 
         Asserted on BOTH the payload field and the log: the count is now carried
         in ``refused_transcripts`` so the usage page can render a warning instead
-        of a confident zero (the earlier #7285 review kept it log-only while no
-        renderer read it; UsageTab now does).
+        of a confident zero; UsageTab renders that warning.
         """
         d = tmp_path / "cli"
         d.mkdir()
@@ -196,13 +195,13 @@ class TestParseSessions:
         ), patch.object(Path, "stat", stat_side_effect):
             r = _parse_sessions()
             assert r["all_time_sessions"] == 0
-            # #6733 First Principles: a stat failure is a did-not-load branch, so
+            # First Principles: a stat failure is a did-not-load branch, so
             # it feeds the incomplete-data count -- otherwise the transcript
             # vanishes with no trace and the warning stays silent.
             assert r["refused_transcripts"] == 1
 
     def test_all_three_did_not_load_branches_feed_the_count(self, tmp_path, caplog):
-        """#6733 First Principles: the warning's ABSENCE promises complete data,
+        """First Principles: the warning's ABSENCE promises complete data,
         so every branch that drops a transcript must feed refused_transcripts --
         not just the validator refusal. Three transcripts, one lost to each of
         the three branches (validator refusal, stat failure, read failure);
@@ -1066,7 +1065,7 @@ class TestBuildTokenRecordCredits:
         assert rec["credits"] == 0.0
 
 
-# ── read_context_tokens / context-occupancy row fields (issue #647) ──────────
+# ── read_context_tokens / context-occupancy row fields ──────────────────────
 
 
 class TestReadContextTokens:

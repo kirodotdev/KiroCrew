@@ -45,6 +45,7 @@ from kiro_crew.config.loader import (
     normalize_agent_model,
     resolve_agent_bindings,
     resolve_effective_model,
+    unsandboxed_exec_declared,
 )
 from kiro_crew.config.paths import (
     LEGACY_CONFIG_DIR_NAME,
@@ -138,6 +139,24 @@ def _safe_display(value: object) -> str:
     return repr(value)
 
 
+def _doctor_member_memory_bindings(cfg: KiroCrewConfig, issues: list[str]) -> None:
+    """Check every configured member's existing binding without initializing memory."""
+    from kiro_crew.memory_stores import require_member_memory_store
+
+    print("\nMember Memory Bindings")
+    if not cfg.agents:
+        print("  (no configured members)")
+    for name, member in cfg.agents.items():
+        binding = f"{_safe_display(name)} -> {_safe_display(getattr(member, 'memory_store', None))}"
+        try:
+            require_member_memory_store(cfg, name, require_directory=True)
+        except Exception as exc:  # noqa: BLE001 -- one broken member must not hide healthy peers
+            print(f"  {binding}: unavailable ({_safe_display(str(exc))})")
+            issues.append(f"member memory binding unavailable: {binding}")
+        else:
+            print(f"  {binding}: valid binding")
+
+
 def _doctor_effective_model(cfg: KiroCrewConfig, project_dir: str, issues: list[str]) -> None:
     """Report which model a new session starts on, and which tier decided it.
 
@@ -206,7 +225,10 @@ def _doctor_effective_model(cfg: KiroCrewConfig, project_dir: str, issues: list[
         bindings = resolve_agent_bindings(cfg)
         override = normalize_agent_model(bindings.model)
         bound = bindings.kiro_agent or "kirocrew"
-    except Exception:  # noqa: BLE001 -- a broken alias must not kill the report
+    except Exception as exc:  # noqa: BLE001 -- a broken alias must not kill the report
+        print(f"  binding:     unavailable ({_safe_display(str(exc))})")
+        print("               See the member memory binding diagnostics below.")
+        issues.append("default agent binding unavailable")
         override = ""
         bound = "kirocrew"
     # kiro_agent is free text in config.json and this name reaches a path join.
@@ -364,12 +386,12 @@ def _os_fix_hint(mac: str, linux: str, windows: str | None = None) -> str:
     return linux
 
 
-# The Linux arm of the missing-ffmpeg fix, a module constant so the test can hold
-# it against the resolver's real search set. An earlier version told the user to
-# drop a static build into ``~/.local/bin``, which ``transcribe._find_ffmpeg``
-# deliberately never searches (``_ffmpeg_candidate_dirs`` documents removing it:
-# a generic user-writable PATH dir would let agent-written code run as the
-# gateway), so a user who followed the advice still ended at "not found" (#8897).
+# The Linux arm of the missing-ffmpeg remedy, a module constant so the test can hold
+# it against the resolver's real search set. It must not name ``~/.local/bin``, which
+# ``transcribe._find_ffmpeg`` deliberately never searches (``_ffmpeg_candidate_dirs``
+# documents leaving it out: a generic user-writable PATH dir would let agent-written
+# code run as the gateway), because a user who follows that advice still ends at
+# "not found".
 # Name only remedies that actually resolve: the dashboard's decoder download
 # installs into the digest-verified store ``_find_ffmpeg`` checks last and needs
 # no PATH reasoning (the working fix on distros with no packaged ffmpeg, e.g.
@@ -519,7 +541,7 @@ def _spec_gate_closed(name: str) -> bool:
     HEALTHY state, not a broken install. Doctor's static checks must consult
     the same predicate or the two sides drift apart, producing the unfixable
     "missing from mcpServers (re-run `kirocrew setup`)" loop on every host
-    where the gate is closed (#6548). Resolving the gate through the registry
+    where the gate is closed. Resolving the gate through the registry
     keeps them pinned together: a future server gaining a gate needs no edit
     here, and a server without one reports open, exactly as emission treats it.
 
@@ -856,9 +878,9 @@ def _doctor_mcp_governance(
     # Same hardened reader as this file's other spec reads: the agents dir is
     # user-writable, so an oversized or sensitively-symlinked spec is refused
     # (and audited) rather than parsed. No try/except: the reader's contract is
-    # return-``None``-never-raise, which the five sibling sites migrated
-    # alongside this one also rely on bare. ``None`` degrades to no declared
-    # servers, exactly as the blanket ``except`` here used to.
+    # return-``None``-never-raise, which the sibling sites also rely on bare.
+    # ``None`` degrades to no declared servers, which is what a blanket
+    # ``except`` here would do.
     spec = _read_agent_spec(agent_path, operation="doctor", source="cli")
     servers = (spec or {}).get("mcpServers") or {}
     if not isinstance(servers, dict):
@@ -875,8 +897,8 @@ def _doctor_mcp_governance(
     # exact failure this section exists to catch. One exception, same rule as
     # the MCP Tools section above: an always-on server whose spec gate is
     # closed is deliberately absent from every emitted spec, so demanding a
-    # registry marker for it would re-create the unfixable "re-run setup" loop
-    # (#6548). A STALE entry still counts while it exists — kiro-cli drops an
+    # registry marker for it would re-create the unfixable "re-run setup" loop.
+    # A STALE entry still counts while it exists — kiro-cli drops an
     # unmarked entry at session assembly, so the marker matters for exactly as
     # long as the entry does.
     if gated_off is None:
@@ -1020,9 +1042,7 @@ def _doctor_cron_script_sources(issues: list[str]) -> None:
     The packaged-to-installed hop is content-verified, ``scripts/`` included. The
     installed-to-``crons/`` hop is a hand-run ``cp`` documented in the owning
     skill, and nothing compares its two sides -- so a deploy can run superseded
-    code indefinitely while looking healthy, which is how the shipped PR watch
-    came to re-emit its wake footer once per observation long after the package
-    had split that out.
+    code indefinitely while looking healthy.
 
     Divergence is reported WITHOUT a direction. A cron script body is
     LLM-writeable by design, so the two sides disagreeing can mean a stale deploy
@@ -1134,6 +1154,88 @@ def _doctor_claude_backend() -> None:
         # probe's three-valued verdict exists to prevent, and which the dashboard
         # also refuses to make.
         print("  claude-acp:  ⚠️  could not check")
+
+
+#: The managed default agent, whose spec is the one a stock install runs.
+#: Mirrors ``agent._MAIN_AGENT_NAME``, which is private; the doctor row below
+#: reports on that spec because it is the one every default session resolves.
+_MAIN_AGENT_NAME = "kirocrew"
+
+
+def _doctor_unresolved_mcp_refs() -> None:
+    """One row per selectable harness: would the default spec's ``@server`` refs
+    resolve on it?
+
+    The static half of the runtime detector in
+    :mod:`kiro_crew.acp.mcp_ref_guard`, answering the same question before a
+    session rather than during one. The defect it names has shipped on three
+    harnesses (``providers/mirrors/README.md``): a session comes up with
+    ``tools: ["@kirocrew-core", ...]`` and nothing defining ``kirocrew-core``, so
+    every Crew tool is absent while the harness works and nothing anywhere is red.
+    A row here is the answer to "my agent has no tools on this backend" that
+    otherwise takes a diagnosis.
+
+    Reports only, and appends NO entry to ``issues``, on the terms
+    :func:`_doctor_strict_identity` sets: a harness the operator has not adopted
+    having no projection yet is a known state of the tree, not a broken install,
+    and failing doctor's exit code on it would make every stock host red for a
+    backend nobody selected.
+
+    Asks ``agent_sdk`` rather than assembling the answer here. The refs need the
+    agent spec and each backend's spec projection, both of which live below the
+    boundary, so reaching them from this module would take three new ACP /
+    providers edges the agent-sdk-boundary gate refuses -- and correctly: which
+    file a harness reads its servers from is exactly the knowledge a consumer is
+    not supposed to hold. ``agent_spec_mcp_refs`` reads the mirror seam, so a
+    backend projecting outside ``providers/mirrors/`` (KAS) reads as unprojected;
+    ``has_mirror`` is what lets the row say which case it is.
+
+    kiro-cli resolves its refs against the spec it is handed, so a healthy install
+    prints a clean row there rather than every ref it declares -- the resolver keys
+    that on the backend id, not on this function.
+    """
+    from kiro_crew.acp_backends import POLICY_ID_BY_BACKEND
+    from kiro_crew.agent_sdk.drivers.acp import agent_spec_mcp_refs
+
+    try:
+        spec_found, rows = agent_spec_mcp_refs(_MAIN_AGENT_NAME)
+    except Exception:
+        # Triage must survive an unreadable spec or registry; the rows are advisory.
+        return
+    if not spec_found:
+        print("  mcp tool refs: \u23f9 no default agent spec on disk yet")
+        return
+
+    for backend, unresolved, has_mirror in rows:
+        label = POLICY_ID_BY_BACKEND.get(backend, backend) or backend
+        if not unresolved:
+            print(f"  mcp tool refs: \u2705 {label} \u2014 every @server ref resolves")
+            continue
+        # Read off a hand-editable spec a cloned repo or an installed app can
+        # author, so it can carry OSC/ANSI sequences that spoof the lines around
+        # it -- the same reason every other spec-derived value in this report is
+        # printed through _safe_display.
+        refs = ", ".join(_safe_display(ref) for ref in unresolved)
+        if not has_mirror:
+            print(f"  mcp tool refs: \u23f9 {label} has no mirror; unprojected: {refs}")
+            _print_wrapped(
+                "Those refs name no server this backend would be handed, so the "
+                "tools behind them are absent from its sessions with nothing to "
+                "say so. The shared MCP gateway can still deliver a server it "
+                "wrapped as a broker stub, which this row does not model. "
+                "Whether the omission is a decision or an unwritten projection "
+                "is recorded per backend in providers/mirrors/registry.py "
+                "(NO_MIRROR); a backend that projects elsewhere reads as "
+                "unprojected here."
+            )
+            continue
+        print(f"  mcp tool refs: \u26a0 {label} projects a spec that still misses: {refs}")
+        _print_wrapped(
+            "This backend HAS a mirror and its projection dropped these refs "
+            "anyway -- a registry-marked entry, an entry with no usable "
+            "transport, or a name the spec references but never defines. Compare "
+            "the agent spec's mcpServers against its tools list."
+        )
 
 
 def _doctor_agent_auth() -> None:
@@ -1443,18 +1545,17 @@ def _process_apparmor_confinement() -> str:
 
 def _service_profile_applies(profile_path: Path, profile_name: str) -> bool:
     """True when the installed profile is ATTACHED to the launcher script this
-    host currently resolves (#3463).
+    host currently resolves.
 
-    Before #3463 this asked a different question — whether the systemd unit
-    carried an ``AppArmorProfile=<name>`` directive — because that directive
-    was the mechanism that confined the service. It no longer is: the profile
-    is now attached BY PATH to ``kirocrew_bin()`` (the same path ``ExecStart``
-    uses), and installing the directive alongside a path attachment was found
-    to make the directive silently win, defeating the attachment. So
-    ``kirocrew service install`` no longer writes it, and this check follows —
-    it reads the profile's own attachment clause and compares it against the
-    CURRENTLY resolved launcher path, the same comparison
-    ``apparmor.launcher_status()`` already makes for the AppImage case.
+    The confining mechanism is a path attachment, not a systemd
+    ``AppArmorProfile=<name>`` directive: the profile is attached BY PATH to
+    ``kirocrew_bin()`` (the same path ``ExecStart`` uses), and installing the
+    directive alongside a path attachment makes the directive silently win,
+    defeating the attachment. ``kirocrew service install`` therefore does not
+    write it, and this check reads the profile's own attachment clause and
+    compares it against the CURRENTLY resolved launcher path, the same
+    comparison ``apparmor.launcher_status()`` already makes for the AppImage
+    case.
 
     A moved or reinstalled launcher (a venv rebuilt at a new path, a symlink
     re-pointed) makes this False until ``kirocrew service install`` re-renders
@@ -1471,11 +1572,11 @@ def _service_profile_applies(profile_path: Path, profile_name: str) -> bool:
     if attached != current:
         return False
     # A unit that still carries ``AppArmorProfile=`` — a hand-edited unit, a
-    # systemd drop-in, an install older than #3463 — silently WINS over the
-    # kernel's path attachment (the finding that retired the directive), so an
-    # attachment that matches is not enough: the service would run under the
-    # directive's semantics, i.e. the very bug #3463 fixed, while a shell
-    # launch through the same path probes green. Best-effort read — an
+    # systemd drop-in, an older install — silently WINS over the kernel's path
+    # attachment, which is why the directive is not used, so an attachment that
+    # matches is not enough: the service would run under the directive's
+    # semantics, leaving its own probe unconfined, while a shell launch through
+    # the same path probes green. Best-effort read — an
     # unreadable unit (or none installed) proves nothing and must not flip a
     # verified attachment to "broken".
     try:
@@ -1498,10 +1599,10 @@ def _doctor_sandbox_apparmor(reason: str, issues: list[str]) -> None:
 
     * profile absent → broken, with the install command;
     * profile installed but not ATTACHED to the launcher script this host
-      currently resolves (#3463 — this used to check the systemd unit for an
-      ``AppArmorProfile=`` directive; that directive is retired, and checking
-      it now would silently fail closed against a correctly-installed,
-      correctly-attached profile), or the probe failed even though THIS
+      currently resolves (checking the systemd unit for an
+      ``AppArmorProfile=`` directive instead would silently fail closed
+      against a correctly-installed, correctly-attached profile), or the
+      probe failed even though THIS
       process is confined by the profile → broken, with the repair command;
     * profile installed and attached to the resolved launcher script, and this
       process is unconfined → the probe's failure says nothing about the
@@ -1560,10 +1661,10 @@ def _doctor_sandbox_apparmor(reason: str, issues: list[str]) -> None:
     # The recipe execs the ATTACHED LAUNCHER PATH: a path-attached profile is
     # applied by the kernel at execve() of that exact file, and the sandbox
     # probe (a fork with no subsequent exec) inherits the confinement — the
-    # same chain the service's ExecStart uses. The retired
-    # ``systemd-run --property=AppArmorProfile=`` form must NOT come back here:
+    # same chain the service's ExecStart uses. The
+    # ``systemd-run --property=AppArmorProfile=`` form must NOT be used here:
     # the directive labels only the unit's own top-level process, so a probe
-    # under it stayed unconfined — the very bug this mechanism replaced (#3463).
+    # under it stays unconfined.
     # The path is quoted for the shell: the recipe is meant to be pasted, so an
     # install path containing spaces or shell metacharacters must arrive as one
     # argument, not execute.
@@ -1637,7 +1738,60 @@ def _doctor_sandbox(issues: list[str]) -> None:
         return
     # Platforms with no OS-level backend to offer (Windows; macOS builds without
     # sandbox-exec) — a fact about the platform, not a fault of this install.
+    # Report what that MEANS for spawns, not just that the backend is absent: with
+    # no backend the configured posture is either "refuse every agent subprocess"
+    # or "run them unconfined", and an operator reading this line needs to know
+    # which.
+    #
+    # Stated as the POSTURE, not as what will happen. A governance
+    # sandbox.min_level floor is resolved per spawn against the mode that spawn
+    # requested, so it is not foldable into one host-level answer — and on a
+    # governed host it makes wrap_argv refuse the very spawns a bare "they run
+    # unconfined" would promise. Each permitting branch therefore names the floor
+    # as the thing that overrides it.
     print("  backend:     ⏭  no OS-level sandbox backend on this platform")
+    permitted_by = sandbox.unsandboxed_exec_permitted_by()
+    if permitted_by == sandbox.UNSANDBOXED_BY_PLATFORM:
+        print("  exec:        ⚠️  configured to run agent subprocesses UNCONFINED")
+        _print_wrapped(
+            "This is the default for a platform with no backend to install: "
+            "~/.aws, ~/.ssh and the rest of your home directory are readable by "
+            "an agent subprocess, and only the bypassable app-level checks "
+            "remain. Every such spawn is audited. To refuse them instead, set "
+            "agent.sandbox_allow_unsandboxed_exec=false. A governance "
+            "sandbox.min_level floor overrides this and makes such spawns fail "
+            "closed, so a managed host refuses them despite this line."
+        )
+    elif permitted_by == sandbox.UNSANDBOXED_BY_OPERATOR:
+        print("  exec:        ⚠️  unconfined by declaration — sandbox_allow_unsandboxed_exec=true")
+        _print_wrapped(
+            "The operator declared this opt-in, so agent subprocesses run "
+            "without OS-level isolation and every such spawn is audited. Remove "
+            "the key to fall back to this platform's default. A governance "
+            "sandbox.min_level floor overrides the declaration and makes such "
+            "spawns fail closed."
+        )
+    else:
+        print("  exec:        ⛔ agent subprocesses are REFUSED on this host")
+        if unsandboxed_exec_declared():
+            _print_wrapped(
+                "agent.sandbox_allow_unsandboxed_exec is set to false, so MCP "
+                "servers, app backends and the provider CLIs will report a "
+                "sandbox error. Remove the key to accept this platform's "
+                "default, or set it to true to allow unconfined execution."
+            )
+        else:
+            # Undeclared AND fail-closed: a platform with no backend whose default
+            # is still refuse (a macOS build without sandbox-exec). Telling this
+            # operator the key "is set to false" would send them to change
+            # something they never wrote.
+            _print_wrapped(
+                "No backend is available and no opt-in is declared, so MCP "
+                "servers, app backends and the provider CLIs will report a "
+                "sandbox error. Set agent.sandbox_allow_unsandboxed_exec=true to "
+                "allow unconfined execution, or run `kirocrew setup` to be walked "
+                "through the decision."
+            )
 
 
 def _linger_enabled(user: str) -> bool | None:
@@ -1970,16 +2124,15 @@ def _doctor_memory_pressure(issues: list[str]) -> None:
 #
 # On Windows the running executable cannot be replaced, so the downloaded
 # installer can never be applied while a Crew ACP child holds the binary — and
-# the "update pending" state is not cleared after an upgrade either
-# (kirodotdev/Kiro#9825). Nothing in that loop is self-limiting: one installer is
-# left behind per process start. A reporting user cleared ~80 GB of them.
+# the "update pending" state is not cleared after an upgrade either. Nothing in
+# that loop is self-limiting: one installer is left behind per process start, and
+# the residue reaches tens of gigabytes.
 #
 # Crew cannot fix the updater, and must NOT disable updates on the user's behalf:
 # ``app.disableAutoupdates`` is a per-user setting shared with their own
 # interactive CLI, so setting it silently would suppress their security updates.
 # What Crew can do is stop the residue being invisible, since it is Crew's
 # per-session spawning that turns a stale flag into tens of gigabytes.
-# Upstream fix requested in kirodotdev/Kiro#10970.
 _CLI_INSTALLER_GLOB = "kiro-installer*"
 
 # One file can be a download still in flight; two or more is residue, because a
@@ -3153,11 +3306,12 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
     # agent.model, and the whole point here is that the global is not
     # necessarily what a new session gets.
     _doctor_effective_model(cfg, proj, issues)
+    _doctor_member_memory_bindings(cfg, issues)
 
-    # ── Stored defaults a release has since changed (#5244) ──
+    # ── Stored defaults a release has since changed ──
     render_doctor_section(issues)
 
-    # ── Installed services must carry the launch-class marker (#6651) ──
+    # ── Installed services must carry the launch-class marker ──
     _doctor_managed_service_policy(issues)
 
     # ── Data Home (+ leftover legacy home) ──
@@ -3167,6 +3321,7 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
     _doctor_trust_root()
     _doctor_strict_identity(cfg)
     _doctor_mcp_gateway_daemon(issues)
+    _doctor_unresolved_mcp_refs()
 
     # ── Credentials (AWS / credential-vending MCP) ──
     # After identity, before the agent-facing sections: this is the answer to

@@ -38,6 +38,7 @@ from kiro_crew.history import mint_row_mid
 from kiro_crew.messaging.attachments import append_attachment_context
 from kiro_crew.messaging.attachments import cleanup as cleanup_attachments
 from kiro_crew.messaging.commands import compact_unsupported_backend
+from kiro_crew.messaging.conversation import reserve_new_generation
 from kiro_crew.messaging.dispatch import (
     ChannelTurn,
     build_directive_consumer,
@@ -94,7 +95,7 @@ _COMPACT_NOTHING = "ℹ️ 当前没有可压缩的对话。"
 _COMPACT_DONE = "🗜️ 已压缩上下文。"
 _COMPACT_FAILED = "⚠️ 压缩失败，请重试。"
 #: This surface speaks Chinese; the wording translates
-#: ``messaging.commands.compact_unsupported_reply`` (#8156).
+#: ``messaging.commands.compact_unsupported_reply``.
 _COMPACT_AUTO_MANAGED = "ℹ️ 当前后端会自动压缩上下文，无需手动 /compact。"
 
 
@@ -159,7 +160,15 @@ class WeixinDispatcher:
                 await self._say(user_id, _ATTACHMENT_WITH_COMMAND)
             if cmd == "new":
                 self._conv.bump_gen(user_id)
-                await self._say(user_id, _NEW_SESSION)
+                saved = await reserve_new_generation(
+                    self.sessions,
+                    self._session_key(user_id),
+                    channel_type="Weixin",
+                )
+                message = _NEW_SESSION
+                if not saved:
+                    message += "\n⚠️ 新对话无法保存，重启后可能恢复到上一段对话。"
+                await self._say(user_id, message)
                 return
             if cmd == "help":
                 await self._say(user_id, build_help())
@@ -185,10 +194,10 @@ class WeixinDispatcher:
         attachment_temp_paths: list[str] = []
         # Captured BEFORE ingestion, which clears ``inbound.attachments`` and
         # inlines the temp paths into the text. The durable inbound spool needs
-        # both originals (issue #2217): the count is what tells the restart
+        # both originals: the count is what tells the restart
         # notice this turn carried media that was not carried over, and the
         # pre-ingestion text is what the notice quotes -- the ingested form
-        # holds paths to files that no longer exist.
+        # holds paths to temp files that are gone after a restart.
         original_text = text
         original_attachments = len(inbound.attachments or ())
         if inbound.attachments:
@@ -272,9 +281,9 @@ class WeixinDispatcher:
         """Session acquisition + turn dispatch for one already-ingested message.
 
         ``original_text`` / ``original_attachments`` are the pre-ingestion values,
-        which this frame can no longer recover: ingestion clears
+        which this frame cannot recover: ingestion clears
         ``inbound.attachments`` and rewrites the text with temp paths that are gone
-        after a restart. They exist for the durable inbound spool (issue #2217).
+        after a restart. They exist for the durable inbound spool.
         """
         assert self.client is not None
         # ── Mid-turn concurrency: check the CURRENT-generation key for an
@@ -312,7 +321,7 @@ class WeixinDispatcher:
             ChannelTurn(
                 channel_type="weixin",
                 session_key=session_key,
-                # Durable inbound spool (issue #2217): the peer id IS the reply
+                # Durable inbound spool: the peer id IS the reply
                 # target on this DM-only channel, and the reply's context_token
                 # is already persisted off-loop, so the restart notice can land.
                 # ``original_text`` with NO fallback to the ingested ``text``: the
@@ -520,7 +529,7 @@ class WeixinDispatcher:
         hard = getattr(self.cfg.weixin, "hard_threshold_pct", 95)
         soft = getattr(self.cfg.weixin, "soft_threshold_pct", 80)
         if pct >= soft:
-            # Capability gate (#8156): no forced compaction to run and the
+            # Capability gate: no forced compaction to run and the
             # soft nudge's /compact advice cannot work — the backend compacts
             # on its own as context fills.
             unsupported = compact_unsupported_backend(provider)
@@ -555,7 +564,7 @@ class WeixinDispatcher:
             if provider is None:
                 await self._say(user_id, _COMPACT_NOTHING)
                 return
-            # Capability gate (#8156, mirroring the dashboard's #7800 gate): a
+            # Capability gate, mirroring the dashboard's compact gate: a
             # backend that cannot serve a manual /compact treats the prompt as
             # ordinary text and never answers, so dispatching would strand the
             # unbounded wait below. Informational, never an error.

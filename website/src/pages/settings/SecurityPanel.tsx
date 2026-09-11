@@ -1,7 +1,8 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { ShieldCheck, ShieldAlert, Lock, Eye, EyeOff, FileWarning, Terminal, Globe, Fingerprint, KeyRound, ScanLine, Layers, AlertTriangle, CheckCircle2, Circle, Clock, ExternalLink, ChevronRight, ChevronDown, Plus, Trash2, Gavel, Building2, Gauge, ToggleRight, MessageSquare, ListChecks, Boxes, BookOpen, Network, Copy, Check, Package } from 'lucide-react'
-import { useAppSelector } from '../../store'
+import { useAppDispatch, useAppSelector } from '../../store'
+import { setYoloDuration } from '../../store/dashboardSlice'
 import { SettingsSubNav } from '../../components/SettingsSubNav'
 import { useImeGuard } from '../../hooks/useImeGuard'
 import { Badge, Btn, Input, Toggle, Checkbox } from '../../components/ui'
@@ -761,6 +762,7 @@ type YoloDurationKey = (typeof YOLO_DURATION_KEYS)[number]
  *  (agent.dangerouslySkipPermissions) — that stays config-file-only. */
 function YoloDurationCard() {
   const qc = useQueryClient()
+  const dispatch = useAppDispatch()
   const status = useAppSelector(s => s.dashboard.status)
   const untilShutdownPermitted = status?.yolo_until_shutdown_permitted ?? true
   const { data, isError: cfgError } = useQuery<KirocrewCfgShape>({ queryKey: ['kirocrewConfig'], queryFn: api.kirocrewConfig })
@@ -768,8 +770,15 @@ function YoloDurationCard() {
   const current: YoloDurationKey =
     YOLO_DURATION_KEYS.find(k => k === configured) ?? '6h'
   const save = useMutation({
-    mutationFn: (v: string) => api.patchConfig('agent.yolo_duration', v),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['kirocrewConfig'] }),
+    mutationFn: (v: YoloDurationKey) => api.patchConfig('agent.yolo_duration', v),
+    onSuccess: (_data, saved) => {
+      qc.invalidateQueries({ queryKey: ['kirocrewConfig'] })
+      // The approval-mode picker reads the duration from `dashboard.status`,
+      // which only the HTTP status reply carries (the WebSocket push omits it).
+      // Record the save in the store, or the picker keeps naming the duration
+      // from page load until a reload while the gateway already grants this one.
+      dispatch(setYoloDuration(saved))
+    },
   })
 
   // Live "when does this end" line, so a no-expiry grant is never mistaken for

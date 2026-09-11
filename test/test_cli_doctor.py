@@ -84,7 +84,7 @@ class TestFixHint:
 
 
 class TestFfmpegLinuxHintResolvable:
-    """The Linux missing-ffmpeg hint names only locations the resolver searches (#8897).
+    """The Linux missing-ffmpeg hint names only locations the resolver searches.
 
     An earlier hint told the user to drop a static build into ``~/.local/bin``,
     which ``transcribe._find_ffmpeg`` deliberately never searches (its candidate
@@ -376,6 +376,151 @@ class TestTrustRoot:
         out = capsys.readouterr().out
         assert "not created yet" in out
         assert "⚠" not in out
+
+
+class TestUnresolvedMcpRefs:
+    """`kirocrew doctor` answers "why does my agent have no tools here?" statically.
+
+    The runtime detector in ``acp/mcp_ref_guard`` reports the same thing from inside
+    a session; this row reports it before one, per selectable harness. Advisory by
+    design -- a harness with no projection yet is a known state of the tree, not a
+    broken install, so it must never move doctor's exit code.
+    """
+
+    def _arrange(self, monkeypatch, rows, *, spec_found=True):
+        """Fixture the SDK delegation the row asks.
+
+        Patched at ``agent_sdk.drivers.acp``, its defining module, because the row
+        imports it inside the function (doctor keeps its import graph lazy). That
+        the row asks ONE boundary-clean question rather than assembling the answer
+        from the spec, the backend registry and the mirror seam is the reason this
+        fixture is a single return value -- and is what keeps `cli_doctor` off the
+        agent-sdk-boundary baseline.
+        """
+        from kiro_crew.agent_sdk.drivers import acp as acp_driver
+
+        monkeypatch.setattr(
+            acp_driver, "agent_spec_mcp_refs", lambda _agent: (spec_found, rows)
+        )
+
+    def test_a_backend_with_no_projection_names_the_unprojected_refs(self, monkeypatch, capsys):
+        self._arrange(monkeypatch, [("codex", ["@kirocrew-core"], False)])
+        cli_doctor._doctor_unresolved_mcp_refs()
+        out = capsys.readouterr().out
+        assert "codex has no mirror" in out
+        assert "@kirocrew-core" in out
+
+    def test_a_healthy_projection_prints_a_clean_row(self, monkeypatch, capsys):
+        self._arrange(monkeypatch, [("claude", [], True)])
+        cli_doctor._doctor_unresolved_mcp_refs()
+        out = capsys.readouterr().out
+        assert out.strip() == "mcp tool refs: \u2705 claude \u2014 every @server ref resolves"
+        # The whole row, so a clean backend cannot also print a remedy paragraph.
+        assert "no mirror" not in out and "still misses" not in out
+
+    def test_kiro_is_labelled_by_its_policy_id_not_the_empty_string(self, monkeypatch, capsys):
+        """The kiro backend is spelled ``""``, which would print as a blank row.
+
+        Same translation ``_doctor_agent_auth`` applies: the policy id is the
+        readable name for the one backend whose identifier is empty.
+        """
+        self._arrange(monkeypatch, [("", [], True)])
+        cli_doctor._doctor_unresolved_mcp_refs()
+        assert "\u2705 kiro" in capsys.readouterr().out
+
+    def test_a_mirrored_backend_that_still_drops_a_ref_is_the_louder_row(self, monkeypatch, capsys):
+        # A mirror exists and its projection lost the server anyway, which is a
+        # different problem from having no projection at all.
+        self._arrange(monkeypatch, [("claude", ["@marked"], True)])
+        cli_doctor._doctor_unresolved_mcp_refs()
+        out = capsys.readouterr().out
+        assert "\u26a0 claude" in out
+        assert "@marked" in out
+        assert "has no mirror" not in out
+
+    def test_no_spec_on_disk_is_informational(self, monkeypatch, capsys):
+        self._arrange(monkeypatch, [], spec_found=False)
+        cli_doctor._doctor_unresolved_mcp_refs()
+        assert "no default agent spec" in capsys.readouterr().out
+
+    def test_a_ref_carrying_terminal_controls_is_rendered_inert(self, monkeypatch, capsys):
+        """Spec-derived text printed to a terminal goes through ``_safe_display``.
+
+        A cloned repository ships its own ``<project>/.kiro/agents/*.json`` and an
+        installed app registers a user-level spec, so a ref can carry OSC/ANSI
+        sequences that spoof the diagnostic lines around it.
+        """
+        self._arrange(monkeypatch, [("codex", ["@srv\x1b]0;pwned\x07"], False)])
+        cli_doctor._doctor_unresolved_mcp_refs()
+        out = capsys.readouterr().out
+        assert "\x1b" not in out
+        assert "srv" in out
+
+    def test_the_row_never_moves_doctors_exit_code(self):
+        """It takes no ``issues`` list, so it structurally cannot append one.
+
+        Same rule as ``_doctor_strict_identity``: making every stock host red for a
+        backend nobody selected is how a useful note becomes one people disable.
+        """
+        import inspect
+
+        assert list(inspect.signature(cli_doctor._doctor_unresolved_mcp_refs).parameters) == []
+
+    def test_the_row_is_reached_from_the_report_itself(self):
+        """The check runs, rather than merely existing for its own tests to call.
+
+        Every other test here invokes it directly, so all of them stay green on a
+        build where nothing in ``_doctor`` calls it at all -- which is the same
+        shape of omission the detector exists to catch, one layer up.
+        """
+        import inspect
+
+        assert "_doctor_unresolved_mcp_refs()" in inspect.getsource(cli_doctor._doctor)
+
+    def test_the_sdk_probe_models_an_owned_permission_surface(self, monkeypatch):
+        """The delegation must pass ``permission_surface_owned=True``.
+
+        The claude mirror withholds its WHOLE array when Crew did not author the
+        session's native permission file — a per-session fact no static check can
+        know. Passing False would make doctor report every ref as unresolved on the
+        one backend whose projection actually works, which is the false positive
+        that would get this row disabled.
+        """
+        from kiro_crew import acp_backends, providers
+        from kiro_crew.acp import session_mcp
+        from kiro_crew.agent_sdk.drivers import acp as acp_driver
+
+        seen: dict = {}
+
+        class _Mirror:
+            def session_params(self, _agent, **kw):
+                seen.update(kw)
+                return {"mcpServers": [{"name": "kirocrew-core"}]}
+
+        monkeypatch.setattr(
+            session_mcp,
+            "agent_spec_snapshot",
+            lambda _a: {"tools": ["@kirocrew-core"], "mcpServers": {"kirocrew-core": {}}},
+        )
+        monkeypatch.setattr(acp_backends, "selectable_backend_values", lambda: ["claude"])
+        # The PACKAGE module: the driver imports both names from ``providers.mirrors``.
+        monkeypatch.setattr(providers.mirrors, "mirror_for", lambda _b: _Mirror())
+
+        found, rows = acp_driver.agent_spec_mcp_refs("kirocrew")
+
+        assert found is True
+        assert seen.get("permission_surface_owned") is True
+        assert rows == [("claude", [], True)]
+
+    def test_an_unreadable_registry_does_not_break_triage(self, monkeypatch, capsys):
+        from kiro_crew.agent_sdk.drivers import acp as acp_driver
+
+        def _boom(*_a, **_k):
+            raise RuntimeError("spec unreadable")
+
+        monkeypatch.setattr(acp_driver, "agent_spec_mcp_refs", _boom)
+        cli_doctor._doctor_unresolved_mcp_refs()  # must not raise
+        assert capsys.readouterr().out == ""
 
 
 class TestSwapTotalProbe:
@@ -1309,7 +1454,7 @@ class TestCliInstallerResidue:
 
 
 class TestEffectiveModelSection:
-    """`kirocrew doctor`'s Model section (#2559).
+    """`kirocrew doctor`'s Model section.
 
     The four-tier model precedence is not visible from any single file, so a
     stale spec pin that outlived the setting which created it is otherwise only
@@ -1466,7 +1611,7 @@ class TestEffectiveModelSection:
         """The default alias may bind a kiro agent other than the built-in one,
         and the resolver consults THAT spec's pin above the global (tier 2).
         Reading kirocrew.json in both cases attributed the pin to the wrong file
-        and printed a reset command for the wrong agent (#4911 review)."""
+        and printed a reset command for the wrong agent."""
         self._install_spec(None)
         agents_dir = self._agents_dir()
         (agents_dir / "custom-agent.json").write_text(
@@ -1584,8 +1729,8 @@ class TestEffectiveModelSection:
         """The doctor read goes through agent_discovery's hardened reader, which
         refuses a symlink whose RESOLVED target is sensitive (the documented
         `evil.json -> ~/.aws/credentials` case) and caps the read size. Routing
-        through that one reader instead of hand-rolling the checks is the point
-        (#4911 review); a benign link is followed exactly as the resolver follows
+        through that one reader instead of hand-rolling the checks is the point.
+        A benign link is followed exactly as the resolver follows
         it, so the report cannot disagree with what will actually run."""
         from kiro_crew import agent_discovery
         from kiro_crew.agent import AGENT_FILENAME
@@ -1626,8 +1771,7 @@ class TestEffectiveModelSection:
     def test_an_absolute_kiro_agent_binding_cannot_escape_the_agent_dir(self, capsys) -> None:
         """`kiro_agent` is free text in config.json and reaches a path join, and
         pathlib DISCARDS the left side when the right is absolute -- so an
-        unvalidated binding would turn a spec lookup into an arbitrary read
-        (#4911 review)."""
+        unvalidated binding would turn a spec lookup into an arbitrary read."""
         self._install_spec(None)
         secret = self._tmp / "protected.json"
         secret.write_text(json.dumps({"model": "leaked-value"}), encoding="utf-8")
@@ -1656,7 +1800,7 @@ class TestEffectiveModelSection:
 
     def test_a_control_bearing_project_filename_is_escaped(self, monkeypatch, capsys) -> None:
         """A cloned repository can TRACK a filename containing control bytes, so
-        the path itself is untrusted input on this line (#4911 review).
+        the path itself is untrusted input on this line.
 
         The hostile path is INJECTED rather than created: control bytes are
         illegal in a Windows filename, so building it on disk would make this
@@ -1671,7 +1815,7 @@ class TestEffectiveModelSection:
         # Only the injected path is faked; the user-level spec still goes through
         # the real reader so the report's own self-check is not disturbed. The
         # stub forwards **kw because the reader takes keyword-only SEL
-        # attribution labels (#6722) that this test does not care about.
+        # attribution labels that this test does not care about.
         monkeypatch.setattr(
             cli_doctor,
             "_read_agent_spec",
@@ -1692,7 +1836,7 @@ class TestEffectiveModelSection:
         """The config loader deliberately KEEPS a type-mismatched value ("validated
         by its consumer"), so a hand-edited non-string reaches this section intact
         and a bare `re.match` would raise TypeError -- aborting the one command a
-        user runs BECAUSE their config is broken (#4911 review)."""
+        user runs BECAUSE their config is broken."""
         self._install_spec("claude-opus-4.8")
         cfg = self._bind_custom_agent(self._cfg("auto"), "placeholder")
         cfg.agents["default"].kiro_agent = 12345  # type: ignore[assignment]
@@ -1706,6 +1850,22 @@ class TestEffectiveModelSection:
         # It degrades to the built-in agent and still produces the report.
         assert "effective:" in out
         assert "tracking:" in out
+
+    def test_broken_default_member_is_reported_without_hiding_the_binding(self, capsys):
+        from kiro_crew.config.loader import KiroCrewAgentConfig
+
+        cfg = self._cfg("auto")
+        cfg.agents["writer"] = KiroCrewAgentConfig(
+            kiro_agent="kirocrew", memory_store="missing-store"
+        )
+        cfg.default_agent = "writer"
+        issues: list[str] = []
+        cli_doctor._doctor_effective_model(cfg, "", issues)
+        out = capsys.readouterr().out
+        assert "default agent binding unavailable" in issues
+        assert "See the member memory binding diagnostics below." in out
+        assert "missing or invalid memory binding" in out
+        assert "writer" in out
 
 
 class TestWhatsAppSection:

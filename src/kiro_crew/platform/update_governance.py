@@ -618,7 +618,7 @@ def commits_ahead(proj: str, upstream: str) -> int | None:
     *upstream* is taken as given — pass the SAME revision the reset will use,
     which for the update path is the captured OID rather than a ref name. That is
     not a detail: a ref is re-resolved per command, so counting against
-    ``origin/<branch>`` while resetting to a previously captured OID lets a
+    ``origin/<branch>`` while resetting to an already-captured OID lets a
     concurrent fetch advance the ref, report zero commits ahead of the NEW tip,
     and still reset to the OLD one — discarding exactly the commits the count was
     supposed to protect. Counting against the reset target closes that.

@@ -239,7 +239,7 @@ export function useChatPageTranscriptEarlyController({
     updatePinnedPrompt,
     onScrollPin,
     pinnedJumpChrome,
-  } = usePinnedPrompt({ scrollerRef })
+  } = usePinnedPrompt({ scrollerRef, requiresMountedHandoff: true })
   /** Jump the transcript back to the pinned prompt, landing it just below the
    *  banner so the prompt is read in context — which also un-pins the banner,
    *  since its prompt is no longer above the fold. */

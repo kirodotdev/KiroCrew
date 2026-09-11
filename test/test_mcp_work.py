@@ -294,10 +294,10 @@ def test_a_channel_agent_is_blocked_from_all_four_tools():
 
 
 def test_session_create_states_the_caller_inheritance_rule():
-    """It used to say "Omit to use the default agent", which is wrong about the one
-    mechanism a conductor most depends on: ``create_session`` falls back to the
-    CALLER's own agent, so a conductor that omits it gets a second conductor — which
-    has no ``fs_write`` and cannot do the work."""
+    """The description must state the caller-inheritance rule, not "Omit to use the
+    default agent": ``create_session`` falls back to the CALLER's own agent, so a
+    conductor that omits it gets a second conductor — which has no ``fs_write``
+    and cannot do the work."""
     from kiro_crew import mcp_dashboard
 
     definition = next(t for t in mcp_dashboard._tool_definitions() if t["name"] == "session_create")

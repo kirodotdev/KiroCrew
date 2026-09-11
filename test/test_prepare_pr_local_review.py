@@ -9,8 +9,8 @@ restating it, so these tests hold two properties:
     (sentinel sections present, lifted verbatim, expressions substituted, model
     pins agreeing with the bundled profile, auxiliary inputs staged the way the
     workflow stages them).
-  * **Loud failure** - if a workflow is restructured so the extraction no longer
-    finds the contract, the script FAILS instead of degrading into a stale
+  * **Loud failure** - if a workflow is restructured so the extraction stops
+    finding the contract, the script FAILS instead of degrading into a stale
     paraphrase. Silently emitting a paraphrase is the exact drift the script
     exists to prevent, so the mutation tests below matter more than the happy
     path: they run the extractor against deliberately broken workflow copies.
@@ -184,7 +184,7 @@ def _stage_gpt_prompts(text, stage):
     """Write the shared GPT prompt files where the workflow's specs stage them.
 
     The live workflow splices `.github/review-prompts/gpt-*.md` into its
-    prompt (#5852); the assembler resolves those splices against the staging
+    prompt; the assembler resolves those splices against the staging
     tree, so the extraction helpers must pre-populate it the way
     ``stage_files`` does in production - from the repo's own prompt files.
     """
@@ -315,7 +315,7 @@ def test_gpt_prompt_is_lifted_verbatim_not_paraphrased():
     """Every extracted line must exist in its source, byte for byte.
 
     This is the property the whole script rests on: the local brief is the
-    server's own text - since #3697 every line of it is a line of a shared
+    server's own text - every line of it is a line of a shared
     prompt file spliced in verbatim.
     """
     prompt = _gpt_prompt()
@@ -424,7 +424,7 @@ def test_opus_wrapper_prompts_extracted_for_every_stage():
 def test_gpt_lane_is_spliced_and_opus_lane_has_no_prompt_target():
     """Lane dispatch keys on the prompt-assembly splice, so the shapes stay disjoint.
 
-    Since #3697 the GPT lane's prompt is assembled purely from shared prompt
+    The GPT lane's prompt is assembled purely from shared prompt
     files (dispatch keys on the opening ``cat ... >`` splice). Its specs carry
     the workflow's cp bootstrap as a worktree fallback; the Opus lane's specs
     stay fail-closed (no fallback).
@@ -804,7 +804,7 @@ def test_a_reviewer_declaring_no_contract_is_skipped_not_failed(parity_repo, tmp
 )
 def test_non_string_contract_exits_40_through_the_cli(parity_repo, tmp_path, literal):
     """The CLI documents EXIT_PARITY for a profile the extractor cannot honour.
-    A falsy value (``0``, ``false``, ``""``) additionally used to be dropped by
+    A falsy value (``0``, ``false``, ``""``) can be dropped by
     a truthiness filter, silently reviewing against fewer contracts than the
     profile declared - so it must fail closed here too, not skip."""
     _profile_on_main(
@@ -896,7 +896,7 @@ def test_a_string_model_survives_the_type_gate():
 )
 def test_non_string_model_exits_40_through_the_cli(parity_repo, tmp_path, field, literal):
     """The CLI documents EXIT_PARITY for a profile the extractor cannot honour.
-    A truthy non-string used to reach ``.lower()`` and exit 1 with a traceback."""
+    A truthy non-string would otherwise reach ``.lower()`` and exit 1 with a traceback."""
     _profile_on_main(
         parity_repo,
         "[review]\n[[review.reviewers]]\nname = \"gpt\"\n"
@@ -969,8 +969,8 @@ def test_two_reviewers_cannot_claim_one_brief(tmp_path):
 def test_duplicate_reviewer_names_refuse_before_any_brief_is_written(
     parity_repo, tmp_path, no_gh
 ):
-    """Two same-named reviewers used to produce two lanes and ONE brief file:
-    whichever wrote last handed its contract to both reviewers. Fail closed, and
+    """Two same-named reviewers would produce two lanes and ONE brief file:
+    whichever wrote last hands its contract to both reviewers. Fail closed, and
     leave no half-assembled output behind."""
     _profile_on_main(
         parity_repo,

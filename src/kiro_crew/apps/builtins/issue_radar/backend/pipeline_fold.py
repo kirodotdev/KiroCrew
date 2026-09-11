@@ -145,7 +145,7 @@ def _printable(raw: Any, limit: int = 160) -> str:
     Truncation happens LAST, and after redaction specifically: cutting first could
     split a credential so that only its tail survives to be matched, leaving the
     head in the output. Cutting last also keeps a multi-character sequence from
-    being bisected into a fragment the filter no longer recognises.
+    being bisected into a fragment the filter does not recognise.
     """
     if raw is None:
         return ""
@@ -334,8 +334,8 @@ def _extract_pr(record: dict[str, Any]) -> int | None:
     all three and every caller applies it to every event.
 
     Free prose is deliberately NOT parsed. Some records spell the number only in a
-    sentence ("PR 5327 head abc1234"), but the same prose also says things like
-    "rebased over PR 5191" -- so a text pattern yields a confidently WRONG link,
+    sentence ("PR <n> head <sha>"), but the same prose also says things like
+    "rebased over PR <other>" -- so a text pattern yields a confidently WRONG link,
     and an operator who clicks it acts on the wrong pull request. A missing link is
     the safer failure.
     """
@@ -394,7 +394,7 @@ class StepSpec:
     done: frozenset[str]
     skipped: frozenset[str]
     #: Events that are PROGRESS INSIDE the step, neither an entry nor an exit:
-    #: a gate run, a review round, a push answering one. Kept distinct from
+    #: a gate run, a review pass, a push answering one. Kept distinct from
     #: ``skipped`` because "78 gate runs" and "78 items declined" are opposite
     #: facts and a view that conflates them misreports a working step as a
     #: rejecting one.
@@ -911,12 +911,11 @@ class ItemRow:
     """One issue as it appears in a step's table.
 
     Carries the item's identity, its timing and its latest event NAME -- not its
-    whole trail. The trail used to ship here for an expanded-row phase strip that
-    was removed: a strip of the pipeline's internal event names answers a question
-    this level does not ask, and it pushed the cost table below the fold. Shipping
-    a field with no renderer is not free either -- up to 200 events per item across
-    up to 2000 items -- so the field went out with the view that wanted it. Item
-    relationships belong to a dependency view, which Issue Radar already owns.
+    whole trail. The trail does NOT belong here: a strip of the pipeline's internal
+    event names answers a question this level does not ask, and it pushes the cost
+    table below the fold. Shipping a field with no renderer is not free either --
+    up to 200 events per item across up to 2000 items. Item relationships belong to
+    a dependency view, which Issue Radar already owns.
     """
 
     number: int

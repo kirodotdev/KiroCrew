@@ -1,7 +1,7 @@
 import { useState, useRef, useReducer, useEffect, useLayoutEffect, memo, useMemo, useCallback, useId, Fragment } from 'react'
 import { createPortal } from 'react-dom'
 import { LayoutGroup, AnimatePresence, motion } from 'framer-motion'
-import { Plus, X, Pin, Monitor, Eye, EyeOff, VenetianMask, Ghost, Droplet, FolderPlus, MessageSquare, MessageSquarePlus, MessagesSquare, Folder, ChevronRight, ChevronDown, ChevronUp, Clock, Pencil, BrushCleaning, Link2, Circle, MoreVertical, Tag as TagIcon, Columns3, GripVertical, Zap, Check, Copy, ListFilter, List, Loader, Loader2, Settings, RotateCcw, Bot, ExternalLink, Cpu, GitMerge, Workflow, CircleDot, Users, TriangleAlert, Goal, MessageCircleQuestionMark, ShieldCheck, Repeat, Server } from 'lucide-react'
+import { Plus, X, Pin, Monitor, Eye, EyeOff, VenetianMask, Ghost, Droplet, FolderPlus, MessageSquare, MessageSquarePlus, MessagesSquare, Folder, ChevronRight, ChevronDown, ChevronUp, Clock, Pencil, BrushCleaning, Link2, Circle, MoreVertical, Tag as TagIcon, Columns3, GripVertical, Zap, Check, Copy, List, Loader, Loader2, Settings, RotateCcw, Bot, ExternalLink, Cpu, GitMerge, Workflow, CircleDot, Users, TriangleAlert, Goal, MessageCircleQuestionMark, ShieldCheck, Repeat, Server } from 'lucide-react'
 import GithubLogo from '../components/icons/GithubLogo'
 import GitlabLogo from '../components/icons/GitlabLogo'
 import { FolderBody } from '../components/FolderBody'
@@ -13,7 +13,10 @@ import { DndContext, closestCenter, pointerWithin, useDroppable, DragOverlay, Me
 import { SortableContext, verticalListSortingStrategy, useSortable } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useNavigate } from 'react-router-dom'
 import { shallowEqual } from 'react-redux'
+import { settingsPath } from '../components/settingsPath'
+import { SETTINGS_CREW_MEMBERS_PREVIEW_ID } from '../hooks/useSettingHighlight'
 import { useAppDispatch, useAppSelector } from '../store'
 import { useConnected } from '../hooks/useConnected'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuSub, DropdownMenuSubTrigger, DropdownMenuSubContent } from '../components/ui/dropdown-menu'
@@ -34,7 +37,7 @@ import { boardCollapseKey, boardColumnFromDroppableId, loadBoardFolderCollapse, 
 import { slotChannelLabel, slotChannelNamespace } from '../utils/channelOrigin'
 import { toolStatusLabel } from '../utils/toolStatusLabel'
 import { sessionRefBlockReason, type SessionRefBlockReason } from '../utils/sessionRefs'
-import { SearchInput, Input, Btn, IconButton, IconButtonGroup, Badge } from '../components/ui'
+import { SearchInput, Input, Btn, IconButton, IconButtonGroup } from '../components/ui'
 import SimpleSelect from '../components/SimpleSelect'
 import FolderConfigModal from '../components/FolderConfigModal'
 import ModelDropdownList from '../components/ModelDropdownList'
@@ -56,6 +59,9 @@ import { platformShortcut } from '../utils/platform'
 import { useDocumentImeLatch, useImeGuard } from '../hooks/useImeGuard'
 import { useIsMobile } from '../hooks/useIsMobile'
 import { usePointerDrag } from '../hooks/usePointerDrag'
+import ResizeHandle from '../components/ResizeHandle'
+import { SearchFilterBar, FilterMenuButton, FilterChip, FILTER_CHIP_ROW_CLS, FILTER_MENU_LABEL_CLS, FILTER_MENU_CONTENT_CLS } from '../components/SearchFilterBar'
+import { LIST_SHELL_CLS, LIST_HEADER_CLS, LIST_TITLE_CLS, LIST_BODY_CLS, ROW_BOX_CLS, ROW_IDLE_CLS, ROW_ACTIVE_CLS, ROW_META_CLS, ROW_TITLE_CLS, ROW_STATUS_CLS } from '../components/listShell'
 import { safeSetItem } from '../utils/safeStorage'
 import { PINNED_SESSION_ORDER_CHANGED_EVENT, PINNED_SESSION_ORDER_KEY, movePinnedSession, persistPinnedSessionOrder, readPinnedSessionOrder, reconcilePinnedSessionOrder } from '../utils/pinnedSessionOrder'
 import { LAYOUT } from '../components/layout'
@@ -142,14 +148,34 @@ const RENAME_MAX_H = 120
  *  rect measurement) is disabled — the IssueList/PrList ANIM_CAP pattern. */
 const SIDEBAR_ANIM_CAP = 200
 
-const ROW_META_CLS = 'text-[10px] leading-[12px]'
-const ROW_TITLE_CLS = 'text-[13px] leading-[20px]'
-const ROW_STATUS_CLS = 'text-[11px] leading-[16px]'
+/** Rows at or past this paint ordinal share ONE `orderStamp`, so an insertion
+ *  or reorder above them does not re-render them: they snap into their new
+ *  position instead of springing there.
+ *
+ *  `orderStamp` exists so a displaced row re-renders and framer measures it
+ *  (see SessionRowProps). Stamped as a plain ordinal, a New Chat landing at the
+ *  top of a 160-session sidebar shifts every ordinal by one and voids all 160
+ *  memo boundaries in one commit — 160 row bodies, 160 layout measurements and
+ *  a group-wide spring — for a change whose visible effect is a handful of rows
+ *  sliding down by one slot. The rows below the fold are displaced too, but
+ *  nobody sees them move, so their spring buys nothing.
+ *
+ *  48 rows is roughly two sidebar viewports of 56px rows: the visible
+ *  displacement stays continuous (the persistent-element rule in
+ *  website/AGENTS.md is about what the user can see move), while the per-insert
+ *  cost is bounded by this constant instead of growing with the session count.
+ *  The deliberate casualty: a user scrolled deep into the list sees rows beyond
+ *  the window snap rather than slide when something above them moves. The
+ *  ordinal-bump above the window still has its usual cost, so this is a bound,
+ *  not a fix for rows inside it. Pinned by ChatSidebar.rowMemo.test.tsx. */
+export const SIDEBAR_DISPLACEMENT_WINDOW = 48
 
-/* A SECOND surface now tracks these three sizes: the Notes app's left rail
+/* ROW_META_CLS / ROW_TITLE_CLS / ROW_STATUS_CLS come from components/listShell,
+ * shared with the Crew Members roster so the two lists sit on one type scale. */
+/* A SECOND surface tracks the three listShell row sizes: the Notes app's left rail
  * (`apps/md-notebook/constants.ts`, `RAIL_TYPE`) mirrors them so the two
  * sidebars read as one scale. The agreement is by copied value, not a shared
- * token — nothing goes red if these move. Change a size here and update
+ * token — nothing goes red if these move. Change a size in listShell and update
  * `RAIL_TYPE` in the same commit, or the rail silently diverges. */
 
 /** The secondary line's three shapes, as whole class strings. The eight status
@@ -1408,12 +1434,13 @@ export const sessionRowRenderProbe: { current: ((slotKey: string) => void) | nul
 interface SessionRowProps {
   slot: Slot
   /** Render-order stamp: increments per row in paint order across the whole
-   *  sidebar. A row whose on-screen position moves (rows above it added,
-   *  removed or reordered) gets a changed stamp and re-renders — framer's
-   *  layout="position" spring only measures a component that re-renders, so
-   *  without this the memo boundary would swallow the re-render and displaced
-   *  rows would snap into place instead of animating. Rows above the change
-   *  keep their stamp and still bail out. */
+   *  sidebar, clamped at SIDEBAR_DISPLACEMENT_WINDOW. A row whose on-screen
+   *  position moves (rows above it added, removed or reordered) gets a changed
+   *  stamp and re-renders — framer's layout="position" spring only measures a
+   *  component that re-renders, so without this the memo boundary would
+   *  swallow the re-render and displaced rows would snap into place instead
+   *  of animating. Rows above the change keep their stamp and still bail out;
+   *  so do rows past the window, which snap by design. */
   orderStamp: number
   /** False above SIDEBAR_ANIM_CAP rows or under prefers-reduced-motion:
    *  the shell computes the gate once so every row's layout spring,
@@ -1959,7 +1986,7 @@ const SessionRow = memo(function SessionRow({
           <ContextMenuTrigger asChild>
         <div ref={dndRow ? setNodeRef : undefined} {...(dndRow ? listeners : {})}
           data-draggable={(!isRenaming).toString()}
-          className={`session-row group relative flex items-start pl-3.5 pr-3 py-2 rounded-md text-sm transition-all select-none ${isActive ? !connected ? 'session-active text-text-strong bg-accent-subtle cursor-not-allowed' : 'session-active text-text-strong bg-accent-subtle cursor-pointer' : !connected ? 'text-muted opacity-50 cursor-not-allowed' : 'text-muted hover:text-text hover:bg-bg-hover cursor-pointer'} ${goalLoopStalled ? 'session-loop-stalled' : ''} ${rowColor ? 'session-colored' : ''} ${rowColor && colorMode === 'gradient' ? 'session-gradient' : ''} ${isDragging ? 'opacity-40' : ''} ${revealFlash ? `session-reveal-flash${revealFlash === 'fade' ? ' session-reveal-flash-fade' : ''}` : ''}`}
+          className={`session-row group relative flex items-start ${ROW_BOX_CLS} text-sm transition-all select-none ${isActive ? !connected ? `session-active ${ROW_ACTIVE_CLS} cursor-not-allowed` : `session-active ${ROW_ACTIVE_CLS} cursor-pointer` : !connected ? 'text-muted opacity-50 cursor-not-allowed' : `${ROW_IDLE_CLS} cursor-pointer`} ${goalLoopStalled ? 'session-loop-stalled' : ''} ${rowColor ? 'session-colored' : ''} ${rowColor && colorMode === 'gradient' ? 'session-gradient' : ''} ${isDragging ? 'opacity-40' : ''} ${revealFlash ? `session-reveal-flash${revealFlash === 'fade' ? ' session-reveal-flash-fade' : ''}` : ''}`}
           style={boostStyle as React.CSSProperties}
           draggable={(!dndRow && !isRenaming) && (connected || isActive)}
           {...offlineProps(connected, 'switch sessions')}
@@ -2257,12 +2284,6 @@ const SessionRow = memo(function SessionRow({
                     {s.memory_mode === 'temporary' && <span className="text-aim" title={i18nT('pages.chatSidebar.temporary_no_memory_reads_or_writes')}><VenetianMask size={10} /></span>}
                   </>}
               {s.mode === 'orchestrator' && <span className="px-1 py-0 rounded bg-accent/15 text-accent font-medium" title={i18nT('pages.chatSidebar.autopilot_mode')}>{i18nT('pages.chatSidebar.autopilot')}</span>}
-              {/* The row badge stays just "Crew": this line already carries several
-               *  chips, and by the time a session exists the mode is no longer a
-               *  decision, so a second visible tag costs more room than it earns.
-               *  The experimental status leads the tooltip here, and is carried
-               *  visibly on the create menu, which is where the choice is made. */}
-              {s.mode === 'crew' && <Badge variant="warn" className="px-1 py-0 rounded font-sans" title={`${i18nT('pages.chatSidebar.experimental')} · ${i18nT('pages.chatSidebar.crew_mode')}`}>{i18nT('pages.chatSidebar.crew')}</Badge>}
               {/* Trailing meta grouped under ONE ml-auto: two sibling auto
                *  margins would split the free space and strand the timestamp
                *  mid-row.
@@ -3081,6 +3102,18 @@ function ChatSidebar({
     try { return new URLSearchParams(window.location.search).get('history') === '1' }
     catch { return false }
   })
+  // The main session search is the broad entry point. Carry it into Older
+  // Sessions when that pane opens, then keep following it while both controls
+  // are visible. The history field can still be refined independently: only a
+  // later edit to the main search intentionally replaces that refinement.
+  const openHistoryPane = useCallback(() => {
+    setHistoryFilter(slotFilter)
+    setHistoryOpen(true)
+    dispatch(fetchHistory(false))
+  }, [dispatch, slotFilter])
+  useEffect(() => {
+    if (historyOpen) setHistoryFilter(slotFilter)
+  }, [historyOpen, slotFilter])
   // The toggle below fetches when it OPENS the pane, so a pane that starts open
   // has never fetched and would render its empty state over real history.
   useEffect(() => {
@@ -3417,7 +3450,7 @@ function ChatSidebar({
       <button
         type="button"
         data-testid={`older-sessions-hint-${lane}`}
-        onClick={() => { setHistoryOpen(true); dispatch(fetchHistory(false)) }}
+        onClick={openHistoryPane}
         className="mt-1 mx-1 px-2 py-1.5 text-left text-[12px] text-muted hover:text-accent hover:bg-accent-subtle rounded-md cursor-pointer bg-transparent border-none transition-colors"
       >
         {i18nT('pages.chatSidebar.show_all_older_sessions')}
@@ -3514,6 +3547,14 @@ function ChatSidebar({
       onWidthChangeRef.current?.(w)
     },
   })
+  // Arrow-key resize for the shared handle: the same clamp a drag applies,
+  // persisted at once since a key press has no "release" to persist on.
+  const nudgeSidebar = useCallback((dx: number) => {
+    const w = Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, sidebarWidthRef.current + dx))
+    setSidebarWidth(w)
+    safeSetItem(SIDEBAR_LS_KEY, String(w))
+    onWidthChangeRef.current?.(w)
+  }, [])
 
   // Unmount guard: if the sidebar unmounts mid-drag (collapse / route change),
   // onEnd never fires — setPointerCapture dies with the element — so the global
@@ -5116,26 +5157,30 @@ function ChatSidebar({
     onError: onNewChatError,
   })
 
-  // Crew Mode: multi-topic chat — the agent runs only in sub-sessions
-  // (topics); the session itself is an engineered routing pipeline.
+  // Crew Members: the create menu's crew entry no longer creates anything. Crew
+  // Mode (a `mode: 'crew'` session fanning topics out to sub-sessions) is
+  // retired in favour of the Crew Members page, where each member is a
+  // standing agent with its own DM thread — so the entry is a DOOR to that
+  // page, kept in this menu because this is where people learned to look
+  // for "crew".
   //
-  // Preview-gated: the create-menu entry below only renders once the operator
-  // opts in at Settings > Developer > Feature Previews. `usePreviewFlag` rather than a bare
-  // read because the sidebar does not remount when that toggle flips.
+  // Always rendered, even while the page is still preview-gated: the flag
+  // only decides WHERE the click lands. On, it opens `/members`. Off, it
+  // opens Settings > Developer > Feature Previews with the crew card scrolled
+  // into view and ringed (`useSettingHighlight`), so the user turns the page
+  // on from the very switch that holds it instead of reading a toast about
+  // one. `usePreviewFlag` rather than a bare read because the sidebar does
+  // not remount when that toggle flips.
   const crewPreview = usePreviewFlag(PREVIEW_CREW)
+  const navigate = useNavigate()
+  const openCrewMembers = () => {
+    navigate(crewPreview ? '/members' : settingsPath({ tab: 'developer', highlight: SETTINGS_CREW_MEMBERS_PREVIEW_ID }))
+  }
   // Separate flag, separate feature: this one holds "New chat on crew", which
   // dispatches a session to another MACHINE. Its toggle is in Settings > Remote
   // crews rather than Settings > Developer > Feature Previews, because it only means
   // anything to someone who already has a crew connected.
   const remoteCrewChatPreview = usePreviewFlag(PREVIEW_REMOTE_CREW_CHAT)
-  const createCrewMutation = useMutation({
-    mutationFn: () => {
-      setNewChatError('')
-      return dispatch(createSlot({ agent: defaultAgent || undefined, mode: 'crew' })).unwrap()
-    },
-    onSuccess: focusComposer,
-    onError: onNewChatError,
-  })
 
   // Create default chat session mutation
   const createChatMutation = useMutation({
@@ -5436,12 +5481,22 @@ function ChatSidebar({
   const startsAutomaticSection = useCallback((list: readonly Slot[], index: number) => (
     !searchRanked && index > 0 && pinned.has(list[index - 1].key) && !pinned.has(list[index].key)
   ), [searchRanked, pinned])
+  // Read through a ref, not the dependency array: `slotFolders` and
+  // `pinnedOrder` are rebuilt whenever the slot list changes, so a callback
+  // closing over them takes a new identity on EVERY slots frame — and this
+  // callback is a prop of every SessionRow, so one unstable reference voids
+  // all N memo boundaries per frame and defeats both the row memo and the
+  // displacement window for any membership change. The handler runs only on
+  // a keypress, where the latest values are what it wants anyway.
+  const keyboardReorderInputsRef = useRef({ searchRanked, pinnedOrder, slotFolders, reorderPinned })
+  keyboardReorderInputsRef.current = { searchRanked, pinnedOrder, slotFolders, reorderPinned }
   const reorderPinnedByKeyboard = useCallback((
     key: string,
     container: string,
     delta: -1 | 1,
     row: HTMLElement,
   ) => {
+    const { searchRanked, pinnedOrder, slotFolders, reorderPinned } = keyboardReorderInputsRef.current
     if (searchRanked) return
     const rendered = new Set(sessionRowsInScope(row).map(el => el.dataset.sessionRow || ''))
     const peers = pinnedOrder.filter(candidate => rendered.has(candidate) && (container === 'flat'
@@ -5450,13 +5505,16 @@ function ChatSidebar({
     const target = peers[index + delta]
     if (index < 0 || !target) return
     reorderPinned(key, target)
-  }, [searchRanked, pinnedOrder, slotFolders, reorderPinned])
+  }, [])
 
   let sessionRowOrderStamp = 0
   const renderSessionRow = (s: Slot, _indent: number, showDivider: boolean, scope = 'list', navScope = scope, holdContainer = navScope) => {
     const renamingHere = renamingSlot === s.key && renameScope === scope
+    // Clamped, not raw: rows past the window share a stamp and bail out of a
+    // displacement above them (see SIDEBAR_DISPLACEMENT_WINDOW).
+    const orderStamp = Math.min(sessionRowOrderStamp++, SIDEBAR_DISPLACEMENT_WINDOW)
     return (
-      <SessionRow key={s.key} slot={s} orderStamp={sessionRowOrderStamp++}
+      <SessionRow key={s.key} slot={s} orderStamp={orderStamp}
         showDivider={showDivider} scope={scope} navScope={navScope} holdContainer={holdContainer}
         isActive={activeSlot === s.key} connected={connected} isOut={poppedOut.has(s.key)}
         isPinned={pinned.has(s.key)} isUnread={unreadSet.has(s.key)} isRunning={runningSet.has(s.key)}
@@ -5961,27 +6019,24 @@ function ChatSidebar({
 
   return (
     // stable theming hook 'sidebar' — see website/docs/theming-contract.md
-    <div ref={sidebarRootRef} onPointerOver={onRootPointerOver} onPointerLeave={releaseHoverPin} className="sidebar sidebar-inner bg-bg-elevated border border-border rounded-xl shadow-sm flex flex-col shrink-0 relative h-full" style={{ width: sidebarWidth }}>
-      {/* Drag handle — Pointer-Events column resize (mouse + touch + pen).
-          role="separator" gives it correct ARIA; touch-action:none so a touch
-          drag resizes the panel instead of scrolling the page. Pointer capture
-          (in usePointerDrag) continues the drag off the thin handle. No
-          keyboard analogue for a drag splitter. */}
-      <div
-        role="separator"
-        aria-orientation="vertical"
-        aria-label={i18nT('pages.chatSidebar.resize_sidebar')}
-        className="sidebar-resize-handle absolute top-0 -right-[2px] w-[5px] h-full cursor-col-resize z-10 group/drag flex items-center justify-center"
-        style={{ touchAction: 'none' }}
-        {...sidebarResize}
-      >
-        {/* Visual bar only — the 5px parent stays full-height as the hit
-            area. The bar's ends are inset by the card's border radius
-            (rounded-xl = 12px, so 24px total) so its accent state spans
-            exactly the straight segment of the card's right border instead
-            of overshooting past the rounded corners. */}
-        <div className="w-[2px] h-[calc(100%-24px)] rounded-full bg-transparent group-hover/drag:bg-accent group-active/drag:bg-accent-hover transition-colors duration-200" />
-      </div>
+    <div ref={sidebarRootRef} onPointerOver={onRootPointerOver} onPointerLeave={releaseHoverPin} className={`${LIST_SHELL_CLS} flex flex-col shrink-0 relative h-full`} style={{ width: sidebarWidth }}>
+      {/* Drag handle — the shared column grip (components/ResizeHandle), so
+          this edge looks and behaves exactly like the Crew Members roster's and
+          the app workspaces'. Positioned absolutely on the card's right border
+          (the default is an in-flow flex sibling); `inset` is the card's
+          rounded-xl radius so the accent bar spans exactly the straight
+          segment of the border. `sidebar-resize-handle` stays as the hook the
+          mobile overlay and the split-pane host use to hide it. */}
+      <ResizeHandle
+        handleProps={sidebarResize}
+        label={i18nT('pages.chatSidebar.resize_sidebar')}
+        onNudge={nudgeSidebar}
+        value={sidebarWidth}
+        min={SIDEBAR_MIN}
+        max={SIDEBAR_MAX}
+        inset={12}
+        className="sidebar-resize-handle absolute top-0 -right-[3px] h-full z-10"
+      />
 
       {/* Header — all elements ("Sessions" title, kebab, New button) centered
           on one line 23px from the panel top (1px card border + mt-0.5, then
@@ -5991,9 +6046,9 @@ function ChatSidebar({
           px-2 is symmetric so the New button ends 9px from the card's right
           edge (8 + 1px border) — the same as its 9px gap to the top edge
           (1px border + mt-0.5 + 6px of the h-10 row around the h-7 button). */}
-      <div className="flex justify-between items-center px-2 mt-0.5 h-10">
+      <div className={LIST_HEADER_CLS}>
         <div className={`flex items-center gap-1.5 min-w-0 flex-1 ${collapsible && !isMobile ? 'pl-9' : 'pl-1.5'}`}>
-          {!tinyHeader && <span className="sessions-panel-title text-sm font-semibold text-text-strong tracking-[.04em] truncate">{i18nT('pages.chatSidebar.sessions')}</span>}
+          {!tinyHeader && <span className={LIST_TITLE_CLS}>{i18nT('pages.chatSidebar.sessions')}</span>}
         </div>
         <div className="flex items-center gap-1.5 shrink-0">
           <DropdownMenu>
@@ -6104,34 +6159,6 @@ function ChatSidebar({
                     <span className="whitespace-normal text-[11px] leading-snug text-muted">{i18nT('pages.chatSidebar.autopilot_desc')}</span>
                   </span>
                 </DropdownMenuItem>
-                {/* Crew Mode is preview-gated (`utils/previewFlags.ts`): the mode
-                 *  is not released, so the menu does not offer it unless the
-                 *  operator opted in at Settings > Developer > Feature Previews. The
-                 *  mutation above stays wired either way, so a session already in
-                 *  crew mode is unaffected — only this ingress disappears.
-                 *
-                 *  CAPTURED: the Feature Previews "See what it looks like" dialog
-                 *  shows a GIF of this menu opening with this entry. A visible
-                 *  change to the menu or the entry makes that picture stale —
-                 *  re-shoot with `scripts/capture-feature-previews.mjs`. */}
-                {crewPreview && (
-                <DropdownMenuItem className="items-start" data-testid="new-crew-chat" onClick={() => { createCrewMutation.mutate() }}>
-                  <Users size={14} className="text-muted mt-[3px] shrink-0" />
-                  <span className="flex min-w-0 flex-col gap-px">
-                    {/* The tag rides the TITLE row, not the gloss below it: this menu
-                     *  is the only point at which the mode is chosen, so a caution
-                     *  placed in the description is read after the click rather than
-                     *  before it. `flex-wrap` so a longer localised label drops the
-                     *  tag onto its own line instead of widening the row past the
-                     *  menu's max-w-[264px] and clipping whichever renders last. */}
-                    <span className="flex flex-wrap items-center gap-x-1.5">
-                      <span>{i18nT('pages.chatSidebar.new_crew_chat')}</span>
-                      <Badge variant="warn" className="px-1 py-0 text-[10px] rounded font-sans" data-testid="crew-experimental-tag">{i18nT('pages.chatSidebar.experimental')}</Badge>
-                    </span>
-                    <span className="whitespace-normal text-[11px] leading-snug text-muted">{i18nT('pages.chatSidebar.crew_desc')}</span>
-                  </span>
-                </DropdownMenuItem>
-                )}
                 {/* Ephemeral session types are grouped one level down: they are two
                  *  spellings of one choice (a session that leaves no lasting memory),
                  *  so listing both at the top level would double the session-type rows
@@ -6183,6 +6210,36 @@ function ChatSidebar({
                   </DropdownMenuSub>
                   )
                 })()}
+                {/* Crew Members is a DOOR, not a create action: it navigates to the
+                 *  Members page (or, while that page is preview-gated, to the
+                 *  Settings card that turns it on — see `openCrewMembers`). It sits
+                 *  among the create entries because this menu is where "crew" was
+                 *  offered until Crew Mode retired, so it is where a returning user
+                 *  looks. Not disabled by `creatingSlot`: it creates nothing.
+                 *
+                 *  CAPTURED: the Feature Previews "See what it looks like" dialog
+                 *  shows the Members page this entry opens. A visible change to
+                 *  that page makes the picture stale — re-shoot with
+                 *  `scripts/capture-feature-previews.mjs`.
+                 *
+                 *  Separators on BOTH sides: every other row here creates something and is
+                 *  named "New …"; this one navigates and is not. Without the rule a
+                 *  reader parsed it as an unnamed create action on every menu open
+                 *  (UX review on #9519). It sits between the session rows and the
+                 *  folder rows, in a group of its own. */}
+                <DropdownMenuSeparator />
+                <DropdownMenuItem className="items-start" data-testid="open-crew-members" onClick={openCrewMembers}>
+                  <Users size={14} className="text-muted mt-[3px] shrink-0" />
+                  <span className="flex min-w-0 flex-col gap-px">
+                    <span>{i18nT('pages.chatSidebar.open_crew_members')}</span>
+                    {/* The gloss tells the truth about where the click lands. While
+                     *  the page is preview-gated the entry detours to the Settings
+                     *  card that turns it on, and a gloss that still promised the
+                     *  page read as "offered and hidden at once" (UX review on
+                     *  #9519) — so it discloses the detour instead. */}
+                    <span className="whitespace-normal text-[11px] leading-snug text-muted">{crewPreview ? i18nT('pages.chatSidebar.open_crew_members_desc') : i18nT('pages.chatSidebar.open_crew_members_gated_desc')}</span>
+                  </span>
+                </DropdownMenuItem>
                 <DropdownMenuSeparator />
                 <DropdownMenuItem onClick={() => { setFolderModal({ mode: 'create', parentId: '' }) }}>
                   <FolderPlus size={14} className="text-muted" /> {i18nT('pages.chatSidebar.new_folder')}
@@ -6241,7 +6298,7 @@ function ChatSidebar({
                  *  their position.
                  *
                  *  Preview-gated on its OWN flag (`utils/previewFlags.ts`), not
-                 *  Crew Mode's: the landing is what is unfinished, since the
+                 *  the Crew Members page's: the landing is what is unfinished, since the
                  *  created session opens in that crew's pane and the local list
                  *  does not yet show live remote sessions. Toggle lives in
                  *  Settings > Remote Instances. */}
@@ -6416,14 +6473,17 @@ function ChatSidebar({
         </div>
       )}
 
-      {/* Search with inline sort/filter control */}
-      <div className="px-2 pt-2 pb-1">
-        <div className="relative">
-          <SearchInput className={`w-full ${slotFilter ? (folders.length > 0 ? '[&>input]:pr-[76px]' : '[&>input]:pr-14') : (folders.length > 0 ? '[&>input]:pr-14' : '[&>input]:pr-9')}`} placeholder={i18nT('pages.chatSidebar.search_sessions')} value={slotFilter} onChange={e => setSlotFilter(e.target.value)} />
-          {slotFilter && (
-            <button type="button" className={`absolute ${folders.length > 0 ? 'right-[56px]' : 'right-8'} top-1/2 -translate-y-1/2 text-muted hover:text-text cursor-pointer bg-transparent border-none p-0 leading-none transition-colors`} onClick={() => setSlotFilter('')} aria-label={i18nT('pages.chatSidebar.clear_search')}><X size={13} /></button>
-          )}
-          <div className="absolute right-1 inset-y-0 flex items-center gap-0.5">
+      {/* Search with inline sort/filter control — the shared list-panel
+          search row (components/SearchFilterBar), also mounted by the Crew
+          Members roster. */}
+      <SearchFilterBar
+        placeholder={i18nT('pages.chatSidebar.search_sessions')}
+        clearLabel={i18nT('pages.chatSidebar.clear_search')}
+        value={slotFilter}
+        onChange={setSlotFilter}
+        trailingCount={folders.length > 0 ? 2 : 1}
+        trailing={(
+          <>
             {/* Flat-view toggle only makes sense when folders exist — without
              *  them the list is already flat. */}
             {folders.length > 0 && (
@@ -6448,29 +6508,18 @@ function ChatSidebar({
             )}
             <DropdownMenu open={filterSortOpen} onOpenChange={setFilterSortOpen}>
               <DropdownMenuTrigger asChild>
-                <button
-                  type="button"
-                  className="relative w-6 h-6 rounded text-muted flex items-center justify-center cursor-pointer transition-colors hover:text-text hover:bg-bg-hover bg-transparent border-none"
+                <FilterMenuButton
                   title={i18nT('pages.chatSidebar.sort_filter_sessions')}
                   aria-label={i18nT('pages.chatSidebar.sort_and_filter_sessions')}
-                >
-                  <ListFilter size={14} />
-                  {filterCounts['unread'] > 0 && (
-                    <span
-                      aria-hidden="true"
-                      className="absolute -top-1 -right-1 min-w-[14px] h-[14px] px-[3px] rounded-full bg-accent text-accent-fg text-[10px] font-semibold leading-[14px] text-center pointer-events-none shadow-[0_0_4px_var(--accent-glow)]"
-                    >
-                      {filterCounts['unread'] > 99 ? '99+' : filterCounts['unread']}
-                    </span>
-                  )}
-                </button>
+                  badge={filterCounts['unread']}
+                />
               </DropdownMenuTrigger>
               {/* max-w keeps the menu inside a phone viewport. Radix sizes the
                   popper wrapper to `max-content`, so the inline pickers' caption
                   sentences (a phone renders them here instead of in a flyout)
                   would otherwise stretch the menu past the screen edge. */}
-              <DropdownMenuContent align="end" className="min-w-[180px] max-w-[calc(100vw-1rem)]">
-                <DropdownMenuLabel className="text-[11px] uppercase tracking-[.04em]">{i18nT('pages.chatSidebar.filter')}</DropdownMenuLabel>
+              <DropdownMenuContent align="end" className={FILTER_MENU_CONTENT_CLS}>
+                <DropdownMenuLabel className={FILTER_MENU_LABEL_CLS}>{i18nT('pages.chatSidebar.filter')}</DropdownMenuLabel>
                 {SESSION_FILTERS.map(filterDef => {
                   const active = activeFilters.has(filterDef.key)
                   const slotCount = filterCounts[filterDef.key] ?? 0
@@ -6621,7 +6670,7 @@ function ChatSidebar({
                   )
                 })}
                 <DropdownMenuSeparator />
-                <DropdownMenuLabel className="text-[11px] uppercase tracking-[.04em]">{i18nT('pages.chatSidebar.sort_by')}</DropdownMenuLabel>
+                <DropdownMenuLabel className={FILTER_MENU_LABEL_CLS}>{i18nT('pages.chatSidebar.sort_by')}</DropdownMenuLabel>
                 {SORT_OPTIONS.map(o => (
                   <DropdownMenuItem
                     key={o.value}
@@ -6733,7 +6782,7 @@ function ChatSidebar({
                 {tagFilterRows.length > 0 && (
                   <>
                     <DropdownMenuSeparator />
-                    <DropdownMenuLabel className="text-[11px] uppercase tracking-[.04em]">
+                    <DropdownMenuLabel className={FILTER_MENU_LABEL_CLS}>
                       {i18nT('pages.chatSidebar.tags')}
                     </DropdownMenuLabel>
                     {tagFilterRows.map(({ tag: t, count, selected }) => (
@@ -6834,9 +6883,9 @@ function ChatSidebar({
                 )}
               </DropdownMenuContent>
             </DropdownMenu>
-          </div>
-        </div>
-      </div>
+          </>
+        )}
+      />
       {/* One aggregate chip in its OWN row, never per-tag chips in the row below.
           AUTOSDE max-two-buttons-per-row grandfathers that row's existing filter
           chips but forbids growing it, and per-tag chips grow it without bound.
@@ -6870,7 +6919,7 @@ function ChatSidebar({
         </div>
       )}
       {activeFilters.size > 0 && (
-        <div className="px-3 pb-1 flex items-center gap-1.5 flex-wrap">
+        <div className={FILTER_CHIP_ROW_CLS}>
           {SESSION_FILTERS.filter(filterDef => activeFilters.has(filterDef.key)).map(filterDef => {
             const slotCount = filterCounts[filterDef.key] ?? 0
             const filterLabel = i18nT(FILTER_LABEL_KEY[filterDef.key])
@@ -6880,18 +6929,13 @@ function ChatSidebar({
             // to a dotless `ı`.
             const clearLabel = i18nT('pages.chatSidebar.clear_named_filter', { filter: filterLabel })
             return (
-              <button
+              <FilterChip
                 key={filterDef.key}
-                type="button"
-                className="inline-flex items-center gap-1 pl-2 pr-1 py-0.5 rounded-full text-[11px] cursor-pointer transition-colors"
-                style={{ background: `color-mix(in srgb, ${filterDef.color} 10%, transparent)`, color: filterDef.color, borderWidth: 1, borderColor: `color-mix(in srgb, ${filterDef.color} 30%, transparent)` }}
-                onClick={() => toggleFilter(filterDef.key)}
-                title={clearLabel}
-                aria-label={clearLabel}
-              >
-                {filterLabel}{filterDef.key === 'recent' ? ` · ${formatRecentWindow(recentWindowMs)}` : ''}{slotCount > 0 ? ` (${slotCount})` : ''}
-                <X size={11} />
-              </button>
+                label={`${filterLabel}${filterDef.key === 'recent' ? ` · ${formatRecentWindow(recentWindowMs)}` : ''}${slotCount > 0 ? ` (${slotCount})` : ''}`}
+                color={filterDef.color}
+                clearLabel={clearLabel}
+                onClear={() => toggleFilter(filterDef.key)}
+              />
             )
           })}
         </div>
@@ -7003,7 +7047,7 @@ function ChatSidebar({
                 <ChatPaneDropZone refusal={draggingRefRefusal} />,
                 chatDropTarget,
               )}
-            <motion.div layoutScroll={rowAnimEnabled} className="flex-1 min-h-0 overflow-y-auto scrollbar-none p-2 flex flex-col" style={{ scrollbarWidth: 'none' }} data-testid="flat-view-lane">
+            <motion.div layoutScroll={rowAnimEnabled} className={`${LIST_BODY_CLS} flex flex-col`} style={{ scrollbarWidth: 'none' }} data-testid="flat-view-lane">
               {/* Flat view renders no folder headers, so the per-folder mount
                *  points for the create-failure notice never exist here — yet
                *  the New menu still offers "New chat in folder". Render the
@@ -7071,7 +7115,7 @@ function ChatSidebar({
           // the sidebar rather than a transient hint. Scrolling itself is
           // untouched — wheel, trackpad, keyboard, and drag-autoscroll all
           // still work, and the list's own overflow is still the affordance.
-          <motion.div layoutScroll={rowAnimEnabled} className="flex-1 min-h-0 overflow-y-auto scrollbar-none p-2 flex flex-col" style={{ scrollbarWidth: 'none' }}>
+          <motion.div layoutScroll={rowAnimEnabled} className={`${LIST_BODY_CLS} flex flex-col`} style={{ scrollbarWidth: 'none' }}>
             {/* Tree-lane fallback, completing the set (flat and board lanes
              *  carry the same): a create into a folder the folder-filter or
              *  hide feature excludes never renders that folder's header, so
@@ -7508,8 +7552,8 @@ function ChatSidebar({
       <div
         role="button"
         tabIndex={0}
-        onClick={() => { setHistoryOpen(!historyOpen); if (!historyOpen) dispatch(fetchHistory(false)) }}
-        onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setHistoryOpen(!historyOpen); if (!historyOpen) dispatch(fetchHistory(false)) } }}
+        onClick={() => { if (historyOpen) setHistoryOpen(false); else openHistoryPane() }}
+        onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); if (historyOpen) setHistoryOpen(false); else openHistoryPane() } }}
         /* pt/pb are 14px, not py-3, so this row's top border lands on the same
            baseline as the nav rail's community row ("Star us · Report issue"):
            both cards sit 8px off the shell floor, the rail spends 8+2+24+10 =

@@ -1,6 +1,6 @@
 """Guard: data-home paths must never be resolved at import time.
 
-Issue #874. ``config_dir()``, ``kiro_sessions_dir()`` and friends read
+``config_dir()``, ``kiro_sessions_dir()`` and friends read
 ``KIROCREW_HOME`` on *every* call. Binding one of them to a module-level constant
 freezes whichever home happened to be active when that module was first
 imported, which silently breaks:
@@ -100,11 +100,11 @@ def _transitive_path_factories() -> frozenset[str]:
     ``Path``-returning function elsewhere in ``src/kiro_crew/`` that calls
     (directly or transitively) any member of the set. This closes the gap where
     accessors like ``kiro_agents_dir_path()`` or ``_subagents_dir()`` resolve
-    through ``kiro_agents_dir()`` or ``data_home()`` but were not themselves in
-    the forbidden set, allowing ``FROZEN = kiro_agents_dir_path()`` at module
-    level without tripping the guard.
+    through ``kiro_agents_dir()`` or ``data_home()`` without being members of the
+    forbidden set themselves, which would let ``FROZEN = kiro_agents_dir_path()``
+    sit at module level without tripping the guard.
 
-    Precision constraints (issue #1059):
+    Precision constraints:
     - Only ``Path``-returning functions are candidates (same restriction as the
       root set -- avoids false-positives on generically-named helpers).
     - A function must CALL a member of the growing set, not merely share a name
@@ -294,19 +294,18 @@ class TestNoImportTimePathResolution:
         assert "config_dir" in _path_factories()
 
     def test_annotated_and_nested_forms_are_detected(self) -> None:
-        """The regex sweep missed these shapes; the AST walk must not."""
+        """An annotated or nested assignment is still a module-level capture."""
         annotated = ast.parse("X: Path = kiro_agents_dir() / 'a'").body[0]
         nested = ast.parse("X = (kiro_sessions_dir() / 'a').resolve()").body[0]
         for node in (annotated, nested):
             assert _called_names(node.value) & _path_factories()
 
     def test_transitive_accessor_is_detected(self) -> None:
-        """Issue #1059: a module-level call to an accessor (not just a paths.py
-        factory) must be detected.
+        """A module-level call to an accessor (not just a paths.py factory) must
+        be detected.
 
-        This is the reproduction from the issue: capturing
-        ``kiro_agents_dir_path()`` at module level freezes the path, and the
-        guard must now catch it via the transitive closure.
+        Capturing ``kiro_agents_dir_path()`` at module level freezes the path, and
+        the transitive closure is what lets the guard see it.
         """
         factories = _transitive_path_factories()
         # Simulate the offending pattern: X = kiro_agents_dir_path()
@@ -388,8 +387,8 @@ class TestNoImportTimePathResolution:
         assert "def-default" in kinds, found
 
     def test_detector_covers_transitive_accessor(self, tmp_path, monkeypatch) -> None:
-        """Issue #1059: a module-level call to an accessor that transitively
-        calls a paths.py factory must be flagged.
+        """A module-level call to an accessor that transitively calls a paths.py
+        factory must be flagged.
         """
         import sys
 
@@ -449,8 +448,8 @@ class TestAccessorsFollowTheLiveHome:
     ``config_dir()`` returns a ``$KIROCREW_HOME`` override immediately, ahead of
     the cached default-home resolution branch, so the override path is live on
     every call. These modules are imported at collection time -- long before the
-    env var below is set -- which is exactly the sequence that used to strand
-    them on the operator's real home.
+    env var below is set -- which is exactly the sequence that strands a
+    module-level capture on the operator's real home.
     """
 
     def test_every_accessor_follows_a_post_import_home_change(self, tmp_path, monkeypatch):
@@ -552,10 +551,10 @@ class TestResolutionDoesNotRepeatStartupMaintenance:
         assert calls, "the first resolution in a process must still perform maintenance"
 
     def test_override_is_never_cached(self, tmp_path, monkeypatch):
-        """A KIROCREW_HOME set after import must still be honoured (#874).
+        """A KIROCREW_HOME set after import must still be honoured.
 
-        Caching would be cheaper but would reintroduce the original bug, so the
-        override branch deliberately delegates on every call.
+        Caching would be cheaper but would freeze the home again, so the override
+        branch deliberately delegates on every call.
         """
         from kiro_crew.config import paths
 

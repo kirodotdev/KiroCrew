@@ -89,7 +89,7 @@ class TestBenignCompositions:
     def test_label_bytes_containing_a_sentinel_do_not_shadow_the_fragment(self):
         """Latent sibling cured by the rightmost-READING probe: an inner
         ``[OPTIONS`` (legal label content -- the trailer grammar only forbids
-        ``[OPTIONS:``) used to win ``rfind`` and the detach point landed
+        ``[OPTIONS:``) must not win ``rfind`` and land the detach point
         MID-LABEL, splitting the genuine marker."""
         text = "prose [OPTIONS: mention [OPTIONS in a label"
         visible, suffix = split_trailing_protocol_suffix(text)

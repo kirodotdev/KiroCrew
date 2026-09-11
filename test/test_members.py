@@ -373,10 +373,10 @@ class TestRecordActivityRotation:
 
 
 class TestOverCapRecordFailsClosed:
-    """#6345: the activity log is agent-writable and its read decides an append.
+    """The activity log is agent-writable and its read decides an append.
 
     ``for line in fh`` would materialise one crafted newline-free line whole.
-    The reader now aborts on an over-cap record, and because the
+    The reader aborts on an over-cap record, and because the
     ``dedupe_session`` probe cannot prove absence from a log it could not
     finish reading, it declines to append rather than risk a duplicate.
     """

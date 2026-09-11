@@ -1376,7 +1376,7 @@ class TestRespawnBackendForStub:
         _backend, _inbox, task = out
         await _drain_task(task)
 
-    # --- validating the replacement's tool set (#6294) -----------------------
+    # --- validating the replacement's tool set ------------------------------
 
     @staticmethod
     def _surface_pair(*, served, published, stub="stub-r8"):
@@ -1499,7 +1499,7 @@ class TestRespawnBackendForStub:
     async def test_an_owner_rekeyed_mid_respawn_is_not_adopted(self, monkeypatch):
         """A claim can retarget this connection during the probe. Both sides of
         the comparison belong to the CAPTURED caller, so across a rekey it
-        describes a principal that no longer owns the stub — and re-probing would
+        describes a principal that does not own the stub — and re-probing would
         race the same way."""
         pool = BackendPool(max_backends=2)
         pool.unreserve = MagicMock()  # type: ignore[method-assign]
@@ -1840,10 +1840,9 @@ class TestReadRssKb:
         assert got == -1 or got > 0
 
     def test_delegates_to_the_shared_current_rss_reader(self, monkeypatch):
-        # The per-platform duplicate that used to live here read ru_maxrss on
-        # macOS -- a peak that never falls. There is now one reader, and this
-        # pins the delegation (and the bytes -> KB conversion) so a second
-        # implementation cannot quietly reappear.
+        # One shared reader backs this. The macOS ru_maxrss variant (a peak
+        # that never falls) must not reappear, so pin the delegation and the
+        # bytes -> KB conversion against a second implementation.
         monkeypatch.setattr(gw, "_proc_rss_bytes", lambda: 4096)
         assert gw._read_rss_kb() == 4
 
@@ -1976,15 +1975,14 @@ class TestZombieDiagnostic:
 
     @pytest.mark.asyncio
     async def test_zombie_dump_survives_a_windows_sharing_violation(self, monkeypatch, tmp_path):
-        # Regression for the Windows write race: the probe baseline and the
-        # zombie dump used to be two back-to-back open-append-close cycles,
-        # and on Windows the second open can land while the first writer's
-        # handle is still closing, failing with a sharing violation
-        # (a PermissionError) that the never-raises writer swallows — losing
-        # the zombie_detected record. Simulate that deterministically by
-        # failing every open of the diagnostic file after the first: with the
-        # records batched through a single open, the dump still lands; with
-        # the old unserialized double-write, it is dropped and this test reds.
+        # The probe baseline and the zombie dump share one open-append-close
+        # cycle. On Windows two back-to-back cycles can collide: the second
+        # open lands while the first writer's handle is still closing and
+        # fails with a sharing violation (a PermissionError) the never-raises
+        # writer swallows, losing the zombie_detected record. Simulate that
+        # by failing every open of the diagnostic file after the first: with
+        # the records batched through a single open, the dump still lands; an
+        # unserialized double-write drops it and this test reds.
         diag = tmp_path / "diag.jsonl"
         monkeypatch.setattr(gw, "_zombie_diagnostic_path", lambda: diag)
         monkeypatch.setattr(gw, "_ZOMBIE_PROBE_INTERVAL_SECS", 0.01)

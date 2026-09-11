@@ -151,8 +151,8 @@ class TestResolveWriteDecisions:
     def test_an_entry_carrying_a_malformed_marker_is_declined(self):
         """A marker we cannot read is a marker we did not write.
 
-        Previously this stamped, because the content beside the malformed key
-        matched our emit. It is unmarked, so it is the user's.
+        The content beside a malformed key may match our emit, but an entry we
+        cannot read is unmarked, so it is the user's.
         """
         assert self._resolve({**self._CANDIDATE, MARKER_KEY: "garbage"}) is None
 
@@ -171,9 +171,9 @@ class TestResolveWriteDecisions:
     def test_content_equality_does_not_widen_the_decline(self):
         """One property, stated once: presence + unmarked is enough to decline.
 
-        Key order, nesting depth and exact byte-equality all used to steer a
-        stamping branch. With that branch gone there is nothing for them to
-        steer, and this pins that no future comparison re-enters through them.
+        Key order, nesting depth and exact byte-equality do not steer the
+        decline: presence plus unmarked is enough, and this pins that no
+        comparison re-enters through them.
         """
         for on_disk in (
             {"headers": {"A": "b"}, "url": "https://u"},

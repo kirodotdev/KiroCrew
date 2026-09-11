@@ -565,7 +565,7 @@ class SessionLifecycleService:
                         self._origin_links.pop(key, None)
                         retired_keys.append(key)
                         # Do not clear _compact_pending_verdict: the identity
-                        # recycle historically preserves that deferred verdict.
+                        # recycle preserves that deferred verdict.
                         doomed.append((key, sess.provider))
                     # Same lock hold as the removals, not down in the shutdown
                     # loop below: that loop awaits, and a replacement session can

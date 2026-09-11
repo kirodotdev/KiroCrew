@@ -160,7 +160,7 @@ def _make_full_l2(root: Path, *, slug: str = "fixture-l2") -> Path:
     """Build a full Level-2 pack in a tmp dir: persona + overlay + both topbars
     + a font + clean overrides.css + an audio manifest, with the §3.1/§3.3
     ``overlays``/``topbar`` manifest declarations populated. This replaces the
-    old shipped-sample regression — sample/test packs no longer live in the
+    old shipped-sample regression — sample/test packs do not live in the
     repo (nothing theme-bearing ships in the wheel), so the full-L2 regression
     value (validates at L2, survives the copy path + re-install, exposes a
     content-bound persona descriptor) is exercised entirely from a fixture."""
@@ -609,7 +609,7 @@ class TestCopyInstalledTheme:
         assert (dst / "theme.json").is_file()
 
     def test_oversized_source_rejected_by_copy_budget(self, tmp_path: Path) -> None:
-        # TOCTOU round 2 (Codex HIGH): a regular file swapped for a huge one
+        # A regular file swapped for a huge one
         # after any earlier walk must not exhaust memory / land in staging —
         # the copy loop enforces a hard cumulative byte ceiling itself.
         from kiro_crew.dashboard.theme_validate import _THEME_TOTAL_BYTES_BY_LEVEL
@@ -628,7 +628,7 @@ class TestCopyInstalledTheme:
     def test_source_containing_themes_dir_rejected(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # Codex HIGH round 3: staging lives inside _themes_dir(), so a source
+        # Staging lives inside _themes_dir(), so a source
         # equal to (or an ancestor of) the themes dir would make the copy walk
         # recursively consume its own staging output (unbounded nesting →
         # ENAMETOOLONG → residue). Must 400 by containment, leaving no residue.
@@ -646,7 +646,7 @@ class TestCopyInstalledTheme:
     def test_install_validates_the_staging_snapshot_not_the_source(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # TOCTOU round 2 (Codex HIGH): validation must run on the private
+        # Validation must run on the private
         # staging copy (immutable to an attacker), NOT on the still-writable
         # source dir — otherwise content swapped in after validation gets
         # promoted unvalidated. Pin the order by capturing the path
@@ -1047,8 +1047,8 @@ class TestDoSCeilings:
 
 
 class TestFullL2Fixture:
-    """Regression for a full Level-2 pack built in a tmp dir. Sample/test packs
-    live OUTSIDE the repo now — nothing theme-bearing ships in the wheel — so
+    """A full Level-2 pack built in a tmp dir. Sample/test packs
+    live OUTSIDE the repo — nothing theme-bearing ships in the wheel — so
     this fixture carries persona + overlays + topbar + a font + an audio
     manifest to exercise the §3.1/§3.3 overlay/topbar/audio manifest
     declarations and the content-bound persona descriptor end to end."""
@@ -1110,7 +1110,7 @@ class TestFullL2Fixture:
 
 # A pack-relative overlay/topbar HTML file set the resolvers can find on disk.
 def _decl_pack(root: Path, files: dict[str, object] | None = None) -> Path:
-    """Bare directory with the given rel-path files (str|bytes). Used to back
+    """Bare directory with the given rel-path files (str|bytes). Backs
     the manifest declaration validators, which resolve ``src`` against disk."""
     d = root / "decl-pack"
     d.mkdir(parents=True, exist_ok=True)
@@ -1497,7 +1497,7 @@ class TestFontRoleRejectedAtInstall:
     most likely to be mistyped, and `_theme_asset_descriptor`'s lenient
     coercion (covered by `TestFontRoles` above, which must keep passing
     unchanged) made the failure silent: the mono face renders as Sans while
-    Mono keeps the built-in JetBrains Mono (#2750). Unlike that read path,
+    Mono keeps the built-in JetBrains Mono. Unlike that read path,
     `_validate_theme_dir` reads `theme.json` from disk, so these build a real
     on-disk pack rather than passing an in-memory manifest."""
 
@@ -1748,7 +1748,7 @@ class TestDeleteLock:
 
 
 class TestServingReadNolink:
-    """Codex HIGH round 4: _resolve_theme_asset CHECKS the path but the route
+    """_resolve_theme_asset CHECKS the path but the route
     OPENED it later with a plain read — a swap-to-symlink in the window was
     followed (credential exfil via the asset endpoint). Serving reads now go
     through _read_theme_bytes_nolink (O_NOFOLLOW + containment)."""
@@ -1788,7 +1788,7 @@ class TestServingReadNolink:
 
 
 class TestCssParserCorpus:
-    """Shared-corpus guard for the two theme-CSS parsers (PR #107 arbiter item).
+    """Shared-corpus guard for the two theme-CSS parsers.
 
     The install-time denylist (``_validate_overrides_css``) and the runtime
     positive-selector scoper (useTheme.tsx) implement different models BY

@@ -179,7 +179,7 @@ class TestEnableWarnsHooksNeedRestart:
     directly -- but the gateway's hook reconciler (``apps/hook_reconcile.py``)
     picks up the on-disk change within a poll interval, and a stopped gateway
     loads it on next start. Printing only "enabled <app>" reads as though the new
-    code were already live; the notice states the actual timing (issue #7880).
+    code were already live; the notice states the actual timing.
     """
 
     HOOKS = {
@@ -206,7 +206,7 @@ class TestEnableWarnsHooksNeedRestart:
         # Names the declared hooks, so the operator can tell which code changed.
         assert "routes" in out and "on_startup" in out
         # States the actual timing: a running gateway reconciles the change
-        # automatically (issue #7880's reconciler), and a stopped one loads it on
+        # automatically (the reconciler picks it up), and a stopped one loads it on
         # next start -- so it must NOT tell the operator a manual restart is
         # required (that was true only before the reconciler landed).
         assert "reloads them automatically" in out

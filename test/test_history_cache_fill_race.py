@@ -418,7 +418,7 @@ class TestGenerationIsProcessWide:
         """``list_sessions``' title fallback reads ``_msg_cache`` under the
         file stem; its hit must consult the generation too, or a cross-
         instance preserved-mtime rewrite leaves the session titled by a first
-        user message the transcript no longer contains."""
+        user message the transcript does not contain."""
         reader = ConversationLog(base_dir=tmp_path)
         writer = ConversationLog(base_dir=tmp_path)
         key = "dashboard:title-probe"
@@ -446,8 +446,8 @@ class TestPopWidthMatchesBumpWidth:
         """``search_sessions`` keys its fold by ``path.stem`` (list_sessions'
         ``meta["key"]``) while writers invalidate under the LOGICAL key. The
         identity-wide pops are what connect them; without them a rewrite that
-        restores the mtime leaves the fold matching text the file no longer
-        has."""
+        restores the mtime leaves the fold matching text the file does not
+        have."""
         log = ConversationLog(base_dir=tmp_path)
         key = "dashboard:probe"
         log.append(key, "user", "SECRETNEEDLE alpha")
@@ -793,7 +793,7 @@ class TestPreservedMtimeFillRace:
         """The snippet memo (filled by the same fold) must not outlive a rewrite.
 
         A stale surviving entry here shows the user a preview line quoting text
-        the transcript no longer contains. The snippet store happens inside
+        the transcript does not contain. The snippet store happens inside
         ``_build_folded`` BEFORE the folded store, so the proxy injects the
         rewrite at the snippet publish — strictly inside the fold's
         stat → read → publish window.
@@ -863,7 +863,7 @@ class TestPreservedMtimeFillRace:
     def test_cross_instance_preserved_mtime_rewrite_unhits_search_memos(
         self, tmp_path: Path
     ) -> None:
-        """The end-to-end issue #4414 scenario, no injection required.
+        """The end-to-end scenario, no injection required.
 
         A long-lived reader instance holds warm fold/snippet memos; a
         short-lived instance over the same directory performs a

@@ -101,7 +101,7 @@ class TestDeliberateOmissions:
 
     ``model`` would compete with the dedicated model verb. ``permissions`` is NOT
     in this list — see :class:`TestPermissionsProjection`; it is absent only when
-    the spec gives nothing to derive it from. ``mcpServers`` is no longer in this
+    the spec gives nothing to derive it from. ``mcpServers`` is not in this
     list either: omitting it left a KAS session with ``@server`` refs naming
     nothing — see :class:`TestMcpServersProjection`.
     """

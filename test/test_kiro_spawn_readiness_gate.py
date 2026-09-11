@@ -4,10 +4,10 @@
 runs unauthenticated (``--no-interactive`` does not suppress it and there is no
 opt-out env var). ``/api/models`` is polled every 8s while the model list is
 degraded and ``/api/sessions/usage`` every 30s, so an unauthenticated gateway
-used to spawn a browser-opening CLI on every cycle — dozens of browser windows
-and an unusable dashboard.
+that spawns the CLI on every cycle opens dozens of browser windows and leaves
+the dashboard unusable.
 
-These tests pin the fix: both handlers consult the prerequisite readiness latch
+These tests pin the guard: both handlers consult the prerequisite readiness latch
 BEFORE resolving or spawning the binary, and return the shared 503 instead.
 
 The signed-out cases drive the REAL ``reject_if_kiro_unverified`` (never a
@@ -146,12 +146,12 @@ async def test_api_models_still_reaches_spawn_path_when_ready() -> None:
 async def test_refused_call_is_visible_in_the_log(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """The gate must SAY it refused (issue #4577).
+    """The gate must SAY it refused.
 
     Every post-spawn failure branch in ``api_models`` logs a WARNING, so a reader
     who greps the log for that endpoint and finds nothing concludes the endpoint is
-    healthy. When the gate refused silently that conclusion was exactly inverted,
-    and it cost hours of misdiagnosis. An absent log line gets read as evidence.
+    healthy. A silent refusal inverts that conclusion, because an absent log line
+    gets read as evidence.
     """
     request = _request(_make_signed_out_kiro_prerequisite())
     request.path = "/api/models"

@@ -427,7 +427,7 @@ class TestValidateFilePath:
 
     def test_linked_ancestor_is_refused_before_realpath(self, tmp_path, monkeypatch):
         """realpath resolves the whole ancestor chain, so it IS the outbound
-        SMB probe when an ancestor junction targets a UNC share (#5962).
+        SMB probe when an ancestor junction targets a UNC share.
         Wiring realpath to explode proves the walk returned first."""
         from kiro_crew import platform_compat
 
@@ -727,7 +727,7 @@ class TestValidateFilePath:
         assert validate_file_path("~/doc.txt") is None
 
     def test_unc_home_sessions_transcript_is_refused(self, monkeypatch):
-        """#6733: a kiro-cli session transcript under a Windows roaming-profile
+        """A kiro-cli session transcript under a Windows roaming-profile
         (UNC) home is refused by the UNC trusted-root gate, because the sessions
         dir is not one of unc_probe_allowed's admitted roots. This is the exact
         refusal the usage page counts as ``refused_transcripts`` instead of
@@ -735,8 +735,8 @@ class TestValidateFilePath:
         string through validate_file_path -- so it runs on a POSIX host; the
         Windows CI shard confirms the native backslash form.
 
-        The fix for #6733 does NOT relax this refusal: admitting the sessions
-        dir to the gate is a separate trust decision (open issue #8079). This
+        This refusal is NOT relaxed: admitting the sessions
+        dir to the gate is a separate trust decision. This
         test therefore pins that the transcript STAYS refused.
         """
         from kiro_crew import platform_compat
@@ -780,7 +780,7 @@ class TestSafeReadFile:
     def test_sensitive_refusal_message_escapes_the_path(self, monkeypatch):
         """The refused path is caller/attacker influenced and the message reaches
         log records via ``exc_info``; a raw newline in it would forge a second
-        record (refs #6371, the #6281/#6315 log-forgery class).
+        record (the log-forgery class).
         """
         forged = "/tmp/pods/wt-evil\nWARNING forged: reclaim authorized"
         # The message carries the RESOLVED path (drive-lettered and
@@ -800,18 +800,24 @@ class TestSafeReadFile:
         """
         import errno as _errno
 
+        from kiro_crew import platform_compat as _pc
+
         f = tmp_path / "map.json"
         f.write_text("{}", encoding="utf-8")
         resolved = os.path.realpath(str(f))
 
-        real_open = os.open
+        real_no_reparse = _pc.open_file_no_reparse
 
-        def _eloop(path, flags, *args, **kwargs):
+        # Patch the open the code actually performs, not one platform's
+        # implementation of it: the Windows arm of open_file_no_reparse reaches
+        # CreateFileW, so a patch on os.open would simulate the race on POSIX only
+        # and the assertion would pass for the wrong reason on the Windows shard.
+        def _eloop(path, *args, **kwargs):
             if str(path) == resolved:
                 raise OSError(_errno.ELOOP, "symlink swapped in")
-            return real_open(path, flags, *args, **kwargs)
+            return real_no_reparse(path, *args, **kwargs)
 
-        monkeypatch.setattr(os, "open", _eloop)
+        monkeypatch.setattr(_pc, "open_file_no_reparse", _eloop)
         with pytest.raises(PermissionError, match="refusing to follow symlink") as excinfo:
             safe_read_file(str(f))
         message = str(excinfo.value)
@@ -861,18 +867,22 @@ class TestSafeReadFileBytesWithIdentity:
     def test_symlink_swap_at_final_component_is_refused(self, tmp_path, monkeypatch):
         # validate_file_path resolves symlinks, so the refusal is reached by
         # making the post-validation open report ELOOP -- the TOCTOU shape the
-        # O_NOFOLLOW guard exists for.
+        # final-component guard exists for. Patching open_file_no_reparse rather
+        # than os.open keeps the simulation faithful on Windows, whose arm of that
+        # helper reaches CreateFileW instead.
         f = _write(tmp_path / "a.txt", "payload")
         import errno as _errno
 
-        real_open = os.open
+        from kiro_crew import platform_compat as _pc
 
-        def _eloop(path, flags, *args, **kwargs):
+        real_no_reparse = _pc.open_file_no_reparse
+
+        def _eloop(path, *args, **kwargs):
             if _same(str(path), str(f)):
                 raise OSError(_errno.ELOOP, "symlink swapped in")
-            return real_open(path, flags, *args, **kwargs)
+            return real_no_reparse(path, *args, **kwargs)
 
-        monkeypatch.setattr(os, "open", _eloop)
+        monkeypatch.setattr(_pc, "open_file_no_reparse", _eloop)
         with pytest.raises(PermissionError, match="refusing to follow symlink"):
             safe_read_file_bytes_with_identity(str(f), {_identity(f)})
 
@@ -1135,6 +1145,27 @@ class TestSafeCopyFileNolink:
         assert Path(copied).parent == dest
         assert Path(copied).suffix == ".png"
 
+    def test_binary_payload_is_copied_byte_for_byte(self, tmp_path):
+        """A media file must survive the copy exactly, 0x1A and CRLF included.
+
+        This function exists to hand a large binary to a subprocess BY PATH, so
+        byte fidelity is its whole contract. Two Windows-specific hazards can break
+        it while every text-content test still passes: a CRT descriptor in text mode
+        translates CRLF, and it reports end-of-file at the first 0x1A. The copy loop
+        reads with a raw ``os.read``, which honours that mode, so the descriptor has
+        to be opened in binary — a payload of ASCII would not detect either fault.
+        """
+        payload = b"\x89PNG\r\n\x1a\n" + bytes(range(256)) + b"\r\ntail\x1amore\x00\xff"
+        src = tmp_path / "clip.mp4"
+        src.write_bytes(payload)
+        dest = tmp_path / "dest"
+        dest.mkdir()
+
+        copied = safe_copy_file_nolink(str(src), str(dest))
+
+        assert copied is not None
+        assert Path(copied).read_bytes() == payload
+
     def test_copy_is_private(self, tmp_path):
         if _IS_WINDOWS:
             pytest.skip("POSIX mode bits are not meaningful on Windows")
@@ -1252,14 +1283,19 @@ class TestSafeReadFileInternal:
             "_emit_internal_read_audit",
             lambda read_id, outcome: outcomes.append(outcome) or True,
         )
-        real_open = os.open
+        from kiro_crew import platform_compat as _pc
 
-        def _eacces(path, flags, *args, **kwargs):
+        real_no_reparse = _pc.open_file_no_reparse
+
+        # Patch the seam the read performs. os.open is only the POSIX arm of
+        # open_file_no_reparse, so a patch there would leave the Windows shard
+        # opening the real file and classifying it by contents.
+        def _eacces(path, *args, **kwargs):
             if str(path).endswith(os.path.basename(rel)):
                 raise PermissionError("denied")
-            return real_open(path, flags, *args, **kwargs)
+            return real_no_reparse(path, *args, **kwargs)
 
-        monkeypatch.setattr(os, "open", _eacces)
+        monkeypatch.setattr(_pc, "open_file_no_reparse", _eacces)
         assert safe_read_file_internal("unreadable") is None
         assert outcomes == ["unreadable"]
 
@@ -1501,9 +1537,8 @@ class TestScriptHookStorePersistence:
         assert store.update(hook.id, {"timeout": 300}).timeout == 300
 
     def test_a_bool_timeout_is_rejected(self, tmp_path):
-        # The deliberate tightening the old test anticipated (issue #5444):
         # ``bool`` is an ``int`` subclass, but ``True`` as a timeout is
-        # meaningless, so the shared validator now rejects it at the update
+        # meaningless, so the shared validator rejects it at the update
         # boundary rather than silently landing a 1-second timeout.
         store = ScriptHookStore(tmp_path)
         hook = store.create({"name": "h1", "command": "true"})
@@ -1950,15 +1985,19 @@ class TestSafeReadFileSymlinkRace:
     def test_eloop_after_canonicalization_is_refused(self, tmp_path, monkeypatch):
         import errno as _errno
 
-        f = _write(tmp_path / "a.txt", "x")
-        real_open = os.open
+        from kiro_crew import platform_compat as _pc
 
-        def _eloop(path, flags, *args, **kwargs):
+        f = _write(tmp_path / "a.txt", "x")
+        real_no_reparse = _pc.open_file_no_reparse
+
+        # The seam is open_file_no_reparse, which is what carries the
+        # final-component refusal on both platforms; os.open is only its POSIX arm.
+        def _eloop(path, *args, **kwargs):
             if isinstance(path, str) and _same(path, str(f)):
                 raise OSError(_errno.ELOOP, "swapped for a symlink")
-            return real_open(path, flags, *args, **kwargs)
+            return real_no_reparse(path, *args, **kwargs)
 
-        monkeypatch.setattr(os, "open", _eloop)
+        monkeypatch.setattr(_pc, "open_file_no_reparse", _eloop)
         with pytest.raises(PermissionError, match="refusing to follow symlink"):
             safe_read_file(str(f))
 
@@ -2082,7 +2121,7 @@ class TestSafeWriteFileNolinkXattrs:
         caller-supplied content, so it shares ``atomic_write``'s allowlist:
         replaying ``security.capability`` there would attach the old file's
         privileges to the new bytes, and ``security.ima``/``security.evm`` are
-        signatures over bytes that no longer exist. The ACL beside them is still
+        signatures over bytes that are gone. The ACL beside them is still
         carried, so this is a filter and not a blanket stop.
         """
         self._require_xattrs()

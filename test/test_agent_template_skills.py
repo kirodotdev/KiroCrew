@@ -3,8 +3,7 @@
 Three layers, matching the three holes this feature closes:
 
 * READ — ``agent_discovery`` derives an agent's skills from its ``skill://``
-  resources (previously only ``builder-mcp --skill-name-filter`` was parsed, so
-  every ordinary agent reported zero skills).
+  resources.
 * WRITE — ``_shared.apply_skill_mapping`` turns catalog keys into ``skill://``
   resources without disturbing ``file://`` steering globs or hand-authored URIs.
 * RUNTIME — ``SkillsLoader.get_context(only=…)`` and the ``build_session_context``
@@ -501,7 +500,7 @@ class _FakeRequest:
         self.app = {"state": state}
         self.query: dict[str, str] = {}
         # api_agent_detail reads X-Session-Key via _read_session_key(request)
-        # to scope the skill catalog to the requesting slot (#2457).
+        # to scope the skill catalog to the requesting slot.
         self.headers: dict[str, str] = {}
 
     async def json(self):
@@ -562,9 +561,8 @@ class TestSessionContextGate:
         )
 
     def test_mapped_custom_agent_gets_its_skills_on_cc(self, fake_home):
-        """Previously a custom agent got NO skills at all. With a mapping it now
-        gets exactly the mapped set on the CC backend (which does not read agent
-        ``resources``)."""
+        """A custom agent with a mapping gets exactly the mapped set on the CC
+        backend (which does not read agent ``resources``)."""
         skills_root = fake_home / "skills"
         _make_skill(skills_root, "alpha")
         _make_skill(skills_root, "beta")

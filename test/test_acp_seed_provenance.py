@@ -510,7 +510,7 @@ class TestProvenanceRecord:
         A cap can only ever evict entries whose file still EXISTS -- the dead ones
         are already gone -- and those are precisely the adoptable orphans this
         module exists to keep. Evicting one makes its path unrecorded, which is
-        worse in both directions at once: its own owner can no longer recognize it
+        worse in both directions at once: its own owner cannot recognize it
         on reset, so it leaks, and no later session is permitted to repair it
         either, so whatever it holds (a stale ``availableModels``, a stale
         ``permissions.defaultMode``, up to an inherited ``bypassPermissions``)
@@ -674,8 +674,8 @@ class TestCrossSessionAdoption:
         """Re-seeding an orphan is also the only way to clean one up.
 
         ``bypassPermissions`` takes every tool call out of the host gate. A seed
-        carrying it that outlived its session used to be frozen in place and kept
-        being read by the adapter; adoption overwrites the mode with THIS session's.
+        carrying it that outlives its session would otherwise stay frozen in place
+        and be read by the adapter; adoption overwrites the mode with THIS session's.
         """
         monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {"claude_code": list(_SERVED)})
         first = _client(tmp_path, permission_mode="bypassPermissions")
@@ -1158,7 +1158,7 @@ class TestTheGrantIsATransaction:
     A grant is only real once it is on disk, so both directions have to commit or
     roll back together: a seed with no durable record is a permission mode nothing
     can clean up, and a revoked record with the file still there is a grant that
-    outlives what it described. These pin the two cases where the pairing used to
+    outlives what it described. These pin the two cases where the pairing can
     come apart -- a sidecar publish that fails, and a teardown that is cancelled.
     """
 
@@ -1347,7 +1347,7 @@ class TestTheGrantIsATransaction:
     def test_a_project_file_at_the_move_aside_name_is_not_clobbered(self, tmp_path, monkeypatch):
         """A file already at the fixed ``.crew-gc`` name must survive the capture.
 
-        The move-aside destination used to be a FIXED sibling (``<name>.crew-gc``),
+        The move-aside destination must not be a FIXED sibling (``<name>.crew-gc``),
         which is itself a pathname a project can own -- and ``os.replace`` onto it
         clobbers it atomically, relocating the very data loss the inode-pin exists to
         prevent. The capture now lands on a fresh ``mkstemp`` name that provably did

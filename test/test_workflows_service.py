@@ -1216,7 +1216,7 @@ async def test_rerun_with_invalid_edited_source_rejected(monkeypatch) -> None:
 # originating slot AND (2) auto-run an agent turn so the launching agent actually
 # interprets the result. Drives the REAL WorkflowService -> runner -> on_done ->
 # inject_workflow_result(on_injected=...) wiring; only _run_chat is stubbed (no
-# model). Regression for "workflow result never reaches the agent to interpret".
+# model). Pins that the workflow result reaches the agent to interpret.
 # --------------------------------------------------------------------------- #
 
 

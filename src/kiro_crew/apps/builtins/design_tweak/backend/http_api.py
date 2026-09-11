@@ -593,7 +593,7 @@ class Handler(BaseHTTPRequestHandler):
                     row["previewUrl"] = static_url
                     row["previewMode"] = "static"
             elif row.get("previewUrl"):
-                # Never return a persisted value that no longer proves loopback.
+                # Never return a persisted value that does not prove loopback.
                 row["previewUrl"] = ""
             projects.append(row)
         return self._json(

@@ -75,6 +75,10 @@ P0_ROUTES: tuple[tuple[str, str], ...] = (
     ("POST", "/backup/{account}/run"),
     ("POST", "/backup/{account}/nightly"),
     ("POST", "/backup/{account}/restore"),
+    # Not account-scoped: an install is the same install whichever account it
+    # backs up to, so a name per account would mint the confusion the install id
+    # exists to remove.
+    ("POST", "/install/label"),
 )
 
 #: Every POST is a mutation and must also refuse restricted sessions.
@@ -1092,7 +1096,7 @@ class TestShares:
         assert [e["key"] for e in shares.list_shares(ACCOUNT)] == ["first.txt"]
 
     def test_a_corrupt_share_store_refuses_the_mutation_and_is_left_intact(self, tmp_path):
-        # #7805: a corrupt ledger is refused, never rewritten. The old tolerance
+        # A corrupt ledger is refused, never rewritten. The old tolerance
         # read it as empty and let the whole-file rewrite destroy records a
         # truncated JSON still held verbatim -- and this ledger is the only local
         # record of live presigned URLs, which are unrevokable bearer grants.
@@ -1126,8 +1130,8 @@ class TestShares:
         with pytest.raises(_json.JSONDecodeError):
             shares.record_share(account=ACCOUNT, section="drive", key="x.txt", expires_secs=3600)
         assert (tmp_path / "shares.json").read_bytes() == b"\xff\xfe not utf8"
-        # And the DISPLAY read tolerates the same bytes (new with #7805:
-        # UnicodeDecodeError previously escaped it): the Access section renders
+        # And the DISPLAY read tolerates the same bytes (a
+        # UnicodeDecodeError escaped it): the Access section renders
         # empty rather than failing on a file only a person can repair.
         assert shares.list_shares(ACCOUNT) == []
 
@@ -1445,7 +1449,7 @@ class TestDriveIamTier:
                 "DriveObject"
             ):
                 for arn in statement["Resource"]:
-                    # Partition-neutral (round 21): the scoping that matters is
+                    # Partition-neutral: the scoping that matters is
                     # the bucket-name pattern, not the commercial partition.
                     assert arn.startswith("arn:*:s3:::kirocrew-drive-"), arn
         # Round-14 pin: the recommended tier can WRITE backups but never read
@@ -1917,13 +1921,24 @@ class TestRound17Hardening:
         staging.mkdir(parents=True)
         target = tmp_path / "victim.txt"
         target.write_text("original", encoding="utf-8")
-        (staging / "a.tar.gz").symlink_to(target)
+        # Named the way the code names it -- the staging filename is derived from the
+        # whole key, so the guard is only exercised if the decoy sits where the
+        # download would actually land.
+        (staging / backup._staging_name("snapshots/a.tar.gz")).symlink_to(target)
 
         monkeypatch.setattr(backup, "app_data_dir", lambda name: tmp_path)
         with mock.patch.object(backup.storage, "get_file") as get_file:
             with pytest.raises(ValueError):
                 backup.restore_download(
-                    "p", "us-west-2", "b", "snapshots/a.tar.gz", account="111122223333"
+                    "p",
+                    "us-west-2",
+                    "b",
+                    "snapshots/a.tar.gz",
+                    account="111122223333",
+                    # Flat legacy-shaped key: the gate refuses anything it cannot prove is
+                    # this install's own, and this test is about the staging path, not
+                    # ownership, so it states the override.
+                    foreign_ok=True,
                 )
         get_file.assert_not_called()
         assert target.read_text(encoding="utf-8") == "original"
@@ -1942,16 +1957,77 @@ class TestRound17Hardening:
 
         with mock.patch.object(backup.storage, "get_file", side_effect=fake_get):
             out = backup.restore_download(
-                "p", "us-west-2", "b", "snapshots/a.tar.gz", account="111122223333"
+                "p",
+                "us-west-2",
+                "b",
+                "snapshots/a.tar.gz",
+                account="111122223333",
+                # Flat legacy-shaped key: the gate refuses anything it cannot prove is
+                # this install's own, and this test is about the staging path, not
+                # ownership, so it states the override.
+                foreign_ok=True,
             )
 
-        final = tmp_path / "restore" / "a.tar.gz"
+        final = tmp_path / "restore" / backup._staging_name("snapshots/a.tar.gz")
         assert out["path"] == str(final)
         assert final.read_text(encoding="utf-8") == "payload"
+        # Not the bare basename: two installs can name an archive the same, and the
+        # staged copies must not land on one file.
+        assert final.name != "a.tar.gz" and final.name.endswith("-a.tar.gz")
         # The download target was NOT the final name.
         assert seen and seen[0] != str(final)
         # No temp residue.
-        assert [p.name for p in (tmp_path / "restore").iterdir()] == ["a.tar.gz"]
+        assert [p.name for p in (tmp_path / "restore").iterdir()] == [final.name]
+
+    def test_the_staged_name_stays_within_the_filesystem_limit(self):
+        """A near-max key segment must still produce a file, not ENAMETOOLONG.
+
+        The prefix is added to a basename the route's validator already allows up to
+        255 characters, so an unbounded name overruns NAME_MAX and the restore fails
+        with an OSError instead of staging anything. Only a co-tenant or the console
+        can place such a name: this app's own writer produces short fixed ones.
+        """
+        from kiro_crew.apps.builtins.aws_control.backend import backup
+
+        longest = "x" * 255
+        name = backup._staging_name(f"snapshots/{'a' * 32}/{longest}")
+        assert len(name.encode("utf-8")) <= backup.STAGING_NAME_MAX_BYTES
+        # Truncation must not undo the collision fix: the digest covers the whole key.
+        other = backup._staging_name(f"snapshots/{'b' * 32}/{longest}")
+        assert name != other
+        assert len(other.encode("utf-8")) <= backup.STAGING_NAME_MAX_BYTES
+
+    def test_same_named_archives_from_two_installs_stage_side_by_side(self, tmp_path, monkeypatch):
+        """Namespacing creates this collision, so the staging name has to resolve it.
+
+        Two installs each write ``kirocrew-snapshot-X.tar.gz`` under their own
+        prefix. Restoring both must leave two files: a basename-only destination
+        would have the second silently replace the first.
+        """
+        from pathlib import Path
+
+        from kiro_crew.apps.builtins.aws_control.backend import backup
+
+        monkeypatch.setattr(backup, "app_data_dir", lambda name: tmp_path)
+        keys = [f"snapshots/{'a' * 32}/same.tar.gz", f"snapshots/{'b' * 32}/same.tar.gz"]
+
+        def fake_get(profile, region, bucket, section, key, dest, *, account=None):
+            Path(dest).write_text(key, encoding="utf-8")
+
+        with mock.patch.object(backup.storage, "get_file", side_effect=fake_get):
+            paths = [
+                backup.restore_download(
+                    "p", "us-west-2", "b", k, account="111122223333", foreign_ok=True
+                )["path"]
+                for k in keys
+            ]
+
+        assert len(set(paths)) == 2
+        staged = sorted(p.name for p in (tmp_path / "restore").iterdir())
+        assert len(staged) == 2, staged
+        # Each file still holds the archive it was downloaded for.
+        for key, path in zip(keys, paths):
+            assert Path(path).read_text(encoding="utf-8") == key
 
     def test_every_string_display_field_is_redacted(self):
         planted = "AKIAIOSFODNN7EXAMPLE"
@@ -2006,7 +2082,15 @@ class TestRound18Hardening:
         with mock.patch.object(backup.storage, "get_file") as get_file:
             with pytest.raises(ValueError):
                 backup.restore_download(
-                    "p", "us-west-2", "b", "snapshots/a.tar.gz", account="111122223333"
+                    "p",
+                    "us-west-2",
+                    "b",
+                    "snapshots/a.tar.gz",
+                    account="111122223333",
+                    # Flat legacy-shaped key: the gate refuses anything it cannot prove is
+                    # this install's own, and this test is about the staging path, not
+                    # ownership, so it states the override.
+                    foreign_ok=True,
                 )
         get_file.assert_not_called()
         # Nothing was written through the link.
@@ -2308,7 +2392,15 @@ class TestRound23Junctions:
         ):
             with pytest.raises(ValueError):
                 backup.restore_download(
-                    "p", "us-west-2", "b", "snapshots/a.tar.gz", account="111122223333"
+                    "p",
+                    "us-west-2",
+                    "b",
+                    "snapshots/a.tar.gz",
+                    account="111122223333",
+                    # Flat legacy-shaped key: the gate refuses anything it cannot prove is
+                    # this install's own, and this test is about the staging path, not
+                    # ownership, so it states the override.
+                    foreign_ok=True,
                 )
         get_file.assert_not_called()
 
@@ -3056,7 +3148,7 @@ class TestBootstrapReauthorizes:
 
     def test_an_account_that_stops_resolving_mid_create_is_audited(self):
         # The other shape the in-lock re-probe returns: not a different triple
-        # but a refusal response, because the profile no longer resolves to the
+        # but a refusal response, because the profile does not resolve to the
         # requested account at all.
         handlers = _registered()
         # The code here is deliberately NOT `account_unavailable`: `_resolve_target`
@@ -3270,7 +3362,7 @@ class TestRound36Hardening:
 
     def test_a_timezone_less_last_run_reads_as_due_instead_of_crashing(self):
         # The nastier half of this class: a timezone-LESS ISO stamp parses fine,
-        # so it escapes the try/except entirely and used to raise TypeError on the
+        # so it escapes the try/except entirely and would raise TypeError on the
         # aware subtraction that sits OUTSIDE the guard -- in the nightly loop,
         # every wake, so a backup the owner enabled silently never ran.
         from kiro_crew.apps.builtins.aws_control.backend import backup

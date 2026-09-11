@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 #: session key touched and never evict; a bounded LRU keeps hot sessions
 #: resident while giving the working set a deterministic ceiling.
 #:
-#: This bound no longer covers the METADATA cache, which is sized separately by
+#: This bound does not cover the METADATA cache, which is sized separately by
 #: ``_METADATA_CACHE_MAX`` below for the reasons documented there.
 _TRANSCRIPT_CACHE_MAX = 256
 

@@ -295,7 +295,7 @@ class TestTagVocabulary:
     async def test_update_tag_redacts_credential_straddling_truncation(self, tmp_path, monkeypatch):
         """Redaction must run BEFORE truncation: a credential crossing the
         60-char cut would otherwise be sliced into a fragment the scanners
-        no longer recognize, persisting a raw key prefix."""
+        do not recognize, persisting a raw key prefix."""
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
         app = _make_tags_app(state)
@@ -1232,7 +1232,7 @@ class TestNonObjectBodiesAcrossConvertedHandlers:
     ``[]`` / ``"s"`` / ``5`` / ``true`` / ``null`` are all VALID JSON, so
     ``request.json()`` returned them and the ``.get()`` (or ``in``) that each
     handler performs next raised from OUTSIDE the parse ``try`` -- a 500 for
-    what is really malformed client input (issue #5587). Driven through a real
+    what is really malformed client input. Driven through a real
     client so the shared guard's 64 KB pre-decode cap is exercised on the wire,
     which is how these endpoints now read their body; the cap decision for each
     site is recorded in ``_CAP_REGISTER`` in ``test_json_object_body_guard.py``.

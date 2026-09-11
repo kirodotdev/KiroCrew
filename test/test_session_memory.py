@@ -682,10 +682,9 @@ def test_slot_spend_applies_per_row_timestamp_cutoff(
 ) -> None:
     """A row inside the boundary shard but older than the cutoff is NOT counted.
 
-    Regression pin: the old _slot_spend in session_memory filtered by shard file
-    date only, not by each row's timestamp. A shard named 2026-08-01 (within
-    window) could contain rows timestamped 2026-07-25 (outside the per-row
-    cutoff) which were then over-counted.
+    Filtering by shard-file date alone would count a row timestamped before the
+    cutoff: a shard named for one day can hold rows from an earlier day, outside
+    the per-row cutoff.
     """
     import json as _json
     from datetime import datetime, timedelta, timezone

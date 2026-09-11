@@ -253,7 +253,7 @@ def _dir_fingerprint(directory: Path) -> Tuple:
 
     Per file: ``st_mtime_ns + st_size + st_ctime_ns`` plus the name set, so a
     create / edit / truncate / delete all change the fingerprint. ``st_ctime_ns``
-    is included specifically so a ``chmod`` that makes a previously-UNREADABLE
+    is included specifically so a ``chmod`` that makes an unreadable
     profile readable busts the cache: chmod/chown/rename-in-place bump ctime but
     NOT mtime/size, so without ctime the unreadable fallback would stay cached
     forever after a permission fix and the profile's restrictions would remain
@@ -366,7 +366,7 @@ def _bump_profile_generation() -> None:
 def poll_profiles_fresh() -> None:
     """Re-stat the profiles directory and reload if it changed.  MAY BLOCK.
 
-    This is the filesystem half of the #8623 notification edge, kept SEPARATE from
+    This is the filesystem half of the notification edge, kept SEPARATE from
     :func:`governance_answer_generation` so the read is never accidentally coupled to
     a directory walk.  ``_dir_fingerprint`` runs ``iterdir`` plus a ``stat`` per file,
     which is exactly the "large synchronous file IO or filesystem walks" that
@@ -394,8 +394,8 @@ def governance_answer_generation() -> int:
 
     ``GET /api/dashboard/config`` derives fields (``social_share_enabled``) from the
     ceiling ∩ profile intersection, so a consumer watching for "the answer may have
-    changed" has to watch both layers.  Watching the ceiling counter alone is issue
-    #8623: a profile-layer tightening is enforced on the next decision but never
+    changed" has to watch both layers.  Watching the ceiling counter alone is a bug:
+    a profile-layer tightening is enforced on the next decision but never
     reaches the dashboard's cache invalidation, so the UI keeps offering an entry
     policy has withdrawn.
 
@@ -563,11 +563,11 @@ class ProfileStore:
             self._reload(directory)
             # A new snapshot is published as of the line above, so the generation
             # describes PUBLISHED snapshots rather than attempted reloads. This is
-            # the notification edge issue #8623 was missing: enforcement already
-            # observed the new profiles (the authorization path calls this method),
-            # but nothing told a cache-invalidation consumer that the governance
-            # answer may have moved. Bumped INSIDE the reload lock, so two threads
-            # cannot publish two snapshots and record one bump.
+            # the notification edge the ceiling counter lacks: enforcement
+            # observes the new profiles (the authorization path calls this method),
+            # but without it nothing tells a cache-invalidation consumer that the
+            # governance answer may have moved. Bumped INSIDE the reload lock, so
+            # two threads cannot publish two snapshots and record one bump.
             _bump_profile_generation()
             # Commit the fingerprint. An unreadable/malformed file is a
             # bind-preserving deny-all (fail-closed), so the cached state is the SAFE

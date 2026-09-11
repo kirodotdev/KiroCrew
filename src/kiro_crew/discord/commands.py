@@ -9,7 +9,7 @@ published as real slash commands):
   !compact     — trigger context compaction
   !model       — pick the model from a button list
   !status      — show runtime stats
-  !sessions    — continue a recent dashboard session here (owner only)
+  !sessions    — continue a recent dashboard or same-DM session here (owner only)
   !link        — mirror this conversation's dashboard tab back here
   !unlink      — stop mirroring
   !stop        — stop the current reply and clear the queue (alias: !cancel)
@@ -153,7 +153,7 @@ COMMAND_SPEC: tuple[tuple[str, str], ...] = (
     ("compact", "Compress the context when it gets long"),
     ("model", "Choose the model from a list"),
     ("status", "Show gateway runtime stats and the approval mode"),
-    ("sessions", "Continue a recent or matching dashboard session here (owner only)"),
+    ("sessions", "Continue a recent or matching session here (owner only)"),
     ("link", "Resume mirroring dashboard replies here (on by default)"),
     ("unlink", "Stop mirroring dashboard replies here"),
     ("stop", "Stop the current reply and clear the queue"),

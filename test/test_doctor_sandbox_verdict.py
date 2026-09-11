@@ -3,9 +3,8 @@
 The probe (`sandbox.detect_backend`) answers for the PROBING process, not for
 the gateway service. On a host that restricts unprivileged user namespaces the
 kirocrew-userns AppArmor profile is ATTACHED to the resolved kirocrew launcher
-script (#3463 — replacing an earlier, unattached design applied purely via a
-systemd `AppArmorProfile=` unit directive, which was found not to actually
-confine the gateway's sandbox probe). A `kirocrew doctor` invocation that did
+script, not via a systemd `AppArmorProfile=` unit directive, which does not
+confine the gateway's sandbox probe. A `kirocrew doctor` invocation that did
 not go through that exact attached path is unconfined regardless of how
 healthy the service's own sandbox is.
 
@@ -50,7 +49,7 @@ def _arm_apparmor_denial(monkeypatch: pytest.MonkeyPatch) -> None:
 def _install_profile(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, *, attached_to: Path | None
 ) -> None:
-    """Write the service profile, optionally ATTACHED to *attached_to* (#3463)."""
+    """Write the service profile, optionally ATTACHED to *attached_to*."""
     profile = tmp_path / apparmor.PROFILE_NAME
     attachment = f' "{attached_to}"' if attached_to is not None else ""
     profile.write_text(
@@ -121,7 +120,7 @@ class TestUnverifiableFromShell:
         the one context the path attachment confines. The retired
         ``systemd-run --property=AppArmorProfile=`` form labels only the unit's
         top-level process, so the forked probe under it stays unconfined and
-        the recipe would reproduce the very bug the attachment fixed (#3463).
+        the recipe would reproduce the very bug the attachment fixed.
         """
         _arm_apparmor_denial(monkeypatch)
         launcher = _resolve_launcher(monkeypatch, tmp_path)
@@ -186,7 +185,7 @@ class TestGenuinelyBroken:
     def test_profile_attached_to_a_stale_path_is_broken(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys
     ) -> None:
-        """#3463: a moved/rebuilt venv silently stops the attachment matching —
+        """A moved/rebuilt venv silently stops the attachment matching —
         the kernel reports no error, so this must be caught by comparing
         against the CURRENTLY resolved path, not just "is there an attachment
         clause at all"."""
@@ -260,10 +259,10 @@ class TestNonFaultStates:
 
 class TestServiceProfileApplies:
     """`_service_profile_applies` reads the profile's own attachment clause and
-    compares it against the CURRENTLY resolved launcher path (#3463), and then
+    compares it against the CURRENTLY resolved launcher path, and then
     checks the unit does not still carry the retired `AppArmorProfile=`
     directive — a leftover directive silently WINS over the path attachment,
-    which is the very failure #3463 documented."""
+    which is the very failure this guards against."""
 
     def test_matching_attachment_applies(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -279,7 +278,7 @@ class TestServiceProfileApplies:
     def test_leftover_unit_directive_defeats_a_matching_attachment(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        """A hand-edited unit (or an install predating #3463) that still says
+        """A hand-edited unit (or an install predating the path attachment) that still says
         `AppArmorProfile=` overrides the attachment for the SERVICE, so a
         matching attachment alone must not read as healthy."""
         launcher = _resolve_launcher(monkeypatch, tmp_path)
@@ -296,7 +295,7 @@ class TestServiceProfileApplies:
     def test_unit_without_directive_leaves_the_attachment_verdict(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        """A readable unit with no directive — the post-#3463 rendering — must
+        """A readable unit with no directive — the current rendering — must
         not disturb a matching-attachment verdict."""
         launcher = _resolve_launcher(monkeypatch, tmp_path)
         profile = tmp_path / "profile"
@@ -313,7 +312,7 @@ class TestServiceProfileApplies:
     def test_undecodable_unit_bytes_do_not_crash_the_verdict(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        """GPT review round 3 on #3514: UnicodeDecodeError is a ValueError, so
+        """UnicodeDecodeError is a ValueError, so
         an OSError guard alone lets a non-UTF unit crash doctor. The read must
         decode non-throwingly and the verdict must fall out of the (replaced)
         text as usual."""
@@ -364,7 +363,7 @@ class TestServiceProfileApplies:
     def test_an_unresolvable_kirocrew_bin_does_not_apply(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        """``kirocrew_bin()`` can point at a path that no longer exists (an
+        """``kirocrew_bin()`` can point at a path that does not exist (an
         uninstalled or moved venv); that must read as "not applied", not raise."""
         monkeypatch.setattr(service_linux, "kirocrew_bin", lambda: "/nonexistent/kirocrew")
         profile = tmp_path / "profile"

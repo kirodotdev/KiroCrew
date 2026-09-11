@@ -72,7 +72,7 @@ class TestAcpPromptStats:
 
     def test_carry_over_preserves_context_state_intra_session(self):
         """Within ONE session, context state must survive the per-turn re-init
-        (#2932's correct half: a turn boundary must not re-report an empty
+        (a turn boundary must not re-report an empty
         context) while per-turn counters restart at zero."""
         stats = AcpPromptStats(
             event_count=7,
@@ -95,8 +95,8 @@ class TestAcpPromptStats:
         assert carried.tool_calls == []
 
     def test_reset_context_state_drops_session_scoped_fields(self):
-        """At a warm-pool handoff every context field must drop (#2932's bug
-        half: the stats describe whatever the runtime did before the re-bind),
+        """At a warm-pool handoff every context field must drop (the stats
+        describe whatever the runtime did before the re-bind),
         landing on plain dataclass defaults. unknown stays False — the claimed
         runtime serves a fresh never-prompted session, and True would collide
         with the compacted-in-place recycle signal (pct==0 and unknown)."""

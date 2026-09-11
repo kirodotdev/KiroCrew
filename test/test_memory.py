@@ -110,6 +110,31 @@ class TestRecentHistoryCache:
         assert store.read_recent_history(days=0) == ""
         assert "today entry" in store.read_recent_history(days=1)
 
+    def test_dashboard_replacement_invalidates_cache(self, tmp_path):
+        store = MemoryStore(workspace=tmp_path)
+        store.append_history("before replacement")
+        baseline = store.read_recent_history(days=14)
+
+        assert store.write_today_history(
+            "# replacement", expected_baseline=baseline, validate_current=lambda _content: None
+        )
+
+        assert store.read_recent_history(days=14) == "# replacement"
+
+    def test_dashboard_replacement_refuses_a_concurrent_append(self, tmp_path):
+        store = MemoryStore(workspace=tmp_path)
+        store.append_history("before replacement")
+        stale = store.read_recent_history(days=14)
+        store.append_history("concurrent consolidation")
+        current = store.read_recent_history(days=14)
+
+        assert not store.write_today_history(
+            "# stale replacement", expected_baseline=stale, validate_current=lambda _content: None
+        )
+
+        assert store.read_recent_history(days=14) == current
+        assert "concurrent consolidation" in current
+
     def test_source_citations_in_context(self, tmp_path):
         store = MemoryStore(workspace=tmp_path)
         store.write_preferences("# User Preferences\n\n- likes lobsters\n")

@@ -4,7 +4,7 @@ Manual (/compact, !compact, channel commands) and automatic
 (context-threshold) compaction perform the identical operation, so they share
 one wait budget: ``kiro_crew.constants.COMPACT_WAIT_TIMEOUT_SECS``. A shorter
 manual budget reports "Compaction timed out." on work that is still running
-and subsequently succeeds — the budget expires, not the work (issue #2183).
+and subsequently succeeds — the budget expires, not the work.
 
 These tests assert against the shared constant, never a literal value, so
 they keep holding if the budget is later tuned.
@@ -118,7 +118,7 @@ def test_inner_status_wait_never_below_floor_or_non_positive():
 
 
 def test_no_call_site_pins_a_shorter_wait():
-    """Regression guard for issue #2183: no production call site may pass an
+    """Regression guard: no production call site may pass an
     explicit numeric-literal timeout below the shared budget — keyword or
     positional, int or float. Call sites inherit the
     shared default instead of restating the budget. Non-literal arguments
@@ -152,12 +152,12 @@ def test_no_call_site_pins_a_shorter_wait():
     )
 
 
-# ── Post-failure turn budget (issue #3583) ──────────────────────────────────
+# ── Post-failure turn budget ──────────────────────────────────
 #
 # A DIFFERENT budget with a different job: the constant above bounds how long a
 # caller waits for compaction to finish, this one bounds how long a turn waits
 # for the backend after compaction reported `failed`. It exists because that
-# wait was previously unbounded in practice — the read loop drained to the
+# wait is otherwise unbounded in practice — the read loop drains to the
 # caller's full prompt ceiling and never released the slot.
 
 

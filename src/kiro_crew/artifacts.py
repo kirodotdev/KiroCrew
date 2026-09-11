@@ -263,7 +263,7 @@ class ArtifactPublication:
     last_pushed_sha256: str = ""  # concurrency guard for the next version push
     last_synced_kirocrew_version: int = 0
     #: Wrapper envelope revision at the time of the last push — compared against
-    #: ``publish_sync.WRAPPER_REVISION`` to detect wrapper-only staleness (#3373).
+    #: ``publish_sync.WRAPPER_REVISION`` to detect wrapper-only staleness.
     wrapper_revision: int = 0
     # Maps str(kirocrew_version) -> remote_version_number.
     version_map: dict[str, int] = field(default_factory=dict)
@@ -3672,8 +3672,8 @@ class ArtifactFolderStore:
         #: over different JSON paths cannot alias each other's folder ids. In
         #: memory on purpose -- in-flight tasks die with the process, so the
         #: epoch has nothing to survive a restart for. Entries are dropped on
-        #: a confirmed folder delete. Ported from the chat-folder guard
-        #: ``_CHAT_FOLDER_ICON_EPOCHS`` (issue #7991).
+        #: a confirmed folder delete. Mirrors the chat-folder guard
+        #: ``_CHAT_FOLDER_ICON_EPOCHS``.
         self._icon_epochs: dict[str, int] = {}
         self._load()
 

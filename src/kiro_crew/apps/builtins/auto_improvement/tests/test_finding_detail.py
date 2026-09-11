@@ -106,7 +106,7 @@ class TestFindingDetail:
 
     @pytest.mark.asyncio
     async def test_cr_field_is_exposed_as_pr(self, data_home: Path) -> None:
-        """The spine's ledger field is historically ``cr``. The API must surface it
+        """The spine's ledger field is named ``cr``. The API must surface it
         as ``pr`` or the UI never renders a pull-request link."""
         _write_ledger(
             data_home,
@@ -466,8 +466,6 @@ class TestCommitButton:
             src = inspect.getsource(getattr(routes, name))
             # The gate is now ONE shared helper (`_refuse_while_running`) rather than four
             # inline copies — a hand-rolled fourth copy is how the guarded status set drifts.
-            # This test previously grepped for the inline `run_in_progress` literal, and the
-            # refactor tripped it, which is the guard working.
             assert "_refuse_while_running(" in src, f"{name} can act mid-run"
 
         # And the helper itself must still consult the supervisor and refuse with 409.

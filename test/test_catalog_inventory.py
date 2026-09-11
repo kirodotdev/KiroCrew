@@ -435,8 +435,8 @@ class TestPinnedFetchNeverEatsUserData:
     async def test_a_spawn_failure_after_init_leaves_nothing_behind(self, tmp_path, monkeypatch):
         """The exit three rounds of patches all missed.
 
-        Cleanup used to sit on each failure BRANCH, so an exception between
-        `git init` and `git remote add` bypassed every one of them and left a `.git`
+        Cleanup on each failure BRANCH would let an exception between
+        `git init` and `git remote add` bypass every one of them and leave a `.git`
         directory with no origin -- which then wedges each later attempt on
         `unreadable_clone_origin`, a fail-closed path that deliberately does not
         clean up after itself. Cleanup now belongs to the destination's lifetime.
@@ -694,7 +694,7 @@ class TestPinnedInstallNeverReusesAnExistingTree:
 
     @pytest.mark.asyncio
     async def test_a_checkout_already_at_the_pin_is_still_not_reused(self, tmp_path, monkeypatch):
-        """HEAD equality is no longer consulted at all -- it described placement,
+        """HEAD equality is not consulted at all -- it described placement,
         never contents."""
         dest = tmp_path / "source"
         (dest / ".git").mkdir(parents=True)

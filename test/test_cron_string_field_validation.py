@@ -1,7 +1,7 @@
 """Tests for the table-driven string-field validation at the cron persistence
-chokepoint (issue #5782).
+chokepoint.
 
-``_build_job`` and ``_update_job_locked`` now iterate a single
+``_build_job`` and ``_update_job_locked`` iterate a single
 ``_CRON_STRING_FIELD_CAPS`` table to enforce type+length on every
 caller-supplied string field. These tests lock that guarantee:
 
@@ -27,7 +27,12 @@ from kiro_crew.cron import (
     CronJob,
     CronService,
 )
-from kiro_crew.validation import CHANNEL_MAX_LEN, CRON_ADD_SCHEMA, MAX_SHORT_STRING
+from kiro_crew.validation import (
+    CHANNEL_MAX_LEN,
+    CRON_ADD_SCHEMA,
+    MAX_CRON_MESSAGE,
+    MAX_SHORT_STRING,
+)
 
 # Derived from the table (its single source of truth) — the set the anti-drift
 # test checks CronJob's fields against.
@@ -71,10 +76,12 @@ _ADD_EXACT_CAP_IDS = [f[0] for f in _ADD_EXACT_CAP_FIELDS]
 # _update_job_locked validates every table field present in kwargs but only
 # ASSIGNS the documented updatable ones. Exact-cap acceptance on update is
 # therefore only meaningful for fields update actually persists; the rest
-# (created_by, thread_ts, session_key, command, script) are validated-then-
-# ignored, which the reject tests already pin via their job-unchanged asserts.
+# (created_by, session_key, command, script) are validated-then-ignored, which
+# the reject tests already pin via their job-unchanged asserts.
 _UPDATE_ASSIGNED_FIELDS = [
-    f for f in _NEWLY_VALIDATED_FIELDS if f[0] in ("agent_id", "channel", "folder_id", "model")
+    f
+    for f in _NEWLY_VALIDATED_FIELDS
+    if f[0] in ("agent_id", "channel", "folder_id", "model", "thread_ts")
 ]
 _UPDATE_ASSIGNED_IDS = [f[0] for f in _UPDATE_ASSIGNED_FIELDS]
 
@@ -263,6 +270,13 @@ class TestCapAlignment:
         "created_by",
         "session_key",
         "folder_id",
+        # Dashboard-only provenance: only the Schedule-page template gallery
+        # can stamp it, so it is accepted on POST /api/crons but has no
+        # CRON_ADD_SCHEMA (MCP) entry. General ID cap applies.
+        "source_preset",
+        # Dashboard-only prompt snapshot (message-sized cap), same reasoning:
+        # written by the create handler, no CRON_ADD_SCHEMA entry.
+        "source_template_prompt",
         # Secret-grant pins and the requesting session key are written only by
         # the grant endpoint / cron_secret_request tool, never via
         # CRON_ADD_SCHEMA (grants cannot be created through cron_add).
@@ -274,9 +288,15 @@ class TestCapAlignment:
         schema_caps = {spec.name: spec.max_len for spec in CRON_ADD_SCHEMA.fields}
         for field_name, cap in _CRON_STRING_FIELD_CAPS:
             if field_name in self._NO_SCHEMA_FIELDS:
-                assert cap == MAX_SHORT_STRING, (
+                # No-schema fields use the general ID cap, except
+                # source_template_prompt, which snapshots a template PROMPT and
+                # so mirrors the message cap.
+                expected = (
+                    MAX_CRON_MESSAGE if field_name == "source_template_prompt" else MAX_SHORT_STRING
+                )
+                assert cap == expected, (
                     f"{field_name} has no boundary schema entry and must use "
-                    f"MAX_SHORT_STRING, got {cap}"
+                    f"{expected}, got {cap}"
                 )
                 continue
             schema_name = self._SCHEMA_NAME_MAP.get(field_name, field_name)
@@ -313,6 +333,8 @@ class TestAntiDrift:
     # - last_posted_hash: set by dedup logic when a Slack post is delivered
     # - last_failure_hash: set by dedup logic when a failure notification fires
     # - approval_mode: validated by a separate finite-set check, not length
+    # - memory_store: resolved internally from trusted member/session identity;
+    #   never accepted from a cron creation or update caller
     _RUNTIME_ONLY_FIELDS: frozenset[str] = frozenset(
         {
             "id",
@@ -323,6 +345,7 @@ class TestAntiDrift:
             "last_posted_hash",
             "last_failure_hash",
             "approval_mode",
+            "memory_store",
         }
     )
 

@@ -689,7 +689,7 @@ class TestPrListMergeReadiness(unittest.TestCase):
         self.assertEqual(out[1]["pr_merged_at"], "2026-08-03T06:45:33Z")
 
     def test_enrichment_corrects_a_stale_cached_row(self):
-        # The #1265 case: the row was cached while the PR was open, the user armed
+        # The row was cached while the PR was open, the user armed
         # auto-merge from it, and GitHub answered "already merged".
         pulls = [{"number": 1265, "state": "open", "merged_at": None}]
         summaries = {1265: {"additions": 1, "deletions": 0, "changed_files": 1,
@@ -964,7 +964,7 @@ class TestPrAiSummary(unittest.TestCase):
     def test_fingerprint_catches_an_edit_that_changes_no_metadata(self):
         # Editing a comment changes neither its created_at nor the comment count,
         # so a metadata-only digest would keep serving a summary written from text
-        # that no longer exists. The body is hashed, so it cannot.
+        # that is gone. The body is hashed, so it cannot.
         base = routes._pr_ai_fingerprint(self.detail, self.timeline, self.checks)
         edited = list(self.timeline)
         edited[0] = {**edited[0], "body": "Actually this is fine."}

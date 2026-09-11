@@ -3,7 +3,7 @@
 Two families, one module, so one test file. ``/stop``, ``/yolo`` and the
 dashboard-link TTL vocabulary existed as near-verbatim copies in three dispatchers;
 the ``spawn`` / ``cron`` / ``task run`` keyword replies existed only inside
-``slack/handler.py``. These tests pin the behaviour that used to be asserted per
+``slack/handler.py``. These tests pin the behaviour once asserted per
 channel (where the copies could drift), the CONTRACT the hoist has to preserve --
 the ``None`` sentinel meaning "not this command, keep routing", the retryable busy
 answer, and the redaction every reply owes an external surface -- and the two
@@ -470,7 +470,7 @@ class TestLayering:
         assert not offenders, offenders
 
     def test_the_allowed_edge_list_has_no_stale_entries(self) -> None:
-        """An exception that no longer exists must be deleted, not left to rot.
+        """An exception that does not exist must be deleted, not left to rot.
 
         Without this the list only ever grows, and a stale entry silently
         pre-authorizes an edge a future change might reintroduce for a different
@@ -1057,7 +1057,7 @@ class TestListsHostState:
         assert "mine" in out and "somebody elses" in out
 
 
-# ── the manual-/compact capability gate (#8156) ───────────────────────────────
+# ── the manual-/compact capability gate ───────────────────────────────
 
 
 class TestCompactUnsupportedBackend:

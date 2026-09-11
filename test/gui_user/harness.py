@@ -337,6 +337,21 @@ class ScenarioResult:
     summary: str
     status: str  # PASS | FAIL | ERROR | SKIPPED
     attempts: list[AttemptResult] = field(default_factory=list)
+    # Carried through to summary.json so report.py can group by product area
+    # without re-reading the scenario files.
+    feature: str = ""
+    user_story: str = ""
+
+    @classmethod
+    def for_scenario(cls, sc: Scenario, status: str) -> "ScenarioResult":
+        return cls(
+            name=sc.name,
+            tier=sc.tier,
+            summary=sc.summary,
+            status=status,
+            feature=sc.feature,
+            user_story=sc.user_story,
+        )
 
     @property
     def usd(self) -> float:
@@ -532,7 +547,7 @@ class Runner:
         results: list[ScenarioResult] = []
         budget_hit = False
         for sc in scenarios:
-            res = ScenarioResult(name=sc.name, tier=sc.tier, summary=sc.summary, status="SKIPPED")
+            res = ScenarioResult.for_scenario(sc, "SKIPPED")
             results.append(res)
             if budget_hit:
                 continue
@@ -633,26 +648,20 @@ def main(argv: Optional[list[str]] = None) -> int:
             time.sleep(3.0)
             _, path = display.screenshot("dry-run")
             log.write("screenshot", label="dry-run", file=path.name)
-            results.append(
-                ScenarioResult(
-                    sc.name,
-                    sc.tier,
-                    sc.summary,
-                    "SKIPPED",
-                    [
-                        AttemptResult(
-                            "DRY_RUN",
-                            0,
-                            0.0,
-                            0,
-                            0,
-                            0.0,
-                            "",
-                            shots_dir=str(shots.relative_to(args.out)),
-                        )
-                    ],
+            dry = ScenarioResult.for_scenario(sc, "SKIPPED")
+            dry.attempts.append(
+                AttemptResult(
+                    "DRY_RUN",
+                    0,
+                    0.0,
+                    0,
+                    0,
+                    0.0,
+                    "",
+                    shots_dir=str(shots.relative_to(args.out)),
                 )
             )
+            results.append(dry)
         mode = "dry-run"
         usage = Usage()
     else:

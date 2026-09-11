@@ -120,10 +120,10 @@ def test_the_concrete_verdicts_are_spelled_out() -> None:
     and refuse or safely namespace an unidentified caller, so none is
     session-bound — ``kirocrew-work`` refuses outright, since a work-ledger tool
     with no verifiable session has no ledger and no binding to reach.
-    ``kirocrew-computer`` also advertises and consumes the block (#4659 — its
-    pooled attribution is correct for every caller the gateway can name), but
-    it stays session-bound DELIBERATELY, and #5322 did not change that on its
-    own: the per-connection nonce removes the namespace collision on a CURRENT
+    ``kirocrew-computer`` also advertises and consumes the block (its pooled
+    attribution is correct for every caller the gateway can name), but it stays
+    session-bound DELIBERATELY: the per-connection nonce removes the namespace
+    collision on a CURRENT
     gateway, while this classification is what ``seed.py`` turns into a config
     write, and the daemon serving those shared frames may be a pre-nonce one
     ``manager.py`` adopted across an upgrade. Promotion waits on a negotiated

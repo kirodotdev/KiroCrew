@@ -623,9 +623,8 @@ class TestReservationRace:
     ``TurnDriver`` dispatches ``PROMPT_CHOICE`` and only then awaits the decider,
     so the prompt is visible in the room for a whole REST round trip before
     ``decide`` would have registered anything. An answer arriving in that window
-    used to find nothing pending, fall through to the mid-turn path, and be
-    discarded — the user watched their decision do nothing and the tool denied
-    itself minutes later.
+    must still resolve the pending choice, not fall through to the mid-turn path
+    and get discarded while the user waits on a decision that does nothing.
     """
 
     @pytest.mark.asyncio

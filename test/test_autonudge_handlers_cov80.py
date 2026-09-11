@@ -1194,7 +1194,7 @@ async def test_delete_of_an_unknown_loop_is_audited_as_a_noop(
     assert kwargs["session_key"] == ""
 
 
-# --- #9194: an armed auto-nudge loop must read as armed, distinct from none ---
+# --- An armed auto-nudge loop must read as armed, distinct from none ---
 
 
 def _authed_session_monitor_request() -> web.Request:
@@ -1212,7 +1212,7 @@ async def test_session_monitor_read_reports_no_loop_as_not_armed(
 ) -> None:
     """A session with NOTHING armed reads as not armed.
 
-    This is the negative case #9194 turns on: a loop that did not arm must be
+    This is the negative case: a loop that did not arm must be
     distinguishable from one that did. Here no loop exists at all.
     """
     _svc(monkeypatch, _FakeSvc([]))
@@ -1229,8 +1229,8 @@ async def test_session_monitor_read_reports_armed_autonudge_loop(
 ) -> None:
     """A plain auto-nudge loop reads as armed via ``autonudge_loop``.
 
-    Previously this collapsed to ``monitor: None`` — identical to the no-loop
-    case above — which is the observability gap the issue reports.
+    A plain loop must not collapse to ``monitor: None`` — that would be identical
+    to the no-loop case above, the observability gap this pins.
     """
     loop = _loop(slot_key="chat-1-111")
     loop.cycle_count = 4

@@ -12,6 +12,9 @@ import ast
 import asyncio
 from pathlib import Path
 from typing import Any
+from unittest.mock import AsyncMock
+
+import pytest
 
 from kiro_crew.messaging import dispatch as D
 from kiro_crew.messaging.dispatch import ChannelTurn, drive_turn
@@ -205,6 +208,48 @@ def test_the_happy_path_releases_exactly_once(monkeypatch) -> None:
     assert sessions.begin_turns == 1
 
 
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/home/alice/memory.db",
+        "/Users/alice/memory.db",
+        r"C:\Users\alice\memory.db",
+    ],
+)
+def test_private_memory_refusal_hides_paths_and_credentials_before_channel_output(
+    monkeypatch, path
+):
+    from kiro_crew.memory_stores import UnknownMemoryStore
+
+    _patch_pipeline(monkeypatch)
+    secret = "ghp_" + "x" * 36
+    refuse = AsyncMock(
+        side_effect=UnknownMemoryStore(
+            f"Member memory unavailable: cannot read {path}; token={secret}. "
+            "Repair this member's memory. Global Memory V1 was not used."
+        )
+    )
+    monkeypatch.setattr(D, "session_store_for_turn", refuse)
+    sessions = _Sessions()
+    sessions.get_or_create = AsyncMock()
+    renderer = _Renderer()
+    renderer.on_text_chunk = AsyncMock()
+    renderer.on_done = AsyncMock()
+
+    asyncio.run(drive_turn(_turn(renderer), sessions=sessions, ctx_builder=_CtxBuilder()))
+
+    renderer.on_text_chunk.assert_awaited_once()
+    visible = renderer.on_text_chunk.call_args.args[0]
+    assert "Repair this member's memory" in visible
+    assert "Global Memory V1 was not used" in visible
+    assert path not in visible and "alice" not in visible and secret not in visible
+    assert len(visible) <= 1000
+    renderer.on_done.assert_awaited_once()
+    assert renderer.closed == 1
+    sessions.get_or_create.assert_not_awaited()
+    assert sessions.released == 0
+
+
 def test_every_turn_open_site_is_gated_on_the_shutdown_state() -> None:
     """Ratchet: the shutdown gate is wired at every site AND placed atomically.
 
@@ -267,7 +312,7 @@ def test_a_shutdown_between_the_claim_and_the_dispatch_never_opens_the_turn(
     ``get_or_create`` guards the CLAIM, but the turn only opens at
     ``driver.run``, and everything between them awaits: ``set_channel``, the
     origin/mirror bind's thread hop, ``publish_turn_identity``, and the whole
-    context build. A restart landing in that span used to leave this pipeline
+    context build. A restart landing in that span can leave this pipeline
     opening a turn that ``close_all`` had already taken its drain snapshot
     without -- killed mid-flight holding its native lock, which reaches the user
     as an empty response. The dashboard runner and the Slack handler each carry

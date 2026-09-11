@@ -101,9 +101,12 @@ Notes:
   and copies only the small root remainder; per-machine installs keep the
   upstream copy path so files inherit the Program Files ACL. Cross-volume or
   occupied destinations also retain the upstream copy-and-retry fallback. The
-  Windows backend ships checked-hash
+  Windows backend ships hash-based (unchecked)
   bytecode for the measured gateway import closure, so first launch consumes
   build-time caches rather than generating thousands of files under Defender.
+  Unchecked rather than checked so the loader does not also re-read and re-hash
+  every `.py` it imports, which cost a median 12.5 s per cold boot; macOS's
+  whole-tree caches stay checked-hash.
 - The native welcome/finish sidebar and the header used on intermediate pages
   carry the Kiro Crew logo and ghost artwork. The standard NSIS controls and
   localized instructions remain native. Page boundaries use a short Win32

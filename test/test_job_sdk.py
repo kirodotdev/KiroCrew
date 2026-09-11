@@ -217,8 +217,8 @@ class TestHappyRun:
             # ``handle.checkpoint`` -- an OBSERVED fact, not the runner's return
             # value. Set by the SDK from the handle at the terminal write, never
             # supplied by the runner, so like the two above it is a lifecycle fact
-            # and not the result payload this guard blocks. Its arrival is the
-            # deliberate design decision #7804 asked for.
+            # and not the result payload this guard blocks. Its presence is a
+            # deliberate design decision.
             "work_observed",
         }
 
@@ -305,19 +305,18 @@ class TestCancellation:
 
 
 # ---------------------------------------------------------------------------
-# 5a. checkpoint - the progress OBSERVATION and the observed-stop cancel (#7804/#7814)
+# 5a. checkpoint - the progress OBSERVATION and the observed-stop cancel
 # ---------------------------------------------------------------------------
 
 
 class TestCheckpoint:
     """The checkpoint channel: one call reports progress AND observes cancel.
 
-    #7804 asked the record to STATE observed progress rather than infer it from
-    the return value; #7814 asked ``cancelled`` to name an observed stop rather
-    than a set flag. Both are answered by ``handle.checkpoint``, and the pairing
-    is the point: a checkpoint that reports progress necessarily observes the
-    cancel signal at the same call, so a progress channel that could not carry
-    cancellation is not representable.
+    The record STATES observed progress rather than inferring it from the return
+    value, and ``cancelled`` names an observed stop rather than a set flag. Both
+    come from ``handle.checkpoint``, and the pairing is the point: a checkpoint
+    that reports progress necessarily observes the cancel signal at the same call,
+    so a progress channel that cannot carry cancellation is not representable.
     """
 
     def test_checkpoint_records_work_observed_on_done(self, sdk: JobSDK) -> None:
@@ -373,9 +372,9 @@ class TestCheckpoint:
         assert run.error == ""
 
     def test_checkpoint_after_cancel_does_not_reach_a_false_done(self, sdk: JobSDK) -> None:
-        """The concrete #7814 hazard for in-thread work: a runner that would
-        run on to a ``done`` after a cancel cannot, because the next checkpoint
-        raises before the return."""
+        """The concrete hazard for in-thread work: a runner cannot run on to a
+        ``done`` after a cancel, because the next checkpoint raises before the
+        return."""
         started = threading.Event()
         reached_end = threading.Event()
 
@@ -425,9 +424,9 @@ class TestCheckpoint:
 class TestCancellingIds:
     """A requested cancel must be readable before the worker records it.
 
-    ``cancel`` writes nothing on purpose, so the request used to exist only in
-    the response to the cancel call itself. These pin the derived read that makes
-    it survive a fresh read of the record instead.
+    ``cancel`` writes nothing on purpose, so without a derived read the request
+    exists only in the response to the cancel call itself. These pin the derived
+    read that makes it survive a fresh read of the record.
     """
 
     def test_request_is_reported_until_the_worker_records_it(self, sdk: JobSDK) -> None:
@@ -541,10 +540,10 @@ class TestDedupe:
 def _handle_over(tmp_path: Path, run: JobRun) -> tuple[JobHandle, JobStore, JobSDK]:
     """A handle plus the REAL SDK whose guarded writer owns the discard check.
 
-    The handle no longer carries a writer: with the progress channel gone the
-    only mid-life write is the worker's terminal one, so the discard check lives
-    entirely in ``JobSDK._persist``. Handing back the SDK lets a test exercise
-    that real guard rather than a stand-in copy of it.
+    The handle carries no writer: the only mid-life write is the worker's
+    terminal one, so the discard check lives entirely in ``JobSDK._persist``.
+    Handing back the SDK lets a test exercise that real guard rather than a
+    stand-in copy of it.
     """
     sdk = JobSDK("handle-test", tmp_path)
     return JobHandle(run), sdk.store, sdk
@@ -1032,7 +1031,7 @@ class TestRemoveAll:
 
 
 # ---------------------------------------------------------------------------
-# 11a. Disable trace — one SEL line per killed run (issue #7583)
+# 11a. Disable trace — one SEL line per killed run
 # ---------------------------------------------------------------------------
 
 
@@ -1490,14 +1489,22 @@ class TestDisableTrace:
         sdk.store.dir.mkdir(parents=True, exist_ok=True)
         denied_stem = "d" * 32
         (sdk.store.dir / f"{denied_stem}.json").write_text("{}")
-        real_open = os.open
 
-        def denying_open(path, flags, *args, **kwargs):
+        from kiro_crew import platform_compat as _pc
+
+        real_no_reparse = _pc.open_file_no_reparse
+
+        # The refused read is simulated at the seam the record read actually uses.
+        # Patching os.open would only cover the POSIX arm of open_file_no_reparse --
+        # its Windows arm reaches CreateFileW -- and the scenario in the docstring
+        # is a Windows one, so the record would read fine there and be classified
+        # by its contents instead of as unreadable.
+        def denying_open(path, *args, **kwargs):
             if str(path).endswith(f"{denied_stem}.json"):
                 raise PermissionError(13, "denied", str(path))
-            return real_open(path, flags, *args, **kwargs)
+            return real_no_reparse(path, *args, **kwargs)
 
-        monkeypatch.setattr(os, "open", denying_open)
+        monkeypatch.setattr(_pc, "open_file_no_reparse", denying_open)
 
         cleanup = asyncio.run(sdk.remove_all_async())
         assert cleanup.removed == 1
@@ -1959,10 +1966,10 @@ class TestConcurrentDedupe:
         assert len(ids) == 2
         assert ids[0] == ids[1], f"dedupe let both starts win: {ids}"
         # And only one body ever ran. Waited for rather than assumed: the worker's
-        # first act is now the STARTING -> RUNNING write, so a body enters strictly
-        # after a lock acquisition and a small disk write. This assertion used to
-        # read `entered` the instant both starts returned, which was only ever true
-        # because that gap was short -- a latent timing assumption, not a property.
+        # first act is the STARTING -> RUNNING write, so a body enters strictly
+        # after a lock acquisition and a small disk write. Reading `entered` the
+        # instant both starts returned would only pass while that gap stays short
+        # -- a timing assumption, not a property.
         # `ids[0] == ids[1]` above already proves ONE run exists, so nothing else
         # can append here.
         _wait_until(lambda: len(entered) >= 1)
@@ -1978,9 +1985,8 @@ class TestRunnerOutputIsRedacted:
     back a command line carrying a credential.
 
     In P1 there is exactly one such field: the error of a failed run. The
-    progress and result channels this class used to cover are out of P1, so the
-    surface that needs scrubbing is a single string rather than arbitrary nested
-    data.
+    progress and result channels are out of P1, so the surface that needs
+    scrubbing is a single string rather than arbitrary nested data.
     """
 
     def test_a_failed_runners_error_is_scrubbed_on_disk_and_in_the_record(
@@ -2065,8 +2071,8 @@ class TestClaimAndWriteFailurePaths:
 class TestRecordIsAlwaysWritable:
     """A runner cannot make its own record unserializable.
 
-    `json.dumps` raises TypeError on a set, a Path, or any object, and that
-    exception used to escape the terminal write and skip the live-table and
+    `json.dumps` raises TypeError on a set, a Path, or any object, and such an
+    exception escaping the terminal write would skip the live-table and
     dedupe-key cleanup that follows it -- leaking a claim no later start could
     release. In P1 that failure is impossible by CONSTRUCTION rather than
     prevented by a sanitizer: every field is minted by the SDK from a str, an int
@@ -2196,10 +2202,10 @@ class TestSanitizeInvariant:
     def test_a_write_lost_starting_record_says_the_body_never_ran(self, sdk: JobSDK) -> None:
         """The consequence is DERIVED from the progress axis, not asserted.
 
-        Round 1 made the `starting` -> `running` transition a precondition for calling
-        the runner, so a record still at `starting` whose terminal write was lost
-        proves execution never began. Saying "not known" there would be this module's
-        own defect: a record declining to state what it knows.
+        The `starting` -> `running` transition is a precondition for calling the
+        runner, so a record still at `starting` whose terminal write was lost
+        proves execution never began. Saying "not known" there would be this
+        module's own defect: a record declining to state what it knows.
         """
         run_id = uuid.uuid4().hex
         sdk.store.write(
@@ -2340,8 +2346,8 @@ class TestSanitizeInvariant:
 class TestDisableIsTerminalForTheSDK:
     """Cleanup must close the SDK, not merely snapshot what was live.
 
-    Marking and snapshotting used to be the whole of cleanup's critical section,
-    so a ``start`` that had already read the runner table could claim AFTER the
+    If marking and snapshotting were the whole of cleanup's critical section, a
+    ``start`` that had already read the runner table could claim AFTER the
     snapshot and spawn a worker cleanup would never see -- a disabled app doing
     real, side-effecting work with its records already deleted. The route guard
     does not cover this: it re-reads the manifest, but the app's own code holds a
@@ -2372,10 +2378,10 @@ class TestDisableIsTerminalForTheSDK:
 class TestDedupeKeyIsNotLogged:
     """A caller-supplied dedupe key must not reach the gateway log.
 
-    The adoption line used to quote it. The gateway log is durable and is served
-    by ``/api/logs``, and a dedupe key is whatever the caller chose -- an account
-    id, a path, or a credential -- so quoting it turned a de-duplication aid into
-    an output boundary nobody had classified as one.
+    The gateway log is durable and is served by ``/api/logs``, and a dedupe key is
+    whatever the caller chose -- an account id, a path, or a credential -- so
+    quoting it in the adoption line would turn a de-duplication aid into an output
+    boundary nobody has classified as one.
     """
 
     def test_the_adoption_line_names_the_run_not_the_key(
@@ -2824,10 +2830,10 @@ class TestCoroutineRunnerIsRefusedAtRegistration:
 
 
 class TestInterruptionRecordsBothAxes:
-    """``reconcile`` used to overwrite ``status`` and pick ``error`` from the
-    runner table alone, so a run whose worker thread was never started was
-    written a record claiming it "was running", and a consumer could not tell a
-    run that may have committed side effects from one that provably had not.
+    """``reconcile`` must not overwrite ``status`` and pick ``error`` from the
+    runner table alone: that writes a run whose worker thread never started a
+    record claiming it "was running", and a consumer then cannot tell a run that
+    may have committed side effects from one that provably has not.
 
     The two facts are independent because they describe different times: how far
     the run got (past) and whether the kind can be serviced now (present).
@@ -3004,7 +3010,7 @@ class TestAMalformedRecordIsAbsentAnUnreadableOneIsNot:
         assert sdk.get(run_id).status == DONE
 
     def test_a_permission_error_escapes_rather_than_reading_as_absent(self, sdk: JobSDK) -> None:
-        """Pins the direction #7703 depends on: an on-loop read lets it out."""
+        """An on-loop read must let a PermissionError out, not swallow it."""
         run_id, _ = self._unreadable(sdk)
         raised: list[str] = []
 
@@ -3217,12 +3223,12 @@ class TestAnUndrivenResultIsFailedNotDone:
         assert reached == ["first"]
 
     def test_a_returned_never_started_generator_is_failed(self, sdk: JobSDK) -> None:
-        """Still failed, but no longer for a reason of its own.
+        """Failed, and with the shared verdict rather than one of its own.
 
-        Earlier rounds gave this state a distinct message ("never began") because it is
-        a distinct fact. The state is no longer consulted, so it now shares the one
-        suspendable verdict -- the cost of the tightening, recorded here rather than
-        left for a reader to infer from a deleted assertion.
+        A never-started generator is a distinct fact, so a distinct message
+        ("never began") would be defensible. The state is not consulted, so this
+        case carries the one suspendable verdict instead -- the cost of the
+        tightening, recorded here rather than left for a reader to infer.
         """
 
         def wrapper(handle: JobHandle):
@@ -3267,10 +3273,10 @@ class TestAnUndrivenResultIsFailedNotDone:
     def test_every_suspendable_state_reaches_the_same_verdict(self) -> None:
         """Completeness by state-INDEPENDENCE, which is a stronger claim than a map.
 
-        The old form enumerated the language's frame states and asserted a verdict for
-        each, so a future Python adding a state broke it. The rule no longer reads state
-        at all, so the property to pin is that no state -- including the two CLOSED
-        histories that motivated the change -- can reach an allow.
+        Enumerating the language's frame states and asserting a verdict for each
+        breaks the moment a future Python adds a state. The rule reads no state at
+        all, so the property to pin is that no state -- the two CLOSED histories
+        included -- can reach an allow.
         """
 
         def gen_fn():
@@ -3317,11 +3323,11 @@ class TestAnUndrivenResultIsFailedNotDone:
         cannot control, since the owner reading it is the only party who can judge
         whether retrying is safe.
 
-        The FIXTURE changed with #7814 and the change is the point. This test used to
-        pass a bare `concurrent.futures.Future()`, which is PENDING and therefore
-        stoppable -- so it asserted "may still be running" about work that provably
-        had not started, and passed only because the SDK never looked. The un-stoppable
-        case is work that is genuinely RUNNING, which is what this now builds.
+        The FIXTURE is the point. A bare `concurrent.futures.Future()` is PENDING and
+        therefore stoppable, so asserting "may still be running" against one claims
+        it about work that provably has not started, and passes only because the SDK
+        never looks. The un-stoppable case is work that is genuinely RUNNING, which
+        is what this builds.
         """
         entered = threading.Event()
         release = threading.Event()
@@ -3349,9 +3355,8 @@ class TestAnUndrivenResultIsFailedNotDone:
     def test_the_states_are_reachable_and_deliberately_not_distinguished(self) -> None:
         """The states are real; the verdict ignores them ON PURPOSE.
 
-        This test asserted the opposite until round 9 -- that all three produced
-        DISTINCT verdicts, and that closed produced an allow. Both assertions are now
-        inverted, because a verdict that varies by state implies the state is
+        Asserting three DISTINCT verdicts, with an allow for closed, would be the
+        wrong shape: a verdict that varies by state implies the state is
         informative, and for CLOSED it is not.
         """
 
@@ -3502,7 +3507,7 @@ class TestAnUndrivenResultIsFailedNotDone:
             ("suspendable: never began (coroutine)", a_coroutine, "must not return"),
             ("suspendable: never began (generator)", unstarted_gen, "must not return"),
             ("suspendable: suspended partway", started_gen, "must not return"),
-            # Was "" (allowed) until round 9; see the inversion test for why.
+            # A drained generator is refused too; see the state-independence test.
             ("suspendable: closed, drained", drained_gen, "must not return"),
             # Q2: is it settled? -- asyncio's flavour...
             ("Q2 unsettled", unsettled_future, "not settled"),
@@ -3718,16 +3723,16 @@ class TestAnUndrivenResultIsFailedNotDone:
         assert closed == [True]
 
 
-# ── 8. stopping work the runner spawned outside the worker thread (#7814) ──
+# ── 8. stopping work the runner spawned outside the worker thread ──
 
 
 class TestStoppingWorkTheRunnerHandedBack:
-    """The reachability half of #7814, and the reason it is reachable at all.
+    """Why handed-back work is stoppable at all.
 
     The SDK cannot stop work a runner spawned onto a thread it does not own -- unless
-    the runner hands that work back, and the reported case does exactly that: it
-    submits to a pool and returns the unwaited `concurrent.futures.Future`. For one
-    instant `_execute` holds the only reference to that work.
+    the runner hands that work back, which is what submitting to a pool and returning
+    the unwaited `concurrent.futures.Future` does. For one instant `_execute` holds
+    the only reference to that work.
 
     It already ASKED that reference to stop before this change, as hygiene, and threw
     the answer away -- so the record warned about work the next line had guaranteed
@@ -3789,7 +3794,7 @@ class TestStoppingWorkTheRunnerHandedBack:
 
         Work already running in a pool cannot be stopped from here. Reporting success
         would be worse than reporting failure -- the owner would believe the work is
-        over and proceed -- so this run keeps the disclosure #7737 shipped, verbatim.
+        over and proceed -- so this run keeps the disclosure verbatim.
         """
         entered = threading.Event()
         release = threading.Event()

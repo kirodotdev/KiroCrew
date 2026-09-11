@@ -1,10 +1,10 @@
 """A crashed isolation probe must surface as a sandbox failure, never as
 "push is not disabled".
 
-Issue #8151: on a host whose LSM kills the namespace-sandbox launcher (AppArmor
+On a host whose LSM kills the namespace-sandbox launcher (AppArmor
 unprivileged-userns restriction), the ``git remote``/``config`` probe exits
-nonzero with the launcher's traceback on stderr. ``_push_disabled`` fail-closed
-that exit into ``False`` and the run-start route reported the 409
+nonzero with the launcher's traceback on stderr. Folding that exit into a
+fail-closed ``False`` makes the run-start route answer 409
 "the clone's push is not disabled — re-run repository setup" for a clone whose
 remotes were never read. These tests pin the distinction:
 
@@ -12,15 +12,14 @@ remotes were never read. These tests pin the distinction:
   :class:`IsolationProbeError` naming the sandbox failure (still refuses to
   start — the surfaced REASON is what changes);
 * the same classification applies to ``_repository_is_safe``'s unsafe-keys
-  probe (issue #8493): its ``returncode == 1`` tail meant "no unsafe keys"
-  and a crashed launcher also exits 1, so this was the one probe in the
-  isolation chain that failed OPEN during a launcher outage;
+  probe: its ``returncode == 1`` tail reads as "no unsafe keys" and a crashed
+  launcher also exits 1, so it is the one probe in the isolation chain that can
+  fail OPEN during a launcher outage;
 * every other nonzero exit keeps its existing fail-closed meaning — git's own
   exit 1 for an absent config key, a launcher WARNING that coexists with a
-  genuine git exit code, an ambiguous fatal, and (the Opus finding on this
-  branch) a git fatal that merely ECHOES a clone path containing the launcher
-  filename substring, which a repository named ``kirocrew_sandbox_x`` can put
-  there legally;
+  genuine git exit code, an ambiguous fatal, and a git fatal that merely ECHOES
+  a clone path containing the launcher filename substring, which a repository
+  named ``kirocrew_sandbox_x`` can put there legally;
 * tuple-returning entry points (``setup_safe_clone``, ``list_clone_branches``,
   ``checkout_branch``) convert the raise into their error string instead of
   letting it escape a worker thread as a 500.
@@ -38,7 +37,7 @@ from kiro_crew.apps.builtins.auto_improvement.profiles.github_repo.profile impor
     RepoIsolation,
 )
 
-#: The reported crash verbatim (issue #8151): a real Python traceback naming the
+#: The crash verbatim: a real Python traceback naming the
 #: launcher's own script file — the frame line plus the banner are what the
 #: structural matcher requires.
 _LAUNCHER_TRACEBACK = (
@@ -163,7 +162,7 @@ class TestProbeCrashShape:
 
 class TestRepositoryIsSafeCrashShape:
     """The unsafe-keys probe must classify a crashed launcher, not read it as
-    "no unsafe keys" (issue #8493 — the one probe that failed OPEN)."""
+    "no unsafe keys" — it is the one probe in the chain that can fail OPEN."""
 
     def test_launcher_traceback_raises_probe_error(
         self, probe_result: dict, tmp_path: Path
@@ -268,7 +267,7 @@ class TestTupleEntryPointsStaySoft:
     def test_list_clone_branches_converts_metadata_probe_crash(
         self, probe_result: dict, tmp_path: Path
     ) -> None:
-        """The raise from ``_repository_is_safe`` itself (issue #8493) is
+        """The raise from ``_repository_is_safe`` itself is
         converted, not leaked — the safety probe runs FIRST, so on a crashed
         launcher it is the one that surfaces."""
         clone = _metadata_safe_clone(tmp_path)

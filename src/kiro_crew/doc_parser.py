@@ -49,9 +49,9 @@ logger = logging.getLogger(__name__)
 _MAX_ZIP_ENTRY = 50 * 1024 * 1024  # 50 MB per ZIP entry (decompressed)
 _MAX_DECOMPRESS = 50 * 1024 * 1024  # 50 MB for zlib decompression
 # Inventory bound for OOXML containers. The per-entry cap above bounds what one
-# member can expand to, but nothing here previously bounded how MANY members an
-# archive declares — and ZipFile's construction allocates from the declared
-# central-directory size before any per-entry limit can apply. Generous next to
+# member can expand to; this bounds how MANY members an archive declares — and
+# ZipFile's construction allocates from the declared central-directory size
+# before any per-entry limit can apply. Generous next to
 # real documents (a large deck with per-slide media is in the low thousands of
 # parts), so this refuses crafted inventories without narrowing legitimate ones.
 _MAX_ARCHIVE_MEMBERS = 20000

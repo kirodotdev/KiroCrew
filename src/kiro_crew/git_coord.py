@@ -249,7 +249,7 @@ async def _branch_history_intact(git_cwd: str, run: Project) -> bool:
     are absent. With no recorded commits there is nothing to verify -- that is
     a run which never committed a step, not a rewritten branch.
 
-    Fails closed: a recorded commit that no longer resolves (rewritten then
+    Fails closed: a recorded commit that does not resolve (rewritten then
     garbage-collected) and any git error both answer False.
     """
     if not run.commit_hashes:
@@ -464,7 +464,7 @@ async def _leftover_dir_is_ours(run: Project, path: str | None = None) -> bool:
     can proceed); nothing in recovery deletes a leftover tree.
 
     *path* defaults to ``run.worktree_path``. Pass it explicitly to judge a
-    tree that has been renamed aside, where the saved path no longer names
+    tree that has been renamed aside, where the saved path differs from
     the directory in question.
     """
     path = path or run.worktree_path
@@ -555,7 +555,7 @@ async def reinit_workspace_for_retry(run: Project) -> bool:
         # the LAST operation to resolve the saved path, and everything
         # afterwards addresses ``doomed`` -- a private name carrying a random
         # token, which nothing else can be holding. A later swap onto the
-        # saved path can no longer redirect anything; it merely loses the race
+        # saved path redirects nothing; it merely loses the race
         # to the ``worktree add`` below, which then fails and returns False
         # rather than clobbering whatever arrived.
         #
@@ -717,7 +717,7 @@ async def _is_git_repo(path: str) -> bool:
         # Something in the invocation is NOT THERE, which is genuinely
         # answerable as "no git repo here": either no ``git`` binary on the
         # host (the task runner is git-optional, so such a host simply has no
-        # git repos), or *path* itself no longer exists -- exactly the
+        # git repos), or *path* itself is absent -- exactly the
         # lost-worktree state the retry path probes for. The platforms spell
         # the missing-cwd case differently: POSIX raises ``FileNotFoundError``
         # from the spawn, Windows raises ``NotADirectoryError`` (WinError 267)

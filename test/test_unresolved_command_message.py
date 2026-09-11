@@ -1,4 +1,4 @@
-"""``command not found`` must say WHERE it looked (part of #3030).
+"""``command not found`` must say WHERE it looked.
 
 Both the dashboard probe and the agent config rebuild reported an unresolvable
 MCP command as a bare ``command not found: <name>``, and the searched

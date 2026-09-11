@@ -80,4 +80,48 @@ describe('SecretField', () => {
     setup({ readOnly: true, isSet: false })
     expect(screen.getByText('(not set)')).toBeInTheDocument()
   })
+
+  it('reports controlled replacement editing without inspecting button labels', () => {
+    const onEditingChange = vi.fn()
+    const result = setup({ isSet: true, editing: false, onEditingChange })
+
+    fireEvent.click(screen.getByRole('button', { name: /replace/i }))
+    expect(onEditingChange).toHaveBeenCalledWith(true)
+
+    result.rerender(<SecretField {...result.props} editing />)
+    expect(screen.getByLabelText('zzq-label')).toHaveAttribute('type', 'password')
+    fireEvent.click(screen.getByRole('button', { name: /cancel/i }))
+    expect(onEditingChange).toHaveBeenLastCalledWith(false)
+  })
+
+  it('renders permanent removal as a visible danger action', () => {
+    const { onClearedChange } = setup({
+      isSet: true,
+      permanentRemoval: {
+        label: 'Permanently delete stored key',
+        text: 'Delete',
+      },
+    })
+
+    const remove = screen.getByRole('button', { name: 'Permanently delete stored key' })
+    expect(remove).toHaveTextContent('Delete')
+    expect(remove).toHaveClass('border-danger', 'text-danger')
+    fireEvent.click(remove)
+    expect(onClearedChange).toHaveBeenCalledWith(true)
+  })
+
+  it('replaces the permanent remove action with its parent-owned confirmation', () => {
+    setup({
+      isSet: true,
+      permanentRemoval: {
+        label: 'Permanently delete stored key',
+        text: 'Delete',
+        confirmation: <span>Permanent confirmation</span>,
+      },
+    })
+
+    expect(screen.getByText('Permanent confirmation')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Permanently delete stored key' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /replace/i })).toBeInTheDocument()
+  })
 })

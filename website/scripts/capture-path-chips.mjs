@@ -44,6 +44,10 @@ const EXPECTED_KINDS = [
   ['origin/main', 'plain'],
   [WORKSPACE, 'dir'],
   [`${PROJECT}/README.md`, 'file'],
+  // Trailing-slash directory (issue #9409): the chip must classify as a dir, not
+  // stay plain text. Only the fix makes this pass -- before it, PATH_SHAPE_RE
+  // rejected the trailing `/` and the probe was never issued.
+  [`${PROJECT}/src/`, 'dir'],
   [`${WORKSPACE}/deleted-notes.md`, 'plain'],
 ]
 

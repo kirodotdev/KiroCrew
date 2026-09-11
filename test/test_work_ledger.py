@@ -1,6 +1,6 @@
 """Conductor work ledger store — Phase 1 exit criteria, one test per criterion.
 
-Pins what the conductor-work-ledger RFC (pull request #8842) §Migration plan
+Pins what the conductor-work-ledger RFC §Migration plan
 Phase 1 lists: every enum and cap fails a test if its value changes; two concurrent
 writers against one item leave a parseable record and an uninterleaved event log; a
 torn, truncated or oversized file reads as absent; a refused cap leaves the prior
@@ -308,7 +308,7 @@ def test_a_worker_may_be_rebound_once_its_prior_item_is_terminal():
 
 
 def test_a_worker_may_be_rebound_when_its_prior_binding_is_stale():
-    """A binding pointing at an item that no longer reads is stale, not open."""
+    """A binding pointing at an item that does not read is stale, not open."""
     first = _new_item(title="first")
     second = _new_item(title="second")
     wl.apply_conductor_action(CONDUCTOR, "bind", item_id=first, worker_session_key=WORKER)
@@ -332,7 +332,7 @@ def test_a_worker_bound_by_another_conductor_is_refused_too():
 
 
 def test_a_failed_item_write_during_bind_restores_the_prior_binding(monkeypatch):
-    """GPT round 3: a bind that fails between its two writes must leave neither a
+    """A bind that fails between its two writes must leave neither a
     half-bound item (which would refuse every retry) nor a dangling new binding."""
     first = _new_item(title="first")
     second = _new_item(title="second")
@@ -473,14 +473,250 @@ def test_apply_worker_report_has_no_conductor_field_parameter():
     assert not names & {"verdict", "state", "acceptance", "decision", "fails", "round_number"}
 
 
+def _ledger_conductor_accept_eval() -> Path:
+    """The evaluator copy the ledger conductor actually runs.
+
+    ``goal-ledger-conductor`` is the skill that consumes ``accept_batch``, so the mirror
+    in :func:`work_ledger.is_acceptance_concrete` has to be pinned against ITS copy —
+    pinning the sibling ``goal-conductor`` copy would be checking a script no ledger
+    conductor invokes. The two are separately shipped and held byte-identical by
+    ``test_ledger_conductor_agent.py``; this helper names the consumer regardless.
+    """
+    script = (
+        Path(__file__).resolve().parents[1]
+        / "src"
+        / "kiro_crew"
+        / "builtin_skills"
+        / "goal-ledger-conductor"
+        / "scripts"
+        / "accept_eval.py"
+    )
+    assert script.is_file(), script
+    return script
+
+
 def test_accept_batch_is_built_from_acceptance_and_never_from_a_claimed_pr():
-    item_id = _new_item(acceptance={"kind": "pr_checks", "repo": "owner/name"})
+    """The bar in the batch is the stored one, whatever number the worker claims."""
+    bar = {"kind": "pr_checks", "pr": 123, "repo": "owner/name"}
+    item_id = _new_item(acceptance=dict(bar))
     wl.apply_worker_report(CONDUCTOR, item_id, status="done", summary="s", pr=999)
     batch = wl.accept_batch(wl.list_work_items(CONDUCTOR))
-    assert batch == {
-        "items": [{"id": item_id, "accept": {"kind": "pr_checks", "repo": "owner/name"}}]
-    }
+    assert batch == {"items": [{"id": item_id, "accept": bar, "status": "done"}]}
     assert "999" not in json.dumps(batch)
+
+
+def test_accept_batch_leaves_out_an_item_whose_bar_is_not_concrete_yet():
+    """A ``"TBD"`` pull request number is not a bar ``accept_eval.py`` can evaluate —
+    it answers ``error`` — so the item stays out until an ``accept`` promotion fills
+    the number in, which is the two-phase acceptance the skill promises."""
+    pending = _new_item(acceptance={"kind": "pr_checks", "pr": "TBD", "repo": "owner/name"})
+    lowercase = _new_item(acceptance={"kind": "pr_checks", "pr": "tbd", "repo": "owner/name"})
+    blank = _new_item(acceptance={"kind": "file", "path": ""})
+    unrepoed = _new_item(acceptance={"kind": "pr_checks", "pr": 9, "repo": "TBD"})
+    unnumbered = _new_item(acceptance={"kind": "pr_checks", "repo": "owner/name"})
+    mistyped = _new_item(acceptance={"kind": "file", "path": 17})
+    inverted = _new_item(acceptance={"kind": "file", "path": "/p", "exists": "false"})
+    unknown = _new_item(acceptance={"kind": "tests_pass", "suite": "backend"})
+    ready = _new_item(acceptance={"kind": "pr_checks", "pr": 7, "repo": "owner/name"})
+    # Concrete: the placeholder sits in a field the evaluator never reads, so it cannot
+    # affect the verdict and must not cost the item its place in the batch.
+    annotated = _new_item(acceptance={"kind": "file", "path": "/p", "meta": {"br": "TBD"}})
+    ids = [entry["id"] for entry in wl.accept_batch(wl.list_work_items(CONDUCTOR))["items"]]
+    # A set: ``list_work_items`` does not promise creation order, and this test is about
+    # membership, not sequence.
+    assert set(ids) == {ready, annotated}
+    for absent in (pending, lowercase, blank, unrepoed, unnumbered, mistyped, inverted, unknown):
+        assert absent not in ids
+
+    # And the promotion puts it back, which is what makes the omission temporary
+    # rather than a way to lose an item.
+    wl.apply_acceptance_update(
+        CONDUCTOR, pending, acceptance={"kind": "pr_checks", "pr": 4321, "repo": "owner/name"}
+    )
+    promoted = [entry["id"] for entry in wl.accept_batch(wl.list_work_items(CONDUCTOR))["items"]]
+    assert pending in promoted
+
+
+def test_a_non_positive_or_boolean_pr_is_not_a_concrete_bar():
+    """``accept_eval.py`` refuses a bool as an int and cannot check pull request 0, so
+    neither counts as filled in."""
+    assert wl.is_acceptance_concrete({"kind": "pr_checks", "pr": 1}) is True
+    assert wl.is_acceptance_concrete({"kind": "pr_checks", "pr": 0}) is False
+    assert wl.is_acceptance_concrete({"kind": "pr_checks", "pr": -3}) is False
+    assert wl.is_acceptance_concrete({"kind": "pr_checks", "pr": True}) is False
+    assert wl.is_acceptance_concrete({"kind": "pr_checks", "pr": "12"}) is False
+    assert wl.is_acceptance_concrete({}) is False
+    # The pr rule is ``pr_checks``-specific; another kind is judged on its own fields.
+    assert wl.is_acceptance_concrete({"kind": "human_approval"}) is True
+    assert wl.is_acceptance_concrete({"kind": "file", "path": "/p", "exists": None}) is False
+
+
+def test_a_mistyped_or_unknown_kind_is_not_a_concrete_bar():
+    """The other guards ``accept_eval.py`` can only answer ``error`` to, mirrored: a
+    ``file`` whose ``path`` is not a string or whose ``exists`` is not a bool, and any
+    ``kind`` that script does not dispatch on at all."""
+    assert wl.is_acceptance_concrete({"kind": "file", "path": "/p"}) is True
+    assert wl.is_acceptance_concrete({"kind": "file", "path": "/p", "exists": False}) is True
+    assert wl.is_acceptance_concrete({"kind": "file", "path": 17}) is False
+    assert wl.is_acceptance_concrete({"kind": "file"}) is False
+    # ``1``/``0`` are refused as ``exists`` there too, and coercing a truthy ``"false"``
+    # would invert an absence check into a presence check.
+    assert wl.is_acceptance_concrete({"kind": "file", "path": "/p", "exists": 1}) is False
+    assert wl.is_acceptance_concrete({"kind": "file", "path": "/p", "exists": "false"}) is False
+    assert wl.is_acceptance_concrete({"kind": "tests_pass", "suite": "backend"}) is False
+    assert wl.is_acceptance_concrete({"pr": 7, "repo": "owner/name"}) is False
+    assert wl.ACCEPTANCE_KINDS == frozenset(wl.ACCEPTANCE_READ_FIELDS)
+    # ``cmd`` stays concrete on purpose: that script always REFUSES it, and ``refused``
+    # is a message the conductor must receive (re-express the condition) rather than an
+    # item silently missing from its batch.
+    assert wl.is_acceptance_concrete({"kind": "cmd", "argv": ["git", "status"]}) is True
+    assert "cmd" in wl.ACCEPTANCE_KINDS
+
+
+def test_only_the_fields_the_evaluator_reads_can_cost_an_item_its_place():
+    """The judgement is field-by-field over what ``accept_eval.py`` consumes, never a
+    walk of the stored object. An acceptance carries whatever the conductor wrote — a
+    branch name, a note, a ``cmd`` argv that mentions the word TBD — and a placeholder
+    in a field the evaluator never reads cannot change its verdict, so it must not drop
+    the item from the batch."""
+    assert wl.is_acceptance_concrete({"kind": "file", "path": "/p", "note": "TBD"}) is True
+    assert wl.is_acceptance_concrete({"kind": "file", "path": "/p", "m": {"b": "TBD"}}) is True
+    assert wl.is_acceptance_concrete({"kind": "cmd", "argv": ["grep", "TBD", "-r"]}) is True
+    # ...while a placeholder in a field it DOES read still costs the item its place.
+    assert wl.is_acceptance_concrete({"kind": "file", "path": "TBD"}) is False
+    assert wl.is_acceptance_concrete({"kind": "pr_checks", "pr": 9, "repo": "TBD"}) is False
+    # An absent optional read field is not a placeholder: the evaluator defaults both.
+    assert wl.is_acceptance_concrete({"kind": "pr_checks", "pr": 9}) is True
+    assert wl.is_acceptance_concrete({"kind": "file", "path": "/p"}) is True
+    # Nor is an explicit null in one: the evaluator omits ``--repo`` for a falsy repo,
+    # so such a bar is evaluable and must keep its place. Where the field is REQUIRED,
+    # the type rules refuse ``None`` — that is where the judgement belongs.
+    assert wl.is_acceptance_concrete({"kind": "pr_checks", "pr": 9, "repo": None}) is True
+    assert wl.is_acceptance_concrete({"kind": "pr_checks", "pr": None}) is False
+    assert wl.is_acceptance_concrete({"kind": "file", "path": None}) is False
+
+
+def test_a_deeply_nested_acceptance_does_not_break_the_read():
+    """A bar is stored verbatim and its nesting is caller-supplied, so a read-path walk
+    over it was a recursion an untrusted depth could exhaust — and one stored record
+    would then fail every later batch read of that slot, not just its own item."""
+    deep: dict[str, object] = {"leaf": "TBD"}
+    for _ in range(500):
+        deep = {"nested": deep}
+    bar = {"kind": "file", "path": "/p", "meta": deep}
+    assert wl.is_acceptance_concrete(bar) is True
+    item_id = _new_item(acceptance=bar)
+    batch = wl.accept_batch(wl.list_work_items(CONDUCTOR))
+    assert [entry["id"] for entry in batch["items"]] == [item_id]
+
+
+def test_the_kind_vocabulary_is_derived_from_accept_eval_not_remembered():
+    """``accept_eval.py`` dispatches on an inline ``if kind == "..."`` chain, so a kind
+    added there would otherwise make every item using it vanish from every batch under
+    a misleading "not filled in yet". Read the chain and require agreement, so drift
+    fails here instead of silently dropping work items."""
+    source = _ledger_conductor_accept_eval().read_text(encoding="utf-8")
+    dispatched = set(re.findall(r'kind == "([a-z_]+)"', source))
+    assert dispatched, "the dispatch chain could not be read — the pattern moved"
+    assert dispatched == set(wl.ACCEPTANCE_READ_FIELDS), (dispatched, wl.ACCEPTANCE_KINDS)
+
+
+def test_the_concreteness_rules_are_exactly_accept_evals_error_only_guards():
+    """The predicate duplicates that script's guards across a process boundary, so pin
+    the two against each other rather than against a remembered reading of it: every
+    spec this store calls non-concrete must come back ``error``, and every spec it
+    passes must come back something else.
+
+    Only specs that evaluate WITHOUT network are used — a valid ``pr_checks`` would
+    shell out to ``gh``, so it is asserted concrete here and evaluated nowhere.
+    """
+    import subprocess
+    import sys
+
+    script = _ledger_conductor_accept_eval()
+    specs = [
+        {"kind": "pr_checks", "pr": "TBD", "repo": "owner/name"},
+        {"kind": "pr_checks", "repo": "owner/name"},
+        {"kind": "pr_checks", "pr": True, "repo": "owner/name"},
+        {"kind": "file", "path": 17},
+        {"kind": "file"},
+        {"kind": "file", "path": "/nowhere", "exists": 1},
+        {"kind": "tests_pass", "suite": "backend"},
+        {"kind": "file", "path": "/nowhere-at-all", "exists": False},
+        {"kind": "human_approval"},
+        {"kind": "cmd", "argv": ["git", "status"]},
+    ]
+    batch = {"items": [{"id": f"it_{n:08d}", "accept": spec} for n, spec in enumerate(specs)]}
+    proc = subprocess.run(
+        [sys.executable, str(script)],
+        input=json.dumps(batch),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=60,
+    )
+    assert proc.returncode == 0, proc.stderr
+    verdicts = [row["verdict"] for row in json.loads(proc.stdout)["results"]]
+    assert len(verdicts) == len(specs)
+    for spec, verdict in zip(specs, verdicts):
+        concrete = wl.is_acceptance_concrete(spec)
+        assert concrete is (verdict != "error"), (spec, verdict, concrete)
+    assert wl.is_acceptance_concrete({"kind": "pr_checks", "pr": 7, "repo": "owner/name"}) is True
+
+
+def test_accept_batch_carries_status_and_does_not_filter_on_it():
+    """The "only ``done`` items" filter is the conductor's to apply — the batch makes
+    it applyable without a second lookup, and applies nothing itself."""
+    moving = _new_item(acceptance={"kind": "human_approval"})
+    finished = _new_item(acceptance={"kind": "human_approval"})
+    silent = _new_item(acceptance={"kind": "human_approval"})
+    wl.apply_worker_report(CONDUCTOR, moving, status="progress", summary="s")
+    wl.apply_worker_report(CONDUCTOR, finished, status="done", summary="s")
+    by_id = {e["id"]: e for e in wl.accept_batch(wl.list_work_items(CONDUCTOR))["items"]}
+    assert by_id[moving]["status"] == "progress"
+    assert by_id[finished]["status"] == "done"
+    assert by_id[silent]["status"] is None
+
+
+def test_a_done_item_is_never_stale_however_long_it_stays_quiet():
+    """``stale`` means the WORKER went quiet. After ``done`` the move belongs to the
+    conductor or a human, so silence is the expected end of the work."""
+    item_id = _new_item(acceptance={"kind": "human_approval"})
+    wl.apply_worker_report(CONDUCTOR, item_id, status="done", summary="green")
+    item = wl.read_work_item(CONDUCTOR, item_id)
+    assert item is not None
+    much_later = datetime.now().astimezone() + timedelta(seconds=wl.DEFAULT_STALE_WINDOW_SECS * 10)
+    assert wl.is_stale(item, worker_running=False, now=much_later) is False
+    for status in ("progress", "blocked", "question"):
+        wl.apply_worker_report(CONDUCTOR, item_id, status=status, summary="s")
+        still_working = wl.read_work_item(CONDUCTOR, item_id)
+        assert still_working is not None
+        assert wl.is_stale(still_working, worker_running=False, now=much_later) is True, status
+    assert "done" not in wl.STALE_ELIGIBLE_STATUSES
+    assert wl.STALE_ELIGIBLE_STATUSES < wl.WORKER_STATUSES
+
+
+def test_a_done_item_the_conductor_handed_back_is_stale_again():
+    """The flag follows who owns the next move, not the last report's word. A ``fail``
+    verdict on an item left OPEN is a retry the worker owns, so its silence is a gap
+    again — otherwise a worker that vanished mid-retry could never be surfaced."""
+    item_id = _new_item(acceptance={"kind": "human_approval"})
+    wl.apply_worker_report(CONDUCTOR, item_id, status="done", summary="claimed")
+    much_later = datetime.now().astimezone() + timedelta(seconds=wl.DEFAULT_STALE_WINDOW_SECS * 10)
+    waiting = wl.read_work_item(CONDUCTOR, item_id)
+    assert waiting is not None
+    assert wl.is_stale(waiting, worker_running=False, now=much_later) is False
+
+    wl.apply_conductor_action(CONDUCTOR, "verdict", item_id=item_id, verdict="fail", fails=1)
+    handed_back = wl.read_work_item(CONDUCTOR, item_id)
+    assert handed_back is not None
+    assert handed_back.status == "done" and handed_back.state == "open"
+    assert wl.is_stale(handed_back, worker_running=False, now=much_later) is True
+    # A pass verdict does not hand it back: the conductor closes it next.
+    wl.apply_conductor_action(CONDUCTOR, "verdict", item_id=item_id, verdict="pass")
+    verified = wl.read_work_item(CONDUCTOR, item_id)
+    assert verified is not None
+    assert wl.is_stale(verified, worker_running=False, now=much_later) is False
 
 
 def test_accept_batch_drops_terminal_items_and_items_with_no_bar():
@@ -765,7 +1001,7 @@ def test_a_line_with_an_unknown_kind_or_a_non_object_is_skipped():
 
 
 def test_a_failed_item_write_rolls_the_event_log_back(monkeypatch):
-    """GPT round 4 F1: state and its event must never disagree. Event goes first;
+    """State and its event must never disagree. Event goes first;
     if the item write fails the log is restored byte-for-byte, and a retry works."""
     item_id = _new_item()
     item_before, log_before = _bytes_on_disk(item_id)
@@ -806,7 +1042,7 @@ def test_a_failed_event_write_leaves_the_item_untouched(monkeypatch):
 
 
 def test_create_default_round_is_read_under_the_lock(monkeypatch):
-    """GPT round 4 F2: a round bump that lands while create waits for the lock must
+    """A round bump that lands while create waits for the lock must
     be the round the new item is assigned to."""
     wl.ensure_conductor(CONDUCTOR, goal="g")
     real_lock = wl.conductor_lock
@@ -828,7 +1064,7 @@ def test_create_default_round_is_read_under_the_lock(monkeypatch):
 
 
 def test_an_acceptance_that_indents_past_the_read_ceiling_is_refused(monkeypatch):
-    """GPT round 4 F3: the compact-form check is not enough; the stored form is
+    """The compact-form check is not enough; the stored form is
     indented and must fit the ceiling too, or a successful create reads as absent."""
     wl.ensure_conductor(CONDUCTOR, goal="g")
     monkeypatch.setattr(wl, "MAX_RECORD_BYTES", 2000)
@@ -1005,7 +1241,7 @@ def test_a_wrong_typed_stored_field_resets_to_its_default_without_raising():
 
 
 def test_an_item_file_storing_a_different_id_reads_as_absent(caplog):
-    """GPT round 5 F1: honouring a mismatched stored id would let a write taken
+    """Honouring a mismatched stored id would let a write taken
     under this item's lock land on another item's path."""
     a = _new_item(title="a")
     b = _new_item(title="b")
@@ -1052,7 +1288,7 @@ def _fault_record_read(monkeypatch, *, name: str | None = None, parent: Path | N
 
 
 def test_the_bind_guard_fails_closed_on_a_transient_read_error(monkeypatch):
-    """GPT round 5 F2: a prior item that is present but momentarily unreadable must
+    """A prior item that is present but momentarily unreadable must
     NOT read as stale, or the worker is rebound and its open item stranded."""
     first = _new_item(title="first")
     second = _new_item(title="second")
@@ -1067,7 +1303,7 @@ def test_the_bind_guard_fails_closed_on_a_transient_read_error(monkeypatch):
 
 
 def test_the_bind_guard_fails_closed_when_the_binding_itself_is_unreadable(monkeypatch):
-    """GPT round 6: the same strictness applies to the BINDING read, or a transient
+    """The same strictness applies to the BINDING read, or a transient
     error there reads as unbound and the open item is stranded."""
     first = _new_item(title="first")
     second = _new_item(title="second")
@@ -1085,7 +1321,7 @@ def test_the_bind_guard_fails_closed_when_the_binding_itself_is_unreadable(monke
 
 
 def test_a_transient_read_error_does_not_reset_the_conductor_header(monkeypatch):
-    """GPT round 7 F1: ensure_conductor must not mint a fresh header over one it
+    """ensure_conductor must not mint a fresh header over one it
     merely failed to read."""
     wl.ensure_conductor(CONDUCTOR, goal="keep me", depth=1)
     wl.apply_conductor_action(CONDUCTOR, "goal", round_number=4)
@@ -1106,7 +1342,7 @@ def test_a_transient_read_error_does_not_reset_the_conductor_header(monkeypatch)
 
 
 def test_a_transient_read_error_does_not_truncate_the_event_log(monkeypatch):
-    """GPT round 7 F1: the log writer rewrites from what it read, so an unreadable
+    """The log writer rewrites from what it read, so an unreadable
     log must fail the write, not be replaced by a one-line log."""
     item_id = _new_item()
     wl.apply_conductor_action(CONDUCTOR, "decide", item_id=item_id, decision="one")
@@ -1128,7 +1364,7 @@ def test_a_transient_read_error_does_not_truncate_the_event_log(monkeypatch):
 
 
 def test_an_interrupted_bind_can_be_retried(caplog):
-    """GPT round 7 F2: a binding whose item does not name the worker back is the
+    """A binding whose item does not name the worker back is the
     half-state a kill between bind's two writes leaves; the retry must succeed."""
     item_id = _new_item()
     # Simulate the crash: binding written, item never updated.
@@ -1355,11 +1591,11 @@ def test_two_conductors_binding_one_worker_at_once_yield_exactly_one_binding():
         )
     # One record per thread, keyed by the conductor that thread bound with, so a
     # thread that dies silently or never finishes still leaves a named entry. The
-    # old helper caught only ``wl.WorkLedgerError`` and appended nothing on anything
-    # else, so a Windows sharing violation (a bare ``OSError`` per #9250's own
-    # docstring) killed the thread without a trace and shortened the count — the
-    # test then reported ``assert 2 == 3`` and threw away the one fact that names
-    # the cause. Each thread starts as ``"never-started"`` and is overwritten only
+    # Catching only ``wl.WorkLedgerError`` and appending nothing on anything
+    # else lets a Windows sharing violation (a bare ``OSError``) kill a thread
+    # without a trace and shorten the count, so the test reports a bare count
+    # mismatch and throws away the one fact that names the cause. Each thread
+    # starts as ``"never-started"`` and is overwritten only
     # when its body actually runs, so a thread that never scheduled is
     # distinguishable from one that ran and died.
     records: dict[str, str] = {key: "never-started" for key, _ in items}
@@ -1637,7 +1873,7 @@ def test_only_the_phase_2_seams_import_the_module():
     Asserted on IMPORT statements rather than any mention of the name, and the
     candidate set is asserted non-empty so a moved source tree fails this test
     instead of hollowing it out. Both directions are checked: an unlisted importer
-    fails, and a listed module that no longer imports the store fails too, so the
+    fails, and a listed module that does not import the store fails too, so the
     allowlist is data rather than lore.
     """
     package = Path(__file__).resolve().parents[1] / "src" / "kiro_crew"

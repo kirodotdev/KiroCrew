@@ -837,7 +837,7 @@ class TestSampleLiveCounts:
         assert (info.last_procs, info.last_stubs) == (7, 6)
 
     def test_one_walk_per_agent_not_one_per_metric(self) -> None:
-        """The whole point of #3970: RSS, CPU and both counts come off ONE walk.
+        """The whole point: RSS, CPU and both counts come off ONE walk.
 
         Patching the shared sample is not enough to prove that — a sweep that
         still called three readers would also pass the assertions above. Count
@@ -1105,10 +1105,10 @@ class TestReadSurfaces:
         assert mgr.task_memory_rows() == []
 
     def test_task_memory_rows_redact_before_truncate(self) -> None:
-        """#5582: a credential straddling the 80-char cut must not leak a fragment.
+        """A credential straddling the 80-char cut must not leak a fragment.
 
         The old spelling ``_redact(a.task[:80])`` sliced first, so a key cut at
-        the boundary lost its tail and no longer matched the credential regex —
+        the boundary loses its tail and does not match the credential regex —
         the raw prefix escaped into the session-memory surface.
         The fabricated AKIA-shaped literal is inlined rather than bound to a
         ``secret``-named variable, which would trip CodeQL's name-based

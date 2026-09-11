@@ -1,10 +1,10 @@
-"""Round-4 review findings: derived paths, and a hole created by round 2's own fix.
+"""Two review findings: paths derived from a guarded one, and a measurability-filter default.
 
 Both blockings this round came from earlier fixes in this PR, which is the useful
-signal: round 3 audited which *entry points* get guarded and that held (no new
+signal: an entry-point audit checked which *entry points* get guarded and held (no new
 ungated entry point was found), but it did not consider paths DERIVED from an
 already-guarded one, nor the check-to-use window between guarding a name and opening
-it. And the measurability filter added in round 2 introduced a new way for the
+it. And the measurability filter added later introduced a new way for the
 comparison to be wrong -- a new field with a default is a new default to be wrong
 about.
 """
@@ -134,7 +134,7 @@ def _report(session: dict, measurable: dict, *, embedder: str = "toy-hashed-bow"
             "retrieval": {"mmr": True},
             "search_backend": "sqlite_cosine",
             "embedder": embedder,
-            # Required since round 13: absent provenance is refused,
+            # Required: absent provenance is refused,
             # not compared -- two reports both missing a field used
             # to compare as compatible.
             "environment": {"python": "3.12.10", "platform": "linux-x86_64"},
@@ -151,7 +151,7 @@ def _report(session: dict, measurable: dict, *, embedder: str = "toy-hashed-bow"
 
 
 def test_an_unmeasurable_baseline_does_not_become_a_zero() -> None:
-    """The exact shape round 2 created: absent on one side, defaulted to 0.0.
+    """The shape to guard: a metric absent on one side, defaulted to 0.0.
 
     A cut-off the baseline's window never exposed is omitted from its metric dict.
     Substituting zero turned "could not measure" into "scored nothing" and published

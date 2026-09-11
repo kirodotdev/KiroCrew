@@ -692,7 +692,7 @@ def test_app_token_path_allowed_implicit_ws() -> None:
     """``/api/ws`` is implicitly allowed for all app tokens without an explicit
     permissions.api declaration: every app that uses KiroCrewClient needs it to
     connect, and the WS layer filters events per-app via ws_event_scope.py so
-    connecting no longer grants full event stream access. ``/api/status`` is
+    connecting does not grant full event stream access. ``/api/status`` is
     NOT implicitly allowed — it has no equivalent response filter. The
     reconnect poll that uses it is the dashboard SPA
     (``useDashboardHealthProbe``), which runs on a dashboard-user token and
@@ -1401,7 +1401,7 @@ class TestLiveScopeNarrowing:
         from kiro_crew.dashboard.handlers import updates as upd
         from kiro_crew.dashboard.state import DashboardState
 
-        # Declaration set no longer contains `log` (revoked).
+        # Declaration set does not contain `log` (revoked).
         mod._declared_cache["mochi-pet"] = (time.monotonic(), True, _allowed("slots:own"))
         ws = MagicMock()
         store = {
@@ -2201,7 +2201,7 @@ class TestExposeToCacheNeverBlocksTheLoop:
         )
 
     def test_source_guard_connect_refuses_a_disabled_app(self):
-        """The connect read must be USED to refuse, not just to build a snapshot.
+        """The connect read must drive the refusal, not just build a snapshot.
 
         Reading enablement and then ignoring it is the defect this replaced: the
         initial slots push and the log replay both run before any background
@@ -2600,7 +2600,7 @@ class TestUntaggedOriginIsNotUser:
     def test_resume_takes_the_persisted_origin_not_the_resumer(self):
         """The resume endpoint must read metadata BEFORE creating the slot.
 
-        It used to create the slot from the request identity and read the history
+        Creating the slot from the request identity and reading the history
         metadata a dozen lines later, so resuming a persisted cron conversation
         from the dashboard produced a USER-tagged slot and `slots:user` handed its
         replayed content to any app holding that scope.
@@ -2675,7 +2675,7 @@ class TestWildcardDeclaration:
 class TestNotificationSourceParsing:
     """The note's field is ``source`` and an app push is ``app:<name>``.
 
-    The gate used to read ``source_app``/``app`` -- keys no emitter writes -- so
+    The gate must not read ``source_app``/``app`` -- keys no emitter writes -- so
     it saw "" for every note and accepted "" as the system stream: one app's
     private push reached any app holding ``notification:system``, and an app
     holding ``notification`` never saw its own.
@@ -3224,7 +3224,7 @@ class TestSubagentBatchFrames:
 
 
 class TestSuppressedDenyCountIsReported:
-    """The dedup comment used to claim suppressed denies were "counted" while
+    """The dedup comment claimed suppressed denies were "counted" while
     the map held only a timestamp — no counter existed. The tally must actually
     reach the trail, so a burst is visible as volume without one SEL write per
     frame (this gate runs per event PER CLIENT on the broadcast hot path)."""

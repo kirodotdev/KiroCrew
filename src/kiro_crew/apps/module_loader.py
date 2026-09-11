@@ -41,8 +41,8 @@ _shutdown_callables: dict[str, tuple[int, Callable[..., Any]]] = {}
 #: disable, or the gateway teardown sweep), so a shutdown callable captured under
 #: one generation can be told apart from the code loaded by a LATER enable. A
 #: cached callable is only honoured while its generation is still current: after
-#: an unload+re-enable, the stale v1 callable is ignored rather than used to tear
-#: down the freshly loaded v2 worker (it would leave v2 running).
+#: an unload+re-enable, the stale v1 callable is ignored rather than applied to
+#: tear down the freshly loaded v2 worker (it would leave v2 running).
 _app_load_generation: dict[str, int] = {}
 
 

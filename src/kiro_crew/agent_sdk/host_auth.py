@@ -286,6 +286,18 @@ _KIRO_REMEDY = "Run kiro-cli login in your terminal, then start a new chat."
 _KIRO_SIGNED_OUT = (
     "kiro-cli is not logged in. Run `kiro-cli login` in your terminal, then start a new chat."
 )
+# KAS can run under either auth owner -- Crew's own vault (the dashboard's Kiro
+# sign-in card) or kiro-cli's store -- and the formatter cannot see which one a
+# process had, so its messages name both remedies. Plain prose (no backticks, no
+# "--") in the remedy: the panel renders it as text.
+_KAS_REMEDY = (
+    "Sign in from Settings → Kiro sign-in, or run kiro-cli login in your terminal "
+    "if kiro-cli owns the sign-in, then start a new chat."
+)
+_KAS_SIGNED_OUT = (
+    "Not signed in to Kiro. Sign in again from Settings → Kiro sign-in, or run "
+    "`kiro-cli login` in your terminal if kiro-cli owns the sign-in, then start a new chat."
+)
 
 
 #: Every harness this build knows, and how it signs in. Table order is projection
@@ -315,20 +327,20 @@ AGENT_AUTH_DECLARATIONS: Tuple[AgentAuthDeclaration, ...] = (
         backend=ACP_BACKEND_KAS,
         # Not an independent harness: it is spawned as ``kiro-cli acp
         # --agent-engine v3 --auth-method cli`` unless Crew's own vault holds an
-        # identity, and that ``--auth-method cli`` is the demonstration -- the relay
-        # resolves every access token from kiro-cli's own store. So it stores
-        # nothing of its own, carries kiro's remedy verbatim, and IS retired by a
-        # host logout: excluding it would let a KAS session keep serving turns on
-        # the previous account's credentials. In the Crew-owned spawn
-        # (``ACP_BACKENDS_HOST_AUTH_CALLBACK``) a recycle on kiro-cli logout is
-        # harmless -- the replacement re-probes the vault and comes back
+        # identity, in which case the relay draws its access token from Crew
+        # (``ACP_BACKENDS_HOST_AUTH_CALLBACK``) instead of kiro-cli's store. It
+        # stores nothing of its own either way and IS retired by a host logout:
+        # excluding it would let a KAS session keep serving turns on the previous
+        # account's credentials. In the Crew-owned spawn a recycle on kiro-cli
+        # logout is harmless -- the replacement re-probes the vault and comes back
         # Crew-owned -- so the answer stays conservative rather than becoming
-        # spawn-dependent.
+        # spawn-dependent. Its messages name BOTH sign-ins because the formatter
+        # cannot tell which owner a given process had.
         credential_leaves=(),
         home_override_env_vars=(),
         adapter_own_leaves=(),
-        sign_in_remedy=_KIRO_REMEDY,
-        signed_out_message=_KIRO_SIGNED_OUT,
+        sign_in_remedy=_KAS_REMEDY,
+        signed_out_message=_KAS_SIGNED_OUT,
         host_logout_retires_children=True,
         entitlement_source=ENTITLEMENT_HOST_IDENTITY_STORE,
     ),

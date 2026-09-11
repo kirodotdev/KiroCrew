@@ -1,10 +1,10 @@
-"""Tests for cron ``name`` validation on the dashboard PATCH surface (issue #3831).
+"""Tests for cron ``name`` validation on the dashboard PATCH surface.
 
 ``POST /api/crons`` caps ``name`` at ``MAX_SHORT_STRING`` via
-``validate_string_field``, but ``PATCH /api/crons/{id}`` previously copied the
+``validate_string_field``, but ``PATCH /api/crons/{id}`` must not copy the
 raw body value straight to ``job.name`` with only a truthiness check — a
 non-string or oversize name was persisted verbatim into ``crons.json``. This
-is the same surface-divergence defect class fixed for ``message`` in #3829.
+is the same surface-divergence defect class already fixed for ``message``.
 
 Locks in that PATCH now routes ``name`` through the same validator as POST:
 type check + ``sanitize_string`` + length cap, so the two REST surfaces cannot

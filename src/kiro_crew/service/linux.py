@@ -16,7 +16,7 @@ One host class this choice does NOT work on, and cannot be made to work by
 anything the installer writes: an SELinux-enforcing host whose kirocrew lives
 under ``$HOME`` (the default on Bazzite, Fedora Silverblue/Kinoite and other
 atomic desktops). PID 1's domain is denied ``execute`` on a home-labelled file,
-so the unit fails every start with ``203/EXEC`` (#7165). :mod:`kiro_crew.service
+so the unit fails every start with ``203/EXEC``. :mod:`kiro_crew.service
 .selinux` detects exactly that case by querying the loaded policy, and
 :func:`install` refuses up front with a rendered user-scope unit as the remedy
 rather than writing a unit that provably cannot start. A per-user install mode is
@@ -714,7 +714,7 @@ def install() -> apparmor.ProfileOutcome:
 
     # Last gate before anything is written: on an SELinux-enforcing host whose
     # kirocrew lives under $HOME, PID 1's domain is denied execute on the binary
-    # this unit would name, so the unit can never start (#7165). Everything below
+    # this unit would name, so the unit can never start. Everything below
     # would still "succeed" up to the first `systemctl restart`, leaving an
     # enabled unit crash-looping at 203/EXEC on every boot. Fires only on a
     # proven policy denial and fails open on every indeterminate answer, so a

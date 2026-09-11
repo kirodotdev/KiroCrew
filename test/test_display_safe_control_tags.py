@@ -1,4 +1,4 @@
-"""Channel outbound sinks strip agent control-tag comments (#7948 round 6).
+"""Channel outbound sinks strip agent control-tag comments.
 
 The prompt rule only contains the EMITTER (channel sessions are never taught
 the marker); these tests pin the deterministic backstop on the MESSAGE: a
@@ -23,11 +23,10 @@ class TestStripControlCommentsTailAnchoredFenceGuarded:
         assert out.rstrip().endswith("done")
 
     def test_tail_inside_unterminated_fence_is_visible_code(self) -> None:
-        # Round-8 GPT: a message ending inside an UNTERMINATED fence renders
-        # the tail tag line as literal code — visible content. The
-        # fence-parity guard rejects the match on BOTH recognizers (the
-        # frontend applies the identical guard), reversing round 7's
-        # tail-wins reading.
+        # A message ending inside an UNTERMINATED fence renders the tail tag
+        # line as literal code — visible content — so the fence-parity guard
+        # rejects the match on BOTH recognizers (the frontend applies the
+        # identical guard). An unterminated fence wins over the tail position.
         text = "```\n<!-- deliver:slack -->"
         assert strip_control_comments(text) == text
         tilde = "~~~html\n<!-- keep-visible -->"

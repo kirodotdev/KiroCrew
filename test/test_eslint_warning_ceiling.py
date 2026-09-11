@@ -11,8 +11,8 @@ that, and neither shows up as a failing check of its own:
   IS slack, so that is pinned here directly rather than left to prose in the
   workflow asking the next author not to lift it.
 * **Transcription.** Prose that repeats a *drifting* number goes stale the first
-  time anyone moves the ceiling, and then documents a gate that no longer
-  exists; a stale ceiling in a doc is also what makes the next burn-down look
+  time anyone moves the ceiling, and then documents a gate that does not
+  exist; a stale ceiling in a doc is also what makes the next burn-down look
   already done. That is pinned too, but only while the ceiling can drift --
   see `test_the_ceiling_is_not_transcribed_into_prose`.
 * **A second gate.** The number copied into ANOTHER workflow is not prose that

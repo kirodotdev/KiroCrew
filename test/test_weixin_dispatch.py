@@ -112,6 +112,7 @@ class FakeSessions:
         self.acquired = False
         self.mirror_links: dict[str, object] = {}
         self.opted_out = False
+        self.reserved_generations: list[str] = []
 
     def is_busy(self, key):
         return self._busy
@@ -149,6 +150,12 @@ class FakeSessions:
 
     def has_session(self, key):
         return True
+
+    def reserve_generation(self, session_key: str) -> None:
+        self.reserved_generations.append(session_key)
+
+    async def aflush(self) -> None:
+        return None
 
     def max_generation(self, *a, **kw):
         # seed_generation() probes for the highest existing generation; a fresh
@@ -387,6 +394,7 @@ def test_new_command_starts_a_fresh_session_without_a_turn(tmp_path):
 
     assert provider.prompts == []  # no LLM turn for a command
     assert before != after  # generation advanced
+    assert sessions.reserved_generations == [after]
     assert "新对话" in client.sent[0]["text"]
 
 
@@ -401,7 +409,7 @@ def test_compact_command_compacts_without_a_turn(tmp_path):
 
 def test_compact_command_declined_on_auto_managed_backend(tmp_path):
     # A backend that cannot serve /compact gets the informational reply and
-    # compact() is NEVER dispatched (#8156).
+    # compact() is NEVER dispatched.
     provider = FakeProvider()
     provider.manual_compact_unsupported_backend = "kas"
     d, client, sessions = _make(tmp_path, provider=provider)
@@ -422,7 +430,7 @@ def test_compact_none_capability_preserves_dispatch(tmp_path):
 
 def test_hard_threshold_declines_silently_on_auto_managed_backend(tmp_path):
     # No /compact to dispatch and no notice: the backend compacts on its own
-    # as context fills (#8156).
+    # as context fills.
     provider = FakeProvider()
     provider.manual_compact_unsupported_backend = "kas"
     d, client, sessions = _make(tmp_path, provider=provider)
@@ -434,7 +442,7 @@ def test_hard_threshold_declines_silently_on_auto_managed_backend(tmp_path):
 
 def test_soft_nudge_suppressed_on_auto_managed_backend(tmp_path):
     # The nudge advises /compact, which this backend refuses — it compacts on
-    # its own, so there is nothing for the user to act on (#8156).
+    # its own, so there is nothing for the user to act on.
     provider = FakeProvider()
     provider.manual_compact_unsupported_backend = "kas"
     d, client, sessions = _make(tmp_path, provider=provider)
@@ -649,7 +657,7 @@ def test_turn_failure_records_failure_and_still_releases(tmp_path):
 def test_delivery_failure_is_not_recorded_as_success(tmp_path):
     """An undelivered reply must fail the turn, not persist as a success.
 
-    Regression: the renderer used to swallow send errors, so a send timeout left
+    The renderer must not swallow send errors, or a send timeout leaves
     the dispatcher recording + persisting a reply the user never received.
     """
     rows: list[tuple[str, str]] = []

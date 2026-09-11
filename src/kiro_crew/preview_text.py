@@ -94,7 +94,7 @@ def strip_markdown_preview(text: str) -> str:
     t = drop_format_chars(text)
     t = _FENCE_RE.sub(_fence_placeholder, t)
     t = _MCWIDGET_RE.sub(" (widget) ", t)
-    # Only RECOGNIZED control tags (keep-visible #7948, heartbeat deliver
+    # Only RECOGNIZED control tags (keep-visible, heartbeat deliver
     # routing, plan_task_id anchors) — never all comments, and never inside
     # inline code: a tag an assistant quotes in inline code renders literally
     # and is visible content. Shared implementation; see constants.py.

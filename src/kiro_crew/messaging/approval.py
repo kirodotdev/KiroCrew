@@ -128,7 +128,7 @@ class PendingApproval:
     #: Told by the renderer that the window closed, so the prompt still on the
     #: operator's screen can be resolved where they are looking. Deny-on-silence
     #: is otherwise INVISIBLE: the tool is refused, the turn moves on, and a live
-    #: -looking prompt sits in the chat that a later "1" can no longer answer.
+    #: -looking prompt sits in the chat that a later "1" cannot answer.
     #: A callback rather than a transport because this module never learns what a
     #: channel is; the renderer that posted the prompt is the only thing that
     #: knows which bubble to edit. Awaited from :meth:`wait`, so it must not raise
@@ -150,7 +150,7 @@ class PendingApproval:
             # Two different events raise this, and conflating them is wrong in
             # opposite directions. The REQUEST being abandoned is a denial. The
             # TURN being torn down is cancellation, and swallowing it would
-            # report a decision to a caller that is no longer listening and
+            # report a decision to a caller that has stopped listening and
             # break the cancellation it was told to honour -- so re-raise, which
             # is also the safe outcome: the tool is never approved.
             if self.future.cancelled():
@@ -638,7 +638,7 @@ def _notify_approval_stalled(session_key: str) -> None:
     """Tell AutoNudge that a prompt in *session_key* went unanswered.
 
     An unanswered prompt is the only evidence available that an UNATTENDED loop
-    can no longer act: without it a monitor loop bound to this conversation keeps
+    cannot act: without it a monitor loop bound to this conversation keeps
     firing, is denied every interactive tool, and burns its whole cycle budget
     while reporting itself healthy — the per-turn cap is measured in tens of
     minutes and the approval window in minutes, so every remaining cycle is spent

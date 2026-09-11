@@ -98,8 +98,8 @@ _AMBIENT_READ_ALLOWLIST = frozenset(
         # plain typo purely to pick the log message; the substitution result is
         # the literal ``${VAR}`` either way.
         ("_expand_env_placeholders", "os.environ:<dynamic>"),
-        # Output-AFFECTING since issue #3495: decides whether an env-declaring
-        # server is pooled at all. Read once per pass in rewrite_agents and
+        # Output-AFFECTING: decides whether an env-declaring server is pooled at
+        # all. Read once per pass in rewrite_agents and
         # fingerprinted as "forward_declared_env" (see
         # test_forward_declared_env_change_invalidates).
         ("forward_declared_env_enabled", "config-import:kiro_crew.config.loader"),
@@ -310,9 +310,9 @@ def _mk_tree(
 def _forward_declared_env_on(monkeypatch: pytest.MonkeyPatch) -> None:
     """Force declared-env forwarding ON for this module.
 
-    Since issue #3495 (cause B pre-classification) a poolable server that
-    declares env while forwarding is OFF is left unwrapped — which would gut
-    every ``with_env=True`` fixture here (no stub, no sidecar, no target_env).
+    Under cause-B pre-classification a poolable server that declares env while
+    forwarding is OFF is left unwrapped — which would gut every
+    ``with_env=True`` fixture here (no stub, no sidecar, no target_env).
     These tests exercise the fingerprint/caching machinery, not the
     classification policy (covered in test_mcp_gateway_rewriter.py), so pin
     the flag ON. ``test_forward_declared_env_change_invalidates`` overrides
@@ -422,9 +422,9 @@ def test_forward_declared_env_change_invalidates(
 ) -> None:
     """Flipping ``mcp_gateway.forward_declared_env`` regenerates the overlays.
 
-    The flag decides whether an env-declaring server is pooled at all (issue
-    #3495 cause B), so serving a cached overlay across a flip would keep a
-    server pooled that the new policy declassifies (or vice versa).
+    The flag decides whether an env-declaring server is pooled at all (cause B),
+    so serving a cached overlay across a flip would keep a server pooled that the
+    new policy declassifies (or vice versa).
     """
     _mk_tree(tmp_path, with_env=True)
     on = _rewrite(tmp_path)
@@ -454,7 +454,7 @@ def test_pool_identity_env_change_invalidates(
     _mk_tree(tmp_path, with_env=True)
     # Declare a rotating-secret-shaped key so the list has something to act on.
     # With nothing opted in this key is withheld from a shared backend, so the
-    # pre-classification leaves the server UNWRAPPED (issue #3495 cause B).
+    # pre-classification leaves the server UNWRAPPED (cause B).
     spec_path = tmp_path / "agents" / "agent-0.json"
     spec = json.loads(spec_path.read_text())
     spec["mcpServers"]["srv"]["env"]["OAUTH_TOKEN"] = "t"
@@ -470,7 +470,7 @@ def test_pool_identity_env_change_invalidates(
     after = _rewrite(tmp_path)
     assert rewrite_counter["n"] == 4, "an identity-list edit must not serve the cache"
     # Non-vacuous, and the feature's headline behaviour: naming the key folds it
-    # into the pool identity, so it is no longer withheld and 'srv' pools too.
+    # into the pool identity, so it stops being withheld and 'srv' pools too.
     assert after[0]["agent-0.json"] == 2
     assert before != after
 
@@ -568,7 +568,7 @@ def test_settings_mcp_json_deletion_invalidates(
 ) -> None:
     """Deleting the global settings file changes the injection set, so the
     cache must invalidate. No settings overlay is involved: the rewriter never
-    writes one (#8111)."""
+    writes one."""
     _mk_tree(tmp_path)
     _rewrite(tmp_path)
     assert not (tmp_path / "mcp-gateway" / "settings" / "mcp.json").exists()
@@ -656,7 +656,7 @@ def test_transient_overlay_write_failure_keeps_the_previous_overlay(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The stale-overlay prune keeps a TRANSIENT failure's previous overlay
-    instead of keying on write success (#5328): a single transient
+    instead of keying on write success: a single transient
     overlay-write failure must leave that agent's previous, healthy overlay
     on disk — stale-but-working beats no overlay at all — while the other
     agents still rewrite."""
@@ -704,9 +704,9 @@ def test_transient_agent_read_failure_keeps_the_previous_overlay(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Same keying, other transient arm: a source spec that fails to READ this
-    pass keeps its previous overlay (before #5328 the read-failure
-    ``continue`` skipped ``written.add`` and the prune deleted the healthy
-    overlay) — AND its env sidecars: the kept overlay's stub argv still
+    pass keeps its previous overlay (a read-failure ``continue`` that skips
+    ``written.add`` lets the prune delete the healthy overlay) — AND its env
+    sidecars: the kept overlay's stub argv still
     points ``--env-file`` at them, and a read-failure pass cannot enumerate
     the victim's sidecar names, so the sidecar prune is skipped for the whole
     (already-uncacheable) pass. Pruning them would spawn the kept overlay's
@@ -749,7 +749,7 @@ def test_malformed_source_still_prunes_its_overlay(
     transient keep: the pass is cacheable and the cached-path prune keys on
     the stored outputs, so sparing the overlay here would let two boots over
     identical inputs behave differently. Bad content prunes exactly like a
-    deleted source, as before #5328."""
+    deleted source."""
     src = _mk_tree(tmp_path)
     _rewrite(tmp_path)
     overlay = tmp_path / "mcp-gateway" / "agents" / "agent-1.json"
@@ -766,9 +766,9 @@ def test_write_failure_does_not_suppress_the_prune_for_deleted_sources(
 ) -> None:
     """The prune keep-set is per-source, never a pass-wide failure switch: in
     ONE degraded pass, a deleted source still loses its overlay while the
-    write-failure victim keeps its previous one. Guards against 'fixing'
-    #5328 by skipping the prune whenever anything failed, which would leak
-    overlays for genuinely-deleted agents."""
+    write-failure victim keeps its previous one. Guards against skipping the
+    prune whenever anything failed, which would leak overlays for
+    genuinely-deleted agents."""
     src = _mk_tree(tmp_path, n_agents=3)
     _rewrite(tmp_path)
     overlay_dir = tmp_path / "mcp-gateway" / "agents"
@@ -1189,7 +1189,7 @@ def test_transient_settings_read_failure_does_not_rewrite_agent_overlays(
 ) -> None:
     """A settings read that FAILED is not a settings file that declared
     nothing: the injection set is unknown, not empty, so no agent overlay may
-    be written from it (#5344).
+    be written from it.
 
     A healthy pass injects each poolable settings server INTO every agent
     overlay; the raw entry still merges from the real settings file, but it
@@ -1330,11 +1330,11 @@ def test_settings_read_failure_with_nothing_stubbed_still_rewrites(
 def test_settings_read_failure_still_writes_an_agent_with_no_overlay(
     tmp_path: Path,
 ) -> None:
-    """The #5344 refusal only withholds a rewrite where withholding PRESERVES
+    """The refusal only withholds a rewrite where withholding PRESERVES
     something. An agent with no previous overlay has no injected copy to drop,
     so refusing would leave it with no overlay at all -- unpooling its own
-    servers too, which is worse than the fault warrants and worse than what
-    this pass does without the fix. It must still be written."""
+    servers too, which is worse than the fault warrants. It must still be
+    written."""
     _mk_tree(tmp_path, n_agents=1)
     overlay_dir = tmp_path / "mcp-gateway" / "agents"
     with _settings_unreadable():
@@ -1557,9 +1557,9 @@ def test_a_swallowed_stat_fault_is_unknown_not_absent(
     ENOENT, EBADF, ENOTDIR and ELOOP return False. ENOTDIR is reachable without
     the file being gone -- a directory component momentarily replaced, an atomic
     directory swap, a symlink being re-pointed -- and reading it as "absent"
-    rewrites every overlay with an empty injection set, which is #5344 through
-    the stat path instead of the read path. Only ``FileNotFoundError`` may mean
-    absent; every other OSError means unknown."""
+    rewrites every overlay with an empty injection set -- the same unknown-read-as-
+    empty fault through the stat path instead of the read path. Only
+    ``FileNotFoundError`` may mean absent; every other OSError means unknown."""
     src = _mk_tree(tmp_path, n_agents=1)
     _rewrite(tmp_path)
     overlay = tmp_path / "mcp-gateway" / "agents" / "agent-0.json"
@@ -1601,7 +1601,7 @@ def test_deterministic_settings_content_is_cacheable_and_injects_nothing(
     CONTENT problem, unlike a transient fault: the injection set is
     established as empty (the agent overlays drop the injected globals) and
     the pass is safe to cache -- fixing the content changes the file's stat
-    signature. No settings overlay exists in either state (#8111)."""
+    signature. No settings overlay exists in either state."""
     src = _mk_tree(tmp_path, n_agents=1)
     _rewrite(tmp_path)
     overlay = tmp_path / "mcp-gateway" / "agents" / "agent-0.json"
@@ -1674,8 +1674,8 @@ def test_sidecar_write_failure_is_not_cached(
 
 
 def test_no_settings_overlay_is_ever_written(tmp_path: Path) -> None:
-    """Locks the #8111 removal in: a healthy pass over a settings file holding
-    poolable AND non-poolable servers must not write
+    """A healthy pass over a settings file holding poolable AND non-poolable
+    servers must not write
     ``<overlay_dir>/../settings/mcp.json`` — nothing ever read it. The real
     settings file is not modified either, and the stored fingerprint carries
     no ``settings_overlay`` output."""
@@ -1700,10 +1700,10 @@ def test_no_settings_overlay_is_ever_written(tmp_path: Path) -> None:
 def test_legacy_settings_overlay_is_left_untouched(
     tmp_path: Path, rewrite_counter: dict[str, int]
 ) -> None:
-    """A settings overlay left behind by a pre-#8111 release is deliberately
-    NOT deleted: it was always written owner-only into a 0o700 directory
-    (issue #5285), its content is a subset copy of the user's real settings
-    file, and nothing reads it -- inert, not exposed. An automated deleter
+    """A settings overlay left behind by an older release is deliberately
+    NOT deleted: it is written owner-only into a 0o700 directory, its content is
+    a subset copy of the user's real settings file, and nothing reads it --
+    inert, not exposed. An automated deleter
     would itself be an attack surface (real-settings aliasing, foreign files
     under a custom overlay_dir, symlink-redirected parents), so the pass must
     leave the file byte-identical, on the full path and on cache hits alike."""
@@ -1725,11 +1725,11 @@ def test_legacy_settings_overlay_is_left_untouched(
 def test_legacy_fingerprint_with_settings_overlay_output_still_cache_hits(
     tmp_path: Path, rewrite_counter: dict[str, int]
 ) -> None:
-    """The upgrade-safety invariant of the #8111 removal: a fingerprint
-    written by a pre-change release carries an ``outputs.settings_overlay``
-    signature. The loader must IGNORE it — not reject it — so the first
-    upgraded boot over unchanged inputs is still served from cache, and the
-    #5344 transient-keep gate keeps comparing inputs meaningfully."""
+    """The upgrade-safety invariant: a fingerprint written by an older release
+    carries an ``outputs.settings_overlay`` signature. The loader must IGNORE it
+    — not reject it — so the first upgraded boot over unchanged inputs is still
+    served from cache, and the transient-keep gate keeps comparing inputs
+    meaningfully."""
     _mk_tree(tmp_path, n_agents=1)
     _rewrite(tmp_path)
     fp = tmp_path / "mcp-gateway" / "agents" / _FINGERPRINT_NAME
@@ -1746,7 +1746,7 @@ def test_legacy_fingerprint_with_settings_overlay_output_still_cache_hits(
 def test_legacy_overlay_acl_is_retightened_when_vouched(
     tmp_path: Path, rewrite_counter: dict[str, int]
 ) -> None:
-    """The ONE guard kept for the leftover pre-#8111 overlay: a loosened ACL
+    """The ONE guard kept for a leftover legacy overlay: a loosened ACL
     is re-tightened on every pass — cache hits included — when the stored
     fingerprint's recorded ``settings_overlay`` signature vouches for the
     file. An unvouched file is never chmodded, the bytes are never touched,

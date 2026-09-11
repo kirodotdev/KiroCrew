@@ -823,7 +823,7 @@ def _refuse_tree_shaping_if_unverifiable(verb: str) -> tuple[str, str | None]:
     authority over everything, and an app keeps read of the whole tree plus
     filing its OWN sessions into any folder.
 
-    So this layer no longer decides the policy — it would be a second copy of a
+    So this layer does not decide the policy — that would be a second copy of a
     rule the endpoint enforces under the store lock, and only the endpoint can
     see the authoritative tree. What stays here is the one question the endpoint
     cannot answer: whether the caller can be placed at all. An unverifiable or
@@ -917,7 +917,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             # are CREATED — and creating folders is tree shaping, so the same
             # gate applies rather than a second authorization path: a caller
             # that could not reshape the tree by creating a folder must not
-            # reach the same write by naming the path here (#6118). The gate's
+            # reach the same write by naming the path here. The gate's
             # verified key is what the segment creation writes under, per its
             # own contract.
             gate_key, gate = _refuse_tree_shaping_if_unverifiable(
@@ -987,8 +987,8 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         if info:
             # Two different facts share this reply and must not read alike. A
             # target that was never running has nothing to stop; one whose
-            # cooperative cancel is still in flight IS stopping, and after #5074 a
-            # re-sent stop lands there routinely — telling that caller "nothing to
+            # cooperative cancel is still in flight IS stopping, and a re-sent
+            # stop lands there routinely — telling that caller "nothing to
             # stop" would report the opposite of what happened and invite it to
             # act as though the target were still free-running.
             if resp.get("already_stopping"):

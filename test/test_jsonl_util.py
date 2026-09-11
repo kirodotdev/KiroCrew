@@ -142,7 +142,7 @@ class TestTryLock:
 
 
 class TestBoundedRecordReaders:
-    """Contract of the shared record readers (``#6345``).
+    """Contract of the shared record readers.
 
     ``for line in handle`` asks for bytes up to the next newline, so one
     crafted newline-free line is a single allocation the size of the whole
@@ -406,8 +406,8 @@ class TestBoundedRecordReaders:
         and the next read then supplied more body AND the terminator at once --
         yielding a record of nearly twice the cap, whole.
 
-        HOW it is prevented has since changed, and this docstring says so rather
-        than implying a mechanism that is no longer the active one. Each read is
+        This docstring states the active mechanism directly rather
+        than implying a stale one. Each read is
         now bounded by what the carried record has left, so the buffer cannot
         reach that size in the first place and this input is refused by the
         unterminated-tail check. The per-piece body check still exists and is
@@ -467,7 +467,7 @@ class TestBoundedRecordReaders:
         clock quantisation (one scheduler tick against three reads as exactly
         3.00x), and once on a shared runner where a single noisy doubled sample
         (0.319s against a 0.101s base) read as 3.15x with no quadratic work in
-        sight (#8606). Best-of-3 `process_time` sampling and a measured-quantum
+        sight. Best-of-3 `process_time` sampling and a measured-quantum
         floor were already in place for that second flake; a clock on a shared
         runner is noise all the way down. Per the AGENTS.md testing convention
         (assert shape, not duration; pin the linear path deterministically
@@ -621,8 +621,8 @@ class TestBoundedRecordReaders:
         # trace above, and this is the coarse net under it. The bound is
         # deliberately generous -- this read measures in tens of milliseconds,
         # so 5s is two orders of magnitude of headroom that neither a loaded
-        # shared runner nor coverage tracing crosses, unlike the 3.0x ratio
-        # this test used to carry (#8606).
+        # shared runner nor coverage tracing crosses, unlike a strict ratio
+        # assertion would impose.
         budget_path = tmp_path / f"dense{count * 2}.jsonl"
         begin = time.process_time()
         with open(budget_path, "rb") as fh:
@@ -676,9 +676,8 @@ class TestBoundedRecordReaders:
 # `learn.py`, the auto_improvement spine's ledger/archive, and the meetings
 # store each hold one, and `learn.py`'s feeds a `_write_all` rewrite, which is
 # the read-feeds-rewrite pattern this module classifies abort-required. Those
-# are a different reader shape than #6345 enumerates and are left for a
-# follow-up rather than swept in here; raised by the First Principles lane on
-# PR #7651.
+# are a different reader shape than this audit enumerates and are left for a
+# follow-up rather than swept in here.
 #
 # Kernel-synthesised pseudo-files: an agent cannot write a multi-GB newline-free
 # line into /proc, and the line lengths are fixed by the kernel.
@@ -699,7 +698,7 @@ _FENCED_READERS = {"sel.py"}
 # DEFERRED, not excused: nothing is deferred today. `snapshot._merge_notifications`
 # was the one entry, and it is converted -- it reads both the destination and the
 # source through `strict_raw_records`, validates each record's encoding without
-# transforming it, and appends the original bytes. See #7771 for the write-side
+# transforming it, and appends the original bytes. The write-side
 # contract that conversion needed (record boundary, dedupe-key type, framing,
 # encoding, abort-not-skip posture) and which is stated on the function itself.
 _DEFERRED_READERS: set[str] = set()
@@ -710,7 +709,7 @@ _ALLOWED_UNBOUNDED_FILES = (
 
 
 class TestNoUnboundedHandleIteration:
-    """Make the #6345 audit executable rather than a claim in a PR body.
+    """Make the reader audit executable rather than a claim in a PR body.
 
     ``for line in handle`` over an agent-writable tree is an unbounded
     allocation. This scans the whole package for THAT SHAPE and requires every

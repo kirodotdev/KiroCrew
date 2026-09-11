@@ -1,4 +1,4 @@
-"""Tests for live slot stale-window reconciliation (#4373).
+"""Tests for live slot stale-window reconciliation.
 
 When a live slot's in-memory window diverges from disk (messages on disk that
 the slot does not know about), both the resume and detail endpoints must

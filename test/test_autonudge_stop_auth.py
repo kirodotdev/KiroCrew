@@ -1,6 +1,6 @@
-"""Contract tests for the stateless session-directive tools (issue #755).
+"""Contract tests for the stateless session-directive tools.
 
-``monitor_start`` / ``monitor_update`` / ``autonudge_stop`` no longer resolve a
+``monitor_start`` / ``monitor_update`` / ``autonudge_stop`` do not resolve a
 session identity or make HTTP calls. Each VALIDATES its arguments and returns a
 DIRECTIVE string — a human-readable confirmation plus an opaque marker carrying
 the validated payload (and NO session key). The session-aware consumer
@@ -18,13 +18,13 @@ The tests split along that seam:
   resolver returns ``""`` and the tool DOES emit a directive.
 * **Applier invariants** — call ``apply_session_directive`` with a fake
   AutoNudge service and fake state/slot, preserving the security invariants
-  that used to live inside the tool: capped-loop refusal, paused-loop
+  enforced in the applier: capped-loop refusal, paused-loop
   protection, and ownership by the session binding key (never a caller-supplied
   loop id).
 
-The former mock-dashboard HTTP server, user-token handshake, and
-arm-failure/lost-response recheck tests are gone: that logic no longer exists —
-the tools are stateless and the loop mutation happens in-process in the applier.
+The tools carry no mock-dashboard HTTP server, user-token handshake, or
+arm-failure/lost-response recheck: they are stateless and the loop mutation
+happens in-process in the applier.
 """
 
 from __future__ import annotations
@@ -250,8 +250,8 @@ def test_autonudge_stop_short_circuits_for_non_nudgeable_session(monkeypatch, ga
 
 # ── Applier invariants (dashboard.session_directive_apply) ────────────────────
 #
-# These preserve the security invariants that used to live inside the tool,
-# moved to the consumer that actually mutates loop state. The applier resolves
+# These preserve the security invariants enforced in the consumer that actually
+# mutates loop state. The applier resolves
 # the loop by ``svc.get_by_slot(binding_key_for(session_key))`` and calls the
 # authz cores; the fakes below record those calls without touching a real
 # AutoNudge service. The authz helpers are imported LAZILY inside the applier
@@ -580,7 +580,7 @@ def test_applier_monitor_update_revives_a_capped_loop_only_when_cap_is_raised(mo
 
 
 def test_applier_monitor_update_revives_a_budget_stopped_loop_on_budget_raise(monkeypatch):
-    """PAUSED-LOOP symmetry (design-review on #2116): a loop stopped by its
+    """PAUSED-LOOP symmetry: a loop stopped by its
     wall-clock budget gets the SAME agent-side recovery as a cap-stopped one —
     raising the budget above the loop's elapsed age revives it. Keyed on the
     persisted stopped_reason, not elapsed-time inference."""
@@ -614,7 +614,7 @@ def test_applier_monitor_update_revives_a_budget_stopped_loop_on_budget_raise(mo
 
 
 def test_applier_manual_pause_is_never_revived_by_a_budget_raise(monkeypatch):
-    """GPT P1 repro on #2116: pause a loop manually, let wall-clock pass its
+    """Pause a loop manually, let wall-clock pass its
     budget, then raise max_runtime_secs — the loop must STAY paused. Elapsed
     time cannot distinguish a pause from an expiry; only the persisted
     stopped_reason can, and 'manual' never auto-resumes."""

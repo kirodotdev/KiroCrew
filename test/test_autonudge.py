@@ -207,7 +207,7 @@ async def test_an_ambiguous_instruction_arms_ungated_rather_than_guessing(tmp_pa
 async def test_a_gated_monitor_survives_a_restart_and_re_arms(tmp_path):
     """A persisted monitor keeps its active intent across a gateway restart.
 
-    It used to be deactivated on load, because delivery had no gate and the
+    Deactivating it on load would be wrong: with no delivery gate the
     legacy timer would have injected a prompt without a decision. With the tick
     gate in place, deactivating would instead end every watch at the next
     restart -- and silently, since a stopped watch and a quiet one look the same
@@ -360,7 +360,7 @@ async def test_an_unusable_instruction_mid_poll_discards_the_verdict(tmp_path, m
     This replaces a test for a HOST change mid-poll -- an instruction edited from a
     bare ``owner/name#123`` to the same subject as a URL, which left kind and target
     identical while changing which SERVER was observed. Requiring an explicit
-    pull-request URL removes that case entirely: a shorthand no longer infers, and an
+    pull-request URL removes that case entirely: a shorthand does not infer, and an
     enterprise URL is refused, so no inferable spelling can change the host. Keeping
     a test for an unreachable path would only look like protection.
 
@@ -598,7 +598,7 @@ async def test_every_uncertain_stored_gate_resolves_to_ungated(tmp_path, stored,
         assert loop.gate is False, note
         assert loop.monitor is None, "and no monitor is inferred for it"
         # A later edit must not gate it either -- that is where a falsy-but-untrusted
-        # value used to bite, by looking like an opt-out nobody had recorded.
+        # value can bite, by looking like an opt-out nobody recorded.
         await service.update(loop.id, message="watch https://github.com/acme/widgets/pull/99")
         assert loop.monitor is None, "an edit must not gate a loop that was never gated"
     finally:
@@ -695,7 +695,7 @@ async def test_a_re_owed_claim_survives_the_backoff_re_arm(tmp_path, monkeypatch
         assert await service._monitor_tick_is_quiet(loop) is False
         # A timer must EXIST, or ``_cancel_timer`` returns before the code under test:
         # the refusal path re-arms with a backoff, and it is that re-arm's cancel which
-        # used to erase the claim. Without this the test cannot fail.
+        # would erase the claim. Without this the test cannot fail.
         service._arm_timer(loop, delay=3600)
         assert loop.id in service._timers
         await service._run_fire_cycle(loop)
@@ -807,8 +807,8 @@ async def test_a_settlement_revalidates_before_it_deactivates(
 ):
     """The window between the terminal observation and the turn landing had no evidence.
 
-    Every earlier guard for a reopened subject runs on the NEXT TICK -- the debt clearing
-    from round 31, the forced re-observation from round 34 -- and this settlement happens
+    Every earlier guard for a reopened subject runs on the NEXT TICK -- the debt
+    clearing and the forced re-observation -- and this settlement happens
     before any tick can. A channel turn runs inline and can take minutes, which is long
     enough for a pull request to be reopened, so the settlement re-asks.
 
@@ -854,7 +854,7 @@ async def test_a_settlement_revalidates_before_it_deactivates(
 async def test_an_unobservable_subject_does_not_get_settled(tmp_path, monkeypatch):
     """Absence of evidence must not retire a watch.
 
-    A failed fetch, a probe defect or a binding that no longer resolves cannot CONFIRM
+    A failed fetch, a probe defect or a binding that does not resolve cannot CONFIRM
     that the subject is finished, and settling on that would be the silent stop this whole
     design resolves away from.
     """
@@ -1065,9 +1065,9 @@ async def test_a_refused_wake_is_charged_once_when_its_retry_delivers(tmp_path, 
 async def test_a_failed_clear_write_leaves_the_debt_cleared(tmp_path, monkeypatch):
     """A rollback here would restore a debt a live observation just disproved.
 
-    Round 31 restored ``terminal_pending`` when its clearing write failed, to keep memory
+    Restoring ``terminal_pending`` when its clearing write fails keeps memory
     and disk in agreement. That is the right instinct almost everywhere and the wrong one
-    here: the next delivered turn would settle a terminal state that no longer holds and
+    here: the next delivered turn would settle a terminal state that does not hold and
     silently stop a watch whose subject is alive -- the exact harm this feature's gating
     default is designed to avoid.
 
@@ -1182,7 +1182,7 @@ async def test_terminal_debt_is_re_observed_rather_than_spending_a_free_tick(tmp
     A subject carrying terminal debt is FINISHED, so there is no work to protect, and
     the retry's correctness depends on it still being finished. Because the clearing
     for a reopened subject lives AFTER the poll, the bypass jumped straight over it
-    and the retried delivery settled a terminal state that no longer held.
+    and the retried delivery settles a terminal state the reopen has invalidated.
     """
     import kiro_crew.autonudge as _an
 
@@ -1937,7 +1937,7 @@ async def test_a_terminal_watch_notifies_even_though_it_cancels_its_own_timer(
     ``update`` runs its mutation as a separate shielded task, so its cancel does
     not see this timer as the current task and cancels it -- and the gate runs in
     that timer, outside the firing window that would have deferred the cancel. So
-    anything sequenced AFTER the await can be dropped, and that used to be the
+    anything sequenced AFTER the await can be dropped, and that is the
     notification.
     """
     import kiro_crew.autonudge as _an
@@ -2236,7 +2236,7 @@ async def test_a_refused_fire_charges_no_wake(tmp_path, monkeypatch):
         assert loop.monitor is not None
         assert loop.monitor.wakes == 0, "a refused fire is not a wake"
         assert loop.id in service._pending_monitor_wake, "but the wake is still OWED"
-        # The claim used to be RELEASED here, and that was the second wrong belief
+        # The claim must NOT be RELEASED here -- the second wrong belief
         # this one test has recorded. The reasoning then treated the claim as a record
         # of a turn that had happened, so releasing it looked like the way to avoid
         # charging a wake that did not. It is really a record of a wake that is OWED:
@@ -2333,7 +2333,7 @@ async def test_retargeting_the_instruction_retargets_the_probe(tmp_path):
         assert loop.monitor is not None
         assert loop.monitor.quiet_ticks == 5
 
-        # An instruction that no longer names one subject returns the loop to a
+        # An instruction that stops naming one subject returns the loop to a
         # plain timer rather than leaving it bound to a stale target.
         await service.update(loop.id, message="watch the canary deployment instead")
         assert loop.monitor is None
@@ -2828,7 +2828,7 @@ async def test_stopped_reason_records_why_and_clears_on_revival(svc, monkeypatch
     """The store records WHY a loop deactivated: _timer's terminal bounds tag
     'cycle_cap'/'runtime_budget', a plain update(active=False) tags 'manual',
     and any revival clears the tag. This is what lets revival logic refuse to
-    resume a manual pause whose budget has since elapsed (GPT P1 on #2116)."""
+    resume a manual pause whose budget has since elapsed."""
     import kiro_crew.autonudge as _an
 
     async def _nosleep(_secs):
@@ -2862,7 +2862,7 @@ async def test_stopped_reason_records_why_and_clears_on_revival(svc, monkeypatch
 
 @pytest.mark.asyncio
 async def test_bound_deactivation_never_overwrites_a_manual_pause(svc):
-    """RACE (GPT P1 on #2116): user pauses right after the timer detects
+    """RACE: user pauses right after the timer detects
     expiry — the timer's in-flight bound-tagged update must degrade to a
     no-op, not stamp 'runtime_budget' over the user's 'manual' (which would
     make the paused loop budget-revivable)."""
@@ -2882,7 +2882,7 @@ async def test_bound_deactivation_never_overwrites_a_manual_pause(svc):
 
 @pytest.mark.asyncio
 async def test_budget_expiring_mid_turn_deactivates_post_delivery(svc, monkeypatch):
-    """GPT P1 on #2116: the budget gates turn STARTS and must not cancel an
+    """The budget gates turn STARTS and must not cancel an
     in-flight turn — but once a slow turn ENDS with the budget spent, the loop
     deactivates immediately (tagged runtime_budget, expired emitted) instead
     of arming another idle cycle. Channel loops must not self-re-arm."""
@@ -3225,7 +3225,7 @@ async def test_replace_stopped_never_deletes_a_future_version_monitor(svc):
     """A future-version record belongs to the newer gateway that wrote it:
     ``_load()`` retains it inactive across a downgrade so an upgrade can resume
     the watch. The directive re-arm must refuse it — deleting opaque state this
-    gateway cannot read is data loss, not a re-arm (GPT round-2 finding)."""
+    gateway cannot read is data loss, not a re-arm."""
     existing = await svc.add_monitor(
         slot_key="chat-1-123",
         kind="github_pull_request",
@@ -3331,8 +3331,7 @@ async def test_create_only_add_monitor_replaces_a_merged_subject_monitor(svc):
 async def test_replace_stopped_preserves_a_quarantined_monitor_record(svc):
     """``_load()`` quarantines a malformed monitor payload as BLOCKED precisely
     to retain the raw record for inspection — a directive re-arm deleting it
-    would destroy the only copy of the corrupt state (GPT round-4 instance of
-    the ruling's fail-closed principle)."""
+    would destroy the only copy of the corrupt state."""
     from kiro_crew.monitoring.models import MONITOR_STOP_INVALID_RECORD
 
     existing = await svc.add_monitor(
@@ -3430,8 +3429,7 @@ async def test_replace_stopped_preserves_a_user_stopped_monitor(svc):
 async def test_replace_stopped_preserves_a_research_tombstone(svc):
     """The auto_research watchdog reads a retained ``AUTONUDGE_STOP_REASON``
     row to tell deliberate completion from crash cleanup; a directive re-arm
-    deleting it would leave the campaign running (GPT round-3 finding, owner
-    ruling option A)."""
+    deleting it would leave the campaign running."""
     await svc.start()
     worker = await svc.add(slot_key="chat-1-123", message="research worker", idle_secs=60)
     await svc.update(worker.id, active=False, stopped_reason=AUTONUDGE_STOP_REASON)
@@ -3905,7 +3903,7 @@ def test_wecom_is_classified_because_it_gained_a_proactive_send_path():
 
     WeCom was excluded while its reply was bound to the inbound request's own reply
     token: a nudge cycle there would wake, spend a turn and have nowhere to put the
-    answer. #5105 gave the channel a proactive path over its long connection and
+    answer. The channel has a proactive path over its long connection, which
     flipped the capability, so the exclusion's own stated condition fired and the
     namespace is now classified like every other channel.
 
@@ -4543,7 +4541,7 @@ class TestAutonudgeUpdateConcurrency:
     async def test_update_does_not_clobber_post_fire_bookkeeping(self, tmp_path):
         """A stale snapshot must never land on top of newer loop state.
 
-        ``update()`` used to snapshot under the lock but the post-fire write did
+        ``update()`` snapshots under the lock but the post-fire write does
         not take the lock at all, so an interleaving could persist
         ``cycle_count``/``active`` and then have the older payload replace it —
         resurrecting obsolete state after a restart.
@@ -4982,7 +4980,7 @@ class TestSentinelPathRepair:
     ``resolve_stop_sentinel`` builds the kill-switch path under the data home at
     ARM time and the store keeps it verbatim, so a loop armed before the
     ``~/.kirocrew`` → ``~/.kiro/crew`` migration is re-armed on the next start
-    pointing at a directory that no longer exists — a dead kill switch, since
+    pointing at a directory that has vanished — a dead kill switch, since
     ``_timer`` only tests ``Path(stop_sentinel_path).exists()``.
     """
 
@@ -5382,7 +5380,7 @@ class TestSentinelPathRepair:
 
 
 class TestPersistenceIsOffLoopAndOrdered:
-    """`remove()` used to fsync inline (freezing chat and heartbeats on a Pause
+    """`remove()` must not fsync inline (freezing chat and heartbeats on a Pause
     click or a spec delete), and the offloaded version had to keep the service
     lock until the write SETTLES: `run_in_executor` leaves the worker running after
     a cancellation, so releasing the lock early let a later mutation persist first

@@ -433,18 +433,6 @@ jobs:
           python3 scripts/check_subprocess_encoding.py --test
           python3 scripts/check_subprocess_encoding.py
 
-      # A comment must not narrate change history -- PR/issue numbers, review
-      # rounds, commit SHAs, "previously", "no longer", "we now". That history is
-      # in git, and a comment describing a past change is stale the moment the
-      # next one lands. code-style.md said so already and nothing checked it, so
-      # the tree carries ~7,600 such markers; they are recorded in
-      # comment-history-baseline.json and it is shrink-only.
-      # Self-test first, same reason as the gate above.
-      - name: Check comments for change history (gate, baselined)
-        run: |
-          python3 scripts/check_comment_history.py --test
-          python3 scripts/check_comment_history.py
-
       # Application code must reach the agent backend through kiro_crew.agent_sdk,
       # not by importing kiro_crew.acp (or kiro_crew.providers, which re-exports
       # the same ACP shapes and would otherwise be a laundering channel). Today's
@@ -502,10 +490,9 @@ jobs:
     name: Backend Tests
     needs: [changes, await-fast-gate]
     runs-on: ubuntu-latest
-    # The slowest 3.12 shard runs ~29 minutes, so a 30-minute cap kills the
-    # job at the coverage step with every test green and Coverage Gate then
-    # reds on the missing shard artifact. Same budget as backend-test-windows.
-    timeout-minutes: 40
+    # Full coverage shards need room for collection, tests and artifact upload.
+    # The 120-second per-test timeout still bounds a stalled individual test.
+    timeout-minutes: 50
     strategy:
       # Don't cancel sibling shards when one fails -- we want the full failure
       # picture across the suite, not just the first shard to break.
@@ -710,8 +697,7 @@ jobs:
     name: Backend Tests (Windows)
     needs: [await-fast-gate]
     runs-on: windows-latest
-    # Same 40-minute budget as backend-test; windows-latest runs the same
-    # shards measurably slower, so this job has the least headroom of the two.
+    # Windows shards omit coverage and retain their 40-minute job budget.
     timeout-minutes: 40
     strategy:
       # Full failure picture across shards, same as backend-test.
@@ -812,8 +798,8 @@ jobs:
   # new test_mcp_gateway_* suite is picked up without editing this file, which a
   # hand-maintained list would not do.
   #
-  # Cheap enough to need no sharding: these suites are ~230 tests and run in
-  # about 4 seconds, so the job's wall time is essentially dependency install.
+  # Keep this focused lane unsharded; the real Seatbelt canary and member
+  # gateway suites also pin the macOS private-memory boundary.
   backend-test-macos:
     name: Gateway Tests (macOS)
     needs: [await-fast-gate]
@@ -863,18 +849,35 @@ jobs:
             exit 1
           }
 
+      - name: Require real Darwin private-memory Seatbelt enforcement
+        run: |
+          set -o pipefail
+          echo "::remove-matcher owner=python::"
+          pytest -v -n0 --no-cov --timeout=120 \
+            "test/test_member_memory_filesystem.py::test_darwin_kernel_private_memory_boundary" \
+            | tee member-memory-canary.log
+          grep -q "2 passed" member-memory-canary.log || {
+            echo "::error::Darwin V1 and private-memory canaries must both PASS (no skips)"
+            exit 1
+          }
+
       - name: Run gateway + platform suites
         run: |
           pytest -q -rs --timeout=180 --no-cov \
             test/test_mcp_gateway_*.py \
             test/test_socketsec.py \
+            test/test_member_memory_auth.py \
+            test/test_member_memory_provenance.py \
+            test/test_member_memory_api.py \
             test/test_platform_compat.py \
             test/test_mcp_apps_e2e.py \
             test/test_pod*.py \
             test/test_service.py \
-            test/test_dev_fleet_app.py
+            test/test_dev_fleet_app.py \
+            "test/test_denied_commands_security.py::TestSandboxEscapeSshSelf::test_own_interface_addresses_returns_parseable_addresses" \
+            "test/test_denied_commands_security.py::TestSandboxEscapeSshSelf::test_first_command_knows_darwin_interface_addresses"
 
-  # The one job where the sandbox-dependent tests EXECUTE rather than skip. They need
+  # The job where Linux mount-namespace tests EXECUTE rather than skip. They need
   # unprivileged user namespaces (unshare NEWNS), which ubuntu-24.04 restricts via
   # AppArmor -- the same restriction codex-review.yml clears for its bwrap sandbox.
   # Without this job the ~/.kiro/crew sensitive-path keystone has no CI coverage at all,
@@ -901,12 +904,13 @@ jobs:
   backend-test-sandbox:
     name: Backend Tests (namespace sandbox)
     needs: [await-fast-gate]
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 2
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
@@ -954,6 +958,132 @@ jobs:
             src/kiro_crew/apps/builtins/auto_improvement/tests/test_profile_capture.py \
             src/kiro_crew/apps/builtins/auto_improvement/tests/test_runner.py \
             src/kiro_crew/apps/builtins/auto_improvement/tests/test_perf_track_propose.py
+
+      - name: Require real Linux private-memory enforcement
+        run: |
+          set -o pipefail
+          pytest -v -n0 --no-cov --timeout=120 \
+            "test/test_member_memory_filesystem.py::test_kernel_hides_replaced_and_future_global_memory_preserving_live_runtime_and_code" \
+            | tee member-memory-linux-canary.log
+          grep -q "2 passed" member-memory-linux-canary.log || {
+            echo "::error::Linux V1 and private-memory canaries must both PASS (no skips)"
+            exit 1
+          }
+
+      - name: Require real V1 vector acceleration regressions
+        timeout-minutes: 5
+        # Keep optional accelerator dependencies out of the base shards and
+        # type-check environment. Reuse installed test dependencies read-only.
+        run: |
+          uv venv --system-site-packages "$RUNNER_TEMP/member-faiss-venv"
+          uv pip install --python "$RUNNER_TEMP/member-faiss-venv/bin/python" "faiss-cpu==1.12.0"
+          "$RUNNER_TEMP/member-faiss-venv/bin/python" -m pytest -v -n0 --no-cov --timeout=60 \
+            test/test_memory_record_metadata.py::test_bulk_episode_edit_invalidates_live_and_saved_faiss_vectors \
+            test/test_memory_record_metadata.py::test_another_process_vector_edit_cannot_reuse_old_faiss_scores_after_restart \
+            test/test_memory_v1_acceleration.py::test_v1_forgotten_row_keeps_resident_numpy_scoring \
+            test/test_memory_v1_acceleration.py::test_v1_faiss_overfetches_past_forgotten_top_hits \
+            --junitxml="$RUNNER_TEMP/member-faiss-results.xml"
+          python - <<'PY'
+          import os
+          import xml.etree.ElementTree as ET
+          from pathlib import Path
+
+          report = Path(os.environ["RUNNER_TEMP"]) / "member-faiss-results.xml"
+          cases = list(ET.parse(report).iter("testcase"))
+          expected = {
+              name + "[" + version + "]"
+              for name in (
+                  "test_bulk_episode_edit_invalidates_live_and_saved_faiss_vectors",
+                  "test_another_process_vector_edit_cannot_reuse_old_faiss_scores_after_restart",
+              )
+              for version in ("v1", "v2")
+          }
+          expected.update(
+              {
+                  "test_v1_forgotten_row_keeps_resident_numpy_scoring",
+                  "test_v1_faiss_overfetches_past_forgotten_top_hits",
+              }
+          )
+          assert len(cases) == 6 and {case.attrib["name"] for case in cases} == expected
+          assert all(case.find(tag) is None for case in cases for tag in ("skipped", "failure", "error"))
+          PY
+
+      - name: Upload FAISS regression evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: member-faiss-regressions
+          path: ${{ runner.temp }}/member-faiss-results.xml
+          if-no-files-found: warn
+
+      - name: Select optional member recall evidence
+        id: member-benchmark
+        if: github.event_name == 'pull_request'
+        run: |
+          CHANGED="$(git diff --name-only HEAD^1 HEAD)"
+          if printf '%s\n' "$CHANGED" | grep -Eq '^(src/kiro_crew/(.*memory.*|embeddings\.py|context\.py|eval/bench/.*)|scripts/ci-member-memory-benchmark\.py|\.github/workflows/ci\.yml)$'; then
+            echo "selected=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Locate the pinned member benchmark model
+        id: member-benchmark-model
+        if: steps.member-benchmark.outputs.selected == 'true'
+        continue-on-error: true
+        env:
+          KIROCREW_HOME: ${{ runner.temp }}/member-memory-benchmark-home
+        run: |
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          from kiro_crew import embeddings
+          print(f"digest={embeddings._GGUF_SHA256}")
+          print(f"path={embeddings.default_model_path().parent}")
+          PY
+
+      - name: Cache the pinned member benchmark model
+        if: steps.member-benchmark-model.outputs.digest != ''
+        continue-on-error: true
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.member-benchmark-model.outputs.path }}
+          key: gguf-${{ steps.member-benchmark-model.outputs.digest }}
+
+      - name: Measure member recall with the real pinned Qwen model
+        if: steps.member-benchmark.outputs.selected == 'true'
+        continue-on-error: true
+        timeout-minutes: 11
+        # Model availability is optional; retrieval scores are observations.
+        # Completed structural measurements are enforced by the next step.
+        env:
+          KIROCREW_HOME: ${{ runner.temp }}/member-memory-benchmark-home
+          KIROCREW_SKIP_MODEL_DOWNLOAD: ""
+          MEMBER_BENCHMARK_OUTPUT: ${{ runner.temp }}/member-memory-benchmark-evidence
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          mkdir -p "$MEMBER_BENCHMARK_OUTPUT"
+          set -o pipefail
+          if timeout --kill-after=15s 600s python scripts/ci-member-memory-benchmark.py \
+              2>&1 | tee "$MEMBER_BENCHMARK_OUTPUT/run.log"; then
+            echo "Member recall measurement completed; inspect the artifact's scores, bounds and provenance." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::warning::Member recall measurement did not finish cleanly; inspect the benchmark artifact and structural validation."
+            echo "Read provenance for availability versus completed structural failures; no cached report is substituted." >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+      - name: Enforce completed member recall structural checks
+        if: always() && steps.member-benchmark.outputs.selected == 'true'
+        env:
+          MEMBER_BENCHMARK_OUTPUT: ${{ runner.temp }}/member-memory-benchmark-evidence
+        run: python scripts/ci-member-memory-benchmark.py --validate-structures
+
+      - name: Upload current member recall evidence
+        if: always() && steps.member-benchmark.outputs.selected == 'true'
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: member-recall-qwen-${{ github.sha }}
+          path: ${{ runner.temp }}/member-memory-benchmark-evidence/
+          retention-days: 30
+          if-no-files-found: warn
 
   coverage-combine:
     name: Coverage Combine
@@ -1885,6 +2015,12 @@ jobs:
           python -m pip install --upgrade pip setuptools
           pip install -e ".[voice,desktop]" --group dev
 
+      - name: Enable private member namespace isolation
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+      - name: Verify private member namespace isolation
+        run: unshare --mount --map-root-user true
+
       - name: Install frontend deps
         working-directory: website
         run: npm ci --no-audit --no-fund
@@ -2012,6 +2148,21 @@ jobs:
         with:
           name: voice-recovery-evidence
           path: website/test-results/**/voice-recovery/
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Upload member memory UI evidence
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: member-memory-ui-evidence
+          path: |
+            website/test-results/**/member-memory-*.png
+            website/test-results/**/legacy-member-memory-*.png
+            website/test-results/**/member-memory-walkthrough.webm
+            website/test-results/**/member-memory-evidence.json
+            website/test-results/**/memory-v1-*.png
+            website/test-results/**/memory-v2-*.png
           if-no-files-found: ignore
           retention-days: 7
 

@@ -180,7 +180,7 @@ async def test_oversized_file_413_before_any_parsing(tmp_path, mock_sel):
     """The size gate runs BEFORE zipfile ever opens the archive.
 
     The gate fstats the already-open O_NOFOLLOW fd (not the path), so the
-    oversize is a real sparse file: a stat-the-path mock would no longer
+    oversize is a real sparse file: a stat-the-path mock would not
     reach the code under test.
     """
     f = tmp_path / "huge.docx"
@@ -301,7 +301,7 @@ async def test_redaction_runs_before_truncation(tmp_path, mock_sel):
     """A credential straddling the cap boundary must not leak as a prefix.
 
     Redaction must see the FULL extracted text: slicing first would cut the
-    secret mid-token so the redactor no longer matches it.
+    secret mid-token so the redactor does not match it.
     """
     f = tmp_path / "creds.docx"
     # One paragraph: filler that ends 10 chars before the cap, then a fake

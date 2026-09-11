@@ -865,6 +865,16 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1
   },
   {
+    "id": "chat.default-memory-mode",
+    "label": "Default Memory Mode",
+    "labelKey": "settings.chat.defaultMemoryMode.label",
+    "description": "Persistent uses what it knows and saves new memory. Incognito uses what it knows but saves no new memory. Temporary starts blank and saves no new memory. Every chat still appears in History. You can change the mode for any chat.",
+    "tab": "chat",
+    "type": "select",
+    "occurrence": 1,
+    "configKey": "dashboard.default_memory_mode"
+  },
+  {
     "id": "chat.default-model",
     "label": "Default Model",
     "labelKey": "pages.settings.chatPanel.default_model",
@@ -1254,10 +1264,10 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1
   },
   {
-    "id": "developer.crew-members-and-crew-mode",
-    "label": "Crew Members and Crew Mode",
-    "labelKey": "pages.developer.featurePreviewsTab.crew",
-    "description": "The Crew Members page and Crew Mode chats. Both are still being built, so neither is offered until you turn this on.",
+    "id": "developer.crew-members",
+    "label": "Crew Members",
+    "labelKey": "pages.developer.featurePreviewsTab.crew_members",
+    "description": "The Crew Members page: every agent you have, each with its own thread. Still being built, so it is not offered until you turn this on.",
     "tab": "developer",
     "type": "toggle",
     "occurrence": 1
@@ -1288,6 +1298,16 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "tab": "developer",
     "type": "toggle",
     "occurrence": 1
+  },
+  {
+    "id": "display.command-completion",
+    "label": "Command completion",
+    "labelKey": "pages.settings.displayPanel.terminal_completion",
+    "description": "Show the completion popup while typing in the Terminal. Enter runs the line you typed; to take a suggestion, press ↑/↓ then Enter, or Tab. Off hides the popup; your shell's own Tab completion still works.",
+    "tab": "display",
+    "type": "toggle",
+    "occurrence": 1,
+    "configKey": "dashboard.terminal.completion.enabled"
   },
   {
     "id": "display.default-for-new-sessions",
@@ -1479,6 +1499,15 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "description": "Heartbeat task results"
   },
   {
+    "id": "notifications.notify-when-a-background-chat-finishes",
+    "label": "Notify when a background chat finishes",
+    "labelKey": "pages.settings.notificationsPanel.notify_when_a_background_chat_finishes",
+    "description": "Shows a system notification naming the chat that finished, but only while this window is minimized or behind another app.",
+    "tab": "notifications",
+    "type": "toggle",
+    "occurrence": 1
+  },
+  {
     "id": "notifications.play-sound-on-new-notifications",
     "label": "Play sound on new notifications",
     "labelKey": "pages.settings.notificationsPanel.play_sound_on_new_notifications",
@@ -1549,6 +1578,15 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "description": "External hook triggers"
   },
   {
+    "id": "overview.kiro-sign-in",
+    "labelKey": "pages.settings.kiroSignInCard.title",
+    "tab": "overview",
+    "type": "buttonGroup",
+    "occurrence": 1,
+    "label": "Kiro sign-in",
+    "description": "Sign in to the Kiro account your agents run as, or sign out of it."
+  },
+  {
     "id": "privacy.record-metrics",
     "label": "Record metrics",
     "labelKey": "pages.settings.privacyPanel.recordMetricsLabel",
@@ -1566,6 +1604,24 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "type": "toggle",
     "occurrence": 1,
     "configKey": "telemetry.beacon_enabled"
+  },
+  {
+    "id": "secrets.jira-api-token",
+    "labelKey": "settings.secrets.jira_api_token_label",
+    "tab": "secrets",
+    "type": "input",
+    "occurrence": 1,
+    "label": "Jira API token",
+    "description": "Authenticates Jira issue lookups for the configured instance."
+  },
+  {
+    "id": "secrets.wakatime-api-key",
+    "labelKey": "settings.secrets.wakatime_api_key_label",
+    "tab": "secrets",
+    "type": "input",
+    "occurrence": 1,
+    "label": "WakaTime API key",
+    "description": "Authenticates coding-activity sync when WakaTime is enabled."
   },
   {
     "id": "security.denied-commands",

@@ -23,6 +23,7 @@ This file lives in ``test/`` (not ``tests/``) so the ``setup.cfg``
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import json
 import os
 import shutil
@@ -189,7 +190,7 @@ async def test_communicate_with_timeout_kills_whole_process_tree(monkeypatch):
     # Whole-tree kill was invoked with the child's pid + SIGKILL ...
     assert killed == [(proc.pid, registry.platform_compat.SIGKILL)]
     # ... the child was reaped by draining pipes via a SECOND communicate(),
-    # never a bare wait() that a full pipe could hang (#5989) ...
+    # never a bare wait() that a full pipe could hang ...
     assert proc.communicate_calls == 2
     assert proc.wait_calls == 0
     # ... and the helper's pid-scoped kill backs up the group signal.
@@ -221,8 +222,8 @@ def unsandboxed_spawn(monkeypatch):
     ``create_subprocess_exec``, so no child process ever actually runs. What they
     must not depend on is whether THIS host can build a namespace sandbox: a CI
     runner with ``kernel.apparmor_restrict_unprivileged_userns=1`` legitimately
-    cannot, and ``wrap_argv`` then fail-closes by design. These tests previously
-    passed only because the capability probe returned a false positive on such
+    cannot, and ``wrap_argv`` then fail-closes by design. Without this fixture the
+    tests pass only when the capability probe returns a false positive on such
     hosts. Autouse because the coupling is a property of the whole module, not of
     individual tests. Sandbox construction is covered by ``test_sandbox_*.py``.
     """
@@ -378,7 +379,7 @@ async def test_kill_process_group_reaps_and_escalates_to_sigkill(monkeypatch):
 async def test_kill_process_group_escalation_reaps_via_communicate_not_wait(monkeypatch):
     """The SIGKILL escalation reaps by draining pipes via communicate(); a
     bare wait() on a killed child blocked writing into a full pipe would
-    hang the app-build timeout path forever (#5989)."""
+    hang the app-build timeout path forever."""
     monkeypatch.setattr(registry, "_KILL_GRACE_PERIOD", 0.01)
     killed: list[tuple[int, int]] = []
 
@@ -2236,10 +2237,10 @@ class TestMinimalEnvHonorsWindowsCaseInsensitivity:
 
 class TestApplyTrustFields:
     """``_apply_trust_fields`` is the API trust boundary of
-    ``GET /api/apps/registry`` (issue #580): ``provenance``/``verified`` are
+    ``GET /api/apps/registry``: ``provenance``/``verified`` are
     computed server-side where the ``_registry`` tag is authoritative, and
     ``featured`` is stripped from external rows. Every branch below mirrors a
-    spoof that used to be blocked only by scattered client-side checks.
+    spoof that must be blocked server-side, not by scattered client-side checks.
     """
 
     def test_external_entry_is_never_verified_despite_spoofed_fields(self):
@@ -3211,11 +3212,53 @@ async def test_python_build_uses_the_running_interpreter_not_path_pip(tmp_path, 
 
 
 @pytest.mark.asyncio
+async def test_python_build_soft_skips_when_the_interpreter_has_no_pip(tmp_path, monkeypatch):
+    """A gateway interpreter without a ``pip`` module must skip the Python build,
+    not abort the whole registry install.
+
+    The docstring promises "no npm / no pip" is a soft skip, and the npm branch
+    honours it. Planning ``[sys.executable, "-m", "pip", "install", "."]`` without
+    checking availability breaks that contract: a venv created with
+    ``--without-pip`` (or any minimal runtime) has no ``pip`` module, so ``-m pip``
+    exits non-zero and the install fails with ``build failed (exit N)``.
+    ``importlib.util.find_spec("pip")`` checks the gateway interpreter and lets the
+    build soft-skip with a logged warning when pip is absent, mirroring npm.
+    """
+    log_lines: list[str] = []
+    captured: list[list[str]] = []
+
+    async def _fake_exec(*argv, **_kwargs):  # pragma: no cover - must NOT run
+        captured.append(list(argv))
+        raise AssertionError("no build command may be planned when pip is unavailable")
+
+    monkeypatch.setattr(registry, "create_subprocess_limited", _fake_exec)
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='x'\nversion='0'\n", encoding="utf-8")
+
+    # This interpreter has no importable `pip` — exactly a `--without-pip` venv.
+    real_find_spec = importlib.util.find_spec
+
+    def _no_pip(name, *args, **kwargs):
+        if name == "pip":
+            return None
+        return real_find_spec(name, *args, **kwargs)
+
+    monkeypatch.setattr(registry.importlib.util, "find_spec", _no_pip)
+
+    result = await registry._run_app_build(tmp_path, "x", log_lines)
+
+    assert result == {"ok": True}, f"a pip-less interpreter must soft-skip, got {result}"
+    assert captured == [], f"no build command may be planned, got {captured}"
+    assert any(
+        "pip not available" in line for line in log_lines
+    ), f"the skip must be logged, log was {log_lines}"
+
+
+@pytest.mark.asyncio
 async def test_a_monorepo_subdirectory_is_built_not_the_clone_root(tmp_path, monkeypatch):
     """The build must run where the package IS, not at the clone root.
 
-    A monorepo registry entry declares ``subdirectory``, and that used to be joined
-    only AFTER the build — so the build looked for pyproject.toml at the clone root,
+    A monorepo registry entry declares ``subdirectory``; joining that only AFTER the
+    build would make the build look for pyproject.toml at the clone root,
     found none, logged "No build step detected — using source as-is" and returned
     ok=True having installed nothing.
     """
@@ -3474,7 +3517,7 @@ class TestCatalogFailureNeverBreaksTheStore:
         traceback this would hide our own bugs instead of a bad document.
 
         Patched at `fetch_inventory_entries` because that is the source the listing
-        now uses; the cache-fed loader is no longer on this path at all.
+        now uses; the cache-fed loader is not on this path at all.
         """
 
         def boom():

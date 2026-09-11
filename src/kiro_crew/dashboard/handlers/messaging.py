@@ -54,6 +54,8 @@ from kiro_crew.dashboard.chat_utils import (
 )
 from kiro_crew.dashboard.handlers._shared import (
     _pip_install_channel_available,
+    guard_owner_surface_routes,
+    internal_memory_scope,
     pip_extra_install_command,
     read_bounded_json,
 )
@@ -168,6 +170,39 @@ def _sel():
 _SPAWN_REJECTED_CODE = "spawn_rejected"
 
 
+async def _spawn_scope_refusal(
+    request: web.Request, *, claimed_session: str | None = None
+) -> web.Response | None:
+    """Refuse a private member's access to a run outside its own memory store.
+
+    The run is the route's ``{agent_id}``; owner and non-private callers pass.
+    Applied to the per-run ``api_spawn_*`` routes by the guard table at the
+    bottom of this module, and called directly where the caller's claimed
+    parent session has to be checked as well.
+    """
+    scope, refusal = await internal_memory_scope(
+        request, "spawn.access", claimed_session=claimed_session
+    )
+    if refusal is not None or scope is None:
+        return refusal
+    state = request.app["state"]
+    try:
+        if state.subagents and scope == await asyncio.to_thread(
+            state.subagents._inherited_memory_store, request.match_info["agent_id"]
+        ):
+            return None
+    except (OSError, ValueError):
+        pass
+    _sel().log_api_access(
+        caller="internal",
+        operation="spawn.access",
+        outcome="denied",
+        source="member_memory",
+        error="The requested run is outside the member's private memory.",
+    )
+    return web.json_response({"error": "not found", "code": "task_scope_denied"}, status=404)
+
+
 async def api_spawn(request: web.Request) -> web.Response:
     """POST /api/spawn — spawn a subagent.
 
@@ -195,6 +230,12 @@ async def api_spawn(request: web.Request) -> web.Response:
                 "include_memory": body.get("include_memory", True),
                 "include_lessons": body.get("include_lessons", True),
                 "include_project": body.get("include_project", True),
+                # The dict is CLOSED -- validate_tool_args only sees what is
+                # listed here -- so omitting a schema field silently disables it
+                # rather than failing. That is what made the crew delegation
+                # below unreachable: the block, its unknown_crew refusal and its
+                # store resolution all ran off a value that was always None.
+                "crew": body.get("crew", ""),
             },
             SPAWN_RUN_SCHEMA,
         )
@@ -204,6 +245,16 @@ async def api_spawn(request: web.Request) -> web.Response:
     if not task:
         return web.json_response({"error": "task is required"}, status=400)
     parent_session = body.get("parent_session", "")
+    if not isinstance(parent_session, str):
+        return web.json_response(
+            {"error": "parent_session must be a string", "code": "invalid_parent_session"},
+            status=400,
+        )
+    caller_store, refusal = await internal_memory_scope(
+        request, "spawn.create", claimed_session=parent_session
+    )
+    if refusal is not None:
+        return refusal
     # approval_mode and silent are HTTP API parameters passed by the SDK,
     # NOT MCP tool arguments from the LLM.  The LLM's spawn_run tool
     # (mcp_core.py) does not expose these params — they are added by the
@@ -226,6 +277,95 @@ async def api_spawn(request: web.Request) -> web.Response:
     if not isinstance(keep, bool):
         keep = str(keep).lower() in ("true", "1", "yes")
     agent = cleaned.get("agent") or ""
+    # DELEGATION TO A NAMED CREW. Resolved once, here, through the shared
+    # binding resolver -- the store must never be derived from `agent`, which
+    # holds a kiro-cli template id and would answer `default` for exactly the
+    # crew that configured otherwise, silently, toward the operator's own memory.
+    #
+    # An unknown crew is REFUSED rather than degraded. Everywhere else an
+    # unresolvable store falls back to the global one, which is the safe
+    # direction; here it is the unsafe one: the caller's whole reason for naming
+    # a crew is to keep this task inside that crew's memory, so quietly running
+    # it against the operator's store is the leak the parameter exists to
+    # prevent. Fail loudly and let the caller pick a real crew.
+    crew = cleaned.get("crew") or ""
+    child_memory_store = ""
+    if crew:
+        from kiro_crew.config.loader import KiroCrewConfig, resolve_agent_bindings
+
+        try:
+            _cfg = await asyncio.to_thread(KiroCrewConfig.load)
+        except Exception:
+            return web.json_response(
+                {"error": "cannot read the crew roster", "code": "crew_unresolvable"}, status=503
+            )
+        if crew not in _cfg.agents:
+            return web.json_response(
+                {
+                    "error": f"unknown crew '{crew}'",
+                    "code": "unknown_crew",
+                    "available": ", ".join(sorted(_cfg.agents)) or "(none)",
+                },
+                status=400,
+            )
+        try:
+            _b = await asyncio.to_thread(resolve_agent_bindings, _cfg, crew)
+        except (OSError, ValueError) as exc:
+            return web.json_response({"error": str(exc), "code": "memory_unavailable"}, status=409)
+        child_memory_store = _b.memory_store_name
+        if crew != "default" and not _cfg.agents[crew].triggers.strip():
+            return web.json_response(
+                {
+                    "error": f"Crew Member '{crew}' has not enabled delegated tasks.",
+                    "code": "crew_delegation_disabled",
+                },
+                status=409,
+            )
+        # The crew's template too: a crew is its memory AND its harness, and
+        # honouring one without the other hands the task a persona the operator
+        # did not bind to that work. An explicit `agent` still wins -- a caller
+        # naming both is overriding deliberately.
+        agent = agent or _b.kiro_agent
+    elif parent_session:
+        from kiro_crew.context import store_of_session
+
+        try:
+            child_memory_store = await asyncio.to_thread(
+                store_of_session, state.conversation_log, parent_session
+            )
+            if parent_session.startswith("subagent:"):
+                child_memory_store = await asyncio.to_thread(
+                    state.subagents._inherited_memory_store,
+                    parent_session.removeprefix("subagent:"),
+                )
+        except (OSError, ValueError) as exc:
+            return web.json_response({"error": str(exc), "code": "memory_unavailable"}, status=409)
+    from kiro_crew.context import require_memory_delegation
+
+    if caller_store is not None and child_memory_store != caller_store:
+        _sel().log_api_access(
+            caller="internal",
+            operation="spawn.create",
+            outcome="denied",
+            source="member_memory",
+            error="The requested delegation changes the member's private memory.",
+        )
+        return web.json_response(
+            {
+                "error": "A Crew Member can delegate only within its own private memory.",
+                "code": "memory_unavailable",
+            },
+            status=409,
+        )
+    try:
+        await asyncio.to_thread(
+            require_memory_delegation,
+            state.conversation_log,
+            parent_session,
+            child_memory_store,
+        )
+    except (OSError, ValueError) as exc:
+        return web.json_response({"error": str(exc), "code": "memory_unavailable"}, status=409)
     max_turns = cleaned.get("max_turns") or 0
     cwd = cleaned.get("cwd") or ""
     model = cleaned.get("model") or ""
@@ -259,6 +399,7 @@ async def api_spawn(request: web.Request) -> web.Response:
         include_memory=cleaned.get("include_memory", True) is not False,
         include_lessons=cleaned.get("include_lessons", True) is not False,
         include_project=cleaned.get("include_project", True) is not False,
+        memory_store=child_memory_store,
     )
     if not info:
         # Reached mgr.spawn (submission COUNTED at the top of spawn()) but
@@ -344,6 +485,9 @@ async def api_spawn_continue(request: web.Request) -> web.Response:
     if not task:
         return web.json_response({"error": "task is required", "code": "task_required"}, status=400)
     parent_session = str(body.get("parent_session", "") or "")
+    refusal = await _spawn_scope_refusal(request, claimed_session=parent_session)
+    if refusal is not None:
+        return refusal
     agent = str(body.get("agent", "") or "")
     model = str(body.get("model", "") or "")
     try:
@@ -487,6 +631,9 @@ async def api_spawn_lost(request: web.Request) -> web.Response:
         batch_total = 0
     reason = str(body.get("reason", "") or "spawn submission failed")[:300]
     parent_session = str(body.get("parent_session", "") or "")
+    _, refusal = await internal_memory_scope(request, "spawn.batch", claimed_session=parent_session)
+    if refusal is not None:
+        return refusal
     state.subagents.record_lost_submission(
         batch_id, batch_total, reason, parent_session_key=parent_session
     )
@@ -514,6 +661,9 @@ async def api_spawn_mark_collected(request: web.Request) -> web.Response:
             {"error": "'ids' array required", "code": "ids_required"}, status=400
         )
     parent_session = str(body.get("parent_session", "") or "")
+    _, refusal = await internal_memory_scope(request, "spawn.batch", claimed_session=parent_session)
+    if refusal is not None:
+        return refusal
     slot_name = dashboard_slot_key(parent_session)
     if not slot_name:
         return web.json_response({"status": "no_slot"})
@@ -710,8 +860,13 @@ async def api_spawn_list(request: web.Request) -> web.Response:
     state: DashboardState = request.app["state"]
     if not state.subagents:
         return web.json_response({"agents": []})
+    scope, refusal = await internal_memory_scope(request, "spawn.list")
+    if refusal is not None:
+        return refusal
     agents = []
     for info in state.subagents.all_agents:
+        if scope is not None and info.memory_store != scope:
+            continue
         entry: dict[str, object] = {
             "id": info.id,
             "task": _redact(info.task),
@@ -806,6 +961,10 @@ async def api_spawn_retry(request: web.Request) -> web.Response:
         include_memory=old.include_memory,
         include_lessons=old.include_lessons,
         include_project=old.include_project,
+        # Same scope the original ran under. Omitting it makes a retry widen to
+        # the global store, so the failure mode is "retrying a delegation leaks
+        # it" -- and a retry is exactly when nobody re-reads the scope.
+        memory_store=old.memory_store,
     )
     if not info:
         return web.json_response(
@@ -917,22 +1076,15 @@ async def api_spawn_stop_all(request: web.Request) -> web.Response:
     slot = state.get_slot(slot_name)
     if slot is None:
         return web.json_response({"error": "slot not found", "code": "slot_not_found"}, status=404)
+    _, refusal = await internal_memory_scope(
+        request, "spawn.stop_all", claimed_session=effective_session_key(slot)
+    )
+    if refusal is not None:
+        return refusal
     running, queued = await state.subagents.cancel_for_parent(effective_session_key(slot))
     return web.json_response(
         {"ok": True, "stopped": running + queued, "running": running, "queued": queued}
     )
-
-
-async def api_spawn_clear(request: web.Request) -> web.Response:
-    """DELETE /api/spawn — clear all completed subagents."""
-    state: DashboardState = request.app["state"]
-    if not state.subagents:
-        return web.json_response({"ok": True})
-    done_ids = [a.id for a in state.subagents.all_agents if a.done]
-    for aid in done_ids:
-        state.subagents._agents.pop(aid, None)
-        state.subagents._tasks.pop(aid, None)
-    return web.json_response({"ok": True, "cleared": len(done_ids)})
 
 
 # ── Sessions / Notifications ──
@@ -1268,15 +1420,27 @@ def _redact_all(value: str) -> str:
 def _sanitize_blocks(
     blocks: list[dict],
     *redactors: Any,
+    display_form: bool = False,
 ) -> list[dict]:
     """Walk Block Kit blocks and sanitize all strings (both keys and values).
 
     Block Kit structural keys (type, text, mrkdwn, etc.) pass through
     sanitizers unchanged since they don't match hostile patterns.
+
+    With ``display_form=True`` each string is scanned through
+    :func:`redact_for_display` (composing the redactors via ``_redact_all``)
+    rather than by the literal redactors alone. That is the SAME floor the text
+    path uses, and it is what catches a credential split across Block Kit markup
+    — ``AKIA`` in one run and the rest bolded in the next — which the literal
+    scan sees only as fragments. Block text a caller controls is LLM-authored,
+    so it is exactly where such a split arrives.
     """
     from copy import deepcopy  # noqa: F811
 
     def _redact_str(s: str) -> str:
+        if display_form:
+            s, _ = redact_for_display(s, _redact_all)
+            return s
         for fn in redactors:
             s, _ = fn(s)
         return s
@@ -2102,7 +2266,9 @@ async def api_send_message(request: web.Request) -> web.Response:
     text, _ = redact_for_display(text, _redact_all)
     title, _ = redact_for_display(title, _redact_all)
     if blocks:
-        blocks = _sanitize_blocks(blocks, redact_exfiltration_urls, redact_credentials)
+        blocks = _sanitize_blocks(
+            blocks, redact_exfiltration_urls, redact_credentials, display_form=True
+        )
 
     # render [OPTIONS: ...] tags as interactive buttons on the
     # plain-text path (when the caller did not supply explicit blocks — those
@@ -2770,6 +2936,141 @@ async def api_delete_message(request: web.Request) -> web.Response:
         safe_error, _ = redact_credentials(safe_error)
         safe_error, _ = redact_exfiltration_urls(safe_error)
         return web.json_response({"error": f"Delete failed: {safe_error}"}, status=502)
+    return web.json_response({"ok": True})
+
+
+async def api_update_message(request: web.Request) -> web.Response:
+    """POST /api/update-message — edit a bot-authored Slack message in place.
+
+    The egress twin of ``api_delete_message``: same "the bot's own message"
+    addressing, but it PUBLISHES replacement content, so the outbound floor is
+    ``api_send_message``'s — ``redact_for_display`` over the text and
+    ``_sanitize_blocks`` over the blocks, before either reaches Slack.
+
+    Authorization is per target kind. A ROOM must be in the tracked-channel
+    allowlist, which is the operator's revocation lever rather than only a
+    first-contact check — without it a message the bot authored while the channel
+    was tracked would stay a writable slot in it after the operator revoked egress.
+    A DM must be the CURRENT owner's, resolved through the same
+    ``open_dm(owner_id)`` the send path uses, and fails closed when no owner is
+    configured or the lookup raises. Admitting every ``D`` channel on its prefix
+    would leave a FORMER owner's DM permanently writable, since ``owner_id``
+    changes and the DM channel id does not.
+
+    That is one notch stricter than the ``file_send`` Slack leg
+    (``dashboard/upload_destination.py::resolve_slack``), which still passes DMs on
+    the prefix. Deliberate: this endpoint publishes replacement content into a
+    message that is already there, so a wrong audience is not merely a new message
+    they can ignore.
+    """
+    # circular import: slack.handler imports from dashboard.* at module load
+    from kiro_crew.slack.handler import is_tracked_channel  # noqa: F811
+
+    state: DashboardState = request.app["state"]
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
+    channel = body.get("channel", "")
+    if not isinstance(channel, str):
+        return web.json_response(
+            {"error": "invalid channel ID format", "code": "invalid_channel"}, status=400
+        )
+    channel = channel.strip()
+    if not channel or len(channel) > CHANNEL_MAX_LEN or not CHANNEL_ID_RE.match(channel):
+        return web.json_response(
+            {"error": "invalid channel ID format", "code": "invalid_channel"}, status=400
+        )
+    ts = body.get("ts", "")
+    if not _is_slack_ts(ts):
+        return web.json_response(
+            {
+                "error": "ts must be a Slack timestamp string like '1712793600.123456'",
+                "code": "invalid_ts",
+            },
+            status=400,
+        )
+    text = body.get("text", "")
+    if not isinstance(text, str):
+        return web.json_response(
+            {"error": "text must be a string", "code": "invalid_text"}, status=400
+        )
+    blocks = body.get("blocks")
+    if blocks is not None and not isinstance(blocks, list):
+        return web.json_response(
+            {"error": "blocks must be a list", "code": "invalid_blocks"}, status=400
+        )
+    if not text and not blocks:
+        return web.json_response(
+            {"error": "text or blocks required", "code": "content_required"}, status=400
+        )
+    # A DM is authorized by IDENTITY, a room by the tracked-channel allowlist --
+    # and a DM must be the CURRENT owner's, not merely D-prefixed. Passing every
+    # `D...` on the prefix alone would leave any DM this bot ever posted in a
+    # writable slot forever, including a FORMER owner's: `owner_id` changes, the
+    # old DM channel id does not, and an edit publishes new agent-authored text
+    # into it. So the prefix is a routing fact, never an authorization one.
+    #
+    # For rooms, tracking is the operator's revocation lever (see
+    # api_send_message's 403: "Add it to config.json ... restart the gateway"), not
+    # just a first-contact check -- a message this bot authored while the channel
+    # was tracked must not remain writable after the operator revoked egress.
+    #
+    # Both refused before any content processing, matching api_send_message's
+    # "Authorization gates (before any side effects)" ordering.
+    if channel.startswith("D"):
+        # Resolved through the same `open_dm(state.owner_id)` the send path uses
+        # (see the send_message Slack leg), so the two agree on who the owner is.
+        # Fail CLOSED when there is no owner configured or the lookup raises: an
+        # unresolvable owner means we cannot prove this DM is theirs.
+        owner_dm = ""
+        if state.owner_id and state.slack_client:
+            try:
+                owner_dm = await state.slack_client.open_dm(state.owner_id)
+            except Exception:
+                logger.warning("update_message: could not resolve the owner DM", exc_info=True)
+        denied = not owner_dm or channel != owner_dm
+        # Deliberately does NOT echo the resolved owner DM id: the refusal is
+        # returned to the caller that just failed authorization.
+        deny_reason = f"channel {channel} is not the owner's DM"
+        deny_code = "not_owner_dm"
+    else:
+        denied = not is_tracked_channel(channel)
+        deny_reason = f"channel {channel} not in tracked channels"
+        deny_code = "channel_not_tracked"
+    if denied:
+        _sel().log_tool_invocation(
+            session_key="api",
+            source="api",
+            tool_name="update_message",
+            tool_kind="slack",
+            outcome="denied",
+            downstream_service="slack",
+            resources=f"channel={channel}",
+        )
+        return web.json_response({"error": deny_reason, "code": deny_code}, status=403)
+    # Sanitize LLM-generated content before it reaches Slack, on the same
+    # DISPLAY-form floor api_send_message uses: the literal-form scan alone lets a
+    # markdown-collapse credential through, and an edit is posted as-is.
+    text, _ = redact_for_display(text, _redact_all)
+    if blocks:
+        blocks = _sanitize_blocks(
+            blocks, redact_exfiltration_urls, redact_credentials, display_form=True
+        )
+    slack = state.slack_client
+    if not slack:
+        return web.json_response(
+            {"error": "Slack not connected", "code": "slack_not_connected"}, status=503
+        )
+    try:
+        await slack.update_message(channel, ts, text, blocks)
+    except Exception as e:
+        safe_error = str(e).split("\n")[0][:200]
+        safe_error, _ = redact_credentials(safe_error)
+        safe_error, _ = redact_exfiltration_urls(safe_error)
+        return web.json_response(
+            {"error": f"Update failed: {safe_error}", "code": "update_failed"}, status=502
+        )
     return web.json_response({"ok": True})
 
 
@@ -6745,3 +7046,33 @@ async def _feishu_config_save_locked(request: web.Request) -> web.Response:
             "verify_warning": "",
         }
     )
+
+
+# A private member reaches only the runs its own memory store owns: the per-run
+# routes run behind ``_spawn_scope_refusal``, the listed routes scope their own
+# caller in their body, and any other ``api_spawn*`` handler is refused to
+# private members until it is listed here on purpose.
+guard_owner_surface_routes(
+    globals(),
+    prefix="api_spawn",
+    member_scoped=frozenset(
+        {
+            "api_spawn",
+            "api_spawn_continue",
+            "api_spawn_lost",
+            "api_spawn_mark_collected",
+            "api_spawn_list",
+            "api_spawn_stop_all",
+        }
+    ),
+    resource_scoped={
+        name: _spawn_scope_refusal
+        for name in (
+            "api_spawn_steer",
+            "api_spawn_release",
+            "api_spawn_status",
+            "api_spawn_retry",
+            "api_spawn_delete",
+        )
+    },
+)

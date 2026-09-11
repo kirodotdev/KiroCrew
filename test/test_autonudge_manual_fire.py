@@ -1,4 +1,4 @@
-"""Tests for the manual goal-loop trigger (issue #8212).
+"""Tests for the manual goal-loop trigger.
 
 The gap these pin: the loop interval is an IDLE gap, so an operator who already
 knows the thing being waited on has changed had no way to tell the loop to look
@@ -158,7 +158,7 @@ async def test_a_manual_trigger_delivers_the_cycle_through_the_ordinary_fire_pat
 async def test_the_next_automatic_nudge_is_a_full_interval_after_the_manual_turn_ends(
     svc_base_dir, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Issue #8212's second requirement, and the one a defect would hide in.
+    """The manual trigger's second requirement, and the one a defect would hide in.
 
     "Reset the countdown to zero, so the next automatic nudge is a full interval
     away from the manual one." Measured from the end of the manual TURN, which

@@ -9,9 +9,9 @@ When an installed app has ``dev: true`` in its ``installed.json``:
   and broadcasts an ``app_reload`` WebSocket event whenever any file changes.
   The dashboard's AppHost reloads so edits appear without a manual refresh.
 
-Link the whole ``ui/`` DIRECTORY, never individual files inside it: since
-#6809 the UI route opens the final name with ``O_NOFOLLOW`` (the swap-resistant
-open that closed the check-then-reopen window), so a per-file symlink like
+Link the whole ``ui/`` DIRECTORY, never individual files inside it: the UI route
+opens the final name with ``O_NOFOLLOW`` (the swap-resistant open that closes
+the check-then-reopen window), so a per-file symlink like
 ``ln -s ~/src/app/dist/index.mjs ui/index.mjs`` answers 404 — indistinguishable
 from "not built yet". The directory link keeps working because the route
 resolves the ui root before validating against it.
@@ -77,11 +77,11 @@ _DEV_SENTINEL = ".dev-apps.json"
 #: :func:`_reconcile_sentinel_from_installed` rebuilds from each app's own
 #: (app-writable) ``installed.json``, so a sentinel entry can be laundered by
 #: an app that writes ``dev: true`` to its own metadata and waits for a
-#: restart. This record is the AUTHORIZATION half the UI route requires
-#: (#6809). Binding the grant to the SPECIFIC resolved root (not a bare name)
+#: restart. This record is the AUTHORIZATION half the UI route requires.
+#: Binding the grant to the SPECIFIC resolved root (not a bare name)
 #: is load-bearing: it makes the grant self-invalidating — repointing ``ui``
 #: after the toggle (an app update, a swapped link, a reinstall under the same
-#: name) yields a root that no longer equals the granted one, so any grant
+#: name) yields a root that does not equal the granted one, so any grant
 #: left behind by a crash mid-revoke or an uninstall race authorizes at most
 #: the exact tree the operator approved, never a new target. The two files
 #: stay separate on purpose — merging them would either re-open the
@@ -198,7 +198,7 @@ def _write_dev_grants(grants: dict[str, str]) -> None:
 def _grant_record_unwritable() -> str | None:
     """Reason the grant record cannot be written from THIS process, or ``None``.
 
-    The STRUCTURAL half of the operator-vs-agent runtime check (#6907): the
+    The STRUCTURAL half of the operator-vs-agent runtime check: the
     grant record is sealed read-only against agent-sandboxed processes at the
     OS level (``sandbox._CREW_READONLY_LEAVES``), so opening it for write
     succeeds only outside that confinement. Unlike the environment marker,
@@ -309,7 +309,7 @@ def _reconcile_sentinel_from_installed() -> set[str]:
         # preserved data while the app itself — its ``installed.json`` — is
         # gone. Never ADD a grant from ``installed.json`` — that is
         # app-writable metadata, and deriving the grant from it is exactly
-        # the laundering path #6809 closes.
+        # the laundering path a separate grant record closes.
         grants = _read_dev_grants()
         live: dict[str, str] = {}
         for gname, groot in grants.items():
@@ -333,7 +333,7 @@ def _reconcile_sentinel_from_installed() -> set[str]:
             # creatable from inside an agent sandbox until the first operator
             # toggle. Seatbelt denies by path pattern and does not need this,
             # but the record's existence also keeps the operator-attestation
-            # write probe (#6907) exercising the same open() the seal governs.
+            # write probe exercising the same open() the seal governs.
             _write_dev_grants(live)
         _set_dev_cache(installed)
     return installed
@@ -395,7 +395,7 @@ def set_dev_mode(
         out_of_install_confirmed = False
         # VALIDATE BEFORE ANY WRITE: every enable (and any disable of a granted
         # app) mutates the grant record, and that record is sealed read-only
-        # against agent-sandboxed processes at the OS level (#6907 — see
+        # against agent-sandboxed processes at the OS level (see
         # ``sandbox._CREW_READONLY_LEAVES``). Probing writability up front
         # keeps the refusal atomic: without it, an enable would write
         # installed.json and the sentinel and then fail at the (deliberately
@@ -438,8 +438,7 @@ def set_dev_mode(
             # re-pointing to re-bind). A root escaping the install dir into a
             # SENSITIVE location (credential stores, key material) is refused
             # outright — no dev workflow legitimately serves those, and the
-            # unauthenticated UI route must never be grantable onto them
-            # (#6809).
+            # unauthenticated UI route must never be grantable onto them.
             granted_root = os.path.realpath(apps_dir() / name / "ui")
             try:
                 # Anchor = resolved apps ROOT + literal name (same rule as the
@@ -516,7 +515,7 @@ def set_dev_mode(
                         ),
                         "code": "dev_mode_out_of_install_confirmation_required",
                     }
-                # RUNTIME human-vs-agent check (#6907): the flag is operator
+                # RUNTIME human-vs-agent check: the flag is operator
                 # ATTESTATION, so it is honoured only from a process showing
                 # no evidence of agent-shell confinement. The deny-list tiers
                 # above stop an agent SPELLING the flag; this stops an agent
@@ -647,9 +646,9 @@ def dev_mode_granted_root(name: str) -> str | None:
     the apps ROOT written only by :func:`set_dev_mode` — never created by the
     startup reconcile) AND the app's ``installed.json`` ``dev`` flag.
     ``installed.json`` alone is the app's own writable metadata — an app that
-    edits it to ``dev: true`` must not thereby authorize itself (#6809: the UI
-    route relaxes root containment only under this grant, and a self-granted
-    app could point its ui root at a credential directory). The watch
+    edits it to ``dev: true`` must not thereby authorize itself: the UI route
+    relaxes root containment only under this grant, and a self-granted app
+    could point its ui root at a credential directory. The watch
     sentinel is deliberately NOT consulted: the reconcile rebuilds it from
     app-writable metadata at every startup, so it proves watching, not
     authorization.

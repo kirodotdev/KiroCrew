@@ -36,13 +36,13 @@ class _RealSigninHandle:
                 instance_id, profile, region, open_browser=False
             )
         except Exception:  # noqa: BLE001 - see below
-            # start_device_login shells out to SSM. A transient failure here used to
+            # start_device_login shells out to SSM. A transient failure here must not
             # raise straight out of this constructor -> begin_signin -> the launch
-            # worker, failing the job BEFORE register() ran — leaving a provisioned,
-            # billing instance that was never registered and so never appeared in the
-            # crew list. That is the same stranding wait() was already hardened
-            # against; this constructor was the one remaining path that could still
-            # cause it. Continue with an empty, unconfirmed prompt so the launch still
+            # worker: failing the job BEFORE register() runs leaves a provisioned,
+            # billing instance that is never registered and so never appears in the
+            # crew list -- the same stranding wait() guards against, and this
+            # constructor is the other path that can reach it. Continue with an
+            # empty, unconfirmed prompt so the launch still
             # reaches register(): the crew becomes visible and the user finishes
             # sign-in from the dashboard (or deletes it) rather than paying for an
             # invisible instance. Broad on purpose — an exec/sandbox failure arrives
@@ -63,9 +63,9 @@ class _RealSigninHandle:
             return False
         try:
             # Resuming the background login is INSIDE this handler on purpose. A
-            # transient SSM failure here used to propagate out of wait(), fail the
-            # whole job, and return before STEP_CONNECT — leaving a provisioned,
-            # billing instance that was never registered and so never appeared in the
+            # transient SSM failure here must not propagate out of wait(), fail the
+            # whole job, and return before STEP_CONNECT, because that leaves a
+            # provisioned, billing instance never registered and so never in the
             # crew list. "We could not confirm sign-in" is the honest outcome, and it
             # lets the launch finish registering so the user can see the crew and
             # complete sign-in from the dashboard (the device code is preserved).

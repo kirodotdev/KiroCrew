@@ -219,9 +219,10 @@ if ($SkipGatewayValidation) {
 } else {
 # Exercise the same bundled interpreter Electron launches, immediately after
 # installation while Defender's post-install scanning is still active. The
-# Windows package ships checked-hash bytecode for the measured gateway import
-# closure; this catches either those files being filtered out of the artifact or
-# the launcher accidentally redirecting imports into an empty user cache again.
+# Windows package ships hash-based (unchecked) bytecode for the measured gateway
+# import closure; this catches either those files being filtered out of the
+# artifact or the launcher accidentally redirecting imports into an empty user
+# cache again.
 $backendRoot = Join-Path $installLocation "resources\backend-dist\kirocrew-backend"
 $bundledPython = Join-Path $backendRoot "python.exe"
 if (-not (Test-Path -LiteralPath $bundledPython -PathType Leaf)) {

@@ -191,9 +191,10 @@ def _read_for_update() -> dict[str, Any]:
     arriving by accident instead of by attack. The error propagates and the
     write is abandoned instead.
 
-    Corruption propagates too (#7805, mirroring #7794): "cannot merge into" is
-    not "safe to destroy", and for THIS file silent replacement re-opens the
-    exact bypass the keystone floor exists to prevent -- a truncated document
+    Corruption propagates too, on the same reasoning as the sibling stores:
+    "cannot merge into" is not "safe to destroy", and for THIS file silent
+    replacement re-opens the exact bypass the keystone floor exists to prevent
+    -- a truncated document
     rewritten from empty reverts every fenced key to a value the constrained
     party can influence. Every corruption door raises the one named type,
     :class:`CorruptDocumentError`: a parse failure, a byte stream that is not
@@ -265,9 +266,9 @@ def _write(data: dict[str, Any]) -> None:
     payload = json.dumps(data, indent=2, sort_keys=True)
     # Fail-loud lockdown BEFORE any content lands, same as the secret store:
     # ``restrict_to_owner=True`` applies the owner-only DACL to the temp file
-    # before the payload reaches it (a post-rename lockdown left the ceiling
-    # readable under the inherited DACL on Windows for the write window, issue
-    # #5285) and implies the owner-only POSIX mode. The default
+    # before the payload reaches it (a post-rename lockdown leaves the ceiling
+    # readable under the inherited DACL on Windows for the write window) and
+    # implies the owner-only POSIX mode. The default
     # ``restrict_on_error="raise"`` refuses to publish a ceiling it cannot
     # protect.
     #
@@ -349,7 +350,7 @@ def get(key: str, default: Any = None) -> Any:
     from the agent-writable config: promoting a value found there onto the fenced floor would
     let the constrained party set its own ceiling — an agent shell writes ``config.json``,
     the next read lifts it to the keystone, and ``act`` is authoritative. See the module
-    docstring; the migration this used to call was removed for exactly that.
+    docstring; that is why there is no migration call here.
     """
     if key not in OPERATOR_ONLY_KEYS:  # pragma: no cover — programming error, not input
         raise KeyError(f"{key!r} is not an operator-only key; use config.json for it")
@@ -365,8 +366,7 @@ def read_authority(key: str, default: Any = None) -> Any:
     except one. ``PRIMARY_KEY`` defaults to TRUE (``rotation.is_primary``), so the lenient
     read turns a truncated policy file into GRANTED ledger-prune authority: the corrupt
     file becomes the key that unlocks destroying shared knowledge, which is the exact
-    corruption-enables-destruction failure #7805 exists to remove. Found in review
-    (GPT 5.6), which correctly rejected scoping this out as pre-existing.
+    corruption-enables-destruction failure this strict reader exists to remove.
 
     Reuses :func:`_read_for_update`'s read, deliberately: one strict reader, one set of
     corruption doors (parse failure, non-UTF-8, non-object root), no second copy to

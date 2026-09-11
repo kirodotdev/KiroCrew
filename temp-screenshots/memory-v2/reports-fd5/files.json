@@ -1,0 +1,24 @@
+{
+  "source_head": "fd5ed8c1ca00a296117c737e526c1bdcd057c4a5",
+  "capture_head": "44546ae46d5dd3b2f67c6db813c3473cd9dc617a",
+  "files": [
+    {
+      "file": "memory-v1-v2-comparison.pdf",
+      "pages": 2,
+      "bytes": 98366,
+      "sha256": "cb70680a286063c9bebd477394c5d1945a2d87515965b8c0020986328abda36c"
+    },
+    {
+      "file": "memory-v2-executive-vision.pdf",
+      "pages": 2,
+      "bytes": 207342,
+      "sha256": "ddbeb59ae0b988fa02df385a182afd445f2271c2796fa5ac17deb1ae99153f1f"
+    },
+    {
+      "file": "memory-v2-technical-design.pdf",
+      "pages": 6,
+      "bytes": 256032,
+      "sha256": "4ed9bfc5652275c0c8eef80930a9e24fee498b95ce1b0f39d20a4508e0191f18"
+    }
+  ]
+}

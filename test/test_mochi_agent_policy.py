@@ -287,10 +287,10 @@ class TestQueuedPetActionIsExecutable:
 
     The MCP server runs as a SEPARATE process (``kirocrew app mcp mochi``) and can
     only hand work over through the queue file, so the file's contract is the only
-    thing keeping the two halves in step. It previously wrote the payload without
-    ``execute_after`` / ``id`` / ``urgent``, and every one of those omissions fails
-    SILENTLY: get_executable_tasks() treats a missing execute_after as not-due, so
-    the action sat in the queue and the pet simply never moved.
+    thing keeping the two halves in step. A payload written without
+    ``execute_after`` / ``id`` / ``urgent`` fails SILENTLY on every one of those
+    omissions: get_executable_tasks() treats a missing execute_after as not-due,
+    so the action sits in the queue and the pet simply never moves.
     """
 
     def _queue(self, monkeypatch, tmp_path, args):
@@ -337,9 +337,9 @@ class TestQueuedPetActionIsExecutable:
 class TestAmbientEnumerationFailsClosed:
     """A server the probe cache never reported must still be neutralized.
 
-    ``_ambient_servers`` used to read the probe cache ALONE, so an enumeration
-    failure returned ``{}``, every ``neutralize`` map came back empty, and an
-    empty map is indistinguishable from "there is nothing to deny": Mochi kept
+    ``_ambient_servers`` must not read the probe cache ALONE: an enumeration
+    failure then returns ``{}``, every ``neutralize`` map comes back empty, and an
+    empty map is indistinguishable from "there is nothing to deny", so Mochi keeps
     ambient reach to servers the user never granted it, silently. The global MCP
     config is a second, independent source of NAMES — and a name with no tools
     denies completely, because the bridge disables at the server level.
@@ -431,8 +431,8 @@ class TestPolicyMaterializationFailsClosed:
 
     kiro-cli loads every globally configured MCP server into an agent regardless
     of that agent's own config, so until the `neutralize` entries are materialized
-    the agent HAS ambient reach. The failure used to be a `logger.warning` — and
-    the caller (`on_startup`) then started the pet anyway.
+    the agent HAS ambient reach. Reporting the failure as a mere `logger.warning`
+    lets the caller (`on_startup`) start the pet anyway.
     """
 
     @staticmethod

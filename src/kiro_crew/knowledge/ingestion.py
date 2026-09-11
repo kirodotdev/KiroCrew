@@ -33,9 +33,12 @@ from .store import AUTO_ADDED_PROP, KnowledgeStore
 
 logger = logging.getLogger(__name__)
 
+#: Extensions routed to the code-aware chunker. Must be a subset of
+#: ``FileReader.SUPPORTED`` -- that set is the folder-scan gate, so an extension
+#: listed here but absent there never reaches this dispatch at all.
 CODE_EXTS = {
     '.py', '.java', '.ts', '.js', '.rs', '.go', '.rb', '.c', '.cpp', '.h',
-    '.sh', '.ps1', '.psm1', '.cs', '.kt', '.swift', '.scala',
+    '.sh', '.ps1', '.psm1', '.cs', '.kt', '.kts', '.swift', '.scala',
 }
 
 MARKDOWN_EXTS = {'.md', '.docx'}
@@ -827,7 +830,7 @@ class IngestionPipeline:
             raise PermissionError(f"Refusing to ingest sensitive path: {log_name}")
 
         # Size guard BEFORE reading: chunking a very large file is CPU-bound and
-        # previously hung gateway startup for 25s+ with only a raw faulthandler
+        # can hang gateway startup for 25s+ with only a raw faulthandler
         # dump (no actionable error). Skip with a clear WARNING naming the file.
         limit_mb = _max_ingest_file_mb()
         try:
@@ -1439,7 +1442,7 @@ class IngestionPipeline:
         """Generate and store embedding for an item. No-op if embedder is None.
 
         Includes chunk ``content`` so vector search matches body text, not just
-        the title/summary (which previously left body-only queries unmatchable).
+        the title/summary -- otherwise body-only queries are unmatchable.
         Respects the global embed rate limiter (knowledge.embed_rate_limit).
         The caller selects the shared inference scheduling class per ingest.
         """
@@ -1548,7 +1551,7 @@ _REBUILD_STALE_AFTER = timedelta(minutes=10)
 
 # Items that just failed a re-embed (vec is None) keep a stale sig but get an
 # `embedded_at` stamp; the watcher backs off from re-triggering on them until this
-# window elapses, so a perpetually-failing item (Ollama down) can't drive a fresh
+# window elapses, so a perpetually-failing item (model not resident) can't drive a fresh
 # rebuild every scan interval. Longer than _REBUILD_STALE_AFTER so a legit retry
 # isn't suppressed but a tight retrigger loop is.
 _REEMBED_RETRY_BACKOFF = timedelta(minutes=15)
@@ -1836,7 +1839,7 @@ async def rebuild_embeddings(store, embedder, *, job_id: str | None = None,
             last_id = row["id"]
             if job_id is not None:
                 # Heartbeat the job row PER ITEM, not just per batch: a single embed
-                # is the CPU floor (Ollama), so 50 serial embeds can exceed
+                # is the CPU floor, so 50 serial embeds can exceed
                 # _REBUILD_STALE_AFTER on a slow/cold host. If updated_at only
                 # advanced at end-of-batch, the single-flight claimer would judge a
                 # live rebuild abandoned mid-batch and start a second one (duplicated

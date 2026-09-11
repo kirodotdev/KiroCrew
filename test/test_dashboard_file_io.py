@@ -754,8 +754,8 @@ class TestSendMessage:
     async def test_send_message_session_origin_rehydrate_reads_off_the_loop(self):
         """The cold-slot rehydration must not parse the transcript on the loop.
 
-        Issue #7408: this handler called the SYNCHRONOUS rehydrate, which read and
-        JSON-parsed the whole transcript inline -- 100-300 ms on a large store,
+        This handler must not call the SYNCHRONOUS rehydrate, which reads and
+        JSON-parses the whole transcript inline -- 100-300 ms on a large store,
         stalling every other request. Asserted by thread identity rather than by
         the name of the function called, so the guarantee survives a rename.
         """

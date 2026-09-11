@@ -3888,9 +3888,8 @@ def _source_summary(scan: _Scan, *, display_name: str) -> dict[str, Any]:
         "id": scan.source_id,
         # `display_name` is REQUIRED, and deliberately: the caller already holds
         # the resolved registry, so a fallback that looked the name up again would
-        # be a SECOND read of a snapshot that may have changed — the exact
-        # split-read defect three earlier review rounds were about. The plan is
-        # the authority; this function is handed the answer.
+        # be a SECOND read of a snapshot that may have changed — a split-read.
+        # The plan is the authority; this function is handed the answer.
         "name": display_name,
         "root": str(scan.root),
         "user_home": str(scan.user_home),
@@ -4220,9 +4219,16 @@ def _preserve_replaced_json(payload: Any, destination: Path) -> str:
 def _lessons_overlap(incoming: str, existing: str) -> bool:
     """Whether two lesson rules are close enough to treat as the same lesson.
 
-    Mirrors ``VectorMemoryStore.write_lesson``'s own dedupe (substring, then
-    >50% significant-word overlap) so import RECOGNIZES the same collisions --
-    but reports them instead of replacing, which is what that writer would do.
+    Tracks ``VectorMemoryStore.write_lesson``'s own dedupe (substring, then
+    significant-word overlap) so import RECOGNIZES the same collisions -- but
+    reports them instead of replacing, which is what that writer would do.
+
+    The overlap divisor is deliberately the SMALLER word set here, which is
+    stricter than the writer's (that one divides by the larger set, because a
+    false positive there DELETES the stored lesson). Import is merge-only, so a
+    false positive costs at most a skipped foreign directive that the user can
+    still teach by hand -- the conservative direction for a boundary that
+    ingests another agent's instructions.
     """
 
     left = incoming.lower().strip()
@@ -4396,10 +4402,10 @@ def _write_workspace(
         return _WriteOutcome("rejected")
 
     path = data_home / "config.json"
-    # ONE locked read-modify-write (#4767): the raw _load_json_dict +
-    # _write_json pair this replaces took no advisory lock, so a concurrent
-    # locked writer (CLI, dashboard) landing between the read and the atomic
-    # write was silently reverted by this import's whole-document publish.
+    # ONE locked read-modify-write: a raw _load_json_dict + _write_json pair
+    # takes no advisory lock, so a concurrent locked writer (CLI, dashboard)
+    # landing between the read and the atomic write is silently reverted by this
+    # import's whole-document publish.
     outcome: _WriteOutcome | None = None
 
     def _mutate(data: dict) -> dict | None:
@@ -4860,8 +4866,8 @@ def _write_schedule(item: _Item, cron_service: Any) -> _WriteOutcome:
 
 def _write_settings(item: _Item, data_home: Path) -> _WriteOutcome:
     path = data_home / "config.json"
-    # ONE locked read-modify-write (#4767) -- see the workspace importer above
-    # for why the raw read+write pair this replaces lost concurrent updates.
+    # ONE locked read-modify-write -- see the workspace importer above for why a
+    # raw read+write pair loses concurrent updates.
     changed = False
 
     def _mutate(data: dict) -> dict | None:

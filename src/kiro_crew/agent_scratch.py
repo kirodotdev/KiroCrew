@@ -4,7 +4,7 @@ Agent sessions have no designated scratch location, so their working residue
 -- repository clones, pytest basetemps, probe scripts, screenshots -- lands
 in the shared system temp dir, where nothing ties it to the session that made
 it and the OS tmp reaper deletes by AGE, killing long-lived in-flight work
-while leaving everything younger to accumulate (issue #5063).
+while leaving everything younger to accumulate.
 
 Each spawned agent process gets ``<data home>/scratch/<label>-<token8>/`` and
 the ``TMPDIR``/``TMP``/``TEMP`` triple plus ``KIROCREW_SCRATCH`` pointing at

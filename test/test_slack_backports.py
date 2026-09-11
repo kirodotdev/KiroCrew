@@ -4,8 +4,8 @@ Each class pins one of them, and each is a defect Slack shipped rather than a
 refinement:
 
 * ``TestOutboundUploads``: an agent that writes ``![chart](/tmp/chart.png)``
-  used to ship the raw path to Slack as text while ``files_outbound=True``
-  claimed the renderer extracted and uploaded it. The flag is what the capability
+  must not ship the raw path to Slack as text while ``files_outbound=True``
+  claims the renderer extracted and uploaded it. The flag is what the capability
   ledger defines as ENFORCED, so these tests exercise the gate from both sides.
 * ``TestFenceSafeSplitting``: the renderer's final no-stream render truncated an
   over-limit answer through ``_safe_update``, and everything it did split, Slack's

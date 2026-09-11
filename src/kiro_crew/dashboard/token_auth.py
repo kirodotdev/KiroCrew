@@ -2341,6 +2341,12 @@ def token_auth_middleware(
                     # loopback caller (kiro-cli / MCP) authenticated" from "no
                     # auth ran at all".
                     request["internal_auth"] = True
+                    if path == "/api/chat" or path.startswith("/api/chat/"):
+                        from kiro_crew.dashboard.handlers._shared import private_chat_route_refusal
+
+                        memory_refusal = await private_chat_route_refusal(request)
+                        if memory_refusal is not None:
+                            return memory_refusal
                     # Derive the app identity ONCE, here, so every ownership
                     # check downstream sees it. The secret proves
                     # the call came from inside, not who made it, so identity

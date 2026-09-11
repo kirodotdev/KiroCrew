@@ -55,7 +55,7 @@ def test_the_pin_free_set_omits_it(monkeypatch) -> None:
     """The classification set reflects the user's own opt-out alone.
 
     This is the difference the mechanism label is derived from — it must never
-    be used to DECIDE a deny, only to explain one.
+    decide a deny, only explain one.
     """
     monkeypatch.setattr(security, "pinned_builtin_command_ids", lambda: {_PINNED_ID})
     mgr = _manager_with_rule_disabled()

@@ -4,6 +4,12 @@
 # flipped a class name.
 name: settings-theme-toggle
 tier: smoke
+feature: settings
+user_story: >-
+  As a user, I want to switch the dashboard between light and dark themes in
+  Settings, so that the app matches my environment and the change is visible
+  at once.
+docs_url: docs/system-specs/modules/themes.md
 summary: Switch the dashboard theme in Settings and confirm the colours change
 preconditions:
   seed: rich

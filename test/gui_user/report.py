@@ -1,8 +1,14 @@
-"""Render ``summary.json`` for humans: ``verdict.md``, the PR comment, the nightly issue.
+"""Render ``summary.json`` for humans: ``verdict.md``, the PR comment, the nightly issue, ``features.md``.
 
 Kept free of harness imports so the workflow can call it after the harness has
 already exited (``python test/gui_user/report.py --summary ... --format comment``)
-and so its formatting is unit-testable from a dict.
+and so its formatting is unit-testable from a dict. It does read the scenario
+DSL (``scenarios.py``, pure YAML) for the feature titles and for the
+``features`` format, which is a catalog of the scenario directory itself.
+
+Every table is grouped by ``feature``: the nightly report reads as "which
+product areas are healthy", and each row carries the scenario's ``user_story``
+so a reader who has never opened the YAML knows what the user was trying to do.
 """
 
 from __future__ import annotations
@@ -11,13 +17,30 @@ import argparse
 import json
 import sys
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Iterable, Optional
+
+if __package__ in (None, ""):  # ``python test/gui_user/report.py`` -- make ``gui_user`` importable
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from gui_user.scenarios import (  # noqa: E402
+    FEATURES,
+    Scenario,
+    ScenarioError,
+    by_feature,
+    load_all,
+)
 
 COMMENT_MARKER = "<!-- gui-user-test -->"
 REVIEWED_MARKER = "[GUI-USER-TESTED]"
 
+#: The shipped scenario directory the ``features`` format catalogs.
+SCENARIOS_DIR = Path(__file__).resolve().parent / "scenarios"
+
 #: Longest model-authored excerpt a comment carries.
 MAX_MODEL_TEXT = 1200
+
+#: Group heading for summary.json entries written before ``feature`` existed.
+UNCLASSIFIED = "unclassified"
 
 _BADGE = {
     "PASS": "✅ PASS",
@@ -25,6 +48,7 @@ _BADGE = {
     "ERROR": "⚠️ ERROR",
     "SKIPPED": "⏭️ SKIPPED",
 }
+_NOT_RUN = "▫️ not run"
 
 
 def overall(summary: dict[str, Any]) -> str:
@@ -45,8 +69,13 @@ def _last_attempt(sc: dict[str, Any]) -> dict[str, Any]:
     return attempts[-1] if attempts else {}
 
 
+def _cell(text: Any, *, max_chars: int = 300) -> str:
+    """Repo-authored text (slugs, user stories) as a table cell: no pipes, no newlines."""
+    return neutralize(str(text or ""), max_chars=max_chars).replace("|", "/").replace("\n", " ")
+
+
 def scenario_line(sc: dict[str, Any]) -> str:
-    """One table row per scenario: status, name, steps, seconds, attempts, cost."""
+    """One table row per scenario: status, name, user story, steps, seconds, attempts, cost."""
     last = _last_attempt(sc)
     attempts = len(sc.get("attempts") or [])
     steps = last.get("steps", 0)
@@ -56,8 +85,47 @@ def scenario_line(sc: dict[str, Any]) -> str:
     if last.get("error"):
         detail = f"{detail}: {neutralize(str(last['error']), max_chars=80).replace('|', '/')}"
     return (
-        f"| {_BADGE.get(sc.get('status', ''), sc.get('status', ''))} | `{sc.get('name')}` | {sc.get('tier')} "
+        f"| {_BADGE.get(sc.get('status', ''), sc.get('status', ''))} | `{sc.get('name')}` "
+        f"| {_cell(sc.get('user_story'))} | {sc.get('tier')} "
         f"| {steps} | {secs}s | {attempts} | ${usd:.2f} | {detail} |"
+    )
+
+
+_TABLE_HEADER = (
+    "| | Scenario | User story | Tier | Steps | Time | Attempts | Cost | Detail |",
+    "|---|---|---|---|---|---|---|---|---|",
+)
+
+
+def feature_title(slug: str) -> str:
+    return FEATURES.get(slug, "Unclassified" if slug == UNCLASSIFIED else slug)
+
+
+def group_by_feature(scenarios: Iterable[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    """summary.json entries by ``feature`` in :data:`FEATURES` order; unknown/missing last."""
+    groups: dict[str, list[dict[str, Any]]] = {slug: [] for slug in FEATURES}
+    extra: dict[str, list[dict[str, Any]]] = {}
+    for sc in scenarios:
+        slug = sc.get("feature") or UNCLASSIFIED
+        if slug in groups:
+            groups[slug].append(sc)
+        else:
+            extra.setdefault(slug, []).append(sc)
+    out = {slug: g for slug, g in groups.items() if g}
+    out.update(extra)
+    return out
+
+
+def group_verdict(scenarios: list[dict[str, Any]]) -> str:
+    return overall({"scenarios": scenarios})
+
+
+def _group_heading(slug: str, scenarios: list[dict[str, Any]]) -> str:
+    passed = sum(1 for sc in scenarios if sc.get("status") == "PASS")
+    verdict = group_verdict(scenarios)
+    return (
+        f"### {_cell(feature_title(slug), max_chars=80)} (`{_cell(slug, max_chars=64)}`) — "
+        f"{_BADGE.get(verdict, verdict)} {passed}/{len(scenarios)}"
     )
 
 
@@ -125,12 +193,17 @@ def _final_text_blocks(summary: dict[str, Any]) -> list[str]:
 def render_markdown(
     summary: dict[str, Any], *, artifact_url: Optional[str] = None, run_url: Optional[str] = None
 ) -> str:
-    """``verdict.md`` body (no marker, no header badge line)."""
-    lines = [
-        "| | Scenario | Tier | Steps | Time | Attempts | Cost | Detail |",
-        "|---|---|---|---|---|---|---|---|",
-    ]
-    lines += [scenario_line(sc) for sc in summary.get("scenarios", [])]
+    """``verdict.md`` body (no marker, no header badge line): one table per feature."""
+    lines: list[str] = []
+    for slug, group in group_by_feature(summary.get("scenarios", [])).items():
+        if lines:
+            lines.append("")
+        lines.append(_group_heading(slug, group))
+        lines.append("")
+        lines += list(_TABLE_HEADER)
+        lines += [scenario_line(sc) for sc in group]
+    if not lines:
+        lines += list(_TABLE_HEADER)
     usage = summary.get("usage") or {}
     lines += [
         "",
@@ -154,18 +227,69 @@ def render_markdown(
 
 def render_console(summary: dict[str, Any]) -> str:
     rows = []
-    for sc in summary.get("scenarios", []):
-        last = _last_attempt(sc)
-        rows.append(
-            f"  {sc.get('status', ''):7} {sc.get('name'):28} steps={last.get('steps', 0)} "
-            f"t={last.get('seconds', 0)}s attempts={len(sc.get('attempts') or [])}"
-        )
+    for slug, group in group_by_feature(summary.get("scenarios", [])).items():
+        rows.append(f"  [{slug}] {feature_title(slug)}: {group_verdict(group)}")
+        for sc in group:
+            last = _last_attempt(sc)
+            rows.append(
+                f"    {sc.get('status', ''):7} {sc.get('name'):28} steps={last.get('steps', 0)} "
+                f"t={last.get('seconds', 0)}s attempts={len(sc.get('attempts') or [])}"
+            )
     return "\n".join(
         [
             f"GUI user test: {overall(summary)}  (${float(summary.get('usd', 0)):.2f}, mode {summary.get('tool_mode')})"
         ]
         + rows
     )
+
+
+def render_features(
+    catalog: list[Scenario],
+    summary: Optional[dict[str, Any]] = None,
+    *,
+    run_url: Optional[str] = None,
+) -> str:
+    """``features.md``: what the product does, as the scenario directory describes it.
+
+    One section per feature in :data:`FEATURES` order, each listing its user
+    stories with the latest verdict when a ``summary.json`` is attached (a
+    scenario the run did not select shows as *not run*). Features that have no
+    scenario yet are listed at the end so the catalog doubles as the coverage
+    backlog. The ``catalog`` is repo-authored YAML, never model output, so the
+    only defanging needed is table-cell hygiene.
+    """
+    latest: dict[str, dict[str, Any]] = {
+        str(sc.get("name")): sc for sc in (summary or {}).get("scenarios", [])
+    }
+    groups = by_feature(catalog)
+    smoke = sum(1 for s in catalog if s.tier == "smoke")
+    lines = [
+        "# GUI user-test feature catalog",
+        "",
+        f"_{len(groups)} of {len(FEATURES)} features covered · "
+        f"{len(catalog)} scenarios ({smoke} smoke / {len(catalog) - smoke} nightly)._",
+    ]
+    if summary is not None:
+        where = f" ([workflow run]({run_url}))" if run_url else ""
+        lines.append(
+            f"_Latest verdict: **{overall(summary)}** on tier `{summary.get('tier')}` "
+            f"with `{summary.get('model')}`{where}._"
+        )
+    else:
+        lines.append("_No run attached: verdict column shows the catalog only._")
+    for slug, group in groups.items():
+        lines += ["", f"## {FEATURES[slug]} (`{slug}`)", ""]
+        lines += ["| | User story | Scenario | Tier | Docs |", "|---|---|---|---|---|"]
+        for s in group:
+            res = latest.get(s.name)
+            badge = _BADGE.get(res.get("status", ""), res.get("status", "")) if res else _NOT_RUN
+            docs = f"[docs]({s.docs_url})" if s.docs_url else ""
+            lines.append(f"| {badge} | {_cell(s.user_story)} | `{s.name}` | {s.tier} | {docs} |")
+    missing = [f"`{slug}` {title}" for slug, title in FEATURES.items() if slug not in groups]
+    if missing:
+        lines += ["", "## Not yet covered", ""]
+        lines += [f"- {m}" for m in missing]
+    return "\n".join(lines) + "\n"
 
 
 def render_comment(
@@ -215,20 +339,36 @@ def render_issue(
 
 def main(argv: Optional[list[str]] = None) -> int:
     p = argparse.ArgumentParser(description="render a GUI user-test summary.json")
-    p.add_argument("--summary", type=Path, required=True)
+    p.add_argument("--summary", type=Path, help="summary.json (optional for --format features)")
     p.add_argument(
         "--format",
-        choices=("markdown", "comment", "issue-title", "issue-body", "verdict"),
+        choices=("markdown", "comment", "issue-title", "issue-body", "verdict", "features"),
         default="markdown",
     )
     p.add_argument("--head-sha", default="")
     p.add_argument("--run-url", default="")
     p.add_argument("--artifact-url", default="")
     args = p.parse_args(argv)
-    try:
-        summary = json.loads(args.summary.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:
-        print(f"could not read {args.summary}: {exc}", file=sys.stderr)
+
+    summary: Optional[dict[str, Any]] = None
+    if args.summary is not None:
+        try:
+            summary = json.loads(args.summary.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            print(f"could not read {args.summary}: {exc}", file=sys.stderr)
+            return 2
+
+    if args.format == "features":
+        try:
+            catalog = load_all(SCENARIOS_DIR)
+        except ScenarioError as exc:
+            print(f"could not load scenarios: {exc}", file=sys.stderr)
+            return 2
+        print(render_features(catalog, summary, run_url=args.run_url or None), end="")
+        return 0
+
+    if summary is None:
+        print("--summary is required for this format", file=sys.stderr)
         return 2
     if args.format == "verdict":
         print(overall(summary))

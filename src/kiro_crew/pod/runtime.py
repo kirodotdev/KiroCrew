@@ -318,11 +318,11 @@ _MAX_PORT_DIGITS = 10
 def _port_from_env(value: str | None) -> int | None:
     """Parse an env-file value as a port number, or ``None`` when it is not one.
 
-    THE one place an env-file string becomes a port. Three call sites used to guard
-    this themselves and each got it wrong differently -- one on length, one on a
-    sibling it forgot to audit, one on character class -- so the guard is now a
-    single function they all share and the class is closed at the parse rather than
-    per symptom.
+    THE one place an env-file string becomes a port. Every call site shares this
+    single function rather than guarding itself, so the class is closed at the parse
+    rather than per symptom -- a hand-rolled guard gets it wrong differently each
+    time (one on length, one on a sibling it forgot to audit, one on character
+    class).
 
     ``isdecimal``, NOT ``isdigit``, because ``isdigit`` is not the predicate that
     matches ``int()``: U+00B2 SUPERSCRIPT TWO satisfies ``isdigit`` while ``int()``
@@ -484,7 +484,7 @@ def _port_is_free(port: int) -> bool:
 #: Env key recording the port :func:`allocate_port` chose ITSELF, so a later call
 #: can tell its own fallback from an operator's deliberate ``PORT=``. The VALUE is
 #: stored (not a bare flag) so the marker self-invalidates: an operator who
-#: hand-edits ``PORT=`` to something else no longer matches it and gets operator
+#: hand-edits ``PORT=`` to something else does not match it and gets operator
 #: treatment, with no way for a stale marker to reclassify their choice as ours.
 AUTO_PORT_KEY = "PORT_AUTO"
 
@@ -1002,7 +1002,7 @@ def unit_state(cfg: PodConfig, name: str) -> tuple[str, int]:
 
 
 def recent_journal(cfg: PodConfig, name: str, lines: int = 30) -> str:
-    """Tail the pod's log — used to surface a boot failure's real cause.
+    """Tail the pod's log — surface a boot failure's real cause.
 
     launchd has no journal, so on macOS this tails the files the pod's plist
     routes stdout/stderr to. Same contract, different mechanism.
@@ -1355,7 +1355,7 @@ def stop_pod(cfg: PodConfig, name: str) -> subprocess.CompletedProcess:
     hook-based delete raced the pod's own surviving subprocesses — they reopened
     their audit log in append mode and recreated the directory behind it — and it
     also ran on the stop half of a ``Restart=``, bringing the pod back up on a
-    home that no longer had its sessions or config. Reclaiming after the service
+    home stripped of its sessions or config. Reclaiming after the service
     is confirmed down fixes both, at the cost of a pod that goes away without a
     ``down`` leaving its HOME behind; :func:`orphan_homes` reports those.
 
@@ -3574,17 +3574,14 @@ def boot(cfg: PodConfig, name: str) -> int:
     ``exec``s and does not return.
 
     **This wrapper is the class closure for "a refusal that escapes the boot path
-    with a non-terminal exit".** Three rounds fixed instances of it one at a time:
-    round 7 unified the explicit ``return`` sites through :func:`_refuse`, round 8
-    added an AST guard over those returns -- and round 9's finding walked straight
-    past both, because a ``raise PodError`` is neither a bare return nor visible to
-    a scan over returns. It escaped to the CLI's generic handler, which exits 1, a
-    code NOT in :data:`TERMINAL_BOOT_EXIT_CODES`, so systemd retried it and
-    launchd's KeepAlive restarted it every ``ThrottleInterval``: the exact
-    restart-loop the terminal-exit work exists to prevent, reached by the one shape
-    the guard did not cover.
+    with a non-terminal exit".** A ``raise PodError`` is neither a bare return nor
+    visible to a scan over explicit ``return`` sites, so a per-site guard over
+    returns does not cover it. Such a raise escapes to the CLI's generic handler,
+    which exits 1, a code NOT in :data:`TERMINAL_BOOT_EXIT_CODES`, so systemd
+    retries it and launchd's KeepAlive restarts it every ``ThrottleInterval``: the
+    exact restart-loop the terminal-exit work exists to prevent.
 
-    Enumerating raises would not have closed it either. ``PodError`` is raised from
+    Enumerating raises does not close it either. ``PodError`` is raised from
     roughly forty sites under ``pod/``, many of them transitively reachable from
     here (``validate_name``, ``read_env_file``, ``write_pod_config``,
     ``seed_home_from_scenario``, ``_ensure_pod_dir``, the whole ``pinned_fs``

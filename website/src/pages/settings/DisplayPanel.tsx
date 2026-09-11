@@ -6,7 +6,7 @@ import type { FontFamily } from '../../hooks/useZoom'
 import { useTheme } from '../../hooks/useTheme'
 import type { ColorTheme } from '../../hooks/useTheme'
 import { useUIMode } from '../../hooks/useUIMode'
-import { SettingsSection, SettingsCard, SettingsSelect, SettingsStepper, SettingsButtonGroup, SettingsInput, SettingsCombobox } from '../../components/settings'
+import { SettingsSection, SettingsCard, SettingsSelect, SettingsStepper, SettingsButtonGroup, SettingsInput, SettingsCombobox, SettingsToggle } from '../../components/settings'
 import SimpleSelect from '../../components/SimpleSelect'
 import { Input } from '../../components/ui'
 import { useThemeEditor, ThemeEditorPanel } from '../../components/themeEditor'
@@ -143,7 +143,12 @@ export function DisplayPanel() {
   // Recency-tint count is persisted server-side (dashboard.recent_tint_count) via the shared
   // kirocrewConfig query, so the choice follows the user across browsers/restarts.
   const qc = useQueryClient()
-  type KirocrewCfg = { dashboard?: { recent_tint_count?: number; terminal?: { shell?: string } } }
+  type KirocrewCfg = {
+    dashboard?: {
+      recent_tint_count?: number
+      terminal?: { shell?: string; completion?: { enabled?: boolean } }
+    }
+  }
   const mcQ = useQuery<KirocrewCfg>({
     queryKey: ['kirocrewConfig'],
     queryFn: () => api.kirocrewConfig(),
@@ -228,6 +233,28 @@ export function DisplayPanel() {
     }
     shellMut.mutate(value)
   }
+
+  // The Terminal tab's completion popup (dashboard.terminal.completion.enabled).
+  // Server-side like the shell, because the gate lives in the completion
+  // route: with it off the gateway answers every listing request with nothing,
+  // so the popup never opens and no menu can steal a key. Default on; only a
+  // literal `false` reads as off — the same rule the backend applies, so a
+  // hand-edited `"false"` string cannot show as off here while the popup keeps
+  // appearing. Same per-path overlay as the shell field, so a slow save
+  // cannot roll back an in-flight sibling.
+  const serverCompletion = mcQ.data?.dashboard?.terminal?.completion?.enabled !== false
+  const shownCompletion = overlay.shown('dashboard.terminal.completion.enabled', serverCompletion)
+  const [completionError, setCompletionError] = useState<string | null>(null)
+  const completionMut = useMutation(overlay.mutationOpts<boolean>({
+    queryKey: ['kirocrewConfig'],
+    mutationFn: (value: boolean) => api.patchConfig('dashboard.terminal.completion.enabled', value),
+    path: () => 'dashboard.terminal.completion.enabled',
+    displayValue: v => v,
+    applyToCache: (cached, value) =>
+      setConfigPathValue(cached as KirocrewCfg, 'dashboard.terminal.completion.enabled', value),
+    onFailure: () => setCompletionError(i18nT('pages.settings.displayPanel.terminal_completion_save_failed')),
+    onSupersede: () => setCompletionError(null),
+  }))
 
   // ── Install theme (Level 0) from a local folder or a GitHub repo ──
   const [installType, setInstallType] = useState<'github' | 'local'>('github')
@@ -407,6 +434,19 @@ export function DisplayPanel() {
               a rejected path stays in the field for the user to fix, and the
               hand-off would navigate away from it. */}
           <ErrorNotice message={shellError} variant="inline" />
+          <SettingsToggle
+            label={i18nT('pages.settings.displayPanel.terminal_completion')}
+            description={i18nT('pages.settings.displayPanel.terminal_completion_desc')}
+            checked={shownCompletion}
+            onChange={v => completionMut.mutate(v)}
+            disabled={!mcQ.isSuccess}
+            configKey="dashboard.terminal.completion.enabled"
+          />
+          {/* No hand-off: the toggle itself has no draft (it saves on click),
+              but `shellDraft` above and `installValue` further down this panel
+              are unsaved local state, and the hand-off's navigation unmounts
+              the whole panel with them. Same rule as the language notice. */}
+          <ErrorNotice message={completionError} variant="inline" />
           {/* The shell field and the recency-tint stepper are both disabled
               while this query is not successful. A failed read used to leave
               them greyed out with no reason on screen. No hand-off: the theme

@@ -183,7 +183,7 @@ async def test_no_conversation_log_returns_none() -> None:
     assert await cp.rehydrate_slot_from_history_async(state, "chat-1-x") is None
 
 
-# ── The shared prefetch seam (#895) ──
+# ── The shared prefetch seam ──
 #
 # The wrapper's read half is now a named module-level function so the two bulk
 # startup restore drivers can hoist the SAME reads into a worker thread instead
@@ -282,7 +282,7 @@ def test_prefetch_reuses_a_callers_model_map() -> None:
     assert called is False, "the prefetch rebuilt a map the caller already had"
 
 
-# ── Deletion during the wrapper's own read (#895 round 4) ──
+# ── Deletion during the wrapper's own read ──
 #
 # This wrapper's read has ALWAYS been offloaded, so its delete-during-read window
 # predates #895 — but a class of defect fixed at two of three prefetch-then-apply

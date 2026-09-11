@@ -1100,7 +1100,7 @@ class TestRemediationNamesOnlyRealCliSubcommands:
     """Every ``kirocrew secrets <verb>`` a shipped message tells an operator to
     run must be a verb the CLI actually registers.
 
-    The defect this pins (#6889): the importer's remediation strings named
+    The defect this pins: the importer's remediation strings named
     ``kirocrew secrets set`` and ``kirocrew secrets rm``, but the ``secrets``
     parser registers only ``import`` — so an operator who followed the message
     at the exact moment a migration aborted got ``invalid choice`` and no way

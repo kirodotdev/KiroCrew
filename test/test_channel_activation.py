@@ -117,7 +117,7 @@ class TestChannelActivationRouting:
     async def test_group_channel_mention_mode_allows_thread_replies_with_session(self):
         """In mention mode, thread replies are processed if the bot has an active session."""
         orch = _make_orch()
-        # Simulate an existing session for this thread (bot was previously @mentioned)
+        # Simulate an existing session for this thread (bot already @mentioned in it)
         orch.sessions = MagicMock()
         # A bare MagicMock returns a truthy Mock for every accessor, so an
         # unconfigured is_busy would route this message down the mid-turn

@@ -200,7 +200,7 @@ class TestGating:
         generation must read the full transcript from disk or earlier intents
         vanish from the regenerated summary."""
         state, slot = env
-        # Disk carries an early request the in-memory tail no longer holds.
+        # Disk carries an early request the in-memory tail does not hold.
         slot.messages = [{"role": "user", "content": "request 2"}]
         prompts: list[str] = []
 
@@ -311,7 +311,7 @@ class TestGating:
             records = real_read(key)
             # A concurrent turn appends while generation is reading.
             log.append(key, "user", "landed mid-read")
-            move_transcript_past(log, key, pre_read_sig)  # don't rely on the OS tick (#2981)
+            move_transcript_past(log, key, pre_read_sig)  # don't rely on the OS tick
             return records
 
         monkeypatch.setattr(log, "read_messages_chained", racing_read)
@@ -329,7 +329,7 @@ class TestGating:
         This is the longest unguarded window in a pass (a model call runs for tens
         of seconds while no lock is held), and it is the one a reader assumes the
         `running` check covers. It does not: the signature captured at generation
-        start no longer matches once the racing turn's message is on disk, so
+        start does not match once the racing turn's message is on disk, so
         `set_cached_intent_summary` refuses the payload instead of publishing a
         summary that predates the turn under a current signature. The guard is
         strictly stronger than re-checking `slot.running` would be, because it
@@ -414,7 +414,7 @@ class TestGating:
 
         On-demand generation is what makes this reachable: two clicks from two
         clients (or a click racing a turn-end pass) are concurrent callers of a
-        function that previously set its marker only after four awaits. The
+        function that sets its marker only after four awaits. The
         signature guard made the outcome safe but not free -- the second pass had
         already paid for a model call by the time its write was refused.
         """
@@ -517,7 +517,7 @@ class TestCaching:
         log = state.conversation_log
         sig = log.session_mtime(state.hkey)  # what pass 1 stamped the sidecar with
         log.append(state.hkey, "user", "another")
-        move_transcript_past(log, state.hkey, sig)  # don't rely on the OS tick (#2981)
+        move_transcript_past(log, state.hkey, sig)  # don't rely on the OS tick
         slot._summary_turn_mark = 0
         assert await chat_summary.generate_session_summary(state, slot, cfg=_cfg()) is True
         assert len(called) == 2

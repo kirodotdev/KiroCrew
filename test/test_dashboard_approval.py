@@ -894,8 +894,8 @@ class TestBatchRejection:
 class TestDenialCascadeLifetime:
     """The batch-rejection suppression must not outlive the group it belongs to.
 
-    Issue #7681: ``_batch_rejected`` was only cleared in the turn runner's
-    ``finally``, so it lived for the whole TURN. A user who denied one call had
+    Clearing ``_batch_rejected`` only in the turn runner's ``finally`` lets it
+    live for the whole TURN. A user who denied one call had
     every later call in that turn auto-denied without ever being shown a card —
     breaking deny → discuss → agent revises → agent retries, and reporting the
     phantom denial to the model as "User denied tool execution".
@@ -970,9 +970,9 @@ class TestDenialCascadeLifetime:
 class TestBatchCascadeAttribution:
     """A cascade behind a HOST auto-decline must not inherit user attribution.
 
-    Issue #8818: ``_batch_rejected`` is also set by the host-side auto-declines
+    ``_batch_rejected`` is also set by the host-side auto-declines
     (approval timeout, no turn budget, Slack delivery failure), and the cascade
-    used to answer every remaining batch member with nothing but kiro-cli's
+    would otherwise answer every remaining batch member with nothing but kiro-cli's
     generic "User denied tool execution" — a decline no user made. These pin the
     provenance split: host-caused cascades steer one cause-specific in-band
     notice for the whole remainder, user-refused batches keep the generic
@@ -1000,7 +1000,7 @@ class TestBatchCascadeAttribution:
         # Nobody answered: the first tool was declined by the host, the second
         # by the cascade — and each decline corrected its own attribution
         # in-band. Two notices, two distinct facts: the expired prompt covers
-        # tool_a (#8219), the cascade notice covers the remainder (#8818).
+        # tool_a, the cascade notice covers the remainder.
         client.reject_tool.assert_any_call("req-1")
         client.reject_tool.assert_any_call("req-2")
         assert client.steer.call_count == 2
@@ -1097,7 +1097,7 @@ class TestBatchCascadeAttribution:
 
     @pytest.mark.asyncio
     async def test_provenance_dies_with_the_group_it_belongs_to(self, tmp_path):
-        # Model output ends the denied group (#7681). What is OBSERVABLE here:
+        # Model output ends the denied group. What is OBSERVABLE here:
         # the revised later call is prompted — not cascaded, not steered — and
         # a host-recorded cause never survives past the turn. The paired
         # cause-clear at each flag-clear site is pinned at source level in
@@ -1126,7 +1126,7 @@ class TestBatchCascadeAttribution:
 
         # The revised call was prompted and approved — never cascaded, so the
         # cascade notice was never sent. The expired prompt on tool_a still
-        # steers its own notice (#8219); what must be absent is the cascade one.
+        # steers its own notice; what must be absent is the cascade one.
         client.approve_tool.assert_any_call("req-2")
         assert client.steer.call_count == 1
         assert "every remaining call in its batch" not in client.steer.call_args[0][0]
@@ -1526,7 +1526,7 @@ class TestRefusalRecovery:
         ``assistant_text`` — so the end-of-turn buffer is empty even though the
         user has already read the answer on screen. Keying the body on that buffer
         alone sent the resume instruction for this ordering, which is the same
-        duplicate answer at full turn cost (GPT round on #8275).
+        duplicate answer at full turn cost.
         """
         cb = _context_builder(
             ToolHookResult.deny("Blocked by security policy: git push")

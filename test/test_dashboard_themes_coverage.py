@@ -281,13 +281,13 @@ class TestApiThemesCreate:
 
 
 class TestApiThemesCreateOffLoop:
-    """#6198: the create handler's filesystem work must never run on the loop.
+    """The create handler's filesystem work must never run on the loop.
 
     On a UNC data home ``mkdir``/``exists`` are SMB-backed and can block for
     as long as the network takes; one such call on the loop stalls every other
     request the gateway serves. Spy on ``Path.mkdir``/``exists``/``is_dir``/
     ``is_file`` for the handler's paths (and the data home itself) and assert
-    every call happened on a worker thread — the same discipline #5963 pinned
+    every call happened on a worker thread — the same discipline pinned
     for the detail route's target stats.
     """
 
@@ -1020,13 +1020,13 @@ class TestApiThemeDetailSlugGuard:
 
 
 class TestApiThemeDetailStatsOffLoop:
-    """#5963: the detail handler's target stats must never run on the event loop.
+    """The detail handler's target stats must never run on the event loop.
 
     On a UNC data home each ``exists()``/``is_dir()`` is SMB-backed and can
     block for as long as the network takes; a stat on the loop stalls every
     other request the gateway serves. Spy on ``Path.exists``/``Path.is_dir``
     for the handler's two target paths and assert every such stat happened on
-    a worker thread — the same discipline #5943 pinned for the asset routes'
+    a worker thread — the same discipline pinned for the asset routes'
     offloaded ``_resolve_theme_asset``.
     """
 

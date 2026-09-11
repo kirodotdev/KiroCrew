@@ -8,8 +8,8 @@ This is a MECHANICAL port. The six primitives the migration plan calls out
 (due-time recomputation after every check, priority dispatch, the timestamp
 lock, fail-degradation with cooldown, at-least-once delivery, lifecycle and
 archiving) live partly here and partly in ``watchlistService``; nothing about
-them is redesigned in passing. Upgrading this into a core scheduler is
-KiroCrew issue #721's business, with THIS file as the baseline.
+them is redesigned in passing. Upgrading this into a core scheduler is separate
+work, with THIS file as the baseline.
 
 PORTING NOTES
 -------------
@@ -353,16 +353,16 @@ def _reject_malformed_ops(params: dict[str, Any]) -> None:
 
     Nothing upstream type-checks these. The HTTP route forwards a decoded JSON
     body and the MCP tool forwards agent-authored arguments; both only assert
-    that at least one operation KEY is present. A wrong TYPE therefore used to
-    reach the per-item code, where it read as a server fault rather than a bad
+    that at least one operation KEY is present. Without this check a wrong TYPE
+    reaches the per-item code, where it reads as a server fault rather than a bad
     request:
 
-    - ``{"add": "x"}`` sliced the STRING, then called ``create_watch_item`` on
+    - ``{"add": "x"}`` slices the STRING, then calls ``create_watch_item`` on
       each character -> ``AttributeError`` -> HTTP 500.
     - ``{"add": [{"checkIntervalMins": "abc"}]}`` -> ``TypeError`` in
       ``_clamp_interval`` -> HTTP 500.
-    - ``{"remove": "abc"}`` built a set of CHARACTERS and deleted every item
-      whose id was one of them: silent data loss with no error at all.
+    - ``{"remove": "abc"}`` builds a set of CHARACTERS and deletes every item
+      whose id is one of them: silent data loss with no error at all.
 
     ``ValueError`` is what both callers already treat as the client's mistake
     (the route maps it to 400), so validating here — rather than in the route —

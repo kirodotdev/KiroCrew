@@ -32,7 +32,7 @@ parallel watcher):
   never runs -- the gap becomes permanent and silent. So the pass runs on EVERY
   :meth:`ArtifactKnowledgeSync.start` and is driven by state comparison instead:
   ingest what the store has and ``artifact_item_state`` lacks or disagrees with,
-  remove state for artifacts that no longer exist. Converged is the common case
+  remove state for artifacts absent from the store. Converged is the common case
   and costs no extraction calls, because :func:`ingest_artifact` already skips
   unchanged content.
 
@@ -928,7 +928,7 @@ class ArtifactKnowledgeSync:
             # ineligible kind, so re-ingesting alone would leave the chunks from
             # the previous kind searchable -- markdown ingested, switched to svg,
             # obsolete prose still answering queries. Reconcile that here: an
-            # artifact that is no longer eligible is removed rather than skipped.
+            # artifact that is not eligible is removed rather than skipped.
             try:
                 art = await asyncio.to_thread(self.art_store.get, slug)
             except ArtifactNotFoundError:

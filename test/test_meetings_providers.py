@@ -708,7 +708,7 @@ class TestUrlValidation:
 
         The shared vet allows 80 and 443 only, and https-only leaves 443. A
         calendar on some other port is nearly always an internal service, and the
-        port is the cheapest place to stop this endpoint being used to probe for
+        port is the cheapest place to stop this endpoint from probing for
         one. No working configuration is broken by starting strict: `ics` only
         ever documented a published `https://` URL, and relaxing later is a
         one-line change to that allow-list.

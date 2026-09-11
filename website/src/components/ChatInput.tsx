@@ -1,6 +1,6 @@
 import { Component, useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo, useId, memo, lazy, Suspense } from 'react'
 import { markComposerResize } from '../utils/composerResize'
-import { ArrowUpFromLine, ArrowUp, Loader2, RotateCw, Plus, Crop, Bot, Mic, Keyboard, Square, X, ClipboardList, CheckCircle, Ban, Sparkles, Target, Lock, Folder, FolderOpen, FileText, FileDiff, PenLine, ChevronsDownUp, ChevronsUpDown, MoreHorizontal } from 'lucide-react'
+import { ArrowUpFromLine, ArrowUp, Loader2, RotateCw, Plus, Crop, Bot, Mic, MicOff, Keyboard, Square, X, ClipboardList, CheckCircle, Ban, Sparkles, Target, Lock, Folder, FolderOpen, FileText, FileDiff, PenLine, ChevronsDownUp, ChevronsUpDown, MoreHorizontal } from 'lucide-react'
 import SketchDialog from './SketchDialog'
 import AppIcon from './AppIcon'
 import CopyBranchButton from './CopyBranchButton'
@@ -9,12 +9,11 @@ import { usePointerDrag } from '../hooks/usePointerDrag'
 import { useScrollEdges } from '../hooks/useScrollEdges'
 import VoiceStatusBar from './VoiceStatusBar'
 import VoiceDictationPanel, { useDictationPanelUsable } from './VoiceDictationPanel'
-import type { AudioSample } from '../hooks/mic'
 import { createPortal } from 'react-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useBranding } from '../hooks/useBranding'
 import { useAppSelector, useAppDispatch } from '../store'
-import { resolveByApprovalId, openActivityToTool, openActivityToTab, selectSlotPendingApproval, selectSlotPendingSpawnApprovals, markSubagentApproving, sseSubagentDone, setAgentSwitchNotice } from '../store/chatSlice'
+import { resolveByApprovalId, openActivityToTool, openActivityToTab, selectSlotPendingApproval, selectSlotPendingSpawnApprovals, markSubagentApproving, sseSubagentDone, setAgentSwitchNotice, switchSlot } from '../store/chatSlice'
 import { agentSwitchFailureMessage } from '../utils/agentSwitchFeedback'
 import { useSlotId } from '../providers/SlotContext'
 import { useToolPillVisible } from '../store/toolPillRegistry'
@@ -112,7 +111,7 @@ const IMAGE_ACCEPT = 'image/png,image/jpeg,image/gif,image/webp,image/bmp,image/
 // test_accept_list_covers_every_accepted_extension pins this set against the
 // server's, from the Python side, since a vitest cannot read the Python constant.
 const VIDEO_ACCEPT = 'video/mp4,video/x-m4v,video/quicktime,video/webm'
-const FILE_ACCEPT = IMAGE_ACCEPT + ',' + VIDEO_ACCEPT + ',.txt,.md,.json,.excalidraw,.har,.yaml,.yml,.xml,.csv,.log,.py,.js,.ts,.tsx,.jsx,.html,.css,.sh,.bash,.rb,.go,.rs,.java,.c,.cpp,.h,.hpp,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.odt,.ods,.odp,.rtf,.zip,.tar,.gz'
+const FILE_ACCEPT = IMAGE_ACCEPT + ',' + VIDEO_ACCEPT + ',.txt,.text,.xwiki,.md,.json,.excalidraw,.har,.yaml,.yml,.xml,.csv,.log,.py,.js,.ts,.tsx,.jsx,.html,.css,.sh,.bash,.rb,.go,.rs,.java,.c,.cpp,.h,.hpp,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.odt,.ods,.odp,.rtf,.zip,.tar,.gz'
 
 import ApprovalModePicker, { APPROVAL_MODE_ADJUSTED_LS_KEY } from './ApprovalModePicker'
 // Effort vocabulary lives in lib/effort.ts (mirrors backend effort.py).
@@ -130,6 +129,7 @@ import { effortLabel } from '../lib/effort'
 import SlashCommandMenu from './SlashCommandMenu'
 import FilePickerMenu from './FilePickerMenu'
 import type { FileKind } from './FilePickerMenu'
+import { useComposerVoiceSlice, type ComposerVoiceInputProps } from '../chat-core/composer/Composer'
 import SkillPickerMenu from './SkillPickerMenu'
 import { skillsCacheStaleTime } from '../lib/skillsCache'
 import ProjectSkillsTrustDialog from './ProjectSkillsTrustDialog'
@@ -470,81 +470,12 @@ interface ChatInputProps {
   onDragOver?: (e: React.DragEvent) => void
   /** Drag-leave event handler */
   onDragLeave?: (e: React.DragEvent) => void
-  /** Voice input state */
-  voiceRecording?: boolean
-  /** Change the voice capture device from the in-chat picker. */
-  onSelectVoiceDevice?: (deviceId: string) => void
-  /** True when a device switch applies to the live capture, not the next one. */
-  voiceDeviceSwitchIsLive?: boolean
-  voiceTranscribing?: boolean
-  /**
-   * "Is a transcription in flight ANYWHERE" — ungated by session ownership, the
-   * same distinction `voiceCaptureActive` draws for capture.
-   *
-   * `voiceTranscribing` is gated (`owned && transcribing`), but the refusal it
-   * has to predict is global: `startVoice` returns early on `voice.transcribing`
-   * outright, because the mic is one shared device. Gating it meant that while
-   * another session's transcript was still landing, THIS composer's voice
-   * controls looked live, invited a press, and captured nothing.
-   *
-   * Only the voice affordances read this. The composer's own text behaviour
-   * (focus, Enter-to-send) stays on the gated flag — another slot transcribing
-   * is no reason to stop this one from typing and sending.
+  /*
+   * Voice. There are no voice props any more (chat-core P3-b): dictation is the
+   * Voice atom the `<Composer>` root mounts beside this input, read here through
+   * `useComposerVoiceSlice()`. A host gets a microphone by wrapping this in a
+   * `<Composer>` root; a host that wants none does not mount the root.
    */
-  voiceTranscribeActive?: boolean
-  onVoiceToggle?: () => void
-  /** Cancel (discard) an in-progress dictation without transcribing — Esc. */
-  onVoiceCancel?: () => void
-  /** Pre-warm the mic on pointer-down so recording starts instantly on click. */
-  onVoicePrewarm?: () => void
-  /** Begin capture. Distinct from `onVoiceToggle` because the hold-to-talk
-   *  gesture must open and close a session on separate edges of one press —
-   *  a toggle cannot express "the finger went down" on its own. */
-  onVoiceStart?: () => Promise<void> | void
-  /** End capture AND transcribe — the commit half of the hold gesture. */
-  onVoiceStop?: () => void
-  /**
-   * Is capture in flight AT ALL — ungated by session ownership, unlike
-   * `voiceRecording`.
-   *
-   * The two are not interchangeable and the difference loses speech. Streaming
-   * STT flips its own `recording` true the moment the worklet is wired and PCM is
-   * buffering, but `useVoiceInput` assigns `sessionOwner` only AFTER the server
-   * handshake resolves — so for the length of that handshake real audio exists
-   * while `voiceRecording` (which is `owned && recording`) still reads false. The
-   * gesture's commit veto asks "did capture begin?", and answering it with the
-   * ownership-gated flag made a release inside that window take the discard
-   * branch and drop what the user had just said.
-   *
-   * Use this ONLY for that question. Anything presentational keeps
-   * `voiceRecording`, so one slot never renders another slot's capture.
-   */
-  voiceCaptureActive?: boolean
-  /** Mic error (null = none), live input level [0,1], active device label, and error-dismiss. */
-  voiceError?: string | null
-  voiceLevel?: number
-  voiceDeviceLabel?: string
-  /** deviceId of the track actually capturing (data-driven picker checkmark). */
-  voiceDeviceId?: string
-  onClearVoiceError?: () => void
-  /** Show the animated dictation panel while recording (stt.dictation_panel). */
-  voiceDictationPanel?: boolean
-  /** True for streaming STT — the dictation panel's hint says "Enter to send"
-   *  (live transcript in composer); batch says "click the mic to finish". */
-  voiceStreaming?: boolean
-  /** Per-frame audio features driving the dictation panel's shader. */
-  voiceSampleRef?: { current: AudioSample }
-  /** Latest partial hypothesis, rendered muted in the dictation panel. */
-  voicePartial?: string
-  /** Byte progress of the one-time speech-model download the live session waits
-   *  on, or null. Both recording surfaces render it: a multi-hundred-megabyte
-   *  transfer with nothing on screen is indistinguishable from a hung mic. */
-  voiceDownload?: { done: number; total: number } | null
-  /** Live composer caret, updated by ChatInput so ChatPage's dictation handler
-   *  can splice the transcript in at the cursor instead of appending. */
-  voiceCaretRef?: React.MutableRefObject<{ start: number; end: number } | null>
-  /** Caret offset to restore after a dictation-driven value update lands. */
-  voicePendingCaretRef?: React.MutableRefObject<number | null>
   /** Chat-level controls in input bar */
   agentName?: string
   /**
@@ -802,6 +733,9 @@ function ResizeBadge({ resize }: { resize: ResizeInfo }) {
   )
 }
 
+/** No Voice atom mounted: every dictation value at its idle default. */
+const NO_VOICE: Partial<ComposerVoiceInputProps> = {}
+
 /** Stable default so an omitted `dirs` prop does not re-run the remeasure
  *  effect on every render (a fresh [] literal changes deps each time). */
 const NO_DIRS: string[] = []
@@ -956,29 +890,6 @@ function ChatInput({
   onDrop,
   onDragOver,
   onDragLeave,
-  voiceRecording = false,
-  onSelectVoiceDevice,
-  voiceDeviceSwitchIsLive = false,
-  voiceTranscribing = false,
-  voiceTranscribeActive,
-  onVoiceToggle,
-  onVoiceCancel,
-  onVoicePrewarm,
-  onVoiceStart,
-  onVoiceStop,
-  voiceCaptureActive,
-  voiceError = null,
-  voiceLevel = 0,
-  voiceDeviceLabel = '',
-  voiceDeviceId = '',
-  voiceDictationPanel = false,
-  voiceStreaming = false,
-  voiceSampleRef,
-  voicePartial = '',
-  voiceDownload = null,
-  voiceCaretRef,
-  voicePendingCaretRef,
-  onClearVoiceError,
   agentName,
   agentLabel,
   agentIsInheritedDefault,
@@ -1046,6 +957,39 @@ function ChatInput({
   connected = true,
   onOptimizeResult,
 }: ChatInputProps) {
+  // Dictation state comes from the Composer root's Voice atom (mounted by the
+  // root beside this input), not from host-wired props: one hook, the same
+  // values the atom computes for every surface, and a host cannot forget to
+  // wire it. Null outside a `<Composer>` root — then there is simply no mic.
+  const composerVoice = useComposerVoiceSlice()
+  const {
+    voiceRecording = false,
+    onSelectVoiceDevice,
+    voiceDeviceSwitchIsLive = false,
+    voiceTranscribing = false,
+    voiceTranscribeActive,
+    voiceBusyElsewhere = false,
+    voiceBusyElsewhereSession = null,
+    voiceHeldLanded = false,
+    onVoiceToggle,
+    onVoiceCancel,
+    onVoicePrewarm,
+    onVoiceStart,
+    onVoiceStop,
+    voiceCaptureActive,
+    voiceError = null,
+    voiceLevel = 0,
+    voiceDeviceLabel = '',
+    voiceDeviceId = '',
+    voiceDictationPanel = false,
+    voiceStreaming = false,
+    voiceSampleRef,
+    voicePartial = '',
+    voiceDownload = null,
+    voiceCaretRef,
+    voicePendingCaretRef,
+    onClearVoiceError,
+  } = composerVoice?.inputProps ?? NO_VOICE
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const disabled = disabledProp
   const dispatch = useAppDispatch()
@@ -3195,6 +3139,25 @@ function ChatInput({
   /** "Is a transcription in flight at all" — see the `voiceTranscribeActive` prop
    *  doc. Falls back to the gated flag so the prop stays optional. */
   const transcribeInFlight = voiceTranscribeActive ?? voiceTranscribing
+  /** Another composer holds the microphone. Blocks STARTING here exactly like a
+   *  foreign transcription does, but it is not transcription — nothing of this
+   *  composer's is in flight — so it gets its own label and icon, never the
+   *  "Transcribing" spinner (UX review on #9787). */
+  const micHeldElsewhere = voiceBusyElsewhere && !transcribeInFlight
+  const micBlocked = transcribeInFlight || voiceBusyElsewhere
+  // Name the chat that holds the mic when the slot list knows it. In a lone DM
+  // thread nothing else on screen shows which chat is capturing, so without a
+  // name the user cannot go and end it.
+  const micOwnerTitle = useAppSelector(s =>
+    voiceBusyElsewhereSession ? s.dashboard.slots.find(x => x.key === voiceBusyElsewhereSession)?.title ?? null : null)
+  const micHeldElsewhereLabel = micOwnerTitle
+    ? i18nT('components.chatInput.mic_in_use_in', { chat: micOwnerTitle })
+    : i18nT('components.chatInput.mic_in_use_elsewhere')
+  // The name in the status row is the way there: one click switches to the
+  // chat that holds the mic, where the user can end the capture.
+  const micHeldElsewhereAction = micOwnerTitle && voiceBusyElsewhereSession
+    ? { label: micOwnerTitle, onClick: () => { void dispatch(switchSlot(voiceBusyElsewhereSession)) } }
+    : undefined
   /** State, not a ref: the hold target mounts only once hold mode is on, and the
    *  gesture hook can only bind its listeners when that arrival is observable.
    *  Declared above `touchPtt` because the hook binds to it. */
@@ -3219,7 +3182,7 @@ function ChatInput({
    */
   const touchPtt = useTouchPushToTalk(touchVoice, {
     target: holdTarget,
-    disabled: disabled || transcribeInFlight || optimizing,
+    disabled: disabled || micBlocked || optimizing,
   })
   /*
    * A draft suspends hold mode, EXCEPT while the touch gesture's own capture is
@@ -3301,6 +3264,32 @@ function ChatInput({
     if (inputRef.current && !dragging.current) applyHeight(inputRef.current, manualHeight, prefillHint, textareaParked)
   }, [value, prefillHint, manualHeight, textareaParked])
 
+  // Re-measure when the textarea's WIDTH changes at an unchanged value: a window
+  // resize, a sibling column folding, the side panel docking. The wrapped
+  // placeholder or text needs a different height at the new column, and the
+  // effect above cannot know — none of its deps moved. Without this the box kept
+  // the height it had at the old width and clipped the placeholder's second
+  // line mid-glyph on the Members DM thread (issue #9979, finding 4).
+  // Width ONLY: the observer also fires for the height `applyHeight` itself
+  // writes, and re-running on that would measure for nothing (the memo makes it
+  // a no-op, but the guard makes the intent legible). `dragging` and `parked`
+  // are the same preconditions the two call sites above honour.
+  useEffect(() => {
+    const el = inputRef.current
+    if (!el || typeof ResizeObserver === 'undefined') return
+    let lastWidth = el.clientWidth
+    const ro = new ResizeObserver(() => {
+      const width = el.clientWidth
+      if (width === lastWidth) return
+      lastWidth = width
+      if (!dragging.current) applyHeight(el, manualHeight, prefillHint, parkedRef.current)
+    })
+    ro.observe(el)
+    return () => ro.disconnect()
+    // `textareaParked` re-arms the observer on the way back from the sr-only box,
+    // where the 1px width must not be the baseline the next change is judged from.
+  }, [manualHeight, prefillHint, textareaParked])
+
   // Keep the paste-highlight mirror's scroll aligned with the textarea after
   // value/height changes (applyHeight mutates scrollTop programmatically, which
   // doesn't fire the textarea's onScroll). rAF lets layout settle first.
@@ -3335,6 +3324,8 @@ function ChatInput({
       : i18nT('components.chatInput.switch_to_voice')
     : transcribeInFlight
       ? i18nT('components.chatInput.transcribing')
+      : micHeldElsewhere
+        ? micHeldElsewhereLabel
       // Not a switch: it records. Same two labels the desktop mic has always had.
       : voiceRecording
         ? i18nT('components.chatInput.stop_recording')
@@ -3925,7 +3916,19 @@ function ChatInput({
              where Esc/Enter genuinely work. */
           <VoiceDictationPanel sampleRef={showDictation} value={value} partial={voicePartial} deviceLabel={voiceDeviceLabel} deviceId={voiceDeviceId} onSelectDevice={onSelectVoiceDevice || noopSelectDevice} deviceSwitchIsLive={voiceDeviceSwitchIsLive} streaming={voiceStreaming} gestureDriven={voiceHoldMode || touchPtt.bar === 'settling'} download={voiceDownload} />
         ) : (
-          <VoiceStatusBar recording={voiceRecording} level={voiceLevel} deviceLabel={voiceDeviceLabel} deviceId={voiceDeviceId} error={voiceError} onDismissError={onClearVoiceError} onSelectDevice={onSelectVoiceDevice || noopSelectDevice} deviceSwitchIsLive={voiceDeviceSwitchIsLive} download={voiceDownload} />
+          <VoiceStatusBar
+            recording={voiceRecording} level={voiceLevel} deviceLabel={voiceDeviceLabel} deviceId={voiceDeviceId} error={voiceError} onDismissError={onClearVoiceError} onSelectDevice={onSelectVoiceDevice || noopSelectDevice} deviceSwitchIsLive={voiceDeviceSwitchIsLive} download={voiceDownload}
+            /* Visible reasons, not tooltips: why the mic is blocked, or that a
+               held dictation just arrived. Only while the mic is offered at all.
+               Shown in hold mode too: one message, one shape, and the name
+               button (the way to the capturing chat) stays reachable there —
+               the disabled hold bar keeps its plain label. */
+            notice={onVoiceToggle && micHeldElsewhere
+              ? { text: micHeldElsewhereLabel, tone: 'muted', action: micHeldElsewhereAction }
+              : voiceHeldLanded
+                ? { text: i18nT('components.chatInput.dictation_added'), tone: 'ok' }
+                : null}
+          />
         )}
 
         {optimizing && <span className="absolute inset-0 flex items-start px-4 pt-3 text-sm text-white font-medium pointer-events-none z-10 bg-black/60 rounded-2xl"><Sparkles size={14} className="inline mr-1 text-yellow-400" /> {i18nT('components.chatInput.optimizing_prompt')}</span>}
@@ -4051,14 +4054,20 @@ function ChatInput({
               // to fit-content even as a block-level flex container (UA form-control
               // sizing), so a bare display swap leaves a small pill where the whole
               // point is a target a thumb can hit without aiming.
+              // `primary` while holding, not just accent classes: Btn's default
+              // variant carries `hover:bg-bg-hover`, and a finger (or a mouse) on
+              // the bar IS a hover, so the accent fill was overridden the moment
+              // it mattered and a live capture read as a switched-off button
+              // (UX review, light theme). The primary variant's hover stays accent.
+              primary={touchPtt.bar === 'holding'}
               className={`flex-1 min-h-[44px] justify-center rounded-xl font-semibold select-none ${
                 touchPtt.bar === 'armed-cancel'
                   ? 'border-dashed border-danger bg-danger-subtle text-danger'
                   : touchPtt.bar === 'holding'
-                    ? 'border-accent bg-accent text-accent-fg'
+                    ? ''
                     : 'border-border-strong bg-card text-text-strong'
               }`}
-              disabled={disabled || transcribeInFlight || optimizing || voiceSettling}
+              disabled={disabled || micBlocked || optimizing || voiceSettling}
               aria-label={holdBarLabel}
             >
               <Mic size={15} className="shrink-0" />
@@ -4364,8 +4373,14 @@ function ChatInput({
             {onVoiceToggle && (
               <button
                 type="button"
-                className={`w-8 h-8 rounded-lg flex items-center justify-center cursor-pointer transition-all border-none ${
-                  voiceRecording ? 'bg-danger-subtle text-danger animate-pulse' : (!micIsModeSwitch && transcribeInFlight) ? 'bg-accent-subtle text-accent' : voiceHoldMode ? 'bg-accent-subtle text-accent' : 'text-muted hover:text-text hover:bg-bg-hover bg-transparent'
+                // In hold mode the switch carries a visible label: its `title` is
+                // hover-only and hold mode is a touch surface, so a bare icon read
+                // as "no idea what it toggles".
+                className={`${voiceHoldMode ? 'px-2.5 gap-1.5 text-[12px] font-medium' : 'w-8'} h-8 rounded-lg flex items-center justify-center cursor-pointer transition-all border-none ${
+                  // The recording tint belongs to the RECORD button. As a mode
+                  // switch (hold mode) this button hands the keyboard back; a red
+                  // pulse on it read as an alarm on an unexplained control.
+                  voiceRecording && !micIsModeSwitch ? 'bg-danger-subtle text-danger animate-pulse' : (!micIsModeSwitch && transcribeInFlight) ? 'bg-accent-subtle text-accent' : voiceHoldMode ? 'bg-accent-subtle text-accent' : 'text-muted hover:text-text hover:bg-bg-hover bg-transparent'
                 } disabled:opacity-30`}
                 // The mic does whichever voice thing is AVAILABLE right now, which is
                 // what keeps it from becoming a dead control. On an empty composer
@@ -4391,11 +4406,16 @@ function ChatInput({
                    click starts nothing — it hands the keyboard back — and disabling
                    it there strands the user in voice mode, unable to type or send
                    until unrelated work in another session finishes. */
-                disabled={disabled || optimizing || (micIsModeSwitch ? captureInFlight : transcribeInFlight)}
+                /* Enabled mid-capture too. A press the hold bar owns is discarded
+                   when its target unmounts (`useTouchPushToTalk.abandon`), so the
+                   switch cancels the capture and hands the keyboard back — the
+                   greyed control beside an identical enabled one in a sibling pane
+                   read as "no idea why it's off" (UX review on #9787). */
+                disabled={disabled || optimizing || (micIsModeSwitch ? false : micBlocked)}
                 aria-label={micLabel}
                 title={micLabel}
               >
-                {!micIsModeSwitch && transcribeInFlight ? <Loader2 size={18} className="animate-spin" /> : voiceHoldMode ? <Keyboard size={18} /> : <Mic size={18} />}
+                {!micIsModeSwitch && transcribeInFlight ? <Loader2 size={18} className="animate-spin" /> : !micIsModeSwitch && micHeldElsewhere ? <MicOff size={18} /> : voiceHoldMode ? <><Keyboard size={18} /><span className="leading-none">{i18nT('components.chatInput.type_label')}</span></> : <Mic size={18} />}
               </button>
             )}
             {/* The busy branch is reachable with EITHER a stop affordance or a

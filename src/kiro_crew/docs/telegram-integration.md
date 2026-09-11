@@ -98,15 +98,17 @@ At startup the bot publishes the menu commands from `COMMAND_SPEC` through `setM
 - `/session [search words]` (or `/sessions [search words]`) — with no words,
   show the ten most recent eligible conversations; with words, use the same ranked
   title-and-message-content search as dashboard history. Results are inline buttons:
-  tap one and ordinary messages in this DM immediately continue that dashboard
-  conversation. The bot replaces its outbound-only native mirror automatically, so
-  no preparatory `/unlink` is required. `/new` leaves the resumed session and starts
-  a fresh Telegram conversation; `/unlink` returns to the existing Telegram
-  conversation. Incognito and temporary transcripts stay excluded. **Direct message
-  only**: a forum Topic is readable by the whole supergroup, so listing or resuming
-  there would expose host-wide titles to members outside `allowed_user_ids`. It also
-  refuses when `allowed_user_ids` contains several people, because the bot cannot
-  tell which one owns the host-wide history.
+  tap one and ordinary messages in this DM immediately continue it. Eligible rows are
+  dashboard conversations plus generations from this exact Telegram DM bucket; native
+  sessions belonging to another user, agent, forum Topic, or messaging channel are
+  excluded. The bot replaces its outbound-only native mirror automatically, so no
+  preparatory `/unlink` is required. `/new` leaves the resumed session, durably
+  records the fresh Telegram generation before replying, and starts that conversation;
+  its first real turn adds it to `/sessions`. `/unlink` returns to the existing Telegram
+  conversation. Incognito and temporary transcripts stay excluded. **Direct message only**: a forum Topic is readable by the
+  whole supergroup, so listing or resuming there would expose host-wide titles to
+  members outside `allowed_user_ids`. It also refuses when `allowed_user_ids` contains
+  several people, because the bot cannot tell which one owns the host-wide history.
 - `/title <text>` — rename this conversation, so its dashboard sidebar row reads
   as something other than the first forty characters you happened to type. On a
   resumed dashboard session the live sidebar row and durable metadata change

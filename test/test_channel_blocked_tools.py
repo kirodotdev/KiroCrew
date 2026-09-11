@@ -1,4 +1,4 @@
-"""Channel-agent blocked-tool containment boundary (PR #422 round 15).
+"""Channel-agent blocked-tool containment boundary.
 
 Channel agents communicate exclusively through channel posts, so
 direct-to-user messaging tools are rejected unconditionally — BEFORE any
@@ -87,9 +87,9 @@ async def test_blocked_tool_rejected_even_on_trusted_channel(monkeypatch, tool):
         ("send_message", True),
         ("send_notification (kirocrew-core)", True),
         ("kirocrew-core___send_message", True),
-        ("mcp__kirocrew-core__send_message", True),  # canonical MCP prefix (round 20)
+        ("mcp__kirocrew-core__send_message", True),  # canonical MCP prefix
         ('Tool: "send_notification"', True),
-        # Negative (GPT 5.6 round 19): filenames/paths/identifiers that merely
+        # Negative: filenames/paths/identifiers that merely
         # CONTAIN a blocked tool name must not trip the containment guard.
         ("Editing send_notification.py", False),
         ("Reading /tmp/send_message_backup.txt", False),

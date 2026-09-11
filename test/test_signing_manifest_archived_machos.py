@@ -4,9 +4,7 @@
 invisible to it AND to the pre-sign ad-hoc signature strip -- nothing signs it.
 The Apple notary service, however, decompresses archive members and scans what
 is inside, so such a payload fails the WHOLE submission ~30 minutes later with
-an opaque `Invalid`. That is how #6746 broke the macOS release lane (Apple
-submission 3dbd3c7d, three `error` issues against
-`.../binaries/ffmpeg-macos-aarch64-v7.1.gz/ffmpeg-macos-aarch64-v7.1`).
+an opaque `Invalid`.
 
 These tests pin the tripwire that turns that into a sign-time failure with a
 bisectable trail.
@@ -56,7 +54,7 @@ def test_a_clean_bundle_reports_nothing(generator, tmp_path):
 
 
 def test_gzip_sealed_macho_is_reported(generator, tmp_path):
-    """The exact #6746 shape."""
+    """A gzip-sealed mach-o inside a bundle is reported."""
     binaries = _bundle(tmp_path)
     (binaries / "ffmpeg-macos-aarch64-v7.1.gz").write_bytes(
         gzip.compress(MACHO_HEAD + b"\x00" * 64, mtime=0)

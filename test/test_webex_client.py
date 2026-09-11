@@ -356,7 +356,7 @@ class TestLifecycle:
         """``_run_loop`` dying from an uncaught, non-CancelledError exception
         makes ``self._task.cancel()`` a no-op, and re-``await``ing it re-raises
         that exception -- which must not skip the handler-task drain or the
-        session close (issue #4627)."""
+        session close."""
 
         class _FakeSession:
             def __init__(self) -> None:
@@ -1325,7 +1325,7 @@ class TestReadLoopFrameDispatch:
 
     Mercury delivers activity events as BINARY WebSocket frames whose payload
     is UTF-8 encoded JSON; a TEXT-only dispatch silently drops every inbound
-    message while the channel still shows as connected (issue #6222).
+    message while the channel still shows as connected.
     """
 
     @staticmethod

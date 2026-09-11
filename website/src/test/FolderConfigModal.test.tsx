@@ -192,6 +192,28 @@ describe('FolderConfigModal', () => {
     }))
   })
 
+  it('names the nearest ANCESTOR agent in the inherit row, not the global default', async () => {
+    // `default_agent: ''` inherits from the nearest ancestor that pins one, the
+    // same way `project_dir` does. A row hardcoded to the global default reads
+    // "Inherit (kirocrew)" over a subfolder whose chats will in fact run
+    // kirocrew-dev — the label contradicting the behaviour it describes.
+    const folders = [
+      folder('a', { name: 'Kiro', default_agent: 'kirocrew-dev' }),
+      folder('b', { name: 'Backend', parent_id: 'a' }),
+    ]
+    open({ folders, parentId: 'b', globalDefaultAgent: 'kirocrew' })
+    expect(await openAgents()).toEqual(['Inherit (kirocrew-dev)', 'kirocrew', 'kirocrew-dev'])
+  })
+
+  it('names what clearing WOULD inherit in edit mode, ignoring the folder own pin', async () => {
+    // Clearing removes this folder's own value, so the row must name the parent's
+    // agent — never the value the picker is about to drop.
+    const parent = folder('a', { name: 'Kiro', default_agent: 'kirocrew-dev' })
+    const self = folder('b', { name: 'Backend', parent_id: 'a', default_agent: 'kirocrew' })
+    open({ mode: 'edit', folder: self, folders: [parent, self], globalDefaultAgent: 'kirocrew' })
+    expect(await openAgents()).toEqual(['Inherit (kirocrew-dev)', 'kirocrew', 'kirocrew-dev'])
+  })
+
   it('labels the inherited directory as inherited, not as a value', () => {
     // A bare inherited path renders identically to a real value, so the field
     // read as "already set" when it was actually empty.

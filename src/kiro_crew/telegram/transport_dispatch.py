@@ -36,9 +36,11 @@ from typing import TYPE_CHECKING, Any, cast
 from kiro_crew.acp.client import AcpError
 from kiro_crew.agent_discovery import list_agents
 from kiro_crew.config.loader import ACTIVATION_MENTION, ACTIVATION_OFF
+from kiro_crew.context import session_store_for_turn
 from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.history import mint_row_mid
 from kiro_crew.hooks import TOOL_AUTO_APPROVE, TOOL_DENY
+from kiro_crew.memory_stores import UnknownMemoryStore
 from kiro_crew.messaging import auto_title, privacy_mode
 from kiro_crew.messaging.attachments import IngestLimits, append_attachment_context
 from kiro_crew.messaging.attachments import cleanup as cleanup_attachments
@@ -55,6 +57,7 @@ from kiro_crew.messaging.commands import (
     stop_running_turn,
     task_arg_reply,
 )
+from kiro_crew.messaging.conversation import reserve_new_generation
 from kiro_crew.messaging.dispatch import (
     build_auto_approve,
     build_directive_consumer,
@@ -212,7 +215,7 @@ _FAILURE_REASON_MAX_CHARS = 500
 def _user_safe_failure_reason(exc: BaseException) -> str | None:
     """A bounded, user-safe reason for a failed turn, or None for the generic text.
 
-    Only a *permanent* :class:`AcpError` (``transient is False``) yields a
+    A private-memory refusal or *permanent* :class:`AcpError` yields a
     reason: its message is already user-facing and actionable (e.g. names the
     models the account does include), and the generic "please try again"
     placeholder would be actively wrong for it. Transient and unclassified
@@ -222,7 +225,9 @@ def _user_safe_failure_reason(exc: BaseException) -> str | None:
     The text is untrusted output: credentials/exfil URLs and local filesystem
     paths are redacted, newlines are collapsed, and the length is hard-capped.
     """
-    if not isinstance(exc, AcpError) or exc.transient is not False:
+    if not isinstance(exc, UnknownMemoryStore) and (
+        not isinstance(exc, AcpError) or exc.transient is not False
+    ):
         return None
     try:
         text = redact_local_paths(redact(str(exc)))[0]
@@ -579,9 +584,17 @@ class TelegramDispatcher:
                 await self._reply(chat_id, _RELEASE_FAILURE, thread=reply_thread)
                 return
             self._conv.bump_gen(route)
+            new_session_key = self._session_key(route)
+            saved = await reserve_new_generation(
+                self.sessions,
+                new_session_key,
+                channel_type="Telegram",
+            )
             message = "✅ New conversation started."
             if left_resumed is not None:
                 message = "✅ New conversation started — left the resumed session."
+            if not saved:
+                message += "\n⚠️ The new conversation could not be saved for restart."
             await self._reply(chat_id, message, thread=reply_thread)
             return
         if cmd == "compact":
@@ -684,6 +697,7 @@ class TelegramDispatcher:
                 getattr(msg, "chat_type", "private"),
                 reply_thread,
                 query=parse_command_argument(text),
+                native_key=self._session_key(route),
             )
             return
         if cmd == "title":
@@ -857,6 +871,7 @@ class TelegramDispatcher:
             # Skipped when muted, as in the Discord twin.
             if not muted:
                 await renderer.on_turn_start()
+            _memory_store = await session_store_for_turn(self.ctx_builder, session_key)
             provider, is_new, resumed = await self.sessions.get_or_create(
                 session_key,
                 agent=agent,
@@ -902,6 +917,11 @@ class TelegramDispatcher:
             # Publish this turn's session identity so managed MCP tools resolve
             # X-Session-Key; one shared writer lives in messaging.identity.
             await publish_turn_identity(self.sessions, session_key)
+            # This conversation's own silo, from the session's RECORDED binding and
+            # never from ``agent``: that value is a kiro agent name, a namespace
+            # disjoint from ``cfg.agents``, so a store derived from it resolves to
+            # ``default`` for exactly the crew that configured otherwise. Private
+            # memory was prepared before provider acquisition and fails closed.
             # Off-loop: build_message embeds the episodic query (blocking urllib).
             full_message, _ = await run_in_embed_pool(
                 self.ctx_builder.build_message,
@@ -910,6 +930,7 @@ class TelegramDispatcher:
                 session_key,
                 channel_id=channel_id,
                 agent=agent,
+                memory_store=_memory_store,
                 resumed=resumed,
                 runtime_source="telegram",
                 # Temporary mode reads NO memory, which is the half the transcript
@@ -940,6 +961,9 @@ class TelegramDispatcher:
                     diff_path=getattr(event, "diff_path", "") or "",
                     command=getattr(event, "shell_command", None),
                     is_shell=bool(getattr(event, "is_shell", False)),
+                    mcp_server_name=getattr(event, "mcp_server_name", "") or "",
+                    mcp_tool_name=getattr(event, "tool_name", "") or "",
+                    mcp_identity_trusted=bool(getattr(event, "mcp_identity_trusted", False)),
                 )
                 if result.action == TOOL_DENY:
                     return "deny"
@@ -1110,7 +1134,7 @@ class TelegramDispatcher:
                 "Telegram: aborting dispatch for %s — gateway is shutting down",
                 session_key,
             )
-            # Durable inbound spool (issue #2217). Written HERE and nowhere else:
+            # Durable inbound spool. Written HERE and nowhere else:
             # this is the one point where the payload is still in memory AND the
             # turn is provably unopened, so a replay on the next start cannot
             # double-answer a turn that actually ran. Telegram cannot recover this
@@ -1369,7 +1393,7 @@ class TelegramDispatcher:
                         if isinstance(requested, str) and requested:
                             privacy_requests.append(requested)
                     else:
-                        # Once one message no longer fits, defer it AND everything
+                        # Once one message does not fit, defer it AND everything
                         # behind it, so queue order stays exact.
                         defer_rest = True
                         remainder.append(item)
@@ -2576,7 +2600,7 @@ class TelegramDispatcher:
             else:
                 # No pending decision to resolve — the request already timed out
                 # (decider denies by default and pops the key), was answered, or the
-                # press came from a STALE keyboard whose nonce no longer matches
+                # press came from a STALE keyboard whose nonce does not match
                 # (request ids restart at 1 per provider process, so an old button can
                 # name an id that is live again for a different tool).
                 # Don't imply the press took effect: a post-timeout "Approve" on
@@ -2807,7 +2831,7 @@ class TelegramDispatcher:
         ``"{chat_id}:{thread}"`` -> the Topic id; a DM (direct) route -> None.
         An authorized forum turn always carries a Topic (General is denied at
         the gate), so the threadless-``comp`` -> None case is only the defensive
-        fallback. Used to thread every dispatcher-originated send back into the
+        fallback. Threads every dispatcher-originated send back into the
         SAME Topic the turn came from.
         """
         slot, comp = route
@@ -3208,7 +3232,7 @@ class TelegramDispatcher:
                 await self._reply(chat_id, "No active session to compact.", thread=thread)
                 return
 
-            # Capability gate (#8156, mirroring the dashboard's #7800 gate): a
+            # Capability gate (mirrors the dashboard's compact gate): a
             # backend that cannot serve a manual /compact treats the prompt as
             # ordinary text and never answers, so dispatching would strand the
             # 120s wait below. Informational, never an error.

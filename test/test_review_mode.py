@@ -838,7 +838,7 @@ class TestHandleReviewEditSubmit:
         tmp_path,
         monkeypatch,
     ) -> None:
-        # HIGH (GPT round-10): the edit MODAL may have opened while slack was
+        # The edit MODAL may have opened while slack was
         # permitted, then a profile hot-reload denied it before submit. The submit
         # handler must re-check the channels gate — a denied channel must NOT
         # receive the edited agent content, even for the legitimate requester.

@@ -147,7 +147,7 @@ def test_started_then_settle_synthesizes_completed() -> None:
     assert (settled.kind, settled.text) == (EVENT_COMPACTION_STATUS, "completed")
     assert not client._claude_compaction_pending
     # The context counts from before the summary are stale now; leaving them
-    # would show a meter reading for a window that no longer exists.
+    # would show a meter reading for a window that has ended.
     assert client.last_prompt_stats.context_pct_unknown
 
 

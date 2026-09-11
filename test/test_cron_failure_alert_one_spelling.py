@@ -6,8 +6,8 @@ legitimately differ in control flow, in who owns ``record_failure()``, and in
 wording. The mechanism underneath must not differ: the dedup window, the
 Slack-sink hardening, and when the dedup anchor advances.
 
-That used to rest on a docstring promising the two "cannot drift", which is prose
-rather than a mechanism -- and it drifted once already, with the message path's DM
+A docstring promising the two "cannot drift" is prose, not a mechanism, and they
+drifted once already, with the message path's DM
 left saying only "check logs" while the helper carried the reason. Review caught
 it, not a test. These tests are the mechanism: the shared helpers are unit-tested,
 and a source scan pins that neither call site grows a second copy.

@@ -469,7 +469,7 @@ async def test_the_turn_duration_reaches_the_row():
 
 class _ClaudeSeamStats:
     """Mirrors AcpPromptStats on the claude seam: ``credits`` stays 0 and the
-    billing dimensions travel through ``to_turn_usage()`` (the post-#6757
+    billing dimensions travel through ``to_turn_usage()`` (the
     stats -> event contract that ``_attempt_usage`` duck-types on)."""
 
     def __init__(self, usage: TurnUsage) -> None:
@@ -496,7 +496,7 @@ class _ClaudeSeamSession(_FakeSession):
 @pytest.mark.asyncio
 async def test_a_cost_only_claude_seam_turn_writes_a_row_with_cost_and_cache_intact():
     """On the claude seam a background turn can bill ``cost_usd`` with credits
-    AND both token counts at zero -- the #6758 shape. The row must be written
+    AND both token counts at zero -- the cost-with-zero-tokens shape. The row must be written
     (mutation guard on the gate's ``cost_usd`` conjunct) and must carry the
     cost and cache fields through ``_attempt_usage``'s ``to_turn_usage`` path
     (mutation guard on the duck-typed converter: the credits-only fallback

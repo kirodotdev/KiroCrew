@@ -1430,6 +1430,54 @@ BUILTIN_DENIED_RULES: list[DeniedCommandRule] = [
             "operator's own terminal, which these rules do not govern."
         ),
     ),
+    DeniedCommandRule(
+        id="sandbox-escape-ssh-self",
+        # The agent's shell runs inside a sandbox; sshd does not.  ``ssh
+        # localhost`` therefore re-enters this same machine OUTSIDE every
+        # control in this module — the far side of the connection is a fresh
+        # unsandboxed login shell (observed live: a uid-remapped sandbox where
+        # ``sudo`` is broken locally but ``ssh localhost sudo …`` grants root).
+        #
+        # Scoped to the connection TARGET in operand position.  The verb is
+        # anchored to command position (start of input or after a separator,
+        # optionally path-qualified), and the self host must be the operand
+        # DIRECTLY after it (with an optional ``user@`` prefix) — so a word
+        # like "localhost" inside a REMOTE command run on some other host
+        # (``ssh far-host 'curl localhost:80'``) is a later operand and does
+        # not match, even after the matcher's quote-normalization.  No
+        # option-skipping group on purpose: the star-of-options shape fails
+        # ``is_safe_user_regex`` (which would disable the rule outright), so
+        # this raw-text pattern is a human-auditable SUBSET like the
+        # credential-mint rule's: option-interspersed spellings (``ssh -p 22
+        # localhost``), separated option values, the scp/rsync ``host:path``
+        # second operand, and this machine's OWN hostname/FQDN/addresses are
+        # resolved by the argv-structural floor (``_is_ssh_to_self``), which
+        # carries enforcement OF THE COMMAND-LINE TIER.  This tier is interim
+        # friction, not closure: the gate only sees tool-routed command lines,
+        # so interpreter/script-file indirection (``bash escape.sh``,
+        # ``python -c`` + subprocess/paramiko) and non-ssh-family clients
+        # (``git clone ssh://localhost/…``, autossh) still reach the
+        # unsandboxed sshd.  The fix of record is an OS-level network fence in
+        # the sandbox (tracked follow-up; see the security.md floor section).
+        pattern=(
+            "(?:\\A|[;&|\\n`]|\\$\\()[\\s\"'(]*(?:[\\w.:/\\\\-]*[/\\\\])?"
+            "(?:ssh|scp|sftp|rsync)(?:\\.exe)?\\s+(?:\\S*@)?"
+            "(?:localhost|127\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}|\\[?::1\\]?"
+            "|\\$\\(\\s*hostname|`\\s*hostname|\\$\\{?hostname\\}?)"
+            "(?=[\\s:'\\\");&|#]|\\Z)"
+        ),
+        category="self-protection",
+        description=(
+            "Blocks ssh/scp/sftp/rsync targeting this same machine (localhost, 127.x.x.x, ::1, "
+            "$(hostname), or this host's own name/addresses), which re-enters the host OUTSIDE "
+            "the agent sandbox: a command run through `ssh localhost` bypasses every other "
+            "control here, and passwordless sudo on the far side completes a full escape. "
+            "Connections to other hosts stay allowed, with one declared exception: a "
+            "first-seen DOTTED hostname in HOST position is refused once, per process, "
+            "while an off-loop DNS check rules out a loopback alias, then cached; a "
+            "dotless name is answered from the hosts file same-call, without a refusal."
+        ),
+    ),
 ]
 
 _RULES_BY_ID: dict[str, DeniedCommandRule] = {r.id: r for r in BUILTIN_DENIED_RULES}
@@ -1555,6 +1603,7 @@ _SELF_PROTECTION_FLOOR_RULE_IDS: frozenset[str] = frozenset(
         "credential-exfil-kirocrew-token",
         "self-protection-kill",
         "self-protection-dev-mode-out-of-root-confirm",
+        "sandbox-escape-ssh-self",
     }
 )
 _SELF_PROTECTION_FLOOR_BY_ID: dict[str, str] = {
@@ -1644,6 +1693,23 @@ _SELF_PROTECTION_FLOOR_NOTES: dict[str, str] = {
         "shell de-escaping resolves an argument to the operator's "
         "`--confirm-out-of-install-root` attestation flag, which agent commands "
         "may never carry."
+    ),
+    "sandbox-escape-ssh-self": (
+        "Matched structurally on the command's argv, not by the pattern text above: "
+        "the ssh/scp/sftp/rsync target resolves to THIS machine (localhost, a loopback "
+        "address, or this host's own name), which would re-enter the host outside the "
+        "agent sandbox. If this is the first command naming a DOTTED hostname in this "
+        "gateway process, this refusal means DNS classification is PENDING, not that "
+        "the host is blocked: retry this exact command — it succeeds as soon as the "
+        "off-loop check rules out a loopback alias. A hostname whose lookup keeps "
+        "FAILING stays refused on every retry (a failed lookup is never trusted as an "
+        "allow): use a name DNS can resolve, or the host's IP address, instead of an "
+        "ssh_config-only alias. The port is part of the target, so a FORWARDED port on "
+        "a loopback address (a container or VM behind `ssh -p 2222 localhost`) is "
+        "denied like the host itself — sshd on this machine could listen on that port "
+        "too, and a text check cannot tell the two apart. Operator recourse for "
+        "container/VM workflows is the per-rule toggle in Settings until a port-scoped "
+        "exemption ships."
     ),
 }
 

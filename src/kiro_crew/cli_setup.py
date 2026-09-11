@@ -9,8 +9,12 @@ import shutil
 import socket
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from zoneinfo import ZoneInfo
+
+from slack_sdk.errors import SlackApiError
+from slack_sdk.web import WebClient
 
 from kiro_crew import platform_compat, slack_manifest
 from kiro_crew.acp.client import KIRO_CLI_BIN
@@ -26,9 +30,10 @@ from kiro_crew.config.loader import (
     ConfigReadError,
     _default_workspace_base,
     _workspace_dir_file,
-    config_local_path,
     config_path,
     env_path,
+    unsandboxed_exec_declared,
+    unsandboxed_exec_platform_default,
     update_config_locked,
 )
 from kiro_crew.constants import DATA_WARNING, MIN_NODE_MAJOR
@@ -36,6 +41,7 @@ from kiro_crew.sandbox import unavailable_kind
 from kiro_crew.secrets.migrate import _env_lock_path
 from kiro_crew.sel import sel
 from kiro_crew.skills import SkillsLoader
+from kiro_crew.validation import USER_ID_RE
 
 
 def _get_alias() -> str:
@@ -141,7 +147,9 @@ def _ensure_prerequisites() -> bool:
     # npm packages, e.g. the Playwright browser MCP).
     if not shutil.which("node"):
         _header()
-        print(f"  ⚠️  node not found on PATH — install Node.js >= {MIN_NODE_MAJOR} from https://nodejs.org\n")
+        print(
+            f"  ⚠️  node not found on PATH — install Node.js >= {MIN_NODE_MAJOR} from https://nodejs.org\n"
+        )
 
     # kiro-cli is the agent backend. Note its absence so the user can install it.
     if not shutil.which(KIRO_CLI_BIN):
@@ -473,6 +481,156 @@ def _setup_workspace_dir() -> None:
         print(f"  Falling back to platform default: {platform_default}\n")
 
 
+#: Per-call timeout, in seconds, for the Slack API round-trips that check a
+#: pasted credential. Mirrors the dashboard credential handler's
+#: ``_TOKEN_VERIFY_TIMEOUT``: long enough for a slow corporate proxy, short
+#: enough that an unreachable Slack does not read as a hung wizard.
+_SLACK_VERIFY_TIMEOUT = 8
+
+#: How many times a value Slack REJECTED is re-asked before the save is
+#: abandoned. Only ever more than one at a terminal (see
+#: :func:`_stdio_is_interactive`).
+_SLACK_VERIFY_ATTEMPTS = 3
+
+#: The only ``users.info`` errors that indict the pasted member ID itself.
+#: Every other Slack error indicts the CHECK — a missing ``users:read`` scope,
+#: a rate limit, a bot token that has since been revoked — and must degrade to
+#: "unverifiable", because refusing an operator's own member ID over a scope
+#: they never granted is worse than not checking it.
+_SLACK_OWNER_REJECTIONS = frozenset({"user_not_found", "users_not_found"})
+
+
+def _stdio_is_interactive() -> bool:
+    """True when both ends of stdio are a real terminal.
+
+    The wizard may only stop to re-ask a question, or to ask for consent, when
+    a human is there to see it: ``kirocrew update`` re-runs setup with its
+    output captured and stdin on ``/dev/null``, and a question asked there is a
+    hang, not a correction. Same two conditions as ``cli_chat._can_prompt``.
+    """
+    return sys.stdin.isatty() and sys.stdout.isatty()
+
+
+def _slack_error_code(exc: Exception) -> str:
+    """Slack's own error code from a ``SlackApiError``, bounded and safe.
+
+    Slack's codes (``invalid_auth``, ``not_allowed_token_type``, …) are the
+    actionable half of a rejection, so they are surfaced verbatim; anything
+    unexpected in the response degrades to a generic label rather than raising
+    out of the check.
+    """
+    try:
+        return str(getattr(exc, "response", {}).get("error", "") or "rejected")[:60]
+    except Exception:
+        return "rejected"
+
+
+def _verify_slack_secret(key: str, token: str) -> tuple[bool | None, str]:
+    """Ask Slack whether it accepts a pasted token, BEFORE it is stored.
+
+    Returns ``(True, detail)`` when Slack accepts it — ``detail`` is the
+    workspace name for a bot token and ``""`` otherwise; ``(False, error)``
+    when Slack rejects it, carrying Slack's own code; and ``(None, reason)``
+    when Slack could not be reached at all. Unverifiable is NOT invalid: being
+    offline must never cost the operator the credentials they just typed, so
+    callers keep the value on that verdict.
+
+    Same two calls, and the same contract, as the dashboard's credential save
+    (``dashboard/handlers/messaging.py::_validate_slack_token``): app-level
+    tokens are checked with ``apps.connections.open`` — the call the gateway
+    itself makes at startup, so a token that passes here will connect at boot —
+    and everything else with ``auth.test``.
+
+    """
+    client = WebClient(token=token, timeout=_SLACK_VERIFY_TIMEOUT)
+    try:
+        if key == CRED_SLACK_APP_TOKEN:
+            client.apps_connections_open(app_token=token)
+            return True, ""
+        resp = client.auth_test()
+    except SlackApiError as exc:
+        return False, _slack_error_code(exc)
+    except Exception as exc:
+        # Transport, DNS, proxy, TLS — Slack never answered, so the token is
+        # unjudged rather than invalid.
+        return None, type(exc).__name__
+    return True, str(resp.get("team") or resp.get("team_id") or "")
+
+
+def _verify_slack_owner_id(bot_token: str, owner_id: str) -> tuple[bool | None, str]:
+    """Check a pasted Slack member ID, with the same verdict triple.
+
+    Two independent checks. The FORMAT check catches the common paste error and
+    needs no network: a channel ID (``C…``) or a bot ID (``B…``) is not a member
+    ID. It uses ``validation.USER_ID_RE``, the same regex the dashboard's Slack
+    save enforces, so the two surfaces cannot disagree about what a member ID
+    is — and it admits the ``W…`` ids Enterprise Grid issues. Then
+    ``users.info`` confirms the ID exists in the workspace the bot token belongs
+    to and names its owner, so a well-formed but WRONG id is visible too.
+
+    Only :data:`_SLACK_OWNER_REJECTIONS` indicts the id; every other Slack error
+    degrades to unverifiable.
+    """
+    if not USER_ID_RE.match(owner_id):
+        return False, (
+            "not a member ID — 'C…' is a channel and 'B…' is a bot; yours starts "
+            "with U (or W on Enterprise Grid), from your profile → ⋯ More → Copy member ID"
+        )
+    client = WebClient(token=bot_token, timeout=_SLACK_VERIFY_TIMEOUT)
+    try:
+        resp = client.users_info(user=owner_id)
+    except SlackApiError as exc:
+        code = _slack_error_code(exc)
+        if code in _SLACK_OWNER_REJECTIONS:
+            return False, f"{code} — no such member in this workspace"
+        return None, code
+    except Exception as exc:
+        return None, type(exc).__name__
+    user = resp.get("user") or {}
+    return True, str(user.get("real_name") or user.get("name") or "")
+
+
+def _prompt_verified_slack_value(
+    prompt: str,
+    current: str,
+    noun: str,
+    check: Callable[[str], tuple[bool | None, str]],
+) -> tuple[str | None, str]:
+    """Prompt for one Slack value and hand back Slack's verdict on it.
+
+    Returns ``(value, detail)`` for a value the caller should save — accepted or
+    unverifiable — and ``(None, "")`` when Slack rejected every attempt, which the
+    caller turns into "nothing was saved". No detail on that leg: each rejection
+    code was already printed to the operator as it happened.
+
+    The check runs ONLY at a terminal. Its whole purpose is to put a verdict in
+    front of the person who just pasted the value so they can retype it, and
+    off a terminal there is neither: nobody sees the verdict, and re-asking
+    would consume the NEXT line of a piped answer file and misassign every
+    remaining answer in the wizard. So a non-interactive run — ``kirocrew
+    update`` re-runs setup with its output captured and stdin on ``/dev/null``
+    — stays exactly as it was before this check existed, rather than paying a
+    Slack round-trip (and an 8s stall on a host with no egress) for an outcome
+    that cannot change. ``kirocrew doctor`` reports on the stored tokens.
+    """
+    if not _stdio_is_interactive():
+        return input(prompt).strip() or current, ""
+    for _attempt in range(_SLACK_VERIFY_ATTEMPTS):
+        value = input(prompt).strip() or current
+        if not value:
+            # Nothing typed and nothing configured — the caller reports the
+            # missing credential; there is no value to judge.
+            return "", ""
+        verdict, detail = check(value)
+        if verdict is None:
+            print(f"  ⚠️  Could not reach Slack to check the {noun} ({detail}) — saved as typed.")
+            return value, ""
+        if verdict:
+            return value, detail
+        print(f"  ❌ Slack rejected the {noun}: {detail}")
+    return None, ""
+
+
 def _setup_slack_tokens() -> None:
     """Prompt for Slack tokens and owner ID, write to config_dir/.env."""
     cred_path = env_path()
@@ -502,9 +660,63 @@ def _setup_slack_tokens() -> None:
     hint_bot = f" [{_mask(cur_bot)}]" if cur_bot else ""
     hint_owner = f" [{cur_owner}]" if cur_owner else ""
 
-    app_token = input(f"  App Token (xapp-...){hint_app}: ").strip() or cur_app
-    bot_token = input(f"  Bot Token (xoxb-...){hint_bot}: ").strip() or cur_bot
-    owner_id = input(f"  Your Slack Member ID{hint_owner}: ").strip() or cur_owner
+    def _abort_rejected(noun: str) -> None:
+        print(
+            f"  ⚠️  Slack rejected the {noun} {_SLACK_VERIFY_ATTEMPTS} times — nothing "
+            f"was saved. Re-run 'kirocrew setup --slack' once you have a working value.\n"
+        )
+
+    # Each value is checked against Slack as it is typed, so a typo, a revoked
+    # token, or a channel ID pasted where a member ID belongs is reported HERE —
+    # instead of being written as typed and surfacing hours later as a "Slack
+    # disabled" line in the gateway log. All of it happens BEFORE the .env lock
+    # below is taken: these prompts can block on the user for minutes, and the
+    # lock covers only the read-merge-write.
+    app_token, _detail = _prompt_verified_slack_value(
+        f"  App Token (xapp-...){hint_app}: ",
+        cur_app,
+        "app token",
+        lambda value: _verify_slack_secret(CRED_SLACK_APP_TOKEN, value),
+    )
+    if app_token is None:
+        _abort_rejected("app token")
+        return
+
+    bot_token, team = _prompt_verified_slack_value(
+        f"  Bot Token (xoxb-...){hint_bot}: ",
+        cur_bot,
+        "bot token",
+        lambda value: _verify_slack_secret(CRED_SLACK_BOT_TOKEN, value),
+    )
+    if bot_token is None:
+        _abort_rejected("bot token")
+        return
+    if team:
+        print(f"  ✅ Bot token verified — workspace: {team}")
+
+    owner_rejected = False
+    owner_id, owner_name = _prompt_verified_slack_value(
+        f"  Your Slack Member ID{hint_owner}: ",
+        cur_owner,
+        "member ID",
+        lambda value: _verify_slack_owner_id(bot_token or "", value),
+    )
+    if owner_id is None:
+        # NOT an abort. The member ID is optional at write time (see the
+        # `if owner_id:` guard below), and the tokens above are already verified —
+        # discarding them over an optional field would cost the operator the
+        # credentials they just typed, which is the one thing this whole
+        # verify-as-you-type flow promises not to do. The full abort stays for a
+        # rejected REQUIRED token.
+        print(
+            f"  ⚠️  Slack rejected the member ID {_SLACK_VERIFY_ATTEMPTS} times — saving "
+            "the verified tokens without it. Set it later with "
+            "'kirocrew setup --slack'.\n"
+        )
+        owner_id = ""
+        owner_rejected = True
+    if owner_name:
+        print(f"  ✅ Owner verified: {owner_name} ({owner_id})")
 
     if not app_token or not bot_token:
         print("  ⚠️  Missing tokens — Slack integration will be disabled.\n")
@@ -545,6 +757,30 @@ def _setup_slack_tokens() -> None:
         merged[CRED_SLACK_BOT_TOKEN] = bot_token
         if owner_id:
             merged[CRED_OWNER_ID] = owner_id
+        elif owner_rejected and merged.get(CRED_OWNER_ID):
+            # The operator's member ID was rejected, so `merged` still holds the
+            # PREVIOUS one, re-read from disk — and the tokens above are brand new.
+            # Keeping it blind would pair a stale owner with fresh workspace
+            # credentials, which is exactly wrong when the tokens point at a
+            # DIFFERENT workspace than the one that owner belongs to.
+            #
+            # Deleting it blind is not right either: an operator who simply
+            # mistyped, on the same workspace, would silently lose a good owner ID.
+            # So the stale value is re-checked against the NEW bot token and only
+            # dropped when Slack INDICTS it (wrong workspace / not a member ID).
+            # `None` means unverifiable (a network or scope error), where deleting
+            # would be data loss on a transient failure, so it is kept.
+            stale_owner = merged[CRED_OWNER_ID]
+            stale_ok, stale_detail = _verify_slack_owner_id(bot_token or "", stale_owner)
+            if stale_ok is False:
+                del merged[CRED_OWNER_ID]
+                print(
+                    f"  ⚠️  Also dropped the saved member ID {stale_owner} — it is not "
+                    f"valid for these tokens ({stale_detail}). Set it with "
+                    "'kirocrew setup --slack'.\n"
+                )
+            else:
+                print(f"  ℹ️  Keeping the saved member ID {stale_owner}.\n")
         lines = [f"{k}={v}" for k, v in merged.items()]
         # atomic_write with restrict_to_owner, not write_text + chmod(0o600): a
         # bare chmod is a silent no-op for Windows ACLs, and applying any lockdown
@@ -566,6 +802,13 @@ def _setup_slack_tokens() -> None:
         platform_compat.release_lock(lock_fd)
         os.close(lock_fd)
     print(f"  ✅ Credentials saved to {cred_path}\n")
+    # Slack credentials are read once, at gateway startup, so tokens written by
+    # this step stay inert until it restarts -- and the bug the operator then
+    # reports is "I fixed the token and Slack is still silent". Naming the command
+    # removes that surprise; OFFERING to run it was ~80 lines and 8 tests to save
+    # one command, and it could drop every in-flight session or spawn a gateway
+    # nobody asked this wizard to start.
+    print("  Restart the gateway to pick them up: kirocrew restart\n")
 
 
 def _setup_whatsapp() -> None:
@@ -740,8 +983,8 @@ def _input_or_skip(prompt: str) -> str | None:
 
     Returns ``None`` when the user hit Enter with no input, which callers treat
     as "keep the default / skip this step". A closed/piped stdin is a different
-    condition and must not be silently coerced to ``""`` (that used to admit an
-    empty default and cascade the failure into the NEXT step's bare
+    condition and must not be silently coerced to ``""`` (coercing it admits an
+    empty default and cascades the failure into the NEXT step's bare
     ``input()``) — see ``_SetupAborted``. A non-UTF-8 locale (e.g. C/POSIX)
     makes ``input()`` raise ``UnicodeDecodeError`` the same way, so it is
     treated identically.
@@ -819,38 +1062,61 @@ def _setup_slash_command() -> None:
 
 
 def _setup_sandbox_consent() -> None:
-    """Offer the unconfined-exec opt-in when this host has NO sandbox backend.
+    """Surface the unconfined-exec decision when this host has NO sandbox backend.
 
-    Fail-closed is the shipped posture: with no backend ``wrap_argv`` refuses
-    every agent subprocess, so a fresh install on such a host — any Windows host,
-    or a Linux kernel that refuses user namespaces — has no working MCP tooling
-    until an operator declares the opt-in. Leaving them to discover that from a
-    probe error is a bad first run, but defaulting the opt-in ON by platform
-    would delete a deny-by-default authorization and put nothing in its place:
-    an agent-selected repo's ``include.path`` reaches ``~/.aws/credentials``, and
-    a crafted ``.tex`` typesets a secret into a PDF.
+    Which WAY this step asks depends on what an undeclared key resolves to here,
+    via :func:`~kiro_crew.sandbox.unsandboxed_exec_platform_default`.
 
-    So the wizard ASKS, and writes the key only on an explicit yes. That keeps
-    the decision operator-declared exactly as
-    ``docs/system-specs/modules/security.md`` requires while making it
-    discoverable instead of hidden behind a spawn failure.
+    On a platform where a backend is BROKEN or missing but installable — a Linux
+    kernel refusing user namespaces, a macOS host — fail-closed remains the
+    shipped posture and this step offers the opt-IN, writing the key only on an
+    explicit yes. The reasoning is unchanged and the threat is concrete: an
+    agent-selected repo's ``include.path`` reaches ``~/.aws/credentials``, and a
+    crafted ``.tex`` typesets a secret into a PDF. Such a host also has a remedy
+    that RESTORES isolation, so pointing at the profile beats disabling the check.
 
-    Only a genuine ``"no_backend"`` classification reaches the prompt.
+    On a platform with no backend to install at all — Windows, where there is
+    neither a user namespace nor ``sandbox-exec`` — the effective default is now
+    ALLOW, and this step offers the opt-OUT instead. This is a deliberate product
+    decision with a real cost, recorded here rather than glossed: it removes a
+    deny-by-default authorization, and the attack above is exactly as available
+    afterwards as it was before. It was taken because fail-closed there is not a
+    security posture anyone can act on — no operator action produces a backend, so
+    the check refused every MCP server, app backend and provider CLI on the
+    platform in perpetuity, and the practical outcome was users hand-editing the
+    same flag from an error message with no risk statement attached at all.
+
+    What stands in the deny-by-default's place, none of it equivalent to it:
+
+    * this step, which STATES the exposure in the same words the opt-in used and
+      offers the lockdown, including a printed notice on a non-interactive run;
+    * a per-spawn SEL ``outcome="unconfined"`` event naming whether an operator or
+      the platform permitted it, so an unconfined spawn is never unrecorded;
+    * the loud once-per-process ``SECURITY`` log line from ``_warn_no_isolation``;
+    * a governance ``sandbox.min_level`` floor, which still OVERRIDES the default
+      fleet-wide and keeps a managed host fail-closed;
+    * a declared ``false``, which still outranks the platform default — an
+      operator who locked this host down stays locked down.
+
+    Only a genuine ``"no_backend"`` classification reaches either prompt.
     ``detect_backend() == "none"`` alone is not sufficient: it also covers a
     momentary fork/resource failure, which self-heals on the next spawn and must
     never buy a permanent bypass, and a foreign outer sandbox, where this host's
     sandbox works and the remedy hands isolation back to Kiro Crew rather than
-    disabling it. The prompt is also skipped when stdin/stdout are not both a
-    terminal, because an unseen question is a hang rather than consent.
+    disabling it. Neither prompt is shown when stdin/stdout are not both a
+    terminal, because an unseen question is a hang rather than consent — but on a
+    default-allow platform the notice is printed there anyway, since that run is
+    otherwise told nothing.
 
     Silent no-op when a backend exists (the Linux/macOS norm) or when the key is
     already declared in either state, in ``config.json`` OR the
     ``config.local.json`` overlay that deep-merges over it — the overlay wins at
     load time, so ignoring it would let this step prompt a user who already
-    decided and then report a grant the effective config contradicts. Declining —
+    decided and then report a state the effective config contradicts. Declining —
     including a non-interactive EOF, which :func:`_input_or_skip` reports as
-    ``None`` — leaves the config untouched, so the effective default stays
-    fail-closed.
+    ``None`` — leaves the config untouched in BOTH directions, so the host keeps
+    this platform's default AND stays undeclared, and a later change to that
+    default still reaches it.
     """
     try:
         kind = unavailable_kind()
@@ -871,26 +1137,41 @@ def _setup_sandbox_consent() -> None:
         # where this host's sandbox works and the remedy hands isolation back to
         # Kiro Crew rather than disabling it. Neither warrants this opt-in.
         return
+    # Which way this step ASKS depends on what an undeclared key now resolves to
+    # on this platform. Resolved once, up front, because the non-interactive
+    # notice, the question and the value written must all describe the same
+    # default -- and on a platform whose default is "allowed" the old wording
+    # ("subprocesses are refused") would be simply false.
+    unconfined_by_default = unsandboxed_exec_platform_default()
+    # Nothing to surface once the operator DECLARED the key, in either state, in
+    # config.json OR the config.local.json overlay that deep-merges over it — the
+    # overlay wins at load time, so ignoring it would let this step address a user
+    # who already decided. This check comes BEFORE the non-TTY notice on purpose:
+    # that notice describes the PLATFORM DEFAULT, so printing it to a host that
+    # declared the opposite would tell an operator who locked the host down that it
+    # runs unconfined.
+    if unsandboxed_exec_declared():
+        return
     # A prompt nobody can see is a hang, not consent: `kirocrew update` runs
     # setup with its output captured and stdin on DEVNULL, so a question asked
     # there is invisible and reads EOF. This guard keeps the decision at a real
     # terminal rather than letting a non-interactive run answer it.
-    if not (sys.stdin.isatty() and sys.stdout.isatty()):
-        print("  ⚠️  No sandbox backend on this host, so agent subprocesses are")
-        print("     refused. Run `kirocrew setup` from a terminal to decide, or set")
-        print("     agent.sandbox_allow_unsandboxed_exec=true by hand to opt in.\n")
+    if not _stdio_is_interactive():
+        if unconfined_by_default:
+            # Still printed, not skipped: this is the only notice a non-interactive
+            # install gets that its agent subprocesses run unconfined, and the
+            # whole point of a platform default is that nobody had to consent to
+            # it. Saying nothing here is what would make the change silent.
+            print("  ⚠️  This platform offers no OS-level sandbox backend, so agent")
+            print("     subprocesses run WITHOUT credential isolation by default.")
+            print("     Run `kirocrew setup` from a terminal to review that, or set")
+            print("     agent.sandbox_allow_unsandboxed_exec=false by hand to refuse")
+            print("     them instead.\n")
+        else:
+            print("  ⚠️  No sandbox backend on this host, so agent subprocesses are")
+            print("     refused. Run `kirocrew setup` from a terminal to decide, or set")
+            print("     agent.sandbox_allow_unsandboxed_exec=true by hand to opt in.\n")
         return
-
-    def _declared(path: Path) -> bool:
-        """Whether *path* explicitly sets the key, in either state."""
-        if not path.exists():
-            return False
-        try:
-            doc = json.loads(path.read_text(encoding="utf-8"))
-        except Exception:
-            return False
-        agent = doc.get("agent") if isinstance(doc, dict) else None
-        return isinstance(agent, dict) and "sandbox_allow_unsandboxed_exec" in agent
 
     cfg_file = config_path()
     cfg: dict = {}
@@ -908,41 +1189,79 @@ def _setup_sandbox_consent() -> None:
             print(f"  ⚠️  {cfg_file} does not contain a JSON object; skipping.\n")
             return
         cfg = loaded
-    if _declared(cfg_file) or _declared(config_local_path()):
-        return
 
     print("── Sandbox ──\n")
-    print("  This host offers no OS-level sandbox backend (Linux user namespaces")
-    print("  or macOS sandbox-exec), so Kiro Crew currently REFUSES to run agent")
-    print("  subprocesses at all — MCP servers, Dev Fleet and the Papyrus")
-    print("  compiler will report a sandbox error until you decide.")
-    print()
-    print("  Allowing them to run unconfined means an agent-driven subprocess can")
-    print("  read your home directory, including ~/.aws and ~/.ssh, with no OS")
-    print("  confinement. Kiro Crew still scrubs credential environment variables,")
-    print("  but it cannot stop a hostile repo or document from reading files.")
-    print()
-    answer = _input_or_skip("  Allow unsandboxed execution? [y/N]: ")
+    if unconfined_by_default:
+        # INFORM, then offer the restriction. The risk paragraph is identical to
+        # the opt-in branch's on purpose: what changed is who has to act, not how
+        # dangerous it is, and a default that describes itself in softer words
+        # than the opt-in did would be the silent change this branch exists to
+        # avoid.
+        print("  This platform offers no OS-level sandbox backend for Kiro Crew to")
+        print("  apply — there is no Linux user namespace and no macOS sandbox-exec,")
+        print("  and unlike a misconfigured Linux host there is no profile to")
+        print("  install that would produce one.")
+        print()
+        print("  Agent subprocesses therefore run unconfined here BY DEFAULT: an")
+        print("  agent-driven subprocess can read your home directory, including")
+        print("  ~/.aws and ~/.ssh, with no OS confinement. Kiro Crew still scrubs")
+        print("  credential environment variables and audits every such spawn, but")
+        print("  it cannot stop a hostile repo or document from reading files.")
+        print()
+        print("  Refusing them instead disables MCP servers, Dev Fleet and the")
+        print("  Papyrus compiler on this host — they will report a sandbox error.")
+        print()
+        answer = _input_or_skip("  Refuse unsandboxed execution on this host? [y/N]: ")
+        granting = False
+    else:
+        print("  This host offers no OS-level sandbox backend (Linux user namespaces")
+        print("  or macOS sandbox-exec), so Kiro Crew currently REFUSES to run agent")
+        print("  subprocesses at all — MCP servers, Dev Fleet and the Papyrus")
+        print("  compiler will report a sandbox error until you decide.")
+        print()
+        print("  Allowing them to run unconfined means an agent-driven subprocess can")
+        print("  read your home directory, including ~/.aws and ~/.ssh, with no OS")
+        print("  confinement. Kiro Crew still scrubs credential environment variables,")
+        print("  but it cannot stop a hostile repo or document from reading files.")
+        print()
+        answer = _input_or_skip("  Allow unsandboxed execution? [y/N]: ")
+        granting = True
     if not answer or answer.lower() not in ("y", "yes"):
-        print("  ⏭  Left fail-closed — MCP tooling stays disabled on this host.")
-        print("     To opt in later, set agent.sandbox_allow_unsandboxed_exec=true")
-        print(f"     in {cfg_file}\n")
+        # Declining writes nothing in BOTH directions, so the effective state
+        # stays whatever this platform's default is -- and stays undeclared, so a
+        # later change to that default still reaches this host. Writing the
+        # current default on a decline would freeze it silently.
+        if unconfined_by_default:
+            print("  ⏭  Left as-is — agent subprocesses keep running unconfined here.")
+            print("     To refuse them later, set")
+            print("     agent.sandbox_allow_unsandboxed_exec=false")
+            print(f"     in {cfg_file}\n")
+        else:
+            print("  ⏭  Left fail-closed — MCP tooling stays disabled on this host.")
+            print("     To opt in later, set agent.sandbox_allow_unsandboxed_exec=true")
+            print(f"     in {cfg_file}\n")
         return
 
     if not isinstance(cfg.get("agent"), dict) and "agent" in cfg:
         print("  ⚠️  'agent' section is not an object; leaving config untouched.\n")
         return
 
-    # Audit-or-deny, BEFORE the write: this persists an execution permission, so
-    # it belongs in the tamper-evident log next to the ``denied`` event
-    # ``wrap_argv`` emits when it refuses a spawn — otherwise the refusals are
-    # recorded and the grant that silences them is not. ``critical=True`` makes
-    # SEL write synchronously and re-raise on a filesystem failure, and the grant
-    # is refused rather than persisted unaudited. Audit-then-write is the safe
-    # ordering: a failure between the two leaves a record without a grant, never
-    # a grant without a record. The documented manual ``config.json`` edit remains
-    # available; it is outside this wizard's control and is not a bypass this
-    # step introduces.
+    # Audit BEFORE the write: this persists an execution permission, so it belongs
+    # in the tamper-evident log next to the ``denied`` event ``wrap_argv`` emits
+    # when it refuses a spawn — otherwise the refusals are recorded and the grant
+    # that silences them is not. Audit-then-write is the safe ordering: a failure
+    # between the two leaves a record without a grant, never a grant without a
+    # record. The documented manual ``config.json`` edit remains available; it is
+    # outside this wizard's control and is not a bypass this step introduces.
+    #
+    # ``critical`` — and whether an audit failure ABORTS — depends on the
+    # direction, because the two directions fail unsafe in opposite ways. A GRANT
+    # is audit-or-deny: ``critical=True`` makes SEL write synchronously and
+    # re-raise, and the grant is refused rather than persisted unaudited. A
+    # RESTRICTION is best-effort: refusing to record "keep this host fail-closed"
+    # because the audit log is broken would LEAVE THE HOST UNCONFINED, which is
+    # the more dangerous of the two outcomes, so the write proceeds and the audit
+    # gap is reported instead.
     try:
         sel().log_tool_invocation(
             session_key="setup",
@@ -950,16 +1269,24 @@ def _setup_sandbox_consent() -> None:
             source="cli_setup._setup_sandbox_consent",
             tool_name="sandbox_allow_unsandboxed_exec",
             tool_kind="config",
-            outcome="allowed",
+            outcome="allowed" if granting else "denied",
             resources=str(cfg_file),
-            metadata={"reason": "operator_consent_at_setup", "probe_kind": kind},
-            critical=True,
+            metadata={
+                "reason": (
+                    "operator_consent_at_setup" if granting else "operator_lockdown_at_setup"
+                ),
+                "probe_kind": kind,
+            },
+            critical=granting,
         )
     except Exception as exc:
         print(f"  ⚠️  Could not record the security audit event: {exc}")
-        print("     Refusing to grant unsandboxed execution unaudited —")
-        print("     left fail-closed. Fix the audit log, then re-run setup.\n")
-        return
+        if granting:
+            print("     Refusing to grant unsandboxed execution unaudited —")
+            print("     left fail-closed. Fix the audit log, then re-run setup.\n")
+            return
+        print("     Recording the restriction anyway: refusing to fail-close this")
+        print("     host because the audit log is broken would leave it unconfined.\n")
 
     # Under the sidecar lock, and the grant is applied to the document as it
     # stands there -- the snapshot read before the prompt is only what decided
@@ -975,28 +1302,38 @@ def _setup_sandbox_consent() -> None:
                 return None
             section = {}
             data["agent"] = section
-        section["sandbox_allow_unsandboxed_exec"] = True
+        section["sandbox_allow_unsandboxed_exec"] = granting
         return data
 
+    # A failed write left the key UNDECLARED, so the host keeps this platform's
+    # default -- which is not "fail-closed" everywhere. Naming the wrong outcome
+    # here would tell an operator their host is protected when nothing confines
+    # it, so both messages state the default that actually now applies.
+    unchanged = (
+        "agent subprocesses keep running unconfined here"
+        if unconfined_by_default
+        else "the host stays fail-closed"
+    )
+    byhand = "false" if unconfined_by_default else "true"
     try:
         update_config_locked(cfg_file, mutate=_grant, stamp_meta=False)
     except ConfigReadError as exc:
         print(f"  ⚠️  Could not read {cfg_file}: {exc}")
-        print("     Nothing was granted — the host stays fail-closed.\n")
+        print(f"     Nothing was recorded — {unchanged}.\n")
         return
     except OSError as exc:
         # A locked or read-only config (common on Windows when another process
         # holds it) must not abort the whole wizard after the user has already
-        # answered. Report it and continue: nothing was granted, so the host
-        # stays fail-closed.
+        # answered. Report it and continue: nothing was written, so the host keeps
+        # whatever this platform's default is.
         print(f"  ⚠️  Could not write {cfg_file}: {exc}")
-        print("     Nothing was granted — the host stays fail-closed. Set")
-        print("     agent.sandbox_allow_unsandboxed_exec=true by hand to opt in.\n")
+        print(f"     Nothing was recorded — {unchanged}. Set")
+        print(f"     agent.sandbox_allow_unsandboxed_exec={byhand} by hand instead.\n")
         return
     if section_clash:
         print("  ⚠️  'agent' section is not an object; leaving config untouched.\n")
         return
-    print("  ✅ Recorded: agent.sandbox_allow_unsandboxed_exec = true\n")
+    print(f"  ✅ Recorded: agent.sandbox_allow_unsandboxed_exec = {str(granting).lower()}\n")
 
 
 def _setup_timezone() -> None:
@@ -1151,9 +1488,7 @@ def _maybe_setup_dashboard_url() -> None:
             dashboard = {}
             data["dashboard"] = dashboard
         elif not isinstance(dashboard, dict):
-            raise TypeError(
-                f"'dashboard' in {cfg_file} is not an object; refusing to replace it"
-            )
+            raise TypeError(f"'dashboard' in {cfg_file} is not an object; refusing to replace it")
         dashboard["url"] = answer
         return data
 

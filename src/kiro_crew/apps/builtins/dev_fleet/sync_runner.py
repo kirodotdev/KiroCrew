@@ -1,12 +1,12 @@
 """The Pull+Build sync runner, as a real module instead of a string literal.
 
-This is the program that :func:`server._sync_start_locked` used to assemble from
-Python source and hand to ``[sys.executable, "-c", <string>]``. That form had one
-defect the code itself was blameless for: no linter parsed it, and its only tests
-string-matched the source. So the transaction that moves ``node_modules`` aside
-and puts it back on failure -- the part whose whole point is not to lose a
-dependency tree -- was unreachable by an executing test. Extracting it here makes
-every branch a real function a test can drive against a real directory tree.
+The alternative shape -- assembling this program from Python source and handing
+it to ``[sys.executable, "-c", <string>]`` -- has one defect the code itself is
+blameless for: no linter parses it, and tests can only string-match the source.
+So the transaction that moves ``node_modules`` aside and puts it back on failure
+-- the part whose whole point is not to lose a dependency tree -- is unreachable
+by an executing test. A module makes every branch a real function a test can
+drive against a real directory tree.
 
 It mirrors :mod:`npm_preflight`'s discipline exactly, and for the same reasons:
 
@@ -269,7 +269,7 @@ def run_steps(
     come ONLY from the preflight: a worktree-run step (a pip lifecycle script)
     exiting the same code is demoted to a plain failure by
     :func:`demote_reserved`, so an untrusted step cannot forge a "skip the
-    build" verdict and ship stale assets (#7132).
+    build" verdict and ship stale assets.
     """
     skip_frontend = False
     for i, st in enumerate(steps):

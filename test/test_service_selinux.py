@@ -1,4 +1,4 @@
-"""SELinux pre-flight for the Linux system unit (#7165).
+"""SELinux pre-flight for the Linux system unit.
 
 Pure-logic tests: every kernel interface the module reads is redirected at a
 tmp_path fake or monkeypatched, so nothing here reads the host's real policy,

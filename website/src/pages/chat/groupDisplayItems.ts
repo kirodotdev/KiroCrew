@@ -52,11 +52,17 @@ export const isReasoningBurst = (t: TurnItem): t is Extract<TurnItem, { kind: 's
  * Roles that OPEN a turn, and are therefore the rows a reader can be anchored to.
  *
  * `nudge` and `subagent` are machine-injected but they ARE the thing that started
- * the turn below them, so a reader looking for "what am I inside" needs them. This
- * set is exported because the pinned-prompt scan has to agree with the grouping
- * exactly: when the two lists were maintained by hand they drifted, and a role
- * that opened a turn without being pinnable made the pin scan walk past every one
- * of them — measured at a 61-display-row gap in a loop-driven session.
+ * the turn below them, so the grouping treats them as openers: each cycle of a
+ * babysit loop, each drained fan-out completion, folds into its own turn.
+ *
+ * The pinned-prompt banner is deliberately NOT derived from this set. It admits
+ * only what the human typed (`isPrompt` in `utils/pinnedPrompt.ts`): a machine
+ * opener taking the band on every loop cycle was the defect that decoupled them.
+ * Grouping and pinning answer different questions — "where does this turn start"
+ * versus "what did I ask" — so the two lists are allowed to differ here.
+ *
+ * Mirrored by `_TURN_OPENER_ROLES` in `src/kiro_crew/dashboard/chat_handlers.py`
+ * (the stop-card same-turn reuse boundary, #9556) — keep the two in agreement.
  */
 export const TURN_OPENER_ROLES = new Set(['user', 'nudge', 'subagent'])
 

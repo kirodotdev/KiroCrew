@@ -138,7 +138,7 @@ class TestFilterLiteralsStillMatchWhatTheGatesReject:
     """Each filter, applied to source the gate exists to fail on.
 
     This is the half a rename breaks: move ``batched_save`` and the gate keeps
-    passing on a tree it can no longer see into, unless something asserts that
+    passing on a tree it cannot see into, unless something asserts that
     the filter admits a known violation. Each case is the same shape the gate's
     own meta-test plants.
     """

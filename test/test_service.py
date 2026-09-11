@@ -475,7 +475,7 @@ class TestLinuxPrivilegeResolution:
 
     def test_install_raises_clean_error_when_sudo_missing(self, monkeypatch):
         """The reported bug: on a root-only/minimal host without sudo, install
-        used to crash with an uncaught FileNotFoundError. It must raise the
+        must not crash with an uncaught FileNotFoundError; it must raise the
         friendly ServiceInstallError instead."""
         from kiro_crew.service import linux as svc_linux
 
@@ -703,8 +703,7 @@ class TestLinuxServiceWritesUtf8:
     environment file back with ``encoding="utf-8"`` (``linux.py:448``), so the
     round trip crossed two different encodings.
 
-    Reviewer-counted residual from merged #7164, which made the identical
-    argument for the drop-in it did fix.
+    The same argument applies here as to the drop-in case.
     """
 
     def _capture_staged_bytes(self, call, contents: str) -> bytes:
@@ -1090,8 +1089,8 @@ class TestControllerDispatch:
 
     def test_restart_service_returns_false_when_systemd_restart_fails(self):
         # The core false-success bug: an unprivileged/failed `systemctl
-        # restart` exits non-zero, but restart_service() historically returned
-        # True regardless (it never checked restart()'s result), printing a
+        # restart` exits non-zero; restart_service() must not return
+        # True regardless (it must check restart()'s result), or it prints a
         # bogus success. The controller must propagate the restart outcome so
         # the caller falls back to the foreground path instead of assuming the
         # service manager handled it.
@@ -2515,7 +2514,7 @@ class TestAppArmorProfileRendering:
     _EXEC = Path("/opt/kirocrew-venv/bin/kirocrew")
 
     def test_attaches_to_the_given_path_and_nothing_else(self):
-        """The attachment is the whole point (#3463), and it must be exactly the
+        """The attachment is the whole point, and it must be exactly the
         validated launcher path — never the interpreter behind its shebang,
         which is a symlink to the system python: attaching there would grant
         unprivileged userns to EVERY Python process on the host.
@@ -2731,7 +2730,7 @@ class TestAppArmorInstall:
     def test_exec_path_attaches_the_profile_to_the_resolved_launcher(
         self, monkeypatch, durable_dir
     ):
-        """#3463: a valid ``exec_path`` makes the WRITTEN profile text carry an
+        """A valid ``exec_path`` makes the WRITTEN profile text carry an
         attachment to the resolved script, not just a bare named profile.
 
         ``durable_dir`` (not raw ``tmp_path``): on Linux CI the pytest temp dir
@@ -2815,7 +2814,7 @@ class TestAppArmorInstall:
 class TestAppArmorUnitDirective:
     """The retired ``AppArmorProfile=`` directive must never reappear in the unit.
 
-    The profile is attached by path (#3463); when both mechanisms are present,
+    The profile is attached by path; when both mechanisms are present,
     systemd's ``change_onexec`` silently wins and defeats the path attachment.
     """
 
@@ -2834,7 +2833,7 @@ class TestAppArmorUnitDirective:
     def test_install_never_writes_the_directive_even_when_the_host_needs_a_profile(
         self, monkeypatch
     ):
-        """#3463: the unit ``linux.install()`` writes must never carry the
+        """The unit ``linux.install()`` writes must never carry the
         directive — a unit written WITH it silently defeats the path-attached
         profile it installs (systemd's change_onexec wins over the kernel's
         automatic path attachment). Asserted end-to-end through ``install()``,
@@ -2872,7 +2871,7 @@ class TestAppArmorUnitDirective:
     "the systemd service path is Linux-only",
 )
 class TestInstallApparmorProfileAttachesToTheLauncher:
-    """#3463: the service caller must hand ``apparmor.install`` the launcher
+    """The service caller must hand ``apparmor.install`` the launcher
     path and the SERVICE account's uid, not the installer process's own uid."""
 
     def test_passes_kirocrew_bin_as_exec_path_and_threads_expected_uid(self, monkeypatch):
@@ -3369,8 +3368,7 @@ class TestATakeoverOfTheAttachedPathIsRefused:
     A world-writable directory outside the denylist — `/srv/shared` at 0777, a
     group-writable `/opt/apps`, a permissive network mount — would sail past a
     prefix check, and an attachment there lets any local user drop in their own
-    executable and inherit the userns grant. Raised as blocking in review of
-    #1653; these pin the fix.
+    executable and inherit the userns grant. These tests pin that refusal.
     """
 
     def test_a_world_writable_directory_outside_the_denylist_is_refused(
@@ -3382,7 +3380,7 @@ class TestATakeoverOfTheAttachedPathIsRefused:
         shared.mkdir()
         app = shared / "kirocrew.AppImage"
         app.write_text("#!/bin/sh\n")
-        os.chmod(shared, 0o777)  # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions -- the lax mode IS the fixture, not the behaviour under test: this stages a world-writable directory outside the prefix denylist precisely so the assertion below can prove validate_exec_path() refuses to attach an AppArmor userns grant there. Removing it deletes the regression test for the blocking finding in #1653.  # noqa: E501
+        os.chmod(shared, 0o777)  # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions -- the lax mode IS the fixture, not the behaviour under test: this stages a world-writable directory outside the prefix denylist precisely so the assertion below can prove validate_exec_path() refuses to attach an AppArmor userns grant there. Removing it deletes this regression test.  # noqa: E501
         # Empty the denylist so this can only be caught by the mode walk — the
         # whole point of the finding is that a prefix list does not cover it.
         monkeypatch.setattr(aa, "_UNSAFE_EXEC_PARENTS", ())
@@ -3427,7 +3425,7 @@ class TestATakeoverOfTheAttachedPathIsRefused:
         assert str(outer) in problem
 
     def test_a_root_owned_system_binary_is_refused(self):
-        """Raised as blocking in review of #1653.
+        """Pins the reviewed refusal behaviour.
 
         The shared-interpreter regex is a BLOCKLIST and blocklists leak: it names
         python, perl, ruby, node and the shells, but not java, mono, dotnet, php,
@@ -3534,7 +3532,7 @@ class TestATakeoverOfTheAttachedPathIsRefused:
 
 @posix_only
 class TestExpectedUidOverride:
-    """#3463: the systemd service case checks ownership against the SERVICE
+    """The systemd service case checks ownership against the SERVICE
     account, not the installer process's own uid — a different account when
     ``kirocrew service install`` itself runs as root or under ``sudo``."""
 
@@ -3554,7 +3552,7 @@ class TestExpectedUidOverride:
     def test_a_file_owned_by_the_installer_but_not_the_expected_account_is_refused(
         self, tmp_path, monkeypatch
     ):
-        """The critical case #3463 exists for: the venv script IS owned by
+        """The critical case: the venv script IS owned by
         whoever is running this Python process (e.g. root, under ``sudo
         kirocrew service install``), but that is not the account the SERVICE
         runs as -- checking against the installer's own uid would wrongly
@@ -3585,7 +3583,7 @@ class TestExpectedUidOverride:
         assert "not by the expected account" in problem
 
     def test_a_foreign_owned_ancestor_is_refused(self, tmp_path, monkeypatch):
-        """GPT review round 2 on #3514: a directory's OWNER can rename or
+        """A directory's OWNER can rename or
         replace what is inside it regardless of the 0o022 mode bits, so a
         tight-mode ancestor owned by a THIRD account (not root, not the
         expected owner) still makes the whole path substitutable — the mode
@@ -4236,7 +4234,7 @@ class TestHeadlessApiKeyWarning:
     launchd/systemd hand the gateway a minimal environment, so a key exported in
     the installing shell is absent when the service starts and the readiness
     probe reports a signed-out state on a host where kiro-cli itself is
-    authenticated (issue #3257). The install path warns instead of pretending
+    authenticated. The install path warns instead of pretending
     nothing was lost — and never bakes the credential into the unit.
     """
 

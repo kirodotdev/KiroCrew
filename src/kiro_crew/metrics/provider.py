@@ -975,7 +975,7 @@ def _consent_worker(generation: int) -> None:
             if generation != _build_generation:
                 # Superseded: another flip or a shutdown happened while we read.
                 # Do NOT stamp the clock — this check answered a question about a
-                # state that no longer exists, and stamping it would defer the
+                # state that is already gone, and stamping it would defer the
                 # replacement check by a full window while the setting sat
                 # unapplied.
                 return
@@ -1129,7 +1129,7 @@ def _take_provider_locked() -> Optional["_MeterProviderT"]:
 
 
 def _flush_detached_provider(doomed: "_MeterProviderT") -> None:
-    """Flush a provider that is no longer referenced. Never holds ``_lock``.
+    """Flush a detached provider that nothing references. Never holds ``_lock``.
 
     Best-effort by construction. The SDK registers its own ``atexit`` flush when a
     provider is built (``MeterProvider(shutdown_on_exit=True)``, its default), which
@@ -1165,7 +1165,7 @@ def shutdown() -> None:
     with _lock:
         doomed = _take_provider_locked()
         # Drop the stamp rather than carry a reading that describes a recorder that
-        # no longer exists; whichever rebuild comes next stamps its own. This does
+        # is gone; whichever rebuild comes next stamps its own. This does
         # not defer the next recheck — a zero stamp reads as immediately due — but
         # nothing consults it while `_recorder` is None.
         _consent_checked_at = 0.0

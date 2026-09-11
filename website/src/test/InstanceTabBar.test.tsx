@@ -461,6 +461,23 @@ describe('InstanceTabBar', () => {
     expect(await screen.findByTestId('crew-stable-order-toggle')).toHaveAttribute('aria-checked', 'true')
   })
 
+  it('breaks and clamps an unbreakable list error so it cannot paint over the notice\'s own Ask-the-agent control', async () => {
+    const unbreakable = '<!DOCTYPE html><html><head><meta charset="utf-8">'
+    vi.mocked(api.listInstances).mockRejectedValue(new Error(unbreakable))
+    renderWithProviders(<InstanceTabBar />)
+
+    const notice = await screen.findByTestId('instance-tab-bar-list-error')
+    expect(within(notice).getByRole('button', { name: /Ask the agent/i })).toBeInTheDocument()
+    // `truncate` on the flex root cannot ellipsise, and its nowrap inherits down
+    // and removes the message's last break opportunity.
+    expect(notice.className).not.toMatch(/truncate|whitespace-nowrap/)
+    const msg = within(notice).getByText(unbreakable)
+    expect(msg.className).toMatch(/line-clamp-1/)
+    // No `break-all`: the span's own `overflow-wrap: anywhere` breaks the unbreakable
+    // token AND prefers word boundaries, so prose does not get cut mid-word.
+    expect(msg.className).not.toMatch(/break-all/)
+  })
+
 })
 
 describe('resolvePinnedPref', () => {

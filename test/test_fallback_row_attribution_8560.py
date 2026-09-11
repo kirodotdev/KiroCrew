@@ -1,4 +1,4 @@
-"""#8560 — a fallback-served turn must attribute the row to the model that ran.
+"""A fallback-served turn must attribute the row to the model that ran.
 
 ``chat_runner``'s post-turn persist blanks the caller-side model while a
 throttle fallback is active and leaves the row's attribution entirely to

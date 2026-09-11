@@ -1,9 +1,9 @@
 """The per-call ``reasoning_effort`` parameter across every spawn_run layer.
 
-Effort for a subagent used to resolve ONLY server-side
+A subagent's effort otherwise resolves ONLY server-side
 (``agent.role_efforts['subagent']`` -> chat default), so a parent could not
 state the thinking depth its subagents run at without mutating the global
-setting. ``spawn_run`` now takes a batch-wide ``reasoning_effort`` that is
+setting. ``spawn_run`` takes a batch-wide ``reasoning_effort`` that is
 plumbed along the exact path ``model`` takes: schema -> tool body ->
 ``POST /api/spawn`` -> ``SubagentManager.spawn`` -> the ``_run_inner``
 resolution site. Each hop is a place the value can be silently dropped
@@ -228,7 +228,7 @@ class TestUnsupportedModelReport:
 
 class TestVerdictCollapse:
     """Identical per-subagent verdicts collapse into ONE line on wide
-    fan-outs (#6185). ``reasoning_effort`` and ``model`` are batch-wide, so
+    fan-outs. ``reasoning_effort`` and ``model`` are batch-wide, so
     every member of a wide batch usually gets the identical verdict — one
     line per subagent injects N copies of the same text into the calling
     agent's context. Differing verdicts keep their own attributed lines so
@@ -309,7 +309,7 @@ class TestApiSpawnHandler:
         mgr = MagicMock()
         mgr.spawn.return_value = SimpleNamespace(id="a1", done=False, error="")
         mgr.max_concurrent = 4
-        state = SimpleNamespace(subagents=mgr)
+        state = SimpleNamespace(subagents=mgr, conversation_log=MagicMock())
         request = MagicMock()
         request.app = {"state": state}
 
@@ -434,6 +434,9 @@ class TestRecordAndRetry:
             include_memory=True,
             include_lessons=True,
             include_project=True,
+            # Reused by the retry alongside the context triple: a retry must not
+            # widen a delegated run to the global store.
+            memory_store="",
             done=True,
             outcome="failed",
         )
@@ -598,7 +601,7 @@ class TestEffortDropReason:
 
 
 class TestNoSpawnSiteDropWarning:
-    """The spawn path no longer emits its own drop warning (#6186): the
+    """The spawn path does not emit its own drop warning: the
     provider factory's effort gate (config/loader.py) is the single warning
     authority, covering spawn, dashboard slot, and cron alike. The tool-result
     verdict (effort_dropped/effort_applied) remains the caller-facing signal;
@@ -711,6 +714,7 @@ class TestApiSpawnEffortDropped:
         state = SimpleNamespace(
             subagents=mgr,
             sessions=SimpleNamespace(get_agent=lambda key: parent_agent),
+            conversation_log=SimpleNamespace(get_metadata_status=lambda key: ({}, True)),
         )
         request = MagicMock()
         request.app = {"state": state}
@@ -921,7 +925,11 @@ class TestAppliedLineRendering:
 
         mgr = MagicMock()
         mgr.spawn.return_value = SimpleNamespace(id="a1", done=False, error="")
-        state = SimpleNamespace(subagents=mgr, sessions=SimpleNamespace(get_agent=lambda key: ""))
+        state = SimpleNamespace(
+            subagents=mgr,
+            sessions=SimpleNamespace(get_agent=lambda key: ""),
+            conversation_log=SimpleNamespace(get_metadata_status=lambda key: ({}, True)),
+        )
         request = MagicMock()
         request.app = {"state": state}
         request.json = AsyncMock(
@@ -953,7 +961,11 @@ class TestAppliedLineRendering:
 
         mgr = MagicMock()
         mgr.spawn.return_value = SimpleNamespace(id="a1", done=False, error="")
-        state = SimpleNamespace(subagents=mgr, sessions=SimpleNamespace(get_agent=lambda key: ""))
+        state = SimpleNamespace(
+            subagents=mgr,
+            sessions=SimpleNamespace(get_agent=lambda key: ""),
+            conversation_log=SimpleNamespace(get_metadata_status=lambda key: ({}, True)),
+        )
         request = MagicMock()
         request.app = {"state": state}
         request.json = AsyncMock(
@@ -1064,7 +1076,11 @@ class TestVerdictOffTheEventLoop:
 
         mgr = MagicMock()
         mgr.spawn.return_value = SimpleNamespace(id="a1", done=False, error="")
-        state = SimpleNamespace(subagents=mgr, sessions=SimpleNamespace(get_agent=lambda key: ""))
+        state = SimpleNamespace(
+            subagents=mgr,
+            sessions=SimpleNamespace(get_agent=lambda key: ""),
+            conversation_log=SimpleNamespace(get_metadata_status=lambda key: ({}, True)),
+        )
         request = MagicMock()
         request.app = {"state": state}
         request.json = AsyncMock(

@@ -7,7 +7,7 @@ binary into every managed server's ``command`` and its own data home into their
 ``env``. The real install's MCP servers then ran the worktree's code and read the
 worktree's credential while still calling the live gateway, so every managed MCP
 call returned HTTP 403 — and once the worktree was removed those specs pointed at
-paths that no longer existed.
+paths that were gone.
 """
 
 from __future__ import annotations
@@ -322,7 +322,7 @@ def test_global_kiro_home_in_a_worktree_still_declines(monkeypatch, tmp_path):
 def test_declines_from_a_clone_under_the_temp_dir(monkeypatch, tmp_path):
     """A throwaway clone under the system temp dir must not own the shared home.
 
-    The #4781 shape: automation clones the repo into a per-task temp directory,
+    The failure shape: automation clones the repo into a per-task temp directory,
     something in that tree reaches ``rebuild_agent_config``, and the machine-wide
     spec ends up naming a launcher venv (and possibly a pinned data home) that is
     deleted when the task ends.
@@ -332,7 +332,7 @@ def test_declines_from_a_clone_under_the_temp_dir(monkeypatch, tmp_path):
     created before the suite redirects the tempfile base, so ``tmp_path`` does
     not live under the redirected root and would miss the arm under test.
 
-    A spec is planted first because that is the harm: #4781 is an OVERWRITE of a
+    A spec is planted first because that is the harm: the failure is an OVERWRITE of a
     working spec, and the guard's remedy ("use the specs that already worked")
     only exists when one is there. The empty-home case is the next test.
     """
@@ -391,7 +391,7 @@ def test_does_not_decline_from_an_appimage_runtime_mount(monkeypatch, tmp_path):
     mount every launch, so the durable ``.AppImage`` behind it can only have
     working managed servers by rewriting the spec on each start. Declining would
     freeze the spec on a previous launch's mount and ENOENT every managed server
-    -- #4781's own symptom, manufactured on a shipped channel -- and on a fresh
+    -- that same ENOENT symptom, manufactured on a shipped channel -- and on a fresh
     install would leave no spec at all.
     """
     import tempfile
@@ -420,7 +420,7 @@ def test_under_system_tmp_covers_posix_tmp_when_tmpdir_points_elsewhere(monkeypa
 
     launchd sets ``$TMPDIR`` to ``/var/folders/.../T``, so ``gettempdir()`` does
     not contain ``/tmp`` there — and ``/tmp/kc-fix-XXXX`` is the literal clone
-    path #4781 reports. Simulated by pointing ``gettempdir()`` away from
+    path this arm refuses. Simulated by pointing ``gettempdir()`` away from
     ``/tmp``, which is what the platform difference amounts to.
 
     POSIX-only: on Windows ``/tmp`` is a drive-relative path with no reboot-reaped
@@ -668,7 +668,7 @@ def test_sessions_dir_follows_kiro_home(monkeypatch, tmp_path, unpinned_kiro_ses
     ``KIRO_HOME`` is directory-wide: kiro-cli writes transcripts under it. If
     KiroCrew kept reading the machine-wide path, an instance with its own agent
     home would look for transcripts that are not there — losing session resume and
-    letting ``SessionMap`` prune mappings whose files it can no longer see.
+    letting ``SessionMap`` prune mappings whose files it cannot see.
     """
     from kiro_crew.config.paths import kiro_agents_dir, kiro_sessions_dir
 

@@ -185,7 +185,7 @@ async def _cron_cb(
     with ExitStack() as stack:
         for patcher in (
             patch.object(gw.CronService, "create", AsyncMock(side_effect=_create)),
-            # No executor patch: the fire-time gate no longer resolves a pool from
+            # No executor patch: the fire-time gate does not resolve a pool from
             # this module -- it goes through run_in_cron_gate_pool, which owns its
             # own bounded pool. `vet_job_at_fire_time` is still patched below, so the
             # gate submits a trivial callable and returns immediately.
@@ -1143,7 +1143,7 @@ class TestDeliverScriptResult:
     async def test_rehydration_reads_the_transcript_off_the_loop(self):
         """A slot-miss must not parse the transcript on the event loop.
 
-        Issue #7408: the sync ``_rehydrate_slot_from_history`` used here read and
+        The sync ``_rehydrate_slot_from_history`` used here reads and
         JSON-parsed the whole transcript inline (100-300 ms on a large store),
         stalling every other session's frames. The async form hoists that read
         into a worker thread, where ``get_running_loop()`` raises -- which is
@@ -1597,7 +1597,7 @@ class TestCronChannelDelivery:
 
     @pytest.mark.asyncio
     async def test_identical_second_run_is_suppressed_on_the_channel(self):
-        """Regression for the spam this fixes: run two, deliver one.
+        """An identical second run is suppressed: run two, deliver one.
 
         With the anchor left unadvanced on this path, ``last_posted_hash`` stayed
         ``""`` forever and every tick re-posted the same text — while Slack posted

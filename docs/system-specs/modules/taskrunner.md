@@ -17,6 +17,29 @@ Supports multiple concurrent tasks, interactive tool approval, per-step session 
 
 ## Module Architecture
 
+Private member tasks receive a protected `taskrunner:<task_id>:runtime` binding
+at trusted creation. Planning, steps, review, retry, and failure-lesson sessions
+inherit that binding before provider allocation; editable task records and
+later changes to the originating chat cannot select another store. Private
+history uses the task ID and carries the same protected binding, so restart
+and consolidation retain the member. Failure lessons use the member's vector
+store and a private session. Existing unbound tasks retain Global V1 behavior.
+Missing or corrupt private identity refuses execution instead of widening it.
+
+Internal HTTP callers inherit only their verified session identity. Body fields
+such as `created_by`, `session_key`, or `memory_store` cannot select authority.
+Run routes check the canonical run binding, including display-name resolution;
+internal cancellation uses a canonical ID and cannot follow a colliding name.
+Private file-based start/planning requires inline text instead: the host must not
+read Global or peer transcripts on a member's behalf. Chat-supplied plans consume
+the supplied text and steps, not an arbitrary source transcript. Private task
+results enter a fresh bound chat before any transcript append or provider call.
+Shared planning cancellation remains an owner-dashboard action when private
+boundaries are active. The guard runs on `POST /api/taskrunner/plan/cancel`
+before the shared planning task can be cancelled. Global-only installations
+retain internal cancellation, and the separate refinement endpoint keeps its
+private-member refusal rather than inheriting the cancellation guard.
+
 The task runner is split into an orchestrator plus 4 focused helper modules under `src/kiro_crew/`:
 
 ```

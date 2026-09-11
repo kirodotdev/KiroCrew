@@ -1,4 +1,4 @@
-"""Regression tests for CSE scan findings 2026-08-05.
+"""Security invariants for a batch of CSE scan findings.
 
 SEC-3F9C863A: search_for_context limit must be server-clamped
 SEC-8746A074: Teams/Webex must not log raw email addresses

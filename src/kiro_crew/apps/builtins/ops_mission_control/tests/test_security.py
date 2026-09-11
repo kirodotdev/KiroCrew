@@ -290,8 +290,8 @@ class TestSecretBackend(unittest.TestCase):
         self.assertEqual(self.backend.get("pagerduty", "api_token"), "")
 
     def test_non_utf8_file_degrades_to_empty(self):
-        # New with #7805: UnicodeDecodeError previously escaped the lookup read
-        # (a ValueError, not a JSONDecodeError). The lenient read must treat a
+        # UnicodeDecodeError escapes a JSONDecodeError-only clause here (it is a
+        # ValueError, not a JSONDecodeError). The lenient read must treat a
         # corrupt byte stream as one condition regardless of which decoder
         # noticed it -- failing a render would wedge the Settings UI on a file
         # only a person can repair.
@@ -302,12 +302,12 @@ class TestSecretBackend(unittest.TestCase):
 class TestSecretStoreLockdownOrdering(unittest.TestCase):
     """The store's write must never publish a token file it has not protected.
 
-    Ports the previous-store-survival recipe from
+    Ports the prior-store-survival recipe from
     ``test/test_aws_consent.py::TestGrantIsOnTheKeystoneFloor``: every failure
     inside ``atomic_write`` happens BEFORE the rename, so a transient lockdown
-    or write failure can no longer reach — let alone delete — the previous,
-    healthy store (the old post-publish ``restrict_to_owner`` + unlink-on-
-    OSError shape destroyed every stored provider token on one lockdown failure).
+    or write failure cannot reach — let alone delete — the healthy store already
+    on disk (a post-publish ``restrict_to_owner`` plus unlink-on-OSError destroys
+    every stored provider token on one lockdown failure).
     """
 
     def setUp(self):
@@ -489,10 +489,10 @@ class TestSecretStoreNeverPublishesOverAFailedRead(unittest.TestCase):
         self.assertEqual(self.backend.get("pagerduty", "api_token"), "u+thefirsttoken")
 
     def test_a_corrupt_store_refuses_the_save_and_is_left_intact(self):
-        """#7805: a corrupt store is refused, never rewritten.
+        """A corrupt store is refused, never rewritten.
 
-        The old tolerance read an unparseable document as empty and let ``put``
-        publish over it -- destroying tokens a truncated JSON still held
+        Reading an unparseable document as empty and letting ``put``
+        publish over it destroys tokens a truncated JSON still holds
         verbatim, silently, when this file is the only copy of every provider
         credential on the box. Byte-for-byte intactness is the half a raise
         alone does not prove.

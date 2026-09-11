@@ -1,4 +1,4 @@
-import { type ReactNode } from 'react'
+import { lazy, Suspense, type ReactNode } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { ArrowLeft, ArrowRight, BarChart3, Brain, Clock } from 'lucide-react'
@@ -6,20 +6,26 @@ import { useAppSelector } from '../store'
 import { useUptime } from '../hooks/useUptime'
 import { api } from '../api/client'
 import type { WakaTimeStats } from '../api/client'
-import { Card, CardTitle, StatCard, Btn } from '../components/ui'
+import { Card, CardTitle, StatCard, Btn, ContentSkeleton } from '../components/ui'
 import { TunnelStatus } from '../components/TunnelStatus'
 import { TailnetMobileCard } from '../components/TailnetMobileCard'
+import { KiroSignInCard } from './settings/KiroSignInCard'
 import ErrorBoundary from '../components/ErrorBoundary'
 import ErrorNotice from '../components/ErrorNotice'
+import { useGuardedLeave } from '../components/NavigationLeaveGuard'
 import { getOverviewStatCards } from './overviewStatCards'
 import { getOverviewPanel } from './overviewPanel'
 import { isOverviewBuiltinSuppressed } from './overviewBuiltins'
-import { MemoryTab, UsageTab, WakaTimeTab } from './overview'
+import { UsageTab, WakaTimeTab } from './overview'
 import { useProvider } from '../providers'
 import type { NormalizedUsage } from '../providers'
 
 import { i18nT } from '../i18n/t'
 import { fmtDuration } from '../i18n/format'
+
+// The record editor and recovery tools are needed only inside this drill-in.
+// Keep them out of the dashboard shell's initial bundle.
+const MemoryTab = lazy(() => import('./overview/MemoryTab'))
 /**
  * Settings > Overview — mission control.
  *
@@ -42,18 +48,19 @@ function fmtNum(n: number | undefined | null): string {
 }
 
 /** Back link + drill-in content, mirroring the Channels back affordance. */
-function DrillIn({ title, onBack, children }: { title: string; onBack: () => void; children: ReactNode }) {
+function DrillIn({ title, onBack, children, hideTitle = false }: { title: string; onBack: () => void; children: ReactNode; hideTitle?: boolean }) {
+  const leave = useGuardedLeave()
   return (
     <div>
-      <button
-        onClick={onBack}
+      <Btn
+        onClick={() => leave(onBack)}
         aria-label={i18nT('pages.overviewPage.back_to_overview')}
         className="flex items-center gap-1.5 text-[13px] font-medium text-accent bg-transparent border-none cursor-pointer px-0 py-1 mb-2 hover:underline"
       >
-        <ArrowLeft size={14} />
+        <ArrowLeft className="lucide-inline" />
         {i18nT('pages.overviewPage.overview')}
-      </button>
-      <div className="text-xl font-bold tracking-tight text-text-strong mb-3">{title}</div>
+      </Btn>
+      {!hideTitle && <div className="text-xl font-bold tracking-tight text-text-strong mb-3">{title}</div>}
       {children}
     </div>
   )
@@ -215,7 +222,15 @@ export default function OverviewPage() {
   }, { replace: true })
 
   if (view === 'memory') {
-    return <DrillIn title={i18nT('pages.overviewPage.memory')} onBack={() => setView(null)}><MemoryTab refreshTrigger={refreshTrigger} /></DrillIn>
+    const selectedStore = params.get('store') || ''
+    return <DrillIn title={i18nT('pages.overviewPage.memory')} hideTitle={!!selectedStore && selectedStore !== 'default'} onBack={() => setView(null)}>
+      <Suspense fallback={<ContentSkeleton rows={6} />}><MemoryTab refreshTrigger={refreshTrigger} selectedStore={selectedStore} onStoreNavigate={store => setParams(previous => {
+        const next = new URLSearchParams(previous)
+        if (store) next.set('store', store)
+        else next.delete('store')
+        return next
+      }, { replace: true })} /></Suspense>
+    </DrillIn>
   }
   if (view === 'usage') {
     return <DrillIn title={i18nT('pages.overviewPage.usage')} onBack={() => setView(null)}><UsageTab /></DrillIn>
@@ -273,6 +288,18 @@ export default function OverviewPage() {
           )
         })}
       </div>
+
+      {/* Kiro sign-in. First among the guided cards because it decides WHICH
+          identity every agent process runs as; a lapsed or missing sign-in is
+          the one Overview fact the rest of the dashboard cannot work around.
+          Same isolation and suppression contract as the tailnet card below. */}
+      {!isOverviewBuiltinSuppressed('kiro-sign-in') && (
+        <ErrorBoundary scope="overview-kiro-sign-in" fallback={null}>
+          <div className="mb-6">
+            <KiroSignInCard />
+          </div>
+        </ErrorBoundary>
+      )}
 
       {/* Mobile access. Above the summary cards and full width, because it is a
           guided sequence rather than a metric: it owns the one next action, and

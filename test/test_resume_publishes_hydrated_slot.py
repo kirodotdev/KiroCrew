@@ -214,7 +214,7 @@ async def test_a_delete_during_the_read_does_not_republish_the_transcript(tmp_pa
     can recreate the session". Resume reads the transcript BEFORE publishing the
     slot (so the await cannot expose an empty slot by name), which means a delete
     landing inside that read leaves us holding a fully populated transcript for a
-    session that no longer exists. Publishing a slot from that content rewrites
+    session that does not exist. Publishing a slot from that content rewrites
     the file on its next flush.
 
     The probe is ``get_metadata_status``, not ``get_metadata``: the latter returns
@@ -459,7 +459,7 @@ async def test_a_folder_filed_during_the_read_is_not_erased_by_a_stale_existence
     log.append(key, "user", "history-1")
     log.append(key, "assistant", "history-2")
 
-    # The PRE-read snapshot points at a folder that no longer exists, so the real
+    # The PRE-read snapshot points at a folder that does not exist, so the real
     # ``_unhide_folder`` reports False -- the verdict that drives the drop.
     gone_id = "fldrGONE0001"
     live_id = "fldrLIVE0001"

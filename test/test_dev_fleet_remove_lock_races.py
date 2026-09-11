@@ -1,11 +1,11 @@
 """Regression tests for two concurrency races in Dev Fleet worktree removal.
 
-Issue #5288 — Race: removal during rebase
+Race: removal during rebase
   ``_worktree_remove`` must refuse immediately when ``_wt_lock(name)`` is
   already held by a running rebase, rather than letting the deletion proceed
   and corrupt the rebase's working directory.
 
-Issue #5289 — Race: make-live staging between protection check and deletion
+Race: make-live staging between protection check and deletion
   The direct worktree-removal path must hold ``_MAKE_LIVE_LOCK`` from the
   live/staged protection re-check through ``git worktree remove``, so a
   concurrent ``/make-live`` cannot stage the target in that window.
@@ -92,7 +92,7 @@ def _stub_successful_remove(monkeypatch, tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Issue #5288: removal must refuse while _wt_lock(name) is held (rebase lock)
+# Removal must refuse while _wt_lock(name) is held (rebase lock)
 # ---------------------------------------------------------------------------
 
 
@@ -101,7 +101,7 @@ async def test_remove_refuses_while_rebase_lock_held(monkeypatch, tmp_path):
     """FIX PRESENT: _worktree_remove returns an error immediately when
     _wt_lock('feat-x') is already locked (rebase in progress).
 
-    This is the production-guard check for issue #5288.
+    This is the production-guard check.
     """
     rebase_lock = asyncio.Lock()
     await rebase_lock.acquire()  # simulate rebase holding the lock
@@ -171,7 +171,7 @@ async def test_remove_proceeds_after_rebase_lock_released(monkeypatch, tmp_path)
 
 
 # ---------------------------------------------------------------------------
-# Issue #5289: direct removal must hold _MAKE_LIVE_LOCK across protection check
+# Direct removal must hold _MAKE_LIVE_LOCK across protection check
 # ---------------------------------------------------------------------------
 
 

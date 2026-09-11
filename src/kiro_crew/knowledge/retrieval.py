@@ -15,6 +15,7 @@ except ImportError:
     import sqlite3
 
 from .._sqlite_compat import fts5_cjk_match_groups, is_cjk_char
+from .embedder import embedder_signature
 from .store import KnowledgeStore
 
 logger = logging.getLogger(__name__)
@@ -63,6 +64,15 @@ _STOPWORDS = frozenset({
 # dominate when the keyword leg returns weak/literal junk.
 VECTOR_RRF_WEIGHT = 2.0
 
+# Opt OUT of the vector leg's embedding-space predicate, for a caller holding a
+# bare ``callable(str) -> list[float]`` with no declarable vector-space identity
+# (ad-hoc probes and the tests of the dimension guard itself). It has to be NAMED
+# and PASSED rather than reachable by omission: the predicate fails OPEN, so an
+# absent signature scores every space against every query and nothing goes red.
+# Spelled with characters a signature cannot contain -- they are lowercase hex
+# digests -- so it can never collide with a real one.
+ANY_EMBEDDING_SPACE = "<any-embedding-space>"
+
 
 def _stored_item_ids(raw: str | bytes | None) -> Any:
     """A state row's ``item_ids`` JSON column, decoded as stored.
@@ -80,13 +90,52 @@ def _stored_item_ids(raw: str | bytes | None) -> Any:
         return []
 
 
+def vector_leg(embedder) -> tuple[Any, str | None]:
+    """The vector leg's ``(query embedder, stored-signature)`` pair, resolved together.
+
+    A query vector may only be scored against item vectors from the SAME
+    embedding space, and the signature is the only thing that establishes it —
+    so the two values are resolved in one place and handed to
+    :class:`HybridRetriever` together, rather than each call site wiring an
+    embedder and separately remembering to wire its identity. ``None`` in (no
+    embedder, or the model is not available yet) gives ``(None, None)``: the leg
+    is off and search answers from FTS5 + graph.
+    """
+    if embedder is None:
+        return None, None
+    return embedder.embed, embedder_signature(embedder)
+
+
 class HybridRetriever:
     """FTS5 keyword + graph traversal + optional vector search, fused with RRF."""
 
-    def __init__(self, store: KnowledgeStore, embedder=None):
-        """store: KnowledgeStore instance. embedder: optional callable(str) -> list[float]."""
+    def __init__(self, store: KnowledgeStore, embedder=None, *, embed_sig: str | None = None):
+        """store: KnowledgeStore instance. embedder: optional callable(str) -> list[float].
+
+        ``embed_sig`` is the :func:`~kiro_crew.knowledge.embedder.embed_signature`
+        value the query vectors belong to; only items stamped with it are scored
+        (see :meth:`_vector_search`). Resolve the pair through :func:`vector_leg`,
+        which cannot hand back one without the other.
+
+        Wiring an embedder REQUIRES a signature, because the predicate it feeds
+        fails OPEN: an omitted one scores every stored vector, including
+        old-space vectors of the same width, and no assertion anywhere goes red
+        for it. So the mistake is a ``ValueError`` at construction — a cost paid
+        once per call site, by a caller that already holds the embedder the
+        signature is read from — and the deliberate unfiltered case is spelled
+        :data:`ANY_EMBEDDING_SPACE`. Without an embedder the leg is off and the
+        signature is moot, so ``None`` stands there.
+        """
+        if embedder is not None and not embed_sig:
+            raise ValueError(
+                "HybridRetriever(embedder=...) requires embed_sig: an unpinned vector leg "
+                "scores stored vectors from any embedding space, including a foreign one of "
+                "the same width. Resolve the pair with retrieval.vector_leg(embedder), or "
+                "pass embed_sig=ANY_EMBEDDING_SPACE to score every space deliberately."
+            )
         self.store = store
         self.embedder = embedder
+        self.embed_sig = embed_sig
 
     def search(
         self,
@@ -109,6 +158,9 @@ class HybridRetriever:
         filter, NOT a security boundary: like ``source_id`` it narrows the
         seeds, and the graph leg stays unfiltered for the same reason. The two
         filters compose (both applied when both are given).
+
+        Returns at most ``limit`` ranked rows, plus at most ONE extra trailing
+        row -- the keyword leg's protected top hit (see below).
         """
         kw = self._keyword_search(
             query, limit=limit * 2, source_id=source_id, namespace=namespace
@@ -145,11 +197,11 @@ class HybridRetriever:
         gr_ids = {i for i, _ in gr}
         vec_ids = {i for i, _ in (vec or [])}
 
-        results = []
-        for item_id, score in fused[:limit]:
+        def _row(item_id: str, score: float) -> dict | None:
+            """A result row for one fused candidate, or None when the item does not resolve."""
             item = items_cache.get(item_id)
             if not item:
-                continue
+                return None
             types = []
             if item_id in kw_ids:
                 types.append("keyword")
@@ -157,7 +209,7 @@ class HybridRetriever:
                 types.append("graph")
             if item_id in vec_ids:
                 types.append("vector")
-            results.append({
+            return {
                 "id": item_id,
                 "title": item["title"],
                 "summary": item.get("summary"),
@@ -165,7 +217,35 @@ class HybridRetriever:
                 "score": score,
                 "source": item.get("source_id"),
                 "match_type": "+".join(types),
-            })
+            }
+
+        picks = fused[:limit]
+
+        # The keyword leg's own best match is protected from fusion truncation.
+        # The vector leg carries VECTOR_RRF_WEIGHT, so it can crowd a
+        # keyword-only document past `limit` even when that document is the
+        # single right answer -- the case where the query carries an exact error
+        # string, a ticket id or a rare technical term, and the caller otherwise
+        # sees related-but-wrong rows with no sign the right one was found and
+        # dropped. No weight setting avoids this, so the winner is appended as
+        # one extra trailing row instead: nothing already ranked is removed,
+        # reordered or demoted, so the rescue cannot regress a query the ranking
+        # already answers. Only rank 1 is protected -- promoting lower keyword
+        # ranks into the window would have to displace ranked rows, which is the
+        # regression this shape exists to avoid. The row keeps its real fused
+        # score, which downstream confidence floors depend on, and it is appended
+        # before the enrichment passes below so it stays as citable as any ranked
+        # row.
+        if kw:
+            top_kw_id = kw[0][0]
+            if all(item_id != top_kw_id for item_id, _ in picks):
+                picks += [(i, s) for i, s in fused if i == top_kw_id]
+
+        results = []
+        for item_id, score in picks:
+            row = _row(item_id, score)
+            if row is not None:
+                results.append(row)
 
         self._attach_source_locations(results)
         self._attach_citation_sources(results)
@@ -333,8 +413,8 @@ class HybridRetriever:
         so it is treated as a literal FTS5 string -- the user's input never
         contributes FTS5 operators (parameterized quoting). Stopwords are dropped
         and the remaining tokens OR-joined
-        so natural-language queries no longer require every
-        literal token to appear in a matching document.
+        so natural-language queries need not have every
+        literal token appear in a matching document.
 
         A CJK run is one whitespace token but several words, so it expands to its
         adjacent-character phrases instead of being matched whole; queries with
@@ -406,6 +486,19 @@ class HybridRetriever:
     ) -> list[tuple[str, int]] | None:
         """Brute-force cosine similarity against stored embeddings. Returns None if no embedder.
 
+        Candidate selection pins ``embedding_sig`` to the query's own embedding
+        space (``embed_sig``, which the constructor requires alongside an
+        embedder). This is the READ-SIDE REFUSAL that makes an embedding-model
+        change safe: a vector from another space that happens to have the SAME
+        WIDTH is invisible to the dimension guard below, so without the predicate
+        it is cosine-scored against this query and returned with a confident
+        score. A NULL signature — an item never stamped — is likewise unproven
+        and drops out until the sig-gated rebuild re-stamps it. The KB degrades
+        to FTS5 + graph rather than serving stale vectors.
+
+        :data:`ANY_EMBEDDING_SPACE` is the one value that drops the predicate,
+        and only a caller with no declarable identity may pass it.
+
         ``source_id`` narrows candidates to items of one source via a
         parameterized WHERE clause (never string interpolation). ``namespace``
         narrows to items carrying that ``items.namespace`` label the same way;
@@ -419,6 +512,9 @@ class HybridRetriever:
             return None
         sql = "SELECT id, embedding FROM items WHERE embedding IS NOT NULL AND status = 'active'"
         params: list[object] = []
+        if self.embed_sig != ANY_EMBEDDING_SPACE:
+            sql += " AND embedding_sig = ?"
+            params.append(self.embed_sig)
         if source_id is not None:
             # Ownership OR location — same membership rule as _keyword_search.
             sql += (

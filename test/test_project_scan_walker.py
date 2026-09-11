@@ -412,7 +412,7 @@ class TestGitignorePruning:
         # subclass. Uncaught, that is an HTTP 500 from a tree the user merely
         # pointed at; the recovery rule is the same as unreadable/oversized —
         # the file costs a warning and its layer, so the ``tmp/`` pattern in
-        # the same file no longer prunes.
+        # the same file does not prune.
         _make(tmp_path, "tmp/pkg/.git/", "app/.git/")
         (tmp_path / ".gitignore").write_text("tmp/\n!\n", encoding="utf-8")
 

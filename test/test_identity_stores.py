@@ -1,4 +1,4 @@
-"""The single canonical identity-store table and its projections (#6352).
+"""The single canonical identity-store table and its projections.
 
 These tests pin two things: the table's structural invariants (every projection
 stays a subset of the table; TRUSTED implies FENCED), and GOLDEN freezes of the
@@ -325,10 +325,10 @@ class TestConstants:
 class TestUsageTuplesAnchorTheRealHome:
     """Replacement pin for the host-isolation ratchet's deleted exclusions.
 
-    ``kiro_usage_api._CLI_SQLITE_DBS`` / ``_OTHER_SQLITE_DBS`` used to be direct
+    ``kiro_usage_api._CLI_SQLITE_DBS`` / ``_OTHER_SQLITE_DBS`` were direct
     import-time ``Path.home()`` bindings, tracked by
     ``test_host_isolation_floor.py``'s ratchet as excluded-with-reason security
-    anchors ("must name the REAL home"). As projections they no longer match
+    anchors ("must name the REAL home"). As projections they do not match
     that tripwire's AST shape, so THIS test carries the property forward: the
     tuples must anchor the operator's real home at import, because an entry is
     trusted precisely when it equals a home-anchored path inside the

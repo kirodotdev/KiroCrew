@@ -10,27 +10,26 @@
  *
  * Every capture is REAL: each preview flag is turned on in the pod's
  * localStorage, the theme is set through the pod's own `PUT /api/config/theme`,
- * and the page is driven with Playwright. Stills are PNG; the one interaction
- * (the create menu opening) is recorded with Playwright's `recordVideo` and
- * turned into a palette-quantised GIF with the ffmpeg that `imageio-ffmpeg`
- * ships in the repo's venv (12 fps, 800 px wide, ~6 s loop).
+ * and the page is driven with Playwright. Every capture today is a PNG still;
+ * the dialog also renders GIFs (`kind: 'gif'`), and the last one — the create
+ * menu opening on "New Crew Mode chat" — went with Crew Mode. Recording one
+ * again means `recordVideo` + a palette-quantised ffmpeg pass (12 fps, 800 px
+ * wide), the recipe the browser-recording skill documents.
  *
  * Usage (from website/, with the pod up and this branch's dist provisioned):
  *
  *   kirocrew pod up <worktree> --seed rich --json | tail -1 > /tmp/pod.json
  *   POD_INFO=/tmp/pod.json node scripts/capture-feature-previews.mjs [outDir]
  *
- * `outDir` defaults to `public/app-assets/feature-previews`. Budgets the PR
- * agreed to: PNG <= 200 KB, GIF <= 1.5 MB — the script fails loudly past them.
+ * `outDir` defaults to `public/app-assets/feature-previews`. Budget the PR
+ * agreed to: PNG <= 200 KB — the script fails loudly past it.
  * Adding a preview: add a `shoot*` step below AND a builder in
  * `pages/settings/FeaturePreviewsSection.tsx`; a preview with no honest capture
  * gets no builder and so no button.
  */
 import { chromium } from 'playwright'
 import fs from 'node:fs'
-import os from 'node:os'
 import path from 'node:path'
-import { execFileSync } from 'node:child_process'
 
 const info = JSON.parse(fs.readFileSync(process.env.POD_INFO, 'utf8').trim().split('\n').pop())
 const base = info.base_url
@@ -39,16 +38,7 @@ const out = path.resolve(process.argv[2] || 'public/app-assets/feature-previews'
 fs.mkdirSync(out, { recursive: true })
 
 const PNG_MAX = 200 * 1024
-const GIF_MAX = 1.5 * 1024 * 1024
 const VIEW = { width: 1200, height: 760 }
-const GIF_VIEW = { width: 1000, height: 640 }
-
-/** The venv's imageio-ffmpeg binary: a full build (palettegen/paletteuse),
- *  unlike Playwright's bundled ffmpeg, which only decodes screencasts. */
-function ffmpegExe() {
-  const py = path.resolve('../.venv/bin/python')
-  return execFileSync(py, ['-c', 'import imageio_ffmpeg; print(imageio_ffmpeg.get_ffmpeg_exe())'], { encoding: 'utf8' }).trim()
-}
 
 async function settle(page) {
   await page.waitForURL(u => !String(u).includes('token='), { timeout: 20_000 }).catch(() => {})
@@ -57,8 +47,8 @@ async function settle(page) {
 
 /** Fresh context: sign in with the pod token, set the theme server-side (the
  *  boot fetch overrides localStorage otherwise), turn the given flags on. */
-async function session(browser, theme, flags, viewport = VIEW, extra = {}) {
-  const ctx = await browser.newContext({ viewport, ...extra })
+async function session(browser, theme, flags) {
+  const ctx = await browser.newContext({ viewport: VIEW })
   const page = await ctx.newPage()
   await page.goto(`${base}/?token=${token}`, { waitUntil: 'load' })
   await settle(page)
@@ -98,54 +88,14 @@ for (const theme of ['light', 'dark']) {
     await shoot(page, path.join(out, `webhooks-page-${theme}.png`))
     await ctx.close()
   }
-  // Crew, door 1: the Members page.
+  // Crew Members: the page is the flag's only door (Crew Mode, the second
+  // door this flag used to open, retired — see `utils/previewFlags.ts`).
   {
     const { ctx, page } = await session(browser, theme, ['mc-preview-crew'])
     await page.goto(`${base}/members`, { waitUntil: 'load' })
     await settle(page)
     await shoot(page, path.join(out, `crew-members-${theme}.png`))
     await ctx.close()
-  }
-  // Crew, door 2: the create menu opening — an interaction, so a GIF.
-  {
-    const vdir = fs.mkdtempSync(path.join(os.tmpdir(), 'fp-gif-'))
-    const seed = await session(browser, theme, ['mc-preview-crew'], GIF_VIEW)
-    const state = await seed.ctx.storageState()
-    await seed.ctx.close()
-    const ctx = await browser.newContext({
-      viewport: GIF_VIEW, storageState: state, recordVideo: { dir: vdir, size: GIF_VIEW },
-    })
-    await ctx.addInitScript((mode) => {
-      localStorage.setItem('mc-theme', mode)
-      localStorage.setItem('mc-preview-crew', '1')
-    }, theme)
-    const page = await ctx.newPage()
-    await page.goto(`${base}/`, { waitUntil: 'load' })
-    await settle(page)
-    await page.getByRole('button', { name: 'Older Sessions' }).first().waitFor()
-    await page.waitForTimeout(2200)
-    const more = page.getByRole('button', { name: 'More create options' })
-    await more.hover(); await page.waitForTimeout(500)
-    await more.click()
-    await page.getByTestId('new-crew-chat').waitFor()
-    await page.waitForTimeout(700)
-    await page.getByTestId('new-crew-chat').hover()
-    await page.waitForTimeout(1800)
-    await page.keyboard.press('Escape')
-    await page.waitForTimeout(600)
-    const video = page.video()
-    await ctx.close()
-    const webm = await video.path()
-    const gif = path.join(out, `crew-menu-${theme}.gif`)
-    const ffmpeg = ffmpegExe()
-    // Skip the first 3 s (page settling), then two-pass palette GIF — the same
-    // recipe as the browser-recording skill: sharp text, bounded size.
-    const filters = 'fps=12,scale=min(800\\,iw):-2:flags=lanczos'
-    const palette = path.join(vdir, 'palette.png')
-    execFileSync(ffmpeg, ['-y', '-loglevel', 'error', '-ss', '3', '-i', webm, '-vf', `${filters},palettegen=max_colors=128`, palette])
-    execFileSync(ffmpeg, ['-y', '-loglevel', 'error', '-ss', '3', '-i', webm, '-i', palette, '-lavfi', `${filters} [x]; [x][1:v] paletteuse=dither=none`, gif])
-    fs.rmSync(vdir, { recursive: true, force: true })
-    check(gif, GIF_MAX)
   }
 }
 

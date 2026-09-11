@@ -21,7 +21,11 @@ from kiro_crew.knowledge import readers
 from kiro_crew.knowledge.chunker import HeadingAwareChunker
 from kiro_crew.knowledge.extractor import EntityExtractor
 from kiro_crew.knowledge.readers import FileReader
-from kiro_crew.knowledge.retrieval import HybridRetriever, _bytes_to_floats
+from kiro_crew.knowledge.retrieval import (
+    ANY_EMBEDDING_SPACE,
+    HybridRetriever,
+    _bytes_to_floats,
+)
 from kiro_crew.knowledge.store import KnowledgeBundleError, KnowledgeStore, SimpleDiGraph
 from kiro_crew.knowledge.sync import SyncScheduler
 
@@ -321,8 +325,8 @@ class TestKnowledgeStore:
         containing that substring literally. Deciding membership by raw text
         would skip the row: the column would stay at its 'pending' default and
         the watcher, which now reads the column, would walk a folder the user had
-        paused. `import_bundle` used to store a bundle's properties verbatim, so
-        such a row can exist.
+        paused. `import_bundle` can store a bundle's properties verbatim, so such
+        a row can exist.
         """
         escaped = str(uuid4())
         now = datetime.now().isoformat()
@@ -347,7 +351,7 @@ class TestKnowledgeStore:
         finally:
             reopened.close()
 
-    # ---- import_bundle JSON-column well-formedness (issue #5559) -----------
+    # ---- import_bundle JSON-column well-formedness ------------------------
     # The invariant "sources.properties / entities.aliases is JSON text every
     # reader json.loads()s back" is enforced at the writer, so every store
     # caller is covered — not only the dashboard handler.
@@ -499,6 +503,45 @@ class TestHeadingAwareChunker:
         for c in chunks:
             assert "line_start" in c and "line_end" in c
 
+    def test_chunk_code_splits_on_kotlin_declaration_keywords(self):
+        # Kotlin/C# spell their declarations `fun`/`object`/`interface`/`internal`.
+        # Without those keywords in the boundary regex the whole file is one block
+        # that the oversized branch then slices on word count, so a chunk starts
+        # mid-declaration and function-level retrieval granularity is lost.
+        source = "\n".join(
+            [
+                "package com.example",
+                "",
+                "interface Greeter {",
+                "    val name: String",
+                "}",
+                "",
+                "object Registry {",
+                "    val items = 0",
+                "}",
+                "",
+                "internal val secret = 0",
+                "",
+                "fun greet(): Int {",
+                "    return 1",
+                "}",
+            ]
+        )
+        # target_size=6 is picked so no block merges into its neighbour and none
+        # trips the oversized-split branch: every declaration therefore heads its
+        # own chunk, which is exactly what the boundary regex is asserted on.
+        chunks = HeadingAwareChunker(target_size=6).chunk_code(source, language="kt")
+        heads = [c["content"].split("\n", 1)[0] for c in chunks]
+        for decl in (
+            "interface Greeter {",
+            "object Registry {",
+            "internal val secret = 0",
+            "fun greet(): Int {",
+        ):
+            assert decl in heads, f"{decl!r} did not start a chunk; chunk heads: {heads}"
+        # Boundaries partition the lines: nothing is dropped or duplicated.
+        assert "\n".join(c["content"] for c in chunks) == source
+
     def test_small_text_single_chunk(self):
         text = "Just a short note."
         chunker = HeadingAwareChunker(target_size=500)
@@ -562,6 +605,52 @@ class TestFileReader:
         assert '.ps1' in CODE_EXTS
         assert '.psm1' in CODE_EXTS
         assert '.psd1' not in CODE_EXTS
+
+    def test_kotlin_and_peer_code_extensions_ingested_as_plain_text(self, tmp_path):
+        # Kotlin (.kt/.kts) and the C#/Swift/Scala trio are plain UTF-8 text, so
+        # the generic _read_text path handles them with no reader and no new
+        # dependency. They must be in SUPPORTED because that set is the
+        # folder-scan gate (folder_watcher._walk), and a source's
+        # include_extensions can only narrow it: an extension absent there is
+        # skipped before any reader runs, so a folder source over such a repo
+        # indexes only its README and config.
+        reader = FileReader()
+        samples = {
+            '.kt': 'fun main() { println("hello from kotlin") }',
+            '.kts': 'val greeting = "hello from a kotlin script"',
+            '.cs': 'internal class Greeter { public void Hi() {} }',
+            '.swift': 'func greet() { print("hello from swift") }',
+            '.scala': 'object Greeter { def hi(): Unit = () }',
+        }
+        for ext, content in samples.items():
+            assert ext in reader.SUPPORTED, f"{ext} missing from SUPPORTED"
+            assert ext not in reader._DISPATCH, f"{ext} must use the generic text path"
+            f = tmp_path / f"sample{ext}"
+            f.write_text(content, encoding="utf-8")
+            text, meta = reader.read(str(f))
+            assert content in text
+            assert meta['format'] == ext.lstrip('.')
+            assert meta['extension'] == ext
+
+    def test_code_extensions_are_a_subset_of_supported(self):
+        # CODE_EXTS (ingestion.py) and SUPPORTED (readers.py) are two
+        # hand-maintained registries over the same extensions, and only SUPPORTED
+        # gates the folder scan. An extension listed in CODE_EXTS alone never
+        # reaches the chunker it selects -- the file is dropped upstream with no
+        # error -- so the subset relation is the guard against that silent drift.
+        from kiro_crew.knowledge.ingestion import CODE_EXTS
+        assert {'.kt', '.kts'} <= CODE_EXTS
+        missing = sorted(CODE_EXTS - FileReader.SUPPORTED)
+        assert not missing, f"CODE_EXTS entries absent from FileReader.SUPPORTED: {missing}"
+
+    def test_kotlin_script_routes_to_the_code_chunker(self):
+        # .kts is a Kotlin build/script file, not prose: it must reach chunk_code
+        # like .kt rather than the generic prose chunker.
+        from kiro_crew.knowledge.ingestion import _run_chunker
+        chunker = MagicMock()
+        _run_chunker(chunker, '.kts', 'val x = 1', 'file:///build.gradle.kts')
+        chunker.chunk_code.assert_called_once_with('val x = 1', language='kts')
+        chunker.chunk.assert_not_called()
 
     def test_utf16_powershell_files_decode_cleanly(self, tmp_path):
         # Windows PowerShell 5.1 tooling (New-ModuleManifest, the legacy ISE)
@@ -956,7 +1045,11 @@ class TestHybridRetrieverSourceFilter:
         vec = json.dumps([1.0, 0.0, 0.0, 0.0]).encode()
         store.add_item("Vec A", "alpha content", "doc", source_id=src_a, embedding=vec)
         store.add_item("Vec B", "beta content", "doc", source_id=src_b, embedding=vec)
-        retriever = HybridRetriever(store, embedder=lambda q: [1.0, 0.0, 0.0, 0.0])
+        # ANY_EMBEDDING_SPACE: this asserts the SOURCE scope, and the items carry
+        # no signature, so the space predicate is deliberately out of the way.
+        retriever = HybridRetriever(
+            store, embedder=lambda q: [1.0, 0.0, 0.0, 0.0], embed_sig=ANY_EMBEDDING_SPACE
+        )
         results = retriever.search("unrelatedquerytoken", source_id=src_a)
         assert [r["title"] for r in results] == ["Vec A"]
 
@@ -1003,7 +1096,9 @@ class TestHybridRetrieverNamespaceFilter:
         vec = json.dumps([1.0, 0.0, 0.0, 0.0]).encode()
         store.add_item("Vec A", "alpha content", "doc", namespace="client-a", embedding=vec)
         store.add_item("Vec B", "beta content", "doc", namespace="client-b", embedding=vec)
-        retriever = HybridRetriever(store, embedder=lambda q: [1.0, 0.0, 0.0, 0.0])
+        retriever = HybridRetriever(
+            store, embedder=lambda q: [1.0, 0.0, 0.0, 0.0], embed_sig=ANY_EMBEDDING_SPACE
+        )
         results = retriever.search("unrelatedquerytoken", namespace="client-a")
         assert [r["title"] for r in results] == ["Vec A"]
 
@@ -2211,7 +2306,9 @@ class TestHybridRetrieverExtended:
     def test_vector_search_with_embedder(self, store):
         emb = json.dumps([1.0, 0.0, 0.0])
         store.add_item("Vec Doc", "vector content", "doc", embedding=emb)
-        retriever = HybridRetriever(store, embedder=lambda q: [1.0, 0.0, 0.0])
+        retriever = HybridRetriever(
+            store, embedder=lambda q: [1.0, 0.0, 0.0], embed_sig=ANY_EMBEDDING_SPACE
+        )
         results = retriever._vector_search("query")
         assert results is not None
         assert len(results) == 1
@@ -2230,7 +2327,9 @@ class TestHybridRetrieverExtended:
         emb = json.dumps([1.0, 0.0])
         item_id = store.add_item("JWT Auth", "JWT token design", "doc", embedding=emb)
         store.add_mention(item_id, e1)
-        retriever = HybridRetriever(store, embedder=lambda q: [1.0, 0.0])
+        retriever = HybridRetriever(
+            store, embedder=lambda q: [1.0, 0.0], embed_sig=ANY_EMBEDDING_SPACE
+        )
         results = retriever.search("JWT")
         assert len(results) >= 1
         # Should have multiple match types
@@ -2631,14 +2730,21 @@ class TestCosineSimilarityDimensionMismatch:
 
 
 class _FakeEmbedder:
-    """Embedder stub: returns a fixed vector and records which items it embedded."""
+    """Embedder stub: returns a fixed vector and records which items it embedded.
+
+    Records the scheduling class of every ``embed_for_item`` call so a caller's
+    priority can be asserted; the shape mirrors ``InProcessEmbedder``, whose
+    signature inputs are ``model`` + ``dim`` + ``content_budget``.
+    """
 
     model = "fake-embed"
+    dim = 4  # width of the vector below; feeds embed_signature like the real one
     base_url = ""
     content_budget = 10_000  # mirrors the real _EMBED_CONTENT_BUDGET default
 
     def __init__(self):
         self.embedded_titles: list[str] = []
+        self.priorities: list[int] = []
 
     def is_available(self) -> bool:
         return True
@@ -2648,6 +2754,7 @@ class _FakeEmbedder:
 
     def embed_for_item(self, title, summary, content=None, *, priority=PRIORITY_NORMAL):
         self.embedded_titles.append(title)
+        self.priorities.append(priority)
         return [0.1, 0.2, 0.3, 0.4]
 
 
@@ -2695,7 +2802,7 @@ class TestRebuildEmbeddingsJob:
             "SELECT embedding, embedding_sig, embedded_at FROM items "
             "WHERE status = 'active' LIMIT 1").fetchone()
         assert row["embedding"] == floats_to_bytes([0.1, 0.2, 0.3, 0.4])
-        assert row["embedding_sig"] == embed_signature(embedder.model)
+        assert row["embedding_sig"] == embed_signature(embedder.model, embedder.dim)
         assert row["embedded_at"]
 
     async def test_rebuild_is_idempotent_skips_current_sig(self, store):
@@ -2716,7 +2823,7 @@ class TestRebuildEmbeddingsJob:
         from kiro_crew.knowledge.embedder import embed_signature, floats_to_bytes
         from kiro_crew.knowledge.ingestion import rebuild_embeddings
         embedder = _FakeEmbedder()
-        sig = embed_signature(embedder.model)
+        sig = embed_signature(embedder.model, embedder.dim)
         done = store.add_item("done", "body", "document",
                               embedding=floats_to_bytes([0.1, 0.2, 0.3, 0.4]))
         store.db.execute("UPDATE items SET embedding_sig = ? WHERE id = ?", (sig, done))
@@ -2754,8 +2861,8 @@ class TestRebuildEmbeddingsJob:
     async def test_rebuild_heartbeats_updated_at_per_item_not_per_batch(self, store):
         """A slow item must not let the single-flight claimer judge the live job
         abandoned mid-batch: updated_at is committed AFTER EACH item, so it
-        advances within a batch rather than only at end-of-batch. Regression for
-        the concurrent-rebuild duplication the per-batch-only heartbeat allowed."""
+        advances within a batch rather than only at end-of-batch. A heartbeat that
+        only lands at end-of-batch lets a second claimer duplicate the rebuild."""
         from kiro_crew.knowledge.ingestion import rebuild_embeddings
 
         # Capture the job row's COMMITTED updated_at as each item is embedded (the
@@ -2818,7 +2925,7 @@ class TestWatcherSelfHeal:
         assert job["status"] == "completed"
         assert job["items_processed"] == 3
         assert len(embedder.embedded_titles) == 3
-        sig = embed_signature(embedder.model)
+        sig = embed_signature(embedder.model, embedder.dim)
         stale = store.db.execute(
             "SELECT COUNT(*) AS c FROM items WHERE embedding_sig IS NULL OR embedding_sig != ?",
             (sig,)).fetchone()["c"]
@@ -2828,7 +2935,7 @@ class TestWatcherSelfHeal:
         # Everything already current -> no job created.
         from kiro_crew.knowledge.embedder import embed_signature, floats_to_bytes
         embedder = _FakeEmbedder()
-        sig = embed_signature(embedder.model)
+        sig = embed_signature(embedder.model, embedder.dim)
         item_id = store.add_item("current", "body", "document",
                                  embedding=floats_to_bytes([0.1, 0.2, 0.3, 0.4]))
         store.db.execute("UPDATE items SET embedding_sig = ? WHERE id = ?", (sig, item_id))
@@ -2901,27 +3008,90 @@ class TestWatcherSelfHeal:
 
 class TestEmbedSignature:
     def test_base_url_ignored_by_signature(self):
-        # Embeddings run in-process (no external inference endpoint), so the
-        # sig hashes f"{model}|inprocess|{budget}" — no base_url input. Same
-        # model = stable signature; changing the model changes the signature,
-        # triggering the sig-gated rebuild.
+        # Embeddings run in-process (no external inference endpoint), so the sig
+        # has no base_url input. Same model + width = stable signature.
         from kiro_crew.knowledge.embedder import embed_signature
 
-        a = embed_signature("m")
-        b = embed_signature("m")
+        a = embed_signature("m", 1024)
+        b = embed_signature("m", 1024)
         assert a == b
 
     def test_model_changes_signature(self):
         from kiro_crew.knowledge.embedder import embed_signature
 
-        assert embed_signature("m1") != embed_signature("m2")
+        assert embed_signature("m1", 1024) != embed_signature("m2", 1024)
 
     def test_content_budget_changes_signature(self):
         # Changing the budget must change the embed signature, else items
         # truncated under the old budget would never be re-embedded.
         from kiro_crew.knowledge.embedder import embed_signature
 
-        assert embed_signature("m") != embed_signature("m", content_budget=42)
+        assert embed_signature("m", 1024) != embed_signature("m", 1024, content_budget=42)
+
+    def test_dim_change_moves_both_identities(self):
+        """A width change at a CONSTANT model id must move BOTH space identities.
+
+        The ratchet on the fold. ``dim`` is exactly the axis a KB signature over
+        ``model`` alone cannot see — a custom GGUF re-quantized to a different
+        projection, a backend adopting the model's own width — and an identity
+        that misses it leaves the KB serving old-width vectors as if nothing had
+        changed. Asserting BOTH here is what makes dropping the input from either
+        half fail a test rather than ship.
+        """
+        from kiro_crew.embeddings import embedding_space_signature
+        from kiro_crew.knowledge.embedder import embed_signature
+
+        assert embedding_space_signature("m", 1024) != embedding_space_signature("m", 768)
+        assert embed_signature("m", 1024) != embed_signature("m", 768)
+
+    def test_the_two_identities_partition_spaces_identically(self):
+        """Whatever the inputs, the two identities agree on "same vector space?".
+
+        For every pair of ``(model, dim)`` combinations, memory's signature and
+        the knowledge library's must be equal for exactly the same pairs. This is
+        the property that matters, but on its own it is satisfied by any injective
+        hash over the same fields -- see the derivation test below for the half it
+        cannot reach.
+        """
+        from kiro_crew.embeddings import embedding_space_signature
+        from kiro_crew.knowledge.embedder import embed_signature
+
+        spaces = [("m", 1024), ("m", 768), ("other", 1024), ("other", 768)]
+        memory = [embedding_space_signature(model, dim) for model, dim in spaces]
+        knowledge = [embed_signature(model, dim) for model, dim in spaces]
+        for i, left in enumerate(spaces):
+            for j, right in enumerate(spaces):
+                assert (memory[i] == memory[j]) == (knowledge[i] == knowledge[j]), (
+                    f"{left} vs {right}: memory and knowledge disagree about whether "
+                    "these are the same vector space"
+                )
+
+    def test_the_kb_identity_is_derived_from_memorys_not_reassembled(self, monkeypatch):
+        """The KB's space identity is a FUNCTION of memory's, not a twin of it.
+
+        Agreement on ``(model, dim)`` is not derivation: an independently
+        assembled hash over the same two fields agrees on every input and is
+        still a second definition of "same vector space", so the next field added
+        to ``embedding_space_signature`` reaches memory alone.
+
+        Observed by DISPLACING the shared function and watching the KB's value
+        follow. Substituting one that ignores ``dim`` must collapse the KB's two
+        widths onto one signature and keep its two models apart -- which holds
+        only if every ``(model, dim)`` input reaches ``embed_signature`` through
+        that one function.
+        """
+        from kiro_crew import embeddings as embeddings_mod
+        from kiro_crew.knowledge.embedder import embed_signature
+
+        assert embed_signature("m", 1024) != embed_signature("m", 768)
+
+        monkeypatch.setattr(
+            embeddings_mod, "embedding_space_signature", lambda model, dim: f"space::{model}"
+        )
+        assert embed_signature("m", 1024) == embed_signature("m", 768)
+        assert embed_signature("m", 1024) != embed_signature("other", 1024)
+        # The KB's own input is unaffected: it is folded on outside the space half.
+        assert embed_signature("m", 1024) != embed_signature("m", 1024, content_budget=42)
 
     def test_embedder_signature_matches_model_signature(self):
         from kiro_crew.knowledge.embedder import (
@@ -2932,9 +3102,34 @@ class TestEmbedSignature:
 
         class _E:
             model = "m"
+            dim = 1024
             content_budget = _EMBED_CONTENT_BUDGET
 
-        assert embedder_signature(_E()) == embed_signature("m")
+        assert embedder_signature(_E()) == embed_signature("m", 1024)
+
+    def test_embedder_signature_reads_the_width_from_the_embedder(self):
+        """``embedder_signature`` must not pin the width to a literal.
+
+        It is the single call sites use, so a width it did not read from the
+        embedder would make every per-item sig claim a space the vectors are not
+        in — and no other test would notice, because the value would still be
+        internally consistent.
+        """
+        from kiro_crew.knowledge.embedder import (
+            _EMBED_CONTENT_BUDGET,
+            embed_signature,
+            embedder_signature,
+        )
+
+        class _E:
+            model = "m"
+            dim = 1024
+            content_budget = _EMBED_CONTENT_BUDGET
+
+        narrow = _E()
+        narrow.dim = 768
+        assert embedder_signature(narrow) == embed_signature("m", 768)
+        assert embedder_signature(narrow) != embedder_signature(_E())
 
 
 class _FlakyEmbedder(_FakeEmbedder):
@@ -2946,6 +3141,7 @@ class _FlakyEmbedder(_FakeEmbedder):
 
     def embed_for_item(self, title, summary, content=None, *, priority=PRIORITY_NORMAL):
         self.embedded_titles.append(title)
+        self.priorities.append(priority)
         if title in self.fail_titles:
             return None
         return [0.1, 0.2, 0.3, 0.4]
@@ -3260,7 +3456,7 @@ class TestEntityExtractorNonceDelimiters:
 
 
 # ---------------------------------------------------------------------------
-# SyncScheduler.sync_all -- errored sources must be quiesced (issue #3946)
+# SyncScheduler.sync_all -- errored sources must be quiesced
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
@@ -3268,11 +3464,10 @@ class TestSyncAllSkipsErroredSources:
     """sync_all must skip an errored source, whichever writer marked it.
 
     KnowledgeIngestion and SyncScheduler both mark failure in the sync_status
-    COLUMN, which is the only store sync_all reads. Rows errored before the
-    column existed carry the state in their properties JSON, which cannot be
-    ordered against the column and so is never promoted onto it; such a row is
-    polled until an attempt of its own fails, and that failure writes the column
-    (issue #3946).
+    COLUMN, which is the only store sync_all reads. A row that carries its
+    errored state only in its properties JSON cannot be ordered against the
+    column and so is never promoted onto it; such a row is polled until an
+    attempt of its own fails, and that failure writes the column.
     """
 
     def _scheduler(self, store):
@@ -3354,7 +3549,7 @@ class TestSyncAllSkipsErroredSources:
 
 
 class TestCjkKeywordRecall:
-    """CJK recall on the FTS keyword leg (issue #3691).
+    """CJK recall on the FTS keyword leg.
 
     Vocabulary is shared with ``TestCjkSearch`` in test_history.py so the two
     search surfaces are read against the same examples. The query is the
@@ -3758,7 +3953,7 @@ class TestCjkKeywordRecall:
         store = KnowledgeStore(path)
         try:
             assert store._fts_terms_segmented() is False
-            # The update that used to raise. Both halves of the FTS sync run here.
+            # An update against a legacy index. Both halves of the FTS sync run here.
             store.update_item(item_id, content="\u5b8c\u5168\u65e0\u5173\u7684\u8bdd\u9898")
             store.db.execute("INSERT INTO items_fts (items_fts) VALUES ('integrity-check')")
             # A delete on the same legacy index must also survive.
@@ -3784,7 +3979,7 @@ class TestCjkKeywordRecall:
 
         store = KnowledgeStore(path)
         try:
-            store.delete_item(item_id)  # used to raise DatabaseError
+            store.delete_item(item_id)  # must not raise DatabaseError
             store.db.execute("INSERT INTO items_fts (items_fts) VALUES ('integrity-check')")
             assert store.get_item(item_id) is None
         finally:

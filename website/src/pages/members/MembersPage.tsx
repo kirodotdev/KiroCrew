@@ -33,7 +33,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom'
-import { ArrowLeft, ChevronRight, Circle, Clock, ExternalLink, Goal, Pencil, Route, Star, UserPlus, Users, Webhook } from 'lucide-react'
+import { ArrowLeft, Check, ChevronRight, Circle, Clock, ExternalLink, Goal, MessageCircleQuestionMark, Pencil, Route, Star, UserPlus, Users, Webhook, Zap } from 'lucide-react'
 import { PanelRightSolid } from '../../components/icons/panels'
 import { useTranslation } from 'react-i18next'
 import { api, type MemberRosterRow, type WebhookTokenEntry } from '../../api/client'
@@ -55,7 +55,7 @@ import {
 } from '../../components/autoNudgeLoop'
 import { skipToken, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { timeAgo } from '../../utils/timeAgo'
-import { fmtDateTimeNumeric, fmtTime } from '../../i18n/format'
+import { fmtDateTimeNumeric, fmtList, fmtTime } from '../../i18n/format'
 import { usePersistedBool } from '../../hooks/usePersistedBool'
 import { usePersistedString } from '../../hooks/usePersistedString'
 import { findReport, type ErrorReport } from '../../utils/errorReport'
@@ -66,9 +66,17 @@ import CrewStateAvatar from '../../components/CrewStateAvatar'
 import ChatPane from '../../components/ChatPane'
 import ErrorBoundary from '../../components/ErrorBoundary'
 import ErrorNotice from '../../components/ErrorNotice'
+import { useGuardedLeave } from '../../components/NavigationLeaveGuard'
 import { useIsMobile } from '../../hooks/useIsMobile'
 import { useConnected } from '../../hooks/useConnected'
-import { SearchInput } from '../../components/ui'
+import { SearchFilterBar, FilterMenuButton, FilterChip, FILTER_CHIP_ROW_CLS, FILTER_MENU_LABEL_CLS, FILTER_MENU_CONTENT_CLS } from '../../components/SearchFilterBar'
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from '../../components/ui/dropdown-menu'
+import {
+  countByFilter, narrowRoster, parseSort, parseSourceFilter, parseStatusFilters, queryNarrows, sortRoster,
+  SORT_OPTIONS, SOURCE_FILTERS, STATUS_FILTERS,
+  type MemberSignals, type MemberSort, type MemberSourceFilter, type MemberStatusFilter, type RosterQuery,
+} from './rosterFilter'
+import { Btn } from '../../components/ui'
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
 import { isSidePanelHidden, shouldMountSidePanel, sidePanelDockMotion } from '../chat/sidePanelMount'
 import SidePanel, { SIDE_PANEL_MIN_W, SIDE_PANEL_RESERVED_W, type SidePanelLeadingTab, type SidePanelWithholdable } from '../chat/SidePanel'
@@ -76,9 +84,10 @@ import { CHAT_TRANSCRIPT_VIEWS, VIEW_DATA_SOURCE, useAnyLiveAppTab, usePanelTabs
 import { usePanelTabDescriptors } from '../../hooks/panelTabRegistry'
 import { usePanelDocumentActions } from '../../hooks/usePanelDocumentActions'
 import ResizeHandle from '../../components/ResizeHandle'
+import { cn } from '../../lib/utils'
+import { LIST_SHELL_CLS, LIST_HEADER_CLS, LIST_TITLE_CLS, LIST_BODY_CLS, ROW_BOX_CLS, ROW_IDLE_CLS, ROW_ACTIVE_CLS, ROW_TITLE_CLS, ROW_STATUS_CLS } from '../../components/listShell'
 import { useColumnResize } from '../../hooks/useColumnResize'
 import { loadColumnWidth } from '../../lib/columnWidth'
-import { compareText } from '../../i18n/format'
 import { tabStatus, type TabStatus } from '../../lib/sessionTabs'
 import { lastActivityEpoch } from '../chat/sessionOrder'
 import { activityDayLabel, floorCountText, groupActivityDays, projectLabel } from './activityDays'
@@ -135,6 +144,16 @@ export function resolveDefaultMember(
     if (hit) return hit
   }
   return ordered[0]
+}
+
+type MemberMemoryDisplay = 'global' | 'legacy' | 'private' | 'ownership_mismatch' | 'unavailable'
+
+export function memberMemoryDisplay(row: MemberRosterRow): MemberMemoryDisplay {
+  if (row.name === 'default') return row.memory_store === 'default' ? 'global' : 'unavailable'
+  if (row.memory_owner && row.memory_owner !== row.name) return 'ownership_mismatch'
+  if (row.memory_version === 2) return row.memory_owner === row.name ? 'private' : 'unavailable'
+  if (row.memory_version === 1 && !row.memory_owner) return 'legacy'
+  return 'unavailable'
 }
 
 /** Roster width bounds, persisted like the chat sidebar's (mc-sidebar-width). */
@@ -206,38 +225,51 @@ const ACTIVITY_DAYS_VISIBLE = 3
  *  field on the server. */
 const STARRED_ONLY_KEY = 'mc-members-starred-only'
 const SOURCE_FILTER_KEY = 'mc-members-source'
-/** Source chips. `mine` = crews created in the crew manager (source
- *  'kirocrew'); `builtin` = shipped with Kiro Crew; `package` = written by the
- *  agent sync from installed capability packages — on a busy host the large
- *  majority of the roster, and the reason the filter exists. */
-export type MemberSourceFilter = 'all' | 'mine' | 'builtin' | 'package'
-const SOURCE_CHIPS: readonly Exclude<MemberSourceFilter, 'all'>[] = ['mine', 'builtin', 'package']
-/** Static key per chip — a map, not a template, so `check-i18n-keys` can
+const STATUS_FILTER_KEY = 'mc-members-status'
+const SORT_KEY = 'mc-members-sort'
+/** Static key per menu row — a map, not a template, so `check-i18n-keys` can
  *  resolve every reference (assembled keys are a counted blind spot there). */
-const SOURCE_CHIP_LABEL_KEY: Record<Exclude<MemberSourceFilter, 'all'>, string> = {
+const SOURCE_LABEL_KEY: Record<Exclude<MemberSourceFilter, 'all'>, string> = {
   mine: 'pages.membersPage.filter_source_mine',
   builtin: 'pages.membersPage.filter_source_builtin',
   package: 'pages.membersPage.filter_source_package',
 }
-/** Hover tooltip per chip: the one-word labels ("From packages") are not
+/** Hover tooltip per origin row: the one-word labels ("From packages") are not
  *  self-explaining to a reader who has never installed a capability package. */
-const SOURCE_CHIP_TITLE_KEY: Record<Exclude<MemberSourceFilter, 'all'>, string> = {
+const SOURCE_TITLE_KEY: Record<Exclude<MemberSourceFilter, 'all'>, string> = {
   mine: 'pages.membersPage.filter_source_mine_description',
   builtin: 'pages.membersPage.filter_source_builtin_description',
   package: 'pages.membersPage.filter_source_package_description',
 }
-export function parseSourceFilter(raw: string | null): MemberSourceFilter {
-  return raw === 'mine' || raw === 'builtin' || raw === 'package' ? raw : 'all'
+/** The two states the sessions menu also filters on reuse ITS labels, so the
+ *  same slot state never reads as two different words across the two menus. */
+const STATUS_LABEL_KEY: Record<MemberStatusFilter, string> = {
+  working: 'pages.chatSidebar.filter_running',
+  needs_you: 'pages.membersPage.filter_status_needs_you',
+  unread: 'pages.chatSidebar.filter_unread',
+  patrolling: 'pages.membersPage.filter_status_patrolling',
 }
-/** The server normalizes `source` to kirocrew | builtin | package before it
- *  reaches the wire; the fallback-to-package here only covers a row from an
- *  older gateway that omits the field. */
-export function matchesSource(m: { source?: unknown }, f: MemberSourceFilter): boolean {
-  if (f === 'all') return true
-  const src = typeof m.source === 'string' ? m.source : ''
-  if (f === 'mine') return src === 'kirocrew'
-  if (f === 'builtin') return src === 'builtin'
-  return src !== 'kirocrew' && src !== 'builtin'
+const STATUS_TITLE_KEY: Record<MemberStatusFilter, string> = {
+  working: 'pages.membersPage.filter_status_working_description',
+  needs_you: 'pages.membersPage.filter_status_needs_you_description',
+  unread: 'pages.membersPage.filter_status_unread_description',
+  patrolling: 'pages.membersPage.filter_status_patrolling_description',
+}
+/** Each status row's marker — the same glyph the roster row and the sidebar's
+ *  session filters use for that state, lit in the state's colour when active. */
+const STATUS_ICON: Record<MemberStatusFilter, (active: boolean) => React.ReactNode> = {
+  working: (active) => <Zap size={12} className={active ? 'text-[var(--warn)]' : 'text-muted'} {...(active ? { fill: 'var(--warn)', stroke: 'none' } : {})} />,
+  needs_you: (active) => <MessageCircleQuestionMark size={12} className={active ? 'text-[var(--info)]' : 'text-muted'} />,
+  unread: (active) => <Circle size={12} className={active ? 'text-accent' : 'text-muted'} {...(active ? { strokeWidth: 0, fill: 'var(--accent)' } : {})} />,
+  patrolling: (active) => <Goal size={12} className={active ? 'text-accent' : 'text-muted'} />,
+}
+/** The A–Z row reuses the sidebar menu's label. The activity row does NOT
+ *  reuse the sidebar's "Newest": on a list of people that reads as "newest
+ *  member", while the order is last activity — so it keeps a member-specific
+ *  word for what it actually sorts by. */
+const SORT_LABEL_KEY: Record<MemberSort, string> = {
+  recent: 'pages.membersPage.sort_recent',
+  name: 'pages.chatSidebar.sort_name_asc',
 }
 /** How each shared tab status renders on a driving row. The ORDER lives in
  *  `tabStatus` (lib/sessionTabs.ts) — this only maps its verdict to a dot
@@ -283,6 +315,7 @@ const EMPTY_ROSTER: readonly MemberRosterRow[] = []
 export default function MembersPage() {
   const { t } = useTranslation()
   const navigate = useNavigate()
+  const leave = useGuardedLeave()
   const location = useLocation()
   const queryClient = useQueryClient()
   // The roster is a React Query read (issue #9418), not page state: a return
@@ -379,6 +412,16 @@ export default function MembersPage() {
     return () => window.removeEventListener('resize', onResize)
   }, [])
   const beside = panelSitsBeside({ winW, rosterW: roster.width, isMobile })
+  // On a phone the overlay must FILL its scrim. SidePanel's own mobile
+  // fallback is `width: 100%`, which cannot resolve here: the overlay's inner
+  // wrapper is a shrink-to-fit flex item, so a percentage child falls back to
+  // the panel's max-content width and the panel lands at SIDE_PANEL_MIN_W
+  // with a dimmed sliver of the thread showing beside it (issue #9979). The
+  // chat page hands its panel an explicit px width for exactly this reason
+  // (sidePanelFillWidth's mobile branch); this is that branch. `undefined` off
+  // the phone, where the panel keeps its own resizable width in both
+  // placements — the docked/overlay split is panelSitsBeside's, not this.
+  const panelFillWidth = isMobile ? Math.max(SIDE_PANEL_MIN_W, winW) : undefined
   const [overlayOpen, setOverlayOpen] = useState(false)
   // `overlayOpen` is overlay-mode state only. Reset it whenever the panel docks
   // (a widening window, a narrower roster), so an open overlay does not lie in
@@ -406,17 +449,30 @@ export default function MembersPage() {
     },
     [slotKeyOf, liveRunning],
   )
+  // A member turn parked on the user — an approval or a question — read off
+  // the same slot frames; `tabStatus` is the shared ranking of those two.
+  const liveNeedsYou = useMemo(() => {
+    const byKey: Record<string, boolean> = {}
+    for (const sl of liveSlots) {
+      if (sl.mode !== 'member') continue
+      const st = tabStatus(sl, [], sl.key)
+      byKey[sl.key] = st === 'permission' || st === 'question'
+    }
+    return byKey
+  }, [liveSlots])
 
   const active = useMemo(
     () => members.find((m) => m.name === activeName),
     [members, activeName],
   )
+  const activeMemory = active ? memberMemoryDisplay(active) : 'unavailable'
   // Most-recently-active first (like any IM member list); never-talked
   // members fall to the bottom alphabetically. Sorted from the cached roster,
   // which changes only when the cache does — a return to the page, a focus
   // after the stale window, a registry write elsewhere — never on a live
   // message, so rows do not move under the cursor mid-conversation.
   const [filter, setFilter] = useState('')
+  const [filterMenuOpen, setFilterMenuOpen] = useState(false)
   // Persistent roster filters. The agent sync writes every package-installed
   // agent spec into the roster, so a host with a few dozen installed packages
   // shows dozens of crews the user never drives. Both toggles survive a page
@@ -430,12 +486,34 @@ export default function MembersPage() {
   const toggleStarredOnly = useCallback(() => setStarredOnly((prev) => !prev), [setStarredOnly])
   const pickSource = useCallback(
     (next: MemberSourceFilter) => {
-      // Clicking the active chip clears it back to "all" — one chip row,
-      // no separate reset control.
+      // Choosing the active origin clears it back to "all" — one radio-like
+      // group, no separate reset row.
       setRawSourceFilter((prev) => (parseSourceFilter(prev) === next ? 'all' : next))
     },
     [setRawSourceFilter],
   )
+  // Live-state filters (working / needs you / unread / patrolling) and the
+  // sort, persisted like the sidebar's session filters. Stored as strings so
+  // the parse is the single place junk from storage is rejected.
+  const [rawStatusFilter, setRawStatusFilter] = usePersistedString(STATUS_FILTER_KEY, '[]')
+  const statusFilter = useMemo(() => parseStatusFilters(rawStatusFilter), [rawStatusFilter])
+  const toggleStatus = useCallback(
+    (key: MemberStatusFilter) =>
+      setRawStatusFilter((prev) => {
+        const next = parseStatusFilters(prev)
+        if (next.has(key)) next.delete(key)
+        else next.add(key)
+        return JSON.stringify([...next])
+      }),
+    [setRawStatusFilter],
+  )
+  const [rawSort, setRawSort] = usePersistedString(SORT_KEY, 'recent')
+  const sort = parseSort(rawSort)
+  const clearFilters = useCallback(() => {
+    setStarredOnly(false)
+    setRawSourceFilter('all')
+    setRawStatusFilter('[]')
+  }, [setStarredOnly, setRawSourceFilter, setRawStatusFilter])
   // Star toggle: optimistic flip, reverted if the PUT fails. The star lives
   // on the crew record, not the DM thread, so it goes through the crew
   // update endpoint rather than a members route. A failed write (403 for a
@@ -520,55 +598,32 @@ export default function MembersPage() {
     },
     [mutateStar],
   )
-  const starredCount = useMemo(() => members.filter((m) => !!m.starred).length, [members])
-  // Per-bucket counts on the origin chips: the one-word labels do not explain
-  // themselves and their tooltips never fire on touch, so each chip shows what
-  // it holds instead.
-  const sourceCounts = useMemo(() => {
-    const out: Record<Exclude<MemberSourceFilter, 'all'>, number> = { mine: 0, builtin: 0, package: 0 }
-    for (const m of members) {
-      for (const chip of SOURCE_CHIPS) if (matchesSource(m, chip)) out[chip] += 1
-    }
-    return out
-  }, [members])
   // Display order before the search filter — this is what "the first member"
   // means for the default-open below, so a typed filter never changes which
-  // member a fresh visit lands on. The ORDER is committed per MEMBERSHIP, not
-  // per refetch: the roster query refetches on every server refresh frame, on
-  // window focus and on staleness, and re-sorting when a last_active_ts
-  // advances would move rows under the cursor mid-click — opening a different
-  // member's durable pinned thread. Row CONTENT (star, last-message preview,
-  // presence) still updates live from every refetch; only the ordering is held
-  // until a member is added, removed or renamed, which re-sorts from scratch.
-  const committedOrderRef = useRef<string[]>([])
+  // member a fresh visit lands on. The ORDER is committed per MEMBERSHIP and
+  // per chosen SORT, not per refetch: the roster query refetches on every
+  // server refresh frame, on window focus and on staleness, and re-sorting
+  // when a last_active_ts advances would move rows under the cursor mid-click
+  // — opening a different member's durable pinned thread. Row CONTENT (star,
+  // last-message preview, presence) still updates live from every refetch;
+  // only the ordering is held until a member is added, removed or renamed, or
+  // the user picks the other sort, which re-sorts from scratch.
+  const committedOrderRef = useRef<{ sort: MemberSort; names: string[] }>({ sort, names: [] })
   const orderedMembers = useMemo(() => {
     const byName = new Map(members.map((m) => [m.name, m]))
     const prev = committedOrderRef.current
-    const sameMembership = prev.length === byName.size && prev.every((n) => byName.has(n))
-    const names = sameMembership
-      ? prev
-      : [...members]
-          .sort(
-            (a, b) =>
-              (b.last_active_ts ?? 0) - (a.last_active_ts ?? 0) || compareText(a.name, b.name),
-          )
-          .map((m) => m.name)
-    committedOrderRef.current = names
+    const sameMembership =
+      prev.sort === sort && prev.names.length === byName.size && prev.names.every((n) => byName.has(n))
+    const names = sameMembership ? prev.names : sortRoster(members, sort).map((m) => m.name)
+    committedOrderRef.current = { sort, names }
     return names.map((n) => byName.get(n)).filter((m): m is MemberRosterRow => !!m)
-  }, [members])
-  const sortedMembers = useMemo(() => {
-    const q = filter.trim().toLowerCase()
-    return orderedMembers.filter(
-      (m) =>
-        (!starredOnly || !!m.starred) &&
-        matchesSource(m, sourceFilter) &&
-        (!q || m.name.toLowerCase().includes(q)),
-    )
-  }, [orderedMembers, filter, starredOnly, sourceFilter])
-  // True when the filters (not the search) hid everything — the empty-roster
-  // copy would be wrong then, since the roster is not empty.
-  const filteredOut =
-    loaded && !loadError && members.length > 0 && sortedMembers.length === 0 && !filter.trim()
+  }, [members, sort])
+  // Named apart from `rosterQuery` above: that one is the React Query READ of
+  // the roster, this one is the user's filter/sort question asked of it.
+  const rosterFilterQuery = useMemo<RosterQuery>(
+    () => ({ search: filter, starredOnly, source: sourceFilter, status: statusFilter, sort }),
+    [filter, starredOnly, sourceFilter, statusFilter, sort],
+  )
   const activeSlot = active ? threadOutcome?.slot_key ?? '' : ''
   // Two distinct verdicts with two different sentences: a collision is a
   // fact about the roster (the slug's thread belongs to another crew), a
@@ -627,9 +682,13 @@ export default function MembersPage() {
         )
       }
     },
-    onError: (_err, m, seq) => {
+    onError: (error, m, seq) => {
       if (seq !== threadReqSeq.current[m.name]) return
-      setThreadOutcome(m.name, (prev) => ({ slot_key: prev?.slot_key ?? '', failed: true }))
+      setThreadOutcome(m.name, (prev) => ({
+        slot_key: prev?.slot_key ?? '',
+        failed: true,
+        errorReport: findReport(error instanceof Error ? error.message : undefined),
+      }))
     },
   })
   const { mutate: postThread } = openThread
@@ -1040,6 +1099,52 @@ export default function MembersPage() {
     [patrolLoopOf],
   )
   const activePatrol = activeMemberKey ? patrol.loops[activeMemberKey] : undefined
+  // The live facts the status filters read, resolved per row the same way the
+  // row's own markers are (isRunning / isUnread / activePatrolOf), so a filter
+  // can never disagree with the dot it filters on.
+  const signalsOf = useCallback(
+    (m: MemberRosterRow): MemberSignals => {
+      const key = slotKeyOf(m)
+      return {
+        running: !!isRunning(m),
+        needsYou: !!key && !!liveNeedsYou[key],
+        unread: isUnread(m),
+        patrolling: !!activePatrolOf(m),
+      }
+    },
+    [slotKeyOf, isRunning, liveNeedsYou, isUnread, activePatrolOf],
+  )
+  // Narrow the COMMITTED order (never re-sort here): a refetch that advances
+  // a last_active_ts must not move rows under the cursor — see orderedMembers.
+  const sortedMembers = useMemo(
+    () => narrowRoster(orderedMembers, rosterFilterQuery, signalsOf),
+    [orderedMembers, rosterFilterQuery, signalsOf],
+  )
+  // Per-row counts in the filter menu: the one-word labels do not explain
+  // themselves and a zero-count row is exactly the one that blanks the list.
+  const filterCounts = useMemo(() => countByFilter(members, signalsOf), [members, signalsOf])
+  const narrowed = queryNarrows(rosterFilterQuery)
+  // What the aggregate chip says: each active filter's menu label with its
+  // count (Starred (2), In progress (1), Mine (6)) — and the bare names for
+  // the chip's accessible "Clear … filter" name.
+  const activeFilterNames = useMemo(() => {
+    const out: string[] = []
+    if (starredOnly) out.push(t('pages.membersPage.filter_starred'))
+    for (const key of STATUS_FILTERS) if (statusFilter.has(key)) out.push(t(STATUS_LABEL_KEY[key]))
+    if (sourceFilter !== 'all') out.push(t(SOURCE_LABEL_KEY[sourceFilter]))
+    return out
+  }, [t, starredOnly, statusFilter, sourceFilter])
+  const activeFilterLabels = useMemo(() => {
+    const out: string[] = []
+    if (starredOnly) out.push(`${t('pages.membersPage.filter_starred')} (${filterCounts.starred})`)
+    for (const key of STATUS_FILTERS) if (statusFilter.has(key)) out.push(`${t(STATUS_LABEL_KEY[key])} (${filterCounts.status[key]})`)
+    if (sourceFilter !== 'all') out.push(`${t(SOURCE_LABEL_KEY[sourceFilter])} (${filterCounts.source[sourceFilter]})`)
+    return out
+  }, [t, starredOnly, statusFilter, sourceFilter, filterCounts])
+  // True when the filters (not the search) hid everything — the empty-roster
+  // copy would be wrong then, since the roster is not empty.
+  const filteredOut =
+    loaded && !loadError && members.length > 0 && sortedMembers.length === 0 && !filter.trim()
   // Which of the block's three verdicts to render. An active loop wins; a
   // stopped loop keeps its reason visible rather than collapsing into
   // "nothing scheduled" — that collapse is exactly how a dead patrol goes
@@ -1200,21 +1305,28 @@ export default function MembersPage() {
           page until a member is picked, then the thread takes over and the
           header's back button returns here. Two fixed rails (264+300px)
           otherwise crush the flex-1 thread to zero at narrow widths.
-          Carded like the Sessions page's chat list (ChatSidebar) so the two
-          conversation surfaces read as one family. */}
+          The card, header line, list body and rows are the Sessions sidebar's
+          own recipes (components/listShell) so the two conversation lists read
+          as one surface — including the kiro-light shell hook that steps the
+          card back from the white canvas. */}
       <aside
         className={`${
           activeName ? 'hidden md:flex' : 'flex'
-        } relative w-full md:w-[var(--roster-w)] shrink-0 bg-bg-elevated border border-border rounded-xl shadow-sm flex-col min-h-0`}
+        } ${LIST_SHELL_CLS} relative w-full md:w-[var(--roster-w)] shrink-0 flex-col min-h-0`}
         // CSS owns the breakpoint: the var is set unconditionally and only the
         // md: class consumes it, so resizing the window across 768px reacts
         // without any JS media-query snapshot going stale.
         style={{ '--roster-w': `${roster.width}px` } as React.CSSProperties}
         data-testid="member-roster"
       >
-        <div className="px-4 pt-4 pb-1 flex items-center gap-2">
-          <Users size={15} className="lucide-inline text-muted" />
-          <h1 className="text-sm font-semibold flex-1">{t('pages.membersPage.title')}</h1>
+        <div className={LIST_HEADER_CLS}>
+          {/* pl-1.5 is the sidebar's title inset when no rail toggle sits
+              before it; the page icon leads the title where the sidebar's
+              reads bare, because this header names a page, not a pane. */}
+          <div className="flex items-center gap-1.5 min-w-0 flex-1 pl-1.5">
+            <Users size={15} className="lucide-inline text-muted shrink-0" />
+            <h1 className={LIST_TITLE_CLS}>{t('pages.membersPage.title')}</h1>
+          </div>
           {/* Adding a member IS creating a crew, and the crew manager is the
               only write path — so this is a navigation, not an inline form.
               It lands ON the create form, not on the crew list (#9513). */}
@@ -1228,7 +1340,7 @@ export default function MembersPage() {
             <UserPlus size={15} />
           </button>
         </div>
-        <div className="px-4 pb-2 text-[11px] text-muted" data-testid="member-count">
+        <div className={`px-4 pb-2 ${ROW_STATUS_CLS} text-muted`} data-testid="member-count">
           {/* "N of M" while any filter (not the search) narrows the list, so
               the header never contradicts a 1-row or empty view below it.
               With no roster to count (the read failed) the line is a dash:
@@ -1236,7 +1348,7 @@ export default function MembersPage() {
               state as fact what is only unknown. */}
           {loadError
             ? '\u2014'
-            : starredOnly || sourceFilter !== 'all'
+            : narrowed
               ? t('pages.membersPage.member_count_filtered', {
                   shown: sortedMembers.length,
                   count: members.length,
@@ -1259,58 +1371,129 @@ export default function MembersPage() {
             />
           </div>
         )}
-        {/* Same search idiom as the Sessions sidebar. */}
-        <div className="px-2 pb-1">
-          <SearchInput
-            className="w-full"
-            placeholder={t('pages.membersPage.search_members')}
-            value={filter}
-            onChange={(e) => setFilter(e.target.value)}
-            data-testid="member-search"
-          />
-        </div>
-        {/* Filter chips: star toggle first, then origin. Pressed state is
-            aria-pressed so the filter reads to AT as a toggle, not a link. */}
-        <div className="px-2 pb-2 flex flex-wrap items-center gap-1" data-testid="member-filters">
-          <button
-            type="button"
-            onClick={toggleStarredOnly}
-            aria-pressed={starredOnly}
-            className={`inline-flex items-center gap-1 h-6 px-2 rounded-full text-[11px] border transition-colors ${
-              starredOnly
-                ? 'border-accent text-accent bg-accent-subtle'
-                : 'border-border text-muted hover:text-text hover:bg-bg-hover'
-            }`}
-            title={t('pages.membersPage.filter_starred_description')}
-            data-testid="member-filter-starred"
-          >
-            <Star
-              size={11}
-              className="lucide-inline"
-              {...(starredOnly ? { fill: 'var(--accent)', stroke: 'none' } : {})}
+        {/* The Sessions sidebar's search row (components/SearchFilterBar): the
+            same field, clear button and inline sort/filter menu. The menu holds
+            what the sidebar's holds for sessions, in the roster's terms — a
+            star toggle, the member's live state, its origin, and the sort.
+            Menu rows keep the menu open (preventDefault) so several can be
+            toggled in one visit, as the sidebar's do. */}
+        <SearchFilterBar
+          className="px-2 pb-1"
+          placeholder={t('pages.membersPage.search_members')}
+          clearLabel={t('pages.chatSidebar.clear_search')}
+          value={filter}
+          onChange={setFilter}
+          inputTestId="member-search"
+          trailing={(
+            <DropdownMenu open={filterMenuOpen} onOpenChange={setFilterMenuOpen}>
+              <DropdownMenuTrigger asChild>
+                {/* Badge = unread count, the same meaning the sidebar's
+                    trigger badge carries, so one learned reading serves both. */}
+                <FilterMenuButton
+                  title={t('pages.membersPage.sort_filter_members')}
+                  badge={filterCounts.status.unread}
+                  testId="member-filter-menu"
+                />
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className={FILTER_MENU_CONTENT_CLS} data-testid="member-filters">
+                <DropdownMenuLabel className={FILTER_MENU_LABEL_CLS}>{t('pages.chatSidebar.filter')}</DropdownMenuLabel>
+                <DropdownMenuItem
+                  onSelect={(e) => { e.preventDefault(); toggleStarredOnly() }}
+                  role="menuitemcheckbox"
+                  aria-checked={starredOnly}
+                  title={t('pages.membersPage.filter_starred_description')}
+                  data-testid="member-filter-starred"
+                >
+                  <Star size={12} className={starredOnly ? 'text-accent' : 'text-muted'} {...(starredOnly ? { fill: 'var(--accent)', stroke: 'none' } : {})} />
+                  <span className="flex-1 truncate">{t('pages.membersPage.filter_starred')}</span>
+                  {/* Every filter row shows its count the same way, 0 included:
+                      a zero-count row is exactly the one that blanks the list
+                      when chosen, whichever section it sits in. */}
+                  <span className="text-muted text-[11px] shrink-0">{filterCounts.starred}</span>
+                  {starredOnly && <Check size={14} className="text-accent shrink-0" />}
+                </DropdownMenuItem>
+                {STATUS_FILTERS.map((key) => {
+                  const active = statusFilter.has(key)
+                  return (
+                    <DropdownMenuItem
+                      key={key}
+                      onSelect={(e) => { e.preventDefault(); toggleStatus(key) }}
+                      role="menuitemcheckbox"
+                      aria-checked={active}
+                      title={t(STATUS_TITLE_KEY[key])}
+                      data-testid={`member-filter-status-${key}`}
+                    >
+                      {STATUS_ICON[key](active)}
+                      <span className="flex-1 truncate">{t(STATUS_LABEL_KEY[key])}</span>
+                      <span className="text-muted text-[11px] shrink-0">{filterCounts.status[key]}</span>
+                      {active && <Check size={14} className="text-accent shrink-0" />}
+                    </DropdownMenuItem>
+                  )
+                })}
+                <DropdownMenuSeparator />
+                <DropdownMenuLabel className={FILTER_MENU_LABEL_CLS}>{t('pages.membersPage.filter_origin')}</DropdownMenuLabel>
+                {SOURCE_FILTERS.map((key) => {
+                  const active = sourceFilter === key
+                  return (
+                    <DropdownMenuItem
+                      key={key}
+                      onSelect={(e) => { e.preventDefault(); pickSource(key) }}
+                      role="menuitemradio"
+                      aria-checked={active}
+                      title={t(SOURCE_TITLE_KEY[key])}
+                      data-testid={`member-filter-source-${key}`}
+                    >
+                      <span className="flex-1 truncate">{t(SOURCE_LABEL_KEY[key])}</span>
+                      {/* 0 is rendered, not omitted: a zero-count origin is
+                          exactly the one that blanks the list when chosen. */}
+                      <span className="text-muted text-[11px] shrink-0">{filterCounts.source[key]}</span>
+                      {active && <Check size={14} className="text-accent shrink-0" />}
+                    </DropdownMenuItem>
+                  )
+                })}
+                <DropdownMenuSeparator />
+                <DropdownMenuLabel className={FILTER_MENU_LABEL_CLS}>{t('pages.chatSidebar.sort_by')}</DropdownMenuLabel>
+                {SORT_OPTIONS.map((key) => (
+                  <DropdownMenuItem
+                    key={key}
+                    onSelect={() => setRawSort(key)}
+                    role="menuitemradio"
+                    aria-checked={sort === key}
+                    data-testid={`member-sort-${key}`}
+                  >
+                    <span className="flex-1">{t(SORT_LABEL_KEY[key])}</span>
+                    {sort === key && <Check size={14} className="text-accent shrink-0" />}
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          )}
+        />
+        {/* The at-rest marker that the list is narrowed: ONE aggregate chip in
+            the sidebar's chip recipe (components/SearchFilterBar), naming every
+            active filter, so a returning user sees WHY the roster is short and
+            clears the lot with one click instead of reopening the menu. One
+            control, not one per filter — up to six sibling buttons would break
+            AUTOSDE max-two-buttons-per-row — and in the NEUTRAL aggregate shape
+            the sidebar's tag filter uses for "clears several": a coloured pill
+            means "clears this one filter" on both lists, a neutral pill means
+            "clears them all". The search text is not in it: it is visible in
+            the field, with its own clear button. */}
+        {narrowed && (
+          <div className={FILTER_CHIP_ROW_CLS} data-testid="member-filter-chips">
+            {/* The visible text IS the outcome of the click — "Clear Starred (2),
+                Mine (6) filter" — the same sentence the accessible name carries,
+                so a reader never has to guess whether the one ✕ drops one filter
+                or all of them. One existing key, one {{var}}: no glued strings. */}
+            <FilterChip
+              aggregate
+              label={t('pages.chatSidebar.clear_named_filter', { filter: fmtList(activeFilterLabels, { type: 'unit', style: 'short' }) })}
+              clearLabel={t('pages.chatSidebar.clear_named_filter', { filter: fmtList(activeFilterNames) })}
+              onClear={clearFilters}
+              testId="member-filter-chip"
             />
-            {t('pages.membersPage.filter_starred')}
-            {starredCount > 0 && <span className="opacity-70">{starredCount}</span>}
-          </button>
-          {SOURCE_CHIPS.map((chip) => (
-            <button
-              key={chip}
-              type="button"
-              onClick={() => pickSource(chip)}
-              aria-pressed={sourceFilter === chip}
-              className={`inline-flex items-center gap-1 h-6 px-2 rounded-full text-[11px] border transition-colors ${
-                sourceFilter === chip
-                  ? 'border-accent text-accent bg-accent-subtle'
-                  : 'border-border text-muted hover:text-text hover:bg-bg-hover'
-              }`}
-              title={t(SOURCE_CHIP_TITLE_KEY[chip])}
-              data-testid={`member-filter-source-${chip}`}
-            >
-              {t(SOURCE_CHIP_LABEL_KEY[chip])}
-              <span className="opacity-70">{sourceCounts[chip]}</span>
-            </button>
-          ))}
-        </div>
+          </div>
+        )}
         {/* Star-write failure. Falsy message renders nothing. askAgent is ON:
             the roster holds no unsaved draft, so the hand-off's navigation
             destroys nothing (AUTOSDE errors-use-error-notice). */}
@@ -1333,7 +1516,7 @@ export default function MembersPage() {
           </div>
         )}
         <ul
-          className="flex-1 overflow-y-auto scrollbar-none list-none m-0 px-2 pb-2"
+          className={`${LIST_BODY_CLS} list-none m-0`}
           style={{ scrollbarWidth: 'none' }}
           aria-label={t('pages.membersPage.title')}
         >
@@ -1370,10 +1553,7 @@ export default function MembersPage() {
               <p>{t('pages.membersPage.filters_hide_all')}</p>
               <button
                 type="button"
-                onClick={() => {
-                  if (starredOnly) toggleStarredOnly()
-                  if (sourceFilter !== 'all') pickSource(sourceFilter)
-                }}
+                onClick={clearFilters}
                 className="mt-2 inline-flex items-center gap-1 text-[11.5px] px-2 py-1 rounded border border-border hover:bg-accent/40"
                 data-testid="member-filters-clear"
               >
@@ -1383,12 +1563,14 @@ export default function MembersPage() {
           )}
           {sortedMembers.map((m) => (
             <li key={m.name} className="group/row relative">
-              {/* Same rounded-row idiom as ChatSidebar's session rows, so the
-                  two conversation lists read as one family. The star is a
-                  SIBLING of the row button, not a child: a button inside a
-                  button is invalid HTML and breaks keyboard activation. It is
-                  absolutely placed over the row's right padding so the row
-                  keeps its single click target and the label its width. */}
+              {/* ChatSidebar's own row recipe (components/listShell), so the
+                  two conversation lists read as one family; pr-8 widens the
+                  right padding over ROW_BOX_CLS's pr-3 to hold the star. The
+                  star is a SIBLING of the row button, not a child: a button
+                  inside a button is invalid HTML and breaks keyboard
+                  activation. It is absolutely placed over the row's right
+                  padding so the row keeps its single click target and the
+                  label its width. */}
               <button
                 onClick={() => openMember(m)}
                 // The open row keeps itself in view: a member opened by URL
@@ -1396,11 +1578,11 @@ export default function MembersPage() {
                 // below the fold of a long roster, and a thread with no visible
                 // row looks like a member that was never added (#9513).
                 ref={m.name === activeName ? scrollActiveRowIntoView : undefined}
-                className={`w-full flex items-center gap-2.5 pl-2.5 pr-8 py-2 rounded-md text-left transition-all select-none ${
-                  m.name === activeName
-                    ? 'text-text-strong bg-accent-subtle'
-                    : 'text-muted hover:text-text hover:bg-bg-hover'
-                }`}
+                className={cn(
+                  'w-full flex items-center gap-2.5 text-sm text-left transition-all select-none',
+                  ROW_BOX_CLS, 'pr-8',
+                  m.name === activeName ? ROW_ACTIVE_CLS : ROW_IDLE_CLS,
+                )}
                 aria-current={m.name === activeName ? 'true' : undefined}
               >
                 <span className="relative shrink-0">
@@ -1477,11 +1659,11 @@ export default function MembersPage() {
                   </AnimatePresence>
                 </span>
                 <span className="min-w-0 flex-1">
-                  <span className="block text-[13px] font-medium truncate">{m.name}</span>
+                  <span className={`block ${ROW_TITLE_CLS} font-semibold text-text truncate`}>{m.name}</span>
                   {/* Last-message preview, like a session row — presence
                       already rides the avatar dot, so a textual Idle/Working
                       label said nothing the dot did not. */}
-                  <span className="block text-[11px] text-muted truncate">
+                  <span className={`block ${ROW_STATUS_CLS} text-muted truncate`}>
                     {m.last_message || '\u00a0'}
                   </span>
                 </span>
@@ -1533,20 +1715,24 @@ export default function MembersPage() {
             </li>
           ))}
         </ul>
+        {/* Window-splitter between roster and thread: the same component as the
+            Sessions sidebar's grip, sitting on the card's right border the same
+            way (absolute, 12px rounded-xl corner inset), so the two pages' edges
+            read as one control. md+ only — below md the page is single-pane and
+            there is nothing to resize. */}
+        <div className="hidden md:block" data-testid="member-roster-resize">
+          <ResizeHandle
+            handleProps={roster.handleProps}
+            label={t('pages.membersPage.resize_roster')}
+            onNudge={roster.nudge}
+            value={roster.width}
+            min={ROSTER_MIN}
+            max={ROSTER_MAX}
+            inset={12}
+            className="absolute top-0 -right-[3px] h-full z-10"
+          />
+        </div>
       </aside>
-
-      {/* Shared window-splitter between roster and thread: keyboard-operable,
-          md+ only (below md the page is single-pane, nothing to resize). */}
-      <div className="hidden md:flex" data-testid="member-roster-resize">
-        <ResizeHandle
-          handleProps={roster.handleProps}
-          label={t('pages.membersPage.title')}
-          onNudge={roster.nudge}
-          value={roster.width}
-          min={ROSTER_MIN}
-          max={ROSTER_MAX}
-        />
-      </div>
 
       {/* DM thread */}
       <section
@@ -1696,10 +1882,26 @@ export default function MembersPage() {
                       ? 'pages.membersPage.thread_repair_failed'
                       : 'pages.membersPage.thread_open_failed',
                   )}
+                  report={threadOutcome?.errorReport}
                   variant="inline"
                   askAgent={!activeSlot}
                   testId="member-thread-error"
                 />
+                {threadOutcome?.errorReport && (
+                  <details className="mt-1.5 text-[12px] text-muted" data-testid="member-thread-error-details">
+                    <summary className="w-fit cursor-pointer rounded-sm focus-ring">{t('pages.membersPage.details')}</summary>
+                    {/* No hand-off here: the notice above owns the sole action
+                        and disables it while the cached conversation holds a draft. */}
+                    <ErrorNotice
+                      message={threadOutcome.errorReport.message}
+                      report={threadOutcome.errorReport}
+                      variant="inline"
+                      askAgent={false}
+                      className="mt-1"
+                      messageClassName="whitespace-pre-wrap"
+                    />
+                  </details>
+                )}
               </div>
             )}
             {activeSlot ? (
@@ -2239,18 +2441,30 @@ export default function MembersPage() {
               <dd className="min-w-0 truncate">{String(active.memory_store ?? '')}</dd>
             </div>
           </dl>
-          {/* Honest disclosure, always rendered, worded for this member's store.
-              Only the markdown layer (preferences, project notes) is read from a
-              named memory_store; conversation memory and lessons live in the
-              one global vector store every member reads, so "what you tell it
-              is known to all of them" stays true on a dedicated store too.
-              Store identity is a config fact — never inferred from the roster. */}
-          <div className="mt-3 text-[11px] text-muted border border-border rounded-md px-2.5 py-2">
-            {String(active.memory_store || 'default') === 'default'
-              ? t('pages.membersPage.memory_shared_note')
-              : t('pages.membersPage.memory_dedicated_note', {
-                  store: String(active.memory_store),
-                })}
+          <div className="mt-3 flex flex-col gap-2 text-[11px] text-muted border border-border rounded-md px-2.5 py-2">
+            <span>
+              {activeMemory === 'global'
+                ? t('pages.kiroCrewAgentsPage.global_memory_v1')
+                : activeMemory === 'private'
+                  ? t('pages.kiroCrewAgentsPage.private_memory_owned')
+                  : activeMemory === 'legacy'
+                    ? t('pages.kiroCrewAgentsPage.private_memory_legacy')
+                    : activeMemory === 'ownership_mismatch'
+                      ? t('pages.kiroCrewAgentsPage.memory_binding_mismatch')
+                      : t('pages.kiroCrewAgentsPage.memory_binding_unavailable')}
+            </span>
+            <Btn onClick={() => {
+              const destination = activeMemory === 'global' || activeMemory === 'private'
+                ? `/settings/overview?view=memory&store=${encodeURIComponent(active.name === 'default' ? 'default' : String(active.memory_store))}`
+                : `${CREW_MANAGER_PATH}&crew=${encodeURIComponent(active.name)}`
+              leave(() => navigate(destination), destination)
+            }}>
+              {activeMemory === 'global' || activeMemory === 'private'
+                ? t('pages.kiroCrewAgentsPage.manage_private_memory')
+                : activeMemory === 'legacy'
+                  ? t('pages.membersPage.setup_in_crew_manager')
+                  : t('pages.kiroCrewAgentsPage.open_crew_manager')}
+            </Btn>
           </div>
           {/* One exit, into the crew manager (the only writer), landing on
               THIS member's editor — the same destination as the header face,
@@ -2352,10 +2566,10 @@ export default function MembersPage() {
                     ? 'h-full overflow-visible flex justify-end shrink-0'
                     /* The overlay MUST be dismissable, so it is the one placement
                        that hands the panel an onClose — and the scrim is a second
-                       dismiss, the drawer convention. On a phone the panel's
-                       mobile `100%` width fills the scrim; on a tablet-width
-                       window the panel keeps its own (resizable, persisted)
-                       width against the dimmed chat. */
+                       dismiss, the drawer convention. On a phone the panel is
+                       handed the window width (`fillWidth`) so it fills the
+                       scrim; on a tablet-width window the panel keeps its own
+                       (resizable, persisted) width against the dimmed chat. */
                     : 'fixed top-safe-offset-[42px] bottom-safe left-safe right-safe z-40 flex justify-end bg-bg/60 backdrop-blur-sm'}
                   style={panelHidden ? { display: 'none' } : undefined}
                   onClick={beside ? undefined : (e) => { if (e.target === e.currentTarget) closeOverlay() }}
@@ -2381,6 +2595,10 @@ export default function MembersPage() {
                          covers the thread, so nothing to reserve. */
                       onClose={beside ? undefined : closeOverlay}
                       extraReserveW={beside ? roster.width + PANEL_GAPS_W : 0}
+                      /* Phone only (see panelFillWidth): the overlay fills the
+                         window. Off the phone this is undefined and the panel
+                         sizes itself. */
+                      fillWidth={panelFillWidth}
                     />
                   </motion.div>
                 </motion.div>

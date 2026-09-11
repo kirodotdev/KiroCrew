@@ -187,7 +187,7 @@ class TestManagedRepair:
         report = dp.check_dead_paths(repair=fake_repair)
 
         managed = report.managed_dead
-        # After a clean repair the spec is no longer counted as dead...
+        # After a clean repair the spec does not count as dead...
         assert managed == [] or all(r.repaired for r in managed)
         result = next(r for r in report.results if r.spec == AGENT_FILENAME)
         assert result.managed is True

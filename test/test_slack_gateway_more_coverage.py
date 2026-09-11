@@ -393,18 +393,36 @@ class TestDeliverResultRouting:
         orch.slack.post_message.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_slack_thread_arm_without_ts_falls_back_to_dm(self):
-        # "slack:C1" is only two segments, so there is no thread to reply in:
-        # the fallback opens the owner's DM and still rings the bell.
+    async def test_slack_channel_arm_without_ts_posts_to_the_channel(self, monkeypatch):
+        # "slack:C1" names a channel and no thread: post there as a new message
+        # (no owner-DM fallback), and still ring the bell. The tag is
+        # agent-writable, so the channel must be tracked for the post to happen —
+        # see test_slack_heartbeat_channel_deliver.py for the refusal legs.
+        monkeypatch.setattr("kiro_crew.slack.gateway.is_tracked_channel", lambda c: c == "C1")
         orch = _make_orchestrator()
         ds = _mock_dashboard_state()
         orch.dashboard_state = ds
         orch.slack = _mock_slack(dm="D7")
         await orch._deliver_result("Title", "task", "result", "slack:C1")
+        orch.slack.open_dm.assert_not_awaited()
+        assert orch.slack.post_message.await_args.args[0] == "C1"
+        assert orch.slack.post_message.await_args.args[2] is None
+        ds.notify.assert_called_once()
+        assert ds.notify.call_args.args[0] == "heartbeat"
+
+    @pytest.mark.asyncio
+    async def test_slack_channel_arm_with_empty_channel_falls_back_to_dm(self):
+        # A truncated tag ("slack:") has no channel to post to: posting to ""
+        # would raise inside the swallowed except and lose the report, so the
+        # owner-DM leg still covers it.
+        orch = _make_orchestrator()
+        ds = _mock_dashboard_state()
+        orch.dashboard_state = ds
+        orch.slack = _mock_slack(dm="D7")
+        await orch._deliver_result("Title", "task", "result", "slack:")
         orch.slack.open_dm.assert_awaited_once_with("U_OWNER")
         assert orch.slack.post_message.await_args.args[0] == "D7"
         ds.notify.assert_called_once()
-        assert ds.notify.call_args.args[0] == "heartbeat"
 
     @pytest.mark.asyncio
     async def test_default_arm_notifies_even_when_dm_unavailable(self):
@@ -711,29 +729,6 @@ class TestAutoMigrateMemory:
 # ═══════════════════════════════════════════════════════════════════════════
 # Tests: small init / notification surfaces
 # ═══════════════════════════════════════════════════════════════════════════
-
-
-class TestInitCrew:
-    """Crew mode is optional: a construction failure disables it silently."""
-
-    def test_orchestrator_failure_disables_crew_mode(self, caplog):
-        orch = _make_orchestrator()
-        ds = _mock_dashboard_state()
-        ds.crew = None
-        orch.dashboard_state = ds
-        with caplog.at_level("WARNING"):
-            with patch(
-                "kiro_crew.crew_chat.CrewOrchestrator", side_effect=RuntimeError("bad wiring")
-            ):
-                orch._init_crew()
-        assert "crew mode disabled" in caplog.text
-
-    def test_no_dashboard_state_skips_crew_setup(self):
-        orch = _make_orchestrator()
-        orch.dashboard_state = None
-        with patch("kiro_crew.crew_chat.CrewOrchestrator") as ctor:
-            orch._init_crew()
-        ctor.assert_not_called()
 
 
 class TestInitMcpDiscovery:

@@ -377,10 +377,11 @@ def browser(name: str, args: dict[str, Any]) -> str:
     # off, so there is no per-call caller context and no KIROCREW_SESSION_KEY,
     # and macOS/Windows have no HMAC pid sidecar -- i.e. ALL THREE sources the
     # strict resolver accepts are absent, so strict returns "" for the user's
-    # own main session too, not just subagents. The tool used to then fabricate
-    # a bogus ``unresolved:<pid>`` key; the strict command route rejects that
-    # header (the gateway kernel-resolves the AF_UNIX peer and denies a declared
-    # key that differs from it), 403-ing every op on a default install. The
+    # own main session too, not just subagents. Feeding strict's empty result
+    # into a fabricated ``unresolved:<pid>`` key gets that header rejected by
+    # the strict command route (the gateway kernel-resolves the AF_UNIX peer
+    # and denies a declared key that differs from it), 403-ing every op on a
+    # default install. The
     # lenient resolver returns the REAL slot key, which matches what the peer
     # check resolves, so the op is admitted. (Tradeoff: a subagent's MCP-core
     # child walks up into the parent slot, so a subagent op resolves to the

@@ -475,7 +475,7 @@ export const defaultMessageRenderers: readonly MessageRenderer[] = [
     // The shared ErrorCard, deliberately without `onContinue`: omitting the
     // handler selects its settled (non-continuable) shape, and the app-sdk
     // surface has no turn to resume, so it must never grow the affordance.
-    render: (m, ctx) => ctx.row(<ErrorCard content={m.content} />),
+    render: (m, ctx) => ctx.row(<ErrorCard content={m.content} meta={m.meta} />),
   },
   {
     id: 'notice',

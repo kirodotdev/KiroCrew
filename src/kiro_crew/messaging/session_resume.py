@@ -1,6 +1,6 @@
-"""Resuming a dashboard session inside a channel conversation, channel-neutrally.
+"""Resuming a persisted session inside a channel conversation, channel-neutrally.
 
-A user picks one of their dashboard chats from a channel and continues it there. Two
+A user picks one of their resumable chats from a channel and continues it there. Two
 channels grew this independently -- Discord first, and Teams would have been a second
 copy of ~600 lines -- so this module is the half that is genuinely shared, split on
 the same line ``queue_receipt.py`` uses:
@@ -33,11 +33,17 @@ import time
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-from kiro_crew.history import is_incognito_transcript, needles_match_text, parse_search_query
+from kiro_crew.history import (
+    is_incognito_transcript,
+    needles_match_text,
+    parse_search_query,
+    transcript_stem,
+)
 from kiro_crew.messaging.link import (
     UNBIND_REASON_ORIGIN_REBIND,
     UNBIND_REASON_USER_UNLINK,
     ChannelLink,
+    split_dm_session_key,
 )
 from kiro_crew.messaging.renderer import new_approval_nonce
 from kiro_crew.messaging.resume_expectation import (
@@ -79,6 +85,37 @@ _MAX_ROUTE_ATTEMPTS = 3
 _AGENT_SENTINELS = frozenset({"default", "auto"})
 
 
+def session_agent_from_metadata(meta: dict) -> str:
+    """Return a provider template, translating a positively owned member alias.
+
+    Dashboard history records the member alias in ``agent``. Channel-native
+    history records a provider template there instead. Only private memory's
+    declared owner disambiguates these namespaces; unowned V1 remains unchanged.
+    The execution path separately validates the actual memory before acquisition.
+    """
+    recorded = str((meta or {}).get("agent") or "").strip()
+    store = (meta or {}).get("memory_store")
+    if isinstance(store, str) and store not in ("", "default"):
+        try:
+            from kiro_crew.config.loader import KiroCrewConfig, resolve_agent_bindings
+
+            cfg = KiroCrewConfig.load()
+            record = cfg.memory_stores.get(store)
+            owner = getattr(record, "owner_member", "")
+            if (
+                owner
+                and getattr(record, "memory_version", 1) == 2
+                and (recorded == owner or not recorded or recorded.casefold() in _AGENT_SENTINELS)
+            ):
+                binding = resolve_agent_bindings(cfg, owner, validate_memory_files=False)
+                return binding.kiro_agent or cfg.agent.default_agent or "kirocrew"
+        except Exception:
+            # The strict session-memory check refuses broken private bindings
+            # before a provider starts. Hydration alone never repairs/rebinds it.
+            logger.debug("resume: member template lookup failed", exc_info=True)
+    return "" if recorded.casefold() in _AGENT_SENTINELS else recorded
+
+
 def persisted_session_agent(conv_log: Any | None, session_key: str) -> str:
     """Return a resumed session's recorded agent, or ``""`` to use the route agent.
 
@@ -93,10 +130,7 @@ def persisted_session_agent(conv_log: Any | None, session_key: str) -> str:
     except Exception:
         logger.debug("resume: could not read persisted agent for %s", session_key, exc_info=True)
         return ""
-    recorded = str((meta or {}).get("agent") or "").strip()
-    if recorded.casefold() in _AGENT_SENTINELS:
-        return ""
-    return recorded
+    return session_agent_from_metadata(meta)
 
 
 class ResumeReleaseError(RuntimeError):
@@ -105,7 +139,7 @@ class ResumeReleaseError(RuntimeError):
 
 @dataclass(frozen=True)
 class SessionChoice:
-    """One offered session: the dashboard key, and the label the user sees."""
+    """One offered session: its canonical key and the label the user sees."""
 
     key: str
     title: str
@@ -206,7 +240,7 @@ def history_dashboard_key(raw_key: object) -> str | None:
 
     A transcript stem is not always the session key: the same session can appear as
     ``dashboard:<slot>`` or as the file-stem form ``dashboard_<slot>``, and a row from
-    some other surface is not resumable at all.
+    some other surface is not resumable by the default resolver.
 
     The stem prefix is stripped in a LOOP, not once: a re-archived transcript can carry
     it stacked (``dashboard_dashboard_<slot>``), and stripping one layer would bind
@@ -223,6 +257,59 @@ def history_dashboard_key(raw_key: object) -> str | None:
     return None
 
 
+def native_generation_bucket(key: str) -> str:
+    """Return the durable DM bucket for a trusted canonical session key."""
+    parsed = split_dm_session_key(key)
+    return parsed[0] if parsed is not None else ""
+
+
+def resumable_history_key(
+    row: dict[str, Any],
+    *,
+    sessions: Any,
+    native_key: str,
+) -> str | None:
+    """Resolve a dashboard or exact-same-bucket native history row.
+
+    A native transcript stem is irreversible: agent and scope segments may
+    contain underscores. Rows therefore require the session map's authoritative
+    resolver; a zero-turn generation has no history row and nothing to recover.
+    """
+    dashboard_key = history_dashboard_key(row.get("key"))
+    if dashboard_key is not None:
+        return dashboard_key
+
+    raw_key = str(row.get("key") or "")
+    if not raw_key:
+        return None
+    resolve_stem = getattr(sessions, "channel_key_for_stem", None)
+    candidate = str(resolve_stem(raw_key) or "") if callable(resolve_stem) else ""
+    if not candidate or raw_key not in {candidate, transcript_stem(candidate)}:
+        return None
+
+    native_bucket = native_generation_bucket(native_key)
+    candidate_bucket = native_generation_bucket(candidate)
+    if not native_bucket or candidate_bucket != native_bucket:
+        return None
+    return candidate
+
+
+def same_bucket_origin_keys(sessions: Any, link: ChannelLink, native_key: str) -> frozenset[str]:
+    """Outbound mirror occupants that are generations of one native DM bucket."""
+    native_bucket = native_generation_bucket(native_key)
+    if not native_bucket:
+        return frozenset()
+    resolve_stem = getattr(sessions, "channel_key_for_stem", None)
+    keys: set[str] = set()
+    for stored_key in sessions.find_mirror_sessions(link):
+        candidate = stored_key
+        if stored_key.startswith("dashboard:") and callable(resolve_stem):
+            candidate = str(resolve_stem(stored_key.removeprefix("dashboard:")) or "")
+        if candidate and native_generation_bucket(candidate) == native_bucket:
+            keys.add(stored_key)
+    return frozenset(keys)
+
+
 async def resolve_session_choices(
     conv_log: Any,
     query: str,
@@ -230,6 +317,8 @@ async def resolve_session_choices(
     *,
     limit: int = PICKER_LIMIT,
     fetch_limit: int = SEARCH_FETCH_LIMIT,
+    sessions: Any | None = None,
+    native_key: str = "",
 ) -> tuple[list[SessionChoice], int]:
     """The offerable sessions for *query* (newest-first when blank), and the total.
 
@@ -241,6 +330,11 @@ async def resolve_session_choices(
 
     Order is already meaningful -- ``search_sessions`` returns best-scored first,
     ``list_sessions`` newest first -- so it is never re-sorted.
+
+    With no native key, only dashboard sessions are admitted. A channel passes its
+    canonical native key and session map to include exact-same-bucket generations;
+    eligibility remains centralized here so privacy filtering, ordering and display
+    budgets do not drift between picker implementations.
 
     Raises whatever the history layer raises; the caller decides what to tell the user.
     """
@@ -271,6 +365,7 @@ async def resolve_session_choices(
         rows = await asyncio.to_thread(conv_log.list_sessions)
 
     eligible: list[SessionChoice] = []
+    seen: set[str] = set()
     for row in rows:
         if not isinstance(row, dict):
             continue
@@ -278,9 +373,13 @@ async def resolve_session_choices(
         # deliberately unpersisted conversation into a channel that does persist.
         if is_incognito_transcript(row.get("memory_mode")):
             continue
-        key = history_dashboard_key(row.get("key"))
-        if key is None:
+        if sessions is not None and native_key:
+            key = resumable_history_key(row, sessions=sessions, native_key=native_key)
+        else:
+            key = history_dashboard_key(row.get("key"))
+        if key is None or key in seen:
             continue
+        seen.add(key)
         raw_title = str(row.get("title") or key.removeprefix("dashboard:"))
         title = display_safe(" ".join(raw_title.split()), TITLE_LIMIT) or "Untitled session"
         eligible.append(SessionChoice(key=key, title=title))
@@ -741,6 +840,7 @@ class SessionResumeController:
         picker_owner: str,
         is_owner: bool,
         query: str = "",
+        native_key: str = "",
     ) -> None:
         """List eligible sessions and register only a picker that reached the surface."""
         operation = f"{self.channel_type}.sessions_data_access"
@@ -762,6 +862,8 @@ class SessionResumeController:
                 self.conv_log,
                 query,
                 surface.display_safe,
+                sessions=self.sessions,
+                native_key=native_key,
             )
         except Exception as exc:
             sel().log_api_access(
@@ -861,8 +963,8 @@ class SessionResumeController:
 
             # Snapshot what this pick is about to overwrite. ``record`` replaces the
             # channel's expectation outright, so on a failed bind, retiring the
-            # replacement is not a rollback: it leaves a DETACHED marker where an
-            # ACTIVE record used to be, and that record was the evidence a lost
+            # replacement is not a rollback: it leaves a DETACHED marker in place of the
+            # ACTIVE record, and that record was the evidence a lost
             # link owes the user a notice. The next message would then route
             # natively and the notice would never be delivered.
             #

@@ -543,7 +543,7 @@ def test_spawn_feature_gateway_happy_path() -> None:
 def test_spawn_feature_gateway_isolates_the_agent_spec_home() -> None:
     """The spawned gateway must write its agent specs under its OWN throwaway home.
 
-    Regression guard for issue #4912. The gateway boot runs ``rebuild_agent_config``,
+    The gateway boot runs ``rebuild_agent_config``,
     which writes the managed MCP specs into ``kiro_agents_dir()``. With only
     ``KIROCREW_HOME`` isolated (the data home) and ``KIRO_HOME`` left at the default,
     that resolver names the operator's real machine-wide ``~/.kiro/agents`` -- and the

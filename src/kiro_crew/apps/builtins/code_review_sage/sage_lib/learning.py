@@ -398,9 +398,9 @@ def clear_candidate(root: Path | None = None, namespace: str | None = None,
     cf = candidate_file(root, namespace)
     if not cf.exists():
         return False
-    # Both branches run under the lock. The full unlink used to sit outside it,
-    # so a `stage_learning` append could complete between the exists() check and
-    # the unlink and be deleted without ever being read — the same read-modify-
+    # Both branches run under the lock. With the full unlink outside it, a
+    # `stage_learning` append can complete between the exists() check and the
+    # unlink and be deleted without ever being read — the same read-modify-
     # write race the selective branch takes the lock for.
     with _candidate_lock(root, namespace):
         if not cf.exists():          # a concurrent clear got there first

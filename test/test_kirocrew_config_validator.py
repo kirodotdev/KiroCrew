@@ -43,7 +43,7 @@ async def test_accepts_zero_auto_sentinel(tmp_path):
 @pytest.mark.asyncio
 async def test_accepts_value_up_to_hard_cap(tmp_path):
     cfg = tmp_path / "config.json"
-    # Default hard cap is 16; 12 used to be rejected by the old upper bound of 5.
+    # Default hard cap is 16, so 12 is accepted.
     res = await _put({"max_subagents": 12}, cfg)
     assert res.status == 200
     assert _written(cfg)["agent"]["max_subagents"] == 12
@@ -77,7 +77,7 @@ async def test_same_request_cannot_widen_hard_cap(tmp_path):
 @pytest.mark.asyncio
 async def test_hard_cap_honors_persisted_config(tmp_path):
     cfg = tmp_path / "config.json"
-    # A previously-persisted higher ceiling DOES raise the bound.
+    # An already-persisted higher ceiling DOES raise the bound.
     cfg.write_text(json.dumps({"agent": {"subagent_auto_max": 32}}), encoding="utf-8")
     res = await _put({"max_subagents": 30}, cfg)
     assert res.status == 200

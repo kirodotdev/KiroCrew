@@ -254,14 +254,22 @@ class TestConfigSchemaProperties:
             origin = typing.get_origin(tp)
             if origin is list or origin is dict:
                 reachable_paths.add(f"{path}.*")
+
             # A dict field may declare known sub-keys via _meta(...,
             # properties={...}); those flatten into first-class entries
             # (see TestDeclaredDictProperties) and are reachable by
-            # construction from the field's own metadata.
-            declared = (f.metadata or {}).get("properties")
-            if isinstance(declared, dict):
-                for key in declared:
-                    reachable_paths.add(f"{path}.{key}")
+            # construction from the field's own metadata. A declared node may
+            # itself be an object with declared properties (the flattener
+            # recurses `properties` at every depth), so walk them the same way.
+            def _add_declared(prefix: str, props: object) -> None:
+                if not isinstance(props, dict):
+                    return
+                for key, node in props.items():
+                    reachable_paths.add(f"{prefix}.{key}")
+                    if isinstance(node, dict):
+                        _add_declared(f"{prefix}.{key}", node.get("properties"))
+
+            _add_declared(path, (f.metadata or {}).get("properties"))
 
         assert len(SCHEMA_REGISTRY) > 0, "Registry should not be empty"
 
@@ -488,6 +496,27 @@ class TestDeclaredDictProperties:
         data = {"dashboard": {"terminal": {"enabled": True, "shell": 123}}}
         validate_config_data(data)
         assert data["dashboard"]["terminal"] == {"enabled": True, "shell": 123}
+
+    def test_completion_enabled_is_first_class_entry(self) -> None:
+        # The Settings toggle references it by configKey, and the generated
+        # settings registry is drift-checked against SCHEMA_REGISTRY.
+        index = {e.path: e for e in SCHEMA_REGISTRY}
+        entry = index.get("dashboard.terminal.completion.enabled")
+        assert entry is not None, "nested declared sub-key did not flatten"
+        assert entry.type == "boolean"
+        assert entry.default_value is True
+
+    def test_completion_dict_stays_open_for_undeclared_keys(self) -> None:
+        # `completion.commands` (the subcommand-probe allowlist) is documented
+        # and undeclared; declaring `enabled` must not invalidate it.
+        from kiro_crew.config.validation import validate_config_data
+
+        node = JSON_SCHEMA["properties"]["dashboard"]["properties"]["terminal"]
+        completion = node["properties"]["completion"]
+        assert completion.get("additionalProperties") is True
+        data = {"dashboard": {"terminal": {"completion": {"enabled": False, "commands": ["gh"]}}}}
+        validate_config_data(data)
+        assert data["dashboard"]["terminal"]["completion"] == {"enabled": False, "commands": ["gh"]}
 
 
 class TestAgentWorkspaceBindingsSchema:

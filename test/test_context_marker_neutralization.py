@@ -393,8 +393,7 @@ class TestChannelHistoryNeutralized:
 class TestSpanLocalPreservesLegitText:
     """Span-local neutralization rewrites only a matched marker span; legitimate
     unicode elsewhere (Persian ZWNJ, emoji ZWJ, unicode hyphens in prose) must be
-    preserved byte-for-byte — the regression GPT round 4 flagged in the global
-    fold."""
+    preserved byte-for-byte, not folded away with the marker span."""
 
     def test_legit_unicode_without_marker_preserved(self):
         for text in (

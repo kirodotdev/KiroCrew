@@ -136,7 +136,7 @@ async def test_bundle_untitled_slot_carries_empty_title():
 
 @pytest.mark.asyncio
 async def test_send_handler_sends_each_turn_exactly_once(monkeypatch):
-    """Regression for the duplicate-tail bug, restated as its real contract.
+    """Each turn is sent exactly once.
 
     The original bug was a pre-bundle flush combined with a ``_resumed_count``
     slice: the save wrote the tail to disk but did not touch that counter, so the
@@ -2219,7 +2219,7 @@ async def test_layer_b_lands_before_the_transcript_is_persisted(monkeypatch):
 @pytest.mark.asyncio
 async def test_failed_save_rolls_back_the_layer_b_join(monkeypatch):
     """Because the join now precedes the save, a rollback has to undo it — else
-    the map keeps an entry for a tab that no longer exists and the
+    the map keeps an entry for a tab that does not exist and the
     ``<sid>.{json,jsonl}`` pair lingers until a prune sweeps it."""
     from kiro_crew.dashboard import session_transfer as st
 
@@ -2728,7 +2728,7 @@ def test_layer_b_is_discarded_when_owner_lockdown_fails(monkeypatch, tmp_path):
     must go: the pair is useless alone and the ``.json`` carries context too.
 
     The lockdown seam lives inside ``atomic_write`` now (it locks the temp file
-    down BEFORE any content reaches it, issue #5285), so the failure is injected
+    down BEFORE any content reaches it), so the failure is injected
     at ``platform_compat.restrict_to_owner`` -- the module-level function the
     helper calls -- not at a name in this module.
     """
@@ -2757,7 +2757,7 @@ def test_layer_b_lockdown_precedes_content(monkeypatch, tmp_path):
 
     On Windows the POSIX mode bits are a no-op, so the owner-only DACL is the
     only protection; applying it after the rename left Layer B readable under
-    the inherited ACL for the write window (issue #5285). Asserted by measuring
+    the inherited ACL for the write window. Asserted by measuring
     each file's SIZE at the moment its lockdown is applied — zero means no
     payload byte existed yet. A post-write stat passes on the buggy ordering
     too, so it would not be a regression test.

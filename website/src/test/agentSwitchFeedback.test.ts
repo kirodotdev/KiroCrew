@@ -26,6 +26,13 @@ describe('agent switch failure feedback', () => {
     expect(agentSwitchFailureMessage(error)).toBe('not found')
   })
 
+  it('preserves the new-conversation instruction for a pinned private chat', () => {
+    const message = 'This conversation belongs to its original member. Start a new conversation to choose a different member.'
+    const error = new ApiError(409, message, JSON.stringify({ error: message, code: 'private_memory_session_pinned' }))
+    expect(agentSwitchFailureMessage(error)).toBe(message)
+    expect(isTurnInFlightError(error)).toBe(false)
+  })
+
   it('maps a 409 turn_in_flight to the specific retry-later copy', () => {
     // The keyboard cycles (Alt+Shift model/agent cycling) have no disabled
     // state, so this copy is the only way the user learns the switch was

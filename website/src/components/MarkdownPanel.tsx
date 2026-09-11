@@ -3,17 +3,17 @@ import { hasCommandModifier } from '../utils/commandModifier'
 import { memo, useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo, useImperativeHandle, forwardRef } from 'react'
 import { createPortal } from 'react-dom'
 import { useNavigate } from 'react-router-dom'
-import { RefreshCw, Ellipsis, ChevronRight, Columns2, Hash, WrapText, FoldVertical, Maximize2, Minimize2, MessageSquare, MessageSquarePlus, Copy, BookOpen, BookmarkPlus, Camera, Check, X, Component, FileText, FileDiff, Folders, TriangleAlert, CaseSensitive, ChevronUp, ChevronDown } from 'lucide-react'
+import { RefreshCw, Ellipsis, ChevronRight, Columns2, Hash, WrapText, FoldVertical, Maximize2, Minimize2, MessageSquare, Copy, BookOpen, BookmarkPlus, Camera, Check, X, Component, FileText, FileDiff, Folders, TriangleAlert, CaseSensitive, ChevronUp, ChevronDown } from 'lucide-react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import DetailPanel from './DetailPanel'
 import ErrorNotice from './ErrorNotice'
 import { errMessage } from '../utils/thunkError'
 import { useConfirm } from './ConfirmDialog'
 import Clickable from './Clickable'
-import { CommentPopover, CommentList, formatCommentsMessage, type InlineComment } from './CommentOverlay'
+import { CommentList, formatCommentsMessage, type InlineComment } from './CommentOverlay'
 import { useListboxKeyboard } from '../hooks/useListboxKeyboard'
 import { useFileMenuItems, visibleFileMenuItems, invokeFileMenuItem, FileMenuItemIcon, FileMenuItemLabel } from '../apps/fileMenuContributions'
-import SelectionToolbar, { type SelectionAction } from './SelectionToolbar'
+import SelectionToolbar, { type SelectionAction, type SelectionComposer } from './SelectionToolbar'
 import MarkdownOutlineRail from './MarkdownToc'
 import { useFileWatch } from '../hooks/useFileWatch'
 import { useBranding } from '../hooks/useBranding'
@@ -931,22 +931,19 @@ function DiffViewBlock({ diffMode, fileName, originalContent, content, lineNums,
   )
 }
 
-/** Shared comment overlay — popover + comment list */
-const CommentOverlayBlock = memo(function CommentOverlayBlock({ popover, addComment, setPopover, onSubmitComments, comments, editComment, removeComment, submitAllComments, containerRef, scrollRef, connected = true }: {
-  popover: { x: number; y: number } | null; addComment: (text: string) => void; setPopover: (v: null) => void
-  onSubmitComments?: (message: string) => void; comments: InlineComment[]; editComment: (id: string, text: string) => void; removeComment: (id: string) => void; submitAllComments: (extraPrompt?: string) => void; containerRef?: React.RefObject<HTMLElement | null>; scrollRef?: React.RefObject<HTMLElement | null>; connected?: boolean
+/** In-memory twin of the per-file comment-draft store (see `composerDraftStore`):
+ *  the copy that survives a slot switch when sessionStorage refuses the write. */
+const composerDraftMemory = new Map<string, string>()
+
+/** Shared comment overlay — the pending-comment list. (The input itself lives
+ *  in `SelectionToolbar`'s composer, which opens on selection.) */
+const CommentOverlayBlock = memo(function CommentOverlayBlock({ onSubmitComments, comments, editComment, removeComment, submitAllComments, connected = true }: {
+  onSubmitComments?: (message: string) => void; comments: InlineComment[]; editComment: (id: string, text: string) => void; removeComment: (id: string) => void; submitAllComments: (extraPrompt?: string) => void; connected?: boolean
 }) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
+  if (!onSubmitComments) return null
   return (
-    <>
-      {popover && (
-        <CommentPopover x={popover.x} y={popover.y} onSubmit={addComment} containerRef={containerRef} scrollRef={scrollRef}
-          onCancel={() => { setPopover(null); window.getSelection()?.removeAllRanges() }} />
-      )}
-      {onSubmitComments && (
-        <CommentList comments={comments} onEdit={editComment} onRemove={removeComment} onSubmitAll={submitAllComments} enableExtraPrompt connected={connected} />
-      )}
-    </>
+    <CommentList comments={comments} onEdit={editComment} onRemove={removeComment} onSubmitAll={submitAllComments} enableExtraPrompt connected={connected} />
   )
 })
 
@@ -1056,7 +1053,14 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
     prevFilePathRef.current = filePath
     setComments(draftsRef.current[filePath] ?? [])
   }
-  const [popover, setPopover] = useState<{ x: number; y: number; anchor: string; line?: number; column?: number; startOffset?: number } | null>(null)
+  // The anchor of the selection the composer is currently open over, resolved
+  // while the DOM selection was still live (focus in the input collapses it).
+  // A ref, not state: it is read only by the submit handler, and nothing renders
+  // from it.
+  const pendingAnchorRef = useRef<{ anchor: string; line?: number; column?: number; startOffset?: number } | null>(null)
+  // Whether the annotation box is open — read by the panel's document-level
+  // Escape handler so it yields the key to the box instead of closing the panel.
+  const composerOpenRef = useRef(false)
   const highlightMarksRef = useRef<HTMLElement[]>([])
 
   const clearHighlightMarks = useCallback(() => {
@@ -1482,38 +1486,150 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
     return undefined
   }, [content, displayContent, isMarkdown])
 
-  const handleCommentAction = useCallback((text: string, rect: DOMRect) => {
+  // Composer opened over a selection (SelectionToolbar calls this BEFORE it
+  // focuses the input, while the DOM selection is live): resolve the anchor
+  // and paint the <mark> highlight that stands in for the selection once focus
+  // has taken it. Re-fires on every re-selection, replacing the previous anchor.
+  // Every operation swallows storage errors: a full quota or a refusing
+  // storage (legacy private modes) must never throw out of a keystroke
+  // handler. When sessionStorage refuses, the draft falls back to the
+  // module-level map, which still outlives the panel (a slot switch unmounts
+  // the panel, not the page) — so the common teardown is covered either way.
+  const composerDraftStore = useMemo(() => {
+    const key = `mc-comment-composer-draft:${filePath}`
+    // One record per file, holding a draft per PASSAGE (offset + text), so two
+    // half-written comments on different passages coexist.
+    type Slots = Record<string, string>
+    const slotKey = (anchor: string, start: number) => `${start}|${anchor}`
+    const parse = (raw: string | null): Slots => {
+      if (!raw) return {}
+      try {
+        const parsed = JSON.parse(raw) as unknown
+        if (!parsed || typeof parsed !== 'object') return {}
+        const out: Slots = {}
+        for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) if (typeof v === 'string') out[k] = v
+        return out
+      } catch { return {} }
+    }
+    // Both copies, merged per passage with memory winning: `save` always writes
+    // memory and writes sessionStorage only when that succeeds, so after a quota
+    // rejection the memory copy is the newer one for the slots it holds, while
+    // sessionStorage still carries slots from before this page load.
+    const load = (): Slots => {
+      let fromSession: Slots = {}
+      try { fromSession = parse(window.sessionStorage.getItem(key)) } catch { /* unavailable */ }
+      return { ...fromSession, ...parse(composerDraftMemory.get(key) ?? null) }
+    }
+    const save = (slots: Slots) => {
+      if (Object.keys(slots).length === 0) {
+        composerDraftMemory.delete(key)
+        try { window.sessionStorage.removeItem(key) } catch { /* unavailable */ }
+        return
+      }
+      const raw = JSON.stringify(slots)
+      composerDraftMemory.set(key, raw)
+      try { window.sessionStorage.setItem(key, raw) } catch { /* quota / unavailable: the memory copy stands */ }
+    }
+    return {
+      read: (anchor: string, start: number): string | null => load()[slotKey(anchor, start)] ?? null,
+      write: (text: string, anchor: string, start: number) => { const slots = load(); slots[slotKey(anchor, start)] = text; save(slots) },
+      clear: (anchor: string, start: number) => { const slots = load(); delete slots[slotKey(anchor, start)]; save(slots) },
+    }
+  }, [filePath])
+
+  // An unsaved comment draft makes this tab NOT clean for the navigate/close
+  // guards below: a rail click must open the next file beside it rather than
+  // re-target this tab under the draft's anchor, a close must ask first, and
+  // so must the view switches (Edit, full screen) that unmount the box.
+  const composerDraftRef = useRef(false)
+  // The passage the open draft belongs to, so a confirmed discard from one of
+  // the panel's own guards clears that slot alone — a draft saved for another
+  // passage of this file stays where it is.
+  const composerDraftPassageRef = useRef<{ anchor: string; start: number } | null>(null)
+  const handleComposerDraftChange = useCallback((hasDraft: boolean, passage: { anchor: string; start: number } | null) => {
+    composerDraftRef.current = hasDraft
+    composerDraftPassageRef.current = hasDraft ? passage : null
+  }, [])
+  const clearActiveDraftSlot = useCallback(() => {
+    const p = composerDraftPassageRef.current
+    if (p) composerDraftStore.clear(p.anchor, p.start)
+    composerDraftPassageRef.current = null
+  }, [composerDraftStore])
+  /** Run `proceed` unless an unsaved comment draft would be lost, in which case
+   *  ask first — in the draft's own words, since "unsaved changes" would read as
+   *  file edits at risk. */
+  const guardDraft = useCallback(async (proceed: () => void) => {
+    if (composerDraftRef.current) {
+      if (!(await confirm({
+        title: i18nT('components.markdownPanel.discard_unsaved_comment'),
+        confirmLabel: i18nT('components.markdownPanel.discard_comment_button'),
+      }))) return
+      // A confirmed discard: THIS draft's persisted copy must not resurface.
+      clearActiveDraftSlot()
+    }
+    proceed()
+  }, [confirm, clearActiveDraftSlot])
+
+  const handleComposerOpen = useCallback((text: string) => {
+    composerOpenRef.current = true
     const info = resolveSelectionCoords(text)
     if (info) {
       if (info.range) applyHighlightMarks(info.range)
-      const popRect = info.rect.width > 0 ? info.rect : rect
-      setPopover({ x: popRect.left, y: popRect.bottom, anchor: info.anchor, line: info.line, column: info.column, startOffset: info.startOffset })
+      else clearHighlightMarks()
+      pendingAnchorRef.current = { anchor: info.anchor, line: info.line, column: info.column, startOffset: info.startOffset }
     } else {
-      // No DOM selection to map — use the reported rect directly
-      setPopover({ x: rect.left, y: rect.top, anchor: text, line: undefined, column: undefined })
+      // No DOM selection to map — anchor on the text the toolbar captured.
+      clearHighlightMarks()
+      pendingAnchorRef.current = { anchor: text }
     }
-    window.getSelection()?.removeAllRanges()
-  }, [resolveSelectionCoords, applyHighlightMarks])
+  }, [resolveSelectionCoords, applyHighlightMarks, clearHighlightMarks])
 
-  const handleCopyAction = useCallback((text: string) => {
-    if (text) copyToClipboard(text)
-  }, [])
-
-  const selectionActions: SelectionAction[] = useMemo(() => {
-    if (!onSubmitComments) return [{ id: 'copy', icon: <Copy size={12} />, label: 'Copy', onClick: handleCopyAction }]
-    return [
-      { id: 'comment', icon: <MessageSquarePlus size={12} />, label: 'Comment', onClick: handleCommentAction },
-      { id: 'copy', icon: <Copy size={12} />, label: 'Copy', onClick: handleCopyAction },
-    ]
-  }, [onSubmitComments, handleCommentAction, handleCopyAction])
-
-  const addComment = useCallback((text: string) => {
-    if (!popover) return
-    const newComment: InlineComment = { id: Math.random().toString(36).substring(2), anchor: popover.anchor, text, line: popover.line, column: popover.column, startOffset: popover.startOffset }
-    setComments(prev => [...prev, newComment])
-    setPopover(null)
+  const handleComposerClose = useCallback(() => {
+    composerOpenRef.current = false
+    composerDraftRef.current = false
+    pendingAnchorRef.current = null
     clearHighlightMarks()
-  }, [popover, clearHighlightMarks])
+  }, [clearHighlightMarks])
+
+  // Returns the clipboard result so the toolbar's checkmark is truthful.
+  const handleCopyAction = useCallback((text: string) => copyToClipboard(text), [])
+
+  const selectionActions: SelectionAction[] = useMemo(() => [
+    // Icon-only beside the composer (14px), icon + label on the plain row (12px,
+    // matching chat's toolbar). The hint says WHAT is copied — next to a comment
+    // input, "Copy" alone reads as copying the draft.
+    { id: 'copy', icon: <Copy size={onSubmitComments ? 14 : 12} />, label: i18nT('components.selectionToolbar.copy'), hint: onSubmitComments ? i18nT('components.selectionToolbar.copy_selection_hint') : undefined, onClick: handleCopyAction },
+  ], [onSubmitComments, handleCopyAction])
+
+  const handleComposerSubmit = useCallback((comment: string, text: string) => {
+    const info = pendingAnchorRef.current ?? { anchor: text }
+    const newComment: InlineComment = { id: Math.random().toString(36).substring(2), anchor: info.anchor, text: comment, line: info.line, column: info.column, startOffset: info.startOffset }
+    setComments(prev => [...prev, newComment])
+    composerOpenRef.current = false
+    composerDraftRef.current = false
+    pendingAnchorRef.current = null
+    clearHighlightMarks()
+  }, [clearHighlightMarks])
+
+  // Only a host that can receive comments gets the type-first box; otherwise
+  // the toolbar is the plain Copy row it always was.
+  // Escape / ✕ over a typed draft ask in the same words as Edit / full screen / close.
+  const confirmDiscardDraft = useCallback(() => confirm({
+    title: i18nT('components.markdownPanel.discard_unsaved_comment'),
+    confirmLabel: i18nT('components.markdownPanel.discard_comment_button'),
+  }), [confirm])
+  // Where an in-progress comment lives between teardowns the toolbar cannot
+  // guard (a chat-slot switch replaces the side panel wholesale). Per file, in
+  // sessionStorage: it should survive the switch, not a browser session.
+
+  const selectionComposer: SelectionComposer | undefined = useMemo(() => onSubmitComments ? {
+    onOpen: handleComposerOpen,
+    onSubmit: handleComposerSubmit,
+    onClose: handleComposerClose,
+    onDraftChange: handleComposerDraftChange,
+    confirmDiscard: confirmDiscardDraft,
+    draftStore: composerDraftStore,
+  } : undefined, [onSubmitComments, handleComposerOpen, handleComposerSubmit, handleComposerClose, handleComposerDraftChange, confirmDiscardDraft, composerDraftStore])
 
   const removeComment = useCallback((id: string) => {
     setComments(prev => prev.filter(c => c.id !== id))
@@ -1542,7 +1658,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
   }, [])
 
   useEffect(() => {
-    if (editing) { setPopover(null); clearHighlightMarks(); window.getSelection()?.removeAllRanges() }
+    if (editing) { pendingAnchorRef.current = null; clearHighlightMarks(); window.getSelection()?.removeAllRanges() }
   }, [editing, clearHighlightMarks])
 
   // Centralize persistence: fires on any comments mutation (add / remove /
@@ -1779,22 +1895,35 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
   }, [])
 
   const guardedClose = useCallback(async () => {
+    // An open comment draft is unsaved work too: closing discards it. The
+    // prompt names what is at risk — file edits take precedence when both are.
     if (dirty && !(await confirm({
       title: i18nT('components.markdownPanel.discard_unsaved_changes'),
       confirmLabel: i18nT('components.markdownPanel.discard_changes_button'),
     }))) return
+    if (!dirty && composerDraftRef.current) {
+      if (!(await confirm({
+        title: i18nT('components.markdownPanel.discard_unsaved_comment'),
+        confirmLabel: i18nT('components.markdownPanel.discard_comment_button'),
+      }))) return
+      clearActiveDraftSlot()
+    }
     onClose()
-  }, [dirty, onClose, confirm])
+  }, [dirty, onClose, confirm, clearActiveDraftSlot])
   const guardedNavigate = useCallback((nav: (stillClean: () => boolean) => void) => {
     // Navigation never destroys this buffer, so there is nothing to confirm: a
     // dirty tab is left exactly as it is and the new file opens as its own tab.
     // Only a CLEAN tab is re-targeted in place. Closing still asks, because
     // closing really does discard.
     //
+    // A tab with an open comment draft is not clean either: re-targeting it
+    // would leave the draft (and the anchor it was resolved against) hanging
+    // over a different file, so the next file opens beside it instead.
+    //
     // The predicate is what decides between those two outcomes, and the caller
     // re-asks it after its file read: the user can start typing during the read,
     // so an answer computed here would already be stale.
-    nav(() => !dirtyRef.current)
+    nav(() => !dirtyRef.current && !composerDraftRef.current)
   }, [])
 
   // Expose the guarded close so an external control (e.g. the Files-tab inline
@@ -1819,15 +1948,16 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
       // save shortcut must not fire — a mid-dialog Cmd+S would persist the very
       // draft the user is about to confirm discarding.
       if (confirmOpen) return
-      if (e.key === 'Escape') { if (popover) { setPopover(null); clearHighlightMarks() } else if (fullscreen) setFullscreen(false); else guardedClose() }
+      // An open annotation box owns Escape: the toolbar closes it (and hands the
+      // selection back) on its own; the panel must not ALSO close or prompt.
+      if (e.key === 'Escape') { if (composerOpenRef.current) return; if (fullscreen) setFullscreen(false); else guardedClose() }
       if ((e.metaKey || e.ctrlKey) && e.key === 's' && editing && dirty) { e.preventDefault(); handleSaveRef.current() }
     }
     document.addEventListener('keydown', h)
     return () => document.removeEventListener('keydown', h)
-  }, [active, guardedClose, editing, dirty, fullscreen, popover, clearHighlightMarks, confirmOpen])
+  }, [active, guardedClose, editing, dirty, fullscreen, confirmOpen])
 
   const handleChange = useCallback((v: string) => { onContentChange(v); setDirty(true) }, [onContentChange])
-  const clearPopover = useCallback(() => { setPopover(null); clearHighlightMarks() }, [clearHighlightMarks])
 
   // Lock body scroll when fullscreen overlay is open
   useEffect(() => {
@@ -1847,7 +1977,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
       <button className={`p-1.5 rounded-md border cursor-pointer transition-all ${lineNums ? 'border-accent text-accent bg-accent-subtle' : 'border-border text-muted hover:text-text hover:border-border-strong'}`} onClick={() => setLineNums(!lineNums)} title={i18nT('components.markdownPanel.toggle_line_numbers')} aria-label={i18nT('components.markdownPanel.toggle_line_numbers')}><Hash size={14} /></button>
     )}
     {canPreview && (
-      <button className={`px-2 py-1 rounded-md text-[12px] font-medium border cursor-pointer transition-all ${editing ? 'border-accent text-accent bg-accent-subtle' : 'border-border text-muted hover:text-text hover:border-border-strong'}`} onClick={() => { setEditing(!editing) }}>{editing ? i18nT('components.markdownPanel.preview') : i18nT('components.markdownPanel.edit')}</button>
+      <button className={`px-2 py-1 rounded-md text-[12px] font-medium border cursor-pointer transition-all ${editing ? 'border-accent text-accent bg-accent-subtle' : 'border-border text-muted hover:text-text hover:border-border-strong'}`} onClick={() => { void guardDraft(() => setEditing(!editing)) }}>{editing ? i18nT('components.markdownPanel.preview') : i18nT('components.markdownPanel.edit')}</button>
     )}
     {!isRichType && editing && (
       <button className={`px-2 py-1 rounded-md text-[12px] font-medium border transition-all disabled:opacity-40 ${dirty ? 'border-accent text-accent-fg bg-accent cursor-pointer hover:bg-accent-hover' : 'border-border text-muted cursor-default'}`} disabled={saving || !dirty} onClick={handleSave}>{saving ? i18nT('components.markdownPanel.saving') : i18nT('components.markdownPanel.save')}</button>
@@ -1903,7 +2033,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
             {canPreview && (
               <button
                 className="px-2.5 h-[26px] rounded-md text-[11.5px] font-medium text-muted hover:text-text hover:bg-bg-hover bg-transparent border-none cursor-pointer transition-colors shrink-0"
-                onClick={() => setEditing(!editing)}
+                onClick={() => { void guardDraft(() => setEditing(!editing)) }}
                 aria-pressed={editing}
               >{editing ? i18nT('components.markdownPanel.preview') : i18nT('components.markdownPanel.edit')}</button>
             )}
@@ -1921,7 +2051,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
             )}
             <OverflowMenu filePath={filePath} content={content} onError={reportActionError}
               onRefresh={handleRefresh} refreshDisabled={refreshing || dirty} refreshTitle={dirty ? i18nT('components.markdownPanel.save_or_discard_changes_first') : i18nT('components.markdownPanel.refresh_file_re_read_from_disk')}
-              onFullscreen={() => setFullscreen(f => !f)} fullscreen={fullscreen}
+              onFullscreen={() => { void guardDraft(() => setFullscreen(f => !f)) }} fullscreen={fullscreen}
               onSnapshot={artifactState.existing ? handleSnapshot : undefined} snapshotting={artifactState.snapshotting}
               wordWrap={wordWrap} onToggleWordWrap={() => setWordWrap(!wordWrap)}
               lineNums={lineNums} onToggleLineNums={() => setLineNums(!lineNums)}
@@ -1986,8 +2116,11 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
             : browserRail
         )}
       </div>
-      {!fullscreen && !editing && <SelectionToolbar containerRef={sidePanelScrollRef} actions={selectionActions} />}
-      {!fullscreen && <CommentOverlayBlock popover={popover} addComment={addComment} setPopover={clearPopover} onSubmitComments={onSubmitComments} comments={comments} editComment={editComment} removeComment={removeComment} submitAllComments={submitAllComments} connected={connected} />}
+      {/* Keyed by file: a re-target of this tab (e.g. a slot switch) must not
+          carry an open composer — and the anchor it resolved against the OLD
+          file — over to the new one. Remount drops it and fires onClose. */}
+      {!fullscreen && !editing && <SelectionToolbar key={filePath} containerRef={sidePanelScrollRef} actions={selectionActions} composer={selectionComposer} suspended={!active} />}
+      {!fullscreen && <CommentOverlayBlock onSubmitComments={onSubmitComments} comments={comments} editComment={editComment} removeComment={removeComment} submitAllComments={submitAllComments} connected={connected} />}
     </DetailPanel>
     {fullscreen && createPortal(
       // The onKeyDown here implements a focus trap for the modal dialog; a
@@ -2032,7 +2165,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
             })()}
             {editorToolbarButtons}
             <OverflowMenu filePath={filePath} content={content} onError={reportActionError} />
-            <button className="p-1.5 rounded-md border border-border text-muted hover:text-text hover:border-border-strong cursor-pointer transition-all" onClick={() => setFullscreen(false)} title={i18nT('components.markdownPanel.exit_full_screen_esc')} aria-label={i18nT('components.markdownPanel.exit_full_screen')}><Minimize2 size={14} /></button>
+            <button className="p-1.5 rounded-md border border-border text-muted hover:text-text hover:border-border-strong cursor-pointer transition-all" onClick={() => { void guardDraft(() => setFullscreen(false)) }} title={i18nT('components.markdownPanel.exit_full_screen_esc')} aria-label={i18nT('components.markdownPanel.exit_full_screen')}><Minimize2 size={14} /></button>
           </div>
         </div>
         {panelNotices && <div className="px-16">{panelNotices}</div>}
@@ -2050,8 +2183,8 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
           </div>
           {isMarkdown && !editing && <MarkdownOutlineRail containerRef={fullscreenBodyRef} />}
         </div>
-        {!editing && <SelectionToolbar containerRef={fullscreenBodyRef} actions={selectionActions} />}
-        <CommentOverlayBlock popover={popover} addComment={addComment} setPopover={clearPopover} onSubmitComments={onSubmitComments} comments={comments} editComment={editComment} removeComment={removeComment} submitAllComments={submitAllComments} connected={connected} scrollRef={fullscreenBodyRef} />
+        {!editing && <SelectionToolbar key={filePath} containerRef={fullscreenBodyRef} actions={selectionActions} composer={selectionComposer} suspended={!active} />}
+        <CommentOverlayBlock onSubmitComments={onSubmitComments} comments={comments} editComment={editComment} removeComment={removeComment} submitAllComments={submitAllComments} connected={connected} />
         {/* Footer */}
         <Clickable className="shrink-0 flex items-center px-3 h-6 text-[11px] text-muted font-mono truncate cursor-pointer hover:text-text transition-colors" title={i18nT('components.markdownPanel.click_to_copy_path')} onClick={() => copyToClipboard(filePath)}>{filePath}</Clickable>
       </div>,

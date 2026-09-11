@@ -61,7 +61,6 @@ class TestRegisterMcpRoutes:
             ("GET", "/api/spawn"),
             ("GET", "/api/spawn/{agent_id}"),
             ("DELETE", "/api/spawn/{agent_id}"),
-            ("DELETE", "/api/spawn"),
             ("GET", "/api/lessons"),
             ("POST", "/api/lessons"),
             ("DELETE", "/api/lessons"),
@@ -126,7 +125,7 @@ class TestApiServerSpawn:
         """
         order: list[str] = []
         # The stub takes **kw because the warm forwards keyword-only SEL
-        # attribution labels (#6764) that this ordering test does not care about.
+        # attribution labels that this ordering test does not care about.
         warm = AsyncMock(side_effect=lambda _d, **kw: order.append("warm"))
         monkeypatch.setattr("kiro_crew.spawn_warm.warm_project_agent_names", warm)
         # The warm only ever touches an ALLOWLISTED cwd; stand in for a config

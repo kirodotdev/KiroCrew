@@ -21,18 +21,20 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from kiro_crew.cron import CronJob, CronSchedule
-from kiro_crew.dashboard.handlers import cron as cron_handlers
 from kiro_crew.dashboard.handlers.cron import (
     _SCRIPT_SOURCE_MAX_BYTES,
     api_cron_script_source,
 )
 
-# The endpoint degrades with 501 on Windows (the nolink chokepoint has no
-# implementation there), so every test that exercises an actual file read is
-# POSIX-only; the 404 guards and the gate test itself run everywhere.
-posix_only = pytest.mark.skipif(
-    os.name == "nt", reason="script source endpoint returns 501 on Windows"
+# The chokepoint reads on both platforms, so the file-reading tests run
+# everywhere. Only the two tests that CREATE a symlink are POSIX-only: on
+# Windows that needs SeCreateSymbolicLinkPrivilege, which an unelevated test
+# runner does not hold (WinError 1314).
+needs_symlinks = pytest.mark.skipif(
+    os.name == "nt", reason="creating a symlink on Windows requires a privilege tests lack"
 )
+
+windows_only = pytest.mark.skipif(os.name != "nt", reason="Windows-specific read path")
 
 SCRIPT_BODY = "def run(ctx):\n    ctx.notify('hello')\n"
 
@@ -90,11 +92,13 @@ def stub_sel():
 
 
 class TestApiCronScriptSource:
-    @posix_only
     @pytest.mark.asyncio
     async def test_happy_path(self, crons_home: Path) -> None:
         script = crons_home / "crons" / "monitor.py"
-        script.write_text(SCRIPT_BODY)
+        # Explicit newline and encoding: the assertions below compare the served
+        # body and its digest against SCRIPT_BODY byte-for-byte, and a text-mode
+        # write would store CRLF on Windows and make the digest a different file's.
+        script.write_text(SCRIPT_BODY, encoding="utf-8", newline="\n")
         state = _make_state(_make_job(script=f"{script}:run"))
         async with TestClient(TestServer(_make_app(state))) as client:
             resp = await client.get("/api/crons/j1/script")
@@ -110,7 +114,6 @@ class TestApiCronScriptSource:
         # Verbatim display: what the operator reads IS the code, so approvable.
         assert data["reviewable"] is True
 
-    @posix_only
     @pytest.mark.asyncio
     async def test_undecodable_bytes_are_not_reviewable(self, crons_home: Path) -> None:
         # Invalid UTF-8 is rendered with replacement characters, so the display
@@ -140,7 +143,6 @@ class TestApiCronScriptSource:
             assert resp.status == 404
             assert (await resp.json())["code"] == "no_script"
 
-    @posix_only
     @pytest.mark.asyncio
     async def test_missing_file_404(self, crons_home: Path) -> None:
         ghost = crons_home / "crons" / "ghost.py"
@@ -150,7 +152,6 @@ class TestApiCronScriptSource:
             assert resp.status == 404
             assert (await resp.json())["code"] == "script_not_found"
 
-    @posix_only
     @pytest.mark.asyncio
     async def test_escape_outside_crons_root_refused(self, crons_home: Path) -> None:
         # A stored spec pointing outside <config_dir>/crons/ must be refused
@@ -163,7 +164,7 @@ class TestApiCronScriptSource:
             assert resp.status == 422
             assert (await resp.json())["code"] == "script_path_refused"
 
-    @posix_only
+    @needs_symlinks
     @pytest.mark.asyncio
     async def test_symlink_escape_refused(self, crons_home: Path) -> None:
         # A symlink under crons/ whose target lives outside the root resolves
@@ -178,7 +179,7 @@ class TestApiCronScriptSource:
             assert resp.status == 422
             assert (await resp.json())["code"] == "script_path_refused"
 
-    @posix_only
+    @needs_symlinks
     @pytest.mark.asyncio
     async def test_symlink_loop_refused_not_500(self, crons_home: Path) -> None:
         # A self-referential symlink makes path resolution raise (RuntimeError
@@ -192,7 +193,6 @@ class TestApiCronScriptSource:
             assert resp.status in (404, 422)
             assert (await resp.json())["code"] in ("script_not_found", "script_path_refused")
 
-    @posix_only
     @pytest.mark.asyncio
     async def test_non_string_script_refused_not_500(self, crons_home: Path) -> None:
         # crons.json is agent- and hand-editable JSON, so a persisted ``script``
@@ -207,7 +207,6 @@ class TestApiCronScriptSource:
             assert resp.status == 422
             assert (await resp.json())["code"] == "script_path_refused"
 
-    @posix_only
     @pytest.mark.asyncio
     async def test_malformed_spec_refused(self, crons_home: Path) -> None:
         state = _make_state(_make_job(script="no-function-part"))
@@ -216,7 +215,6 @@ class TestApiCronScriptSource:
             assert resp.status == 422
             assert (await resp.json())["code"] == "script_path_refused"
 
-    @posix_only
     @pytest.mark.asyncio
     async def test_oversize_source_truncated(self, crons_home: Path) -> None:
         script = crons_home / "crons" / "big.py"
@@ -230,7 +228,6 @@ class TestApiCronScriptSource:
         assert data["truncated"] is True
         assert len(data["source"].encode()) <= _SCRIPT_SOURCE_MAX_BYTES
 
-    @posix_only
     @pytest.mark.asyncio
     async def test_credentials_redacted(self, crons_home: Path) -> None:
         # Scripts are LLM-writeable, so their content is agent-influenced text:
@@ -243,11 +240,10 @@ class TestApiCronScriptSource:
             assert resp.status == 200
             data = await resp.json()
         assert "AKIAIOSFODNN7EXAMPLE" not in data["source"]
-        # The display no longer equals the raw body, so the approval flow must
+        # The display does not equal the raw body, so the approval flow must
         # treat this script as unreviewable (the operator cannot read the span).
         assert data["reviewable"] is False
 
-    @posix_only
     @pytest.mark.asyncio
     async def test_metadata_fields_redacted(self, crons_home: Path) -> None:
         # The file and function names come from the same stored spec as the
@@ -264,20 +260,49 @@ class TestApiCronScriptSource:
         assert "AKIAIOSFODNN7EXAMPLE" not in data["file"]
         assert "AKIAIOSFODNN7EXAMPLE" not in data["function"]
 
+    @windows_only
     @pytest.mark.asyncio
-    async def test_windows_gate_501(
-        self, crons_home: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    async def test_windows_serves_source(self, crons_home: Path) -> None:
+        # The read needs "open this file and prove what the descriptor points
+        # at", not a dir_fd/openat walk: pinned_fs.fd_real_path answers on
+        # Windows via GetFinalPathNameByHandleW, so the route serves the source
+        # there rather than refusing. CRLF and a 0x1A byte are in the body on
+        # purpose -- a descriptor left in the CRT's text mode would translate
+        # the line endings and stop at Ctrl-Z, so the digest the approval flow
+        # echoes back would not be the digest of the bytes on disk.
+        raw = b"def run(ctx):\r\n    ctx.notify('hi')\r\n# tail \x1a after\n"
         script = crons_home / "crons" / "monitor.py"
-        script.write_text(SCRIPT_BODY)
-        monkeypatch.setattr(cron_handlers, "_SCRIPT_SOURCE_WIN_UNSUPPORTED", True)
+        script.write_bytes(raw)
         state = _make_state(_make_job(script=f"{script}:run"))
         async with TestClient(TestServer(_make_app(state))) as client:
             resp = await client.get("/api/crons/j1/script")
-            assert resp.status == 501
-            assert (await resp.json())["code"] == "unsupported_platform"
+            assert resp.status == 200
+            data = await resp.json()
+        assert data["source"] == raw.decode("utf-8")
+        assert data["sha256"] == hashlib.sha256(raw).hexdigest()
+        assert data["truncated"] is False
+        assert data["reviewable"] is True
 
-    @posix_only
+    @windows_only
+    @pytest.mark.asyncio
+    async def test_windows_hardlink_alias_refused(self, crons_home: Path) -> None:
+        # Windows has no O_NOFOLLOW, so the inode-pinned guards are what keep
+        # the read honest there. os.fstat reports st_nlink on Windows, so a
+        # second name for the same inode is refused on the open descriptor --
+        # a 4xx with a code, never a served body and never a 500.
+        script = crons_home / "crons" / "monitor.py"
+        script.write_text(SCRIPT_BODY, encoding="utf-8")
+        alias = crons_home / "crons" / "alias.py"
+        try:
+            os.link(script, alias)
+        except OSError as exc:
+            pytest.skip(f"filesystem does not support hard links: {exc}")
+        state = _make_state(_make_job(script=f"{alias}:run"))
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.get("/api/crons/j1/script")
+            assert resp.status == 422
+            assert (await resp.json())["code"] == "script_read_refused"
+
     @pytest.mark.asyncio
     async def test_allowed_read_emits_sel_audit(
         self, crons_home: Path, stub_sel: MagicMock
@@ -296,7 +321,6 @@ class TestApiCronScriptSource:
         assert kw["outcome"] == "ok"
         assert "job_id=j1" in kw["resources"]
 
-    @posix_only
     @pytest.mark.asyncio
     async def test_refused_read_emits_sel_audit(
         self, crons_home: Path, stub_sel: MagicMock

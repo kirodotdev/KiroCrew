@@ -321,8 +321,8 @@ def format_ttl(ttl_secs: int) -> str:
 def compact_unsupported_backend(provider: Any) -> str | None:
     """Backend id when *provider* cannot serve a manual ``/compact``, else ``None``.
 
-    The channel half of the dashboard's manual-``/compact`` capability gate
-    (#7800): a backend outside ``ACP_BACKENDS_COMPACT`` treats the ``/compact``
+    The channel half of the dashboard's manual-``/compact`` capability gate:
+    a backend outside ``ACP_BACKENDS_COMPACT`` treats the ``/compact``
     prompt as ordinary text and never emits a compaction status, so dispatching
     it strands ``wait_for_compaction()`` for its whole deadline. The capability
     is read off the LIVE provider — ``manual_compact_unsupported_backend`` is

@@ -195,9 +195,9 @@ class TestSharedHelper:
         assert overflow == ["B", "C"]
 
     def test_overflow_neutralizes_mass_mention_syntax(self) -> None:
-        # Regression (review round 2): overflow lands in the message BODY
-        # where platforms parse mentions — unlike widget labels, which render
-        # as plain text. A prompt-injected choice must not mass-notify.
+        # Overflow lands in the message BODY where platforms parse mentions —
+        # unlike widget labels, which render as plain text. A prompt-injected
+        # choice must not mass-notify.
         from kiro_crew.messaging.renderer import format_overflow
 
         out = format_overflow(["ping @everyone now", "or <!channel> maybe"], start=1)
@@ -207,8 +207,8 @@ class TestSharedHelper:
         assert "everyone" in out and "channel" in out
 
     def test_overflow_redacts_credentials_in_their_DISPLAY_form(self) -> None:
-        # Regression (review round 5): overflow lands in the markdown-parsed
-        # BODY, so a key split by a code span or emphasis is broken to every
+        # Overflow lands in the markdown-parsed BODY, so a key split by a code
+        # span or emphasis is broken to every
         # byte-level scan (the driver's stream redactor included) and WHOLE on
         # screen once the platform drops the delimiters. Slack's widget path
         # already routes choices through the display redactor for exactly this
@@ -234,11 +234,10 @@ class TestSharedHelper:
         assert "IOSFODNN7EXAMPLE" not in out
 
     def test_overflow_redacts_a_spoiler_split_key(self) -> None:
-        # Regression (review round 6): ``||…||`` is Discord's spoiler. The
-        # reader clicks it, the delimiters vanish and the halves join — the
-        # same splitter property as ``**``, but it was missing from the
-        # canonicaliser's delimiter run, so round 5's fix had a hole exactly
-        # one delimiter family wide.
+        # ``||…||`` is Discord's spoiler. The reader clicks it, the delimiters
+        # vanish and the halves join — the same splitter property as ``**``, so
+        # it must be in the canonicaliser's delimiter run or the redaction has a
+        # hole exactly one delimiter family wide.
         from kiro_crew.messaging.renderer import format_overflow
 
         out = format_overflow(["Retry with AKIA||IOSFODNN7EXAMPLE||"], start=0)
@@ -374,8 +373,8 @@ class TestSplitOptionsTrailer:
         """The loss is unbounded: everything from the quote to buffer end went.
 
         The trim point is wherever the substring sits, so one quoted token
-        positioned early deletes every later paragraph -- located-by-substring
-        without asking whether it READS as the marker (the #8983 class).
+        positioned early deletes every later paragraph -- located by substring
+        without asking whether it READS as the marker.
         """
         text = (
             "The [OPTIONS grammar is end-anchored.\n\n"
@@ -665,9 +664,9 @@ class TestSlackEnforcement:
         assert [b["type"] for b in blocks] == ["actions"]
 
     def test_huge_overflow_is_chunked_not_sliced(self) -> None:
-        # Regression (review round 1): a single [:2900] slice re-created the
-        # silent data loss the cap exists to remove. Every overflow choice
-        # must reach the wire, across as many context blocks as needed.
+        # A single [:2900] slice re-creates the silent data loss the cap exists
+        # to remove. Every overflow choice must reach the wire, across as many
+        # context blocks as needed.
         from kiro_crew.slack.format import build_options_blocks
         from kiro_crew.slack.transport import SLACK_CAPABILITIES
 
@@ -680,10 +679,9 @@ class TestSlackEnforcement:
         assert f"{n + 40}." in joined, "the LAST overflow choice must survive"
 
     def test_pathological_overflow_is_bounded_with_visible_truncation(self) -> None:
-        # Regression (review round 3): unbounded context blocks blow Slack's
-        # 50-block message limit — the API rejects the WHOLE message and every
-        # choice disappears. The block budget is capped and the tail drop is
-        # VISIBLE (counted marker), never silent.
+        # Unbounded context blocks blow Slack's 50-block message limit — the API
+        # rejects the WHOLE message and every choice disappears. The block budget
+        # is capped and the tail drop is VISIBLE (counted marker), never silent.
         from kiro_crew.slack.format import build_options_blocks
         from kiro_crew.slack.transport import SLACK_CAPABILITIES
 
@@ -699,8 +697,8 @@ class TestSlackEnforcement:
         assert any(ch.isdigit() for ch in marker)
 
     def test_single_oversized_choice_truncates_with_visible_marker(self) -> None:
-        # Regression (review round 4): one absurd >2900-char choice was
-        # sliced with no signal. The cut must be visible.
+        # One absurd >2900-char choice must not be sliced with no signal: the
+        # cut has to be visible.
         from kiro_crew.slack.format import build_options_blocks
         from kiro_crew.slack.transport import SLACK_CAPABILITIES
 
@@ -715,9 +713,9 @@ class TestSlackEnforcement:
 
 class TestTelegramEnforcement:
     def test_steer_seal_near_limit_with_overflow_stays_under_transport_cap(self) -> None:
-        # Regression (review round 1): on_steer_consumed ran _rotate_on_length
-        # BEFORE apply_options_cap expanded the body with numbered overflow, so
-        # a near-limit pre-steer answer sealed past the transport cap.
+        # on_steer_consumed must not run _rotate_on_length BEFORE
+        # apply_options_cap expands the body with numbered overflow: in that
+        # order a near-limit pre-steer answer seals past the transport cap.
         from test_telegram import FakeClient
 
         from kiro_crew.messaging.renderer import STEER_CONSUMED, TEXT_CHUNK, OutputEvent

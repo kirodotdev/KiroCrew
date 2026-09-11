@@ -34,6 +34,7 @@ from kiro_crew.history import mint_row_mid
 from kiro_crew.messaging.attachments import append_attachment_context
 from kiro_crew.messaging.attachments import cleanup as cleanup_attachments
 from kiro_crew.messaging.commands import compact_unsupported_backend
+from kiro_crew.messaging.conversation import reserve_new_generation
 from kiro_crew.messaging.dispatch import (
     ChannelTurn,
     build_directive_consumer,
@@ -139,7 +140,15 @@ class WeComDispatcher:
         cmd = None if has_media else parse_command(text)
         if cmd == "new":
             self._conv.bump_gen(userid)
-            await self.client.say(inbound, "✅ 已开始新对话")
+            saved = await reserve_new_generation(
+                self.sessions,
+                self._session_key(userid),
+                channel_type="WeCom",
+            )
+            message = "✅ 已开始新对话"
+            if not saved:
+                message += "\n⚠️ 新对话无法保存，重启后可能恢复到上一段对话。"
+            await self.client.say(inbound, message)
             return
         if cmd == "compact":
             self._conv.clear_awaiting(userid)
@@ -423,7 +432,7 @@ class WeComDispatcher:
         userid = inbound.userid
         pct = self.sessions.check_context_usage(session_key, provider)
         if pct >= self.cfg.wecom.soft_threshold_pct:
-            # Capability gate (#8156): no forced compaction to run and the
+            # Capability gate: no forced compaction to run and the
             # soft nudge's /compact advice cannot work — the backend compacts
             # on its own as context fills.
             unsupported = compact_unsupported_backend(provider)
@@ -643,7 +652,7 @@ class WeComDispatcher:
             if provider is None:
                 await self.client.say(inbound, "ℹ️ 当前没有可压缩的对话。")
                 return
-            # Capability gate (#8156, mirroring the dashboard's #7800 gate): a
+            # Capability gate, mirroring the dashboard's compact gate: a
             # backend that cannot serve a manual /compact treats the prompt as
             # ordinary text and never answers, so dispatching would strand the
             # unbounded wait below. Informational (this surface speaks Chinese;

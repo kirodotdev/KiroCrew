@@ -92,7 +92,7 @@ _PUSH_REQ_PREFIX = "aibot_send_msg-"
 _PUSH_ACK_TIMEOUT_SECS = 10.0
 
 # Reply-ACK errcodes that mean THIS stream bubble can never be written again:
-# 846605 the req_id is not (or no longer) routable, 846608 the bubble passed the
+# 846605 the req_id is not routable, 846608 the bubble passed the
 # platform's 10-minute lifetime and is sealed. Both are terminal for the
 # stream_id, not for the connection, so the renderer's answer is recoverable —
 # but only if it learns the frame was refused. ``send_stream`` returning True
@@ -824,10 +824,10 @@ class WeComClient:
         """Believe the subscribe ACK instead of inferring auth from a close.
 
         A rejected ``bot_id``/``secret`` is reported here, in band, with its
-        code. Previously the only signal was the connection closing straight
+        code. Without it the only signal is the connection closing straight
         away, which the run loop reports as the generic "server closed
         connection immediately" — indistinguishable from an anti-kick, so an
-        operator with a bad secret was told to check something else. The badge is
+        operator with a bad secret is told to check something else. The badge is
         the documented compensating control for not verifying credentials at save
         time, so it has to carry the real reason.
 

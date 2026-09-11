@@ -27,7 +27,10 @@ def _write_cfg(tmp_path: Path) -> Path:
         },
         "default_agent": "default",
         "workspaces": {"default": {"dir": "workspace"}, "oncall-ws": {"dir": "oncall"}},
-        "memory_stores": {"default": {}, "oncall-mem": {}},
+        "memory_stores": {
+            "default": {},
+            "oncall-mem": {"owner_member": "oncall", "memory_version": 2},
+        },
     }
     p = tmp_path / "config.json"
     p.write_text(json.dumps(data), encoding="utf-8")

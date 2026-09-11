@@ -146,7 +146,7 @@ class TestProviderSideSuppressionIsReadable(unittest.TestCase):
     """
 
     def test_every_providers_word_for_parked_reads_as_suppressed(self):
-        """The vocabularies differ per provider; all of them used to land in `unknown`."""
+        """The vocabularies differ per provider; a naive read lands them all in `unknown`."""
         for raw in (
             "suppressed",  # Alertmanager status.state
             "silenced",
@@ -290,7 +290,7 @@ class TestTransitionGrammar(unittest.TestCase):
         A signal can clear between the claim and the agent's first turn (a flapping
         alarm; a GitHub issue closed a minute later). Without this edge the
         incident sticks at ``dispatched`` until the stale sweep hours later, so the
-        board asserts work is in progress on a problem that no longer exists.
+        board asserts work is in progress on a problem that does not exist.
         Found by exercising the reconcile SOP against a real cleared signal.
         """
         self.assertIn(

@@ -133,7 +133,7 @@ def _sanitize_for_terminal(value: str) -> str:
     hostile spec drive the terminal (retitle the window, rewrite earlier output,
     inject a pasteable command) the moment doctor renders it. Replace every C0
     control (except tab) and the C1/DEL range with a visible ``\\xNN`` token so
-    the value is still readable but inert. ESC in particular can no longer open
+    the value is still readable but inert. ESC in particular cannot open
     a control sequence.
     """
     out: list[str] = []

@@ -1,0 +1,1346 @@
+{
+  "$comment": "AUTO-GENERATED from the dashboard settings panels by website/scripts/gen-settings-registry.mjs — DO NOT EDIT. How to use a route: settings-deeplink.md (same directory).",
+  "settings": [
+    {
+      "id": "about.auto-update-on-restart",
+      "label": "Auto-update on restart",
+      "tab": "about",
+      "route": "/settings/about?highlight=about.auto-update-on-restart"
+    },
+    {
+      "id": "about.update-notifications",
+      "label": "Notify when an update is available",
+      "tab": "about",
+      "route": "/settings/about?highlight=key%3Aauto_update",
+      "configKey": "auto_update"
+    },
+    {
+      "id": "about.update-channel",
+      "label": "Update channel",
+      "tab": "about",
+      "route": "/settings/about?highlight=about.update-channel"
+    },
+    {
+      "id": "browser.attach-token",
+      "label": "Extension token (optional)",
+      "tab": "browser",
+      "route": "/settings/browser?highlight=browser.attach-token"
+    },
+    {
+      "id": "browser.use-the-built-in-browser",
+      "label": "Use the built-in browser",
+      "tab": "browser",
+      "route": "/settings/browser?highlight=key%3Adashboard.use_builtin_browser",
+      "configKey": "dashboard.use_builtin_browser"
+    },
+    {
+      "id": "channels.allowed-emails-webex",
+      "label": "Allowed emails (Webex)",
+      "tab": "channels",
+      "route": "/settings/channels/webex?highlight=channels.allowed-emails-webex",
+      "description": "Webex account emails permitted to DM the bot. Empty = nobody (fail closed) — anyone in an org can message a Webex bot, so add only your own."
+    },
+    {
+      "id": "channels.allowed-enterprise-orgs-slack",
+      "label": "Allowed enterprise orgs (Slack)",
+      "tab": "channels",
+      "route": "/settings/channels/slack?highlight=channels.allowed-enterprise-orgs-slack",
+      "description": "Enterprise Grid org IDs to allow (starts with E or T). Leave empty to allow all orgs."
+    },
+    {
+      "id": "channels.allowed-handles-imessage",
+      "label": "Allowed handles (iMessage)",
+      "tab": "channels",
+      "route": "/settings/channels/imessage?highlight=channels.allowed-handles-imessage",
+      "description": "Phone numbers or Apple Account emails allowed to message the agent. Empty denies everyone — anyone who knows this Mac's handle can send to it, so there is no safe default. Formatting is ignored."
+    },
+    {
+      "id": "channels.allowed-numbers-whatsapp",
+      "label": "Allowed numbers (WhatsApp)",
+      "tab": "channels",
+      "route": "/settings/channels/whatsapp?highlight=channels.allowed-numbers-whatsapp",
+      "description": "Phone numbers (digits with country code, no plus sign) that may also chat with the agent. Empty adds nobody beyond you."
+    },
+    {
+      "id": "channels.allowed-space-ids-webex",
+      "label": "Allowed space IDs (Webex)",
+      "tab": "channels",
+      "route": "/settings/channels/webex?highlight=channels.allowed-space-ids-webex",
+      "description": "Empty means no space is answered, so turning the switch on alone grants nothing. The sender must also be on the allowed-emails list. A space ID is an opaque string — list yours with:\ncurl -H \"Authorization: Bearer $WEBEX_BOT_TOKEN\" https://webexapis.com/v1/rooms"
+    },
+    {
+      "id": "channels.allowed-user-ids-discord",
+      "label": "Allowed user IDs (Discord)",
+      "tab": "channels",
+      "route": "/settings/channels/discord?highlight=channels.allowed-user-ids-discord"
+    },
+    {
+      "id": "channels.allowed-user-ids-telegram",
+      "label": "Allowed user IDs (Telegram)",
+      "tab": "channels",
+      "route": "/settings/channels/telegram?highlight=channels.allowed-user-ids-telegram"
+    },
+    {
+      "id": "channels.allowed-user-ids-wechat",
+      "label": "Allowed user IDs (WeChat)",
+      "tab": "channels",
+      "route": "/settings/channels/weixin?highlight=channels.allowed-user-ids-wechat",
+      "description": "Allowed WeChat user IDs. Empty = deny all (fail closed)."
+    },
+    {
+      "id": "channels.allowed-user-ids-wecom",
+      "label": "Allowed user IDs (WeCom)",
+      "tab": "channels",
+      "route": "/settings/channels/wecom?highlight=channels.allowed-user-ids-wecom"
+    },
+    {
+      "id": "channels.allowed-users-email-or-aad-object-id-teams",
+      "label": "Allowed users (email or AAD object id) (Teams)",
+      "tab": "channels",
+      "route": "/settings/channels/teams?highlight=channels.allowed-users-email-or-aad-object-id-teams",
+      "description": "Azure AD UPNs/emails OR object ids permitted to DM the bot. Teams activities reliably carry the object id (email is often absent), so object ids work out of the box. Empty = nobody (fail closed)."
+    },
+    {
+      "id": "channels.answer-in-group-spaces-webex",
+      "label": "Answer in group spaces (Webex)",
+      "tab": "channels",
+      "route": "/settings/channels/webex?highlight=channels.answer-in-group-spaces-webex",
+      "description": "Off by default. A reply in a space is visible to everyone in it, including people not on the allowed-emails list."
+    },
+    {
+      "id": "channels.app-client-id-teams",
+      "label": "App (Client) ID (Teams)",
+      "tab": "channels",
+      "route": "/settings/channels/teams?highlight=key%3Ateams.app_id",
+      "configKey": "teams.app_id"
+    },
+    {
+      "id": "channels.app-password-client-secret-teams",
+      "label": "App password (client secret) (Teams)",
+      "tab": "channels",
+      "route": "/settings/channels/teams?highlight=channels.app-password-client-secret-teams",
+      "description": "Azure Bot client secret. Stored only in .env (never config.json)."
+    },
+    {
+      "id": "channels.enable-imessage-channel-imessage",
+      "label": "Enable iMessage channel (iMessage)",
+      "tab": "channels",
+      "route": "/settings/channels/imessage?highlight=channels.enable-imessage-channel-imessage",
+      "description": "Start the channel at gateway boot on this Mac."
+    },
+    {
+      "id": "channels.enable-teams-channel-teams",
+      "label": "Enable Teams channel (Teams)",
+      "tab": "channels",
+      "route": "/settings/channels/teams?highlight=channels.enable-teams-channel-teams",
+      "description": "Start the channel at gateway boot when the App ID + password are set."
+    },
+    {
+      "id": "channels.enable-the-wechat-channel-wechat",
+      "label": "Enable the WeChat channel (WeChat)",
+      "tab": "channels",
+      "route": "/settings/channels/weixin?highlight=channels.enable-the-wechat-channel-wechat"
+    },
+    {
+      "id": "channels.enable-the-whatsapp-channel-whatsapp",
+      "label": "Enable the WhatsApp channel (WhatsApp)",
+      "tab": "channels",
+      "route": "/settings/channels/whatsapp?highlight=channels.enable-the-whatsapp-channel-whatsapp"
+    },
+    {
+      "id": "channels.enable-webex-channel-webex",
+      "label": "Enable Webex channel (Webex)",
+      "tab": "channels",
+      "route": "/settings/channels/webex?highlight=channels.enable-webex-channel-webex",
+      "description": "Start the channel at gateway boot when a token is set."
+    },
+    {
+      "id": "channels.file-sessions-in-a-folder-discord",
+      "label": "File sessions in a folder (Discord)",
+      "tab": "channels",
+      "route": "/settings/channels/discord?highlight=channels.file-sessions-in-a-folder-discord"
+    },
+    {
+      "id": "channels.file-sessions-in-a-folder-imessage",
+      "label": "File sessions in a folder (iMessage)",
+      "tab": "channels",
+      "route": "/settings/channels/imessage?highlight=channels.file-sessions-in-a-folder-imessage"
+    },
+    {
+      "id": "channels.file-sessions-in-a-folder-slack",
+      "label": "File sessions in a folder (Slack)",
+      "tab": "channels",
+      "route": "/settings/channels/slack?highlight=channels.file-sessions-in-a-folder-slack"
+    },
+    {
+      "id": "channels.file-sessions-in-a-folder-teams",
+      "label": "File sessions in a folder (Teams)",
+      "tab": "channels",
+      "route": "/settings/channels/teams?highlight=channels.file-sessions-in-a-folder-teams"
+    },
+    {
+      "id": "channels.file-sessions-in-a-folder-telegram",
+      "label": "File sessions in a folder (Telegram)",
+      "tab": "channels",
+      "route": "/settings/channels/telegram?highlight=channels.file-sessions-in-a-folder-telegram"
+    },
+    {
+      "id": "channels.file-sessions-in-a-folder-webex",
+      "label": "File sessions in a folder (Webex)",
+      "tab": "channels",
+      "route": "/settings/channels/webex?highlight=channels.file-sessions-in-a-folder-webex"
+    },
+    {
+      "id": "channels.file-sessions-in-a-folder-wechat",
+      "label": "File sessions in a folder (WeChat)",
+      "tab": "channels",
+      "route": "/settings/channels/weixin?highlight=channels.file-sessions-in-a-folder-wechat"
+    },
+    {
+      "id": "channels.file-sessions-in-a-folder-wecom",
+      "label": "File sessions in a folder (WeCom)",
+      "tab": "channels",
+      "route": "/settings/channels/wecom?highlight=channels.file-sessions-in-a-folder-wecom"
+    },
+    {
+      "id": "channels.file-sessions-in-a-folder-whatsapp",
+      "label": "File sessions in a folder (WhatsApp)",
+      "tab": "channels",
+      "route": "/settings/channels/whatsapp?highlight=channels.file-sessions-in-a-folder-whatsapp"
+    },
+    {
+      "id": "channels.folder-name-discord",
+      "label": "Folder name (Discord)",
+      "tab": "channels",
+      "route": "/settings/channels/discord?highlight=channels.folder-name-discord",
+      "description": "Created for you when you save these settings, if it does not exist yet."
+    },
+    {
+      "id": "channels.folder-name-imessage",
+      "label": "Folder name (iMessage)",
+      "tab": "channels",
+      "route": "/settings/channels/imessage?highlight=channels.folder-name-imessage",
+      "description": "Created for you when you save these settings, if it does not exist yet."
+    },
+    {
+      "id": "channels.folder-name-slack",
+      "label": "Folder name (Slack)",
+      "tab": "channels",
+      "route": "/settings/channels/slack?highlight=channels.folder-name-slack",
+      "description": "Created for you when you save these settings, if it does not exist yet."
+    },
+    {
+      "id": "channels.folder-name-teams",
+      "label": "Folder name (Teams)",
+      "tab": "channels",
+      "route": "/settings/channels/teams?highlight=channels.folder-name-teams",
+      "description": "Created for you when you save these settings, if it does not exist yet."
+    },
+    {
+      "id": "channels.folder-name-telegram",
+      "label": "Folder name (Telegram)",
+      "tab": "channels",
+      "route": "/settings/channels/telegram?highlight=channels.folder-name-telegram",
+      "description": "Created for you when you save these settings, if it does not exist yet."
+    },
+    {
+      "id": "channels.folder-name-webex",
+      "label": "Folder name (Webex)",
+      "tab": "channels",
+      "route": "/settings/channels/webex?highlight=channels.folder-name-webex",
+      "description": "Created for you when you save these settings, if it does not exist yet."
+    },
+    {
+      "id": "channels.folder-name-wechat",
+      "label": "Folder name (WeChat)",
+      "tab": "channels",
+      "route": "/settings/channels/weixin?highlight=channels.folder-name-wechat",
+      "description": "Created for you when you turn this on, if it does not exist yet."
+    },
+    {
+      "id": "channels.folder-name-wecom",
+      "label": "Folder name (WeCom)",
+      "tab": "channels",
+      "route": "/settings/channels/wecom?highlight=channels.folder-name-wecom",
+      "description": "Created for you when you save these settings, if it does not exist yet."
+    },
+    {
+      "id": "channels.folder-name-whatsapp",
+      "label": "Folder name (WhatsApp)",
+      "tab": "channels",
+      "route": "/settings/channels/whatsapp?highlight=channels.folder-name-whatsapp",
+      "description": "Created for you when you turn this on, if it does not already exist."
+    },
+    {
+      "id": "channels.hard-context-threshold-teams",
+      "label": "Hard context threshold % (Teams)",
+      "tab": "channels",
+      "route": "/settings/channels/teams?highlight=key%3Ateams.hard_threshold_pct",
+      "description": "Compact automatically at this percentage, even without a reply, so the context window never overflows.",
+      "configKey": "teams.hard_threshold_pct"
+    },
+    {
+      "id": "channels.hard-context-threshold-webex",
+      "label": "Hard context threshold % (Webex)",
+      "tab": "channels",
+      "route": "/settings/channels/webex?highlight=channels.hard-context-threshold-webex",
+      "description": "Compact automatically at this point, even without a decision, so the context window never overflows."
+    },
+    {
+      "id": "channels.how-the-agent-joins-in-whatsapp",
+      "label": "How the agent joins in (WhatsApp)",
+      "tab": "channels",
+      "route": "/settings/channels/whatsapp?highlight=channels.how-the-agent-joins-in-whatsapp"
+    },
+    {
+      "id": "channels.messages-database-path-imessage",
+      "label": "Messages database path (iMessage)",
+      "tab": "channels",
+      "route": "/settings/channels/imessage?highlight=channels.messages-database-path-imessage",
+      "description": "Override where the Messages database is read from. Leave empty to use the default location."
+    },
+    {
+      "id": "channels.owner-slack-member-id-slack",
+      "label": "Owner Slack member ID (Slack)",
+      "tab": "channels",
+      "route": "/settings/channels/slack?highlight=channels.owner-slack-member-id-slack",
+      "description": "The one member who can always interact with the bot (KIROCREW_OWNER_ID). Starts with U or W."
+    },
+    {
+      "id": "channels.phase-reactions-slack",
+      "label": "Phase reactions (Slack)",
+      "tab": "channels",
+      "route": "/settings/channels/slack?highlight=channels.phase-reactions-slack",
+      "description": "Show phase-aware emoji reactions (queued → thinking → coding → done) on messages."
+    },
+    {
+      "id": "channels.reply-in-thread-webex",
+      "label": "Reply in thread (Webex)",
+      "tab": "channels",
+      "route": "/settings/channels/webex?highlight=channels.reply-in-thread-webex",
+      "description": "Reply under the message's own thread when it has one, which keeps a busy space readable."
+    },
+    {
+      "id": "channels.seconds-between-unprompted-replies-whatsapp",
+      "label": "Seconds between unprompted replies (WhatsApp)",
+      "tab": "channels",
+      "route": "/settings/channels/whatsapp?highlight=channels.seconds-between-unprompted-replies-whatsapp"
+    },
+    {
+      "id": "channels.send-replies-over-imessage",
+      "label": "Send replies over (iMessage)",
+      "tab": "channels",
+      "route": "/settings/channels/imessage?highlight=channels.send-replies-over-imessage",
+      "description": "Which service outbound replies use. Inbound is unaffected — messages are accepted whichever service they arrive over."
+    },
+    {
+      "id": "channels.show-thinking-slack",
+      "label": "Show thinking (Slack)",
+      "tab": "channels",
+      "route": "/settings/channels/slack?highlight=channels.show-thinking-slack",
+      "description": "Post the model's reasoning as a thread reply. Disable to keep responses concise."
+    },
+    {
+      "id": "channels.slack-app-token-slack",
+      "label": "Slack app token (Slack)",
+      "tab": "channels",
+      "route": "/settings/channels/slack?highlight=channels.slack-app-token-slack",
+      "description": "App-level token required for Socket Mode (starts with xapp-)."
+    },
+    {
+      "id": "channels.slack-bot-token-slack",
+      "label": "Slack bot token (Slack)",
+      "tab": "channels",
+      "route": "/settings/channels/slack?highlight=channels.slack-bot-token-slack",
+      "description": "From OAuth & Permissions after installing your Slack app (starts with xoxb-)."
+    },
+    {
+      "id": "channels.slash-command-slack",
+      "label": "Slash command (Slack)",
+      "tab": "channels",
+      "route": "/settings/channels/slack?highlight=channels.slash-command-slack",
+      "description": "Trigger word for the Slack slash command (without the leading /)."
+    },
+    {
+      "id": "channels.soft-context-threshold-discord",
+      "label": "Soft context threshold % (Discord)",
+      "tab": "channels",
+      "route": "/settings/channels/discord?highlight=channels.soft-context-threshold-discord"
+    },
+    {
+      "id": "channels.soft-context-threshold-teams",
+      "label": "Soft context threshold % (Teams)",
+      "tab": "channels",
+      "route": "/settings/channels/teams?highlight=key%3Ateams.soft_threshold_pct",
+      "configKey": "teams.soft_threshold_pct"
+    },
+    {
+      "id": "channels.soft-context-threshold-telegram",
+      "label": "Soft context threshold % (Telegram)",
+      "tab": "channels",
+      "route": "/settings/channels/telegram?highlight=channels.soft-context-threshold-telegram"
+    },
+    {
+      "id": "channels.soft-context-threshold-webex",
+      "label": "Soft context threshold % (Webex)",
+      "tab": "channels",
+      "route": "/settings/channels/webex?highlight=channels.soft-context-threshold-webex",
+      "description": "When a conversation's context passes this, suggest /compact or /new instead of compacting automatically."
+    },
+    {
+      "id": "channels.soft-context-threshold-wecom",
+      "label": "Soft context threshold % (WeCom)",
+      "tab": "channels",
+      "route": "/settings/channels/wecom?highlight=channels.soft-context-threshold-wecom"
+    },
+    {
+      "id": "channels.tenant-id-teams",
+      "label": "Tenant ID (Teams)",
+      "tab": "channels",
+      "route": "/settings/channels/teams?highlight=key%3Ateams.tenant_id",
+      "description": "Optional — only for single-tenant bots.",
+      "configKey": "teams.tenant_id"
+    },
+    {
+      "id": "channels.webex-bot-token-webex",
+      "label": "Webex bot token (Webex)",
+      "tab": "channels",
+      "route": "/settings/channels/webex?highlight=channels.webex-bot-token-webex",
+      "description": "Bot access token from developer.webex.com (My Webex Apps)."
+    },
+    {
+      "id": "channels.when-the-agent-may-speak-whatsapp",
+      "label": "When the agent may speak (WhatsApp)",
+      "tab": "channels",
+      "route": "/settings/channels/whatsapp?highlight=channels.when-the-agent-may-speak-whatsapp"
+    },
+    {
+      "id": "channels.who-can-message-the-agent-whatsapp",
+      "label": "Who can message the agent (WhatsApp)",
+      "tab": "channels",
+      "route": "/settings/channels/whatsapp?highlight=channels.who-can-message-the-agent-whatsapp"
+    },
+    {
+      "id": "channels.who-can-message-the-bot-wechat",
+      "label": "Who can message the bot (WeChat)",
+      "tab": "channels",
+      "route": "/settings/channels/weixin?highlight=channels.who-can-message-the-bot-wechat"
+    },
+    {
+      "id": "chat.auto-compact-threshold",
+      "label": "Auto-Compact Threshold",
+      "tab": "chat",
+      "route": "/settings/chat?highlight=key%3Asession.autocompact_pct",
+      "description": "Context usage % at which auto-compaction triggers. Lower = more frequent compaction, longer sessions",
+      "configKey": "session.autocompact_pct"
+    },
+    {
+      "id": "chat.auto-open-git-in-side-panel",
+      "label": "Auto-Open Git in Side Panel",
+      "tab": "chat",
+      "route": "/settings/chat?highlight=chat.auto-open-git-in-side-panel",
+      "description": "Expand the side panel to the Git tab each time you start a chat in a git project. The Git tab is created either way."
+    },
+    {
+      "id": "chat.background-effort",
+      "label": "Background Effort",
+      "tab": "chat",
+      "route": "/settings/chat?highlight=chat.background-effort"
+    },
+    {
+      "id": "chat.background-model",
+      "label": "Background Model",
+      "tab": "chat",
+      "route": "/settings/chat?highlight=chat.background-model"
+    },
+    {
+      "id": "chat.completion-event-characters",
+      "label": "Completion Event Characters",
+      "tab": "chat",
+      "route": "/settings/chat?highlight=chat.completion-event-characters"
+    },
+    {
+      "id": "chat.completion-event-truncation",
+      "label": "Completion Event Truncation",
+      "tab": "chat",
+      "route": "/settings/chat?highlight=chat.completion-event-truncation",
+      "description": "Which part of a subagent's stream to keep when injecting its completion event into the parent session. Head preserves the start (default, matches legacy behavior). Tail preserves the final summary. Both keeps a slice from each end with a marker between them."
+    },
+    {
+      "id": "chat.confirm-before-closing-session",
+      "label": "Confirm Before Closing Session",
+      "tab": "chat",
+      "route": "/settings/chat?highlight=chat.confirm-before-closing-session",
+      "description": "Show a confirmation dialog when closing a session"
+    },
+    {
+      "id": "chat.content-width",
+      "label": "Content Width",
+      "tab": "chat",
+      "route": "/settings/chat?highlight=chat.content-width",
+      "description": "Compact is the original view. Comfortable and Full use more screen space."
+    },
+    {
+      "id": "chat.default-memory-mode",
+      "label": "Default Memory Mode",
+      "tab": "chat",
+      "route": "/settings/chat?highlight=key%3Adashboard.default_memory_mode",
+      "description": "Persistent uses what it knows and saves new memory. Incognito uses what it knows but saves no new memory. Temporary starts blank and saves no new memory. Every chat still appears in History. You can change the mode for any chat.",
+      "configKey": "dashboard.default_memory_mode"
+    },
+    {
+      "id": "chat.default-model",
+      "label": "Default Model",
+      "tab": "chat",
+      "route": "/settings/chat?highlight=chat.default-model",
+      "description": "Which model new sessions start with when their agent pins none. Set a model per agent under Capabilities → Agents, or pick one inside a session to override it there."
+    },
+    {
+      "id": "chat.default-reasoning-effort",
+      "label": "Default Reasoning Effort",
+      "tab": "chat",
+      "route": "/settings/chat?highlight=chat.default-reasoning-effort",
+      "description": "How long models think before answering by default. Higher is slower and costs more. Only available on reasoning-capable models (Opus, Sonnet, Fable, GPT-5.x)."
+    },
+    {
+      "id": "chat.default-to-autopilot-mode",
+      "label": "Default to Autopilot Mode",
+      "tab": "chat",
+      "route": "/settings/chat?highlight=chat.default-to-autopilot-mode",
+      "description": "New sessions start in autopilot mode (plan → approve → execute). You can still toggle individual sessions."
+    },
+    {
+      "id": "chat.describe-your-role",
+      "label": "Describe your role",
+      "tab": "chat",
+      "route": "/settings/chat?highlight=chat.describe-your-role",
+      "description": "Kiro uses this description to adapt vocabulary and examples to your role."
+    },
+    {
+      "id": "chat.fallback-model",
+      "label": "Fallback model",
+      "tab": "chat",
+      "route": "/settings/chat?highlight=key%3Aagent.fallback_model",
+      "configKey": "agent.fallback_model"
+    },
+    {
+      "id": "chat.feature-tips",
+      "label": "Feature Tips",
+      "tab": "chat",
+      "route": "/settings/chat?highlight=chat.feature-tips"
+    },
+    {
+      "id": "chat.file-change-chips",
+      "label": "File Change Chips",
+      "tab": "chat",
+      "route": "/settings/chat?highlight=chat.file-change-chips",
+      "description": "How file diff chips appear below assistant messages"
+    },
+    {
+      "id": "chat.folder-suggestions",
+      "label": "Folder suggestions",
+      "tab": "chat",
+      "route": "/settings/chat?highlight=chat.folder-suggestions",
+      "description": "Offer to file a new session into a matching folder once it has a title."
+    },
+    {
+      "id": "chat.follow-up-bar-layout",
+      "label": "Follow-Up Bar Layout",
+      "tab": "chat",
+      "route": "/settings/chat?highlight=chat.follow-up-bar-layout",
+      "description": "Multiline wraps suggestions onto multiple rows. Single line keeps them on one horizontally-scrollable row."
+    },
+    {
+      "id": "chat.history-expanded",
+      "label": "History Expanded",
+      "tab": "chat",
+      "route": "/settings/chat?highlight=chat.history-expanded",
+      "description": "Expand history sidebar by default"
+    },
+    {
+      "id": "chat.link-previews",
+      "label": "Link Previews",
+      "tab": "chat",
+      "route": "/settings/chat?highlight=chat.link-previews",
+      "description": "Show a favicon and page title instead of the raw URL. This machine then fetches every link the model outputs, so each linked site sees a request from your IP address."
+    },
+    {
+      "id": "chat.mcp-apps-in-side-panel",
+      "label": "MCP Apps in Side Panel",
+      "tab": "chat",
+      "route": "/settings/chat?highlight=chat.mcp-apps-in-side-panel",
+      "description": "Render interactive MCP Apps (such as Excalidraw diagrams) in the right side panel instead of inline in the chat. The panel opens automatically."
+    },
+    {
+      "id": "chat.merge-queued-messages",
+      "label": "Merge Queued Messages",
+      "tab": "chat",
+      "route": "/settings/chat?highlight=chat.merge-queued-messages",
+      "description": "Combine follow-up messages into a single labeled prompt while the agent is busy"
+    },
+    {
+      "id": "chat.pin-the-latest-turn",
+      "label": "Pin the latest turn",
+      "tab": "chat",
+      "route": "/settings/chat?highlight=chat.pin-the-latest-turn",
+      "description": "Keep the most recent turn visible as a sticky banner once it scrolls above the fold."
+    },
+    {
+      "id": "chat.plain-diffs",
+      "label": "Plain diffs",
+      "tab": "chat",
+      "route": "/settings/chat?highlight=chat.plain-diffs",
+      "description": "Render diffs as plain unified-diff text instead of syntax-highlighted colour. Uses less memory on large diffs."
+    },
+    {
+      "id": "chat.pr-and-issue-chips-on-session-cards",
+      "label": "PR and Issue Chips on Session Cards",
+      "tab": "chat",
+      "route": "/settings/chat?highlight=chat.pr-and-issue-chips-on-session-cards",
+      "description": "Show a chip on each session's sidebar card for every pull request, merge request and issue mentioned in that session. Turning it off also stops the periodic provider calls that keep those chips up to date."
+    },
+    {
+      "id": "chat.prevent-sleep-while-running",
+      "label": "Prevent sleep while running",
+      "tab": "chat",
+      "route": "/settings/chat?highlight=key%3Adashboard.prevent_sleep",
+      "description": "Keep your computer awake while a task is running",
+      "configKey": "dashboard.prevent_sleep"
+    },
+    {
+      "id": "chat.quick-send",
+      "label": "Quick Send",
+      "tab": "chat",
+      "route": "/settings/chat?highlight=chat.quick-send"
+    },
+    {
+      "id": "chat.response-verbosity",
+      "label": "Response Verbosity",
+      "tab": "chat",
+      "route": "/settings/chat?highlight=chat.response-verbosity",
+      "description": "How terse the agent's prose is. Ultra-concise keeps the whole reply short: answer first, bullets over paragraphs, no filler. Code, commands, and error strings stay verbatim at every level; security warnings always appear but stay brief, and multi-step instructions stay complete. Answer-only goes further and drops explanation entirely: one sentence at most, and detail only when you ask for it — or when a decision is consequential enough (security, exposure, data loss, spend, anything hard to undo) that you need the reasoning to choose correctly."
+    },
+    {
+      "id": "chat.restore-sessions",
+      "label": "Restore Sessions",
+      "tab": "chat",
+      "route": "/settings/chat?highlight=chat.restore-sessions",
+      "description": "Re-open recently active sessions on startup"
+    },
+    {
+      "id": "chat.restore-window",
+      "label": "Restore Window",
+      "tab": "chat",
+      "route": "/settings/chat?highlight=chat.restore-window",
+      "description": "Time window for session restoration"
+    },
+    {
+      "id": "chat.send-shortcut",
+      "label": "Send shortcut",
+      "tab": "chat",
+      "route": "/settings/chat?highlight=chat.send-shortcut"
+    },
+    {
+      "id": "chat.session-summaries",
+      "label": "Session summaries",
+      "tab": "chat",
+      "route": "/settings/chat?highlight=chat.session-summaries",
+      "description": "Summarize each session by intent. Uses tokens on turns that change the session."
+    },
+    {
+      "id": "chat.show-context-percentage",
+      "label": "Show Context Percentage",
+      "tab": "chat",
+      "route": "/settings/chat?highlight=chat.show-context-percentage",
+      "description": "Display usage percentage next to the context progress bar"
+    },
+    {
+      "id": "chat.show-context-tokens",
+      "label": "Show Context Tokens",
+      "tab": "chat",
+      "route": "/settings/chat?highlight=chat.show-context-tokens",
+      "description": "Display used and total tokens next to the context progress bar"
+    },
+    {
+      "id": "chat.show-thinking-inline",
+      "label": "Show Thinking Inline",
+      "tab": "chat",
+      "route": "/settings/chat?highlight=chat.show-thinking-inline",
+      "description": "Show intermediate reasoning text between tool calls instead of collapsing everything"
+    },
+    {
+      "id": "chat.show-timestamps",
+      "label": "Show Timestamps",
+      "tab": "chat",
+      "route": "/settings/chat?highlight=chat.show-timestamps",
+      "description": "Display time on each message"
+    },
+    {
+      "id": "chat.simplified-tool-call-names",
+      "label": "Simplified Tool Call Names",
+      "tab": "chat",
+      "route": "/settings/chat?highlight=chat.simplified-tool-call-names",
+      "description": "When enabled, inline tool pills show simplified tool use purpose instead of the exact command being run"
+    },
+    {
+      "id": "chat.soft-stop-budget-seconds",
+      "label": "Soft-stop budget (seconds)",
+      "tab": "chat",
+      "route": "/settings/chat?highlight=chat.soft-stop-budget-seconds"
+    },
+    {
+      "id": "chat.split-view-session-grid",
+      "label": "Split View (Session Grid)",
+      "tab": "chat",
+      "route": "/settings/chat?highlight=chat.split-view-session-grid"
+    },
+    {
+      "id": "chat.subagent-effort",
+      "label": "Subagent Effort",
+      "tab": "chat",
+      "route": "/settings/chat?highlight=chat.subagent-effort"
+    },
+    {
+      "id": "chat.subagent-model",
+      "label": "Subagent Model",
+      "tab": "chat",
+      "route": "/settings/chat?highlight=chat.subagent-model"
+    },
+    {
+      "id": "chat.tail-only-fork",
+      "label": "Tail-only Fork",
+      "tab": "chat",
+      "route": "/settings/chat?highlight=chat.tail-only-fork",
+      "description": "Fork keeps only the messages after the chosen point instead of those up to it."
+    },
+    {
+      "id": "chat.technical-comfort",
+      "label": "Technical Comfort",
+      "tab": "chat",
+      "route": "/settings/chat?highlight=chat.technical-comfort",
+      "description": "Sets how deep explanations go — plain language vs. full technical detail"
+    },
+    {
+      "id": "chat.text-streaming-style",
+      "label": "Text Streaming Style",
+      "tab": "chat",
+      "route": "/settings/chat?highlight=chat.text-streaming-style",
+      "description": "Immediate mode shows raw chunks as they arrive. Smooth mode buffers and fades text in at a steady pace."
+    },
+    {
+      "id": "chat.what-enter-does-while-the-agent-is-working",
+      "label": "What Enter does while the agent is working",
+      "tab": "chat",
+      "route": "/settings/chat?highlight=chat.what-enter-does-while-the-agent-is-working"
+    },
+    {
+      "id": "chat.widget-density",
+      "label": "Widget Density",
+      "tab": "chat",
+      "route": "/settings/chat?highlight=chat.widget-density",
+      "description": "How aggressively the agent uses inline widgets for visual content"
+    },
+    {
+      "id": "chat.your-role",
+      "label": "Your Role",
+      "tab": "chat",
+      "route": "/settings/chat?highlight=chat.your-role",
+      "description": "Kiro matches vocabulary and examples to your professional background"
+    },
+    {
+      "id": "computer-use.attach-screenshots",
+      "label": "Attach screenshots",
+      "tab": "computer-use",
+      "route": "/settings/computer-use?highlight=computer-use.attach-screenshots",
+      "description": "Also capture the target window and pass its file path. The accessibility tree stays the primary channel; windows containing a password field are never captured."
+    },
+    {
+      "id": "computer-use.enable-computer-use",
+      "label": "Enable computer use",
+      "tab": "computer-use",
+      "route": "/settings/computer-use?highlight=computer-use.enable-computer-use",
+      "description": "Let the agent read desktop app windows through accessibility and act on their controls. Off until you turn it on here — an agent cannot enable it."
+    },
+    {
+      "id": "computer-use.max-tree-nodes",
+      "label": "Max tree nodes",
+      "tab": "computer-use",
+      "route": "/settings/computer-use?highlight=computer-use.max-tree-nodes",
+      "description": "How many controls one window reading returns. A window with more than this gets truncated, and the agent is told so. Raise it for dense apps (a spreadsheet, an IDE); lower it to spend fewer tokens per reading."
+    },
+    {
+      "id": "computer-use.screenshot-width",
+      "label": "Screenshot width",
+      "tab": "computer-use",
+      "route": "/settings/computer-use?highlight=computer-use.screenshot-width",
+      "description": "Longest edge of the screenshot, in pixels. Smaller is cheaper and faster to read; larger keeps small text legible if the agent has to fall back to the image."
+    },
+    {
+      "id": "computer-use.show-cursor-motion",
+      "label": "Show cursor motion",
+      "tab": "computer-use",
+      "route": "/settings/computer-use?highlight=computer-use.show-cursor-motion",
+      "description": "Draw a cursor that glides to each target and pulses when it clicks, so you can follow along on screen. Purely visual — it changes nothing about what the agent is allowed to do, and it only appears for clicks that move the real pointer."
+    },
+    {
+      "id": "developer.chat-on-a-crew",
+      "label": "Chat on a crew",
+      "tab": "developer",
+      "route": "/settings/developer?highlight=developer.chat-on-a-crew",
+      "description": "Adds “New chat on crew” to the create menu, which starts a session on a remote instance — another machine you have connected under Settings > Remote Instances. Unfinished: the session opens in that instance’s own pane and is not listed in this dashboard’s sessions yet, so to return to it later, switch to that instance’s pane."
+    },
+    {
+      "id": "developer.crew-members",
+      "label": "Crew Members",
+      "tab": "developer",
+      "route": "/settings/developer?highlight=developer.crew-members",
+      "description": "The Crew Members page: every agent you have, each with its own thread. Still being built, so it is not offered until you turn this on."
+    },
+    {
+      "id": "developer.developer-mode",
+      "label": "Developer Mode",
+      "tab": "developer",
+      "route": "/settings/developer?highlight=developer.developer-mode",
+      "description": "Show Developer page in sidebar with Logs, System metrics, and Memory internals"
+    },
+    {
+      "id": "developer.run-a-local-gateway",
+      "label": "Run a local gateway",
+      "tab": "developer",
+      "route": "/settings/developer?highlight=developer.run-a-local-gateway",
+      "description": "Start a gateway on this machine. Turn it off to use Kiro Crew as a client only, connecting to the gateway you have configured instead of running one here. Takes effect next time you open the app."
+    },
+    {
+      "id": "developer.webhooks",
+      "label": "Webhooks",
+      "tab": "developer",
+      "route": "/settings/developer?highlight=developer.webhooks",
+      "description": "Inbound webhook tokens, registered contexts, and run history. The API works; the page is not finished."
+    },
+    {
+      "id": "display.command-completion",
+      "label": "Command completion",
+      "tab": "display",
+      "route": "/settings/display?highlight=key%3Adashboard.terminal.completion.enabled",
+      "description": "Show the completion popup while typing in the Terminal. Enter runs the line you typed; to take a suggestion, press ↑/↓ then Enter, or Tab. Off hides the popup; your shell's own Tab completion still works.",
+      "configKey": "dashboard.terminal.completion.enabled"
+    },
+    {
+      "id": "display.default-for-new-sessions",
+      "label": "Default for New Sessions",
+      "tab": "display",
+      "route": "/settings/display?highlight=display.default-for-new-sessions",
+      "description": "None, auto-cycle, or pick a fixed color."
+    },
+    {
+      "id": "display.default-shell",
+      "label": "Default shell",
+      "tab": "display",
+      "route": "/settings/display?highlight=key%3Adashboard.terminal.shell",
+      "description": "Shell the built-in terminal launches — an absolute path or a command on PATH. Leave empty to use the system default ($SHELL).",
+      "configKey": "dashboard.terminal.shell"
+    },
+    {
+      "id": "display.display-mode",
+      "label": "Display Mode",
+      "tab": "display",
+      "route": "/settings/display?highlight=display.display-mode",
+      "description": "How the session color is applied to the row."
+    },
+    {
+      "id": "display.font",
+      "label": "Font",
+      "tab": "display",
+      "route": "/settings/display?highlight=display.font",
+      "description": "Font for the built-in terminal. Pick one installed on the machine you view the dashboard from, or type any font name — a Nerd Font renders Powerline and prompt-theme glyphs."
+    },
+    {
+      "id": "display.font-family",
+      "label": "Font Family",
+      "tab": "display",
+      "route": "/settings/display?highlight=display.font-family",
+      "description": "UI font family for the dashboard. Code font follows the active theme, except OpenDyslexic which supplies its own."
+    },
+    {
+      "id": "display.font-size",
+      "label": "Font size",
+      "tab": "display",
+      "route": "/settings/display?highlight=display.font-size",
+      "description": "Text size in the built-in terminal, measured in pixels."
+    },
+    {
+      "id": "display.highlight-recent-sessions",
+      "label": "Highlight recent sessions",
+      "tab": "display",
+      "route": "/settings/display?highlight=display.highlight-recent-sessions",
+      "description": "Highlight the N most-recently-active sessions with a graded accent stripe (0 = off). Saved to your Kiro Crew config."
+    },
+    {
+      "id": "display.intensity",
+      "label": "Intensity",
+      "tab": "display",
+      "route": "/settings/display?highlight=display.intensity",
+      "description": "How visible the color tint is on sidebar rows."
+    },
+    {
+      "id": "display.interface",
+      "label": "Interface",
+      "tab": "display",
+      "route": "/settings/display?highlight=display.interface",
+      "description": "Chat bubbles or CLI-style line-by-line output"
+    },
+    {
+      "id": "display.language",
+      "label": "Language",
+      "tab": "display",
+      "route": "/settings/display?highlight=display.language",
+      "description": "Language for the dashboard interface."
+    },
+    {
+      "id": "display.mode",
+      "label": "Mode",
+      "tab": "display",
+      "route": "/settings/display?highlight=display.mode",
+      "description": "Light or dark appearance for the dashboard"
+    },
+    {
+      "id": "display.palette",
+      "label": "Palette",
+      "tab": "display",
+      "route": "/settings/display?highlight=display.palette",
+      "description": "Choose a color palette for your sidebar sessions."
+    },
+    {
+      "id": "display.theme",
+      "label": "Theme",
+      "tab": "display",
+      "route": "/settings/display?highlight=display.theme",
+      "description": "Select a theme for the dashboard"
+    },
+    {
+      "id": "display.zoom-level",
+      "label": "Zoom Level",
+      "tab": "display",
+      "route": "/settings/display?highlight=display.zoom-level"
+    },
+    {
+      "id": "instances.auto-connect-crews",
+      "label": "Auto-connect crews",
+      "tab": "instances",
+      "route": "/settings/instances?highlight=instances.auto-connect-crews",
+      "description": "When on, opening the web app connects every crew automatically, and reconnects them when you come back to the tab. Turn off to connect a crew only when you switch to it."
+    },
+    {
+      "id": "instances.enable-remote-crew-management",
+      "label": "Enable remote instance management",
+      "tab": "instances",
+      "route": "/settings/instances?highlight=key%3Ainstances.enabled",
+      "configKey": "instances.enabled"
+    },
+    {
+      "id": "notifications.sound-category-turn",
+      "label": "Agent replies",
+      "tab": "notifications",
+      "route": "/settings/notifications?highlight=notifications.sound-category-turn",
+      "description": "When the agent finishes a turn in any chat"
+    },
+    {
+      "id": "notifications.sound-category-approval",
+      "label": "Approval",
+      "tab": "notifications",
+      "route": "/settings/notifications?highlight=notifications.sound-category-approval",
+      "description": "Tool approval requests"
+    },
+    {
+      "id": "notifications.sound-category-cron",
+      "label": "Cron",
+      "tab": "notifications",
+      "route": "/settings/notifications?highlight=notifications.sound-category-cron",
+      "description": "Scheduled job completions"
+    },
+    {
+      "id": "notifications.sound-category-all",
+      "label": "Default (all categories)",
+      "tab": "notifications",
+      "route": "/settings/notifications?highlight=notifications.sound-category-all",
+      "description": "Fallback sound when no category-specific override is set"
+    },
+    {
+      "id": "notifications.sound-category-heartbeat",
+      "label": "Heartbeat",
+      "tab": "notifications",
+      "route": "/settings/notifications?highlight=notifications.sound-category-heartbeat",
+      "description": "Heartbeat task results"
+    },
+    {
+      "id": "notifications.notify-when-a-background-chat-finishes",
+      "label": "Notify when a background chat finishes",
+      "tab": "notifications",
+      "route": "/settings/notifications?highlight=notifications.notify-when-a-background-chat-finishes",
+      "description": "Shows a system notification naming the chat that finished, but only while this window is minimized or behind another app."
+    },
+    {
+      "id": "notifications.play-sound-on-new-notifications",
+      "label": "Play sound on new notifications",
+      "tab": "notifications",
+      "route": "/settings/notifications?highlight=notifications.play-sound-on-new-notifications"
+    },
+    {
+      "id": "notifications.sound-category-agent",
+      "label": "Proactive agent messages",
+      "tab": "notifications",
+      "route": "/settings/notifications?highlight=notifications.sound-category-agent",
+      "description": "When the agent proactively messages you outside a chat"
+    },
+    {
+      "id": "notifications.sound-category-skills",
+      "label": "Skills",
+      "tab": "notifications",
+      "route": "/settings/notifications?highlight=notifications.sound-category-skills",
+      "description": "New skill candidates awaiting your approval"
+    },
+    {
+      "id": "notifications.sources",
+      "label": "Sources",
+      "tab": "notifications",
+      "route": "/settings/notifications?highlight=notifications.sources",
+      "description": "Mute notification sources or override their priority. Muted notifications stay in history but never badge, sound, or banner."
+    },
+    {
+      "id": "notifications.sound-category-subagent",
+      "label": "Subagent",
+      "tab": "notifications",
+      "route": "/settings/notifications?highlight=notifications.sound-category-subagent",
+      "description": "Background subagent completions"
+    },
+    {
+      "id": "notifications.sound-category-taskrunner",
+      "label": "Tasks",
+      "tab": "notifications",
+      "route": "/settings/notifications?highlight=notifications.sound-category-taskrunner",
+      "description": "Task Runner completions"
+    },
+    {
+      "id": "notifications.volume",
+      "label": "Volume",
+      "tab": "notifications",
+      "route": "/settings/notifications?highlight=notifications.volume"
+    },
+    {
+      "id": "notifications.sound-category-hook",
+      "label": "Webhook",
+      "tab": "notifications",
+      "route": "/settings/notifications?highlight=notifications.sound-category-hook",
+      "description": "External hook triggers"
+    },
+    {
+      "id": "overview.kiro-sign-in",
+      "label": "Kiro sign-in",
+      "tab": "overview",
+      "route": "/settings/overview?highlight=overview.kiro-sign-in",
+      "description": "Sign in to the Kiro account your agents run as, or sign out of it."
+    },
+    {
+      "id": "privacy.record-metrics",
+      "label": "Record metrics",
+      "tab": "privacy",
+      "route": "/settings/privacy?highlight=key%3Atelemetry.enabled",
+      "configKey": "telemetry.enabled"
+    },
+    {
+      "id": "privacy.send-anonymous-usage-heartbeat",
+      "label": "Send anonymous usage heartbeat",
+      "tab": "privacy",
+      "route": "/settings/privacy?highlight=key%3Atelemetry.beacon_enabled",
+      "description": "Saved for future launches.",
+      "configKey": "telemetry.beacon_enabled"
+    },
+    {
+      "id": "secrets.jira-api-token",
+      "label": "Jira API token",
+      "tab": "secrets",
+      "route": "/settings/secrets?highlight=secrets.jira-api-token",
+      "description": "Authenticates Jira issue lookups for the configured instance."
+    },
+    {
+      "id": "secrets.wakatime-api-key",
+      "label": "WakaTime API key",
+      "tab": "secrets",
+      "route": "/settings/secrets?highlight=secrets.wakatime-api-key",
+      "description": "Authenticates coding-activity sync when WakaTime is enabled."
+    },
+    {
+      "id": "security.denied-commands",
+      "label": "Denied Commands",
+      "tab": "security",
+      "route": "/settings/security/rules?highlight=security.denied-commands"
+    },
+    {
+      "id": "security.governance-policy",
+      "label": "Governance Policy",
+      "tab": "security",
+      "route": "/settings/security/governance?highlight=security.governance-policy"
+    },
+    {
+      "id": "security.how-long-auto-approve-stays-on",
+      "label": "How long auto-approve stays on",
+      "tab": "security",
+      "route": "/settings/security/approval?highlight=key%3Aagent.yolo_duration",
+      "configKey": "agent.yolo_duration"
+    },
+    {
+      "id": "security.live-security-posture",
+      "label": "Live Security Posture",
+      "tab": "security",
+      "route": "/settings/security/posture?highlight=security.live-security-posture"
+    },
+    {
+      "id": "security.trust-every-third-party-app",
+      "label": "Trust every third-party app",
+      "tab": "security",
+      "route": "/settings/security/apps?highlight=security.trust-every-third-party-app",
+      "description": "Off by default. When on, every third-party app you install can run its own code straight away, without asking you first."
+    },
+    {
+      "id": "security.trust-this-machine-s-tailnet-name",
+      "label": "Trust this machine's tailnet name",
+      "tab": "security",
+      "route": "/settings/security/tailnet?highlight=security.trust-this-machine-s-tailnet-name"
+    },
+    {
+      "id": "security.your-custom-denies",
+      "label": "Your custom denies",
+      "tab": "security",
+      "route": "/settings/security/rules?highlight=security.your-custom-denies",
+      "description": "Add your own deny patterns (Python-compatible regex). These are enforced at {{productName}}'s PreToolUse gate alongside the built-in rules."
+    },
+    {
+      "id": "shortcuts.enable-shortcuts",
+      "label": "Enable shortcuts",
+      "tab": "shortcuts",
+      "route": "/settings/shortcuts?highlight=shortcuts.enable-shortcuts"
+    },
+    {
+      "id": "shortcuts.search-everywhere",
+      "label": "Search Everywhere",
+      "tab": "shortcuts",
+      "route": "/settings/shortcuts?highlight=shortcuts.search-everywhere"
+    },
+    {
+      "id": "shortcuts.use-ctrl-not-option-for-chat-1-9",
+      "label": "Use ⌃ Ctrl (not ⌥ Option) for chat 1–9",
+      "tab": "shortcuts",
+      "route": "/settings/shortcuts?highlight=shortcuts.use-ctrl-not-option-for-chat-1-9",
+      "description": "Bind chat-tab switching to Ctrl+digit instead of Option+digit"
+    },
+    {
+      "id": "skills.auto-generate-skills-from-sessions",
+      "label": "Auto-generate skills from sessions",
+      "tab": "skills",
+      "route": "/settings/skills?highlight=key%3Askills.auto_create_from_sessions",
+      "description": "Analyze each completed session and draft a reusable SKILL.md when the session demonstrates a recurring procedure — one a future session, working on a different target, would run again. Off by default. Drafts are staged to the pending queue on the Skills tab for review — nothing goes live without your approval (see below).",
+      "configKey": "skills.auto_create_from_sessions"
+    },
+    {
+      "id": "skills.require-approval-before-generated-skills-go-live",
+      "label": "Require approval before generated skills go live",
+      "tab": "skills",
+      "route": "/settings/skills?highlight=key%3Askills.approval_required",
+      "description": "Keep every auto-generated candidate in the pending queue until you approve it. Turning this off lets prose-only skills publish automatically; skills that bundle scripts always require approval regardless.",
+      "configKey": "skills.approval_required"
+    },
+    {
+      "id": "voice.auto-speak-responses",
+      "label": "Auto-speak Responses",
+      "tab": "voice",
+      "route": "/settings/voice?highlight=voice.auto-speak-responses",
+      "description": "Speak every assistant reply automatically"
+    },
+    {
+      "id": "voice.auto-submit-when-i-finish-speaking",
+      "label": "Auto-submit when I finish speaking",
+      "tab": "voice",
+      "route": "/settings/voice?highlight=key%3Astt.endpointing",
+      "description": "Use a fast model to detect when you've finished a complete request and send it automatically. Streaming providers only.",
+      "configKey": "stt.endpointing"
+    },
+    {
+      "id": "voice.aws-profile-amazon-polly",
+      "label": "AWS Profile (Amazon Polly)",
+      "tab": "voice",
+      "route": "/settings/voice?highlight=voice.aws-profile-amazon-polly",
+      "description": "AWS credentials profile for Amazon Polly"
+    },
+    {
+      "id": "voice.aws-profile-transcribe",
+      "label": "AWS Profile (Transcribe)",
+      "tab": "voice",
+      "route": "/settings/voice?highlight=voice.aws-profile-transcribe",
+      "description": "AWS credentials profile for Transcribe (blank = default chain)"
+    },
+    {
+      "id": "voice.aws-region-amazon-polly",
+      "label": "AWS Region (Amazon Polly)",
+      "tab": "voice",
+      "route": "/settings/voice?highlight=voice.aws-region-amazon-polly",
+      "description": "AWS region for Amazon Polly API"
+    },
+    {
+      "id": "voice.aws-region-transcribe",
+      "label": "AWS Region (Transcribe)",
+      "tab": "voice",
+      "route": "/settings/voice?highlight=voice.aws-region-transcribe",
+      "description": "AWS region for Transcribe"
+    },
+    {
+      "id": "voice.dictation-panel",
+      "label": "Dictation panel",
+      "tab": "voice",
+      "route": "/settings/voice?highlight=voice.dictation-panel",
+      "description": "Show an animated panel while recording instead of the thin status bar. Falls back to the bar when the browser lacks WebGL2 or your system requests reduced motion."
+    },
+    {
+      "id": "voice.enabled",
+      "label": "Enabled",
+      "tab": "voice",
+      "route": "/settings/voice?highlight=voice.enabled",
+      "description": "Transcribe voice into the message box when you click the mic"
+    },
+    {
+      "id": "voice.engine",
+      "label": "Engine",
+      "tab": "voice",
+      "route": "/settings/voice?highlight=voice.engine",
+      "description": "Amazon Polly engine type"
+    },
+    {
+      "id": "voice.how-the-key-works",
+      "label": "How the key works",
+      "tab": "voice",
+      "route": "/settings/voice?highlight=voice.how-the-key-works"
+    },
+    {
+      "id": "voice.language",
+      "label": "Language",
+      "tab": "voice",
+      "route": "/settings/voice?highlight=key%3Astt.language_code",
+      "configKey": "stt.language_code"
+    },
+    {
+      "id": "voice.live-transcript-refresh-ms",
+      "label": "Live transcript refresh (ms)",
+      "tab": "voice",
+      "route": "/settings/voice?highlight=key%3Astt.partial_interval_ms",
+      "description": "How often the transcript is redrawn while you speak. Lower feels more immediate and costs more processing.",
+      "configKey": "stt.partial_interval_ms"
+    },
+    {
+      "id": "voice.microphone",
+      "label": "Microphone",
+      "tab": "voice",
+      "route": "/settings/voice?highlight=voice.microphone",
+      "description": "Input device used to capture your voice"
+    },
+    {
+      "id": "voice.model",
+      "label": "Model",
+      "tab": "voice",
+      "route": "/settings/voice?highlight=key%3Astt.model",
+      "description": "Models download on demand. Select one and click Download now; the desktop app already includes every other runtime dependency.",
+      "configKey": "stt.model"
+    },
+    {
+      "id": "voice.pause-that-ends-a-phrase-ms",
+      "label": "Pause that ends a phrase (ms)",
+      "tab": "voice",
+      "route": "/settings/voice?highlight=key%3Astt.silence_ms",
+      "description": "How much silence commits what you just said. Lower reacts sooner; higher tolerates thinking pauses.",
+      "configKey": "stt.silence_ms"
+    },
+    {
+      "id": "voice.piper-binary",
+      "label": "Piper Binary",
+      "tab": "voice",
+      "route": "/settings/voice?highlight=voice.piper-binary",
+      "description": "Path to the piper executable. Leave blank to auto-detect on PATH or in a ~/piper-venv install"
+    },
+    {
+      "id": "voice.piper-model",
+      "label": "Piper Model",
+      "tab": "voice",
+      "route": "/settings/voice?highlight=voice.piper-model",
+      "description": "Path to the Piper voice model (.onnx). Required — download from huggingface.co/rhasspy/piper-voices"
+    },
+    {
+      "id": "voice.provider",
+      "label": "Provider",
+      "tab": "voice",
+      "route": "/settings/voice?highlight=key%3Astt.provider",
+      "description": "Local speech recognition runs on this machine and sends nothing anywhere. Transcribe uploads your audio to AWS.",
+      "configKey": "stt.provider"
+    },
+    {
+      "id": "voice.provider-2",
+      "label": "Provider",
+      "tab": "voice",
+      "route": "/settings/voice?highlight=voice.provider-2",
+      "description": "The built-in engine needs no setup; Piper is offline with better quality; Amazon Polly uses AWS credentials + network"
+    },
+    {
+      "id": "voice.shortcut-key",
+      "label": "Shortcut key",
+      "tab": "voice",
+      "route": "/settings/voice?highlight=voice.shortcut-key"
+    },
+    {
+      "id": "voice.speed",
+      "label": "Speed",
+      "tab": "voice",
+      "route": "/settings/voice?highlight=voice.speed",
+      "description": "Speech rate for spoken replies (built-in engine)"
+    },
+    {
+      "id": "voice.speed-2",
+      "label": "Speed",
+      "tab": "voice",
+      "route": "/settings/voice?highlight=voice.speed-2",
+      "description": "Speech rate for spoken replies (Amazon Polly)"
+    },
+    {
+      "id": "voice.speed-3",
+      "label": "Speed",
+      "tab": "voice",
+      "route": "/settings/voice?highlight=voice.speed-3",
+      "description": "Piper speech speed (length scale)"
+    },
+    {
+      "id": "voice.streaming",
+      "label": "Streaming",
+      "tab": "voice",
+      "route": "/settings/voice?highlight=key%3Astt.streaming",
+      "description": "Show the transcript in the input box as you speak, instead of only when you stop.",
+      "configKey": "stt.streaming"
+    },
+    {
+      "id": "voice.tap-vs-hold-cutoff",
+      "label": "Tap vs. hold cutoff",
+      "tab": "voice",
+      "route": "/settings/voice?highlight=voice.tap-vs-hold-cutoff",
+      "description": "Only used by “Both”. Hold the key longer than this to talk; a quicker tap starts recording and leaves it on."
+    },
+    {
+      "id": "voice.voice",
+      "label": "Voice",
+      "tab": "voice",
+      "route": "/settings/voice?highlight=voice.voice",
+      "description": "Voice from the host's built-in speech engine"
+    },
+    {
+      "id": "voice.voice-2",
+      "label": "Voice",
+      "tab": "voice",
+      "route": "/settings/voice?highlight=voice.voice-2",
+      "description": "Amazon Polly voice for TTS"
+    }
+  ]
+}

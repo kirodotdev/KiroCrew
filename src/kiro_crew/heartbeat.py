@@ -12,11 +12,12 @@ import functools
 import logging
 import os
 import re
+import threading
 from collections import Counter
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Coroutine
 
-from kiro_crew import platform_compat, shutdown_event
+from kiro_crew import memory_backup, platform_compat, shutdown_event
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.executors import maintenance_executor
@@ -40,6 +41,12 @@ _KEEP_RE = re.compile(_KEEP_SENTINEL, re.IGNORECASE)
 _DEFAULT_INTERVAL = 60
 _FTS_REBUILD_TICKS = 15  # rebuild every 15 ticks (15 min at 60s interval)
 _PRUNE_TICKS = 1440  # prune old history once per day (1440 min at 60s interval)
+# Memory backup runs on its OWN counter, offset from _PRUNE_TICKS rather than sharing
+# it: pruning history and copying every store are both minutes-long on a large
+# install, and landing them on the same tick puts two of four maintenance workers on
+# the same second once a day. The offset costs nothing and keeps them apart.
+_MEMORY_BACKUP_TICKS = 1440
+_MEMORY_BACKUP_OFFSET = 30
 # Per-task hard deadline for an unattended heartbeat turn. Mirrors cron's
 # _JOB_TIMEOUT_SECS (1800s / 30 min): a heartbeat turn runs without a human
 # present, so it MUST be bounded — otherwise a single non-allowlisted tool
@@ -156,6 +163,9 @@ class HeartbeatService:
         self._tick = 0
         self._processing = False
         self._task: asyncio.Task | None = None  # type: ignore[type-arg]
+        self._memory_backup_task: asyncio.Task | None = None
+        self._memory_backup_stop = threading.Event()
+        self._memory_backup_started = False
         # Serializes the HEARTBEAT.md read→process→rewrite window within this
         # process so two cycles can't clobber each other's rewrite.
         self._file_lock = asyncio.Lock()
@@ -170,6 +180,9 @@ class HeartbeatService:
         logger.info("Heartbeat started (interval=%ds)", self._interval)
 
     def stop(self) -> None:
+        self._memory_backup_stop.set()
+        if self._memory_backup_task is not None:
+            self._memory_backup_task.cancel()
         if self._task:
             self._task.cancel()
             self._task = None
@@ -188,6 +201,26 @@ class HeartbeatService:
                 logger.warning("Heartbeat tick failed", exc_info=True)
 
     async def _beat(self) -> None:
+        from kiro_crew.memory_startup import (
+            MemoryStartupUnavailable,
+            require_memory_prepared,
+            require_memory_ready,
+        )
+
+        require_memory_prepared()
+        if (
+            not self._memory_backup_started
+            or self._tick % _MEMORY_BACKUP_TICKS == _MEMORY_BACKUP_OFFSET
+        ):
+            self._schedule_memory_backup()
+        try:
+            require_memory_ready()
+        except MemoryStartupUnavailable:
+            # Healthy member backups and idle consolidation remain eligible
+            # while this gateway's Global memory awaits owner recovery.
+            if self._consolidator:
+                self._consolidator.check_idle_sessions()
+            return
         if not self._processing:
             await self._process_heartbeat_file()
 
@@ -233,6 +266,67 @@ class HeartbeatService:
         # Check for idle sessions needing history consolidation (every tick)
         if self._consolidator:
             self._consolidator.check_idle_sessions()
+
+    def _schedule_memory_backup(self) -> None:
+        """One owned pass; ticks keep serving while a large store is copied."""
+        if self._memory_backup_stop.is_set():
+            return
+        if self._memory_backup_task is not None and not self._memory_backup_task.done():
+            return
+        self._memory_backup_started = True
+        self._memory_backup_task = asyncio.create_task(self._back_up_memory())
+
+    async def _back_up_memory(self) -> None:
+        """Take a rotating copy of every active private V2 memory store.
+
+        Offloaded to ``maintenance_executor`` because the SQLite backup API is blocking
+        and copies the whole file; on the event loop a large store would stall every
+        task. Same pool and same rationale as ``prune_history`` above — it terminates,
+        the retained task prevents overlapping passes. The first eligible
+        heartbeat checks existing backup freshness, so frequent restarts cannot
+        postpone durability indefinitely; subsequent passes use the daily tick.
+
+        Guarded so a backup failure cannot take the heartbeat down, and logged at
+        WARNING rather than debug: a dead backup means durability silently stops, which
+        is the whole failure this exists to prevent, so it has to be alarmable.
+        """
+
+        def copy_active_stores():
+            if self._memory_backup_stop.is_set():
+                return None
+            cfg = KiroCrewConfig.load().memory
+            if not cfg.backup_enabled:
+                return None
+            return memory_backup.back_up_all_stores(
+                int(cfg.backup_keep),
+                should_stop=self._memory_backup_stop.is_set,
+                private_only=True,
+            )
+
+        try:
+            loop = asyncio.get_running_loop()
+            result = await loop.run_in_executor(maintenance_executor(), copy_active_stores)
+            if result is None:
+                return
+            if result["failed"]:
+                # WARNING on its own, so a store whose copy fails every pass is
+                # alarmable. Durability stopping quietly is the failure this exists to
+                # prevent, and an INFO line among the copied counts is not visible.
+                logger.warning(
+                    "Memory backup: %d store(s) FAILED to copy (%d copied, %d skipped)",
+                    result["failed"],
+                    result["backed_up"],
+                    result["skipped"],
+                )
+            elif result["backed_up"]:
+                logger.info(
+                    "Memory backup: %d store(s) copied, %d old removed, %d skipped",
+                    result["backed_up"],
+                    result["pruned"],
+                    result["skipped"],
+                )
+        except Exception:
+            logger.warning("Memory backup pass failed", exc_info=True)
 
     async def _run_one_task(self, task_text: str, deliver: str) -> str | None:
         """Execute a single heartbeat task (used by gather).

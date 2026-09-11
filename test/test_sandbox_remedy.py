@@ -1,11 +1,11 @@
 """The sandbox probe must report WHICH host mechanism denied the namespace.
 
-Issue #1660: on Ubuntu the gate screen showed ``unshare(CLONE_NEWNS) failed with
-errno 1 (EPERM)`` and a retry button, and nothing else. The probe already knew
-the mechanism — it deliberately performs the two unshare steps separately so a
-NEWNS denial can be told apart from a NEWUSER denial — but that knowledge died
-inside a prose reason string. These tests pin the machine-readable token that
-carries it out, and the invariant that it never outlives its failure.
+On Ubuntu the gate screen can show only ``unshare(CLONE_NEWNS) failed with
+errno 1 (EPERM)`` and a retry button. The probe already knows the mechanism —
+it deliberately performs the two unshare steps separately so a NEWNS denial can
+be told apart from a NEWUSER denial — but that knowledge must not die inside a
+prose reason string. These tests pin the machine-readable token that carries it
+out, and the invariant that it never outlives its failure.
 """
 
 from __future__ import annotations

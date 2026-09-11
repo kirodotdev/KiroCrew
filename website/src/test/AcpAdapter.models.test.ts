@@ -9,7 +9,7 @@ vi.mock('../api/client', () => ({
 }))
 
 import { api } from '../api/client'
-import { AcpAdapter } from '../providers/adapters/acp'
+import { AcpAdapter, clearCachedModels } from '../providers/adapters/acp'
 import {
   markModelsDegraded,
   modelsDegraded,
@@ -108,6 +108,24 @@ describe('AcpAdapter.fetchAvailableModels', () => {
   it('falls back to auto-only when the API throws and there is no cache', async () => {
     ;(api.models as ModelsMock).mockRejectedValue(new Error('503'))
     const models = await new AcpAdapter().fetchAvailableModels()
+    expect(models).toHaveLength(1)
+    expect(models[0].name).toBe('auto')
+  })
+
+  it('clearCachedModels drops the last-good list so a failing fetch degrades to auto-only', async () => {
+    // A backend switch: the cache holds the OLD backend's ids. After the drop,
+    // a failing first fetch on the new backend must not resurrect them.
+    ;(api.models as ModelsMock).mockResolvedValueOnce([
+      { model_name: 'auto', description: 'a' },
+      { model_name: 'claude-opus-4.8', description: 'b' },
+    ])
+    const adapter = new AcpAdapter()
+    await adapter.fetchAvailableModels()
+    expect(localStorage.getItem('kc.acp.models.v1')).not.toBeNull()
+    clearCachedModels()
+    expect(localStorage.getItem('kc.acp.models.v1')).toBeNull()
+    ;(api.models as ModelsMock).mockRejectedValue(new Error('503'))
+    const models = await adapter.fetchAvailableModels()
     expect(models).toHaveLength(1)
     expect(models[0].name).toBe('auto')
   })

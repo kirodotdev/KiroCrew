@@ -51,6 +51,7 @@ vi.mock('./api', async () => {
       backupRun: vi.fn(),
       backupNightly: vi.fn(),
       backupRestore: vi.fn(),
+      installLabel: vi.fn(),
     },
   }
 })
@@ -161,7 +162,12 @@ const costsFresh: CostReport = {
 }
 
 const emptyLibrary: LibraryResponse = { artifacts: [] }
-const emptyBackup: BackupStatus = { nightly: false, runs: {}, remote: { snapshot: [], sessions: [] } }
+const emptyBackup: BackupStatus = {
+  nightly: false,
+  runs: {},
+  install: { id: 'a'.repeat(32), label: 'This Mac' },
+  remote: { snapshot: [], sessions: [], installs: [], others: 0, truncated: false, max: 8 },
+}
 const noShares: SharesResponse = { shares: [] }
 
 function share(id: string): SharesResponse['shares'][number] {

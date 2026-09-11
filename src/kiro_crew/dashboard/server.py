@@ -354,6 +354,7 @@ _STRICT_INTERNAL_API_PATHS = frozenset(
     {
         "/api/send-message",
         "/api/delete-message",
+        "/api/update-message",
         "/api/browser-event",
         "/api/browser/frame",
         "/api/browser/pump-audit",
@@ -725,6 +726,8 @@ _MIXED_INTERNAL_API_PATHS = frozenset(
         "/api/spawn",
         "/api/chat",
         "/api/lessons",
+        # MCP recall still requires the handler's protected member/session proof.
+        "/api/memory/recall",
         "/api/crons",  # CLI cron trigger; prefix covers all sub-routes (consistent with spawn/taskrunner)
         # The cron_add/cron_update MCP tools resolve-or-create Schedule-page
         # folders via X-Internal-Secret. Same trap as "/api/artifact-folders"
@@ -1465,7 +1468,6 @@ def _register_mcp_routes(app: web.Application) -> None:
     app.router.add_post("/api/spawn/{agent_id}/continue", handlers.api_spawn_continue)
     app.router.add_post("/api/spawn/{agent_id}/steer", handlers.api_spawn_steer)
     app.router.add_post("/api/spawn/{agent_id}/release", handlers.api_spawn_release)
-    app.router.add_delete("/api/spawn", handlers.api_spawn_clear)
     app.router.add_get("/api/lessons", handlers.api_lessons)
     app.router.add_post("/api/lessons", handlers.api_lessons_create)
     app.router.add_delete("/api/lessons", handlers.api_lessons_delete)
@@ -1479,6 +1481,7 @@ def _register_mcp_routes(app: web.Application) -> None:
     app.router.add_post("/api/crons", handlers.api_crons_create)
     app.router.add_delete("/api/crons", handlers.api_cron_batch_delete)
     app.router.add_get("/api/crons/history", handlers.api_cron_history_all)
+    app.router.add_post("/api/crons/tools", handlers.api_cron_tools)
     app.router.add_delete("/api/crons/{job_id}", handlers.api_cron_delete)
     app.router.add_patch("/api/crons/{job_id}", handlers.api_cron_update)
     # Operator-only vault-secret grants. The "/api/crons" prefix above makes
@@ -1503,6 +1506,7 @@ def _register_mcp_routes(app: web.Application) -> None:
     app.router.add_post("/api/taskrunner/cancel", handlers.api_taskrunner_cancel)
     app.router.add_post("/api/send-message", handlers.api_send_message)
     app.router.add_post("/api/delete-message", handlers.api_delete_message)
+    app.router.add_post("/api/update-message", handlers.api_update_message)
     # send_notification MCP tool (RFC notification bus Phase 5) — registered
     # here (not the dashboard-only block) so headless --slack-only mode
     # serves it too; it is on _STRICT_INTERNAL_API_PATHS like send-message.
@@ -1569,6 +1573,7 @@ def _register_mcp_routes(app: web.Application) -> None:
         api_autonudge_list,
         api_autonudge_start,
         api_autonudge_update,
+        api_monitor_clear,
         api_monitor_create,
         api_monitor_restart,
         api_monitor_slot_get,
@@ -1590,6 +1595,7 @@ def _register_mcp_routes(app: web.Application) -> None:
     app.router.add_get("/api/monitors/slot/{slot_key}", api_monitor_slot_get)
     app.router.add_patch("/api/monitors/{monitor_id}", api_monitor_update)
     app.router.add_post("/api/monitors/{monitor_id}/stop", api_monitor_stop)
+    app.router.add_post("/api/monitors/{monitor_id}/clear", api_monitor_clear)
     app.router.add_post("/api/monitors/{monitor_id}/restart", api_monitor_restart)
 
     # Agent questions. The MCP ask_question tool does not post here: it returns
@@ -2661,6 +2667,83 @@ def _kick_connections_warm_scavenge(state: DashboardState) -> None:
     task.add_done_callback(state._background_tasks.discard)
 
 
+def _kick_session_search_index(state: DashboardState) -> None:
+    """Keep the session search candidate index caught up, post-bind.
+
+    Without this the index never gets built and search silently stays on the
+    scan path — correct, and as slow as it was (measured 6.7 s per keystroke on
+    a 2.96 GB corpus, against ~0.3 s indexed).
+
+    Shape, and why each part is what it is:
+
+    * post-bind and in a worker thread, like the warm scavenge — a first pass
+      over a large corpus reads and parses every session in the search window
+      (~70 s for 500 files here) and must never sit in front of the listener or
+      on the event loop;
+    * budgeted per pass rather than run to completion, so the first pass yields
+      the thread repeatedly instead of holding it for a minute;
+    * paced by a sleep between passes once caught up, because the only work then
+      is picking up sessions that changed since the last pass;
+    * ``optimize`` on a slow multiple of the pass, since FTS5 deletes leave
+      tombstones that every query pays for until segments merge.
+
+    A failure is logged and the loop continues: a missing row costs one scanned
+    file, so the honest response to an index that will not build is to keep
+    serving searches from the files.
+    """
+
+    #: Seconds of indexing work per pass, and the pause between passes once the
+    #: window is fully indexed. The pass budget is small enough that the thread
+    #: is returned promptly; the idle pause is what keeps a caught-up gateway
+    #: from re-stat'ing the window in a tight loop.
+    pass_budget_secs = 5.0
+    idle_pause_secs = 60.0
+    busy_pause_secs = 2.0
+    optimize_every_passes = 60
+
+    def _pass_in_thread() -> dict[str, int]:
+        log = state.conversation_log
+        if log is None:
+            return {"indexed": 0, "dropped": 0, "remaining": 0}
+        return log._catalog_projection.backfill_index(budget_secs=pass_budget_secs)
+
+    def _optimize_in_thread() -> None:
+        log = state.conversation_log
+        if log is not None:
+            log._catalog_projection.search_index.optimize()
+
+    async def _session_index_loop() -> None:
+        if state.conversation_log is None:
+            # No transcript store on this gateway: nothing to index, and the
+            # search path it would serve does not exist either.
+            return
+        passes = 0
+        while True:
+            try:
+                report = await asyncio.to_thread(_pass_in_thread)
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 — search must survive a bad index
+                logger.warning("Session search index pass failed", exc_info=True)
+                await asyncio.sleep(idle_pause_secs)
+                continue
+            passes += 1
+            if passes % optimize_every_passes == 0:
+                try:
+                    await asyncio.to_thread(_optimize_in_thread)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:  # noqa: BLE001
+                    logger.warning("Session search index optimize failed", exc_info=True)
+            # More to do means come straight back; caught up means idle until
+            # something changes on disk.
+            await asyncio.sleep(busy_pause_secs if report["remaining"] else idle_pause_secs)
+
+    task = asyncio.create_task(_session_index_loop())
+    state._background_tasks.add(task)
+    task.add_done_callback(state._background_tasks.discard)
+
+
 def _register_browser_view_cleanup(app: web.Application) -> None:
     """Stop the CLI dashboard process when the gateway shuts down.
 
@@ -3134,6 +3217,8 @@ async def start_dashboard(
     slack_client: Any = None,
     owner_id: str = "",
     assume_kiro_ready: bool = False,
+    defer_channel_agent_resume: bool = False,
+    schedule_memory_preparation: "Callable[[], asyncio.Task[None] | None] | None" = None,
 ) -> tuple[web.AppRunner, DashboardState]:
     """Start the dashboard web server.  Returns ``(runner, state)``."""
     # The generated service marker describes this launch, not every process the
@@ -4081,6 +4166,7 @@ async def start_dashboard(
     # import must never sit in front of the listener
     # (no-new-work-on-gateway-boot-path).
     _kick_connections_warm_scavenge(state)
+    _kick_session_search_index(state)
 
     # Event-loop heartbeat: proves the asyncio loop is live (the off-loop /proc
     # sampler can't — it runs in a subprocess). Sleeps 10s, then logs actual
@@ -4450,7 +4536,9 @@ async def start_dashboard(
         )
         state._channel_slot_reconciler = _chan_reconciler  # prevent GC
 
-    # Relaunch agents in non-archived channels
+    # Relaunch agents in non-archived channels. A gateway defers this batch
+    # until its restore/open task completes; a standalone dashboard preserves
+    # the existing immediate behavior.
     from kiro_crew.channel import ChannelManager, run_channel_agent
     from kiro_crew.dashboard.handlers_channel import _spawn_agent_task
 
@@ -4460,12 +4548,33 @@ async def start_dashboard(
         max_agents=cfg.agent.max_channel_agents,
     )
     state.channel_manager = mgr
-    for ch in mgr._channels.values():
-        for agent in ch.members.values():
+    restored_agents = [
+        (channel.id, agent_id, agent)
+        for channel in mgr._channels.values()
+        for agent_id, agent in channel.members.items()
+    ]
+
+    def _resume_channel_agents() -> None:
+        for channel_id, agent_id, restored_agent in restored_agents:
+            channel = mgr.get(channel_id)
+            if channel is None:
+                continue
+            agent = channel.members.get(agent_id)
+            # A handler may add, dismiss, replace or start an agent while the
+            # gateway prepares memory. Resume only the exact object loaded at
+            # construction, and never start one a live request already owned.
+            if agent is not restored_agent or agent._task is not None:
+                continue
             agent.state = "pending"
             _spawn_agent_task(
-                agent, run_channel_agent(agent, ch, state.sessions, is_yolo=lambda: state._yolo)
+                agent,
+                run_channel_agent(agent, channel, state.sessions, is_yolo=lambda: state._yolo),
             )
+
+    if defer_channel_agent_resume:
+        state.resume_channel_agents = _resume_channel_agents
+    else:
+        _resume_channel_agents()
 
     # ── AEA Tunnel ───────────────────────────────────────────────────────────
     _tunnel_enabled = cfg.tunnel.enabled
@@ -4495,7 +4604,11 @@ async def start_dashboard(
     # Boot-to-ready (rec #1): full dashboard init is complete and the server is
     # about to accept traffic. Privacy-safe — the only labels are the fixed
     # ``server``/``outcome`` enums. Best-effort; never blocks the return.
-    # Publish readiness at the exact boundary measured as boot-to-ready.
+    # Publish the gateway's shared memory task first and do not yield between
+    # these assignments. create_task cannot enter its restore/open worker until
+    # this coroutine yields back to the gateway after returning the ready state.
+    if schedule_memory_preparation is not None:
+        state.memory_startup_task = schedule_memory_preparation()
     state.ready = True
     record_boot_to_ready((time.time() - state.start_time) * 1000.0, server="dashboard")
 
@@ -4515,6 +4628,7 @@ async def start_api_server(
     configured_host: str = "",
     assume_kiro_ready: bool = False,
     conversation_log: Any = None,
+    schedule_memory_preparation: "Callable[[], asyncio.Task[None] | None] | None" = None,
 ) -> tuple[web.AppRunner, DashboardState]:
     """Start a minimal API-only server for MCP tool transport (no UI).
 
@@ -4840,6 +4954,7 @@ async def start_api_server(
     # start_dashboard: never an on_startup hook, which would run the deferred
     # import before the bind).
     _kick_connections_warm_scavenge(state)
+    _kick_session_search_index(state)
 
     logger.info("API-only server listening on %s:%d", bind_addr, port)
 
@@ -4850,7 +4965,11 @@ async def start_api_server(
 
     # Boot-to-ready (rec #1): headless API server is bound and ready. Privacy-safe
     # fixed labels only; best-effort.
-    # Publish readiness at the exact boundary measured as boot-to-ready.
+    # Publish the gateway's shared memory task at the same no-yield boundary as
+    # the full dashboard. Headless MCP/chat callers therefore see the barrier
+    # whenever they can observe ready=True.
+    if schedule_memory_preparation is not None:
+        state.memory_startup_task = schedule_memory_preparation()
     state.ready = True
     record_boot_to_ready((time.time() - state.start_time) * 1000.0, server="api")
 

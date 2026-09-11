@@ -261,7 +261,7 @@ def resume_login_daemon(
 
     ``start_device_login`` already keeps the displayed device-code process
     alive. This helper is retained for manual fallback paths and starts a new
-    background login only when the recorded process is no longer running.
+    background login only when the recorded process is not running.
     """
     ssm.run_command(
         instance_id,

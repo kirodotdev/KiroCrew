@@ -561,9 +561,9 @@ class TestStore:
     def test_snapshot_reads_the_store_once_regardless_of_size(self, store, monkeypatch):
         """Pins the fix for a quadratic read on the event loop.
 
-        ``snapshot`` used to call ``state_for`` per name, and each of those re-read
-        the store AND the config -- so annotating an N-server probe response cost N
-        file reads, in a handler that runs on every dashboard poll.
+        ``snapshot`` reads the store and the config once, not once per name: annotating
+        an N-server probe response must cost a single read, in a handler that runs on
+        every dashboard poll.
         """
         mcp_quarantine.record_verdicts([(f"srv{i}", "error", "") for i in range(25)])
         reads = {"n": 0}

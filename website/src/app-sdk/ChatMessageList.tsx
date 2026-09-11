@@ -245,6 +245,14 @@ const ChatMessageList = memo(function ChatMessageList({
     const nonPerm = item.msgs.filter(m => m.role !== 'permission')
     const perms = item.msgs.filter(m => m.role === 'permission')
     const unresolvedPerms = perms.filter(m => !m.meta?.resolved)
+    // A group of only RESOLVED permissions has nothing to show: its pill would
+    // claim "0 tool calls" over an empty expansion (permission rows render
+    // null), which after a stop cancels a call sits right under the turn
+    // summary's own count — two disagreeing counts for one stopped call
+    // (#9556). ChatPage's renderTurnItem already skips all-permission groups;
+    // this host keeps a group with a PENDING permission because, with no
+    // pinned ApprovalBar in the embed, the group IS the approval surface.
+    if (nonPerm.length === 0 && unresolvedPerms.length === 0) return null
     const lastPerm = unresolvedPerms[unresolvedPerms.length - 1]
 
     const handleApprove = onApprove && lastPerm?.meta?.approval_id

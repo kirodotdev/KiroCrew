@@ -13,6 +13,11 @@ POSIX record lock. That swap is unsafe here: record locks are keyed by
 (process, inode), so any unrelated ``open()``/``close()`` of the lock path inside
 the gateway -- including via its authenticated file-read endpoint -- would
 silently release the guard and let a second gateway start.
+
+Owner diagnosis is best effort. WSL2 5.15 can retain the inherited flock while
+reporting owner 0 in the child's fdinfo and omitting it from /proc/locks. That
+positive kernel evidence must produce an honest unknown-owner refusal; kernels
+that retain the acquirer's PID still require the strict owner diagnosis.
 """
 
 from __future__ import annotations
@@ -86,6 +91,33 @@ def _orphan_the_lock(home, reap: list[int]) -> int:
     return pid
 
 
+def _kernel_discarded_fixture_lock_owner(lock_path: Path, orphan: int) -> bool:
+    """Recognize owner 0 only on the fixture child's descriptor for this lock."""
+    info = lock_path.stat()
+    device_inode = f"{os.major(info.st_dev):02x}:{os.minor(info.st_dev):02x}:{info.st_ino}"
+    for fd in Path(f"/proc/{orphan}/fd").iterdir():
+        try:
+            opened = fd.stat()
+        except OSError:
+            continue
+        if (opened.st_dev, opened.st_ino) != (info.st_dev, info.st_ino):
+            continue
+        rows = Path(f"/proc/{orphan}/fdinfo/{fd.name}").read_text().splitlines()
+        for row in rows:
+            fields = row.split()
+            if (
+                len(fields) >= 7
+                and fields[0] == "lock:"
+                and fields[2:6] == ["FLOCK", "ADVISORY", "WRITE", "0"]
+                and fields[6] == device_inode
+            ):
+                return not any(
+                    device_inode in line.split()
+                    for line in Path("/proc/locks").read_text().splitlines()
+                )
+    return False
+
+
 def test_flock_is_held_by_a_fork_orphan(tmp_path, reap):
     """The documented limitation: a dead parent's flock lives on in its child.
 
@@ -112,12 +144,23 @@ def test_flock_is_held_by_a_fork_orphan(tmp_path, reap):
     if platform_compat.pids_holding_file(home / "gateway.lock") is None:
         pytest.skip("/proc/<pid>/fd not readable here")
 
-    # /proc/locks names the DEAD acquirer, never the inheritor -- that asymmetry
-    # is the whole reason the message has to be written carefully.
+    # When retained, /proc/locks names the DEAD acquirer, never the inheritor.
     lock_path = home / "gateway.lock"
     if not Path("/proc/locks").exists():
         pytest.skip("/proc/locks unavailable")
     acquirer = platform_compat.flock_owner_pid(lock_path)
+    if _kernel_discarded_fixture_lock_owner(lock_path, orphan):
+        assert acquirer is None
+        recorded = int(lock_path.read_text().strip())
+        assert not platform_compat.pid_exists(recorded)
+        assert excinfo.value.holder_pid == recorded
+        text = str(excinfo.value)
+        assert "holder could not be identified" in text
+        assert f"file records pid {recorded}" in text
+        assert "may be stale" in text
+        assert "held by pid" not in text
+        assert "kill" not in text.lower()
+        return
     # Asserted, NOT guarded: a None here means the owner lookup regressed, which
     # is exactly the failure this test exists to catch. Guarding it would let the
     # regression pass silently. (Filesystems with an anonymous s_dev, e.g. btrfs,
@@ -156,8 +199,8 @@ def test_pids_holding_file_finds_the_real_holder(tmp_path):
 # --- refusal message rendering -------------------------------------------
 #
 # These drive the diagnosis directly (the lock is forced to appear taken) so the
-# wording is pinned without needing a real second holder. The message is the
-# whole point of the change: the old one named a pid that no longer existed.
+# wording is pinned without needing a real second holder. The message must name a
+# pid that actually holds the lock, never a stale one read from the pid file.
 
 
 @pytest.fixture
@@ -272,12 +315,13 @@ def test_refusal_refuses_to_guess_between_multiple_openers(monkeypatch, refused_
     assert "kill -9" not in text  # an opener is not proof of ownership
 
 
-def test_refusal_degrades_honestly_without_proc_locks(monkeypatch, refused_lock):
-    """No /proc/locks (non-Linux): fall back to the recorded pid, say it may be stale."""
+@pytest.mark.parametrize("openers", [None, [23185]])
+def test_refusal_degrades_honestly_without_proc_locks(monkeypatch, refused_lock, openers):
+    """Without an owner record, even a known opener cannot establish ownership."""
     from kiro_crew import platform_compat
 
     monkeypatch.setattr(platform_compat, "flock_owner_pid", lambda _p: None)
-    monkeypatch.setattr(platform_compat, "pids_holding_file", lambda _p: None)
+    monkeypatch.setattr(platform_compat, "pids_holding_file", lambda _p: openers)
 
     err = _refusal(refused_lock, port=5477)
     text = str(err)

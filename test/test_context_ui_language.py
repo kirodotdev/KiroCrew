@@ -115,7 +115,7 @@ class TestUiLanguageSection:
         for it, so the chrome renders in English while a steered agent would
         write purpose pills — and the Slack/Discord task titles derived from
         them — in the unsupported language, durably (purposes persist in
-        session history and are inherited by forked sessions). See #1130."""
+        session history and are inherited by forked sessions)."""
         for tag in ("ar", "th", "zz", "tlh"):
             _seed_language(tag)
             ctx = _builder(tmp_path).build_session_context()
@@ -193,9 +193,9 @@ class TestUiLanguageSection:
 # that "which languages exist" stays a pure frontend data change in
 # website/src/i18n/languages.ts — so this gate is what keeps the backend copy
 # honest: add or remove a language there without updating the Python set and
-# this test fails naming both sides. A silent drift would re-create #1130 for
+# this test fails naming both sides. A silent drift would re-create the bug for
 # the next added language (backend refuses a tag the UI now renders) or, worse,
-# for a removed one (backend steers the agent to a language the UI no longer
+# for a removed one (backend steers the agent to a language the UI does not
 # ships).
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -228,7 +228,7 @@ def _frontend_registry() -> tuple[set[str], set[str]]:
     # double-quoted strings, ...). Without this the gate fails OPEN: at the
     # moment a contributor adds an unparseable entry, the backend set also
     # lacks that code, so both sides omit it and the equality check passes —
-    # recreating #1130 for exactly the language the gate exists to protect.
+    # recreating the bug for exactly the language the gate exists to protect.
     entry_count = body.count("code:")
     parsed = len(shipped) + len(dev_only)
     assert parsed == entry_count, (
@@ -279,11 +279,11 @@ class TestCatalogDriftGate:
 class TestNormalizeUiLanguageTag:
     """The ONE gate a tag passes to become a usable UI language.
 
-    Public because ``dashboard.language`` is no longer the only source: a caller
+    Public because ``dashboard.language`` is not the only source: a caller
     that CAN observe a browser's own resolved language (Issue Radar's per-request
-    hint, #7144) must admit it on exactly the same terms. Two gates would let the
+    hint) must admit it on exactly the same terms. Two gates would let the
     frontend and the backend disagree about the active language, which is the
-    class of bug #1130 exists to prevent.
+    class of bug this gate exists to prevent.
     """
 
     def test_a_shipped_tag_is_returned_verbatim(self):

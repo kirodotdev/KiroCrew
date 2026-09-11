@@ -13,11 +13,17 @@ import { SecretsPanel } from './SecretsPanel'
  * the re-render they cause.
  */
 type FetchCall = { url: string; method: string; body?: unknown; headers?: Record<string, string> }
+type ManagedSecret = { name: string; kind: 'jira_api_token' | 'jira_host_token'; host?: string }
 
 let calls: FetchCall[] = []
 
-/** Names the list endpoint returns; mutated between the initial GET and the refetch. */
+/** Names and managed catalog entries returned by the list endpoint. */
 let listNames: string[] = []
+let listManaged: ManagedSecret[] = []
+let listUnused: Array<{ name: string; reason: 'wakatime_disabled' | 'jira_multi_host' | 'jira_host_precedence' }> = []
+
+/** Non-fatal managed catalog warning returned by the list endpoint. */
+let listManagedError = false
 
 /** When set, the next `/api/secrets` GET rejects — drives the error path. */
 let listShouldFail = false
@@ -49,7 +55,12 @@ function installFetch() {
       return Promise.resolve({
         ok: true,
         status: 200,
-        json: () => Promise.resolve({ names: listNames }),
+        json: () => Promise.resolve({
+          names: listNames,
+          managed: listManaged,
+          ...(listUnused.length ? { unused: listUnused } : {}),
+          ...(listManagedError ? { managed_error: listManagedError } : {}),
+        }),
       } as Response)
     }
     // POST /api/secrets and DELETE /api/secrets/:name both just acknowledge.
@@ -82,6 +93,9 @@ function mount() {
 beforeEach(() => {
   calls = []
   listNames = []
+  listManaged = []
+  listUnused = []
+  listManagedError = false
   listShouldFail = false
   localStorage.setItem('kiro_crew_token', 'test-token')
   installFetch()
@@ -112,10 +126,31 @@ describe('SecretsPanel', () => {
   })
 
   it('shows the empty state when no secrets are stored', async () => {
+    const user = userEvent.setup()
     listNames = []
     mount()
 
     expect(await screen.findByText('No secrets stored yet.')).toBeInTheDocument()
+    expect(screen.getByText(/KIROCREW_HOME\/config.json/)).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Open the secrets setup guide' })).toHaveAttribute(
+      'href',
+      'https://github.com/kirodotdev/KiroCrew/blob/main/docs/guides/secrets-env.md',
+    )
+
+    await user.click(screen.getByRole('button', { name: 'Add secret' }))
+    expect(screen.queryByText(/configured in config.json/)).not.toBeInTheDocument()
+  })
+
+  it('shows a non-fatal managed config warning while keeping stored names', async () => {
+    listNames = ['MY_API_KEY']
+    listManagedError = true
+    mount()
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Some automatic credentials are hidden because $KIROCREW_HOME/config.json',
+    )
+    expect(screen.getByText('MY_API_KEY')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Add secret' })).toBeInTheDocument()
   })
 
   it('lists stored secret names with values masked', async () => {
@@ -124,9 +159,211 @@ describe('SecretsPanel', () => {
 
     expect(await screen.findByText('MY_API_KEY')).toBeInTheDocument()
     expect(screen.getByText('DB_PASSWORD')).toBeInTheDocument()
+    expect(screen.getByText('Stored secrets')).toBeInTheDocument()
+    expect(screen.getByText(/MCP server configuration or \.env/)).toBeInTheDocument()
     // The plaintext is never rendered — only the mask is.
     expect(screen.getAllByText('••••••••')).toHaveLength(2)
     expect(screen.queryByText('No secrets stored yet.')).not.toBeInTheDocument()
+    expect(screen.queryByText(/To use WakaTime or Jira automatically/)).not.toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Open the secrets setup guide' })).toBeInTheDocument()
+  })
+
+
+  it('marks an orphaned WakaTime key unused while WakaTime is disabled', async () => {
+    listNames = ['WAKATIME_API_KEY']
+    listUnused = [{ name: 'WAKATIME_API_KEY', reason: 'wakatime_disabled' }]
+    mount()
+
+    expect(await screen.findByText('Not used while WakaTime is disabled. Enable WakaTime or delete this entry.')).toBeInTheDocument()
+  })
+
+  it('renders managed Jira credentials separately from other stored names', async () => {
+    const user = userEvent.setup()
+    listNames = ['JIRA_API_TOKEN', 'WEATHER_API_KEY']
+    listManaged = [
+      { name: 'JIRA_API_TOKEN', kind: 'jira_api_token' },
+    ]
+    mount()
+
+    expect(await screen.findByText('Used automatically by Kiro Crew')).toBeInTheDocument()
+    expect(screen.getByText('Jira API token')).toBeInTheDocument()
+    expect(screen.getByText(/Authenticates Jira issue lookups/)).toBeInTheDocument()
+    expect(screen.getByText('JIRA_API_TOKEN')).toBeInTheDocument()
+    expect(screen.getByText('Other stored secrets')).toBeInTheDocument()
+    expect(screen.getByText('WEATHER_API_KEY')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Replace' })).toBeInTheDocument()
+    expect(screen.queryByText('test-value-123')).not.toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Add secret' }))
+    const replace = screen.getByRole('button', { name: 'Replace' })
+    expect(replace).toBeEnabled()
+    expect(replace).toHaveAttribute('title', 'Replace')
+  })
+
+  it('configures an unset managed credential without asking for its key name', async () => {
+    const user = userEvent.setup()
+    listManaged = [
+      { name: 'JIRA_API_TOKEN', kind: 'jira_api_token' },
+    ]
+    mount()
+    await screen.findByText('Jira API token')
+
+    expect(screen.queryByLabelText('Secret name')).not.toBeInTheDocument()
+    expect(screen.getAllByText('JIRA_API_TOKEN')).toHaveLength(1)
+    expect(screen.getByRole('button', { name: 'Add secret' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Save JIRA_API_TOKEN' })).toBeDisabled()
+    await user.type(screen.getByLabelText('Jira API token'), 'jira-token-value')
+    listNames = ['JIRA_API_TOKEN']
+    listManaged = [
+      { name: 'JIRA_API_TOKEN', kind: 'jira_api_token' },
+    ]
+    await user.click(screen.getByRole('button', { name: 'Save JIRA_API_TOKEN' }))
+
+    await waitFor(() => {
+      const post = calls.find(c => c.method === 'POST')
+      expect(post?.body).toEqual({ name: 'JIRA_API_TOKEN', value: 'jira-token-value' })
+    })
+    expect(await screen.findByRole('status')).toHaveTextContent('Saved')
+  })
+
+  it('keeps managed row drafts independent and leaves Add available', async () => {
+    const user = userEvent.setup()
+    listNames = ['JIRA_API_TOKEN']
+    listManaged = [
+      { name: 'WAKATIME_API_KEY', kind: 'wakatime_api_key' },
+      { name: 'JIRA_API_TOKEN', kind: 'jira_api_token' },
+    ]
+    mount()
+    await screen.findByText('WakaTime API key')
+
+    await user.type(screen.getByLabelText('WakaTime API key'), 'waka-draft')
+    await user.click(screen.getByRole('button', { name: 'Replace' }))
+
+    expect(screen.getByLabelText('WakaTime API key')).toHaveValue('waka-draft')
+    expect(screen.getByLabelText('Jira API token')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Add secret' })).toBeEnabled()
+  })
+
+  it('clears Saved feedback when deletion starts', async () => {
+    const user = userEvent.setup()
+    listNames = ['JIRA_API_TOKEN']
+    listManaged = [{ name: 'JIRA_API_TOKEN', kind: 'jira_api_token' }]
+    mount()
+    await screen.findByText('Jira API token')
+
+    await user.click(screen.getByRole('button', { name: 'Replace' }))
+    await user.type(screen.getByLabelText('Jira API token'), 'replacement-value')
+    await user.click(screen.getByRole('button', { name: 'Save JIRA_API_TOKEN' }))
+    expect(await screen.findByRole('status')).toHaveTextContent('Saved')
+
+    await user.click(screen.getByRole('button', { name: 'Delete Jira API token' }))
+    await user.click(screen.getByRole('button', { name: 'Delete' }))
+    expect(screen.queryByRole('status')).not.toBeInTheDocument()
+  })
+
+  it('removes a configured managed credential only after confirmation', async () => {
+    const user = userEvent.setup()
+    listNames = ['JIRA_API_TOKEN']
+    listManaged = [{ name: 'JIRA_API_TOKEN', kind: 'jira_api_token' }]
+    mount()
+    await screen.findByText('Jira API token')
+
+    const deleteAction = screen.getByRole('button', { name: 'Delete Jira API token' })
+    expect(deleteAction).toHaveTextContent('Delete')
+    expect(deleteAction).toHaveClass('border-danger', 'text-danger')
+    await user.click(deleteAction)
+    expect(screen.queryByRole('button', { name: 'Delete Jira API token' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Cancel' })).toHaveFocus()
+    expect(screen.getByRole('button', { name: 'Replace' })).toBeInTheDocument()
+    expect(screen.getByText('Permanently delete “Jira API token”? The current value cannot be recovered.')).toBeInTheDocument()
+    expect(calls.some(call => call.method === 'DELETE')).toBe(false)
+
+    listNames = []
+    await user.click(screen.getByRole('button', { name: 'Delete' }))
+    await waitFor(() => {
+      expect(calls.find(call => call.method === 'DELETE')?.url).toBe('/api/secrets/JIRA_API_TOKEN')
+    })
+  })
+
+  it('returns focus to managed Delete after cancelling confirmation', async () => {
+    const user = userEvent.setup()
+    listNames = ['JIRA_API_TOKEN']
+    listManaged = [{ name: 'JIRA_API_TOKEN', kind: 'jira_api_token' }]
+    mount()
+    await screen.findByText('Jira API token')
+
+    await user.click(screen.getByRole('button', { name: 'Delete Jira API token' }))
+    await user.click(screen.getByRole('button', { name: 'Cancel' }))
+
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Delete Jira API token' })).toHaveFocus())
+  })
+
+  it('clears a managed delete confirmation when replacement editing begins', async () => {
+    const user = userEvent.setup()
+    listNames = ['JIRA_API_TOKEN']
+    listManaged = [{ name: 'JIRA_API_TOKEN', kind: 'jira_api_token' }]
+    mount()
+    await screen.findByText('Jira API token')
+
+    await user.click(screen.getByRole('button', { name: 'Delete Jira API token' }))
+    expect(screen.getByText('Permanently delete “Jira API token”? The current value cannot be recovered.')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Replace' }))
+    await user.type(screen.getByLabelText('Jira API token'), 'replacement-draft')
+
+    expect(screen.queryByText('Permanently delete “Jira API token”? The current value cannot be recovered.')).not.toBeInTheDocument()
+    expect(screen.getByLabelText('Jira API token')).toHaveValue('replacement-draft')
+    expect(calls.some(call => call.method === 'DELETE')).toBe(false)
+  })
+
+  it('labels configured per-host Jira tokens as managed credentials', async () => {
+    listNames = ['JIRA_TOKEN_6578616D706C652E636F6D']
+    listManaged = [
+      {
+        name: 'JIRA_TOKEN_6578616D706C652E636F6D',
+        kind: 'jira_host_token',
+        host: 'example.com',
+      },
+    ]
+    mount()
+
+    expect(await screen.findByText('Jira host API token — example.com')).toBeInTheDocument()
+    expect(screen.getByText(/one configured host/)).toBeInTheDocument()
+    expect(screen.getByText('JIRA_TOKEN_6578616D706C652E636F6D')).toBeInTheDocument()
+  })
+
+  it('explains when a stored global Jira token is inactive in multi-host mode', async () => {
+    listNames = ['JIRA_API_TOKEN', 'JIRA_TOKEN_6578616D706C652E636F6D']
+    listUnused = [{ name: 'JIRA_API_TOKEN', reason: 'jira_multi_host' }]
+    listManaged = [
+      {
+        name: 'JIRA_TOKEN_6578616D706C652E636F6D',
+        kind: 'jira_host_token',
+        host: 'example.com',
+      },
+      {
+        name: 'JIRA_TOKEN_6A697261322E6578616D706C652E636F6D',
+        kind: 'jira_host_token',
+        host: 'jira2.example.com',
+      },
+    ]
+    mount()
+
+    expect(await screen.findByText('JIRA_API_TOKEN')).toBeInTheDocument()
+    expect(screen.getByText('Not used by Jira while multiple hosts are configured. Set each host’s credential above, or delete this entry.')).toBeInTheDocument()
+  })
+
+  it('explains when a stored per-host Jira token takes precedence over the global token', async () => {
+    listNames = ['JIRA_API_TOKEN', 'JIRA_TOKEN_6578616D706C652E636F6D']
+    listUnused = [{ name: 'JIRA_API_TOKEN', reason: 'jira_host_precedence' }]
+    listManaged = [{
+      name: 'JIRA_TOKEN_6578616D706C652E636F6D',
+      kind: 'jira_host_token',
+      host: 'example.com',
+    }]
+    mount()
+
+    expect(await screen.findByText('JIRA_API_TOKEN')).toBeInTheDocument()
+    expect(screen.getByText('Not used because the host-specific Jira credential takes precedence. Delete this entry if you no longer need the fallback.')).toBeInTheDocument()
   })
 
   it('sends the session key header on the list request', async () => {
@@ -135,6 +372,24 @@ describe('SecretsPanel', () => {
 
     const listCall = calls.find(c => c.method === 'GET')
     expect(listCall?.url).toBe('/api/secrets')
+  })
+
+  it('renders the vault-only WakaTime credential as managed without an empty Other section', async () => {
+    listManaged = [
+      { name: 'WAKATIME_API_KEY', kind: 'wakatime_api_key' },
+    ]
+    mount()
+
+    expect(await screen.findByText('WakaTime API key')).toBeInTheDocument()
+    expect(screen.getByText(/coding-activity sync/)).toBeInTheDocument()
+    expect(screen.queryByText('Other stored secrets')).not.toBeInTheDocument()
+    expect(screen.getByLabelText('WakaTime API key')).toHaveAttribute('type', 'password')
+    expect(screen.getByRole('button', { name: 'Save WAKATIME_API_KEY' })).toBeDisabled()
+    expect(screen.getByLabelText('WakaTime API key')).toHaveAttribute('placeholder', 'Paste secret value')
+    expect(screen.getByRole('link', { name: 'Open WakaTime API key settings' })).toHaveAttribute(
+      'href',
+      'https://wakatime.com/settings/api-key',
+    )
   })
 
   it('opens the add form and keeps Save disabled until both fields are filled', async () => {
@@ -154,6 +409,161 @@ describe('SecretsPanel', () => {
     // Value completes it.
     await user.type(screen.getByLabelText('Secret value'), 'sk-abc123')
     expect(save).toBeEnabled()
+  })
+
+  it('explains managed-name collisions and saves through the canonical name', async () => {
+    const user = userEvent.setup()
+    listManaged = [{ name: 'JIRA_API_TOKEN', kind: 'jira_api_token' }]
+    mount()
+    await screen.findByText('Used automatically by Kiro Crew')
+
+    await user.click(screen.getByRole('button', { name: 'Add secret' }))
+    await user.type(screen.getByLabelText('Secret name'), 'jira_api_token')
+    await user.type(screen.getByLabelText('Secret value'), 'jira-token-value')
+
+    expect(screen.getByText('Saving here updates JIRA_API_TOKEN under Used automatically by Kiro Crew.')).toBeInTheDocument()
+    const save = screen.getByRole('button', { name: 'Save' })
+    expect(save).toBeEnabled()
+    await user.click(save)
+    await waitFor(() => expect(calls.find(call => call.method === 'POST')?.body).toEqual({
+      name: 'JIRA_API_TOKEN', value: 'jira-token-value',
+    }))
+  })
+
+  it('disables a managed row while its save is pending', async () => {
+    const user = userEvent.setup()
+    let resolvePost: (response: Response) => void = () => {}
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+        const method = init?.method ?? 'GET'
+        if (method === 'POST') {
+          return new Promise<Response>((resolve) => { resolvePost = resolve })
+        }
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve({
+            names: ['JIRA_API_TOKEN'],
+            managed: [{ name: 'JIRA_API_TOKEN', kind: 'jira_api_token' }],
+          }),
+        } as Response)
+      }),
+    )
+    mount()
+    await screen.findByText('Jira API token')
+
+    await user.click(screen.getByRole('button', { name: 'Replace' }))
+    const input = screen.getByLabelText('Jira API token')
+    await user.type(input, 'submitted-value')
+    await user.click(screen.getByRole('button', { name: 'Save JIRA_API_TOKEN' }))
+
+    expect(input).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Show' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Cancel' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Save JIRA_API_TOKEN' })).toBeDisabled()
+
+    resolvePost({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({ ok: true }),
+    } as Response)
+  })
+
+  it('blocks an Add that targets a managed name whose row delete is still in flight', async () => {
+    // Regression: the Add-save gate only watched the parent mutations, so a
+    // managed row's in-flight DELETE could be overtaken by a same-name Add and
+    // the delayed DELETE would erase the just-saved credential. The gate now
+    // shares pending managed-row names, so the Add stays disabled until the
+    // delete settles.
+    const user = userEvent.setup()
+    let resolveDelete: (response: Response) => void = () => {}
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+        const method = init?.method ?? 'GET'
+        if (method === 'DELETE') {
+          return new Promise<Response>((resolve) => { resolveDelete = resolve })
+        }
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve({
+            names: ['JIRA_API_TOKEN'],
+            managed: [{ name: 'JIRA_API_TOKEN', kind: 'jira_api_token' }],
+          }),
+        } as Response)
+      }),
+    )
+    mount()
+    await screen.findByText('Jira API token')
+
+    // Start deleting the managed row and leave the DELETE pending.
+    await user.click(screen.getByRole('button', { name: 'Delete Jira API token' }))
+    await user.click(screen.getByRole('button', { name: 'Delete' }))
+
+    // Open Add and type the same canonical name + a value.
+    await user.click(screen.getByRole('button', { name: 'Add secret' }))
+    await user.type(screen.getByLabelText('Secret name'), 'jira_api_token')
+    await user.type(screen.getByLabelText('Secret value'), 'replacement-value')
+
+    // The Add-save button must stay disabled while the row delete is in flight.
+    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled()
+
+    // Once the delete settles, no stray POST should have been sent.
+    resolveDelete({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({ ok: true }),
+    } as Response)
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled())
+    expect(calls.find(call => call.method === 'POST')).toBeUndefined()
+  })
+
+  it('freezes a managed row while a parent Add save targeting its canonical name is in flight', async () => {
+    // Regression (reverse direction): while the parent Add POST is in flight
+    // against a managed canonical name, that row stayed interactive, so a
+    // concurrent delete/replace on the row could reorder around the Add and
+    // corrupt the credential. The row is now frozen for the duration of the Add.
+    const user = userEvent.setup()
+    let resolvePost: (response: Response) => void = () => {}
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+        const method = init?.method ?? 'GET'
+        if (method === 'POST') {
+          return new Promise<Response>((resolve) => { resolvePost = resolve })
+        }
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve({
+            names: ['JIRA_API_TOKEN'],
+            managed: [{ name: 'JIRA_API_TOKEN', kind: 'jira_api_token' }],
+          }),
+        } as Response)
+      }),
+    )
+    mount()
+    await screen.findByText('Jira API token')
+
+    // Open Add, type the managed canonical name + value, and start the save.
+    await user.click(screen.getByRole('button', { name: 'Add secret' }))
+    await user.type(screen.getByLabelText('Secret name'), 'jira_api_token')
+    await user.type(screen.getByLabelText('Secret value'), 'add-value')
+    await user.click(screen.getByRole('button', { name: 'Save' }))
+
+    // The matching managed row's delete control must be frozen while the Add
+    // POST is in flight (the row's own fieldset is disabled).
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Delete Jira API token' })).toBeDisabled(),
+    )
+
+    resolvePost({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({ ok: true }),
+    } as Response)
   })
 
   it('POSTs the trimmed name and value, then closes the form', async () => {
@@ -207,8 +617,7 @@ describe('SecretsPanel', () => {
 
     await user.click(screen.getByRole('button', { name: 'Delete secret MY_API_KEY' }))
 
-    // The confirm prompt replaces the trash affordance; no request yet.
-    expect(screen.getByText('Delete this secret?')).toBeInTheDocument()
+    expect(screen.getByText('Permanently delete “MY_API_KEY”? The current value cannot be recovered.')).toBeInTheDocument()
     expect(calls.some(c => c.method === 'DELETE')).toBe(false)
   })
 
@@ -237,24 +646,23 @@ describe('SecretsPanel', () => {
     await user.click(screen.getByRole('button', { name: 'Delete secret MY_API_KEY' }))
     await user.click(screen.getByRole('button', { name: 'Cancel' }))
 
-    // Back to the trash affordance, nothing deleted.
-    expect(screen.queryByText('Delete this secret?')).not.toBeInTheDocument()
-    expect(
-      screen.getByRole('button', { name: 'Delete secret MY_API_KEY' }),
-    ).toBeInTheDocument()
+    expect(screen.queryByText('Permanently delete “MY_API_KEY”? The current value cannot be recovered.')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Delete secret MY_API_KEY' })).toBeInTheDocument()
     expect(calls.some(c => c.method === 'DELETE')).toBe(false)
   })
 
-  it('renders the empty state rather than crashing when the list request fails', async () => {
+  it('shows an actionable error while preserving the Add path', async () => {
+    const user = userEvent.setup()
     listShouldFail = true
     mount()
 
-    // A failed read must NOT read as "no secrets": the panel names the failure
-    // (with the backend prose) instead of degrading to the empty state — and the
-    // Add path stays reachable.
     expect(await screen.findByRole('alert')).toHaveTextContent('Could not load secrets: boom')
+    expect(screen.getByRole('button', { name: /ask the agent/i })).toBeInTheDocument()
     expect(screen.queryByText('No secrets stored yet.')).not.toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Add secret' })).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Add secret' }))
+    expect(screen.getByLabelText('Secret name')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /ask the agent/i })).not.toBeInTheDocument()
   })
 })
 
@@ -330,7 +738,7 @@ describe('SecretsPanel error handling', () => {
     // A failed delete must not resolve the confirmation — otherwise the UI
     // implies the secret is gone when it is still stored.
     await waitFor(() => {
-      expect(screen.getByText('Delete this secret?')).toBeInTheDocument()
+      expect(screen.getByText('Permanently delete “MY_API_KEY”? The current value cannot be recovered.')).toBeInTheDocument()
     })
     expect(screen.getByText('MY_API_KEY')).toBeInTheDocument()
   })
@@ -348,10 +756,9 @@ describe('SecretsPanel error handling', () => {
     )
     mount()
 
-    // The list query rejects and the panel names the failure. The assertion that
-    // matters is that a non-OK status did NOT resolve as data — and that the
-    // backend's prose survived into the thrown error.
-    expect(await screen.findByRole('alert')).toHaveTextContent('HTTP 400: Secret name must be a string')
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent('HTTP 400: Secret name must be a string')
+    expect(screen.queryByText('No secrets stored yet.')).not.toBeInTheDocument()
   })
 
   it('rejects a non-OK response whose body is not JSON', async () => {
@@ -367,11 +774,10 @@ describe('SecretsPanel error handling', () => {
     )
     mount()
 
-    // The detail-extraction `catch` must swallow the parse failure and still
-    // throw on the status, not leak a SyntaxError — so the notice carries the
-    // bare status and nothing else.
-    expect(await screen.findByRole('alert')).toHaveTextContent('Could not load secrets: HTTP 502')
-    expect(screen.getByRole('alert')).not.toHaveTextContent('not json')
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent('Could not load secrets: HTTP 502')
+    expect(alert).not.toHaveTextContent('not json')
+    expect(screen.queryByText('No secrets stored yet.')).not.toBeInTheDocument()
   })
 })
 
@@ -530,7 +936,7 @@ describe('SecretsPanel error feedback and in-flight guards', () => {
     mount()
     await screen.findByText('ALPHA')
 
-    // Open ALPHA's confirm row and fire its DELETE (stays pending).
+    // Open ALPHA's confirmation and fire its DELETE (stays pending).
     await user.click(screen.getByRole('button', { name: 'Delete secret ALPHA' }))
     await user.click(screen.getByRole('button', { name: 'Delete' }))
     expect(deletes).toHaveLength(1)
@@ -626,6 +1032,74 @@ describe('SecretsPanel error feedback and in-flight guards', () => {
     expect(alert).toHaveTextContent('Could not delete secret')
     expect(alert).toHaveTextContent('500')
     expect(alert).toHaveTextContent('boom')
+    expect(screen.queryByRole('button', { name: /ask the agent/i })).not.toBeInTheDocument()
+  })
+
+  it('does not offer delete-error handoff while the add form holds a draft', async () => {
+    const user = userEvent.setup()
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((_input: RequestInfo | URL, init?: RequestInit) => {
+        if ((init?.method ?? 'GET') === 'DELETE') {
+          return Promise.resolve({
+            ok: false,
+            status: 500,
+            json: () => Promise.resolve({ error: 'boom' }),
+          } as Response)
+        }
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve({ names: ['MY_API_KEY'], managed: [] }),
+        } as Response)
+      }),
+    )
+    mount()
+    await screen.findByText('MY_API_KEY')
+
+    await user.click(screen.getByRole('button', { name: 'Add secret' }))
+    await user.type(screen.getByLabelText('Secret name'), 'UNSAVED_KEY')
+    await user.type(screen.getByLabelText('Secret value'), 'unsaved-value')
+    await user.click(screen.getByRole('button', { name: 'Delete secret MY_API_KEY' }))
+    await user.click(screen.getByRole('button', { name: 'Delete' }))
+
+    await screen.findByRole('alert')
+    expect(screen.queryByRole('button', { name: /ask the agent/i })).not.toBeInTheDocument()
+    expect(screen.getByLabelText('Secret value')).toHaveValue('unsaved-value')
+  })
+
+  it('does not offer page-level handoff while a managed row holds a draft', async () => {
+    const user = userEvent.setup()
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((_input: RequestInfo | URL, init?: RequestInit) => {
+        if ((init?.method ?? 'GET') === 'DELETE') {
+          return Promise.resolve({
+            ok: false,
+            status: 500,
+            json: () => Promise.resolve({ error: 'boom' }),
+          } as Response)
+        }
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve({
+            names: ['MY_API_KEY'],
+            managed: [{ name: 'JIRA_API_TOKEN', kind: 'jira_api_token' }],
+          }),
+        } as Response)
+      }),
+    )
+    mount()
+    await screen.findByText('Jira API token')
+
+    await user.type(screen.getByLabelText('Jira API token'), 'unsaved-managed-value')
+    await user.click(screen.getByRole('button', { name: 'Delete secret MY_API_KEY' }))
+    await user.click(screen.getByRole('button', { name: 'Delete' }))
+
+    await screen.findByRole('alert')
+    expect(screen.queryByRole('button', { name: /ask the agent/i })).not.toBeInTheDocument()
+    expect(screen.getByLabelText('Jira API token')).toHaveValue('unsaved-managed-value')
   })
 
   /**

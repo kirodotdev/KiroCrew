@@ -1,8 +1,8 @@
-"""Regression tests for the 2026-08-07 CSE scan findings.
+"""Behaviour pinned for a set of CSE scan findings.
 
 One class per finding. These assert BEHAVIOR (build a hostile zip, flatten a
 forged message, capture the aws argv) rather than grepping source text, so they
-still fail if the fix is reimplemented differently but incorrectly.
+still fail if the code is reimplemented differently but incorrectly.
 
 Findings covered:
   SEC-1125C1  portability zip import accepted symlink entries (defense-in-depth:

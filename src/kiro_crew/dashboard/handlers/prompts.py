@@ -2207,6 +2207,11 @@ async def api_skills(request: web.Request) -> web.Response:
     result = await _assemble_skills_catalog(skills, project_dir)
     agent = request.query.get("agent") or None
     if agent:
+        # Resolved from the parsed-specs snapshot in agent_discovery (the
+        # annotation pass inside the catalog assembly warms it), so the warm
+        # path costs one scandir signature check instead of re-parsing every
+        # agent JSON. Still off-loop: the cold path walks and parses
+        # ~/.kiro/agents.
         globs = await asyncio.get_running_loop().run_in_executor(
             discovery_executor(), agent_skill_globs, agent
         )

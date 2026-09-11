@@ -459,10 +459,10 @@ def test_every_middleware_denial_is_audited_off_the_loop() -> None:
     invisible when omitted: the write is best-effort (an audit that raises
     must not turn the 403 into a 500). The write itself is a direct enqueue —
     the SEL singleton is warmed at gateway startup (``sel.warm_sel_singleton``,
-    pinned in test_sel_startup_warm.py), so the per-call thread hop the helper
-    used to carry is gone (#8608) and must not quietly return.
+    pinned in test_sel_startup_warm.py), so the helper enqueues directly with
+    no per-call thread hop, and must not quietly return.
 
-    A bare raise with no audit at all is no longer a silent failure — the
+    A bare raise with no audit at all is not a silent failure — the
     deny-audit boundary records it by position (see the chain tests below) — so
     these calls are what keeps each record's own reason detail, not what keeps
     the record. Both halves are still worth pinning: the boundary's generic
@@ -606,7 +606,7 @@ async def test_a_forgetful_pre_audit_refusal_is_still_audited_by_position(
     """The fourth deny site, written the way the pin cannot catch.
 
     This barrier raises a bare 403 and audits nothing — exactly the omission
-    that used to leave a refusal in no log at all, because
+    that would leave a refusal in no log at all, because
     ``sel_audit_middleware`` is registered inner to it. The record must appear
     anyway, on the event loop's thread, and the 403 must still reach the client.
     """
@@ -619,9 +619,9 @@ async def test_a_forgetful_pre_audit_refusal_is_still_audited_by_position(
     # Establish the warm precondition HERE rather than inheriting it: production
     # awaits sel.warm_sel_singleton() before the middleware chain is built, but
     # this test builds its own chain and performs no warm, so whether the real
-    # sel_is_warm() answers True depends on what else ran first in this worker
-    # (#8885). Patching it — like server_mod.sel above — keeps the test hermetic
-    # and pins the warm path's contract: a direct enqueue, no thread hop (#8608).
+    # sel_is_warm() answers True depends on what else ran first in this worker.
+    # Patching it — like server_mod.sel above — keeps the test hermetic
+    # and pins the warm path's contract: a direct enqueue, no thread hop.
     monkeypatch.setattr(server_mod, "sel_is_warm", lambda: True)
 
     @web.middleware
@@ -639,7 +639,7 @@ async def test_a_forgetful_pre_audit_refusal_is_still_audited_by_position(
     assert denials[0]["resources"] == "/api/sessions"
     assert "403" in denials[0]["error"]
     # Warm singleton (patched above) ⇒ a direct enqueue on the loop thread via
-    # the shared helper — no per-call thread hop on the healthy path (#8608).
+    # the shared helper — no per-call thread hop on the healthy path.
     assert spy.threads[0] == "MainThread"
 
 
@@ -652,7 +652,7 @@ async def test_a_pre_audit_refusal_on_a_cold_sel_is_audited_off_the_loop(
     ``warm_sel_singleton`` is best-effort, so a cold singleton is a real
     production state: the next ``sel()`` retries construction — blocking file
     I/O — on the caller's thread. ``_audit_denied`` keeps a thread hop for
-    exactly that case (``server.py``'s warm/cold branch, #8608/#8885), and this
+    exactly that case (``server.py``'s warm/cold branch), and this
     pins its side of the contract: the record still lands, off the loop thread.
     The assertion is on the contract (not MainThread), not on the executor's
     ``asyncio_N`` naming, which is an environment detail.

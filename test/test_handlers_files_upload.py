@@ -270,9 +270,9 @@ async def test_upload_corrupted_docx_emits_zipfile_false_diagnostic(
     )
     async with TestClient(TestServer(_make_app())) as client:
         resp = await client.post("/api/upload/file", data=form)
-        # A .docx whose bytes aren't a valid zip is now REJECTED at the upload
+        # A .docx whose bytes aren't a valid zip is REJECTED at the upload
         # boundary by the magic-byte content gate (CWE-434), before any write —
-        # a bogus / masquerading file no longer reaches disk.
+        # a bogus / masquerading file never reaches disk.
         assert resp.status == 400, await resp.text()
         body = await resp.json()
         assert "does not match its type" in body["error"]
@@ -284,7 +284,7 @@ async def test_upload_har_is_accepted_as_plain_text(
     caplog: pytest.LogCaptureFixture,
     mock_sel,
 ) -> None:
-    """A ``.har`` upload is accepted exactly like ``.json`` (#2555).
+    """A ``.har`` upload is accepted exactly like ``.json``.
 
     HAR exports are JSON text, so they ride the text-extension allowlist:
     no magic-byte signature to enforce, and — because HAR files routinely
@@ -324,6 +324,30 @@ async def test_upload_har_is_accepted_as_plain_text(
         f"Did not expect a diagnostic for .har upload; got: "
         f"{[r.getMessage() for r in diagnostics]}"
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("extension", [".text", ".xwiki"])
+async def test_upload_plain_text_alias_is_accepted(
+    upload_dir: Path,
+    mock_sel,
+    extension: str,
+) -> None:
+    payload = "Plain UTF-8 text\nUnicode: café 日本語\n".encode()
+    form = aiohttp.FormData()
+    form.add_field(
+        "file",
+        payload,
+        filename=f"notes{extension}",
+        content_type="text/plain",
+    )
+    async with TestClient(TestServer(_make_app())) as client:
+        resp = await client.post("/api/upload/file", data=form)
+        assert resp.status == 200, await resp.text()
+        body = await resp.json()
+    saved = Path(body["paths"][0])
+    assert saved.name.endswith(f"_notes{extension}")
+    assert saved.read_bytes() == payload
 
 
 @pytest.mark.asyncio

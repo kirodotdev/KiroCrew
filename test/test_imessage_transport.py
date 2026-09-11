@@ -224,7 +224,7 @@ class TestReceive:
     async def test_an_own_echo_is_dropped_even_when_the_platform_calls_it_inbound(
         self,
     ) -> None:
-        # The self-chat loop of issue #5246: the agent's own reply arrives with
+        # The self-chat loop: the agent's own reply arrives with
         # is_from_me FALSE, from a handle that is on the allowlist because it is
         # the user's own. Nothing about the row says "this is ours" -- only the
         # client's record of having sent it does.

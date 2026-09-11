@@ -11,17 +11,18 @@
  * derived from, so reading it stays on the production dispatch path without
  * mounting the renderer.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import type { ReactNode } from 'react'
 import { render, screen, act, waitFor, fireEvent } from '@testing-library/react'
 import type { RootState } from '../store'
+import { store as appStore } from '../store'
 import type { ChatMessage } from '../types'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
 import { configureStore } from '@reduxjs/toolkit'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { ThemeProvider } from '../hooks/useTheme'
-import chatReducer, { setActiveSlot } from '../store/chatSlice'
+import chatReducer, { appendSlotMessage, setActiveSlot, sseChatMessage } from '../store/chatSlice'
 import dashboardReducer from '../store/dashboardSlice'
 import notificationsReducer from '../store/notificationsSlice'
 import { i18nT } from '../i18n/t'
@@ -80,7 +81,7 @@ import ChatPage from '../pages/ChatPage'
 const STEERED_TEXT = 'change course now'
 
 function makeStore(extraSlots: Array<ReturnType<typeof slotRow>> = []) {
-  return configureStore({
+  const store = configureStore({
     reducer: { dashboard: dashboardReducer, chat: chatReducer, notifications: notificationsReducer },
     preloadedState: {
       dashboard: {
@@ -102,19 +103,36 @@ function makeStore(extraSlots: Array<ReturnType<typeof slotRow>> = []) {
       notifications: { items: [] } as unknown as RootState['notifications'],
     },
   })
+  // Receipt handlers read the singleton; rendered selectors read Provider.
+  // They must see the same transcript, as they do in the running app.
+  vi.spyOn(appStore, 'getState').mockImplementation(store.getState)
+  return store
 }
 
 /** Drive the real path: mount, type mid-turn, press Enter (Steer is the default
  *  busy action), and wait for the mocked receipt to have been applied. */
-async function steerWithReceipt(receipt: Record<string, unknown> | { reject: unknown } | { httpStatus: number; body: Record<string, unknown> }) {
+async function steerWithReceipt(
+  receipt: Record<string, unknown> | { reject: unknown } | { httpStatus: number; body: Record<string, unknown> },
+  echo?: 'ordinary' | 'steer' | 'another-send',
+) {
+  const store = makeStore()
   // A mid-turn steer is the same `/api/chat` POST as a send, flagged `steer`,
   // through the same transport -- so it is `sendChat` that answers, with a
   // Response-shaped value the receipt reader parses (or a rejection, for a
   // request that never left / the transport's deadline).
-  if ('reject' in receipt) sendChat.mockRejectedValue(receipt.reject)
+  if ('reject' in receipt) sendChat.mockImplementation(async (_text, slot, _signal, _files, meta) => {
+    if (echo) {
+      const message = {
+        role: 'user', content: STEERED_TEXT, cls: 'msg msg-u',
+        ts: '2026-09-10T00:00:00Z',
+        meta: { ...meta, mid: 'm-delivered', ...(echo === 'steer' ? { steer: true } : {}), ...(echo === 'another-send' ? { sendId: 's-another-tab' } : {}) },
+      }
+      store.dispatch(echo === 'steer' ? appendSlotMessage({ slot, message }) : sseChatMessage({ slot, ...message }))
+    }
+    throw receipt.reject
+  })
   else if ('httpStatus' in receipt) sendChat.mockResolvedValue({ ok: false, status: receipt.httpStatus, json: () => Promise.resolve(receipt.body) })
   else sendChat.mockResolvedValue({ ok: true, json: () => Promise.resolve(receipt) })
-  const store = makeStore()
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   await act(async () => {
     render(
@@ -136,9 +154,8 @@ async function steerWithReceipt(receipt: Record<string, unknown> | { reject: unk
   await waitFor(() => expect(sendChat).toHaveBeenCalled())
   // The steer flag is the 6th positional argument of api.sendChat.
   expect(sendChat.mock.calls[0][5]).toBe(true)
-  // The receipt is applied in the mutation's onSuccess, a few microtasks past
-  // the resolved promise, so settle the queue before reading the store.
-  await act(async () => { for (let i = 0; i < 6; i++) await Promise.resolve() })
+  // onSuccess must finish before checking that it did NOT restore the draft.
+  await waitFor(() => expect(qc.isMutating()).toBe(0))
   const rows = (store.getState().chat.messages as ChatMessage[]).filter(m => m.role === 'user' && m.content === STEERED_TEXT)
   return Object.assign(rows, { store, input })
 }
@@ -149,8 +166,33 @@ beforeEach(() => {
   sendChat.mockReset()
   sendChat.mockResolvedValue({ ok: true, json: () => Promise.resolve({ ok: true }) })
 })
+afterEach(() => vi.restoreAllMocks())
 
 describe('optimistic steer bubble vs the steer receipt', { timeout: 20_000 }, () => {
+  it.each([
+    { echo: 'ordinary' as const, status: 'response-late' },
+    { echo: 'steer' as const, status: 'response-late' },
+    { echo: 'ordinary' as const, status: 'transport-error' },
+    { echo: 'steer' as const, status: 'transport-error' },
+  ])('keeps a confirmed $echo delivery when the POST rejects: $status', async ({ echo, status }) => {
+    const error = status === 'response-late' ? new DOMException('aborted', 'AbortError') : new TypeError('connection reset after acceptance')
+    const rows = await steerWithReceipt({ reject: error }, echo)
+    expect(rows).toHaveLength(1)
+    expect(rows[0].meta?.mid).toBe('m-delivered')
+    expect(rows[0].meta?.optimistic).toBeUndefined()
+    expect(!!rows[0].meta?.steer).toBe(echo === 'steer')
+    expect(rows.input.value).toBe('')
+    expect(rows.store.getState().chat.messages.some(m => m.role === 'notice' || m.role === 'error')).toBe(false)
+  })
+
+  it('does not count an identical message from another send as delivery', async () => {
+    const rows = await steerWithReceipt({ reject: new DOMException('aborted', 'AbortError') }, 'another-send')
+    expect(rows.input.value).toBe(STEERED_TEXT)
+    expect(rows).toHaveLength(1)
+    expect(rows[0].meta?.sendId).toBe('s-another-tab')
+    expect(rows.store.getState().chat.messages.some(m => m.role === 'notice')).toBe(true)
+  })
+
   it('drops the bubble when the server queued the text instead of injecting it', async () => {
     const rows = await steerWithReceipt({ ok: true, queued: true })
     // Every arm answering `queued` has already broadcast a `queue_push`, so that

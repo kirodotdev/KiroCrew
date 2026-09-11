@@ -65,20 +65,41 @@ describe('nudgeMatchesLoop', () => {
 })
 
 describe('NudgeCard', () => {
-  it('collapses the payload to a one-line chip by default', () => {
+  it('collapses to a one-line system row by default: label + expand word, no payload', () => {
     render(<NudgeCard message={makeMsg()} />)
     expect(screen.getByText('Auto-nudge · cycle 76')).toBeTruthy()
-    // Body is not rendered until expanded — this is the whole point of the card.
+    expect(screen.getByText('Show instruction')).toBeTruthy()
+    // Body is not rendered until expanded — this is the whole point of the row.
     expect(screen.queryByTestId('nudge-card-body')).toBeNull()
+    // The payload's first line is NOT previewed on the collapsed row either: the
+    // instruction text is machine-facing, and quoting even one line of it made
+    // the row read as a message the user had sent.
+    expect(screen.queryByText(/Babysit the KiroCrew/)).toBeNull()
     expect(screen.getByTestId('nudge-card-toggle').getAttribute('aria-expanded')).toBe('false')
+    expect(screen.getByTestId('nudge-card').getAttribute('data-expanded')).toBe('false')
   })
 
-  it('reveals the full instruction text when expanded', () => {
+  it('is drawn as a quiet system line, not a card or bubble', () => {
+    render(<NudgeCard message={makeMsg()} />)
+    const root = screen.getByTestId('nudge-card')
+    // No card chrome on the collapsed row: ring / card background belong to the
+    // expanded payload panel only.
+    expect(root.className).not.toMatch(/ring-1|bg-card/)
+    expect(root.className).toMatch(/text-muted/)
+    // Centred like the other system dividers, not left-aligned like a bubble.
+    expect(root.firstElementChild?.className).toMatch(/justify-center/)
+  })
+
+  it('reveals the full instruction text when expanded, and the toggle word flips', () => {
     render(<NudgeCard message={makeMsg()} />)
     fireEvent.click(screen.getByTestId('nudge-card-toggle'))
     const body = screen.getByTestId('nudge-card-body')
     expect(body.textContent).toContain('second line of instructions')
+    expect(screen.getByText('Hide instruction')).toBeTruthy()
+    expect(screen.queryByText('Show instruction')).toBeNull()
     expect(screen.getByTestId('nudge-card-toggle').getAttribute('aria-expanded')).toBe('true')
+    // The payload panel carries the card chrome the row itself does not.
+    expect(body.className).toMatch(/ring-1/)
   })
 
   it('omits the loop button when no loop handler is supplied', () => {
@@ -86,14 +107,19 @@ describe('NudgeCard', () => {
     expect(screen.queryByTestId('nudge-card-open-loop')).toBeNull()
   })
 
-  it('opens the loop popover via the loop button', () => {
+  it('opens the loop popover via the loop button, which names its destination', () => {
     const onOpenLoop = vi.fn()
     render(<NudgeCard message={makeMsg()} onOpenLoop={onOpenLoop} />)
-    fireEvent.click(screen.getByTestId('nudge-card-open-loop'))
+    const btn = screen.getByTestId('nudge-card-open-loop')
+    expect(btn.textContent).toContain('View loop')
+    // Tooltip distinguishes it from the Expand toggle beside it (UX review).
+    expect(btn.getAttribute('title')).toBe("Open this auto-nudge loop's status and controls")
+    expect(screen.getByTestId('nudge-card-toggle').getAttribute('title')).toBe('Show nudge instructions')
+    fireEvent.click(btn)
     expect(onOpenLoop).toHaveBeenCalledTimes(1)
   })
 
-  it('still renders a chip when the cycle number is unknown', () => {
+  it('still renders a row when the cycle number is unknown', () => {
     render(<NudgeCard message={makeMsg({ content: 'bare text' })} />)
     expect(screen.getByText('Auto-nudge')).toBeTruthy()
   })

@@ -94,7 +94,7 @@ class TestRefusalsCarryTheDiagnosis:
         """
         import re
 
-        # For modules migrated to the shared reflexive-tool gate (#5913) the
+        # For modules migrated to the shared reflexive-tool gate the
         # diagnosis is appended INSIDE mcp_core.require_strict_session_key, so
         # the marker to count is the gate call itself; mcp_cron composes its
         # refusal (and diagnosis) separately and keeps the direct token.

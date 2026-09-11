@@ -87,9 +87,9 @@ class TestBackendPredicates:
         "backend", sorted({ACP_BACKEND_KIRO, ACP_BACKEND_CLAUDE, ACP_BACKEND_KAS})
     )
     def test_acp_runtime_backend_is_the_positive_form_of_not_claude(self, backend):
-        # The four provider sites that used to read ``not is_claude_backend``
-        # now read ``is_acp_runtime_backend``; the two must stay equivalent for the
-        # backends that conversion covered, so it is behavior-preserving.
+        # The four provider sites read ``is_acp_runtime_backend``; it must stay
+        # equivalent to ``not is_claude_backend`` for the backends covered here,
+        # so the two forms are behavior-preserving.
         #
         # Scoped to those three deliberately, NOT to ACP_BACKENDS_KNOWN. The
         # equivalence is an artifact of a world with one non-runtime harness: any

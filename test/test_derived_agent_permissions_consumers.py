@@ -1,10 +1,10 @@
-"""The KAS derive-plus-fallback is spelled once, in ``derived_agent_permissions`` (#7513).
+"""The KAS derive-plus-fallback is spelled once, in ``derived_agent_permissions``.
 
-PR #7238 introduced the wrapper as the shared spelling of derive-plus-fallback
+The wrapper is the shared spelling of derive-plus-fallback
 (``allowed_tools_to_permissions`` then ``{"rules": []}`` when nothing
-qualifies), but migrated only one of the three call sites. The other two kept
-the inline spelling, so the fallback existed in three places and a future
-divergence between them would have been invisible: all three behaved
+qualifies), and every call site must use it. An inline spelling at any call site
+puts the fallback in several places, where a divergence between them is
+invisible: they all behave
 identically, so no behavioural test could tell them apart.
 
 The guard here is structural, not behavioural, for exactly that reason: it

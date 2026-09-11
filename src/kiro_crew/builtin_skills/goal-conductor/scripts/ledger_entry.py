@@ -2,15 +2,14 @@
 """Ledger item-entry codec - the one code owner of the conductor's entry format.
 
 The goal-conductor's only compaction-surviving state is the per-work-item entry
-it writes into the session ledger's ``artifacts`` map. Before this script, that
-format existed only as prose plus a worked example in SKILL.md, and the model
-re-derived it every patrol cycle - which produced two real defects during
-review of PR #5652: an acceptance spec that lived only in model context (lost
-on compaction), and an entry written as a nested JSON object, which the ledger
-rejects with ``artifacts_not_string_map`` so nothing persisted at all.
+it writes into the session ledger's ``artifacts`` map. A format the model
+re-derives from prose every patrol cycle costs two defects this codec exists to
+remove: an acceptance spec that lives only in model context, so compaction loses
+it, and an entry written as a nested JSON object, which the ledger rejects with
+``artifacts_not_string_map`` so nothing persists at all.
 
 This script owns the format. The conductor calls it; it never hand-rolls the
-encoding again.
+encoding.
 
 Usage:
     python3 ledger_entry.py {encode|decode|validate|rotate} < input.json
@@ -338,6 +337,14 @@ _MODES = {
 }
 
 
+def _stdin_is_a_tty() -> bool:
+    """Is stdin a terminal? A closed or detached stdin counts as not one."""
+    try:
+        return bool(sys.stdin is not None and sys.stdin.isatty())
+    except (AttributeError, ValueError, OSError):
+        return False
+
+
 def main() -> int:
     if len(sys.argv) != 2 or sys.argv[1] not in _MODES:
         # stdout, like the malformed-stdin error below and accept_eval.py: the
@@ -346,6 +353,21 @@ def main() -> int:
         print(
             json.dumps(
                 {"error": f"usage: ledger_entry.py {{{'|'.join(sorted(_MODES))}}} < input.json"}
+            )
+        )
+        return 2
+    if _stdin_is_a_tty():
+        # A VALID mode with nothing piped in still blocked on the read below
+        # until the caller's tool timeout: an approval spent, no output, and
+        # nothing saying the input goes on stdin. The argv guard above never saw
+        # it, because the invocation was well-formed. Same exit 2, so no caller
+        # that pipes real input sees a new outcome.
+        print(
+            json.dumps(
+                {
+                    "error": "stdin is a terminal; "
+                    f"usage: ledger_entry.py {{{'|'.join(sorted(_MODES))}}} < input.json"
+                }
             )
         )
         return 2

@@ -10,11 +10,21 @@ are unit-testable without a socket:
    connect time, an attacker-controlled DNS server could answer the vet with a
    public address and the connect with 127.0.0.1, and the vet would have proved
    nothing.
-2. HTML/icon extraction — parsing an untrusted document into the handful of
+2. :class:`PinnedResolver` and :func:`pinned_connector` — the other half of
+   that close. The resolver answers with the addresses the vet already approved
+   — all of them, so a multi-homed host keeps its fallbacks — and nothing else,
+   so the socket cannot be opened anywhere the vet did not check. The factory is
+   the one place that spells out the connector it has to be installed on. They live
+   here, beside the vet whose result they serve, because every caller that
+   fetches a vetted URL needs them: the link-preview handler, WeCom media, and
+   any channel added later.
+3. HTML/icon extraction — parsing an untrusted document into the handful of
    short, capped strings the client renders.
 
 Nothing here opens a connection. The single OS call is ``getaddrinfo`` in the
-vet, which is injectable (``resolve=``) precisely so tests never touch DNS.
+vet, which is injectable (``resolve=``) precisely so tests never touch DNS —
+:class:`PinnedResolver` answers from a value it was handed and performs no lookup
+of its own.
 """
 
 from __future__ import annotations
@@ -26,10 +36,14 @@ import socket
 from base64 import b64encode
 from dataclasses import dataclass
 from html.parser import HTMLParser
-from typing import Callable, Dict, List, Optional, Sequence, Tuple
+from typing import TYPE_CHECKING, Callable, Dict, List, Optional, Sequence, Tuple
 from urllib.parse import urljoin, urlsplit, urlunsplit
 
+import aiohttp.abc
 import yarl
+
+if TYPE_CHECKING:  # `ResolveResult` only exists from aiohttp 3.10; see resolve() below.
+    from aiohttp.abc import ResolveResult
 
 from kiro_crew.security import canonicalize_ip
 
@@ -142,7 +156,16 @@ class VettedUrl:
     port: int
     """Effective port (the scheme default when the URL omitted one)."""
     ip: str
-    """The resolved address to connect to. Equals ``host`` for an IP literal."""
+    """First vetted address. Kept for callers that dial one address; prefer
+    ``addresses``, which is what a pinned connector must serve."""
+    addresses: Tuple[str, ...]
+    """EVERY address the vet resolved and approved, in the resolver's own order
+    (deduplicated). A pin built from ``ip`` alone silently drops the fallbacks a
+    multi-homed host relies on: an HTTP client tries the resolved addresses in
+    turn, so a CDN whose first node is down still succeeds — unless the resolver
+    hands it one address, and then that node being down is a failed download.
+    Every entry passed the same internal-address check, so serving all of them
+    costs the vet nothing. One entry for an IP literal."""
     domain: str
     """Display host: lowercased, leading ``www.`` stripped."""
 
@@ -413,7 +436,115 @@ def vet_unfurl_url(
         wire_host=wire_host,
         port=port,
         ip=str(addresses[0]),
+        # Deduplicated, order preserved: `getaddrinfo` can report one address
+        # more than once (a host answering on several socket protocols), and a
+        # repeat would make the client dial the same dead node twice before
+        # trying the next one.
+        addresses=tuple(dict.fromkeys(str(address) for address in addresses)),
         domain=host[4:] if host.startswith("www.") else host,
+    )
+
+
+class PinnedResolver(aiohttp.abc.AbstractResolver):
+    """Resolver that answers with the address the vet already approved.
+
+    This is the mechanism that makes the vet meaningful. aiohttp would otherwise
+    resolve the hostname itself when opening the connection — a second lookup,
+    which an attacker-controlled DNS server is free to answer differently from
+    the first (DNS rebinding). Pinning means the TCP connection goes to the exact
+    address that was checked, while the hostname still drives SNI and the
+    ``Host`` header so virtual hosting and certificate validation keep working.
+
+    It answers with EVERY vetted address, not just the first. aiohttp dials the
+    addresses a resolver returns in order and falls back to the next one when a
+    connection fails, so pinning to a single address turns one dead CDN node — or
+    an AAAA record on a host with no working IPv6 route — into a failed fetch that
+    would have succeeded before the pin existed. Every address the vet returned
+    passed the same internal-address check, so the whole set is as safe as its
+    first element.
+
+    Callers do not build it directly: :func:`pinned_connector` constructs it
+    from a :class:`VettedUrl` together with the connector settings the pin needs
+    to stay effective.
+
+    ``wire_host`` rather than ``host``: aiohttp asks its resolver with
+    ``yarl.URL.raw_host``, so a pin on the unicode form never matches an
+    internationalized domain and the fetch is refused by our own pin.
+    """
+
+    def __init__(self, host: str, ips: "Tuple[str, ...]", port: int) -> None:
+        # `Tuple[str, ...]` rather than `Sequence[str]`: a bare `str` IS a
+        # `Sequence[str]`, so a sequence annotation would let one through to be
+        # iterated into single characters — a connector pinned to "9", "3", "."
+        # answers every lookup with nonsense. A tuple annotation is the one shape
+        # a type checker rejects a bare string against.
+        self._host = host
+        self._ips: Tuple[str, ...] = tuple(ips)
+        self._port = port
+        if not self._ips:
+            # Fail closed at construction: a resolver with nothing to serve would
+            # answer every lookup with an empty list, which aiohttp reports as an
+            # unrelated connection error far from the cause.
+            raise ValueError(f"pinned resolver for {host} was given no addresses")
+
+    async def resolve(
+        self, host: str, port: int = 0, family: socket.AddressFamily = socket.AF_INET
+    ) -> "List[ResolveResult]":
+        if host != self._host:
+            # Cannot happen on the current call paths (one session per vetted
+            # URL), but a future caller reusing the session for a second host
+            # would silently get the first host's address. Refuse instead.
+            raise OSError(f"resolver pinned to {self._host}, refusing {host}")
+        return [
+            # Built as plain dicts, and `ResolveResult` imported only under
+            # TYPE_CHECKING: that name landed in aiohttp 3.10, while setup.cfg
+            # allows `aiohttp>=3.9`, so importing it at runtime would make this
+            # module — and therefore the whole gateway — fail to import on an
+            # allowed install. 3.9 annotates `AbstractResolver.resolve` as
+            # `List[Dict[str, Any]]` and every version since reads the same six
+            # keys, so one dict satisfies both while the quoted annotation still
+            # gives the type checker the real TypedDict.
+            {
+                "hostname": self._host,
+                "host": ip,
+                "port": port or self._port,
+                # Per address, not once for the set: a host answering on both
+                # families reports each entry with its own, and announcing a v6
+                # literal as AF_INET is an immediate connection failure.
+                "family": socket.AF_INET6 if ":" in ip else socket.AF_INET,
+                "proto": 0,
+                "flags": 0,
+            }
+            for ip in self._ips
+        ]
+
+    async def close(self) -> None:
+        return None
+
+
+def pinned_connector(vetted: VettedUrl) -> aiohttp.TCPConnector:
+    """A connector that can only reach the address *vetted* approved.
+
+    One function rather than the recipe at each call site: the two settings below
+    are what make the pin hold, they are not obvious from reading them, and a
+    caller that copies the resolver but drops ``family`` re-opens the very window
+    the pin closes. Every caller of the vet that opens its own session gets the
+    connector from here.
+
+    Install it on a session used for that ONE URL, and let the session own it —
+    :class:`aiohttp.ClientSession` closes the connector it is handed.
+    """
+    return aiohttp.TCPConnector(
+        # The whole vetted set, so a multi-homed host keeps the fallbacks it had
+        # before the pin.
+        resolver=PinnedResolver(vetted.wire_host, vetted.addresses, vetted.port),
+        # One URL, one connection: nothing else may ride this pinned pool.
+        limit=1,
+        # The pinned resolver already returns a literal with its family, so
+        # aiohttp must not narrow or re-derive it: constraining the family here
+        # would either drop a valid IPv6 target or re-open the door to a second
+        # lookup.
+        family=socket.AF_UNSPEC,
     )
 
 

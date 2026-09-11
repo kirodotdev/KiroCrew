@@ -1,8 +1,8 @@
-"""Task-runner compaction routes through the shared SessionManager path (#4686).
+"""Task-runner compaction routes through the shared SessionManager path.
 
 Pins the four contract points from the issue:
 
-(a) ``check_context`` no longer calls ``provider.compact()`` directly — it
+(a) ``check_context`` does not call ``provider.compact()`` directly — it
     delegates to :meth:`SessionManager.compact_if_needed`;
 (b) a second concurrent trigger on the same key is collapsed by the
     ``_compacting`` dedup (across the awaited seam AND the fire-and-forget
@@ -16,7 +16,7 @@ critical SETTLED verdict escalates to a reset (awaited on the seam, scheduled
 on the sync turn-end path), while unmeasurable readings — unknown, or stale
 showing no drop — defer instead of destroying a healthy session.
 
-Full gate-ladder parity between the two entry points (#5132) is pinned by
+Full gate-ladder parity between the two entry points is pinned by
 ``TestGateLadderParity``: the manager facade preserves the patchable dispatch
 seams while both implementations consume the coordinator's single gate owner,
 so a gate added to one path only cannot silently diverge again.
@@ -126,7 +126,7 @@ class TestCheckContextRoutesThroughManager:
     @pytest.mark.asyncio
     async def test_check_context_delegates_to_compact_if_needed(self, cfg):
         """check_context awaits the public seam and never touches the provider
-        pair (context_usage_pct / compact) it used to call directly."""
+        pair (context_usage_pct / compact) it would otherwise call directly."""
         async with _managed(cfg, _compacting_provider_factory()) as mgr:
             provider, _, _ = await mgr.get_or_create(KEY)
             mgr.release(KEY)
@@ -473,7 +473,7 @@ class _FakeClaudeCode:
 
 
 class TestGateLadderParity:
-    """Full gate-order parity between the two compaction entry points (#5132).
+    """Full gate-order parity between the two compaction entry points.
 
     ``check_context_usage`` (sync, fire-and-forget via ``_trigger_compaction``)
     and ``compact_if_needed`` (awaited) must decide compaction identically:

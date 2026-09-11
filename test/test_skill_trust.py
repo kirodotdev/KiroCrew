@@ -512,7 +512,7 @@ class TestInstanceBinding:
         # time), so the replacement must land on a DIFFERENT inode for the
         # untrusted outcome to be observable -- and recreating after the delete
         # would leave that to the allocator, which is free to hand the
-        # just-freed inode straight back (the flake in #5932). Creating the
+        # just-freed inode straight back. Creating the
         # replacement WHILE the granted directory still exists forces distinct
         # inodes -- two live directories on one device cannot share one -- and
         # the rename preserves the replacement's inode while giving it the
@@ -573,8 +573,8 @@ class TestInstanceBinding:
     def test_re_granting_a_replaced_directory_rebinds_it(self, tmp_path: Path) -> None:
         """An explicit re-grant must take effect.
 
-        The dedup loop used to return early on a path match. Left that way, an
-        operator re-granting a path whose directory had been replaced would get a
+        The dedup loop must not return early on a path match. If it does, an
+        operator re-granting a path whose directory had been replaced gets a
         no-op: the new tree stays untrusted, with the settings page showing a grant
         for it and no surface explaining the contradiction.
         """

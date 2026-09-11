@@ -31,6 +31,7 @@ import atexit
 import faulthandler
 import importlib
 import importlib.machinery
+import json
 import logging
 import os
 import queue
@@ -55,6 +56,7 @@ from kiro_crew.crash_guard import install as _install_crash_guard
 from kiro_crew.env import git_build_info
 from kiro_crew.gateway_lock import GatewayLock, GatewayLockError
 from kiro_crew.history import ConversationLog, HistoryConsolidator
+from kiro_crew.knowledge import store as knowledge_store
 from kiro_crew.knowledge.dedup import dedup_sweep
 from kiro_crew.knowledge.store import KnowledgeStore
 from kiro_crew.log_redaction import install_log_redaction
@@ -567,7 +569,7 @@ def _diagnostic_port(gw_kwargs: dict) -> int | None:
         # Deferred import: ``dashboard.urls`` is a stdlib-only leaf, but
         # importing it executes ``dashboard/__init__`` — keep it out of
         # cli.py's module scope so non-gateway commands and the MCP stdio
-        # servers never touch the dashboard package (see issue #3504).
+        # servers never touch the dashboard package.
         from kiro_crew.dashboard.urls import parse_dashboard_url
 
         return parse_dashboard_url(KiroCrewConfig.load().dashboard.url)[1]
@@ -576,10 +578,93 @@ def _diagnostic_port(gw_kwargs: dict) -> int | None:
         return None
 
 
+def _knowledge_stats(args) -> None:
+    """``kirocrew knowledge stats [--json]`` -- read-only counts, no repair verb."""
+
+    db_path = config_dir() / "workspace" / "knowledge" / "knowledge.db"
+    as_json = bool(getattr(args, "json", False))
+    if not db_path.exists():
+        sel().log_tool_invocation(
+            session_key="cli", source="cli", tool_name="knowledge_stats", outcome="not_configured"
+        )
+        if as_json:
+            print(json.dumps({"error": "not_configured"}))
+        else:
+            print("Knowledge Library is not configured (no knowledge.db). Ingest documents first.")
+        return
+    # Read-only means the FILE is opened read-only. A normal open runs the
+    # schema migration, whose orphan sweep takes the writer lock and deletes
+    # itemless source rows -- a write this verb must not make. The trade is
+    # that a library behind this schema is reported, not repaired here.
+    store = KnowledgeStore.open_read_only(str(db_path))
+    try:
+        stats = store.aggregate_stats()
+    except knowledge_store.sqlite3.OperationalError as exc:
+        if "no such" not in str(exc):
+            raise
+        sel().log_tool_invocation(
+            session_key="cli", source="cli", tool_name="knowledge_stats", outcome="schema_behind"
+        )
+        if as_json:
+            print(json.dumps({"error": "schema_behind", "detail": str(exc)}))
+        else:
+            print(
+                f"Knowledge database is behind this schema ({exc}). Stats opens it "
+                "read-only and does not migrate; start the gateway or run "
+                "`kirocrew knowledge dedup --apply` once to migrate it, then retry."
+            )
+        return
+    finally:
+        store.db.close()
+    sel().log_tool_invocation(
+        session_key="cli",
+        source="cli",
+        tool_name="knowledge_stats",
+        outcome="success",
+        metadata={"sources": stats.sources, "documents": stats.documents, "items": stats.items},
+    )
+    if as_json:
+        print(
+            json.dumps(
+                {
+                    "sources": stats.sources,
+                    "documents": stats.documents,
+                    "items": stats.items,
+                    "per_source": [
+                        {
+                            "id": s.source_id,
+                            "name": s.name,
+                            "documents": s.documents,
+                            "items": s.items,
+                        }
+                        for s in stats.per_source
+                    ],
+                },
+                indent=2,
+            )
+        )
+        return
+    print(
+        f"Knowledge Library: {stats.sources} source(s), "
+        f"{stats.documents} document(s), {stats.items} item(s)"
+    )
+    if not stats.per_source:
+        return
+    # Width from the data, so a long source name does not wrap the count columns.
+    name_width = max(len(s.name) for s in stats.per_source)
+    print(f"\n  {'SOURCE'.ljust(name_width)}  {'DOCS':>6}  {'ITEMS':>6}")
+    for s in stats.per_source:
+        print(f"  {s.name.ljust(name_width)}  {s.documents:>6}  {s.items:>6}")
+
+
 def _knowledge(args) -> None:
-    """``kirocrew knowledge dedup [--apply]`` -- collapse cross-source duplicate docs."""
-    if getattr(args, "knowledge_action", None) != "dedup":
-        print("Usage: kirocrew knowledge dedup [--apply]")
+    """``kirocrew knowledge dedup|stats`` -- duplicate collapse and read-only counts."""
+    action = getattr(args, "knowledge_action", None)
+    if action == "stats":
+        _knowledge_stats(args)
+        return
+    if action != "dedup":
+        print("Usage: kirocrew knowledge dedup [--apply] | kirocrew knowledge stats [--json]")
         return
     apply = bool(getattr(args, "apply", False))
     db_path = config_dir() / "workspace" / "knowledge" / "knowledge.db"
@@ -589,9 +674,29 @@ def _knowledge(args) -> None:
         )
         print("Knowledge Library is not configured (no knowledge.db). Ingest documents first.")
         return
-    store = KnowledgeStore(str(db_path))
+    if apply:
+        store = KnowledgeStore(str(db_path))
+    else:
+        # The dry run promises "no changes", and an ordinary open breaks that
+        # promise before the sweep starts: the constructor runs the schema
+        # migration, whose orphan reap deletes itemless source rows. So the
+        # preview opens the file read-only (SQLite mode=ro) and only --apply
+        # takes the migrating, writing open.
+        store = KnowledgeStore.open_read_only(str(db_path))
     try:
         results = dedup_sweep(store, apply=apply)
+    except knowledge_store.sqlite3.OperationalError as exc:
+        if apply or "no such" not in str(exc):
+            raise
+        sel().log_tool_invocation(
+            session_key="cli", source="cli", tool_name="knowledge_dedup", outcome="schema_behind"
+        )
+        print(
+            f"Knowledge database is behind this schema ({exc}). The dry run opens it "
+            "read-only and does not migrate; start the gateway or run "
+            "`kirocrew knowledge dedup --apply` once to migrate it, then retry."
+        )
+        return
     finally:
         store.db.close()
     sel().log_tool_invocation(
@@ -878,8 +983,8 @@ def _setup_cli_logging(command: str | None, verbose: int) -> None:
 
     - the console echo is skipped entirely;
     - the file handler attaches to the ROOT logger instead, so third-party
-      WARNINGs that previously reached the file only through the stderr
-      redirect still land, now formatted and PID-stamped;
+      WARNINGs reach the file formatted and PID-stamped rather than only as
+      raw stderr;
     - after the boot rotation, fds 1/2 are re-pointed at the live log so raw
       writes (uncaught tracebacks, child stderr) do not land in ``.prev``.
 
@@ -898,7 +1003,17 @@ def _setup_cli_logging(command: str | None, verbose: int) -> None:
     else:
         level = logging.WARNING
 
-    log_file = config_dir() / "gateway.log"
+    from kiro_crew.config.paths import private_runtime_log_dir
+
+    log_home = config_dir()
+    private_logs = private_runtime_log_dir()
+    if private_logs is not None:
+        # A private namespace deliberately seals loose data-home files. Keep
+        # durable rotating logs in the live directory prepared by its launcher;
+        # never reopen the root or silently drop MCP diagnostics.
+        log_file = private_logs / f"member-{os.getpid()}.log"
+    else:
+        log_file = log_home / "gateway.log"
     # Detect BEFORE the boot rotation below: rotation renames the file, and
     # the inode comparison must see the file stderr actually inherited.
     detached = _fd_targets_file(2, log_file)
@@ -963,8 +1078,8 @@ def _setup_cli_logging(command: str | None, verbose: int) -> None:
     )
     if detached:
         # Root attach: kiro_crew records arrive once via propagation, and
-        # third-party WARNINGs land formatted — replacing what the accidental
-        # stderr echo used to provide unformatted.
+        # third-party WARNINGs land formatted rather than as an unformatted
+        # stderr echo.
         target_logger = logging.getLogger()
     else:
         target_logger = logging.getLogger("kiro_crew")
@@ -1023,7 +1138,7 @@ def _builtin_mcp_server_available(name: str) -> bool:
     that actually ship an ``mcp_server`` module). Gating the verb on this
     predicate keeps the two decoupled — a builtin without the module is simply
     not registered, instead of advertising a command that dies with a raw
-    ``ModuleNotFoundError`` traceback (#5901).
+    ``ModuleNotFoundError`` traceback.
 
     Resolution deliberately uses ``PathFinder`` rather than
     ``importlib.util.find_spec``: ``find_spec`` IMPORTS the parent package as a
@@ -1610,9 +1725,9 @@ Examples:
     sel_parser = sec_sub.add_parser("events", help="Show recent security event log entries")
     sel_parser.add_argument("-n", "--limit", type=int, default=20, help="Number of entries")
     # A count alone cannot express "what happened around 14:05" — on a busy log
-    # 6000 entries reached only 15 minutes back, so answering a question about a
-    # two-hour-old event meant pulling ~90k entries and filtering by hand
-    # (issue #4843). Reading the file directly is correctly refused by the
+    # 6000 entries reach only 15 minutes back, so answering a question about a
+    # two-hour-old event means pulling ~90k entries and filtering by hand.
+    # Reading the file directly is correctly refused by the
     # credential-path gate, so the time selector has to live here.
     _time_help = (
         "a relative age (30m, 2h, 7d) or an ISO 8601 instant " "(2026-08-21, 2026-08-21T04:00:00Z)"
@@ -1708,6 +1823,12 @@ Examples:
         "--apply",
         action="store_true",
         help="Apply the deletions (default: dry-run preview that changes nothing)",
+    )
+    kn_stats = kn_sub.add_parser(
+        "stats", help="Count sources, documents and items in the knowledge library (read-only)"
+    )
+    kn_stats.add_argument(
+        "--json", action="store_true", help="Emit the counts as JSON instead of a table"
     )
 
     # secrets — encrypted vault maintenance. Only the migration importer lives
@@ -2240,8 +2361,8 @@ Examples:
     # Builtin app MCP servers (spawned by the agent backend, not user-facing).
     # Only builtins that actually ship an ``mcp_server`` module get a verb —
     # ``_BUILTIN_NAMES`` is load-bearing for HTTP route registration and lists
-    # every builtin, so registering unconditionally advertised commands that
-    # crashed with a raw ModuleNotFoundError traceback (#5901). A builtin that
+    # every builtin, so registering unconditionally would advertise commands
+    # that crash with a raw ModuleNotFoundError traceback. A builtin that
     # gains an ``mcp_server.py`` gains its verb automatically.
     #
     # The probe only runs when the invocation actually names an ``mcp-*``
@@ -2421,6 +2542,71 @@ Examples:
         help="Also include the markdown layer (preferences, projects, daily history)",
     )
     mem_sub.add_parser("migrate", help="Migrate legacy markdown memory to vector store")
+    mem_backup = mem_sub.add_parser("backup", help="Back up active memory stores now")
+    mem_backup.add_argument(
+        "--keep", type=int, default=None, help="How many backups to keep per store"
+    )
+    mem_backups = mem_sub.add_parser("backups", help="List memory backups, newest first")
+    mem_backups.add_argument("--store", default=None, help="Only this store")
+    mem_restore = mem_sub.add_parser("restore", help="Restore a memory store from a backup")
+    mem_restore.add_argument(
+        "--store", default=None, help="Store to restore (default: the default store)"
+    )
+    mem_restore_choice = mem_restore.add_mutually_exclusive_group()
+    mem_restore_choice.add_argument(
+        "--from",
+        dest="from_backup",
+        default=None,
+        help="Backup file to restore (default: the newest for that store)",
+    )
+    mem_restore_choice.add_argument(
+        "--cancel-pending",
+        action="store_true",
+        help="Cancel a staged memory restore without changing active memory",
+    )
+    mem_carve = mem_sub.add_parser(
+        "carve", help="Filter or count a crew store's memory by its carve facets"
+    )
+    mem_carve.add_argument(
+        "--store",
+        default=None,
+        help="Memory store to read (default: the default store, which carries no facets)",
+    )
+    # One flag per field of memory_schema.MemoryFacets, and each argparse dest IS the
+    # column name, so `_memory_carve` reads them by facet name instead of restating the
+    # list. The flag spellings and the two closed choice sets are LITERAL here rather
+    # than derived from memory_schema: this parser is built on `kirocrew gateway`'s
+    # boot path, where an import of the schema module is work every launch pays for
+    # a verb it never runs. Drift is caught instead, not prevented -- the rendered
+    # `memory carve --help` is checked against memory_schema.ALL_KINDS and
+    # GROUPABLE_COLUMNS, so a sixth axis added to the dataclass without a flag or a
+    # choice here fails that check rather than silently going unfilterable.
+    mem_carve.add_argument("--scope", default=None, help="Only rows carved to this repo scope")
+    mem_carve.add_argument("--surface", default=None, help="Only rows from this surface")
+    mem_carve.add_argument("--crew", default=None, help="Only rows this crew produced")
+    mem_carve.add_argument("--session-key", default=None, help="Only rows from this conversation")
+    mem_carve.add_argument(
+        "--derived-from", default=None, help="Only rows synthesized from this item id"
+    )
+    mem_carve.add_argument(
+        "--kind",
+        default=None,
+        choices=["directive", "fact", "episode"],
+        help="Only rows of this kind",
+    )
+    mem_carve.add_argument(
+        "--count-by",
+        default=None,
+        choices=["scope", "surface", "crew", "session_key", "derived_from", "kind"],
+        help="Report counts grouped by this axis instead of listing rows",
+    )
+    mem_carve.add_argument("--limit", type=int, default=50, help="How many rows to list")
+    mem_carve.add_argument("--offset", type=int, default=0, help="Rows to skip when listing")
+    mem_retired = mem_sub.add_parser(
+        "retired", help="List episodes a semantic write superseded, and restore one"
+    )
+    mem_retired.add_argument("--restore", dest="restore_id", default=None, help="Restore this id")
+    mem_retired.add_argument("--limit", type=int, default=20, help="How many to list")
     mem_import = mem_sub.add_parser("import", help="Import memory from JSON file")
     mem_import.add_argument("file", help="Path to JSON file (export format)")
 
@@ -2432,12 +2618,23 @@ Examples:
     agent_create.add_argument("--name", required=True, help="Agent name")
     agent_create.add_argument("--kiro-agent", default="kirocrew", help="Kiro agent name")
     agent_create.add_argument("--workspace", default="default", help="Workspace name")
-    agent_create.add_argument("--memory-store", default="default", help="Memory store name")
+    agent_create.add_argument(
+        "--memory-store",
+        default="default",
+        help="Compatibility flag; private memory is allocated automatically",
+    )
     agent_update = agent_sub.add_parser("update", help="Update a Kiro Crew agent")
     agent_update.add_argument("name", help="Agent name to update")
     agent_update.add_argument("--kiro-agent", help="New kiro agent name")
     agent_update.add_argument("--workspace", help="New workspace name")
-    agent_update.add_argument("--memory-store", help="New memory store name")
+    agent_update.add_argument(
+        "--memory-store", help="Existing memory store identity (cannot be changed)"
+    )
+    agent_update.add_argument(
+        "--provision-memory",
+        action="store_true",
+        help="Initialize empty private V2 memory for a legacy member; never copies V1",
+    )
     agent_delete = agent_sub.add_parser("delete", help="Delete a Kiro Crew agent")
     agent_delete.add_argument("name", help="Agent name to delete")
     agent_reset_model = agent_sub.add_parser(
@@ -2750,7 +2947,7 @@ The dashboard port is set with the KIROCREW_PORT env var, not a config key.
         # The asyncio loop handler is installed later inside run().
         _install_crash_guard()
         gw_kwargs = _resolve_gateway_args(args)
-        # Deferred imports (issue #3504): ``dashboard.state`` pulls
+        # Deferred imports: ``dashboard.state`` pulls
         # vector_memory → numpy (~56 MB) and ``cli_server`` pulls
         # slack.gateway (~549 ms) — only the gateway command needs either,
         # so no other subcommand (and no MCP stdio server) pays for them.
@@ -2846,7 +3043,7 @@ The dashboard port is set with the KIROCREW_PORT env var, not a config key.
         # builtin's mcp_server and run it or refuse cleanly" — the same helper
         # the `kirocrew app mcp <name>` manifest path uses (clean stderr line +
         # exit 1 on ImportError or a missing run_mcp_server entrypoint), so an
-        # unresolvable module cannot reach a raw traceback here (#5901).
+        # unresolvable module cannot reach a raw traceback here.
         from kiro_crew.cli_commands import _run_app_mcp_server
 
         _run_app_mcp_server(args.command[4:])
@@ -2884,7 +3081,7 @@ The dashboard port is set with the KIROCREW_PORT env var, not a config key.
         # Dispatch through the module-level `importlib` rather than a
         # function-local `from kiro_crew.cli_commands import …`: the latter trips
         # the `top-level-imports` lint, while a module-scope import of
-        # `cli_commands` is deliberately avoided (issue #3504 — it costs ~556 ms
+        # `cli_commands` is deliberately avoided (it costs ~556 ms
         # on every CLI start). `importlib.import_module` keeps the load lazy AND
         # satisfies the linter.
         importlib.import_module("kiro_crew.cli_commands")._handle_secrets(args)
@@ -2983,7 +3180,7 @@ The dashboard port is set with the KIROCREW_PORT env var, not a config key.
 # ── Config ──
 
 
-# NOTE (issue #3504): ``cli_commands`` and ``cli_server`` are deliberately NOT
+# NOTE: ``cli_commands`` and ``cli_server`` are deliberately NOT
 # imported at module scope. ``cli_commands`` costs ~556 ms and ``cli_server``
 # ~549 ms (it pulls ``slack.gateway``), and the MCP stdio servers
 # (``kirocrew mcp-core`` / ``mcp-cron`` / ``mcp-computer``) — which dispatch

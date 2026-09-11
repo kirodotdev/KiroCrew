@@ -170,7 +170,7 @@ _TOOL_LABEL_MAX = 120
 #
 # ``_`` is deliberately NOT in the set: real tool names are ``fs_write``,
 # ``execute_bash``, ``mcp__server__tool``, and stripping it renders the label
-# ``fswrite`` — so the user can no longer tell WHICH tool they are approving,
+# ``fswrite`` — so the user cannot tell WHICH tool they are approving,
 # which is the entire job of this string. Emphasis is cosmetic anyway: it cannot
 # remove text or create a target, and inside the body's code span an underscore
 # is literal.

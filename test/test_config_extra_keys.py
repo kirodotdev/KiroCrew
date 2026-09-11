@@ -35,7 +35,7 @@ def _write(cfgp, doc):
 
 
 def test_unknown_section_key_survives_save(cfg_home):
-    """The regression: an unmodelled nested key used to vanish on any save()."""
+    """An unmodelled nested key survives any save()."""
     _write(cfg_home, {"agent": {"provider": "acp", "retired_knob": "keep-me"}})
 
     cfg = KiroCrewConfig.load()
@@ -142,7 +142,7 @@ def test_hooks_is_not_captured_because_it_round_trips_raw(cfg_home):
 
 def test_unknown_keys_inside_a_named_record_survive_save(cfg_home):
     """agents/workspaces/memory_stores are maps of dataclass records parsed
-    field-by-field and re-emitted with asdict, so `agents.<name>.<key>` used to
+    field-by-field and re-emitted with asdict, so `agents.<name>.<key>` would
     vanish exactly like `agent.<key>`. Captured one level deeper."""
     _write(
         cfg_home,

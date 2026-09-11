@@ -1,9 +1,9 @@
 """``MAX_STAGE_ROUNDS`` must stop a dashboard plan.
 
 ``OrchestrationTracker.record_round()`` returns whether the stage has spent its
-round budget, and the dashboard's ``_stage_loop`` recorded the round and threw the
-answer away — so the "max 3 rounds per stage" the orchestrator prompt promises
-enforced nothing on the dashboard path (issue #1783).
+round budget, and the dashboard's ``_stage_loop`` must act on that answer rather than discard
+it — otherwise the "max 3 rounds per stage" the orchestrator prompt promises
+enforces nothing on the dashboard path.
 
 Where the rounds come from matters for what has to be tested. Every round is
 recorded by the subagent-completion handler, against ``tracker.current_stage`` as
@@ -14,8 +14,8 @@ records those rounds the same way the gateway does.
 The loop does NOT record one. It enters a stage through ``start_stage``, which
 registers the stage and starts its clock but spends no round, so all three the
 prompt promises are available to actual waves. Entering through ``record_round``
-(which is what the loop used to do, for the side effects rather than the count)
-made the enforced cap 2 waves on this path and 3 on the Slack path — stricter than
+(for the side effects rather than the count) would make the enforced cap 2 waves
+on this path and 3 on the Slack path — stricter than
 the promise, and inconsistent between the two. That is what
 ``test_two_waves_per_stage_is_still_under_the_cap`` guards.
 

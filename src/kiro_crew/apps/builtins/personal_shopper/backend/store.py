@@ -407,7 +407,7 @@ class PreferenceStore:
         with that id to the second group.
 
         Same-name adds still return the original group instead of creating a
-        duplicate, which is the idempotency the slug used to provide for free.
+        duplicate, which is the idempotency a slug provides for free.
         Matching is case-insensitive on the trimmed name.
         """
         clean = name.strip()
@@ -451,7 +451,7 @@ class PreferenceStore:
                 if group_id in tags:
                     # Strip EVERY occurrence. list.remove drops only the first,
                     # so a preference tagged twice kept a tag pointing at a group
-                    # that no longer exists -- it then belongs to no visible group
+                    # that does not exist -- it then belongs to no visible group
                     # and is not "ungrouped" either, so it vanishes from the UI
                     # while still sitting in the database.
                     tags = [t for t in tags if t != group_id]

@@ -151,6 +151,18 @@ meaningful when the authority actually said something:
   switching the central tier off and dropping every centrally supplied restriction.
   `compose_tier_ladder` tracks the effective value as the fold proceeds and
   re-applies it on every exit, so no path that rebuilds a ceiling can drop it.
+  An **unusable home file beneath a present authority is skipped, not raised**
+  (`_subordinate_ceiling(beneath_authority=True)`, one warning per process) --
+  unreadable, not JSON, JSON that `parse_policy` rejects, or bytes on which verifying
+  or parsing raises anything at all (the catch is total at this one boundary), one
+  path for every shape so JSON validity does not split the behaviour. The home
+  `distribution` peek that runs before the central document is known is a lookup for
+  a declared source, not a ruling on the file: a malformed block declares no source
+  and the peek moves on, leaving skip-or-fatal to `_subordinate_ceiling`, which
+  re-parses the home document only when the home tier is the one selected. The
+  authority governs unchanged, which is the fail-closed direction, whereas raising
+  -- the behaviour when the home file is the only ceiling -- would let whoever owns
+  `~/.kiro/crew` refuse boot and freeze every refresh on a fleet host.
   "Declared" is read from the **presence** of the block, not from its values
   (`PolicyDistribution.explicit`, set by `from_dict`, outside `__eq__`): a central
   document that spells out `on_unavailable: fail_closed` -- the default -- has
@@ -661,7 +673,7 @@ so there is no age left to restart.
 **A refused install does not leave the rejected bytes as the last-known-good.** The
 publish is confirmed before the install, so the new document is on disk before
 `apply_ceiling` has had its say — and that step refuses for reasons the earlier
-`validate_ceiling` cannot see (a bound profile, the trust root, or a tier-1 pin that moved
+`validate_ceiling` cannot see (a bound profile, the trust root, or a subordinate tier that moved
 between the two). `refresh_now` snapshots the prior copy and `_restore_cache` puts it back
 on any failure — **invalidating first, then writing** — carrying its original `fetched_at` so a repeatedly-failing refresh cannot
 keep resetting the staleness clock. **The rollback is itself a compare-and-swap**, on the

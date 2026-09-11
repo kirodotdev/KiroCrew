@@ -647,7 +647,7 @@ class TestReconcile:
         self, pipeline, art_store, kstore
     ):
         """Same rule as deletions: an empty allowlist means "ingest nothing",
-        not "let chunks from a kind that no longer applies stay live"."""
+        not "let chunks from a kind that does not apply stay live"."""
         sid, _ = ensure_artifact_source(kstore)
         art = art_store.create(name="Doc", content="old body", kind="markdown")
         await reconcile_artifacts(pipeline, art_store, sid, DEFAULT_KINDS)
@@ -739,7 +739,7 @@ class TestReconcile:
         """``remove_artifact`` -> ``delete_items_batch`` -> ``store._load_graph``
         is a full graph rebuild inside a SQLite transaction. Once per slug
         deleted during a long off-window, on the loop, is the wedge
-        ``no-blocking-call-on-event-loop`` guards (see #2175 / #2336). Asserts
+        ``no-blocking-call-on-event-loop`` guards. Asserts
         the THREAD, so keeping the call but dropping the ``to_thread`` hop fails.
         """
         sid, _ = ensure_artifact_source(kstore)
@@ -996,8 +996,8 @@ class TestKindChangeReconciliation:
 
     ``ingest_artifact`` early-returns on an ineligible kind. That is right for a
     reconcile sweep, but wrong for a *change*: an artifact ingested as markdown and
-    then switched to svg would keep answering searches from prose that no longer
-    describes it. The dashboard now lets a user change the type directly, so this
+    then switched to svg would keep answering searches from prose that does not
+    describe it. The dashboard now lets a user change the type directly, so this
     transition is reachable from the UI rather than only from a widget pull.
     """
 

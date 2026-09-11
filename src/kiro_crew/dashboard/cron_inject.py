@@ -386,12 +386,18 @@ def _bind_cron_slot(
     """
     slot = state.get_or_create_slot(
         name=f"cron-{job.id}",
-        agent=job.agent_id or "",
+        agent=job.member_id or job.agent_id or "",
         # A cron result is the job's output, not something the person typed.
         # A USER label would expose it to any app holding `slots:user`.
         origin=SlotOrigin.CRON,
     )
     slot.title = f"Cron: {_safe_job_name(job)}"
+    # A provider-template alias on a legacy V1 job cannot authorize a private
+    # member. Private cron dispatch publishes its protected session binding;
+    # follow-up turns must use that binding instead of minting one from agent_id.
+    slot._memory_assignment_from_history = True
+    if job.memory_store:
+        slot.memory_store = job.memory_store
     if not slot.linked_session_key:
         slot.linked_session_key = f"cron:{job.id}"
         hydrate_slot_from_history(slot, history or [])

@@ -113,8 +113,7 @@ def test_a_pattern_the_matcher_would_disable_is_not_published(monkeypatch) -> No
     The matcher DISABLES a malformed or ReDoS-prone regex and only logs, so a
     published row would read enabled in Settings → Security and toggle cleanly
     while matching nothing — a control that looks present and is not, which is the
-    failure this seam exists to remove. Regression for the GPT 5.6 review finding
-    on #7705; the earlier code published it."""
+    failure this seam exists to remove."""
     # A TOP-LEVEL alternation, not a catastrophic-backtracking literal. Both are
     # rejected by `is_safe_user_regex` and both reach this publication path
     # identically, so this fixture proves the same property — while keeping a live

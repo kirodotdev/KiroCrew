@@ -919,8 +919,8 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
   }, [failedRetryableIds])
   const dismissDone = useCallback(() => {
     // Slot-scoped by construction: delete exactly this slot's terminal cards
-    // by id — the global DELETE /api/spawn clear would nuke other sessions'
-    // completed agents too (their cards would 404 on status/output).
+    // by id via DELETE /api/spawn/{id}. There is no global clear route, so a
+    // cross-session wipe is not reachable from here.
     // The local clear stays optimistic; a refused delete is reported so the
     // user knows the card still exists server-side.
     setBatchError(null)

@@ -593,7 +593,7 @@ class TestInstanceMutations:
     ):
         """DELETE_FAILED means the crew is still there. Dropping its registration
         and source archive then would strand a live, billing instance the user can
-        no longer see in the dashboard — so both must survive."""
+        not see in the dashboard — so both must survive."""
         calls = {}
         monkeypatch.setattr(hc.ec2, "describe", lambda tag, p, r: {"instance_id": "i-0abc"})
         monkeypatch.setattr(hc.ec2, "destroy", lambda tag, p, r, **kw: {"destroyed": False})
@@ -712,7 +712,7 @@ class TestInstanceMutations:
         self, tmp_path, monkeypatch
     ):
         """A restart kills the teardown watcher mid-wait, so the stack goes but the
-        registry row stays. On the retry `describe` can no longer answer — the stack is
+        registry row stays. On the retry `describe` cannot answer — the stack is
         gone — so without the launch-job fallback the retry would delete nothing, resolve
         no id, skip the unregister again, and the row could never be cleared here."""
         calls = {}

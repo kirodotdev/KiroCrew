@@ -1,4 +1,4 @@
-"""A channel-born transcript row carries a durable delivery identity (#5981).
+"""A channel-born transcript row carries a durable delivery identity.
 
 The dashboard's merge keys on ``meta.mid`` and nothing else: ``isRedeliveredMessage``
 drops a redelivered row by it, ``olderHeadAbovePage`` cuts the retained scrollback
@@ -22,9 +22,8 @@ mid, so an unrelated id can never match the copy the slot save landed and the tu
 would be persisted twice -- a durable duplicate, worse than the display one this
 change fixes.
 
-Structured after ``test_channel_persist_agent_metadata.py`` (#2890, the same "every
-channel omitted a kwarg on its persist writes" shape): the unbound ``_persist_turn``
-is called with a minimal stand-in so no channel client has to be constructed.
+The unbound ``_persist_turn`` is called with a minimal stand-in so no channel
+client has to be constructed.
 """
 
 from __future__ import annotations
@@ -79,7 +78,7 @@ def _dispatcher_class(module):
 def _persist(cls, host, key, user_text, reply_text, is_new):
     """Call ``_persist_turn`` across the two signatures in play.
 
-    WhatsApp's takes no ``agent`` (it predates #2890's fix), so keywords alone
+    WhatsApp's takes no ``agent``, so keywords alone
     cannot cover both shapes.
     """
     try:

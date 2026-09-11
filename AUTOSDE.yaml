@@ -405,6 +405,113 @@ custom-rules:
         enum is the value-SURVIVAL domain and selectability is gated separately
         (H4). Omitting it there is the bug, not including it.
 
+  - id: memory-store-seam
+    blocking: true
+    file-patterns:
+      - "src/kiro_crew/context.py"
+      - "src/kiro_crew/memory.py"
+      - "src/kiro_crew/vector_memory.py"
+      - "src/kiro_crew/suggestions.py"
+      - "src/kiro_crew/tips.py"
+      - "src/kiro_crew/task_executor.py"
+      - "src/kiro_crew/task_planner.py"
+      - "src/kiro_crew/history_consolidation.py"
+      - "src/kiro_crew/messaging/**/*.py"
+      - "src/kiro_crew/subagent_manager/**/*.py"
+      - "src/kiro_crew/slack/**/*.py"
+      - "src/kiro_crew/telegram/**/*.py"
+      - "src/kiro_crew/discord/**/*.py"
+      - "src/kiro_crew/dashboard/chat_runner.py"
+      - "src/kiro_crew/dashboard/handlers/**/*.py"
+      - "src/kiro_crew/eval/runner.py"
+      - "src/kiro_crew/config/loader.py"
+      - "scripts/check_memory_store_seam.py"
+    rule: |
+      A named memory store is a SILO: cfg.agents[<crew>].memory_store
+      (config/loader.py, the `memory_store` field, default "default") selects a
+      SEPARATE SQLITE FILE. A new store starts EMPTY by default. Content is never
+      copied or inferred automatically; explicit owner-selected copies follow the
+      exception below. So a memory read that does not name its store reads
+      the operator's own `default` store for a crew that configured otherwise,
+      and NOTHING GOES RED: the prompt is well-formed, the store exists, and the
+      content is plausible. The reader is the only detector.
+
+      The mechanical shapes are already gated by
+      scripts/check_memory_store_seam.py, on the lines a change touches — added
+      lines, plus the anchor of a deletion-only hunk, since REMOVING a
+      `memory_store=` keyword adds no line at all. The shapes it owns: a missing
+      `memory_store=` on the enclosing call, a store derived from `agent=`, a bare
+      string literal, a literal `memory_store=None` (omission spelled out, since
+      the consumer collapses None onto its v1 workspace arm), an unanchored reference
+      to the target methods, and `get_memory_for` / `get_lessons_for` called with
+      nothing or a literal None. Do NOT re-report those. Report only what an AST
+      walk cannot see:
+
+      - A NEW READ PATH the gate does not know about. The gate matches four
+        names. FLAG a change that reaches memory some other way — constructing a
+        MemoryStore or a vector index directly, adding a second context builder
+        entry point, or adding a resolver alongside get_memory_for — without
+        threading the store name through it. A read path the gate cannot see is
+        exactly the one that will be added without a store.
+      - THE WRONG NAMESPACE passed as the store. The silo key is the named store
+        and nothing else. FLAG a call that passes a workspace name, a member or
+        channel slug, a project directory, a session key, or a kiro agent name
+        into `memory_store=`. These read as plausible because several of them are
+        in scope at every call site, and the gate cannot tell a store name from
+        any other string.
+      - RESOLUTION DUPLICATED AT THE CALL SITE. The store is resolved once, by
+        config.loader.resolve_agent_bindings, and its result is passed by name.
+        FLAG a call site that indexes cfg.agents itself, re-implements the
+        fallback to config.default_memory_store, or resolves a store from an
+        agent name inline — the measured failure mode is a silent `default` with
+        requested_resolved=False, for exactly the crew that configured otherwise.
+      - THE TWO ROOTS CONFLATED. The markdown/FTS root and the vector file are
+        different paths and a per-store resolver has to reproduce both for the
+        `default` store: the markdown root is memory.workspace_dir(), which is
+        config_dir()/"workspace" (memory.py), and the vector file is
+        config_dir()/"memory.db" (vector_memory.py's `db_path or ...` default).
+        FLAG a change that returns config_dir() itself as a store's markdown
+        root, or that moves the default store's vector file: either one takes
+        every existing user's preferences.md, projects.md and history/ out from
+        under the consolidator and `kirocrew memory search`, with no error.
+      - IMPLICIT CONTENT TRANSFER INTO A NEW STORE. FLAG automatic copies, seeds
+        or backfills, and any fallback read of Global Memory or another store when
+        the selected store is missing or unreadable. Explicit owner-selected
+        copies must satisfy the allowed case below.
+      - THE GATE ITSELF WIDENED. FLAG an added ALLOWLIST entry (the table is
+        intended empty and its size is printed on every run), a rule made
+        conditional, or a `# memory-store-ok:` marker whose reason does not
+        survive reading — the reason exists so a reviewer can decide whether the
+        call really has no store to name.
+
+      Allowed (do NOT flag):
+      - An explicit owner-authorized copy that names both source and destination,
+        copies only user-selected records, records source provenance, preserves
+        existing destination records, and leaves ownership and store bindings
+        unchanged. This does not authorize automatic inheritance, fallback reads
+        or shared private stores.
+      - The pre-existing unconverted call sites. The whole-tree backlog is a
+        non-failing report by design, pinned per rule by
+        test/test_memory_store_seam.py, and converting them is separate work.
+      - A call site that names the store and ALSO passes `agent=`. The two are
+        independent: `agent=` selects the kiro-cli mode, `memory_store=` selects
+        the silo, and the store being explicit is the point.
+      - `memory_store=cfg.default_memory_store` or
+        `memory_store=bindings.memory_store_name`. Reading the default store on
+        purpose is a legitimate answer; naming it is what makes it reviewable.
+      - `ContextBuilder.get_memory_for(ws_name)` / `get_lessons_for(ws_name)`
+        holding a WORKSPACE name. That parameter is `workspace`, resolved through
+        config.loader.workspace_dir_for. Both resolvers now also take a separate
+        `memory_store=` keyword, which wins when it names a non-default store.
+        A store name handed to the POSITIONAL workspace argument is still the
+        wrong-namespace bug (an unmapped workspace falls back to
+        config_dir()/"workspace", the default markdown root).
+      - Diff scoping is the standing enforcement mode. The whole-tree report
+        retains the operator heartbeat and evaluation coordinator calls, whose
+        unscoped spelling represents their Global context. Their exact backlog
+        is pinned by test/test_memory_store_seam.py; new unscoped call sites
+        remain forbidden. Whole-tree enforcement is not a promised rollout step.
+
   - id: changelog-is-written-at-version-bump-only
     blocking: true
     file-patterns:

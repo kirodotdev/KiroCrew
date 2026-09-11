@@ -182,13 +182,20 @@ export function Badge({ variant, children, className, ...rest }: { variant: 'ok'
   )
 }
 
-export function SourceBadge({ source }: { source: string }) {
+/** `source` picks the colour; pass `children` to show a translated label instead
+ *  of the raw field value, which is an internal identifier in every language.
+ *  `tone="neutral"` forces the grey style for every source — used where several
+ *  of these sit together (the template list) and one coloured chip among grey
+ *  peers reads as "why is this one different?" rather than as a category. */
+export function SourceBadge({ source, children, tone = 'auto' }: { source: string; children?: React.ReactNode; tone?: 'auto' | 'neutral' }) {
+  const neutral = 'bg-bg-elevated text-muted border-border'
   const cls =
-    source === 'package' ? 'bg-aim-subtle text-aim border-aim/30'
-    : source === 'kirocrew' ? 'bg-bg-elevated text-muted border-border'
+    tone === 'neutral' ? neutral
+    : source === 'package' ? 'bg-aim-subtle text-aim border-aim/30'
+    : source === 'kirocrew' ? neutral
     : source === 'project' ? 'text-ok border-ok/30'
-    : 'bg-bg-elevated text-muted border-border'
-  return <span className={`px-1.5 py-[2px] rounded-full text-[11px] font-bold border shrink-0 ${cls}`}>{source}</span>
+    : neutral
+  return <span className={`px-1.5 py-[2px] rounded-full text-[11px] font-bold border shrink-0 ${cls}`}>{children ?? source}</span>
 }
 
 export function StatCard({ label, value, accent, colorClass, delay, onClick, active, title, className, ...rest }: { label: string; value?: string | number | null; accent?: boolean; colorClass?: string; delay?: number; onClick?: () => void; active?: boolean; title?: string } & Omit<React.ComponentPropsWithoutRef<'div'>, 'title' | 'onClick' | 'dangerouslySetInnerHTML'>) {

@@ -1,4 +1,4 @@
-"""Recovery path for a cron job with no owning chat session (issue #4660).
+"""Recovery path for a cron job with no owning chat session.
 
 A cron created outside a chat -- ``kirocrew cron add``, the dashboard Schedule
 page, an onboarding import -- has no originating chat session, so its

@@ -37,6 +37,11 @@ recursive-include src/kiro_crew/apps *.md
 recursive-include src/kiro_crew/eval/scenarios *.json
 recursive-include src/kiro_crew/eval/bench/data *.json
 recursive-include src/kiro_crew/docs *.md
+# The generated settings registry beside those docs (see settings-deeplink.md).
+# `[options.package_data]`'s `docs/*.json` covers the WHEEL only; the sdist is
+# built from this file, and `python -m build` builds the wheel FROM the sdist, so
+# a missing line here drops the file from every published artifact.
+recursive-include src/kiro_crew/docs *.json
 recursive-include src/kiro_crew/tests_fixtures *
 
 # --- Pruning: never ship test trees, vendored node deps, or build cruft ------

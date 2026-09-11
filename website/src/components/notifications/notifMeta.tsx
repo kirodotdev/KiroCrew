@@ -115,6 +115,16 @@ export function fmtFull(ts: string | number): string {
   return isNaN(d.getTime()) ? i18nT('components.notifications.notifMeta.unknown_date') : fmtDateTime(d)
 }
 
+/** Markdown → one-line plain-text excerpt: images keep their alt text, links
+ *  their label; fence language tags, heading / emphasis / blockquote markers and
+ *  list bullets are dropped. Shared by notification previews and the
+ *  transcript turn minimap. */
 export function stripMd(text: string): string {
-  return text.replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1').replace(/[*_~`#>]+/g, '').replace(/\n+/g, ' ').trim()
+  return text
+    .replace(/```[\w-]*/g, ' ')
+    .replace(/^\s{0,3}(?:[-+]|\d+\.)\s+/gm, '')
+    .replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1')
+    .replace(/[*_~`#>]+/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
 }

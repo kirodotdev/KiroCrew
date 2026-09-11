@@ -2,6 +2,7 @@ import { fireEvent, screen, waitFor } from '@testing-library/react'
 import { createRef } from 'react'
 import { describe, expect, it, vi } from 'vitest'
 import ChatInput from '../components/ChatInput'
+import { ComposerVoiceSliceOverride } from '../chat-core/composer/Composer'
 import { formatToken, type PasteBlock } from '../utils/pasteTokens'
 import { renderWithProviders } from './helpers'
 
@@ -64,13 +65,13 @@ describe('ChatInput Lexical migration seam', () => {
     caretRef.current = { start: 1, end: 1 }
     pendingRef.current = 3
     renderWithProviders(
-      <ChatInput
-        {...defaultProps}
-        value="hello"
-        lexicalComposer
-        voiceCaretRef={caretRef}
-        voicePendingCaretRef={pendingRef}
-      />,
+      <ComposerVoiceSliceOverride inputProps={{ voiceCaretRef: caretRef, voicePendingCaretRef: pendingRef }}>
+        <ChatInput
+          {...defaultProps}
+          value="hello"
+          lexicalComposer
+        />
+      </ComposerVoiceSliceOverride>,
     )
     await waitFor(() => expect(pendingRef.current).toBeNull())
     await waitFor(() => expect(caretRef.current).toEqual({ start: 3, end: 3 }))

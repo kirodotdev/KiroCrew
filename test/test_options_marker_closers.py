@@ -75,7 +75,7 @@ class TestClosersNotOverlyBroad:
         # reachable through closers that are MATCHED by an earlier ``[`` or that
         # CONTINUE the label list -- here the ``]`` after ``a`` is followed by ``|``,
         # so it stays inside the label. An UNMATCHED closer followed by ordinary
-        # words ends the block instead (#9284); see
+        # words ends the block instead; see
         # ``test_options_marker_label_closers.py``.
         match = OPTIONS_RE_LINE.search("[OPTIONS: a] | b\u3011")
         assert match is not None

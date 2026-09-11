@@ -144,13 +144,12 @@ def test_compaction_per_agent_independent(cost_log):
 
 
 class TestOverCapRecordDoesNotLoseData:
-    """#6345: compaction REPLACES the log with what it parsed.
+    """Compaction REPLACES the log with what it parsed.
 
     So this reader cannot skip an over-cap record the way a read-only consumer
     can -- a skipped record would be permanently deleted by the next
-    compaction. Found by GPT 5.6 review on PR #7651; the audit had classified
-    this site skip-safe by tracing only its percentile consumer and missing
-    ``compact_cost_log``'s rewrite.
+    compaction. This site is not skip-safe: ``compact_cost_log`` rewrites the
+    log, not just the percentile consumer that reads it.
     """
 
     @pytest.fixture(autouse=True)

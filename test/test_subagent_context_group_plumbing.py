@@ -229,7 +229,7 @@ class TestContinuationInheritsScope:
         )
         assert mgr.recorded_cwd("conv9") == str(proj)
 
-        # A project that no longer exists is forwarded ANYWAY, so `spawn` refuses
+        # A project that does not exist is forwarded ANYWAY, so `spawn` refuses
         # it. Filtering this to "" would be unsafe because an empty cwd resolves
         # to the POOL project, so a follow-up naming relative files would then edit
         # an unrelated repository.

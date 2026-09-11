@@ -400,6 +400,53 @@ class TestCli:
         # matching the malformed-stdin error and accept_eval.py.
         assert "usage" in proc.stdout
 
+    def test_a_valid_mode_with_a_terminal_stdin_does_not_block(self):
+        """The sibling of ``accept_eval.py``'s hang, in this script.
+
+        ``ledger_entry.py encode`` with nothing piped in is a WELL-FORMED
+        invocation, so the argv guard above never sees it, and the read then
+        blocks until the caller's tool timeout: an approval spent, no output,
+        and nothing saying the input goes on stdin. Exit 2 is the code a bad
+        invocation already returns, so no caller that pipes input is affected.
+        """
+        mod = _mod()
+
+        class _RefusingStdin:
+            def __init__(self):
+                self.read_calls = 0
+
+            def isatty(self):
+                return True
+
+            def read(self, *args, **kwargs):
+                self.read_calls += 1
+                return ""
+
+        stdin = _RefusingStdin()
+        argv = [str(SCRIPT), "encode"]
+        original_stdin, original_argv = mod.sys.stdin, mod.sys.argv
+        try:
+            mod.sys.stdin, mod.sys.argv = stdin, argv
+            assert mod.main() == 2
+        finally:
+            mod.sys.stdin, mod.sys.argv = original_stdin, original_argv
+        assert stdin.read_calls == 0, "the usage path must not read stdin"
+
+    def test_a_stdin_that_cannot_answer_isatty_is_not_treated_as_a_tty(self):
+        """Piped input must keep working when ``isatty`` raises (closed stdin)."""
+        mod = _mod()
+
+        class _Broken:
+            def isatty(self):
+                raise ValueError("I/O operation on closed file")
+
+        original = mod.sys.stdin
+        try:
+            mod.sys.stdin = _Broken()
+            assert mod._stdin_is_a_tty() is False
+        finally:
+            mod.sys.stdin = original
+
     def test_json_array_stdin_exits_2_without_traceback(self):
         """A JSON array parses fine but is not an object; the contract is a
         structured exit-2, never a crash inside a mode handler."""

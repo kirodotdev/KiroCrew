@@ -86,6 +86,7 @@ from kiro_crew.acp.types import (
     ACP_CLIENT_CAPABILITIES,
     KAS_CLIENT_CAPABILITIES,
     METHOD_KAS_SESSION_DELETE,
+    METHOD_KIRO_SESSION_UPDATE,
     METHOD_MCP_OAUTH_REQUEST,
     METHOD_MCP_SERVER_INIT_FAILURE,
     METHOD_MCP_SERVER_INITIALIZED,
@@ -100,7 +101,11 @@ from kiro_crew.acp.types import (
     JsonRpcRequest,
     backends_retired_by_host_logout,
 )
-from kiro_crew.agent import ensure_agent_materialized
+from kiro_crew.agent import (
+    ForkGovernanceUnresolved,
+    ensure_agent_materialized,
+    require_fork_governance,
+)
 from kiro_crew.browser_cli.launch import browser_session_env, browser_socket_env
 from kiro_crew.config.paths import kiro_agents_dir
 from kiro_crew.constants import KIROCREW_SPAWNED_ENV, KIROCREW_SPAWNED_VALUE
@@ -121,6 +126,7 @@ from kiro_crew.sandbox import (
     bind_voice_safe_agent_workspace_async,
     cgroup_scope_argv,
     create_subprocess_limited,
+    delegated_workspace_exposes_agents_dir,
     release_bound_agent_workspace,
     resolve_bound_session_workspace,
     scrub_agent_subprocess_env,
@@ -713,6 +719,7 @@ class AcpRuntime:
         expect_mcp_reports: bool = True,
         acp_backend: str = ACP_BACKEND_KIRO,
         crew_agent: str = "",
+        private_memory: bool = False,
     ):
         if work_dir:
             self._work_dir = Path(work_dir)
@@ -748,9 +755,21 @@ class AcpRuntime:
                 )
         self._model = model
         self._sandbox_mode = sandbox_mode
+        self._private_memory = private_memory is True
+        if self._private_memory:
+            from kiro_crew.member_memory_auth import require_private_memory_mcp_backend
+
+            require_private_memory_mcp_backend(acp_backend)
         self._extra_env = extra_env or {}
-        self._mcp_gateway_overlay = str(mcp_gateway_overlay) if mcp_gateway_overlay else None
-        self._mcp_gateway_socket = str(mcp_gateway_socket) if mcp_gateway_socket else None
+        # Keep private MCP subprocesses inside this runtime's sandbox, including
+        # after resume. An older shared broker cannot attest their member origin.
+        self._private_mcp_gateway_socket = str(mcp_gateway_socket) if mcp_gateway_socket else ""
+        self._mcp_gateway_overlay = (
+            str(mcp_gateway_overlay) if mcp_gateway_overlay and not self._private_memory else None
+        )
+        self._mcp_gateway_socket = (
+            str(mcp_gateway_socket) if mcp_gateway_socket and not self._private_memory else None
+        )
         # Whether sessions on this runtime should hold drain_init() open for
         # slow MCP servers (the no-report ceiling). A runtime whose agent is
         # KNOWN to have zero MCP servers — the kirocrew-lite background runtime,
@@ -954,7 +973,13 @@ class AcpRuntime:
 
     def _stale_by_age(self) -> bool:
         """True if uptime exceeds max_age_secs. Cheap, no I/O — safe to call
-        under a lock. Does NOT consider RSS (see _is_stale for that)."""
+        under a lock. Does NOT consider RSS (see _is_stale for that).
+
+        NOT a recycle predicate: RSS, not age, is the growth mode this class
+        was observed failing on, so a reuse decision MUST ask _is_stale().
+        Reaching for this one because it is cheaper is what left the shared
+        background runtime unbounded. No production caller today.
+        """
         if self._pid is None or self._spawn_monotonic is None:
             return False
         return (time.monotonic() - self._spawn_monotonic) > self._max_age_secs
@@ -967,8 +992,12 @@ class AcpRuntime:
         kirocrew-lite background runtime observed growing unbounded (multi-GB
         RSS) over ~24h of uptime because the multiplexed design has no per-turn
         compaction or lifetime cap. Callers should check this alongside
-        is_alive() and, when active session count is 0, kill() and respawn
-        rather than reusing the process indefinitely.
+        is_alive() and stop reusing a stale process: kill() and respawn when the
+        active session count is 0, and otherwise DETACH it (park it to drain,
+        respawn for new callers, reap on its last unregister) rather than
+        deferring. Waiting for an idle window is not a bound — a multiplexed
+        runtime under sustained background load never has one, which is how the
+        multi-GB growth above went unchecked.
 
         RSS is measured across the whole descendant tree (_get_rss_tree_mb):
         under the Linux namespace sandbox self._pid is the launcher parent, and
@@ -979,8 +1008,9 @@ class AcpRuntime:
         The RSS probe is gated behind _RSS_PROBE_MIN_AGE_SECS: a freshly-(re)used
         runtime returns None without any executor round-trip, so the hot reuse
         path in get_bg_session (which holds _bg_runtime_lock) stays CPU-only for
-        young runtimes. The lock IS deliberately held across the probe for
-        older-and-idle runtimes; the age gate bounds how often that happens.
+        young runtimes. The lock IS deliberately held across the probe for older
+        runtimes, busy or idle; the age gate bounds how often that happens, and a
+        runtime that answers "stale" is displaced rather than re-probed.
         """
         if self._pid is None:
             return None
@@ -1004,9 +1034,10 @@ class AcpRuntime:
     def has_active_sessions(self) -> bool:
         """True if any session is currently registered on this runtime.
 
-        Used by callers deciding whether it's safe to recycle a stale
-        runtime: killing it while a co-tenant session is registered would
-        drop that session's in-flight prompt/response.
+        Killing a runtime while a co-tenant session is registered drops that
+        session's in-flight prompt/response. Every recycle path now asks
+        ``has_active_or_initializing_sessions`` instead, which closes the
+        registration window this one leaves open; no production caller remains.
         """
         return bool(self._session_queues)
 
@@ -1015,15 +1046,14 @@ class AcpRuntime:
 
         ``has_active_sessions`` sees only REGISTERED queues, and
         ``create_session`` registers outside the runtime lock -- so a co-tenant
-        whose ``session/new`` is in flight is momentarily invisible to it. Callers
-        that recycle a stale runtime tolerate that window deliberately (their
-        ``create_session`` raises ``AcpRuntimeDead`` and a respawn loop backstops
-        it, costing one extra respawn).
+        whose ``session/new`` is in flight is momentarily invisible to it, and
+        killing the runtime under it surfaces as ``AcpRuntimeDead`` on work the
+        user never connected to whatever prompted the kill.
 
-        A caller with NO such backstop must not: killing the runtime under an
-        initializing task session surfaces as ``AcpRuntimeDead`` on work the user
-        never connected to whatever prompted the kill. Those callers ask this
-        instead, which also counts ``_session_inits_in_flight``.
+        This is therefore the predicate every recycle and displacement decision
+        asks, because it also counts ``_session_inits_in_flight``: a runtime with
+        an initializing session is treated as busy and parked to drain rather
+        than killed, so no caller has to absorb that window with a respawn.
         """
 
         return bool(self._session_queues) or self._session_inits_in_flight > 0
@@ -1167,6 +1197,26 @@ class AcpRuntime:
         except Exception:
             logger.warning("pre-spawn agent materialization failed", exc_info=True)
 
+        # NOT best-effort: a fork-backed agent may not spawn until fork
+        # governance is re-projected, and a failed or timed-out refresh ABORTS
+        # the spawn — its on-disk allowedTools/autoApprove bypass the
+        # PreToolUse gate, so proceeding would run ungoverned grants. The work
+        # dir is the cwd kiro-cli resolves --agent against first, so the gate
+        # also refuses a fork shadowed by a project-local spec. Same gate as
+        # the legacy client spawn path (THIS is the live path).
+        try:
+            await asyncio.to_thread(require_fork_governance, self._agent, self._work_dir)
+        except ForkGovernanceUnresolved as exc:
+            raise AcpRuntimeError(str(exc)) from exc
+        # The agents-tree seal is a launcher rule, and a spawn delegated to
+        # kiro-cli's internal sandbox never sees the launcher — so on those
+        # paths a workspace overlapping the agents directory is the one way left
+        # to rewrite a spec. Refused before the spawn; off-loop because the
+        # delegation predicate reads the kiro settings file.
+        overlap = await asyncio.to_thread(delegated_workspace_exposes_agents_dir, self._work_dir)
+        if overlap:
+            raise AcpRuntimeError(overlap)
+
         argv: list[str] = [kiro_bin, KIRO_CLI_SUBCMD, "--agent", self._agent]
         if self._model:
             # Pin the model at process start (mirrors `kiro-cli chat --model X`).
@@ -1261,12 +1311,26 @@ class AcpRuntime:
         argv, delegate_internal_sandbox = await asyncio.to_thread(
             apply_pod_bundle_spawn, argv, backend=self._acp_backend
         )
+        private_kwargs: dict[str, Any] = (
+            {
+                "private_memory": True,
+                "private_mcp_gateway_socket": self._private_mcp_gateway_socket,
+                "private_mcp_gateway_socket_overrides": tuple(
+                    self._extra_env[name]
+                    for name in ("KIROCREW_MCP_SOCKET", "MC_MCP_SOCKET")
+                    if self._extra_env.get(name)
+                ),
+            }
+            if self._private_memory
+            else {}
+        )
         argv, self._sandbox_cleanup = await wrap_argv_async(
             argv,
             mode=self._sandbox_mode,
             strip_python_env=True,
             is_kiro_cli=delegate_internal_sandbox,
             _prepare=wrap_argv,
+            **private_kwargs,
         )
         # cgroup v2 scope (OUTERMOST): bound this agent + all its MCP-server /
         # tool descendants with pids.max (fork bomb) + memory.max (RSS balloon).
@@ -2009,7 +2073,11 @@ class AcpRuntime:
         _m = method if isinstance(method, str) else ""
         if _m == METHOD_REQUEST_PERMISSION:
             _mclass = "permission"
-        elif _m == METHOD_SESSION_UPDATE:
+        elif _m in (METHOD_SESSION_UPDATE, METHOD_KIRO_SESSION_UPDATE):
+            # Both live session-update spellings classify as "update": a
+            # dashboard alerting on the pre-fix hang signature must see a
+            # dropped extension-method child update the same way it sees
+            # the plain spelling.
             _mclass = "update"
         else:
             _mclass = "other"
@@ -2257,6 +2325,7 @@ class AcpRuntime:
                         and (
                             msg.is_method(METHOD_REQUEST_PERMISSION)
                             or msg.is_method(METHOD_SESSION_UPDATE)
+                            or msg.is_method(METHOD_KIRO_SESSION_UPDATE)
                         )
                     ):
                         # A frame for a backend-internal subagent the backend
@@ -2264,10 +2333,17 @@ class AcpRuntime:
                         # runtime with an UNAMBIGUOUS consumer (exactly one
                         # registered session — the dashboard-slot shape).
                         #
-                        # - session/update: routed so the consumer's
-                        #   per-toolCallId caches capture the child's REAL
-                        #   command bytes; the handle re-tags them as crew
-                        #   activity, never as parent transcript.
+                        # - session/update — under EITHER spelling: kiro-cli
+                        #   2.21.x emits child updates as the extension method
+                        #   `_kiro.dev/session/update` where earlier versions
+                        #   used plain `session/update`. Routed so the
+                        #   consumer's per-toolCallId caches capture the
+                        #   child's REAL command bytes; the handle re-tags
+                        #   them as crew activity, never as parent transcript.
+                        #   Both spellings must route: a dropped child update
+                        #   leaves the caches empty, child MCP identity
+                        #   unverified, and every auto-approve path falls to
+                        #   the interactive card.
                         # - session/request_permission: routed so the child's
                         #   approval flows through the exact policy pipeline a
                         #   main-agent approval takes — with the command bytes
@@ -2317,6 +2393,21 @@ class AcpRuntime:
                             # drain; a genuinely wedged backend still
                             # accumulates blocked tasks and trips the cap.
                             await asyncio.sleep(0)
+                        elif not _owner_turn_active:
+                            # An UPDATE between the owner's turns (either
+                            # session/update spelling). Nothing reads the
+                            # queue until the next prompt's dispatch loop,
+                            # and _run_turn clears the per-toolCallId caches
+                            # at turn start and then discards stale
+                            # non-permission frames from the queue — so a
+                            # between-turns update can never contribute a
+                            # cache write or an activity event. Queueing it
+                            # would only grow an unbounded queue in gateway
+                            # memory while the slot idles (session queues
+                            # have no depth cap). Unlike a REQUEST there is
+                            # no protocol obligation to answer, so take the
+                            # counted-drop path.
+                            self._note_dropped_frame(session_id, msg.method)
                         else:
                             # Hang-resilience series: a child permission
                             # request delivered to the mode-parity pipeline.
@@ -2990,6 +3081,15 @@ class AcpRuntime:
         if self._acp_backend == ACP_BACKEND_KAS and agent:
 
             def _build() -> list[dict[str, Any]]:
+                # NOT best-effort, same gate as the --agent spawn path: the
+                # projection READS the on-disk spec and transmits its grants
+                # into the KAS session, so a fork whose governance refresh is
+                # pending or failed would project stale allowedTools /
+                # autoApprove over the wire. Raises ForkGovernanceUnresolved,
+                # mapped below alongside the translation failure — both mean
+                # "do not create this session". getattr like the shutdown
+                # path above: projection-only callers construct bare runtimes.
+                require_fork_governance(agent, getattr(self, "_work_dir", None))
                 try:
                     ensure_agent_materialized(agent)
                 except Exception:
@@ -3029,6 +3129,10 @@ class AcpRuntime:
 
             try:
                 return await asyncio.to_thread(_build)
+            except ForkGovernanceUnresolved as exc:
+                # Fail loud for the same reason as the translation error below:
+                # continuing would hand the session ungoverned grants.
+                raise AcpRuntimeError(str(exc)) from exc
             except KasAgentTranslationError as exc:
                 # Fail loud: continuing would create a session on KAS's own default
                 # mode, which for a restricted agent means running a BROADER agent

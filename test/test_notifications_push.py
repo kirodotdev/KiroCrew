@@ -380,8 +380,7 @@ class TestPushHandler:
 
     @pytest.mark.asyncio
     async def test_rate_limiter_is_state_owned_not_module_global(self):
-        # Regression: two gateway states must not share rate-limit budgets
-        # (the limiter was previously a module-level singleton).
+        # Two gateway states must not share rate-limit budgets.
         state_a = _FakeState()
         state_b = _FakeState()
         with _patch_channels():
@@ -452,8 +451,8 @@ class TestPushHandler:
 
     @pytest.mark.asyncio
     async def test_missing_app_token_denial_emits_sel_audit(self):
-        # Regression: every denial path must emit a SEL audit event -- the
-        # no-app-token 403 previously skipped it.
+        # Every denial path must emit a SEL audit event, including the
+        # no-app-token 403.
         state = _FakeState()
         with patch(
             "kiro_crew.dashboard.handlers.notifications_push.sel"
@@ -493,8 +492,8 @@ class TestPushHandler:
 
     @pytest.mark.asyncio
     async def test_corrupt_manifest_priority_returns_400_not_500(self):
-        # Regression: a corrupt on-disk manifest defaultPriority previously
-        # raised out of register_channel unhandled (500).
+        # A corrupt on-disk manifest defaultPriority must not raise out of
+        # register_channel unhandled (500).
         state = _FakeState()
         with _patch_channels(channels={"ticket-update": "not-a-priority"}):
             async with TestClient(TestServer(_make_app(state, {"app": "oncall-radar"}))) as client:
@@ -961,7 +960,7 @@ class TestPushErrorCodes:
         assert body["error"] == "channel not declared in app manifest: 'not-declared'"
 
     def test_every_refusal_in_this_handler_carries_a_code(self):
-        """Per-file ratchet. ``error-code-baseline.json`` no longer lists this
+        """Per-file ratchet. ``error-code-baseline.json`` does not list this
         module, and the repo-wide gate only fails on a NET regression across
         1300+ sites -- which a new bare refusal here could hide behind an
         unrelated conversion. This one cannot be hidden behind anything."""

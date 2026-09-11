@@ -1,7 +1,7 @@
 """The dashboard route table's ordering contract.
 
 The 447 registrations moved out of ``start_dashboard`` into ``dashboard/routes/``.
-Splitting them made one previously-implicit property easy to break silently:
+Splitting them made one implicit property easy to break silently:
 **aiohttp resolves a request against its routes in REGISTRATION order.** Several
 routes in this table rely on it -- a literal path is registered before a pattern
 that would otherwise swallow it, and the original inline table said so in

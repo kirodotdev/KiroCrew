@@ -388,6 +388,32 @@ DM_SCOPE_UNIFIED = "unified"
 #: stays separate; ``unified`` opts into one shared bucket per agent.
 DEFAULT_DM_SCOPE = DM_SCOPE_PER_CHANNEL_PEER
 
+
+def split_dm_session_key(key: str) -> tuple[str, int] | None:
+    """Return ``(bucket, generation)`` for a canonical DM session key.
+
+    The strict RFC parser owns normal channel keys. ``dm_scope=unified`` uses
+    the shorter ``unified:{agent}[:genN]`` shape, so this helper recognizes only
+    that one named exception. Keeping both shapes beside the key builder avoids
+    copying generation grammar into picker or persistence code.
+    """
+    parsed = parse_session_key(key)
+    if parsed is not None:
+        return parsed.bucket, parsed.gen
+
+    segments = key.split(":")
+    if len(segments) == 2 and segments[0] == DM_SCOPE_UNIFIED and segments[1]:
+        return key, 0
+    if (
+        len(segments) == 3
+        and segments[0] == DM_SCOPE_UNIFIED
+        and segments[1]
+        and (match := _GEN_SUFFIX_RE.match(segments[2])) is not None
+    ):
+        return ":".join(segments[:2]), int(match.group(1))
+    return None
+
+
 #: ``direct`` (1:1 DM) is the baseline; ``forum`` keys a Telegram supergroup
 #: forum Topic ``(chat_id, thread_id)`` to its own session (Slack-thread style).
 CHAT_TYPE_DIRECT = "direct"
@@ -459,7 +485,7 @@ def legacy_dashboard_mirror_key(channel_session_key: str) -> str:
     key itself, so that key is where its mirror binding belongs and where the
     turn path reads it back. Bindings created before that unification live on
     ``"dashboard:" + history._safe_key(channel_session_key)`` — the runtime key
-    of the derived slot that used to own the conversation.
+    of the derived slot that owned the conversation under the earlier scheme.
 
     Retained for compat only: reads and clears fall back to this spelling
     (``SessionMap._mirror_key``) so a link a user set earlier still resolves,

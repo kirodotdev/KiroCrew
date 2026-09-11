@@ -270,7 +270,7 @@ def test_optional_min_version_is_signed_and_round_trips(
     assert verified.returncode == 0, verified.stderr
 
     # Flip the floor after signing: the canonical payload changes, so the
-    # existing signature must no longer verify.
+    # existing signature must fail to verify.
     manifest["min_version"] = "0.0.1"
     manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
     tampered = _run_helper(
@@ -882,7 +882,7 @@ def test_verify_accepts_a_signed_manifest_and_rejects_tampering(
     verified = _verify_manifest(manifest, test_key)
     assert verified.returncode == 0, verified.stderr
 
-    # Tampered field: signature no longer covers the payload.
+    # Tampered field: the signature does not cover the payload.
     data = json.loads(manifest.read_text(encoding="utf-8"))
     data["version"] = "9.9.9"
     tampered = tmp_path / "tampered.json"

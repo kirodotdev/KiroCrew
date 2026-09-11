@@ -802,7 +802,7 @@ class TestChannelUploadEndpoint:
 
     @pytest.mark.asyncio
     async def test_discord_destination_gets_send_document(self, tmp_path, outbox_pdf):
-        # Issue #6058: Discord was an explicit skip while its only upload verb
+        # Discord was an explicit skip while its only upload verb
         # was the extraction one, whose sanitizer maps any non-raster mime to
         # `.bin` (report.pdf would arrive as report.bin). It now has the same
         # purpose-built name-preserving verb Telegram uses, so it delivers.
@@ -1009,7 +1009,7 @@ class TestChannelUploadEndpoint:
 
 
 class TestSlackUploadAuthorizationRungs:
-    """The two ceilings the Slack leg shares with the channel leg (issue #7290).
+    """The two ceilings the Slack leg shares with the channel leg.
 
     Slack is deliberately absent from ``channel_transports``, so it reaches
     neither the send ladder's ``channels`` governance vet nor the ceiling the
@@ -1282,7 +1282,7 @@ class TestSlackUploadAuthorizationRungs:
 
 class TestDestinationOracleEquivalence:
     """The rungs the destination oracle must keep answering exactly as the two
-    inline ladders did (issue #6060).
+    inline ladders did.
 
     The classes above already pin the seven Slack destination OUTCOMES and the
     channel leg's skip-vs-error semantics, and they run unchanged against the

@@ -104,7 +104,7 @@ class TestLifecycle:
     @pytest.mark.asyncio
     async def test_close_closes_session_even_when_ws_close_raises(self, client) -> None:
         """A websocket whose transport is already broken raises on close();
-        that must not take the session close down with it (issue #4627)."""
+        that must not take the session close down with it."""
 
         class _BadWS(_FakeWS):
             async def close(self) -> None:
@@ -122,7 +122,7 @@ class TestLifecycle:
     async def test_close_closes_session_even_when_task_died_with_a_bug(self, client) -> None:
         """A task already dead from an uncaught, non-CancelledError exception
         makes ``task.cancel()`` a no-op, and re-``await``ing it re-raises that
-        exception -- which must not skip the session close (issue #4627)."""
+        exception -- which must not skip the session close."""
         session = _FakeSession()
         client._session = session  # type: ignore[assignment]
 

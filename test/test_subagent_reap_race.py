@@ -127,10 +127,10 @@ async def test_done_set_during_reap_teardown_still_reports_and_frees_one_slot():
     """THE round-5 regression.
 
     ``_run_inner`` sets ``info.done`` while ``_force_reap`` is suspended in the
-    session reset. Previously the reaper then declined the report claim (it was
-    gated on ``not info.done``), still set ``reaped``, and ``_run``'s finally
-    skipped BOTH its claim and its slot decrement — so nothing was reported and
-    ``_running_count`` stayed inflated, starving the spawn queue.
+    session reset. A reaper gated on ``not info.done`` would then decline the
+    report claim, still set ``reaped``, and let ``_run``'s finally skip BOTH its
+    claim and its slot decrement — so nothing is reported and ``_running_count``
+    stays inflated, starving the spawn queue.
     """
     mgr = _make_manager()
     info = _info(_session_sharing=False)
@@ -342,8 +342,8 @@ async def test_reap_during_recovering_still_reports_and_supersedes_respawn():
 
     `_claim_finalize` withholds the claim while `_recovering` so a pending
     respawn is not reported done prematurely. But a reap is DEFINITIVELY
-    terminal: previously it was refused the claim, did its teardown, set
-    `reaped=True` and reported nothing — and `_resume`'s `reaped` abort path
+    terminal: a reap that only refused the claim would do its teardown, set
+    `reaped=True` and report nothing — and `_resume`'s `reaped` abort path
     bare-returns, so no path ever reported. The agent sat unfinished until the
     reaper's wall-clock deadline.
     """
@@ -515,7 +515,7 @@ async def test_cancel_all_keeps_the_tombstone_when_delivery_already_happened(mon
 async def test_recovery_failure_reports_through_the_claim():
     """A failed cancel-recovery respawn must report via `_claim_finalize`.
 
-    This site used to fire `subagent_done` and `_on_done` DIRECTLY, gated only
+    This site must not fire `subagent_done` and `_on_done` DIRECTLY, gated only
     on `done`/`reaped` — a fourth reporter outside the claim, so it could
     deliver on top of a concurrent reaper. Here the claim is already spent (as
     a reaper would leave it) and the respawn is forced to fail, so a compliant
@@ -566,7 +566,7 @@ async def test_recovery_failure_still_reports_when_it_owns_the_claim():
 async def test_reap_suppression_marker_is_set_before_the_teardown_await():
     """The RESPAWN-suppression marker must be visible during teardown.
 
-    The marker and the recovery-task cancel used to sit AFTER the session reset
+    The marker and the recovery-task cancel must not sit AFTER the session reset
     await. A recovery task whose bounded handshake expired inside that window
     respawned the run being killed — tools running after a user Stop. Asserting
     from inside the reset proves the ordering.
@@ -655,7 +655,7 @@ async def test_run_woken_by_reaper_reset_still_synthesizes_its_error():
     its error synthesis when `reaped` is set — so a run woken by the reaper's
     reset (the reset kills the provider, `_run_inner` raises) fell through with
     NO error, claimed the report first while the reaper was still tearing down,
-    and delivered a FALSE SUCCESS the reaper could no longer correct.
+    and delivered a FALSE SUCCESS the reaper could not correct.
 
     The flag is therefore split: `_reap_started` early (respawn suppression),
     `reaped` late (record/teardown ownership).
@@ -775,7 +775,7 @@ async def test_user_stop_during_pending_recovery_is_not_recorded_as_failure():
     must stay false until the reaper owns the record). `_resume_guarded`'s
     CancelledError arm consulted only `reaped`, so it won that race and wrote
     `error="cancelled"` plus a failure stat over a neutral stop — an outcome the
-    reaper could no longer correct. It must consult `_reap_started`.
+    reaper could not correct. It must consult `_reap_started`.
     """
     mgr = _make_manager()
     info = _info(_session_sharing=False, user_stopped=True, started=time.time() - 5.0)

@@ -374,16 +374,16 @@ describe('Settings > Developer > Feature Previews', () => {
     // One card per feature: crew's own toggle, not a row folded into the
     // webhooks card. Anchored (`^…$`) because the label's words also appear in
     // this card's description and in the "Chat on a crew" card next to it. The
-    // label names BOTH doors the flag holds so it stops sharing a bare "Crew"
+    // label names the page the flag holds so it stops sharing a bare "Crew"
     // with that neighbour, which a newcomer could not tell apart.
     renderTab()
-    expect(screen.getByRole('switch', { name: /^crew members and crew mode$/i }).getAttribute('aria-checked')).toBe('false')
+    expect(screen.getByRole('switch', { name: /^crew members$/i }).getAttribute('aria-checked')).toBe('false')
   })
 
   it('persists the crew opt-in under its own key, leaving webhooks alone', async () => {
     renderTab()
     await act(async () => {
-      screen.getByRole('switch', { name: /^crew members and crew mode$/i }).click()
+      screen.getByRole('switch', { name: /^crew members$/i }).click()
     })
     expect(localStorage.getItem(PREVIEW_CREW)).toBe('1')
     // Two flags, two keys: a shared write would release both features at once.
@@ -410,7 +410,7 @@ describe('Settings > Developer > Feature Previews', () => {
       Array.from(container.querySelectorAll('button:not([data-testid="feature-preview-intro-button"])'))
     expect(realButtons()).toHaveLength(0)
     await act(async () => {
-      screen.getByRole('switch', { name: /^crew members and crew mode$/i }).click()
+      screen.getByRole('switch', { name: /^crew members$/i }).click()
     })
     expect(realButtons()).toHaveLength(0)
     // The webhooks card still HAS its link, so this is an asymmetry on purpose

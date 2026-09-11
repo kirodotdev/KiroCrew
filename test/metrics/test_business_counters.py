@@ -189,7 +189,7 @@ class TestCompactions:
         assert _named(rec, ev.CONTEXT_COMPACTIONS)[-1]["attrs"] == {"success": False}
 
     def test_a_failed_compact_that_recycles_is_not_counted_successful(self, rec):
-        """Review round 6: the counter's success is not the callback's success.
+        """The counter's success is not the callback's success.
 
         ``_recycle_held`` is reached exactly when an in-place ``/compact`` FAILED
         and the provider had to be replaced instead, yet it fires this funnel with

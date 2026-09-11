@@ -7,6 +7,7 @@ import logging
 import re
 import uuid
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from aiohttp import web
 
@@ -15,7 +16,103 @@ from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.security import is_sensitive_path, redact_credentials, redact_exfiltration_urls
 from kiro_crew.task_planner import plan_to_yaml
 
+if TYPE_CHECKING:
+    from kiro_crew.taskrunner import TaskRunner
+
 logger = logging.getLogger(__name__)
+
+
+async def _taskrunner_request_origin(request: web.Request) -> tuple[str, web.Response | None]:
+    """Return the kernel/proof-authenticated origin for an internal caller."""
+    if request.get("internal_auth") is not True:
+        return "", None
+    from kiro_crew.member_memory_auth import (
+        memory_request_identity,
+        private_memory_boundaries_active,
+    )
+
+    if not await asyncio.to_thread(private_memory_boundaries_active):
+        return "", None
+    actual, verified = await asyncio.to_thread(memory_request_identity, request)
+    if not verified:
+        return "", web.json_response(
+            {
+                "error": "The task runner session could not be verified.",
+                "code": "member_session_unverified",
+            },
+            status=403,
+        )
+    return actual or "", None
+
+
+async def _taskrunner_run_refusal(
+    request: web.Request, runner: object, task_id: str
+) -> web.Response | None:
+    """Keep an internal member caller inside its own persisted run boundary."""
+    origin, refusal = await _taskrunner_request_origin(request)
+    if refusal is not None or request.get("internal_auth") is not True:
+        return refusal
+    from kiro_crew.member_memory_auth import (
+        private_memory_boundaries_active,
+        private_memory_store_for_session,
+    )
+
+    if not await asyncio.to_thread(private_memory_boundaries_active):
+        return None
+    caller_store = await asyncio.to_thread(private_memory_store_for_session, origin)
+    runtime_key = f"taskrunner:{task_id}:runtime"
+    run_store = await asyncio.to_thread(private_memory_store_for_session, runtime_key)
+    if caller_store != run_store:
+        return web.json_response({"error": "not found", "code": "task_scope_denied"}, status=404)
+    return None
+
+
+def _canonical_task_reference(runner: TaskRunner, reference: str, *, first: bool = False) -> str:
+    runs = runner._runs
+    if reference in runs:
+        return reference
+    matches = [run for run in runs.values() if run.name == reference]
+    return matches[0 if first else -1].task_id if matches else reference
+
+
+async def _private_refine_refusal(request: web.Request) -> web.Response | None:
+    origin, refusal = await _taskrunner_request_origin(request)
+    if refusal is not None:
+        return refusal
+    if origin:
+        from kiro_crew.member_memory_auth import private_memory_store_for_session
+
+        private_store = await asyncio.to_thread(private_memory_store_for_session, origin)
+    else:
+        private_store = ""
+    if private_store:
+        return web.json_response(
+            {
+                "error": "Private member plan refinement is unavailable.",
+                "code": "private_refine_unsupported",
+            },
+            status=409,
+        )
+    return None
+
+
+async def _task_result_slot(request: web.Request, state: DashboardState, task_id: str):
+    """Bind a fresh private destination before publishing any task transcript."""
+    if request.get("internal_auth") is True:
+        from kiro_crew.member_memory_auth import private_memory_store_for_session
+
+        runtime_key = f"taskrunner:{task_id}:runtime"
+        store = await asyncio.to_thread(private_memory_store_for_session, runtime_key)
+        if store:
+            from kiro_crew.context import inherit_session_memory
+
+            token = uuid.uuid4().hex
+            session_key = f"taskrunner:{task_id}:chat:{token}"
+            await inherit_session_memory(state.context_builder, runtime_key, session_key)
+            slot = state.get_or_create_slot(f"task-review-{token}", linked_session_key=session_key)
+            slot.memory_store = store
+            return slot
+    return state.get_or_create_slot()
 
 
 def _sel():
@@ -100,8 +197,29 @@ async def api_taskrunner_status(request: web.Request) -> web.Response:
     if not state.task_runner:
         return web.json_response({"running": False, "available": False})
     data = state.task_runner.status()
+    origin, refusal = await _taskrunner_request_origin(request)
+    if refusal is not None:
+        return refusal
     visible_sources = {"text", "spec", "file", "chat", "dashboard", "mcp", "yaml"}
     data["runs"] = [r for r in data["runs"] if r.get("source") in visible_sources]
+    if request.get("internal_auth") is True:
+        from kiro_crew.member_memory_auth import (
+            private_memory_boundaries_active,
+            private_memory_store_for_session,
+        )
+
+        if await asyncio.to_thread(private_memory_boundaries_active):
+            caller_store = await asyncio.to_thread(private_memory_store_for_session, origin)
+            visible = []
+            for row in data["runs"]:
+                run_store = await asyncio.to_thread(
+                    private_memory_store_for_session,
+                    f"taskrunner:{row.get('task_id', '')}:runtime",
+                )
+                if run_store == caller_store:
+                    visible.append(row)
+            data["runs"] = visible
+            data["running"] = any(row.get("running") for row in visible)
     for run in data["runs"]:
         if run.get("error"):
             run["error"] = redact_exfiltration_urls(run["error"])[0]
@@ -136,6 +254,9 @@ async def api_taskrunner_start(request: web.Request) -> web.Response:
     state: DashboardState = request.app["state"]
     if not state.task_runner:
         return web.json_response({"error": "task runner not available"}, status=400)
+    origin, refusal = await _taskrunner_request_origin(request)
+    if refusal is not None:
+        return refusal
     body, body_err = await read_bounded_json(request, max_bytes=None)
     if body_err is not None:
         return body_err
@@ -149,11 +270,25 @@ async def api_taskrunner_start(request: web.Request) -> web.Response:
     # use share one value — no gap where spec_path could differ from what was
     # checked, and the containment guard is visible to static analysis.
     if not spec_path.startswith("__inline__:"):
+        from kiro_crew.member_memory_auth import private_memory_store_for_session
+
+        if origin and await asyncio.to_thread(private_memory_store_for_session, origin):
+            return web.json_response(
+                {
+                    "error": "Private tasks require inline input from their own session.",
+                    "code": "private_task_file_unsupported",
+                },
+                status=409,
+            )
         resolved = Path(spec_path).resolve()
         if ".." in Path(spec_path).parts or not resolved.is_file():
-            return web.json_response({"error": "invalid spec path"}, status=400)
+            return web.json_response(
+                {"error": "invalid spec path", "code": "invalid_spec_path"}, status=400
+            )
         if is_sensitive_path(str(resolved)):
-            return web.json_response({"error": "access denied"}, status=403)
+            return web.json_response(
+                {"error": "access denied", "code": "access_denied"}, status=403
+            )
         spec_path = str(resolved)
 
     # Handle inline spec content
@@ -188,6 +323,7 @@ async def api_taskrunner_start(request: web.Request) -> web.Response:
             source=source,
             workspace_dir=workspace_dir,
             auto_approve=auto_approve,
+            session_key=origin,
         )
     except Exception as exc:
         # The handler owns the temp file ONLY when it created it: a rejected
@@ -217,7 +353,36 @@ async def api_taskrunner_cancel(request: web.Request) -> web.Response:
     if body_err is not None:
         return body_err
     assert body is not None  # read_bounded_json returns (dict, None) on success
-    state.task_runner.cancel(body.get("task_id"))
+    task_id = body.get("task_id")
+    if task_id is not None and not isinstance(task_id, str):
+        return web.json_response(
+            {"error": "task_id must be a string", "code": "invalid_task_id"}, status=400
+        )
+    from kiro_crew.member_memory_auth import private_memory_boundaries_active
+
+    exact = request.get("internal_auth") is True and await asyncio.to_thread(
+        private_memory_boundaries_active
+    )
+    if exact and task_id and task_id not in state.task_runner._runs:
+        return web.json_response(
+            {"error": "Use the task's canonical ID.", "code": "task_scope_denied"}, status=404
+        )
+    if task_id:
+        refusal = await _taskrunner_run_refusal(request, state.task_runner, str(task_id))
+        if refusal is not None:
+            return refusal
+    elif request.get("internal_auth") is True:
+        _, refusal = await _taskrunner_request_origin(request)
+        if refusal is not None:
+            return refusal
+        if await asyncio.to_thread(private_memory_boundaries_active):
+            return web.json_response(
+                {"error": "task_id required", "code": "task_scope_denied"}, status=403
+            )
+    if exact:
+        state.task_runner.cancel(task_id, exact=True)
+    else:
+        state.task_runner.cancel(task_id)
     return web.json_response({"ok": True})
 
 
@@ -226,7 +391,12 @@ async def api_taskrunner_pause(request: web.Request) -> web.Response:
     state: DashboardState = request.app["state"]
     if not state.task_runner:
         return web.json_response({"error": "task runner not available"}, status=400)
-    task_id = request.match_info["task_id"]
+    task_id = _canonical_task_reference(
+        state.task_runner, request.match_info["task_id"], first=True
+    )
+    refusal = await _taskrunner_run_refusal(request, state.task_runner, task_id)
+    if refusal is not None:
+        return refusal
     runner = state.task_runner
     run = runner._runs.get(task_id)
     if not run:
@@ -269,6 +439,9 @@ async def api_taskrunner_delete(request: web.Request) -> web.Response:
     if not state.task_runner:
         return web.json_response({"error": "task runner not available"}, status=400)
     task_id = request.match_info["task_id"]
+    refusal = await _taskrunner_run_refusal(request, state.task_runner, task_id)
+    if refusal is not None:
+        return refusal
     run = state.task_runner._runs.get(task_id)
     if not run:
         return web.json_response({"error": "not found"}, status=404)
@@ -284,6 +457,9 @@ async def api_taskrunner_rename(request: web.Request) -> web.Response:
     if not state.task_runner:
         return web.json_response({"error": "task runner not available"}, status=400)
     task_id = request.match_info["task_id"]
+    refusal = await _taskrunner_run_refusal(request, state.task_runner, task_id)
+    if refusal is not None:
+        return refusal
     run = state.task_runner._runs.get(task_id)
     if not run:
         return web.json_response({"error": "not found"}, status=404)
@@ -304,7 +480,10 @@ async def api_taskrunner_update_task(request: web.Request) -> web.Response:
     state: DashboardState = request.app["state"]
     if not state.task_runner:
         return web.json_response({"error": "task runner not available"}, status=400)
-    task_id = request.match_info["task_id"]
+    task_id = _canonical_task_reference(state.task_runner, request.match_info["task_id"])
+    refusal = await _taskrunner_run_refusal(request, state.task_runner, task_id)
+    if refusal is not None:
+        return refusal
     try:
         index = int(request.match_info["index"])
     except ValueError:
@@ -344,7 +523,10 @@ async def api_taskrunner_retry(request: web.Request) -> web.Response:
     state: DashboardState = request.app["state"]
     if not state.task_runner:
         return web.json_response({"error": "task runner not available"}, status=400)
-    task_id = request.match_info["task_id"]
+    task_id = _canonical_task_reference(state.task_runner, request.match_info["task_id"])
+    refusal = await _taskrunner_run_refusal(request, state.task_runner, task_id)
+    if refusal is not None:
+        return refusal
     body, body_err = await read_bounded_json(request, allow_absent=True)
     if body_err is not None:
         return body_err
@@ -365,6 +547,9 @@ async def api_taskrunner_plan_context(request: web.Request) -> web.Response:
     if not state.task_runner:
         return web.json_response({"error": "task runner not available"}, status=400)
     task_id = request.match_info["task_id"]
+    refusal = await _taskrunner_run_refusal(request, state.task_runner, task_id)
+    if refusal is not None:
+        return refusal
     run = state.task_runner._runs.get(task_id)
     if not run or run.status != "planned":
         return web.json_response({"error": "not found or not planned"}, status=404)
@@ -382,6 +567,9 @@ async def api_taskrunner_export_yaml(request: web.Request) -> web.Response:
     if not state.task_runner:
         return web.json_response({"error": "task runner not available"}, status=400)
     task_id = request.match_info["task_id"]
+    refusal = await _taskrunner_run_refusal(request, state.task_runner, task_id)
+    if refusal is not None:
+        return refusal
     run = state.task_runner._runs.get(task_id)
     if not run:
         # Generic 404 — do not reflect the requested id or reveal existence.
@@ -423,6 +611,9 @@ async def api_taskrunner_to_chat(request: web.Request) -> web.Response:
     if not state.task_runner:
         return web.json_response({"error": "task runner not available"}, status=400)
     task_id = request.match_info["task_id"]
+    refusal = await _taskrunner_run_refusal(request, state.task_runner, task_id)
+    if refusal is not None:
+        return refusal
     run = state.task_runner._runs.get(task_id)
     if not run:
         return web.json_response({"error": "not found"}, status=404)
@@ -430,7 +621,7 @@ async def api_taskrunner_to_chat(request: web.Request) -> web.Response:
     # Handle planned runs — send to chat for optimization
     if run.status == "planned":
         summary = state.task_runner.plan_to_chat_context(task_id)
-        slot = state.get_or_create_slot()
+        slot = await _task_result_slot(request, state, task_id)
         slot.title = f"Plan: {run.task_id}"
         slot.append("user", summary, "msg msg-u")
         from kiro_crew.dashboard.chat import _run_chat  # noqa: F811
@@ -499,7 +690,7 @@ async def api_taskrunner_to_chat(request: web.Request) -> web.Response:
         )
     summary = "\n".join(lines)
 
-    slot = state.get_or_create_slot()
+    slot = await _task_result_slot(request, state, task_id)
     slot.title = f"Review: {spec_name}"
     slot.append("user", summary, "msg msg-u")
 
@@ -520,6 +711,9 @@ async def api_taskrunner_plan(request: web.Request) -> web.Response:
     state: DashboardState = request.app["state"]
     if not state.task_runner:
         return web.json_response({"error": "task runner not available"}, status=400)
+    origin, refusal = await _taskrunner_request_origin(request)
+    if refusal is not None:
+        return refusal
     body, body_err = await read_bounded_json(request, max_bytes=None)
     if body_err is not None:
         return body_err
@@ -529,6 +723,27 @@ async def api_taskrunner_plan(request: web.Request) -> web.Response:
     spec_path = body.get("spec", "")
     agent = body.get("agent", "")
     workspace_dir = body.get("workspace_dir", "")
+    if source == "file":
+        from kiro_crew.member_memory_auth import private_memory_store_for_session
+
+        if origin and await asyncio.to_thread(private_memory_store_for_session, origin):
+            return web.json_response(
+                {
+                    "error": "Private task plans require inline input from their own session.",
+                    "code": "private_task_file_unsupported",
+                },
+                status=409,
+            )
+        resolved = Path(spec_path).resolve()
+        if ".." in Path(spec_path).parts or not resolved.is_file():
+            return web.json_response(
+                {"error": "invalid spec path", "code": "invalid_spec_path"}, status=400
+            )
+        if is_sensitive_path(str(resolved)):
+            return web.json_response(
+                {"error": "access denied", "code": "access_denied"}, status=403
+            )
+        spec_path = str(resolved)
     try:
         plan_coro = state.task_runner.plan(
             input_text=input_text,
@@ -536,6 +751,7 @@ async def api_taskrunner_plan(request: web.Request) -> web.Response:
             spec_path=spec_path,
             agent=agent,
             workspace_dir=workspace_dir,
+            session_key=origin,
         )
         state.task_runner._plan_task = asyncio.current_task()
         run = await plan_coro
@@ -573,6 +789,20 @@ async def api_taskrunner_plan(request: web.Request) -> web.Response:
 async def api_taskrunner_plan_cancel(request: web.Request) -> web.Response:
     """POST /api/taskrunner/plan/cancel — cancel running plan decomposition."""
     state: DashboardState = request.app["state"]
+    if request.get("internal_auth") is True:
+        _, refusal = await _taskrunner_request_origin(request)
+        if refusal is not None:
+            return refusal
+        from kiro_crew.member_memory_auth import private_memory_boundaries_active
+
+        if await asyncio.to_thread(private_memory_boundaries_active):
+            return web.json_response(
+                {
+                    "error": "Shared planning cancellation requires the owner dashboard.",
+                    "code": "task_scope_denied",
+                },
+                status=403,
+            )
     if state.task_runner:
         state.task_runner.cancel_plan()
     return web.json_response({"ok": True})
@@ -584,6 +814,9 @@ async def api_taskrunner_update_plan(request: web.Request) -> web.Response:
     if not state.task_runner:
         return web.json_response({"error": "task runner not available"}, status=400)
     task_id = request.match_info["task_id"]
+    refusal = await _taskrunner_run_refusal(request, state.task_runner, task_id)
+    if refusal is not None:
+        return refusal
     body, body_err = await read_bounded_json(request, max_bytes=None)
     if body_err is not None:
         return body_err
@@ -623,6 +856,9 @@ async def api_taskrunner_execute_plan(request: web.Request) -> web.Response:
     if not state.task_runner:
         return web.json_response({"error": "task runner not available"}, status=400)
     task_id = request.match_info["task_id"]
+    refusal = await _taskrunner_run_refusal(request, state.task_runner, task_id)
+    if refusal is not None:
+        return refusal
     body, body_err = await read_bounded_json(request, allow_absent=True)
     if body_err is not None:
         return body_err
@@ -659,6 +895,9 @@ async def api_taskrunner_from_chat(request: web.Request) -> web.Response:
     state: DashboardState = request.app["state"]
     if not state.task_runner:
         return web.json_response({"error": "task runner not available"}, status=400)
+    origin, refusal = await _taskrunner_request_origin(request)
+    if refusal is not None:
+        return refusal
     body, body_err = await read_bounded_json(request, max_bytes=None)
     if body_err is not None:
         return body_err
@@ -669,6 +908,9 @@ async def api_taskrunner_from_chat(request: web.Request) -> web.Response:
         return web.json_response({"error": "steps array required"}, status=400)
     try:
         if task_id:
+            refusal = await _taskrunner_run_refusal(request, state.task_runner, task_id)
+            if refusal is not None:
+                return refusal
             run = await state.task_runner.update_plan(task_id, steps)
         else:
             while True:
@@ -692,6 +934,13 @@ async def api_taskrunner_from_chat(request: web.Request) -> web.Response:
             )
             state.task_runner._runs[new_id] = run
             try:
+                if origin:
+                    from kiro_crew.context import inherit_session_memory
+
+                    await inherit_session_memory(
+                        state.task_runner._ctx, origin, f"taskrunner:{new_id}:runtime"
+                    )
+                    state.task_runner._run_session_keys[new_id] = origin
                 await state.task_runner._workflow_begin(run)
                 run = await state.task_runner.update_plan(new_id, steps)
             except BaseException:
@@ -825,6 +1074,9 @@ async def _run_refine(state: DashboardState, user_input: str) -> None:
 async def api_taskrunner_refine(request: web.Request) -> web.Response:
     """POST /api/taskrunner/refine — start background spec generation from user input."""
     state: DashboardState = request.app["state"]
+    refusal = await _private_refine_refusal(request)
+    if refusal is not None:
+        return refusal
     body, body_err = await read_bounded_json(request, max_bytes=None)
     if body_err is not None:
         return body_err
@@ -851,6 +1103,9 @@ async def api_taskrunner_refine(request: web.Request) -> web.Response:
 async def api_taskrunner_refine_status(request: web.Request) -> web.Response:
     """GET /api/taskrunner/refine — poll refine progress."""
     state: DashboardState = request.app["state"]
+    refusal = await _private_refine_refusal(request)
+    if refusal is not None:
+        return refusal
     return web.json_response(
         {
             "status": state._refine_status,
@@ -865,6 +1120,9 @@ async def api_taskrunner_refine_status(request: web.Request) -> web.Response:
 async def api_taskrunner_refine_cancel(request: web.Request) -> web.Response:
     """POST /api/taskrunner/refine/cancel — cancel running refine."""
     state: DashboardState = request.app["state"]
+    refusal = await _private_refine_refusal(request)
+    if refusal is not None:
+        return refusal
     if state._refine_task and not state._refine_task.done():
         state._refine_task.cancel()
     return web.json_response({"ok": True})
@@ -873,6 +1131,9 @@ async def api_taskrunner_refine_cancel(request: web.Request) -> web.Response:
 async def api_taskrunner_refine_answer(request: web.Request) -> web.Response:
     """POST /api/taskrunner/refine/answer — answer a clarifying question."""
     state: DashboardState = request.app["state"]
+    refusal = await _private_refine_refusal(request)
+    if refusal is not None:
+        return refusal
     body, body_err = await read_bounded_json(request, max_bytes=None)
     if body_err is not None:
         return body_err

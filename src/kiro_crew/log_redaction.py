@@ -22,9 +22,9 @@ carry locals no text scan can bound.
 The trade this makes explicit: redaction inspects the RENDERED
 text, never the internals of the ``args`` objects themselves, so a structured
 handler that serializes arg objects directly (attribute dumps, JSON) can emit
-content the text scan never saw. That limitation existed before too — the scan
-has never looked inside objects — but previously such records were destroyed
-wholesale as collateral. Preservation also moves rendering from creation time
+content the text scan never saw. That limitation is inherent — the scan does not
+look inside objects — and the alternative is destroying such records wholesale as
+collateral. Preservation also moves rendering from creation time
 to emit time: an arg object whose ``str()`` reads live state, or one mutated
 before a ``QueueHandler`` drains, can emit text the creation-time scan never
 saw. Both halves of the trade are accepted deliberately in favor of keeping

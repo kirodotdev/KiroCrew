@@ -328,7 +328,7 @@ class TestLifecycle:
     async def test_close_closes_session_even_when_task_died_with_a_bug(self) -> None:
         """A task already dead from an uncaught, non-CancelledError exception
         makes ``task.cancel()`` a no-op, and re-``await``ing it re-raises that
-        exception -- which must not skip the session close (issue #4627)."""
+        exception -- which must not skip the session close."""
         client = _make_client()
         session = FakeSession()
         client._session = session  # type: ignore[assignment]

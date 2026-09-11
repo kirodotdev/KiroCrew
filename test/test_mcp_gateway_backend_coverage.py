@@ -227,8 +227,8 @@ class TestFrameHelpers:
     def test_strip_caller_meta_also_removes_a_forged_TENANT_block(self) -> None:
         """The nonce decides which namespace an unnamed co-tenant lands in.
 
-        A stub allowed to supply its own would pick a PEER's namespace — #5322's
-        collision chosen instead of accidental — so the nonce is stripped on the
+        A stub allowed to supply its own would pick a PEER's namespace — a chosen
+        collision rather than an accidental one — so the nonce is stripped on the
         same trust boundary as the identity, by the same function, on every
         forwarded frame.
         """
@@ -401,6 +401,38 @@ class TestAttachDetachAndAccounting:
 
 
 class TestForwardFromStub:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("proof", ["trusted.signature", "", None])
+    async def test_only_current_gateway_member_proof_reaches_backend(self, proof) -> None:
+        from kiro_crew.member_memory_auth import PROOF_META_KEY
+
+        backend = _make_backend()
+        backend.supports_caller_identity = True
+        caller = None if proof is None else CallerContext(
+            session_key="reviewer", from_gateway=True, member_memory_proof=proof,
+        )
+        msg = {
+            "method": "tools/call", "id": 23,
+            "params": {"name": "memory_recall", "_meta": {
+                CALLER_META_KEY: {
+                    "schemaVersion": 1, "sessionKey": "victim", PROOF_META_KEY: "forged.signature",
+                },
+                "progressToken": "visible-progress",
+            }},
+        }
+        await backend.forward_from_stub("s1", msg, caller=caller)
+        meta = _frames(backend)[0]["params"]["_meta"]
+        parsed = CallerContext.from_meta(meta)
+        if caller is None:
+            assert parsed is None
+        else:
+            assert parsed is not None
+            assert parsed.session_key == "reviewer"
+            assert parsed.member_memory_proof == proof
+        assert "forged.signature" not in json.dumps(meta)
+        assert meta["progressToken"] == "visible-progress"
+        assert "forged.signature" in json.dumps(msg)
+
     @pytest.mark.asyncio
     async def test_dead_backend_raises_backend_gone(self) -> None:
         backend = _make_backend()
@@ -1768,8 +1800,8 @@ class TestRouteBackendLine:
     async def test_replay_grant_for_a_detached_stub_releases_the_lease(self) -> None:
         """Detach cannot see a sentinel-owned replay pending, so the response
         arm must catch the mid-replay disconnect itself: a grant for a stub
-        that is no longer attached is released, never recorded against the
-        dead UUID (which would pin the lease to a stub that cannot drain it)."""
+        that is already detached is released, never recorded against the dead
+        UUID (which would pin the lease to a stub that cannot drain it)."""
         backend = _make_backend()
         await backend.attach_stub("s1")
         await backend.attach_stub("s2")
@@ -2372,8 +2404,8 @@ class TestSubscriptionResponseHardening:
     async def test_grant_commits_every_rider_before_replies(self) -> None:
         """The coalesced grant commits the forwarder AND every rider before
         any reply: a mid-loop detach that empties the entry would otherwise
-        delete it from the table, stranding later riders in a stale set
-        alias that no longer routes."""
+        delete it from the table, stranding later riders in a stale set alias
+        that routes nowhere."""
         backend = _make_backend()
         s1_inbox = await backend.attach_stub("s1")
         s2_inbox = await backend.attach_stub("s2")
@@ -3329,11 +3361,11 @@ class TestSubscriptionResponseHardening:
 
     @pytest.mark.asyncio
     async def test_respawn_capture_survives_backend_death(self) -> None:
-        """The backend-gone cleanup clears the pending table — previously
-        erasing an in-flight replay's only record, so a replacement dying
-        before its replay responses arrived left the NEXT respawn's capture
-        empty and the subscription permanently dark. Death now preserves the
-        replay-target URIs for the capture. A rekey-evicted replay
+        """The backend-gone cleanup clears the pending table, which is an
+        in-flight replay's only record: erase it and a replacement dying before
+        its replay responses arrive leaves the NEXT respawn's capture empty and
+        the subscription permanently dark. Death preserves the replay-target URIs
+        for the capture. A rekey-evicted replay
         (``replay_stub`` scoped to ``""``) is correctly NOT preserved."""
         backend = _make_backend()
         await backend.attach_stub("s1")
@@ -4474,7 +4506,7 @@ class TestCallMetrics:
 
 
 class TestBackendTmpContainment:
-    """Issue #5064: spawn injects a contained temp dir; shutdown reclaims it."""
+    """Spawn injects a contained temp dir; shutdown reclaims it."""
 
     @pytest.mark.asyncio
     async def test_spawn_contains_temp_under_managed_root(

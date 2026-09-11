@@ -1,13 +1,13 @@
-"""Tests for the first-run cron tab pre-create (ensure_cron_slot, issue #8336).
+"""Tests for the first-run cron tab pre-create (ensure_cron_slot).
 
-The result injection used to be the ONLY creator site for a ``cron-{job.id}``
-dashboard slot, and it runs after a turn completes — so during a brand-new
-job's FIRST run the tab did not exist. Session-control caller identity walks
-the live slot table (``caller_slot_key``), so every verb a first run called
-refused with ``caller_unidentified``; the dashboard-surface registry had the
-same first-run hole. These tests pin the pre-create path and the invariant the
-issue named explicitly: the hydration must MOVE with the link, so the
-injection's unlink guard stays an idempotent no-op after a pre-create.
+Result injection is otherwise the ONLY creator site for a ``cron-{job.id}``
+dashboard slot, and it runs after a turn completes — so without a pre-create a
+brand-new job's FIRST run has no tab. Session-control caller identity walks the
+live slot table (``caller_slot_key``), so every verb a first run calls would
+refuse with ``caller_unidentified``; the dashboard-surface registry has the same
+first-run hole. These tests pin the pre-create path and the invariant: the
+hydration must MOVE with the link, so the injection's unlink guard stays an
+idempotent no-op after a pre-create.
 
 The state/job fakes mirror test_dashboard_cron_to_chat.py's, plus ``get_slot``
 and ``has_slot`` defined as REAL functions over the same dict: on a bare
@@ -21,6 +21,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from kiro_crew.cron import CronJob
 from kiro_crew.dashboard.cron_inject import (
     ensure_cron_slot,
     inject_cron_result_to_dashboard,
@@ -90,6 +91,8 @@ def _make_job(job_id="job42", name="nightly-sweep", persistent=True, hidden=Fals
     job.id = job_id
     job.name = name
     job.agent_id = ""
+    job.member_id = ""
+    job.memory_store = ""
     job.persistent_session = persistent
     job.hide_in_chat = hidden
     return job
@@ -97,8 +100,33 @@ def _make_job(job_id="job42", name="nightly-sweep", persistent=True, hidden=Fals
 
 class TestEnsureCronSlot:
     @pytest.mark.asyncio
+    async def test_member_identity_is_available_at_start_and_retained_at_delivery(self):
+        state = _make_state()
+        create_slot = state.get_or_create_slot
+        state.get_or_create_slot = MagicMock(wraps=create_slot)
+        job = CronJob(
+            id="member-job",
+            name="daily report",
+            message="report",
+            agent_id="kirocrew",
+            member_id="writer",
+            memory_store="writer-private",
+        )
+
+        await ensure_cron_slot(state, job)
+
+        slot = state.get_slot("cron-member-job")
+        assert slot.memory_store == "writer-private"
+        assert slot.linked_session_key == "cron:member-job"
+        assert state.get_or_create_slot.call_args.kwargs["agent"] == "writer"
+        inject_cron_result_to_dashboard(state, job, "report ready", history=None)
+        assert state.get_slot("cron-member-job") is slot
+        assert slot.memory_store == "writer-private"
+        state.conversation_log.read_messages.assert_called_once_with("cron:member-job")
+
+    @pytest.mark.asyncio
     async def test_first_run_tab_exists_with_identity_before_any_result(self):
-        """The core #8336 fix: tab + link + registry row exist at run start."""
+        """Tab + link + registry row exist at run start."""
         state = _make_state()
         job = _make_job()
 

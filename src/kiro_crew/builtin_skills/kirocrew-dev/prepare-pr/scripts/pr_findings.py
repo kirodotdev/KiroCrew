@@ -161,15 +161,15 @@ DEFAULT_MARKER_AUTHORS = _review_contract.DEFAULT_MARKER_AUTHORS
 DEFAULT_MARKER_BINDINGS = _review_contract.DEFAULT_MARKER_BINDINGS
 _COMMENT_KEY_RE = _review_contract._COMMENT_KEY_RE
 FINDING_RE = _review_contract.FINDING_RE
-# The disposition names below have no caller in THIS script since #6658 moved
-# the listing out of main(): the rule is evaluated once, by pr_status.py, for
-# both the local gate and pr-readiness.yml's server-side enforcement, so
-# re-listing it on every drill-in only re-fetched the comment list and re-spent
-# one permission call per author to print what the same loop already printed.
+# The disposition names below have no caller in THIS script: the rule is
+# evaluated once, by pr_status.py, for both the local gate and
+# pr-readiness.yml's server-side enforcement, so re-listing it on every drill-in
+# would only re-fetch the comment list and re-spend one permission call per
+# author to print what the same loop already prints.
 # They stay exported because the compatibility seam is pinned by
 # test_prepare_pr_findings.py: a caller that copied this script keeps resolving
 # them here, and both entrypoints resolve them from the one shared contract, so
-# the two can no longer drift into two different rules.
+# the two cannot drift into two different rules.
 DISPOSITION_PREFIX = _review_contract.DISPOSITION_PREFIX
 DISPOSITION_MARKER_RE = _review_contract.DISPOSITION_MARKER_RE
 SPAN_CLAIM_RE = _review_contract.SPAN_CLAIM_RE

@@ -100,17 +100,16 @@ class TestReaperUsesActiveSessionKey:
 
 
 class TestCronCallbackDeferredResetPreservesActiveKey:
-    """Regression for review-bot comment on rev 2 (post 5).
+    """_cron_callback must not clear the active session key when reset is deferred.
 
-    Before this fix, _cron_callback cleared the active session key in its
-    finally block unconditionally — even when session reset was deferred
-    because subagents were still running. That left the ephemeral session
-    alive with no registration, so if the reaper fired during the deferred
-    window it would target the stable key f"cron:{job.id}" and miss the
+    When session reset is deferred because subagents are still running,
+    clearing the active session key in the finally block would leave the
+    ephemeral session alive with no registration, so a reaper firing during the
+    deferred window targets the stable key f"cron:{job.id}" and misses the
     actual ephemeral session f"cron:{job.id}:{run_id}", failing to kill
     the hung child.
 
-    Fix: only clear on the non-deferred branch. _subagent_done clears
+    So it clears only on the non-deferred branch; _subagent_done clears
     after the real reset completes.
 
     This test inspects the gateway source to pin the ordering invariant:

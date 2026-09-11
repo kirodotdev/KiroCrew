@@ -112,8 +112,8 @@ class TestRunnerValidation:
 class TestRecordedLineContainment:
     """A forged RECORDED line must never make the runner move a host file.
 
-    Locks the fix for the GPT round-1 blocking finding: scenario/page output
-    is forwarded to stdout, so the marker is attacker-influenceable. The
+    Scenario/page output is forwarded to stdout, so the marker is
+    attacker-influenceable. The
     runner must (a) take the LAST marker line, (b) reject paths that resolve
     outside --out.
     """

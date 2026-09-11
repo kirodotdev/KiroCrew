@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { createPortal } from 'react-dom'
 import { Brain, ChevronDown, Lock, Plus, X } from 'lucide-react'
@@ -38,6 +38,23 @@ interface Props {
    * on agent B and the next edit writes them to B's spec.
    */
   onChange: (agentName: string, skills: string[]) => void
+  /**
+   * Resolves the template the edit should actually be written to, called just
+   * before each save. The Agent Template pane uses it for blueprint semantics:
+   * editing from a crew forks a private copy first and returns the copy's
+   * name, so the shared template file is never mutated. Omitted, the save
+   * writes to `agentName` (the Agent Templates tab's direct-edit behavior).
+   */
+  beforeSave?: () => Promise<string>
+  /**
+   * A shared instant-save chain each save serializes onto. The owner can then
+   * drain ONE promise before an action that snapshots the spec file (publish)
+   * and know every queued edit has landed. Optional — omitted, saves run
+   * unchained (the Agent Templates tab has no such action).
+   */
+  pendingChain?: React.MutableRefObject<Promise<unknown>>
+  /** Reports whether a save is in flight, so the owner can fence publish. */
+  onSavePending?: (pending: boolean) => void
 }
 
 /**
@@ -48,7 +65,7 @@ interface Props {
  * agent's `resources`. Each edit saves immediately (same interaction model as
  * the model picker on this page) — there is no separate Save button to forget.
  */
-export default function AgentSkillsEditor({ agentName, skills, unmanaged = [], onChange }: Props) {
+export default function AgentSkillsEditor({ agentName, skills, unmanaged = [], onChange, beforeSave, pendingChain, onSavePending }: Props) {
   const [error, setError] = useState('')
   const btnRef = useRef<HTMLButtonElement>(null)
 
@@ -80,13 +97,33 @@ export default function AgentSkillsEditor({ agentName, skills, unmanaged = [], o
   const save = useMutation({
     // The agent name travels WITH the request so the response can be matched to
     // the agent it was issued for, not to whatever is selected when it lands.
-    mutationFn: ({ agent, next }: { agent: string; next: string[] }) =>
-      api.agentPatch(agent, { skills: next }),
+    // `beforeSave` may redirect the write to a just-forked private copy; the
+    // resolved target is what onChange reports, so the caller tracks the copy.
+    mutationFn: async ({ agent, next }: { agent: string; next: string[] }) => {
+      // Chained onto the caller's shared instant-save chain when one is
+      // provided: an action that snapshots the file (publish) can then drain
+      // ONE promise and know every queued edit — model pick or skill toggle —
+      // has landed first.
+      const run = (pendingChain?.current ?? Promise.resolve())
+        .catch(() => undefined)
+        .then(async () => {
+          const target = beforeSave ? await beforeSave() : agent
+          const res = await api.agentPatch(target, { skills: next })
+          return { res: res as { skills?: string[] }, target }
+        })
+      if (pendingChain) pendingChain.current = run
+      return run
+    },
     onMutate: () => setError(''),
-    onSuccess: (res: { skills?: string[] }, { agent, next }) =>
-      onChange(agent, res?.skills ?? next),
+    onSuccess: ({ res, target }, { next }) => onChange(target, res?.skills ?? next),
     onError: (e: unknown) => setError(e instanceof Error ? e.message : String(e)),
   })
+
+  // Reported as an effect, not inline in render: the parent uses it to fence
+  // actions (publish) that must not run over an in-flight skill save.
+  useEffect(() => {
+    onSavePending?.(save.isPending)
+  }, [save.isPending, onSavePending])
 
   const add = (key: string) => {
     setOpen(false)

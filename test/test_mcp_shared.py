@@ -601,8 +601,8 @@ class TestCallToolWithLoggingKind:
 
 # --- run_mcp_stdio_loop busy-queue behavior ----------------------------------
 #
-# A tools/call arriving while a worker is busy used to be silently dropped:
-# no response was ever written, so the client waited forever. These tests
+# A tools/call arriving while a worker is busy must not be silently dropped:
+# with no response ever written, the client waits forever. These tests
 # drive the real loop over a pipe-backed stdin (select() needs a real fd)
 # and assert queued calls are answered FIFO once the worker frees. The
 # worker-thread + select() interleave is POSIX-only (the Windows loop
@@ -791,7 +791,7 @@ class TestStdioLoopBusyQueue:
             harness.close()
 
 
-# --- Caller-identity extension through the stdio loop (PR #422 round 18) -----
+# --- Caller-identity extension through the stdio loop -----------------------
 
 
 def _initialize(req_id) -> dict:
@@ -821,10 +821,77 @@ class TestStdioLoopCallerIdentity:
     def setup_method(self):
         mcp_shared._use_content_length = False
 
+    def test_tool_policy_uses_only_the_current_request_proof(self, monkeypatch):
+        from kiro_crew.mcp_caller import CallerContext, build_caller_meta
+
+        seen = []
+        harness = _LoopHarness(monkeypatch, lambda _name, _args: "ok")
+
+        def policy(session="", *, member_memory_proof=""):
+            seen.append((session, member_memory_proof))
+            return set()
+
+        monkeypatch.setattr(mcp_shared, "_resolve_excluded_tools", policy)
+        try:
+            for req_id, method, session, proof in (
+                (1, "tools/list", "dashboard:alice", "alice.list-proof"),
+                (2, "tools/call", "dashboard:bob", "bob.call-proof"),
+                (3, "tools/list", "dashboard:global", ""),
+            ):
+                msg = _tools_call(req_id, "echo")
+                msg["method"] = method
+                msg["params"]["_meta"] = build_caller_meta(
+                    CallerContext(session_key=session, from_gateway=True, member_memory_proof=proof)
+                )
+                harness.send(msg)
+                assert harness.wait_for(lambda: len(harness.responses) >= req_id)
+            assert seen == [
+                ("dashboard:alice", "alice.list-proof"),
+                ("dashboard:bob", "bob.call-proof"),
+                ("dashboard:global", ""),
+            ]
+        finally:
+            harness.close()
+
+    @pytest.mark.skipif(platform_compat.IS_WINDOWS, reason="select interleave uses a POSIX pipe")
+    def test_listing_while_busy_does_not_borrow_the_running_members_proof(self, monkeypatch):
+        from kiro_crew.mcp_caller import CallerContext, build_caller_meta
+
+        call, started, release = _slow_then_echo()
+        seen = []
+        harness = _LoopHarness(monkeypatch, call)
+
+        def policy(session="", *, member_memory_proof=""):
+            seen.append((session, member_memory_proof))
+            return set()
+
+        monkeypatch.setattr(mcp_shared, "_resolve_excluded_tools", policy)
+        try:
+            for req_id, method, session, proof in (
+                (1, "tools/call", "dashboard:alice", "alice.current-proof"),
+                (2, "tools/list", "dashboard:bob", "bob.current-proof"),
+            ):
+                msg = _tools_call(req_id, "slow")
+                msg["method"] = method
+                msg["params"]["_meta"] = build_caller_meta(
+                    CallerContext(session_key=session, from_gateway=True, member_memory_proof=proof)
+                )
+                harness.send(msg)
+                if req_id == 1:
+                    assert started.wait(timeout=5)
+            assert harness.wait_for(lambda: any(row[0] == 2 for row in harness.responses))
+            assert seen == [
+                ("dashboard:alice", "alice.current-proof"),
+                ("dashboard:bob", "bob.current-proof"),
+            ]
+        finally:
+            release.set()
+            harness.close()
+
     def test_initialize_advertises_capability_when_opted_in(self, monkeypatch):
-        # GPT 5.6 round 18 HIGH: without the advertisement gatewayd treats
-        # the backend as single-session and never injects the caller block,
-        # so the whole per-call identity path would be dead code.
+        # Without the advertisement gatewayd treats the backend as
+        # single-session and never injects the caller block, which would make
+        # the whole per-call identity path dead code.
         harness = _LoopHarness(
             monkeypatch, lambda n, a: "ok", {"advertise_caller_identity": True}
         )
@@ -871,7 +938,7 @@ class TestStdioLoopCallerIdentity:
             harness.close()
 
     def test_tool_sees_the_tenant_nonce_WITHOUT_an_identity(self, monkeypatch):
-        """#5322: the separator arrives even when the identity does not.
+        """The separator arrives even when the identity does not.
 
         This is the frame an unnamed co-tenant of a pooled backend receives. The
         nonce must reach the tool (it is what per-tenant state is keyed on when
@@ -921,9 +988,9 @@ class TestStdioLoopCallerIdentity:
             harness.close()
 
     def test_excluded_tool_audit_attributes_caller_session(self, monkeypatch):
-        # GPT 5.6 round 18 MEDIUM: in a shared backend the env var attributes
-        # rejection audits to "mcp" or the wrong session — the parsed caller
-        # identity must win when present.
+        # In a shared backend the env var attributes rejection audits to "mcp"
+        # or the wrong session, so the parsed caller identity must win when
+        # present.
         harness = _LoopHarness(monkeypatch, lambda n, a: "ok")
         monkeypatch.setattr(
             mcp_shared, "_resolve_excluded_tools", lambda *a: {"blocked"}
@@ -958,8 +1025,7 @@ class TestStdioLoopCallerIdentity:
 
 
 class TestPerSessionToolPolicy:
-    """Pooled backends must not bleed one session's policy into another
-    (GPT 5.6 PR #422 round 20)."""
+    """Pooled backends must not bleed one session's policy into another."""
 
     def _reset(self):
         # Full module-state reset: the negative-cache timestamps are shared
@@ -976,6 +1042,39 @@ class TestPerSessionToolPolicy:
 
     def teardown_method(self):
         self._reset()
+
+    @pytest.mark.parametrize("proof", ["signed.current-proof", "", "bad\r\nheader"])
+    def test_policy_http_forwards_current_proof_without_retaining_it(self, monkeypatch, proof):
+        from types import SimpleNamespace
+
+        requests = []
+
+        def policy(req, timeout=0):
+            requests.append(dict(req.header_items()))
+            return io.BytesIO(b'{"exclude":["blocked"]}')
+
+        monkeypatch.setattr(mcp_shared, "loopback_urlopen", policy)
+        monkeypatch.setattr(mcp_shared, "read_local_secret", lambda _port: "internal")
+        monkeypatch.setattr(
+            mcp_shared.KiroCrewConfig,
+            "load",
+            classmethod(
+                lambda _cls: SimpleNamespace(dashboard=SimpleNamespace(url="http://localhost:5476"))
+            ),
+        )
+        assert mcp_shared._resolve_excluded_tools("dashboard:alice", member_memory_proof=proof) == {
+            "blocked"
+        }
+        assert mcp_shared._resolve_excluded_tools("dashboard:global") == {"blocked"}
+        assert requests[0]["X-session-key"] == "dashboard:alice"
+        assert requests[0].get("X-member-session-proof") == (
+            proof if proof == "signed.current-proof" else None
+        )
+        assert "X-member-session-proof" not in requests[1]
+        assert mcp_shared._excluded_tools_by_session == {
+            "dashboard:alice": {"blocked"},
+            "dashboard:global": {"blocked"},
+        }
 
     def test_cache_is_keyed_per_session(self, monkeypatch):
         calls: list = []

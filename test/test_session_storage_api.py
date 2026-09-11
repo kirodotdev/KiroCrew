@@ -892,11 +892,11 @@ class TestEmpty:
     ) -> None:
         """A list of names is not approval, so a failed snapshot cancels the delete.
 
-        This case used to dispatch anyway, on the reasoning that the caller had already
-        said WHICH batches and a missing snapshot only cost the progress bar its
-        denominator. That reading was wrong: the snapshot is what turns those names into
-        approval of the DIRECTORIES they pointed at, so dispatching without it deletes
-        whatever answers to the names by the time the worker runs. The failure is not
+        Dispatching anyway is wrong, even though the caller has already said WHICH
+        batches and a missing snapshot only costs the progress bar its
+        denominator: the snapshot is what turns those names into approval of the
+        DIRECTORIES they point at, so dispatching without it deletes whatever
+        answers to the names by the time the worker runs. The failure is not
         always benign either - a staged tree deep enough to exhaust descriptors arrives
         here as an exception, and writing into the trash is how it gets there.
 
@@ -1072,7 +1072,7 @@ class TestIndexConstruction:
 
 
 class TestTheReclaimRefreshIsCheapToCallPerSession:
-    """``move_to_trash`` calls ``refresh`` once per selected session (#7118).
+    """``move_to_trash`` calls ``refresh`` once per selected session.
 
     It has to, because a resume that only READS an old transcript writes nothing
     and is invisible to the mtime guard inside the move loop — the index is where

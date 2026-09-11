@@ -3,10 +3,10 @@ title: Security Conductor — proactive vulnerability discovery as a conductor u
 status: partial
 author: zejiangg
 created: 2026-09-07
-last-audited: 2026-09-08
-audited-at: acc99f217
+last-audited: 2026-09-10
+audited-at: f6d38741c
 doc-pr: 9195
-implementation-prs: [9270, 9271, 9273, 9362, 9332]
+implementation-prs: [9270, 9271, 9273, 9362, 9332, 9495, 9499, 9500, 9813]
 tracking-issues: []
 supersedes: []
 superseded-by: []
@@ -19,20 +19,28 @@ proactive vulnerability discovery as a supervised worker fleet: one auditor per 
 independent verifier per finding, and an optional fixer lane behind a human gate. The skill is the
 operating procedure of record; this document carries the intent and the decisions.
 
-**Status.** M0 is on main. The agent is registered — `kirocrew-security-conductor` in
+**Status.** M0 and M1 are on main. The agent is registered — `kirocrew-security-conductor` in
 `UNADVERTISED_AGENTS` (`src/kiro_crew/subagent.py`) with its installer
 `_install_security_conductor_agent` in `src/kiro_crew/agent.py`
 ([#9273](https://github.com/kirodotdev/KiroCrew/pull/9273)) — and the skill plus the first rules of
 engagement are on main as `src/kiro_crew/builtin_skills/security-conductor/SKILL.md` and
 `rules-of-engagement.json` ([#9271](https://github.com/kirodotdev/KiroCrew/pull/9271)), whose merge
-is the human review of the rules of engagement that M0 required as its exit criterion. M1 is half
-shipped: the SQLite findings ledger and its CLI landed as
+is the human review of the rules of engagement that M0 required as its exit criterion. M1 is
+complete: the SQLite findings ledger and its CLI landed as
 `src/kiro_crew/builtin_skills/security-conductor/scripts/ledger.py`
 ([#9270](https://github.com/kirodotdev/KiroCrew/pull/9270), with its test guard corrected in
-[#9362](https://github.com/kirodotdev/KiroCrew/pull/9362)); the three evaluator scripts —
-`scope_check.py`, `finding_entry.py`, `verify_finding.py` — are review-ready in open
-[PR #9332](https://github.com/kirodotdev/KiroCrew/pull/9332) and **not merged**, so nothing on main
-answers a scope question yet. M2 and M3 are unstarted.
+[#9362](https://github.com/kirodotdev/KiroCrew/pull/9362)); the three evaluator scripts
+`scope_check.py`, `finding_entry.py` and `verify_finding.py` merged
+([#9332](https://github.com/kirodotdev/KiroCrew/pull/9332)); the `golden_paths` table, its committed
+export `golden-paths.json` and `scripts/verify_fix.py` merged
+([#9500](https://github.com/kirodotdev/KiroCrew/pull/9500)); and `scripts/deny_diff.py` with its
+three-platform CI gate merged ([#9499](https://github.com/kirodotdev/KiroCrew/pull/9499)). What was
+left after those four was wiring rather than machinery, and it is what this document's own text
+already required: the skill has to cite `verify_fix.py` as the fixer lane's acceptance gate, the
+`forbidden` rules of engagement have to carry the cross-platform row, and the denial differential has
+to read the security-conductor's own corpus instead of a second fixture that could disagree with it.
+That wiring landed as [#9813](https://github.com/kirodotdev/KiroCrew/pull/9813). M2 and M3 are unstarted, so no pilot round has run and no fixer has been
+dispatched.
 
 ## What a security conductor is
 
@@ -88,9 +96,10 @@ The pattern facts were measured at `e992b7771`; the shipped-state facts were re-
   The security-conductor installer keeps the same shape.
 - The bundled-script half of the pattern is shipped for the pipeline conductor
   (`claim_preflight.py`, `fleet_probe.py`, `credit_spend.py` under
-  `src/kiro_crew/builtin_skills/pipeline-conductor/scripts/`) and half shipped for this one: only
-  `scripts/ledger.py` is on main under
-  `src/kiro_crew/builtin_skills/security-conductor/scripts/`.
+  `src/kiro_crew/builtin_skills/pipeline-conductor/scripts/`) and now for this one as well: all five
+  of `ledger.py`, `scope_check.py`, `finding_entry.py`, `verify_finding.py` and `verify_fix.py` are
+  on main under `src/kiro_crew/builtin_skills/security-conductor/scripts/`, beside the committed
+  `golden-paths.json` corpus.
 - **SQLite is this repository's established store for durable agent knowledge**, which is the pattern
   the findings ledger mirrors. `src/kiro_crew/memory.py` keeps `memory_index.db` beside the workspace
   config; `src/kiro_crew/vector_memory.py` keeps `memory.db` in WAL mode behind a `schema_version`
@@ -106,10 +115,9 @@ The pattern facts were measured at `e992b7771`; the shipped-state facts were re-
   `src/kiro_crew/security.py`, reached through `src/kiro_crew/platform/security_authority.py` from
   the PreToolUse gate in `src/kiro_crew/hooks.py`; webhook ingest in `src/kiro_crew/webhooks.py`;
   dashboard session and bearer handling in `src/kiro_crew/dashboard/token_auth.py`.
-- What this document proposes and main does **not** have at `acc99f217`: `scope_check.py`,
-  `finding_entry.py` and `verify_finding.py` (all three in open
-  [PR #9332](https://github.com/kirodotdev/KiroCrew/pull/9332)), `verify_fix.py`, `deny_diff.py`, the
-  `golden_paths` table, the pilot round, the retrospective lane and the fixer lane.
+- What this document proposes and main does **not** have at `f6d38741c`: the M2 pilot round, the
+  retrospective lane that rules on `policy_block` events, the harness that executes `flow` and
+  `cron` golden paths, and the M3 fixer lane. Every M1 script and both gates are on main.
 - The `security-assistance` (ARCC) skill the auditor brief depends on is **not** a builtin in this
   repository; it is an installed skill. The shipped skill resolves this by treating an absent script
   or skill as `UNKNOWN` rather than as permission, so the dependency is an environment precondition
@@ -482,9 +490,11 @@ waiting to be written.
   reported as in-scope, dedupe identity, verifier verdict mapping, append-only `verdicts`, an
   unapproved lesson never reaching a seed message, `verify_fix` failing closed on an unresolvable
   golden path, and `deny_diff` reporting a newly refused row on a deliberately over-wide test
-  pattern. **Ledger shipped** ([#9270](https://github.com/kirodotdev/KiroCrew/pull/9270)); evaluator
-  scripts review-ready in [#9332](https://github.com/kirodotdev/KiroCrew/pull/9332); golden paths,
-  `verify_fix` and `deny_diff` unstarted.
+  pattern. **Shipped**: the ledger ([#9270](https://github.com/kirodotdev/KiroCrew/pull/9270)), the
+  evaluator scripts ([#9332](https://github.com/kirodotdev/KiroCrew/pull/9332)), the golden-path
+  corpus and `verify_fix.py` ([#9500](https://github.com/kirodotdev/KiroCrew/pull/9500)), the
+  denial differential ([#9499](https://github.com/kirodotdev/KiroCrew/pull/9499)), and the wiring that
+  makes the fixer lane's acceptance criterion and the gate's corpus one thing ([#9813](https://github.com/kirodotdev/KiroCrew/pull/9813)).
 - **M2** — the pilot round on this repository, including the retrospective lane, plus the harness that
   executes `flow` and `cron` golden paths and promotes them from recorded to gating. Exit criteria:
   every round-1 finding carries a verifier verdict, the false-positive rate is recorded, the

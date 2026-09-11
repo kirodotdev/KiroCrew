@@ -150,15 +150,15 @@ def atomic_write_text(path: Path, content: str) -> None:
 
     Thin delegate to :func:`kiro_crew.atomic_write.atomic_write`, kept as a
     named function because it is the seam Dev Fleet's tests drive the staging
-    failure path through. The shared helper carries the same
-    ``mkstemp``-plus-rename shape this used to hand-roll, plus the Windows
+    failure path through. The shared helper carries the
+    ``mkstemp``-plus-rename shape this needs, plus the Windows
     sharing-violation rename retry and the ``except BaseException`` temp
-    cleanup that the local ``finally`` provided.
+    cleanup a hand-rolled ``finally`` would have to provide.
 
-    ``fsync`` stays off and no explicit *mode* is passed, so the drop-in lands
-    at the umask default exactly as ``Path.write_text`` left it. Encoding is
-    now pinned to UTF-8 rather than following the locale, which is what the
-    generated unit text (systemd reads it as UTF-8) always needed.
+    ``fsync`` stays off and no explicit *mode* is passed, so the write lands
+    at the umask default exactly as ``Path.write_text`` does. Encoding is
+    pinned to UTF-8 rather than following the locale, which is what the
+    generated unit text (systemd reads it as UTF-8) requires.
     """
     atomic_write(path, content)
 
@@ -690,9 +690,10 @@ class ForegroundBackend:
 
     On a host where neither systemd nor launchd can be driven (see
     :data:`FOREGROUND_ELIGIBLE`) the gateway is just a foreground/detached
-    process, and Make Live used to stage the live-target pointer and stop —
-    telling the operator to run ``kirocrew restart`` themselves. This backend
-    performs exactly that command FOR them, detached so it survives the death
+    process, with no manager to ask for a bounce: the fallback is for Make Live
+    to stage the live-target pointer and stop, telling the operator to run
+    ``kirocrew restart`` themselves. This backend performs exactly that command
+    FOR them, detached so it survives the death
     of the gateway it bounces, and otherwise reuses the CLI's whole
     kill-and-respawn path (lsof+SIGTERM the incumbent, wait, spawn a detached
     replacement that reads the staged pointer, poll ``/api/ready``) rather than
@@ -872,7 +873,7 @@ def backend(run_cmd: RunCmd, *, unit: Callable[[], str],
     globals, which keeps the existing test seams working: the dev_fleet tests
     drive platform detection by patching ``live.sys`` / ``live.shutil``, and
     a direct read here would silently escape those patches — the Linux paths
-    would then be "passing" tests that no longer exercise them.
+    would then be "passing" tests that do not exercise them.
 
     ``None`` is NOT "everything is fine, just hide the buttons" — callers must
     surface it as an explicit, reasoned unavailability (see

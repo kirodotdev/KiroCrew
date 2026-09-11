@@ -97,6 +97,22 @@ function readCachedModels(): ModelInfo[] | null {
  *  it. */
 for (const m of readCachedModels() ?? []) learnWindow(m.name, m.contextWindow ?? 0)
 
+/** Drop the last-good list. Called when `agent.acp_backend` changes: the cache
+ *  is keyed by nothing but time, so after a switch it still holds the PREVIOUS
+ *  backend's ids. If the new backend's first `/api/models` then fails (a cold
+ *  `--list-models` spawn past the gateway timeout is the common case), the
+ *  degraded path would serve that list and the picker would offer ids the new
+ *  backend rejects. Dropping it makes the degraded answer auto-only, which every
+ *  backend accepts, until the first live success rewrites the cache. */
+export function clearCachedModels(): void {
+  try {
+    if (typeof localStorage === 'undefined') return
+    localStorage.removeItem(MODELS_CACHE_KEY)
+  } catch {
+    /* storage disabled — nothing to drop */
+  }
+}
+
 /** Persist a live model list with a timestamp. Best-effort — storage errors
  *  (quota, disabled, SSR) are swallowed so caching never breaks the picker. */
 function writeCachedModels(models: ModelInfo[]): void {

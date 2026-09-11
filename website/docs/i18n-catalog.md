@@ -38,6 +38,17 @@ locale before matching `data-setting-label`, while the palette deliberately
 continues to index the stable English text. Run `npm run gen:settings` after
 changing a setting label or its translation key.
 
+That command writes **two** artifacts: the UI registry, and
+`src/kiro_crew/docs/settings-registry.generated.json` — the agent-facing
+enumeration bundled into the Python docs package, so the agent can answer "where
+is that setting?" with a working deep link. Both are byte-matched against a live
+extraction by `settingsRegistry.test.ts`, so regenerating is not optional. The
+JSON is where the English-label problem becomes visible outside the dashboard:
+each entry ships a prebuilt `route`, and that route highlights by
+`key:<configKey>` wherever the control exposes one, precisely because the id form
+resolves an English label against the rendered DOM and cannot match a translated
+dashboard.
+
 ## Catalog structure
 
 Catalogs live in `src/i18n/locales/`:

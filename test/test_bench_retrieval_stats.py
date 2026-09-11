@@ -720,10 +720,9 @@ def test_unchanged_and_inconclusive_are_different_words_for_the_same_zero() -> N
     a zero really is no change, while two noisy medians landing on the same value is
     the noise band containing zero.
 
-    This test previously asserted the opposite for the noisy case, and its own
-    docstring argued against that assertion — zero is the value most likely to
-    appear by chance when the true effect is smaller than the band, so calling it
-    "unchanged" hands out the most confident word available for the least
+    Calling the noisy zero "unchanged" would be wrong: zero is the value most
+    likely to appear by chance when the true effect is smaller than the band, so
+    that word hands out the most confident reading available for the least
     informative result.
     """
     exact_zero = _cmp((0.40,), (0.40,), deterministic=True, band=0.10)

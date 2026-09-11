@@ -7,8 +7,8 @@ every route below is asserted twice: the non-owner is refused, and the owner
 reaches the handler's own outcome.
 
 Ordering is asserted too, because a gate placed below a referential guard leaks
-what it was added to protect. Before this change (#6470) any authenticated
-dashboard session reached all four -- including the token minted for an
+what it was added to protect. Without the gate, any authenticated
+dashboard session reaches all four -- including the token minted for an
 allow-listed Slack user by ``!dashboard``, which carries an empty app identity
 and so is authenticated but is not the owner.
 

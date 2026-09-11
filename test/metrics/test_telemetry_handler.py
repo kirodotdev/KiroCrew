@@ -108,8 +108,8 @@ def test_aggregate_counts_only_the_end_to_end_startup_point(tmp_path: Path):
 def test_aggregate_kiro_startup_counts_as_cold(tmp_path: Path):
     """spawned=True on the kiro path must land in cold, not warm.
 
-    Regression guard: the kiro emit previously carried no ``spawned`` attribute,
-    so bool(None) filed every cold start as warm and cold read as empty forever.
+    The attribute is what splits cold from warm: without it bool(None) files
+    every cold start as warm and cold reads as empty forever.
     """
     startup = {
         "name": "kirocrew.session.startup.duration",
@@ -1169,8 +1169,8 @@ def test_every_turn_outcome_label_is_classified_fault_or_excluded():
     # "ok" succeeded; "tool_stall"/"stale_recover" are recovered-in-place stalls
     # tracked under kirocrew.watchdog.recovery.outcome; "cancelled" is the
     # operator pressing Stop, so counting it would report a deliberate user
-    # action as the system failing (it used to fold into "error" and did exactly
-    # that); "unclassified" is a turn whose surface had no stop reason to give,
+    # action as the system failing — which is what folding it into "error"
+    # does; "unclassified" is a turn whose surface had no stop reason to give,
     # so calling it a fault would invent one for every clean background turn. Add
     # a new label here or to _TERMINAL_FAULT_OUTCOMES — never leave it
     # unclassified.
@@ -1268,7 +1268,7 @@ def test_total_count_is_the_full_population_not_the_group_count():
 
 
 def test_other_histograms_report_dropped_generations(tmp_path: Path):
-    """Regression: the ``other`` surface used to omit other_generations."""
+    """The ``other`` surface must report other_generations, not omit it."""
     acquire = {
         "name": "kirocrew.mcp.backend.acquire.duration",
         "data": {

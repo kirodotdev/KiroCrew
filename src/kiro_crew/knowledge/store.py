@@ -7,7 +7,9 @@ import json
 import logging
 import threading
 from collections import defaultdict
+from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
@@ -32,11 +34,49 @@ logger = logging.getLogger(__name__)
 AUTO_ADDED_PROP = "auto_added"
 
 # Marker recording that a row Kiro Crew registered itself has been adopted by the
-# user, the feature that registered it no longer existing. Written by
+# user (the auto-registration feature that created such rows is gone). Written by
 # `retire_auto_registered_folder` when the scan funnel refuses such a row, and by the
 # confirm and resume endpoints when the user adopts one; its presence is what keeps a
 # later refusal from undoing that decision.
 AUTO_REGISTRATION_RETIRED_PROP = "auto_registration_retired"
+
+
+@dataclass(frozen=True)
+class SourceContentStats:
+    """One source's share of the admitted content.
+
+    ``source_id`` is None for the bucket holding items that belong to no source.
+    The store deliberately does not spell that bucket with the dashboard's
+    ``__none__`` wire sentinel: that string is a contract between the items API
+    and the SPA, and a third copy down here in the store would have to change
+    with them while nothing in SQLite needs it.
+    """
+
+    source_id: str | None
+    name: str
+    documents: int
+    items: int
+
+
+@dataclass(frozen=True)
+class ContentStats:
+    """Admitted knowledge content: totals plus the same numbers per source.
+
+    ``sources`` counts registered sources, so it excludes the sourceless bucket
+    that ``per_source`` may carry. Both totals reconcile against ``per_source``
+    exactly -- summing its ``items`` gives ``items`` and summing its
+    ``documents`` gives ``documents`` -- which is the property that makes these
+    numbers auditable, and the reason membership here is plain ownership
+    (``items.source_id``) rather than the ownership-OR-location rule
+    ``knowledge_list_sources`` uses to estimate what a scope would yield. Under
+    that rule an item surviving a cross-source dedup collapse counts for two
+    sources and the per-source numbers over-sum the totals.
+    """
+
+    sources: int
+    documents: int
+    items: int
+    per_source: tuple[SourceContentStats, ...]
 
 
 def is_auto_registered(props: dict) -> bool:
@@ -64,24 +104,38 @@ _WALKING_SOURCE_TYPES = ("local_folder", "obsidian_vault")
 
 # Every query in this module funnels through the ``db`` property, so one check
 # there covers every caller at any stack depth -- including the ones a lexical
-# ``async def`` scan cannot see, which is why this guard exists (#7078, the
-# interprocedural half of #3057).
+# ``async def`` scan cannot see, which is why this guard exists.
 #
 # Both narrowings below are temporary and exist for the same reason: this store
-# still has 85 recorded on-loop callers -- the whole of
-# ``.github/sync-io-in-async-baseline.txt``, all of it knowledge paths, owned by
-# the cleanup at #7019.
+# still has on-loop callers left -- the lines in
+# ``.github/sync-io-in-async-baseline.txt``, all of it knowledge paths.
+#
+# ``dashboard/handlers/knowledge.py`` takes the store through a worker for every
+# take of its OWN, endpoints and background tasks alike. It is not the whole
+# story, so the claim is scoped deliberately: the connector branch of
+# ``sync_source`` awaits ``SyncScheduler.sync_source``, which writes the row
+# inline from an async method (``sync.py``'s ``update_source`` after a successful
+# fetch, and ``_record_failure``), so a handler still reaches the store on the
+# loop ONE FRAME DOWN. That path is interprocedural backlog, invisible to the
+# lexical baseline, and stays with the cleanup rather than with this file.
+#
+# Two takes are left in the lexical baseline. The watcher's self-heal rebuild
+# finalizes its job row inline on its cancellation path, where an interrupted
+# ``to_thread`` could drop the write -- ``start_rebuild_job`` sweeps a stale
+# 'processing' row to 'abandoned', so the single-flight guard recovers either
+# way. And ``dashboard/state.py`` builds this store lazily, whose migrations run
+# under ``allow_on_loop()`` below.
 #
 # * ``strict_env=STORE_STRICT_ENV`` keeps this store off the SHARED
 #   ``KIROCREW_STRICT_ON_LOOP_PERSIST`` switch, which ``setup.py``'s ``test_e2e``
 #   and ``ci.yml`` already export into the e2e gateway for history's clean
-#   surface. On the shared flag, the on-loop ``/api/knowledge/stats`` and
-#   ``/api/knowledge/namespaces`` handlers would raise and 500 the e2e run.
+#   surface. On the shared flag, the watcher's finalize would raise inside the
+#   e2e gateway.
 # * ``dev_mode_arms_strict=False`` keeps a developer gateway from raising on that
 #   same backlog, which would report tracked work as a regression and push the
 #   developer to unset ``KIROCREW_DEV_MODE`` -- silencing history.py's guard too.
 #
-# When #7019 empties that baseline, delete both arguments and this store joins
+# When that baseline is empty, delete both arguments and this store joins
 # the shared switch.
 _ON_LOOP_DB_GUARD = OnLoopDBGuard(
     label="knowledge store",
@@ -163,6 +217,28 @@ def _validated_aliases(value: object) -> str:
     if not all(isinstance(alias, str) for alias in parsed):
         raise KnowledgeBundleError("'entities.aliases' must be a JSON array of strings")
     return text
+
+
+def _validated_embedding_sig(value: object) -> str | None:
+    """``items.embedding_sig``: an opaque signature string, or NULL.
+
+    Deliberately shape-only. The value's grammar belongs to its producer
+    (:func:`kiro_crew.knowledge.embedder.embed_signature`), and a signature this
+    store cannot recognise is safe in the only direction that matters: it fails
+    to equal the importing store's own signature, so ``_vector_search`` refuses
+    the vector instead of scoring it across spaces. What is NOT safe is a
+    non-string reaching the bind, which raises past the typed-error contract --
+    hence the guard here rather than at one HTTP path.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value:
+        raise KnowledgeBundleError("'items.embedding_sig' must be a non-empty string or null")
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        raise KnowledgeBundleError("'items.embedding_sig' must be valid UTF-8 text") from None
+    return value
 
 
 def _without_sync_status(properties):
@@ -377,8 +453,12 @@ _OWNERSHIP_HASH_COL: dict[str, str] = {
 
 
 class KnowledgeStore:
-    def __init__(self, db_path: str):
+    def __init__(self, db_path: str, *, read_only: bool = False):
         self._db_path = db_path
+        # A read-only store runs neither the schema DDL nor `_migrate()` and opens
+        # every connection with SQLite `mode=ro`, so a write is refused by the
+        # engine rather than by convention -- see `open_read_only`.
+        self._read_only = read_only
         # One connection PER THREAD. sqlite3 connections carry
         # thread affinity (check_same_thread=True by default), but callers
         # like HybridRetriever.search() run on worker threads via
@@ -427,22 +507,51 @@ class KnowledgeStore:
         # the socket binds, so construction happens on the loop on every
         # launch. The take is deliberate, so the on-loop guard -- which exists
         # to police reader/writer query paths -- warned spuriously on every
-        # boot (#8231). Deliberate is not free, though: `_migrate()` runs an
+        # boot. Deliberate is not free, though: `_migrate()` runs an
         # unconditional writer-locked orphan sweep, which is data-scaled and
-        # still runs here. `_load_graph()` no longer does: it is deferred to the
+        # still runs here. `_load_graph()` does not: it is deferred to the
         # first graph reader (`ensure_graph_loaded`), the same shape the FTS
         # rebuild already uses, which takes roughly half the construction cost
-        # off the boot path (#8329). Gating the sweep as well would change when
+        # off the boot path. Gating the sweep as well would change when
         # the writer lock is taken, so it stays.
         # The suppression ends with the block: the six non-constructor
         # `_load_graph()` call sites and every query path stay fully guarded.
+        if read_only:
+            return
         with _ON_LOOP_DB_GUARD.allow_on_loop():
             self._init_schema()
             self._migrate()
 
+    @classmethod
+    def open_read_only(cls, db_path: str) -> "KnowledgeStore":
+        """Open an EXISTING library for reading only: no DDL, no migration, no reap.
+
+        The constructor runs `_migrate()` on every open, and that sweep takes the
+        writer lock and deletes any itemless source row nothing references. That
+        is the right cost for a surface that goes on to write and the wrong one
+        for a verb documented as read-only -- `kirocrew knowledge stats` runs in
+        a fresh process, so it would re-run the sweep on every invocation. Here
+        the file is opened with SQLite `mode=ro`: nothing on this store can
+        write, because the engine refuses rather than a convention asking. The
+        trade is that a schema behind the code is reported, not repaired -- a
+        read that meets a missing table or column raises
+        `sqlite3.OperationalError`, and any migrating open (the gateway,
+        `kirocrew knowledge dedup --apply`) is the fix.
+        """
+        return cls(db_path, read_only=True)
+
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self._db_path, timeout=30, isolation_level=None)
-        conn.execute("PRAGMA journal_mode=WAL")
+        if self._read_only:
+            # `as_uri()` percent-encodes the path, which is the escaping SQLite
+            # undoes when it parses a URI filename, so a path holding `?` or `#`
+            # cannot be read as the start of the query string. journal_mode is
+            # left alone: a read-only connection may not change it, and a WAL
+            # file is readable as-is.
+            uri = Path(self._db_path).resolve().as_uri() + "?mode=ro"
+            conn = sqlite3.connect(uri, uri=True, timeout=30, isolation_level=None)
+        else:
+            conn = sqlite3.connect(self._db_path, timeout=30, isolation_level=None)
+            conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA busy_timeout=10000")
         conn.execute("PRAGMA foreign_keys=ON")
         conn.row_factory = sqlite3.Row
@@ -729,9 +838,8 @@ class KnowledgeStore:
         #
         # Nothing in-tree can write that escaped form any more (`json.dumps`
         # never escapes ASCII, and `_without_sync_status` re-serializes on every
-        # insert and update), but `import_bundle` used to store a bundle's
-        # properties text verbatim, so a row imported before this change can
-        # still hold one.
+        # insert and update), but a row imported by an early `import_bundle` --
+        # which stored properties text verbatim -- can still hold one.
         blob_copies = self.db.execute(
             "SELECT id, properties, sync_status FROM sources").fetchall()
         for row in blob_copies:
@@ -920,7 +1028,7 @@ class KnowledgeStore:
         from ``__init__``, for the reason ``ensure_fts_index_current`` gives
         about itself: the constructor runs on the event-loop thread and this
         work is proportional to ``entities`` + ``entity_relations``, so doing it
-        there stalls the gateway before the socket binds (#8329).
+        there stalls the gateway before the socket binds.
 
         **The offload is load-bearing, not hygiene.** Both handlers are
         ``async def`` and read the graph on the loop, where the loop-stall
@@ -960,14 +1068,14 @@ class KnowledgeStore:
         freshest committed state rather than replaying rows it captured earlier.
 
         **Build a fresh graph, then publish it with one reference assignment.**
-        The rebuild used to ``clear()`` the live ``self._graph`` and re-add row
-        by row, which serialization made stale-publish-safe but left the object a
+        Clearing the live ``self._graph`` and re-adding row
+        by row would be stale-publish-safe under serialization but leave the object a
         reader could be iterating momentarily empty: a reader holding
-        ``self._graph`` between the ``clear()`` and the last insert saw a torn
+        ``self._graph`` between the ``clear()`` and the last insert would see a torn
         (empty or truncated) graph, and a multi-step reader that re-read
         ``self.graph`` across its own steps -- degree ranking, then per-node
-        attribute reads -- could miss a node that ``clear()`` had just removed
-        (#8692). Building into a NEW ``SimpleDiGraph`` and swapping the reference
+        attribute reads -- could miss a node that ``clear()`` had just removed.
+        Building into a NEW ``SimpleDiGraph`` and swapping the reference
         under the lock closes that window: the old object is never mutated, so a
         reader holding it sees a complete, consistent OLD graph until it drops the
         reference, and the next read sees the complete NEW one. The multi-step
@@ -1048,17 +1156,25 @@ class KnowledgeStore:
         safe = {k: v for k, v in fields.items() if k in self._ITEM_COLUMNS}
         if not safe:
             return
-        # Read old FTS values BEFORE the update
-        fts_fields = {"title", "content", "tags"} & set(fields)
-        old_row = None
-        if fts_fields:
-            old_row = self.db.execute(
-                "SELECT rowid, title, content, tags FROM items WHERE id = ?", (item_id,)
-            ).fetchone()
         cols = ", ".join(f"{k} = ?" for k in safe)
         vals = [json.dumps(v) if isinstance(v, (list, dict)) else v for v in safe.values()]
+        fts_fields = {"title", "content", "tags"} & set(fields)
+        # The write lock comes first, BEFORE the old-row read, because the FTS
+        # delete is built from what that read returns. Two concurrent PATCHes of
+        # one item would otherwise both read the same old title, and the loser
+        # would unindex terms the winner had already replaced -- leaving the item
+        # searchable under a superseded title, with nothing that repairs it
+        # (``ensure_fts_index_current`` re-indexes on a term-representation
+        # version bump, never on content staleness). Holding the lock across the
+        # read costs one indexed lookup by id, and it is the shape
+        # ``merge_source_properties`` documents for the same reason.
         self.db.execute("BEGIN IMMEDIATE")
         try:
+            old_row = None
+            if fts_fields:
+                old_row = self.db.execute(
+                    "SELECT rowid, title, content, tags FROM items WHERE id = ?", (item_id,)
+                ).fetchone()
             self.db.execute(f"UPDATE items SET {cols} WHERE id = ?", (*vals, item_id))  # noqa: S608
             # Sync FTS: delete with OLD values, insert with NEW values
             if old_row:
@@ -1107,7 +1223,7 @@ class KnowledgeStore:
         Matched on ``content_hash`` because that is what identifies the document
         independently of which source holds it. Appends rather than replaces, so a
         multi-item group (a chunked file) is not truncated to one, and clears any
-        deferral marker: a row that owns an item is no longer deferring to anyone.
+        deferral marker: a row that owns an item is not deferring to anyone.
 
         A hash is only an identifier while it picks out ONE row. Two distinct
         documents in one source may legitimately hold identical text, and writing the
@@ -1150,14 +1266,14 @@ class KnowledgeStore:
                 (json.dumps(ids), healthy, st["rowid"]))
 
     def detach_source_location_by_hash(self, source_id: str, content_hash: str) -> int:
-        """Drop this source's CLAIM on a document it no longer has a copy of.
+        """Drop this source's CLAIM on a document it has no copy of.
 
         The counterpart to :meth:`_adopt_reassigned_item`. A source that lost a dedup
         holds no items for that document -- its state row is 'deduped' with an empty
         group -- yet it IS still a location of the winner's items, which is what keeps
         the document reachable if the winner goes away. When the losing copy is
         genuinely removed (its file deleted from that folder), the claim has to go too,
-        or the source stays a candidate to inherit a document it no longer has and the
+        or the source stays a candidate to inherit a document it does not have and the
         content resurfaces there as searchable text with no file behind it.
 
         Identified by ``content_hash`` because that is the only handle such a row has:
@@ -1198,7 +1314,7 @@ class KnowledgeStore:
     def release_stale_claim(self, source_id: str, prev_hash: str | None,
                             new_hash: str, prev_item_ids: list[str],
                             prev_text_hash: str | None = None) -> int:
-        """Release a claim made for content this source no longer has.
+        """Release a claim made for content this source does not have.
 
         A source that lost a dedup owns no items but IS a location of the winner's,
         and that claim is specific to the content it was made for. When the source's
@@ -1346,10 +1462,8 @@ class KnowledgeStore:
     def delete_source_cascade(self, source_id):
         """Delete a source and all its items in a single transaction (batch SQL).
 
-        No tombstone is written. One used to be, so a recurring discovery sweep could
-        not re-create the auto source a user had just deleted; with both discovery
-        loops removed nothing re-creates a source behind the user, so recording the
-        deletion would be a write nothing reads. The ``dismissed_auto_sources`` table
+        No tombstone is written. Nothing re-creates a source behind the user, so
+        recording the deletion would be a write nothing reads. The ``dismissed_auto_sources`` table
         is left in place unused rather than dropped, so no schema migration rides
         along with a feature removal.
         """
@@ -1563,6 +1677,68 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
             self.db.execute("ROLLBACK")
             raise
 
+    def merge_source_properties(self, source_id: str, *, set_keys: dict | None = None,
+                                remove_keys: tuple[str, ...] = (),
+                                sync_status: str | None = None) -> dict | None:
+        """Apply a key delta to one source's ``properties``, in ONE write-locked take.
+
+        Returns the properties as persisted, or None when the row is gone.
+
+        ``properties`` is a whole-column rewrite, so a read-modify-write split
+        across two statements loses a concurrent writer's change: whoever writes
+        last replaces the other's blob wholesale, and a dropped ``scan_paused``
+        means a folder the user paused keeps being walked. This takes the write
+        lock BEFORE reading (``BEGIN IMMEDIATE``, the shape
+        :meth:`retire_auto_registered_folder` uses), so no other writer can land
+        between this read and this write, and guards the UPDATE with the blob it
+        read (``WHERE properties = ?``, the shape :meth:`_retire_one_in_txn`
+        uses). Under the lock that guard cannot fail, which is the point: it
+        states the invariant in SQL, so a future caller that drops the
+        transaction gets a no-op rather than a silent overwrite.
+
+        A failed ``BEGIN IMMEDIATE`` is NOT swallowed here, unlike in
+        :meth:`retire_auto_registered_folder`: that sweep gets another pass, a
+        request does not, so a lock timeout has to reach the caller instead of
+        being reported as a missing row.
+
+        ``sync_status`` is written to the COLUMN and stripped from the blob by
+        ``_without_sync_status``, for the reason that helper documents.
+
+        Synchronous and takes the write lock, so an event-loop caller hands it to
+        ``asyncio.to_thread``.
+        """
+        self.db.execute("BEGIN IMMEDIATE")
+        try:
+            row = self.db.execute(
+                "SELECT properties FROM sources WHERE id = ?", (source_id,)).fetchone()
+            if row is None:
+                self.db.execute("COMMIT")
+                return None
+            try:
+                props = json.loads(row["properties"] or "{}")
+            except (ValueError, TypeError, RecursionError):
+                props = {}
+            if not isinstance(props, dict):
+                props = {}
+            for key in remove_keys:
+                props.pop(key, None)
+            props.update(set_keys or {})
+            text = _without_sync_status(json.dumps(props))
+            if sync_status is None:
+                cur = self.db.execute(
+                    "UPDATE sources SET properties = ? WHERE id = ? AND properties = ?",
+                    (text, source_id, row["properties"]))
+            else:
+                cur = self.db.execute(
+                    "UPDATE sources SET properties = ?, sync_status = ? "
+                    "WHERE id = ? AND properties = ?",
+                    (text, sync_status, source_id, row["properties"]))
+            self.db.execute("COMMIT")
+            return props if cur.rowcount > 0 else None
+        except Exception:
+            self.db.execute("ROLLBACK")
+            raise
+
     def _migrate_fts_index(self) -> None:
         """Re-index ``items_fts`` when its stored term representation is stale.
 
@@ -1733,13 +1909,13 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
             "VALUES (?, ?, ?, ?, ?, ?, ?)",
             (eid, name, entity_type, description, json.dumps(aliases or []), now, now))
         # Hold ``_graph_lock`` across BOTH the commit and the in-memory add, as one
-        # critical section (#8692). ``_load_graph`` -- which every delete / merge /
+        # critical section. ``_load_graph`` -- which every delete / merge /
         # import path runs after its own COMMIT -- takes this same lock for its whole
         # rebuild-and-swap, so serializing commit+add here means a concurrent rebuild
         # can never land BETWEEN this commit and this add. Without that, a source
         # deletion that removes this entity's rows could rebuild and swap in the
         # window, and this late add would re-inject the deleted entity into the
-        # published graph while SQLite no longer has it. Whichever of the two paths
+        # published graph when SQLite has already dropped it. Whichever of the two paths
         # acquires last leaves the in-memory graph agreeing with the committed rows.
         with self._graph_lock:
             self.db.commit()
@@ -1950,7 +2126,7 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
 
     def get_neighbors(self, entity_id, depth=1) -> list:
         # Pin one graph reference for the whole traversal. ``_load_graph``
-        # publishes a rebuilt graph by swapping ``self._graph`` (#8692), so
+        # publishes a rebuilt graph by swapping ``self._graph``, so
         # re-reading ``self.graph`` at each step could mix an old and a new graph
         # across the successor/predecessor walk and the per-node attribute reads.
         # Capturing it once means this read sees a single consistent snapshot.
@@ -1983,7 +2159,7 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
         against it, so the check and the traversal see the same snapshot -- a
         rebuild swapping in a fresh graph between them cannot let an entity pass
         the check on the old graph and be walked on the new one, returning a
-        degenerate ``name: None`` subgraph instead of ``None`` (#8692). The
+        degenerate ``name: None`` subgraph instead of ``None``. The
         ``get_entity_graph`` handler relies on this ``None`` to answer 404.
         """
         graph = self.graph
@@ -2010,6 +2186,82 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
             if u in visited and v in visited:
                 edges.append({"source": u, "target": v, "type": data.get("relation_type"), "weight": data.get("weight")})
         return {"nodes": nodes, "edges": edges}
+
+    def aggregate_stats(self) -> ContentStats:
+        """Admitted content, totalled and broken down by source.
+
+        Distinct from ``get_stats``, which reports raw table cardinality for the
+        dashboard overview: this counts ACTIVE items only, because a superseded
+        or deduped copy is not content the library will serve, and it resolves
+        the two units a reader conflates otherwise. An ``items`` row IS a chunk
+        -- the unit ``knowledge_list_sources`` and ``/source-counts`` already
+        call an item -- and every chunk of one document carries that document's
+        whole-text ``content_hash``, so ``(source_id, content_hash)`` is the
+        document identity, the same one ``dedup`` groups on. An item written
+        without a content hash is therefore counted in ``items`` and belongs to
+        no document.
+
+        Read-only: no write, no repair, no rebuild. A caller that finds the
+        numbers wrong has a diagnosis, not a fix.
+        """
+        totals = self.db.execute(
+            "SELECT COUNT(*) AS items, "
+            "COUNT(DISTINCT CASE WHEN content_hash IS NOT NULL AND content_hash != '' "
+            "  THEN COALESCE(source_id, '') || char(31) || content_hash END) AS documents "
+            "FROM items WHERE status = 'active'"
+        ).fetchone()
+        # char(31) is a unit separator: concatenating the two keys raw would let
+        # a source id ending in a hash prefix collide with its neighbour.
+        by_source = {
+            row["sid"]: row
+            for row in self.db.execute(
+                "SELECT COALESCE(source_id, '') AS sid, COUNT(*) AS items, "
+                "COUNT(DISTINCT CASE WHEN content_hash IS NOT NULL AND content_hash != '' "
+                "  THEN content_hash END) AS documents "
+                "FROM items WHERE status = 'active' GROUP BY sid"
+            ).fetchall()
+        }
+        per_source: list[SourceContentStats] = []
+        source_rows = self.db.execute("SELECT id, name FROM sources ORDER BY name").fetchall()
+        for src in source_rows:
+            counted = by_source.get(src["id"])
+            per_source.append(
+                SourceContentStats(
+                    source_id=src["id"],
+                    name=src["name"],
+                    documents=int(counted["documents"]) if counted else 0,
+                    items=int(counted["items"]) if counted else 0,
+                )
+            )
+        # Every registered source is listed even at zero, so a source that
+        # ingested nothing is visible rather than absent. The sourceless bucket
+        # is the opposite: it is not a registered row, so it appears only when it
+        # holds something. It holds every active item no registered source owns:
+        # the NULL-source rows, and any row whose source_id names a source that no
+        # longer exists. `items.source_id REFERENCES sources(id)` keeps the second
+        # kind out of anything this store writes, but a database written before
+        # the foreign key was enforced can still hold one, and a row counted in
+        # `items` that appeared on no line would break the reconciliation this
+        # breakdown promises. A document is identified by (source_id,
+        # content_hash), so summing the per-source_id document counts is exact.
+        registered = {src["id"] for src in source_rows}
+        unowned = [row for sid, row in by_source.items() if sid not in registered]
+        unowned_items = sum(int(row["items"]) for row in unowned)
+        if unowned_items > 0:
+            per_source.append(
+                SourceContentStats(
+                    source_id=None,
+                    name="(no source)",
+                    documents=sum(int(row["documents"]) for row in unowned),
+                    items=unowned_items,
+                )
+            )
+        return ContentStats(
+            sources=len(source_rows),
+            documents=int(totals["documents"]) if totals else 0,
+            items=int(totals["items"]) if totals else 0,
+            per_source=tuple(per_source),
+        )
 
     def get_stats(self) -> dict:
         return {
@@ -2159,12 +2411,22 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
                         raw_emb = base64.b64decode(raw_emb)
                     except Exception:
                         raw_emb = None
+                # ``embedding_sig`` travels WITH the blob. It is the only thing
+                # that says which vector space the imported vector belongs to,
+                # and ``HybridRetriever._vector_search`` pins it -- so dropping
+                # it lands every imported item at NULL, which the vector leg
+                # reads as unproven provenance and refuses. The vectors are in
+                # the bundle and would simply never be scored again until a full
+                # re-embed. A foreign-space signature is exactly as welcome: it
+                # will not match the importing store's own signature, so those
+                # vectors are refused on purpose rather than by accident.
                 cursor = self.db.execute(
-                    "INSERT OR IGNORE INTO items (id, title, content, item_type, source_id, chunk_index, namespace, summary, tags, embedding, status, created_at, updated_at) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "INSERT OR IGNORE INTO items (id, title, content, item_type, source_id, chunk_index, namespace, summary, tags, embedding, embedding_sig, status, created_at, updated_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (item["id"], item["title"], item["content"], item["item_type"],
                      item.get("source_id"), item.get("chunk_index", 0), item.get("namespace", "default"), item.get("summary"),
-                     item.get("tags", "[]"), raw_emb, item.get("status", "active"),
+                     item.get("tags", "[]"), raw_emb, _validated_embedding_sig(item.get("embedding_sig")),
+                     item.get("status", "active"),
                      item.get("created_at", now), now))
                 if cursor.rowcount > 0:
                     items_imported += 1

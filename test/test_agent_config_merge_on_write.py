@@ -1,4 +1,4 @@
-"""Merge-on-write semantics for the agent-config PUT (#6664).
+"""Merge-on-write semantics for the agent-config PUT.
 
 ``PUT /api/agent/config`` persists a whole-file snapshot the client read earlier,
 and ``apps/bridges.py::_register_mcp_servers`` writes app MCP bridges into that
@@ -254,7 +254,7 @@ async def _put(
 
 @pytest.mark.asyncio
 async def test_app_bridge_registered_during_the_lock_wait_survives_the_put(tmp_path):
-    """The race the GPT round-6 finding reported, closed.
+    """An app bridge registered during the lock wait survives the PUT.
 
     The transaction lock is a cross-process flock whose wait is unbounded, so an
     app enable queued ahead of this PUT commits its ``mcpServers`` entry strictly
@@ -357,7 +357,7 @@ async def test_direct_client_entry_deletes_on_a_sequential_add_then_remove(tmp_p
 
     Pre-fix the preserve test was "no scope declares it", and the installed spec
     is not a scope, so this entry was re-inserted on every deletion attempt --
-    permanently undeletable, breaking #6664's own requirement 2 for the most
+    permanently undeletable, breaking the merge rule's own requirement 2 for the most
     ordinary kind of client entry. Preservation now requires POSITIVE evidence of
     app or host ownership, which a direct entry has none of.
     """
@@ -447,16 +447,15 @@ async def test_entry_of_unknown_ownership_is_deleted(tmp_path):
 
 @pytest.mark.asyncio
 async def test_a_scope_declaration_does_not_defeat_proven_ownership(tmp_path):
-    """ROUND 6: a scope declaration must not delete a bridge the app really owns.
+    """A scope declaration must not delete a bridge the app really owns.
 
-    The scope census used to subtract every declared name from the candidates
-    BEFORE ownership was tested, as a precedence rule inherited from the
-    prefix-matching era. Once ownership became the EXACT set of manifest-declared
-    names, that subtraction could only ever remove a name that IS provably owned:
-    app ``demo`` genuinely registers ``demo:notes``, so a user who also declares
-    ``demo:notes`` in their own mcp.json made every stale PUT delete the live
-    bridge -- the exact clobber #6664 exists to prevent, reachable through a
-    collision the user cannot see.
+    A scope census that subtracts every declared name from the candidates BEFORE
+    ownership is tested can only ever remove a name that IS provably owned, since
+    ownership is the EXACT set of manifest-declared names: app ``demo`` genuinely
+    registers ``demo:notes``, so a user who also declares ``demo:notes`` in their
+    own mcp.json would make every stale PUT delete the live bridge -- the exact
+    clobber the merge rule exists to prevent, reachable through a collision the
+    user cannot see.
 
     The census seam stays injected here on purpose: re-introducing any
     scope-based exclusion ahead of the ownership test trips this test.
@@ -542,7 +541,7 @@ async def test_host_managed_entry_is_preserved(tmp_path):
 
 @pytest.mark.asyncio
 async def test_an_opt_in_managed_server_omitted_from_the_snapshot_is_deleted(tmp_path):
-    """ROUND 7: an opt-in grant must be REVOCABLE through this editor.
+    """An opt-in grant must be REVOCABLE through this editor.
 
     ``kirocrew-dashboard`` carries ``opt_in``, which makes it an assignable set
     rather than an always-on capability: ``build_agent_config`` never emits it and
@@ -569,7 +568,7 @@ async def test_an_opt_in_managed_server_omitted_from_the_snapshot_is_deleted(tmp
 
 @pytest.mark.asyncio
 async def test_a_gate_closed_managed_server_omitted_from_the_snapshot_is_deleted(tmp_path):
-    """ROUND 7: a CLOSED ``spec_gate`` means the rebuild would not re-add it.
+    """A CLOSED ``spec_gate`` means the rebuild would not re-add it.
 
     ``kirocrew-computer``'s gate is consulted at emission time, and both spec
     writers ``pop`` the entry while it is closed -- emitting it is what makes
@@ -708,7 +707,7 @@ async def test_a_malformed_host_spec_does_not_fail_the_put(tmp_path):
 
 @pytest.mark.asyncio
 async def test_client_entry_under_an_installed_apps_namespace_is_deleted(tmp_path):
-    """ROUND 2: squatting an installed app's namespace must not confer ownership.
+    """Squatting an installed app's namespace must not confer ownership.
 
     App ``demo`` is installed and declares only ``notes``. The client adds
     ``demo:custom`` through this editor -- a name the app never registered -- and
@@ -736,7 +735,7 @@ async def test_a_declared_app_server_is_still_preserved(tmp_path):
     """The overshoot guard: a name the app genuinely declares still survives.
 
     Tightening ownership to exact names must not stop protecting real bridges --
-    that is the defect #6664 exists to fix.
+    that is the defect the merge rule exists to fix.
     """
     response, written = await _put(
         tmp_path,
@@ -787,7 +786,7 @@ async def test_unreadable_app_manifest_fails_the_put_and_writes_nothing(tmp_path
 
 @pytest.mark.asyncio
 async def test_corrupt_installed_metadata_fails_the_put_and_writes_nothing(tmp_path):
-    """ROUND 3: a malformed ``installed.json`` must refuse, not silently skip.
+    """A malformed ``installed.json`` must refuse, not silently skip.
 
     ``manager._read_installed`` returns None for BOTH a missing file and a parse
     failure, so a bare ``is None: continue`` dropped a CORRUPT app out of the
@@ -844,7 +843,7 @@ async def test_absent_installed_metadata_is_still_skipped(tmp_path):
 
 @pytest.mark.asyncio
 async def test_disabled_app_bridge_is_deleted(tmp_path):
-    """ROUND 4: a DISABLED app's stale bridge must be cleanable, not protected.
+    """A DISABLED app's stale bridge must be cleanable, not protected.
 
     A disabled app is still installed, so an installed-only ownership test keeps
     its declared names app-owned. That protects the exact entry the disable
@@ -945,7 +944,7 @@ async def _assert_refused_and_intact(tmp_path, **kwargs):
 @requires_symlinks
 @pytest.mark.asyncio
 async def test_installed_metadata_as_a_broken_symlink_fails_the_put(tmp_path):
-    """ROUND 5: a DANGLING installed.json symlink is unreadable, not absent.
+    """A DANGLING installed.json symlink is unreadable, not absent.
 
     ``Path.is_file()`` follows the link, finds nothing, and answers False -- the
     same False it gives for genuine absence -- so the app read as not installed
@@ -978,15 +977,15 @@ async def test_apps_root_as_a_regular_file_fails_the_put(tmp_path):
 
 @pytest.mark.asyncio
 async def test_an_unstattable_apps_root_child_fails_the_put(tmp_path):
-    """ROUND 6: a child the listing returns but cannot stat is unreadable.
+    """A child the listing returns but cannot stat is unreadable.
 
     The enumeration screened its children with ``Path.is_dir()``, which routes
     the fault through pathlib's ``_ignore_error`` and answers a plain False for
     ENOENT, ENOTDIR, EBADF and ELOOP alike -- the same False it gives for a
     regular file. So a child that is a symlink LOOP was skipped as "not an app",
     and the absent bridge of the app living under that name was deleted: the
-    cannot-read-becomes-not-owned defect one level inside the shapes round 5's
-    screen already covers, and the same loop shape that screen refuses for
+    cannot-read-becomes-not-owned defect one level inside the shapes the
+    dangling-symlink screen already covers, and the same loop shape that screen refuses for
     ``installed.json``. Only a resolved stat may exclude a child, and only by
     PROVING it is not a directory.
     """
@@ -1142,7 +1141,7 @@ async def test_preserved_entries_go_through_the_governance_filter(tmp_path, monk
     )
 
 
-# ── (d) the stale-snapshot axis: entries PRESENT in the submission (#7089) ─────
+# ── (d) the stale-snapshot axis: entries PRESENT in the submission ─────
 #
 # The mirror of section (b). There the submission OMITS a name and the question is
 # whether to KEEP it; here the submission CONTAINS a namespaced name absent from
@@ -1166,7 +1165,7 @@ async def test_a_stale_snapshot_cannot_resurrect_an_uninstalled_apps_bridge(tmp_
     so nothing on disk or under apps/ mentions it. Pre-fix the snapshot was
     persisted verbatim and the bridge came back live, with nothing logged; and it
     stayed back, because ``reconcile_enabled_app_resources`` only re-registers
-    ENABLED apps and there is no longer an app here at all.
+    ENABLED apps and there is no app here at all.
 
     The user's own plain entry in the same submission is untouched, which is what
     makes this specifically the app-namespace axis rather than a blanket refusal.
@@ -1371,7 +1370,7 @@ async def test_a_readable_spec_with_no_servers_still_drops_a_namespaced_addition
 
 @pytest.mark.asyncio
 async def test_a_spec_with_no_mcpservers_key_still_drops_a_namespaced_addition(tmp_path):
-    """A KEYLESS spec is ``{}``, not "unknown" -- the GPT round-1 finding on #7465.
+    """A KEYLESS spec is ``{}``, not "unknown".
 
     Reading a missing ``mcpServers`` key as unreadable hands this rule a reason to
     stand down and lets the resurrection straight through. The state is reachable
@@ -1442,7 +1441,7 @@ async def test_an_unreadable_spec_still_persists_a_namespaced_entry(tmp_path):
     )
 
 
-# ── (g) the region's axis matrix, and the one cell still open (#7470) ──────────
+# ── (g) the region's axis matrix, and the one cell still open ──────────
 
 
 @pytest.mark.asyncio
@@ -1450,24 +1449,23 @@ async def test_the_app_namespace_region_decides_every_axis_it_claims_to(tmp_path
     """Every axis of the app-namespace region in ONE table, so a missing one shows.
 
     THE FAILURE THIS EXISTS TO CATCH is a rule set that reads as complete and is
-    not. #6975 shipped the ABSENT axis; the PRESENT axis was not missing from that
-    review's conclusions so much as never enumerated, and it survived review to
-    become #7089 months later. A per-axis test cannot prevent that on its own --
-    each one passes in isolation -- so the axes are gathered here, and a region
-    whose behaviour changes on any axis has to come through this table.
+    not: one axis can ship while its mirror axis is never enumerated, passing
+    review only because nothing named it. A per-axis test cannot prevent that on
+    its own -- each one passes in isolation -- so the axes are gathered here, and
+    a region whose behaviour changes on any axis has to come through this table.
 
     The three cells and who decides each:
 
     * EXISTENCE, name ABSENT from the submission -> ON DISK decides
-      (``_merge_unowned_servers``, #6664): an owned bridge is kept.
+      (``_merge_unowned_servers``): an owned bridge is kept.
     * EXISTENCE, name PRESENT in the submission with no row on disk -> ON DISK
-      decides (``_drop_unbacked_app_entries``, #7089): the addition is dropped.
+      decides (``_drop_unbacked_app_entries``): the addition is dropped.
     * CONTENT, name on BOTH sides -> the SUBMISSION decides. **This cell is
-      OPEN** (#7470): a stale editor snapshot reverts a definition the platform
+      OPEN**: a stale editor snapshot reverts a definition the platform
       had already corrected. It is asserted here as it BEHAVES, not as it should,
-      because reversing it reverses the editor-snapshot-wins contract kept in
-      #5899 and re-affirmed for #6664 -- a maintainer ruling, not a review-time
-      call. When that ruling lands, this is the assertion that changes.
+      because reversing it reverses the editor-snapshot-wins contract -- a
+      maintainer ruling, not a review-time call. When that ruling lands, this is
+      the assertion that changes.
     """
     submitted_only = {"name": "kirocrew", "mcpServers": {"demo:ghost": {"command": "ghost"}}}
     matrix = [

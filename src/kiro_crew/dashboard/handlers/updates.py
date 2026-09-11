@@ -2395,7 +2395,9 @@ async def api_update_arm_status(request: web.Request) -> web.Response:
     """GET /api/update/arm — the armed request, SPA-safe projection."""
     from kiro_crew.platform import update_stepup
 
-    pending = await asyncio.to_thread(update_stepup.read_pending)
+    # clear_expired=True: this runs inside the gateway, where the expiry
+    # cleanup is serialized against arm under the module mutex.
+    pending = await asyncio.to_thread(lambda: update_stepup.read_pending(clear_expired=True))
     if pending is None:
         return web.json_response({"armed": False})
     return web.json_response(update_stepup.public_view(pending))

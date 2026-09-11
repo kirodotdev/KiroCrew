@@ -1,7 +1,18 @@
 #!/usr/bin/env node
 /**
- * Generate settingsRegistry.gen.ts from settings panel source files.
+ * Generate the settings registry from settings panel source files.
  * Usage: node scripts/gen-settings-registry.mjs
+ *
+ * TWO artifacts come out of one extraction pass:
+ *  - `src/components/commandPalette/settingsRegistry.gen.ts` — the UI registry
+ *    behind settings search and the command palette's deep links.
+ *  - `../src/kiro_crew/docs/settings-registry.generated.json` — the same
+ *    controls as the AGENT sees them (id/label/tab/route), bundled into the
+ *    Python docs package so a deployed gateway can answer "how do I turn on X?"
+ *    with a link instead of prose. Scheme: that directory's
+ *    settings-deeplink.md.
+ * One pass, so the agent's enumeration can never describe a different set of
+ * controls than the dashboard renders.
  */
 import { execSync } from 'child_process'
 import * as fs from 'fs'
@@ -12,7 +23,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(__dirname, '..')
 
 const runnerScript = `
-import { extractAll, generateRegistrySource } from './scripts/settingsExtract'
+import { extractAll, generateAgentRegistryJson, generateRegistrySource } from './scripts/settingsExtract'
 import * as path from 'path'
 import * as fs from 'fs'
 
@@ -38,7 +49,17 @@ if (entries.length < FLOOR) {
 const outPath = path.resolve(${JSON.stringify(ROOT)}, 'src/components/commandPalette/settingsRegistry.gen.ts')
 const source = generateRegistrySource(entries)
 fs.writeFileSync(outPath, source)
-console.log(\`Generated \${entries.length} entries (\${skipped} dynamic labels skipped) → settingsRegistry.gen.ts\`)
+
+// The agent-facing sibling, written only after the floor check above: an
+// extractor that stopped matching must not be able to replace a good bundled
+// enumeration with an empty one.
+const agentOutPath = path.resolve(
+  ${JSON.stringify(ROOT)},
+  '../src/kiro_crew/docs/settings-registry.generated.json',
+)
+fs.writeFileSync(agentOutPath, generateAgentRegistryJson(entries))
+
+console.log(\`Generated \${entries.length} entries (\${skipped} dynamic labels skipped) → settingsRegistry.gen.ts + settings-registry.generated.json\`)
 `
 
 const tmpFile = path.join(ROOT, '.gen-settings-runner.ts')

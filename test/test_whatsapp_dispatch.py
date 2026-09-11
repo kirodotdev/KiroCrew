@@ -103,6 +103,7 @@ class FakeSessions:
         #: channel, which is the only case an unseeded counter gets right.
         self.persisted_generations = dict(persisted_generations or {})
         self.generation_lookups: list[str] = []
+        self.reserved_generations: list[str] = []
         self._busy = busy
         self.released = 0
         self.successes = 0
@@ -130,6 +131,12 @@ class FakeSessions:
 
     def has_session(self, key: str) -> bool:
         return self._session_exists
+
+    def reserve_generation(self, session_key: str) -> None:
+        self.reserved_generations.append(session_key)
+
+    async def aflush(self) -> None:
+        return None
 
     def max_generation(self, bucket: str) -> int:
         self.generation_lookups.append(bucket)
@@ -306,13 +313,14 @@ def test_group_scope_uses_forum_chat_type_in_session_key():
 # ── dispatcher: commands ────────────────────────────────────────────────────
 def test_new_command_starts_a_fresh_session_without_a_turn():
     provider = FakeProvider()
-    d, _client, _sessions, transport = _make(provider=provider)
+    d, _client, sessions, transport = _make(provider=provider)
     before = d._session_key(_DM)
     asyncio.run(d.handle_message(_msg("/new")))
     after = d._session_key(_DM)
 
     assert provider.prompts == []  # no LLM turn for a command
     assert before != after  # generation advanced
+    assert sessions.reserved_generations == [after]
     assert any("fresh session" in t.lower() for _, t in transport.sent)
 
 
@@ -328,7 +336,7 @@ def test_compact_command_compacts_in_place_without_a_turn():
 
 def test_compact_command_declined_on_auto_managed_backend():
     # A backend that cannot serve /compact gets the informational reply and
-    # compact() is NEVER dispatched (#8156).
+    # compact() is NEVER dispatched.
     provider = FakeProvider()
     provider.manual_compact_unsupported_backend = "kas"
     d, _client, sessions, transport = _make(provider=provider)
@@ -350,7 +358,7 @@ def test_compact_none_capability_preserves_dispatch():
 
 def test_the_hard_threshold_declines_silently_on_auto_managed_backend():
     # No /compact to dispatch and no notice: the backend compacts on its own
-    # as context fills (#8156).
+    # as context fills.
     provider = FakeProvider("answered")
     provider.manual_compact_unsupported_backend = "kas"
     d, _client, _sessions, transport = _make(provider=provider, context_pct=96.0)
@@ -361,7 +369,7 @@ def test_the_hard_threshold_declines_silently_on_auto_managed_backend():
 
 def test_the_soft_nudge_is_suppressed_on_auto_managed_backend():
     # The nudge advises /compact, which this backend refuses — it compacts on
-    # its own, so there is nothing for the user to act on (#8156).
+    # its own, so there is nothing for the user to act on.
     provider = FakeProvider("answered")
     provider.manual_compact_unsupported_backend = "kas"
     d, _client, _sessions, transport = _make(provider=provider, context_pct=85.0)
@@ -644,7 +652,7 @@ def _captured_turn(monkeypatch, dispatcher, inbound):
     return seen.get("turn")
 
 
-# ── durable inbound spool route (#2217) ──────────────────────────────────────
+# ── durable inbound spool route ──────────────────────────────────────────────
 
 
 def test_dm_route_spools_the_pre_ingestion_original_not_the_prompt(monkeypatch):
@@ -678,7 +686,7 @@ def test_dm_route_is_not_declared_without_a_captured_original(monkeypatch):
 
 
 def test_group_route_is_never_declared(monkeypatch):
-    """``may_send_to`` knows nothing of the group roster, so groups are not spooled (#9144)."""
+    """``may_send_to`` knows nothing of the group roster, so groups are not spooled."""
     d, _client, _sessions, transport = _make()
     inbound = _msg("hi group", conv=_GROUP)
     transport.pending_original[id(inbound)] = ("hi group", 0)

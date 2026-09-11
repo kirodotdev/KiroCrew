@@ -109,7 +109,8 @@ def _close(state, slot, *, closed_at: float) -> None:
 
 class TestSlotHistoryKey:
     def test_unbound_channel_tab_resolves_to_its_channel_transcript(self, tmp_path):
-        """The regression: this used to answer "dashboard:slack_<ts>"."""
+        """An unbound channel tab resolves to its channel transcript, not to
+        "dashboard:slack_<ts>"."""
         state = _state(tmp_path)
         slot = state.get_or_create_slot(STEM, channel_origin=True)
         assert not slot.linked_session_key
@@ -138,9 +139,9 @@ class TestSlotHistoryKey:
 
         An empty dashboard tab named for an old channel stem must not inherit
         that thread's history, and file absence cannot tell the two apart. The
-        data-loss risk this used to guard against is handled instead by
-        ``api_sessions_clear`` protecting BOTH candidate transcripts, so
-        deletion no longer depends on provenance resolving correctly.
+        data-loss risk is handled instead by ``api_sessions_clear`` protecting
+        BOTH candidate transcripts, so deletion does not depend on provenance
+        resolving correctly.
         """
         state = _state(tmp_path)
         _seed_channel_transcript(state)  # channel transcript, no persisted flag
@@ -269,7 +270,7 @@ class TestCloseLandsOnTheTranscriptTheRestorePathReads:
         assert not (tmp_path / "sessions" / PHANTOM).exists()
 
     def test_bound_channel_tab_still_writes_the_channel_transcript(self, tmp_path):
-        """No regression for the tab the reconciler DID manage to bind."""
+        """A bound channel tab still writes the channel transcript."""
         state = _state(tmp_path, resolves=CHANNEL_KEY)
         _seed_channel_transcript(state)
         slot = _restored_tab(state)

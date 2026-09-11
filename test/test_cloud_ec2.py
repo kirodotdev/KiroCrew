@@ -246,7 +246,7 @@ class TestTemplate:
         assert "arn:aws:s3:::${SourceBucket}/${SourceKey}" not in text
 
     def test_boundary_is_referenced_by_param_not_created_per_launch(self):
-        # The permissions boundary must NO LONGER be an in-template
+        # The permissions boundary must not be an in-template
         # AWS::IAM::ManagedPolicy created per launch (that was the self-authorship
         # hole). Instead the InstanceRole references the pre-created shared
         # boundary via the PermissionsBoundaryArn parameter.

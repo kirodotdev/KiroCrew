@@ -4,7 +4,7 @@ These pin the behaviours that are easy to break silently by editing YAML:
 the triggers a gate needs to be fixable without a code push, the
 added-lines-only scoping that keeps a gate from blaming a PR for
 pre-existing code, the advisory-vs-blocking contract of each lane, and --
-most importantly -- that `pr-readiness.yml` no longer force-passes a failing
+most importantly -- that `pr-readiness.yml` does not force-pass a failing
 Design Review.
 """
 
@@ -274,10 +274,10 @@ class TestScreenshotEvidenceBodyLogic:
         assert "carries no screenshot or recording" in result.stdout, result.stdout
 
     def test_unreadable_body_is_not_reported_as_missing_evidence(self, tmp_path):
-        # A failed API read is not an absent screenshot. The step used to
-        # discard both gh's status and its stderr, so a transient failure left
-        # the body empty and the run told the author their description carried
-        # no evidence -- sending them to fix a description that was already
+        # A failed API read is not an absent screenshot. Discarding both gh's
+        # status and its stderr makes a transient failure leave the body empty,
+        # so the run tells the author their description carries no evidence,
+        # sending them to fix a description that is already
         # correct. It must still fail closed (this gate is required) while
         # naming the read as the cause.
         body = "![shot](https://example.test/x.png)\n"
@@ -383,10 +383,10 @@ class TestScreenshotEvidenceSurfaceDetection:
         assert "visual=false" in outputs, outputs
 
     def test_uncomputable_diff_fails_instead_of_skipping_the_gate(self, tmp_path):
-        # The failure this pins: a failed `git diff` used to be swallowed into
-        # the same empty string as "nothing visual changed", so the step wrote
-        # visual=false, the evidence step's `if:` went false, and a REQUIRED
-        # check reported green having examined nothing. Failing open on a gate
+        # The failure this pins: a failed `git diff` swallowed into the same
+        # empty string as "nothing visual changed" makes the step write
+        # visual=false, the evidence step's `if:` go false, and a REQUIRED
+        # check report green having examined nothing. Failing open on a gate
         # is worse than a false red, so the diff failure must surface.
         result, outputs = self._run_detect(tmp_path, git_status=128)
         assert result.returncode == 1, result.stdout + result.stderr
@@ -403,8 +403,8 @@ class TestCrossPlatform:
         assert "grep -vE '^\\+\\+\\+'" in wf
 
     def test_filters_prose_before_matching(self):
-        # Verified against commit 1d78b24e3: a docstring quoting ``shell=True``
-        # to explain why it is avoided must not fail the gate.
+        # A docstring quoting ``shell=True`` to explain why it is avoided must
+        # not fail the gate.
         wf = _read("cross-platform.yml")
         assert "grep -vE '^\\+[[:space:]]*#'" in wf
         assert "grep -vF '``'" in wf
@@ -412,7 +412,7 @@ class TestCrossPlatform:
     def test_no_encoding_rule(self):
         # A line regex cannot decide this: nested calls truncate the lookahead
         # and multi-line calls split `encoding=` onto another line. Both give
-        # FALSE failures on correct code (verified against commit 1d78b24e3),
+        # FALSE failures on correct code,
         # so the rule is deliberately absent and its absence is documented.
         wf = _read("cross-platform.yml")
         assert "deliberately NO" in wf, "the absence must stay documented"
@@ -459,9 +459,9 @@ class TestPrScopeMeasureLogic:
     """Execute the real scope-measurement step with ``git`` stubbed.
 
     The step is advisory by contract (it never exits nonzero), which is
-    exactly why a swallowed read failure was invisible: a failed ``git diff``
-    used to collapse onto the same empty string as "no files changed", and
-    the step reported a verdict -- "No reviewable files changed." -- about a
+    exactly why a swallowed read failure is invisible: a failed ``git diff``
+    collapses onto the same empty string as "no files changed", and
+    the step reports a verdict -- "No reviewable files changed." -- about a
     diff it never obtained. These cases pin which of the two empty results
     produced the answer, without loosening the advisory contract.
     """
@@ -545,10 +545,10 @@ class TestPrScopeMeasureLogic:
         assert "No reviewable files changed." in result.stdout, result.stdout
 
     def test_uncomputable_diff_refuses_the_verdict_but_stays_advisory(self, tmp_path):
-        # The failure this pins: a failed `git diff` used to be swallowed into
-        # the same empty string as "no files changed", so the step claimed
+        # The failure this pins: a failed `git diff` swallowed into the same
+        # empty string as "no files changed" makes the step claim
         # "No reviewable files changed." having measured nothing. The step must
-        # now refuse to report any scope claim -- while still exiting 0,
+        # refuse to report any scope claim -- while still exiting 0,
         # because this gate's advisory contract (test_never_exits_nonzero)
         # is deliberate.
         result, summary = self._run_measure(tmp_path, git_status=128)
@@ -583,9 +583,9 @@ class TestDesignReviewBlocks:
     """
 
     def test_readiness_blocks_every_opinion_lane(self):
-        # The whole point of the promotion: the advisory bucket that used to
-        # force-pass UX and First Principles (and once Design too) is gone, so
-        # a red opinion lane now produces a red PR Readiness.
+        # The whole point of the promotion: no advisory bucket force-passes UX
+        # and First Principles (or Design), so a red opinion lane produces a
+        # red PR Readiness.
         wf = _read("pr-readiness.yml")
         assert (
             'passed+=("$label (advisory)")' not in wf
@@ -605,8 +605,8 @@ class TestDesignReviewBlocks:
 
     @pytest.mark.parametrize("name", ["design-review.yml", "fork-design-review.yml"])
     def test_prompt_no_longer_claims_block_is_advisory(self, name):
-        # The prompt used to tell the model "BLOCK does NOT block the merge",
-        # which taught it to under-use the verdict that now actually gates.
+        # The prompt must not tell the model "BLOCK does NOT block the merge",
+        # which would teach it to under-use the verdict that actually gates.
         wf = _read(name)
         assert "does NOT block the merge" not in wf
         assert "BLOCK (advisory)" not in wf
@@ -711,7 +711,7 @@ class TestDecidableFindingsExitTheTieBreaker:
     def test_ux_tie_breaker_carries_a_closed_exception_list(self, name):
         wf = _flat(_read(name))
         assert "Tie-breaker: when torn between BLOCK and CONCERNS" in wf
-        # Four decidable exits: the two notice rules, plus (PR #6783) a primary
+        # Four decidable exits: the two notice rules, plus a primary
         # control the blind reader could not use and a hard element swap. Each
         # is read off the blind-read report or the diff, not judged.
         assert "The tie-breaker does NOT apply to the four below" in wf

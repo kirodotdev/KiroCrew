@@ -9,6 +9,7 @@ import { useImeGuard } from '../hooks/useImeGuard'
 import { useRailWidth } from '../hooks/useRailWidth'
 import { SETTINGS_DEFAULT_MODEL_ID } from '../hooks/useSettingHighlight'
 import { settingsPath } from '../components/settingsPath'
+import { KIRO_SIGN_IN_SETTINGS_TAB, KIRO_SIGN_IN_SETTING_ID } from './settings/KiroSignInCard'
 import { isTouchDevice } from '../utils/isTouchDevice'
 import { agentOrDefaultLabel } from '../utils/agentLabel'
 import { toApiDecision } from '../utils/approvalDecision'
@@ -31,7 +32,7 @@ import {
   switchSlot, createSlot, deleteSlot, loadOlderMessages, abortActiveOlderFetch, isSupersededPagingRejection,
   appendMessage, appendSlotMessage, endLocalTurn, clearUnresumableResume, forkSlot,
   setSlotRunning, startLocalTurn, syncSlotRunningFromServer, setPendingInput, setAgentSwitchNotice, resolveByApprovalId, clearPendingPermissions,
-  selectComposerBusy,
+  selectComposerBusy, selectSendConfirmed,
   selectContinuable,
   selectTurnInterrupted,
   setVoiceAudio,
@@ -55,6 +56,7 @@ import { addTab as addDockTerminal } from '../hooks/useBottomTerminal'
 import { interceptSlashCommand, isInterceptedSlashCommand } from './chat/ChatInput'
 import { sseSlotTitle, triggerRefresh, updateSlot } from '../store/dashboardSlice'
 import { performSlotSwitch } from '../lib/slotSwitch'
+import { drainPendingChunks } from '../lib/pendingChunkDrain'
 import { performAgentSlotSwitch } from '../lib/agentSwitch'
 import { api } from '../api/client'
 import { resolveAskAfterSend } from '../lib/resolveAskAfterSend'
@@ -98,11 +100,26 @@ import { useChatPageResourcesController } from './chat/useChatPageResourcesContr
 import EarlierMessagesBar from './chat/EarlierMessagesBar'
 import TranscriptScrollShell from './chat/TranscriptScrollShell'
 import { devLog, devWatchMessages, inspectorOn } from '../dev/scrollInspector'
+import TurnNavigationMinimap from './chat/TurnNavigationMinimap'
 import { useVirtualChat } from '../hooks/virtualizer/useVirtualChat'
 import { addPendingFile, prepareSendPayload, buildRelMap, hasExactRelMention, normalizeWindowsPath, parseDirTokens, serializeDirTokens, spliceDirTokens } from '../utils/fileTokens'
 import { makeRelative } from '../components/FilePickerMenu'
 import { type PasteBlock, expandAll as expandPasteTokens, pruneBlocks as pruneBlocksUtil, remapCarriedBlocks, saveStoredPaste } from '../utils/pasteTokens'
 import { extractPromptFromToken, extractSlackContextFromToken } from '../utils/tokenPrompt'
+/** Map message index → displayItems index, for scroll-to-match and the turn minimap. */
+function buildMessageToDisplayIdx(items: DisplayItem[]): Map<number, number> {
+  const map = new Map<number, number>()
+  items.forEach((item, di) => {
+    if (item.kind === 'turn') {
+      for (const ti of item.items) {
+        if (ti.kind === 'single') map.set(ti.idx, di)
+        else if (ti.kind === 'group') ti.msgs.forEach((_, mi) => map.set(ti.startIdx + mi, di))
+      }
+    } else if (item.kind === 'single') map.set(item.idx, di)
+    else if (item.kind === 'group') item.msgs.forEach((_, mi) => map.set(item.startIdx + mi, di))
+  })
+  return map
+}
 /** Delay (ms) before scrolling to bottom after a state update, giving React time to commit. */
 const SCROLL_AFTER_RENDER_MS = 100
 /** Min gap between scroll-gesture-driven retries of a failed older-history
@@ -254,7 +271,6 @@ import SessionGridView from '../components/SessionGridView'
 import SessionTabStrip from '../components/SessionTabStrip'
 import { anchorForSlot, loadLayout, sessionSlots } from '../hooks/splitLayoutStore'
 import { modelSupportsEffort } from '../lib/effort'
-import { providerLabel } from '../lib/sttProviders'
 import { countCompletedTurns } from '../lib/completedTurns'
 import { displayModel, pinIsWithheld } from '../lib/model'
 import FollowUpCard from '../components/FollowUpCard'
@@ -276,10 +292,7 @@ import { pickSearchScrollBehavior, scrollCurrentMatchIntoView } from '../utils/s
 import QueueStack, { SubagentDeliveryProgress, isSystemDelivery, isNonInteractiveQueued } from '../components/QueueStack'
 import { runBelongsToSlot } from '../apps/workflows/runModel'
 import { TipCard, useTipTrigger } from '../components/TipCard'
-import { useVoiceInput, voiceInputSupported, type TranscriptOrigin } from '../hooks/useVoiceInput'
-import { dictationSeparator, spliceDictationText } from '../lib/dictationText'
-import { usePushToTalk } from '../hooks/usePushToTalk'
-import VoiceDisabledModal from '../components/VoiceDisabledModal'
+import { Composer, type ComposerHandle, type ComposerVoiceOptions } from '../chat-core/composer/Composer'
 import { ChatFooter, AssistantMessage, UserMessage, PinnedPrompt } from './chat'
 import { useStreamIdle } from './chat/ChatFooter'
 import type { TurnStats } from './chat/AssistantMessage'
@@ -985,11 +998,13 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
         if (onScreenNow) setInput(back)
       }
       const row = (message: ChatMessage) => dispatch(appendSlotMessage({ slot, message }))
-      // - `refused` / `transport-error`: nothing was accepted -- the same two
-      //   outcomes `send()` reports with an error row (the server's reason,
-      //   framed, or the connection copy that names the restore) and a
-      //   restore. The optimistic bubble is dropped first (the reducer's drop
-      //   arm; a no-op once the server owns the row): left standing it would be
+      // A confirmed echo is stronger evidence than a missing HTTP response,
+      // including when a steer raced onto a new turn and lost its steer flag.
+      if ((receipt.status === 'response-late' || receipt.status === 'transport-error')
+        && sendId && selectSendConfirmed(store.getState(), slot, sendId)) return
+      // - `refused` / unconfirmed `transport-error`: report the server's reason
+      //   or the connection error, and restore the draft. The reducer drops only
+      //   an optimistic bubble; left standing it would be
       //   a third, false representation of the same text next to the error row
       //   and the refilled composer.
       if (receipt.status === 'refused' || receipt.status === 'transport-error') {
@@ -1014,10 +1029,6 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       //   resending -- a duplicate is visible and deletable, a lost steer is not.
       if (receipt.status === 'response-late') {
         if (sendId) {
-          const chat = store.getState().chat
-          const rows = slot === chat.activeSlot ? chat.messages : (chat.slotMessages[slot] ?? chat.messages)
-          const bubble = rows.find(m => m.role === 'user' && m.meta?.sendId === sendId)
-          if (bubble && !bubble.meta?.optimistic) return
           // `queued` is the reducer's DROP arm (its other arm, `turn`, demotes):
           // an unconfirmed steer drops its bubble for the same reason a
           // demoted-to-queue one does -- the server-side row, if any, is the
@@ -1520,7 +1531,11 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     }
     sp.delete('prefill')
     const qs = sp.toString()
-    window.history.replaceState({}, '', window.location.pathname + (qs ? `?${qs}` : ''))
+    // PRESERVE the existing state: react-router keeps its stack position in
+    // history.state.idx, and replacing it with {} makes idx NaN for every
+    // later push — permanently disabling the top-bar Back/Forward arrows and
+    // the ⌘/Ctrl+arrow chords (routeHistoryPosition reads that bookkeeping).
+    window.history.replaceState(window.history.state, '', window.location.pathname + (qs ? `?${qs}` : ''))
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Consume prompt from token payload (channel challenge-and-redirect flow).
@@ -1547,7 +1562,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     const token = new URLSearchParams(window.location.search).get('token')
     if (!token) { tokenConsumingRef.current = false; return }
     // Always strip token from URL to prevent leakage via referrer/history
-    window.history.replaceState({}, '', window.location.pathname)
+    // Preserves history.state for the same reason as the prefill strip above.
+    window.history.replaceState(window.history.state, '', window.location.pathname)
     const prompt = extractPromptFromToken(token)
     if (!prompt) { tokenConsumingRef.current = false; return }
     const { sessionKey, channel, threadTs } = extractSlackContextFromToken(token)
@@ -1832,556 +1848,56 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // restore chips per slot) and stale keys are harmless.
   const [resizedInfo, setResizedInfo] = useState<Record<string, ResizeInfo>>({})
   const isMac = useAppSelector(s => s.dashboard.status?.platform) === 'darwin'
-  const { data: sttCfg } = useQuery({
-    queryKey: ['sttConfig'],
-    queryFn: () => api.sttConfig() as Promise<{ streaming?: boolean; enabled?: boolean; dictation_panel?: boolean; available?: boolean; provider?: string }>,
-  })
-  const sttStreaming = !!sttCfg?.streaming
-  const sttEnabled = !!sttCfg?.enabled
-  // The backend probes for the provider's binary and reports `available`.
-  // Default true so a not-yet-loaded config doesn't flash the modal; the
-  // separate sttConfigLoaded guard already covers the pre-load case.
-  const sttAvailable = sttCfg?.available !== false
-  // The LOCALISED provider name, not the wire id: the modal puts it in a
-  // sentence, and a bare id reads as a typo there ("local is not installed").
-  const sttProvider = providerLabel(sttCfg?.provider || '')
-  // Default true so the panel is the standard recording surface; the backend
-  // sends an explicit boolean, so `undefined` here means "config not loaded yet"
-  // rather than "off", and a pre-load recording would otherwise flash the bar.
-  const sttDictationPanel = sttCfg?.dictation_panel !== false
-  // Treat "config not loaded yet" as disabled so the guard never lets a
-  // recording start before STT is confirmed on. Stable boolean so toggleVoice's
-  // deps don't churn on every sttCfg object identity from a refetch.
-  const sttConfigLoaded = !!sttCfg
-  // Opened when the user clicks the mic while STT is disabled — points them at
-  // the setting that turns it on instead of starting a recording that would
-  // never be transcribed.
-  const [voiceSetupOpen, setVoiceSetupOpen] = useState(false)
-  const frozenInputRef = useRef<string | null>(null)
-  // Caret snapshot taken alongside frozenInputRef, so a streaming partial (and
-  // the final that replaces it) keeps inserting at the same spot. The batch
-  // path leaves both null and reads the LIVE composer caret instead.
-  const frozenCaretRef = useRef<{ start: number; end: number } | null>(null)
-  // Live composer caret, kept current by ChatInput (onSelect / click / typing).
-  // Dictation splices the transcript in HERE instead of always appending at end.
-  const voiceCaretRef = useRef<{ start: number; end: number } | null>(null)
-  // Caret offset ChatInput should restore after a dictation-driven value update
-  // lands (set by the splice below, consumed + cleared inside ChatInput).
-  const voicePendingCaretRef = useRef<number | null>(null)
-  // Drops late-arriving partials/finals for the CURRENT slot after a send.
-  // `stop()` is async (up to 5s for backend close) — without this guard, a
-  // delayed onFinal would repopulate the composer with text the user already
-  // sent. Cross-SLOT safety is handled separately by session-scoped routing
-  // (see applyVoiceText + voice.sessionOwner).
-  const sttDisarmedRef = useRef(false)
-  // Narrower sibling of `sttDisarmedRef`, for a MANUAL STOP of a streaming
-  // recording that already put a hypothesis in the composer.
+  // Voice dictation is the Composer's Voice atom (chat-core P3-b): ChatPage no
+  // longer runs the hook or wires 23 props. It supplies, through the `Composer`
+  // root below, only what the atom cannot know on its own: which slot the
+  // composer currently shows (the draft-settlement predicate), where an
+  // off-screen batch transcript goes (that slot's persisted draft), the
+  // endpointer's auto-submit, and that this is the surface owning the
+  // document-wide push-to-talk key. `composerRef` reaches the atom's controls
+  // from send().
   //
-  // One flag was doing two jobs, and a manual stop only wants one of them.
-  // `applyVoiceText` APPENDS (`base + ' ' + text`), so the close-time final
-  // landing on a composer that already holds the hypothesis duplicates the
-  // utterance ("hello hello") — that has to stay suppressed. But `onPartial`
-  // REPLACES the region at the frozen boundary, and the hook re-emits
-  // `finals.join(' ')` through it on every `final` message while `stop()`
-  // deliberately leaves the socket draining. Suppressing that too meant every
-  // segment Transcribe stabilised AFTER the release was dropped, so the user
-  // was left holding the last UNSTABLE hypothesis. On a push-to-talk hold that
-  // is the common case, not a corner: the hold is short, so the tail of the
-  // utterance is exactly the part still unstable at release.
-  //
-  // So: this flag suppresses the append only, and leaves the drain's own
-  // corrections free to keep replacing the region until the socket closes.
-  // Cancel, send and slot-switch still want EVERYTHING suppressed and keep
-  // using `sttDisarmedRef` — the user discarded, already sent, or left.
-  const sttAppendDisarmedRef = useRef(false)
-  // The composer content UP TO the end of the region onPartial last inserted,
-  // plus the whole value it wrote. Dictation splices at the caret, so it can sit
-  // mid-draft with an existing tail after it — and typing after the release
-  // lands at the restored caret, i.e. between the two. Anchoring on the PREFIX
-  // (not the whole value) is what lets a drain-time update replace the corrected
-  // region and keep everything after it verbatim; anchoring on the whole value
-  // would fail its own startsWith check mid-draft and drop the correction.
-  // The full value distinguishes "the user typed" from "nothing changed", which
-  // decides whether the caret may be moved.
-  const lastDictationAnchorRef = useRef<string | null>(null)
-  const lastDictationValueRef = useRef<string | null>(null)
-  // Sticky for the whole post-stop drain: once the user has typed, the caret is
-  // theirs until dictation restarts. Recomputing "did they edit?" per update is
-  // not enough — after the first correction carries the suffix across, the
-  // composer matches what we wrote again, so a second correction would decide
-  // nothing was edited and yank the caret back in front of the typed text.
-  const postStopEditedRef = useRef(false)
-  // Suppresses ONLY the auto-submit route, and unlike the append flag it is set
-  // by EVERY manual stop of a streaming recording — including a cold-stream stop
-  // where no partial landed. "Stop capturing" is never "send": without this, a
-  // short press against a cold stream leaves the endpointer armed, and a
-  // trailing final's endpoint verdict submits the turn the user never asked to
-  // send. The append flag cannot carry this, because with no partial landed the
-  // close-time final is the only copy of the utterance and must still land.
-  const sttEndpointDisarmedRef = useRef(false)
-  // A frozen caret is a position in the composer as it stood at the release. Once
-  // the user edits after that, it can go stale in two ways, and both corrupt the
-  // splice: a RANGE (dictating over a selection replaces it) whose selection they
-  // have since typed over, and an OFFSET whose meaning shifts when they edit text
-  // BEFORE it. Rebase it onto the current text instead of trusting or discarding
-  // it wholesale — discarding it would put the transcript after text they wrote
-  // later, trusting it would cut into text they wrote earlier.
-  const rebaseFrozenCaret = useCallback(() => {
-    if (!sttEndpointDisarmedRef.current) return
-    const frozen = frozenCaretRef.current
-    const released = lastDictationValueRef.current
-    const cur = inputRef.current ?? ''
-    // Untouched composer: a selection here is still a legitimate replacement
-    // target, which is what dictating over a selection is supposed to do.
-    if (!frozen || released === null || cur === released) return
-    // Bound the edit to the region between the longest common prefix and suffix.
-    let lcp = 0
-    while (lcp < released.length && lcp < cur.length && released[lcp] === cur[lcp]) lcp++
-    let lcs = 0
-    while (
-      lcs < released.length - lcp && lcs < cur.length - lcp &&
-      released[released.length - 1 - lcs] === cur[cur.length - 1 - lcs]
-    ) lcs++
-    const start = frozen.start
-    let next: number
-    if (start <= lcp) next = start                                    // edit is after it
-    else if (start >= released.length - lcs) next = start + (cur.length - released.length)
-    else next = voiceCaretRef.current?.start ?? start                 // edit straddles it
-    next = Math.max(0, Math.min(next, cur.length))
-    frozenCaretRef.current = { start: next, end: next }
-  }, [])
-  // The hook's EFFECTIVE streaming mode: streaming is only truly active when the
-  // config asks for it AND the browser supports it (AudioWorklet/WS). Mirrored
-  // from voice.streamEnabled (set by the effect below, once `voice` exists) so
-  // the disarm + cross-slot-routing decisions gate on what the hook ACTUALLY
-  // runs, not the raw config. Keying those on the config alone would, in a
-  // browser without AudioWorklet, treat a batch-fallback session as streaming
-  // and disarm/drop its (only) transcript.
-  const streamEnabledRef = useRef(false)
   // Forward ref to send() (defined far below) so the streaming endpointer's
-  // auto-submit callback — wired into the voice hook here, above send — can
-  // fire it. Kept fresh by an effect after send is declared.
+  // auto-submit callback — handed to the atom here, above send — can fire it.
+  // Kept fresh by an effect after send is declared.
   const sendRef = useRef<((optionText?: string, targetSlot?: string) => void) | null>(null)
-  // Deliver a finished transcript to the slot that INITIATED the recording,
-  // using the session id useVoiceInput snapshotted at record-start (falling back
-  // to the active slot for the ordinary same-slot case). Same-slot splices into
-  // the live composer; a background slot gets it appended to its persisted draft
-  // (recoverable, shown on return) instead of leaking into the active session or
-  // being dropped. Mirrors handleOptimizeResult's cross-slot routing.
-  // Splice a dictation transcript into `base` at the caret (frozen snapshot
-  // when streaming, else the live caret), returning the new value and the caret
-  // offset to restore. Falls back to appending when no caret is known (e.g. the
-  // composer was never focused).
-  const spliceDictation = useCallback((base: string, text: string): { value: string; caret: number } =>
-    spliceDictationText(base, text, frozenCaretRef.current ?? voiceCaretRef.current), [])
-  const applyVoiceText = useCallback((text: string, sessionId: string | null, origin: TranscriptOrigin) => {
-    // Disarmed after a send (streaming) — the transcript was already sent, so
-    // drop it for EVERY route. Checked FIRST (before the cross-slot branch) so a
-    // late final can't slip the already-sent text back into the originating
-    // slot's draft.
-    //
-    // `sttAppendDisarmedRef` covers the narrower case: a manual stop whose
-    // hypothesis is already in the composer. This route APPENDS, so letting the
-    // close-time final through there would duplicate the utterance.
-    //
-    // Both are STREAMING-only states — every site that arms them is gated on
-    // streaming — so they are keyed on where the text came from, not on the mode
-    // selected right now. A batch transcription can outlive the page that started
-    // it and land after streaming was switched on, and its onstop transcript is
-    // always the only copy: suppressing it would delete what the user said.
-    if (origin === 'stream' && (sttDisarmedRef.current || sttAppendDisarmedRef.current)) return
-    const target = sessionId ?? activeSlotRef.current
-    const append = (base: string) => base + dictationSeparator(base, text) + text
-    // Splice into the LIVE composer only when the target slot is both the active
-    // slot AND the slot the composer's `input` currently belongs to. On a slot
-    // switch, activeSlotRef updates synchronously in render, but the composer's
-    // draft-restore + composerSlotRef advance run in LATER effects — splicing in
-    // that unsettled window would let the pending draft restore overwrite the
-    // transcript. Otherwise route to the target slot's persisted draft.
-    const onScreen = target === activeSlotRef.current && composerSlotRef.current === target
-    if (!onScreen) {
-      // Off-screen (or not-yet-settled) delivery is BATCH ONLY. Streaming splices
-      // its live hypothesis into `input`, which is flushed into the draft on
-      // switch, so a cross-slot append would double it — a streaming final that
-      // lands off its slot is dropped (pre-existing behaviour). Batch has no
-      // partial, so appending to the slot's draft is unambiguous. Keyed on the
-      // text's origin rather than the live streaming setting, which is a proxy
-      // that goes wrong for a batch transcript arriving after the mode changed.
-      if (!target || origin === 'stream') return
-      const next = append(drafts.current[target] ?? '')
-      setDraft(drafts.current, target, next)
-      // Mid-switch guard: if the composer still belongs to `target` (activeSlot
-      // has advanced in render but the outgoing-slot persist effect hasn't run
-      // yet), that effect will flush inputRef.current into drafts[target] and
-      // would overwrite this transcript with the pre-transcript input. Carry the
-      // appended value into inputRef too so the flush preserves the transcript.
-      if (composerSlotRef.current === target) inputRef.current = next
-      saveDrafts()
-      return
-    }
-    // Foreground: streaming seeds frozenInputRef/frozenCaretRef in onPartial
-    // (the pre-dictation snapshot); the batch path never fires onPartial so both
-    // are null — fall back to the live composer text + caret so the transcript
-    // inserts at the cursor instead of overwriting (or blindly appending to)
-    // what the user typed.
-    rebaseFrozenCaret()
-    const spliced = spliceDictation(frozenInputRef.current ?? inputRef.current ?? '', text)
-    // Only arm the caret restore when the value actually changes. If a streaming
-    // final equals the last partial, setInput is a no-op and the restore effect
-    // (keyed on `value`) never fires — leaving a stale pending caret that would
-    // hijack the user's NEXT edit.
-    if (spliced.value !== inputRef.current) {
-      setInput(spliced.value)
-      voicePendingCaretRef.current = spliced.caret
-    }
-    frozenInputRef.current = null
-    lastDictationAnchorRef.current = null
-    lastDictationValueRef.current = null
-    postStopEditedRef.current = false
-    frozenCaretRef.current = null
-  }, [saveDrafts, spliceDictation, rebaseFrozenCaret])
-  // Capture can end from a manual release or from the readiness-buffer ceiling.
-  // Both release the composer for typing while the same socket still sends finals.
-  const protectStoppedDictation = useCallback(() => {
-    if (!streamEnabledRef.current || sttEndpointDisarmedRef.current) return
-    sttEndpointDisarmedRef.current = true
-    if (frozenInputRef.current !== null) {
-      // Partials already own the region; close-time delivery would duplicate it.
-      sttAppendDisarmedRef.current = true
-    } else {
-      // Freeze the release caret, but keep the live draft for a cold stream's first
-      // result so typing before that result is preserved at its authored position.
-      frozenCaretRef.current = voiceCaretRef.current
-      lastDictationValueRef.current = inputRef.current
-    }
-  }, [])
-  const voice = useVoiceInput(
-    applyVoiceText,
-    {
-      streaming: sttStreaming,
-      sessionId: activeSlot,
-      onCaptureStop: protectStoppedDictation,
-      onPartial: useCallback((text: string, sessionId: string | null) => {
-        // Streaming partials only fire while the originating slot is on screen
-        // (switching slots stops the stream), so a partial attributed to any
-        // other slot is a late straggler — drop it rather than smear a
-        // half-word into the wrong session.
-        if (sessionId && sessionId !== activeSlotRef.current) return
-        // Deliberately NOT gated on `sttAppendDisarmedRef`: after a manual stop
-        // the socket is still draining, and this is the route that carries the
-        // stabilised text. It REPLACES the region at the frozen boundary rather
-        // than appending, so letting it keep firing cannot duplicate anything —
-        // it is what turns the last unstable hypothesis into the real transcript.
-        if (sttDisarmedRef.current) return
-        // Snapshot the pre-dictation text AND caret on the first partial
-        // (before setInput, so the updater stays pure — no ref mutation inside a
-        // function React may invoke twice) so every later partial and the final
-        // insert at the same spot, replacing the growing hypothesis.
-        if (frozenInputRef.current === null) {
-          frozenInputRef.current = inputRef.current
-          // Do not clobber a caret a cold-stream stop already froze: that one is
-          // the release-time insertion point, and the live caret is now wherever
-          // the user has typed since.
-          frozenCaretRef.current = frozenCaretRef.current ?? voiceCaretRef.current
-        }
-        rebaseFrozenCaret()
-        const spliced = spliceDictation(frozenInputRef.current ?? '', text)
-        // Everything up to and including the dictated insertion. What follows it
-        // in the composer (an existing tail, and anything typed after release) is
-        // carried across untouched rather than rebuilt from the snapshot.
-        const anchor = spliced.value.slice(0, spliced.caret)
-        let next = spliced.value
-        // Where the caret should end up. Defaults to the end of the dictated
-        // region (the ordinary "we own the composer" case); the post-stop branch
-        // overrides it when the text is the user's to steer.
-        let caretTarget: number | null = spliced.caret
-        if (sttEndpointDisarmedRef.current) {
-          // POST-STOP DRAIN. The user has let go, so as far as they are concerned
-          // dictation is over and they may already be typing — at the restored
-          // caret, which for mid-draft dictation sits in the MIDDLE of the text.
-          // Rebuilding from the frozen snapshot would delete that typing, so
-          // verify our own prefix is still intact and splice the correction in
-          // ahead of whatever now follows it. If the prefix cannot be verified
-          // the user edited inside the dictated region; leave the composer alone
-          // rather than guess — same policy as cancelVoice, for the same reason:
-          // a heuristic here deletes user-authored text.
-          //
-          // Gated on the ENDPOINT flag, not the append flag: a cold-stream stop
-          // deliberately leaves the append armed (the close-time final is the
-          // only copy of the utterance), so keying off it would skip this branch
-          // in exactly the case where it is still needed.
-          //
-          // During recording this does not apply: the region is being actively
-          // rewritten and that behaviour is unchanged.
-          const prev = lastDictationAnchorRef.current
-          const cur = inputRef.current ?? ''
-          // The composer now holds a copy of the utterance, which is the exact
-          // condition the append flag encodes — so close the close-time route
-          // here rather than at stop time. stopVoice could not decide this: with
-          // frozenInputRef still null it had to leave the append armed, because
-          // back then the close-time final really was the only copy. Once a drain
-          // partial has landed that is no longer true, and letting the final
-          // through would re-splice from the snapshot and delete whatever the
-          // user typed after the release.
-          sttAppendDisarmedRef.current = true
-          // Checked OUTSIDE the anchor guard: on a cold stream the first drain
-          // partial has no anchor yet, but the user may already have typed since
-          // the release, and their caret must still be left alone.
-          if (cur !== lastDictationValueRef.current) postStopEditedRef.current = true
-          // A null anchor means no partial has landed yet — the cold-stream stop.
-          // This IS the first write: there is nothing to preserve and nothing to
-          // verify, and returning here would drop the utterance. Fall through to
-          // the plain write, which establishes the anchor for the next update.
-          // The typed text is inside the snapshot (taken from the LIVE composer)
-          // and the insertion point is the caret stopVoice froze at the release,
-          // so the transcript lands where the user was speaking rather than after
-          // what they wrote afterwards.
-          if (prev !== null) {
-            if (!cur.startsWith(prev)) return
-            next = anchor + cur.slice(prev.length)
-            if (postStopEditedRef.current) {
-              // Their caret is in their own text, so it must not be dragged to the
-              // end of the dictation — but NOT arming it is not "leaving it
-              // alone" either: React replaces the textarea value and the browser
-              // resets the DOM caret to the end. Re-arm it at the same LOGICAL
-              // spot, shifted by how much the region ahead of it grew or shrank.
-              const live = voiceCaretRef.current
-              caretTarget = live && live.start >= prev.length
-                ? live.start + (anchor.length - prev.length)
-                : null
-            }
-          } else if (postStopEditedRef.current) {
-            // Cold-stream first write with typing already done: there is no old
-            // anchor to measure a shift against, and the value commit leaves the
-            // caret at the end — which is past their text, a sane place to be.
-            caretTarget = null
-          }
-        }
-        if (next !== inputRef.current) {
-          setInput(next)
-          if (caretTarget !== null) voicePendingCaretRef.current = caretTarget
-        }
-        lastDictationAnchorRef.current = anchor
-        lastDictationValueRef.current = next
-      }, [spliceDictation, rebaseFrozenCaret]),
-      // Semantic endpointing (stt.endpointing) judged the utterance complete:
-      // auto-submit. The composer already holds the streamed transcript via
-      // onPartial, and send() reads inputRef.current + stops the live capture
-      // itself (its recording+streaming branch), so this is the same path as
-      // pressing Enter mid-dictation — just triggered by the backend verdict.
-      onEndpoint: useCallback(() => {
-        // A manual stop is the user saying "stop capturing", so a backend
-        // endpoint verdict arriving during the drain must not turn that into an
-        // unrequested send. The endpoint flag is what covers a COLD-stream stop,
-        // where no partial landed and the append flag is deliberately left unset
-        // so the close-time final can still deliver the utterance.
-        if (sttDisarmedRef.current || sttAppendDisarmedRef.current || sttEndpointDisarmedRef.current) return
-        sendRef.current?.()
-      }, []),
-    }
-  )
-  // Keep a ref to the latest `voice` so effects that intentionally omit
-  // `voice` from their deps always invoke the current instance — otherwise
-  // they'd capture a stale `toggle`/`recording` whenever `voice` identity
-  // changes (e.g. when `sttStreaming` flips).
-  const voiceRef = useRef(voice)
-  useEffect(() => { voiceRef.current = voice }, [voice])
-  // Same reason as voiceRef: send() deliberately keeps a minimal dep array (with
-  // an exhaustive-deps suppression), so reading `sttStreaming` directly there
-  // would close over the value from the render that created that send().
-  // Keep streamEnabledRef in sync with the hook's EFFECTIVE streaming mode (see
-  // its declaration above). send()/the slot-switch effect/toggleVoice read it to
-  // decide whether a draining final should be disarmed — which must reflect what
-  // the hook actually runs, not the raw config.
-  useEffect(() => { streamEnabledRef.current = voice.streamEnabled }, [voice.streamEnabled])
-  // Re-arm when the user explicitly (re)starts recording — wrap toggle.
-  // Depend on the individual stable members actually read so this callback
-  // is only re-created when they change. `[voice]` would recreate every
-  // render (hooks don't memoize their return by default), re-rendering all
-  // child components that receive `toggleVoice` as a prop.
-  /**
-   * Start voice capture, with the gating and state resets every entry point
-   * needs. Extracted from `toggleVoice` so the push-to-talk key driver
-   * (`usePushToTalk`) goes through the SAME preamble — calling `voice.start()`
-   * raw would skip the disarm reset and the frozen-snapshot clear, and a
-   * key-started dictation would then be rebuilt from stale pre-dictation text.
-   *
-   * RETURNS the start promise. Load-bearing, not incidental: `usePushToTalk`
-   * chains on it to stop a session whose async startup only finished after the
-   * key was already released. Swallowing it here leaves that guard unreachable
-   * and the microphone open with nothing holding it.
-   *
-   * `silent` suppresses the "voice needs setting up" modal. The key binding is a
-   * PASSIVE trigger — a bare modifier is also an ordinary typing modifier — so a
-   * keystroke that used to type a character must never throw an unsolicited
-   * dialog. Clicking the mic button is a deliberate request and still explains
-   * itself.
-   */
-  const startVoice = useCallback((opts?: { silent?: boolean }): Promise<void> | void => {
-    // Starting a recording while server-side STT is disabled would capture
-    // audio that never gets transcribed. Point the user at the enable setting
-    // instead — unless this came from the keyboard (see `silent`).
-    if (!sttConfigLoaded || !sttEnabled || !sttAvailable) {
-      if (!opts?.silent) setVoiceSetupOpen(true)
-      return
-    }
-    // Exclusive sessions: the mic is a single shared device, so refuse to
-    // START a new recording while another session's transcription is still
-    // in flight (voice.transcribing). This is what keeps voice single-session
-    // — no two recordings/transcriptions ever overlap — so the busy state
-    // needs only a single owner and can never be misattributed.
-    if (voice.transcribing) return
-    sttDisarmedRef.current = false
-    sttAppendDisarmedRef.current = false
-    sttEndpointDisarmedRef.current = false
-    // Reset stale snapshot from a prior session that ended without
-    // finals — otherwise onPartial sees a non-null ref, skips
-    // re-snapshotting, and text typed between sessions is dropped.
-    frozenInputRef.current = null
-    lastDictationAnchorRef.current = null
-    lastDictationValueRef.current = null
-    postStopEditedRef.current = false
-    frozenCaretRef.current = null
-    return voice.start()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [voice.transcribing, voice.start, sttEnabled, sttConfigLoaded, sttAvailable])
-
-  /** Stop voice capture. Always allowed — only starting is gated. */
-  const stopCapture = voice.stop
-  const stopVoice = useCallback(() => {
-    protectStoppedDictation()
-    stopCapture()
-  }, [protectStoppedDictation, stopCapture])
-
-  const toggleVoice = useCallback(() => {
-    if (voice.recording) stopVoice()
-    else startVoice()
-    // Depends on the individual member actually read (`voice.recording`), not the
-    // whole `voice` object — `[voice]` would recreate this callback every render
-    // and re-render every child that receives `toggleVoice`. No suppression is
-    // needed here because the split into startVoice/stopVoice left this list
-    // genuinely exhaustive.
-  }, [voice.recording, startVoice, stopVoice])
-  // Cancel (discard) the in-progress dictation — Esc. Batch simply drops the
-  // pending audio (the hook's onstop skips transcription), so nothing lands in
-  // the composer. Streaming additionally disarms the draining final AND removes
-  // the live dictated region from the composer at the frozenInputRef boundary:
-  // the region is recomputed with the same `spliceDictation` call onPartial used
-  // (so it matches a mid-draft caret splice, not just an append), and we drop
-  // exactly that region — preserving the pre-dictation text verbatim (including
-  // its own trailing whitespace) AND any suffix typed after the dictation. When
-  // the region can't be verified (the user replaced/edited it), leave the
-  // composer unchanged rather than restoring the snapshot and losing that edit.
-  // Uses voiceRef.current (not `voice`) so this prop stays referentially stable
-  // and does not re-render the composer every render — matching toggleVoice.
-  const cancelVoice = useCallback(() => {
-    if (streamEnabledRef.current) {
-      sttDisarmedRef.current = true
-      // Remove the dictated region at the frozenInputRef boundary, preserving
-      // the pre-dictation text EXACTLY (including its own trailing whitespace)
-      // and any suffix the user typed after the dictation. onPartial rebuilt the
-      // composer as `frozen [+ ' ' separator] + partial`, so reconstruct that
-      // exact region and drop only it — never a blanket trailing-space strip.
-      const cur = inputRef.current ?? ''
-      const frozen = frozenInputRef.current
-      const p = voiceRef.current.partial
-      if (frozen !== null && p) {
-        // Reconstruct the composer value through the SAME pure function that
-        // wrote it. onPartial splices at the snapshotted caret, so for a
-        // mid-draft caret the value is `before + lead + partial + trail + after`
-        // — NOT `frozen + separator + partial`. Re-deriving the region with an
-        // append-only formula failed `startsWith` for every mid-draft dictation
-        // and fell through to the leave-unchanged branch, stranding the partial
-        // in the draft. spliceDictation reads the same frozen caret, so this
-        // reproduces the write exactly for both the append and mid-caret shapes.
-        const written = spliceDictation(frozen, p).value
-        if (cur.startsWith(written)) {
-          // The composer still begins with exactly the region onPartial wrote.
-          // Restore the pre-dictation text verbatim and keep any suffix the user
-          // typed after it.
-          setInput(frozen + cur.slice(written.length))
-        }
-        // else: the dictated region can't be verified exactly — the user edited
-        // or replaced it (e.g. deleted the separator, or typed their own text
-        // that merely ends in the same word as the partial). Leave the composer
-        // UNCHANGED: a suffix-match heuristic here would delete user-authored
-        // text ("say hello" -> "say"). The disarm above still drops the draining
-        // final, so no dictation is committed; at worst the visible partial
-        // lingers for the user to clear.
-      }
-      // (frozen===null, or no current partial: nothing verifiably removable —
-      // leave the composer as-is rather than risk clobbering user text.)
-      // Clear BOTH halves of the snapshot: they are written together in
-      // onPartial and a surviving caret would aim the next session's first
-      // splice at a position from the discarded one.
-      frozenInputRef.current = null
-      lastDictationAnchorRef.current = null
-      lastDictationValueRef.current = null
-      postStopEditedRef.current = false
-      frozenCaretRef.current = null
-    }
-    voiceRef.current.cancel()
-  }, [spliceDictation])
-
-  // Push-to-talk / tap-to-toggle keyboard binding (default: hold right ⌥ on
-  // macOS, ⌥⇧Space elsewhere). Routed through startVoice/stopVoice rather than
-  // voice.start/stop so a key-driven dictation gets the same gating and
-  // snapshot resets as the mic button, and `cancelVoice` — NOT the hook's raw
-  // cancel — for the discard. Since capture now opens on the keydown, a fast
-  // partial can reach the composer before the press is revealed as a chord or a
-  // sub-threshold tap, and the raw cancel would strand that text; `cancelVoice`
-  // runs the streaming rollback that removes the dictated region (and no-ops
-  // when nothing verifiably removable was written). No `prewarm`: the driver
-  // opens capture on the keydown itself, so there is no warm-up step to
-  // schedule.
-  usePushToTalk(
-    {
-      recording: voice.recording,
-      // silent: a bare modifier is also an ordinary typing modifier, so a
-      // keystroke must never raise the voice-setup modal on its own.
-      start: () => startVoice({ silent: true }),
-      stop: stopVoice,
-      cancel: cancelVoice,
-    },
-    { disabled: !voiceInputSupported },
-  )
-  // Stop any in-flight recording and clear the streaming prefix when the user
-  // switches slots. The mic is a single shared device, so a recording can't
-  // follow the user to another session; a BATCH transcript is still delivered
-  // to the originating slot via applyVoiceText's session-scoped routing (which
-  // prevents cross-slot leakage precisely — no blanket disarm needed here).
-  // Clearing frozenInputRef here means a streaming final that lands after a
-  // switch-and-return rebases on the LIVE input, so edits made after returning
-  // are preserved rather than clobbered by a stale snapshot.
-  useEffect(() => {
-    frozenInputRef.current = null
-    lastDictationAnchorRef.current = null
-    lastDictationValueRef.current = null
-    postStopEditedRef.current = false
-    frozenCaretRef.current = null
-    // Drop the previous slot's caret so dictating in a freshly switched-to slot
-    // (without touching its composer) appends to that slot's draft instead of
-    // inserting at the old slot's offset.
-    voiceCaretRef.current = null
-    // Streaming ONLY: disarm so a delayed streaming final arriving after this
-    // switch is dropped instead of appended. Its live partial was already
-    // flushed into the outgoing slot's draft, so appending the full final on
-    // return would duplicate the dictated text ("hello hello"). Batch is NOT
-    // disarmed — its single final is routed to the originating slot's draft by
-    // applyVoiceText. (Cross-slot streaming delivery is a follow-up; streaming
-    // is opt-in and off by default.)
-    if (streamEnabledRef.current) sttDisarmedRef.current = true
-    if (voiceRef.current.recording) voiceRef.current.toggle()
-  }, [activeSlot])
-  // True when the current voice session (owned by the slot where recording
-  // actually started — see useVoiceInput's sessionOwner) is the slot on screen.
-  // Gates the recording/transcribing UI so a session transcribing in the
-  // background never shows a busy/locked mic in the session the user switched to.
-  const voiceOwned = voice.sessionOwner === activeSlot
-  // (Streaming-off teardown now lives in useVoiceInput — see its effect on
-  // [streamEnabled, streamRecording, streamStop]. Routing through voice.toggle
-  // here is racy because `useVoiceInput` flips its returned `recording` to the
-  // batch value on the same render that `streamEnabled` goes false.)
+  const composerRef = useRef<ComposerHandle>(null)
+  // Live composer caret, kept current by ChatInput; the resources controller
+  // splices a picked file token at it, and dictation splices the transcript at
+  // it — so ChatPage owns the refs and hands them to the atom.
+  const voiceCaretRef = useRef<{ start: number; end: number } | null>(null)
+  const voicePendingCaretRef = useRef<number | null>(null)
+  // Splice into the LIVE composer only when the target slot is both the active
+  // slot AND the slot the composer's `input` currently belongs to. On a slot
+  // switch, activeSlotRef updates synchronously in render, but the composer's
+  // draft-restore + composerSlotRef advance run in LATER effects — splicing in
+  // that unsettled window would let the pending draft restore overwrite the
+  // transcript.
+  const voiceIsComposerFor = useCallback((target: string | null) => target === activeSlotRef.current && composerSlotRef.current === target, [])
+  // Off-screen batch transcript: append to the target slot's persisted draft
+  // (recoverable, shown on return). Mirrors handleOptimizeResult's cross-slot
+  // routing.
+  const voiceDeliverOffScreen = useCallback((target: string, append: (base: string) => string) => {
+    const next = append(drafts.current[target] ?? '')
+    setDraft(drafts.current, target, next)
+    // Mid-switch guard: if the composer still belongs to `target` (activeSlot
+    // has advanced in render but the outgoing-slot persist effect hasn't run
+    // yet), that effect will flush inputRef.current into drafts[target] and
+    // would overwrite this transcript with the pre-transcript input. Carry the
+    // appended value into inputRef too so the flush preserves the transcript.
+    if (composerSlotRef.current === target) inputRef.current = next
+    saveDrafts()
+  }, [saveDrafts])
+  const voiceAutoSubmit = useCallback(() => { sendRef.current?.() }, [])
+  const composerVoiceOptions = useMemo<ComposerVoiceOptions>(() => ({
+    isComposerFor: voiceIsComposerFor,
+    deliverOffScreen: voiceDeliverOffScreen,
+    onAutoSubmit: voiceAutoSubmit,
+    pushToTalk: true,
+    caretRef: voiceCaretRef,
+    pendingCaretRef: voicePendingCaretRef,
+    settingsRoute: embedded ? '/embed/settings' : settingsPath({ tab: 'voice' }),
+  }), [voiceIsComposerFor, voiceDeliverOffScreen, voiceAutoSubmit, embedded])
 
   // The project ref is read by the resources controller's drop/paste handlers at
   // event time, so it is declared before the controller and refreshed every render.
@@ -2676,7 +2192,12 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const planActionMutationRef = useRef(planActionMutation)
   planActionMutationRef.current = planActionMutation
 
-  const send = useCallback(async (optionText?: string, targetSlot?: string, steerNow?: boolean) => {
+  // Resolves true when the server accepted the message (dispatched, queued,
+  // or received-but-late), false when nothing was delivered (offline, empty,
+  // intercepted locally, transport error, refused). UI reactions all stay
+  // inside send(); the verdict exists for callers that persist state only on
+  // delivery (ArtifactPanel's submit-to-chat batch marks comments sent on it).
+  const send = useCallback(async (optionText?: string, targetSlot?: string, steerNow?: boolean): Promise<boolean> => {
     // Defense-in-depth: ChatInput already gates Send/Optimize buttons and
     // the keyboard Enter shortcut on `connected`, but a future caller (a
     // programmatic dispatch from a hotkey, a follow-up option click, an
@@ -2684,38 +2205,19 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // clear the draft via setInput('') below — losing the user's typed
     // message with no recovery path is the offline-UX regression we're
     // guarding against. Cheap belt-and-braces.
-    if (!connected) return
+    if (!connected) return false
     const raw = (optionText || inputRef.current).trim()
  // Capture + clear the widget-origin tag: attribute this
     // turn to a widget only if the composer still carries the exact text a
     // widget action pre-filled. Cleared on every send so it can't go stale.
     const widgetOrigin = !!widgetPrefillRef.current && raw.includes(widgetPrefillRef.current)
     widgetPrefillRef.current = null
-    if (!raw && !pendingFilesRef.current.length && !pendingSessionsRef.current.length) return
+    if (!raw && !pendingFilesRef.current.length && !pendingSessionsRef.current.length) return false
 
-    // Sending while STREAMING dictation is live ends the dictation. The panel
-    // advertises "Enter to send", so this path is reachable by design — and
-    // without it, streaming STT keeps running past the send: `onPartial`
-    // re-derives the composer value from `frozenInputRef`, which was snapshotted
-    // BEFORE the send cleared it, so the next partial repopulates the composer
-    // with text the user already sent. Disarm FIRST so any partial/final already
-    // in flight is dropped, then stop capture (stop() is async — up to 5s for
-    // the backend close).
-    //
-    // STREAMING ONLY, deliberately. In batch mode the transcription arrives
-    // exactly once, from `MediaRecorder.onstop` AFTER capture ends, and it
-    // arrives through `onText` — which honours `sttDisarmedRef`. Disarming here
-    // would throw away the entire recording, which is the opposite of the bug
-    // being fixed. Batch therefore keeps its pre-existing behaviour untouched:
-    // capture continues, and the transcript lands when the user stops.
-    if (voiceRef.current.recording && streamEnabledRef.current) {
-      sttDisarmedRef.current = true
-      frozenInputRef.current = null
-      lastDictationAnchorRef.current = null
-      lastDictationValueRef.current = null
-      postStopEditedRef.current = false
-      voiceRef.current.toggle()
-    }
+    // Sending while STREAMING dictation is live ends the dictation (see
+    // `useComposerVoice.disarmForSend` for the full rationale — streaming only,
+    // batch keeps capturing and lands its transcript when the user stops).
+    composerRef.current?.voice()?.disarmForSend()
 
     // The session actually on screen at send time. Read from the ref (fresh
     // every render), not the closure `activeSlot` (stale until send() is
@@ -2768,7 +2270,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
             message: slashResult.error || i18nT('pages.chatPage.side_command_not_run'),
           })
         }
-        return
+        return false
       }
     }
 
@@ -2777,7 +2279,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     if (kq && !optionText) {
       knowledgeFetchRef.current.searchKnowledge(kq)
       setInput('')
-      return
+      return false
     }
 
     // Snapshot the staged attachments BEFORE the composer is cleared below, so a
@@ -3021,7 +2523,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
           setSessionRefDraft(sessionRefDrafts.current, uiSlot, restoredRefs)
           saveDrafts()
         }
-        return
+        return false
       }
       const result = created
       slot = result.key;
@@ -3047,12 +2549,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     const sendId = mintSendId()
     meta.sendId = sendId
     const metaPayload = meta
-    // Skip optimistic user bubble when the slot is busy (shared rule:
-    // chatSlice.selectComposerBusy) — the backend sends a "queued" role
-    // message instead, avoiding a duplicate. A steer-flagged send usually
-    // bypasses the queue and starts a turn, so nothing would represent it; its
-    // bubble is appended from the response instead (see below), because only
-    // the server knows whether this particular send got queued after all.
+    // A busy snapshot may be stale. The server's user event supplies the
+    // bubble for an immediate dispatch; a real queue has its own card.
     const _busy = selectComposerBusy(store.getState(), slot ?? null)
     if (!_busy || forceNew) {
       dispatch(appendMessage({ role: 'user', content: displayTxt, cls: '', ts: new Date().toISOString(), meta: metaPayload }))
@@ -3136,11 +2634,10 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       colorTheme: colorThemeRef.current,
     })
     const { body } = receipt
-    // - `transport-error`: the fetch itself rejected -- the send never left, so
-    //   restore-and-report is safe (the old catch branch).
-    // - `response-late`: the deadline fired -- the message was received and the
-    //   WS will deliver the answer; the optimistic bubble stays pending and its
-    //   delivery indicator says so (the old AbortError branch).
+    // - `transport-error`: the fetch rejected. Restore and report only when
+    //   no correlated server echo has already proved delivery.
+    // - `response-late`: the deadline fired; the request may have arrived.
+    //   The optimistic bubble stays pending and its delivery indicator says so.
     // - `unknown`: a 2xx whose body would not parse. The request was accepted
     //   and only its answer is mangled, so it may have started a turn that is
     //   streaming right now. Reporting a refusal would hand the payload back
@@ -3164,14 +2661,15 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       }
     }
     if (receipt.status === 'transport-error') {
+      if (slot && selectSendConfirmed(store.getState(), slot, sendId)) return true
       // Cause-stating and naming the restore ("...and try again"), the shared
       // core copy the other surfaces use, instead of a bare "Connection error".
       failLocalTurn({ role: 'error', content: i18nT('pages.chatPage.send_failed_connection'), cls: '' })
       restoreComposerAfterFailedSend()
-      return
+      return false
     }
-    if (receipt.status === 'response-late') return
-    const accepted = receipt.status === 'dispatched' || receipt.status === 'queued'
+    // Keep the pending-send verdict while WS delivery settles.
+    if (receipt.status === 'response-late') return true
     if (body.queued && llmTxt === typedTxtDirs) {
       // The server queued this send and its receipt names the entry:
       // `queue_id` is the same id `queue_push` broadcasts and the card's
@@ -3217,41 +2715,13 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       // The server explicitly accepted neither (`ok` nor `queued`), so nothing
       // was sent — recovering the composer cannot duplicate a delivered turn.
       restoreComposerAfterFailedSend()
-    } else if (accepted && steerNow && _busy && !body.queued && !body.steered) {
-      // A steer-flagged send the server neither queued nor injected: it
-      // started a turn, so no `queue_push` or `steer_push` echo is coming and
-      // the busy rule above left the text with nothing to represent it.
-      // Append only once the answer rules out both echoes — a mid-plan send
-      // is queued, and a child turn that started while this POST was in
-      // flight is injected mid-turn, each of which brings its own bubble.
-      // Addressed to the SENDING slot, not the active one: the user can
-      // switch sessions while the POST is in flight, and this text belongs to
-      // the transcript it was typed into (same reason `steer_push` uses this).
-      if (slot) {
-        dispatch(appendSlotMessage({
-          slot,
-          message: { role: 'user', content: displayTxt, cls: '', ts: new Date().toISOString(), meta: metaPayload },
-        }))
-      }
     }
     if (slot && confirmedDelivered(body)) {
-      // The response IS the delivery receipt (#4131). The server accepted the
-      // message and appended (or queued) the row, so the optimistic bubble is
-      // confirmed and must stop being a candidate for the 30s "may not have
-      // been delivered" sweep. Nothing else can retire it on this surface: the
-      // `chat_message` user echo `reconcileOptimisticEcho` waits for is
-      // suppressed for every dashboard send by design (`DashboardState.append`
-      // defaults `broadcast_user=False` precisely because the composer already
-      // rendered this bubble), so before this the flag survived the whole turn
-      // and only vanished when `chat_done`'s refresh rebuilt the transcript
-      // from disk.
-      //
-      // Addressed to the SENDING slot for the same reason as the steer-echo
-      // append above. Harmless when the busy rule appended no bubble — no row
-      // carries this `sendId`, so it is a no-op. Deliberately NOT dispatched on
-      // a rejected response, a queued acceptance, or the abort-timeout path:
-      // there delivery of THIS row is unknown, which is what the indicator
-      // exists to say (see `confirmedDelivered`).
+      // The response remains a delivery receipt (#4131), even if the correlated
+      // user echo is missed. The echo owns insertion before streaming, so the
+      // receipt must never append another row.
+      // Addressed to the SENDING slot because the user can switch sessions
+      // while the POST is in flight. A queued acceptance is not delivery.
       // The receipt carries the server-minted user-row `mid` (when the send
       // dispatched immediately); handing it to the reconcile stamps it onto
       // this optimistic bubble so message-pinning works this turn instead of
@@ -3261,8 +2731,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     if (body.ok && !body.queued && cardAtSend && slot === entrySendSlot) {
       // Immediate dispatch confirmed (`ok`): the message consumed the slot's
       // next-turn channel, so the card captured at entry is now stale. An
-      // independent check, not part of the else-if chain above — the
-      // steer-echo branch also implies `ok && !queued`, and the card must
+      // independent check, not part of the else-if chain above — the card must
       // retire regardless of which transcript-echo rule applied. A QUEUED
       // acceptance deliberately does NOT retire here — the queued message is
       // still cancellable, and cancelling must keep the card; it retires at
@@ -3288,6 +2757,12 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // The user answered in the composer instead of the card; a blocking card
     // is resolved over the network, so this cannot be a store-only retirement.
     void resolveAskAfterSend(body, slot === entrySendSlot ? askAtSend : null, dispatch)
+    // The delivery verdict (see the callback's doc above). Only an explicit
+    // `refused` reads as not-delivered here; `unknown` (a 2xx whose body did
+    // not parse) may have started a turn, so it counts as delivered for the
+    // same reason the composer above does not restore on it — a retry it
+    // invited could duplicate a delivered turn.
+    return receipt.status !== 'refused'
     // `send` is deliberately kept stable: it reads volatile values (agent,
     // model, project, mode, colorTheme, activeSlot) through refs so it does not
     // re-create on every keystroke/theme/agent change (it is passed to children
@@ -3317,10 +2792,12 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // Defense-in-depth: the panels' submit buttons are gated on `connected`,
     // but bail here too so an offline call can't switch the active session
     // and then have send() silently drop the message.
-    if (!connected) return
+    if (!connected) return false
     const target = tabsCtl.activeTab?.slot ?? null
     if (target && target !== activeSlot) dispatch(switchSlot(target))
-    send(message, target ?? undefined)
+    // The delivery verdict flows back to the panel: ArtifactPanel marks a
+    // comment batch as sent only when this resolves true.
+    return send(message, target ?? undefined)
   }, [connected, tabsCtl.activeTab, activeSlot, dispatch, send])
 
   // Auto-send when navigated with ?autoSend=1 or ?token= with prompt
@@ -4368,6 +3845,12 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const openDefaultModelSetting = useCallback(() => {
     navigate(settingsPath({ tab: 'chat', highlight: SETTINGS_DEFAULT_MODEL_ID }))
   }, [navigate])
+  // The Kiro sign-in card (an `auth_required` error row's fix) lives on the
+  // full dashboard's Settings > Overview; same surface rule as the Default
+  // Model link above.
+  const openKiroSignIn = useCallback(() => {
+    navigate(settingsPath({ tab: KIRO_SIGN_IN_SETTINGS_TAB, highlight: KIRO_SIGN_IN_SETTING_ID }))
+  }, [navigate])
 
   const handleContinue = useCallback(() => {
     if (!activeSlot || continuing || !continuable) return
@@ -4671,7 +4154,12 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // new chat's first send briefly showed the previous session's messages
   // (#8526). Only same-slot updates (streaming flushes, history landings) are
   // deferred; a switch renders the right transcript in its first commit.
-  const renderedDisplayItems = useSlotDeferredValue(activeSlot, displayItems)
+  // One deferred frame carries both the rows the virtualizer draws and the
+  // messages they came from, so every deferred reader (the transcript, the
+  // turn minimap, the Navigation tab) sees the same snapshot by construction.
+  const liveTranscript = useMemo(() => ({ messages, displayItems }), [messages, displayItems])
+  const renderedTranscript = useSlotDeferredValue(activeSlot, liveTranscript)
+  const renderedDisplayItems = renderedTranscript.displayItems
 
   // Keep the ref in sync so handleRangeChanged / updatePinnedPrompt
   // read the latest displayItems. useLayoutEffect (not useEffect): the DOM's
@@ -4974,6 +4462,10 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
 
   // Legacy aliases so the JSX below keeps reading the same names.
   const visibleDisplayItems = virt.virtualItems
+  // A window replacement can commit after the scroll frame that requested it.
+  // Re-read geometry from the committed rows so an incomplete old window cannot
+  // leave its banner at rest over a different part of the transcript.
+  useLayoutEffect(() => { updatePinnedPrompt() }, [visibleDisplayItems, updatePinnedPrompt])
 
 
 
@@ -5230,6 +4722,12 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     const raw = inputRef.current.trim()
     const files = pendingFilesRef.current
     if (!raw && !files.length) return
+    // Same rule as send(): a steer while STREAMING dictation is live ends the
+    // dictation before the composer is cleared below. AFTER the empty-payload
+    // check, like send(): an Enter on an empty composer before the first
+    // partial has landed sends nothing, so it must not end the capture — that
+    // would drop the utterance in flight with nothing to show for it.
+    composerRef.current?.voice()?.disarmForSend()
     // Client-side slash commands (/side, /onboarding) are UI commands, not
     // turn content: they must work identically whether the agent is mid-turn
     // or idle. Without this guard the command text is steered into the
@@ -5299,6 +4797,11 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // races chat_done falls onto — so the bubble is resolvable by id identity
     // whichever path the server took (#6075).
     const steerSendId = mintSendId()
+    // Drain the per-frame chunk buffer first: a pre-steer chunk still pending
+    // in useWebSocket's buffer means appendMessage's finalize-on-steer finds
+    // no streaming row to freeze, so that text would flush BELOW this card
+    // and post-steer chunks would append to it (see lib/pendingChunkDrain.ts).
+    drainPendingChunks()
     dispatch(appendMessage({ role: 'user', content: llmTxt, cls: 'msg msg-u', ts: new Date().toISOString(), meta: { steer: true, optimistic: true, sendId: steerSendId } }))
     steerMutation.mutate({ text: llmTxt, sendId: steerSendId, slot: activeSlot })
     // Staged session references are deliberately NOT part of steering: neither
@@ -5348,21 +4851,25 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
 
 
   // Search: map message index → displayItems index for scroll-to-match
-  const messageToDisplayIdx = useMemo(() => {
-    const map = new Map<number, number>()
-    displayItems.forEach((item, di) => {
-      if (item.kind === 'turn') {
-        for (const ti of item.items) {
-          if (ti.kind === 'single') map.set(ti.idx, di)
-          else if (ti.kind === 'group') ti.msgs.forEach((_, mi) => map.set(ti.startIdx + mi, di))
-        }
-      } else if (item.kind === 'single') map.set(item.idx, di)
-      else if (item.kind === 'group') item.msgs.forEach((_, mi) => map.set(item.startIdx + mi, di))
-    })
-    return map
-  }, [displayItems])
+  const messageToDisplayIdx = useMemo(() => buildMessageToDisplayIdx(displayItems), [displayItems])
 
-  const chatNav = useChatNavigation(messages, messageToDisplayIdx)
+  const navigateToTurn = useCallback((displayIndex: number) => {
+    navToDisplayIndex(displayIndex, { behavior: 'smooth', align: 'start', offset: -24 })
+  }, [navToDisplayIndex])
+
+  // The transcript renders the deferred `renderedTranscript` snapshot; while a
+  // history page lands, live indexes lead the rows on screen. The minimap's
+  // items and index map come from that same frame, so a marker's display index
+  // always names the row the virtualizer is actually showing.
+  const renderedMessageToDisplayIdx = useMemo(
+    () => buildMessageToDisplayIdx(renderedTranscript.displayItems),
+    [renderedTranscript.displayItems],
+  )
+  // One per-turn derivation: `sections` feeds the turn minimap; `links` feeds the
+  // Navigation tab. Both read the deferred snapshot, so the link list trails a
+  // landing history page by one deferred commit -- deliberate, and harmless for
+  // a side panel.
+  const chatNav = useChatNavigation(renderedTranscript.messages, renderedMessageToDisplayIdx)
 
   // ── Chat Pins ──────────────────────────────────────────────────────────────
   const {
@@ -5890,6 +5397,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       onContinue: handleContinue,
       onPickModel: openModelPickerFromError,
       onOpenDefaultModel: embedded || popout ? undefined : openDefaultModelSetting,
+      onOpenSignIn: embedded || popout ? undefined : openKiroSignIn,
       onSessionOpen: selectSessionTab,
       sessions: connected ? sessionTitles : undefined,
       activeSession: activeSlot || undefined,
@@ -5927,7 +5435,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       bubble,
     ])
     return { renderers, fallback: bubble }
-  }, [slotRunning, handleFileOpen, handleArtifactOpen, selectSessionTab, sessionTitles, connected, handleFork, handleQuote, handleAsk, chatConfig, activeSlot, regenerating, handleRegenerate, handleEditResend, slotHasMore, loadingOlder, cursorIsForActiveSlot, slotOldestIndex, handleLoadEarlier, renderUserContentCb, highlightTs, activeSlotTitle, mode, embedded, popout, handleOpenDiff, handlePlanFromHere, planTaskId, artifactPaths, automationId, toolDisclosure, setToolDisclosureFor, linkPreviewsOn, socialShareOn, voiceRecoverySlot, handleSubagentPanelOpen, isPinned, handleTogglePinForMessage, showRefusedPress, transcriptHot, revealAppInPanel, continuable, interrupted, continuing, handleContinue, openModelPickerFromError, openDefaultModelSetting, handleFolderOpen, handleSpeak, handleApplyPlan, mcpAppPanel])
+  }, [slotRunning, handleFileOpen, handleArtifactOpen, selectSessionTab, sessionTitles, connected, handleFork, handleQuote, handleAsk, chatConfig, activeSlot, regenerating, handleRegenerate, handleEditResend, slotHasMore, loadingOlder, cursorIsForActiveSlot, slotOldestIndex, handleLoadEarlier, renderUserContentCb, highlightTs, activeSlotTitle, mode, embedded, popout, handleOpenDiff, handlePlanFromHere, planTaskId, artifactPaths, automationId, toolDisclosure, setToolDisclosureFor, linkPreviewsOn, socialShareOn, voiceRecoverySlot, handleSubagentPanelOpen, isPinned, handleTogglePinForMessage, showRefusedPress, transcriptHot, revealAppInPanel, continuable, interrupted, continuing, handleContinue, openModelPickerFromError, openDefaultModelSetting, openKiroSignIn, handleFolderOpen, handleSpeak, handleApplyPlan, mcpAppPanel])
 
   const renderMessage = useCallback((i: number, m: ChatMessage) => {
     // Key identity rules (clientTs preference + streaming->assistant role
@@ -5967,7 +5475,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // nothing for them, and the bare wrapper would still stack py-1 spacers,
     // one per quiet monitor cycle.
     if (it.kind === 'single' && isHiddenInvisibleAssistantRow(it.msg)) return null
-    return <div key={turnLeadKey(it, stableMsgKey)} className={`px-4 mx-auto w-full py-1`} style={{ maxWidth: 'var(--mc-content-width, 900px)' }}>
+    return <div key={turnLeadKey(it, stableMsgKey)} data-content-column="" className={`px-4 mx-auto w-full py-1`} style={{ maxWidth: 'var(--mc-content-width, 900px)' }}>
       {it.kind === 'group' ? (() => {
         const unresolvedPerms = it.msgs.filter(m => m.role === 'permission' && !m.meta?.resolved)
         // Skip group entirely if it only contains unresolved permissions (handled by ApprovalBar)
@@ -6005,7 +5513,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       return <TurnBlock turn={item} renderItem={renderTurnItem} collapseAll={chatConfig.collapseAllSteps} appToolCallIds={appToolCallIds} disclosure={undefined} disclosureKey={`farm-${i}`} onDisclosureChange={() => {}} />
     }
     return (
-      <div className={`px-4 mx-auto w-full py-1`} style={{ maxWidth: 'var(--mc-content-width, 900px)' }}>
+      <div data-content-column="" className={`px-4 mx-auto w-full py-1`} style={{ maxWidth: 'var(--mc-content-width, 900px)' }}>
         {item.kind === 'group' ? (() => {
           if (item.msgs.every(m => m.role === 'permission')) return null
           return (
@@ -7167,6 +6675,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                       color_index: old?.color_index ?? null,
                       color_hex: old?.color_hex ?? null,
                       project: old?.project ?? null,
+                      instanceId: old?.instance_id || undefined,
                     }
                     try { await dispatch(createSlot(opts)).unwrap() } catch { return }
                     try { await dispatch(deleteSlot(activeSlot)).unwrap() } catch { /* new slot already active */ }
@@ -7183,6 +6692,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                       color_index: old?.color_index ?? null,
                       color_hex: old?.color_hex ?? null,
                       project: old?.project ?? null,
+                      instanceId: old?.instance_id || undefined,
                     }
                     try { await dispatch(createSlot(opts)).unwrap() } catch { return }
                     try { await dispatch(deleteSlot(activeSlot)).unwrap() } catch { /* new slot already active */ }
@@ -7190,6 +6700,17 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                 />
               </motion.div>
             ) : (
+            <>
+            <TurnNavigationMinimap
+              items={chatNav.sections}
+              scrollerRef={scrollerRef}
+              onNavigate={navigateToTurn}
+              // The rail maps loaded turns only; while the server holds older
+              // rows it wears an end-cap that says so and loads them (#8221).
+              earlier={slotHasMore && cursorIsForActiveSlot
+                ? { loading: loadingOlder, onLoad: handleLoadEarlier }
+                : undefined}
+            />
             <TranscriptScrollShell
               scrollerRef={scrollerRef}
               onScroll={onScrollPin}
@@ -7343,6 +6864,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               })}
               
             </TranscriptScrollShell>
+            </>
             )}
             {/* Restore cover. A session left mid-history reopens on a transcript
                 that hydrates in chunks and is only positioned once its anchored
@@ -7554,6 +7076,13 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                   />
                 </div>
               )}
+              <Composer
+                ref={composerRef}
+                slotKey={activeSlot}
+                value={input}
+                onChange={setInput}
+                voice={composerVoiceOptions}
+              >
               <ChatInput
               aboveComposer={
                 <>
@@ -7706,31 +7235,6 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               onDrop={dropTargetProps.onDrop}
               onDragOver={dropTargetProps.onDragOver}
               onDragLeave={dropTargetProps.onDragLeave}
-              voiceRecording={voiceOwned && voice.recording}
-              voiceTranscribing={voiceOwned && voice.transcribing}
-              /* Ungated: `startVoice` refuses on `voice.transcribing` outright,
-                 so the voice controls have to read the same global fact. */
-              voiceTranscribeActive={voice.transcribing}
-              voiceError={voice.error}
-              voiceLevel={voiceOwned ? voice.level : 0}
-              voiceDeviceLabel={voiceOwned ? voice.deviceLabel : ''}
-              voiceDeviceId={voiceOwned ? voice.deviceId : ''}
-              onSelectVoiceDevice={voice.switchDevice}
-              voiceDeviceSwitchIsLive={voiceOwned && voice.deviceSwitchIsLive}
-              onClearVoiceError={voice.clearError}
-              voiceDictationPanel={sttDictationPanel}
-              voiceStreaming={voice.streamEnabled}
-              voiceSampleRef={voice.sampleRef}
-              voicePartial={voiceOwned ? voice.partial : ''}
-              voiceDownload={voiceOwned ? voice.download : null}
-              voiceCaretRef={voiceCaretRef}
-              voicePendingCaretRef={voicePendingCaretRef}
-              onVoiceToggle={voiceInputSupported ? toggleVoice : undefined}
-              onVoiceCancel={voiceInputSupported ? cancelVoice : undefined}
-              onVoicePrewarm={voiceInputSupported ? voice.prewarm : undefined}
-              onVoiceStart={voiceInputSupported ? startVoice : undefined}
-              onVoiceStop={voiceInputSupported ? stopVoice : undefined}
-              voiceCaptureActive={voice.recording}
               agentName={activeAgentName}
               // The chip shows the inherited-default marker; `agentName` stays
               // the raw resolved alias for the skills query and switch title.
@@ -7894,17 +7398,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               knowledgeChip={knowledgeFetch.pendingKnowledge ? <div className="flex items-start gap-1"><KnowledgeBubbleChip knowledge={{ items: knowledgeFetch.pendingKnowledge.items.length, tokens: knowledgeFetch.pendingKnowledge.totalTokens, titles: knowledgeFetch.pendingKnowledge.items.map(i => i.title), content: knowledgeFetch.pendingKnowledge.items.map(i => ({ title: i.title, text: i.content.slice(0, 2000) })) }} /><button type="button" onClick={() => knowledgeFetch.clearPending()} className="shrink-0 mt-0.5 p-0.5 text-muted hover:text-danger bg-transparent border-none cursor-pointer rounded hover:bg-danger/10 transition-colors" aria-label={i18nT('pages.chatPage.remove_knowledge_context')} title={i18nT('pages.chatPage.remove_knowledge_context')}>&times;</button></div> : undefined}
               connected={connected}
             />
+              </Composer>
             </div>
-            <VoiceDisabledModal
-              open={voiceSetupOpen}
-              reason={sttEnabled && !sttAvailable ? 'unavailable' : 'disabled'}
-              provider={sttProvider}
-              onClose={() => setVoiceSetupOpen(false)}
-              onOpenSettings={() => {
-                setVoiceSetupOpen(false)
-                navigate(embedded ? '/embed/settings' : settingsPath({ tab: 'voice' }))
-              }}
-            />
             {/* Agent dropdown portal — triggered from input bar */}
             {agentDropdown && agentBtnRect && createPortal(
               // The keydown handler routes arrow/Enter navigation to the inner
@@ -7923,7 +7418,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                     failed-write alert — offering the write without its error path would make
                     a rejected request indistinguishable from a successful one. */}
                 {!embedded && <DefaultAgentRow agentName={activeAgentName} isDefault={activeAgentName === defaultAgent} onSetDefault={() => toggleDefaultAgent(activeAgentName)} />}
-                {!embedded && <ManageAgentsFooter error={defaultAgentFailed} onManage={() => { setAgentDropdown(false); navigate('/capabilities?tab=templates') }} />}
+                {!embedded && <ManageAgentsFooter error={defaultAgentFailed} onManage={() => { setAgentDropdown(false); navigate('/capabilities?tab=crews') }} />}
               </div>,
               document.body
             )}

@@ -8,11 +8,9 @@ id). A third case is the job being created rather than the creator: an agent job
 with ``persistent_session=False`` can never satisfy an ownership check on a later
 run, including against jobs it scheduled itself.
 
-All three succeeded silently before this change. These tests pin the warning AND
+All three write a row they can never manage. These tests pin the warning AND
 the fact that it is only a warning -- execution is untouched and the durable
 callers stay quiet, which is what keeps the noise off the paths that already work.
-
-See issue #8772.
 """
 
 from __future__ import annotations

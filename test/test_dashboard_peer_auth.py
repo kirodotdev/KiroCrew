@@ -49,7 +49,7 @@ def short_sock_dir() -> "Iterator[Path]":
 
     ``sun_path`` caps at 104 bytes on macOS, and a pytest ``tmp_path`` under a
     deep TMPDIR (or xdist) exceeds it, failing ``bind()`` with ``OSError:
-    AF_UNIX path too long`` (#8610). Same pattern as ``test_socketsec.py``:
+    AF_UNIX path too long``. Same pattern as ``test_socketsec.py``:
     ``mkdtemp`` under :func:`short_tmp_base`, removed at teardown because
     ``mkdtemp`` registers no finalizer.
     """

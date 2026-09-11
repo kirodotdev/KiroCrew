@@ -1,6 +1,7 @@
 import { createSlice, createAsyncThunk, createSelector, type PayloadAction } from '@reduxjs/toolkit'
 import { whenScrollQuiet } from '../lib/scrollQuiet'
 import { api } from '../api/client'
+import { resolveDefaultMemoryMode } from '../api/queryClient'
 import { devLog, inspectorOn } from '../dev/scrollInspector'
 import { addSlotOptimistic, updateSlot, removeSlotOptimistic, markSlotRead, fetchSlots, slotSurfaceKey, sseSlots, sseConnected } from './dashboardSlice'
 import { resolveDefaultColor } from '../utils/sessionColors'
@@ -150,9 +151,13 @@ const RECONCILE_WINDOW = 50
 /** Reconcile a server echo (carrying both `sendId` and `mid`) against the
  *  optimistic user bubble that was appended client-side at send time.
  *
- *  Scans backward over non-steer user messages looking for a `sendId` match.
- *  On match: updates ts/meta, clears the `optimistic` flag, and strips the
- *  one-shot `sendId` from persisted meta (it served its correlation purpose).
+ *  Scans the bounded tail for an exact `sendId` match, including past newer
+ *  steers that may have been appended before this echo arrived.
+ *  A matching optimistic steer can have raced onto a new turn; the ordinary
+ *  user echo then also clears its provisional steer flag.
+ *  On match: updates ts/meta and clears the `optimistic` flag. Keep `sendId`
+ *  so a pending HTTP request can still recognize delivery if its receipt
+ *  times out or the connection resets after this echo.
  *
  *  Returns `true` if reconciliation succeeded (caller should `return` to skip
  *  the push), `false` if no match was found (caller falls through to push).
@@ -171,14 +176,15 @@ function reconcileOptimisticEcho(
   for (let i = msgs.length - 1; i >= reconcileFloor; i--) {
     const m = msgs[i]
     if (m.role !== 'user') continue
-    if (m.meta?.steer) break // steer boundary — stop scanning
     if (m.meta?.sendId === echoSendId) {
+      // Keep the rendered row's identity when the server supplies its timestamp.
+      if (ts && m.ts && ts !== m.ts) {
+        m.meta = { ...(m.meta || {}), clientTs: m.meta?.clientTs ?? m.ts }
+      }
       if (ts) m.ts = ts
       m.meta = { ...(m.meta || {}), ...meta }
-      // The sendId is a one-shot wire correlation ID — strip it from the
-      // persisted meta now that reconciliation succeeded (#3898 item 2).
-      delete (m.meta as Record<string, unknown>).sendId
       delete (m.meta as Record<string, unknown>).optimistic
+      if (!meta.steer) delete (m.meta as Record<string, unknown>).steer
       return true
     }
     // #3898 fix: continue scanning past non-matching user messages so
@@ -189,34 +195,39 @@ function reconcileOptimisticEcho(
 
 /** Frame roles that retire a slot's pending STATELESS question card.
  *
- *  Deliberately NARROWER than "every role that starts a turn". The card's
- *  contract is "the user's answer arrives as the next message", and the roles
- *  here are the ones where that answer channel is genuinely gone:
+ *  Exactly one role, `user`, and the narrowness is the whole rule. The card's
+ *  contract is "the user's answer arrives as the next message", so the only
+ *  frame that consumes that channel is one the HUMAN sent: they answered in the
+ *  composer, or said something else, and either way spent their next message.
  *
- *  - `user` — the human spoke (composer answer, or something else entirely);
- *    either way the next-message channel was consumed by its owner.
- *  - `nudge` — an auto-nudge cycle deliberately moved the session on past the
- *    question; the loop's instruction, not the answer, became the next turn.
+ *  `nudge` was in this set (PR #2131) on the theory that an auto-nudge cycle
+ *  moves the session past the question. It does not consume the answer channel:
+ *  a nudge wakes the SAME agent in the SAME conversation, so a message the user
+ *  sends ten cycles later still lands on the agent that asked. Retiring on it
+ *  deleted the user's only affordance for a question nobody had answered —
+ *  observed on a monitored conductor session, where the card was gone by the
+ *  time the user came back to it, and the server record went with it so a reload
+ *  had nothing to rehydrate. An unanswered card now stays until it is answered
+ *  or explicitly DISMISSED; dismissal is a server round-trip that retires the
+ *  record too, and it is the control that keeps a genuinely stale card from
+ *  lingering — the auto-retire was covering for a control that now exists.
  *
  *  `inject` (cron notifications, recovery resumes) and `subagent` (completion
- *  events) also start turns, but they interleave with a question the agent may
- *  STILL be waiting on: an agent that spawns work, asks the user a question,
- *  and ends its turn will absorb completion events while the question remains
- *  genuinely open — clearing the card on those frames would delete the user's
- *  only UI for answering a live question. If a session moves on for real, its
- *  next user/nudge frame still retires the card. Extending coverage is a data
- *  edit here, not a code change (per Design Review on PR #2131). */
-const QUESTION_RETIRING_ROLES = new Set(['user', 'nudge'])
+ *  events) also start turns and are out for the same reason they always were:
+ *  they interleave with a question the agent may STILL be waiting on. Extending
+ *  coverage is a data edit here, not a code change (per Design Review on PR
+ *  #2131), and the backend's `_QUESTION_RETIRING_ROLES` must be edited with it
+ *  (parity is pinned by test_slot_needs_input_status.py). */
+const QUESTION_RETIRING_ROLES = new Set(['user'])
 
-/** Drop a slot's pending STATELESS question card (no ``ask_id``) when a
- *  turn-consuming frame lands on that slot.
+/** Drop a slot's pending STATELESS question card (no ``ask_id``) when the user's
+ *  own frame lands on that slot.
  *
  *  A stateless card's contract is "the user's answer arrives as the next
  *  message" (the agent ended its turn on it — `post_question_card`, no
- *  server-side wait). So the frame that STARTS the slot's next turn consumes
- *  the card's answer channel and makes it stale. Without this, a monitored
- *  session that asked a question and was then nudged onward parks the card
- *  above the composer FOREVER — it invites an answer no turn is waiting for.
+ *  server-side wait). A `user` row IS that next message, so the card it was
+ *  waiting for has arrived and the card is spent. Nothing else retires it —
+ *  see `QUESTION_RETIRING_ROLES` for why a nudge does not.
  *
  *  Server-owned cards (with `ask_id`) are exempt: their lifecycle is the
  *  `question_card_resolved` broadcast (answered / timed out / cancelled /
@@ -1297,6 +1308,10 @@ function applyNonActiveFrame(
 const EMPTY_MESSAGES: ChatMessage[] = []
 export const selectSlotMessages = (state: RootState, slot: string): ChatMessage[] =>
   slot === state.chat.activeSlot ? state.chat.messages : (state.chat.slotMessages[slot] ?? EMPTY_MESSAGES)
+/** Only a server-confirmed row for THIS send proves delivery, even if the POST
+ *  subsequently fails. An optimistic bubble or identical text proves nothing. */
+export const selectSendConfirmed = (state: RootState, slot: string, sendId: string): boolean =>
+  selectSlotMessages(state, slot).some(m => m.role === 'user' && m.meta?.sendId === sendId && !m.meta?.optimistic)
 export const selectSlotStreamState = (state: RootState, slot: string): SlotState =>
   slot === state.chat.activeSlot ? state.chat.slotState : (state.chat.slotRun[slot]?.state ?? 'idle')
 /** The turn-start count for `slot` (see `ChatState.runEpoch`): the identity a
@@ -2367,7 +2382,7 @@ function mergePreservedThinking<M extends { role: string; content: string; cls?:
       // A PLAIN optimistic send is deliberately NOT resolved this way, even
       // though it carries a `sendId` too: for a non-steer send, "a persisted
       // row with this id exists" does not prove "the turn above this bubble is
-      // over" — crew mode persists the user row as a durable queue entry and
+      // over" — a durable-queue ingress (the retired Crew Mode was one) can persist the user row and
       // starts no turn at all — so recording a boundary there re-opens the
       // over-drop class the text heuristics were retired for. For a steer
       // bubble the inference is sound precisely because the row's own `steer`
@@ -2816,6 +2831,9 @@ export const refreshSlot = createAsyncThunk(
 let warmSeqCounter = 0
 const nextWarmSeq = (): number => ++warmSeqCounter
 
+const configuredDefaultMemoryMode = () =>
+  resolveDefaultMemoryMode(() => api.dashboardConfig())
+
 export const warmSlotCache = createAsyncThunk(
   'chat/warmSlotCache',
   async (key: string, { getState }) => {
@@ -2840,11 +2858,11 @@ export const createSlot = createAsyncThunk<
   { fulfilledMeta: { originActiveSlot: string | null; activate: boolean } }
 >(
   'chat/createSlot',
-  async (opts, { dispatch, getState, fulfillWithValue }) => {
+  async (opts, { getState, fulfillWithValue }) => {
     const agent = typeof opts === 'string' ? opts : opts?.agent
     const model = typeof opts === 'string' ? undefined : opts?.model
     const mode = typeof opts === 'string' ? undefined : opts?.mode
-    const memory_mode = typeof opts === 'string' ? undefined : opts?.memory_mode
+    const requestedMemoryMode = typeof opts === 'string' ? undefined : opts?.memory_mode
     const clean_mode = typeof opts === 'string' ? undefined : opts?.clean_mode
     const folderId = typeof opts === 'string' ? undefined : opts?.folder_id
     // Title at BIRTH, for the same reason folder membership rides this payload:
@@ -2871,6 +2889,10 @@ export const createSlot = createAsyncThunk<
     // pending (e.g. New Chat spun on "Creating" under memory pressure and they
     // moved to another tab), the new slot must NOT hijack the view.
     const originActiveSlot = (getState() as RootState).chat.activeSlot
+    // An explicit Incognito/Temporary menu choice wins. All other dashboard chat
+    // entry points resolve the persisted preference here, before the first turn
+    // can read or write memory.
+    const memory_mode = requestedMemoryMode || await configuredDefaultMemoryMode()
     const slot = await api.createChatSlot(undefined, agent, model, mode, memory_mode, title, clean_mode, undefined, folderId || undefined, instanceId)
     const dashState = (getState() as RootState).dashboard
     // An explicit color (e.g. carried from a slot being recreated on a
@@ -2923,7 +2945,8 @@ export const createSlot = createAsyncThunk<
     if (project) {
       slot.project = project
       // Await the scope on BOTH paths before publishing the slot. Publishing
-      // via addSlotOptimistic makes the slot selectable (and, when activated,
+      // (dashboardSlice's createSlot.fulfilled matcher) makes the slot
+      // selectable (and, when activated,
       // keys the agents-roster fetch to this optimistic project), so anything
       // that observes the slot before the server records the project runs
       // against the DEFAULT checkout: a turn would execute in the wrong
@@ -2939,7 +2962,10 @@ export const createSlot = createAsyncThunk<
         throw err
       }
     }
-    dispatch(addSlotOptimistic(slot))
+    // No `addSlotOptimistic` here: dashboardSlice registers the slot on this
+    // thunk's `fulfilled` action, so the row and the activation land in one
+    // commit. Everything that must precede publication (colour, project
+    // scope) has already been awaited above.
     // Carry the origin slot in the action meta (fulfillWithValue) rather than on
     // the payload, so it can never leak into the persisted slot object. The
     // fulfilled reducer reads action.meta.originActiveSlot to decide whether
@@ -3017,7 +3043,7 @@ export const resumeFromHistory = createAsyncThunk(
     const cursor = typeof d.next_before === 'number' ? d.next_before : null
     // `surface` (falling back to `mode`) is returned so a caller resuming from
     // a surface that cannot display every slot (ChatPage's unified view only
-    // shows default/orchestrator/crew, see isChatPageSurface) can tell a
+    // shows default/orchestrator, see isChatPageSurface) can tell a
     // silently-unusable resume apart from a genuinely failed one (#3624) --
     // the request succeeds either way, so `ok` alone cannot distinguish them.
     return { ok: d.ok, key: d.key, surface: d.surface ?? d.mode, nextBefore: cursor ?? 0, messages: filterMessages(d.messages || []), hasMore: cursor !== null && (d.has_more || false), total: d.total || 0 }
@@ -3034,7 +3060,9 @@ export const forkSlot = createAsyncThunk(
       ? await api.forkChatSlot(slot, atIndex, prompt, mode, direction, messageId)
       : await api.forkChatSlot(slot, atIndex, prompt, mode, direction)
     if (d.ok) {
-      dispatch(addSlotOptimistic({ key: d.key, title: d.title || d.key, messages: d.messages || 0, running: false, folder_id: d.folder_id }))
+      // memory_mode is the parent's, echoed by the server; without it the new
+      // tab would read as persistent until the next slots refresh.
+      dispatch(addSlotOptimistic({ key: d.key, title: d.title || d.key, messages: d.messages || 0, running: false, folder_id: d.folder_id, memory_mode: d.memory_mode }))
     }
     return d
   },
@@ -3457,7 +3485,8 @@ const CONTINUE_SCAN_SKIP = new Set(['queued', 'tool_call', 'tool_result', 'injec
  * True when the active slot can be handed back to the agent — i.e. Continue is
  * worth offering on an empty composer.
  *
- * The rule is simply "the slot is idle and has a conversation under it". It is
+ * The rule is "the slot is idle and has a conversation under it", except for
+ * a current typed member-memory setup refusal that requires the owner editor. It is
  * NOT limited to turns that visibly died, because a transcript cannot reliably
  * show that they did: a force-quit or force-exit runs no cleanup, so no error
  * row is ever written and a killed turn reads exactly like a finished one (see
@@ -3926,20 +3955,13 @@ const chatSlice = createSlice({
     },
     removeThinking(state) { state.messages = state.messages.filter(m => m.role !== 'thinking') },
     /** Retire a bubble's "pending confirmation" state once the send's own HTTP
-     *  response accepted it (`ok` or `queued`).
-     *
-     *  This is the PRIMARY confirmation path, not a fallback. The `chat_message`
-     *  echo that `reconcileOptimisticEcho` waits for is only broadcast for rows
-     *  the composer did NOT render — a message typed in a channel and replayed
-     *  into the slot (`channel_slots`, the sole `broadcast_user=True` caller).
-     *  `DashboardState.append` suppresses it for every dashboard send by design,
-     *  precisely BECAUSE the composer already rendered the bubble, so waiting on
-     *  it left every composer bubble optimistic forever and the 30s sweep flagged
-     *  all of them (#4131).
+     *  response accepted it as an immediate turn. A correlated user echo can
+     *  also confirm it; the receipt remains useful if that echo was missed.
+     *  Never insert here: the user echo supplies a skipped bubble before the
+     *  reply, independently of receipt timing.
      *
      *  Clears only the pending-confirmation flags and deliberately KEEPS
-     *  `sendId`: a channel-linked slot can still deliver a later echo, and
-     *  `reconcileOptimisticEcho` needs that id to update this row in place
+     *  `sendId`: a later echo needs that id to update this row in place
      *  instead of pushing a duplicate bubble.
      *
      *  Scans BOTH arrays rather than resolving the slot's own: `appendMessage`
@@ -3959,8 +3981,7 @@ const chatSlice = createSlice({
           delete meta.optimistic
           // Stamp the server-minted row id the receipt carried back. The bubble
           // was appended client-side with only a `sendId` (no server identity),
-          // and no `chat_message` echo carries the `mid` for a dashboard send,
-          // so this is the only point it can land before the chat_done refresh.
+          // so either the user echo or this receipt can supply its identity.
           // The message-pin control is gated on `meta.mid`, so without it the
           // just-sent message cannot be pinned for the whole turn. Only set when
           // the row has none yet — never overwrite a `mid` a refresh already
@@ -4488,7 +4509,7 @@ const chatSlice = createSlice({
       state.selectedSubagentId = action.payload
     },
     /** "Dismiss done": drop terminal cards for a slot (backend clear is the
-     *  caller's job via DELETE /api/spawn; this trims the local view). */
+     *  caller's job via per-id DELETE /api/spawn/{id}; this trims the local view). */
     clearTerminalSubagents(state, action: PayloadAction<{ slot: string }>) {
       const slot = action.payload.slot
       if (isUnsafeKey(slot)) return
@@ -6111,8 +6132,8 @@ const chatSlice = createSlice({
         state.creatingSlot = false
         // Switched-away guard: if the user moved to a different
         // session while this create was pending (a slow "Creating…" under memory
-        // pressure), do NOT hijack the view. The new slot is already registered
-        // via addSlotOptimistic; just leave the user where they are. Mirrors the
+        // pressure), do NOT hijack the view. The new slot is registered by
+        // dashboardSlice on this same action; just leave the user where they are. Mirrors the
         // guard switchSlot/refreshSlot/warmSlotCache already have. `send()`'s
         // forceNew path and welcome-screen New Chat both leave activeSlot equal
         // to the origin, so they still activate normally.

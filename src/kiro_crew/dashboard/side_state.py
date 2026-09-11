@@ -62,6 +62,20 @@ class SideState:
     #: submitter has to tell apart, and inferring them from an entry's absence
     #: cannot distinguish the first from the third.
     steers: list[dict[str, str]] = field(default_factory=list)
+    #: This sidecar's generation, the suffix of its ACP session key
+    #: (``side:<slot>:<gen>``). A close+reopen makes a NEW sidecar with a new
+    #: generation, so a turn still finishing on the old one can only ever
+    #: destroy, acquire or release the old session — never the replacement's.
+    gen: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
+    #: The binding the live side session was created under, as
+    #: ``(derived agent name, cwd, derived-spec digest)`` — set by
+    #: ``_run_side_turn`` after ``get_or_create``. A later turn whose binding
+    #: differs (the slot's project or agent changed, or the base spec changed so
+    #: the derived spec's content did) destroys the session first: kiro-cli
+    #: loads the spec at spawn, so a retained session would keep running under
+    #: the old agent, in the old cwd, with the old grants. ``None`` = no live
+    #: session has been bound through this sidecar yet.
+    binding: tuple[str, str, str] | None = None
 
     def append_user(self, content: str, ts: str = "", *, steer: bool = False) -> None:
         """Append a user turn. ``steer`` marks it as injected mid-turn, which the

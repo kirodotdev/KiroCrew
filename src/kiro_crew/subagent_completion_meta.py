@@ -6,12 +6,12 @@ injected text as a compact card instead of the machine-facing prompt it is; to
 decide the outcome, tallies, and headline it needs the header FACTS — which
 agent, success or failure, how much of a wave landed.
 
-Historically the card recovered those facts by re-parsing the English header
-prose with regexes on the frontend. Nothing pinned the two sides together, so a
-reword of the prose here silently broke card rendering with no failing test
-(issue #1792). These helpers stamp the same facts as a structured dict on the
-injected message's ``meta[SUBAGENT_COMPLETION_META_KEY]`` at composition time;
-the frontend reads that first and demotes the regexes to a legacy fallback.
+Recovering those facts by re-parsing the English header prose with regexes on the
+frontend pins nothing between the two sides, so a reword of the prose here breaks
+card rendering silently and with no failing test. These helpers stamp the same
+facts as a structured dict on the injected message's
+``meta[SUBAGENT_COMPLETION_META_KEY]`` at composition time; the frontend reads
+that first and keeps the regexes only as a legacy fallback.
 
 The dict shape mirrors ``ParsedSingleCompletion`` / ``ParsedBatchCompletion`` in
 ``website/src/pages/chat/subagentCompletion.ts`` (minus ``body``, which the
@@ -57,7 +57,7 @@ def single_completion_meta(
     callers); ``resolved_model`` is the model the session
     ACTUALLY served (``""`` ⇒ unknown/inconclusive, never a wildcard). The card
     shows the resolved model and flags a mismatch when both are known and differ
-    — making a model-pinned review's real model auditable (issue #3582). Both
+    — making a model-pinned review's real model auditable. Both
     default to ``""`` so existing callers are unchanged and the key is simply
     absent-equivalent when a provider cannot report a model.
     """
@@ -87,7 +87,7 @@ def wave_final_meta(
     (``delivered == total``, ``running == 0``) and left for the frontend to fill,
     exactly as the regex path does.
 
-    Per-member model provenance (issue #5337) is surfaced inline in the digest
+    Per-member model provenance is surfaced inline in the digest
     text (``ok_lines``/``fail_lines``), which both the parent LLM and the human
     read, rather than in a structured field here — the card renders the digest
     body verbatim and no consumer reads a per-member meta list.
@@ -114,7 +114,7 @@ def wave_chunk_meta(
 ) -> dict:
     """Structured facts for a MID-wave digest chunk — progress, no tallies.
 
-    Per-member model provenance (issue #5337) is surfaced inline in the digest
+    Per-member model provenance is surfaced inline in the digest
     text, not here — see ``wave_final_meta``.
     """
     return {

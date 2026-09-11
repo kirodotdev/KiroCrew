@@ -3,7 +3,7 @@
 NUL is a legal code point, so a NUL-padded binary whose other bytes are ASCII decodes
 cleanly -- a tar of text files is exactly that shape. Replacing a credential is a
 variable-length edit, so rewriting one moves every following byte and the operator restores
-something that is no longer a valid archive.
+something that is not a valid archive.
 """
 
 from __future__ import annotations

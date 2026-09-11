@@ -274,7 +274,7 @@ class TestListServers:
 
         Consent-disabled installs/custom adds land with ``disabled: true``
         in the KiroCrew scope; the table's enable action is the consent
-        step, so the row must exist (previously these were invisible)."""
+        step, so the row must exist."""
         monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(tmp_path))
         monkeypatch.setattr("kiro_crew.mcp_discovery.Path.home", lambda: tmp_path)
         mcp_json = tmp_path / "mcp.json"
@@ -1558,6 +1558,69 @@ class TestProbeCache:
         assert status == "error"
         assert error == "timeout"
 
+    def test_failed_probe_after_success_keeps_prior_tools(self) -> None:
+        """A transient failure must not collapse a healthy server's tool list.
+
+        `status`/`error` DO overwrite -- a fresh "error" should flip
+        `mcp_gateway.shareability`'s `probe_ok` to False, which is the
+        correct fail-closed behavior. What must survive is the server's last
+        known-good shape, so a single timeout doesn't render as "0 tools".
+        """
+        good = McpServerInfo(
+            name="flaky-srv",
+            command="x",
+            status="ok",
+            tools=["a", "b"],
+            tool_annotations=[{"readOnlyHint": True}, {}],
+            capabilities={"tools": {}},
+            protocol_version="2025-03-26",
+        )
+        _cache_probe(good)
+
+        failed = McpServerInfo(name="flaky-srv", command="x", status="error", error="timeout")
+        _cache_probe(failed)
+
+        status, tools, error, _at, _mode = _get_cached("flaky-srv")
+        assert status == "error"
+        assert error == "timeout"
+        assert tools == ["a", "b"]  # preserved, not collapsed to []
+
+        meta = probe_metadata("flaky-srv")
+        assert meta is not None
+        assert meta.tool_annotations == [{"readOnlyHint": True}, {}]
+        assert meta.capabilities == {"tools": {}}
+        assert meta.protocol_version == "2025-03-26"
+        # Both preserved together, never one alone -- a caller reading tool
+        # metadata after this must see the same handshake's tools and
+        # annotations, not a mix of stale and fresh.
+        assert meta.tools == good.tools
+        assert meta.tool_annotations == good.tool_annotations
+        # The preserved shape keeps its original observation time, not the
+        # failed probe's -- "as of" claims about the tool list must point to
+        # when it was actually seen, not to the timeout that came later.
+        assert meta.probed_at_wall == good.probed_at
+
+    def test_first_ever_probe_failing_has_no_prior_to_preserve(self) -> None:
+        """A server that has never succeeded gets the failure's own (empty)
+        shape -- there is nothing stale to protect it from."""
+        server = McpServerInfo(name="never-worked", command="x", status="error", error="refused")
+        _cache_probe(server)
+        status, tools, error, _at, _mode = _get_cached("never-worked")
+        assert status == "error"
+        assert error == "refused"
+        assert tools == []
+
+    def test_needs_auth_also_preserves_prior_shape(self) -> None:
+        """needs_auth is a probe-side failure too (no token to present), not
+        a success -- it must preserve prior tools the same way "error" does."""
+        good = McpServerInfo(name="oauth-srv", command="x", status="ok", tools=["x", "y"])
+        _cache_probe(good)
+        challenged = McpServerInfo(name="oauth-srv", command="x", status="needs_auth", error="")
+        _cache_probe(challenged)
+        status, tools, _error, _at, _mode = _get_cached("oauth-srv")
+        assert status == "needs_auth"
+        assert tools == ["x", "y"]
+
     def test_cache_preserves_declared_probe_mode(self) -> None:
         """The in-process fallback's "declared" mode survives the cache round trip."""
         server = McpServerInfo(
@@ -2219,12 +2282,12 @@ class TestProbeRemote:
     async def test_directory_qualified_command_reports_no_search_path(self) -> None:
         """A directory-qualified command is looked up directly, not PATH-searched.
 
-        Regression for #5053: ``shutil.which`` returns before it reads ``path=``
-        when the command carries a directory component, so it checks exactly the
-        one location named. Reporting the declared search path for it told the
-        reader it "searched N directories" that were never consulted -- the exact
-        not-installed vs installed-elsewhere confusion #4954 exists to prevent,
-        stated backwards. The error for such a command must be the bare
+        ``shutil.which`` returns before it reads ``path=`` when the command
+        carries a directory component, so it checks exactly the one location
+        named. Reporting a declared search path for it would tell the reader it
+        "searched N directories" that were never consulted -- the exact
+        not-installed vs installed-elsewhere confusion this avoids, stated
+        backwards. The error for such a command must be the bare
         ``command not found: <cmd>`` with no directory list.
         """
         abs_missing = os.path.join(os.sep, "opt", "vendor", "bin", "ghost-mcp")
@@ -2367,8 +2430,22 @@ class TestProbeServerConsentGate:
         assert result.error == ""
 
 
+#: The sealed-refusal tests below drive the REAL ``classify_declared_temp_path``
+#: against a declaration under ``<home>/run``. On Windows that classification
+#: returns ``None`` by design and the probe honours the declaration -- see
+#: ``test_on_windows_a_declared_temp_is_honored_because_nothing_seals_run`` in
+#: ``test_sandbox_argv.py`` -- so the refusal these tests assert cannot happen
+#: there. Skipped rather than run under a patched platform: path semantics
+#: differ, and a POSIX-pinned run on Windows would mask a real failure.
+_NEEDS_A_SEALING_BACKEND = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="nothing seals run/ on Windows, so the probe honours a declared temp there; "
+    "pinned by test_on_windows_a_declared_temp_is_honored_because_nothing_seals_run",
+)
+
+
 class TestProbeTempContainment:
-    """#5064 probe wiring: spec-declared temp yields; Windows defers cleanup.
+    """Probe wiring: spec-declared temp yields; Windows defers cleanup.
 
     Both tests assert ONLY on the containment calls and tolerate any probe
     outcome -- the probe command is a real interpreter that exits instantly,
@@ -2398,6 +2475,328 @@ class TestProbeTempContainment:
         with patch.object(bt, "allocate_probe_tmp", alloc_spy):
             await probe_server(server)
         alloc_spy.assert_not_called()
+
+    @_NEEDS_A_SEALING_BACKEND
+    @pytest.mark.asyncio
+    async def test_sealed_spec_declared_temp_falls_back_to_managed(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """A declared temp inside ``<data home>/run`` is refused, not honored.
+
+        Both backends seal that parent read-only, so honoring the declaration
+        hands the child a TMPDIR it cannot write -- silently, since the probe
+        still reports a green handshake. The declaration therefore yields to the
+        managed temp (allocated, carved out, and pointed at by the child's env),
+        and the sealed path never reaches the child.
+        """
+        import sys
+        from pathlib import Path
+
+        from kiro_crew import sandbox
+        from kiro_crew.mcp_gateway import backend_tmp as bt
+
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setattr(bt, "config_dir", lambda: home)
+        monkeypatch.setattr(sandbox, "config_dir", lambda: home)
+        sealed = home / "run" / "custom-tmp"
+
+        captured_wrap: dict = {}
+
+        def _wrap(argv, *a, env=None, **k):
+            captured_wrap.update(k)
+            return list(argv), dict(env if env is not None else os.environ), None
+
+        monkeypatch.setattr("kiro_crew.mcp_discovery.sandboxed_spawn_argv", _wrap)
+
+        server = McpServerInfo(
+            name="sealed-declared-temp",
+            command=sys.executable,
+            args=["-c", "pass"],
+            env={"TMPDIR": str(sealed)},
+        )
+        with patch(
+            "kiro_crew.mcp_discovery.create_subprocess_limited",
+            new_callable=AsyncMock,
+            side_effect=OSError("stop after env capture"),
+        ) as spawn_mock:
+            await probe_server(server)
+
+        carve = captured_wrap.get("extra_writable_dirs")
+        assert carve is not None and len(carve) == 1
+        scratch = Path(carve[0])
+        assert scratch.parent.parent == home / "run" / "mcp-tmp"
+        captured_env = spawn_mock.call_args.kwargs["env"]
+        # Every canonical key points at the managed scratch, so a child reading
+        # TMP or TEMP cannot land back on the sealed path either.
+        assert captured_env["TMPDIR"] == str(scratch)
+        assert captured_env["TMP"] == str(scratch)
+        assert captured_env["TEMP"] == str(scratch)
+        assert str(sealed) not in captured_env.values()
+
+    @_NEEDS_A_SEALING_BACKEND
+    @pytest.mark.asyncio
+    async def test_sealed_declared_temp_stripped_when_allocation_fails(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        # Containment is fail-open, but never onto a directory already known to
+        # be read-only: with no managed dir to point at, every temp key is
+        # stripped (the ambient ones too) so the child falls back to its
+        # platform default instead of the sealed path.
+        import sys
+
+        from kiro_crew import sandbox
+        from kiro_crew.mcp_gateway import backend_tmp as bt
+
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setattr(bt, "config_dir", lambda: home)
+        monkeypatch.setattr(sandbox, "config_dir", lambda: home)
+        monkeypatch.setattr(bt, "allocate_probe_tmp", MagicMock(side_effect=OSError("disk full")))
+        sealed = home / "run" / "custom-tmp"
+
+        def _wrap(argv, *a, env=None, **k):
+            return list(argv), dict(env if env is not None else os.environ), None
+
+        monkeypatch.setattr("kiro_crew.mcp_discovery.sandboxed_spawn_argv", _wrap)
+
+        server = McpServerInfo(
+            name="sealed-alloc-fail",
+            command=sys.executable,
+            args=["-c", "pass"],
+            env={"TMPDIR": str(sealed)},
+        )
+        with patch(
+            "kiro_crew.mcp_discovery.create_subprocess_limited",
+            new_callable=AsyncMock,
+            side_effect=OSError("stop after env capture"),
+        ) as spawn_mock:
+            await probe_server(server)
+
+        captured_env = spawn_mock.call_args.kwargs["env"]
+        assert not [key for key in captured_env if key.upper() in ("TMPDIR", "TMP", "TEMP")]
+
+    @_NEEDS_A_SEALING_BACKEND
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("declared_key", ["tmpdir", "Temp", "TmP"])
+    async def test_sealed_declared_temp_refused_whatever_case_the_spec_spelled(
+        self, tmp_path, monkeypatch, declared_key
+    ) -> None:
+        """A case variant must not survive the refusal.
+
+        Spec env keys are treated case-INSENSITIVELY here on purpose -- Windows
+        env keys are case-insensitive and the sanitized spec preserves the
+        author's spelling -- so the detection above already sees ``tmpdir`` as a
+        declaration. The REWRITE compared exact spellings, so the spec's own
+        lowercase key stayed in the env beside the managed triple: on Windows
+        those two names are ONE variable, and the child could be handed back the
+        very sealed path this refusal exists to withhold.
+        """
+        import sys
+
+        from kiro_crew import sandbox
+        from kiro_crew.mcp_gateway import backend_tmp as bt
+
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setattr(bt, "config_dir", lambda: home)
+        monkeypatch.setattr(sandbox, "config_dir", lambda: home)
+        sealed = home / "run" / "custom-tmp"
+
+        def _wrap(argv, *a, env=None, **k):
+            return list(argv), dict(env if env is not None else os.environ), None
+
+        monkeypatch.setattr("kiro_crew.mcp_discovery.sandboxed_spawn_argv", _wrap)
+
+        server = McpServerInfo(
+            name="sealed-declared-temp-case",
+            command=sys.executable,
+            args=["-c", "pass"],
+            env={declared_key: str(sealed)},
+        )
+        with patch(
+            "kiro_crew.mcp_discovery.create_subprocess_limited",
+            new_callable=AsyncMock,
+            side_effect=OSError("stop after env capture"),
+        ) as spawn_mock:
+            await probe_server(server)
+
+        captured_env = spawn_mock.call_args.kwargs["env"]
+        # The sealed path is gone in EVERY spelling, and exactly one canonical
+        # name survives per key -- no lowercase twin left to shadow the managed
+        # triple on a case-insensitive platform.
+        assert str(sealed) not in captured_env.values()
+        assert declared_key not in captured_env
+        temp_keys = sorted(key for key in captured_env if key.upper() in ("TMPDIR", "TMP", "TEMP"))
+        assert temp_keys == ["TEMP", "TMP", "TMPDIR"]
+
+    @pytest.mark.asyncio
+    async def test_unsealed_declared_temp_is_honored_under_the_canonical_key(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        # The mirror case: a declaration OUTSIDE the seal is still honored, and
+        # honored in the key `tempfile` actually reads. POSIX consults only the
+        # uppercase TMPDIR/TMP/TEMP, so a spec spelled `tmpdir` must come out as
+        # TMPDIR -- keeping the lowercase key while pruning the ambient ones
+        # left the child on the platform default with no managed temp either.
+        # The ambient siblings are still pruned, since an ambient TMPDIR beside a
+        # declared TMP would win the lookup by spelling luck.
+        import sys
+
+        from kiro_crew import sandbox
+        from kiro_crew.mcp_gateway import backend_tmp as bt
+
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setattr(bt, "config_dir", lambda: home)
+        monkeypatch.setattr(sandbox, "config_dir", lambda: home)
+        chosen = tmp_path / "capacity-volume" / "tmp"
+        chosen.mkdir(parents=True)
+        alloc = MagicMock(side_effect=AssertionError("managed temp allocated despite declaration"))
+        monkeypatch.setattr(bt, "allocate_probe_tmp", alloc)
+
+        def _wrap(argv, *a, env=None, **k):
+            return list(argv), dict(env if env is not None else os.environ), None
+
+        monkeypatch.setattr("kiro_crew.mcp_discovery.sandboxed_spawn_argv", _wrap)
+        monkeypatch.setenv("TMPDIR", "/ambient/tmpdir")
+        monkeypatch.setenv("TMP", "/ambient/tmp")
+        monkeypatch.setenv("TEMP", "/ambient/temp")
+
+        server = McpServerInfo(
+            name="declared-temp-lowercase",
+            command=sys.executable,
+            args=["-c", "pass"],
+            env={"tmpdir": str(chosen)},
+        )
+        with patch(
+            "kiro_crew.mcp_discovery.create_subprocess_limited",
+            new_callable=AsyncMock,
+            side_effect=OSError("stop after env capture"),
+        ) as spawn_mock:
+            await probe_server(server)
+
+        captured_env = spawn_mock.call_args.kwargs["env"]
+        assert captured_env["TMPDIR"] == str(chosen)
+        # The canonical spelling is the ONLY temp key left: no ambient TMPDIR to
+        # win the lookup, and no lowercase twin to shadow it on Windows.
+        assert [key for key in captured_env if key.upper() in ("TMPDIR", "TMP", "TEMP")] == [
+            "TMPDIR"
+        ]
+
+    @pytest.mark.asyncio
+    async def test_declared_temp_check_failure_fails_closed_onto_managed_temp(
+        self, tmp_path, monkeypatch, caplog
+    ) -> None:
+        # A raise inside the refusal check has cleared nothing, so the
+        # declaration is REFUSED, not honored: honoring it is exactly the bug
+        # (a possibly sealed temp handed to the child under a green probe)
+        # with only a debug line to show for it. The managed temp takes over
+        # and the WARNING names the failure.
+        import sys
+        from pathlib import Path
+
+        from kiro_crew import sandbox
+        from kiro_crew.mcp_gateway import backend_tmp as bt
+
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setattr(bt, "config_dir", lambda: home)
+        monkeypatch.setattr(sandbox, "config_dir", lambda: home)
+        declared = home / "run" / "custom-tmp"
+        monkeypatch.setattr(
+            "kiro_crew.mcp_discovery.classify_declared_temp_path",
+            MagicMock(side_effect=OSError("data home does not resolve to a real directory")),
+        )
+        captured_wrap: dict = {}
+
+        def _wrap(argv, *a, env=None, **k):
+            captured_wrap.update(k)
+            return list(argv), dict(env if env is not None else os.environ), None
+
+        monkeypatch.setattr("kiro_crew.mcp_discovery.sandboxed_spawn_argv", _wrap)
+
+        server = McpServerInfo(
+            name="check-raises",
+            command=sys.executable,
+            args=["-c", "pass"],
+            env={"TMPDIR": str(declared)},
+        )
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.mcp_discovery"):
+            with patch(
+                "kiro_crew.mcp_discovery.create_subprocess_limited",
+                new_callable=AsyncMock,
+                side_effect=OSError("stop after env capture"),
+            ) as spawn_mock:
+                await probe_server(server)
+
+        carve = captured_wrap.get("extra_writable_dirs")
+        assert carve is not None and len(carve) == 1
+        scratch = Path(carve[0])
+        assert scratch.parent.parent == home / "run" / "mcp-tmp"
+        captured_env = spawn_mock.call_args.kwargs["env"]
+        assert captured_env["TMPDIR"] == str(scratch)
+        assert str(declared) not in captured_env.values()
+        warnings = [r for r in caplog.records if "ignoring spec-declared" in r.getMessage()]
+        assert len(warnings) == 1
+        text = warnings[0].getMessage()
+        assert "seal check itself failed" in text
+        assert "OSError: data home does not resolve to a real directory" in text
+        assert "sandbox-sealed runtime parent" not in text
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "cause, phrase",
+        [
+            ("sealed", "inside the sandbox-sealed runtime parent"),
+            ("unclassifiable", "canonical form cannot be established"),
+        ],
+    )
+    async def test_refusal_warning_names_the_actual_cause(
+        self, tmp_path, monkeypatch, caplog, cause, phrase
+    ) -> None:
+        # Only one of the two refusals is about the seal. Telling an operator
+        # that a symlink cycle "is inside the sealed runtime parent" sends them
+        # looking in the wrong place.
+        import sys
+
+        from kiro_crew import sandbox
+        from kiro_crew.mcp_gateway import backend_tmp as bt
+
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setattr(bt, "config_dir", lambda: home)
+        monkeypatch.setattr(sandbox, "config_dir", lambda: home)
+        monkeypatch.setattr(
+            "kiro_crew.mcp_discovery.classify_declared_temp_path", MagicMock(return_value=cause)
+        )
+
+        def _wrap(argv, *a, env=None, **k):
+            return list(argv), dict(env if env is not None else os.environ), None
+
+        monkeypatch.setattr("kiro_crew.mcp_discovery.sandboxed_spawn_argv", _wrap)
+        server = McpServerInfo(
+            name="refused-" + cause,
+            command=sys.executable,
+            args=["-c", "pass"],
+            env={"TMPDIR": "//declared/tmp"},
+        )
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.mcp_discovery"):
+            with patch(
+                "kiro_crew.mcp_discovery.create_subprocess_limited",
+                new_callable=AsyncMock,
+                side_effect=OSError("stop after env capture"),
+            ) as spawn_mock:
+                await probe_server(server)
+
+        assert "//declared/tmp" not in spawn_mock.call_args.kwargs["env"].values()
+        texts = [
+            r.getMessage() for r in caplog.records if "ignoring spec-declared" in r.getMessage()
+        ]
+        assert len(texts) == 1 and "TMPDIR=//declared/tmp" in texts[0]
+        assert phrase in texts[0]
+        if cause != "sealed":
+            assert "sandbox-sealed" not in texts[0]
 
     @pytest.mark.asyncio
     async def test_windows_probe_cleanup_defers_to_daemon_sweep(
@@ -2537,7 +2936,7 @@ class TestProbeTempContainment:
     async def test_probe_tmp_allocated_before_wrap_and_carved_out(
         self, tmp_path, monkeypatch
     ) -> None:
-        """#8653: the probe TMPDIR is allocated BEFORE the sandbox wrap, which
+        """The probe TMPDIR is allocated BEFORE the sandbox wrap, which
         receives it as a write carve-out, and the spawn env points at it.
 
         The managed probe root lives at ``<data home>/run/mcp-tmp``, inside the
@@ -3071,8 +3470,8 @@ class TestFixStaleManagedCommand:
 
     def test_applies_python_dash_m_fallback_with_args(self):
         """When no standalone binary resolves, the python -m kiro_crew fallback
-        (command + its args) is applied — regression for Windows where rewriting
-        the command alone left a bare 'kirocrew' that isn't on PATH."""
+        (command + its args) is applied. On Windows, rewriting the command alone
+        would leave a bare 'kirocrew' that isn't on PATH."""
         from kiro_crew.mcp_discovery import _fix_stale_managed_command
 
         spec = {"command": "kirocrew", "args": []}
@@ -3459,7 +3858,7 @@ class TestProbeServerStderrCapture:
 class TestProbeStdioMalformedResponse:
     """Stdio probe must not crash on non-spec JSON-RPC response shapes.
 
-    Regression for: MCP probe failed [...]: 'str' object has no attribute 'get'
+    The crashing shape: MCP probe failed [...]: 'str' object has no attribute 'get'
     — some servers return an `error` value (or whole response) that is a bare
     string rather than the spec's {"message": ...} object / dict.
     """
@@ -3688,7 +4087,7 @@ class TestReadStdioJsonrpcResponse:
 
 
 class TestProbeServerBannerTolerance:
-    """probe_server no longer errors when a banner precedes the handshake."""
+    """probe_server tolerates a banner that precedes the handshake."""
 
     @pytest.mark.asyncio
     async def test_leading_banner_does_not_fail_probe(self) -> None:
@@ -4161,8 +4560,8 @@ class TestProbeSandboxUnavailable:
 class TestFirstPartyManagedArgv:
     """The probe passes ``first_party_fixed_argv`` ONLY for a self-derived argv.
 
-    The flag buys an unconfined spawn on a backend-less host (issue #1563
-    carve-out), so it must key on the INVOCATION this package derives for its
+    The flag buys an unconfined spawn on a backend-less host, so it must key on
+    the INVOCATION this package derives for its
     own managed servers — never on the server name alone, which an mcp.json
     scope could pair with user-config command text.
     """
@@ -4351,9 +4750,9 @@ class TestProbeHeaderReferenceExpansion:
 
     A static header whose value carries a runtime reference is a documented
     form (docs/reference/kiro-cli/mcp/configuration.md) that kiro-cli expands
-    at session runtime. The probe used to send the reference as literal text,
-    so a working configuration rendered as Error / HTTP 401 with advice to
-    delete the header (issue #9206). The probe now resolves references through
+    at session runtime. If the probe sent the reference as literal text, a
+    working configuration would render as Error / HTTP 401 with advice to
+    delete the header. The probe resolves references through
     the gateway rewriter's declared-env expander — same regex, same
     credential-filtered source view, same "unresolved stays literal" rule.
     """

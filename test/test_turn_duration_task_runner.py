@@ -1,4 +1,4 @@
-"""Turn wall-clock accounting for the taskrunner dispatch surface (issue #647).
+"""Turn wall-clock accounting for the taskrunner dispatch surface.
 
 ``task_executor`` persists a per-turn usage row at two sites — the main
 execution turn in :func:`execute_task` and the separate model turn in

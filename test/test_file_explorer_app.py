@@ -214,6 +214,50 @@ class TestListDir:
         names = {e["name"] for e in entries}
         assert "node_modules" in names
 
+    def test_one_unreadable_sibling_does_not_collapse_listing(self, tmp_tree):
+        """One child raising OSError/PermissionError during its stat must not
+        abort the whole listing: readable siblings still list and the
+        unreadable child degrades to a non-error node."""
+        real_is_dir = Path.is_dir
+
+        def boom(self, *args, **kwargs):
+            if self.name == "file.txt":
+                raise PermissionError(1, "Operation not permitted")
+            return real_is_dir(self, *args, **kwargs)
+
+        with patch.object(Path, "is_dir", boom):
+            entries, _ = server._list_dir(tmp_tree, depth=1, ignore=True)
+
+        # The listing did not collapse to a single error node.
+        error_nodes = [e for e in entries if e.get("type") == "error"]
+        assert not error_nodes, f"listing collapsed to error node(s): {entries!r}"
+        # Readable siblings are still present.
+        names = {e["name"] for e in entries}
+        assert "code.py" in names
+        assert "subdir" in names
+        # The unreadable child is still listed (its stat failure degrades to a
+        # "missing" node via _entry_meta rather than vanishing).
+        assert "file.txt" in names
+
+    def test_kirocrew_safe_children_survives_unreadable_sibling(self, tmp_tree):
+        """A single unreadable child must not empty the crew-home safe-subdir
+        list: the readable safe subdirs still return."""
+        crew = tmp_tree / ".kiro" / "crew"
+        (crew / "skills").mkdir(parents=True)
+        (crew / "workspace").mkdir()
+        real_is_dir = Path.is_dir
+
+        def boom(self, *args, **kwargs):
+            if self.name == "skills":
+                raise PermissionError(1, "Operation not permitted")
+            return real_is_dir(self, *args, **kwargs)
+
+        with patch.object(Path, "is_dir", boom):
+            out = server._kirocrew_safe_children(crew)
+
+        names = {e["name"] for e in out}
+        assert "workspace" in names  # readable safe subdir still listed
+
 
 class TestFileHelpers:
     def test_file_kind_file(self, tmp_tree):
@@ -501,6 +545,22 @@ class TestHTTPHandler:
         names = {e["name"] for e in responses[0][1]["entries"]}
         assert "file.txt" not in names  # kind=dir by default
         assert "subdir" in names
+
+    def test_complete_survives_unreadable_sibling(self, tmp_tree):
+        """One unreadable child must not empty the completion list: the
+        readable directories still complete."""
+        real_is_dir = Path.is_dir
+
+        def boom(self, *args, **kwargs):
+            if self.name == ".ssh":
+                raise PermissionError(1, "Operation not permitted")
+            return real_is_dir(self, *args, **kwargs)
+
+        with patch.object(Path, "is_dir", boom):
+            responses = self._make_request(f"/complete?path={tmp_tree}/&kind=dir")
+        assert responses[0][0] == 200
+        names = {e["name"] for e in responses[0][1]["entries"]}
+        assert "subdir" in names  # readable dir still completes
 
     def test_complete_bare_allowed_root_matches_trailing_slash(self, tmp_tree):
         """A bare allowed-root path (no trailing slash) must complete exactly

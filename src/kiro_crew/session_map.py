@@ -31,6 +31,7 @@ from kiro_crew.messaging.link import (
     canonical_key,
     is_channel_session_key,
     legacy_dashboard_mirror_key,
+    split_dm_session_key,
 )
 from kiro_crew.sel import _infer_source, sel
 
@@ -46,8 +47,8 @@ SESSION_MAP_FILENAME = "session_map.json"
 # Resolved per call, never captured at import: an import-time binding freezes
 # the data home and defeats pod isolation, the lazy legacy-home migration and
 # test isolation. The name below is an opt-in override (None = live home) so
-# existing monkeypatch call sites keep working. See config.md "Data Home" and
-# issue #874; dashboard/handlers/usage.py is the reference implementation.
+# existing monkeypatch call sites keep working. See config.md "Data Home";
+# dashboard/handlers/usage.py is the reference implementation.
 _KIRO_SESSIONS_DIR: Path | None = None
 
 
@@ -61,6 +62,11 @@ def _kiro_sessions_dir() -> Path:
 # persists it, so renaming the literal would silently re-enable mirroring for
 # every conversation that had already turned it off.
 MIRROR_OPT_OUT_FLAG = "mirror_opt_out"
+
+# Highest explicit DM generation acknowledged before its first provider turn.
+# Stored on the stable bucket entry so repeated /new commands cost one integer,
+# not one immortal map row per empty generation.
+GENERATION_FLOOR_FIELD = "generation_floor"
 
 # Flags that are durable SETTINGS rather than session-scoped state, and so keep
 # their entry alive through :meth:`SessionMap.prune`. Membership is opt-in
@@ -90,14 +96,18 @@ def _has_durable_flag(entry: dict) -> bool:
 def _survives_prune(entry: dict) -> bool:
     """True iff *entry* holds state that must outlive its native session.
 
-    The ONE predicate behind every stale branch of :meth:`SessionMap.prune`, so
-    they cannot disagree about what a missing session file is allowed to take
-    with it. Two kinds of state qualify: a durable flag (a per-conversation
-    setting) and a channel binding — a Slack thread or a ``mirror`` — which is
-    the identity that routes a conversation back to its channel. Prune may clear
-    a stale ``sid`` on such an entry, but never discards the entry itself.
+    Durable settings, an explicit generation floor, and channel bindings all
+    outlive a provider session. The generation floor prevents a restart from
+    reusing a history key after ``/new`` was acknowledged before the first turn.
     """
-    return bool(_has_durable_flag(entry) or entry.get("slack_thread_ts") or entry.get("mirror"))
+    floor = entry.get(GENERATION_FLOOR_FIELD)
+    has_generation_floor = isinstance(floor, int) and not isinstance(floor, bool) and floor > 0
+    return bool(
+        _has_durable_flag(entry)
+        or has_generation_floor
+        or entry.get("slack_thread_ts")
+        or entry.get("mirror")
+    )
 
 
 # The callable shape a lost-binding announcement is delivered through:
@@ -488,7 +498,7 @@ class SessionMap:
         - on a thread running an event loop: mark dirty and schedule ONE
           debounced flush task. The task serializes under the lock and does the
           disk write in a worker thread, so the loop never pays the write
-          inline (issue #2405). A mutation landing while a flush is in flight
+          inline. A mutation landing while a flush is in flight
           re-marks dirty, and the task loops until it observes a clean map, so
           a trailing mutation is never dropped.
         - no running loop (CLI, tests, worker threads): write inline on the
@@ -1061,7 +1071,7 @@ class SessionMap:
             # One more dirty-mark after the rebuild. ``_save`` is loop-aware:
             # on prune's only production path (``start_pool`` on the startup
             # loop) the saves coalesce into one deferred flush whose disk
-            # write runs on a worker thread (#2405) — the loop still pays the
+            # write runs on a worker thread — the loop still pays the
             # serialize, never the write. A ``batched_save`` here would write
             # inline at batch exit on that same loop.
             self._save()
@@ -1614,7 +1624,7 @@ class SessionMap:
           from the CANONICAL row -- the session's own -- never through
           ``_mirror_key``. That conversation is permanent, so the flag cannot be
           orphaned by its target disappearing; it CAN be orphaned by the lookup
-          moving, which is what keying it to the mirror binding used to do.
+          moving, which is what keying it to the mirror binding would do.
         * ``origin=False`` requires an explicit ``mirror`` dict, and follows the
           binding through ``_mirror_key``.
         """
@@ -1631,19 +1641,43 @@ class SessionMap:
         return entry.get("mirror_paused") is True
 
     @_guarded
+    def reserve_generation(self, session_key: str) -> None:
+        """Persist the generation in *session_key* before its first provider turn.
+
+        The watermark lives on the stable bucket entry instead of materializing
+        one map row per empty generation. It is monotonic: a delayed or repeated
+        command can never lower the restart seed and make an older history key
+        reusable.
+        """
+        parsed = split_dm_session_key(canonical_key(session_key))
+        if parsed is None:
+            raise ValueError(f"not a canonical DM session key: {session_key!r}")
+        bucket, generation = parsed
+        if generation <= 0:
+            return
+        entry = self._ensure_entry(bucket)
+        current = entry.get(GENERATION_FLOOR_FIELD)
+        if isinstance(current, int) and not isinstance(current, bool) and current >= generation:
+            return
+        entry[GENERATION_FLOOR_FIELD] = generation
+        self._save()
+
+    @_guarded
     def max_generation(self, bucket: str) -> int:
         """Return the highest persisted DM generation for a session *bucket*.
 
         The bucket is the generation-0 key (e.g.
         ``telegram:<agent>:direct:<user>``); generations persist as ``{bucket}``
-        (gen 0) and ``{bucket}:gen{N}``. Returns the max ``N`` with a persisted
-        entry, or -1 when the bucket has none. Channels seed their in-memory
-        generation counter from this so ``/new`` and idle/daily reset advance
-        past any generation left on disk (restart-safe) instead of colliding
-        with a stale session and resuming it.
+        (gen 0) and ``{bucket}:gen{N}``. An explicit ``/new`` also records a
+        monotonic generation floor on the bucket before the first provider turn.
+        Returns the highest of those sources, or -1 when the bucket has none.
         """
         bucket = canonical_key(bucket)
         best = 0 if bucket in self._data else -1
+        entry = self._data.get(bucket)
+        floor = entry.get(GENERATION_FLOOR_FIELD) if entry else None
+        if isinstance(floor, int) and not isinstance(floor, bool):
+            best = max(best, floor)
         prefix = f"{bucket}:gen"
         for key in self._data:
             if key.startswith(prefix):

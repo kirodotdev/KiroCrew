@@ -164,10 +164,10 @@ def _open_catalog(req: urllib.request.Request) -> Any:
 
     A named function rather than an inline `urlopen`, because tests must be able
     to intercept the network at a place that cannot drift: patching
-    `urllib.request.urlopen` used to work here, and when this function started
-    using an opener instead, those tests silently stopped intercepting anything
-    and began making real requests to the live CDN. A seam that belongs to this
-    module cannot be bypassed by changing how this module calls out.
+    `urllib.request.urlopen` does not survive this module switching to an opener:
+    such tests silently stop intercepting anything and make real requests to the
+    live CDN. A seam that belongs to this module cannot be bypassed by changing
+    how this module calls out.
 
     The opener is built per call: an opener is mutable shared state, and one
     built at import time is something any other import can reach in and
@@ -335,8 +335,8 @@ def _curated_str(value: Any) -> str:
 
     Every field below arrives from a document fetched over the network, so its
     TYPE is as untrusted as its content. A wrong type is not hypothetical
-    tidiness: ``{"tags": 5}`` used to reach ``list(5)`` and turn one malformed
-    entry into an HTTP 500 for the whole store, and a non-string
+    tidiness: unguarded, ``{"tags": 5}`` reaches ``list(5)`` and turns one
+    malformed entry into an HTTP 500 for the whole store, and a non-string
     ``displayName`` reaches the browser to be sorted and lowercased there.
     Returning ``""`` collapses both into the falsy case the callers already
     handle, so a bad field degrades that field and nothing else.
@@ -449,8 +449,8 @@ def inventory(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
     This is what makes the catalog the SHELF rather than a decoration on one:
     :func:`annotate` can only change a row that already exists, so an app the
-    catalog lists but the bundled seed does not was previously unlistable and
-    therefore uninstallable -- adding one required shipping a release.
+    catalog lists but the bundled seed does not would otherwise be unlistable and
+    therefore uninstallable -- adding one would require shipping a release.
 
     ``builtin`` entries produce nothing here on purpose. Their code ships in the
     wheel and is discovered from disk; a row for code this client does not have

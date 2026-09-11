@@ -276,7 +276,7 @@ def test_console_script_target_reports_a_removal_rather_than_reading_a_stale_cop
     Falling through to setup.cfg here is what hides the removal: this repository
     carries the same entry point in both files, so the stale copy AGREES with the
     installed wrapper and the comparison reports success on a script the revision
-    deleted -- the wrapper left dispatching to a target that may no longer exist.
+    deleted -- the wrapper is left dispatching to a target that may not exist.
     """
     (repo / "setup.cfg").write_text(
         _SETUP_CFG + "\n\n[options.entry_points]\nconsole_scripts =\n"
