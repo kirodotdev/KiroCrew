@@ -3944,7 +3944,7 @@ def _registry_app_candidates(name: str) -> list[dict[str, Any]]:
         # this is its sibling and must refuse the same way.
         return []
     for reg in _effective_registries():
-        cached = _read_external_registry_cache(reg.name or reg.repo, ignore_ttl=True)
+        cached = _read_external_registry_cache(_external_registry_cache_identity(reg), ignore_ttl=True)
         for entry in cached or []:
             if isinstance(entry, dict) and entry.get("name") == name:
                 _apply_configured_branch([entry], reg)
