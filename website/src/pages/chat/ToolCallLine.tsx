@@ -707,13 +707,24 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
   // flood-length shell label is substituted with a derived command digest
   // (binaries + redirect target), so the visible line is meaningful. Short
   // labels pass through untouched, and raw mode always shows the exact command.
+  //
+  // The digest parses COMMANDS, so it only ever runs when the shown label
+  // actually fell back to the raw title (no purpose, or purpose suppressed by
+  // the language guard — `pickToolLabel` returns `rawLabel` in exactly those
+  // cases). A prose purpose parsed as a command keeps only its head token —
+  // "Run the full benchmark…" rendered as "Run" — and the `Running:` prefix
+  // path inside deriveShellSummary parses regardless of `bareCommand`, so the
+  // gate is on the call itself, not just the flag. Long purposes pass through
+  // and CSS truncation owns the overflow, exactly as it does for
+  // restored-history rows.
   const pillLabelText = useMemo(() => {
     if (!simplified) return displayLabel
     if (displayLabel.length <= DERIVE_LABEL_THRESHOLD_CHARS && !displayLabel.includes('\n')) {
       return displayLabel
     }
+    if (toolLabel !== label) return displayLabel
     return deriveShellSummary(displayLabel, { bareCommand: isShell }) ?? displayLabel
-  }, [displayLabel, simplified, isShell])
+  }, [displayLabel, simplified, isShell, toolLabel, label])
   // Hover reveals the verbatim command whenever the pill shows a substitute.
   const pillLabelTitle = pillLabelText === displayLabel ? undefined : displayLabel
   // Both running and pending-approval pills shimmer — the highlight color
