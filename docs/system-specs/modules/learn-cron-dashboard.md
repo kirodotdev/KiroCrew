@@ -136,7 +136,7 @@ Scheduled job execution with three schedule types: `every` (interval, min 60s), 
 - Semaphore safety: `_acquired` flag pattern in gateway.py, handler.py, chat.py, task_executor.py prevents over-release when `get_or_create()` throws
 - ACP zombie detection: `_last_activity` timestamp on AcpClient, `is_responsive()` returns False after 10 minutes of inactivity
 - Job execution: resets LLM session, streams response, posts to the job's own surface plus the dashboard (unless `silent`). Delivery is routed by ORIGIN: `_deliver_cron_to_channel` resolves the session that CREATED the job (`_cron_origin_key`, off `job.session_key`) and, when that session belongs to a non-Slack channel, delivers there and the Slack owner-DM leg stands down, so one run notifies one operator once. Every leg gates on that send's own return value rather than on a prediction, so a governance refusal or a wire failure falls through to Slack instead of dropping the run, and the SEL `downstream_service` names `slack` only when the Slack post landed. An explicit `job.channel` is a destination the user pinned and takes precedence over both. A Slack-origin, dashboard-origin or origin-less job keeps the Slack leg, which is every job an install carries today. The same routing covers the result, the run-failure alert and the crash alert. Delivery via `_deliver_cron_response`: attempts configured `channel`/`thread_ts` first, falls back to owner-DM if channel delivery fails; applies boundary redaction to all output before posting. It also renders any `[OPTIONS: ...]` tags as interactive Slack buttons — `extract_options()` strips them from the text and `build_options_blocks()` posts them under a try/except guard so a Block Kit failure never blocks the text delivery (`gateway.py`)
-- Session scoping: identity comes from the per-call caller block gatewayd injects (`_meta.kirocrew.caller`, consumed via `_resolve_session_key_strict`), with `KIROCREW_SESSION_KEY` and `KIROCREW_HOST_PID`+HMAC as the non-gateway-launch fallbacks; the lenient `/proc` pid walk is deliberately NOT an authorization source. `kirocrew-cron` advertises `kirocrew.caller-identity` so gatewayd injects that block — without the advertisement it is pooled AND identity-blind (nothing declines to pool an unadvertised backend), which is why every session-scoped path used to read an empty key and fail open. One scope function, `_owned_by`, gates BOTH reads and writes: a caller reaches only the jobs whose `session_key` matches its own. Consequences: an unidentifiable caller (gatewayd forwards `caller=None` when a stub registers with no key and peer resolution fails, so it may be sharing a pooled backend with identified sessions) reaches nothing and every write refuses; `cron_add` refuses rather than storing an ownerless row; a job with no recorded owner — written by `kirocrew cron add`, the onboarding importer, and pre-fix pooled `cron_add` — is outside every session's scope in both directions, so it does not appear in `cron_list` from chat and the CLI remains its management surface; `cron_remove_all` removes only the calling session's jobs. There is no admin bypass on this server and no ambient environment value grants cross-session scope: identity comes only from the sources `_authz_session_key` accepts. The CLI's authority does not come from this server at all — `kirocrew cron ...` reaches `CronService` directly and never routes through it, which is why the refusal text names that route. `cron_add` also takes its default delivery channel from the caller block's `channelId`, since `KIROCREW_CHANNEL_ID` has the same one-session-per-process defect as the key
+- Session scoping: identity comes from the per-call caller block gatewayd injects (`_meta.kirocrew.caller`, consumed via `_resolve_session_key_strict`), with `KIROCREW_SESSION_KEY` and `KIROCREW_HOST_PID`+HMAC as the non-gateway-launch fallbacks; the lenient `/proc` pid walk is deliberately NOT an authorization source. `kirocrew-cron` advertises `kirocrew.caller-identity` so gatewayd injects that block — without the advertisement it is pooled AND identity-blind (nothing declines to pool an unadvertised backend), which is why every session-scoped path used to read an empty key and fail open. One scope function, `_owned_by`, gates BOTH reads and writes: a caller reaches only the jobs whose `session_key` matches its own. Consequences: an unidentifiable caller (gatewayd forwards `caller=None` when a stub registers with no key and peer resolution fails, so it may be sharing a pooled backend with identified sessions) reaches nothing and every write refuses; `cron_add` refuses rather than storing an ownerless row; a job with no recorded owner — written by `kirocrew cron add`, the onboarding importer, a `POST /api/crons` create that names no `session_key`, and pre-fix pooled `cron_add` — is outside every session's scope in both directions, so it does not appear in `cron_list` from chat and the CLI remains its management surface (a dashboard create that DOES name a `session_key` is owned, and enters that session's scope — see § Create-time delivery target); `cron_remove_all` removes only the calling session's jobs. There is no admin bypass on this server and no ambient environment value grants cross-session scope: identity comes only from the sources `_authz_session_key` accepts. The CLI's authority does not come from this server at all — `kirocrew cron ...` reaches `CronService` directly and never routes through it, which is why the refusal text names that route. `cron_add` also takes its default delivery channel from the caller block's `channelId`, since `KIROCREW_CHANNEL_ID` has the same one-session-per-process defect as the key
 - Silent mode: `CronJob.silent = True` suppresses auto-delivery of results; the agent decides when to notify the user via the `send_message` MCP tool. Silent also gates **failure** broadcasts: the failure-alert sites — the dup-failure dashboard bell, the fresh-failure dashboard bell, and the fresh-failure Slack DM (`gateway.py`) — are wrapped in `not job.silent`, so a silent cron's failure is *recorded but not broadcast*. The dedup-state advance (`last_failure_hash`/`last_failure_at`), the consecutive-failure auto-pause, the SEL `cron_failure_alert` audit, and the re-raise still fire regardless of `silent`
 - Per-agent cron: jobs store optional `agent_id`; gateway passes `agent=job.agent_id` to `get_or_create()` so each job runs with its configured agent
 - Handler intercepts cron commands before ACP (no LLM round-trip needed)
@@ -252,6 +252,171 @@ validation ran *after* the immediate `_save()`, so the invalid job persisted and
 a retry duplicated it). `mcp_cron.cron_add` keeps only a thin pre-check to
 return a *redacted* user-facing error message and passes the values through to
 `add_job` for the authoritative check.
+
+### Create-time delivery target (`session_key` on `POST /api/crons`)
+
+`POST /api/crons` accepts an optional `session_key` naming the dashboard chat
+session a created job delivers into. Absent or empty means no target, which is
+the session-less default: the job gets its own `cron-<id>` tab.
+
+This is an **ownership** decision rather than a schema-parity one, so it does not
+mirror `cron_add` — that tool takes no session key from its caller at all, it
+derives one through `_authz_session_key()` and refuses a caller it cannot name. A
+browser is not a gateway-launched process and cannot satisfy that resolver, so the
+guarantee is rebuilt from what a dashboard request carries:
+
+- the **owner gate** (`require_owner_dashboard_request`), because naming a
+  delivery target decides where an agent turn's output lands. It runs **only when
+  `session_key` is present**, so a session-less create is unaffected;
+- the slot must **exist** (`state.has_slot`). `kirocrew cron adopt` can warn an
+  operator that a mistyped key leaves a job whose results reach nobody; over HTTP
+  nobody reads a warning, so an unknown slot is refused rather than stored.
+
+Only dashboard slots are targetable. A bare name is stored namespaced as
+`dashboard:<slot>` — the inverse of the `removeprefix("dashboard:")` the delivery
+path applies — and an already-namespaced dashboard key passes through. That
+namespacing rule, and the diagnosis for a target that cannot receive delivery,
+live in **`kiro_crew.cron_session_target`** — one semantic core this route shares
+with `kirocrew cron adopt`. The two surfaces keep **different policy on purpose**
+(the route refuses everything the core reports; adopt accepts other namespaces and
+declines to *promise* delivery instead) but they may not disagree about what a
+target string MEANS. Two copies of that rule is how they drifted: the namespacing
+was spelled out twice, and because a dashboard conversation's transcript is filed
+under the NAMESPACED key, adopt's "is this a real session?" probe — which asked by
+bare slot name — reported no such session for conversations that were plainly
+there. A channel
+key is refused: `_owned_by` would let it own the job, but only a `dashboard:` key
+resolves to a slot the injection path reaches, so storing one would promise a
+delivery the code does not make. The **prefixed** key is what is length-validated,
+since that is the value `_CRON_STRING_FIELD_CAPS` caps.
+
+A slot that EXISTS is still not always targetable. A tab can display a
+conversation whose session key is not its own — a channel-born chat keeps the
+channel's key, and a cron tab carries `cron:<job id>` (the trap
+`dashboard_slot_key` documents). For those, `dashboard:<slot>` is not the
+conversation's key, so `_owned_by` would never match and the chat the user is
+looking at could not list or cancel its own job. A slot whose
+`linked_session_key` names anything other than its own dashboard key is refused
+rather than stored under either key: only a `dashboard:` key resolves for
+injection, and only the linked key owns.
+
+**Delivery survives the tab being closed.** Closing a dashboard tab *archives*
+it: the slot is popped while the transcript stays on disk, and reopening the
+conversation reads that file back. Resolving a live slot alone would therefore
+cover only the window in which the tab happens to be open — the opposite of what
+naming a target is usually for, since "remind me in this thread later" implies the
+thread is not on screen when the job fires. So delivery has two legs:
+
+- **tab open** — mirrored into the live slot (`append_and_surface`). Persistence
+  belongs to the slot that owns the conversation: `slot.append` marks it dirty and
+  the ordinary slot save writes this row with the rest of the window. This leg
+  makes no durable write of its own, so there is exactly one writer per row.
+- **tab closed** — `_deliver_to_archived_target` appends to the transcript
+  directly, and refuses in two cases rather than guessing, because the write lands
+  in a conversation the job does not own. The transcript must **already exist**
+  (this path never creates one, so a conversation the user deleted stays deleted
+  instead of returning as a chat holding one orphaned result), and it must be the
+  **same conversation**: a slot name is reusable, so `session_tab_id` — the target
+  tab's permanent identity, recorded at create time, when the tab is guaranteed
+  live — is compared against the `tab_id` in the transcript's metadata. A
+  mismatch is refused so a session deleted and recreated under the old name cannot
+  inherit a stranger's scheduled result. An **absent** stamp on either side means
+  "cannot disprove", not "mismatch": a job pointed at a session by `cron adopt` is
+  addressed by key alone, and a transcript older than tab identities carries none,
+  so refusing on absence would drop delivery for exactly the conversations this leg
+  exists to reach. It must also be a conversation that **keeps** what it is
+  sent: an incognito/temporary target has memory writes disabled and the live leg
+  honours that by never persisting from the slot, so a durable row written here
+  would be the one thing outliving the session. The transcript header is the only
+  authority for that decision once the tab is archived — a close pops the slot AND
+  discards its key from `state._restricted_keys` deliberately, so the in-memory
+  marker cannot outlive the tab — and the mode is resolved **allowlist-first**
+  through the shared header reader rather than by testing the raw field.
+  `is_incognito_transcript` does not strip whitespace and reads anything
+  unrecognised as not-private, so a header carrying `"incognito "` would miss the
+  membership test and read as unrestricted; the reader also bounds the bytes it
+  consumes and reports an unreadable or non-metadata header as unknown rather than
+  as persistent, so every case that cannot be established refuses the write.
+
+The probe, the metadata read and the append are **one offloaded hop**. All three
+are blocking file I/O taken behind the session lock, and this runs from an
+injection path that normally has a running loop, so probing inline and offloading
+only the write would put two disk reads straight onto the event loop. Best-effort
+throughout: the job's own tab already carries the row, so a lock timeout costs a
+copy of the result rather than the run.
+
+**Delivery eligibility is `persistent_session and not hide_in_chat`** — the same
+expression `ensure_cron_slot` gates the tab pre-create on, and the condition all
+three executor `inject_cron_result_to_dashboard` call sites share. The mirror runs
+inside that injector, so it inherits the check rather than repeating it, and two
+consequences follow for a stored target:
+
+- `hide_in_chat` and a target are refused together
+  (`hidden_job_cannot_target_session`), since the flag would leave the named session
+  receiving nothing, silently. The value is **type-checked, not coerced**
+  (`invalid_hide_in_chat` for a non-boolean): `bool("false")` is True while
+  `"false" is True` is False, so either spelling silently disagrees with somebody —
+  coercion refuses a caller who asked for a visible job, identity admits one this
+  handler then stores hidden. `null` keeps its wire meaning of "not set" and reads
+  as visible, matching what the handler already persists for it;
+- `persistent_session` defaults True and the dashboard create path does not accept
+  it, so a targeted job is always eligible when created. A later `cron_update`
+  setting `persistent_session=False` ends delivery without touching `session_key`:
+  the job keeps a target it does not reach. Not refused at create — the create
+  path cannot see a future update — and worth knowing when a target goes quiet.
+
+Only FRESH delivery mirrors. `include_prompt=False` marks a caller re-surfacing an
+older result (`/to-chat`), and a replay must not re-deliver: the dedup sees only the
+target slot's bounded in-memory buffer, so a result older than that window, or one
+whose buffer a restart rebuilt, would append the run to a conversation twice. Suppressing only the `cron-<id>` tab while still delivering to an
+explicitly named session is coherent, and arguably what setting both means, but it
+redefines the flag and moves the executor's gate, so it is tracked separately.
+
+Refusal codes: `invalid_session_key` (non-string, or over the cap once
+namespaced), `unsupported_session_namespace`, `unknown_session`,
+`linked_session_not_targetable`, `hidden_job_cannot_target_session`,
+`invalid_hide_in_chat`, plus the gate's own `owner_only`.
+
+**Delivery is a MIRROR, not a redirect.** `_mirror_result_to_target_session`
+appends the result row into the named slot *in addition to* the job's own
+`cron-<id>` tab, through `append_and_surface` so the live copy arrives with a
+`meta.mid` on one identity-carrying door. Four properties that are deliberate
+rather than incidental:
+
+- **the job keeps its own tab and its own session.** Pointing `_bind_cron_slot` at
+  the target would set that slot's `linked_session_key` to `cron:<job id>` and
+  hydrate the job's prior runs into a live conversation, so the person's next turn
+  would run AS the job — the exact pairing `_bind_cron_slot` holds together.
+  Nothing on the mirror path touches identity or hydration;
+- **only the assistant result is copied, never the prompt row.** The prompt row is
+  the cron tab's run boundary; in someone else's transcript it would read as a turn
+  they typed;
+- **`dashboard:` keys only.** A channel-origin job already has its own delivery
+  rung (`_deliver_cron_to_channel`), and a channel-born tab's session key is the
+  channel's, so mirroring on a resolved-tab match would double-deliver what the
+  channel leg posted;
+- **the mirror writes NO transcript of its own.** `slot.append` marks the slot
+  dirty, so the periodic slot save (`flush_slot_now`, which skips a slot whose
+  `_dirty` is false) persists the row with the rest of that conversation's window,
+  exactly as it does every other message in the chat. Writing the transcript from
+  the mirror — a deferred, off-loop write aimed at a session the job does not own —
+  had two OPPOSED failures with no local fix: creating the file resurrected a
+  conversation the user had deleted in the meantime, while refusing to create it
+  dropped the row for a session with nothing on disk yet. Neither is reachable once
+  persistence belongs to the slot that owns the conversation. The residual is the
+  ordinary one every dashboard message carries — a crash before the next flush
+  loses the tail — which is the platform's durability contract rather than
+  something this path weakens on its own.
+
+Best-effort on the same footing as every other delivery leg: a deleted target, a
+tab since linked to another session, or a target that is the job's own tab each
+cost the copy, not the run — the job's own tab always carries the result. This closes the asymmetry where the dashboard leg routed by job id
+alone while the channel leg already routed by origin.
+
+**Consequence for scoping:** a targeted job enters the named session's `_owned_by`
+scope, not just its delivery path — so it appears in that session's `cron_list`
+and is mutable through `cron_update` / `cron_remove` from chat. A dashboard-created
+job is therefore only ownerless when no `session_key` was supplied.
 
 **Scope (field-partial invariant).** This owner-level guarantee currently covers
 `timezone` and `skip_dates`. The other first-save fields (`agent_id`, `model`,
