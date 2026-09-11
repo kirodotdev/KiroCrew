@@ -197,6 +197,13 @@ interface Props {
   submitRef?: React.MutableRefObject<(() => void) | null>
   /** Called when saving state changes */
   onSavingChange?: (saving: boolean) => void
+  /** A submit that REACHED the server and failed, reported outward as well as
+   *  rendered inline. The inline error is invisible to a host that has already
+   *  unmounted this form — which is exactly the case worth reporting, since the
+   *  user was told the save might still land and would otherwise never learn it
+   *  did not. Validation refusals do not come through here: the form is on
+   *  screen for those, so its own message is the right surface. */
+  onSubmitError?: (message: string) => void
   /** Called when the form's TOUCHED state changes: true once any field has
    *  diverged from its initial value, false when they all match again (or
    *  after a successful create resets them). Hosts that guard destruction
@@ -206,7 +213,7 @@ interface Props {
   onDirtyChange?: (dirty: boolean) => void
 }
 
-export default function JobForm({ job, prefill, agents, defaultAgent, rosterFailure, lockedAgent, memberId, providerAgent, onSaved, layout = 'horizontal', externalSubmit, submitRef, onSavingChange, onDirtyChange }: Props) {
+export default function JobForm({ job, prefill, agents, defaultAgent, rosterFailure, lockedAgent, memberId, providerAgent, onSaved, layout = 'horizontal', externalSubmit, submitRef, onSavingChange, onSubmitError, onDirtyChange }: Props) {
   // "" and undefined both mean unlocked, so render and submit share one truth.
   const boundMember = job?.member_id || memberId
   const privateMember = !!boundMember && boundMember !== 'default'
@@ -329,7 +336,16 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
     const f = { name, message: msg, agent: locked ?? agent, model, channel, approvalMode, silent, strictSchedule, hideInChat, minimalContext, jobKind, schedMode, intVal, intUnit, weekDays, weekTime, cronExpr }
     const body = buildBody(f, tz, setError, !!job, job ? undefined : prefill)
     if (!body) { setSaving(false); return }
-    if (boundMember && !isLlmless) {
+    if (privateMember && !isLlmless) {
+      // Keyed on `privateMember`, not on `boundMember`, and BOTH lines depend on
+      // it. The backend refuses `member_id: "default"` as a V1 identity, so the
+      // rule lives here rather than in each host — three call sites were
+      // spelling the same `x === 'default' ? undefined : x` ternary to avoid it.
+      // The `agent` override belongs to the same condition: for a real member,
+      // `agent` carries the provider TEMPLATE while `member_id` carries identity,
+      // but the default crew is not a member — overriding its `agent` from
+      // "default" to the template would break the attribution `wakesCrew` reads,
+      // and its schedule would vanish from the pane that created it.
       body.member_id = boundMember
       body.agent = providerAgent || job?.agent || ''
     }
@@ -337,10 +353,21 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
       const res = job
         ? await api.updateCron(job.id, body)
         : await api.createCron(body).catch((e: Error) => ({ error: e.message }))
-      if (res.error) { setError(res.error); setSaving(false); return }
+      if (res.error) { setError(res.error); onSubmitError?.(res.error); setSaving(false); return }
       if (!job) { setName(''); setMsg(''); setWeekDays([]); setIntVal(1); setChannel(''); setModel(''); setApprovalMode(''); setSilent(false); setStrictSchedule(false); setHideInChat(false); setMinimalContext(false) }
+      // Cleared BEFORE onSaved, so `onSavingChange` is symmetric: it reports
+      // false on EVERY outcome, not only on failure. An asymmetric version made
+      // the flag a host's problem to unlearn — a host that lifts it out of its
+      // own dialog (to refuse a dismissal mid-save, say) never heard about
+      // success, so one successful save left it stuck saving forever. Ordering
+      // matters: onSaved typically unmounts this form, so a clear after it
+      // would not run.
+      setSaving(false)
       onSaved()
-    } catch { setError(i18nT('components.jobForm.failed_to_save')); setSaving(false) }
+    } catch {
+      const msg = i18nT('components.jobForm.failed_to_save')
+      setError(msg); onSubmitError?.(msg); setSaving(false)
+    }
   }
 
   const toggleDay = (d: number) => setWeekDays(prev => prev.includes(d) ? prev.filter(x => x !== d) : [...prev, d].sort())
