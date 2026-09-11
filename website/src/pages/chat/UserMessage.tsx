@@ -25,7 +25,11 @@ interface UserMessageProps {
   meta?: Record<string, unknown>
   timestamp?: string
   timestampTitle?: string
-  renderContent: (content: string, meta: Record<string, unknown> | undefined) => React.ReactNode
+  /** `messageTs` is handed over because the session chip's short-name form needs
+   *  to know WHEN the text was written: a bare `chat-1380` resolves against the
+   *  live roster, and slot numbers are reused, so without a write time it cannot
+   *  tell the session that name meant from the one that later took its number. */
+  renderContent: (content: string, meta: Record<string, unknown> | undefined, messageTs?: string) => React.ReactNode
   canEdit?: boolean
   messageIndex?: number
   messageTs?: string
@@ -261,7 +265,14 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
   const bubble = (
     // 'message-bubble' is a stable theming hook — see website/docs/theming-contract.md
     <div ref={userRef} onCopy={handleCopy} className={`message-bubble msg-content px-4 py-2 text-sm leading-6 rounded-xl overflow-hidden min-w-0 w-fit max-w-[min(550px,100%)] ${isSteer ? 'bg-accent-subtle text-text' : 'user-bubble bg-card text-card-fg'}`} style={{ overflowWrap: 'anywhere', wordBreak: 'break-word' }}>
-      {renderContent(content, meta)}
+      {/* `messageTs` FIRST, `clientTs` only as a fallback. The opposite order is
+          correct for the audio key above, which wants the optimistic bubble's own
+          identity, but this value is COMPARED against server-clock slot mint
+          epochs: `clientTs` is the client's clock, retained through reconcile, so
+          an ahead-skewed one would let a reused slot pass the mint check and open
+          the wrong conversation, silently. The fallback still covers a bubble that
+          has no server ts yet. */}
+      {renderContent(content, meta, messageTs || ((meta as { clientTs?: string })?.clientTs))}
     </div>
   )
 
