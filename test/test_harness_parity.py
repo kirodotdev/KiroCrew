@@ -26,6 +26,7 @@ import pytest
 
 from kiro_crew.acp import client as acp_client
 from kiro_crew.acp import runtime as acp_runtime
+from kiro_crew.acp.harness import KasHarness, KiroHarness
 from kiro_crew.acp.types import (
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
@@ -378,15 +379,20 @@ def test_unknown_backend_rejected_at_construction() -> None:
 
 
 def test_kiro_spawn_argv_keeps_its_own_branch() -> None:
-    """H9: the Kiro branch keeps agent materialization and the model pin.
+    """H9: the Kiro spawn keeps agent materialization and the model pin.
 
     kiro-cli discovers selectable modes from ``~/.kiro/agents/*.json`` at
     startup, so a missing agent file makes a later ``set_mode`` fail with "Mode
     not found"; and ``--model`` at spawn is the only way to run a model outside
-    the agent's own provider. A dict-of-builders refactor that treats Kiro as one
-    entry among N drops both without failing anything else.
+    the agent's own provider. A refactor that treats Kiro as one entry among N
+    drops both without failing anything else.
+
+    The Kiro spawn now lives in its own harness rather than as a branch inside
+    the runtime, which is what keeps this invariant satisfiable at all: the
+    materialization and the model pin are in a file no other host shares, so a
+    host added later cannot reach them and cannot generalize them away.
     """
-    source = inspect.getsource(acp_runtime.AcpRuntime._resolve_spawn_argv)
+    source = inspect.getsource(KiroHarness.resolve_spawn)
     assert "ensure_agent_materialized" in source
     assert '"--model"' in source
     assert '"--agent"' in source
@@ -397,15 +403,18 @@ def test_handshake_is_per_backend() -> None:
 
     Collapsing the two capability dicts into one every harness accepts silently
     downgrades what the Kiro session declares.
+
+    Each harness answers with its OWN constant, so the two answers cannot be
+    merged without deleting one of these two lines. The protocol version is
+    pinned alongside because the hosts disagree on its TYPE, and a shared
+    handshake would have to pick one and break the other outright.
     """
-    source = "\n".join(
-        (
-            inspect.getsource(acp_runtime.AcpRuntime.spawn),
-            inspect.getsource(acp_runtime.AcpRuntime._spawn_admitted),
-        )
-    )
-    assert "KAS_CLIENT_CAPABILITIES" in source and "ACP_CLIENT_CAPABILITIES" in source
+    kiro_source = inspect.getsource(KiroHarness.client_capabilities.fget)
+    kas_source = inspect.getsource(KasHarness.client_capabilities.fget)
+    assert "ACP_CLIENT_CAPABILITIES" in kiro_source
+    assert "KAS_CLIENT_CAPABILITIES" in kas_source
     assert KAS_CLIENT_CAPABILITIES != ACP_CLIENT_CAPABILITIES
+    assert KiroHarness().protocol_version != KasHarness().protocol_version
 
 
 def test_every_known_backend_has_a_label() -> None:

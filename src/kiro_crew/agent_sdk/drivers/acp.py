@@ -153,7 +153,7 @@ def agent_spec_mcp_refs(agent: str) -> tuple[bool, list[tuple[str, list[str], bo
 
 
 def kiro_cli_resolves() -> bool:
-    """Does kiro-cli resolve, through the resolver ``_resolve_spawn_argv`` calls?
+    """Does kiro-cli resolve, through the resolver ``_resolve_spawn_plan`` calls?
 
     ``_resolve_kiro_bin`` also enforces the executable-trust snapshot, so a
     binary that is present but fails that check raises rather than answering a

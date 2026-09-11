@@ -10,7 +10,6 @@
 src/kiro_crew/_process_group_supervisor.py
 src/kiro_crew/acp/kas_wire.py
 src/kiro_crew/acp/liveness.py
-src/kiro_crew/acp/session_handle.py
 src/kiro_crew/acp/worker_pool.py
 src/kiro_crew/apps/__init__.py
 src/kiro_crew/apps/app_storage.py
@@ -350,7 +349,6 @@ test/test_acp_liveness.py
 test/test_acp_metadata_fields.py
 test/test_acp_offload.py
 test/test_acp_prompt_blocks.py
-test/test_acp_spawn_offload.py
 test/test_acp_stale_recovery.py
 test/test_acp_tool_identity.py
 test/test_acp_tool_search.py
@@ -712,9 +710,7 @@ test/test_issue_radar_routes_coverage.py
 test/test_issue_radar_tagging.py
 test/test_issue_summary_workflow.py
 test/test_issue_triage_workflow.py
-test/test_kas_agents.py
 test/test_kas_display_mapping.py
-test/test_kas_mode_binding.py
 test/test_kas_subagent_progress.py
 test/test_kiro_prerequisite.py
 test/test_kiro_usage_api.py

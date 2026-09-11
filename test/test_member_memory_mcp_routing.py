@@ -189,8 +189,12 @@ async def test_kas_projection_preserves_direct_private_server(
         ),
         encoding="utf-8",
     )
-    monkeypatch.setattr(runtime_mod, "kiro_agents_dir", lambda: agents)
-    monkeypatch.setattr(runtime_mod, "ensure_agent_materialized", lambda _agent: True)
+    import kiro_crew.config.paths as paths_mod
+
+    monkeypatch.setattr(paths_mod, "kiro_agents_dir", lambda: agents)
+    import kiro_crew.agent as agent_mod
+
+    monkeypatch.setattr(agent_mod, "ensure_agent_materialized", lambda _agent: True)
     runtime = AcpRuntime(
         work_dir=tmp_path,
         acp_backend=ACP_BACKEND_KAS,
@@ -263,11 +267,16 @@ def launch_boundary(monkeypatch):
     spawned = AsyncMock(
         side_effect=AssertionError("A provider process must never start in this test")
     )
+    import kiro_crew.agent as agent_mod
+
+    # The binary search and the agent-spec materialization are stubbed at the
+    # modules that DEFINE them: the runtime's spawn reaches both through its
+    # harness, so a stub on the runtime module would not be the code that runs.
+    monkeypatch.setattr(
+        client_mod, "_resolve_kiro_bin_for_spawn", AsyncMock(return_value=sys.executable)
+    )
+    monkeypatch.setattr(agent_mod, "ensure_agent_materialized", lambda _agent: True)
     for module in (client_mod, runtime_mod):
-        monkeypatch.setattr(
-            module, "_resolve_kiro_bin_for_spawn", AsyncMock(return_value=sys.executable)
-        )
-        monkeypatch.setattr(module, "ensure_agent_materialized", lambda _agent: True)
         monkeypatch.setattr(
             module, "assert_voice_runtime_outside_agent_workspace", lambda _path: None
         )

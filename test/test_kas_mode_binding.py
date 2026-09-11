@@ -39,7 +39,7 @@ def _fast_no_report_ceiling(monkeypatch):
 
 #: Records what the client injected so a test can read it back, and gates
 #: ``session/set_mode`` on the resulting mode list the way KAS does.
-_MODE_STUB = '''
+_MODE_STUB = """
 import json, os, sys
 
 BUILTIN = ["vibe", "spec", "plan"]
@@ -88,7 +88,7 @@ for line in sys.stdin:
                 "code": -32603, "message": "Mode '%s' not found" % requested}})
     elif mid is not None:
         send({"jsonrpc": "2.0", "id": mid, "result": {}})
-'''
+"""
 
 
 @pytest.fixture
@@ -107,9 +107,7 @@ def mode_stub(tmp_path, monkeypatch):
     async def fake_bin(*, environ=None, home=None) -> str:
         return str(launcher)
 
-    monkeypatch.setattr(
-        "kiro_crew.acp.runtime._resolve_kiro_bin_for_spawn", fake_bin
-    )
+    monkeypatch.setattr("kiro_crew.acp.client._resolve_kiro_bin_for_spawn", fake_bin)
     monkeypatch.setenv("KAS_STUB_RECORD", str(record))
     return record
 
@@ -130,17 +128,15 @@ def crew_agent(tmp_path, monkeypatch):
         ),
         encoding="utf-8",
     )
-    monkeypatch.setattr("kiro_crew.acp.runtime.kiro_agents_dir", lambda: agents_dir)
-    monkeypatch.setattr("kiro_crew.acp.runtime.ensure_agent_materialized", lambda _a: True)
+    monkeypatch.setattr("kiro_crew.config.paths.kiro_agents_dir", lambda: agents_dir)
+    monkeypatch.setattr("kiro_crew.agent.ensure_agent_materialized", lambda _a: True)
     return agents_dir
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="the stub launcher is a POSIX shell script")
 class TestModeBinding:
     @pytest.mark.asyncio
-    async def test_injected_agent_becomes_the_active_mode(
-        self, mode_stub, crew_agent, tmp_path
-    ):
+    async def test_injected_agent_becomes_the_active_mode(self, mode_stub, crew_agent, tmp_path):
         """The whole chain: inject -> advertised as a mode -> activated."""
         runtime = AcpRuntime(
             work_dir=tmp_path / "ws",
@@ -192,9 +188,7 @@ class TestModeBinding:
         assert seen["set_mode"] == "kirocrew"
 
     @pytest.mark.asyncio
-    async def test_prompt_is_inlined_not_sent_as_a_file_uri(
-        self, mode_stub, crew_agent, tmp_path
-    ):
+    async def test_prompt_is_inlined_not_sent_as_a_file_uri(self, mode_stub, crew_agent, tmp_path):
         """KAS rejects ``file://`` here; the client owns the read."""
         prompt_file = tmp_path / "prompt.md"
         prompt_file.write_text("inlined from disk", encoding="utf-8")

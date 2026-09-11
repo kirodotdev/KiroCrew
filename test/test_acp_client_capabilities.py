@@ -31,17 +31,38 @@ def test_fs_and_terminal_stay_false() -> None:
 def test_both_acp_transports_send_capabilities() -> None:
     """Both transports must advertise, not just one.
 
-    `AcpClient` and `AcpRuntime` build their `initialize` params independently,
-    so a capability added to one silently stays dark on the other. Asserted on
-    source because neither params dict is reachable without spawning a real
-    agent subprocess.
+    The two build their `initialize` params independently, so a capability added
+    to one silently stays dark on the other. Asserted on source because neither
+    params dict is reachable without spawning a real agent subprocess.
+
+    The shared-process transport reads the set from its host's harness, so that
+    is where its half of the proof lives; every harness that serves a kiro-family
+    host must name the constant itself.
     """
-    for rel in ("src/kiro_crew/acp/client.py", "src/kiro_crew/acp/runtime.py"):
+    for rel in (
+        "src/kiro_crew/acp/client.py",
+        "src/kiro_crew/acp/harness/kiro.py",
+        "src/kiro_crew/acp/harness/kas.py",
+    ):
         src = Path(__file__).resolve().parents[1] / rel
         # encoding is explicit: read_text() defaults to the locale codec, which
         # is cp1252 on the Windows CI shards, and these files contain non-ASCII
         # (em dashes / arrows) in their comments.
-        assert "ACP_CLIENT_CAPABILITIES" in src.read_text(encoding="utf-8"), rel
+        assert "CLIENT_CAPABILITIES" in src.read_text(encoding="utf-8"), rel
+
+
+def test_the_shared_process_transport_reads_capabilities_from_its_host() -> None:
+    """The runtime must not carry a capability literal of its own.
+
+    A second copy beside the harness's would be free to drift from the one
+    actually sent, and the drift is invisible: both spellings compile and only a
+    live session shows which set went out.
+    """
+    src = Path(__file__).resolve().parents[1] / "src/kiro_crew/acp/runtime.py"
+    text = src.read_text(encoding="utf-8")
+    assert '"clientCapabilities": self._harness.client_capabilities' in text
+    assert "ACP_CLIENT_CAPABILITIES" not in text
+    assert "KAS_CLIENT_CAPABILITIES" not in text
 
 
 def test_both_acp_transports_send_client_info_name() -> None:

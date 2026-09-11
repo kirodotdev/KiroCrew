@@ -1,0 +1,96 @@
+{
+  "backend": "kas",
+  "requests": [
+    {
+      "method": "session/new",
+      "params": {
+        "_meta": {
+          "kiro": {
+            "customAgents": [
+              {
+                "name": "pinned-agent",
+                "prompt": "pinned"
+              }
+            ]
+          }
+        },
+        "cwd": "/pinned/work/dir",
+        "mcpServers": [
+          {
+            "command": "pinned-core",
+            "name": "kirocrew-core"
+          },
+          {
+            "command": "pinned-cron",
+            "name": "kirocrew-cron"
+          }
+        ]
+      }
+    },
+    {
+      "method": "session/set_mode",
+      "params": {
+        "modeId": "pinned-agent",
+        "sessionId": "pinned-new-sid"
+      }
+    },
+    {
+      "method": "_kiro/session/delete",
+      "params": {
+        "sessionId": "pinned-new-sid"
+      }
+    },
+    {
+      "method": "session/load",
+      "params": {
+        "_meta": {
+          "_kiro.dev/session_file": "/pinned/transcript.jsonl",
+          "kiro": {
+            "customAgents": [
+              {
+                "name": "pinned-agent",
+                "prompt": "pinned"
+              }
+            ]
+          }
+        },
+        "cwd": "/pinned/work/dir",
+        "mcpServers": [
+          {
+            "command": "pinned-core",
+            "name": "kirocrew-core"
+          },
+          {
+            "command": "pinned-cron",
+            "name": "kirocrew-cron"
+          }
+        ],
+        "sessionId": "pinned-resume-sid"
+      }
+    },
+    {
+      "method": "session/set_mode",
+      "params": {
+        "modeId": "pinned-agent",
+        "sessionId": "pinned-resume-sid"
+      }
+    },
+    {
+      "method": "_kiro/session/delete",
+      "params": {
+        "sessionId": "pinned-resume-sid"
+      }
+    }
+  ],
+  "stdin_frames": [
+    {
+      "error": {
+        "code": -32000,
+        "message": "pinned auth failure"
+      },
+      "id": 7,
+      "jsonrpc": "2.0"
+    }
+  ],
+  "teardown_method": "_kiro/session/delete"
+}

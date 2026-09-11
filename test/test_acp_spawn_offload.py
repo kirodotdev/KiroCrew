@@ -213,9 +213,7 @@ class TestClientSpawnPidTrackingOffLoop:
             ),
             patch(
                 "kiro_crew.session._track_session_pid",
-                side_effect=lambda pid: session_track_threads.append(
-                    threading.current_thread()
-                ),
+                side_effect=lambda pid: session_track_threads.append(threading.current_thread()),
             ),
             # PID 12345 may be a real host process; an empty scan keeps the
             # early-descendant branch (and its own tracking write) out of
@@ -292,11 +290,11 @@ class TestRuntimeSpawnOffLoop:
             mkdir_threads.append(threading.current_thread())
             return real_mkdir(self, *a, **kw)
 
-        monkeypatch.setattr(runtime_mod, "_resolve_kiro_bin_for_spawn", resolve_bin)
-        monkeypatch.setattr(runtime_mod, "ensure_agent_materialized", lambda agent: None)
-        monkeypatch.setattr(
-            runtime_mod, "wrap_argv", lambda argv, mode, **kw: (list(argv), None)
-        )
+        monkeypatch.setattr(client_mod, "_resolve_kiro_bin_for_spawn", resolve_bin)
+        import kiro_crew.agent as agent_mod
+
+        monkeypatch.setattr(agent_mod, "ensure_agent_materialized", lambda agent: None)
+        monkeypatch.setattr(runtime_mod, "wrap_argv", lambda argv, mode, **kw: (list(argv), None))
         monkeypatch.setattr(runtime_mod, "cgroup_scope_argv", _rec_cgroup)
         monkeypatch.setattr(
             runtime_mod,
@@ -344,9 +342,7 @@ class TestSpawnCancellationSandboxCleanup:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("raise_in", ["cgroup", "env"])
-    async def test_client_spawn_cancel_unlinks_sandbox_file(
-        self, tmp_path, raise_in
-    ) -> None:
+    async def test_client_spawn_cancel_unlinks_sandbox_file(self, tmp_path, raise_in) -> None:
         sandbox_file = self._sandbox_file(tmp_path)
         client = AcpClient(work_dir=tmp_path / "workspace", session_key="k")
 
@@ -392,8 +388,10 @@ class TestSpawnCancellationSandboxCleanup:
         def _krb5(env):
             raise asyncio.CancelledError()
 
-        monkeypatch.setattr(runtime_mod, "_resolve_kiro_bin_for_spawn", resolve_bin)
-        monkeypatch.setattr(runtime_mod, "ensure_agent_materialized", lambda agent: None)
+        monkeypatch.setattr(client_mod, "_resolve_kiro_bin_for_spawn", resolve_bin)
+        import kiro_crew.agent as agent_mod
+
+        monkeypatch.setattr(agent_mod, "ensure_agent_materialized", lambda agent: None)
         monkeypatch.setattr(
             runtime_mod,
             "wrap_argv",
@@ -549,8 +547,10 @@ class TestRuntimeShieldSurvivesAFailedAppend:
         async def resolve_bin(*, environ=None, home=None) -> str:
             return "/usr/bin/kiro-cli"
 
-        monkeypatch.setattr(runtime_mod, "_resolve_kiro_bin_for_spawn", resolve_bin)
-        monkeypatch.setattr(runtime_mod, "ensure_agent_materialized", lambda agent: None)
+        monkeypatch.setattr(client_mod, "_resolve_kiro_bin_for_spawn", resolve_bin)
+        import kiro_crew.agent as agent_mod
+
+        monkeypatch.setattr(agent_mod, "ensure_agent_materialized", lambda agent: None)
         monkeypatch.setattr(runtime_mod, "wrap_argv", lambda argv, mode, **kw: (list(argv), None))
         monkeypatch.setattr(runtime_mod, "cgroup_scope_argv", lambda argv: list(argv))
         monkeypatch.setattr(runtime_mod, "resolve_krb5_ccname", lambda env: None)

@@ -83,6 +83,18 @@ def _fast_no_report_ceiling(monkeypatch):
     monkeypatch.setattr(sh, "_MCP_DRAIN_NO_REPORT_CEILING", 0.05, raising=False)
 
 
+def _spawn_client_mod():
+    """The module that DEFINES the trusted-binary resolver every spawn uses.
+
+    A harness resolves it there at call time, so a patch aimed at some other
+    module's re-export would leave the real filesystem search running while the
+    test believed it was stubbed.
+    """
+    import kiro_crew.acp.client as client_mod
+
+    return client_mod
+
+
 def _make_runtime():
     """An initialized AcpRuntime wired to a fake subprocess.
 
@@ -826,14 +838,26 @@ def test_runtime_reuses_clients_oversize_drain_helper():
 
 
 def test_runtime_uses_clients_augmented_kiro_bin_resolver():
-    """spawn() must resolve kiro-cli via the SAME augmented-PATH resolver as
-    AcpClient (honours KIROCREW_KIRO_BIN + augmented_path so a non-login gateway
-    finds a ~/.local/bin install). A bare shutil.which(PATH) duplicate regressed
-    the kiro/_bg path to 'kiro-cli not found in PATH'. Assert single-source."""
-    import kiro_crew.acp.client as client_mod
-    import kiro_crew.acp.runtime as runtime_mod
+    """Every spawn path must resolve kiro-cli via the SAME augmented-PATH resolver
+    as AcpClient (honours KIROCREW_KIRO_BIN + augmented_path so a non-login
+    gateway finds a ~/.local/bin install). A bare shutil.which(PATH) duplicate
+    regressed the kiro/_bg path to 'kiro-cli not found in PATH'. Assert
+    single-source.
 
-    assert runtime_mod._resolve_kiro_bin_for_spawn is client_mod._resolve_kiro_bin_for_spawn
+    Read as SOURCE rather than by identity because each kiro-family harness
+    resolves the binary at call time, which is what lets a test patch the
+    resolver at its definition site instead of at a re-export that may not
+    exist."""
+    import inspect
+
+    import kiro_crew.acp.client as client_mod
+    from kiro_crew.acp.harness import KasHarness, KiroHarness
+
+    assert hasattr(client_mod, "_resolve_kiro_bin_for_spawn")
+    for harness in (KiroHarness, KasHarness):
+        source = inspect.getsource(harness.resolve_spawn)
+        assert "_resolve_kiro_bin_for_spawn" in source, harness.__name__
+        assert "shutil.which" not in source, harness.__name__
 
 
 @pytest.mark.parametrize("backend", [None, ACP_BACKEND_KAS])
@@ -861,7 +885,6 @@ async def test_runtime_missing_kiro_bin_reports_the_directories_it_searched(back
     have to answer the same question.
     """
     import kiro_crew.acp.client as client_mod
-    import kiro_crew.acp.runtime as runtime_mod
 
     searched = [os.path.join(os.sep, "managed-bin"), os.path.join(os.sep, "path-bin")]
     unsearched = os.path.join(os.sep, "never-checked")
@@ -873,11 +896,11 @@ async def test_runtime_missing_kiro_bin_reports_the_directories_it_searched(back
         return None
 
     with (
-        patch.object(runtime_mod, "_resolve_kiro_bin_for_spawn", _no_bin),
+        patch.object(client_mod, "_resolve_kiro_bin_for_spawn", _no_bin),
         patch.object(client_mod, "known_kiro_cli_dirs", return_value=searched),
     ):
         with pytest.raises(AcpRuntimeError) as raised:
-            await rt._resolve_spawn_argv()
+            await rt._resolve_spawn_plan()
 
     message = str(raised.value)
     assert "searched 2 directories" in message
@@ -1100,8 +1123,9 @@ async def test_runtime_spawn_passes_installed_path_through_exact_wrappers(
     async def resolve_installed(*, environ=None, home=None):
         return launch_path
 
+    client_mod = _spawn_client_mod()
     monkeypatch.setattr(
-        runtime_mod,
+        client_mod,
         "_resolve_kiro_bin_for_spawn",
         resolve_installed,
     )
@@ -6325,8 +6349,9 @@ async def test_runtime_spawn_scrubs_sensitive_env_on_default_auto(monkeypatch):
     async def resolve_kiro_bin(*, environ=None, home=None):
         return "/fake/kiro"
 
+    client_mod = _spawn_client_mod()
     monkeypatch.setattr(
-        runtime_mod,
+        client_mod,
         "_resolve_kiro_bin_for_spawn",
         resolve_kiro_bin,
     )
@@ -6387,7 +6412,7 @@ async def test_runtime_spawn_names_its_own_browser_session(monkeypatch):
     async def resolve_kiro_bin(*, environ=None, home=None):
         return "/fake/kiro"
 
-    monkeypatch.setattr(runtime_mod, "_resolve_kiro_bin_for_spawn", resolve_kiro_bin)
+    monkeypatch.setattr(_spawn_client_mod(), "_resolve_kiro_bin_for_spawn", resolve_kiro_bin)
     monkeypatch.setattr(
         runtime_mod,
         "wrap_argv",

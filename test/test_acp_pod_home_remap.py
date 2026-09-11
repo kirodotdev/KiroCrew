@@ -115,21 +115,44 @@ class TestTheCapabilitySetIsItsOwnDecision:
         assert ACP_BACKEND_CLAUDE not in ACP_BACKENDS_POD_HOME_REMAP
         assert ACP_BACKEND_KAS not in ACP_BACKENDS_POD_HOME_REMAP
 
-    def test_neither_spawn_site_gates_the_remap_on_the_sandbox_set(self) -> None:
+    def test_the_client_spawn_does_not_gate_the_remap_on_the_sandbox_set(self) -> None:
         """The regression: reusing ACP_BACKENDS_INTERNAL_SANDBOX for this gate
-        is the conflation, so neither call site may name it for the remap."""
+        is the conflation, so the call site may not name it for the remap."""
         import inspect
 
         from kiro_crew.acp import client as client_mod
-        from kiro_crew.acp import runtime as runtime_mod
 
-        for source in (
-            inspect.getsource(client_mod.AcpClient._spawn),
-            inspect.getsource(runtime_mod.AcpRuntime._spawn_admitted),
-        ):
-            remap_call = source.split("_apply_pod_home_remap(")[1].split(")")[0]
-            assert "ACP_BACKENDS_POD_HOME_REMAP" in remap_call
-            assert "ACP_BACKENDS_INTERNAL_SANDBOX" not in remap_call
+        source = inspect.getsource(client_mod.AcpClient._spawn)
+        remap_call = source.split("_apply_pod_home_remap(")[1].split(")")[0]
+        assert "ACP_BACKENDS_POD_HOME_REMAP" in remap_call
+        assert "ACP_BACKENDS_INTERNAL_SANDBOX" not in remap_call
+
+    def test_the_shared_process_spawn_asks_a_question_of_its_own(self) -> None:
+        """The same conflation, closed one layer down.
+
+        The shared-process spawn asks its host, and the host answers from the
+        remap set. Each question is one property reading one set, so answering
+        "does this host relocate its credential store" with "does it carry its own
+        sandbox" now requires editing the wrong property by name -- a stronger
+        pin than a spawn method that mentions both sets for unrelated reasons.
+        """
+        import inspect
+
+        from kiro_crew.acp import runtime as runtime_mod
+        from kiro_crew.acp.harness._common import MembershipHarness
+
+        spawn = inspect.getsource(runtime_mod.AcpRuntime._spawn_admitted)
+        remap_call = spawn.split("_apply_pod_home_remap(")[1].split(")")[0]
+        assert "self._harness.pod_home_remap" in remap_call
+        assert "ACP_BACKENDS_INTERNAL_SANDBOX" not in remap_call
+
+        answer = inspect.getsource(MembershipHarness.pod_home_remap.fget)
+        assert "ACP_BACKENDS_POD_HOME_REMAP" in answer
+        assert "ACP_BACKENDS_INTERNAL_SANDBOX" not in answer
+
+        sandbox_answer = inspect.getsource(MembershipHarness.internal_sandbox.fget)
+        assert "ACP_BACKENDS_INTERNAL_SANDBOX" in sandbox_answer
+        assert "ACP_BACKENDS_POD_HOME_REMAP" not in sandbox_answer
 
 
 class TestAwsCredentialPointersAreNotExportedIntoThePod:
