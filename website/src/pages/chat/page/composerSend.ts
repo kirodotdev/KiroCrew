@@ -5,7 +5,9 @@ import type { ChatMessage, ChatSlot } from '../../../types'
 import { expandAll as expandPasteTokens, carryPastes, mergeCarriedDraft, type PasteBlock } from '../../../utils/pasteTokens'
 import { mergeSessionRefs, type SessionRef } from '../../../utils/sessionRefs'
 import type { PickedFileTokens } from './composerFileMentions'
-import { queuedSendStash } from '../../../hooks/useQueuedMessageActions'
+import { queuedSendStash, queuedReviewStash } from '../../../hooks/useQueuedMessageActions'
+import { peekReviewComments, clearReviewComments, restoreReviewComments } from '../../../store/reviewComments'
+import { formatReviewComments } from '../../../store/reviewComments.prompt'
 import { syncSlotRunningFromServer, capturePendingAskId, createSlot, appendMessage, selectComposerBusy, startLocalTurn, endLocalTurn, appendSlotMessage, setSlotRunning, selectSendConfirmed, markSendUnconfirmed, confirmOptimisticSend, ageFolderSuggestion } from '../../../store/chatSlice'
 import { confirmedDelivered } from '../../../utils/sendDelivery'
 import { mintSendId, sendTurn } from '../../../chat-core/transport/sendTurn'
@@ -163,7 +165,10 @@ export function useComposerSend({
     if (!isolated) widgetPrefillRef.current = null
     // A staged quote alone is a sendable message (the quote IS the text).
     const sentQuote: MessageQuote | null = isolated || optionText ? null : messageQuote.consume('').quote
-    if (isEmptyTurn(isolated ? { text: raw } : { text: raw, quote: sentQuote, files: pendingFilesRef.current, sessionRefs: pendingSessionsRef.current })) return false
+    // Review comments drafted on this chat's diff lines are sendable content
+    // on their own: a comments-only send needs no placeholder prompt.
+    const hasReviewDrafts = !isolated && !optionText && !targetSlot && peekReviewComments(activeSlotRef.current ?? '').length > 0
+    if (!hasReviewDrafts && isEmptyTurn(isolated ? { text: raw } : { text: raw, quote: sentQuote, files: pendingFilesRef.current, sessionRefs: pendingSessionsRef.current })) return false
 
     // Sending while STREAMING dictation is live ends the dictation (see
     // `useComposerVoice.disarmForSend` for the full rationale — streaming only,
@@ -381,6 +386,23 @@ export function useComposerSend({
     if (!targetSlot) {
       forceNew = newSessionRef.current
       newSessionRef.current = false
+    }
+    // Inline review comments drafted on diff lines ride the next normal send
+    // into the session they were drafted in, and leave the bar with it.
+    // Option sends (follow-up chips, question answers), targeted sends and a
+    // send that opens a new session skip them: that text is aimed elsewhere.
+    // Snapshotted, not only cleared, so a failed send and a cancelled queued
+    // send can put them back. The block is APPENDED after every serializer
+    // has run: it quotes code verbatim, so an `@docs/`-shaped string inside
+    // it must reach the agent as written, and a staged quote must still
+    // open the message for the bubble's quote card.
+    const reviewSlot = !isolated && !optionText && !targetSlot && !forceNew && uiSlot && slot === uiSlot ? uiSlot : null
+    const sentReviews = reviewSlot ? peekReviewComments(reviewSlot) : []
+    if (reviewSlot && sentReviews.length) {
+      clearReviewComments(reviewSlot)
+      const reviewBlock = formatReviewComments(sentReviews)
+      turn.wire = turn.wire ? turn.wire + '\n\n' + reviewBlock : reviewBlock
+      turn.bubble = turn.bubble ? turn.bubble + '\n\n' + reviewBlock : reviewBlock
     }
     if (!slot || forceNew) {
       sendingRef.current = true;
@@ -626,6 +648,9 @@ export function useComposerSend({
      * staged while the send was in flight is not clobbered.
      */
     const restoreComposerAfterFailedSend = () => {
+      // Review drafts go back to the slot they were drained from. The store
+      // merges, so a draft re-made while the send was in flight wins.
+      if (reviewSlot && sentReviews.length) restoreReviewComments(reviewSlot, sentReviews)
       // App payloads remain in the page-level error notice for copying; the
       // composer was never consumed and must not gain the app's text or chips.
       if (!slot || isolated) return
@@ -775,6 +800,12 @@ export function useComposerSend({
       if (typeof body.queue_id === 'string' && body.queue_id) {
         queuedSendStash.set(body.queue_id, { raw, files: stagedFilesAtSend, sent: turn.wire, aliases: sentSlotTokens, ...(sentQuote ? { quote: sentQuote } : {}) })
       }
+    }
+    // Drafts a queued send carried are recorded whatever else it carried
+    // (`typedOnly` above was decided before their block was appended), so a
+    // cancel puts them back as chips. See `queuedReviewStash`.
+    if (body.queued && reviewSlot && sentReviews.length && typeof body.queue_id === 'string' && body.queue_id) {
+      queuedReviewStash.set(body.queue_id, { slot: reviewSlot, reviews: sentReviews, sent: turn.wire })
     }
     if (receipt.status === 'refused') {
       // FRAMED like the steer's refusal (and ChatEmbed's): a raw backend reason

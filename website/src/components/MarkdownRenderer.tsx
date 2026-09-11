@@ -1029,7 +1029,7 @@ function BlockRenderer({ block, prevBlock, onFileOpen, sourcePos, messageTs, slo
       // reply, so the chat must not leave it folded: the same chip stays
       // mounted, opens itself and says why it looks wrong.
       const node = !collapseDiffs
-        ? <DiffBlock code={block.content} complete={block.complete} onFileOpen={onFileOpen} pathHint={pathHint} />
+        ? <DiffBlock code={block.content} complete={block.complete} onFileOpen={onFileOpen} pathHint={pathHint} reviewAnchor={foldKey} />
         : <FoldableDiffBlock code={block.content} complete={block.complete} onFileOpen={onFileOpen} pathHint={pathHint} foldKey={foldKey}
             warning={block.unclosed ? i18nT('components.markdownRenderer.unclosed_diff_warning') : undefined} />
       // Smooth mode: wrap so the block height eases as lines arrive. The wrapper
