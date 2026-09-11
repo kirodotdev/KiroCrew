@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import type React from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { BookOpen, ChevronDown, ChevronRight, Folder, Paperclip, Plug } from 'lucide-react'
+import { BookOpen, ChevronDown, ChevronRight, Folder, Paperclip, Plug, Save } from 'lucide-react'
 
 import { api } from '../../api/client'
 import Clickable from '../../components/Clickable'
@@ -14,6 +14,7 @@ import SessionActionsMenu from '../../components/SessionActionsMenu'
 import {
   DropdownMenu,
   DropdownMenuContent,
+  DropdownMenuItem,
   DropdownMenuSub,
   DropdownMenuSubContent,
   DropdownMenuSubTrigger,
@@ -38,8 +39,12 @@ import { TURN_OPENER_ROLES } from './groupDisplayItems'
 import McpToolsPanel from './McpToolsPanel'
 import type { DisplayItem, TurnItem } from './types'
 
-export function ChatHeaderMenu({ activeSlot, agent, onReveal, onRename, mode }: {
+export function ChatHeaderMenu({ activeSlot, agent, onReveal, onRename, mode, memoryMode, onPromote }: {
   activeSlot: string | null; agent?: string; onReveal?: () => void; onRename?: () => void; mode?: string
+  /** Slot's memory_mode; gates the "Keep this chat" item to incognito/temporary. */
+  memoryMode?: string
+  /** Promotes the ephemeral slot to persistent (confirmation dialog owned by the caller). */
+  onPromote?: () => void
 }) {
   // Controlled open state: lets the colour-swatch row (not a Radix menu item)
   // close the menu after a pick, via the onColorPicked hook passed below.
@@ -101,7 +106,17 @@ export function ChatHeaderMenu({ activeSlot, agent, onReveal, onRename, mode }: 
           mode={mode}
           // MCP servers: stateful (lazy fetch gated on the sub's open state), so
           // it stays here as an info slot rather than a generic capability.
+          // "Keep this chat" is likewise threaded in as an info slot rather
+          // than a peer button in the title row: a header row holds at most
+          // two peer action controls (max-two-buttons-per-row), and rename +
+          // regenerate-title already claim both, so a third entry point goes
+          // into this existing overflow menu instead of the row.
           infoSlots={[
+            (memoryMode === 'incognito' || memoryMode === 'temporary') && onPromote && (
+              <DropdownMenuItem key="promote" onSelect={() => { onPromote() }}>
+                <Save size={13} className="shrink-0 text-muted" /> {i18nT('pages.chatPage.keep_this_chat')}
+              </DropdownMenuItem>
+            ),
             <DropdownMenuSub key="mcp" onOpenChange={setMcpOpen}>
               <DropdownMenuSubTrigger>
                 <Plug size={13} className="shrink-0 text-muted" />

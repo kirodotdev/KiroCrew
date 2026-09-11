@@ -255,27 +255,67 @@ no longer destroy older turns.
   `dashboard.tail_fork_enabled`; if the gate is off, a `direction="tail"`
   request falls back to a normal head-fork instead of erroring. The source
   slot's history file is untouched, so the head stays archived in the parent.
-- **Fork inherits `memory_mode`, and never loosens it**: an incognito or
-  temporary session forks like a persistent one, and the child is born with the
-  parent's mode -- passed to `get_or_create_slot` at creation so the child's
-  `dashboard:` key is registered restricted in the same step, never stamped on
-  afterwards. There is no `slot_not_persistent` refusal: one would buy no
-  privacy, for the reason the titling section below gives -- the parent's full
-  transcript is already in its session JSONL, and a fork copies transcript
-  while engaging neither guarantee the modes make (`is_restricted`,
-  `blocks_reads`). What a fork must not do is
-  produce a *persistent* child from a restricted parent -- that would hand
-  no-write content to consolidation -- so the request body carries no
-  `memory_mode` and the parent's value is the only source. A temporary child
-  still receives its copied turns: `build_session_context` assembles the
-  thread-history block before any `blocks_reads` gate. The response and the
-  `chat.slot_fork` audit event both report the inherited mode. The inherited
-  value is validated against `VALID_MEMORY_MODES` before the child is
-  allocated: rehydration copies the transcript header's `memory_mode` onto the
-  slot as written, so a hand-edited or partially written header can leave a
-  value outside the allowlist on a live parent, and passing it through would
-  raise out of the slot constructor as a 500. The fork instead answers 409
+- **Fork inherits `memory_mode`, and never loosens it on its own**: an
+  incognito or temporary session forks like a persistent one, and the child is
+  born with the parent's mode -- passed to `get_or_create_slot` at creation so
+  the child's `dashboard:` key is registered restricted in the same step,
+  never stamped on afterwards. There is no `slot_not_persistent` refusal: one
+  would buy no privacy, for the reason the titling section below gives -- the
+  parent's full transcript is already in its session JSONL, and a fork copies
+  transcript while engaging neither guarantee the modes make (`is_restricted`,
+  `blocks_reads`). What an ORDINARY fork must not do is produce a *persistent*
+  child from a restricted parent -- that would hand no-write content to
+  consolidation -- so the request body carries no `memory_mode` and the
+  parent's value is the only source; promotion (below) is the one deliberate,
+  consent-gated exception. A temporary child still receives its copied turns:
+  `build_session_context` assembles the thread-history block before any
+  `blocks_reads` gate. The response and the `chat.slot_fork` audit event both
+  report the inherited (or, for a promotion, forced) mode. The inherited value
+  is validated against `VALID_MEMORY_MODES` before the child is allocated:
+  rehydration copies the transcript header's `memory_mode` onto the slot as
+  written, so a hand-edited or partially written header can leave a value
+  outside the allowlist on a live parent, and passing it through would raise
+  out of the slot constructor as a 500. The fork instead answers 409
   `fork_source_memory_mode_invalid` (SEL `denied`), and no child exists.
+- **Promoting an ephemeral session** (`POST /api/chat/slots/{slot}/promote`,
+  `chat_fork.api_chat_slot_promote`): "Keep this chat" turns an
+  incognito/temporary slot into a persistent one. Ephemeral sessions were
+  otherwise a one-way door — `is_incognito_transcript()` (below) excludes them
+  from history, MCP tools and summaries, and there was no way back short of
+  losing the conversation or hand-copying it. Promotion is a THIN wrapper over
+  the fork machinery above: it passes an internal-only, keyword-only
+  `_promote_from_ephemeral=True` to `api_chat_slot_fork`, the ONE consent-gated
+  exception to the mode-inheritance rule the bullet above describes -- it
+  forces the child's `memory_mode` to `persistent` regardless of the parent's,
+  rather than inheriting it. The new slot is a HEAD fork of the ENTIRE
+  transcript — any body field that would narrow the scope
+  (`at_message_index`, `direction`, `mode`, `prompt`) is discarded before
+  parsing, because the confirmation dialog promises the whole conversation is
+  kept — titled `"↳ Kept from ephemeral chat: <parent title>"`, and carries one
+  additional hardcoded-English system note (`meta.kind: "session_promoted"`)
+  recording that it was kept from a private chat; a `temporary` source (which
+  also suppressed memory READS, unlike `incognito`) gets an extra sentence
+  noting the copied turns ran without that context. **Fork, not in-place
+  header rewrite**, by design: rewriting `memory_mode` on the existing
+  transcript would make every earlier turn — sent when the user believed the
+  session was private — retroactively eligible for history search and
+  consolidation, a scope the confirmation dialog cannot honestly describe up
+  front. Forking instead leaves the ephemeral ORIGINAL completely untouched
+  (still incognito/temporary, still excluded everywhere) and makes the promise
+  "the whole conversation is copied into a new, regular session" literally
+  true. An already-persistent slot refuses with `slot_already_persistent`
+  (400) — nothing to promote. A successful promotion is SEL-audited as
+  `chat.slot_promote` (`outcome=allowed`, `resources` includes
+  `promoted_from=<incognito|temporary>`); every refusal path shares the same
+  operation name so a promote attempt is never misattributed to a fork one.
+  **Strictly human-initiated:** an app credential is refused outright
+  (`promote_requires_dashboard_user`, 403, SEL-audited), before delegating,
+  regardless of whether the app owns the slot — slot ownership never implies
+  authority to decide that a private session should stop being private. There
+  is also no MCP tool, no CLI command, and no other endpoint that can reach
+  `_promote_from_ephemeral=True` — an agent deciding on its own to stop
+  treating a session as private would be a privacy defect, not a feature, so
+  this capability is dashboard-route-only by construction.
 - **Private-member fork identity**: a V2 fork also inherits the parent's
   protected memory assignment before the child receives copied history. The
   parent assignment must match the currently configured member and store;

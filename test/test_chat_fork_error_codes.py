@@ -64,15 +64,18 @@ def test_the_ratchet_can_actually_fail() -> None:
 
     The count moves when a refusal enters or leaves this module's own body. Two
     corpus-read refusals now answer through `chat_utils.history_corpus_unreadable`,
-    which sets the code by construction, so the scanner does not see them here —
-    a stronger guarantee than a per-site scan, but two fewer sites to count. There
-    is no ``slot_not_persistent`` site: an incognito or temporary session forks
-    and the child inherits its mode. The one memory-mode refusal in the module is
-    ``fork_source_memory_mode_invalid``, for a parent whose persisted mode is
-    outside the allowlist.
+    which sets the code by construction, so the scanner no longer sees them here —
+    a stronger guarantee than a per-site scan, but two fewer sites to count.
+    There is no ``slot_not_persistent`` site: an ordinary fork of an incognito
+    or temporary session succeeds and the child inherits its mode. The
+    memory-mode-specific refusals left are ``fork_source_memory_mode_invalid``
+    (a parent whose persisted mode is outside the allowlist) and the
+    promotion escape hatch's own two (``slot_already_persistent`` and
+    ``promote_requires_dashboard_user``, from ``api_chat_slot_promote``),
+    among the 29 total.
     """
     coded = [f for f in _findings() if f.bucket == "compliant"]
-    assert len(coded) == 27, f"scanner reached {len(coded)} coded sites, expected 27"
+    assert len(coded) == 29, f"scanner reached {len(coded)} coded sites, expected 29"
     assert all(f.code_value for f in coded)
 
 

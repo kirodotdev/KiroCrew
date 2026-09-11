@@ -103,6 +103,11 @@ def register(app: web.Application) -> None:
     # Note — visible transcript line + silent next-turn context, no LLM turn
     app.router.add_post("/api/chat/slots/{slot}/note", chat.api_chat_slot_note)
     app.router.add_post("/api/chat/slots/{slot}/fork", chat.api_chat_slot_fork)
+    # Promote an ephemeral (incognito/temporary) slot to persistent — forks
+    # the whole transcript into a new persistent slot, leaving the original
+    # untouched. Dashboard-only, human-initiated; no MCP/CLI surface — see
+    # chat_fork.api_chat_slot_promote.
+    app.router.add_post("/api/chat/slots/{slot}/promote", chat.api_chat_slot_promote)
     app.router.add_post("/api/chat/slots/{slot}/side/open", handlers.api_side_open)
     app.router.add_post("/api/chat/slots/{slot}/side/turn", handlers.api_side_turn)
     app.router.add_post("/api/chat/slots/{slot}/side/close", handlers.api_side_close)

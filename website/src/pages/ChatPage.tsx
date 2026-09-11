@@ -28,9 +28,10 @@ import { useConnected } from '../hooks/useConnected'
 import { usePlanActionMutation, isPlanAction } from '../hooks/usePlanActionMutation'
 import { useQueuedMessageActions, queuedSendStash } from '../hooks/useQueuedMessageActions'
 import { useChatPopouts } from '../hooks/useChatPopouts'
+import { useConfirm } from '../components/ConfirmDialog'
 import {
   switchSlot, createSlot, deleteSlot, loadOlderMessages, abortActiveOlderFetch, isSupersededPagingRejection,
-  appendMessage, appendSlotMessage, endLocalTurn, clearUnresumableResume, forkSlot,
+  appendMessage, appendSlotMessage, endLocalTurn, clearUnresumableResume, forkSlot, promoteSlot,
   setSlotRunning, startLocalTurn, syncSlotRunningFromServer, setPendingInput, setAgentSwitchNotice, resolveByApprovalId, clearPendingPermissions,
   selectComposerBusy, selectSendConfirmed,
   selectContinuable,
@@ -2972,6 +2973,41 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       currentSlot?.folder_id || '',
       activeFolderName,
     )
+
+  // "Keep this chat" (issue #9694): promotes an ephemeral (incognito/temporary)
+  // slot to persistent. Human-initiated only — there is no MCP tool or agent
+  // path that can reach this, by design (see chat_fork.api_chat_slot_promote).
+  // Uses the shared async confirm dialog (never window.confirm, which would
+  // freeze the tab) so the user sees exactly what becomes retained before the
+  // whole transcript is copied into a brand-new persistent slot; the
+  // ephemeral original is left open and untouched either way.
+  const { confirm: confirmPromote, confirmDialog: promoteConfirmDialog } = useConfirm()
+  const handlePromote = useCallback(async () => {
+    if (!activeSlot) return
+    const isTemporary = currentSlot?.memory_mode === 'temporary'
+    const confirmed = await confirmPromote({
+      title: i18nT('pages.chatPage.keep_this_chat_confirm_title'),
+      body: i18nT(
+        isTemporary
+          ? 'pages.chatPage.keep_this_chat_confirm_body_temporary'
+          : 'pages.chatPage.keep_this_chat_confirm_body',
+      ),
+      confirmLabel: i18nT('pages.chatPage.keep_this_chat'),
+      confirmVariant: 'primary',
+    })
+    if (!confirmed) return
+    try {
+      const result = await dispatch(promoteSlot({ slot: activeSlot })).unwrap()
+      if (result.ok) {
+        await dispatch(switchSlot(result.key))
+      } else {
+        showActionError(i18nT('pages.chatPage.keep_this_chat_failed_error', { error: result.error || i18nT('pages.chatPage.unknown_error') }))
+      }
+    } catch (e) {
+      showActionError(i18nT('pages.chatPage.keep_this_chat_failed_error', { error: errMessage(e) || i18nT('pages.chatPage.unknown_error') }))
+    }
+  }, [activeSlot, confirmPromote, currentSlot?.memory_mode, dispatch, showActionError])
+
   // One source for both same-meaning markers in the agent pop-up: the row's check and
   // the default-agent row's label. Reading the slot twice let them disagree.
   // A peer-bound session falls back to the PEER's default, never this machine's:
@@ -6538,6 +6574,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                   } : undefined}
                   onRename={activeSlot ? () => { setEditingTitleSlot(activeSlot); setTitleDraft(title) } : undefined}
                   mode={effectiveMode}
+                  memoryMode={currentSlot?.memory_mode}
+                  onPromote={handlePromote}
                 />
                 </div>
               {editingTitle ? (
@@ -6644,6 +6682,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               )}
             </div>
             <ChatDropOverlay active={dragOver} />
+            {promoteConfirmDialog}
             {isWelcomeState ? (
               <motion.div
                 key="welcome-hero"
