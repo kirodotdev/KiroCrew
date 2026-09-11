@@ -38,7 +38,7 @@ from kiro_crew.messaging.dispatch import build_directive_consumer
 from kiro_crew.messaging.driver import APPROVAL_INTERACTIVE, TurnDriver
 from kiro_crew.messaging.identity import channel_inbound_permitted, publish_turn_identity
 from kiro_crew.messaging.link import canonical_key
-from kiro_crew.platform import current_context
+from kiro_crew.platform import current_context, redact_via_context
 from kiro_crew.security import redact, redact_local_paths
 from kiro_crew.sel import sel
 from kiro_crew.session_allocation import SessionClosingError
@@ -644,6 +644,7 @@ async def handle_message_transport(
             ),
             audit_session_key=session_key,
             audit_agent=_agent or "kirocrew",
+            redactor=redact_via_context,
             closing_gate=lambda: sessions.begin_turn(session_key),
         )
         # The thread's owner as of the moment the turn starts producing output.

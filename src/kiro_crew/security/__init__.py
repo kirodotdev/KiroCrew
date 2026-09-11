@@ -367,6 +367,7 @@ from .paths import (
 from .redaction import (
     _B64_CHUNK_RE,
     _BARE_SECRET_RUN_RE,
+    _CJK_ZERO_BRACKET_COUNTS,
     _CREDENTIAL_PATTERNS,
     _CREDENTIAL_PREFILTER_AUTHORIZATION_RE,
     _CREDENTIAL_PREFILTER_DISCORD_RE,
@@ -378,6 +379,10 @@ from .redaction import (
     _HEX_ONLY_RE,
     _LOCAL_PATH_PLACEHOLDER,
     _LOCAL_PATH_RE,
+    _PAKO_FRAGMENT_MAX_ENCODED_CHARS,
+    _PAKO_FRAGMENT_PREFIX,
+    _PAKO_URL_TRAILING_WHITESPACE,
+    _PAKO_URL_TRAILING_WHITESPACE_MAX,
     _PREFILTER_MIN_LEN,
     _PRINTABLE_BYTES,
     _REDACTED_CREDENTIAL_TAG,
@@ -390,6 +395,8 @@ from .redaction import (
     _VOWELS,
     CREDENTIAL_REDACTION_TAGS,
     REDACTED_CREDENTIAL_TAG,
+    _advance_pako_cjk_bracket_counts,
+    _advance_pako_outer_url_context,
     _contains_bare_secret,
     _contains_fixed_credential,
     _decode_b64_chunk,
@@ -399,6 +406,15 @@ from .redaction import (
     _looks_like_secret_key,
     _lowercase_run_exceeds,
     _might_contain_credential,
+    _pako_fragment_has_right_boundary,
+    _pako_has_cjk_separator_backtick_boundary,
+    _pako_has_plain_text_cjk_boundary,
+    _pako_is_cjk_autolink_punct,
+    _pako_pending_cjk_closers,
+    _pako_url_trailing_whitespace_is_safe,
+    _PakoScanState,
+    _protect_pako_fragments,
+    _restore_pako_fragments,
     _shannon_entropy,
     _text_contains_bare_secret,
     _vowel_ratio,
@@ -771,6 +787,43 @@ BINARY_MIME_ALLOWLIST: frozenset[str] = frozenset(
 )
 
 
+def _redact_with_policy_findings(
+    text: str,
+    *,
+    pako_scan_state: _PakoScanState | None = None,
+    final_redactor: "Callable[[str], str] | None" = None,
+) -> tuple[str, list[str], list[str]]:
+    """Return pako-aware text, URL warnings, then credential warnings."""
+    scan_state = pako_scan_state if pako_scan_state is not None else _PakoScanState()
+    pako_warnings: list[str] = []
+    protected, restorations = _protect_pako_fragments(
+        text,
+        pako_warnings,
+        scan_state,
+        decoded_text_is_unsafe=lambda decoded: bool(scan_exfiltration_urls(decoded)),
+        decoded_text_redactor=final_redactor,
+    )
+    result, url_warnings = redact_exfiltration_urls(protected)
+    if pako_scan_state is None:
+        # Keep the public facade composable with callers/tests that replace the
+        # two policy functions with positional-only stand-ins. The pako bytes
+        # are already sentinel-protected, so this pass cannot reset their state.
+        result, credential_warnings = redact_credentials(result)
+    else:
+        result, credential_warnings = redact_credentials(
+            result,
+            _pako_scan_state=scan_state,
+            _pako_already_protected=True,
+        )
+    if final_redactor is not None:
+        result = final_redactor(result)
+    return (
+        _restore_pako_fragments(result, restorations),
+        list(url_warnings),
+        pako_warnings + list(credential_warnings),
+    )
+
+
 def redact_with_findings(text: str) -> tuple[str, list[str], list[str]]:
     """Apply all redaction passes, reporting what each one removed.
 
@@ -778,14 +831,10 @@ def redact_with_findings(text: str) -> tuple[str, list[str], list[str]]:
     it living here: exfiltration URLs run FIRST because that pass matches whole
     URLs, and a credential replaced ahead of it leaves a placeholder inside one,
     which the URL matcher then fails to recognise as the shape it is there to
-    catch. A caller that wants the found lists would otherwise hand-sequence
-    the two calls and own that ordering separately -- which several already do,
-    in the reverse order.
+    catch. Validated pako bytes stay hidden until both policies finish.
 
     Returns ``(text, credential_warnings, url_warnings)``. Both lists hold the
-    WARNING strings the underlying passes report (``"Redacted credential pattern
-    (20 chars)"``), never the removed values, so a caller can tell the user their
-    content was altered -- and log that fact -- without handling a secret.
+    WARNING strings the underlying passes report, never the removed values.
 
     This is the companion-BLIND baseline, like every ``security.redact*`` entry
     point: it consults no active :class:`CredentialPolicy`. An egress site must
@@ -793,13 +842,12 @@ def redact_with_findings(text: str) -> tuple[str, list[str], list[str]]:
     companion's extra patterns apply; use this one for the warnings, or where the
     baseline is deliberately the subject.
     """
-    text, urls = redact_exfiltration_urls(text)
-    text, credentials = redact_credentials(text)
-    return text, list(credentials), list(urls)
+    result, url_warnings, credential_warnings = _redact_with_policy_findings(text)
+    return result, credential_warnings, url_warnings
 
 
 def redact(text: str) -> str:
-    """Apply all redaction passes (exfiltration URLs + credentials)."""
+    """Apply all redaction passes through one pako-aware output boundary."""
     return redact_with_findings(text)[0]
 
 
@@ -824,7 +872,7 @@ def redact(text: str) -> str:
 # it is a non-secret header string and the final full-text pass still redacts
 # the persisted/displayed copy.)
 _CRED_CLASS: frozenset[str] = frozenset(
-    string.ascii_letters + string.digits + "_-+/=.:@%~" + '"' + "'" + "?&#"
+    string.ascii_letters + string.digits + "_-+/=.:@%~!$*,;()" + '"' + "'" + "?&#"
 )
 
 # Upper bound on withheld trailing characters. Larger than the longest
@@ -890,29 +938,312 @@ _BEARER_ANCHOR_PARTIAL_RE = re.compile(
 )
 
 
+# An exact Mermaid editor pako URL is one opaque compressed token even though its
+# base64url payload can be far longer than the ordinary 512-character holdback.
+# Keep the whole candidate together until a delimiter or segment flush lets one
+# stateful batch validate it. The cap is exactly the accepted encoded ceiling plus
+# the reviewed prefix; one more payload character fails closed instead of growing
+# the stream buffer or bisecting a compressed fragment.
+_PAKO_PAYLOAD_CHARS: frozenset[str] = frozenset(string.ascii_letters + string.digits + "-_")
+
+
 class StreamRedactor:
     """Rolling-buffer redactor for streamed LLM output.
 
     Feed raw chunks in order; ``feed`` returns the redacted, safe-to-broadcast
     prefix (possibly empty while a partial credential is buffered). Call
     ``flush`` when the stream/segment ends to redact and return the remainder.
-    Adds at most one chunk of latency. A credential is never split across a
-    commit boundary because commits only ever end at a non-credential-class
-    character, while a credential is a contiguous credential-class run.
+    Ordinary tails add at most one chunk of latency; an exact pako candidate is
+    held across chunks up to its encoded-size ceiling. A credential is never
+    split across a commit boundary because commits only ever end at a
+    non-credential-class character, while a credential is a contiguous
+    credential-class run.
     """
 
-    __slots__ = ("_buf", "_redact")
+    __slots__ = (
+        "_buf",
+        "_discard_pako_tail",
+        "_pako_boundary_parts",
+        "_pako_boundary_len",
+        "_pako_boundary_mode",
+        "_pako_candidate_cjk_closers",
+        "_pako_cjk_bracket_counts",
+        "_pako_html_attr_quote",
+        "_pako_html_tag_open",
+        "_pako_html_unquoted_attr_state",
+        "_pako_markdown_destination_depth",
+        "_pako_markdown_escape",
+        "_pako_outer_url_parenthesis_depth",
+        "_pako_parts",
+        "_pako_payload_len",
+        "_pako_scan_state",
+        "_pako_token_has_outer_url",
+        "_pako_token_prefix_tail",
+        "_pako_top_level",
+        "_redact",
+    )
 
     def __init__(self, redactor: "Callable[[str], str] | None" = None) -> None:
         self._buf = ""
-        # Resolve at call time so module-load order is irrelevant.
-        self._redact = redactor or redact
+        self._discard_pako_tail = False
+        self._pako_boundary_parts: list[str] = []
+        self._pako_boundary_len = 0
+        self._pako_boundary_mode = ""
+        self._pako_candidate_cjk_closers: frozenset[str] = frozenset()
+        self._pako_cjk_bracket_counts = _CJK_ZERO_BRACKET_COUNTS
+        self._pako_html_attr_quote = ""
+        self._pako_html_tag_open = False
+        self._pako_html_unquoted_attr_state = 0
+        self._pako_markdown_destination_depth = 0
+        self._pako_markdown_escape = False
+        self._pako_outer_url_parenthesis_depth = 0
+        self._pako_parts: list[str] | None = None
+        self._pako_payload_len = 0
+        self._pako_token_has_outer_url = False
+        self._pako_token_prefix_tail = ""
+        self._pako_top_level = False
+        self._redact = redactor
+        self._pako_scan_state = _PakoScanState()
+
+    def _apply_redaction(self, text: str) -> str:
+        return _redact_with_policy_findings(
+            text,
+            pako_scan_state=self._pako_scan_state,
+            final_redactor=self._redact,
+        )[0]
+
+    def _advance_pako_token_context(self, text: str) -> None:
+        """Carry outer-URL and raw-HTML ownership across feeds."""
+        self._pako_cjk_bracket_counts = _advance_pako_cjk_bracket_counts(
+            text, self._pako_cjk_bracket_counts
+        )
+        (
+            self._pako_token_has_outer_url,
+            self._pako_token_prefix_tail,
+            self._pako_html_tag_open,
+            self._pako_html_attr_quote,
+            self._pako_html_unquoted_attr_state,
+            self._pako_outer_url_parenthesis_depth,
+            self._pako_markdown_destination_depth,
+            self._pako_markdown_escape,
+        ) = _advance_pako_outer_url_context(
+            text,
+            self._pako_token_has_outer_url,
+            self._pako_token_prefix_tail,
+            self._pako_html_tag_open,
+            self._pako_html_attr_quote,
+            self._pako_html_unquoted_attr_state,
+            self._pako_outer_url_parenthesis_depth,
+            self._pako_markdown_destination_depth,
+            self._pako_markdown_escape,
+        )
+
+    def _apply_committed_redaction(self, text: str) -> str:
+        self._advance_pako_token_context(text)
+        return self._apply_redaction(text)
+
+    def _clear_pako_candidate(self) -> None:
+        self._pako_parts = None
+        self._pako_boundary_parts = []
+        self._pako_boundary_len = 0
+        self._pako_boundary_mode = ""
+        self._pako_candidate_cjk_closers = frozenset()
+        self._pako_payload_len = 0
+        self._pako_top_level = False
+
+    def _feed_pako_payload(self, chunk: str, start: int = 0) -> tuple[str, int, bool, str]:
+        """Return ``(output, cursor, waiting, rolling_replay)``."""
+        parts = self._pako_parts
+        if parts is None:  # internal invariant; callers start the candidate first
+            raise RuntimeError("pako payload feed without an active candidate")
+        boundary_parts = self._pako_boundary_parts
+
+        def _finish(
+            top_level: bool,
+            cursor: int,
+            *,
+            release_outer_url: bool = False,
+        ) -> tuple[str, int, bool, str]:
+            candidate = _PAKO_FRAGMENT_PREFIX + "".join(parts)
+            boundary_text = "".join(boundary_parts)
+            if top_level and release_outer_url:
+                if boundary_text:
+                    self._pako_cjk_bracket_counts = _advance_pako_cjk_bracket_counts(
+                        boundary_text, self._pako_cjk_bracket_counts
+                    )
+                self._pako_token_has_outer_url = False
+                self._pako_token_prefix_tail = ""
+                self._pako_outer_url_parenthesis_depth = 0
+            self._clear_pako_candidate()
+            if not top_level:
+                return (
+                    _PAKO_FRAGMENT_PREFIX + _REDACTED_ENCODED_CREDENTIAL_TAG,
+                    cursor,
+                    False,
+                    boundary_text,
+                )
+            return self._apply_redaction(candidate) + boundary_text, cursor, False, ""
+
+        def _append_boundary(piece: str) -> bool:
+            if piece:
+                boundary_parts.append(piece)
+                self._pako_boundary_len += len(piece)
+            return self._pako_boundary_len <= _PAKO_URL_TRAILING_WHITESPACE_MAX
+
+        def _consume_boundary(cursor: int) -> tuple[str, int, bool, str]:
+            quote = chunk.find(self._pako_html_attr_quote, cursor)
+            target = len(chunk) if quote < 0 else quote
+            remaining = _PAKO_URL_TRAILING_WHITESPACE_MAX + 1 - self._pako_boundary_len
+            end = min(target, cursor + remaining)
+            if not _append_boundary(chunk[cursor:end]):
+                return _finish(False, end)
+            if quote >= 0 and end == quote:
+                boundary_text = "".join(boundary_parts)
+                return _finish(
+                    self._pako_top_level and _pako_url_trailing_whitespace_is_safe(boundary_text),
+                    quote,
+                )
+            return "", end, True, ""
+
+        def _consume_cjk_boundary(cursor: int) -> tuple[str, int, bool, str]:
+            remaining = _PAKO_URL_TRAILING_WHITESPACE_MAX + 1 - self._pako_boundary_len
+            end = cursor
+            ceiling = min(len(chunk), cursor + remaining)
+            while end < ceiling and _pako_is_cjk_autolink_punct(chunk[end]):
+                end += 1
+            if not _append_boundary(chunk[cursor:end]):
+                return _finish(False, end)
+            if end == len(chunk):
+                return "", end, True, ""
+            boundary_text = "".join(boundary_parts)
+            evidence = _pako_has_cjk_separator_backtick_boundary(boundary_text + chunk[end], 0)
+            accepted = self._pako_top_level and evidence
+            return _finish(accepted, end, release_outer_url=accepted)
+
+        # A previous chunk ended inside a pending quoted-whitespace or CJK
+        # punctuation suffix. Continue only that mode; both are bounded above.
+        if boundary_parts:
+            if self._pako_boundary_mode == "cjk":
+                return _consume_cjk_boundary(start)
+            return _consume_boundary(start)
+
+        end = start
+        while end < len(chunk) and chunk[end] in _PAKO_PAYLOAD_CHARS:
+            end += 1
+        piece = chunk[start:end]
+        if self._pako_payload_len + len(piece) > _PAKO_FRAGMENT_MAX_ENCODED_CHARS:
+            self._clear_pako_candidate()
+            out = _PAKO_FRAGMENT_PREFIX + _REDACTED_ENCODED_CREDENTIAL_TAG
+            if end == len(chunk):
+                self._discard_pako_tail = True
+                return out, end, True, ""
+            return out, end, False, ""
+
+        if piece:
+            parts.append(piece)
+            self._pako_payload_len += len(piece)
+        if end == len(chunk):
+            return "", end, True, ""
+
+        if self._pako_html_attr_quote and (
+            chunk[end] in _PAKO_URL_TRAILING_WHITESPACE or chunk[end] == "&"
+        ):
+            self._pako_boundary_mode = "quoted"
+            return _consume_boundary(end)
+
+        if (
+            self._pako_top_level
+            and not self._pako_html_tag_open
+            and not self._pako_html_attr_quote
+            and not self._pako_html_unquoted_attr_state
+            and not self._pako_markdown_destination_depth
+            and chunk[end] not in self._pako_candidate_cjk_closers
+            and _pako_is_cjk_autolink_punct(chunk[end])
+        ):
+            self._pako_boundary_mode = "cjk"
+            return _consume_cjk_boundary(end)
+
+        plain_text_cjk_boundary = (
+            self._pako_top_level
+            and not self._pako_html_tag_open
+            and not self._pako_html_attr_quote
+            and not self._pako_html_unquoted_attr_state
+            and not self._pako_markdown_destination_depth
+            and _pako_has_plain_text_cjk_boundary(chunk, end, self._pako_candidate_cjk_closers)
+        )
+        top_level = self._pako_top_level and _pako_fragment_has_right_boundary(
+            chunk,
+            end,
+            html_tag_open=self._pako_html_tag_open,
+            html_attr_quote=self._pako_html_attr_quote,
+            html_unquoted_attr_state=self._pako_html_unquoted_attr_state,
+            markdown_destination_depth=self._pako_markdown_destination_depth,
+            plain_text_cjk_closers=self._pako_candidate_cjk_closers,
+        )
+        return _finish(
+            top_level,
+            end,
+            release_outer_url=top_level and plain_text_cjk_boundary,
+        )
 
     def feed(self, chunk: str) -> str:
         """Accept a chunk; return the redacted prefix that is safe to emit now."""
         if not chunk:
             return ""
-        self._buf += chunk
+
+        outputs: list[str] = []
+        cursor = 0
+        if self._discard_pako_tail:
+            while cursor < len(chunk) and chunk[cursor] in _PAKO_PAYLOAD_CHARS:
+                cursor += 1
+            if cursor == len(chunk):
+                return ""
+            self._discard_pako_tail = False
+        replay = ""
+        if self._pako_parts is not None:
+            emitted, cursor, waiting, replay = self._feed_pako_payload(chunk, cursor)
+            if emitted:
+                outputs.append(emitted)
+            if waiting:
+                return "".join(outputs)
+
+        data = replay + self._buf + chunk[cursor:]
+        self._buf = ""
+        cursor = 0
+        while True:
+            pako_start = data.find(_PAKO_FRAGMENT_PREFIX, cursor)
+            if pako_start < 0:
+                self._buf = data[cursor:]
+                break
+            if pako_start > cursor:
+                outputs.append(self._apply_committed_redaction(data[cursor:pako_start]))
+            self._pako_parts = []
+            self._pako_candidate_cjk_closers = _pako_pending_cjk_closers(
+                self._pako_cjk_bracket_counts
+            )
+            self._pako_boundary_parts = []
+            self._pako_boundary_len = 0
+            self._pako_boundary_mode = ""
+            self._pako_payload_len = 0
+            self._pako_top_level = not self._pako_token_has_outer_url
+            self._pako_token_has_outer_url = True
+            self._pako_token_prefix_tail = ""
+            self._pako_markdown_escape = False
+            emitted, next_cursor, waiting, replay = self._feed_pako_payload(
+                data, pako_start + len(_PAKO_FRAGMENT_PREFIX)
+            )
+            if emitted:
+                outputs.append(emitted)
+            if waiting:
+                return "".join(outputs)
+            if replay:
+                data = replay + data[next_cursor:]
+                cursor = 0
+            else:
+                cursor = next_cursor
+
+        prefix_output = "".join(outputs)
+
         # Start of the maximal trailing credential-class run.
         i = len(self._buf)
         while i > 0 and self._buf[i - 1] in _CRED_CLASS:
@@ -934,15 +1265,23 @@ class StreamRedactor:
         # Escalate the holdback cap to the JWT ceiling when the withheld tail is
         # (the start of) a credential that legitimately exceeds the 512-char DoS
         # floor: a partial JWT/JWE (`eyJ…`) OR a trailing `Authorization: Bearer`
-        # anchor. Bearer must be included alongside JWT — an opaque OAuth/refresh/
-        # SSO Bearer token > 512 chars has no `eyJ` prefix, so keying escalation on
-        # `_PARTIAL_JWT_TAIL_RE` alone left its 512-char tail streaming raw. Still
-        # bounded: a run with no credential anchor stays on the 512 floor.
+        # anchor.
         cred_anchored = _PARTIAL_JWT_TAIL_RE.search(self._buf) is not None or anchor is not None
         cap = _STREAM_HOLDBACK_MAX
         if len(self._buf) - i > cap and cred_anchored:
             cap = _STREAM_HOLDBACK_JWT_MAX
         if len(self._buf) - i > cap:
+            raw_tail = self._buf[i:]
+            redacted_tail = self._apply_redaction(raw_tail)
+            if redacted_tail != raw_tail:
+                # A changed oversized run contains policy-sensitive data, but its
+                # tail may still end mid-credential. Emitting the rewritten run
+                # would commit that partial and let the next feed reconstruct the
+                # secret. Drop the unsafe run behind one stable marker instead.
+                commit, self._buf = self._buf[:i], ""
+                out = self._apply_committed_redaction(commit) if commit else ""
+                self._advance_pako_token_context(raw_tail)
+                return prefix_output + out + _REDACTED_CREDENTIAL_TAG
             if cred_anchored:
                 # Fail closed: a credential-anchored tail (JWT/JWE/Bearer) has blown
                 # past the 4096 ceiling. Bisecting here would emit the token's head
@@ -952,23 +1291,61 @@ class StreamRedactor:
                 # (bisecting an opaque non-credential run cannot leak a structured
                 # secret and preserves the DoS bound with no data loss).
                 commit, self._buf = self._buf[:i], ""
-                out = self._redact(commit) if commit else ""
-                return out + _REDACTED_CREDENTIAL_TAG
+                out = self._apply_committed_redaction(commit) if commit else ""
+                return prefix_output + out + _REDACTED_CREDENTIAL_TAG
             i = len(self._buf) - cap
         if i <= 0:
-            return ""  # whole buffer is a (possibly partial) credential run — hold
+            return prefix_output  # whole generic tail remains buffered
         commit, self._buf = self._buf[:i], self._buf[i:]
-        return self._redact(commit)
+        return prefix_output + self._apply_committed_redaction(commit)
 
     def flush(self) -> str:
-        """Redact and return the buffered remainder; clears the buffer."""
-        out = self._redact(self._buf) if self._buf else ""
+        """Redact and return the buffered remainder; clears segment state."""
+        if self._pako_parts is not None:
+            candidate = _PAKO_FRAGMENT_PREFIX + "".join(self._pako_parts)
+            boundary_text = "".join(self._pako_boundary_parts)
+            if boundary_text:
+                out = (
+                    _PAKO_FRAGMENT_PREFIX
+                    + _REDACTED_ENCODED_CREDENTIAL_TAG
+                    + self._apply_redaction(boundary_text)
+                )
+            elif self._pako_top_level:
+                out = self._apply_redaction(candidate)
+            else:
+                out = _PAKO_FRAGMENT_PREFIX + _REDACTED_ENCODED_CREDENTIAL_TAG
+        else:
+            out = self._apply_redaction(self._buf) if self._buf else ""
         self._buf = ""
+        self._clear_pako_candidate()
+        self._discard_pako_tail = False
+        self._pako_token_has_outer_url = False
+        self._pako_token_prefix_tail = ""
+        self._pako_cjk_bracket_counts = _CJK_ZERO_BRACKET_COUNTS
+        self._pako_html_tag_open = False
+        self._pako_html_attr_quote = ""
+        self._pako_html_unquoted_attr_state = 0
+        self._pako_markdown_destination_depth = 0
+        self._pako_markdown_escape = False
+        self._pako_outer_url_parenthesis_depth = 0
+        self._pako_scan_state.reset()
         return out
 
     def reset(self) -> None:
-        """Discard the buffer without emitting (segment abandoned/cleared)."""
+        """Discard the buffer and scan state (segment abandoned/cleared)."""
         self._buf = ""
+        self._clear_pako_candidate()
+        self._discard_pako_tail = False
+        self._pako_token_has_outer_url = False
+        self._pako_token_prefix_tail = ""
+        self._pako_cjk_bracket_counts = _CJK_ZERO_BRACKET_COUNTS
+        self._pako_html_tag_open = False
+        self._pako_html_attr_quote = ""
+        self._pako_html_unquoted_attr_state = 0
+        self._pako_markdown_destination_depth = 0
+        self._pako_markdown_escape = False
+        self._pako_outer_url_parenthesis_depth = 0
+        self._pako_scan_state.reset()
 
 
 def _deny_segment_views(segment: str, emit_self: bool = True) -> tuple[str, ...]:
@@ -1150,9 +1527,7 @@ def _deny_segment_views(segment: str, emit_self: bool = True) -> tuple[str, ...]
                     seen_views.add(candidate)
                     views.append(candidate)
             joined_here: set[str] = set()
-            payloads = _nested_shell_payloads(
-                tokens, allow_join=allow_join, joined_out=joined_here
-            )
+            payloads = _nested_shell_payloads(tokens, allow_join=allow_join, joined_out=joined_here)
             programs = _argv_programs(tokens) if payloads else []
             # Both values below read ONLY ``tokens``, which is fixed for this
             # whole walk, so they are charged ONCE here instead of once per
@@ -1401,9 +1776,7 @@ def is_denied(
         agent cannot diagnose at all. The span is the whole subject because a floor
         decides on the argv's SHAPE rather than at an offset.
         """
-        diagnostic = (
-            refusal_diagnostic(rule, component, tool_name) if rule and component else None
-        )
+        diagnostic = refusal_diagnostic(rule, component, tool_name) if rule and component else None
         return _deny_reason(
             matched, reason_notes, note_override=note_override, diagnostic=diagnostic
         )

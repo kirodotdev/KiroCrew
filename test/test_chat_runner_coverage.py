@@ -23,9 +23,11 @@ Two harnesses are used and the choice between them is deliberate:
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import os
 import threading
+import zlib
 from contextlib import contextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -34,7 +36,7 @@ import pytest
 from chat_test_helpers import _make_ready_kiro_prerequisite
 from member_memory_helpers import patch_private_memory_supported
 
-from kiro_crew import name_grant
+from kiro_crew import name_grant, security
 from kiro_crew.acp.types import (
     EVENT_COMPLETE,
     EVENT_PERMISSION_REQUEST,
@@ -208,6 +210,37 @@ async def _settle(slot) -> None:
         pass
     except Exception:  # pragma: no cover — draining, never the assertion
         pass
+
+
+@pytest.mark.asyncio
+async def test_split_pako_link_is_identical_on_wire_and_in_persisted_segment(tmp_path):
+    state, client = _runner_state(tmp_path)
+    slot = _slot()
+    code = "flowchart TD\n" + "\n".join(
+        f"  N{i}[Step {i}: reconcile draft {i * 7919}] --> N{i + 1}" for i in range(240)
+    )
+    encoded_state = json.dumps(
+        {"code": code, "mermaid": '{"theme":"default"}', "autoSync": True},
+        separators=(",", ":"),
+    ).encode()
+    payload = base64.urlsafe_b64encode(zlib.compress(encoded_state, 9)).decode().rstrip("=")
+    link = f"[Open diagram](https://mermaid.live/edit#pako:{payload})"
+    chunks = [link[start : start + 73] for start in range(0, len(link), 73)]
+    _set_stream(
+        client,
+        [*(LLMEvent(kind=EVENT_TEXT_CHUNK, text=chunk) for chunk in chunks), _complete()],
+    )
+
+    await _drive(state, slot)
+
+    assistant = next(row for row in slot.messages if row.get("role") == "assistant")
+    wire = "".join(
+        call.args[1]["content"]
+        for call in state.broadcast_ws.call_args_list
+        if call.args and call.args[0] == "chat_chunk"
+    )
+    assert assistant["content"] == link
+    assert wire == link
 
 
 @pytest.mark.asyncio
@@ -1372,6 +1405,33 @@ class TestFlushSegment:
         chat_runner._flush_segment(state, slot, "here is a plain answer")
 
         assert [m.get("role") for m in slot.messages] == ["assistant"]
+
+    def test_a_clean_pako_mermaid_segment_stays_pasteable_without_notice(
+        self, tmp_path, monkeypatch
+    ):
+        state, slot = _state(tmp_path), _slot()
+        code = "flowchart TD\n" + "\n".join(
+            f"  N{i}[Step {i}: reconcile draft {i * 7919}] --> N{i + 1}" for i in range(240)
+        )
+        encoded_state = json.dumps(
+            {"code": code, "mermaid": '{"theme":"default"}', "autoSync": True},
+            separators=(",", ":"),
+        ).encode()
+        payload = base64.urlsafe_b64encode(zlib.compress(encoded_state, 9)).decode().rstrip("=")
+        link = f"[Open diagram](https://mermaid.live/edit#pako:{payload})"
+        real_redactor = security.redact_exfiltration_urls
+
+        def _raw_collision(text: str) -> tuple[str, list[str]]:
+            if payload in text:
+                return "[REDACTED: raw compressed collision]", ["raw collision"]
+            return real_redactor(text)
+
+        monkeypatch.setattr(security, "redact_exfiltration_urls", _raw_collision)
+
+        chat_runner._flush_segment(state, slot, link)
+
+        assert [m.get("role") for m in slot.messages] == ["assistant"]
+        assert slot.messages[0]["content"] == link
 
     def test_an_encoded_credential_also_warns(self, tmp_path):
         """A base64-encoded credential is redacted by a DIFFERENT pass and tag.
@@ -4277,6 +4337,25 @@ class TestRunChatPlanGate:
             await _drive(state, slot)
 
         assert not slot._stage_titles
+
+    @pytest.mark.asyncio
+    async def test_invalid_plan_rephrase_receives_a_redacted_copy(self, tmp_path):
+        state, client = _runner_state(tmp_path)
+        slot = _slot()
+        slot.mode = "orchestrator"
+        secret = "AKIAIOSFODNN7EXAMPLE"
+        malformed = f"📋 Plan for: x\nno stages here\ncredential: {secret}"
+        _set_stream(client, [LLMEvent(kind=EVENT_TEXT_CHUNK, text=malformed), _complete()])
+        rephrase = AsyncMock(return_value="")
+
+        with patch.object(chat_runner, "_rephrase_plan_lite", new=rephrase):
+            await _drive(state, slot)
+
+        prompt_copy = rephrase.await_args.args[1]
+        assert secret not in prompt_copy
+        assert "[REDACTED: credential]" in prompt_copy
+        assistant = next(row for row in slot.messages if row.get("role") == "assistant")
+        assert secret not in assistant["content"]
 
     @pytest.mark.asyncio
     async def test_plan_like_text_is_reformatted_by_the_rephrase_pass(self, tmp_path):

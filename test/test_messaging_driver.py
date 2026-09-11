@@ -9,6 +9,9 @@ approve_tool/reject_tool correctly.
 from __future__ import annotations
 
 import asyncio
+import base64
+import json
+import zlib
 
 import pytest
 
@@ -18,6 +21,7 @@ from kiro_crew.acp.types import (
     EVENT_PERMISSION_REQUEST,
     EVENT_STEER_CONSUMED,
     EVENT_TEXT_CHUNK,
+    EVENT_THINKING_CHUNK,
     EVENT_TOOL_CALL,
     AcpEvent,
     TurnUsage,
@@ -99,6 +103,151 @@ class TestTurnDriverTranslation:
         out = _run(p, r)
         assert out == "Hello world"
         assert [e[0] for e in r.events] == ["text_chunk", "text_chunk", "done"]
+
+    def test_separately_terminated_pako_links_share_one_scan_budget(self):
+        from kiro_crew import security
+
+        budget = security.redaction._PAKO_FRAGMENT_MAX_BARE_SECRET_WINDOWS
+        run_chars = budget // 2 + security._SECRET_KEY_LEN
+
+        def _url(decoded: str) -> tuple[str, str]:
+            state = json.dumps({"code": decoded}, separators=(",", ":"))
+            payload = (
+                base64.urlsafe_b64encode(zlib.compress(state.encode(), 9)).decode().rstrip("=")
+            )
+            return f"https://mermaid.live/edit#pako:{payload}", payload
+
+        first_url, first_payload = _url("Zz9/" * ((run_chars + 3) // 4) + "A")
+        second_url, second_payload = _url("Zz9/" * ((run_chars + 3) // 4) + "B")
+        renderer = _RecordingRenderer()
+        provider = _ScriptedProvider(
+            [
+                AcpEvent(kind=EVENT_TEXT_CHUNK, text=first_url + " "),
+                AcpEvent(kind=EVENT_TEXT_CHUNK, text=second_url + " "),
+                AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+            ]
+        )
+
+        out = _run(provider, renderer)
+
+        tag = "[REDACTED: encoded credential]"
+        assert out == f"{first_url} https://mermaid.live/edit#pako:{tag} "
+        assert first_payload in out
+        assert second_payload not in out
+
+    def test_active_policy_redacts_companion_token_inside_pako_stream(self):
+        import dataclasses
+
+        from kiro_crew import security
+        from kiro_crew.config import KiroCrewConfig
+        from kiro_crew.platform.bootstrap import build_default_context
+        from kiro_crew.platform.context import redact_via_context, reset_context, set_context
+
+        companion_token = "COMPANION-COOKIE-SECRET"
+        state = json.dumps({"code": f"flowchart TD\n  A[{companion_token}] --> B"})
+        payload = base64.urlsafe_b64encode(zlib.compress(state.encode(), 9)).decode().rstrip("=")
+        url = f"https://mermaid.live/edit#pako:{payload}"
+
+        class _CompanionPolicy:
+            def redact(self, text: str) -> str:
+                return security.redact(text).replace(
+                    companion_token, "[REDACTED: companion credential]"
+                )
+
+            def exempt_exact_hosts(self) -> "frozenset[str]":
+                return frozenset()
+
+        base = build_default_context(KiroCrewConfig())
+        set_context(dataclasses.replace(base, credentials=_CompanionPolicy()))
+        try:
+            renderer = _RecordingRenderer()
+            provider = _ScriptedProvider(
+                [
+                    AcpEvent(kind=EVENT_TEXT_CHUNK, text=url[: len(url) // 2]),
+                    AcpEvent(kind=EVENT_TEXT_CHUNK, text=url[len(url) // 2 :] + " "),
+                    AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+                ]
+            )
+            out = _run(provider, renderer, redactor=redact_via_context)
+        finally:
+            reset_context()
+
+        wire = "".join(event[1] for event in renderer.events if event[0] == "text_chunk")
+        assert payload not in out
+        assert payload not in wire
+        assert "[REDACTED: encoded credential]" in out
+
+    def test_active_policy_rejoins_companion_credential_across_thinking(self):
+        companion_token = "COMPANION-COOKIE-SECRET"
+        renderer = _RecordingRenderer()
+        provider = _ScriptedProvider(
+            [
+                AcpEvent(kind=EVENT_THINKING_CHUNK, text="COMPANION-COOKIE-"),
+                AcpEvent(kind=EVENT_THINKING_CHUNK, text="SECRET"),
+                AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+            ]
+        )
+
+        _run(
+            provider,
+            renderer,
+            redactor=lambda text: text.replace(companion_token, "[REDACTED: companion credential]"),
+        )
+
+        thinking = "".join(event[1] for event in renderer.events if event[0] == "thinking")
+        assert companion_token not in thinking
+        assert "[REDACTED: companion credential]" in thinking
+
+    def test_active_policy_rejoins_companion_credential_across_tool_event(self):
+        companion_token = "SSO-COOKIE"
+        renderer = _RecordingRenderer()
+        provider = _ScriptedProvider(
+            [
+                AcpEvent(kind=EVENT_THINKING_CHUNK, text="SSO-"),
+                AcpEvent(kind=EVENT_TOOL_CALL, tool_call_id="tool-1", title="lookup"),
+                AcpEvent(kind=EVENT_THINKING_CHUNK, text="COOKIE"),
+                AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+            ]
+        )
+
+        _run(
+            provider,
+            renderer,
+            redactor=lambda text: text.replace(companion_token, "[REDACTED: companion credential]"),
+        )
+
+        thinking = "".join(event[1] for event in renderer.events if event[0] == "thinking")
+        assert companion_token not in thinking
+        assert "[REDACTED: companion credential]" in thinking
+
+    def test_every_production_driver_injects_active_redactor(self):
+        import ast
+        import pathlib
+
+        root = pathlib.Path(driver.__file__).resolve().parents[1]
+        owners = [
+            root / "messaging" / "dispatch.py",
+            root / "discord" / "transport_dispatch.py",
+            root / "slack" / "gateway.py",
+            root / "slack" / "transport_dispatch.py",
+            root / "telegram" / "transport_dispatch.py",
+        ]
+
+        for path in owners:
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            calls = [
+                node
+                for node in ast.walk(tree)
+                if isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "TurnDriver"
+            ]
+            assert calls, path
+            for call in calls:
+                keyword = next((kw for kw in call.keywords if kw.arg == "redactor"), None)
+                assert keyword is not None, path
+                assert isinstance(keyword.value, ast.Name), path
+                assert keyword.value.id == "redact_via_context", path
 
     def test_safe_complete_reports_monitor_action_once(self):
         r = _RecordingRenderer()

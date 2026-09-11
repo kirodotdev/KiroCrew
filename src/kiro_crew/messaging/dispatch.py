@@ -47,6 +47,7 @@ from kiro_crew.messaging.link import (
     is_channel_session_key,
 )
 from kiro_crew.messaging.renderer import SilentRenderer
+from kiro_crew.platform import redact_via_context
 from kiro_crew.security import (
     redact,
     redact_credentials,
@@ -683,6 +684,7 @@ async def drive_turn(turn: ChannelTurn, *, sessions: Any, ctx_builder: Any) -> N
             audit_session_key=session_key,
             audit_agent=turn.agent or "kirocrew",
             closing_gate=lambda: sessions.begin_turn(session_key),
+            redactor=redact_via_context,
         )
         accumulated = await driver.run(full_message)
 
