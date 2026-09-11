@@ -7789,7 +7789,7 @@ class TestARefusalNamesItsRuleAndSpan:
         """
         from kiro_crew.security import is_denied
 
-        payload = "imp" + "ort " + "kiro" + "_" + "crew"
+        payload = "imp" + "ort " + "kiro" + "_" + "crew" + ".cli"
         reason = is_denied("pyth" + 'on -c "' + payload + '"')
         assert reason is not None
         line = reason.splitlines()[-1]

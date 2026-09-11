@@ -219,38 +219,185 @@ _PYTHON_OPERAND_FLAGS = frozenset({"-x", "-w", "-q", "--check-hash-based-pycs"})
 _PYTHON_INLINE_PROGRAM_FLAGS = ("-c",)
 
 
-def _glob_to_regex(pattern: str) -> str:
-    """Translate a shell glob into a regex that matches what it could expand to."""
+#: How deep a nested brace group is read before it is treated as "anything".  Bash
+#: itself nests without limit, but a glob-shaped word is never legitimately more than
+#: a few groups deep, and the translation below recurses once per level -- so a word
+#: built to be hundreds of levels deep would otherwise exhaust the interpreter stack
+#: and crash the gate instead of answering.  Past the cap the group reads as ``.*``,
+#: the fail-closed direction (it can only over-match a protected name, never miss one).
+_BRACE_NESTING_CAP = 8
+
+#: How many brace ALTERNATION groups one word may translate before the rest read as
+#: "anything".  Each ``{a,b}`` becomes a regex alternation whose branches are themselves
+#: globs, and a run of them (``{*,*}{*,*}...``) is a regex with 2^N ways to match a short
+#: name -- ``re`` explores every one before it can say no, so fifteen groups cost seconds
+#: per name and stall the synchronous gate.  A legitimate program word has one or two.
+#: Past the budget a group reads as ``.*``, the fail-closed direction, exactly as the
+#: nesting cap does.
+_BRACE_GROUP_BUDGET = 6
+
+#: A brace SEQUENCE body: ``1..5``, ``a..z``, ``c..c``, optionally ``..<step>``.
+_BRACE_SEQUENCE_RE = re.compile(
+    r"\A(?:(-?[0-9]+)\.\.(-?[0-9]+)|([a-z])\.\.([a-z]))(?:\.\.-?[0-9]+)?\Z"
+)
+
+
+def _brace_pairs(pattern: str) -> "dict[int, int]":
+    """Every ``{`` index in *pattern* mapped to the index of its closing ``}``.
+
+    One linear pass with a stack; an unmatched ``{`` is simply absent and reads as a
+    literal character.  This replaces a scan-to-the-end lookup per ``{``: with that
+    lookup a word of N unbalanced braces cost O(N^2), and a 12,000-brace program word
+    stalled the synchronous permission gate for tens of seconds -- long enough for the
+    loop watchdog to hard-exit the gateway.  A pair table is the same answer in O(N).
+    """
+    pairs: dict[int, int] = {}
+    stack: list[int] = []
+    for j, ch in enumerate(pattern):
+        if ch == "{":
+            stack.append(j)
+        elif ch == "}" and stack:
+            pairs[stack.pop()] = j
+    return pairs
+
+
+def _split_brace_alternatives(body: str) -> "list[str]":
+    """Split a brace body on its TOP-LEVEL commas (``a,{b,c},d`` -> 3 parts)."""
+    parts: list[str] = []
+    depth = 0
+    start = 0
+    for j, ch in enumerate(body):
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+        elif ch == "," and depth == 0:
+            parts.append(body[start:j])
+            start = j + 1
+    parts.append(body[start:])
+    return parts
+
+
+def _brace_group_regex(body: str, depth: int = 0, budget: "list[int] | None" = None) -> str:
+    """The regex for what bash's brace expansion makes of ``{<body>}``.
+
+    Bash expands exactly three shapes, and this mirrors them rather than reading
+    every brace group as "anything" -- that reading turned every quoted jq filter
+    (``--jq '{state}'``), awk program (``'{print $1}'``) and format literal
+    (``{directory}``) into a word that could be a kill-by-name program or the
+    product CLI, and a later product-named argument in the same argv then denied
+    the whole command:
+
+    * ``{a,b,c}`` -- one word per alternative, each itself a glob.
+    * ``{x..y}`` -- a sequence: ``{c..c}`` is ``c``, ``{a..f}`` is one letter of
+      the range, ``{1..9}`` is a run of digits (no protected name carries digits,
+      so ``-?[0-9]+`` cannot over-match one; it is written out rather than left
+      as ``.*`` so a future digit-bearing name is matched honestly).
+    * anything else (no top-level comma, not a sequence) is NOT expanded at all:
+      ``{state}`` reaches the program as the literal characters ``{state}``,
+      braces included, and only an inner glob character still globs.
+
+    *depth* counts enclosing groups; at ``_BRACE_NESTING_CAP`` the group is ``.*``
+    rather than recursed into (see the cap's note).  *budget* is the word's remaining
+    ``_BRACE_GROUP_BUDGET`` of alternation groups, shared across the whole translation;
+    an alternation past it is ``.*`` too.
+    """
+    if depth >= _BRACE_NESTING_CAP:
+        return ".*"
+    parts = _split_brace_alternatives(body)
+    if len(parts) > 1:
+        if budget is None:
+            budget = [_BRACE_GROUP_BUDGET]
+        # Identical alternatives (``{*,*}``) are one alternative: bash produces the same
+        # word twice, and a regex branch pair with identical branches is only a doubling
+        # of the ways to fail.  Deduplicated BEFORE the budget is charged, so the pathological
+        # spelling neither costs a group nor reaches the engine as a pair.
+        branches = list(dict.fromkeys(_glob_to_regex(part, depth + 1, budget) for part in parts))
+        if len(branches) == 1:
+            return branches[0]
+        if budget[0] <= 0:
+            return ".*"
+        budget[0] -= 1
+        return "(?:" + "|".join(branches) + ")"
+    seq = _BRACE_SEQUENCE_RE.match(body)
+    if seq is not None:
+        if seq.group(1) is not None:
+            return "-?[0-9]+"
+        lo, hi = sorted((seq.group(3), seq.group(4)))
+        return f"[{lo}-{hi}]"
+    return r"\{" + _glob_to_regex(body, depth + 1, budget) + r"\}"
+
+
+def _glob_to_regex(pattern: str, depth: int = 0, budget: "list[int] | None" = None) -> str:
+    """Translate a shell glob into a regex that matches what it could expand to.
+
+    *depth* is the brace-nesting level this pattern sits at (see ``_BRACE_NESTING_CAP``),
+    *budget* the word's remaining alternation groups (see ``_BRACE_GROUP_BUDGET``; a
+    fresh translation starts a full budget).  Brace pairs are resolved once per pattern
+    (``_brace_pairs``), so the translation is linear in the pattern whatever the braces
+    do, and the regex it produces is bounded in how much backtracking it can demand.
+
+    Only GLOB and BRACE syntax is read; everything else is literal.  A COMMAND
+    substitution (``$(...)``, a backtick) is what the command it runs prints, which no
+    static reading knows -- and this reader does not guess.  The substitution's BODY is
+    judged on its own by the payload walk, which descends into every substitution
+    wherever it sits (``tar czf x_$(pkill -f kirocrew).tgz`` is denied for the body);
+    what it PRINTS is outside this floor, exactly as it is at program position, where
+    ``_program_basename`` peels a leading substitution and ``$(printf pk)ill -f <name>``
+    is the documented residual.  Reading the substitution as ``.*`` instead made every
+    host-stamped filename (``logs_$(hostname)_*.tar.gz``) and every brace group with a
+    substituted alternative (``{$(date +%F),current}.log``) under an ordinary program a
+    word that "could be ``pkill``", and a product-named path later in the argv a
+    self-kill -- three rounds of scope-review regressions, no kill among them.
+    PARAMETER expansion (``${X}``, ``$X``) is literal for the same reason: reading it as
+    anything turned every awk field list (``{print $6,$7}``) and every prose heredoc
+    naming ``${name}`` into a possible verb.
+    """
     out: list[str] = []
+    pairs: "dict[int, int] | None" = None
+    if budget is None:
+        budget = [_BRACE_GROUP_BUDGET]
+
+    def emit(piece: str) -> None:
+        # ``.*.*`` is ``.*``: a run of "anything" pieces (``**``, a budgeted group after a
+        # ``*``) is one piece, so the engine has one segment to place rather than a
+        # polynomial number of ways to split a name across several.
+        if piece == ".*" and out and out[-1] == ".*":
+            return
+        out.append(piece)
+
     i = 0
     while i < len(pattern):
         ch = pattern[i]
         if ch == "[":
             close = pattern.find("]", i + 1)
             if close == -1:
-                out.append(re.escape(ch))
+                emit(re.escape(ch))
                 i += 1
                 continue
-            out.append(".")
+            emit(".")
             i = close + 1
             continue
         if ch == "{":
-            # ``kiro{c..c}rew`` expands to the real name, so a brace group stands for
-            # whatever it can produce -- same treatment as a bracket class.
-            close = pattern.find("}", i + 1)
+            # ``kiro{c..c}rew`` and ``p{k,k}ill`` expand to the real name, so a brace
+            # group stands for what bash's brace expansion can produce from it --
+            # and only that (see ``_brace_group_regex``).
+            if pairs is None:
+                pairs = _brace_pairs(pattern)
+            close = pairs.get(i, -1)
             if close == -1:
-                out.append(re.escape(ch))
+                emit(re.escape(ch))
                 i += 1
                 continue
-            out.append(".*")
+            emit(_brace_group_regex(pattern[i + 1 : close], depth, budget))
             i = close + 1
             continue
         if ch == "?":
-            out.append(".")
+            emit(".")
         elif ch == "*":
-            out.append(".*")
+            emit(".*")
         else:
-            out.append(re.escape(ch))
+            emit(re.escape(ch))
         i += 1
     return "".join(out)
 
@@ -279,6 +426,28 @@ _ENV_SPLIT_PROGRAMS = frozenset({"env"})
 # unrecognised program is "this could execute the name".
 _DATA_CONSUMER_PROGRAMS = frozenset(
     {
+        # filesystem inspectors: every argument is a path to DESCRIBE, so a glob
+        # or brace word among them (``ls -d dir/*``) is a filename, not a program.
+        "ls",
+        "stat",
+        "file",
+        "du",
+        "readlink",
+        "realpath",
+        "dirname",
+        "basename",
+        # filesystem movers: every argument is a path to COPY, MOVE, LINK, REMOVE or
+        # re-mode, never a program to run (``cp $dir/*; ...``).  ``tar`` is absent on
+        # purpose: ``-I <prog>`` / ``--use-compress-program`` executes its argument.
+        "cp",
+        "mv",
+        "ln",
+        "rm",
+        "mkdir",
+        "rmdir",
+        "touch",
+        "chmod",
+        "chown",
         "echo",
         "printf",
         "print",
@@ -321,6 +490,15 @@ _DATA_CONSUMER_PROGRAMS = frozenset(
 
 # program in a run that ``shlex`` handed over as a single word.
 _CONTROL_OPERATOR_RE = re.compile(r"[;&|\n]+")
+# A word that OPENS with a command substitution, past any quote or paren the shell
+# strips first: its basename reading is the substitution body's program
+# (``$(kirocrew`` reads as ``kirocrew``), which is what runs.  A BRACE before it is
+# not in the class: ``{$(date +%F),current}.log`` is a brace group whose first
+# alternative is the body's OUTPUT -- a filename -- and the body itself
+# (``date +%F``) is judged on its own by the payload walk, which descends into
+# every substitution wherever it sits (``ls {$(pkill -f kirocrew),y}`` is denied
+# for the body).
+_LEADING_SUBSTITUTION_RE = re.compile(r"^[\"'(\s]*(?:\$\((?!\()|`)")
 
 
 # same glue-evasion as the empty-quote form (``ca""t`` -> ``cat``) that
@@ -571,19 +749,38 @@ def _data_consumer_exempt(
 
     The exemption is refused in two cases:
 
-    * the token itself carries a control operator (``echo foo;kirocrew>/tmp/x``).
-      ``shlex`` splits on whitespace only, so such a token is attributed to the
-      PRECEDING command while the part after the operator is a new command that
-      really runs.
+    * the token carries a control operator with a NEW PROGRAM after it
+      (``echo foo;kirocrew>/tmp/x``).  ``shlex`` splits on whitespace only, so such
+      a token is attributed to the PRECEDING command while the part after the
+      operator is a new command that really runs.  An operator at the very END of
+      the token (``cp $dir/*;``) starts no program inside the token: the word before
+      it is still this data consumer's argument, and the next command's words are
+      the next command's -- so that token IS exempt.  (This is the one place a
+      trailing operator may excuse a token: gated on the program being a data
+      consumer, a quoted ``'pkill;'`` or ``'kirocrew;'`` at PROGRAM position -- a
+      symlink literally named with the operator -- never reaches it.)
     * the command pipes into a shell or evaluator (``echo … | sh``), where the
       printed text is executed rather than displayed.
+    * the token OPENS with a command substitution (``ls $(kirocrew update)``,
+      ``cat `kirocrew token```, quotes before it notwithstanding): the token's own
+      basename reading IS the body's program, so excusing the token as data would
+      excuse the program that runs.  A substitution LATER in the word
+      (``cp report_$(hostname)_*.log <dir>``) or inside a BRACE GROUP
+      (``mv {$(date +%F),current}.log <dir>``) is a filename around a body: the
+      body is judged on its own by the payload walk, which descends into every
+      substitution wherever it sits, and the word itself is a filename bash never
+      runs.  Refusing those made two ops routines -- archiving host-stamped or
+      date-stamped logs into a product-named scratch directory -- read as a
+      self-kill (each confirmed newly-refused by the scope review).
 
-    Inheriting the exemption in either case would turn a precision fix into a
+    Inheriting the exemption in any of these cases would turn a precision fix into a
     bypass.
     """
     if index <= 0:
         return False
-    if _CONTROL_OPERATOR_RE.search(token):
+    if any(segment for segment in _CONTROL_OPERATOR_RE.split(token)[1:]):
+        return False
+    if _LEADING_SUBSTITUTION_RE.match(token):
         return False
     # Command-level guards, hoisted into ``_data_consumer_command_disqualified``.
     # *command_disqualified* lets a caller iterating one fixed argv charge them
