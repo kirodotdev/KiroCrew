@@ -111,6 +111,23 @@ def _is_bundled_skill_asset(path: Path) -> bool:
     return parts[:2] == ("apps", "builtins") and "skills" in parts[2:]
 
 
+def _is_container_image_asset(path: Path) -> bool:
+    """True for a container image's own source rather than gateway runtime code.
+
+    ``apps/builtins/<app>/crew/runtime/**`` is the build context of a Linux image: a
+    Dockerfile, the processes that image runs, and their tests. The gateway does not
+    import it, which ``test_container_image_assets_are_not_imported`` pins and which the
+    tree itself enforces by assuming an installed layout where ``kiro_crew`` is absent.
+
+    Its subprocess calls are the image's supervisor starting the image's own children,
+    inside a container the owner's machine never runs. The sandbox chokepoint governs the
+    gateway's OWN spawning, so it has nothing to say about them -- the same reasoning as
+    ``_is_bundled_skill_asset`` above, applied to a different shape.
+    """
+    parts = path.relative_to(_SRC_ROOT).parts
+    return parts[:2] == ("apps", "builtins") and "crew" in parts and "runtime" in parts
+
+
 # Attribute names that actually spawn a child process.
 _SPAWN_ATTRS = {
     "Popen",
@@ -1697,7 +1714,7 @@ def _collect_first_party_flag_sites() -> frozenset[str]:
     out: set[str] = set()
     for path, source in candidate_sources(require_all=(_FIRST_PARTY_KWARG,)):
         rel = path.relative_to(_SRC_ROOT).as_posix()
-        if rel == "sandbox.py" or _is_bundled_skill_asset(path):
+        if rel == "sandbox.py" or _is_bundled_skill_asset(path) or _is_container_image_asset(path):
             continue
         tree = ast.parse(source, str(path))
         funcs = [
@@ -1837,8 +1854,9 @@ def _collect_spawn_functions() -> dict[str, str]:
     needles = tuple(_SPAWN_ATTRS | _SPAWN_NAMES)
     for path, source in candidate_sources(require_any=needles):
         # A skill's own helper scripts are not gateway runtime code paths --
-        # see ``_is_bundled_skill_asset`` for why they are out of scope.
-        if _is_bundled_skill_asset(path):
+        # see ``_is_bundled_skill_asset`` for why they are out of scope. A container
+        # image's own source is the same kind of exclusion for a different shape.
+        if _is_bundled_skill_asset(path) or _is_container_image_asset(path):
             continue
         tree = ast.parse(source, str(path))
         spawn_bases = _spawn_module_bindings(tree)
@@ -2115,6 +2133,60 @@ def test_bundled_skill_assets_are_not_imported():
         "exempts:\n  " + "\n  ".join(sorted(offenders)) + "\n\nEither move the "
         "shared logic into a real module under src/kiro_crew (where the spawn "
         "audit reviews it), or drop the import."
+    )
+
+
+def test_container_image_assets_are_not_imported():
+    """The container-image exemption is only honest while the gateway never imports one.
+
+    ``_is_container_image_asset`` takes a Linux image's own source out of the spawn audit
+    on the premise that the image runs it, not this package. That premise has one failure
+    mode: gateway code imports one of those modules, and its unrouted spawns become
+    gateway spawns while staying invisible to the audit.
+
+    The tree also cannot be imported in practice: it assumes an installed layout where
+    ``kiro_crew`` is absent, so an import would fail at runtime rather than quietly work.
+    This test makes the premise explicit instead of leaving it to that accident.
+
+    Reading these files as DATA is expected: the image build copies the tree, and tests in
+    the tree's own suite compare its source text against the gateway's copy of a duplicated
+    helper. Neither is an import.
+    """
+    assets = [p for p in _SRC_ROOT.rglob("*.py") if _is_container_image_asset(p)]
+    # Non-vacuity: a predicate matching nothing would make this pass while pinning
+    # nothing, and would mean the exemption itself is dead.
+    assert assets, "no container image assets found -- the exemption matches nothing"
+
+    asset_modules = {
+        "kiro_crew." + p.relative_to(_SRC_ROOT).with_suffix("").as_posix().replace("/", ".")
+        for p in assets
+    }
+    asset_packages = {
+        "kiro_crew." + p.relative_to(_SRC_ROOT).parent.as_posix().replace("/", ".") for p in assets
+    }
+
+    offenders: list[str] = []
+    for path in _SRC_ROOT.rglob("*.py"):
+        if _is_container_image_asset(path):
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"), str(path))
+        rel = path.relative_to(_SRC_ROOT).as_posix()
+        for node in ast.walk(tree):
+            names: list[str] = []
+            if isinstance(node, ast.Import):
+                names = [a.name for a in node.names]
+            elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
+                names = [node.module]
+            for name in names:
+                if name in asset_modules or name in asset_packages:
+                    offenders.append(f"{rel}:{node.lineno} imports {name}")
+
+    assert not offenders, (
+        "Gateway code imports a container image asset, which the spawn audit "
+        "exempts:\n  " + "\n  ".join(sorted(offenders)) + "\n\nThat tree runs inside a "
+        "Linux image on an installed copy where kiro_crew is absent, so the import would "
+        "fail there anyway. Move the shared logic into a real module under src/kiro_crew, "
+        "or duplicate it deliberately and pin the copies equal by source text."
     )
 
 

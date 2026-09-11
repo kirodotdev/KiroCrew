@@ -65,7 +65,6 @@
 2 test/test_browser_recording_skill.py
 1 test/test_build_desktop_launcher_symlink.py
 1 test/test_build_desktop_rm_resilient.py
-1 test/test_ci_surface_tests.py
 1 test/test_cli.py
 2 test/test_cli_lazy_imports.py
 2 test/test_cli_manifest_signature.py

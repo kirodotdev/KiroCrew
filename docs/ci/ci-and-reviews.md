@@ -294,6 +294,7 @@ Every job here is blocking. Every job that costs real runner time also `needs:`
 | `backend-test-windows-fail-closed` | windows-latest, single `-n0` run of `test/test_windows_fail_closed_optin.py` BY NODE ID with the pass count grepped, so a silent skip cannot go green. It is the only lane that boots a real gateway and drives one ACP prompt turn on Windows, against real filesystem state instead of a `sys.platform` mock: the pair of assertions [PR #8117](https://github.com/kirodotdev/KiroCrew/pull/8117) broke and no test could see |
 | `backend-test-macos` | macos-15 (pinned label, not `macos-latest`), 3 shards, `--no-cov`, 180s per-test timeout. The full suite, same shape as the Windows line. It shipped scoped to a 51-file glob while the darwin gap list was burned down; that list is `test/macos-expected-failures.txt` now and the glob is gone, so a POSIX-but-not-Linux regression outside those 51 files can no longer land unseen. 3 shards rather than Windows' 4 because macOS bills at 10x Linux per minute |
 | `backend-test-sandbox` | The one job that clears the AppArmor userns restriction, so the tests guarded by `skipif(not userns_available())` EXECUTE instead of skipping. Runs all eleven sandbox-dependent suites. The shards collect the same files — nothing is deselected — but there the sandbox-guarded tests skip, so this is the only lane where those 85 assertions (the `~/.kiro/crew` keystone among them) actually execute |
+| `backend-test-crew-container` | "Backend Tests (crew container)". The only lane that runs the crew container image's suite (`aws_control/crew/runtime/container_tests/`, 327 tests). It is separate from the shards because it installs the image's own runtime pins (`container/requirements.txt`: fastapi, uvicorn, httpx, boto3), which that file's header forbids becoming dependencies of the application, and the shards' environment IS the application's, so there the suite's conftest collects nothing. Sets `CREW_CONTAINER_TESTS_REQUIRED=1`, which turns every reason that conftest would decline to collect into a hard error and checks the collection against the tree |
 | `coverage-combine` then `coverage-gate` | Combines the 3.12 shard data, then enforces the project line-rate floors, plus a per-file floor with a shrink-only baseline (all floors live in the job's `env:` block). **CodeBuild-hosted runner** (pilot, below) except for forks |
 | `frontend-lint` | `tsc -b`, `eslint` under a hard-zero warning ceiling, `jscpd`, and `npm run i18n:check` |
 | `electron-test` | The Electron shell's own node:test suite (`website/electron`) |
@@ -424,6 +425,18 @@ Details worth knowing:
   namespace, the job fails instead of letting the suite silently skip and the gate
   go green having asserted nothing. This is what gives the `hooks.py`
   sensitive-path keystone real CI coverage.
+- **`backend-test-crew-container` cannot go green by skipping.** Installing the
+  image's runtime dependencies in a dedicated lane fixes one instance of the
+  problem; the mechanism that caused it, a conftest that answers a missing
+  dependency with `collect_ignore_glob`, so 226 tests read as present while
+  executing zero times, survives any dependency rename or extras split. So the lane
+  that installs them also sets `CREW_CONTAINER_TESTS_REQUIRED=1`, and under that
+  variable the suite refuses to skip: a missing dependency or a non-POSIX host is a
+  collection error, every `test_*.py` that defines a test function must contribute at
+  least one collected item, and the total must clear a floor read off a real
+  collection. The variable can only ever turn a skip into a failure, never the
+  reverse, so setting it can hide nothing. This is the same shape as
+  `backend-test-sandbox`'s `unshare` probe, moved inside the instrument.
 - **`coverage-gate` is fail-closed, and the split made that load-bearing.** It runs
   `if: always()` and its first step converts any non-success upstream result into an
   explicit failure, because GitHub treats a **skipped** required check as satisfied.

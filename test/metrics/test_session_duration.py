@@ -1226,6 +1226,25 @@ class TestEveryRegistryRemovalRecordsAnEnd:
         for path in sorted(root.rglob("*.py")):
             if "__pycache__" in path.parts:
                 continue
+            rel_parts = path.relative_to(root).parts
+            # A container image's build context, under ``apps/builtins/<app>/crew/runtime/**``.
+            # This walk hands each hit to ``importlib.import_module``, and that tree is the
+            # one place under ``src/kiro_crew`` that must never be imported from here:
+            # ``test_spawn_audit.py::test_container_image_assets_are_not_imported`` forbids
+            # it, and the tree could not satisfy the import anyway, since it assumes the
+            # image's installed layout and its modules import the image's own runtime
+            # dependencies (httpx, fastapi), which ``container/requirements.txt`` marks as
+            # deliberately absent from this application's environment.
+            #
+            # This does not weaken the discovered-not-listed property the docstring
+            # defends. That property is about GATEWAY removal paths, and nothing in an
+            # image that runs on Fargate participates in this process's session registry.
+            if (
+                rel_parts[:2] == ("apps", "builtins")
+                and "crew" in rel_parts
+                and "runtime" in rel_parts
+            ):
+                continue
             try:
                 if "_sessions" not in path.read_text(encoding="utf-8"):
                     continue
@@ -1310,6 +1329,31 @@ class TestEveryRegistryRemovalRecordsAnEnd:
         removals = self._removal_functions("session_lifecycle")
         assert removals, "the AST walk found no registry removals at all"
         assert "drain_all_providers" in removals, "the mass-pop path must be in scope"
+
+    def test_the_container_image_tree_is_excluded_and_that_exclusion_is_needed(self):
+        """The image-tree skip must be load-bearing, not a line that matches nothing.
+
+        An exclusion matching no file would pass this gate while protecting nothing, and
+        would quietly stop protecting it the day the tree grew a match. So assert both
+        halves: files under the image tree DO contain the registry name this walk keys
+        on, and none of them reached the discovered list, where ``import_module`` would
+        have tried to import a tree that cannot be imported from this process.
+        """
+        import kiro_crew
+
+        root = Path(kiro_crew.__file__).resolve().parent
+        image_root = root / "apps" / "builtins" / "aws_control" / "crew" / "runtime"
+        matching = [
+            p
+            for p in image_root.rglob("*.py")
+            if "__pycache__" not in p.parts and "_sessions" in p.read_text(encoding="utf-8")
+        ]
+        assert matching, (
+            "no file under the image tree mentions the registry, so the skip in "
+            "_owning_modules is vacuous -- remove it or re-point it"
+        )
+        leaked = [m for m in self._owning_modules() if "crew.runtime" in m]
+        assert not leaked, f"the image tree reached an import-based walk: {leaked}"
 
 
 class TestTeardownPathsAreWired:

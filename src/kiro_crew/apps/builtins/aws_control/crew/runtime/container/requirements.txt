@@ -1,0 +1,7 @@
+# Container runtime only. These must NOT become dependencies of the Kiro Crew app
+# itself: the app's backend hooks are imported into the owner's gateway process,
+# and adding a web framework to every owner's gateway buys nothing.
+fastapi==0.115.6
+uvicorn==0.34.0
+httpx==0.28.1
+boto3==1.35.99

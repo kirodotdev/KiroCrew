@@ -682,3 +682,395 @@ backup archive's `remoteError`) travels as the notice's message under the
 localised lead, so the hand-off carries the text AWS returned.
 `DrivePage.test.tsx::error surfaces reach the agent`,
 `AwsControlPage.test.tsx::edge states`, and `ConsoleView.test.tsx` pin these.
+
+## The crew container runtime
+
+`crew/runtime/` is the source of a Linux container image, not code the owner's
+gateway runs. It is what a remote crew runs AS: a supervisor that orders and
+watches the task's processes, a front process that receives a turn, and Kiro
+Crew's own backend executing it. The design of record is
+[rfc-remote-instance-on-fargate](../../request-for-change/rfc-remote-instance-on-fargate.md).
+
+The tree is a docker build context and deliberately not a Python package:
+`crew/runtime/` has no `__init__.py`, its modules import each other as top-level
+`container.*` because that is what they are inside the image, and
+`test_spawn_audit.py::test_container_image_assets_are_not_imported` pins that the
+gateway never imports it. Three repo-level audits exempt it by shape for that
+reason: the spawn audit (`_is_container_image_asset`), the MCP secret-caller scan,
+and the hardcoded-agents-dir ratchet.
+
+Its tests live in `container_tests/`, run only by the `backend-test-crew-container`
+lane in `ci.yml` (see [ci-and-reviews](../../ci/ci-and-reviews.md)), and are
+excluded from `setup.cfg`'s `package_data` and from `MANIFEST.in`, so a user's
+wheel and DMG carry the image's build context and not its test suite.
+`test_crew_runtime_payload.py` pins both directions.
+
+### Three processes, one task
+
+| Process | Owns | Exposure |
+|---|---|---|
+| Supervisor | process order, the crew bundle install, the container's own config, teardown | no listener; it is the task's init process |
+| Front | receiving a turn, stripping any route prefix, forwarding over loopback | the only listener, port 8080 |
+| Kiro Crew backend | sessions, conversations, transcripts, MCP, subagents, skills, memory | loopback only (`127.0.0.1`, not configurable) |
+
+Nothing serves a user interface. `config_dir` equals `data_home`: the gateway's
+`config_dir()` and `data_home()` resolve to the same directory, so
+`session_map.json` and `open_slots.json` sit at the home root, and the supervisor
+refuses to start when the two disagree, because a backend writing to one path
+while the deployment points at another loses the record of which conversations
+existed.
+
+The startup order is a correctness requirement rather than a preference:
+
+1. Gate the environment (path layout, model credential, sandbox) and install the
+   crew bundle. Nothing has started.
+2. Write the container's own configuration. It must land after the bundle, because
+   a bundle may ship config and the container's posture has to win on the keys it
+   sets, and before the backend, which reads the file at boot.
+3. Start the backend. `wait_until_ready` returns only when the port answers **and**
+   the boot secret file exists; process-alive is not ready.
+4. Start the front process.
+
+There is no backup sidecar and no restore phase. Durability across task
+replacement is a capability the container does not have; the front still fetches a
+slot's transcript from S3 on demand, so `SMC_BACKUP_BUCKET`/`SMC_BACKUP_PREFIX`
+name where it reads. When durability returns it must reinstate the ordering rule
+that made it correct -- a restore must finish before the backend starts, because
+the backend's periodic flush persists its in-memory slot table and a flush landing
+before the restore completes writes an empty set over the record of which
+conversations existed.
+
+### The front layer
+
+Two customer routes and nothing else. Everything is classified once, on the path
+AFTER any configured route prefix is stripped, because classifying the prefixed
+path let a control route read as a customer route in an earlier build:
+
+| Route | Auth | What it does |
+|---|---|---|
+| `POST /v1/chat/completions` | none of its own | one turn, forwarded to the backend |
+| `GET /health` | none of its own | liveness; `{"status": "ok"}` and no internals |
+| everything else | `SMC_CONTROL_SECRET` in `X-SMC-Control-Secret` | 404: no control operation is served yet |
+
+Both outcomes of the control-authorization decision are recorded before the response is
+sent -- the grant as well as the deny, because a trail holding only grants records exactly
+the events nobody needed to investigate, and the deny is what answers who tried. **A
+decision that cannot be recorded is not acted on**: the request gets a 503
+`control_audit_unavailable` rather than the 403 or the 404 it would otherwise get, because
+serving the grant would be the unaudited grant the record exists to prevent, and serving
+the deny would leave a denial nobody can later account for. 503 rather than 403 says the
+failure is the container's, not the caller's.
+
+The record mirrors `kiro_crew.sel` -- the `SecurityEvent` field names, its `event_type`
+vocabulary (`tool_approval` / `tool_denial`), and the audit-or-deny discipline
+`log_tool_invocation(critical=True)` exists for -- and is mirrored rather than called
+because of the SINK, not importability. The wheel is installed in this image, so
+`kiro_crew.sel` would import; what does not survive the move is where SEL keeps its log.
+`sel._default_dir()` resolves under `config_dir()` with the HMAC key in `trust/` beside
+it, which here means the persistent volume, and the supervisor and the model worker run as
+the same user -- so the audited party could delete both and write a self-consistent
+replacement, and there is no trust root in the container to anchor a chain. Nothing
+harvests that file either: the container's only writer to the owner's bucket is the
+transcript store. So the record goes to the process log stream, which leaves the task as
+it is written. It carries no `prev_hash` or `entry_hash`, because claiming SEL's integrity
+fields for an unchained line would assert a property the record does not have. Durability
+of that stream is the task definition's log driver, which belongs to the deploy track
+rather than to this image.
+
+No header value is ever recorded -- not the control secret, not any other header -- so
+what the record says is only whether the header was presented.
+
+**The sink is the container's own, and `emit` refuses when a record would not be
+delivered.** This is a different shape of defect from the rest of this document: the guard
+above is present, its logic is right, and it does refuse when it should -- but under
+uvicorn's own logging configuration a module logger in this process resolves to an
+effective level of WARNING with no reachable handler, and `logging.lastResort` sits at
+WARNING too, so an INFO audit call writes zero bytes. A dropped record is not an error, so
+nothing raised, the audit-or-deny path never fired, and every control decision was acted
+on with no record -- in production only, since a test session has a root handler. A guard
+that is live only where it is not needed cannot be told from no guard.
+
+Two halves, both load-bearing. `configure_sink()` attaches an INFO-capable handler that
+this module owns, called from `build_app` rather than from the process entrypoint so that
+an app which can serve a request has one -- a lazy "configure on first emit" would let
+whichever request arrives first decide whether the audit works. And `emit` checks that a
+record would actually reach a handler before writing it, which is what stops a later
+logging change from switching the audit off silently. The check is not
+`logger.hasHandlers()`: that ignores the logger's effective level and every handler's own
+level, so it answers yes for a logger whose only reachable handler is at WARNING, which is
+exactly the arrangement that drops an INFO record.
+
+`/health` is registered twice, prefixed and bare, so liveness can be probed
+without knowing the crew's prefix. The route prefix is optional and empty by
+default; nothing in this repository sets `SMC_ROUTE_PREFIX`, and a wrong value
+fails closed because a path that does not strip to one of the two customer routes
+is control and is refused.
+
+The control gate sits IN FRONT of the 404 rather than behind it. Adding a control
+route is then adding a handler rather than also remembering to authorise it, and
+an unauthorised caller cannot learn which control paths exist by reading which
+ones 404. `_control_authorized` fails closed when no control secret is configured
+and compares in constant time, on bytes rather than `str`, because
+`hmac.compare_digest` raises `TypeError` on a non-ASCII `str` and a caller could
+otherwise turn a 403 into an unhandled 500.
+
+**How an endpoint gets added.** Decide first whether it is a customer route or a
+control route, because that decision is the security boundary and not a detail of
+registration. A customer route is added to the allowlist that `gateway` checks and
+inherits no authentication of its own, so it must be safe for anyone who can reach
+the port; a control route needs only a handler, since the gate already refuses
+without the secret. Either way the path is matched on the STRIPPED path, and the
+turn path stays the only route that accepts a caller-supplied conversation id.
+
+**Authorisation, and what this process cannot do.** Reaching port 8080 is an
+authorised call in the owner's own account, decided before the request arrives; the
+task is not published to the internet and has no external DNS name. That decision's
+result is not passed through to the front process, so it has no caller identity to
+bind a forwarded conversation id to, and a binding written against an absent
+identity would fail open. What it does instead is refuse to serve customer turns at
+all unless the deployment has declared `SMC_SINGLE_PRINCIPAL`, which is the RFC's
+one-owner invariant made explicit and enforced at startup rather than assumed. The
+refusal is at startup for the reason `require_api_key` refuses at startup: a
+container that answers its port while mixing two callers' conversations looks
+healthy and is not.
+
+### The loopback hop
+
+The front forwards to the gateway's own `POST /v1/chat/completions` with
+`{model, messages, id, stream}`, returning one JSON completion or an SSE stream.
+`model` is set from the DEPLOYED crew name and never copied from the payload, and
+`id` is the slot id, which is what continues a conversation.
+
+Facts the front must respect, each established by reading the gateway's source and
+each wrong once in a way that produced no error:
+
+- **Authenticate with `X-Internal-Secret`, read from disk on EVERY attempt.** The
+  boot secret is `os.urandom(16)` per boot and is never persisted, so a cached copy
+  works until the backend restarts and then 403s on every request in a way that
+  looks like a client fault. On a 403 the front re-reads the secret once and retries
+  once, then relays the failure.
+- **Do not forward the client's `Origin` or any `X-Forwarded-*` header.** Loopback
+  with no Origin is trusted by the gateway's CSRF check and a forwarded foreign
+  Origin trips it. Outbound headers are built from scratch rather than copied and
+  stripped, so a header the caller sends cannot reach the backend by accident.
+- **A busy slot answers 409.** Requests for one slot id are serialised in the front
+  process rather than surfacing 409 to the caller.
+- **The stream is OpenAI-format, not ACP.** Completion chunks, keepalives, a
+  terminal sentinel and an error object, with no event names at all. The ACP
+  `sessionUpdate` vocabulary lives on the owner control stream, which this process
+  does not serve, so the projection is keyed on frame shape and is fail-closed: a
+  kind added later is dropped rather than relayed.
+- **Readiness proves less than it looks like.** A backend with no model credential
+  answers its port and then returns `503 kiro_prerequisite_required` on every turn,
+  so a present `KIRO_API_KEY` is not a working one and only a real turn establishes
+  that it is.
+
+A restored transcript is bounded by SIZE as well as by shape. The bytes come from the
+bucket and are held in memory for the length of a turn, so without a ceiling one stored
+object decides how much memory the task uses. `ContentLength` is checked first and then
+not trusted -- a header is a claim by the source -- and the read is streamed in chunks
+against the same 64 MiB ceiling, one chunk past it so an object of exactly that size can
+be told from a larger one. The refusal is a `TranscriptUnavailable`, so an oversized
+object fails that turn rather than letting the backend serve one with the conversation
+missing.
+
+### Launching the backend
+
+Verified names only, because the plausible ones are read by nothing:
+`KIROCREW_BIND=127.0.0.1` (the published image sets `0.0.0.0`, and a deployment
+that does not override it puts the backend on the network while every local test
+still passes); `KIROCREW_HOME` equal to `SMC_DATA_HOME`, which is what makes the
+boot secret path resolve; `KIROCREW_TELEMETRY_DISABLED=1` to silence the beacon;
+`--no-crons`, because arming the scheduler fires any overdue job immediately; and
+`--approval yolo`, which the gateway refuses unless `KIROCREW_HOME` is explicitly
+non-default. Nothing in the container is there to click Approve, so an interactive
+prompt would be an indefinite stall rather than a question, and the cost is stated
+plainly: every tool the crew carries is auto-approved for whatever a caller's
+message causes it to do. The boot update check cannot be disabled by config; it is
+recorded as an outbound request the deployment makes rather than suppressed.
+
+**The container serves no messaging channel, and disables them positively.** Before
+the backend starts, the supervisor writes `<config dir>/config.json` with every
+channel section's `enabled` false, merged over anything already there so a shipped
+file cannot outvote it, and the launch environment carries no channel credential.
+Both halves are required and neither covers the other's case: `imessage` and
+`whatsapp` carry no credential in the gateway's channel registry, so they start on
+their config flag alone, and `slack` has no `enabled` key at all, so it starts on
+its tokens alone. Both name lists are ratcheted against that registry in both
+directions by `test_crew_container_config_isolation.py` -- a channel the gateway
+can start that the container does not disable fails, and so does a name the gateway
+does not have, because that reads as coverage while doing nothing.
+
+**The backend environment drops what the worker must not hold.** The task role
+(`AWS_CONTAINER_CREDENTIALS_RELATIVE_URI` and its peers) and the front's
+`SMC_CONTROL_SECRET` are removed: the backend spawns the model subprocess with this
+environment, that subprocess auto-approves every tool, and a turn could otherwise
+read the task role from its own environment and act as it. `KIRO_API_KEY` cannot be
+removed, because kiro-cli re-injects it into the worker and it is the whole
+model-auth mechanism.
+
+**A reinstall replaces the bundle's own files and prunes nothing else.**
+`install_bundle` runs at every boot and the data home may be a persistent volume, so
+the skills install has two jobs that pull against each other: a skill a later bundle
+DROPPED must not stay active, and a skill the running crew created must not be
+deleted. Replacing the whole tree satisfies the first and violates the second, so the
+two sets are separated. The bundle-managed set is derived from the tree in the image
+layer, which needs no trust and cannot be forged by the crew; the marker records that
+set so the NEXT install can prune exactly what this one installed. Pruning is per
+FILE, not per directory, because a directory can hold both the bundle's file and the
+crew's. When the marker is absent, hand-edited or from an older build, the previous
+set is unknown and NOTHING is pruned: a stale skill an operator can delete is a
+smaller harm than the crew's work disappearing silently, and the log says which of the
+two happened. A symlink at a bundle-managed path is unlinked before that file is
+written -- a pointer is not work, and its target is never opened -- while a link at the
+skills ROOT is still refused outright, since that one redirects the whole install.
+
+**The install marker is authenticated, because it lives where the crew can write.**
+The record the prune reads sits in the data home, so its contents are an INPUT and not
+state this code owns; constraining what the list may contain does not change that. It
+carries an HMAC tag keyed on `SMC_CONTROL_SECRET` -- the one value the supervisor holds
+that the worker provably does not, since `build_backend_env` removes it from the
+environment the backend is launched with and the worker inherits that environment.
+Relocating the marker instead is not available: the image runs the supervisor and the
+worker as the same user, so no directory on the persistent volume is writable by one and
+not the other, and a location in the read-only image layer cannot record what a previous
+task installed, which is the marker's whole purpose. Every untrusted case -- no tag, a
+tag that does not verify, no control secret to verify with -- prunes nothing and is
+logged as itself, because "the tag is wrong" and "there is no marker" are different
+things to be told.
+
+**Every directory the container creates on that volume refuses rather than crashes.**
+`mkdir(exist_ok=True)` raises `FileExistsError` when a regular file holds the path, and a
+previous task can leave one where a skill directory belongs. Uncaught, that crashes the
+supervisor, ECS restarts the task, and the next boot hits the same file on the same
+volume -- a boot loop that spends the owner's money and never says what is wrong. A boot
+loop is worse than a refusal for the reason a crash is worse than a refusal, so each
+directory goes through one helper that names the path it could not create.
+
+**The prune's bound is in the code, not in the record.** The marker lives in the data
+home, which the crew can write, so what it says is an INPUT: an absolute entry, a
+non-normalised one, one carrying `..`, or a clean-looking one whose parent is a symlink
+would each turn "delete the bundle's own file" into "delete a file of the entry's
+choosing". Pruning from a recorded list is narrower than replacing the tree and would
+be strictly worse if the list decided where the deleting happens.
+
+So the bound is enforced twice. Any entry that is not a plain relative path is refused
+by name, and one bad entry discards the WHOLE record rather than only itself: a
+malformed entry means the record is corrupt or hostile, which says nothing good about
+the entries beside it, so the install falls back to pruning nothing and logs an error.
+It does not fail the boot, because refusing to start over a corrupt bookkeeping file
+would be a worse outcome than the residue. Then each deletion walks descriptors from
+the skills directory with `O_NOFOLLOW | O_DIRECTORY` and unlinks relative to the last
+one, so a component swapped for a symlink is refused by the kernel as it is traversed
+and the directory verified is the directory deleted from -- there is no window in which
+the path is re-resolved by name. A resolved-containment check runs first as well, not
+because the walk needs it but because it turns "this entry leaves the tree" into its
+own named refusal instead of a bare `ELOOP`. The leaf's own type is read by `lstat` on
+that descriptor, so a link at the recorded path is left alone rather than followed.
+
+**A transcript entry that is not a file is refused, not opened.** Boot restores no
+transcripts, so what is on disk was put there by an earlier turn or by the restore,
+and the restore's bytes and keys come from the backup bucket -- names and files from
+outside the container. Before the backend is handed a path it will open and append to,
+the entry's shape is checked: a directory, a FIFO, a socket, a symlink or a
+hard-linked file is refused by name with `TranscriptUnavailable`, which fails that one
+turn. A crash mid-turn on whatever `open()` raises would be worse, because a refusal
+is auditable and a crash is not.
+
+Shape is decided on the DESCRIPTOR, never on the name. `Path.exists()` follows a
+symlink, answers true for a directory, and is a separate resolution from the open that
+follows it, so a check by name plus an open by name is the check-to-use gap every
+finding in this area lives in. The probe opens with the link refused and `O_NONBLOCK`
+(a FIFO open would otherwise wait for a writer and hang the turn rather than answer),
+then `fstat`s that descriptor, so the entry validated is the entry that was opened.
+`st_nlink > 1` is refused as well as a non-regular type, because a hard link is a
+regular file and the backend appends to this path. This mirrors
+`hooks.safe_read_file_bytes_nolink`, which the container cannot import, the way
+`supervisor/bundle.py` mirrors the agents-dir resolver. The write side refuses a
+symlinked sessions directory for the same reason `mkdir(exist_ok=True)` cannot be
+trusted, and still installs by `os.link` so an existing target is never clobbered.
+
+A publish COLLISION goes through the same check. `os.link` failing means the entry the
+turn will use is not the one just written and has had none of these checks applied to
+it, so the winner is validated by the same helper before it is accepted. Keeping it is
+still right when it is a transcript -- whoever wrote it has the newer history -- and a
+shape that fails the check fails that turn rather than being handed to the backend.
+
+**The container writes the sandbox settings rather than inheriting them.** The
+gateway reads `agent.sandbox` and two unsandboxed-fallback flags from the same
+`config.json`, so a file supplied to the task could turn the sandbox off while the
+supervisor's refusal reported nothing wrong. All three are forced -- `sandbox` to
+`auto`, both flags to false -- and forcing rather than defaulting matters because
+`sandbox_allow_unsandboxed_exec` resolves an undeclared value through a platform
+default, so silence is not a constant. The rule is by PREFIX rather than by that list
+of three: `test_crew_container_config_isolation.py` requires every `AgentConfig`
+field whose name begins with `sandbox` to appear in `FORCED_AGENT_SETTINGS`, with the
+value checked as well as the key, so a sandbox knob added to the gateway reds CI
+until the container decides what to write for it.
+
+**The config is published atomically.** The file's failure is in the future: nothing
+reads it during the write, and a truncated write is read at the NEXT start, on a
+container that boots on a config it cannot parse and with the run that produced it
+already gone. So the write is a sibling temp in the destination's own directory
+opened `O_EXCL | O_NOFOLLOW`, fsynced, then one `os.replace`, with the directory
+fsynced after so the rename itself survives a power loss. A symlink at the
+destination is refused rather than replaced: `rename` would unlink the link rather
+than follow it, so nothing would be written through it, but a link there means
+something else chose the path and consuming it silently hides that.
+
+**A link planted where the boot secret goes stops the task.** The gateway writes
+`run/gateway-<port>.secret` itself, with an ordinary link-following open, and
+truncates it on every start; the model worker can write inside the data home and
+what it writes is driven by prompt content. Nothing in the container can make the
+gateway's writer link-safe, so the supervisor refuses to start when the run
+directory or the secret path is a symlink, or when the secret path is not a regular
+file. The checks are `lstat`-based, because `exists()` follows the link they are
+looking for. The container's own writes into the data home already refuse a link at
+the destination (`bundle._write_nofollow`); this is the same guard for a file
+another process writes.
+
+### Sandboxed-only, and why there is no opt-in
+
+kiro-cli runs the model subprocess inside an unprivileged user namespace, and
+without one `wrap_argv` fails closed. This container runs SANDBOXED-ONLY: there is
+deliberately no config key or environment variable that opts into unsandboxed
+execution, and the supervisor refuses to start on a host that cannot provide the
+sandbox rather than running the worker exposed.
+
+The refusal is positive. The probe returns an available verdict, a denied verdict,
+or an `undetermined: <why>` verdict, and only the first proceeds: undetermined
+refuses and names what could not be determined, and so does any verdict the guard
+does not recognise. Reading "could not determine" as "probably fine" fails open as
+new hosts appear, which is the same defect as reading the environment through a
+denylist.
+
+Why no opt-in, and why the task boundary is not a substitute for one: the model
+subprocess auto-approves every tool and its environment carries `KIRO_API_KEY`, so
+an unsandboxed worker would run an auto-approved shell, driven by untrusted prompt
+content, with a live credential readable in its own environment. The ECS task
+boundary (one owner, one data home, no public endpoint, reached only by an
+authorised call in the owner's own account) does not close that path, because the
+attacker there is the caller's own prompt content, already inside the boundary.
+Offering an unsandboxed posture safely requires brokering the model credential out
+of the worker's environment, which is tracked separately; until then the worker is
+sandboxed or the container does not start. Unprivileged user namespaces are not
+available on Fargate today
+([aws/containers-roadmap#2102](https://github.com/aws/containers-roadmap/issues/2102)),
+so the supported target is a host that permits them.
+
+### Shutdown
+
+A kiro-cli worker spawns with `start_new_session`, so it `setsid`s into its own
+process group and ESCAPES a `killpg` on the backend. Only the backend's own SIGTERM
+handling reaps it, which makes the drain window load-bearing rather than a
+courtesy: too short a drain SIGKILLs the backend before it finishes reaping and
+orphans a worker that goes on to finish its turn. Teardown order is front, then
+backend -- stop new turns arriving, then let the backend drain and flush -- and
+anything still alive afterwards is an escaped worker, which the teardown sweeps by
+process group over bounded rounds, because a killed process's children reparent to
+PID 1 and surface in the next round.
+
+The exit code distinguishes the two reasons, because it is the only thing the
+platform reads: a stop signal is the one success case, and any other reason,
+including one this code cannot account for, exits non-zero. Reporting both as 0
+told ECS that a crash loop was a clean shutdown.

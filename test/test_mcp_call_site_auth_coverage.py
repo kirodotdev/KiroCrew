@@ -697,6 +697,17 @@ class TestMcpCallSiteAuthCoverage:
                 continue
             if "/tests/" in f"/{rel}" or path.name.startswith("test_"):
                 continue
+            # OUT OF SCOPE BY SHAPE, not by exception: a container image's own source
+            # under ``apps/builtins/<app>/crew/runtime/**``. This guard exists because a
+            # module that reaches THE DASHBOARD with the internal secret must have its
+            # call sites checked. That tree is not in the dashboard's process: it is
+            # built into a Linux image and its secret header is passed between the
+            # image's OWN processes over loopback, never to the owner's gateway. It is
+            # also not importable from here, which is what
+            # ``test_spawn_audit.py::test_container_image_assets_are_not_imported``
+            # holds, so adding it to ``_SOURCES`` is not available either.
+            if "/crew/runtime/" in f"/{rel}":
+                continue
             text = path.read_text(encoding="utf-8")
             tree = ast.parse(text)
             reasons: list[str] = []
