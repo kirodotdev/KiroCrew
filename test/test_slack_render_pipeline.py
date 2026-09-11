@@ -46,11 +46,14 @@ exception is auditable in review and greppable later.
 from __future__ import annotations
 
 import ast
+import base64
+import hashlib
 import io
 import json
 import pathlib
 import re
 import tokenize
+import zlib
 
 import pytest
 from source_corpus import parsed_candidates
@@ -59,6 +62,7 @@ from kiro_crew.slack.format import (
     CONTINUATION,
     SLACK_MAX_TEXT,
     SLACK_MSG_LIMIT,
+    _redact_slack_mrkdwn_with_findings,
     build_options_blocks,
     build_options_selected_blocks,
     ends_inside_code_fence,
@@ -206,9 +210,7 @@ def test_no_module_converts_slack_markdown_directly() -> None:
     """
     violations = collect_repo_violations()
     if violations:
-        detail = "\n".join(
-            f"  {path}:{lineno}  {name}(...)" for path, lineno, name in violations
-        )
+        detail = "\n".join(f"  {path}:{lineno}  {name}(...)" for path, lineno, name in violations)
         raise AssertionError(
             "to_slack_mrkdwn called outside kiro_crew/slack/format.py.\n\n"
             "Neither redact-then-convert nor convert-then-redact is safe on its "
@@ -235,9 +237,7 @@ def test_detector_flags_a_bare_aliased_call() -> None:
 
 def test_detector_flags_a_module_attribute_call() -> None:
     src = (
-        "import kiro_crew.slack.format as fmt\n"
-        "def f(t):\n"
-        "    return fmt.to_slack_mrkdwn(t)\n"
+        "import kiro_crew.slack.format as fmt\n" "def f(t):\n" "    return fmt.to_slack_mrkdwn(t)\n"
     )
     assert [v[1] for v in find_violations(src)] == [3]
 
@@ -281,6 +281,58 @@ def test_render_ok_inside_a_string_does_not_suppress() -> None:
 class TestRenderForSlackOrdering:
     """render_for_slack: the multi-part form."""
 
+    @pytest.mark.parametrize("unsafe", [False, True])
+    def test_slack_link_conversion_preserves_only_clean_pako_payloads(self, unsafe: bool) -> None:
+        from kiro_crew import security
+
+        code = "flowchart TD\n  A --> B"
+        if unsafe:
+            code += "\n  C[AKIAIOSFODNN7EXAMPLE]"
+        state = json.dumps({"code": code}, separators=(",", ":"))
+        payload = base64.urlsafe_b64encode(zlib.compress(state.encode(), 9)).decode().rstrip("=")
+        url = f"https://mermaid.live/edit#pako:{payload}"
+
+        body = "".join(render_for_slack(f"[Open]({url})", redactor=security.redact))
+        native_text, exfil_warnings, credential_warnings = _redact_slack_mrkdwn_with_findings(
+            f"<{url}|Open>"
+        )
+
+        if unsafe:
+            assert payload not in body
+            assert payload not in native_text
+            assert "[REDACTED: encoded credential]" in body
+            assert "[REDACTED: encoded credential]" in native_text
+            assert exfil_warnings or credential_warnings
+        else:
+            assert body == f"<{url}|Open>"
+            assert native_text == body
+            assert exfil_warnings == []
+            assert credential_warnings == []
+
+    def test_single_message_keeps_long_under_limit_pako_link_in_one_conversion_block(
+        self,
+    ) -> None:
+        from kiro_crew import security
+
+        code = "\n".join(
+            half
+            for i in range(700)
+            for half in (
+                hashlib.sha256(str(i).encode()).hexdigest()[:32],
+                hashlib.sha256(str(i).encode()).hexdigest()[32:],
+            )
+        )
+        state = json.dumps({"code": code}, separators=(",", ":"))
+        payload = base64.urlsafe_b64encode(zlib.compress(state.encode(), 9)).decode().rstrip("=")
+        url = f"https://mermaid.live/edit#pako:{payload}"
+        markdown = f"[Open]({url})"
+        assert SLACK_MAX_TEXT // 2 < len(markdown) < SLACK_MAX_TEXT
+
+        rendered = render_one_for_slack(markdown, redactor=security.redact)
+
+        assert rendered.text == f"<{url}|Open>"
+        assert rendered.redacted is False
+
     def test_ansi_split_credential_is_not_reassembled(self) -> None:
         """redact-then-convert hazard: the ANSI strip must not rebuild a secret.
 
@@ -319,9 +371,9 @@ class TestRenderForSlackOrdering:
         cut = SLACK_MAX_TEXT // 2 - len(CONTINUATION)
         filler = "q" * (cut - 12)
         content = filler + obfuscated + ("z" * 200)
-        assert len(filler) < cut < len(filler) + len(obfuscated), (
-            "the credential must straddle the cut for this test to mean anything"
-        )
+        assert (
+            len(filler) < cut < len(filler) + len(obfuscated)
+        ), "the credential must straddle the cut for this test to mean anything"
         body = "".join(render_for_slack(content, redactor=_fake_redactor))
         assert _SECRET not in body
         assert _SECRET[:8] not in body
@@ -339,9 +391,7 @@ class TestRenderForSlackOrdering:
         Decorating a maximally-sized part after the split is what pushed the
         backfill's icon-prefixed messages past SLACK_MSG_LIMIT.
         """
-        parts = render_for_slack(
-            "z" * (SLACK_MSG_LIMIT * 3), prefix="🤖 ", redactor=_fake_redactor
-        )
+        parts = render_for_slack("z" * (SLACK_MSG_LIMIT * 3), prefix="🤖 ", redactor=_fake_redactor)
         assert len(parts) > 1
         assert all(p.startswith("🤖 ") for p in parts)
         assert all(len(p) <= SLACK_MSG_LIMIT for p in parts)
@@ -404,9 +454,9 @@ class TestHeaderCaptionsAreRedactedAtTheSeam:
             header=header,
             redactor=_fake_redactor,
         )
-        assert all(len(p) <= SLACK_MSG_LIMIT for p in parts), (
-            "a caption pushed a part past the limit"
-        )
+        assert all(
+            len(p) <= SLACK_MSG_LIMIT for p in parts
+        ), "a caption pushed a part past the limit"
 
     def test_an_empty_body_still_yields_the_caption(self) -> None:
         """The cron path attaches an ack button to the first part."""
@@ -450,9 +500,9 @@ class TestFencedCodeSurvivesThePreSplit:
         were also treated as code.
         """
         body = "".join(render_for_slack(self._long_fence(), redactor=_fake_redactor))
-        assert body.count("**not_bold_in_code**") == 1_200, (
-            "later blocks lost fence state and had their code rewritten"
-        )
+        assert (
+            body.count("**not_bold_in_code**") == 1_200
+        ), "later blocks lost fence state and had their code rewritten"
 
     def test_the_fence_tracker_agrees_with_the_converter(self) -> None:
         assert ends_inside_code_fence("```py\nx = 1") is True
@@ -507,12 +557,12 @@ class TestRenderOneForSlackOrdering:
     def test_keep_tables_can_be_forced_by_the_caller(self) -> None:
         """The streaming sink renders tables itself, so it forces raw pipes."""
         table = "| a | b |\n| - | - |\n| 1 | 2 |"
-        assert "| a | b |" in render_one_for_slack(
-            table, keep_tables=True, redactor=_fake_redactor
-        ).text
         assert (
-            "*a:*"
-            in render_one_for_slack(table, keep_tables=False, redactor=_fake_redactor).text
+            "| a | b |"
+            in render_one_for_slack(table, keep_tables=True, redactor=_fake_redactor).text
+        )
+        assert (
+            "*a:*" in render_one_for_slack(table, keep_tables=False, redactor=_fake_redactor).text
         )
 
     def test_keep_tables_can_only_add_rawness_never_remove_it(self) -> None:
@@ -607,9 +657,7 @@ class TestOptionsChoicesAreRedacted:
     """
 
     def test_checkbox_labels_and_values_are_redacted(self) -> None:
-        blocks = build_options_blocks(
-            [f"Retry with {_SECRET}", "Abort"], redactor=_fake_redactor
-        )
+        blocks = build_options_blocks([f"Retry with {_SECRET}", "Abort"], redactor=_fake_redactor)
         payload = json.dumps(blocks)
         assert _SECRET not in payload
         assert "[REDACTED]" in payload
@@ -655,9 +703,9 @@ def test_default_redactor_is_the_platform_shim() -> None:
     import kiro_crew.slack.format as fmt
 
     src = pathlib.Path(fmt.__file__).read_text(encoding="utf-8")
-    assert src.count("redact_via_context") >= 2, (
-        "both render helpers must default to redact_via_context"
-    )
+    assert (
+        src.count("redact_via_context") >= 2
+    ), "both render helpers must default to redact_via_context"
 
 
 @pytest.mark.parametrize("limit", [1, 5, len(CONTINUATION), len(CONTINUATION) + 1])

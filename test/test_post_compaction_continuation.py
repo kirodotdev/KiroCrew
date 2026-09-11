@@ -463,10 +463,10 @@ def test_a_notice_is_recorded_without_touching_the_text_path() -> None:
     """
     src = _runner_source()
     assert re.search(
-        r"\n\s*assistant_text \+= safe_chunk\n"
+        r"\n\s*assistant_text \+= event\.text\n"
         r"\s*if event\.control_notice:\n"
         r"(?:\s*#[^\n]*\n)*"
-        r"\s*_compaction_notice_chunks\.append\(safe_chunk\)",
+        r"\s*_compaction_notice_chunks\.append\(event\.text\)",
         src,
     ), "the notice must accumulate like any chunk and be recorded, not skipped"
 

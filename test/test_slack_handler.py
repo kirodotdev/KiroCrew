@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import json
 import re
+import zlib
 
 import pytest
 
@@ -301,6 +304,8 @@ class TestHandleMessage:
         """A credential split across streaming chunks must never reach the Slack
         wire raw — not on any append_stream frame, nor reassembled across them
         (pentest issue 3, Slack parity). The final message shows the redaction."""
+        from unittest.mock import MagicMock
+
         import kiro_crew.slack.handler as _h
 
         # Force a flush on every chunk so the split is exercised through
@@ -317,7 +322,17 @@ class TestHandleMessage:
             ]
         )
         sessions = FakeSessionManager(provider)
-        await handle_message(slack, sessions, "C1", "echo the key", None, "msg1", "U1")
+        log = MagicMock()
+        await handle_message(
+            slack,
+            sessions,
+            "C1",
+            "echo the key",
+            None,
+            "msg1",
+            "U1",
+            conversation_log=log,
+        )
 
         # Every text-bearing action (append_stream deltas + stop_stream final).
         texts = [
@@ -331,8 +346,16 @@ class TestHandleMessage:
             assert "AKIAIOSFODNN7EXAMPLE" not in t
         assert "AKIAIOSFODNN7EXAMPLE" not in wire
         assert "AKIA" not in wire.replace("[REDACTED: credential]", "")
-        # The final message shows the redaction.
+        # The final message and persisted assistant row both show the redaction.
         assert "[REDACTED: credential]" in wire
+        assistant_rows = [
+            call.args[2]
+            for call in log.append.call_args_list
+            if len(call.args) >= 3 and call.args[1] == "assistant"
+        ]
+        assert assistant_rows
+        assert "AKIAIOSFODNN7EXAMPLE" not in assistant_rows[-1]
+        assert "[REDACTED: credential]" in assistant_rows[-1]
 
     @pytest.mark.asyncio
     async def test_edit_mode_snapshot_not_truncated(self, monkeypatch):
@@ -359,6 +382,51 @@ class TestHandleMessage:
         # text appears only in the final message (count == 1). The fix redacts the
         # complete snapshot, so an intermediate snapshot also carries it (>= 2).
         assert sum("The answer is 42" in u for u in updates) >= 2, updates
+
+    @pytest.mark.asyncio
+    async def test_edit_mode_active_policy_redacts_decoded_pako_before_live_update(
+        self, monkeypatch
+    ):
+        import dataclasses
+
+        import kiro_crew.slack.handler as _h
+        from kiro_crew import security
+        from kiro_crew.config import KiroCrewConfig
+        from kiro_crew.platform.bootstrap import build_default_context
+        from kiro_crew.platform.context import reset_context, set_context
+
+        companion_token = "COMPANION-COOKIE-SECRET"
+        state = json.dumps(
+            {"code": f"flowchart TD\n  A[{companion_token}] --> B"},
+            separators=(",", ":"),
+        )
+        payload = base64.urlsafe_b64encode(zlib.compress(state.encode(), 9)).decode().rstrip("=")
+        url = f"https://mermaid.live/edit#pako:{payload}"
+
+        class _CompanionPolicy:
+            def redact(self, text: str) -> str:
+                return security.redact(text).replace(
+                    companion_token, "[REDACTED: companion credential]"
+                )
+
+            def exempt_exact_hosts(self) -> "frozenset[str]":
+                return frozenset()
+
+        monkeypatch.setattr(_h, "_EDIT_INTERVAL", 0.0)
+        base = build_default_context(KiroCrewConfig())
+        set_context(dataclasses.replace(base, credentials=_CompanionPolicy()))
+        try:
+            slack = MockSlackClient()
+            provider = FakeProvider([LLMEvent(kind="text_chunk", text=f"[Open]({url})")])
+            sessions = FakeSessionManager(provider)
+            await handle_message(slack, sessions, "C1", "hi", None, "msg1", "U1")
+        finally:
+            reset_context()
+
+        updates = [action[1].get("text") or "" for action in slack.actions if action[0] == "update"]
+        assert updates
+        assert all(payload not in text for text in updates)
+        assert any("[REDACTED: encoded credential]" in text for text in updates)
 
     @pytest.mark.asyncio
     async def test_adds_eyes_reaction(self):
@@ -1701,6 +1769,162 @@ class TestStreamingAPI:
         stops = [a for a in slack.actions if a[0] == "stop_stream"]
         assert len(stops) == 1
         assert "hello world" in stops[0][1]["text"]
+
+    @pytest.mark.asyncio
+    async def test_native_stream_flushes_clean_redactor_tail_before_stop(self):
+        slack = self._streaming_client()
+        provider = FakeProvider([LLMEvent(kind="text_chunk", text="Done!")])
+        sessions = FakeSessionManager(provider)
+
+        await handle_message(slack, sessions, "C1", "hi", None, "msg1", "U1")
+
+        appended = "".join(
+            action[1]["text"] for action in slack.actions if action[0] == "append_stream"
+        )
+        assert appended.endswith("Done!")
+
+    @pytest.mark.asyncio
+    async def test_native_post_render_pass_preserves_clean_pako_link(self):
+        state = json.dumps({"code": "flowchart TD\n  A --> B"}, separators=(",", ":"))
+        payload = base64.urlsafe_b64encode(zlib.compress(state.encode(), 9)).decode().rstrip("=")
+        url = f"https://mermaid.live/edit#pako:{payload}"
+        slack = self._streaming_client()
+        provider = FakeProvider([LLMEvent(kind="text_chunk", text=f"[Open]({url})")])
+        sessions = FakeSessionManager(provider)
+
+        await handle_message(slack, sessions, "C1", "hi", None, "msg1", "U1")
+
+        stops = [a for a in slack.actions if a[0] == "stop_stream"]
+        assert len(stops) == 1
+        assert stops[0][1]["text"] == f"<{url}|Open>"
+        appended = "".join(
+            action[1]["text"] for action in slack.actions if action[0] == "append_stream"
+        )
+        assert f"[Open]({url})" in appended
+
+    @pytest.mark.asyncio
+    async def test_native_active_policy_redacts_decoded_pako_before_live_or_persist(self):
+        import dataclasses
+        from unittest.mock import MagicMock
+
+        from kiro_crew import security
+        from kiro_crew.config import KiroCrewConfig
+        from kiro_crew.platform.bootstrap import build_default_context
+        from kiro_crew.platform.context import reset_context, set_context
+
+        companion_token = "COMPANION-COOKIE-SECRET"
+        state = json.dumps(
+            {"code": f"flowchart TD\n  A[{companion_token}] --> B"}, separators=(",", ":")
+        )
+        payload = base64.urlsafe_b64encode(zlib.compress(state.encode(), 9)).decode().rstrip("=")
+        url = f"https://mermaid.live/edit#pako:{payload}"
+        markdown = f"[Open]({url})"
+
+        class _CompanionPolicy:
+            def redact(self, text: str) -> str:
+                return security.redact(text).replace(
+                    companion_token, "[REDACTED: companion credential]"
+                )
+
+            def exempt_exact_hosts(self) -> "frozenset[str]":
+                return frozenset()
+
+        base = build_default_context(KiroCrewConfig())
+        set_context(dataclasses.replace(base, credentials=_CompanionPolicy()))
+        try:
+            slack = self._streaming_client()
+            split = len(markdown) // 2
+            provider = FakeProvider(
+                [
+                    LLMEvent(kind="text_chunk", text=markdown[:split]),
+                    LLMEvent(kind="text_chunk", text=markdown[split:]),
+                ]
+            )
+            sessions = FakeSessionManager(provider)
+            log = MagicMock()
+            await handle_message(
+                slack,
+                sessions,
+                "C1",
+                "hi",
+                None,
+                "msg1",
+                "U1",
+                conversation_log=log,
+            )
+        finally:
+            reset_context()
+
+        wire = "".join(
+            action[1].get("text") or ""
+            for action in slack.actions
+            if action[0] in ("append_stream", "stop_stream", "update", "post")
+        )
+        assistant_rows = [
+            call.args[2]
+            for call in log.append.call_args_list
+            if len(call.args) >= 3 and call.args[1] == "assistant"
+        ]
+        assert payload not in wire
+        assert assistant_rows and payload not in assistant_rows[-1]
+        assert "[REDACTED: encoded credential]" in wire
+        assert "[REDACTED: encoded credential]" in assistant_rows[-1]
+
+    @pytest.mark.asyncio
+    async def test_native_provider_chunk_split_preserves_long_clean_pako_link(self):
+        import hashlib
+        from unittest.mock import MagicMock
+
+        from kiro_crew.slack.format import SLACK_MAX_TEXT
+
+        code = "\n".join(
+            half
+            for i in range(700)
+            for half in (
+                hashlib.sha256(str(i).encode()).hexdigest()[:32],
+                hashlib.sha256(str(i).encode()).hexdigest()[32:],
+            )
+        )
+        state = json.dumps({"code": code}, separators=(",", ":"))
+        payload = base64.urlsafe_b64encode(zlib.compress(state.encode(), 9)).decode().rstrip("=")
+        url = f"https://mermaid.live/edit#pako:{payload}"
+        markdown = f"[Open]({url})"
+        assert SLACK_MAX_TEXT // 2 < len(markdown) < SLACK_MAX_TEXT
+        split = SLACK_MAX_TEXT // 2
+        slack = self._streaming_client()
+        provider = FakeProvider(
+            [
+                LLMEvent(kind="text_chunk", text=markdown[:split]),
+                LLMEvent(kind="text_chunk", text=markdown[split:]),
+            ]
+        )
+        sessions = FakeSessionManager(provider)
+        log = MagicMock()
+
+        await handle_message(
+            slack,
+            sessions,
+            "C1",
+            "hi",
+            None,
+            "msg1",
+            "U1",
+            conversation_log=log,
+        )
+
+        stops = [a for a in slack.actions if a[0] == "stop_stream"]
+        assert len(stops) == 1
+        assert stops[0][1]["text"] == f"<{url}|Open>"
+        assert not [
+            a for a in slack.actions if a[0] == "post" and "credential-like text" in a[1]["text"]
+        ]
+        log.append.assert_any_call(
+            "msg1",
+            "assistant",
+            markdown,
+            source_thread="msg1",
+            source_user="U1",
+        )
 
     @pytest.mark.asyncio
     async def test_no_update_message_on_streaming_path(self):
