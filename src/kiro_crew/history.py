@@ -827,6 +827,11 @@ def _safe_mtime(path: Path) -> float | None:
         return None
 
 
+def _cache_identity(stat: os.stat_result) -> tuple[int, int, int]:
+    """Return a cache stamp that survives an mtime-preserving rewrite."""
+    return (stat.st_mtime_ns, stat.st_ctime_ns, stat.st_ino)
+
+
 def _restore_mtime(path: Path, prev_mtime: float | None) -> None:
     """Restore a session file's mtime after a *housekeeping* rewrite.
 
@@ -1289,14 +1294,11 @@ class ConversationLog:
     _flock_epochs: dict[str, int] = {}
 
     # Per-key invalidation generation, bumped by ``_invalidate_cache`` BEFORE
-    # it drops entries. The mtime guard alone cannot protect a cache FILL:
-    # housekeeping rewrites (compaction / rotation / metadata edits /
-    # mark_consolidated) restore the pre-write mtime via ``_restore_mtime``,
-    # so a fill that stats the file before such a rewrite and publishes after
-    # its invalidation would park pre-rewrite data under an mtime the file
-    # still has — undetectable for the life of the process. Fill paths
+    # it drops entries. The cache identity catches the normal atomic rewrite
+    # even when housekeeping restores its pre-write mtime, but it cannot by
+    # itself prove that a fill stayed write-free while it ran. Fill paths
     # snapshot the generation before their stat and publish only while it is
-    # unmoved (``_publish_if_current`` for the mtime-keyed memos; the unlocked
+    # unmoved (``_publish_if_current`` for the identity-keyed memos; the unlocked
     # ``_msg_cache`` fallback in ``_read_messages`` checks it inline alongside
     # the flock-hold witness), discarding the fill otherwise. Class-level for
     # the same reason
@@ -1325,16 +1327,18 @@ class ConversationLog:
         cache_max: int = _TRANSCRIPT_CACHE_MAX,
     ):
         self._dir = base_dir or _sessions_dir()
-        # Bounded, mtime-keyed LRU caches (key → (mtime, payload)). Bounded so
+        # Bounded identity-keyed LRU caches. Bounded so
         # a long-lived gateway touching thousands of sessions cannot grow the
         # parsed-transcript working set without limit. Eviction is
         # least-recently-used and deterministic; writes invalidate per-key via
         # _invalidate_cache so a stale entry can never outlive a file change.
-        self._msg_cache: _LRUCache[tuple[float, int, list[dict]]] = _LRUCache(cache_max)
-        #: ``(mtime, gen, meta)`` — like the search memos, entries record the
+        self._msg_cache: _LRUCache[tuple[tuple[int, int, int], int, list[dict]]] = _LRUCache(
+            cache_max
+        )
+        #: ``(identity, gen, meta)`` — like the search memos, entries record the
         #: invalidation generation and a warm hit requires both fields to
-        #: match, so a preserved-mtime metadata edit through another
-        #: instance (whose pops cannot reach this cache) still unhits.
+        #: match, so a same-process metadata edit through another instance
+        #: (whose pops cannot reach this cache) still unhits.
         #:
         #: Sized by ``_METADATA_CACHE_MAX``, NOT ``cache_max``: this memo holds one
         #: parsed first line per session rather than a transcript window, and
@@ -1343,31 +1347,35 @@ class ConversationLog:
         #: already use to decline that knob. Deliberately not overridable: a test
         #: that needs a small bound assigns ``_meta_cache`` directly rather than
         #: adding a constructor parameter no product caller uses.
-        self._meta_cache: _LRUCache[tuple[float, int, dict]] = _LRUCache(_METADATA_CACHE_MAX)
-        #: Bounded, mtime-keyed LRU of formatted ``recent()`` windows keyed by
+        self._meta_cache: _LRUCache[tuple[tuple[int, int, int], int, dict]] = _LRUCache(
+            _METADATA_CACHE_MAX
+        )
+        #: Bounded identity-keyed LRU of formatted ``recent()`` windows keyed by
         #: (key, max_messages, roles). The tail-read fast path intentionally
         #: never warms ``_msg_cache`` (it returns a partial view), so a session
         #: accessed *only* via ``recent()`` — the hot per-turn context path —
         #: would otherwise re-open and re-parse the file tail on every single
-        #: call. This memoizes the formatted window; the stored mtime guards
-        #: staleness (an append bumps the file mtime, so the entry is
-        #: recomputed on the next call). Own ``_LRUCache`` → own internal lock.
-        self._recent_cache: _LRUCache[tuple[float, list[dict]]] = _LRUCache(cache_max)
+        #: call. This memoizes the formatted window; the stored identity guards
+        #: staleness even when a housekeeping write preserves mtime. Own
+        #: ``_LRUCache`` → own internal lock.
+        self._recent_cache: _LRUCache[tuple[tuple[int, int, int], int, list[dict]]] = _LRUCache(
+            cache_max
+        )
         #: Bounded memo of lightweight message projections containing only
         #: ``ts`` and ``meta.file_changes``. The Artifacts "All" view scans
         #: every session, so routing it through ``_msg_cache`` retains the full
         #: parsed transcript corpus. The file stamp includes inode and size in
         #: addition to nanosecond mtime so rotations and atomic rewrites miss.
         self._file_change_cache: _LRUCache[_FileChangeCacheEntry] = _LRUCache(cache_max)
-        #: Bounded memo of ``(mtime, gen, doc_chars, casefolded_blob)`` per
+        #: Bounded memo of ``(identity, gen, doc_chars, casefolded_blob)`` per
         #: session, consumed only by :meth:`search_sessions`. ``gen`` is the
         #: invalidation generation (:meth:`_cache_gen`) the entry was folded
-        #: under; a hit requires BOTH the mtime and the generation to match,
+        #: under; a hit requires BOTH the cache identity and generation to match,
         #: because ``_invalidate_cache``'s pops reach only their own
-        #: instance's caches while a preserved-mtime rewrite can be performed
-        #: through a different ``ConversationLog`` instance over the same
-        #: directory — the generation bump is what unhits such an entry where
-        #: the instance-local pop cannot.
+        #: instance's caches while a rewrite can be performed through a
+        #: different ``ConversationLog`` instance over the same directory —
+        #: the generation bump is what unhits such an entry where the
+        #: instance-local pop cannot.
         #:
         #: Folding is the dominant cost of a search: the substring count itself
         #: is cheap, but ``str.casefold`` over a whole corpus is not, and it
@@ -1382,10 +1390,10 @@ class ConversationLog:
         #: order; :class:`_SearchTextCache` keeps that guarantee by refusing
         #: admission instead of evicting, so the sessions that fit stay cached
         #: and the bound is now a real memory ceiling rather than a proxy for one.
-        self._folded_cache: _SearchTextCache[tuple[float, int, int, str]] = _SearchTextCache(
-            _SEARCH_FOLD_BUDGET_BYTES, lambda v: v[3].__sizeof__(), "fold"
+        self._folded_cache: _SearchTextCache[tuple[tuple[int, int, int], int, int, str]] = (
+            _SearchTextCache(_SEARCH_FOLD_BUDGET_BYTES, lambda v: v[3].__sizeof__(), "fold")
         )
-        #: session key → (mtime, gen, raw message texts) for snippet extraction.
+        #: session key → (identity, gen, raw message texts) for snippet extraction.
         #:
         #: The fold above answers "does this session match"; this answers "show me
         #: the line". Without it every returned row re-opened its file and
@@ -1402,10 +1410,12 @@ class ConversationLog:
         #: same generation field as ``_folded_cache`` above, for the same
         #: cross-instance reason: both memos are derived from the messages, so
         #: they go stale at exactly the same moment.
-        self._snippet_cache: _SearchTextCache[tuple[float, int, list[str]]] = _SearchTextCache(
-            _SEARCH_SNIPPET_BUDGET_BYTES,
-            lambda v: v[2].__sizeof__() + sum(t.__sizeof__() for t in v[2]),
-            "snippet",
+        self._snippet_cache: _SearchTextCache[tuple[tuple[int, int, int], int, list[str]]] = (
+            _SearchTextCache(
+                _SEARCH_SNIPPET_BUDGET_BYTES,
+                lambda v: v[2].__sizeof__() + sum(t.__sizeof__() for t in v[2]),
+                "snippet",
+            )
         )
         #: tab_id → [session keys] chain index. ``None`` means "stale, rebuild
         #: on next chained read"; a dict is an authoritative snapshot. Rebuilt
@@ -1457,10 +1467,15 @@ class ConversationLog:
             safe_key=lambda key: _safe_key(key),
             registry_owner=ConversationLog,
         )
+
         self._catalog_projection = SessionCatalogProjection(self)
         self._read_projection = TranscriptReadProjection(self)
         self._metadata_projection = SessionMetadataProjection(self)
         self._rewrite_coordinator = HistoryRewriteCoordinator(self)
+
+    @staticmethod
+    def _cache_identity(stat: os.stat_result) -> tuple[int, int, int]:
+        return _cache_identity(stat)
 
     def _file_lock(self, key: str) -> threading.RLock:
         """Return the process-wide reentrant lock guarding *key*'s session file.
@@ -2327,10 +2342,9 @@ class ConversationLog:
             # to the top of list_sessions on every gateway restart.
             _restore_mtime(path, prev_mtime)
             # Invalidate while still holding the lock. Outside it there is a
-            # window where the file is already rewritten with its mtime
-            # restored but the generation has not moved, so a concurrent fold /
-            # snippet / metadata read passes both the mtime and the generation
-            # guard and memoizes pre-rewrite data. Every other preserved-mtime
+            # window where the file is already rewritten but the generation has
+            # not moved, so a concurrent fold / snippet / metadata read could
+            # publish before the local invalidation. Every other preserved-mtime
             # writer already invalidates inside its locked section;
             # _invalidate_cache is pure in-memory work, so this adds no I/O
             # under the cross-process flock.
@@ -2374,11 +2388,10 @@ class ConversationLog:
         Read UNCACHED. The accounting is cross-process (a gateway sweep, the CLI,
         a subagent all record failures for the same session), and every writer of
         these fields restores the file's pre-write mtime so housekeeping does not
-        reorder ``list_sessions``. The metadata cache is keyed on mtime, so a warm
-        entry survives another process's write byte-for-byte and would serve a
-        stale attempt count — bypassing the backoff on the read path and, on the
-        read-increment-write path, overwriting the other process's durable count
-        with a lower one. Dropping the entry first costs one first-line read.
+        reorder ``list_sessions``. The metadata cache identity detects the normal
+        atomic rewrite, but this accounting path deliberately reads uncached: a
+        second process can update its durable count between a warm read and the
+        following increment. Dropping the entry first costs one first-line read.
 
         Metadata is caller-supplied JSON, so every conversion is defensive:
         ``1e309`` parses to ``inf`` and ``int(inf)`` raises ``OverflowError``
@@ -2644,8 +2657,13 @@ class ConversationLog:
     def _prune_search_memos(self, live_keys: set[str]) -> None:
         self._catalog_projection._prune_search_memos(live_keys)
 
-    def _build_folded(self, key: str, mtime: float, gen: int) -> tuple[int, str] | None:
-        return self._catalog_projection._build_folded(key, mtime, gen)
+    def _build_folded(
+        self,
+        key: str,
+        identity: tuple[int, int, int],
+        gen: int,
+    ) -> tuple[int, str] | None:
+        return self._catalog_projection._build_folded(key, identity, gen)
 
     def _iter_message_texts(self, key: str) -> Iterator[str]:
         return self._catalog_projection._iter_message_texts(key)

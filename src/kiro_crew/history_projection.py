@@ -706,12 +706,12 @@ class TranscriptReadProjection:
         """
         path = self._log._path(key)
         try:
-            mtime = path.stat().st_mtime
+            identity = self._log._cache_identity(path.stat())
         except OSError:
-            mtime = None
-        if mtime is not None:
+            identity = None
+        if identity is not None:
             cached = self._log._msg_cache.get(key)
-            if cached and cached[0] == mtime and cached[1] == self._log._cache_gen(key):
+            if cached and cached[0] == identity and cached[1] == self._log._cache_gen(key):
                 return cached[2]
 
         generation = self._log._cache_gen(key)
@@ -773,9 +773,9 @@ class TranscriptReadProjection:
         attempts = _history_facade()._METADATA_READ_ATTEMPTS
         for attempt in range(attempts):
             try:
-                mtime = path.stat().st_mtime
+                identity = self._log._cache_identity(path.stat())
                 cached = self._log._msg_cache.get(key)
-                if cached and cached[0] == mtime and cached[1] == self._log._cache_gen(key):
+                if cached and cached[0] == identity and cached[1] == self._log._cache_gen(key):
                     return cached[2]
                 with open(path, encoding="utf-8") as handle:
                     raw = handle.read()
@@ -817,7 +817,7 @@ class TranscriptReadProjection:
                 and flock_witness is not None
                 and flock_witness == self._log._flock_hold_witness(key)
             ):
-                self._log._msg_cache[key] = (mtime, entry_generation, messages)
+                self._log._msg_cache[key] = (identity, entry_generation, messages)
             return messages
         return []
 
@@ -831,22 +831,22 @@ class TranscriptReadProjection:
         path = self._log._path(key)
         generation = self._log._cache_gen(key)
         try:
-            mtime = path.stat().st_mtime
+            identity = self._log._cache_identity(path.stat())
         except OSError:
             return None
         cached = self._log._msg_cache.get(key)
-        if cached and cached[0] == mtime and cached[1] == self._log._cache_gen(key):
+        if cached and cached[0] == identity and cached[1] == self._log._cache_gen(key):
             return None
         recent_key = self._log._recent_cache_key(key, max_messages, roles)
         recent = self._log._recent_cache.get(recent_key)
-        if recent is not None and recent[0] == mtime:
-            return [dict(message) for message in recent[1]]
+        if recent is not None and recent[0] == identity and recent[1] == self._log._cache_gen(key):
+            return [dict(message) for message in recent[2]]
         tail = self._log._read_tail_messages(path, max_messages, roles)
         formatted = [{"role": message["role"], "content": message["content"]} for message in tail]
         self._log._publish_if_current(
             self._log._recent_cache,
             recent_key,
-            (mtime, formatted),
+            (identity, generation, formatted),
             key=key,
             gen=generation,
         )
@@ -1079,9 +1079,9 @@ class TranscriptReadProjection:
         for attempt in range(attempts):
             generation = self._log._cache_gen(key)
             try:
-                mtime = path.stat().st_mtime
+                identity = self._log._cache_identity(path.stat())
                 cached = self._log._meta_cache.get(key)
-                if cached and cached[0] == mtime and cached[1] == self._log._cache_gen(key):
+                if cached and cached[0] == identity and cached[1] == self._log._cache_gen(key):
                     return cached[2], True
                 with open(path, encoding="utf-8") as handle:
                     first = handle.readline().strip()
@@ -1112,7 +1112,7 @@ class TranscriptReadProjection:
             self._log._publish_if_current(
                 self._log._meta_cache,
                 key,
-                (mtime, generation, metadata),
+                (identity, generation, metadata),
                 key=key,
                 gen=generation,
             )
