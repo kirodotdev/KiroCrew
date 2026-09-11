@@ -5,7 +5,7 @@
  * Radix submenu it feeds.
  */
 import { describe, it, expect } from 'vitest'
-import { orderFoldersWithPaths, FOLDER_PATH_SEP } from '../utils/folderTree'
+import { orderFoldersWithPaths, bySidebarOrder, FOLDER_PATH_SEP } from '../utils/folderTree'
 import type { ChatFolder } from '../types'
 
 const nested: ChatFolder[] = [
@@ -75,6 +75,7 @@ describe('orderFoldersWithPaths', () => {
 // and drag re-parenting (excludes them from drop collision candidates) rely on
 // this returning exactly the folder's own subtree.
 import { collectFolderSubtreeIds } from '../utils/folderTree'
+import goldenFixture from '../../../test/fixtures/chat_folder_sibling_order.json'
 
 describe('collectFolderSubtreeIds', () => {
   const tree: ChatFolder[] = [
@@ -105,5 +106,126 @@ describe('collectFolderSubtreeIds', () => {
       { id: 'q', name: 'Q', order: 0, parent_id: 'p' },
     ]
     expect([...collectFolderSubtreeIds(cyclic, 'p')].sort()).toEqual(['p', 'q'])
+  })
+})
+
+describe('bySidebarOrder', () => {  /**
+   * The single definition every surface that draws siblings must use — the tree
+   * walk here, and both of ChatSidebar's nested renders. A render path with its
+   * own comparator (or none) shows a sequence the person never chose, which is
+   * what the nested subfolder render did before `chat_folder_move` could set a
+   * position at all.
+   */
+  const f = (id: string, name: string, order: number) => ({ id, name, order })
+
+  it('sorts by stored order', () => {
+    const rows = [f('c', 'C', 2), f('a', 'A', 0), f('b', 'B', 1)]
+    expect([...rows].sort(bySidebarOrder).map(r => r.id)).toEqual(['a', 'b', 'c'])
+  })
+
+  it('breaks a tie on name, since the store permits duplicate order values', () => {
+    const rows = [f('z', 'Zulu', 5), f('a', 'Alpha', 5)]
+    expect([...rows].sort(bySidebarOrder).map(r => r.id)).toEqual(['a', 'z'])
+  })
+
+  it('is the comparator the tree walk itself applies', () => {
+    const rows = [f('late', 'Aaa', 9), f('early', 'Zzz', 1)]
+    const walked = orderFoldersWithPaths(rows).map(o => o.folder.id)
+    expect(walked).toEqual([...rows].sort(bySidebarOrder).map(r => r.id))
+  })
+
+  it('treats a row with no order key as 0, the way the Python reader does', () => {
+    // A folder written before the field existed carries no `order`, and the
+    // folders endpoint returns rows verbatim. Without `?? 0` the subtraction is
+    // NaN -- which is falsy, so the whole comparison would fall through to the
+    // name tie-break and order the numbered siblings by name instead.
+    const legacy = { id: 'legacy', name: 'Zulu' } as unknown as Parameters<typeof bySidebarOrder>[0]
+    const rows = [f('five', 'Alpha', 5), legacy, f('one', 'Bravo', 1)]
+    expect([...rows].sort(bySidebarOrder).map(r => r.id)).toEqual(['legacy', 'one', 'five'])
+  })
+
+  it('does not let a missing order silently reorder numbered siblings', () => {
+    const legacy = { id: 'legacy', name: 'Mike' } as unknown as Parameters<typeof bySidebarOrder>[0]
+    // Name-only ordering would put Alpha(9) before Mike before Zulu(1); the
+    // numbers must win, with the unnumbered row sorting as 0.
+    const rows = [f('nine', 'Alpha', 9), legacy, f('one', 'Zulu', 1)]
+    expect([...rows].sort(bySidebarOrder).map(r => r.id)).toEqual(['legacy', 'one', 'nine'])
+  })
+
+  it('survives a folder row with no name, instead of taking the sidebar down', () => {
+    // A folder row is persisted JSON: `name` can be absent or non-string, and an
+    // exception thrown inside a comparator kills the whole render, not one row.
+    const nameless = { id: 'nameless', order: 0 } as unknown as Parameters<typeof bySidebarOrder>[0]
+    const numeric = { id: 'numeric', name: 7, order: 0 } as unknown as Parameters<
+      typeof bySidebarOrder
+    >[0]
+    const rows = [f('named', 'Alpha', 0), nameless, numeric]
+    expect(() => [...rows].sort(bySidebarOrder)).not.toThrow()
+    expect([...rows].sort(bySidebarOrder).map(r => r.id)).toHaveLength(3)
+  })
+
+  it('compares names the way the Python sort key does, so equal orders agree', () => {
+    // Neither side folds case, so this pair is decided by code unit alone
+    // (s=0x73 before U+00DF) — identical here and in `_chat_folder_name_key`,
+    // and dependent on no Unicode table on either side.
+    const rows = [f('sharp', 'straße', 0), f('ss', 'strasse', 0)]
+    expect([...rows].sort(bySidebarOrder).map(r => r.id)).toEqual(['ss', 'sharp'])
+  })
+})
+
+describe('the shared golden fixture (test/fixtures/chat_folder_sibling_order.json)', () => {
+  // ONE fixture, both suites. The pytest side asserts the same rows through
+  // `_chat_folder_siblings`, so a coercion that agrees here and diverges there
+  // (or the reverse) fails in one of the two runs instead of shipping as an
+  // anchor that names a different gap than the tool reported.
+  for (const c of goldenFixture.cases) {
+    it(c.name, () => {
+      const rows = c.rows.map((r) => {
+        const units = (r as { name_code_units?: number[] }).name_code_units
+        // An unpaired surrogate cannot travel as a JSON string (strict parsers
+        // reject the escape), so that one name arrives as UTF-16 code units.
+        const name = units ? String.fromCharCode(...units) : (r as { name?: unknown }).name
+        return { ...r, name, parent_id: '' }
+      }) as unknown as ChatFolder[]
+      const got = [...rows].sort(bySidebarOrder).map((r) => r.id)
+      expect(got).toEqual(c.expected)
+    })
+  }
+})
+
+describe('bySidebarOrder is never NaN', () => {
+  // The fixture cannot cover this: a comparator returning NaN leaves the order
+  // UNSPECIFIED rather than deterministically wrong, so a golden sequence can
+  // pass by luck. Assert the comparator's own contract instead.
+  const junk = ['abc', null, undefined, {}, [], '', NaN, Infinity, -Infinity, true, '3']
+  for (const v of junk) {
+    it(`order=${JSON.stringify(v) ?? String(v)} compares as a number`, () => {
+      const a = { id: 'a', name: 'a', parent_id: '', order: v } as unknown as ChatFolder
+      const b = { id: 'b', name: 'b', parent_id: '', order: 1 } as unknown as ChatFolder
+      expect(Number.isNaN(bySidebarOrder(a, b))).toBe(false)
+      expect(Number.isNaN(bySidebarOrder(b, a))).toBe(false)
+    })
+  }
+})
+
+describe('the tie-break folds A-Z and nothing else', () => {
+  // Mirror of the pytest side. Anything outside A-Z has a case mapping that can
+  // differ between this runtime and the interpreter's, so it must pass through.
+  const f = (id: string, name: string, order: number) =>
+    ({ id, name, order, parent_id: '' }) as unknown as ChatFolder
+  it('folds an ASCII capital so ordering stays alphabetical', () => {
+    const rows = [f('apr', 'apricot', 0), f('app', 'Apple', 0), f('ban', 'banana', 0)]
+    expect([...rows].sort(bySidebarOrder).map(r => r.id)).toEqual(['app', 'apr', 'ban'])
+  })
+
+  it('leaves a non-ASCII capital alone', () => {
+    // U+0130 is past every ASCII letter, so it sorts after `zebra` on both sides.
+    const rows = [f('dotted', '\u0130stanbul', 0), f('z', 'zebra', 0)]
+    expect([...rows].sort(bySidebarOrder).map(r => r.id)).toEqual(['z', 'dotted'])
+  })
+
+  it('leaves the sharp s and an accented capital alone', () => {
+    const rows = [f('sharp', 'stra\u00dfe', 0), f('ss', 'strasse', 0)]
+    expect([...rows].sort(bySidebarOrder).map(r => r.id)).toEqual(['ss', 'sharp'])
   })
 })

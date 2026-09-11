@@ -10,6 +10,8 @@ themselves are tested by ``test_folder_store_writer.py`` and
 from __future__ import annotations
 
 import inspect
+import json
+import pathlib
 from typing import Any
 from unittest.mock import patch
 
@@ -1722,7 +1724,7 @@ class TestSessionCreateFolder:
         with (
             patch(
                 "kiro_crew.mcp_dashboard._refuse_tree_shaping_if_unverifiable",
-                return_value=("", "Error: refused by the tree-shaping gate"),
+                return_value=("", "", "Error: refused by the tree-shaping gate"),
             ),
             patch("kiro_crew.mcp_dashboard._get", side_effect=_rows),
             patch("kiro_crew.mcp_dashboard._post") as post,
@@ -1782,7 +1784,7 @@ class TestSessionCreateFolder:
         with (
             patch(
                 "kiro_crew.mcp_dashboard._refuse_tree_shaping_if_unverifiable",
-                return_value=("dashboard:gate-key", None),
+                return_value=("dashboard:gate-key", "", None),
             ),
             patch("kiro_crew.mcp_dashboard._get", side_effect=_rows),
             patch("kiro_crew.mcp_dashboard._post", side_effect=_post_route) as post,
@@ -1813,3 +1815,851 @@ class TestAdvertisedSet:
             "session_send",
             "session_read_message",
         }
+
+
+#: Four root folders with explicit, contiguous positions — the shape a sidebar
+#: drag leaves behind (``computeReorderedFolders`` renumbers 0..n-1), so these
+#: cases assert the tool writes what a drag would have written.
+_ORDERED = [
+    {"id": "aaaaaaaaaaaa", "name": "Alpha", "parent_id": "", "order": 0},
+    {"id": "bbbbbbbbbbbb", "name": "Bravo", "parent_id": "", "order": 1},
+    {"id": "cccccccccccc", "name": "Charlie", "parent_id": "", "order": 2},
+    {"id": "dddddddddddd", "name": "Delta", "parent_id": "", "order": 3},
+]
+
+
+def _ordered_rows(path: str) -> list[dict]:
+    if path == "/api/chat/folders":
+        return [dict(f) for f in _ORDERED]
+    if path == "/api/chat/slots":
+        return _slots_with_caller()
+    raise AssertionError(f"unexpected GET {path}")
+
+
+def _patched_orders(mock_patch: Any) -> dict[str, int]:
+    """``{folder_id: order}`` over every PATCH the call issued."""
+    out: dict[str, int] = {}
+    for call in mock_patch.call_args_list:
+        path, body = call.args[0], call.args[1]
+        if "order" in body:
+            out[path.rsplit("/", 1)[-1]] = body["order"]
+    return out
+
+
+class TestTheTwoSidesCompareNamesIdentically:
+    """The tool's sort key and the sidebar's comparator must not disagree.
+
+    `chat_folder_tree` is where an agent picks a `before`/`after` anchor, so a
+    sequence that differs from the rendered one makes the anchor point at the
+    wrong gap.
+
+    The key consults no Unicode table. `str.lower()` reads the interpreter's tables
+    and `String.prototype.toLowerCase` reads the browser's, so a character whose case
+    mapping differs between those two versions would fold differently on each side,
+    and neither side owns both tables.
+
+    `A`-`Z` is the exception, folded through a literal table here and by arithmetic on
+    the frontend. That range is fixed in every Unicode version, so folding it costs no
+    version dependency — and a store written before `order` existed has every sibling
+    tied at 0, which makes this tie-break the whole sort for those sidebars.
+    """
+
+    def test_ascii_case_folds_so_ordering_stays_alphabetical(self) -> None:
+        """`Apple` belongs next to `apricot`, not ahead of every lowercase name."""
+        rows = [
+            {"id": "aaaaaaaaaaaa", "name": "apricot", "parent_id": "", "order": 0},
+            {"id": "bbbbbbbbbbbb", "name": "Apple", "parent_id": "", "order": 0},
+            {"id": "cccccccccccc", "name": "banana", "parent_id": "", "order": 0},
+        ]
+        names = [str(f["name"]) for f in mcp_dashboard._chat_folder_siblings(rows, "")]
+        assert names == ["Apple", "apricot", "banana"]
+
+    def test_only_ascii_letters_are_folded(self) -> None:
+        """Pins the fold's exact reach, so widening it back to a table is caught.
+
+        Every character outside `A`-`Z` must survive byte-for-byte: those are the
+        ones whose case mapping can differ between the two runtimes.
+        """
+        for name in ("\u00dfeta", "\u0130stanbul", "\u00c9clair", "\u01c5", "stra\u00dfe"):
+            key = mcp_dashboard._chat_folder_name_key({"name": name})
+            assert key == name.encode("utf-16-be", "surrogatepass"), name
+        assert mcp_dashboard._chat_folder_name_key({"name": "STRASSE"}) == (
+            "strasse".encode("utf-16-be")
+        )
+
+    def test_a_dotted_capital_i_is_not_folded(self) -> None:
+        """The concrete skew shape: a character whose fold is version-dependent.
+
+        `\u0130` (LATIN CAPITAL I WITH DOT ABOVE) lowercases to a two-character
+        sequence in Python, and the exact result has moved across Unicode versions.
+        Unfolded it is one code unit on both sides and cannot skew.
+        """
+        key = mcp_dashboard._chat_folder_name_key({"name": "\u0130"})
+        assert key == b"\x01\x30"
+        assert len(key) == 2
+
+    def test_an_astral_name_sorts_by_utf16_code_unit_not_code_point(self) -> None:
+        """Python orders str by code point; JavaScript orders by UTF-16 code unit.
+
+        Above U+FFFF the two disagree: an astral character's surrogates begin at
+        0xD800, so U+1F600 sorts AFTER U+FF21 by code point and BEFORE it by code
+        unit. The frontend comparator uses `<` on strings, so the tool has to speak
+        code units or the anchor an agent picks lands in the wrong gap.
+        """
+        rows = [
+            {"id": "aaaaaaaaaaaa", "name": "\U0001f600", "parent_id": "", "order": 0},
+            {"id": "bbbbbbbbbbbb", "name": "\uff21", "parent_id": "", "order": 0},
+        ]
+        names = [str(f["name"]) for f in mcp_dashboard._chat_folder_siblings(rows, "")]
+        assert names == ["\U0001f600", "\uff21"]
+        # And the naive key would have put them the other way round.
+        assert sorted((str(r["name"]) for r in rows)) == ["\uff21", "\U0001f600"]
+
+    def test_the_key_is_utf16_bytes(self) -> None:
+        """Pins the encoding, so a future edit back to a str key is caught."""
+        key = mcp_dashboard._chat_folder_name_key({"name": "Ab\U0001f600"})
+        assert key == "ab\U0001f600".encode("utf-16-be")
+
+
+def _fixture_name(row: dict) -> dict:
+    """Materialise a fixture row's `name_code_units` into a `name`.
+
+    An unpaired surrogate is legal in a JSON string escape but strict parsers
+    reject it, so the shared fixture carries that one name as UTF-16 code units
+    and each side builds the identical string from them.
+    """
+    units = row.get("name_code_units")
+    if units is None:
+        return {}
+    return {"name": "".join(chr(u) for u in units)}
+
+
+class TestFolderPosition:
+    """``before``/``after`` set a folder's place among its siblings.
+
+    The position is written as contiguous 0..n-1 over the destination's
+    siblings, which is exactly what a sidebar drag writes — so a tool call and a
+    drag leave one convention in the store rather than two.
+    """
+
+    def test_after_an_anchor_lands_immediately_behind_it(self) -> None:
+        with (
+            patch("kiro_crew.mcp_dashboard._get", side_effect=_ordered_rows),
+            patch(
+                "kiro_crew.mcp_dashboard._patch",
+                return_value={"id": "dddddddddddd", "name": "Delta", "parent_id": ""},
+            ) as mock_patch,
+        ):
+            out = _call_tool_inner("chat_folder_move", {"folder": "Delta", "after": "Alpha"})
+        assert not out.startswith("Error:")
+        # Alpha 0, Delta 1, Bravo 2, Charlie 3.
+        assert _patched_orders(mock_patch) == {
+            "dddddddddddd": 1,
+            "bbbbbbbbbbbb": 2,
+            "cccccccccccc": 3,
+        }
+        # The moved row's own position rides along with the reparent: one write
+        # for the folder this call is about.
+        first_path, first_body = mock_patch.call_args_list[0].args[:2]
+        assert first_path.endswith("dddddddddddd")
+        # No parent_id: the folder is already at the top level, and sending it
+        # back would make the endpoint judge this as a reparent.
+        assert first_body == {"order": 1}
+        assert "after `Alpha`" in out
+
+    def test_before_an_anchor_lands_immediately_ahead_of_it(self) -> None:
+        with (
+            patch("kiro_crew.mcp_dashboard._get", side_effect=_ordered_rows),
+            patch(
+                "kiro_crew.mcp_dashboard._patch",
+                return_value={"id": "dddddddddddd", "name": "Delta", "parent_id": ""},
+            ) as mock_patch,
+        ):
+            out = _call_tool_inner("chat_folder_move", {"folder": "Delta", "before": "Bravo"})
+        assert not out.startswith("Error:")
+        assert _patched_orders(mock_patch) == {
+            "dddddddddddd": 1,
+            "bbbbbbbbbbbb": 2,
+            "cccccccccccc": 3,
+        }
+        assert "before `Bravo`" in out
+
+    def test_an_anchor_alone_reorders_without_moving(self) -> None:
+        """The reason an anchor may stand in for ``new_parent``.
+
+        An omitted ``new_parent`` means the TOP LEVEL, so demanding one would
+        make repositioning inside a folder inexpressible: every call would drag
+        the folder out to the root as the price of ordering it.
+        """
+        nested = [
+            {"id": "pppppppppppp", "name": "Parent", "parent_id": "", "order": 0},
+            {
+                "id": "aaaaaaaaaaaa",
+                "name": "Alpha",
+                "parent_id": "pppppppppppp",
+                "order": 0,
+            },
+            {
+                "id": "bbbbbbbbbbbb",
+                "name": "Bravo",
+                "parent_id": "pppppppppppp",
+                "order": 1,
+            },
+        ]
+
+        def _get(path: str) -> list[dict]:
+            if path == "/api/chat/folders":
+                return [dict(f) for f in nested]
+            return _slots_with_caller()
+
+        with (
+            patch("kiro_crew.mcp_dashboard._get", side_effect=_get),
+            patch(
+                "kiro_crew.mcp_dashboard._patch",
+                return_value={
+                    "id": "bbbbbbbbbbbb",
+                    "name": "Bravo",
+                    "parent_id": "pppppppppppp",
+                },
+            ) as mock_patch,
+        ):
+            out = _call_tool_inner(
+                "chat_folder_move", {"folder": "Parent/Bravo", "before": "Parent/Alpha"}
+            )
+        assert not out.startswith("Error:")
+        # Stays inside Parent — the anchor chose the destination. Alpha sits at 0
+        # and nothing precedes it, so one write puts Bravo ahead of it.
+        assert mock_patch.call_count == 1
+        # Stays inside Parent, so parent_id is omitted and only the position
+        # is written.
+        assert mock_patch.call_args_list[0].args[1] == {"order": -1}
+
+    def test_only_folders_whose_position_changes_are_written(self) -> None:
+        """A no-op reposition must not spend a write per sibling."""
+        with (
+            patch("kiro_crew.mcp_dashboard._get", side_effect=_ordered_rows),
+            patch(
+                "kiro_crew.mcp_dashboard._patch",
+                return_value={"id": "bbbbbbbbbbbb", "name": "Bravo", "parent_id": ""},
+            ) as mock_patch,
+        ):
+            out = _call_tool_inner("chat_folder_move", {"folder": "Bravo", "after": "Alpha"})
+        assert not out.startswith("Error:")
+        # Bravo already sits right after Alpha, so every sibling keeps its
+        # number and only the reparent write goes out.
+        assert _patched_orders(mock_patch) == {}
+        # Same parent AND the position it already holds: nothing to write.
+        assert mock_patch.call_count == 0
+
+    def test_a_same_parent_reposition_is_not_reported_as_a_move(self) -> None:
+        """ "Moved to `Delta`" would name the folder's OWN path as a destination.
+
+        The reparent did not happen, so the result names what did change.
+        """
+        with (
+            patch("kiro_crew.mcp_dashboard._get", side_effect=_ordered_rows),
+            patch(
+                "kiro_crew.mcp_dashboard._patch",
+                return_value={"id": "dddddddddddd", "name": "Delta", "parent_id": ""},
+            ),
+        ):
+            out = _call_tool_inner("chat_folder_move", {"folder": "Delta", "after": "Alpha"})
+        assert out.startswith("Repositioned folder")
+        assert "after `Alpha`" in out and "(top level)" in out
+        assert "Moved" not in out
+
+    def test_a_reparent_that_also_positions_says_both(self) -> None:
+        with (
+            patch("kiro_crew.mcp_dashboard._get", side_effect=_rows),
+            patch(
+                "kiro_crew.mcp_dashboard._patch",
+                return_value={
+                    "id": "cccccccccccc",
+                    "name": "Travel",
+                    "parent_id": "aaaaaaaaaaaa",
+                },
+            ),
+        ):
+            out = _call_tool_inner(
+                "chat_folder_move", {"folder": "Travel", "after": "kirocrew/0811"}
+            )
+        assert out.startswith("Moved folder")
+        assert "kirocrew/Travel" in out and "after `kirocrew/0811`" in out
+
+    def test_a_free_slot_makes_the_whole_reposition_one_write(self) -> None:
+        """The answer to "several writes cannot be atomic": usually there is one.
+
+        Several writes CAN land half-applied, since the endpoint takes one row at a
+        time. So a position the store already has room for is written as a single
+        PATCH and cannot be partial at all; only adjacent neighbours force the
+        renumber. Alpha is first, so the slot ahead of it is free.
+        """
+        with (
+            patch("kiro_crew.mcp_dashboard._get", side_effect=_ordered_rows),
+            patch(
+                "kiro_crew.mcp_dashboard._patch",
+                return_value={"id": "dddddddddddd", "name": "Delta", "parent_id": ""},
+            ) as mock_patch,
+        ):
+            out = _call_tool_inner("chat_folder_move", {"folder": "Delta", "before": "Alpha"})
+        assert not out.startswith("Error:")
+        assert mock_patch.call_count == 1
+        assert _patched_orders(mock_patch) == {"dddddddddddd": -1}
+
+    def test_a_gap_between_neighbours_is_used_instead_of_renumbering(self) -> None:
+        """A deleted folder leaves a gap, and a gap is a free slot."""
+        gapped = [
+            {"id": "aaaaaaaaaaaa", "name": "Alpha", "parent_id": "", "order": 0},
+            {"id": "bbbbbbbbbbbb", "name": "Bravo", "parent_id": "", "order": 10},
+            {"id": "dddddddddddd", "name": "Delta", "parent_id": "", "order": 20},
+        ]
+
+        def _get(path: str) -> list[dict]:
+            if path == "/api/chat/folders":
+                return [dict(f) for f in gapped]
+            return _slots_with_caller()
+
+        with (
+            patch("kiro_crew.mcp_dashboard._get", side_effect=_get),
+            patch(
+                "kiro_crew.mcp_dashboard._patch",
+                return_value={"id": "dddddddddddd", "name": "Delta", "parent_id": ""},
+            ) as mock_patch,
+        ):
+            out = _call_tool_inner("chat_folder_move", {"folder": "Delta", "after": "Alpha"})
+        assert not out.startswith("Error:")
+        assert mock_patch.call_count == 1
+        # Midpoint of the 0..10 gap, so a later insert on either side still fits.
+        assert _patched_orders(mock_patch) == {"dddddddddddd": 5}
+
+    def test_an_app_cannot_position_a_folder_whose_subtree_holds_a_foreign_one(self) -> None:
+        """Positioning takes the descendants with it, so the blast radius is the subtree.
+
+        The app owns the row it names, so the moved-folder check passes. But the
+        person's folder is nested inside it, and moving the parent relocates the
+        child — the same violation the endpoint refuses on a reparent, reached one
+        level down. The rule is imported from the endpoint rather than restated, so
+        the two cannot disagree about it.
+        """
+        rows = [
+            {
+                "id": "aaaaaaaaaaaa",
+                "name": "AppRoot",
+                "parent_id": "",
+                "order": 0,
+                "owner_app": "x",
+            },
+            {"id": "pppppppppppp", "name": "Person", "parent_id": "aaaaaaaaaaaa", "order": 0},
+            {"id": "bbbbbbbbbbbb", "name": "AppTwo", "parent_id": "", "order": 1, "owner_app": "x"},
+        ]
+
+        def _rows_only(path: str, **_kw: object) -> list[dict]:
+            if path == "/api/chat/folders":
+                return rows
+            return [{"key": "chat-1-1", "app": "x"}]
+
+        with (
+            patch("kiro_crew.mcp_dashboard._get", side_effect=_rows_only),
+            patch(
+                "kiro_crew.mcp_dashboard._refuse_tree_shaping_if_unverifiable",
+                return_value=("dashboard:chat-1-1", "x", None),
+            ),
+            patch("kiro_crew.mcp_dashboard._patch") as mock_patch,
+        ):
+            out = _call_tool_inner("chat_folder_move", {"folder": "AppRoot", "after": "AppTwo"})
+        assert out.startswith("Error:"), out
+        assert "contains folders this app does not own" in out, out
+        mock_patch.assert_not_called()
+
+    def test_an_app_cannot_position_a_folder_it_does_not_own(self) -> None:
+        """Positioning is relative, so it does not need a write to its own target.
+
+        The endpoint refuses an app a write to a foreign row, and it refuses an app
+        a REPARENT of a foreign subtree — but a pure reposition sends no
+        `parent_id`, so the reparent rule never fires, and when the moved folder
+        already holds its target number no write to it is issued at all. Renumbering
+        the app's OWN siblings around it then changes where the person's folder
+        renders, with nothing for the endpoint to refuse.
+        """
+        rows = [
+            {"id": "pppppppppppp", "name": "Person", "parent_id": "", "order": 0},
+            {"id": "aaaaaaaaaaaa", "name": "AppOne", "parent_id": "", "order": 1, "owner_app": "x"},
+            {"id": "bbbbbbbbbbbb", "name": "AppTwo", "parent_id": "", "order": 2, "owner_app": "x"},
+        ]
+
+        def _rows_only(path: str, **_kw: object) -> list[dict] | dict:
+            if path == "/api/chat/folders":
+                return rows
+            return [{"key": "chat-1-1", "app": "x"}]
+
+        with (
+            patch("kiro_crew.mcp_dashboard._get", side_effect=_rows_only),
+            patch(
+                "kiro_crew.mcp_dashboard._refuse_tree_shaping_if_unverifiable",
+                return_value=("dashboard:chat-1-1", "x", None),
+            ),
+            patch(
+                "kiro_crew.mcp_dashboard._patch",
+                return_value={"id": "pppppppppppp", "name": "Person", "parent_id": ""},
+            ) as mock_patch,
+        ):
+            out = _call_tool_inner("chat_folder_move", {"folder": "Person", "after": "AppTwo"})
+        assert out.startswith("Error:"), out
+        assert "does not own" in out, out
+        mock_patch.assert_not_called()
+
+    def test_a_row_deeper_than_the_sidebar_draws_is_listed_at_the_cap_depth(self) -> None:
+        """Clamp the indentation, keep the row.
+
+        `renderFolderBlock` returns nothing for `depth > 10`, and the store caps
+        folder count but not nesting, so a deeper chain is legal. Reporting depth 14
+        would claim a level the sidebar never draws — but omitting the row would hide
+        the folder AND the live sessions filed in it from an agent's only tree view,
+        to buy indentation parity on a row nobody can see.
+        """
+        rows = [
+            {
+                "id": f"{i:012d}",
+                "name": f"L{i}",
+                "parent_id": "" if i == 0 else f"{i - 1:012d}",
+                "order": 0,
+            }
+            for i in range(14)
+        ]
+        order = mcp_dashboard._chat_folder_render_order(rows)
+        assert len(order) == 14, "every folder is listed"
+        depths = [d for _fid, d in order]
+        assert max(depths) == mcp_dashboard._SIDEBAR_MAX_DRAWN_DEPTH
+        assert depths.count(0) == 1, "the deep rows are not relocated to the top level"
+        assert depths == list(range(11)) + [10, 10, 10]
+
+    def test_a_saturated_edge_has_no_free_slot(self) -> None:
+        """One past the bound reads back AS the bound, so it is not outside anything.
+
+        `_free_slot_order` earns its single write by naming an order no sibling
+        holds. At the numeric limit that is impossible: the value it would return
+        comes back through the same clamp as the anchor's own order, so the pair
+        ties and the name tie-break — not the requested side — decides where the
+        folder lands. There is no representable slot, so the caller must renumber.
+        """
+        limit = mcp_dashboard._CHAT_FOLDER_ORDER_LIMIT
+        at_top = [{"id": "aaaaaaaaaaaa", "name": "A", "parent_id": "", "order": limit}]
+        at_bottom = [{"id": "bbbbbbbbbbbb", "name": "B", "parent_id": "", "order": -limit}]
+        assert mcp_dashboard._free_slot_order(at_top, 1) is None
+        assert mcp_dashboard._free_slot_order(at_bottom, 0) is None
+        # The other edge of each is still free: only the saturated side is refused.
+        assert mcp_dashboard._free_slot_order(at_top, 0) == limit - 1
+        assert mcp_dashboard._free_slot_order(at_bottom, 1) == -limit + 1
+
+    def test_the_shared_golden_fixture_orders_identically_on_this_side(self) -> None:
+        """One fixture, both suites — see test/fixtures/chat_folder_sibling_order.json.
+
+        `folderTree.test.ts` drives these same rows through `bySidebarOrder`, so the
+        agreement between the tool's order and the sidebar's is checked by one
+        artifact rather than asserted in prose on each side. A coercion that changes
+        on either side fails one of the two runs.
+        """
+        spec = json.loads(
+            (
+                pathlib.Path(__file__).parent / "fixtures" / "chat_folder_sibling_order.json"
+            ).read_text()
+        )
+        for case in spec["cases"]:
+            rows = [{**r, "parent_id": "", **_fixture_name(r)} for r in case["rows"]]
+            got = [f["id"] for f in mcp_dashboard._chat_folder_siblings(rows, "")]
+            assert got == case["expected"], case["name"]
+
+    def test_no_persisted_order_shape_can_raise_out_of_the_sort_key(self) -> None:
+        """Totality over the store, checked as a set rather than one shape at a time.
+
+        The folder store is read with a bare `json.loads`, so `order` can arrive as
+        anything JSON expresses. `1e999` parses to `inf`, and `int(inf)` raises
+        `OverflowError` — which is neither `TypeError` nor `ValueError`. An exception
+        escaping a SORT KEY aborts the whole sort, so one row would take down every
+        folder tool.
+        """
+        junk = [float("inf"), float("-inf"), float("nan"), "abc", [1], {"a": 1}, None, True]
+        for value in junk:
+            row = {"id": "aaaaaaaaaaaa", "name": "X", "parent_id": "", "order": value}
+            assert isinstance(mcp_dashboard._chat_folder_order(row), int), value
+            # And through the sorts that consume it, which is where a raise lands.
+            assert mcp_dashboard._chat_folder_siblings([row], "") == [row], value
+            assert mcp_dashboard._chat_folder_render_order([row]) == [("aaaaaaaaaaaa", 0)], value
+
+    def test_a_lone_surrogate_name_does_not_crash_the_sort_key(self) -> None:
+        """A raised encoder inside a sort key takes down every folder tool.
+
+        A folder name is persisted JSON, so it can hold a LONE surrogate, and the
+        strict `utf-16-be` codec refuses one outright. `surrogatepass` both survives
+        it and keeps the byte-for-byte match with the frontend, whose string holds
+        that same unit and compares it as 0xD800.
+        """
+        rows = [
+            {"id": "aaaaaaaaaaaa", "name": "a\ud800b", "parent_id": "", "order": 0},
+            {"id": "bbbbbbbbbbbb", "name": "plain", "parent_id": "", "order": 1},
+        ]
+        names = [str(f["name"]) for f in mcp_dashboard._chat_folder_siblings(rows, "")]
+        assert names == ["a\ud800b", "plain"]
+        key = mcp_dashboard._chat_folder_name_key({"name": "a\ud800b"})
+        assert key == b"\x00a\xd8\x00\x00b"
+
+    def test_a_same_parent_reposition_sends_no_parent_id(self) -> None:
+        """The endpoint reads a present `parent_id` as a reparent.
+
+        It then applies the reparent-only rule that a subtree holding a folder the
+        caller does not own cannot be moved. Sending the CURRENT parent back would
+        put a pure reposition through a guard about a move that is not happening,
+        and an app reordering its own folder that contains one of the person's would
+        be refused for no reason.
+        """
+        with (
+            patch("kiro_crew.mcp_dashboard._get", side_effect=_ordered_rows),
+            patch(
+                "kiro_crew.mcp_dashboard._patch",
+                return_value={"id": "dddddddddddd", "name": "Delta", "parent_id": ""},
+            ) as mock_patch,
+        ):
+            out = _call_tool_inner("chat_folder_move", {"folder": "Delta", "before": "Alpha"})
+        assert not out.startswith("Error:")
+        for call in mock_patch.call_args_list:
+            assert "parent_id" not in call.args[1], call.args[1]
+
+    def test_a_real_reparent_still_sends_parent_id(self) -> None:
+        with (
+            patch("kiro_crew.mcp_dashboard._get", side_effect=_rows),
+            patch(
+                "kiro_crew.mcp_dashboard._patch",
+                return_value={"id": "cccccccccccc", "name": "Travel", "parent_id": "aaaaaaaaaaaa"},
+            ) as mock_patch,
+        ):
+            out = _call_tool_inner(
+                "chat_folder_move", {"folder": "Travel", "new_parent": "kirocrew"}
+            )
+        assert not out.startswith("Error:")
+        assert mock_patch.call_args_list[0].args[1] == {"parent_id": "aaaaaaaaaaaa"}
+
+    def test_both_anchors_at_once_is_refused(self) -> None:
+        with (
+            patch("kiro_crew.mcp_dashboard._get", side_effect=_ordered_rows),
+            patch("kiro_crew.mcp_dashboard._patch") as mock_patch,
+        ):
+            out = _call_tool_inner(
+                "chat_folder_move",
+                {"folder": "Delta", "before": "Alpha", "after": "Bravo"},
+            )
+        assert out.startswith("Error:") and "not both" in out
+        mock_patch.assert_not_called()
+
+    def test_an_anchor_outside_the_destination_is_refused(self) -> None:
+        """``before``/``after`` names a SIBLING, so it must live in the destination."""
+        with (
+            patch("kiro_crew.mcp_dashboard._get", side_effect=_rows),
+            patch("kiro_crew.mcp_dashboard._patch") as mock_patch,
+        ):
+            out = _call_tool_inner(
+                "chat_folder_move",
+                {"folder": "Travel", "new_parent": "root", "after": "kirocrew/0811"},
+            )
+        assert out.startswith("Error:") and "not in the destination" in out
+        mock_patch.assert_not_called()
+
+    def test_a_folder_cannot_anchor_on_itself(self) -> None:
+        with (
+            patch("kiro_crew.mcp_dashboard._get", side_effect=_ordered_rows),
+            patch("kiro_crew.mcp_dashboard._patch") as mock_patch,
+        ):
+            out = _call_tool_inner("chat_folder_move", {"folder": "Delta", "after": "Delta"})
+        assert out.startswith("Error:") and "relative to itself" in out
+        mock_patch.assert_not_called()
+
+    def test_root_is_not_an_anchor(self) -> None:
+        with (
+            patch("kiro_crew.mcp_dashboard._get", side_effect=_ordered_rows),
+            patch("kiro_crew.mcp_dashboard._patch") as mock_patch,
+        ):
+            out = _call_tool_inner("chat_folder_move", {"folder": "Delta", "after": "root"})
+        assert out.startswith("Error:") and "SIBLING" in out
+        mock_patch.assert_not_called()
+
+    def test_a_missing_anchor_is_refused_before_any_write(self) -> None:
+        with (
+            patch("kiro_crew.mcp_dashboard._get", side_effect=_ordered_rows),
+            patch("kiro_crew.mcp_dashboard._patch") as mock_patch,
+        ):
+            out = _call_tool_inner("chat_folder_move", {"folder": "Delta", "after": "Echo"})
+        assert out.startswith("Error:") and "folder not found" in out
+        mock_patch.assert_not_called()
+
+    def test_a_failed_order_write_says_the_position_itself_landed(self) -> None:
+        """The two halves have different outcomes, so they get different words.
+
+        Re-moving a folder that already arrived is the mistake this prevents. The
+        wording also has to match what happened: with the parent unchanged there was
+        no move, so naming one would describe a reparent that did not occur — and it
+        would say it in the one message a caller reads while deciding what to retry.
+        """
+        calls: list[dict] = []
+
+        def _fake_patch(path: str, body: dict, **_kw: Any) -> dict:
+            calls.append(body)
+            # Keyed on the ROW, not on parent_id: a same-parent reposition
+            # writes only `order`, so the moved folder carries no parent_id.
+            if path.endswith("dddddddddddd"):
+                return {"id": "dddddddddddd", "name": "Delta", "parent_id": ""}
+            return {"error": "this app does not own that folder"}
+
+        with (
+            patch("kiro_crew.mcp_dashboard._get", side_effect=_ordered_rows),
+            patch("kiro_crew.mcp_dashboard._patch", side_effect=_fake_patch),
+        ):
+            out = _call_tool_inner("chat_folder_move", {"folder": "Delta", "after": "Alpha"})
+        assert "stopped partway" in out
+        assert "Repositioned folder" in out, out
+        assert "Moved folder" not in out, out
+        assert not out.startswith("Error:")
+
+
+class TestPositionRenumberIsAllOrNothingForAnApp:
+    """An app may not half-shuffle the person's sidebar.
+
+    Repositioning is several writes and the endpoint judges each against this
+    app's ownership on its own, so a refusal landing midway would leave an order
+    nobody chose and nothing to roll it back with. The whole set is therefore
+    checked before the first write.
+    """
+
+    @staticmethod
+    def _owned(path: str) -> list[dict]:
+        if path == "/api/chat/folders":
+            return [
+                {"id": "aaaaaaaaaaaa", "name": "Alpha", "parent_id": "", "order": 0},
+                {"id": "bbbbbbbbbbbb", "name": "Bravo", "parent_id": "", "order": 1},
+                {
+                    "id": "cccccccccccc",
+                    "name": "Radar out",
+                    "parent_id": "",
+                    "order": 2,
+                    "owner_app": "issue-radar",
+                },
+            ]
+        return [
+            {
+                "key": "chat-1-100",
+                "title": "Radar run",
+                "folder_id": "",
+                "app": "issue-radar",
+            },
+        ]
+
+    def test_renumbering_a_folder_the_app_does_not_own_is_refused_up_front(
+        self,
+    ) -> None:
+        # Alpha and Bravo hold adjacent integers, so landing BETWEEN them has no
+        # free slot and can only be reached by renumbering the person's two rows.
+        with (
+            patch("kiro_crew.mcp_dashboard._get", side_effect=self._owned),
+            patch("kiro_crew.mcp_dashboard._patch") as mock_patch,
+        ):
+            out = _call_tool_inner("chat_folder_move", {"folder": "Radar out", "after": "Alpha"})
+        assert out.startswith("Error:") and "does not own" in out
+        mock_patch.assert_not_called()
+
+    def test_an_app_may_place_its_own_folder_where_a_slot_is_free(self) -> None:
+        """The rule is about renumbering the person's rows, not about positioning.
+
+        Ahead of Alpha the slot is free, so the app writes only its OWN row: none
+        of the person's folders change, and the endpoint judges that single write.
+        """
+        with (
+            patch("kiro_crew.mcp_dashboard._get", side_effect=self._owned),
+            patch(
+                "kiro_crew.mcp_dashboard._patch",
+                return_value={"id": "cccccccccccc", "name": "Radar out", "parent_id": ""},
+            ) as mock_patch,
+        ):
+            out = _call_tool_inner("chat_folder_move", {"folder": "Radar out", "before": "Alpha"})
+        assert not out.startswith("Error:")
+        assert mock_patch.call_count == 1
+        assert _patched_orders(mock_patch) == {"cccccccccccc": -1}
+
+    def test_the_same_move_without_a_position_still_reaches_the_endpoint(self) -> None:
+        """The refusal is about the RENUMBER, not about moving at all."""
+        with (
+            patch("kiro_crew.mcp_dashboard._get", side_effect=self._owned),
+            patch(
+                "kiro_crew.mcp_dashboard._patch",
+                return_value={
+                    "id": "cccccccccccc",
+                    "name": "Radar out",
+                    "parent_id": "aaaaaaaaaaaa",
+                },
+            ) as mock_patch,
+        ):
+            out = _call_tool_inner(
+                "chat_folder_move", {"folder": "Radar out", "new_parent": "Alpha"}
+            )
+        assert not out.startswith("Error:")
+        assert mock_patch.called
+
+    def test_a_lone_FOREIGN_order_write_is_still_preflighted(self) -> None:
+        """A renumber can change exactly ONE row, and not the moved folder's.
+
+        Gating the preflight on a multi-row set let this through: the app's own
+        reparent landed, then the single foreign order write was refused at the
+        endpoint, leaving the sidebar in an order nobody chose. The count is not
+        the question — whether any row belongs to someone else is.
+
+        Here the app's folder already holds its target position, so the only row
+        whose order changes is the person's Bravo.
+        """
+        rows = [
+            {"id": "aaaaaaaaaaaa", "name": "Alpha", "parent_id": "", "order": 0},
+            {"id": "bbbbbbbbbbbb", "name": "Bravo", "parent_id": "", "order": 1},
+            {
+                "id": "cccccccccccc",
+                "name": "Radar out",
+                "parent_id": "",
+                "order": 1,
+                "owner_app": "issue-radar",
+            },
+        ]
+
+        def _get(path: str) -> list[dict]:
+            if path == "/api/chat/folders":
+                return [dict(f) for f in rows]
+            return [
+                {
+                    "key": "chat-1-100",
+                    "title": "Radar run",
+                    "folder_id": "",
+                    "app": "issue-radar",
+                },
+            ]
+
+        with (
+            patch("kiro_crew.mcp_dashboard._get", side_effect=_get),
+            patch("kiro_crew.mcp_dashboard._patch") as mock_patch,
+        ):
+            # Alpha(0) and the app's own Radar out(1) are adjacent, so landing
+            # between them renumbers; Radar out keeps position 1 and only the
+            # person's Bravo has to move.
+            out = _call_tool_inner("chat_folder_move", {"folder": "Radar out", "after": "Alpha"})
+        assert out.startswith("Error:") and "does not own" in out
+        mock_patch.assert_not_called()
+
+    def test_a_person_reordering_their_own_tree_is_not_gated(self) -> None:
+        def _get(path: str) -> list[dict]:
+            if path == "/api/chat/folders":
+                return [dict(f) for f in _ORDERED]
+            return [{"key": "chat-1-100", "title": "Raymond", "folder_id": "", "app": ""}]
+
+        with (
+            patch("kiro_crew.mcp_dashboard._get", side_effect=_get),
+            patch(
+                "kiro_crew.mcp_dashboard._patch",
+                return_value={"id": "dddddddddddd", "name": "Delta", "parent_id": ""},
+            ) as mock_patch,
+        ):
+            out = _call_tool_inner("chat_folder_move", {"folder": "Delta", "before": "Alpha"})
+        assert not out.startswith("Error:")
+        # Alpha is first, so the slot ahead of it is free — one write, no renumber.
+        assert _patched_orders(mock_patch) == {"dddddddddddd": -1}
+
+
+class TestTreeListsInSidebarOrder:
+    """The tree is what an anchor is picked from, so it must show the order the
+    person sees. Listing it by path would show a sequence that exists nowhere
+    and make every ``before``/``after`` a guess."""
+
+    def test_folders_follow_their_stored_order_not_the_alphabet(self) -> None:
+        reversed_alpha = [
+            {"id": "aaaaaaaaaaaa", "name": "Zulu", "parent_id": "", "order": 0},
+            {"id": "bbbbbbbbbbbb", "name": "Mike", "parent_id": "", "order": 1},
+            {"id": "cccccccccccc", "name": "Alpha", "parent_id": "", "order": 2},
+        ]
+
+        def _get(path: str) -> list[dict]:
+            if path == "/api/chat/folders":
+                return [dict(f) for f in reversed_alpha]
+            return _slots_with_caller()
+
+        with patch("kiro_crew.mcp_dashboard._get", side_effect=_get):
+            out = _call_tool_inner("chat_folder_tree", {})
+        lines = [ln for ln in out.splitlines() if ln.strip().startswith(("aaaa", "bbbb", "cccc"))]
+        assert [ln.split()[1] for ln in lines] == ["Zulu", "Mike", "Alpha"]
+
+    def test_a_child_still_follows_its_own_parent(self) -> None:
+        """Order sequences siblings; it never reparents the render."""
+        nested = [
+            {"id": "aaaaaaaaaaaa", "name": "First", "parent_id": "", "order": 0},
+            {
+                "id": "bbbbbbbbbbbb",
+                "name": "Deep",
+                "parent_id": "aaaaaaaaaaaa",
+                "order": 99,
+            },
+            {"id": "cccccccccccc", "name": "Second", "parent_id": "", "order": 1},
+        ]
+
+        def _get(path: str) -> list[dict]:
+            if path == "/api/chat/folders":
+                return [dict(f) for f in nested]
+            return _slots_with_caller()
+
+        with patch("kiro_crew.mcp_dashboard._get", side_effect=_get):
+            out = _call_tool_inner("chat_folder_tree", {})
+        body = out.splitlines()
+        order = [ln.split()[1] for ln in body if ln.strip().startswith(("aaaa", "bbbb", "cccc"))]
+        assert order == ["First", "First/Deep", "Second"]
+
+    def test_a_parent_cycle_neither_hangs_nor_swallows_its_folders(self) -> None:
+        cyclic = [
+            {
+                "id": "aaaaaaaaaaaa",
+                "name": "Ping",
+                "parent_id": "bbbbbbbbbbbb",
+                "order": 0,
+            },
+            {
+                "id": "bbbbbbbbbbbb",
+                "name": "Pong",
+                "parent_id": "aaaaaaaaaaaa",
+                "order": 1,
+            },
+            {"id": "cccccccccccc", "name": "Sane", "parent_id": "", "order": 2},
+        ]
+
+        def _get(path: str) -> list[dict]:
+            if path == "/api/chat/folders":
+                return [dict(f) for f in cyclic]
+            return _slots_with_caller()
+
+        with patch("kiro_crew.mcp_dashboard._get", side_effect=_get):
+            out = _call_tool_inner("chat_folder_tree", {})
+        for fid in ("aaaaaaaaaaaa", "bbbbbbbbbbbb", "cccccccccccc"):
+            assert fid in out
+
+
+class TestPositionIsAdvertised:
+    def test_the_tool_declares_both_anchors(self) -> None:
+        move = next(t for t in _list_tools() if t["name"] == "chat_folder_move")
+        props = move["inputSchema"]["properties"]
+        assert "before" in props and "after" in props
+        assert move["inputSchema"]["required"] == ["folder"]
+
+    def test_an_anchor_is_accepted_by_the_schema(self) -> None:
+        """The schema rejects unknown fields, so an undeclared anchor would 400
+        before the handler ever ran."""
+        with (
+            patch("kiro_crew.mcp_dashboard._get", side_effect=_ordered_rows),
+            patch(
+                "kiro_crew.mcp_dashboard._patch",
+                return_value={"id": "dddddddddddd", "name": "Delta", "parent_id": ""},
+            ),
+        ):
+            out = _call_tool_inner("chat_folder_move", {"folder": "Delta", "after": "Alpha"})
+        assert "unknown field" not in out
+
+    def test_an_unknown_field_is_still_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            _call_tool_inner("chat_folder_move", {"folder": "Delta", "position": "first"})
