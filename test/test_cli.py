@@ -2316,14 +2316,47 @@ class TestStop:
         assert "reason=lsof_not_found" in resources
 
     def test_no_kirocrew_process(self, capsys):
-        # A listener exists but its cmdline isn't a kirocrew gateway → refuse to kill.
+        # A listener exists but its cmdline isn't a kirocrew gateway → refuse to kill,
+        # but name the pid so the operator can see what holds the port.
         from kiro_crew.cli_server import _stop
 
         with self._mock_sel(), self._ports([1234]), self._cmdline("nginx: worker"):
             with pytest.raises(SystemExit) as exc:
                 _stop(5476)
             assert exc.value.code == 1
-        assert "No Kiro Crew gateway" in capsys.readouterr().out
+        out = capsys.readouterr().out
+        assert "1234" in out
+        assert "not recognised" in out
+        assert "(nginx:)" in out
+
+    def test_unrecognised_listener_names_a_quoted_executable_basename(self, capsys):
+        # A quoted executable path is one token; the message must carry its
+        # basename, not the fragment before the first space.
+        from kiro_crew.cli_server import _stop
+
+        quoted = '"/opt/some tool/bin/otherd" --port 5476'
+        with self._mock_sel(), self._ports([4321]), self._cmdline(quoted):
+            with pytest.raises(SystemExit):
+                _stop(5476)
+        out = capsys.readouterr().out
+        assert "(otherd)" in out
+        assert "/opt/some" not in out
+
+    def test_unrecognised_listener_name_cannot_drive_the_terminal(self, capsys):
+        # argv[0] is chosen by whoever holds the port: escape sequences, OSC
+        # title changes and BEL must be stripped before the name is echoed, and
+        # the name is capped so it cannot flood the line.
+        from kiro_crew.cli_server import _MAX_ECHOED_NAME_LEN, _stop, _terminal_safe_name
+
+        hostile = "/tmp/\x1b[31mred\x1b[0m\x1b]0;owned\x07" + "x" * 200
+        with self._mock_sel(), self._ports([4321]), self._cmdline(f"'{hostile}' --port 5476"):
+            with pytest.raises(SystemExit):
+                _stop(5476)
+        out = capsys.readouterr().out
+        assert "\x1b" not in out and "\x07" not in out
+        assert "[31mred[0m]0;owned" in out  # printable residue only, no ESC/BEL
+        assert len(out.split("(", 1)[1].split(")", 1)[0]) <= _MAX_ECHOED_NAME_LEN
+        assert _terminal_safe_name("\x1b\x07\u200b") == ""
 
     def test_successful_stop(self, capsys):
         from kiro_crew.cli_server import _stop

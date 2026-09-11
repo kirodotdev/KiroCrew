@@ -1146,7 +1146,15 @@ that must not change, because the SPA's per-origin `localStorage` is keyed on it
    `/proc/<pid>/cmdline` (Linux), `ps -o command=` (macOS), `Win32_Process.CommandLine`
    via WMI (Windows). The Windows venv `kirocrew.exe` re-execs `python.exe`, so the
    match is on the command line (`-m kiro_crew gateway` / `\Scripts\kirocrew.exe gateway`),
-   not the image name.
+   not the image name. `_args_look_like_kirocrew` parses the command line structurally
+   and keys on a server subcommand plus a recognised module name. The module name is
+   matched against `port_resolution._gateway_module_roots()`: always `kiro_crew`, plus
+   the top-level module of every installed `kirocrew.plugins` entry point, so a composed
+   edition whose launcher execs its own module with `-m` classifies without the core
+   knowing any edition's name. When a listener exists but none of the pids classify,
+   `stop` names the pid(s) — with the cmdline basename when cheap — and exits 1 with SEL
+   `reason=unrecognized_listener`, rather than reporting "no gateway running" for a port
+   that is occupied.
 4. Terminate each verified PID: `os.kill(SIGTERM)` on POSIX; `taskkill /T /F`
    (via `platform_compat.kill_process_tree`) on Windows so the gateway's detached
    children are reaped too. Liveness is probed with `platform_compat.pid_exists`
@@ -1187,6 +1195,16 @@ that must not change, because the SPA's per-origin `localStorage` is keyed on it
      `try / except SystemExit` so a TOCTOU race (gateway exits between the
      listener check and `_stop`'s own lookup → `_stop` calls `sys.exit(1)`)
      does not abort the restart before the spawn.
+   - When a listener IS present but none of the pids classify as a Kiro Crew
+     gateway, `_stop` declines it (see step 3 above) and the incumbent list is
+     empty, so restart resolves the incumbent through `gateway.lock` instead
+     (`_incumbent_from_lock_holder`): a live holder that did not acknowledge the
+     shutdown is refused by `_refuse_lock_holder` and no replacement is spawned.
+     A gateway booted from a module the classifier does not recognise lands exactly
+     there — it holds the lock and `stop` could not signal it — so recognition, not
+     the restart path, is what makes the ordinary stop → wait → spawn path run. A
+     foreign listener that holds no lock still leaves the spawn to proceed and fail
+     on its own bind.
    - Spawn a detached `kirocrew gateway` via `subprocess.Popen`, stdin set
      to `subprocess.DEVNULL`, and stdout + stderr redirected to
      `~/.kiro/crew/gateway.log` (the same file the `kirocrew logs` command
