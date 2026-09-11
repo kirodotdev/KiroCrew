@@ -762,6 +762,9 @@ class TestExecutePlan:
         with (
             patch.object(TaskRunner, "_execute_tasks", AsyncMock()) as exec_tasks,
             patch.object(TaskRunner, "_watchdog_loop", AsyncMock()),
+            # branch_name is set, so this run resumes through the workspace
+            # guard rather than the first-run init_workspace path.
+            patch.object(tr.git_coord, "workspace_is_valid", AsyncMock(return_value=True)),
             patch.object(tr.git_coord, "init_workspace", AsyncMock()) as init_ws,
             patch.object(tr.git_coord, "finalize", finalize),
         ):
@@ -769,7 +772,7 @@ class TestExecutePlan:
             assert safety_override().is_scope_active(scope) is True
             await runner._tasks[task_id]
         exec_tasks.assert_awaited_once()
-        init_ws.assert_awaited_once()
+        init_ws.assert_not_awaited()
         finalize.assert_awaited_once()
         consolidator.maybe_consolidate.assert_called_once_with("taskrunner:run:plan_trust")
         assert run.status == "completed"
@@ -777,6 +780,160 @@ class TestExecutePlan:
         assert task_id not in runner._tasks
         # trust never outlives the run
         assert safety_override().is_scope_active(scope) is False
+
+    @pytest.mark.asyncio
+    async def test_refuses_restart_while_previous_run_is_still_finishing(
+        self, tmp_path: Path
+    ) -> None:
+        """A run's status flips terminal before its finally-block (which
+        removes the worktree) completes. A restart accepted in that window
+        would validate a workspace the prior finalizer is about to delete,
+        so it is refused while the prior task handle is unfinished."""
+        import asyncio as _asyncio
+
+        runner = _runner(tmp_path)
+        _seed_run(runner, tmp_path, status="failed")
+        release = _asyncio.Event()
+
+        async def _still_finalizing() -> None:
+            await release.wait()
+
+        runner._tasks["plan_1"] = _asyncio.create_task(_still_finalizing())
+        try:
+            with pytest.raises(ValueError, match="still finishing"):
+                await runner.execute_plan("plan_1")
+        finally:
+            release.set()
+            await runner._tasks["plan_1"]
+
+    @pytest.mark.asyncio
+    async def test_restart_fails_the_run_when_the_workspace_cannot_be_restored(
+        self, tmp_path: Path
+    ) -> None:
+        """A restarted run whose worktree was deregistered (directory present,
+        not a registered git repo) must not silently dispatch the remaining
+        steps against it. If recovery fails, the run is failed terminally
+        instead of continuing without git isolation."""
+        runner = _runner(tmp_path)
+        run = _seed_run(runner, tmp_path, status="failed")
+        run.branch_name = "feat/x"
+        run.work_dir = str(tmp_path / "orphaned-worktree")
+        execute_tasks = AsyncMock()
+        with (
+            patch.object(TaskRunner, "_execute_tasks", execute_tasks),
+            patch.object(TaskRunner, "_watchdog_loop", AsyncMock()),
+            patch.object(tr.git_coord, "workspace_is_valid", AsyncMock(return_value=False)),
+            patch.object(tr.git_coord, "reinit_workspace_for_retry", AsyncMock(return_value=False)),
+            patch.object(tr.git_coord, "finalize", AsyncMock()) as finalize,
+        ):
+            task_id = await runner.execute_plan("plan_1")
+            await runner._tasks[task_id]
+        execute_tasks.assert_not_awaited()
+        assert run.status == "failed"
+        assert "workspace" in run.error.lower()
+        # The rejected path was never positively identified as the run's own
+        # worktree, so the finally-block must not force-remove it.
+        finalize.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_cancel_during_restart_validation_does_not_finalize(self, tmp_path: Path) -> None:
+        """A CancelledError raised while the workspace is still being
+        validated unwinds _execute before the guard's verdict lands. The
+        finally-block must treat that workspace as unvalidated and skip
+        finalize(), which would force-remove a path never positively
+        identified as this run's worktree."""
+        runner = _runner(tmp_path)
+        run = _seed_run(runner, tmp_path, status="failed")
+        run.branch_name = "feat/x"
+        finalize = AsyncMock()
+        with (
+            patch.object(TaskRunner, "_execute_tasks", AsyncMock()),
+            patch.object(TaskRunner, "_watchdog_loop", AsyncMock()),
+            patch.object(
+                tr.git_coord,
+                "workspace_is_valid",
+                AsyncMock(side_effect=asyncio.CancelledError()),
+            ),
+            patch.object(tr.git_coord, "finalize", finalize),
+        ):
+            task_id = await runner.execute_plan("plan_1")
+            await runner._tasks[task_id]
+        finalize.assert_not_awaited()
+        assert run.status == "cancelled"
+
+    @pytest.mark.asyncio
+    async def test_cancel_before_restart_validation_does_not_finalize(self, tmp_path: Path) -> None:
+        """A CancelledError raised before validation begins (during the
+        workflow rebind that precedes it) must also leave the workspace
+        marked unvalidated: the pessimistic flag is assigned before the
+        coroutine's first await, so no cancellation window exists."""
+        runner = _runner(tmp_path)
+        run = _seed_run(runner, tmp_path, status="failed")
+        run.branch_name = "feat/x"
+        finalize = AsyncMock()
+        valid = AsyncMock()
+        with (
+            patch.object(TaskRunner, "_execute_tasks", AsyncMock()),
+            patch.object(TaskRunner, "_watchdog_loop", AsyncMock()),
+            patch.object(
+                TaskRunner,
+                "_workflow_rebind",
+                AsyncMock(side_effect=asyncio.CancelledError()),
+            ),
+            patch.object(tr.git_coord, "workspace_is_valid", valid),
+            patch.object(tr.git_coord, "finalize", finalize),
+        ):
+            task_id = await runner.execute_plan("plan_1")
+            await runner._tasks[task_id]
+        valid.assert_not_awaited()
+        finalize.assert_not_awaited()
+        assert run.status == "cancelled"
+
+    @pytest.mark.asyncio
+    async def test_restart_skips_reinit_when_the_workspace_is_already_valid(
+        self, tmp_path: Path
+    ) -> None:
+        """The common restart case -- worktree still valid -- must not pay the
+        reinit cost or touch the workspace at all."""
+        runner = _runner(tmp_path)
+        run = _seed_run(runner, tmp_path, status="failed")
+        run.branch_name = "feat/x"
+        reinit = AsyncMock()
+        with (
+            patch.object(TaskRunner, "_execute_tasks", AsyncMock()),
+            patch.object(TaskRunner, "_watchdog_loop", AsyncMock()),
+            patch.object(tr.git_coord, "workspace_is_valid", AsyncMock(return_value=True)),
+            patch.object(tr.git_coord, "reinit_workspace_for_retry", reinit),
+            patch.object(tr.git_coord, "finalize", AsyncMock()),
+        ):
+            task_id = await runner.execute_plan("plan_1")
+            await runner._tasks[task_id]
+        reinit.assert_not_awaited()
+        assert run.status == "completed"
+
+    @pytest.mark.asyncio
+    async def test_planned_run_keeps_the_first_run_init_path(self, tmp_path: Path) -> None:
+        """A planned run that never had a worktree (no branch_name) keeps the
+        original best-effort init_workspace call: the resume guard must not
+        run, and first-run git failure stays non-fatal."""
+        runner = _runner(tmp_path)
+        run = _seed_run(runner, tmp_path, status="planned")
+        valid = AsyncMock()
+        reinit = AsyncMock()
+        init_ws = AsyncMock()
+        with (
+            patch.object(TaskRunner, "_execute_tasks", AsyncMock()),
+            patch.object(TaskRunner, "_watchdog_loop", AsyncMock()),
+            patch.object(tr.git_coord, "workspace_is_valid", valid),
+            patch.object(tr.git_coord, "reinit_workspace_for_retry", reinit),
+            patch.object(tr.git_coord, "init_workspace", init_ws),
+        ):
+            task_id = await runner.execute_plan("plan_1")
+            await runner._tasks[task_id]
+        valid.assert_not_awaited()
+        reinit.assert_not_awaited()
+        init_ws.assert_awaited_once()
+        assert run.status == "completed"
 
     @pytest.mark.asyncio
     async def test_git_init_failure_does_not_abort_run(self, tmp_path: Path) -> None:
