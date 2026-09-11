@@ -45,6 +45,7 @@ class _SessionEntry(Protocol):
     provider: Any
     semaphore: asyncio.BoundedSemaphore
     first_turn: object
+    provider_switch_replay: bool
     retire_on_identity_change: bool
     prev_turn_cancelled: bool
 
@@ -939,8 +940,13 @@ class SessionLifecycleService:
                 cwd_str = sess.provider.cwd
                 if isinstance(sess.provider, acp_provider_type):
                     sid = sess.provider.client._session_id
+                    # A replay-pending fresh child is not yet the durable
+                    # conversation. Allocation retained the prior full-history
+                    # SID; shutdown must not overwrite it before the replay
+                    # settlement in chat_runner commits the fresh transcript.
                     if (
                         sid
+                        and not sess.provider_switch_replay
                         and key != constants.background_key
                         and (
                             not any(

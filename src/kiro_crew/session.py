@@ -895,10 +895,17 @@ class _Session:
     # must re-inject the cancelled turn (user prompt + partial assistant) as a
     # preamble on the next prompt. One-shot: consumers clear after use.
     prev_turn_cancelled: bool = False
-    # Set when a provider switch is detected (e.g. kiro→CC or CC→kiro).
-    # Consumed one-shot by the next prompt builder to inject history replay
-    # from KiroCrew's conversation_log. Ensures replay fires exactly once
-    # per switch, even if the session is reused across multiple prompts.
+    # Set when a provider switch, failed native resume, or Tool Search
+    # compatibility fallback creates a fresh provider that still needs Kiro Crew
+    # history. Non-destructive slash commands read without clearing; a confirmed
+    # native `/clear` consumes it so replay cannot undo the user's deletion. The
+    # first provider event records acceptance only in the dashboard runner's
+    # turn-local state; the shared lease remains armed until a clean,
+    # non-synthetic, non-empty end_turn atomically promotes the fresh SID and
+    # consumes it. Cancellation, raised streams, empty verdicts, and synthetic
+    # terminals leave it armed because kiro-cli discards or cannot prove those
+    # turns. This preserves replay across empty streams, pre-output failures, and
+    # soft Stops while surviving loss of the separate ``first_turn`` observation.
     provider_switch_replay: bool = False
     # Set of msg_ts values cancelled (message deleted while processing)
     cancelled: set[str] = field(default_factory=set)
@@ -2069,6 +2076,64 @@ class SessionManager:
     def consume_needs_reinjection(self, key: str) -> bool:
         """Consume a live session's reinjection marker."""
         return self._compaction.consume_needs_reinjection(key)
+
+    def provider_switch_replay_pending(self, key: str) -> bool:
+        """Return whether a live session still owes conversation replay.
+
+        The first real claimant can be a native non-destructive slash command,
+        which deliberately bypasses prompt construction. Reading without clearing
+        lets that command finish while preserving replay for the next prompt. A
+        confirmed ``/clear`` is the exception and consumes the marker at its
+        provider event.
+        """
+        session = self._sessions.get(self._fold_key(key))
+        return bool(session is not None and session.provider_switch_replay)
+
+    def mark_provider_switch_replay(self, key: str) -> bool:
+        """Re-arm replay after an accepted turn is discarded by cancellation."""
+        session = self._sessions.get(self._fold_key(key))
+        if session is None:
+            return False
+        session.provider_switch_replay = True
+        return True
+
+    def commit_provider_switch_replay_sid(self, key: str) -> bool:
+        """Settle landed replay, promoting the live ACP SID when applicable.
+
+        Allocation deliberately leaves the prior resumable ACP SID in
+        ``SessionMap`` while replay is pending. ACP settlement writes the fresh SID
+        before synchronously consuming the shared lease, so shutdown can observe
+        only old-SID/pending or fresh-SID/settled. A legacy provider has no ACP SID
+        to promote; its landed replay consumes the same lease directly instead of
+        re-arming it forever.
+        """
+        folded = self._fold_key(key)
+        session = self._sessions.get(folded)
+        if session is None or not session.provider_switch_replay:
+            return False
+        if not _is_acp_provider(session.provider):
+            session.provider_switch_replay = False
+            return True
+        client = getattr(session.provider, "client", None)
+        sid = getattr(client, "_session_id", None)
+        if not isinstance(sid, str) or not sid:
+            return False
+        self._session_map.set(
+            folded,
+            sid,
+            provider=_provider_label(session.provider),
+            cwd=session.provider.cwd,
+        )
+        session.provider_switch_replay = False
+        return True
+
+    def consume_provider_switch_replay(self, key: str) -> bool:
+        """Explicitly retire replay after confirmed native history deletion."""
+        session = self._sessions.get(self._fold_key(key))
+        if session is None or not session.provider_switch_replay:
+            return False
+        session.provider_switch_replay = False
+        return True
 
     def consume_replay_suppression(self, key: str) -> bool:
         """Read *and clear* whether *key*'s next cold start must skip replay.

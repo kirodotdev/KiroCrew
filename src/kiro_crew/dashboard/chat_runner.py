@@ -6457,6 +6457,9 @@ async def _run_chat(
     # `getattr(state, "sessions", None)` above).
     _stop_gen_turn_start = getattr(slot, "_stop_generation", 0)
     _retrying_empty = False
+    # Any empty-response verdict is unlanded for replay durability, including
+    # the terminal give-up rung (which intentionally queues no recovery).
+    _had_empty_response_verdict = False
     # Set when the turn ended on a promise-only final message and we injected one
     # continuation (see the promise-only guard near turn completion). Like
     # _retrying_empty it suppresses success-recording for this non-landing turn.
@@ -6484,6 +6487,10 @@ async def _run_chat(
     # re-queue), every `except` arm, and a hard CancelledError — not just the
     # graceful-cancel and empty-re-queue paths that reach the success check.
     _turn_landed = False
+    # Replay settlement also lives in ``finally``. Bind at turn scope because
+    # config, binding and session-start failures can reach teardown before the
+    # acquisition block determines whether replay is pending.
+    _replay_accepted_this_turn = False
     # True while a member DM thread's FIRST turn is in flight: the session
     # client is allocated before the context build, so a build failure (e.g.
     # MemberRulesUnreadable aborting on a malformed rules file) leaves a warm
@@ -6946,6 +6953,18 @@ async def _run_chat(
         # as is gone. Retiring it here means this turn cold-starts on the current
         # account instead of running as the previous one.
         await _retire_sessions_on_identity_change(state)
+        # A linked channel can retain a dashboard-owned key. Resolve both the
+        # dedicated Slack field and any inbound-capable channel-neutral mirror
+        # before provider construction, so a restart cannot erase the dispatcher
+        # signal that distinguishes a linked turn from a direct dashboard turn.
+        # Outbound-only mirrors do not own inbound resume and stay direct turns.
+        _mirror_link = state.sessions.get_mirror_link(session_key)
+        _mirror_resumes = state.sessions.mirror_accepts_inbound(session_key)
+        _provider_channel_id = getattr(slot, "_slack_channel", "") or (
+            getattr(_mirror_link, "channel_id", "")
+            if _mirror_link is not None and _mirror_resumes
+            else ""
+        )
         client, is_new, resumed = await state.sessions.get_or_create(
             session_key,
             agent=kiro_agent or slot.agent or None,
@@ -6955,9 +6974,20 @@ async def _run_chat(
             crew_agent=crew_alias,
             model=slot.model or agent_model or default_model or None,
             cwd=slot.project or None,
+            # The persisted channel stays separate from the dashboard-owned key
+            # so provider startup can distinguish a linked dispatcher from a
+            # direct dashboard turn.
+            channel_id=_provider_channel_id or None,
             reasoning_effort_override=slot.reasoning_effort or None,
         )
         _acquired = True
+        # A fresh provider can still owe Kiro Crew history after its one-shot
+        # ``is_new`` observation was consumed by a slash command. Keep that debt
+        # separate from provider creation: slash commands bypass ContextBuilder,
+        # while the next ordinary prompt must behave as the context-bearing first
+        # turn and acknowledge replay only after assembly succeeds.
+        _replay_pending = state.sessions.provider_switch_replay_pending(session_key) is True
+        _context_is_new = is_new or _replay_pending
         # A member DM's first turn carries the four-layer member section as
         # session-start context. Record that it is at stake HERE — the moment
         # the session client exists — not at the context build: every early
@@ -6976,7 +7006,7 @@ async def _run_chat(
         _member_session_start_pending = (
             slot.mode == "member"
             and member_lifecycle(
-                is_new_session=is_new,
+                is_new_session=_context_is_new,
                 resumed=resumed,
                 minimal_context=False,
                 needs_reinjection=False,
@@ -7327,7 +7357,11 @@ async def _run_chat(
 
                 if isinstance(client, AcpProvider) and client.client.resumed:
                     _provider_has_history = True
-            if is_new and not _provider_has_history and state.context_builder.conversation_log:
+            if (
+                _context_is_new
+                and not _provider_has_history
+                and state.context_builder.conversation_log
+            ):
                 # Consumed HERE rather than before the branch, so only a real cold
                 # start can spend the flag: a warm turn that never rebuilds history
                 # must not burn the one chance the reset asked for.
@@ -7409,7 +7443,7 @@ async def _run_chat(
             # Folder breadcrumb: inject once per session, and again after a
             # folder move (no session reset — it's just a label refresh).
             folder_path = None
-            if is_new or slot._folder_changed:
+            if _context_is_new or slot._folder_changed:
                 folder_path = state.folder_breadcrumb(slot.folder_id) or None
                 slot._folder_changed = False
             _color_theme = getattr(slot, "color_theme", "")
@@ -7426,7 +7460,11 @@ async def _run_chat(
             # A governance-evaluation error therefore denies (persona skipped
             # for that turn; the chat itself is unaffected).
             _persona_permitted = True
-            if is_new and isinstance(_color_theme, str) and _color_theme.startswith("custom-"):
+            if (
+                _context_is_new
+                and isinstance(_color_theme, str)
+                and _color_theme.startswith("custom-")
+            ):
                 from kiro_crew.platform.governance_profiles import governance_permits
 
                 _decision = governance_permits(
@@ -7446,7 +7484,7 @@ async def _run_chat(
                 persona_message = _maybe_inject_persona(
                     message,
                     _color_theme,
-                    is_new,
+                    _context_is_new,
                     theme_consent_sha=getattr(slot, "theme_consent_sha", None),
                 )
                 message, persona_context = _detach_appended_context(message, persona_message)
@@ -7480,7 +7518,7 @@ async def _run_chat(
             full_message, _ = await run_in_embed_pool(
                 state.context_builder.build_message,
                 message,
-                is_new,
+                _context_is_new,
                 session_key,
                 agent=kiro_agent or slot.agent or None,
                 resumed=resumed,
@@ -7532,7 +7570,7 @@ async def _run_chat(
         # build_session_context already injects recent() from JSONL, so this
         # only adds value when in-memory messages are newer than disk.
         # Skip for soft stops — session is preserved, no re-injection needed.
-        if is_new and slot.messages:
+        if _context_is_new and slot.messages:
             # Check if last stop was soft (session preserved, no re-injection).
             # cls is a JSON-encoded dict (see api_chat_slot_stop); parse it.
             _last_stop_soft = False
@@ -7648,7 +7686,7 @@ async def _run_chat(
                 user_offset=_user_prepend_offset,
                 user_span=_span_arg,
             )
-            slot_ctx_phase = PHASE_SESSION_START if is_new else PHASE_PER_TURN
+            slot_ctx_phase = PHASE_SESSION_START if _context_is_new else PHASE_PER_TURN
             # Named rather than counted: naming only four blocks by hand
             # under-describes most of the bytes being reported.
             _named = ", ".join(
@@ -7800,6 +7838,15 @@ async def _run_chat(
             monitor_completion.mark_accepted()
         event_stream = client.stream_command(message) if is_slash else client.stream(full_message)
         async for event in event_stream:
+            # Async-generator creation is not prompt acceptance. The first
+            # provider event is the earliest evidence that the replay-bearing
+            # prompt entered the turn; pre-output errors and empty streams never
+            # reach this branch. Acceptance is runner-local: the shared lease
+            # stays armed until final settlement so a concurrent shutdown cannot
+            # publish the fresh SID before this turn proves durable.
+            if _replay_pending and not is_slash:
+                _replay_pending = False
+                _replay_accepted_this_turn = True
             # Heartbeat every 5s during long operations
             if time.time() - last_heartbeat > 5:
                 state.broadcast_ws("heartbeat", {"slot": slot.key, "ts": time.time()})
@@ -10002,6 +10049,16 @@ async def _run_chat(
                         assistant_text = ""
                         _wsred.reset()
             elif event.kind == EVENT_CLEAR_STATUS:
+                # A confirmed native clear is the one destructive slash command:
+                # replaying the persisted Kiro Crew history afterwards would undo
+                # the user's clear. Retire either an unconsumed slash lease or the
+                # consumed-turn marker before any terminal can re-arm it.
+                if _replay_pending or _replay_accepted_this_turn:
+                    state.sessions.commit_provider_switch_replay_sid(session_key)
+                if _replay_pending:
+                    state.sessions.consume_provider_switch_replay(session_key)
+                    _replay_pending = False
+                _replay_accepted_this_turn = False
                 slot.messages.clear()
                 # The boundary was captured against the pre-clear message
                 # count; the list is now empty, so reset it to 0 or the
@@ -11040,6 +11097,7 @@ async def _run_chat(
             and not _terminal_question_posted
             and not _refusal_reasons
         ):
+            _had_empty_response_verdict = True
             # Model returned an empty response — retry once, then notify user.
             # Precedence: a turn that ended on a recoverable tool refusal also has
             # empty assistant_text when the model went straight to the blocked
@@ -12662,6 +12720,31 @@ async def _run_chat(
             _flush_file_changes(slot)
         except Exception:
             logger.debug("_flush_file_changes failed", exc_info=True)
+        # Replay settlement belongs on the one path every turn exit crosses.
+        # A clean, non-synthetic landed end_turn is the only ordinary terminal
+        # whose fresh native transcript is durable enough to replace the prior
+        # full-history SID. Exceptions, hard cancellation, synthetic completion,
+        # recovery returns and unlanded terminals re-arm the lease; close_all then
+        # sees provider_switch_replay and preserves the old SID on restart.
+        if _replay_accepted_this_turn:
+            try:
+                _replay_landed = (
+                    _turn_landed
+                    and _stop_reason == STOP_REASON_END_TURN
+                    and not _terminal_synthetic
+                    and not _had_empty_response_verdict
+                )
+                if _replay_landed:
+                    if not state.sessions.commit_provider_switch_replay_sid(session_key):
+                        state.sessions.mark_provider_switch_replay(session_key)
+                else:
+                    state.sessions.mark_provider_switch_replay(session_key)
+            except Exception:
+                logger.debug("settling replay SID failed", exc_info=True)
+                try:
+                    state.sessions.mark_provider_switch_replay(session_key)
+                except Exception:
+                    logger.debug("re-arming replay after settlement failure failed", exc_info=True)
         # This turn consumed the one-shot post-compaction re-injection flag but
         # never landed, so the prompt carrying the skills index was discarded —
         # an early return (stale-recover / tool-stall / error re-queue), an

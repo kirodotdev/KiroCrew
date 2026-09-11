@@ -1010,15 +1010,23 @@ when a switch is detected (stored SID exists AND providers differ).
 **Behavior on switch:**
 1. `resume_sid` is discarded (not passed to the new provider process)
 2. `SessionMap.clear_sid(key)` removes the stale SID from persistent state
-3. `_Session.provider_switch_replay = True` flags the session for replay
+3. `_Session.provider_switch_replay = True` arms the shared replay lease
 4. The new provider's session_id (once obtained) is saved with the correct
    provider label
-5. On the first prompt after the switch, `chat_runner` detects the flag and
-   injects history from `compress_thread_history()` (KiroCrew's conversation_log)
-6. The flag is consumed (set to False) — replay fires exactly once per switch
+5. On the first ordinary prompt after the switch, `chat_runner` detects the lease
+   and injects history from `compress_thread_history()` (KiroCrew's
+   `conversation_log`). Non-destructive slash commands leave the lease armed.
+6. The first clean, non-synthetic, non-empty `end_turn` settles the lease. ACP
+   settlement writes the fresh SID before clearing the lease; legacy-provider
+   settlement has no ACP SID to promote and clears the lease directly.
+7. Cancellation, raised streams, synthetic completions, and empty-response
+   verdicts leave the lease armed so the next ordinary prompt retries replay. A
+   confirmed native `/clear` consumes it so replay cannot undo the deletion.
 
-**Same-provider resume:** unaffected. Normal `session/load` path with full
-native fidelity.
+**Same-provider resume:** normal `session/load` keeps full native fidelity except
+for direct dashboard kiro-cli sessions with Tool Search enabled. Those sessions
+start fresh and use the same landed-turn replay lease because native resume can
+restore the transcript without restoring Tool Search's activated schemas.
 
 **Audit:** A `provider_switch_detected` SEL event is emitted with both the
 stored and new provider names for observability.

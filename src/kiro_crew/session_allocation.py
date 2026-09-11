@@ -1488,12 +1488,15 @@ class SessionAllocationService:
                         agent=agent or "",
                     )
                     replay_needed = getattr(provider, "_history_replay_needed", False) is True
+                    provider_label = self._deps.provider_label(provider)
+                    defer_sid_promotion = (
+                        replay_needed
+                        and provider.defer_replay_sid_promotion
+                        and provider_label == constants.provider_label_default
+                    )
                     if provider_switched or replay_needed:
                         session.provider_switch_replay = True
-                    if (
-                        replay_needed
-                        and self._deps.provider_label(provider) != constants.provider_label_default
-                    ):
+                    if replay_needed and provider_label != constants.provider_label_default:
                         owner._session_map.clear_sid(key)
                     self._sessions[key] = session
                     try:
@@ -1518,13 +1521,18 @@ class SessionAllocationService:
                     provider_cwd = provider.cwd
                     if not is_stateless and self._deps.is_acp_provider(provider):
                         sid = cast(Any, provider).client._session_id
-                        provider_label = self._deps.provider_label(provider)
-                        if sid:
+                        if sid and not defer_sid_promotion:
                             owner._session_map.set(
                                 key,
                                 sid,
                                 provider=provider_label,
                                 cwd=provider_cwd,
+                            )
+                        elif sid:
+                            self._deps.logger.info(
+                                "Deferring fresh SID promotion for replay-pending "
+                                "session %s; prior resumable SID stays durable",
+                                key,
                             )
                     elif not is_stateless and self._deps.is_claude_provider(provider):
                         sid = provider.session_id

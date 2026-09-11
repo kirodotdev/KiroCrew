@@ -8428,6 +8428,323 @@ class TestRuntimeWiring:
         assert "frozen retained question" in replay
         assert "frozen retained answer" in replay
 
+    @pytest.mark.parametrize(
+        ("accepts_inbound", "expected_channel"),
+        [(True, "chat-42"), (False, None)],
+    )
+    @pytest.mark.asyncio
+    async def test_run_chat_passes_only_resumable_mirror_channel_to_provider(
+        self, tmp_path, monkeypatch, accepts_inbound, expected_channel
+    ):
+        """Only an inbound-capable persisted mirror identifies a dispatcher.
+
+        Telegram/Discord mirrors can reuse a ``dashboard:*`` key while their
+        identity exists only in ``SessionMap.mirror``. Two-way links must retain
+        native resume; outbound-only mirrors still run as direct dashboard turns
+        and need the Tool Search resume workaround.
+        """
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+
+        from kiro_crew.messaging.link import ChannelLink
+        from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
+
+        state = _make_state(tmp_path)
+        state.context_builder = None
+        state.broadcast_ws = MagicMock()
+        state.push_slots_update = MagicMock()
+        slot = state.get_or_create_slot("linked-provider")
+        slot._slack_channel = ""
+        state.sessions.get_mirror_link = MagicMock(
+            return_value=ChannelLink("telegram", channel_id="chat-42", thread_id="thread-7")
+        )
+        state.sessions.mirror_accepts_inbound = MagicMock(return_value=accepts_inbound)
+
+        async def stream(_message):
+            yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="ok")
+            yield LLMEvent(kind=EVENT_COMPLETE, stop_reason="end_turn")
+
+        mock_client = MagicMock()
+        mock_client.stream = stream
+        mock_client.stream_command = stream
+        mock_client.context_usage_pct = MagicMock(return_value=10.0)
+        state.sessions.get_or_create = AsyncMock(return_value=(mock_client, True, False))
+        state.sessions.get_pid = MagicMock(return_value=None)
+
+        from kiro_crew.dashboard.chat import _run_chat
+
+        await _run_chat(state, slot, "linked dashboard turn")
+
+        assert state.sessions.get_or_create.await_args.kwargs["channel_id"] == expected_channel
+
+    @pytest.mark.asyncio
+    async def test_first_slash_preserves_pending_replay_for_next_prompt(
+        self, tmp_path, monkeypatch
+    ):
+        """A fresh session's slash command bypasses ContextBuilder entirely.
+
+        The command may consume SessionManager's one-shot ``is_new`` observation,
+        but it must not consume the conversation replay debt. Pre-dispatch Stop
+        leaves it armed; an accepted turn consumes it on the first provider event;
+        and a cancelled terminal re-arms it because the provider discards that
+        turn. The next accepted ordinary prompt finally clears the lease.
+        """
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+
+        build_message_calls: list[dict] = []
+        build_behavior = {"stop_during_build": False}
+
+        def mock_build_message(text, context_is_new, session_key=None, **kwargs):
+            build_message_calls.append(
+                {
+                    "text": text,
+                    "context_is_new": context_is_new,
+                    "session_key": session_key,
+                    "kwargs": kwargs,
+                }
+            )
+            if build_behavior["stop_during_build"]:
+                slot._stop_generation += 1
+                build_behavior["stop_during_build"] = False
+            return text, MagicMock(action=None, text="")
+
+        from kiro_crew.acp.types import STOP_REASON_CANCELLED
+        from kiro_crew.context import ContextBuilder
+        from kiro_crew.hooks import HOOK_EVENT_AGENT_SPAWN
+        from kiro_crew.memory import MemoryStore
+        from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
+        from kiro_crew.skills import SkillsLoader
+
+        ctx_builder = ContextBuilder(
+            memory=MemoryStore(workspace=tmp_path / "ws"),
+            skills=SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False),
+        )
+        ctx_builder.conversation_log = MagicMock()
+        monkeypatch.setattr(ctx_builder, "build_message", mock_build_message)
+        monkeypatch.setattr(
+            "kiro_crew.context.build_session_replay",
+            lambda *args, **kwargs: "retained conversation replay",
+        )
+
+        state = _make_state(tmp_path, context_builder=ctx_builder)
+        hook_store = MagicMock()
+        hook_store.fire = AsyncMock(return_value=[])
+        state._hook_store = hook_store
+        slot = state.get_or_create_slot("slash-replay")
+        slot.folder_id = "folder-1"
+        state.folder_breadcrumb = MagicMock(return_value="Workspace / Demo")
+        persona_first_turn: list[bool] = []
+
+        def inject_persona(message, _theme, context_is_new, **_kwargs):
+            persona_first_turn.append(context_is_new)
+            return message
+
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_runner._maybe_inject_persona",
+            inject_persona,
+        )
+
+        dispatched: list[str] = []
+        stream_behavior = {
+            "cancel_after_accept": False,
+            "raise_after_accept": False,
+            "synthetic_end_turn": False,
+            "empty_end_turn": False,
+        }
+
+        async def stream(stream_message):
+            dispatched.append(stream_message)
+            if stream_message != "/tools":
+                assert replay["pending"] is True
+            if stream_behavior["cancel_after_accept"]:
+                stream_behavior["cancel_after_accept"] = False
+                yield LLMEvent(kind=EVENT_COMPLETE, stop_reason=STOP_REASON_CANCELLED)
+                return
+            if stream_behavior["synthetic_end_turn"]:
+                stream_behavior["synthetic_end_turn"] = False
+                yield LLMEvent(
+                    kind=EVENT_COMPLETE,
+                    stop_reason="end_turn",
+                    synthetic_completion=True,
+                )
+                return
+            if stream_behavior["empty_end_turn"]:
+                stream_behavior["empty_end_turn"] = False
+                yield LLMEvent(kind=EVENT_COMPLETE, stop_reason="end_turn")
+                return
+            yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="ok")
+            if stream_message != "/tools":
+                assert replay["pending"] is True
+            if stream_behavior["raise_after_accept"]:
+                stream_behavior["raise_after_accept"] = False
+                raise RuntimeError("stream failed after accepting replay")
+            yield LLMEvent(kind=EVENT_COMPLETE, stop_reason="end_turn")
+
+        mock_client = MagicMock()
+        mock_client.stream = stream
+        mock_client.stream_command = stream
+        mock_client.context_usage_pct = MagicMock(return_value=10.0)
+        state.sessions.get_or_create = AsyncMock(
+            side_effect=[
+                (mock_client, True, False),
+                (mock_client, False, False),
+                (mock_client, False, False),
+                (mock_client, False, False),
+                (mock_client, False, False),
+                (mock_client, False, False),
+                (mock_client, False, False),
+                (mock_client, False, False),
+            ]
+        )
+        state.sessions.get_pid = MagicMock(return_value=None)
+        state.sessions.record_failure = AsyncMock()
+        state.sessions.consume_replay_suppression = MagicMock(return_value=False)
+
+        replay = {"pending": True}
+        durable = {"sid": "old-full-history-sid"}
+
+        def replay_pending(_key):
+            return replay["pending"]
+
+        def consume_replay(_key):
+            was_pending = replay["pending"]
+            replay["pending"] = False
+            return was_pending
+
+        def mark_replay(_key):
+            replay["pending"] = True
+            return True
+
+        def commit_replay(_key):
+            durable["sid"] = "fresh-replayed-sid"
+            replay["pending"] = False
+            return True
+
+        state.sessions.provider_switch_replay_pending = MagicMock(side_effect=replay_pending)
+        state.sessions.consume_provider_switch_replay = MagicMock(side_effect=consume_replay)
+        state.sessions.mark_provider_switch_replay = MagicMock(side_effect=mark_replay)
+        state.sessions.commit_provider_switch_replay_sid = MagicMock(side_effect=commit_replay)
+
+        from kiro_crew.dashboard.chat import _run_chat
+
+        await _run_chat(state, slot, "/tools")
+
+        assert build_message_calls == []
+        assert replay["pending"] is True
+        assert durable["sid"] == "old-full-history-sid"
+        assert dispatched == ["/tools"]
+        state.sessions.consume_provider_switch_replay.assert_not_called()
+        state.sessions.commit_provider_switch_replay_sid.assert_not_called()
+
+        build_behavior["stop_during_build"] = True
+        await _run_chat(state, slot, "stop during replay prep")
+
+        assert len(build_message_calls) == 1
+        assert build_message_calls[0]["context_is_new"] is True
+        assert build_message_calls[0]["kwargs"]["folder_path"] == "Workspace / Demo"
+        assert (
+            build_message_calls[0]["kwargs"]["compressed_history"] == "retained conversation replay"
+        )
+        assert persona_first_turn == [True]
+        assert replay["pending"] is True
+        assert durable["sid"] == "old-full-history-sid"
+        assert dispatched == ["/tools"]
+        state.sessions.consume_provider_switch_replay.assert_not_called()
+        state.sessions.commit_provider_switch_replay_sid.assert_not_called()
+
+        stream_behavior["cancel_after_accept"] = True
+        await _run_chat(state, slot, "cancel accepted replay")
+
+        assert len(build_message_calls) == 2
+        cancelled_call = build_message_calls[1]
+        assert cancelled_call["context_is_new"] is True
+        assert cancelled_call["kwargs"]["folder_path"] == "Workspace / Demo"
+        assert cancelled_call["kwargs"]["compressed_history"] == "retained conversation replay"
+        assert persona_first_turn == [True, True]
+        assert dispatched == ["/tools", "cancel accepted replay"]
+        assert replay["pending"] is True
+        assert durable["sid"] == "old-full-history-sid"
+        state.sessions.consume_provider_switch_replay.assert_not_called()
+        state.sessions.mark_provider_switch_replay.assert_called_once_with("dashboard:slash-replay")
+        state.sessions.commit_provider_switch_replay_sid.assert_not_called()
+
+        stream_behavior["raise_after_accept"] = True
+        await _run_chat(state, slot, "raise after accepted replay")
+
+        assert len(build_message_calls) == 3
+        assert replay["pending"] is True
+        assert durable["sid"] == "old-full-history-sid"
+        state.sessions.consume_provider_switch_replay.assert_not_called()
+        assert state.sessions.mark_provider_switch_replay.call_count == 2
+        state.sessions.commit_provider_switch_replay_sid.assert_not_called()
+
+        stream_behavior["synthetic_end_turn"] = True
+        slot._empty_response_retries = 2
+        await _run_chat(state, slot, "synthetic replay completion")
+
+        assert len(build_message_calls) == 4
+        assert replay["pending"] is True
+        assert durable["sid"] == "old-full-history-sid"
+        state.sessions.consume_provider_switch_replay.assert_not_called()
+        assert state.sessions.mark_provider_switch_replay.call_count == 3
+        state.sessions.commit_provider_switch_replay_sid.assert_not_called()
+
+        stream_behavior["empty_end_turn"] = True
+        slot._empty_response_retries = 2
+        await _run_chat(state, slot, "real empty replay with exhausted budget")
+
+        assert len(build_message_calls) == 5
+        assert replay["pending"] is True
+        assert durable["sid"] == "old-full-history-sid"
+        state.sessions.consume_provider_switch_replay.assert_not_called()
+        assert state.sessions.mark_provider_switch_replay.call_count == 4
+        state.sessions.commit_provider_switch_replay_sid.assert_not_called()
+
+        stream_behavior["empty_end_turn"] = True
+        slot._empty_response_retries = 1
+        with patch(
+            "kiro_crew.dashboard.chat_runner._empty_auto_continue_enabled",
+            return_value=False,
+        ):
+            await _run_chat(state, slot, "real empty replay with continuation off")
+
+        assert len(build_message_calls) == 6
+        assert replay["pending"] is True
+        assert durable["sid"] == "old-full-history-sid"
+        state.sessions.consume_provider_switch_replay.assert_not_called()
+        assert state.sessions.mark_provider_switch_replay.call_count == 5
+        state.sessions.commit_provider_switch_replay_sid.assert_not_called()
+
+        await _run_chat(state, slot, "continue after uncommitted replay turns")
+
+        assert len(build_message_calls) == 7
+        call = build_message_calls[6]
+        assert call["context_is_new"] is True
+        assert call["kwargs"]["folder_path"] == "Workspace / Demo"
+        assert call["kwargs"]["compressed_history"] == "retained conversation replay"
+        assert persona_first_turn == [True, True, True, True, True, True, True]
+        assert dispatched == [
+            "/tools",
+            "cancel accepted replay",
+            "raise after accepted replay",
+            "synthetic replay completion",
+            "real empty replay with exhausted budget",
+            "real empty replay with continuation off",
+            "continue after uncommitted replay turns",
+        ]
+        assert replay["pending"] is False
+        assert durable["sid"] == "fresh-replayed-sid"
+        state.sessions.consume_provider_switch_replay.assert_not_called()
+        assert state.sessions.mark_provider_switch_replay.call_count == 5
+        state.sessions.commit_provider_switch_replay_sid.assert_called_once_with(
+            "dashboard:slash-replay"
+        )
+        agent_spawn_calls = [
+            call
+            for call in hook_store.fire.await_args_list
+            if call.args and call.args[0] == HOOK_EVENT_AGENT_SPAWN
+        ]
+        assert len(agent_spawn_calls) == 1
+
     @pytest.mark.asyncio
     async def test_run_chat_forwards_and_clears_the_reinjection_flag(self, tmp_path, monkeypatch):
         """A compaction flags the session; the NEXT _run_chat must forward
@@ -16925,6 +17242,10 @@ class TestEmptyResponseRetry:
         from kiro_crew.providers.base import EVENT_CLEAR_STATUS, EVENT_COMPLETE, LLMEvent
 
         state, slot, client, _run_chat = self._make_state_and_slot(tmp_path)
+        state.sessions.provider_switch_replay_pending = MagicMock(return_value=True)
+        state.sessions.consume_provider_switch_replay = MagicMock(return_value=True)
+        state.sessions.mark_provider_switch_replay = MagicMock(return_value=True)
+        state.sessions.commit_provider_switch_replay_sid = MagicMock(return_value=True)
 
         async def _stream(msg):
             yield LLMEvent(kind=EVENT_CLEAR_STATUS)
@@ -16937,6 +17258,13 @@ class TestEmptyResponseRetry:
 
         notice_msgs = [m for m in slot.messages if m.get("role") == "notice"]
         assert not any("returned nothing this turn" in m.get("content", "") for m in notice_msgs)
+        state.sessions.consume_provider_switch_replay.assert_called_once_with(
+            f"dashboard:{slot.key}"
+        )
+        state.sessions.commit_provider_switch_replay_sid.assert_called_once_with(
+            f"dashboard:{slot.key}"
+        )
+        state.sessions.mark_provider_switch_replay.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_agent_switch_turn_no_empty_response_error(self, tmp_path: Path) -> None:

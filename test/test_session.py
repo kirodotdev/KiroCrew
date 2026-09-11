@@ -5188,6 +5188,215 @@ class TestLoadRecoveryHistoryReplay:
         assert sess.provider_switch_replay is False
         await mgr.close_all()
 
+    @pytest.mark.asyncio
+    async def test_replay_marker_survives_reads_until_prompt_acknowledges_it(self, cfg):
+        mgr = SessionManager(cfg, provider_factory=self._factory(True))
+        await mgr.get_or_create("thread1")
+
+        assert mgr.provider_switch_replay_pending("thread1") is True
+        assert mgr.provider_switch_replay_pending("thread1") is True
+        assert mgr.consume_provider_switch_replay("thread1") is True
+        assert mgr.provider_switch_replay_pending("thread1") is False
+        assert mgr.consume_provider_switch_replay("thread1") is False
+        assert mgr.mark_provider_switch_replay("thread1") is True
+        assert mgr.provider_switch_replay_pending("thread1") is True
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_landed_registered_legacy_replay_settles_without_rearming(self, cfg, monkeypatch):
+        from kiro_crew.providers.base import LLMProvider
+
+        class _LegacyClaudeProvider(LLMProvider):
+            async def start(self) -> None:
+                return None
+
+            async def shutdown(self) -> None:
+                return None
+
+            async def stream(self, message: str):
+                if False:  # pragma: no cover - establishes async-generator shape
+                    yield message
+
+            async def approve_tool(self, request_id, *, always: bool = False) -> None:
+                return None
+
+            async def reject_tool(self, request_id) -> None:
+                return None
+
+            def context_usage_pct(self) -> float:
+                return 0.0
+
+            @property
+            def session_id(self) -> str:
+                return "legacy-session-sid"
+
+            @property
+            def cwd(self) -> str:
+                return "/legacy-workspace"
+
+        monkeypatch.setattr("kiro_crew.session.ClaudeCodeProvider", _LegacyClaudeProvider)
+        provider = _LegacyClaudeProvider()
+        mgr = SessionManager(cfg, provider_factory=lambda *args, **kwargs: provider)
+        await mgr.get_or_create("thread1")
+        assert mgr.mark_provider_switch_replay("thread1") is True
+
+        # chat_runner calls this settlement after a clean landed end_turn. A
+        # dynamically registered legacy provider has no ACP SID to promote, so
+        # settlement must consume the lease instead of returning False and making
+        # chat_runner re-arm full-history replay forever.
+        assert mgr.commit_provider_switch_replay_sid("thread1") is True
+        assert mgr.provider_switch_replay_pending("thread1") is False
+        assert mgr.commit_provider_switch_replay_sid("thread1") is False
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_non_acp_provider_switch_replay_settles_without_sid_promotion(self, cfg):
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        await mgr.get_or_create("thread1")
+        session = next(iter(mgr._sessions.values()))
+        session.provider_switch_replay = True
+
+        assert mgr.commit_provider_switch_replay_sid("thread1") is True
+        assert session.provider_switch_replay is False
+        assert mgr.provider_switch_replay_pending("thread1") is False
+
+        mgr.release("thread1")
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_pending_replay_preserves_prior_sid_until_commit(
+        self, cfg, monkeypatch, tmp_path
+    ):
+        from kiro_crew.acp.types import PROVIDER_LABEL_DEFAULT
+        from kiro_crew.providers.acp import AcpProvider
+
+        shutdown_started = asyncio.Event()
+        release_shutdown = asyncio.Event()
+
+        async def concrete_shutdown():
+            shutdown_started.set()
+            await release_shutdown.wait()
+
+        def factory(session_key=None, agent=None, channel_id=None, **kwargs):
+            provider = object.__new__(AcpProvider)
+            provider._client = MagicMock()
+            provider._client._session_id = "fresh-replayed-sid"
+            provider._client._work_dir = "/new-workspace"
+            provider._client._pid = None
+            provider._client.backend = ACP_BACKEND_KIRO
+            provider._client.resumed = False
+            provider._client.set_resume_session_id = MagicMock()
+            provider._history_replay_needed = True
+            provider._defer_replay_sid_promotion = True
+            provider.start = AsyncMock()
+            provider.shutdown = AsyncMock(side_effect=concrete_shutdown)
+            provider.context_usage_pct = MagicMock(return_value=0.0)
+            return provider
+
+        native_sessions = tmp_path / "native-sessions"
+        native_sessions.mkdir()
+        (native_sessions / "old-full-history-sid.json").write_text("{}", encoding="utf-8")
+        (native_sessions / "old-full-history-sid.jsonl").write_text(
+            '{"role":"user","content":"prior history"}\n',
+            encoding="utf-8",
+        )
+        (native_sessions / "fresh-replayed-sid.json").write_text("{}", encoding="utf-8")
+        (native_sessions / "fresh-replayed-sid.jsonl").write_text(
+            '{"role":"user","content":"replayed history"}\n',
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(
+            "kiro_crew.session_map._kiro_sessions_dir",
+            lambda: native_sessions,
+        )
+
+        mgr = SessionManager(cfg, provider_factory=factory)
+        mgr._session_map.set(
+            "thread1",
+            "old-full-history-sid",
+            provider=PROVIDER_LABEL_DEFAULT,
+            cwd="/old-workspace",
+        )
+
+        await mgr.get_or_create("thread1")
+
+        assert mgr._session_map.get("thread1") == "old-full-history-sid"
+        assert mgr.provider_switch_replay_pending("thread1") is True
+
+        # close_all flushes SessionMap before provider shutdown. Hold it at that
+        # boundary and create a new manager, exactly as an update restart can.
+        close_task = asyncio.create_task(mgr.close_all())
+        await asyncio.wait_for(shutdown_started.wait(), timeout=1.0)
+        resumed_mgr = SessionManager(cfg, provider_factory=factory)
+        assert resumed_mgr._session_map.get("thread1") == "old-full-history-sid"
+        release_shutdown.set()
+        await close_task
+
+        await resumed_mgr.get_or_create("thread1")
+        assert resumed_mgr.provider_switch_replay_pending("thread1") is True
+        assert resumed_mgr._session_map.get("thread1") == "old-full-history-sid"
+        assert resumed_mgr.commit_provider_switch_replay_sid("thread1") is True
+        assert resumed_mgr.provider_switch_replay_pending("thread1") is False
+        assert resumed_mgr._session_map.get("thread1") == "fresh-replayed-sid"
+        await resumed_mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_generic_load_recovery_promotes_fresh_sid_immediately(
+        self, cfg, monkeypatch, tmp_path
+    ):
+        from kiro_crew.acp.types import PROVIDER_LABEL_DEFAULT
+        from kiro_crew.providers.acp import AcpProvider
+
+        def factory(session_key=None, agent=None, channel_id=None, **kwargs):
+            provider = object.__new__(AcpProvider)
+            provider._client = MagicMock()
+            provider._client._session_id = "fresh-recovery-sid"
+            provider._client._work_dir = "/new-workspace"
+            provider._client._pid = None
+            provider._client.backend = ACP_BACKEND_KIRO
+            provider._client.resumed = False
+            provider._client.set_resume_session_id = MagicMock()
+            provider._history_replay_needed = True
+            provider._defer_replay_sid_promotion = False
+            provider.start = AsyncMock()
+            provider.shutdown = AsyncMock()
+            provider.context_usage_pct = MagicMock(return_value=0.0)
+            return provider
+
+        native_sessions = tmp_path / "native-sessions"
+        native_sessions.mkdir()
+        for sid, content in (
+            ("old-full-history-sid", "prior history"),
+            ("fresh-recovery-sid", "replayed history"),
+        ):
+            (native_sessions / f"{sid}.json").write_text("{}", encoding="utf-8")
+            (native_sessions / f"{sid}.jsonl").write_text(
+                f'{{"role":"user","content":"{content}"}}\n',
+                encoding="utf-8",
+            )
+        monkeypatch.setattr(
+            "kiro_crew.session_map._kiro_sessions_dir",
+            lambda: native_sessions,
+        )
+
+        mgr = SessionManager(cfg, provider_factory=factory)
+        mgr._session_map.set(
+            "thread1",
+            "old-full-history-sid",
+            provider=PROVIDER_LABEL_DEFAULT,
+            cwd="/old-workspace",
+        )
+
+        await mgr.get_or_create("thread1")
+
+        assert mgr.provider_switch_replay_pending("thread1") is True
+        assert mgr._session_map.get("thread1") == "fresh-recovery-sid"
+        await mgr.close_all()
+
+        reloaded_mgr = SessionManager(cfg, provider_factory=factory)
+        assert reloaded_mgr._session_map.get("thread1") == "fresh-recovery-sid"
+        await reloaded_mgr.close_all()
+
 
 class TestIneffectiveCompactionCooldown:
     """A compaction that completes but frees no meaningful headroom keeps the
