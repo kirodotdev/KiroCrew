@@ -228,6 +228,23 @@ export function relTime(ts: number): string {
   return fmtRelative(ts)
 }
 
+// The screen the report pins onto must load from a url WE built, never from a
+// path the model handed back. We give the critic the images as `![screen](path)`,
+// and it echoes a `screens[].path` — but that echo can be a chat placeholder
+// (`[image: <id>_name.png]`) or an invented path, which /api/file-raw cannot serve,
+// so the preview collapses and the pins pile up. `uploaded` already carries the
+// real url for every screen (an uploaded file, or a backend-rendered PNG) in the
+// order the critic reviewed them, so pin onto that url and take only the (nicer)
+// label from the model. With no url of our own there is nothing to show — the
+// report falls to its "couldn't get the pixels" state rather than a dead link.
+export function resolveScreens(rep: Report, uploaded: Screen[]): Screen[] {
+  return (uploaded || []).map((u, i) => ({
+    step: i + 1,
+    label: (rep.screens && rep.screens[i] && rep.screens[i].label) || u.label,
+    url: u.url,
+  }))
+}
+
 export const loadHistory = (): HistoryEntry[] => { try { return JSON.parse(localStorage.getItem(HKEY) || '[]') } catch { return [] } }
 /**
  * Show an in-flight run in the critique list. Called when `+ New` backgrounds a
