@@ -72,8 +72,9 @@ register it in `registry.py`.
   wire params with nothing off-wire, so a mirror that has no such obligation
   implements only `session_params()`. A mirror that does (codex) overrides this
   and defines `session_params()` as its `.params`, so the two faces cannot drift.
-  Also the seam a mirror that must place the gateway's pooled stubs itself takes
-  them through (`stub_elements`).
+  Also the seam the gateway's pooled stubs come through (`stub_elements`): the
+  client's shared append is inert for every mirrored backend, so a mirror that
+  does not place them ships a backend the gateway cannot pool onto.
 - **`write_files()`** — the file face, for native config the harness loads itself.
   **Create-or-decline**: create the file, or leave the path entirely alone. Never
   read, merge into, rewrite or delete a file Crew did not author.

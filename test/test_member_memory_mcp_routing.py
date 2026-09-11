@@ -72,18 +72,27 @@ async def test_client_session_requests_do_not_restore_private_broker_routing(
         mcp_gateway_overlay=broker_overlay,
         mcp_gateway_socket=socket,
     )
+
     # Model the direct Claude projection after spawn; its resolver is exercised
     # separately below. Kiro reads its original agent spec without an injection.
-    client._session_mcp_cache = [{"name": "direct", "command": "local-mcp", "args": [], "env": []}]
+    # The claude mirror now places the pooled broker stubs INTO the projection
+    # (held to the spec's `tools` allowlist), so the post-spawn cache carries the
+    # stub for a non-private session; the shared _pooled_mcp_servers append is
+    # inert for mirrored backends and must not re-add it at the call site.
+    def _projected_cache() -> list:
+        cache = [{"name": "direct", "command": "local-mcp", "args": [], "env": []}]
+        if backend == ACP_BACKEND_CLAUDE and not private:
+            cache.append({"name": "builder", "command": "broker-stub", "args": [], "env": []})
+        return cache
+
+    client._session_mcp_cache = _projected_cache()
     claims = Mock()
     monkeypatch.setattr(client_mod, "schedule_claim", claims)
     if entry == "reset-and-rekey":
         client._reset_state()
         client.rekey("dashboard:next", channel_id="next-channel")
         client._agent = "another-agent"
-        client._session_mcp_cache = [
-            {"name": "direct", "command": "local-mcp", "args": [], "env": []}
-        ]
+        client._session_mcp_cache = _projected_cache()
         assert claims.call_args.args[0] == (None if private else str(socket))
 
     sent = []

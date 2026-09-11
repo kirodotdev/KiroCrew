@@ -182,10 +182,16 @@ class AgentConfigMirror(ABC):
 
         ``stub_elements`` may arrive in ``kwargs``: the shared MCP gateway's broker
         stubs for this session, which the client holds because it owns the overlay.
-        A mirror that must place them itself (so one withhold rule covers both halves
-        of the array) takes them; this default ignores them, and the client's shared
-        append then places them for that backend. Same blocking allowance and the
-        same wiring obligation as :meth:`session_params`.
+        A MIRRORED backend receives its stubs only through here -- the client's
+        shared append (``AcpClient._pooled_mcp_servers``) is inert for every
+        mirrored backend, precisely so an unnarrowed append cannot re-add what a
+        projection withheld -- so a mirror places them itself, under its own
+        withhold rules. This default ignores them, and that is the fail-CLOSED
+        direction: a new mirror that does not decide stub placement ships a
+        backend the gateway cannot pool onto, which is visible and harmless,
+        rather than one that mounts stubs no allowlist filtered.
+        Same blocking allowance and the same wiring obligation as
+        :meth:`session_params`.
         """
         return SessionProjection(params=self.session_params(agent, **kwargs))
 

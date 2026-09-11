@@ -632,12 +632,18 @@ class TestClientSeam:
             mcp_gateway_overlay=overlay,
         )
         original = _by_name(client._session_mcp_servers()).get("foo")
-        assert (original is not None) is private
+        # Present either way: privately as the spec's own entry, pooled as the
+        # broker stub the MIRROR appended (the spec's `tools` references foo, so
+        # the allowlist grants the stub).
+        assert original is not None
         if private:
             assert original["command"] == "/bin/foo"
             assert original["args"] == ["serve"]
             assert original["env"] == [{"name": "K", "value": "V"}]
-        assert bool(client._pooled_mcp_servers()) is (not private)
+        else:
+            assert original["command"] == "broker-stub"
+        # The shared append is inert for claude -- the mirror placed the stubs.
+        assert client._pooled_mcp_servers() == []
 
     def test_neither_gate_is_an_identity_check(self, tmp_path, agents_dir, monkeypatch):
         """Two gates decide the seam, and neither reads the harness's identity.
@@ -710,7 +716,7 @@ class TestClientSeam:
         def _never(*_a, **_kw):
             raise AssertionError("the kiro path must not translate a spec")
 
-        monkeypatch.setattr(claude_mirror, "session_mcp_servers", _never)
+        monkeypatch.setattr(claude_mirror, "session_mcp_projection", _never)
         monkeypatch.setattr(client_mod, "injection_server_names", _never)
         client = AcpClient(work_dir=tmp_path, agent="kirocrew")
         result = client._session_mcp_servers()
@@ -730,13 +736,13 @@ class TestClientSeam:
         """
         _write_spec(agents_dir, servers={"foo": {"command": "/bin/foo"}}, tools=["@foo"])
         calls: list[int] = []
-        real = session_mcp.session_mcp_servers
+        real = session_mcp.session_mcp_projection
 
         def _counted(*a, **kw):
             calls.append(1)
             return real(*a, **kw)
 
-        monkeypatch.setattr(claude_mirror, "session_mcp_servers", _counted)
+        monkeypatch.setattr(claude_mirror, "session_mcp_projection", _counted)
         client = self._seeded(tmp_path, agent="kirocrew", acp_backend=ACP_BACKEND_CLAUDE)
         assert "foo" in _by_name(client._session_mcp_servers())
         assert "foo" in _by_name(client._session_mcp_servers())
@@ -787,6 +793,141 @@ class TestClientSeam:
         first = client._session_mcp_servers()
         first.clear()
         assert "foo" in _by_name(client._session_mcp_servers())
+
+    def test_a_pooled_stub_the_spec_never_references_does_not_mount(self, tmp_path, agents_dir):
+        """The `tools` allowlist covers the pooled half of the array too.
+
+        The gateway rewriter writes each agent's overlay from the GLOBAL settings
+        file as well as the agent's own spec, so the overlay can carry a stub for
+        a server this agent's ``tools`` never references -- and a stub is that
+        server. Before the mirror placed the stubs, the shared append mounted it
+        anyway, so a claude session received a pooled server the same spec would
+        NOT mount on kiro-cli or codex. The unreferenced server is the widening
+        direction, and this is the parity this test pins.
+        """
+        _write_spec(agents_dir, servers={"direct": {"command": "/bin/direct"}}, tools=["@direct"])
+        client = self._seeded(tmp_path, agent="kirocrew", acp_backend=ACP_BACKEND_CLAUDE)
+        client._pooled_broker_stubs = lambda: [  # type: ignore[method-assign]
+            {"name": "unreferenced", "command": "/stub", "args": [], "env": [], "type": "stdio"},
+        ]
+        names = set(_by_name(client._session_mcp_servers()))
+        assert "direct" in names
+        assert "unreferenced" not in names
+        # And the shared append is inert for claude, so nothing re-adds it later.
+        assert client._pooled_mcp_servers() == []
+
+    def test_the_shared_append_still_pools_for_kiro(self, tmp_path):
+        """The mirror-less backend keeps the shared append.
+
+        kiro-cli reads the agent spec itself via ``--agent``, so the injected
+        array is the ONLY channel its broker stubs arrive on -- the injection
+        outranking the same-named spec entry is what pools them. Making the
+        append inert for every MIRRORED backend must not take kiro's away.
+        """
+        client = AcpClient(work_dir=tmp_path, agent="kirocrew")
+        stub = {"name": "pooled", "command": "/stub", "args": [], "env": [], "type": "stdio"}
+        client._pooled_broker_stubs = lambda: [dict(stub)]  # type: ignore[method-assign]
+        assert client._pooled_mcp_servers() == [stub]
+
+
+class TestPooledStubsOnTheClaudeMirror:
+    """The claude mirror places the pooled broker stubs itself (codex parity).
+
+    One withhold rule must cover both halves of the array: a stub carries the
+    SAME name as the agent-spec entry it rewrites, so a stub appended by the
+    client after the mirror's rules ran would re-add -- unfiltered -- exactly what
+    those rules withheld.
+    """
+
+    def test_the_mirror_places_the_pooled_stubs_itself(self, agents_dir):
+        _write_spec(agents_dir, servers={"granted": {"command": "/bin/g"}}, tools=["@granted"])
+        stubs = [{"name": "granted", "command": "/stub", "args": [], "env": [], "type": "stdio"}]
+        mirror = ClaudeCodeMirror()
+        projection = mirror.session_projection(
+            "kirocrew",
+            stub_server_names=("granted",),
+            stub_elements=stubs,
+            permission_surface_owned=True,
+        )
+        by_name = _by_name(projection.params["mcpServers"])
+        assert by_name["granted"]["command"] == "/stub"
+        # The wire face IS the projection's params, pinned so the two cannot drift.
+        assert (
+            mirror.session_params(
+                "kirocrew",
+                stub_server_names=("granted",),
+                stub_elements=stubs,
+                permission_surface_owned=True,
+            )
+            == projection.params
+        )
+
+    def test_a_pooled_stub_is_held_to_the_same_tools_allowlist(self, agents_dir):
+        """Same rule, same parse, as codex: `tools` gates the stubs too.
+
+        ``*`` still grants all, and a spec with no ``tools`` list grants nothing.
+        """
+        stubs = [
+            {"name": "granted", "command": "/stub", "args": [], "env": [], "type": "stdio"},
+            {"name": "unreferenced", "command": "/stub", "args": [], "env": [], "type": "stdio"},
+        ]
+        mirror = ClaudeCodeMirror()
+
+        def _names(tools):
+            _write_spec(agents_dir, servers={"granted": {"command": "/bin/g"}}, tools=tools)
+            projection = mirror.session_projection(
+                "kirocrew",
+                stub_server_names=("granted", "unreferenced"),
+                stub_elements=stubs,
+                permission_surface_owned=True,
+            )
+            return {e["name"] for e in projection.params["mcpServers"]}
+
+        assert "granted" in _names(["@granted"])
+        assert "unreferenced" not in _names(["@granted"])
+        assert {"granted", "unreferenced"} <= _names(["*"])
+        assert _names(None) & {"granted", "unreferenced"} == set()
+
+    def test_an_unowned_permission_surface_withholds_the_stubs_too(self, agents_dir):
+        """The fail-closed rule covers both halves of the array.
+
+        A stub is a WORKING server (``spawn_run``, ``cron_add``, every pooled
+        backend), so appending it after the translated half was withheld would
+        hand an ungoverned permission surface exactly the tools the withhold
+        exists to keep off it.
+        """
+        _write_spec(agents_dir, servers={"granted": {"command": "/bin/g"}}, tools=["@granted"])
+        stubs = [{"name": "granted", "command": "/stub", "args": [], "env": [], "type": "stdio"}]
+        projection = ClaudeCodeMirror().session_projection(
+            "kirocrew",
+            stub_server_names=("granted",),
+            stub_elements=stubs,
+            permission_surface_owned=False,
+        )
+        assert projection.params == {"mcpServers": []}
+
+    def test_a_narrowed_servers_stub_stays_mounted_unlike_codex(self, agents_dir):
+        """Claude honours `disabledTools` through `permissions.deny`, not withholding.
+
+        The deny rules in ``settings.local.json`` are keyed
+        ``mcp__<server>__<tool>`` and the stub registers under the same server
+        name, so the narrowing still applies to it. Withholding the stub, as
+        codex must (it has no deny channel), would drop a server this backend
+        can narrow correctly.
+        """
+        _write_spec(
+            agents_dir,
+            servers={"narrowed": {"command": "/bin/n", "disabledTools": ["dangerous"]}},
+            tools=["@narrowed"],
+        )
+        stubs = [{"name": "narrowed", "command": "/stub", "args": [], "env": [], "type": "stdio"}]
+        projection = ClaudeCodeMirror().session_projection(
+            "kirocrew",
+            stub_server_names=("narrowed",),
+            stub_elements=stubs,
+            permission_surface_owned=True,
+        )
+        assert "narrowed" in {e["name"] for e in projection.params["mcpServers"]}
 
 
 class TestLocalSettingsSeed:

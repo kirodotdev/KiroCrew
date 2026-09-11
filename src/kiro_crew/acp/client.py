@@ -179,7 +179,7 @@ from kiro_crew.mcp_gateway.claim import schedule_claim
 from kiro_crew.mcp_gateway.session_servers import injection_server_names, pooled_session_servers
 from kiro_crew.metrics.tool_calls import note_tool_call_started, record_tool_call_finished
 from kiro_crew.platform.context import redact_log_via_context
-from kiro_crew.providers.mirrors import mirror_for
+from kiro_crew.providers.mirrors import MIRRORS, mirror_for
 from kiro_crew.providers.mirrors.codex import drop_unadvertised_transports
 from kiro_crew.resource_status import inject_xdist_auto_cap
 from kiro_crew.sandbox import (
@@ -3774,13 +3774,26 @@ class AcpClient:
         servers — nothing is written to the user's project or to
         ``~/.kiro/agents/``. Empty when the shared gateway is disabled.
 
-        Empty for codex as well, because its own projection already appended the
-        stubs it may have (``_resolve_session_mcp_servers``). A second unnarrowed
+        Empty for EVERY mirrored backend, with no per-backend branch: a mirror's
+        projection places the stubs itself (``_resolve_session_mcp_servers`` hands
+        them down as ``stub_elements``), so one withhold rule -- the spec's
+        ``tools`` allowlist, codex's restriction set, claude's permission-surface
+        precondition -- covers both halves of the array. A second unnarrowed
         append here would re-add, as an UNRESTRICTED broker stub, exactly the
-        servers that projection withheld — a stub carries the same name as the entry
-        it rewrites, so the withhold and the re-add are the same server.
+        servers that projection withheld: a stub carries the same name as the
+        entry it rewrites, so the withhold and the re-add are the same server.
+
+        The shared append remains for the mirror-less backends: kiro-cli reads
+        the spec itself via ``--agent``, so this array is the ONLY channel its
+        stubs can arrive on, and the injection outranking the spec entry is what
+        pools them there.
+
+        Membership in ``MIRRORS`` rather than ``mirror_for``, because this sits
+        on the shared session/new / session/load composition: ``mirror_for``
+        RAISES for a backend registered in neither map, and kiro's construction
+        path must not gain a failure mode in service of an adapter (H13).
         """
-        return [] if self._is_codex else self._pooled_broker_stubs()
+        return [] if self.backend in MIRRORS else self._pooled_broker_stubs()
 
     def _resolve_session_mcp_servers(self) -> list[dict[str, Any]]:
         """Translate the agent spec into this session's ``mcpServers`` array.

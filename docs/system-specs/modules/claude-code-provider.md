@@ -171,14 +171,27 @@ and effort selection, the full `session/request_permission` flow) works. So
   difference from kiro-cli is stated for what it is: an administrator who omits
   `kirocrew-core` from the catalog has it dropped there and kept here (one
   host-owned server wider), while every third-party server goes the other way.
-- **A server the MCP gateway brokers yields to its stub.** The pooled broker
-  emits a stub under the SAME name as the agent-spec entry it rewrites, and the
-  caller appends those stubs to this array. Emitting both would put two elements
-  with one `name` in a single array: either the raw entry shadows the stub and
-  the session bypasses the broker, or both register and every pooled backend runs
+- **A server the MCP gateway brokers yields to its stub, and the MIRROR places
+  the stubs.** The pooled broker emits a stub under the SAME name as the
+  agent-spec entry it rewrites. Emitting both would put two elements with one
+  `name` in a single array: either the raw entry shadows the stub and the
+  session bypasses the broker, or both register and every pooled backend runs
   twice (#927). The client resolves `injection_server_names` for its overlay and
   passes the set down; an unreadable overlay degrades to "no stubs", never to a
-  session with no servers.
+  session with no servers. The stub ELEMENTS come down the same call
+  (`stub_elements`) and the mirror appends them itself -- the client's shared
+  append (`_pooled_mcp_servers`) is inert for every mirrored backend -- so two
+  of the rules that narrowed the translated half cover the stubs: a stub for a
+  server this agent's `tools` never references is not mounted (the gateway
+  overlay is written per agent from the GLOBAL settings file as well as the
+  agent's own spec, so it can carry exactly that stub), and a session whose
+  permission surface Crew does not own gets no stubs along with no array. The
+  registry filter is the stated residual: the rewriter has no registry
+  awareness, so a stub is not held to it here -- tracked separately, and
+  pre-existing on codex, whose stub filter reads the same two rules. A stub
+  for a spec-narrowed server stays mounted, unlike codex: the narrowing rides
+  `permissions.deny` in `settings.local.json`, which matches the stub because it
+  registers under the same server name.
 - **Crew's control plane is re-derived, not copied.** `kirocrew-core` and
   `kirocrew-cron` come from `agent.managed_mcp_spec_entry`, so a stale hand-edited
   command in the spec cannot cost a session the tools it needs to report back at
