@@ -2320,7 +2320,19 @@ class VectorMemoryStore:
             now = datetime.now(tz=timezone.utc)
             candidates: list[dict] = []
             with self._db_lock:
-                k = min(limit * 2, self._faiss_index.ntotal)  # type: ignore[attr-defined]
+                # MMR reranks from the FULL candidate pool (see the _mmr_rerank pool
+                # comment: truncating toward `limit` silently drops the
+                # relevant-but-diverse tail pick that is the whole point of MMR). The
+                # sqlite tiers already hand the rerank their entire embedded
+                # population, bounded only by _MMR_MAX_POOL inside _mmr_rerank — so
+                # the FAISS tier must match that recall contract (#9074). Without
+                # MMR the result is candidates[:limit], where limit * 2 headroom for
+                # tag-filter/tombstone drops is correct and cheaper.
+                k = (
+                    min(_MMR_MAX_POOL, self._faiss_index.ntotal)  # type: ignore[attr-defined]
+                    if mmr
+                    else min(limit * 2, self._faiss_index.ntotal)  # type: ignore[attr-defined]
+                )
                 distances, indices = self._faiss_index.search(vec.reshape(1, -1), k)  # type: ignore[attr-defined]
                 # FAISS returns ids and distances only. Every hit is resolved in
                 # a single IN (...) query over an explicit column list: one

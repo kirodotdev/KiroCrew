@@ -4336,3 +4336,148 @@ class TestDedupThresholdLoaderValidation:
         assert section.semantic_confidence_threshold == 0.6
         assert section.episodic_max_results == 12
         assert section.episodic_max_count == 500
+
+
+class TestFaissMmrPoolRecallContract:
+    """FAISS episodic tier must hand MMR the same recall-contract pool as the
+    sqlite tiers (#9074).
+
+    The sqlite tiers (per-call and resident) hand ``_mmr_rerank`` their entire
+    embedded population, bounded only by ``_MMR_MAX_POOL`` — the pool comment in
+    ``_mmr_rerank`` declares truncating toward ``limit`` a recall change. The
+    FAISS tier pre-truncated its pool to ``limit * 2`` (16 at the default
+    ``limit=8``), silently dropping the relevant-but-diverse tail pick that is
+    the whole point of MMR.
+    """
+
+    dim = 16
+
+    class _MiniFlatIP:
+        """Exact IndexFlatIP semantics over a normalized row matrix.
+
+        ``search`` computes true inner products and honors ``k`` exactly like
+        FAISS: only the top-``k`` hits come back. Records every ``k`` received
+        so tests can pin the pool-size request itself.
+        """
+
+        def __init__(self, mat) -> None:
+            self._mat = mat
+            self.ntotal = len(mat)
+            self.received_k: list[int] = []
+
+        def search(self, vec, k):
+            import numpy as np
+
+            self.received_k.append(int(k))
+            sims = self._mat @ vec.reshape(-1)
+            order = np.argsort(-sims)[: int(k)]
+            return sims[order].reshape(1, -1), order.reshape(1, -1).astype(np.int64)
+
+    def _build_store(self, tmp_path: Path, monkeypatch, texts_and_vecs):
+        """Store with rows in sqlite (real embedding blobs) AND a MiniFlatIP index.
+
+        Both tiers see the identical population, so FAISS-vs-sqlite parity is a
+        true recall comparison, not a mock artifact.
+        """
+        import numpy as np
+
+        import kiro_crew.vector_memory as vm_mod
+
+        monkeypatch.setattr(vm_mod, "_HAS_FAISS", True)
+        monkeypatch.setattr(vm_mod, "_HAS_NUMPY", True)
+
+        store = VectorMemoryStore(db_path=tmp_path / "mem.db", embedding_dim=self.dim)
+        store.init()
+
+        today = datetime.now(tz=timezone.utc).isoformat()
+        mat = np.zeros((len(texts_and_vecs), self.dim), dtype=np.float32)
+        id_map: list[str] = []
+        for i, (mem_id, text, vec) in enumerate(texts_and_vecs):
+            v = np.asarray(vec, dtype=np.float32)
+            v /= np.linalg.norm(v)
+            mat[i] = v
+            id_map.append(mem_id)
+            store.db.execute(
+                "INSERT INTO episodic_memories (id, text, embedding, is_deleted, "
+                "importance, created_at, last_accessed_at) VALUES (?, ?, ?, 0, 1.0, ?, ?)",
+                (mem_id, text, v.tobytes(), today, today),
+            )
+        store.db.commit()
+
+        index = self._MiniFlatIP(mat)
+        store._faiss_index = index
+        store._faiss_id_map = id_map
+        return store, index
+
+    def _population(self):
+        """20 near-duplicate rows outranking one diverse row on pure relevance.
+
+        Duplicates share one token set (pairwise Jaccard 1.0) with cosines
+        descending from ~0.995; the diverse row sits at rank 21 with cosine 0.6
+        and zero token overlap. With the old ``limit * 2`` pool (16) the diverse
+        row never reaches MMR; from the full pool MMR must select it (its MMR
+        value 0.6·rel ≈ 0.36 beats a second duplicate's 0.6·rel − 0.4·1.0 ≈ 0.19).
+        """
+        import numpy as np
+
+        rows = []
+        dup_text = "postgres database migration plan step one"
+        for i in range(20):
+            # e0-dominant with a tiny per-row e1 component: cosine to e0 descends
+            # ~0.9950 → ~0.9046 as eps grows, keeping all 20 above the diverse row.
+            eps = 0.1 + i * 0.02
+            vec = np.zeros(self.dim, dtype=np.float32)
+            vec[0], vec[1] = 1.0, eps
+            rows.append((f"dup-{i:02d}", dup_text, vec))
+        diverse = np.zeros(self.dim, dtype=np.float32)
+        diverse[0], diverse[2] = 0.6, 0.8  # cosine 0.6 to e0, disjoint tokens
+        rows.append(("diverse-x", "kubernetes ingress rollout canary window", diverse))
+        return rows
+
+    def _query(self):
+        q = [0.0] * self.dim
+        q[0] = 1.0
+        return q
+
+    def test_mmr_pool_not_truncated_to_limit_window(self, tmp_path: Path, monkeypatch) -> None:
+        """ATTACK: the rank-21 diverse row must be MMR-reachable (full pool)."""
+        store, index = self._build_store(tmp_path, monkeypatch, self._population())
+        result = store.search_episodic(query_embedding=self._query(), limit=8, mmr=True)
+        ids = [r["id"] for r in result]
+        assert "diverse-x" in ids, (
+            "FAISS tier truncated the MMR candidate pool below the recall "
+            f"contract: rank-21 diverse row unreachable (pool k={index.received_k})"
+        )
+        # The pool request itself must follow the contract, not the limit window.
+        assert index.received_k == [21], index.received_k
+
+    def test_faiss_and_sqlite_tiers_return_identical_mmr_results(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """PARITY (#9074 Q2): identical population → identical MMR selections."""
+        store, _ = self._build_store(tmp_path, monkeypatch, self._population())
+        q = self._query()
+        faiss_ids = [r["id"] for r in store.search_episodic(query_embedding=q, limit=8, mmr=True)]
+        store._faiss_index = None  # falls through to the per-call sqlite tier
+        sqlite_ids = [r["id"] for r in store.search_episodic(query_embedding=q, limit=8, mmr=True)]
+        assert faiss_ids == sqlite_ids
+
+    def test_non_mmr_path_keeps_limit_window(self, tmp_path: Path, monkeypatch) -> None:
+        """CONTROL: mmr=False keeps the cheap limit*2 pool (top-limit slice only)."""
+        store, index = self._build_store(tmp_path, monkeypatch, self._population())
+        result = store.search_episodic(query_embedding=self._query(), limit=8, mmr=False)
+        assert index.received_k == [16]  # limit * 2, unchanged contract
+        assert len(result) == 8
+        assert all(r["id"].startswith("dup-") for r in result)  # pure relevance order
+
+    def test_small_population_unchanged(self, tmp_path: Path, monkeypatch) -> None:
+        """BENIGN: ntotal below both pool bounds → both tiers identical, no new denials."""
+        rows = self._population()[:5]
+        store, index = self._build_store(tmp_path, monkeypatch, rows)
+        q = self._query()
+        faiss_ids = [r["id"] for r in store.search_episodic(query_embedding=q, limit=8, mmr=True)]
+        assert index.received_k == [5]  # min(_MMR_MAX_POOL, ntotal) = ntotal
+        assert len(faiss_ids) == 5
+        store._faiss_index = None
+        sqlite_ids = [r["id"] for r in store.search_episodic(query_embedding=q, limit=8, mmr=True)]
+        assert faiss_ids == sqlite_ids
