@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import logging
 import os
+import posixpath
 import re
 import zipfile
 import zlib
@@ -271,7 +272,49 @@ def _extract_docx(
 # ── PPTX parser (Office Open XML) ──
 
 _A_NS = "{http://schemas.openxmlformats.org/drawingml/2006/main}"
+_P_NS = "{http://schemas.openxmlformats.org/presentationml/2006/main}"
+_R_NS = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
+_PACKAGE_R_NS = "{http://schemas.openxmlformats.org/package/2006/relationships}"
+_SLIDE_REL_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide"
 _SLIDE_RE = re.compile(r"^ppt/slides/slide(\d+)\.xml$")
+
+
+def _pptx_slide_order(zf: zipfile.ZipFile) -> list[tuple[int, str]]:
+    """Resolve presentation positions to internal ZIP members, never filesystem paths."""
+    assert _xml_fromstring is not None
+    names = set(zf.namelist())
+    if "ppt/presentation.xml" not in names:
+        # Keep best-effort extraction for incomplete containers without an order.
+        return sorted(
+            (int(match.group(1)), name)
+            for name in names
+            if (match := _SLIDE_RE.match(name))
+        )
+    presentation = _read_zip_entry(zf, "ppt/presentation.xml")
+    relationships = _read_zip_entry(zf, "ppt/_rels/presentation.xml.rels")
+    if presentation is None or relationships is None:
+        return []
+    root = _xml_fromstring(presentation)
+    rels = _xml_fromstring(relationships)
+    targets = {
+        rel.get("Id"): posixpath.normpath(posixpath.join("ppt", rel.attrib["Target"])).lstrip("/")
+        for rel in rels.findall(f"{_PACKAGE_R_NS}Relationship")
+        if rel.get("Type") == _SLIDE_REL_TYPE
+        and rel.get("TargetMode", "Internal") == "Internal"
+        and rel.get("Target")
+    }
+    # Part numbers and relationship IDs survive reordering; only sldIdLst gives
+    # the order a reader sees. Enumerate before skipping blank or missing slides.
+    ordered: list[tuple[int, str]] = []
+    seen: set[str] = set()
+    for number, slide in enumerate(root.iterfind(f"{_P_NS}sldIdLst/{_P_NS}sldId"), 1):
+        target = targets.get(slide.get(f"{_R_NS}id"))
+        if target is not None and target in names and target not in seen:
+            # A malformed manifest must not multiply decompression and retained
+            # text beyond the vetted inventory by referencing one part repeatedly.
+            seen.add(target)
+            ordered.append((number, target))
+    return ordered
 
 
 def _extract_pptx(
@@ -293,15 +336,10 @@ def _extract_pptx(
     slides: list[tuple[int, str]] = []
     collected = 0
     with zipfile.ZipFile(fileobj if fileobj is not None else path, "r") as zf:
-        slide_names = sorted(
-            (n for n in zf.namelist() if _SLIDE_RE.match(n)),
-            key=lambda n: int(_SLIDE_RE.match(n).group(1)),  # type: ignore[union-attr]
-        )
-        for slide_name in slide_names:
+        for num, slide_name in _pptx_slide_order(zf):
             data = _read_zip_entry(zf, slide_name)
             if data is None:
                 continue
-            num = int(_SLIDE_RE.match(slide_name).group(1))  # type: ignore[union-attr]
             root = _xml_fromstring(data)
             texts: list[str] = []
             for t_elem in root.iter(f"{_A_NS}t"):
