@@ -73,6 +73,7 @@ from __future__ import annotations
 
 import ast
 import functools
+import textwrap
 from pathlib import Path
 
 import pytest
@@ -120,9 +121,19 @@ _SPAWN_ATTRS = {
     "create_subprocess_exec",
     "create_subprocess_shell",
 }
-# Only calls whose receiver is one of these modules count (excludes e.g.
-# ``proc.communicate`` or ``pool.run``).
-_SPAWN_BASES = {"subprocess", "asyncio"}
+# The modules whose attributes actually spawn a child. Only calls whose receiver
+# resolves to one of these count, which excludes e.g. ``proc.communicate`` or
+# ``pool.run``.
+#
+# These are the CANONICAL names. The receiver a call site actually spells is
+# whatever that file bound the module to, so it is derived per file by
+# :func:`_spawn_module_bindings` rather than enumerated here. Naming aliases in a
+# literal set is what made this audit blind: ``acp/client.py`` imports
+# ``subprocess as subprocess_mod`` and five spawns in it were invisible, while
+# ``sp``, ``_sp`` and ``_asyncio`` were live aliases in other scanned files at the
+# same time. A scanner that has to be TOLD each alias is a scanner that is blind by
+# default, and its greenness says nothing.
+_SPAWN_MODULES = {"subprocess", "asyncio"}
 
 # Spawn helpers called as a BARE NAME rather than ``module.attr`` -- they are
 # imported directly, so the receiver check above cannot see them. Without this
@@ -213,6 +224,41 @@ PREEXEC_EXEMPT: frozenset[str] = frozenset(
 BENIGN_SPAWNS: frozenset[str] = frozenset(
     {
         "acp/runtime.py::_get_rss_mb",
+        # Eight pre-existing spawns in one app's own test module, invisible to this
+        # audit until receivers were derived from each file's imports: they are
+        # reached through a function-local ``import subprocess as sp``. Every one is
+        # a fixed ``git`` argv (``init``, ``config``, ``add``, ``commit``,
+        # ``worktree add``, ``rev-parse``) against a repository the test just created
+        # under ``tmp_path``; nothing is agent-influenced and no shell is used. They
+        # are tests of the dogfood spine's own refusals -- a planted pre-commit hook,
+        # a planted clean filter, a repointed worktree gitdir -- so the git repo IS
+        # the fixture, and routing them through the agent sandbox would sandbox the
+        # fixture rather than the thing under test. Same class as the Ops Mission
+        # Control ledger-sync tests below.
+        "apps/builtins/auto_improvement/tests/test_dogfood_learnings.py::test_a_planted_clean_filter_does_not_run",
+        "apps/builtins/auto_improvement/tests/test_dogfood_learnings.py::test_a_planted_clean_filter_does_not_run_in_a_linked_worktree",
+        "apps/builtins/auto_improvement/tests/test_dogfood_learnings.py::test_a_planted_pre_commit_hook_does_not_run",
+        "apps/builtins/auto_improvement/tests/test_dogfood_learnings.py::test_a_repointed_worktree_gitdir_is_refused",
+        "apps/builtins/auto_improvement/tests/test_dogfood_learnings.py::test_clone_setup_checkout_pins_the_attributes",
+        "apps/builtins/auto_improvement/tests/test_dogfood_learnings.py::test_red_base_staging_does_not_dereference_a_credential_symlink",
+        "apps/builtins/auto_improvement/tests/test_dogfood_learnings.py::test_the_pin_refuses_a_symlink_and_fails_closed",
+        "apps/builtins/auto_improvement/tests/test_dogfood_learnings.py::test_the_pin_survives_a_normal_repo",
+        # Four pre-existing spawns in ``acp/client.py`` that the scan could not see
+        # until receivers were derived from each file's imports (it binds the module
+        # as ``subprocess_mod``). None is
+        # agent-influenced and each is a fixed argv with a bounded timeout and no
+        # shell: ``mise which <tool>`` where the tool is a module-level binary-name
+        # constant; ``pgrep -P <pid>``, ``ps -o lstart= -p <pid>`` and
+        # ``ps -o comm= -p <pid>``, all against a pid this core is already managing,
+        # with ``ps`` resolved through ``platform_compat.trusted_system_bin`` rather
+        # than PATH. They are listed rather than routed for the same reason the rest
+        # of this group is: they are how process management and toolchain discovery
+        # observe the machine, and the sandbox they would route through is a thing
+        # they run underneath.
+        "acp/client.py::_mise_which",
+        "acp/client.py::_direct_children",
+        "acp/client.py::_get_start_time",
+        "acp/client.py::_read_basename",
         # The shadow-venv update engine's four spawns. None is agent-influenced
         # and none can route through sandboxed_spawn_argv, because the engine's
         # whole job is to build the NEXT gateway install outside the agent
@@ -1600,6 +1646,72 @@ def test_first_party_allowlist_has_no_stale_entries():
     )
 
 
+def _spawn_module_bindings(tree: ast.Module) -> set[str]:
+    """Every local name in one file that refers to a spawn-capable module.
+
+    Reads the file's OWN import statements -- including function-local ones, which
+    is where an alias most often hides -- so a receiver is recognized by what it
+    BINDS rather than by what it happens to be called. ``import subprocess`` binds
+    ``subprocess``; ``import subprocess as sp`` binds ``sp``; ``from concurrent
+    import futures`` binds neither.
+
+    The canonical names are always included, so a file that imports nothing under an
+    alias is scanned exactly as before.
+    """
+    bound = set(_SPAWN_MODULES)
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            # ``from x import subprocess as y`` is rare but binds a name that
+            # spawns, and skipping it would leave the same shape of hole this
+            # function exists to close.
+            for alias in node.names:
+                if alias.name in _SPAWN_MODULES:
+                    bound.add(alias.asname or alias.name)
+    return bound
+
+
+def test_a_spawn_module_alias_is_derived_not_enumerated() -> None:
+    """The scanner must recognize a receiver it has never been told about.
+
+    This is the general form of a hole this audit shipped with: it matched receivers
+    against a hardcoded name set, so ``import subprocess as subprocess_mod`` hid five
+    spawns in ``acp/client.py`` and a function-local ``import subprocess as sp`` hid
+    eight more in an app's test module -- while the audit stayed green, because it was
+    not finding them and accepting them, it was not finding them at all.
+
+    Naming each alias as it is discovered cannot fix that: the next alias is invisible
+    again. So bindings are derived from each file's own imports, and this pins that a
+    NAME nobody has ever written down is still recognized.
+    """
+    tree = ast.parse(textwrap.dedent("""
+            import asyncio as _never_seen_before
+            import subprocess as _also_novel
+
+            def f():
+                import subprocess as _function_local
+
+                _function_local.run(["true"])
+            """))
+    bound = _spawn_module_bindings(tree)
+    assert {"_never_seen_before", "_also_novel", "_function_local"} <= bound
+    assert _SPAWN_MODULES <= bound, "the canonical names must always be recognized"
+
+
+def test_an_unrelated_import_binds_no_spawn_receiver() -> None:
+    """Derivation must not widen the scan to modules that do not spawn.
+
+    A receiver set that grew on every import would flag ``pool.run`` and
+    ``proc.communicate``, and an audit that cries wolf gets its findings dismissed.
+    """
+    tree = ast.parse(textwrap.dedent("""
+            import json as subprocess_lookalike
+            from concurrent import futures as pool
+            """))
+    bound = _spawn_module_bindings(tree)
+    assert "subprocess_lookalike" not in bound
+    assert "pool" not in bound
+
+
 @functools.lru_cache(maxsize=1)
 def _collect_spawn_functions() -> dict[str, str]:
     """Map ``<relpath>::<func>`` -> the enclosing function's source, for every
@@ -1625,6 +1737,7 @@ def _collect_spawn_functions() -> dict[str, str]:
         if _is_bundled_skill_asset(path):
             continue
         tree = ast.parse(source, str(path))
+        spawn_bases = _spawn_module_bindings(tree)
         funcs = [
             n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
         ]
@@ -1646,7 +1759,7 @@ def _collect_spawn_functions() -> dict[str, str]:
                         if isinstance(base, ast.Name)
                         else base.attr if isinstance(base, ast.Attribute) else ""
                     )
-                    if base_name not in _SPAWN_BASES:
+                    if base_name not in spawn_bases:
                         continue
                 else:
                     continue
