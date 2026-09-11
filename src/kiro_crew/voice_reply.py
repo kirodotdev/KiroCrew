@@ -917,7 +917,7 @@ async def _synthesize_piper(
     """
     bin_path = _resolve_piper_binary(piper_binary)
     if not bin_path:
-        logger.error("piper binary not found (configured=%r)", piper_binary)
+        logger.warning("piper binary not found (configured=%r)", piper_binary)
         return None
     model = os.path.expanduser(piper_model) if piper_model else ""
     if not model or not os.path.isfile(model):

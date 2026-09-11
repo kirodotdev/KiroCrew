@@ -1386,9 +1386,18 @@ class TestSynthesizeSystem:
 
 class TestSynthesizePiper:
     @pytest.mark.asyncio
-    async def test_binary_not_found_returns_none(self) -> None:
-        with patch("kiro_crew.voice_reply._resolve_piper_binary", return_value=None):
+    async def test_binary_not_found_warns_and_returns_none(self, caplog) -> None:
+        with (
+            patch("kiro_crew.voice_reply._resolve_piper_binary", return_value=None),
+            caplog.at_level("DEBUG", logger="kiro_crew.voice_reply"),
+        ):
             assert await _synthesize_piper("hi") is None
+
+        records = [
+            record for record in caplog.records if "piper binary not found" in record.message
+        ]
+        assert len(records) == 1
+        assert records[0].levelname == "WARNING"
 
     @pytest.mark.asyncio
     async def test_model_missing_returns_none(self, tmp_path) -> None:
