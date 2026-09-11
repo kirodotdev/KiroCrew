@@ -228,17 +228,21 @@ class TestAcceptedCosts:
         # here, and neither does this one.
         assert OPTIONS_RE_LINE.search("Note [OPTIONS: see [OPTIONS: x] below | Skip]") is None
 
-    def test_the_separator_tail_form_is_out_of_scope_and_unchanged(self):
-        # NOT reachable by this rule, and pinned so it is not read as a regression
-        # introduced here: ``], `` DOES continue the label list, by the very rule
-        # that makes ``[OPTIONS: Alpha ], Bravo]`` legal, so no guard applied at the
-        # internal closer can tell the two apart. Resolving it means deciding which
-        # shape loses -- a separate call with its own cost. Behaviour here is
-        # byte-for-byte what origin/main does.
+    def test_the_separator_tail_form_is_declined_rather_than_truncated(self):
+        # Not reachable by the matched-or-continues rule: ``], `` DOES continue the
+        # label list, by the very rule that makes ``[OPTIONS: Alpha ], Bravo]``
+        # legal, so no guard applied at the INTERNAL closer can tell the two apart.
+        # The terminator gate reaches it from the other end -- the ``[`` of
+        # ``CHANGELOG[1]`` is the opener whose partner would end the marker, so the
+        # bare form is refused and the line stays whole.
+        #
+        # Declining is the affordable outcome: truncating deleted ``, details in
+        # CHANGELOG[1]`` from the message and handed it back as the pill label
+        # ``Wait], details in CHANGELOG[1``.
         text = "Done. [OPTIONS: Merge | Wait], details in CHANGELOG[1]"
-        match = OPTIONS_RE_LINE.search(text)
-        assert match is not None
-        assert OPTIONS_RE_LINE.sub("", text) == "Done. "
+        assert OPTIONS_RE_LINE.search(text) is None
+        assert OPTIONS_RE_LINE.sub("", text) == text
+        assert split_options_trailer(text) == (text, [])
 
 
 class TestTheWideningIsNotOverlyNarrow:

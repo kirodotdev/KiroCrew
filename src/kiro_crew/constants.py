@@ -265,11 +265,13 @@ _MARKER_WRAP_CLASS = "[" + re.escape(MARKER_WRAPPERS) + "]"
 #: ``]`` -- see the gate in ``messaging.renderer.split_options_trailer``, which
 #: this rule is what made load-bearing.
 #:
-#: NOT reachable by this rule, and deliberately unchanged: the separator-tail
-#: form (``Done. [OPTIONS: Merge | Wait], details in CHANGELOG[1]``). ``], ``
-#: DOES continue the list, by the very rule that makes ``[OPTIONS: Alpha ],
-#: Bravo]`` legal, so no guard applied at the internal closer can tell them
-#: apart. Resolving it means deciding which shape loses -- a separate call.
+#: NOT reachable by this rule: the separator-tail form (``Done. [OPTIONS: Merge |
+#: Wait], details in CHANGELOG[1]``). ``], `` DOES continue the list, by the very
+#: rule that makes ``[OPTIONS: Alpha ], Bravo]`` legal, so no guard applied at the
+#: INTERNAL closer can tell them apart. What decides that shape is the terminator
+#: gate on the bare opener (see :data:`_MARKER_BARE_OPENER_GATE_LINE`), which
+#: reaches it from the other end -- the ``[`` of ``CHANGELOG[1]`` is the opener
+#: whose partner would end the marker, so the line is declined and left whole.
 _MARKER_LABEL_CONTINUES = rf"(?=[ \t]*[|,]|{_MARKER_CLOSE_CLASS})"
 
 #: A closer MATCHED by a ``[`` earlier in the same label. One level deep, and its
@@ -294,6 +296,77 @@ _MARKER_LABEL_PAIR = (
     rf"(?![ \t]*[|,]|{_MARKER_CLOSE_CLASS})"
 )
 
+#: A bare opener may not be the one whose partner closer ENDS the marker.
+#:
+#: The bare-``[`` alternative exists so a stray opener inside a label does not
+#: sink the whole marker: ``[OPTIONS: Fix [x logging | Skip]`` parses, and is
+#: tested. But nothing about it distinguishes that opener from the one in
+#: ``[OPTIONS: A | B then check arr[0]``, where the marker was never closed and
+#: the ``]`` of ``arr[0]`` is the only closer on the line. There the body ran on
+#: through the prose, that ``]`` became the terminator, and since every consumer
+#: removes the whole match, the line was deleted from the message and came back
+#: as the label ``B then check arr[0``.
+#:
+#: What separates the two is where the opener sits relative to the END, not the
+#: brackets themselves -- the two shapes are otherwise identical token for token,
+#: which is why no rule over bracket structure alone can tell them apart. So the
+#: bare form is refused exactly when nothing but ordinary text lies between it
+#: and a closer at the end anchor: that closer is then its partner rather than
+#: the marker's, and the marker is unterminated.
+#:
+#: Crossing ``|`` clears the gate, because that is the unambiguous option
+#: separator: the opener is inside a label and the list continues past it, which
+#: is what keeps the pinned stray-opener shape. Crossing another BRACKET clears it
+#: too, because some other bracket form owns that closer -- which is what keeps
+#: ``[OPTIONS: Fix arr[0] | Skip]`` (the continuation half admits that ``]``) and
+#: ``[OPTIONS: a[1] | b[2]]`` parsing.
+#:
+#: ``,`` does NOT clear it, and that asymmetry is the whole reason the scan can
+#: find the partner closer at all. A comma is only a FALLBACK separator -- the
+#: frontend's ``parseOptions`` reaches for it just when no ``|`` is present -- and
+#: inside brackets it is ordinary punctuation, which models write constantly:
+#: ``dict[str, Any]``, ``arr[i, j]``. A scan that stopped at it halted before the
+#: closer in ``[OPTIONS: A | B then inspect dict[str, int]`` and cleared the gate,
+#: leaving exactly the shape this exists to refuse.
+#:
+#: Spelled twice because the two bodies end differently and, more importantly,
+#: because they differ on NEWLINES. LINE stops at one; TRAILER spans them under
+#: DOTALL, so its scan has to as well -- otherwise a ``\n`` blinds the gate and
+#: ``[OPTIONS: A | B then check arr[0\nAnd that is all]`` walks straight through
+#: it. The scan must see as far as the body can reach, or it is not looking at the
+#: same terminator. Both carry the optional stray markdown-link tic and a wrapper
+#: run, so a marker wearing either still gates on the closer its tail consumes;
+#: both reuse the tail's own constants below rather than respelling them.
+#:
+#: WHAT THIS DOES NOT CLOSE. The gate clears when the scan meets another bracket,
+#: on the grounds that some other bracket form owns that closer. With NESTING at
+#: the end of the line that reasoning fails: in ``[OPTIONS: A | B then inspect
+#: list[dict[str, int]]`` the outer opener's partner IS the terminator, but the
+#: scan halts at the inner ``[`` and never reaches it. Encoding one level of
+#: nesting here only moves the boundary -- depth three defeats that, depth four
+#: the next one. The condition being reached for is "the terminating closer is not
+#: nested", which is bracket BALANCE, and balance is not a regular language at
+#: unbounded depth. Closing it means the check cannot live in this pattern at all;
+#: the residual is pinned at the depth where the gate stops reaching, in
+#: ``test_options_marker_terminator.py``.
+#:
+#: ReDoS: the lookahead is TEMPERED -- its scan stops at the first bracket or
+#: ``|``, so the runs scanned from different openers are disjoint and the total
+#: work stays linear. It adds no quantifier over a quantifier, which is the shape
+#: the frontend's ``.source`` pin forbids.
+_MARKER_TERMINATOR_SCAN_LINE = rf"[^[{re.escape(MARKER_CLOSERS)}|\n]*"
+_MARKER_TERMINATOR_SCAN_TRAILER = rf"[^[{re.escape(MARKER_CLOSERS)}|]*"
+_MARKER_STRAY_TIC = r"(?:\([^\s()]*\))?"
+_MARKER_WRAP_RUN = rf"{_MARKER_WRAP_CLASS}{{0,3}}"
+_MARKER_BARE_OPENER_GATE_LINE = (
+    rf"(?!{_MARKER_TERMINATOR_SCAN_LINE}{_MARKER_CLOSE_CLASS}"
+    rf"{_MARKER_STRAY_TIC}{_MARKER_WRAP_RUN}[ \t]*$)"
+)
+_MARKER_BARE_OPENER_GATE_TRAILER = (
+    rf"(?!{_MARKER_TERMINATOR_SCAN_TRAILER}{_MARKER_CLOSE_CLASS}"
+    rf"{_MARKER_STRAY_TIC}{_MARKER_WRAP_RUN}\s*\Z)"
+)
+
 #: Label body, spelled once per regex so LINE and TRAILER cannot drift. LINE
 #: stops at a newline; TRAILER spans them (``DOTALL``, as the old ``.*`` did).
 #: The one body-shaped pattern NOT derived from these is
@@ -308,12 +381,12 @@ _MARKER_LABEL_PAIR = (
 #: closer. So there is never more than one way to consume a character, and each
 #: lookahead is entered only at a bracket and bounded by the run it scans.
 _MARKER_BODY_LINE = (
-    rf"(?:{_MARKER_LABEL_PAIR}|\[(?!OPTIONS:)"
+    rf"(?:{_MARKER_LABEL_PAIR}|\[(?!OPTIONS:){_MARKER_BARE_OPENER_GATE_LINE}"
     rf"|{_MARKER_CLOSE_CLASS}{_MARKER_LABEL_CONTINUES}"
     rf"|[^[{re.escape(MARKER_CLOSERS)}\n])*"
 )
 _MARKER_BODY_TRAILER = (
-    rf"(?:{_MARKER_LABEL_PAIR}|\[(?!OPTIONS:)"
+    rf"(?:{_MARKER_LABEL_PAIR}|\[(?!OPTIONS:){_MARKER_BARE_OPENER_GATE_TRAILER}"
     rf"|{_MARKER_CLOSE_CLASS}{_MARKER_LABEL_CONTINUES}"
     rf"|[^[{re.escape(MARKER_CLOSERS)}])*"
 )
@@ -325,7 +398,7 @@ _MARKER_BODY_TRAILER = (
 OPTIONS_RE_LINE = re.compile(
     rf"(?:^[ \t]*(?P<lwrap>{_MARKER_WRAP_CLASS}{{1,3}}))?"
     rf"\[OPTIONS:(?P<labels>{_MARKER_BODY_LINE}){_MARKER_CLOSE_CLASS}"
-    rf"(?:\([^\s()]*\))?(?(lwrap){_MARKER_WRAP_CLASS}{{0,3}})[ \t]*$",
+    rf"{_MARKER_STRAY_TIC}(?(lwrap){_MARKER_WRAP_RUN})[ \t]*$",
     re.MULTILINE,
 )
 
@@ -342,7 +415,7 @@ OPTIONS_RE_LINE = re.compile(
 OPTIONS_RE_TRAILER = re.compile(
     rf"(?:^[ \t]*(?P<lwrap>{_MARKER_WRAP_CLASS}{{1,3}}))?"
     rf"\[OPTIONS:(?P<labels>{_MARKER_BODY_TRAILER}){_MARKER_CLOSE_CLASS}"
-    rf"(?:\([^\s()]*\))?(?(lwrap){_MARKER_WRAP_CLASS}{{0,3}})\s*\Z",
+    rf"{_MARKER_STRAY_TIC}(?(lwrap){_MARKER_WRAP_RUN})\s*\Z",
     re.DOTALL | re.MULTILINE,
 )
 

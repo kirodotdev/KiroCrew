@@ -82,8 +82,29 @@
 // is what makes them affordable. Making them parse means matching brackets to
 // arbitrary depth and over an opener set this grammar does not have. The
 // separator-tail form (`…| Wait], details in CHANGELOG[1]`) is NOT reachable by
-// this rule and is unchanged: `], ` does continue the list, by the same rule that
-// makes `[OPTIONS: Alpha ], Bravo]` legal.
+// this rule: `], ` does continue the list, by the same rule that makes
+// `[OPTIONS: Alpha ], Bravo]` legal. What decides it is the TERMINATOR GATE below,
+// reaching it from the other end — the `[` of `CHANGELOG[1]` is the opener whose
+// partner would end the marker, so the line is declined and left whole.
+//
+// A BARE OPENER MAY NOT BE THE ONE WHOSE PARTNER CLOSER ENDS THE MARKER. The bare
+// form exists so a stray opener does not sink a whole marker, but it also admitted
+// the opener in a marker the model never closed — `[OPTIONS: A | B then check
+// arr[0]`, where the only closer belongs to `arr[0]`. The body ran on through the
+// prose, that `]` became the terminator, and since the marker is removed by
+// `replace` the line left the message and came back as the pill label
+// `B then check arr[0`.
+//
+// No rule over bracket structure can separate the two: reduced to skeletons,
+// `[OPTIONS: Fix | Skip [x logging]` and `[OPTIONS: A | B then check arr[0]` are
+// the same string. The discriminator is where the opener sits relative to the END,
+// so the bare form is refused when nothing but ordinary text lies between it and a
+// closer at the end anchor. Crossing `|` clears it — the opener is inside a label
+// and the list continues past it, which is what keeps the pinned stray-opener
+// shape — and so does another bracket, because some other form owns that closer.
+// `,` does NOT clear it: a comma is only the fallback separator, and inside brackets
+// it is ordinary punctuation (`dict[str, Any]`), so a scan that stopped there would
+// halt before the closer and let the shape through.
 //
 // MARKDOWN WRAPPERS (#9110): a model sometimes wraps the whole marker line in
 // inline code or emphasis — `` `[OPTIONS: A | B]` `` or `**[OPTIONS: A | B]**`.
@@ -119,7 +140,7 @@
 // `new RegExp(OPTION_MARKER_RE)` there. Never call `.exec`/`.test` on it: both leave the index
 // advanced, and the next reader silently scans from the wrong offset.
 export const OPTION_MARKER_RE =
-  /(?:^[ \t]*[`*_]{1,3}\[OPTION(S)?:((?:\[(?!OPTIONS?:)[^[\]\u3011\uFF3D\u3015\n]*[\]\u3011\uFF3D\u3015](?![ \t]*[|,]|[\]\u3011\uFF3D\u3015])|\[(?!OPTIONS?:)|[\]\u3011\uFF3D\u3015](?=[ \t]*[|,]|[\]\u3011\uFF3D\u3015])|[^[\]\u3011\uFF3D\u3015\n])*)[\]\u3011\uFF3D\u3015](?:\([^\s()]*\))?[`*_]{0,3}|\[OPTION(S)?:((?:\[(?!OPTIONS?:)[^[\]\u3011\uFF3D\u3015\n]*[\]\u3011\uFF3D\u3015](?![ \t]*[|,]|[\]\u3011\uFF3D\u3015])|\[(?!OPTIONS?:)|[\]\u3011\uFF3D\u3015](?=[ \t]*[|,]|[\]\u3011\uFF3D\u3015])|[^[\]\u3011\uFF3D\u3015\n])*)[\]\u3011\uFF3D\u3015](?:\([^\s()]*\))?)[ \t]*$/gim
+  /(?:^[ \t]*[`*_]{1,3}\[OPTION(S)?:((?:\[(?!OPTIONS?:)[^[\]\u3011\uFF3D\u3015\n]*[\]\u3011\uFF3D\u3015](?![ \t]*[|,]|[\]\u3011\uFF3D\u3015])|\[(?!OPTIONS?:)(?![^[\]\u3011\uFF3D\u3015|\n]*[\]\u3011\uFF3D\u3015](?:\([^\s()]*\))?[`*_]{0,3}[ \t]*$)|[\]\u3011\uFF3D\u3015](?=[ \t]*[|,]|[\]\u3011\uFF3D\u3015])|[^[\]\u3011\uFF3D\u3015\n])*)[\]\u3011\uFF3D\u3015](?:\([^\s()]*\))?[`*_]{0,3}|\[OPTION(S)?:((?:\[(?!OPTIONS?:)[^[\]\u3011\uFF3D\u3015\n]*[\]\u3011\uFF3D\u3015](?![ \t]*[|,]|[\]\u3011\uFF3D\u3015])|\[(?!OPTIONS?:)(?![^[\]\u3011\uFF3D\u3015|\n]*[\]\u3011\uFF3D\u3015](?:\([^\s()]*\))?[`*_]{0,3}[ \t]*$)|[\]\u3011\uFF3D\u3015](?=[ \t]*[|,]|[\]\u3011\uFF3D\u3015])|[^[\]\u3011\uFF3D\u3015\n])*)[\]\u3011\uFF3D\u3015](?:\([^\s()]*\))?)[ \t]*$/gim
 
 /** The closing brackets OPTION_MARKER_RE accepts — ASCII plus the CJK lookalikes.
  *  Module-private and used with matchAll only (to take the LAST closer in the

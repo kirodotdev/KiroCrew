@@ -136,14 +136,16 @@ describe('OPTION_MARKER_RE label closers must be matched or continue the list (#
     expect(parseOptions(text).text).toBe(text)
   })
 
-  it('leaves the separator-tail form out of scope and unchanged', () => {
-    // NOT reachable by this rule, pinned so it is not read as a regression here:
-    // `], ` DOES continue the label list, by the very rule that makes
-    // `[OPTIONS: Alpha ], Bravo]` legal, so no guard applied at the internal closer
-    // can tell them apart. Byte-for-byte what origin/main does.
-    expect(parseOptions('Done. [OPTIONS: Merge | Wait], details in CHANGELOG[1]').text).toBe(
-      'Done.',
-    )
+  it('declines the separator-tail form rather than truncating it', () => {
+    // Not reachable by THIS rule: `], ` DOES continue the label list, by the very
+    // rule that makes `[OPTIONS: Alpha ], Bravo]` legal, so no guard applied at the
+    // internal closer can tell them apart. The terminator gate reaches it from the
+    // other end — the `[` of `CHANGELOG[1]` is the opener whose partner would end
+    // the marker — so the line stays whole instead of losing its tail to a pill
+    // label reading `Wait], details in CHANGELOG[1`.
+    const text = 'Done. [OPTIONS: Merge | Wait], details in CHANGELOG[1]'
+    expect(parseOptions(text).options).toEqual([])
+    expect(parseOptions(text).text).toBe(text)
   })
 })
 
