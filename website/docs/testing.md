@@ -10,6 +10,16 @@ observe the thing you changed.
 | Desktop shell | node:test | Node, no DOM | `electron/test/` |
 | Component stories | Storybook | real Chromium, no gateway, every shipped theme | `src/**/*.stories.tsx`, config in `.storybook/` |
 
+The shared `integration/setup.ts` installs a fresh `fake-indexeddb` factory
+for each test and synchronously resets the real terminal store's renderer
+snapshots. It does not delete the already-empty database: IndexedDB deletion
+queues timer work and can deadlock before a test's local hook restores its clock.
+The fixture preserves any fake timers intentionally installed by `beforeAll`.
+Terminal
+behavior tests use the canonical IndexedDB adapter; tests that deliberately
+simulate isolation or storage failure can provide their own adapter mock.
+Await `__resetBottomTerminal()` and terminal mutations before checking state.
+
 ## Commands
 
 ```bash

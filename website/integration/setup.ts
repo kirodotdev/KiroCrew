@@ -1,9 +1,23 @@
 import { afterEach, beforeEach, vi } from 'vitest'
 import '@testing-library/jest-dom'
+import { IDBFactory } from 'fake-indexeddb'
 import { server } from './mocks/server'
 import { initI18n, i18next } from '../src/i18n'
 import { __resetStagingForTests } from '../src/components/pierreStaging'
 import { clearSideChatDrafts } from '../src/chat-core/composer/sideChatDrafts'
+
+// Each test gets a fresh browser database and matching renderer state. Import the
+// real hook so partial hook mocks cannot accidentally skip its cached revision reset.
+beforeEach(async () => {
+  vi.stubGlobal('indexedDB', new IDBFactory())
+  const { __resetBottomTerminalRenderer } = await vi.importActual<typeof import('../src/hooks/useBottomTerminal')>('../src/hooks/useBottomTerminal')
+  // The new factory is empty already. Do not await deleteDatabase here:
+  // a previous test may leave fake timers enabled until its sibling's local
+  // beforeEach runs, which is AFTER this outer hook.
+  __resetBottomTerminalRenderer()
+  const { __resetHistoryTerminalCleanupForTests } = await vi.importActual<typeof import('../src/lib/historyTerminalCleanup')>('../src/lib/historyTerminalCleanup')
+  __resetHistoryTerminalCleanupForTests()
+})
 
 // The Pierre mount queue is MODULE state — in a browser that is per-page, but a
 // vitest worker runs many test files in one process, so without this a file that

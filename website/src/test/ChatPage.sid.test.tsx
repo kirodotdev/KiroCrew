@@ -14,7 +14,7 @@ import { createTestStore } from './helpers'
 import { switchSlot } from '../store/chatSlice'
 import { sseSlots } from '../store/dashboardSlice'
 import { ThemeProvider } from '../hooks/useTheme'
-import type { RootState } from '../store'
+import { store as appStore, type RootState } from '../store'
 import type { ChatSlot } from '../types'
 
 /** Deep-partial preloaded state for createTestStore — test fixtures intentionally
@@ -145,6 +145,9 @@ function renderChatPage(opts: {
     },
   }
   const store = createTestStore(preload as Partial<RootState>)
+  // Production selectors and imperative reads share one store.
+  vi.spyOn(appStore, 'getState').mockImplementation(store.getState)
+  vi.mocked(api.chatSlotDetail).mockResolvedValue({ messages, has_more: false, total: messages.length })
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   const result = render(
     <QueryClientProvider client={qc}>
@@ -183,6 +186,7 @@ afterEach(() => {
   // clock left armed by a failing assertion makes every later test in the file
   // time out, which reads as a cascade of unrelated breakage.
   vi.useRealTimers()
+  vi.restoreAllMocks()
   vi.clearAllMocks()
 })
 
@@ -203,8 +207,8 @@ const orchSlots = [
  *  in the wrong transcript, the one-shot ref is spent, and the jump is lost. */
 describe('ChatPage ?sid= + ?msg= deep link across a slot switch', () => {
   const slots: ChatSlot[] = [
-    { key: 'chat-1-100', title: 'short chat', agent: 'a', mode: 'chat' } as ChatSlot,
-    { key: 'chat-2-200', title: 'long chat', agent: 'a', mode: 'chat' } as ChatSlot,
+    { ...slot('chat-1-100', 'short chat'), agent: 'a' },
+    { ...slot('chat-2-200', 'long chat'), agent: 'a' },
   ]
   /** A complete window for the chat being LEFT. The deep-link target belongs to
    *  the requested chat, so it is legitimately absent from this array. */
@@ -215,13 +219,24 @@ describe('ChatPage ?sid= + ?msg= deep link across a slot switch', () => {
   const DEEP_LINK = '/chat?sid=chat-2-200&msg=2025-06-01T00%3A00%3A00Z'
 
   it('does not declare the target unavailable while the requested chat is still activating', async () => {
-    renderChatPage({ route: DEEP_LINK, activeSlot: 'chat-1-100', slots, messages: outgoing, slotCursorKey: 'chat-1-100' })
-    // The outgoing window is complete, so an ungated hand-off hits the dead-end
-    // branch and paints a false notice against a chat the link never named.
-    await new Promise(r => setTimeout(r, 250))
-    // Matched on "no longer", which BOTH unavailability notices still share: a
-    // matcher tied to wording only one of them carries would pass vacuously here.
-    expect(screen.queryByText(/no longer/i)).toBeNull()
+    // Keep the requested transcript pending: an immediately resolved empty page
+    // legitimately reports the target missing once activation has completed.
+    let resolveDetail!: (value: Awaited<ReturnType<typeof api.chatSlotDetail>>) => void
+    const detail = new Promise<Awaited<ReturnType<typeof api.chatSlotDetail>>>(resolve => { resolveDetail = resolve })
+    vi.mocked(api.chatSlotDetail).mockReturnValueOnce(detail)
+    const { store } = renderChatPage({ route: DEEP_LINK, activeSlot: 'chat-1-100', slots, messages: outgoing, slotCursorKey: 'chat-1-100' })
+    try {
+      await waitFor(() => expect(detailCalls()).toContain('chat-2-200'))
+      expect(store.getState().chat.slotLoading).toBe(true)
+      // The outgoing window is complete, so an ungated hand-off paints a false
+      // notice against a chat the link never named.
+      expect(screen.queryByText(/no longer/i)).toBeNull()
+    } finally {
+      await act(async () => {
+        resolveDetail({ messages: [], has_more: false, total: 0 })
+        await detail
+      })
+    }
   })
 
   it('acts on the deep link once the window belongs to the requested chat (control)', async () => {

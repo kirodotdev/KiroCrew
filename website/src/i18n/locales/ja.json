@@ -5608,7 +5608,12 @@
       "move_panel_to_bottom": "パネルを下に移動",
       "more_actions": "その他の操作",
       "close_failed": "サーバー上でこのターミナルのシェルを停止できませんでした。自動的にクリーンアップされます。",
-      "closing_terminal": "ターミナルを閉じています…"
+      "closing_terminal": "ターミナルを閉じています…",
+      "history_cleanup_failed": "チャット 「{{session}}」 は削除されましたが、ターミナルのクリーンアップに失敗しました。再試行するとターミナルを削除できます。",
+      "history_delete_failed": "チャット 「{{session}}」 を削除できませんでした。ターミナルは保持されています。",
+      "history_deletion_unconfirmed": "このウィンドウではチャット 「{{session}}」 の削除が確認されていません。ターミナルは個別に閉じることができます。",
+      "close_terminals": "ターミナルを閉じる",
+      "terminal_cleanup_failed": "「{{session}}」 のターミナルのクリーンアップに失敗しました。再試行すると閉じることができます。"
     },
     "chatInput": {
       "approval_hint_adjust": "承認モードを調整",

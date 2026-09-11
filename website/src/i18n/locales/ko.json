@@ -5608,7 +5608,12 @@
       "move_panel_to_bottom": "패널을 아래로 이동",
       "more_actions": "추가 작업",
       "close_failed": "서버에서 이 터미널의 셸을 중지할 수 없습니다. 자동으로 정리됩니다.",
-      "closing_terminal": "터미널을 닫는 중…"
+      "closing_terminal": "터미널을 닫는 중…",
+      "history_cleanup_failed": "‘{{session}}’ 채팅이 삭제되었지만 터미널 정리에 실패했습니다. 터미널을 제거하려면 다시 시도하세요.",
+      "history_delete_failed": "‘{{session}}’ 채팅을 삭제하지 못했습니다. 터미널은 유지되었습니다.",
+      "history_deletion_unconfirmed": "이 창에서는 채팅 ‘{{session}}’의 삭제가 확인되지 않았습니다. 터미널을 별도로 닫을 수 있습니다.",
+      "close_terminals": "터미널 닫기",
+      "terminal_cleanup_failed": "‘{{session}}’의 터미널 정리에 실패했습니다. 닫으려면 다시 시도하세요."
     },
     "chatInput": {
       "approval_hint_adjust": "승인 모드 조정",

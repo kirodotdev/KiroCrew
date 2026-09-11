@@ -3371,17 +3371,17 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     })
   }, [dispatch])
   // "Run in terminal" (from chat code blocks): open a terminal tab in the
-  // app-wide dock panel and run the command in it, starting in the chat's
+  // session-owned dock panel and run the command in it, starting in the chat's
   // working dir. The dock panel persists across routes (unlike chat-scoped
   // terminal tabs) so the running shell survives navigation.
   useEffect(() => {
-    const handler = (e: Event) => {
+    const handler = async (e: Event) => {
       const detail = (e as CustomEvent).detail || {}
       const code: string = detail.code
       const reqId: string = detail.reqId
       const lang: string | undefined = typeof detail.lang === 'string' ? detail.lang : undefined
       if (typeof code !== 'string' || !code) return
-      const sessionId = addDockTerminal(currentProjectRef.current ?? undefined)
+      const sessionId = await addDockTerminal(currentProjectRef.current ?? undefined, activeSlotRef.current)
       let settled = false
       const emit = (ok: boolean) => {
         if (settled) return

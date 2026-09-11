@@ -22,13 +22,13 @@ describe('terminalPopout identity', () => {
   })
 
   it('uses a fixed window name so window.open dedupes to a single terminal window', () => {
-    expect(popoutWindowName()).toBe('mc-popout-terminal')
+    expect(popoutWindowName(null)).toBe('mc-popout-terminal')
     // Stable across calls — dedupe depends on it never varying.
-    expect(popoutWindowName()).toBe(popoutWindowName())
+    expect(popoutWindowName(null)).toBe(popoutWindowName(null))
   })
 
   it('builds the popout URL at /popout/terminal on the current origin', () => {
-    expect(buildPopoutUrl()).toBe(`${window.location.origin}/popout/terminal`)
+    expect(buildPopoutUrl(null)).toBe(`${window.location.origin}/popout/terminal`)
   })
 })
 
@@ -47,16 +47,16 @@ describe('terminalPopout liveness beacon', () => {
   const KEY = 'mc-terminal-popout-alive'
   it('is fresh for a recent heartbeat', () => {
     localStorage.setItem(KEY, String(Date.now()))
-    expect(hasFreshBeacon()).toBe(true)
+    expect(hasFreshBeacon(null)).toBe(true)
   })
   it('expires past the TTL (crashed popout)', () => {
     localStorage.setItem(KEY, String(Date.now() - 60_000))
-    expect(hasFreshBeacon()).toBe(false)
+    expect(hasFreshBeacon(null)).toBe(false)
   })
   it('is false when absent or garbage', () => {
     localStorage.removeItem(KEY)
-    expect(hasFreshBeacon()).toBe(false)
+    expect(hasFreshBeacon(null)).toBe(false)
     localStorage.setItem(KEY, 'not-a-number')
-    expect(hasFreshBeacon()).toBe(false)
+    expect(hasFreshBeacon(null)).toBe(false)
   })
 })

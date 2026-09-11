@@ -118,6 +118,7 @@ import CliPanel, {
   isThemeSignal,
   useDeleteTerminalSession,
 } from '../components/CliPanel'
+import { useTerminalCloseFailed, setTerminalCloseFailed } from '../hooks/useBottomTerminal'
 import { setTerminalFontSize, __resetTerminalFontStore } from '../hooks/useTerminalFont'
 import { ansiPaletteFromVars } from '../utils/terminalPalette'
 
@@ -916,4 +917,26 @@ describe('useDeleteTerminalSession', () => {
       act(async () => { await result.current.mutateAsync('pty-43') }),
     ).rejects.toThrow('Failed to delete terminal session (409)')
   })
+})
+
+
+it('reports a delayed DELETE failure to its initiating session after hook scope changes', async () => {
+  setTerminalCloseFailed(false, 'delete-A')
+  setTerminalCloseFailed(false, 'delete-B')
+  let resolveDelete!: (response: Response) => void
+  vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>(resolve => { resolveDelete = resolve })))
+  let scope = 'delete-A'
+  const { result, rerender } = renderHookWithProviders(() => ({
+    deletion: useDeleteTerminalSession(scope),
+    failedA: useTerminalCloseFailed('delete-A'),
+    failedB: useTerminalCloseFailed('delete-B'),
+  }))
+  let pending!: Promise<unknown>
+  act(() => { pending = result.current.deletion.mutateAsync('pty-A').catch(() => {}) })
+  await waitFor(() => expect(resolveDelete).toBeTypeOf('function'))
+  scope = 'delete-B'
+  rerender()
+  await act(async () => { resolveDelete({ ok: false, status: 409 } as Response); await pending })
+  expect(result.current.failedA).toBe(true)
+  expect(result.current.failedB).toBe(false)
 })

@@ -2101,6 +2101,69 @@ React 18 + TypeScript + Vite 5 + Redux Toolkit + React Router v7 + Tailwind CSS 
 
 **Agent monitor — `Ctrl+G`** (`useKeyboardShortcuts.ts`, predicate `isAgentMonitorChord`): opens the **Subagents** activity tab (`openActivityToTab('subagents')`) and routes to `/chat`, since the activity panel is owned by the chat page. This is the one chord that is **literal Ctrl on every platform** rather than ⌘-on-Mac: the kiro-cli backend emits `Press ctrl+g to monitor progress.` into its crew-pipeline tool result, that string lives inside the backend binary and cannot be re-worded per OS, so the chord the user is told to press must be the chord that fires (on macOS find-next is ⌘G, leaving ⌃G free). It requires exactly one primary modifier and no Alt/Shift, and deliberately fires **inside text fields** — the hint is read while a crew is running and focus is normally in the composer, so an input bail-out would make it dead exactly when it is needed. It is skipped for `.xterm` targets, where Ctrl+G is BEL and belongs to the PTY. Because the branch requires `ctrlKey && !altKey`, `KeyG` is deliberately **not** added to `RESERVED_PANEL_CODES`: it cannot shadow a downstream Alt+G panel registration, so reserving it would over-claim the panel-navigation extension seam.
 
+The docked terminal owns tabs, their order, active tab, and open/closed state
+per selected chat session. Switching chats selects its state synchronously and
+removes the old view without waiting for an exit animation. Cached xterm objects
+and persistent connections survive; explicit tab close or confirmed permanent
+history deletion deletes the associated PTYs.
+Dimensions and bottom/right docking remain shared preferences. One IndexedDB
+readwrite transaction owns session membership, migration, and the shared cap;
+asynchronous actions carry their originating session key. React publishes only
+committed revisions. LocalStorage provides the one-time legacy input, layout
+preferences, and revision notifications; notification readers fetch the canonical
+IndexedDB snapshot and ignore older revisions. Unavailable storage fails closed
+with a scoped error notice.
+Close failures and state-update failures are also scoped to that session.
+
+Legacy ownerless tabs remain available with no selected chat, then transfer once
+to the first real session under cross-window serialization. Migration commits
+the owner and membership atomically in the canonical transaction, separately
+from UI preferences. Terminal IDs
+and migration records never participate in UI preference backup or hydration.
+
+Permanent history deletion first prepares that terminal generation in IndexedDB
+without disposing its PTYs or changing its epoch. This reversible token fences
+allocation in every window while the request runs. A failed request or `ok: false`
+cancels preparation; a confirmed deletion keeps the fence until retirement
+commits, including when a failed write needs an explicit cleanup retry.
+A confirmed permanent history deletion (`ok: true`) atomically empties the
+matching terminal buckets and advances their lifecycle epoch. Transport aliases
+use the existing session-key normalizer. Ordinary tab close/archive does not
+retire terminals. Allocations and delayed adoptions carry an epoch lease;
+retired scopes reject them. A successful server-backed switch or history resume
+can deliberately reopen a retired deterministic key with a new epoch. Cold or
+changed leases require a fresh existence check; navigation never waits for
+terminal I/O. Confirmed pending cleanup finishes before same-key revival,
+retaining only old PTY IDs for retry. A bounded, scrollable error list cannot
+consume the whole chat viewport. An
+old popup closes when its captured epoch changes. Canonical retirement releases
+cached connections in every observing window and requests best-effort PTY deletion.
+
+If history deletion succeeds but local retirement or PTY cleanup fails, the App
+shows an ErrorNotice with a cleanup-only Retry button. That retry never repeats
+the history DELETE, whose `ok: false` cannot distinguish an absent file from an
+index, lock, or filesystem failure. Confirmed cleanup failures are retained in this renderer. A prepared token
+survives reload but does not prove the server outcome: the App identifies that
+uncertainty and offers an explicitly authorized terminal-only Close action.
+That recovery leaves history untouched rather than guessing whether HTTP
+succeeded. Existing views and explicit tab closing remain available during
+preparation; only allocation is fenced. This does not claim atomicity across
+HTTP and IndexedDB.
+
+The shared creation cap remains eight docked terminals across all session
+buckets; a session with no tabs shows a scoped maximum-terminal notice when
+that cap blocks opening, without creating a placeholder PTY. The gateway
+retains its independent global terminal-session limit.
+
+A terminal popout pins its session in the URL, liveness messages, window name,
+and heartbeat beacon. Main-window chat switches neither retarget that popout
+nor attach its PTY sockets. Explicit Return selects and reveals the origin chat;
+native window close releases the popout without changing the main selection.
+Before a closed popout's terminals can remount, the main window completes a
+readonly canonical refresh. Failed reads or revision-zero authority keep that
+session detached with its scoped error, preventing a stale deleted PTY from
+reconnecting.
+
 **Panel toggles — user-rebindable, one id per panel** (`lib/panelToggleShortcuts.ts`): four ids — `left-sidebar`, `session-panel`, `side-panel`, `terminal` — each carrying a `Chord` whose `mod` resolves to Cmd on macOS and Ctrl elsewhere. Defaults: session list `mod+B`, activity/side panel `mod+\`, while the nav rail **and** the docked terminal both ship **unbound** (`null`) for the user to opt into. `localStorage('mc-panel-toggle-shortcuts')` holds **overrides only**, so a code default reaches every user who never touched it, while an explicit `null` is a deliberate "cleared to unbound" the loader must preserve rather than collapse back to the default; a write broadcasts `mc-panel-toggle-shortcuts-changed` so the live keydown handler, the Alt+K reference and the Settings → Shortcuts rows re-read without a reload. An unbound id renders its row with the `unset` ("Not set") state rather than being hidden, so it stays discoverable. The terminal's row is hidden when `dashboard.terminal.enabled` is false, matching the nav rail. **Why the terminal alone has no proposed default**: its chord is on the skip-shell allowlist below, so by construction it is taken from the PTY — meaning any default spends one of the user's shell keystrokes for them. `mod+J`, the natural pick (VS Code's Toggle Panel, which HOSTS its integrated terminal), is `^J` on Windows/Linux, i.e. readline's `accept-line`, so a user pressing it instead of Enter would close the panel mid-command; VS Code's terminal chord proper is literal `Ctrl+`` on every platform, unrepresentable in this `Chord` model (`mod` is Cmd on macOS by definition, and ⌘` is the macOS window cycler). Widening the chord model for one binding was rejected, and so was choosing a shell keystroke on every user's behalf — the binding is left to whoever wants it. **Skip-the-shell allowlist**: these chords otherwise yield to any `.xterm` target, because a keystroke aimed at a shell belongs to the shell — but a terminal toggle that yields would open the panel, focus its own shell, and then be unable to close it. `PANEL_TOGGLES_SKIPPING_SHELL` names the ids exempt from that yield (currently just `terminal`), mirroring VS Code's `terminal.integrated.commandsToSkipShell` as a per-COMMAND allowlist rather than a per-key rule, so a future panel with the same need joins a set instead of adding a second special case. The allowlist is honoured by a **capture-phase** `keydown` listener scoped to terminal targets, not by the bubble-phase dispatch: a control-character chord such as `Ctrl+J` is consumed by xterm, so a bubble listener never runs — the same structural point VS Code makes by consulting its own list inside the terminal's key handler. That listener calls `preventDefault` + `stopPropagation`, so the PTY never receives the keystroke; everywhere outside a terminal the bubble path still owns these chords, leaving `defaultPrevented` deference and handler ordering untouched. A panel whose action is absent — terminal disabled, or a popout/embed with no such panel — is treated as unbound on **both** seams, so the chord falls through untouched instead of being swallowed.
 
 **Session titles** — auto-generated after a few turns via background LLM call in `chat_title.py` (`_maybe_auto_title`), pushed to all clients via `slot_title` WS/SSE event, persisted in chat history JSONL metadata via `ConversationLog.update_metadata()` together with `title_origin` (`auto` = background titler, `user` = manual rename; a legacy title with no stored origin rehydrates as `user`). Title input scans reserve a bounded allowance for the dashboard's 20-file upload limit, remove generated image/file references, and then cap retained user text before prompting or fallback selection. Non-image metadata is validated, length-limited, and stored in token-index order so each generated reference resolves directly without scanning every path. Manual trigger via `POST /api/chat/slots/{slot}/generate-title` — it prompts from the *last* `_TITLE_PROMPT_WINDOW` conversational (user/assistant) messages (the user regenerates because the name no longer fits, so the prompt must reflect the current topic, not the opening turns that initial titling reads; filtering before slicing keeps a tool-heavy tail from starving the window); generation errors use the same sanitized first-user-message fallback, while attachment-only placeholder results remain untitled so a later automatic attempt can retry. Cancellation releases the in-flight guard without starting a pending retry. Max 5 auto-title attempts before falling back to the first usable user message. **Background title refresh** (`chat_title.py:maybe_refresh_title`, fired from `chat_done` for already-titled slots): an `auto`-origin title is re-examined at the user-turn milestones in `_TITLE_REFRESH_MILESTONES` (8 and 24) through the same `_bg` one-liner path, with a `KEEP` reply leaving the name alone; each milestone fires at most once (attempt-counted — KEEP/error consumes it) and the consumed mark is persisted as `title_refresh_mark` so restarts cannot re-spend the budget. A manual rename records origin `user`, which locks the refresh out permanently, and bumps `_title_epoch` so an in-flight background attempt stands down instead of clobbering the rename (the reveal animation is cosmetic-only and never assigns `slot.title`). The generated name follows the **workspace UI language** (`dashboard.language`) rather than the conversation's: `_ui_language()` resolves the tag via `context.ui_language_tag()` and `_build_title_prompt()` interpolates a language directive outside the delimited transcript, with `""` (auto) omitting it and leaving the prompt byte-identical — see `config.md` § Dashboard UI language for the prose-guard and reveal-animation consequences of naming in an unspaced script.

@@ -1550,7 +1550,7 @@ describe('chatSlice thunks', () => {
 
   it('removes a deleted session from the history list', async () => {
     apiMock.sessions.mockResolvedValue({ sessions: [{ key: 'h1' }, { key: 'h2' }], has_more: false })
-    apiMock.deleteSession.mockResolvedValue({})
+    apiMock.deleteSession.mockResolvedValue({ ok: true })
     const store = makeStore()
     await store.dispatch(fetchHistory(false))
     expect(chat(store).history).toHaveLength(2)

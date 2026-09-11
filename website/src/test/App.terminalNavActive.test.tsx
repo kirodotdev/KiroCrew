@@ -88,15 +88,15 @@ globalThis.ResizeObserver = class {
 const terminalRow = () => screen.getByRole('button', { name: 'Terminal' })
 
 describe('App nav rail — Terminal row reflects the docked panel state', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     setTerminalEnabledFlag(true)
-    __resetBottomTerminal()
+    await __resetBottomTerminal()
     server.use(
       http.get('/api/terminal/sessions', () => HttpResponse.json({ enabled: true, sessions: [] })),
     )
   })
-  afterEach(() => {
-    __resetBottomTerminal()
+  afterEach(async () => {
+    await __resetBottomTerminal()
     setTerminalEnabledFlag(false)
   })
 
@@ -142,7 +142,7 @@ describe('App nav rail — Terminal row reflects the docked panel state', () => 
     await waitFor(() => expect(terminalRow()).toBeInTheDocument())
     expect(terminalRow()).toHaveAttribute('aria-pressed', 'false')
 
-    act(() => { openBottomTerminal() })
+    await act(async () => { await openBottomTerminal() })
 
     await waitFor(() => expect(terminalRow()).toHaveAttribute('aria-pressed', 'true'))
   })

@@ -1,3 +1,4 @@
+import { deleteHistoryWithTerminals, captureTerminalActivation, activateTerminalsAfterNavigation } from '../lib/historyTerminalCleanup'
 import { createSlice, createAsyncThunk, createSelector, type PayloadAction } from '@reduxjs/toolkit'
 import { whenScrollQuiet } from '../lib/scrollQuiet'
 import { emitSlotRead } from '../lib/slotReadRelay'
@@ -2053,7 +2054,9 @@ export const switchSlot = createAsyncThunk<
       const cachedRows = state.slotMessages?.[safeKey(key)] ?? []
       const cached = cachedRows.length
       const limit = slotSwitchFetchLimit({ cached })
+      const terminalLease = captureTerminalActivation(key)
       const first = await fetchSlotDetail(key, limit)
+      void activateTerminalsAfterNavigation(key, terminalLease)
       // Coverage, MEASURED from the rows the window returned against the rows this
       // tab already holds. The older count-based check had to assume a hole whenever
       // it had no earlier server total to subtract -- true on every first visit to a
@@ -3069,7 +3072,9 @@ export const deleteSlot = createAsyncThunk(
 export const resumeFromHistory = createAsyncThunk(
   'chat/resumeFromHistory',
   async ({ key, title }: { key: string; title: string }, { dispatch }) => {
+    const terminalLease = captureTerminalActivation(key)
     const d = await api.resumeChatSlot(key, title)
+    if (d.ok) void activateTerminalsAfterNavigation(d.key, terminalLease)
     if (d.ok) {
       dispatch(addSlotOptimistic({ key: d.key, title: title || d.key, messages: 0, running: false, memory_mode: d.memory_mode, mode: d.mode, surface: d.surface ?? d.mode, pending_approval: false, waiting_for_input: false, last_activity_ts: undefined }))
       dispatch(updateSlot({ key: d.key, mode: d.mode, surface: d.surface ?? d.mode }))
@@ -3120,7 +3125,7 @@ export const deleteHistorySession = createAsyncThunk<
   'chat/deleteHistorySession',
   async (key, { getState, rejectWithValue }) => {
     try {
-      await api.deleteSession(key)
+      await deleteHistoryWithTerminals(key)
       return key
     } catch (e) {
       // Duck-typed on `body`, not `instanceof ApiError`, so a mocked transport

@@ -5701,7 +5701,12 @@
       "move_panel_to_bottom": "Panel nach unten verschieben",
       "more_actions": "Weitere Aktionen",
       "close_failed": "Die Shell dieses Terminals konnte auf dem Server nicht beendet werden und wird automatisch aufgeräumt.",
-      "closing_terminal": "Terminal wird geschlossen…"
+      "closing_terminal": "Terminal wird geschlossen…",
+      "history_cleanup_failed": "Chat „{{session}}“ wurde gelöscht, aber die Terminalbereinigung ist fehlgeschlagen. Versuche erneut, die Terminals zu entfernen.",
+      "history_delete_failed": "Chat „{{session}}“ konnte nicht gelöscht werden. Seine Terminals wurden beibehalten.",
+      "history_deletion_unconfirmed": "Das Löschen von Chat „{{session}}“ wurde in diesem Fenster nicht bestätigt. Du kannst seine Terminals separat schließen.",
+      "close_terminals": "Terminals schließen",
+      "terminal_cleanup_failed": "Die Terminalbereinigung für „{{session}}“ ist fehlgeschlagen. Versuche erneut, die Terminals zu schließen."
     },
     "chatInput": {
       "approval_hint_adjust": "Genehmigungsmodus anpassen",
