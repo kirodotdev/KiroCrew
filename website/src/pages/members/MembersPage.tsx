@@ -64,6 +64,7 @@ import { markSlotRead } from '../../store/dashboardSlice'
 import CrewAvatar from '../../components/CrewAvatar'
 import CrewStateAvatar from '../../components/CrewStateAvatar'
 import ChatPane from '../../components/ChatPane'
+import CrewWebview from './CrewWebview'
 import ErrorBoundary from '../../components/ErrorBoundary'
 import ErrorNotice from '../../components/ErrorNotice'
 import { useGuardedLeave } from '../../components/NavigationLeaveGuard'
@@ -1988,6 +1989,17 @@ export default function MembersPage() {
               <div className="text-[11px] text-muted">{t('pages.membersPage.stat_week')}</div>
             </div>
           </div>
+          {/* The crew's own webview — the surface the crew fills in to answer
+              "what am I holding, what is stuck, what needs you", which is what
+              the operator opens this tab for. It sits between the activity
+              counts above and the session list below: those two are what the
+              backend can attest, this is the crew's own account of itself. */}
+          <div className="text-[11px] font-semibold tracking-wide text-muted mb-1.5">
+            {t('pages.membersPage.webview_heading')}
+          </div>
+          {activeSlug && activeMemberName ? (
+            <CrewWebview slug={activeSlug} member={activeMemberName} />
+          ) : null}
           {/* Sessions this member is driving — the worker sessions it opened
               and steers. Live rows off the WS slots frames (see the
               drivingSessions memo); each row is a jump into that session.

@@ -38,6 +38,7 @@
 // - ArtifactDetailPage.tsx (full-screen artifact view at /artifacts/<slug>)
 
 import { TAILWIND_RUNTIME_PATH } from './vendorPaths'
+import { sanitizeCssValue } from './cssSanitize'
 
 /** CSS custom properties the parent app exposes to widgets. Resolved against
  * document.documentElement and serialized into the sandboxed srcdoc so widget
@@ -533,6 +534,30 @@ function buildThemeCss(vars: Record<string, string>, mode: 'dark' | 'light'): st
  * deliberately does NOT any more: model script in that frame was a BLOCKING
  * DNS-prefetch exfiltration channel, and it strips scripts instead (see
  * apps/meetings/lib/sketchSrcdoc.ts). Do not "restore" that call. */
+/**
+ * The live values of `THEME_VAR_NAMES`, read off the document root.
+ *
+ * ONE copy, imported by every frame host. There were seven near-identical local
+ * copies; six agreed and mochi's did not — it read `.getPropertyValue(name).trim()`
+ * with no `sanitizeCssValue` and no SSR guard, so one host was interpolating
+ * unsanitised computed CSS into an iframe document while its six siblings
+ * sanitised. That is the failure mode duplication actually causes: not the
+ * duplicated lines, but the copy that silently stops matching.
+ *
+ * Returns `{}` outside a browser so a server render is a no-op rather than a
+ * crash on `document`.
+ */
+export function readThemeVars(): Record<string, string> {
+  if (typeof window === 'undefined' || typeof document === 'undefined') return {}
+  const computed = getComputedStyle(document.documentElement)
+  const out: Record<string, string> = {}
+  for (const name of THEME_VAR_NAMES) {
+    const v = sanitizeCssValue(computed.getPropertyValue(name))
+    if (v) out[name] = v
+  }
+  return out
+}
+
 export function recloneScripts(root: ParentNode, doc: Document): void {
   const scripts = Array.from(root.querySelectorAll('script'))
   for (const oldScript of scripts) {

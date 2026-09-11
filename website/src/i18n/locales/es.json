@@ -14792,7 +14792,19 @@
       "filter_source_builtin_description": "Crews incluidos con {{productName}}",
       "filter_source_package_description": "Crews instalados por paquetes de capacidades",
       "member_count_filtered": "{{shown}} de {{count}} miembros",
-      "setup_in_crew_manager": "Configurar la memoria privada"
+      "setup_in_crew_manager": "Configurar la memoria privada",
+      "webview_heading": "Panel",
+      "webview_collapse": "Contraer el panel",
+      "webview_open": "Abrir el panel",
+      "webview_value_yes": "sí",
+      "webview_value_no": "no",
+      "webview_contained": "Aislado",
+      "webview_contained_detail": "rellenado por este equipo, aislado de esta página y bloqueado para enviar datos",
+      "webview_empty": "Este equipo aún no ha rellenado su panel. Añade su servidor de panel en «Herramientas y MCP» en el gestor de equipos para que pueda publicarlo.",
+      "webview_error": "No se pudo renderizar el panel de este equipo.",
+      "webview_frame_title": "Panel rellenado por {{crew}}",
+      "webview_rendering": "Renderizando el panel…",
+      "webview_retry": "Reintentar"
     }
   },
   "privacyDisclosure": {

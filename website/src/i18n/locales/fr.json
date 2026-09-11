@@ -14792,7 +14792,19 @@
       "filter_source_builtin_description": "Crews fournis avec {{productName}}",
       "filter_source_package_description": "Crews installés par des packages de capacités",
       "member_count_filtered": "{{shown}} membres sur {{count}}",
-      "setup_in_crew_manager": "Configurer la mémoire privée"
+      "setup_in_crew_manager": "Configurer la mémoire privée",
+      "webview_heading": "Tableau de bord",
+      "webview_collapse": "Réduire le tableau de bord",
+      "webview_open": "Ouvrir le tableau de bord",
+      "webview_value_yes": "oui",
+      "webview_value_no": "non",
+      "webview_contained": "Isolé",
+      "webview_contained_detail": "rempli par cette équipe, isolé de cette page et empêché d'envoyer des données",
+      "webview_empty": "Cette équipe n'a pas encore rempli son tableau de bord. Ajoutez son serveur de panneau dans « Outils et MCP » dans le gestionnaire d'équipes pour qu'elle puisse en publier un.",
+      "webview_error": "Le tableau de bord de cette équipe n'a pas pu être affiché.",
+      "webview_frame_title": "Tableau de bord rempli par {{crew}}",
+      "webview_rendering": "Affichage du tableau de bord…",
+      "webview_retry": "Réessayer"
     }
   },
   "privacyDisclosure": {

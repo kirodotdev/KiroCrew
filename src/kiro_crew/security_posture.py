@@ -1267,6 +1267,24 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "preference is not one the client can use, and the sync loop would "
         "write the sentinel back over the file.",
     ),
+    (
+        "Crew webview panels",
+        "agent_panel.py",
+        "Everything a crew publishes into its drawer webview: every string in the "
+        "`data` object -- KEYS as well as values, because the template renders a "
+        "key as a heading -- plus the panel title. A panel is assembled unattended "
+        "from issue bodies, review comments and command output, so it is untrusted "
+        "text on a path that ends at the operator's dashboard, both in the native "
+        "docked summary and inside the composed sandbox document. Each string is "
+        "Unicode-sanitized BEFORE the chain, because a redactor matches the "
+        "characters it is handed: an invisible character inside a token hides it "
+        "from both patterns and is then dropped downstream, which would store the "
+        "joined-up secret with redaction skipped. The chain runs at "
+        "PUBLISH rather than at render, so a credential never enters `panel.json` at "
+        "all: it cannot be read back by a later reader, cannot survive in halves "
+        "across the record's byte ceiling, and is not left on disk for the next "
+        "reader that forgets to scrub.",
+    ),
 )
 
 # Modules that call a redactor but are NOT an output egress boundary, so they do
@@ -1566,6 +1584,24 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # worker-authored prose before returning it, but the egress boundary is
         # the transport the result crosses, not this module.
         "mcp_work.py",
+        # Same class again, and worth stating precisely because the module's NAME
+        # suggests otherwise. Two flows pass through the kirocrew-panel server and
+        # only one of them touches a redactor:
+        #
+        #   agent -> dashboard: the `data` object and `title` are FORWARDED
+        #     verbatim by `panel_publish` (`_post` at mcp_panel.py:189). This
+        #     module applies no redactor to them. The scrub happens in
+        #     `agent_panel.publish`, which is a registered sink above -- so the
+        #     panel content IS counted in the posture report, under the module
+        #     that actually performs it rather than the one that relays it.
+        #   dashboard -> model: the gateway's refusal prose, which can quote
+        #     caller-supplied material (an echoed template id), is scrubbed at
+        #     mcp_panel.py:167 and :194 before being handed back as a tool result.
+        #
+        # It is the second flow that matches the call-site scan, and its consumer
+        # is the MODEL over the stdio transport -- the boundary is that transport,
+        # not this module, exactly as for `mcp_dashboard.py` above.
+        "mcp_panel.py",
         "mcp_gateway/backend.py",
         # The kirocrew-core tool handlers, moved out of mcp_core.py into their
         # domain modules. Same classification as mcp_core.py above for the same
@@ -1949,6 +1985,7 @@ _SCHEMA_REGISTRY_NAMES: tuple[str, ...] = (
     "MCP_COMPUTER_SCHEMAS",
     "MCP_DASHBOARD_SCHEMAS",
     "MCP_WORK_SCHEMAS",
+    "MCP_PANEL_SCHEMAS",
 )
 
 

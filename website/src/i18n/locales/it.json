@@ -14791,7 +14791,19 @@
       "filter_source_builtin_description": "Crew inclusi in {{productName}}",
       "filter_source_package_description": "Crew installati da pacchetti di capacità",
       "member_count_filtered": "{{shown}} membri su {{count}}",
-      "setup_in_crew_manager": "Configura la memoria privata"
+      "setup_in_crew_manager": "Configura la memoria privata",
+      "webview_heading": "Dashboard",
+      "webview_collapse": "Comprimi la dashboard",
+      "webview_open": "Apri la dashboard",
+      "webview_value_yes": "sì",
+      "webview_value_no": "no",
+      "webview_contained": "Isolato",
+      "webview_contained_detail": "compilata da questa crew, isolata da questa pagina e impossibilitata a inviare dati",
+      "webview_empty": "Questa crew non ha ancora compilato la sua dashboard. Aggiungi il suo server pannello in «Strumenti e MCP» nel gestore delle crew per consentirle di pubblicarne una.",
+      "webview_error": "Non è stato possibile rendere la dashboard di questa crew.",
+      "webview_frame_title": "Dashboard compilata da {{crew}}",
+      "webview_rendering": "Rendering della dashboard…",
+      "webview_retry": "Riprova"
     }
   },
   "privacyDisclosure": {

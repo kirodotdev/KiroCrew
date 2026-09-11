@@ -14791,7 +14791,19 @@
       "filter_source_builtin_description": "Crews incluídos no {{productName}}",
       "filter_source_package_description": "Crews instalados por pacotes de capacidades",
       "member_count_filtered": "{{shown}} de {{count}} membros",
-      "setup_in_crew_manager": "Configurar memória privada"
+      "setup_in_crew_manager": "Configurar memória privada",
+      "webview_heading": "Painel",
+      "webview_collapse": "Recolher o painel",
+      "webview_open": "Abrir o painel",
+      "webview_value_yes": "sim",
+      "webview_value_no": "não",
+      "webview_contained": "Isolado",
+      "webview_contained_detail": "preenchido por esta equipe, isolado desta página e bloqueado de enviar dados",
+      "webview_empty": "Esta equipe ainda não preencheu seu painel. Adicione o servidor de painel dela em “Ferramentas e MCP” no gerenciador de equipes para que ela possa publicar um.",
+      "webview_error": "Não foi possível renderizar o painel desta equipe.",
+      "webview_frame_title": "Painel preenchido por {{crew}}",
+      "webview_rendering": "Renderizando o painel…",
+      "webview_retry": "Tentar novamente"
     }
   },
   "privacyDisclosure": {

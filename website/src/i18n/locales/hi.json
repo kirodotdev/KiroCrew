@@ -14601,7 +14601,19 @@
       "filter_source_builtin_description": "{{productName}} के साथ आने वाले क्रू",
       "filter_source_package_description": "क्षमता पैकेजों द्वारा इंस्टॉल किए गए क्रू",
       "member_count_filtered": "{{count}} में से {{shown}} सदस्य",
-      "setup_in_crew_manager": "निजी मेमोरी सेट अप करें"
+      "setup_in_crew_manager": "निजी मेमोरी सेट अप करें",
+      "webview_heading": "डैशबोर्ड",
+      "webview_collapse": "डैशबोर्ड को छोटा करें",
+      "webview_open": "डैशबोर्ड खोलें",
+      "webview_value_yes": "हाँ",
+      "webview_value_no": "नहीं",
+      "webview_contained": "सीमित",
+      "webview_contained_detail": "इस क्रू द्वारा भरा गया, इस पेज से अलग और डेटा भेजने से अवरुद्ध",
+      "webview_empty": "इस क्रू ने अभी अपना डैशबोर्ड नहीं भरा है। क्रू प्रबंधक में «टूल और MCP» के अंतर्गत इसका पैनल सर्वर जोड़ें, तब यह प्रकाशित कर सकेगा।",
+      "webview_error": "इस क्रू का डैशबोर्ड रेंडर नहीं किया जा सका।",
+      "webview_frame_title": "{{crew}} द्वारा भरा गया डैशबोर्ड",
+      "webview_rendering": "डैशबोर्ड रेंडर हो रहा है…",
+      "webview_retry": "पुन: प्रयास करें"
     }
   },
   "privacyDisclosure": {

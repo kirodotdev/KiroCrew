@@ -2272,6 +2272,20 @@ export interface MemberActivityEntry {
   project?: string
 }
 
+/** Free-form fields a crew publishes into its webview. The crew owns the shape,
+ *  so every value is unknown until the renderer narrows it. */
+export type CrewPanelData = Record<string, unknown>
+
+/** Metadata half of GET /api/members/{slug}/panel. The document itself travels
+ *  beside it as `html`, already composed server-side from the template. */
+export interface CrewPanelMeta {
+  template: string
+  title: string
+  crew: string
+  published_at: string
+  data: CrewPanelData
+}
+
 /** WakaTime coding-stats payload (GET /api/wakatime/stats). When the
  *  integration is off the endpoint returns { configured: false } instead. */
 export type WakaTimeStatsEntry = { name: string; total_seconds: number }
@@ -3028,6 +3042,17 @@ export const api = {
       capped: boolean
       entries: MemberActivityEntry[]
     }>,
+  // The crew's published webview: metadata plus the composed document. Read
+  // through this layer rather than a component-local `fetch`, like every sibling
+  // above -- the members page's tests stub THIS module, so a hand-rolled fetch was
+  // the one reader they could not stub, and a silent fallback (a remembered crew
+  // renamed away) surfaced as a red alert instead. `member` is the exact crew name
+  // because the record carries an ownership claim the server checks against it;
+  // slugs are lossy, so two crews can share one.
+  memberPanel: (slug: string, member: string) =>
+    fetch(
+      '/api/members/' + encodeURIComponent(slug) + '/panel?member=' + encodeURIComponent(member),
+    ).then(j) as Promise<{ panel: CrewPanelMeta | null; html: string | null }>,
   updateKirocrewAgent: (name: string, body: object) =>
     put('/api/agents/' + encodeURIComponent(name), body).then(j),
   deleteKirocrewAgent: (name: string) =>

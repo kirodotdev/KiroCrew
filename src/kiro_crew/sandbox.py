@@ -302,6 +302,21 @@ _CREW_HIDDEN_LEAVES: tuple[str, ...] = (
     "live_target.json",
     "backup",
     "mcp-apps",
+    # Published crew webview records. Same model as the entries above, and named
+    # here rather than under ``trust/`` for a specific reason: ``trust`` is a
+    # declared READ-WRITE exception below (in-sandbox ``verify_session_pid`` reads
+    # ``trust/sel_hmac.key`` and the in-sandbox MCP servers append to the audit
+    # log), so a record under it stayed writable by a sandboxed command that built
+    # the path at runtime -- defeating command matching, which has no literal path
+    # to match. Masking costs no live consumer: the publishing MCP tool does not
+    # import the store at all, it POSTs to ``/api/agent-panel/publish``, so the
+    # gateway process is the only writer and the only reader.
+    #
+    # Listed in ``_CREW_PRECREATE_HIDDEN_DIR_LEAVES`` too, because on Linux the
+    # mask is a bind mount and the loop guards on ``isdir`` -- an absent directory
+    # is SKIPPED, which on a fresh install is exactly the disposition this entry
+    # exists to deny.
+    "crew-panels",
     # Named memory stores (``memory_stores.py``): one subdirectory per crew, each
     # holding that crew's private markdown memory, FTS index and vector database.
     # HIDDEN rather than read-only, and the reason is the direction the harm runs in:
@@ -390,6 +405,20 @@ _CREW_READONLY_LEAVES: tuple[str, ...] = (
     # fence how a command SPELLS this path, and the kernel denial is what still
     # holds when a spelling is built at runtime (``$(printf ...)``).
     "settings_seeds.json",
+    # The crew webview template directory. A ceiling in exactly the sense above:
+    # the whole value of splitting a panel into human-authored TEMPLATE and
+    # agent-published DATA is that layout is authored by a person, so a crew must
+    # never be able to write one -- a template it authored could put markup, and
+    # therefore a hostile issue body's markup, straight into the operator's
+    # dashboard. ``security._CREW_SECRET_LEAVES`` fences it from the agent FILE
+    # TOOLS; sealing it read-only here closes the other half, because a fence that
+    # only covers file tools is bypassed by any spawned shell that can write.
+    #
+    # READ-ONLY rather than masked, and the direction matters: templates are
+    # versioned, human-reviewed repo content with nothing secret in them, so
+    # reading one costs nothing, while hiding a directory the OPERATOR drops
+    # overrides into would silently change which template renders.
+    "panel-templates",
     # The fork-lineage / model-state sidecar (agent_state.py). Same
     # input-to-an-authorization-decision class as the ceilings above:
     # ``forked_from`` / ``private_to`` decide whether the fork endpoint treats
@@ -737,7 +766,18 @@ def carveout_shadowed_by_foreign_mask(path: str, mode: str = "standard") -> bool
 #: this list closes: a mask needs the opposite treatment (an empty bind OVER the
 #: name), and ``_CREW_HIDDEN_LEAVES`` has no reader to prove an empty document is
 #: absent-equivalent, so each leaf needs its own argument.
-_CREW_PRECREATE_READONLY_DIR_LEAVES: tuple[str, ...] = ("profiles", "member-memory-bindings")
+_CREW_PRECREATE_READONLY_DIR_LEAVES: tuple[str, ...] = (
+    "profiles",
+    "member-memory-bindings",
+    # The crew webview template directory. A fence only fences an EXISTING path:
+    # the Linux launcher skips the read-only mount for an absent target, so on a
+    # fresh install -- where no operator has dropped an override yet -- the
+    # directory does not exist, the seal is silently skipped, and the agent can
+    # create it and author its own template. Which is precisely the write the
+    # read-only listing above exists to deny, so without this entry that listing
+    # protects only hosts that happen to have the directory already.
+    "panel-templates",
+)
 _CREW_PRECREATE_READONLY_FILE_LEAVES: tuple[str, ...] = (
     "computer_use.json",
     "oauth_endpoints.json",
@@ -805,6 +845,13 @@ _CREW_PRECREATE_HIDDEN_DIR_LEAVES: tuple[str, ...] = (
     # ``SENSITIVE_DIRS`` loop skips it, and the directory the backend creates later shows
     # up INSIDE that running sandbox — with the PAT staging window in it.
     _MD_NOTEBOOK_STAGING_LEAF,
+    # ``crew-panels`` is the same requirement seen from the mirror side of the
+    # ceilings above: a read-only ceiling is materialised so the SEAL can apply,
+    # a hidden leaf so the MASK can. The skip lands precisely on a fresh install,
+    # where the agent could then create the directory itself and write what the
+    # gateway later reads back as authoritative. Same failure the
+    # ``panel-templates`` ceiling has, one list over.
+    "crew-panels",
     # Private memory has the same late-creation hazard: an agent spawned before
     # the first member must never gain access when that member's database appears.
     "memory_stores",
@@ -849,7 +896,13 @@ _CEILING_TEMP_PREFIX: str = ".kirocrew-ceiling-"
 
 
 def _sealable_absent_ceilings() -> tuple[list[str], list[str]]:
-    """Resolved (dir, file) ceiling paths that may be created so the seal can apply.
+    """Resolved (dir, file) paths that may be created so their disposition can apply.
+
+    Two kinds of directory, one requirement. A read-only ceiling is materialised so
+    the SEAL can apply; a hidden leaf is materialised so the MASK can. Both are
+    skipped by their launcher loop when absent, so both need the path to exist
+    before the loop runs, and the creation rules are identical -- 0o700, never
+    truncate, never remove, refuse a dangling symlink.
 
     Resolved through ``config_dir()`` — the LIVE data home — rather than expanded over
     both ``_CREW_HOME_PREFIXES`` the way the deny lists are. A deny rule covers both
@@ -869,7 +922,12 @@ def _sealable_absent_ceilings() -> tuple[list[str], list[str]]:
         logger.debug("could not resolve the crew data home for ceiling sealing", exc_info=True)
         return ([], [])
     file_targets = [os.path.join(root, leaf) for leaf in _CREW_PRECREATE_READONLY_FILE_LEAVES]
-    dir_targets = [os.path.join(root, leaf) for leaf in _CREW_PRECREATE_READONLY_DIR_LEAVES]
+    # Read-only ceilings AND hidden leaves: the seal needs the former to exist,
+    # the mask needs the latter (see the docstring), so both are materialised here.
+    dir_targets = [
+        os.path.join(root, leaf)
+        for leaf in _CREW_PRECREATE_READONLY_DIR_LEAVES + _CREW_PRECREATE_HIDDEN_DIR_LEAVES
+    ]
     try:
         # The kiro agents tree (fork governance's specs + their lock; see the
         # readonly-target entry above): the Linux mount seal needs a directory
@@ -925,6 +983,61 @@ def _warn_unsealed_ceiling(target: str, exc: "OSError | None") -> None:
         "writable inside the sandbox",
         target,
         exc if exc is not None else "publish failed",
+    )
+
+
+#: Protected leaves where an ALIASED name is a hard spawn failure, not a warning.
+#:
+#: ``_warn_if_alias_backed`` warns for every other ceiling, deliberately: those are
+#: an operator's config files and a dotfile manager (chezmoi, stow) legitimately
+#: symlinks them, so refusing would turn a normal setup into a spawn failure for a
+#: hole that is pre-existing and narrower than the breakage.
+#:
+#: These two are not config files and nothing has a reason to link them:
+#:
+#: * ``crew-panels`` -- created on demand by the GATEWAY and read by nothing else.
+#:   It is bind-MASKED, so a link means the mask attaches to the target while the
+#:   link name stays writable in the data home: a sandboxed process unlinks it,
+#:   drops its own directory, and forges records the gateway reads back as
+#:   authoritative -- past the ownership check and past the redactors.
+#: * ``panel-templates`` -- holds the human-authored TEMPLATE whose separation from
+#:   crew-published DATA is the whole containment story. Replacing that directory is
+#:   authoring markup that renders in the panel, not changing a setting.
+#:
+#: So for these, a link is refused: the disposition must attach to the same name the
+#: reader uses, and following a link is exactly the gap that voids it.
+_CREW_NO_ALIAS_LEAVES: frozenset[str] = frozenset({"crew-panels", "panel-templates"})
+
+
+def _refuse_if_aliased_protected_leaf(target: str) -> None:
+    """Refuse the spawn when a protected leaf is reachable under a second name.
+
+    Same two shapes ``_warn_if_alias_backed`` reports -- a symlink, or a regular
+    file with an extra hardlink -- but for :data:`_CREW_NO_ALIAS_LEAVES` the
+    outcome is a refusal. Warning and continuing is what made this silent: the log
+    said the path was sealed while the writes went somewhere else.
+    """
+    if os.path.basename(target.rstrip("/" + os.sep)) not in _CREW_NO_ALIAS_LEAVES:
+        return
+    try:
+        info = os.lstat(target)
+    except OSError:
+        return
+    if stat.S_ISLNK(info.st_mode):
+        pointed_at = "(unreadable)"
+        with contextlib.suppress(OSError):
+            pointed_at = os.readlink(target)
+        raise SandboxCeilingUnsealable(
+            f"the protected directory {target} is a SYMLINK -> {pointed_at}. Its "
+            "disposition attaches to this NAME, so the link would leave the name "
+            "replaceable inside the sandbox while reads and writes went to an "
+            "unfenced inode. Remove the link and use a real directory."
+        )
+    if stat.S_ISDIR(info.st_mode):
+        return
+    raise SandboxCeilingUnsealable(
+        f"the protected directory {target} is not a directory. It must be a real "
+        "directory under this name for its mask to apply."
     )
 
 
@@ -1159,6 +1272,10 @@ def _materialize_sealable_ceilings() -> list[str]:
 
     for target in dir_targets:
         _refuse_if_dangling_symlink(target)
+        # BEFORE the warn-and-continue below: for a protected leaf an alias is a
+        # refusal, and reaching `_warn_if_alias_backed` would log that the path was
+        # covered while the bytes went elsewhere.
+        _refuse_if_aliased_protected_leaf(target)
         if os.path.exists(target):
             # Present, so the launcher will seal it -- but say so when the seal is
             # reachable around rather than through this path.
