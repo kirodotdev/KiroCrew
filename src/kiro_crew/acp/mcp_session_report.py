@@ -60,6 +60,9 @@ from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 # nothing and its row reads "no report" for a server that did report. The bound
 # only has to stop a pathological name, so it sits well above any real one.
 _NAME_CAP = 128
+# Shared with the unresolved-ref guard, whose refs are config-derived in exactly
+# the same way and reach the same three sinks.
+NAME_CAP = _NAME_CAP
 # A failure text comes from the failing server's own startup and can carry a
 # connection string. It is redacted first; this bounds what survives.
 _ERROR_CAP = 240
@@ -85,13 +88,19 @@ _EVENT_ACTIONS = {
 }
 
 
-def _clean(text: str, cap: int) -> str:
+def sanitize_sink_text(text: str, cap: int) -> str:
     """Redact, collapse whitespace, drop control characters, then truncate.
 
     Order matters: redaction runs first so a credential cannot be split across
     the truncation boundary and survive, and the control strip runs after the
     whitespace collapse so a redaction marker cannot reintroduce a line break
     into a log line or a payload.
+
+    Public because it is the ONE cleaner for every config-derived string this
+    package pushes at a sink -- a server name, a startup failure, an unresolved
+    tool ref. :mod:`kiro_crew.acp.mcp_ref_guard` shares it rather than repeating
+    the order above: two sanitizers with the same job are two that can drift, and
+    the one that drifts is the one that stops redacting.
     """
     scrubbed, _ = redact_exfiltration_urls(text)
     scrubbed, _ = redact_credentials(scrubbed)
@@ -106,7 +115,7 @@ def server_name_of(msg: JsonRpcMessage) -> str:
     """
     params = msg.params if isinstance(msg.params, dict) else {}
     raw = params.get("serverName") or params.get("name") or ""
-    return _clean(str(raw), _NAME_CAP)
+    return sanitize_sink_text(str(raw), _NAME_CAP)
 
 
 def roster_names(servers: Any) -> tuple[str, ...]:
@@ -120,7 +129,7 @@ def roster_names(servers: Any) -> tuple[str, ...]:
     for entry in servers if isinstance(servers, list) else []:
         if not isinstance(entry, dict):
             continue
-        name = _clean(str(entry.get("name") or ""), _NAME_CAP)
+        name = sanitize_sink_text(str(entry.get("name") or ""), _NAME_CAP)
         if name and name not in out:
             out.append(name)
     return tuple(out[:_BUCKET_CAP])
@@ -193,7 +202,7 @@ class McpSessionReport:
         for raw in refs if isinstance(refs, (list, tuple)) else ():
             if not isinstance(raw, str):
                 continue
-            ref = _clean(raw, _NAME_CAP)
+            ref = sanitize_sink_text(raw, _NAME_CAP)
             if ref and ref not in seen:
                 seen.append(ref)
         self.unresolved_refs = tuple(seen[:_BUCKET_CAP])
@@ -231,7 +240,7 @@ class McpSessionReport:
         error = ""
         if action == _ACTION_INIT_FAILURE:
             params = msg.params if isinstance(msg.params, dict) else {}
-            error = _clean(str(params.get("error") or ""), _ERROR_CAP)
+            error = sanitize_sink_text(str(params.get("error") or ""), _ERROR_CAP)
         return self._record(action, name, error)
 
     def record_event(
@@ -264,10 +273,10 @@ class McpSessionReport:
             # call site so both ownership rules live together — the event path
             # missing the rule the frame path had is exactly the bug this closes.
             return False
-        name = _clean(str(server_name or ""), _NAME_CAP)
+        name = sanitize_sink_text(str(server_name or ""), _NAME_CAP)
         if not name:
             return False
-        return self._record(action, name, _clean(str(error or ""), _ERROR_CAP))
+        return self._record(action, name, sanitize_sink_text(str(error or ""), _ERROR_CAP))
 
     def _record(self, action: str, name: str, error: str = "") -> bool:
         """Move ``name`` into the bucket ``action`` implies, evicting the others."""

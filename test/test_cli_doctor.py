@@ -381,107 +381,80 @@ class TestTrustRoot:
 class TestUnresolvedMcpRefs:
     """`kirocrew doctor` answers "why does my agent have no tools here?" statically.
 
-    The runtime guard in ``acp/mcp_ref_guard`` reports the same thing from inside a
-    session; this row reports it before one, per selectable harness. Advisory by
+    The runtime detector in ``acp/mcp_ref_guard`` reports the same thing from inside
+    a session; this row reports it before one, per selectable harness. Advisory by
     design -- a harness with no projection yet is a known state of the tree, not a
     broken install, so it must never move doctor's exit code.
     """
 
-    def _wire(self, *names: str) -> list:
-        return [{"name": n, "command": "/bin/x", "args": [], "env": [], "type": "stdio"} for n in names]
+    def _arrange(self, monkeypatch, rows, *, spec_found=True):
+        """Fixture the SDK delegation the row asks.
 
-    def _arrange(self, monkeypatch, *, spec, backends, projections, no_mirror=("codex",)):
-        """Point the check's three lookups at fixtures.
-
-        The check imports them inside the function (doctor keeps its import graph
-        lazy), so the patches land on the source modules.
+        Patched at ``agent_sdk.drivers.acp``, its defining module, because the row
+        imports it inside the function (doctor keeps its import graph lazy). That
+        the row asks ONE boundary-clean question rather than assembling the answer
+        from the spec, the backend registry and the mirror seam is the reason this
+        fixture is a single return value -- and is what keeps `cli_doctor` off the
+        agent-sdk-boundary baseline.
         """
-        from kiro_crew import acp_backends, providers
-        from kiro_crew.acp import session_mcp
+        from kiro_crew.agent_sdk.drivers import acp as acp_driver
 
-        # The PACKAGE module, not registry: ``providers/mirrors/__init__`` re-exports
-        # both names, so that is the binding the check's own import reads.
-        mirrors = providers.mirrors
-
-        monkeypatch.setattr(session_mcp, "agent_spec_snapshot", lambda _a: spec)
-        monkeypatch.setattr(acp_backends, "selectable_backend_values", lambda: backends)
-
-        class _Mirror:
-            def __init__(self, servers):
-                self._servers = servers
-
-            def session_params(self, _agent, **_kw):
-                return {"mcpServers": self._servers}
-
-        def _mirror_for(backend):
-            projected = projections.get(backend)
-            return None if projected is None else _Mirror(projected)
-
-        monkeypatch.setattr(mirrors, "mirror_for", _mirror_for)
-        monkeypatch.setattr(mirrors, "NO_MIRROR", {b: "declared" for b in no_mirror})
+        monkeypatch.setattr(
+            acp_driver, "agent_spec_mcp_refs", lambda _agent: (spec_found, rows)
+        )
 
     def test_a_backend_with_no_projection_names_the_unprojected_refs(self, monkeypatch, capsys):
-        self._arrange(
-            monkeypatch,
-            spec={"tools": ["@kirocrew-core"], "mcpServers": {"kirocrew-core": {"command": "/x"}}},
-            backends=["codex"],
-            projections={"codex": None},
-        )
+        self._arrange(monkeypatch, [("codex", ["@kirocrew-core"], False)])
         cli_doctor._doctor_unresolved_mcp_refs()
         out = capsys.readouterr().out
         assert "codex has no mirror" in out
         assert "@kirocrew-core" in out
 
     def test_a_healthy_projection_prints_a_clean_row(self, monkeypatch, capsys):
-        self._arrange(
-            monkeypatch,
-            spec={"tools": ["@kirocrew-core"], "mcpServers": {"kirocrew-core": {"command": "/x"}}},
-            backends=["claude"],
-            projections={"claude": self._wire("kirocrew-core")},
-            no_mirror=(),
-        )
+        self._arrange(monkeypatch, [("claude", [], True)])
         cli_doctor._doctor_unresolved_mcp_refs()
         out = capsys.readouterr().out
-        assert "✅ claude" in out
-        assert "@kirocrew-core" not in out
+        assert out.strip() == "mcp tool refs: \u2705 claude \u2014 every @server ref resolves"
+        # The whole row, so a clean backend cannot also print a remedy paragraph.
+        assert "no mirror" not in out and "still misses" not in out
 
-    def test_kiro_reads_its_refs_against_the_spec_not_the_empty_array(self, monkeypatch, capsys):
-        """Crew passes kiro-cli no array on purpose; it loads the spec via --agent.
+    def test_kiro_is_labelled_by_its_policy_id_not_the_empty_string(self, monkeypatch, capsys):
+        """The kiro backend is spelled ``""``, which would print as a blank row.
 
-        Judging it against the wire would make the healthiest install in the tree
-        print every ref it declares -- the false positive that would get this row
-        deleted rather than fixed.
+        Same translation ``_doctor_agent_auth`` applies: the policy id is the
+        readable name for the one backend whose identifier is empty.
         """
-        self._arrange(
-            monkeypatch,
-            spec={"tools": ["@kirocrew-core"], "mcpServers": {"kirocrew-core": {"command": "/x"}}},
-            backends=[""],
-            projections={"": None},
-            no_mirror=("",),
-        )
+        self._arrange(monkeypatch, [("", [], True)])
         cli_doctor._doctor_unresolved_mcp_refs()
-        out = capsys.readouterr().out
-        assert "✅ kiro" in out
+        assert "\u2705 kiro" in capsys.readouterr().out
 
     def test_a_mirrored_backend_that_still_drops_a_ref_is_the_louder_row(self, monkeypatch, capsys):
         # A mirror exists and its projection lost the server anyway, which is a
         # different problem from having no projection at all.
-        self._arrange(
-            monkeypatch,
-            spec={"tools": ["@marked"], "mcpServers": {"marked": {"type": "registry"}}},
-            backends=["claude"],
-            projections={"claude": []},
-            no_mirror=(),
-        )
+        self._arrange(monkeypatch, [("claude", ["@marked"], True)])
         cli_doctor._doctor_unresolved_mcp_refs()
         out = capsys.readouterr().out
-        assert "⚠ claude" in out
+        assert "\u26a0 claude" in out
         assert "@marked" in out
+        assert "has no mirror" not in out
 
     def test_no_spec_on_disk_is_informational(self, monkeypatch, capsys):
-        self._arrange(monkeypatch, spec=None, backends=["codex"], projections={})
+        self._arrange(monkeypatch, [], spec_found=False)
         cli_doctor._doctor_unresolved_mcp_refs()
         assert "no default agent spec" in capsys.readouterr().out
+
+    def test_a_ref_carrying_terminal_controls_is_rendered_inert(self, monkeypatch, capsys):
+        """Spec-derived text printed to a terminal goes through ``_safe_display``.
+
+        A cloned repository ships its own ``<project>/.kiro/agents/*.json`` and an
+        installed app registers a user-level spec, so a ref can carry OSC/ANSI
+        sequences that spoof the diagnostic lines around it.
+        """
+        self._arrange(monkeypatch, [("codex", ["@srv\x1b]0;pwned\x07"], False)])
+        cli_doctor._doctor_unresolved_mcp_refs()
+        out = capsys.readouterr().out
+        assert "\x1b" not in out
+        assert "srv" in out
 
     def test_the_row_never_moves_doctors_exit_code(self):
         """It takes no ``issues`` list, so it structurally cannot append one.
@@ -498,19 +471,54 @@ class TestUnresolvedMcpRefs:
 
         Every other test here invokes it directly, so all of them stay green on a
         build where nothing in ``_doctor`` calls it at all -- which is the same
-        shape of omission the guard exists to detect, one layer up.
+        shape of omission the detector exists to catch, one layer up.
         """
         import inspect
 
         assert "_doctor_unresolved_mcp_refs()" in inspect.getsource(cli_doctor._doctor)
 
-    def test_an_unreadable_registry_does_not_break_triage(self, monkeypatch, capsys):
+    def test_the_sdk_probe_models_an_owned_permission_surface(self, monkeypatch):
+        """The delegation must pass ``permission_surface_owned=True``.
+
+        The claude mirror withholds its WHOLE array when Crew did not author the
+        session's native permission file — a per-session fact no static check can
+        know. Passing False would make doctor report every ref as unresolved on the
+        one backend whose projection actually works, which is the false positive
+        that would get this row disabled.
+        """
+        from kiro_crew import acp_backends, providers
         from kiro_crew.acp import session_mcp
+        from kiro_crew.agent_sdk.drivers import acp as acp_driver
+
+        seen: dict = {}
+
+        class _Mirror:
+            def session_params(self, _agent, **kw):
+                seen.update(kw)
+                return {"mcpServers": [{"name": "kirocrew-core"}]}
+
+        monkeypatch.setattr(
+            session_mcp,
+            "agent_spec_snapshot",
+            lambda _a: {"tools": ["@kirocrew-core"], "mcpServers": {"kirocrew-core": {}}},
+        )
+        monkeypatch.setattr(acp_backends, "selectable_backend_values", lambda: ["claude"])
+        # The PACKAGE module: the driver imports both names from ``providers.mirrors``.
+        monkeypatch.setattr(providers.mirrors, "mirror_for", lambda _b: _Mirror())
+
+        found, rows = acp_driver.agent_spec_mcp_refs("kirocrew")
+
+        assert found is True
+        assert seen.get("permission_surface_owned") is True
+        assert rows == [("claude", [], True)]
+
+    def test_an_unreadable_registry_does_not_break_triage(self, monkeypatch, capsys):
+        from kiro_crew.agent_sdk.drivers import acp as acp_driver
 
         def _boom(*_a, **_k):
             raise RuntimeError("spec unreadable")
 
-        monkeypatch.setattr(session_mcp, "agent_spec_snapshot", _boom)
+        monkeypatch.setattr(acp_driver, "agent_spec_mcp_refs", _boom)
         cli_doctor._doctor_unresolved_mcp_refs()  # must not raise
         assert capsys.readouterr().out == ""
 

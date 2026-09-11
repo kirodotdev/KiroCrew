@@ -217,18 +217,23 @@ credentials occupy. An unknown provider defaults to *not* self-sandboxing.
 | Auto-approve bypass | `allowedTools` is the one path that never reaches `hooks.on_tool_call` (`apps/bridges.py`) | KAS `rules` array | see §7 | **none reaches the harness** — no `--agent`, no spec, no session MCP array, and not in `ACP_BACKENDS_SEED_LOCAL_SETTINGS`; `allowedTools` is consumed Crew-side by the gate only. Routing is `SESSION_CONFIG`, so `read-only` is applied through `session/set_config_option` before the first prompt and the session is refused otherwise. The residual that does NOT close: ACP v1 cannot require a prompt for a passive READ, so the sensitive-path block never sees this harness's reads, and §4's OS-boundary mask is the compensating control (`acp_backends.py`) |
 | Tool-name grammar | `@server/tool` split on `/`, so slash-bearing keys are slugged or expose zero tools (`mcp_utils.py`) | — | `mcp__server`; `fs_read`→`Read`, `execute_bash`→`Bash`; `use_aws` has no equivalent and is dropped (companion) | unexercised — no MCP server is ever injected, so no grammar is reached |
 
-**Detected rather than declared, for every provider alike:** `acp/mcp_ref_guard.py`
-compares the spec's `@server` tool refs against the FINAL `mcpServers` array at the
-one point it is composed, and logs one structured warning plus a row on the
-session's MCP report (`unresolved_refs`) when a ref names nothing the session
-receives — the §5 failure this bucket keeps describing, made visible instead of
-re-diagnosed. Satisfaction is per backend: kiro-cli reads the spec itself via
-`--agent`, so its refs resolve against the spec's own `mcpServers`, while a harness
-that reads no agent file is satisfied only by the wire array (a broker stub counts
-on either, since it arrives under the name it wraps). It never alters the array and
-never fails the session. `kirocrew doctor` runs the same function per selectable
-backend, and it reads the mirror seam — so a backend projecting outside
-`providers/mirrors/` (KAS) reads as unprojected there.
+**Detected rather than declared, on every provider `AcpClient` composes for:**
+`agent_sdk/mcp_refs.py` compares the spec's `@server` tool refs against the FINAL
+`mcpServers` array, and `acp/mcp_ref_guard.py` logs one structured warning plus a
+row on the session's MCP report (`unresolved_refs`) at the one point that array is
+composed, when a ref names nothing the session receives — the §5 failure this
+bucket keeps describing, made visible instead of re-diagnosed. Satisfaction is per
+backend: kiro-cli reads the spec itself via `--agent`, so its refs resolve against
+the spec's own `mcpServers`, while a harness that reads no agent file is satisfied
+only by the wire array (a broker stub counts on either, since it arrives under the
+name it wraps). It never alters the array and never fails the session, and it adds
+no `await` to any construction path — the snapshot rides in the `mkdir` hop
+`_spawn` already had (H13). `kirocrew doctor` runs the same resolver per selectable
+backend through `agent_sdk.drivers.acp.agent_spec_mcp_refs`, which reads the mirror
+seam — so a backend projecting outside `providers/mirrors/` (KAS) reads as
+unprojected there. KAS is also the one backend the RUNTIME detector does not reach:
+it composes its array on `AcpRuntime`, not at `AcpClient`'s call sites, so its refs
+are checked statically only.
 
 **A provider must declare:** its injection channel and precedence rule, its
 server shape, its env-expansion semantics, its loader strictness, which field (if

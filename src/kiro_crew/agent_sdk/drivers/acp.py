@@ -37,6 +37,7 @@ sandbox posture at their defining modules.
 from __future__ import annotations
 
 __all__ = [
+    "agent_spec_mcp_refs",
     "claude_adapter_cached_negative",
     "claude_adapter_install_command",
     "claude_components_resolve",
@@ -89,6 +90,66 @@ def derived_agent_permissions(allowed_tools: object, agent_filename: str) -> dic
 
     derived = allowed_tools_to_permissions(allowed_tools, agent_id=Path(agent_filename).stem)
     return derived if derived is not None else {"rules": []}
+
+
+def agent_spec_mcp_refs(agent: str) -> tuple[bool, list[tuple[str, list[str], bool]]]:
+    """Per selectable backend: which of *agent*'s ``@server`` refs resolve to nothing.
+
+    The static half of the runtime detector in
+    :mod:`kiro_crew.acp.mcp_ref_guard`, answering before a session exists rather
+    than during one. ``kirocrew doctor`` is the consumer, and it reaches it here
+    for the usual reason: the answer needs the agent spec AND each backend's spec
+    projection, both of which live below the boundary, so a consumer assembling it
+    itself would take three new ACP/providers edges the agent-sdk-boundary gate
+    refuses. The RESOLVER is provider-neutral and needs no delegation --
+    :mod:`kiro_crew.agent_sdk.mcp_refs` is importable directly.
+
+    Returns ``(spec_found, [(backend, unresolved refs, backend has a mirror)])``,
+    sorted by backend id. Plain data only, so no ACP type crosses the boundary,
+    and ``has_mirror`` is the one bit of provenance the caller cannot recover from
+    the refs alone: "no mirror registered" and "a mirror that dropped this ref"
+    are different problems with different remedies.
+
+    **It reads the mirror seam, and that bounds what it can claim.** The wire
+    array comes from ``providers.mirrors.mirror_for`` -- the same seam
+    ``AcpClient._resolve_session_mcp_servers`` composes from -- so a backend whose
+    projection lives OUTSIDE that folder (KAS today, per its own ``NO_MIRROR``
+    reason) reports refs here that its own projection may well carry.
+    ``has_mirror`` is what lets the caller say which case it is instead of
+    collapsing the two.
+
+    ``permission_surface_owned=True`` models the ordinary spawn: the claude mirror
+    withholds its whole array when Crew did not author the session's native
+    permission file, and that is a per-SESSION fact no static check can know.
+    Passing ``False`` would report every ref as unresolved on the one backend
+    whose projection actually works.
+
+    Blocking (reads the spec) and never raises: a backend whose projection cannot
+    be resolved is omitted rather than reported wrongly. Function-local imports
+    for the same boot-path reason as every other function here.
+    """
+    from kiro_crew.acp.session_mcp import agent_spec_snapshot
+    from kiro_crew.acp_backends import selectable_backend_values
+    from kiro_crew.agent_sdk.mcp_refs import unresolved_server_refs
+    from kiro_crew.providers.mirrors import NO_MIRROR, mirror_for
+
+    spec = agent_spec_snapshot(agent)
+    if not spec:
+        return False, []
+    rows: list[tuple[str, list[str], bool]] = []
+    for backend in selectable_backend_values():
+        try:
+            mirror = mirror_for(backend)
+            wire: list = []
+            if mirror is not None:
+                params = mirror.session_params(agent, permission_surface_owned=True)
+                raw = params.get("mcpServers")
+                wire = list(raw) if isinstance(raw, list) else []
+            unresolved = unresolved_server_refs(spec, wire, backend=backend)
+        except Exception:
+            continue
+        rows.append((backend, unresolved, backend not in NO_MIRROR))
+    return True, sorted(rows)
 
 
 def kiro_cli_resolves() -> bool:

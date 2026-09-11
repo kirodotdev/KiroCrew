@@ -3741,6 +3741,25 @@ class AcpClient:
             return servers
         return [e for e in servers if e.get("name") != entry["name"]] + [entry]
 
+    def _prepare_spawn_workspace(self) -> None:
+        """Create the session's work dir, then snapshot its spec for the detector.
+
+        Two blocking reads folded into ONE executor hop, and the fold is the
+        point: the mkdir was already awaited here, so carrying the snapshot with
+        it means the unresolved-ref detector adds no suspension point to any
+        backend's construction path -- kiro-cli's included, which is what
+        harness-parity H13 protects. Nothing is deferred or reordered: the mkdir
+        still runs first and still raises, because the spawn genuinely cannot
+        proceed without the directory.
+
+        The snapshot half is best-effort and comes SECOND for that reason. It
+        cannot fail the spawn (see :meth:`_read_mcp_ref_spec`), and it is skipped
+        outright when the mkdir raises -- a session with no work dir has no
+        diagnostic to report.
+        """
+        self._work_dir.mkdir(parents=True, exist_ok=True)
+        self._mcp_ref_spec = self._read_mcp_ref_spec()
+
     def _read_mcp_ref_spec(self) -> dict[str, Any] | None:
         """Snapshot this session's agent spec for the unresolved-ref guard.
 
@@ -3748,7 +3767,7 @@ class AcpClient:
         guard itself then only reads what this left behind.
 
         Best-effort by construction: every failure resolves to ``None``, which
-        makes the guard silent rather than making the spawn fail. That is not
+        makes the detector silent rather than making the spawn fail. That is not
         politeness, it is the H13 constraint spelled out -- this runs on EVERY
         backend's construction path including kiro-cli's, and a diagnostic that
         can fail a session is a worse defect than the one it detects.
@@ -5220,17 +5239,13 @@ class AcpClient:
         select it and this branch spawns it.
         """
         # Off-loop: mkdir is a blocking syscall and the parent dirs may live on
-        # slow storage; the loop must never wait on the kernel here.
-        await asyncio.to_thread(self._work_dir.mkdir, parents=True, exist_ok=True)
-
-        # Snapshot the agent spec for the unresolved-ref guard, here rather than in
-        # any one backend's branch: the guard runs for EVERY harness, because the
-        # defect it detects has already shipped on three of them. It is not adapter
-        # work and so is not the addition H13 forbids -- kiro-cli is the backend the
-        # guard reads most accurately, since its refs resolve against the spec it is
-        # handed. _read_mcp_ref_spec swallows every failure, so this adds no failure
-        # mode to any construction path; a None snapshot only silences the guard.
-        self._mcp_ref_spec = await asyncio.to_thread(self._read_mcp_ref_spec)
+        # slow storage; the loop must never wait on the kernel here. The
+        # unresolved-ref snapshot rides IN this hop rather than in one of its own:
+        # the detector runs for every harness (the defect it catches has shipped on
+        # three), and a second await would be a new suspension point on kiro-cli's
+        # construction path in service of a diagnostic -- so the count of awaits
+        # here is deliberately unchanged (harness-parity H13).
+        await asyncio.to_thread(self._prepare_spawn_workspace)
 
         # Kiro's internal macOS sandbox replaces (rather than nests inside)
         # Kiro Crew's Seatbelt profile. Refuse a delegated agent workspace that

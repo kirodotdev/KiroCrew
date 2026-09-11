@@ -1145,7 +1145,7 @@ def _doctor_unresolved_mcp_refs() -> None:
     """One row per selectable harness: would the default spec's ``@server`` refs
     resolve on it?
 
-    The static half of the runtime guard in
+    The static half of the runtime detector in
     :mod:`kiro_crew.acp.mcp_ref_guard`, answering the same question before a
     session rather than during one. The defect it names has shipped on three
     harnesses (``providers/mirrors/README.md``): a session comes up with
@@ -1160,57 +1160,43 @@ def _doctor_unresolved_mcp_refs() -> None:
     and failing doctor's exit code on it would make every stock host red for a
     backend nobody selected.
 
-    **It reads the mirror seam, and that bounds what it can say.** The wire array
-    comes from ``providers.mirrors.mirror_for`` -- the same seam
-    ``AcpClient._resolve_session_mcp_servers`` composes from -- so a backend whose
-    projection lives OUTSIDE that folder (KAS today, per its own ``NO_MIRROR``
-    reason) shows refs here that its own projection may well carry. The row says
-    which case it is instead of collapsing the two, because "no mirror registered"
-    and "no channel for these tools" are the distinction the mirror registry
-    exists to keep apart.
+    Asks ``agent_sdk`` rather than assembling the answer here. The refs need the
+    agent spec and each backend's spec projection, both of which live below the
+    boundary, so reaching them from this module would take three new ACP /
+    providers edges the agent-sdk-boundary gate refuses -- and correctly: which
+    file a harness reads its servers from is exactly the knowledge a consumer is
+    not supposed to hold. ``agent_spec_mcp_refs`` reads the mirror seam, so a
+    backend projecting outside ``providers/mirrors/`` (KAS) reads as unprojected;
+    ``has_mirror`` is what lets the row say which case it is.
 
     kiro-cli resolves its refs against the spec it is handed, so a healthy install
-    prints a clean row there rather than every ref it declares -- the guard keys
+    prints a clean row there rather than every ref it declares -- the resolver keys
     that on the backend id, not on this function.
     """
-    from kiro_crew.acp.mcp_ref_guard import unresolved_server_refs
-    from kiro_crew.acp.session_mcp import agent_spec_snapshot
-    from kiro_crew.acp_backends import POLICY_ID_BY_BACKEND, selectable_backend_values
-    from kiro_crew.providers.mirrors import NO_MIRROR, mirror_for
+    from kiro_crew.acp_backends import POLICY_ID_BY_BACKEND
+    from kiro_crew.agent_sdk.drivers.acp import agent_spec_mcp_refs
 
     try:
-        spec = agent_spec_snapshot(_MAIN_AGENT_NAME)
-        backends = selectable_backend_values()
+        spec_found, rows = agent_spec_mcp_refs(_MAIN_AGENT_NAME)
     except Exception:
         # Triage must survive an unreadable spec or registry; the rows are advisory.
         return
-    if not spec:
-        print("  mcp tool refs: ⏹ no default agent spec on disk yet")
+    if not spec_found:
+        print("  mcp tool refs: \u23f9 no default agent spec on disk yet")
         return
 
-    for backend in backends:
+    for backend, unresolved, has_mirror in rows:
         label = POLICY_ID_BY_BACKEND.get(backend, backend) or backend
-        try:
-            mirror = mirror_for(backend)
-            wire: list = []
-            if mirror is not None:
-                # ``permission_surface_owned=True`` models the ordinary spawn: the
-                # claude mirror withholds the whole array when Crew did not author
-                # the session's native permission file, and that is a per-SESSION
-                # fact no static check can know. Passing False would print every
-                # ref as unresolved on the backend whose projection actually works.
-                params = mirror.session_params(_MAIN_AGENT_NAME, permission_surface_owned=True)
-                raw = params.get("mcpServers")
-                wire = list(raw) if isinstance(raw, list) else []
-            unresolved = unresolved_server_refs(spec, wire, backend=backend)
-        except Exception:
-            continue
         if not unresolved:
-            print(f"  mcp tool refs: ✅ {label} — every @server ref resolves")
+            print(f"  mcp tool refs: \u2705 {label} \u2014 every @server ref resolves")
             continue
-        refs = ", ".join(unresolved)
-        if backend in NO_MIRROR:
-            print(f"  mcp tool refs: ⏹ {label} has no mirror; unprojected: {refs}")
+        # Read off a hand-editable spec a cloned repo or an installed app can
+        # author, so it can carry OSC/ANSI sequences that spoof the lines around
+        # it -- the same reason every other spec-derived value in this report is
+        # printed through _safe_display.
+        refs = ", ".join(_safe_display(ref) for ref in unresolved)
+        if not has_mirror:
+            print(f"  mcp tool refs: \u23f9 {label} has no mirror; unprojected: {refs}")
             _print_wrapped(
                 "Those refs name no server this backend would be handed, so the "
                 "tools behind them are absent from its sessions with nothing to "
@@ -1222,7 +1208,7 @@ def _doctor_unresolved_mcp_refs() -> None:
                 "unprojected here."
             )
             continue
-        print(f"  mcp tool refs: ⚠ {label} projects a spec that still misses: {refs}")
+        print(f"  mcp tool refs: \u26a0 {label} projects a spec that still misses: {refs}")
         _print_wrapped(
             "This backend HAS a mirror and its projection dropped these refs "
             "anyway -- a registry-marked entry, an entry with no usable "

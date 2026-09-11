@@ -74,7 +74,6 @@ from collections.abc import Collection
 from pathlib import Path
 from typing import Any
 
-from kiro_crew.acp.mcp_ref_guard import parse_tools_refs
 from kiro_crew.agent import (
     _mcp_registry_mode,
     agent_spec_path,
@@ -82,6 +81,7 @@ from kiro_crew.agent import (
     managed_mcp_spec_entry,
 )
 from kiro_crew.agent_discovery import _read_agent_spec, project_agent_files, project_agent_name
+from kiro_crew.agent_sdk.mcp_refs import parse_tools_refs
 
 logger = logging.getLogger(__name__)
 
@@ -173,9 +173,9 @@ def _tools_grant(tools: list[Any], name: str) -> bool:
     grant uses, and what a narrowed-by-hand spec looks like) would come alive the
     moment the session happened to run on claude.
 
-    Reads the refs through :func:`~kiro_crew.acp.mcp_ref_guard.parse_tools_refs`
+    Reads the refs through :func:`~kiro_crew.agent_sdk.mcp_refs.parse_tools_refs`
     rather than scanning the list here, so this module and the unresolved-ref
-    guard cannot disagree about what an entry names -- a guard that read ``@srv``
+    detector cannot disagree about what an entry names -- a guard that read ``@srv``
     where this read nothing would report a ref as unresolved while the server
     mounted, and the reverse would mount a server the guard called absent. Only
     the bare ``*`` grants everything: ``@*`` is a server LITERALLY named ``*``
@@ -262,11 +262,13 @@ def agent_spec_snapshot(
 ) -> dict[str, Any] | None:
     """The spec for *agent* exactly as this module's own translation reads it.
 
-    Exported for :mod:`kiro_crew.acp.mcp_ref_guard`, which has to judge the spec's
-    ``tools`` refs against the array the session receives. Reading the file itself
-    there would give it a SECOND resolution order, and the guard would then be able
-    to report a ref as unresolved because it read a different spec than the one the
-    projection ran on -- see :func:`_agent_spec_for` for why the order (project
+    Exported for the unresolved-ref detector's two callers --
+    :mod:`kiro_crew.acp.mcp_ref_guard` at session establishment and
+    ``agent_sdk.drivers.acp.agent_spec_mcp_refs`` for ``kirocrew doctor`` -- which
+    have to judge the spec's ``tools`` refs against the array a session receives.
+    Reading the file themselves would give them a SECOND resolution order, and
+    either could then report a ref as unresolved because it read a different spec
+    than the one the projection ran on -- see :func:`_agent_spec_for` for why the order (project
     checkout nearest, then user level) is load-bearing rather than incidental.
 
     Blocking, and never raises: callers run it off the event loop and treat

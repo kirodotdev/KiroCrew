@@ -21,16 +21,28 @@ every backend needs one." That sentence is what this folder is.
 
 ## Runtime guard
 
-A mirror is the fix for one backend. `acp/mcp_ref_guard.py` is the detector for all
-of them, so a fourth occurrence cannot be silent. At the one point where the
+A mirror is the fix for one backend. `agent_sdk/mcp_refs.py` is the detector, so a
+fourth occurrence cannot be silent. At the one point where the
 `session/new` / `session/load` `mcpServers` array is final — spec projection plus
-the gateway's broker stubs — it compares the spec's `@server` refs against what the
-session is actually about to receive, and logs ONE structured warning naming the
-backend, the agent, the unresolved refs and whether the shared gateway is on. It
-also records them on the session's MCP report (`unresolved_refs`), beside the
-buckets saying what a configured server reported — a different claim, because a
-server nothing configured has no row there to be missing from. `kirocrew doctor`
-evaluates the same function per selectable backend before a session exists.
+the gateway's broker stubs — `acp/mcp_ref_guard.py` compares the spec's `@server`
+refs against what the session is actually about to receive, and logs ONE structured
+warning naming the backend, the agent, the unresolved refs and whether the shared
+gateway is on. It also records them on the session's MCP report
+(`unresolved_refs`), beside the buckets saying what a configured server reported —
+a different claim, because a server nothing configured has no row there to be
+missing from.
+
+Its runtime reach is `AcpClient`'s composition — kiro-cli, claude, codex. **KAS
+composes its array on `AcpRuntime` and never reaches that call site**, so a KAS
+session's refs are checked only by `kirocrew doctor`; wiring the second transport is
+a separate change, and claiming "every backend" here would be the same unexamined
+claim this folder exists to stop.
+
+The resolver sits in the SDK rather than in the ACP layer because the question is
+not an ACP question: spec in, wire array in, backend id in, refs out. That is what
+lets `kirocrew doctor` evaluate the same function per selectable backend, before a
+session exists, without taking an ACP edge (`agent_spec_mcp_refs` in
+`agent_sdk/drivers/acp.py` supplies it the spec and each backend's projection).
 
 It never changes the array and never fails the session: a ref naming nothing is a
 configuration fact, and the complaint about this defect class was that it was
@@ -93,8 +105,10 @@ Beside the mirror, not inside it, when it is substantial:
 - `acp/session_mcp.py` — Claude Code's spec-entry to array-element translation,
   the `tools` allowlist and the registry filter.
 - `acp/kas_permissions.py` — KAS's `allowedTools` to `permissions` mapping.
-- `acp/mcp_ref_guard.py` — the provider-agnostic unresolved-ref detector above, and
-  the one reader of the `tools` ref vocabulary that `session_mcp` mounts through.
+- `agent_sdk/mcp_refs.py` — the provider-agnostic unresolved-ref resolver above,
+  and the one reader of the `tools` ref vocabulary that `session_mcp` mounts
+  through. `acp/mcp_ref_guard.py` is its one-line-of-log half, at the session
+  call sites.
 
 A mirror declares and routes; a helper translates.
 

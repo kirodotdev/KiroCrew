@@ -6,8 +6,13 @@ holding ``tools: ["@kirocrew-core", ...]`` while nothing in its effective
 with the harness otherwise working. These tests pin the two backend semantics
 (kiro-cli reads the spec itself, everyone else gets only the wire array), the ref
 spellings that are NOT server refs, and that the composition path in
-``acp/client.py`` actually reaches the guard on both ``session/new`` and
+``acp/client.py`` actually reaches the detector on both ``session/new`` and
 ``session/load``.
+
+The resolver itself is provider-neutral and lives in
+:mod:`kiro_crew.agent_sdk.mcp_refs`, which is what lets ``kirocrew doctor`` ask the
+same question without taking an ACP edge; ``acp/mcp_ref_guard`` is only the log
+line. Both are exercised from here, because they are one behaviour.
 """
 
 from __future__ import annotations
@@ -15,6 +20,7 @@ from __future__ import annotations
 import inspect
 import json
 import logging
+import time
 from typing import Any
 
 import pytest
@@ -23,13 +29,20 @@ from kiro_crew import agent as agent_mod
 from kiro_crew.acp import client as client_mod
 from kiro_crew.acp import mcp_ref_guard, session_mcp
 from kiro_crew.acp.client import AcpClient
-from kiro_crew.acp.mcp_ref_guard import (
+from kiro_crew.acp.mcp_ref_guard import warn_unresolved_server_refs
+from kiro_crew.acp.mcp_session_report import (
+    NAME_CAP,
+    McpSessionReport,
+    roster_names,
+    sanitize_sink_text,
+)
+from kiro_crew.acp.types import ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX, ACP_BACKEND_KIRO
+from kiro_crew.agent_sdk import mcp_refs as mcp_refs_mod
+from kiro_crew.agent_sdk.mcp_refs import (
     parse_tools_refs,
     unresolved_server_refs,
-    warn_unresolved_server_refs,
+    wire_server_names,
 )
-from kiro_crew.acp.mcp_session_report import McpSessionReport
-from kiro_crew.acp.types import ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX, ACP_BACKEND_KIRO
 
 _CORE = {"command": "/opt/kirocrew", "args": ["mcp-core"]}
 _CRON = {"command": "/opt/kirocrew", "args": ["mcp-cron"]}
@@ -73,6 +86,66 @@ class TestRefParsing:
 
     def test_non_string_entries_are_ignored(self):
         assert parse_tools_refs([None, 3, ["@srv"], "@real"]) == (False, ["real"])
+
+    def test_the_two_array_readers_agree(self):
+        """``wire_server_names`` and the report's ``roster_names`` read one array.
+
+        The SDK resolver may not import the ACP layer, so it carries its own
+        reader -- and a detector warning that a server is missing while the
+        dashboard panel lists it two rows down is worse than no detector. Their
+        agreement is therefore pinned here instead of by a shared import. The two
+        differ only where the report deliberately bounds a browser payload, which
+        no case below reaches.
+        """
+        for array in (
+            _wire("a", "b"),
+            _wire("a", "a"),
+            [],
+            [{"name": ""}, {"name": "ok"}],
+            [None, 3, {}, {"name": "late"}],
+            "not an array",
+        ):
+            assert wire_server_names(array) == list(roster_names(array)), array
+
+    def test_a_large_spec_is_parsed_in_linear_time(self):
+        """Both readers must not be quadratic: a session waits on them.
+
+        The spec is only SIZE-capped (50 MB, ``hooks.MAX_FILE_BYTES``), never
+        entry-capped, so the number of refs is operator-controlled and large. A
+        linear ``in`` over the growing result list would make N distinct refs cost
+        O(N**2) on the session-establishment path -- minutes for the input below,
+        long enough for a watchdog to kill the gateway mid-session.
+
+        The ceiling is deliberately loose. Linear finishes this in milliseconds, so
+        a wide margin still separates the two shapes by orders of magnitude and
+        cannot flake on a loaded host.
+        """
+        n = 60_000
+        tools = [f"@srv{i}" for i in range(n)]
+        wire = [{"name": f"srv{i}"} for i in range(n)]
+
+        start = time.monotonic()
+        grant_all, refs = parse_tools_refs(tools)
+        names = wire_server_names(wire)
+        elapsed = time.monotonic() - start
+
+        assert grant_all is False
+        assert len(refs) == n
+        assert len(names) == n
+        assert elapsed < 5.0, f"parsing {n} refs took {elapsed:.1f}s -- shape is not linear"
+
+    def test_dedup_is_set_backed_while_output_stays_ordered(self):
+        """The property the timing test measures, stated directly.
+
+        Order is contractual (a stable warning across two sessions on one spec) and
+        so is the dedup, so the two structures have to coexist -- and nothing may
+        add to one without the other.
+        """
+        assert parse_tools_refs(["@b", "@a", "@b", "@a", "@c"]) == (False, ["b", "a", "c"])
+        assert wire_server_names([{"name": "b"}, {"name": "a"}, {"name": "b"}]) == ["b", "a"]
+        source = inspect.getsource(mcp_refs_mod.parse_tools_refs)
+        assert "seen: set[str] = set()" in source
+        assert "server not in seen" in source
 
     def test_session_mcp_mounts_through_this_parser(self):
         """The mounting decision and the guard read one vocabulary.
@@ -251,6 +324,164 @@ class TestTheWarning:
             )
         assert [r for r in caplog.records if r.levelno == logging.WARNING] == []
 
+    def test_a_credential_shaped_ref_is_redacted_before_it_is_logged(self, caplog):
+        """A ref is untrusted text, and this warning fires in normal operation.
+
+        The ref is whatever follows ``@`` in a ``tools`` entry, authored by an
+        operator, a cloned repository's project spec, or an installed app. The log
+        ring fans out to the dashboard, so a credential-shaped ref would appear
+        there verbatim. Redaction is not optional on a sink like that.
+        """
+        secret = "AKIAIOSFODNN7EXAMPLE"
+        spec = {"tools": [f"@{secret}"], "mcpServers": {}}
+        with caplog.at_level(logging.WARNING, logger=mcp_ref_guard.__name__):
+            found = warn_unresolved_server_refs(
+                spec, [], backend=ACP_BACKEND_CODEX, agent="kirocrew", gateway_enabled=False
+            )
+        assert secret not in caplog.text
+        # The RETURN value is sanitized too, so the next consumer to log or render
+        # it inherits the redaction instead of re-opening the hole.
+        assert all(secret not in ref for ref in found)
+
+    def test_a_ref_cannot_forge_a_second_log_line(self, caplog):
+        spec = {"tools": ["@srv\nWARNING  everything is fine"], "mcpServers": {}}
+        with caplog.at_level(logging.WARNING, logger=mcp_ref_guard.__name__):
+            found = warn_unresolved_server_refs(
+                spec, [], backend=ACP_BACKEND_CODEX, agent="a", gateway_enabled=False
+            )
+        assert "\n" not in found[0]
+        assert len(caplog.records) == 1
+
+    def test_the_agent_name_is_redacted_on_the_same_line(self, caplog):
+        """The agent name reaches the same sink and is config-derived too.
+
+        Asserted as REDACTION rather than as control-character stripping, because
+        the format spells it ``%r`` -- which already escapes a newline, so a forged
+        second line was never the exposure there. Redaction is the half ``%r``
+        cannot do: it would print a secret-shaped name in full, just quoted.
+        """
+        secret = "AKIAIOSFODNN7EXAMPLE"
+        spec = {"tools": ["@ghost"], "mcpServers": {}}
+        with caplog.at_level(logging.WARNING, logger=mcp_ref_guard.__name__):
+            warn_unresolved_server_refs(
+                spec, [], backend=ACP_BACKEND_CODEX, agent=secret, gateway_enabled=False
+            )
+        assert len(caplog.records) == 1
+        assert secret not in caplog.records[0].getMessage()
+
+    def test_a_ref_is_length_bounded_in_the_line(self, caplog):
+        spec = {"tools": ["@" + "x" * 5000], "mcpServers": {}}
+        with caplog.at_level(logging.WARNING, logger=mcp_ref_guard.__name__):
+            found = warn_unresolved_server_refs(
+                spec, [], backend=ACP_BACKEND_CODEX, agent="a", gateway_enabled=False
+            )
+        assert len(found[0]) <= NAME_CAP
+
+    def test_the_logged_text_is_rebuilt_from_the_modules_own_alphabet(self):
+        """The log line must not carry a string DERIVED from the spec.
+
+        ``py/clear-text-logging-sensitive-data`` follows the spec-derived dataflow
+        into this sink and does not model the sanitizer as a barrier, and code
+        scanning does not honour a per-line ``lgtm`` suppression either. This
+        repository's own answer is to return characters the module owns --
+        ``keeper._locus`` / ``_metric_slug``, ``name_grant``'s constant tables --
+        which is what ``_log_safe`` does. Pinned as the property, not as a comment:
+        every character out is one this module holds.
+        """
+        out = mcp_ref_guard._log_safe("@srv-1.x_Y")
+        assert out == "@srv-1.x_Y"
+        assert all(ch in mcp_ref_guard._LOG_ALPHABET for ch in out)
+
+    def test_url_punctuation_never_reaches_the_log_line(self, caplog):
+        """``:`` is outside the alphabet, so an endpoint cannot ride along.
+
+        Two independent cuts, and both are worth pinning because either alone would
+        look sufficient. ``parse_tools_refs`` keeps only the text before the first
+        ``/``, so the path half of a URL never becomes a ref at all; the alphabet
+        then drops the ``:`` that a host:port needs. Hardening on top of the
+        redactors, not instead of them.
+        """
+        spec = {
+            "tools": ["@host.example:8080", "@sneaky/../../etc/passwd"],
+            "mcpServers": {},
+        }
+        with caplog.at_level(logging.WARNING, logger=mcp_ref_guard.__name__):
+            found = warn_unresolved_server_refs(
+                spec, [], backend=ACP_BACKEND_CODEX, agent="a", gateway_enabled=False
+            )
+        # The parser already cut at the first slash, so no path segment is a ref.
+        assert found == ["@host.example:8080", "@sneaky"]
+        line = caplog.records[0].getMessage()
+        assert "host.example8080" in line  # still identifiable
+        assert ":8080" not in line
+        assert "passwd" not in line
+
+    def test_the_rebuild_runs_after_the_redactors_not_instead_of_them(self, caplog):
+        """Order is the load-bearing part: the alphabet alone would leak a key.
+
+        ``AKIAIOSFODNN7EXAMPLE`` is pure alphanumerics, so a rebuild would pass it
+        through verbatim. Redaction is what removes the secret; the rebuild removes
+        the punctuation and the dataflow.
+        """
+        secret = "AKIAIOSFODNN7EXAMPLE"
+        assert mcp_ref_guard._log_safe(secret) == secret  # the alphabet alone: no help
+        spec = {"tools": [f"@{secret}"], "mcpServers": {}}
+        with caplog.at_level(logging.WARNING, logger=mcp_ref_guard.__name__):
+            warn_unresolved_server_refs(
+                spec, [], backend=ACP_BACKEND_CODEX, agent="a", gateway_enabled=False
+            )
+        assert secret not in caplog.records[0].getMessage()
+
+    def test_the_agent_name_is_rebuilt_too_not_only_redacted(self, caplog):
+        # It reaches the same sink through the same dataflow, so it needs both
+        # halves; redaction alone would leave the punctuation and the taint edge.
+        spec = {"tools": ["@ghost"], "mcpServers": {}}
+        with caplog.at_level(logging.WARNING, logger=mcp_ref_guard.__name__):
+            warn_unresolved_server_refs(
+                spec,
+                [],
+                backend=ACP_BACKEND_CODEX,
+                agent="crew:9100/x",
+                gateway_enabled=False,
+            )
+        line = caplog.records[0].getMessage()
+        assert "crew9100" in line
+        assert ":9100" not in line and "/x" not in line
+
+    def test_the_rebuild_returns_the_alphabets_own_characters(self):
+        """The taint-severance property, which no output assertion can reach.
+
+        ``_LOG_ALPHABET[idx]`` and ``ch`` are equal strings, so swapping them
+        changes nothing observable -- and everything about whether a taint query
+        sees the result as derived from the input. The property therefore lives in
+        the source shape, which is exactly what the analyser reads, so that is
+        where it is pinned. Same reason ``keeper._locus`` spells out "append the
+        ALPHABET's own character object, not the input's" in a comment.
+        """
+        body = inspect.getsource(mcp_ref_guard._log_safe)
+        assert "out.append(_LOG_ALPHABET[idx])" in body
+        assert "out.append(ch)" not in body
+
+    def test_an_all_dropped_name_still_prints_something(self):
+        # A row reading nothing would look like a bug in the report rather than a
+        # name made entirely of characters the log will not carry.
+        assert mcp_ref_guard._log_safe("::://") == "?"
+
+    def test_a_logged_token_is_length_bounded(self):
+        assert len(mcp_ref_guard._log_safe("x" * 10_000)) == mcp_ref_guard._LOG_TOKEN_MAX
+
+    def test_one_sanitizer_serves_the_log_line_and_the_report(self):
+        """The guard shares the report's cleaner rather than repeating its order.
+
+        Two sanitizers with the same job are two that can drift, and the one that
+        drifts is the one that stops redacting -- which is the same
+        two-readers-of-one-thing failure this whole PR is about, in miniature.
+        """
+        assert mcp_ref_guard.sanitize_sink_text is sanitize_sink_text
+        source = inspect.getsource(mcp_ref_guard)
+        assert "redact_credentials" not in source
+        assert "isprintable" not in source
+
     def test_the_line_is_bounded_but_the_count_is_not_lost(self, caplog):
         many = [f"@srv{i:03d}" for i in range(mcp_ref_guard._REPORT_CAP + 5)]
         spec = {"tools": many, "mcpServers": {}}
@@ -260,6 +491,29 @@ class TestTheWarning:
             )
         assert len(found) == len(many)
         assert "(+5 more)" in caplog.records[-1].getMessage()
+
+
+class TestTheDocumentedReach:
+    """The module must not claim a reach it does not have.
+
+    The resolver is provider-neutral, but the RUNTIME call site is ``AcpClient``'s
+    composition. KAS runs on ``AcpRuntime``, which composes its array elsewhere, so
+    a KAS session never reaches the detector -- and an over-broad claim in the one
+    module written to stop unexamined claims about backend coverage would be the
+    same defect it exists to catch.
+    """
+
+    def test_the_module_names_kas_as_out_of_runtime_reach(self):
+        doc = mcp_refs_mod.__doc__ or ""
+        assert "AcpRuntime" in doc
+        assert "KAS" in doc
+
+    def test_the_runtime_call_site_really_is_acpclient_only(self):
+        from kiro_crew.acp import runtime as runtime_mod
+
+        # If a future change wires the detector into the runtime too, this fails and
+        # the docstring above has to be corrected with it.
+        assert "mcp_ref_guard" not in inspect.getsource(runtime_mod)
 
 
 class TestTheReportSlot:
@@ -494,3 +748,74 @@ class TestTheCallSitesAreWired:
             # Same argument, so the guard judges the array that actually went out
             # rather than a stale or differently-composed one.
             assert guard.split("_guard_unresolved_mcp_refs(", 1)[1] == roster
+
+
+class TestTheSpawnHopCarriesTheSnapshot:
+    """The warm rides in the hop ``_spawn`` already had, and adds no await.
+
+    The reviewer finding that produced this shape was specific: an added
+    ``await asyncio.to_thread`` on the Kiro construction path is a new suspension
+    point in service of a diagnostic (harness-parity H13). Folding the snapshot
+    into the pre-existing ``mkdir`` hop answers it by making the added await not
+    exist -- which is only true while nothing re-adds one, hence the structural
+    pin below.
+    """
+
+    def test_the_hop_creates_the_dir_and_warms_the_snapshot(self, tmp_path, monkeypatch):
+        work = tmp_path / "nested" / "work"
+        client = AcpClient(work_dir=work, agent="kirocrew", acp_backend=ACP_BACKEND_CODEX)
+        monkeypatch.setattr(
+            client_mod, "agent_spec_snapshot", lambda _a, **_k: {"tools": ["@ghost"]}
+        )
+        client._mcp_ref_spec = None
+
+        client._prepare_spawn_workspace()
+
+        assert work.is_dir()
+        assert client._mcp_ref_spec == {"tools": ["@ghost"]}
+
+    def test_the_mkdir_still_raises_and_the_snapshot_never_does(self, tmp_path, monkeypatch):
+        """Two halves, two failure contracts, and the order is what separates them.
+
+        The spawn genuinely cannot proceed without the work dir, so that half must
+        still raise. The diagnostic must never cost a session, so its half is
+        swallowed -- and it runs SECOND, so a failed mkdir skips it rather than
+        reporting on a session that has no workspace.
+        """
+        blocker = tmp_path / "blocked"
+        blocker.write_text("not a directory", encoding="utf-8")
+        client = AcpClient(
+            work_dir=blocker / "work", agent="kirocrew", acp_backend=ACP_BACKEND_CODEX
+        )
+        with pytest.raises(OSError):
+            client._prepare_spawn_workspace()
+        assert client._mcp_ref_spec is None
+
+        # The other direction: a spec that cannot be read leaves the dir made.
+        def _boom(*_a, **_k):
+            raise OSError("spec unreadable")
+
+        ok = AcpClient(work_dir=tmp_path / "ok", agent="kirocrew", acp_backend=ACP_BACKEND_CODEX)
+        monkeypatch.setattr(client_mod, "agent_spec_snapshot", _boom)
+        ok._prepare_spawn_workspace()
+        assert (tmp_path / "ok").is_dir()
+        assert ok._mcp_ref_spec is None
+
+    def test_the_detector_adds_no_await_to_the_construction_path(self):
+        """The snapshot is never awaited on its own -- only inside the mkdir hop.
+
+        Pinned as the absence of a separate hop rather than as a total await count,
+        so an unrelated await added to ``_spawn`` later cannot fail this for the
+        wrong reason. What must stay true is narrow: the detector's read reaches
+        the executor ONLY as a passenger of the hop ``_spawn`` already had, which
+        is what keeps it off kiro-cli's suspension-point budget (H13).
+        """
+        spawn = inspect.getsource(AcpClient._spawn)
+        assert "await asyncio.to_thread(self._prepare_spawn_workspace)" in spawn
+        assert "_read_mcp_ref_spec" not in spawn
+        assert "_mcp_ref_spec" not in spawn
+
+        # ...and the fold itself is not split back apart: one hop, both halves.
+        hop = inspect.getsource(AcpClient._prepare_spawn_workspace)
+        assert "self._work_dir.mkdir(" in hop
+        assert "self._mcp_ref_spec = self._read_mcp_ref_spec()" in hop
