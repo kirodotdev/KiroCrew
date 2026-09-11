@@ -59,6 +59,7 @@ from kiro_crew.artifacts import (
     webapp_metadata_from_dict,
 )
 from kiro_crew.dashboard.chat_folders import generate_emoji_for_name
+from kiro_crew.dashboard.fork_lineage import descends_from
 from kiro_crew.dashboard.handlers._shared import _is_restricted_session
 from kiro_crew.dashboard.state import _normalize_slot_key
 from kiro_crew.executors import subprocess_executor
@@ -1646,12 +1647,30 @@ async def api_artifact_asset(request: web.Request) -> web.Response:
     404 when the slug does not resolve or is not an image artifact.
     """
     slug = request.match_info.get("slug", "")
+    # Optional owner check. Image slugs derive from (message ts, ordinal) alone,
+    # so two sessions that finalize in the same instant can collide on a slug;
+    # the transcript fallback names its own session and must never be handed
+    # another session's picture. A FORK renders its source's copies (messages
+    # keep their ts), so a caller descended from the owner is accepted too.
+    # Fail CLOSED (404) on anything else. Callers that name no session (the
+    # artifact library) are unaffected.
+    session = getattr(request, "query", {}).get("session", "")
     try:
         store = get_default_store()
         # Off the loop: the sidecar can be up to MAX_CONTENT_BYTES, and a
         # synchronous read of that size would stall every other gateway task
-        # (the user's chat turn and the liveness heartbeat included).
-        data, mime = await asyncio.to_thread(store.read_image_bytes, slug)
+        # (the user's chat turn and the liveness heartbeat included). Bytes and
+        # owner come from ONE metadata snapshot, so the owner the check below
+        # authorizes is the record whose bytes are served — a slug deleted and
+        # recreated between two separate reads cannot pass one owner's check
+        # and return another's picture.
+        data, mime, owner = await asyncio.to_thread(store.read_image_bytes_with_owner, slug)
+        if session:
+            state = request.app.get("state") if hasattr(request, "app") else None
+            log = getattr(state, "conversation_log", None)
+            owned = await asyncio.to_thread(descends_from, log, session, owner)
+            if not owned:
+                return _err("artifact not found", status=404)
     except ArtifactNotFoundError as exc:
         return _err(str(exc), status=404)
     except ArtifactValidationError as exc:

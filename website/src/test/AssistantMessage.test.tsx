@@ -9,7 +9,9 @@ import { OPTION_MARKER_RE } from '../app-sdk/protocol/optionMarker'
 
 // Mock MarkdownRenderer to avoid complex markdown parsing in tests
 vi.mock('../components/MarkdownRenderer', () => ({
-  default: ({ content }: { content: string }) => <div data-testid="md">{content}</div>,
+  default: ({ content, messageTs }: { content: string; messageTs?: string }) => (
+    <div data-testid="md" data-message-ts={messageTs}>{content}</div>
+  ),
 }))
 // Mock useSmoothStream to passthrough — its rAF loop conflicts with vi.useFakeTimers()
 vi.mock('../hooks/useSmoothStream', () => ({
@@ -243,6 +245,23 @@ describe('AssistantMessage', () => {
     fireEvent.click(screen.getByTitle('Previous version'))
     expect(screen.getByText('1/2')).toBeInTheDocument()
     expect(screen.getByTestId('md')).toHaveTextContent('version one text')
+  })
+
+  it('keys the rendered markdown to the ts of the variant being shown', () => {
+    // Images are cache-busted and fall back to durable copies by message ts;
+    // a regenerated reply registers its own copies under its own ts, so an
+    // older variant must render with ITS ts, not the active variant's.
+    const variants = [{ content: 'v1', ts: 'ts-1' }, { content: 'v2', ts: 'ts-2' }]
+    render(<AssistantMessage content="v2" isStreaming={false} variants={variants} variantIdx={1} messageTs="ts-2" />)
+    expect(screen.getByTestId('md')).toHaveAttribute('data-message-ts', 'ts-2')
+    fireEvent.click(screen.getByTitle('Previous version'))
+    expect(screen.getByTestId('md')).toHaveTextContent('v1')
+    expect(screen.getByTestId('md')).toHaveAttribute('data-message-ts', 'ts-1')
+    // A variant without its own ts falls back to the message's.
+    cleanup()
+    render(<AssistantMessage content="v2" isStreaming={false} variants={[{ content: 'v1' }, { content: 'v2', ts: 'ts-2' }]} variantIdx={1} messageTs="ts-2" />)
+    fireEvent.click(screen.getByTitle('Previous version'))
+    expect(screen.getByTestId('md')).toHaveAttribute('data-message-ts', 'ts-2')
   })
 
   it('calls onSwitchVariant for last message but uses local state for older messages', () => {

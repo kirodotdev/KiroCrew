@@ -9353,6 +9353,11 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
         state._restricted_keys.discard(f"dashboard:{name}")
     if meta.get("forked_from") is not None:
         slot.forked_from = meta["forked_from"]
+    # The fork's materialized chain travels with `forked_from`: it is a
+    # slot-owned field, so a save after a resume that skipped it would rewrite
+    # the meta line without it and the fork would lose its ancestry.
+    if isinstance(meta.get("fork_ancestors"), list):
+        slot.fork_ancestors = [str(a) for a in meta["fork_ancestors"] if a]
     disk_total = len(all_messages)
     max_resume = 500
     messages = all_messages[-max_resume:] if disk_total > max_resume else all_messages

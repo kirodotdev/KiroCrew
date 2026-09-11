@@ -204,7 +204,7 @@ from kiro_crew.hooks import (
     safe_read_file_bytes_nolink,
     validate_file_path,
 )
-from kiro_crew.image_artifacts import register_images_off_loop
+from kiro_crew.image_artifacts import register_images_off_loop, track_registration
 from kiro_crew.llm_helpers import (
     TRANSIENT_RETRIES,
     TURN_FALLBACK_ATTR,
@@ -3640,6 +3640,8 @@ def _schedule_widget_registration(
         image_task = asyncio.create_task(register_images_off_loop(text, message_ts, slot.key))
         state._background_tasks.add(image_task)
         image_task.add_done_callback(state._background_tasks.discard)
+        # A permanent delete of this session drains this before reaping copies.
+        track_registration(slot.key, image_task)
 
 
 def _strip_yaml_frontmatter(content: str) -> str:

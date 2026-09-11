@@ -258,8 +258,10 @@ def register_images(text: str, message_ts: str, session_key: str) -> list[str]:
         copied_bytes += len(data)
 
     if registered:
-        # Image artifacts are auto_registered=True, so they ride the SAME
-        # unpinned-widget sweep — its predicate is kind-agnostic.
+        # Registering images can only ADD records, so give the widget sweep its
+        # turn. The sweep skips kind == "image": chat images are durable
+        # transcript assets reclaimed with their session
+        # (ArtifactStore.delete_auto_images_for_sessions), not rolling previews.
         try:
             pruned = store.prune_auto_widgets(keep=MAX_AUTO_WIDGET_ARTIFACTS)
             if pruned:
@@ -283,3 +285,50 @@ async def register_images_off_loop(text: str, message_ts: str, session_key: str)
     no reason to share a queue with subprocess teardown.
     """
     return await asyncio.to_thread(register_images, text, message_ts, session_key)
+
+
+#: In-flight registrations by session key. Registration is dispatched as a
+#: detached task at finalize time, so a permanent delete issued right after a
+#: turn ends could reap the session's copies BEFORE a late registration lands
+#: and leave a copy of a deleted transcript's image behind. The delete path
+#: drains these first (:func:`drain_registrations`).
+_PENDING_REGISTRATIONS: dict[str, set["asyncio.Task[object]"]] = {}
+
+
+def track_registration(session_key: str, task: "asyncio.Task[object]") -> None:
+    """Record ``task`` as an in-flight registration for ``session_key``."""
+    if not session_key:
+        return
+    tasks = _PENDING_REGISTRATIONS.setdefault(session_key, set())
+    tasks.add(task)
+
+    def _done(t: "asyncio.Task[object]") -> None:
+        pending = _PENDING_REGISTRATIONS.get(session_key)
+        if pending is not None:
+            pending.discard(t)
+            if not pending:
+                _PENDING_REGISTRATIONS.pop(session_key, None)
+
+    task.add_done_callback(_done)
+
+
+def pending_registrations(session_keys: set[str]) -> list["asyncio.Task[object]"]:
+    """The in-flight registration tasks for any of ``session_keys``."""
+    out: list[asyncio.Task[object]] = []
+    for key in session_keys:
+        out.extend(t for t in _PENDING_REGISTRATIONS.get(key, ()) if not t.done())
+    return out
+
+
+async def drain_registrations(session_keys: set[str], *, timeout: float | None = 30.0) -> bool:
+    """Wait for in-flight registrations of ``session_keys`` to finish.
+
+    Returns ``False`` when the wait timed out (some task still running) so the
+    caller can decide not to reap yet; ``timeout=None`` waits for them all.
+    Exceptions inside the tasks are theirs to log; this only waits.
+    """
+    tasks = pending_registrations(session_keys)
+    if not tasks:
+        return True
+    _done, still = await asyncio.wait(tasks, timeout=timeout)
+    return not still

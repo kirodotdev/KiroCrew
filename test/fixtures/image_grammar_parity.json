@@ -1,0 +1,36 @@
+{
+  "_comment": "Markdown image grammar parity corpus. Drives test/test_image_grammar_parity.py (kiro_crew.messaging.outbound_files) AND website/src/test/imageGrammarParity.test.ts (website/src/lib/imageArtifactSlug.ts). Add a case here when either side's grammar changes; both suites must agree with the expectations below.",
+  "destinations": [
+    { "rest": "/tmp/a.png)", "expect": "/tmp/a.png" },
+    { "rest": "/tmp/a.png \"shot\")", "expect": "/tmp/a.png" },
+    { "rest": "/tmp/a.png\t'shot')", "expect": "/tmp/a.png" },
+    { "rest": "  /tmp/padded.png  )", "expect": "/tmp/padded.png" },
+    { "rest": "/tmp/shot(1).png)", "expect": "/tmp/shot(1).png" },
+    { "rest": "/tmp/a\\).png)", "expect": "/tmp/a).png" },
+    { "rest": "/tmp/a\\(.png)", "expect": "/tmp/a(.png" },
+    { "rest": "/tmp/a\\\\b.png)", "expect": "/tmp/a\\b.png" },
+    { "rest": "C:\\Users\\me\\shot.png)", "expect": "C:\\Users\\me\\shot.png" },
+    { "rest": "</tmp/generated images/c.png>)", "expect": "/tmp/generated images/c.png" },
+    { "rest": "< /tmp/spaced.png >)", "expect": "/tmp/spaced.png" },
+    { "rest": "</tmp/unterminated)", "expect": null },
+    { "rest": "/tmp/never-closes.png", "expect": null },
+    { "rest": "/tmp/a\n.png)", "expect": null },
+    { "rest": "/tmp/a\r.png)", "expect": null },
+    { "rest": "/tmp/a\u0001.png)", "expect": null },
+    { "rest": "/tmp/a\u007f.png)", "expect": null },
+    { "rest": ")", "expect": null },
+    { "rest": "https://example.com/x.png?w=1)", "expect": "https://example.com/x.png?w=1" },
+    { "rest": "file:///tmp/a.png)", "expect": "file:///tmp/a.png" }
+  ],
+  "openers": [
+    { "text": "![a](/x.png)", "count": 1 },
+    { "text": "![a\\]b](/x.png)", "count": 1 },
+    { "text": "![a][ref]", "count": 0 },
+    { "text": "[a](/x.png)", "count": 0 },
+    { "text": "![](/x.png) ![](/y.png)", "count": 2 },
+    { "text": "```\n![in-fence](/x.png)\n```", "count": 1 },
+    { "text": "<mcwidget title=\"![t](/x.png)\"></mcwidget>", "count": 1 },
+    { "text": "![unclosed", "count": 0 },
+    { "text": "![a](", "count": 1 }
+  ]
+}

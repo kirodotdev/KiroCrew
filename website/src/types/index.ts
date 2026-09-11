@@ -1324,6 +1324,11 @@ export interface ContentBlock {
   complete: boolean
   /** 1-based line in the original raw source where this block starts. */
   startLine?: number
+  /** 0-based character offset in the original raw source where this block's
+   * text begins (markdown blocks only). Exact, including a block that starts
+   * mid-line after a same-line `</mcwidget>`; lets the renderer count
+   * `![…](` openers over the raw text the same way the backend does. */
+  startOffset?: number
   /** Artifact slug (widget blocks only) — when present, the widget is
    * already saved as an artifact in the user's library. The dashboard uses
    * this to render the bookmark filled, link the title to /artifacts/<slug>,

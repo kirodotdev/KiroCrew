@@ -853,3 +853,35 @@ async def test_resuming_a_session_that_never_existed_is_not_refused(tmp_path, mo
         f"resuming a never-existed session returned {resp.status}; an absent key is a new "
         "conversation, not a deletion"
     )
+
+
+@pytest.mark.asyncio
+async def test_resume_restores_the_fork_chain_and_the_next_save_keeps_it(tmp_path, monkeypatch):
+    """A fork reopened from history via ``api_chat_slot_resume`` must carry its
+    ``fork_ancestors``. The field is slot-owned (``SLOT_OWNED_META_KEYS``): a
+    resume that skipped it would let the next save rewrite the metadata line
+    without the chain, and the fork's images would stop resolving through fork
+    descent — the failure this PR fixes, reopened on a different path."""
+    from kiro_crew.dashboard.chat_persistence import save_slot_off_loop
+
+    monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+    state = _make_state(tmp_path)
+    log = state.conversation_log
+    log.append("dashboard:fork1", "user", "history-1")
+    log.append("dashboard:fork1", "assistant", "history-2")
+    chain = ["dashboard:src", "dashboard:root"]
+    log.update_metadata(
+        "dashboard:fork1", {"forked_from": "dashboard:src", "fork_ancestors": chain}
+    )
+
+    async with TestClient(TestServer(_make_app(state))) as client:
+        resp = await client.post("/api/chat/slots/fork1/resume", json={"key": "dashboard:fork1"})
+        assert resp.status == 200
+
+    slot = state._slots["fork1"]
+    assert slot.forked_from == "dashboard:src"
+    assert slot.fork_ancestors == chain
+
+    await save_slot_off_loop(state, slot, force=True)
+    meta = log.get_metadata("dashboard:fork1")
+    assert meta.get("fork_ancestors") == chain, "the chain was dropped by the save after resume"

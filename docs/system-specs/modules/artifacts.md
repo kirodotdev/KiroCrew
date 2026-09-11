@@ -1240,9 +1240,40 @@ JSON never carries base64.
   to an unauthenticated requester.
 - 404 when the slug does not resolve, is not an image artifact, its sidecar is
   missing, or its mime is not in the allowlist.
+- **Optional owner check — `?session=<slot>`.** Image slugs derive from
+  (message ts, ordinal) alone, so two sessions that finalize in the same instant
+  can collide on a slug. The chat transcript's durable-image fallback (see
+  "Chat image fallback" below) names its own session, and the endpoint then
+  returns 404 unless the copy's recorded `session_key` is that session or one it
+  descends from by fork lineage — a fork copies its source's messages with
+  their `ts` intact, so it legitimately renders the source's copies. Descent is
+  decided by `kiro_crew.dashboard.fork_lineage.descends_from` (the same walker
+  the session-delete reap uses), reading `forked_from` / `fork_ancestors` from
+  transcript metadata through `_safe_key`-sanitised reads; an unreadable link
+  fails CLOSED (404). Every dashboard spelling of a session
+  (`<slot>`, `dashboard:<slot>`, `dashboard_<slot>`) folds to one identity.
+  Callers that name no session — the artifact library — are unaffected.
 - The read is offloaded with `asyncio.to_thread`: the sidecar may be up to
   `MAX_CONTENT_BYTES` and a synchronous read would stall every other gateway
   task, the liveness heartbeat included.
+
+### Chat image fallback (transcript consumer of the asset endpoint)
+
+A local markdown image in a chat message (`![alt](/…/scratch/…/chart.png)`) is
+served from `/api/file-raw`. When that load fails — the agent's scratch
+directory was reclaimed — the renderer retries the durable copy registered at
+finalize time: `/api/artifacts/<slug>/asset?session=<slot>` with
+`slug = derive_widget_slug(f"{ts}#image", ordinal)`. The ordinal is the image's
+position among ALL direct `![…](` openers in the RAW message text, exactly as
+`register_images` numbered it; the dashboard derives it with a byte-for-byte
+port of `IMAGE_MD_RE` / `md_destination`
+(`website/src/lib/imageArtifactSlug.ts`, pinned to the Python grammar by
+`test/fixtures/image_grammar_parity.json`, which drives both test suites).
+Resolution is exact-or-nothing: a destination
+that appears once is unambiguous; a repeated destination is resolved only when
+the block's raw span is known and preprocessing removed nothing from it; any
+other case gets the broken-image chip rather than a guessed picture. Only after
+every candidate fails does the chip render.
 
 ### Auto-registration from chat (`kiro_crew.image_artifacts`)
 
@@ -1270,10 +1301,17 @@ cannot strip them.
   the cap one batch at a time. Pruning runs after the loop, so without these a
   single message could fill the disk.
 - **Retention.** Auto-registered images are `auto_registered=True` and unpinned,
-  so they ride the **same** count-based sweep as auto-registered widgets
-  (`prune_auto_widgets(keep=MAX_AUTO_WIDGET_ARTIFACTS)`) — the predicate is
-  kind-agnostic. Images and widgets therefore share one budget; pinning
-  ("Save permanently"), filing, tagging, or commenting exempts a record.
+  but they are **exempt** from the count-based widget sweep
+  (`_is_sweepable_auto_widget` returns false for `kind == "image"`): a chat
+  image is a durable transcript asset, and a still-existing chat must never
+  render a broken image because a rolling preview budget ran out. Their
+  lifetime is the owning chat's: every handler that permanently deletes a
+  transcript (`DELETE /api/sessions/{key}` and the bulk `DELETE /api/sessions`)
+  calls `ArtifactStore.delete_auto_images_for_sessions`, which removes only the
+  copies that carry no investment signal — the same
+  `_is_unclaimed_auto_artifact` test the widget sweep uses, so pinning
+  ("Save permanently"), filing, tagging, describing, editing, or commenting
+  exempts a record from both.
 - **Never raises.** A failure to register a chat image is a lost convenience, not
   a reason to fail the turn that produced it; per-image failures are logged and
   skipped individually. Dispatch uses `asyncio.to_thread` rather than the shared

@@ -42,6 +42,7 @@ import { useBranding } from '../hooks/useBranding'
 import { fileIcon } from '../utils/fileIcons'
 import { urlTransform, ALLOWED_PROTOCOLS, WINDOWS_ABS_PATH_RE, decodeLocalPath } from '../utils/urlTransform'
 import { safeHttpUrl } from '../lib/safeUrl'
+import { buildImageOrdinalMap, deriveImageArtifactSlug, imageOrdinalCandidates } from '../lib/imageArtifactSlug'
 import { useLinkMeta, type LinkMeta } from '../lib/linkMeta'
 import { LinkChip, LinkCard } from './LinkPreview'
 import { parseSourceLinkUrl, forgeChipLabel, type PullRequestLink } from '../utils/pullRequestLinks'
@@ -331,6 +332,25 @@ export const CompactImagesCtx = createContext<boolean>(false)
  * Stable within a message, so re-renders and streaming do not re-request.
  */
 export const ImageVersionCtx = createContext<string | null>(null)
+
+/** Destination -> zero-based ordinal of every direct image in the RAW message,
+ * numbered as the backend numbers them (see buildImageOrdinalMap). `null` when
+ * unknown: images then never guess an artifact ordinal. */
+export const ImageOrdinalsCtx = createContext<ReadonlyMap<string, readonly number[]> | null>(null)
+
+/** The whole raw message text (what the backend scanned), for the image ordinal
+ * lookup to locate this block's raw slice. */
+export const RawMessageCtx = createContext<string | null>(null)
+
+/** This markdown block's [start, end) span in the raw message, when the block
+ * assembler recorded it. Lets an image prefer its exact raw ordinal. */
+export const RawBlockSpanCtx = createContext<{ start: number; end: number } | null>(null)
+
+/** The chat session (slot key) whose transcript is being rendered, so the image
+ * fallback can name its owner: image slugs derive from (message ts, ordinal)
+ * alone and two sessions can collide, so the asset endpoint refuses a copy that
+ * belongs to another session. `null` outside a chat transcript. */
+export const ImageSessionCtx = createContext<string | null>(null)
 
 /** The exact markdown string handed to ReactMarkdown, so components can map a
  *  node's source position back to the original text. ImgWithFallback uses it
@@ -1779,9 +1799,27 @@ function ImgWithFallback({
 }: React.ImgHTMLAttributes<HTMLImageElement> & ExtraProps) {
   const [errored, setErrored] = useState(false)
   const [loaded, setLoaded] = useState(false)
+  // -1 = the original file; otherwise the index into `artifactCandidates` being tried.
+  const [artifactAttempt, setArtifactAttempt] = useState(-1)
   const basePath = useContext(BasePathCtx)
   const compact = useContext(CompactImagesCtx)
   const version = useContext(ImageVersionCtx)
+  // The component can be reused for a different image without remounting
+  // (variant browsing swaps the message ts; an edit swaps `src`). Fallback
+  // state belongs to the OLD identity, so start over from the original file.
+  // Not user-facing text: a composite key of (message version, src).
+  const identity = [version ?? '', src ?? ''].join('\u0000')
+  const [seenIdentity, setSeenIdentity] = useState(identity)
+  if (seenIdentity !== identity) {
+    setSeenIdentity(identity)
+    setErrored(false)
+    setLoaded(false)
+    setArtifactAttempt(-1)
+  }
+  const imageOrdinals = useContext(ImageOrdinalsCtx)
+  const rawMessage = useContext(RawMessageCtx)
+  const rawBlockSpan = useContext(RawBlockSpanCtx)
+  const imageSession = useContext(ImageSessionCtx)
   const source = useContext(MdSourceCtx)
   if (!src) return null
   // A Windows drive/UNC path (`C:/…` — urlTransform passes it through for
@@ -1824,6 +1862,28 @@ function ImgWithFallback({
   } else {
     url = src
   }
+  const nodeOffset = node?.position?.start?.offset
+  // The backend registers only DIRECT `![alt](dest)` images, keyed by their
+  // ordinal in the raw message. Look this node up by the destination written at
+  // its own source position: a reference-style `![alt][ref]` has no direct
+  // opener there and gets no fallback, and nothing depends on how much of the
+  // block's text was stripped or repaired before rendering. Same-destination
+  // duplicates yield the ordinal for THIS occurrence first, then the others.
+  const artifactCandidates = isLocal && version && source != null && nodeOffset != null
+    ? imageOrdinalCandidates(
+      source,
+      nodeOffset,
+      imageOrdinals,
+      rawMessage != null && rawBlockSpan
+        ? { message: rawMessage, blockStart: rawBlockSpan.start, blockEnd: rawBlockSpan.end }
+        : undefined,
+    )
+    : []
+  const artifactUrl = artifactAttempt >= 0 && artifactAttempt < artifactCandidates.length
+    ? `/api/artifacts/${deriveImageArtifactSlug(version as string, artifactCandidates[artifactAttempt])}/asset`
+      + (imageSession ? `?session=${encodeURIComponent(imageSession)}` : '')
+    : null
+  const resolvedUrl = artifactUrl ?? url
   if (errored) {
     return <BrokenImage path={diskPath} alt={alt} probeUrl={isLocal ? url : undefined} />
   }
@@ -1858,7 +1918,7 @@ function ImgWithFallback({
   // first successful load (keyed by resolved URL, same mechanism as the
   // artifact gallery's thumbnails) lets every later mount reserve the real
   // aspect box before any bytes arrive.
-  const learned = !isSvg ? getImageDims(url) : undefined
+  const learned = !isSvg ? getImageDims(resolvedUrl) : undefined
   // The reserved box must resolve to EXACTLY the size the loaded image will
   // take, or the difference shows as a border wrapping empty space with the
   // image floated centered inside (object-contain letterboxing). The loaded
@@ -1909,7 +1969,7 @@ function ImgWithFallback({
           preview is presentational here. */}
       {/* eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-noninteractive-element-interactions */}
       <img
-        src={url} alt={alt || ''} loading="lazy"
+        src={resolvedUrl} alt={alt || ''} loading="lazy"
         // Sent-prompt images align to the END edge, matching the bubble they
         // were sent from. `ms-auto` (logical, RTL-correct) sits on the IMG, never
         // on its wrapper: preflight makes <img> display:block so text-align is
@@ -1933,10 +1993,17 @@ function ImgWithFallback({
         title={alt || src}
         onLoad={(e) => {
           const el = e.currentTarget
-          if (el.naturalWidth > 0 && el.naturalHeight > 0) rememberImageDims(url, el.naturalWidth, el.naturalHeight)
+          if (el.naturalWidth > 0 && el.naturalHeight > 0) rememberImageDims(resolvedUrl, el.naturalWidth, el.naturalHeight)
           setLoaded(true)
         }}
-        onError={() => setErrored(true)}
+        onError={() => {
+          if (artifactAttempt + 1 < artifactCandidates.length) {
+            setLoaded(false)
+            setArtifactAttempt(artifactAttempt + 1)
+          } else {
+            setErrored(true)
+          }
+        }}
         {...props}
       />
     </span>
@@ -3692,7 +3759,7 @@ function deferIncompleteStreamingTable(content: string): string {
   return lines.slice(0, start).join('\n')
 }
 
-const MarkdownBlock = memo(function MarkdownBlock({ content, sourcePos, startLine, glow, smooth, softBreaks, live, unfurl }: { content: string; sourcePos?: boolean; startLine?: number; glow?: boolean; smooth?: boolean; softBreaks?: boolean; live?: boolean; unfurl?: boolean }) {
+const MarkdownBlock = memo(function MarkdownBlock({ content, sourcePos, startLine, glow, smooth, softBreaks, live, unfurl, rawStart }: { content: string; sourcePos?: boolean; startLine?: number; rawStart?: number; glow?: boolean; smooth?: boolean; softBreaks?: boolean; live?: boolean; unfurl?: boolean }) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   // Declared before the early return below — Rules of Hooks.
   //
@@ -3705,6 +3772,12 @@ const MarkdownBlock = memo(function MarkdownBlock({ content, sourcePos, startLin
   const unfurlCtx = useMemo<LinkUnfurl>(
     () => ({ enabled: !!unfurl && !sourcePos, live: !!live }),
     [unfurl, sourcePos, live],
+  )
+  // This block's span in the raw message (block content is a verbatim slice of
+  // the raw text, so its length is the span length). See RawBlockSpanCtx.
+  const rawSpan = useMemo(
+    () => (rawStart != null ? { start: rawStart, end: rawStart + content.length } : null),
+    [rawStart, content],
   )
   // Strip any <mcwidget> or <tool_use> tags that leak through during
   // streaming transitions or when the agent emits protocol markup as text.
@@ -3748,11 +3821,13 @@ const MarkdownBlock = memo(function MarkdownBlock({ content, sourcePos, startLin
   // sourcePos mode together.
   const prepared = sourcePos ? fenced : fixCjkAutolinkBoundaries(fixUnencodedLinkDestinations(fenced))
   const md = (
+    <RawBlockSpanCtx.Provider value={rawSpan}>
     <MdSourceCtx.Provider value={prepared}>
       <ReactMarkdown remarkPlugins={softBreaks ? REMARK_PLUGINS_WITH_BREAKS : REMARK_PLUGINS} rehypePlugins={rehypePlugins} urlTransform={urlTransform} components={MD_COMPONENTS}>
         {prepared}
       </ReactMarkdown>
     </MdSourceCtx.Provider>
+    </RawBlockSpanCtx.Provider>
   )
   const body = sourcePos ? <div data-block-start={startLine ?? 1}>{md}</div> : md
   // The provider carries no DOM node, so sourcepos / lightbox scoping upstream
@@ -3922,7 +3997,7 @@ function BlockRenderer({ block, prevBlock, onFileOpen, sourcePos, messageTs, wid
       // `live` = this block is the streaming tail (see MarkdownRenderer). ORed
       // with the block's own `complete` flag so a provisional block is treated
       // as live too, whatever produced it.
-      return <MarkdownBlock content={block.content} sourcePos={sourcePos} startLine={block.startLine} glow={glow} smooth={smooth} softBreaks={softBreaks} live={!block.complete || !!live} unfurl={unfurl} />
+      return <MarkdownBlock content={block.content} sourcePos={sourcePos} startLine={block.startLine} glow={glow} smooth={smooth} softBreaks={softBreaks} live={!block.complete || !!live} unfurl={unfurl} rawStart={block.startOffset} />
   }
 }
 
@@ -3969,6 +4044,14 @@ export default memo(function MarkdownRenderer({ content, streaming = false, onFi
   // Must run before any conditional return — Rules of Hooks. (rawMode flips
   // via a settings toggle which usually re-mounts this component anyway,
   // but we keep hook order strict for safety.)
+  // Destination -> ordinal for every direct image in the RAW message: the same
+  // string the backend's IMAGE_MD_RE scans when it registers image artifacts,
+  // numbered the same way. Built once per message and read by ImgWithFallback.
+  const imageOrdinals = useMemo(
+    () => (messageTs ? buildImageOrdinalMap(content) : null),
+    [content, messageTs],
+  )
+
   const widgetIndices = useMemo(() => {
     const out: number[] = new Array(blocks.length).fill(-1)
     let n = 0
@@ -4055,6 +4138,9 @@ export default memo(function MarkdownRenderer({ content, streaming = false, onFi
           rewriting one file across turns is not served the previous bytes from
           the in-document resource cache. */}
       <ImageVersionCtx.Provider value={messageTs ?? null}>
+      <ImageOrdinalsCtx.Provider value={imageOrdinals}>
+      <RawMessageCtx.Provider value={imageOrdinals ? content : null}>
+      <ImageSessionCtx.Provider value={slotKey ?? null}>
         {blocks.map((block, i) => (
           // Key on startLine (stable across streaming) instead of block.type, so
           // a code -> diff reclassification mid-stream doesn't unmount the
@@ -4081,6 +4167,9 @@ export default memo(function MarkdownRenderer({ content, streaming = false, onFi
             mdCardToggle={mdCardToggle}
           />
         ))}
+      </ImageSessionCtx.Provider>
+      </RawMessageCtx.Provider>
+      </ImageOrdinalsCtx.Provider>
       </ImageVersionCtx.Provider>
       </CompactImagesCtx.Provider>
       </SessionActionCtx.Provider>

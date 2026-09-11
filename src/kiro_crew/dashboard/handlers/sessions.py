@@ -9,6 +9,8 @@ import logging
 import os
 import re
 import time
+from dataclasses import dataclass
+from dataclasses import field as _dc_field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -26,8 +28,9 @@ from aiohttp import web
 import kiro_crew.dashboard.handlers as _h
 from kiro_crew import session_directive, session_ledger
 from kiro_crew.acp.client import _resolve_kiro_bin_for_spawn
+from kiro_crew.artifacts import get_default_store
 from kiro_crew.config.paths import kiro_agents_dir
-from kiro_crew.dashboard import directive_queue
+from kiro_crew.dashboard import directive_queue, fork_lineage
 from kiro_crew.dashboard.handlers import kiro_usage_api
 from kiro_crew.dashboard.handlers._shared import (
     SESSION_SEARCH_TEXT_FIELDS,
@@ -36,9 +39,10 @@ from kiro_crew.dashboard.handlers._shared import (
 )
 from kiro_crew.dashboard.kiro_readiness import reject_if_kiro_unverified
 from kiro_crew.dashboard.session_memory import SessionMemorySampler
-from kiro_crew.dashboard.state import DashboardState
+from kiro_crew.dashboard.state import DashboardState, _normalize_slot_key
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.history import SEARCH_MIN_CHARS, _archive_dir, is_incognito_transcript
+from kiro_crew.image_artifacts import drain_registrations
 from kiro_crew.llm_helpers import run_bg_oneliner
 from kiro_crew.mcp_discovery import sync_discovered_servers
 from kiro_crew.sandbox import (
@@ -1273,20 +1277,257 @@ async def api_session_detail(request: web.Request) -> web.Response:
     return web.json_response(messages)
 
 
+def _image_artifact_session_keys(keys: set[str]) -> set[str]:
+    """The spellings under which an image copy may record one of ``keys``.
+
+    ``register_images`` has one caller (``chat_runner``) and it passes
+    ``slot.key`` — the tab name. For a dashboard-born tab that is the bare slot,
+    whose transcript stem is ``dashboard_<slot>``; the delete handlers receive
+    that transcript's history key (``dashboard:<slot>``) or its file stem, so the
+    copy's key is the input with the transport prefix removed. A cron-born tab is
+    named ``cron-<id>`` while its transcript is ``cron:<id>`` / ``cron_<id>``, so
+    that spelling is added too. All forms are kept so a record written with the
+    history key itself (none today) is still found. One owner:
+    :func:`fork_lineage.owner_spellings`.
+    """
+    out: set[str] = set()
+    for key in keys:
+        if key:
+            out |= fork_lineage.owner_spellings(key)
+    return out
+
+
+@dataclass
+class _ForkLineage:
+    """Fork edges over the session catalog, as transcript stems.
+
+    ``parent_of`` is the immediate ``forked_from`` edge; ``known_ancestors`` is
+    the materialized ``fork_ancestors`` chain each fork carries, which keeps
+    ancestry provable after an intermediate fork's own record is gone.
+    ``unreadable`` lists sessions whose metadata could not be read; the reap
+    fails CLOSED on any of them, since a missing edge could expose an image copy
+    a surviving fork still renders.
+    """
+
+    keys: set[str] = _dc_field(default_factory=set)
+    parent_of: dict[str, str] = _dc_field(default_factory=dict)
+    known_ancestors: dict[str, set[str]] = _dc_field(default_factory=dict)
+    unreadable: set[str] = _dc_field(default_factory=set)
+
+
+def _fork_lineage(log: Any) -> _ForkLineage:
+    """Read the fork edges of every session in the catalog.
+
+    Taken BEFORE a permanent delete: an unlinked transcript takes its
+    ``forked_from`` with it, which would break any chain that runs through a
+    deleted intermediate. Blocking (reads every session's metadata) — call off
+    the loop.
+    """
+    # (stem, forked_from, fork_ancestors, readable)
+    entries: list[tuple[str, str | None, list[str], bool]] = []
+    for entry in log.list_sessions():
+        key = str(entry.get("key") or "")
+        if not key:
+            continue
+        try:
+            meta, ok = log.get_metadata_status(key)
+        except Exception:
+            meta, ok = {}, False
+        if not ok or not isinstance(meta, dict):
+            entries.append((fork_lineage.fold(key), None, [], False))
+            continue
+        parent = meta.get("forked_from")
+        chain = fork_lineage.recorded_chain(meta)
+        entries.append(
+            (
+                fork_lineage.fold(key),
+                str(parent) if parent else None,
+                chain,
+                True,
+            )
+        )
+    # A `forked_from` key may name a transcript that still lives under a legacy
+    # stem (pre-canonical Slack threads); alias each legacy stem onto the
+    # canonical one so the catalog entry and the edge meet.
+    alias: dict[str, str] = {}
+    for _stem, parent, chain, _ok in entries:
+        for k in [parent, *chain]:
+            if k:
+                alias.update(fork_lineage.legacy_aliases(k))
+    out = _ForkLineage()
+    for stem, parent, chain, ok in entries:
+        stem = alias.get(stem, stem)
+        out.keys.add(stem)
+        if not ok:
+            out.unreadable.add(stem)
+            continue
+        if parent:
+            out.parent_of[stem] = fork_lineage.fold(parent)
+        if chain:
+            out.known_ancestors[stem] = {fork_lineage.fold(a) for a in chain}
+    return out
+
+
+def _ancestors(lineage: _ForkLineage, start: str) -> set[str]:
+    """Every ancestor of ``start`` in the snapshot — the shared
+    :func:`fork_lineage.walk_ancestors` fed by the snapshot's edges, so the
+    reap and the asset endpoint share one definition of "ancestor"."""
+    return fork_lineage.walk_ancestors(
+        start,
+        parent_of=lineage.parent_of.get,
+        known_of=lambda s: lineage.known_ancestors.get(s, ()),
+    )
+
+
+def _image_reap_set(
+    before: _ForkLineage, after: _ForkLineage, deleted: set[str]
+) -> set[str] | None:
+    """Which sessions' image copies to reap after ``deleted`` were unlinked.
+
+    A fork copies messages with their ``ts`` intact, and an image copy's slug is
+    derived from ``ts`` alone, so a fork renders the very same artifacts as its
+    source (and its source's source, …). Therefore:
+
+    * a deleted session with a SURVIVING descendant is kept;
+    * an ancestor that is itself already gone from the catalog (it was kept
+      earlier because of a fork) is reaped as soon as its last descendant goes;
+    * ``None`` (reap nothing) when any lineage metadata was unreadable, because
+      an unknown edge could hide a live descendant.
+
+    ``after`` is read once the unlink has happened: a fork acknowledged between
+    the snapshot and the delete shows up there, and the merged edge set (fresh
+    reads win) is what the decision uses. Everything is compared as transcript
+    stems (:func:`_lineage_key`); the result is the set of stems to reap plus the
+    caller's own spellings of them.
+    """
+    if before.unreadable or after.unreadable:
+        return None
+    merged = _ForkLineage(
+        keys=before.keys | after.keys,
+        parent_of={**before.parent_of, **after.parent_of},
+        known_ancestors={**before.known_ancestors, **after.known_ancestors},
+    )
+    deleted_stems = {fork_lineage.fold(k) for k in deleted}
+    # ``after`` is authoritative for what is live NOW. A deleted stem that is
+    # back in it was recreated under the same key while the delete ran (a
+    # channel session receiving a new message, a slot re-registered), so its
+    # images — including any the new incarnation registered — must stay.
+    survivors = set(after.keys)
+    protected: set[str] = set()
+    for s in survivors:
+        protected |= _ancestors(merged, s)
+    candidates = set(deleted_stems)
+    for d in deleted_stems:
+        # Ancestors absent from the catalog were kept for this line's sake.
+        candidates |= {a for a in _ancestors(merged, d) if a not in survivors}
+    reap_stems = candidates - protected - survivors
+    return reap_stems | {k for k in deleted if fork_lineage.fold(k) in reap_stems}
+
+
+#: Reaps deferred behind a straggling image registration. Held here so the task
+#: is not garbage-collected mid-flight; each removes itself when done.
+_DEFERRED_REAPS: set["asyncio.Task[None]"] = set()
+#: How long a deferred reap waits for a straggling registration before giving
+#: up loudly. A registration copies local files, so ten minutes is far past any
+#: honest run — beyond it the task is wedged and parking the reap behind it
+#: forever would just hide the leak.
+_DEFERRED_REAP_WAIT_SECS = 600.0
+
+
+async def _reap_session_images(log: Any, before: _ForkLineage, keys: set[str]) -> None:
+    """Delete the untouched chat-image copies of permanently deleted sessions.
+
+    Chat images are exempt from the widget-preview sweep, so this is their ONLY
+    reclamation path: every handler that permanently deletes a transcript must
+    call it, passing the :func:`_fork_lineage` snapshot it took BEFORE deleting.
+    The decision is :func:`_image_reap_set`; the store singleton's first
+    construction does ``resolve``+``mkdir``, so the whole call runs off the loop.
+    """
+    if not keys:
+        return
+    # Image registration is dispatched as a detached task at finalize time. A
+    # delete issued right after a turn ends must wait for it, or the late copy
+    # would land after the reap and outlive the transcript. Registrations are
+    # keyed by the slot key (what `register_images` receives). The delete
+    # request itself waits a bounded time; if a registration is still running
+    # past that, the reap is DEFERRED behind it (a background task with its own,
+    # much longer bound) rather than dropped, so the late copy is still reclaimed.
+    bare = _image_artifact_session_keys(keys)
+    drained = await drain_registrations(bare)
+    if not drained:
+        logger.warning(
+            "image cleanup for %s deferred: an image registration is still running",
+            sorted(keys),
+        )
+
+        async def _deferred() -> None:
+            # Generous second wait: a registration is a local file copy, so
+            # anything still running after this is wedged. Fail LOUD rather than
+            # park the reap forever behind it.
+            if not await drain_registrations(bare, timeout=_DEFERRED_REAP_WAIT_SECS):
+                logger.error(
+                    "image cleanup for %s abandoned: an image registration is wedged "
+                    "(%ss); its copies may outlive the deleted transcript",
+                    sorted(keys),
+                    _DEFERRED_REAP_WAIT_SECS,
+                )
+                return
+            await _reap_session_images(log, before, keys)
+
+        task = asyncio.create_task(_deferred())
+        _DEFERRED_REAPS.add(task)
+        task.add_done_callback(_DEFERRED_REAPS.discard)
+        return
+
+    def _run() -> int:
+        after = _fork_lineage(log)
+        reap = _image_reap_set(before, after, keys)
+        if reap is None:
+            logger.warning(
+                "image cleanup skipped for %s: fork lineage unreadable for %s",
+                sorted(keys),
+                sorted(before.unreadable | after.unreadable),
+            )
+            return 0
+        kept = {k for k in keys if fork_lineage.fold(k) not in reap}
+        if kept:
+            logger.info("image cleanup: keeping copies of %s (surviving forks)", sorted(kept))
+        if not reap:
+            return 0
+        return get_default_store().delete_auto_images_for_sessions(
+            _image_artifact_session_keys(reap)
+        )
+
+    try:
+        await asyncio.to_thread(_run)
+    except Exception:
+        logger.warning("image artifact cleanup failed for sessions %s", sorted(keys), exc_info=True)
+
+
 async def api_session_delete(request: web.Request) -> web.Response:
     """DELETE /api/sessions/{key} — permanently delete a history session."""
     state: DashboardState = request.app["state"]
     key = request.match_info["key"]
     if not state.conversation_log:
         return web.json_response({"error": "no conversation log"}, status=400)
+    # Fork lineage must be read BEFORE the unlink (the deleted transcript's own
+    # `forked_from` goes with it); one metadata pass, off the loop.
+    lineage = await asyncio.to_thread(_fork_lineage, state.conversation_log)
     # delete_session enters _locked (flock acquire + os.close); offload off the
     # loop so a wedged cross-process peer can't freeze chat/WS/heartbeat.
     ok = await asyncio.to_thread(state.conversation_log.delete_session, key)
     if ok:
+        # Quiesce FIRST: removing the slot kills its kiro-cli session, so no
+        # further turn can finalize and schedule a registration behind the
+        # drain below. Only then wait for what is already in flight and reap.
         try:
             await _remove_slot_for_history_key(state, key)
         except Exception:
             logger.warning("cleanup failed for session %s", key, exc_info=True)
+        # Auto-registered image artifacts are chat-owned durable copies. Keep
+        # them across agent/runtime cleanup, but reap untouched copies when the
+        # transcript itself is permanently deleted.
+        await _reap_session_images(state.conversation_log, lineage, {key})
         state.push_slots_update()
         state.push_refresh("history")
     return web.json_response({"ok": ok})
@@ -1301,8 +1542,6 @@ async def _remove_slot_for_history_key(state: DashboardState, key: str) -> None:
     first, then the stripped variant.  Also kills the kiro-cli session
     to prevent orphaned processes.
     """
-    from kiro_crew.dashboard.state import _normalize_slot_key
-
     stripped = key
     if stripped.startswith("dashboard:"):
         stripped = stripped[len("dashboard:") :]
@@ -1438,10 +1677,13 @@ async def api_sessions_clear(request: web.Request) -> web.Response:
     # permanently unlinks.
     # It globs and stats every session file, so it stays off the event loop.
     clearable, skipped = await asyncio.to_thread(_clearable_history_keys, state, log)
+    # Fork lineage snapshot BEFORE any unlink — see api_session_delete.
+    lineage = await asyncio.to_thread(_fork_lineage, log)
 
     count = 0
     failed = 0
     cleanup_tasks = []
+    deleted_keys: set[str] = set()
     for key in clearable:
         # Re-check per iteration: a resume publishing a slot during the selector's
         # scan OR during an earlier delete-await now appears here. The selector
@@ -1462,6 +1704,7 @@ async def api_sessions_clear(request: web.Request) -> web.Response:
                 skipped += 1
             elif result:
                 cleanup_tasks.append(_remove_slot_for_history_key(state, key))
+                deleted_keys.add(key)
                 count += 1
             else:
                 failed += 1
@@ -1470,6 +1713,10 @@ async def api_sessions_clear(request: web.Request) -> web.Response:
             logger.warning("api_sessions_clear: delete raised for %s", key, exc_info=True)
     if cleanup_tasks:
         await asyncio.gather(*cleanup_tasks, return_exceptions=True)
+    # Same lifetime rule as the single delete: a transcript that is gone for
+    # good takes its untouched image copies with it. One store pass for the
+    # whole batch rather than one per session.
+    await _reap_session_images(log, lineage, deleted_keys)
     if count:
         state.push_slots_update()
         state.push_refresh("history")

@@ -108,6 +108,12 @@ logger = logging.getLogger(__name__)
 #: caption may legally contain an escaped bracket -- ``![Revenue \[Q1\]](p.png)``.
 #: A plain ``[^\]]*`` stops at that escaped ``]``, the whole pattern then fails to
 #: match, and the image is never seen at all.
+#:
+#: KEEP IN SYNC: ``website/src/lib/imageArtifactSlug.ts`` ports this pattern,
+#: ``_MD_ESCAPABLE`` and ``md_destination`` byte for byte. The dashboard uses the
+#: port to find a chat image's durable artifact by its ordinal in the raw
+#: message, so a grammar change here that is not mirrored there silently breaks
+#: the image fallback. ``test/test_image_grammar_parity.py`` drives both.
 IMAGE_MD_RE = re.compile(r"!\[((?:[^\]\\]|\\.)*)\]\(")
 
 #: Unwraps a markdown backslash escape to the character it escaped.

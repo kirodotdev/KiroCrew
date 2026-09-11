@@ -16,6 +16,7 @@ from kiro_crew.dashboard.chat_utils import (
     history_corpus_unreadable,
     slot_history_key,
 )
+from kiro_crew.dashboard.fork_lineage import ancestry_chain, materialize_ancestors
 from kiro_crew.dashboard.state import (
     MAX_LIVE_SLOTS,
     VALID_MEMORY_MODES,
@@ -960,6 +961,16 @@ async def api_chat_slot_fork(request: web.Request) -> web.Response:
                 return _store_unavailable_response(inherited_store, exc)
             raise
     new_slot.forked_from = effective_session_key(slot)
+    # The FULL chain, so lineage stays provable after an intermediate fork is
+    # deleted (its own metadata goes with it). A source forked before the chain
+    # was recorded carries only `forked_from`; walk the catalog once so the new
+    # fork records every ancestor, not one link. See dashboard/fork_lineage.py.
+    source_chain: list[str] | None = getattr(slot, "fork_ancestors", None) or None
+    if not source_chain and getattr(slot, "forked_from", None) and state.conversation_log:
+        source_chain = await asyncio.to_thread(
+            ancestry_chain, state.conversation_log, new_slot.forked_from
+        )
+    new_slot.fork_ancestors = materialize_ancestors(new_slot.forked_from, source_chain)
     new_slot.reasoning_effort = slot.reasoning_effort
     # Inherit the active project directory so the fork keeps the parent's working
     # context (agent resolution, steering files, CWD) instead of falling back to

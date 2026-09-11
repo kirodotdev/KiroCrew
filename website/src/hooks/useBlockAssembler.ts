@@ -150,13 +150,19 @@ export function parseBlocks(raw: string, streaming: boolean): ContentBlock[] {
   let widgetSlug = ''
   let widgetFenceTick = ''
   let mdStart = 1
+  let mdStartOffset = 0
   let codeStart = 1
   let widgetStart = 1
+  // Raw character offset of the start of line `i` — lines are split on '\n',
+  // so each line contributes its length plus the separator.
+  let lineOffset = 0
 
   const flushMd = () => {
     if (mdBuf.length === 0) return
     const text = mdBuf.join('\n')
-    if (text.trim()) blocks.push({ type: 'markdown', content: text, complete: true, startLine: mdStart })
+    if (text.trim()) {
+      blocks.push({ type: 'markdown', content: text, complete: true, startLine: mdStart, startOffset: mdStartOffset })
+    }
     mdBuf = []
   }
 
@@ -193,8 +199,13 @@ export function parseBlocks(raw: string, streaming: boolean): ContentBlock[] {
     widgetFenceTick = ''
   }
 
-  const pushMd = (text: string, lineIdx: number) => {
-    if (mdBuf.length === 0) mdStart = lineIdx + 1
+  // `column` is where `text` begins within line `lineIdx` (0 for a whole line
+  // or a line prefix; the suffix start for text after a same-line close tag).
+  const pushMd = (text: string, lineIdx: number, column = 0) => {
+    if (mdBuf.length === 0) {
+      mdStart = lineIdx + 1
+      mdStartOffset = lineOffset + column
+    }
     mdBuf.push(text)
   }
 
@@ -227,7 +238,7 @@ export function parseBlocks(raw: string, streaming: boolean): ContentBlock[] {
             widgetBuf.push(afterTag.slice(0, wClose.index))
             flushWidget(true)
             const afterClose = afterTag.slice(wClose.index + wClose[0].length)
-            if (afterClose) pushMd(afterClose, i)
+            if (afterClose) pushMd(afterClose, i, line.length - afterClose.length)
           } else {
             if (afterTag) widgetBuf.push(afterTag)
             state = 'widget'
@@ -289,7 +300,7 @@ export function parseBlocks(raw: string, streaming: boolean): ContentBlock[] {
           if (before) widgetBuf.push(before)
           flushWidget(true)
           const afterClose = line.slice(wClose.index + wClose[0].length)
-          if (afterClose) pushMd(afterClose, i)
+          if (afterClose) pushMd(afterClose, i, line.length - afterClose.length)
           state = 'outside'
           break
         }
@@ -312,6 +323,8 @@ export function parseBlocks(raw: string, streaming: boolean): ContentBlock[] {
         break
       }
     }
+    // Every `break` above lands here: account for this line and its '\n'.
+    lineOffset += line.length + 1
   }
 
   // End of input: flush any open state.

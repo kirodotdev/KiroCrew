@@ -37,6 +37,7 @@ import json
 import logging
 import os
 import re
+import stat
 import tempfile
 import threading
 import unicodedata
@@ -48,7 +49,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterator
 from typing import List as _List
 
-from kiro_crew import hooks
+from kiro_crew import hooks, platform_compat
 from kiro_crew.artifact_source import is_verifiable_root
 from kiro_crew.config.loader import KiroCrewConfig, config_dir
 from kiro_crew.deploy.webapp_types import (  # noqa: F401 — re-export for API compatibility
@@ -82,6 +83,16 @@ MAX_VERSIONS = 50
 #: ``validation.ARTIFACT_CONTENT_MAX`` (the MCP tool-arg cap) so a save's limit
 #: doesn't depend on its entry path — guarded by a regression test.
 MAX_CONTENT_BYTES = 26_214_400  # 25 MiB
+
+#: What pins an image sidecar between the locked metadata read and the unlocked
+#: byte read: ``(st_dev, st_ino, st_size, st_mtime_ns)``. See
+#: :meth:`ArtifactStore._sidecar_identity`.
+_SidecarIdentity = tuple[int, int, int, int]
+
+
+def _stat_identity(st: os.stat_result) -> _SidecarIdentity:
+    return (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns)
+
 
 #: Maximum length of human-readable name / description fields.
 MAX_NAME_LEN = 200
@@ -1415,6 +1426,17 @@ class ArtifactStore:
         routed through the gated :meth:`_read_bytes` so the sensitive-path
         denylist fires here as on every other store read.
         """
+        data, mime, _owner = self.read_image_bytes_with_owner(slug)
+        return data, mime
+
+    def read_image_bytes_with_owner(self, slug: str) -> tuple[bytes, str, str]:
+        """``(bytes, mime, session_key)`` from ONE metadata snapshot.
+
+        The owner is read under the same lock that resolves the asset path, so a
+        caller authorizing by session compares against the record whose bytes it
+        then serves — a delete/recreate of the slug between two separate reads
+        cannot pair one record's owner with another record's bytes.
+        """
         slug = _validate_slug(slug)
         with self._lock:
             meta = self._load_meta(slug)
@@ -1436,11 +1458,21 @@ class ArtifactStore:
             if not asset.exists():
                 raise ArtifactNotFoundError(f"image asset missing for {slug!r}")
             mime = norm_mime
+            owner = meta.session_key or ""
+            # Pin the sidecar's inode WHILE the metadata is locked: the bytes are
+            # read after the lock is released (an asset can be tens of MiB), and a
+            # delete + recreate of this slug in that window would otherwise pair
+            # the owner captured here with another record's bytes. The read below
+            # authorizes the descriptor it actually opened against this identity.
+            identity = self._sidecar_identity(asset)
+            if identity is None:
+                raise ArtifactNotFoundError(f"image asset is not readable: {asset.name}")
         # Read OUTSIDE the lock: an asset can be tens of MiB, and holding the
         # store-wide lock across it would block every concurrent artifact
         # operation for the duration of the read. The path was resolved under
-        # the lock and an image artifact's bytes are never rewritten in place.
-        return self._read_image_asset_bytes(asset), mime
+        # the lock and an image artifact's bytes are never rewritten in place;
+        # the identity check refuses a sidecar swapped in since.
+        return self._read_image_asset_bytes(asset, identity=identity), mime, owner
 
     def get(self, slug: str, *, version: int | None = None) -> Artifact:
         """Return an artifact (with content) by slug, optionally a specific version.
@@ -2051,6 +2083,20 @@ class ArtifactStore:
         A widget that is merely *rendered* is not claimed; a widget that was
         touched in any of the above ways is.
         """
+        # Chat images are durable transcript assets, not rolling widget previews.
+        # Their lifecycle is the owning session; count-based pruning must never
+        # make a still-existing chat render a broken image.
+        if art.kind == "image":
+            return False
+        return self._is_unclaimed_auto_artifact(art)
+
+    def _is_unclaimed_auto_artifact(self, art: Artifact) -> bool:
+        """True when ``art`` is auto-registered and carries NO investment signal.
+
+        The single spelling of the "nobody has claimed this" test, shared by the
+        widget sweep and the per-session image reap so the two can never drift.
+        The signals are documented on :meth:`_is_sweepable_auto_widget`.
+        """
         if not art.auto_registered or art.pinned:
             return False
         if art.folder_id or art.publication is not None or art.fork_metadata is not None:
@@ -2125,6 +2171,45 @@ class ArtifactStore:
                 logger.warning("auto-widget prune skipped %s: %s", art.slug, exc)
                 continue
             # Fired outside the lock, matching ``delete()``.
+            self._fire_change("delete", art.slug)
+            deleted += 1
+        return deleted
+
+    def delete_auto_images_for_sessions(self, session_keys: set[str]) -> int:
+        """Delete untouched chat-image copies owned by permanently deleted sessions.
+
+        Saved/invested images survive: pinning, filing, publishing, editing,
+        describing, tagging, forking, or commenting turns an automatic transcript
+        copy into a user-owned artifact. The eligibility re-check and removal share
+        one lock acquisition so a concurrent pin cannot be overwritten.
+        """
+        keys = {key for key in session_keys if key}
+        if not keys:
+            return 0
+
+        def eligible(art: Artifact) -> bool:
+            return (
+                art.kind == "image"
+                and art.session_key in keys
+                and self._is_unclaimed_auto_artifact(art)
+            )
+
+        deleted = 0
+        for art in self.list():
+            if not eligible(art):
+                continue
+            try:
+                with self._lock:
+                    fresh = self._load_meta(art.slug)
+                    if not eligible(fresh):
+                        continue
+                    adir = self._artifact_dir(art.slug)
+                    if not adir.exists():
+                        continue
+                    self._rmtree(adir)
+            except (ArtifactNotFoundError, ArtifactError, OSError) as exc:
+                logger.warning("session image cleanup skipped %s: %s", art.slug, exc)
+                continue
             self._fire_change("delete", art.slug)
             deleted += 1
         return deleted
@@ -3533,7 +3618,9 @@ class ArtifactStore:
             raise ArtifactError(f"refusing to read sensitive path: {resolved}")
         return resolved.read_bytes()
 
-    def _read_image_asset_bytes(self, path: Path) -> bytes:
+    def _read_image_asset_bytes(
+        self, path: Path, *, identity: _SidecarIdentity | None = None
+    ) -> bytes:
         """Read an image sidecar with the open descriptor as the unit of trust.
 
         :meth:`_read_bytes` resolves the path, checks it, then opens it by name —
@@ -3543,6 +3630,12 @@ class ArtifactStore:
         the open is ``O_NOFOLLOW`` and the inode it actually opened is validated
         (regular file, not hardlinked), so a swapped sidecar is refused rather
         than followed.
+
+        With ``identity`` — the inode identity a caller captured while it
+        held the metadata lock — the descriptor is additionally required to BE
+        that inode, so a sidecar replaced after the lock was released (a slug
+        deleted and recreated) is refused rather than served under the earlier
+        record's owner.
 
         ``within_root`` is deliberately NOT passed to the helper: its containment
         check reads the descriptor's real path via ``/proc/self/fd`` or
@@ -3558,12 +3651,67 @@ class ArtifactStore:
         resolved = Path(os.path.realpath(path))
         if resolved != root and root not in resolved.parents:
             raise ArtifactNotFoundError(f"image asset escapes the store root: {path.name}")
-        data = hooks.safe_read_file_bytes_nolink(str(resolved), max_bytes=MAX_CONTENT_BYTES)
+        if identity is not None:
+            data = self._read_pinned_sidecar(resolved, identity)
+        else:
+            data = hooks.safe_read_file_bytes_nolink(str(resolved), max_bytes=MAX_CONTENT_BYTES)
         if data is None:
-            # Refused: not a regular file, hardlinked, or unreadable.
+            # Refused: not a regular file, hardlinked, unreadable, or (with an
+            # identity) not the inode the caller pinned under the lock.
             # Indistinguishable from "gone" to the caller by design.
             raise ArtifactNotFoundError(f"image asset is not readable: {path.name}")
         return data
+
+    @staticmethod
+    def _sidecar_identity(asset: Path) -> _SidecarIdentity | None:
+        """Identity of the sidecar as it is NOW, for pinning under the lock.
+
+        ``(st_dev, st_ino)`` alone is not enough: a file deleted and rewritten a
+        moment later commonly gets the same inode number back, so size and
+        ``mtime_ns`` are part of the identity too. ``None`` when the path is
+        refused or unstattable.
+        """
+        if is_sensitive_path(str(asset)):
+            return None
+        try:
+            return _stat_identity(os.stat(asset, follow_symlinks=False))
+        except OSError:
+            return None
+
+    @staticmethod
+    def _read_pinned_sidecar(resolved: Path, identity: _SidecarIdentity) -> bytes | None:
+        """Read ``resolved`` only if the descriptor opened IS the pinned inode.
+
+        Every check runs on the one ``fstat`` of the descriptor that is read —
+        the same set :func:`hooks.safe_read_file_bytes_nolink` applies (regular
+        file, not hardlinked, under ``MAX_CONTENT_BYTES``) PLUS the ``(st_dev,
+        st_ino)`` captured under the metadata lock — so neither a hardlinked
+        alias nor a sidecar swapped in after the lock was released can be served.
+        ``None`` means refused, for any reason.
+        """
+        if is_sensitive_path(str(resolved)):
+            return None
+        try:
+            fd = platform_compat.open_file_no_reparse(resolved)
+        except OSError:
+            return None
+        try:
+            st = os.fstat(fd)
+            if _stat_identity(st) != identity:
+                return None
+            if st.st_nlink > 1 or not stat.S_ISREG(st.st_mode):
+                return None
+            if st.st_size > MAX_CONTENT_BYTES:
+                return None
+            with os.fdopen(fd, "rb") as fh:
+                fd = -1  # consumed by fdopen
+                data = fh.read(MAX_CONTENT_BYTES + 1)
+        except OSError:
+            return None
+        finally:
+            if fd != -1:
+                os.close(fd)
+        return None if len(data) > MAX_CONTENT_BYTES else data
 
     def _write_bytes(self, path: Path, data: bytes) -> None:
         """Binary sibling of :meth:`_write_text` (image asset writes).
